@@ -1,6 +1,7 @@
 import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
 import { PublicationLifecycle, PublicationScheduleStatus } from '../prisma/prisma-client';
 import { PublicationService } from './publication.service';
+import { ServiceUnavailableException } from '@nestjs/common';
 
 function createHarness() {
   const scheduledAt = new Date('2026-09-13T09:00:00Z');
@@ -38,7 +39,9 @@ function createHarness() {
   const tx = {
     publicationSchedule: {
       updateMany: jest.fn((args) =>
-        args.data.status === PublicationScheduleStatus.ERROR ? scheduleUpdate(args) : claim(args),
+        args.data.status === PublicationScheduleStatus.ERROR || args.data.lastError
+          ? scheduleUpdate(args)
+          : claim(args),
       ),
     },
     publication: {
@@ -65,6 +68,7 @@ function createHarness() {
   });
   return {
     service,
+    schedule,
     scheduleUpdate,
     publicationUpdate,
     occurrenceCreate,
@@ -85,10 +89,22 @@ describe('Publication recurrence preparation recovery', () => {
       const error = Object.assign(new Error('Transient database failure'), { code });
       harness.transaction.mockRejectedValueOnce(error);
       await harness.service.materializeRecurringSchedules(1);
-      expect(harness.scheduleUpdate).not.toHaveBeenCalled();
+      expect(harness.scheduleUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            nextMaterializeAt: new Date('2026-09-13T09:00:00Z'),
+            revision: 2,
+          }),
+          data: {
+            nextMaterializeAt: expect.any(Date),
+            lastError: 'PUBLICATION_PREPARATION_TRANSIENT',
+          },
+        }),
+      );
       expect(harness.publicationUpdate).not.toHaveBeenCalled();
       expect(harness.occurrenceCreate).not.toHaveBeenCalled();
 
+      jest.advanceTimersByTime(75_000);
       await harness.service.materializeRecurringSchedules(1);
       expect(harness.occurrenceCreate).toHaveBeenCalledTimes(1);
       expect(harness.claim).toHaveBeenCalledWith(
@@ -103,9 +119,105 @@ describe('Publication recurrence preparation recovery', () => {
     const harness = createHarness();
     harness.latest.mockRejectedValue(Object.assign(new Error('Pool timeout'), { code: 'P2024' }));
     await harness.service.materializeRecurringSchedules(1);
-    expect(harness.scheduleUpdate).not.toHaveBeenCalled();
+    expect(harness.scheduleUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ lastError: 'PUBLICATION_PREPARATION_TRANSIENT' }),
+      }),
+    );
     expect(harness.publicationUpdate).not.toHaveBeenCalled();
-    expect(harness.transaction).not.toHaveBeenCalled();
+    expect(harness.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [1, 'access'],
+    [2, 'access'],
+    [50, 'access'],
+    [2, 'database'],
+  ] as const)(
+    'lets healthy schedules pass a first batch of %s %s failures without widening the scan',
+    async (limit, failureType) => {
+      const harness = createHarness();
+      const schedules = Array.from({ length: limit + 1 }, (_, index) => ({
+        ...harness.schedule,
+        id: `schedule-${index}`,
+        publicationId: `publication-${index}`,
+        nextMaterializeAt: new Date('2026-09-13T09:00:00Z'),
+        lastError: null,
+        publication: { ...harness.schedule.publication, id: `publication-${index}` },
+      }));
+      const select = harness.service.prisma.publicationSchedule.findMany;
+      select.mockImplementation(
+        async ({ where, take }: { where: { nextMaterializeAt: { lte: Date } }; take: number }) =>
+          schedules
+            .filter(
+              (schedule) =>
+                schedule.nextMaterializeAt &&
+                schedule.nextMaterializeAt <= where.nextMaterializeAt.lte,
+            )
+            .sort(
+              (left, right) => left.nextMaterializeAt.getTime() - right.nextMaterializeAt.getTime(),
+            )
+            .slice(0, take),
+      );
+      harness.scheduleUpdate.mockImplementation(async ({ where, data }) => {
+        const schedule = schedules.find((entry) => entry.id === where.id);
+        if (
+          !schedule ||
+          schedule.revision !== where.revision ||
+          schedule.nextMaterializeAt.getTime() !== where.nextMaterializeAt.getTime()
+        )
+          return { count: 0 };
+        Object.assign(schedule, data);
+        return { count: 1 };
+      });
+      harness.service.resolveOccurrenceTargets.mockImplementation(
+        async (publication: { id: string }) => {
+          if (publication.id !== `publication-${limit}`)
+            throw failureType === 'access'
+              ? new ServiceUnavailableException('MAX temporarily unavailable')
+              : Object.assign(new Error('Transient pool timeout'), { code: 'P2024' });
+          return [{ chatId: 'healthy-chat', entityType: 'chat' }];
+        },
+      );
+      await harness.service.materializeRecurringSchedules(limit);
+      expect(harness.occurrenceCreate).not.toHaveBeenCalled();
+      for (const schedule of schedules.slice(0, limit)) {
+        expect(schedule.nextMaterializeAt.getTime()).toBeGreaterThanOrEqual(
+          new Date('2026-09-13T10:01:00Z').getTime(),
+        );
+        expect(schedule.nextMaterializeAt.getTime()).toBeLessThan(
+          new Date('2026-09-13T10:01:15Z').getTime(),
+        );
+      }
+      await harness.service.materializeRecurringSchedules(limit);
+      expect(harness.occurrenceCreate).toHaveBeenCalledTimes(1);
+      expect(select).toHaveBeenCalledTimes(2);
+      for (const [query] of select.mock.calls) expect(query.take).toBe(limit);
+    },
+  );
+
+  it('keeps empty recurrence recovery from undoing a persisted preparation pause', async () => {
+    const harness = createHarness();
+    harness.service.prisma.publicationSchedule.findMany.mockResolvedValue([]);
+    await harness.service.reconcileActiveRecurrenceSchedules(2);
+    expect(harness.service.prisma.publicationSchedule.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ lastError: null }) }),
+    );
+  });
+
+  it('stops the bounded sweep if the database cannot persist deferral', async () => {
+    const harness = createHarness();
+    harness.service.prisma.publicationSchedule.findMany.mockResolvedValue([
+      harness.schedule,
+      { ...harness.schedule, id: 'healthy-second' },
+    ]);
+    const transient = Object.assign(new Error('Pool timeout'), { code: 'P2024' });
+    harness.latest.mockRejectedValue(transient);
+    harness.scheduleUpdate.mockRejectedValue(transient);
+    await expect(harness.service.materializeRecurringSchedules(2)).resolves.toBeUndefined();
+    expect(harness.latest).toHaveBeenCalledTimes(1);
+    expect(harness.scheduleUpdate).toHaveBeenCalledTimes(1);
+    expect(harness.publicationUpdate).not.toHaveBeenCalled();
   });
 
   it('backs off unavailable Publisher access without canceling the recurrence', async () => {

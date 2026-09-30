@@ -2936,6 +2936,7 @@ model PublicationOccurrence {
   dispatchBlockerCode String?                     @map("dispatch_blocker_code")
   dispatchBlockedAt   DateTime?                   @map("dispatch_blocked_at")
   dispatchFirstBlockedAt DateTime?                   @map("dispatch_first_blocked_at")
+  retryAuthorizedAt   DateTime?                   @map("retry_authorized_at")
   createdAt           DateTime                    @default(now()) @map("created_at")
   updatedAt           DateTime                    @updatedAt @map("updated_at")
 

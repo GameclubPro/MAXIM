@@ -86,11 +86,6 @@ export type PublisherTargetPresentation = {
 
 export type PublisherTargetPresentationMap = ReadonlyMap<string, PublisherTargetPresentation>;
 
-export type PublisherTargetSearchMatch = {
-  chatId: string;
-  entityType: ChatEntityType;
-};
-
 @Injectable()
 export class PublicationPresenterService {
   constructor(private readonly prisma: PrismaService) {}
@@ -440,13 +435,14 @@ export class PublicationPresenterService {
       return emptyPublicationDispatchIssueIndex();
     }
 
-    // FLAG: Once execution deliveries exist, their pending rows are authoritative. A broadcast
-    // envelope can exist before delivery rows, while the occurrence blocker is still current.
+    // FLAG: Pending deliveries own active blockers after materialization; a definitive failed
+    // missed window stays visible even when historical execution deliveries remain.
     const rows = await this.prisma.$queryRaw<PublicationDispatchBlockerRow[]>(Prisma.sql`
       WITH "currentOccurrences" AS (
         SELECT
           occurrence."id" AS "occurrenceId",
           occurrence."publication_id" AS "publicationId",
+          occurrence."status" AS "occurrenceStatus",
           occurrence."dispatch_blocker_code" AS "occurrenceBlockerCode",
           EXISTS (
             SELECT 1
@@ -485,7 +481,9 @@ export class PublicationPresenterService {
         current_occurrence."occurrenceId",
         current_occurrence."occurrenceBlockerCode" AS "blockerCode"
       FROM "currentOccurrences" AS current_occurrence
-      WHERE current_occurrence."hasExecutionDeliveries" = FALSE
+      WHERE (current_occurrence."hasExecutionDeliveries" = FALSE
+        OR (current_occurrence."occurrenceStatus" = 'FAILED'::"PublicationOccurrenceStatus"
+          AND current_occurrence."occurrenceBlockerCode" = 'PUBLISHER_MISSED_WINDOW_REVIEW'))
         AND current_occurrence."occurrenceBlockerCode" IS NOT NULL
       UNION ALL
       SELECT DISTINCT
@@ -693,30 +691,6 @@ export class PublicationPresenterService {
       }
     }
     return presentations;
-  }
-
-  async findPublisherTargetSearchMatches(
-    publisherBotId: string,
-    query: string,
-  ): Promise<PublisherTargetSearchMatch[]> {
-    const normalizedBotId = publisherBotId.trim();
-    const normalizedQuery = query.trim();
-    if (!normalizedBotId || !normalizedQuery) {
-      return [];
-    }
-
-    const rows = await this.prisma.$queryRaw<PublisherTargetSearchMatch[]>(Prisma.sql`
-      SELECT
-        catalog."chat_id" AS "chatId",
-        catalog."entity_type" AS "entityType"
-      FROM "managed_bot_chat_catalog" AS catalog
-      WHERE catalog."bot_id" = ${normalizedBotId}
-        AND catalog."status" = 'ACTIVE'
-        AND COALESCE(NULLIF(BTRIM(catalog."title"), ''), catalog."chat_id")
-          ILIKE ${`%${normalizedQuery}%`}
-      ORDER BY catalog."entity_type" ASC, catalog."chat_id" ASC
-    `);
-    return rows;
   }
 
   mapTarget(

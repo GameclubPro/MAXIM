@@ -13,6 +13,10 @@ export type PublisherBindingRefreshReason =
   | 'historical_actor_recovery'
   | 'bootstrap'
   | 'stale_access'
+  | 'scheduled_bot_access'
+  | 'publication_due'
+  | 'publication_actor_due'
+  | 'binding_maintenance'
   | 'stale_user_access'
   | 'manual_recheck'
   | 'policy_enablement_recheck'
@@ -57,6 +61,17 @@ export type PublisherScheduledBacklogCompactionResult = {
 };
 
 function resolveRefreshPriority(reason: PublisherBindingRefreshReason, createdAt?: number): number {
+  // FLAG: Aged scheduled maintenance joins urgent work in FIFO order; interactive rechecks
+  // retain priority one. This is also applied to retained jobs by bounded periodic compaction.
+  if (
+    ['stale_access', 'scheduled_bot_access', 'binding_maintenance', 'stale_user_access'].includes(
+      reason,
+    ) &&
+    createdAt !== undefined &&
+    Number.isFinite(createdAt) &&
+    Date.now() - createdAt >= PUBLISHER_ACTOR_REFRESH_AGING_MS
+  )
+    return 5;
   switch (reason) {
     case 'manual_recheck':
     case 'policy_enablement_recheck':
@@ -66,19 +81,18 @@ function resolveRefreshPriority(reason: PublisherBindingRefreshReason, createdAt
     case 'forwarded_private':
     case 'historical_actor_recovery':
     case 'send_access_lost':
+    case 'publication_due':
+    case 'publication_actor_due':
       return 5;
     // FLAG: The 15-minute bot snapshot gates every publication. Background actor checks
     // refresh three-day grants and must not starve this prerequisite or interactive work.
     case 'stale_access':
+    case 'scheduled_bot_access':
       return 10;
+    case 'binding_maintenance':
     case 'stale_user_access':
-      // FLAG: Aged actor checks join the bot queue in FIFO order so future bot jobs
-      // cannot overtake them forever. Manual and lifecycle priorities remain ahead.
-      return createdAt !== undefined &&
-        Number.isFinite(createdAt) &&
-        Date.now() - createdAt >= PUBLISHER_ACTOR_REFRESH_AGING_MS
-        ? 10
-        : 20;
+      // FLAG: New maintenance starts behind bot checks; aged work joins priority five above.
+      return 20;
     case 'bootstrap':
       return 20;
   }
@@ -318,13 +332,13 @@ export class PublisherBindingRefreshQueueService {
         },
       },
     );
-    if (params.reason === 'stale_user_access' && queued?.id && queued.id !== jobId) {
+    if (scheduledDeduplicationKey && queued?.id && queued.id !== jobId) {
       // FLAG: Queue.add returns the retained ID on deduplication but its local data
       // describes the new request. Inspect only that exact persisted job for its age.
       const retained = await this.queue.getJob(queued.id);
       if (
         retained &&
-        retained.data.reason === 'stale_user_access' &&
+        retained.data.reason === params.reason &&
         this.scheduledDeduplicationKey(retained.data) === scheduledDeduplicationKey
       ) {
         const priority = resolveRefreshPriority(retained.data.reason, retained.timestamp);
@@ -420,14 +434,29 @@ export class PublisherBindingRefreshQueueService {
   }
 
   private scheduledLogicalKey(job: PublisherBindingRefreshJob | null | undefined): string | null {
-    if (!job || (job.reason !== 'stale_access' && job.reason !== 'stale_user_access')) {
+    if (
+      !job ||
+      ![
+        'stale_access',
+        'stale_user_access',
+        'scheduled_bot_access',
+        'publication_due',
+        'publication_actor_due',
+        'binding_maintenance',
+      ].includes(job.reason)
+    ) {
       return null;
     }
     const chatId = job.chatId?.trim() ?? '';
     const publisherBotId = job.publisherBotId?.trim() ?? '';
     const candidateUserId = job.candidateUserId?.trim() ?? '';
     const candidateVersion = job.candidateVersion?.trim() ?? '';
-    if (!chatId || !publisherBotId || (job.reason === 'stale_user_access' && !candidateUserId)) {
+    if (
+      !chatId ||
+      !publisherBotId ||
+      ((job.reason === 'stale_user_access' || job.reason === 'publication_actor_due') &&
+        !candidateUserId)
+    ) {
       return null;
     }
     return JSON.stringify([

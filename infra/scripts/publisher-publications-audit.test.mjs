@@ -44,7 +44,22 @@ test('publication audit classifies exact-bot access without exposing content or 
     ('private-chat', 'private-actor', 'private-bot', 'GRANTED', 'ADMIN', 'CHANNEL', now() - interval '8 days', NULL, NULL, 'private-error');`);
   assert.equal((await report()).target_reasons[0].reason, 'actor_edge_expired');
   await db.exec(`UPDATE managed_entity_access_edges SET expires_at = now() + interval '1 day';`);
+  assert.equal((await report()).target_reasons[0].reason, 'actor_authority_stale');
+  await db.exec(
+    `UPDATE managed_entity_access_edges SET checked_at = now() - interval '14 minutes';`,
+  );
   assert.equal((await report()).target_reasons[0].reason, 'metadata_ready');
+  await db.exec(`UPDATE managed_entity_access_edges SET expires_at = NULL;`);
+  assert.equal((await report()).target_reasons[0].reason, 'metadata_ready');
+  await db.exec(
+    `UPDATE managed_entity_access_edges SET checked_at = now() - interval '16 minutes';`,
+  );
+  assert.equal((await report()).target_reasons[0].reason, 'actor_authority_stale');
+  await db.exec(`UPDATE managed_entity_access_edges SET state = 'DENIED', checked_at = now();`);
+  assert.equal((await report()).target_reasons[0].reason, 'actor_denied');
+  await db.exec(`UPDATE managed_entity_access_edges SET state = 'GRANTED', user_role = 'MEMBER';`);
+  assert.equal((await report()).target_reasons[0].reason, 'actor_not_admin');
+  await db.exec(`UPDATE managed_entity_access_edges SET user_role = 'ADMIN';`);
   await db.exec(`UPDATE managed_bot_chat_catalog SET status = 'REMOVED';`);
   assert.equal((await report()).target_reasons[0].reason, 'catalog_missing_or_inactive');
   await db.exec(
@@ -53,6 +68,34 @@ test('publication audit classifies exact-bot access without exposing content or 
   assert.equal((await report()).target_reasons[0].reason, 'policy_disabled');
   await db.exec(`UPDATE publisher_entity_bindings SET publisher_bot_id = 'private-other-bot';`);
   assert.equal((await report()).target_reasons[0].reason, 'binding_missing_or_wrong_bot');
+});
+
+test('missed-window blockers stay distinct from ambiguous delivery results', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  await db.exec(`
+    INSERT INTO publications VALUES ('private-publication', 'private-actor', 'ACTIVE', 'SNAPSHOT', 'SELECTED', 'PUBLIK_V1', 'private-bot', 'private-title');
+    INSERT INTO publication_schedules VALUES ('private-schedule', 'ONCE', 'ACTIVE', 1, '{}');
+    INSERT INTO publication_occurrences VALUES ('private-occurrence', 'private-publication', 'private-schedule', 'FAILED', now() - interval '1 hour', 'PUBLIK_V1', 'private-bot', 'PUBLISHER_MISSED_WINDOW_REVIEW', 'private-content');
+    INSERT INTO publication_targets VALUES ('private-publication', 'private-chat', 'CHANNEL', 0);
+    INSERT INTO managed_broadcast_deliveries VALUES ('private-delivery', 'private-occurrence', now(), 'AMBIGUOUS', 1, NULL, 'private-error');
+  `);
+  const report = async () => (await db.query(query)).rows[0].json_build_object;
+  const missed = await report();
+  assert.equal(missed.occurrences[0].status, 'FAILED');
+  assert.equal(missed.blockers[0].blocker, 'missed_window');
+  assert.equal(missed.target_reasons[0].blocker, 'missed_window');
+  assert.equal(missed.delivery_states[0].status, 'AMBIGUOUS');
+  assert.doesNotMatch(JSON.stringify(missed), /private-/u);
+
+  for (const code of ['publisher_missed_window_review', 'private-unrecognized-error']) {
+    await db.query('UPDATE publication_occurrences SET dispatch_blocker_code = $1', [code]);
+    const unknown = await report();
+    assert.equal(unknown.blockers[0].blocker, 'other');
+    assert.equal(unknown.target_reasons[0].blocker, 'other');
+    assert.doesNotMatch(JSON.stringify(unknown), /private-|publisher_missed_window_review/u);
+  }
 });
 
 test('source samples are capped and indexed, with explicit truncation', async (t) => {

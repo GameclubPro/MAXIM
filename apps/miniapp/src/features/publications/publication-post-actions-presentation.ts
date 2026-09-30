@@ -54,7 +54,7 @@ export function publicationPostActionLabels(
     DONE: 'Закреплён',
     FAILED: 'Не удалось закрепить',
     AMBIGUOUS: 'Закрепление требует проверки',
-    SKIPPED: 'Закрепление пропущено: срок истёк',
+    SKIPPED: 'Закрепление пропущено',
   };
   const deleteLabels: Record<PublicationPostActions['deleteStatus'], string | null> = {
     NONE: null,

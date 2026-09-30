@@ -75,6 +75,46 @@
     color: var(--publication-warning-ink);
   }
 
+  .publication-occurrences > .has-retry-action {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 7px;
+  }
+
+  .publication-occurrences > .has-retry-action .publication-occurrences__actions {
+    display: grid;
+    justify-content: stretch;
+    gap: 7px;
+  }
+
+  .publication-occurrences > .has-retry-action .publication-occurrences__actions > button {
+    width: 100%;
+    min-height: 44px;
+    height: auto;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    font-size: 0.75rem;
+    font-weight: 650;
+  }
+
+  .publication-occurrences > .has-retry-action .publication-occurrences__actions > button svg {
+    flex: 0 0 19px;
+  }
+
+  .publication-occurrences > .has-retry-action .publication-occurrences__actions > button span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .publication-occurrences__retry-label {
+    display: grid;
+    gap: 2px;
+    text-align: left;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .publication-details-dispatch-notice > button.is-refreshing svg {
       animation: none;

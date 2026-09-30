@@ -1,4 +1,13 @@
-import { Copy, EditPencil, MoreHoriz, Pause, Play, RefreshDouble, Xmark } from 'iconoir-react';
+import {
+  Copy,
+  EditPencil,
+  MoreHoriz,
+  Pause,
+  Play,
+  RefreshDouble,
+  WarningCircle,
+  Xmark,
+} from 'iconoir-react';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from '../../components/max-markdown-preview';
@@ -25,6 +34,7 @@ type PublicationFeedCardProps = {
   canRetry?: boolean;
   canDuplicate?: boolean;
   canCancel?: boolean;
+  requiresScheduleDecision?: boolean;
   editLabel?: string;
   cancelLabel?: string;
   onPause?: () => void;
@@ -33,6 +43,7 @@ type PublicationFeedCardProps = {
   onRetry?: () => void;
   onDuplicate?: () => void;
   onCancel?: () => void;
+  onReviewScheduleDecision?: () => void;
   footer?: ReactNode;
 };
 
@@ -60,6 +71,7 @@ export function PublicationFeedCard({
   canRetry = false,
   canDuplicate = false,
   canCancel = false,
+  requiresScheduleDecision = false,
   editLabel = 'Изменить публикацию',
   cancelLabel = 'Отменить публикацию',
   onPause,
@@ -68,16 +80,26 @@ export function PublicationFeedCard({
   onRetry,
   onDuplicate,
   onCancel,
+  onReviewScheduleDecision,
   footer,
 }: PublicationFeedCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuPanelRef = useRef<HTMLElement | null>(null);
   const firstActionRef = useRef<HTMLButtonElement | null>(null);
   const menuTitleId = useId();
-  const hasMenu = canEdit || canPause || canResume || canRetry || canDuplicate || canCancel;
+  const canReviewScheduleDecision = requiresScheduleDecision && Boolean(onReviewScheduleDecision);
+  const hasMenu =
+    canEdit ||
+    canPause ||
+    canResume ||
+    canRetry ||
+    canDuplicate ||
+    canCancel ||
+    canReviewScheduleDecision;
   const primaryActionLabel = primaryAction ? `${primaryAction.label}: ${title}` : undefined;
   const [audience, schedule, ...additionalMeta] = meta;
-  const scheduleLabel = schedule?.replace(/^Следующая · /u, '') ?? null;
+  const scheduleLabel =
+    (requiresScheduleDecision ? schedule : schedule?.replace(/^Следующая · /u, '')) ?? null;
   const menuPortalTarget = menuOpen ? resolvePublicationActionMenuPortalTarget() : null;
 
   useEffect(() => {
@@ -129,6 +151,14 @@ export function PublicationFeedCard({
     danger?: boolean;
     onClick: () => void;
   }> = [];
+  if (canReviewScheduleDecision && onReviewScheduleDecision) {
+    menuActions.push({
+      key: 'review-schedule-decision',
+      label: 'Разобрать пропущенные отправки',
+      icon: <WarningCircle aria-hidden />,
+      onClick: onReviewScheduleDecision,
+    });
+  }
   if (canEdit && onEdit) {
     menuActions.push({
       key: 'edit',
@@ -220,7 +250,14 @@ export function PublicationFeedCard({
   );
 
   return (
-    <article className={cn('publication-feed-card', `is-${tone}`)} data-publication-id={id}>
+    <article
+      className={cn(
+        'publication-feed-card',
+        `is-${tone}`,
+        requiresScheduleDecision && 'has-schedule-decision',
+      )}
+      data-publication-id={id}
+    >
       {primaryAction ? (
         <button
           type="button"

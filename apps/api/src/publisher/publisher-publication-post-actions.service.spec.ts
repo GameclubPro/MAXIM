@@ -32,7 +32,22 @@ function setup(overrides: Record<string, unknown> = {}) {
   };
   if (row.contentRevision) row.contentRevision.publicationId = 'publication-1';
   const prisma = {
-    publication: { findFirst: jest.fn().mockResolvedValue({ actorUserId: 'author-1' }) },
+    publication: {
+      findFirst: jest.fn().mockResolvedValue({ actorUserId: 'author-1', lifecycle: 'ACTIVE' }),
+    },
+    chat: {
+      findUnique: jest.fn().mockResolvedValue({
+        entityType: 'CHAT',
+        publicationPolicy: { publikEnabled: true },
+        publisherBinding: {
+          publisherBotId: 'publik',
+          status: 'ACTIVE',
+          botAccessState: 'CONFIRMED_ADMIN',
+          botAccessExpiresAt: new Date(NOW.getTime() + 900_000),
+          lifecycleEventAt: null,
+        },
+      }),
+    },
     managedEntityAccessEdge: { findFirst: jest.fn().mockResolvedValue({ chatId: 'chat-1' }) },
     managedBroadcastDelivery: {
       findMany: jest.fn(async () =>
@@ -92,6 +107,10 @@ function setup(overrides: Record<string, unknown> = {}) {
     }),
     assertDeletionAllowed: jest.fn().mockResolvedValue(undefined),
   };
+  const readiness = {
+    requestBotAccessRefresh: jest.fn().mockResolvedValue(undefined),
+    requestActorAccessRefresh: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new PublisherPublicationPostActionsService(
     prisma as any,
     max as any,
@@ -102,32 +121,111 @@ function setup(overrides: Record<string, unknown> = {}) {
     { runExclusive: async (_lane: string, operation: () => Promise<void>) => operation() } as any,
     governor as any,
     subscriptions as any,
+    readiness as any,
   );
-  return { service, row, prisma, max, boundary, health, identity, governor, subscriptions };
+  return {
+    service,
+    row,
+    prisma,
+    max,
+    boundary,
+    health,
+    identity,
+    governor,
+    subscriptions,
+    readiness,
+  };
 }
 
 describe('Publisher publication post actions', () => {
   beforeEach(() => jest.useFakeTimers().setSystemTime(NOW));
   afterEach(() => jest.useRealTimers());
 
-  it('pauses a pin after author access is revoked without losing the committed deletion', async () => {
+  it('requests authority refresh for a missing author edge without losing committed deletion', async () => {
     const f = setup();
     f.prisma.managedEntityAccessEdge.findFirst.mockResolvedValue(null);
     await f.service.processDue();
     expect(f.row.pinStatus).toBe('PENDING');
     expect(f.row.pinAttemptCount).toBe(0);
+    expect(f.readiness.requestBotAccessRefresh).toHaveBeenCalledWith(
+      [{ chatId: 'chat-1', entityType: 'chat' }],
+      'publik',
+    );
+    expect(f.readiness.requestActorAccessRefresh).toHaveBeenCalledWith(
+      [{ chatId: 'chat-1', entityType: 'chat' }],
+      'author-1',
+      'publik',
+    );
     expect(f.row.deleteAt).toEqual(new Date(NOW.getTime() + 3600_000));
     jest.setSystemTime(new Date(NOW.getTime() + 3600_000));
     await f.service.processDue();
     expect(f.row.deleteStatus).toBe('DONE');
   });
 
-  it('pauses pin when the publication has been canceled or paused', async () => {
+  it('terminates pin when the original publication is unavailable', async () => {
     const f = setup();
     f.prisma.publication.findFirst.mockResolvedValue(null);
     await f.service.processDue();
-    expect(f.row.pinStatus).toBe('PENDING');
+    expect(f.row.pinStatus).toBe('FAILED');
     expect(f.row.pinAttemptCount).toBe(0);
+  });
+
+  it('skips a canceled publication pin and preserves its committed deletion', async () => {
+    const f = setup();
+    f.prisma.publication.findFirst.mockResolvedValue({
+      actorUserId: 'author-1',
+      lifecycle: 'CANCELED',
+    });
+    await f.service.processDue();
+    expect(f.row).toMatchObject({
+      pinStatus: 'SKIPPED',
+      deleteStatus: 'PENDING',
+      pinAttemptCount: 0,
+    });
+    jest.setSystemTime(new Date(NOW.getTime() + 3600_000));
+    await f.service.processDue();
+    expect(f.row.deleteStatus).toBe('DONE');
+  });
+
+  it('finishes authority waiting after 30 minutes without making a pin attempt', async () => {
+    const f = setup({
+      sentAt: new Date(NOW.getTime() - 30 * 60_000),
+      deleteStatus: 'NONE',
+      contentRevision: { postPublish: { pin: 'notify', deleteAfterMinutes: null } },
+    });
+    f.prisma.managedEntityAccessEdge.findFirst.mockResolvedValue(null);
+    await f.service.processDue();
+    expect(f.row).toMatchObject({
+      pinStatus: 'FAILED',
+      pinAttemptCount: 0,
+      postActionsNextAt: null,
+    });
+    expect(f.row.pinError).toContain('30 минут');
+    expect(f.readiness.requestBotAccessRefresh).not.toHaveBeenCalled();
+    expect(f.readiness.requestActorAccessRefresh).not.toHaveBeenCalled();
+    expect(f.prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: { pinStatus: 'RUNNING' } }),
+    );
+  });
+
+  it('ends pin on a fresh definitive author denial without waiting or authorizing a mutation', async () => {
+    const f = setup();
+    f.prisma.managedEntityAccessEdge.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      state: 'USER_DENIED',
+      userRole: 'MEMBER',
+      expiresAt: new Date(NOW.getTime() + 900_000),
+      checkedAt: NOW,
+    } as never);
+    await f.service.processDue();
+    expect(f.row).toMatchObject({
+      pinStatus: 'FAILED',
+      pinAttemptCount: 0,
+      deleteStatus: 'PENDING',
+    });
+    expect(f.row.pinError).toContain('отозваны');
+    expect(f.prisma.chat.findUnique).not.toHaveBeenCalled();
+    expect(f.readiness.requestBotAccessRefresh).not.toHaveBeenCalled();
+    expect(f.readiness.requestActorAccessRefresh).not.toHaveBeenCalled();
   });
 
   it('checks a subscription-owned delete before preparation and at the final transport boundary', async () => {
@@ -454,7 +552,7 @@ describe('Publisher publication post actions', () => {
     const { service, prisma, row } = setup();
     prisma.publisherEntityBinding.findFirst.mockResolvedValue(null);
     await service.processDue();
-    expect(row.pinStatus).toBe('PENDING');
+    expect(row.pinStatus).toBe('FAILED');
     expect(row.deleteStatus).toBe('PENDING');
     expect(prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalledWith(
       expect.objectContaining({ data: { pinStatus: 'RUNNING' } }),

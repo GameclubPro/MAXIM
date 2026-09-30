@@ -75,8 +75,12 @@ import {
   normalizePublicationContent,
   PublicationContentService,
 } from './publication-content.service';
-import { selectCurrentRevisionFailedPublicationPage } from './publication-failed-page-query';
+import {
+  selectCurrentRevisionFailedPublicationPage,
+  selectPublicationSearchPage,
+} from './publication-failed-page-query';
 import { isImportedEmptyPublicationDraft } from './publication-imported-draft';
+import { readPublicationRetryAuthorizedAt } from './publication-late-policy';
 import {
   PublicationPublisherRoutingService,
   type ResolvedPublicationTarget,
@@ -114,7 +118,10 @@ import {
 import * as publicationManualRetrySafety from './publication-manual-retry-safety';
 import { expandPublicationSchedule } from './publication-recurrence';
 import { normalizePublicationSchedule } from './publication-schedule-normalization';
-import { recoverPublicationRecurrencePreparationFailure } from './publication-recurrence-recovery';
+import {
+  deferPublicationRecurrencePreparation,
+  recoverPublicationRecurrencePreparationFailure,
+} from './publication-recurrence-recovery';
 
 const PUBLICATION_RECURRENCE_HORIZON_MS = 14 * 24 * 60 * 60_000;
 const PUBLICATION_RECURRENCE_LOOKAHEAD_MS = 450 * 24 * 60 * 60_000;
@@ -206,15 +213,8 @@ export class PublicationService {
       dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
         ? this.publisherRouting.requireNewRoute().requiredBotId
         : null;
-    const publisherTargetSearchMatches =
-      parsed.data.query && publisherBotId
-        ? await this.publicationPresenterService.findPublisherTargetSearchMatches(
-            publisherBotId,
-            parsed.data.query,
-          )
-        : [];
     const filters: Prisma.PublicationWhereInput[] = [];
-    if (parsed.data.query) {
+    if (parsed.data.query && !publisherBotId) {
       const searchBranches: Prisma.PublicationWhereInput[] = [
         { title: { contains: parsed.data.query, mode: 'insensitive' } },
         {
@@ -223,33 +223,13 @@ export class PublicationService {
           },
         },
       ];
-      if (publisherBotId) {
-        const chats = publisherTargetSearchMatches
-          .filter((target) => target.entityType === ChatEntityType.CHAT)
-          .map((target) => target.chatId);
-        const channels = publisherTargetSearchMatches
-          .filter((target) => target.entityType === ChatEntityType.CHANNEL)
-          .map((target) => target.chatId);
-        const targetPredicates: Prisma.PublicationTargetWhereInput[] = [
-          ...(chats.length > 0
-            ? [{ entityType: ChatEntityType.CHAT, targetChatId: { in: chats } }]
-            : []),
-          ...(channels.length > 0
-            ? [{ entityType: ChatEntityType.CHANNEL, targetChatId: { in: channels } }]
-            : []),
-        ];
-        if (targetPredicates.length > 0) {
-          searchBranches.push({ targets: { some: { OR: targetPredicates } } });
-        }
-      } else {
-        searchBranches.push({
-          targets: {
-            some: {
-              chat: { title: { contains: parsed.data.query, mode: 'insensitive' } },
-            },
+      searchBranches.push({
+        targets: {
+          some: {
+            chat: { title: { contains: parsed.data.query, mode: 'insensitive' } },
           },
-        });
-      }
+        },
+      });
       filters.push({
         OR: searchBranches,
       });
@@ -343,17 +323,26 @@ export class PublicationService {
     };
     let failedPageIdentifiers: Array<{ id: string; updatedAt: Date }> = [];
     let rows: any[];
-    if (usesCurrentRevisionFailedSelector) {
-      failedPageIdentifiers = await selectCurrentRevisionFailedPublicationPage(this.prisma, {
+    const usesSqlPageSelector =
+      usesCurrentRevisionFailedSelector || Boolean(parsed.data.query && publisherBotId);
+    if (usesSqlPageSelector) {
+      const pageParams = {
         actorUserId: user.userId,
-        view: parsed.data.view as 'current' | 'schedules',
+        view: parsed.data.view,
+        status: parsed.data.status,
         query: parsed.data.query,
         entityType: parsed.data.entityType,
         cursor,
         limit: parsed.data.limit + 1,
         dispatchProfile,
         publisherBotId: publisherBotId ?? undefined,
-      });
+      };
+      failedPageIdentifiers = usesCurrentRevisionFailedSelector
+        ? await selectCurrentRevisionFailedPublicationPage(this.prisma, {
+            ...pageParams,
+            view: parsed.data.view as 'current' | 'schedules',
+          })
+        : await selectPublicationSearchPage(this.prisma, pageParams);
       if (failedPageIdentifiers.length === 0) {
         rows = [];
       } else {
@@ -402,9 +391,7 @@ export class PublicationService {
     );
     const last = page.at(-1);
     const lastFailedIdentifier =
-      usesCurrentRevisionFailedSelector && last
-        ? failedPageIdentifiers.find((row) => row.id === last.id)
-        : null;
+      usesSqlPageSelector && last ? failedPageIdentifiers.find((row) => row.id === last.id) : null;
 
     return listPublicationsResponseSchema.parse({
       items,
@@ -1417,7 +1404,6 @@ export class PublicationService {
         });
       }
     }
-
     try {
       await this.prisma.$transaction(async (tx: any) => {
         // FLAG: Delivery retry changes only definitively failed or provably untouched PENDING
@@ -1545,12 +1531,9 @@ export class PublicationService {
               : PublicationOccurrenceStatus.IN_PROGRESS,
             // FLAG: Persist the author's bounded past-slot authorization. A Redis wake
             // or an ordinary poller must observe the same choice after a crash.
-            ...(retryWithoutExecutionEnvelope
-              ? {
-                  dispatchBlockerCode: PUBLISHER_EXPLICIT_RETRY_CODE,
-                  dispatchBlockedAt: retryLockedAt,
-                }
-              : {}),
+            dispatchBlockerCode: PUBLISHER_EXPLICIT_RETRY_CODE,
+            dispatchBlockedAt: retryLockedAt,
+            retryAuthorizedAt: retryLockedAt,
             ...(contentMode === 'latest' ? { contentRevisionId: retryContentRevisionId } : {}),
           },
         });
@@ -1938,6 +1921,7 @@ export class PublicationService {
         mode: PublicationScheduleMode.RECURRENCE,
         status: PublicationScheduleStatus.ACTIVE,
         nextMaterializeAt: { gt: now },
+        lastError: null,
         publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
       },
       orderBy: { nextMaterializeAt: 'asc' },
@@ -1954,7 +1938,6 @@ export class PublicationService {
         },
       },
     });
-
     for (const schedule of schedules) {
       try {
         const scheduledRefreshAt = schedule.nextMaterializeAt;
@@ -2117,7 +2100,17 @@ export class PublicationService {
                 schedule,
               )
             : [];
-        if (targets === null) continue;
+        if (targets === null) {
+          const databaseAvailable = await deferPublicationRecurrencePreparation({
+            prisma: this.prisma,
+            logger: this.logger,
+            schedule,
+            publicationVersion: schedule.publication.version,
+            lockCalendar: (tx) => this.lockPublicationCalendar(tx),
+          });
+          if (!databaseAvailable) break;
+          continue;
+        }
         await this.prisma.$transaction(async (tx: any) => {
           if (slots.length > 0) {
             await this.lockPublicationCalendar(tx);
@@ -2171,7 +2164,7 @@ export class PublicationService {
           }
         });
       } catch (error: unknown) {
-        await recoverPublicationRecurrencePreparationFailure({
+        const databaseAvailable = await recoverPublicationRecurrencePreparationFailure({
           prisma: this.prisma,
           logger: this.logger,
           schedule,
@@ -2179,6 +2172,7 @@ export class PublicationService {
           lockCalendar: (tx) => this.lockPublicationCalendar(tx),
           error,
         });
+        if (!databaseAvailable) break;
       }
     }
   }
@@ -2242,6 +2236,9 @@ export class PublicationService {
           status: PublicationOccurrenceStatus.SCHEDULED,
           scheduleRevision: occurrence.scheduleRevision,
           contentRevisionId: occurrence.contentRevisionId,
+          retryAuthorizedAt: occurrence.retryAuthorizedAt ?? null,
+          dispatchBlockerCode: occurrence.dispatchBlockerCode ?? null,
+          dispatchBlockedAt: occurrence.dispatchBlockedAt ?? null,
           schedule: {
             is: {
               revision: occurrence.scheduleRevision,
@@ -2252,6 +2249,9 @@ export class PublicationService {
         },
         data: {
           status: PublicationOccurrenceStatus.IN_PROGRESS,
+          // FLAG: Author retry authorization must survive materialization and process restarts.
+          // Execution applies the same five-minute boundary before its first send.
+          retryAuthorizedAt: readPublicationRetryAuthorizedAt(occurrence),
           dispatchBlockerCode: null,
           dispatchBlockedAt: null,
         },

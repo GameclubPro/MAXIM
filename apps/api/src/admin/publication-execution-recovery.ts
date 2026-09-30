@@ -10,6 +10,7 @@ import {
   PublicationDeliveryVerificationSource,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
+  PublicationScheduleMode,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -32,8 +33,15 @@ import {
   resolvePublicationVerificationNextSendAt,
 } from './publication-delivery-verification-state';
 import { isTransientPublicationPrismaError } from './publication-prisma-retry';
+import { isPublicationScheduledWindowExpired } from './publication-late-policy';
+import { PUBLISHER_MISSED_WINDOW_BLOCKER_CODE } from './publication-dispatch-issue';
+import {
+  recordPublicationDispatchOutcome,
+  type PublicationExecutionTiming,
+} from './publication-delivery-timing';
 
 export { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
+export { cancelPublicationDeliveryBeforeStoppedDispatch } from './publication-stopped-dispatch-cleanup';
 
 export class ManagedBroadcastPublicationExecutionStopped extends Error {
   constructor() {
@@ -44,10 +52,10 @@ export class ManagedBroadcastPublicationExecutionStopped extends Error {
 
 const PUBLICATION_ROUTE_RECOVERY_SPACING_MS = 15 * 60_000;
 const PUBLICATION_RATE_LIMIT_RETRY_STEP_MS = 60_000;
-const PUBLICATION_RATE_LIMIT_MAX_RETRY_AFTER_MS = 60 * 60_000;
 const PUBLICATION_PRISMA_RETRY_DELAY_MS = 1_000;
 
 class StalePublicationRouteQuarantineDeferralError extends Error {}
+
 class StalePublicationRateLimitDeferralError extends Error {}
 class StalePublicationPrismaDeferralError extends Error {}
 
@@ -64,6 +72,21 @@ function collectPublicationRateLimitErrorChain(error: unknown): unknown[] {
 }
 
 function readPublicationRateLimitRetryAfterMs(error: unknown, nowMs: number): number {
+  let requestedDelayMs = 0;
+  const addDelay = (rawValue: unknown, factor: number): boolean => {
+    if (typeof rawValue !== 'number' && typeof rawValue !== 'string') return false;
+    if (typeof rawValue === 'string' && !/^\d+(?:\.\d+)?$/.test(rawValue.trim())) return false;
+    const delayMs = Math.ceil(Number(rawValue) * factor);
+    if (
+      !Number.isFinite(delayMs) ||
+      delayMs < 0 ||
+      delayMs > 8_640_000_000_000_000 - PUBLICATION_RATE_LIMIT_RETRY_STEP_MS - nowMs
+    ) {
+      return false;
+    }
+    requestedDelayMs = Math.max(requestedDelayMs, delayMs);
+    return true;
+  };
   for (const current of collectPublicationRateLimitErrorChain(error)) {
     const record = current as {
       retryAfterMs?: unknown;
@@ -77,37 +100,21 @@ function readPublicationRateLimitRetryAfterMs(error: unknown, nowMs: number): nu
       record.response?.data?.retry_after_ms,
       record.response?.data?.retryAfterMs,
     ]) {
-      const numeric = Number(rawValue);
-      if (Number.isFinite(numeric) && numeric > 0) {
-        return Math.min(PUBLICATION_RATE_LIMIT_MAX_RETRY_AFTER_MS, Math.ceil(numeric));
-      }
+      addDelay(rawValue, 1);
     }
 
     const headers = record.response?.headers;
     const rawHeader = headers?.['retry-after'] ?? headers?.['Retry-After'];
-    const header =
-      Array.isArray(rawHeader) && rawHeader.length > 0
-        ? String(rawHeader[0])
-        : String(rawHeader ?? '');
-    if (!header) {
-      continue;
-    }
-    const seconds = Number(header);
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      return Math.min(
-        PUBLICATION_RATE_LIMIT_MAX_RETRY_AFTER_MS,
-        Math.max(1_000, Math.ceil(seconds * 1_000)),
-      );
-    }
-    const retryAtMs = Date.parse(header);
-    if (Number.isFinite(retryAtMs)) {
-      return Math.min(
-        PUBLICATION_RATE_LIMIT_MAX_RETRY_AFTER_MS,
-        Math.max(1_000, retryAtMs - nowMs),
-      );
+    for (const header of Array.isArray(rawHeader) ? rawHeader : [rawHeader]) {
+      if (addDelay(header, 1_000)) continue;
+      if (typeof header !== 'string' || !/[A-Za-z]/.test(header)) continue;
+      const retryAtMs = Date.parse(header);
+      if (Number.isFinite(retryAtMs)) {
+        addDelay(Math.max(0, retryAtMs - nowMs), 1);
+      }
     }
   }
-  return 0;
+  return requestedDelayMs;
 }
 
 export function resolvePublicationRateLimitRetryAt(error: unknown, now = new Date()): Date | null {
@@ -176,7 +183,15 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
   >;
   occurrenceIndex: number;
   reconcileStaleDeliveries?: () => Promise<void>;
-  onOccurrenceScheduledAt?: (scheduledAt: Date) => void;
+  onOccurrenceScheduledAt?: (scheduledAt: Date, timing?: PublicationExecutionTiming) => void;
+  logger?: Pick<Logger, 'log'>;
+  preDispatchClaim?: { id: string; lockToken: string; attemptCount: number };
+  activeDeliveryClaim?: {
+    id: string;
+    lockToken: string;
+    attemptCount: number;
+    sendAttemptStarted: boolean;
+  };
 }): Promise<boolean> {
   if (!options.row.publicationOccurrenceId) {
     return true;
@@ -187,14 +202,22 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
     select: {
       status: true,
       scheduledAt: true,
+      createdAt: true,
       scheduleRevision: true,
       contentRevisionId: true,
+      dispatchBlockerCode: true,
+      dispatchBlockedAt: true,
+      dispatchFirstBlockedAt: true,
+      retryAuthorizedAt: true,
       publication: { select: { lifecycle: true } },
-      schedule: { select: { revision: true, status: true } },
+      schedule: { select: { revision: true, status: true, mode: true } },
     },
   });
   if (occurrence) {
-    options.onOccurrenceScheduledAt?.(occurrence.scheduledAt);
+    options.onOccurrenceScheduledAt?.(occurrence.scheduledAt, {
+      mode: occurrence.schedule.mode,
+      intentCreatedAt: occurrence.createdAt,
+    });
   }
   const executionStateActive = Boolean(
     occurrence &&
@@ -218,7 +241,94 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
     return false;
   }
   if (executionStateActive) {
-    return true;
+    if (!occurrence || !isPublicationScheduledWindowExpired(occurrence)) return true;
+    const preDispatchClaim = options.activeDeliveryClaim
+      ? options.activeDeliveryClaim.sendAttemptStarted
+        ? undefined
+        : {
+            ...options.activeDeliveryClaim,
+            attemptCount: options.activeDeliveryClaim.attemptCount + 1,
+          }
+      : options.preDispatchClaim;
+    const attemptWhere: Prisma.ManagedBroadcastDeliveryWhereInput = {
+      publicationOccurrenceId: options.row.publicationOccurrenceId,
+      OR: [
+        { attemptCount: { gt: 0 } },
+        { remoteMessageId: { not: null } },
+        { legacySentWithoutRemoteId: true },
+        {
+          status: {
+            in: [
+              ManagedBroadcastDeliveryStatus.SENDING,
+              ManagedBroadcastDeliveryStatus.SENT,
+              ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+            ],
+          },
+        },
+      ],
+      // FLAG: Only this worker's first pre-dispatch claim is not evidence of a prior send.
+      // Other SENDING rows and attempts without receipts must remain crash-fenced.
+      ...(preDispatchClaim?.attemptCount === 1
+        ? {
+            NOT: {
+              id: preDispatchClaim.id,
+              lockToken: preDispatchClaim.lockToken,
+              attemptCount: 1,
+              status: ManagedBroadcastDeliveryStatus.SENDING,
+              remoteMessageId: null,
+              legacySentWithoutRemoteId: false,
+            },
+          }
+        : {}),
+    };
+    if (await options.prisma.managedBroadcastDelivery.count({ where: attemptWhere })) return true;
+    // FLAG: The occurrence fence spans chat/channel envelopes. Preserve partial deliveries
+    // and stop only a never-attempted scheduled occurrence, even after early materialization.
+    const expired = await options.prisma.publicationOccurrence.updateMany({
+      where: {
+        id: options.row.publicationOccurrenceId,
+        status: occurrence.status,
+        scheduleRevision: occurrence.scheduleRevision,
+        contentRevisionId: occurrence.contentRevisionId,
+        dispatchBlockerCode: occurrence.dispatchBlockerCode,
+        dispatchBlockedAt: occurrence.dispatchBlockedAt,
+        retryAuthorizedAt: occurrence.retryAuthorizedAt,
+        publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
+        schedule: {
+          is: {
+            revision: occurrence.scheduleRevision,
+            status: PublicationScheduleStatus.ACTIVE,
+          },
+        },
+        deliveries: { none: attemptWhere },
+      },
+      data: {
+        status:
+          occurrence.schedule.mode === PublicationScheduleMode.RECURRENCE
+            ? PublicationOccurrenceStatus.CANCELED
+            : PublicationOccurrenceStatus.FAILED,
+        dispatchBlockerCode:
+          occurrence.schedule.mode === PublicationScheduleMode.RECURRENCE
+            ? 'PUBLISHER_WINDOW_EXPIRED'
+            : PUBLISHER_MISSED_WINDOW_BLOCKER_CODE,
+        dispatchBlockedAt: new Date(),
+        dispatchFirstBlockedAt: occurrence.dispatchFirstBlockedAt ?? new Date(),
+      },
+    });
+    if (expired.count === 0) {
+      await options.prisma.managedBroadcast.updateMany({
+        where: { id: options.row.id, lockToken: options.row.lockToken },
+        data: { lockedAt: null, lockToken: null },
+      });
+      return false;
+    }
+    if (options.logger) {
+      recordPublicationDispatchOutcome(options.logger, {
+        mode: occurrence.schedule.mode,
+        scope: 'occurrence',
+        outcome: 'missed_window',
+      });
+    }
   }
 
   if (options.reconcileStaleDeliveries) {
@@ -298,29 +408,6 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
     });
   });
   return false;
-}
-
-export async function cancelPublicationDeliveryBeforeStoppedDispatch(
-  prisma: PrismaService,
-  deliveryId: string,
-  deliveryLockToken: string,
-): Promise<void> {
-  // FLAG: This CAS is limited to the delivery claimed by the current worker before MAX dispatch.
-  // A concurrent or already-dispatched SENDING delivery must keep its token and persist its result.
-  await prisma.managedBroadcastDelivery.updateMany({
-    where: {
-      id: deliveryId,
-      status: ManagedBroadcastDeliveryStatus.SENDING,
-      lockToken: deliveryLockToken,
-    },
-    data: {
-      status: ManagedBroadcastDeliveryStatus.CANCELED,
-      lockedAt: null,
-      lockToken: null,
-      lastErrorCode: null,
-      lastError: 'Публикация остановлена до отправки.',
-    },
-  });
 }
 
 export async function deferClaimedPublicationEnvelopeAfterTransientPrismaError(options: {
@@ -542,18 +629,23 @@ export async function settlePublicationDeliveryAfterAttemptPersistenceError(opti
 export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: {
   context: Pick<AdminManagedBroadcastRuntimeContext, 'prisma' | 'logger'>;
   row: Pick<ManagedBroadcast, 'id' | 'publicationOccurrenceId'>;
-  delivery: Pick<ManagedBroadcastDelivery, 'id' | 'targetChatId'>;
+  delivery: Pick<ManagedBroadcastDelivery, 'id' | 'targetChatId' | 'attemptCount'>;
   reason: 'startup' | 'scheduled' | 'manual_retry' | 'immediate' | 'deadline';
   occurrenceIndex: number;
   broadcastLockToken: string;
   deliveryLockToken: string;
+  sendAttemptStarted?: boolean;
   error: unknown;
 }): Promise<Date | null> {
   // FLAG: Recycle only an exact limiter/circuit rejection before HTTP dispatch or an exact HTTP
   // 429, which is definitive. Timeouts, 5xx responses, and other attempted sends remain terminal.
   const occurrenceId = options.row.publicationOccurrenceId;
   const retryAt = resolvePublicationRateLimitRetryAt(options.error);
-  if (!occurrenceId || options.reason !== 'deadline' || !retryAt) {
+  const externalRateLimit = collectPublicationRateLimitErrorChain(options.error).some(
+    (error) => extractMaxErrorStatus(error) === 429,
+  );
+  const undoClaim = options.sendAttemptStarted === false && !externalRateLimit;
+  if (!occurrenceId || (options.reason !== 'deadline' && !externalRateLimit) || !retryAt) {
     return null;
   }
 
@@ -577,11 +669,11 @@ export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: 
           id: options.delivery.id,
           status: ManagedBroadcastDeliveryStatus.SENDING,
           lockToken: options.deliveryLockToken,
-          attemptCount: { gt: 0 },
+          attemptCount: undoClaim ? options.delivery.attemptCount + 1 : { gt: 0 },
         },
         data: {
           status: ManagedBroadcastDeliveryStatus.PENDING,
-          attemptCount: { decrement: 1 },
+          ...(undoClaim ? { attemptCount: { decrement: 1 } } : {}),
           botId: null,
           remoteMessageId: null,
           ...PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,

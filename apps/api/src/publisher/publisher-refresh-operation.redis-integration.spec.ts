@@ -6,6 +6,64 @@ const redisUrl = process.env.MAXIM_TEST_REDIS_URL ?? '';
 const integration = redisUrl ? describe : describe.skip;
 
 integration('Publisher refresh operation Redis status', () => {
+  it('lets aged maintenance join urgent FIFO before subsequent publication requests', async () => {
+    const url = new URL(redisUrl);
+    if (!['localhost', '127.0.0.1'].includes(url.hostname)) throw new Error('Local Redis required');
+    const options = {
+      prefix: `test-${randomUUID()}`,
+      connection: { host: url.hostname, port: Number(url.port) },
+    };
+    const queue = new Queue('maintenance-urgent-aging', options);
+    let worker: Worker | undefined;
+    try {
+      await queue.pause();
+      const base = {
+        version: 1,
+        publisherBotId: 'publisher',
+        requestedAt: new Date().toISOString(),
+      };
+      await queue.add(
+        'refresh',
+        { ...base, chatId: 'maintenance', reason: 'binding_maintenance' },
+        { jobId: 'maintenance', priority: 20, timestamp: Date.now() - 120_000 },
+      );
+      for (let i = 0; i < 10; i += 1)
+        await queue.add(
+          'refresh',
+          { ...base, chatId: `before-${i}`, reason: 'publication_due' },
+          { priority: 5 },
+        );
+      const service = new PublisherBindingRefreshQueueService(queue as never);
+      await service.compactScheduledBacklog();
+      for (let i = 0; i < 100; i += 1)
+        await queue.add(
+          'refresh',
+          { ...base, chatId: `after-${i}`, reason: 'publication_due' },
+          { priority: 5 },
+        );
+      const order: string[] = [];
+      worker = new Worker(
+        'maintenance-urgent-aging',
+        async (job) => {
+          order.push(job.data.chatId);
+        },
+        options,
+      );
+      const drained = new Promise<void>((resolve) => {
+        worker!.on('completed', () => {
+          if (order.length === 111) resolve();
+        });
+      });
+      await queue.resume();
+      await drained;
+      expect(order.indexOf('maintenance')).toBe(10);
+      expect(order.slice(11).every((id) => id.startsWith('after-'))).toBe(true);
+    } finally {
+      await worker?.close();
+      await queue.obliterate({ force: true });
+      await queue.close();
+    }
+  });
   it('ages persisted delayed actor checks without changing their deadline or activating them', async () => {
     const url = new URL(redisUrl);
     if (!['localhost', '127.0.0.1'].includes(url.hostname)) throw new Error('Local Redis required');
@@ -33,7 +91,7 @@ integration('Publisher refresh operation Redis status', () => {
         reprioritizedCount: 1,
       });
       const retained = (await queue.getJob('actor'))!;
-      expect(retained.priority).toBe(10);
+      expect(retained.priority).toBe(5);
       expect(await retained.getState()).toBe('delayed');
       expect(retained.timestamp + retained.delay).toBe(deadline);
       await expect(service.compactScheduledBacklog()).resolves.toMatchObject({
@@ -77,7 +135,7 @@ integration('Publisher refresh operation Redis status', () => {
         reason: 'stale_access',
       });
       expect(await service.enqueue(actor)).toBe(actorId!);
-      expect((await queue.getJob(actorId!))?.priority).toBe(10);
+      expect((await queue.getJob(actorId!))?.priority).toBe(5);
       await service.enqueue({
         chatId: 'bot-after',
         publisherBotId: 'publisher',
@@ -104,7 +162,7 @@ integration('Publisher refresh operation Redis status', () => {
       );
       await queue.resume();
       await drained;
-      expect(order).toEqual(['manual', 'bot-before', 'actor-chat', 'bot-after']);
+      expect(order).toEqual(['manual', 'actor-chat', 'bot-before', 'bot-after']);
     } finally {
       await worker?.close();
       await queue.obliterate({ force: true });

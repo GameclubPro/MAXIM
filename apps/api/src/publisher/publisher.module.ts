@@ -63,6 +63,8 @@ import { PUBLISHER_START_QUEUE, PublisherStartQueueService } from './publisher-s
 import { PublisherStartProcessor } from './publisher-start.processor';
 import { PublisherStartRecoveryService } from './publisher-start-recovery.service';
 import { PublisherPublicationPostActionsService } from './publisher-publication-post-actions.service';
+import { PublisherReadinessService } from './publisher-readiness.service';
+import { PublisherPublicationAccessPreflightService } from './publisher-publication-access-preflight.service';
 import {
   PUBLISHER_VIDEO_UPLOAD_QUEUE,
   PublisherVideoUploadQueueService,
@@ -86,6 +88,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
       PublisherStartProcessor,
       PublisherStartRecoveryService,
       PublisherPublicationPostActionsService,
+      PublisherPublicationAccessPreflightService,
       PublisherVideoUploadProcessor,
     ]
   : [];
@@ -94,6 +97,7 @@ const sharedPublisherProviders = [
   PublisherCommentNotificationService,
   PublisherBackgroundWorkCoordinatorService,
   PublisherRuntimeHeartbeatReaderService,
+  PublisherReadinessService,
   PublisherBindingRefreshQueueService,
   PublisherChatCommentQueueService,
   PublisherDispatchHealthService,

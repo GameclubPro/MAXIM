@@ -4,6 +4,7 @@ import {
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleStatus,
+  PublicationScheduleMode,
 } from '../prisma/prisma-client';
 import { ConflictException } from '@nestjs/common';
 import { MaxActionRouteQuarantinedError } from '../max/max-action-dispatch-error';
@@ -12,6 +13,7 @@ import {
   deferPublicationDeliveryAfterPreDispatchThrottle,
   deferPublicationDeliveryAfterRouteQuarantine,
   ensureManagedBroadcastPublicationExecutionActive,
+  resolvePublicationRateLimitRetryAt,
   PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
   selectManagedBroadcastDeliveryCandidates,
   syncPublicationBroadcastAfterDeliveryResolution,
@@ -35,7 +37,7 @@ describe('publication execution recovery', () => {
         logger: { warn: jest.fn() },
       },
       row: { id: 'broadcast-1', publicationOccurrenceId: 'occurrence-1' as string | null },
-      delivery: { id: 'delivery-1', targetChatId: 'chat-1' },
+      delivery: { id: 'delivery-1', targetChatId: 'chat-1', attemptCount: 0 },
       reason: 'deadline' as const,
       occurrenceIndex: 1,
       broadcastLockToken: 'broadcast-lock-1',
@@ -70,10 +72,207 @@ describe('publication execution recovery', () => {
       }),
     ).resolves.toBe(true);
 
-    expect(onOccurrenceScheduledAt).toHaveBeenCalledWith(scheduledAt);
+    expect(onOccurrenceScheduledAt).toHaveBeenCalledWith(scheduledAt, expect.any(Object));
     expect(findUnique).toHaveBeenCalledWith({
       where: { id: 'occurrence-1' },
       select: expect.objectContaining({ scheduledAt: true }),
+    });
+  });
+
+  describe('materialized scheduled publication deadline', () => {
+    beforeEach(() => jest.useFakeTimers().setSystemTime(new Date('2026-09-30T09:00:00Z')));
+    afterEach(() => jest.useRealTimers());
+
+    function createLateHarness(mode: PublicationScheduleMode = PublicationScheduleMode.ONCE) {
+      const occurrence = {
+        status: PublicationOccurrenceStatus.IN_PROGRESS,
+        scheduledAt: new Date('2026-09-30T07:00:00Z'),
+        scheduleRevision: 3,
+        contentRevisionId: 'content-1',
+        dispatchBlockerCode: null as string | null,
+        dispatchBlockedAt: null as Date | null,
+        dispatchFirstBlockedAt: null,
+        publication: { lifecycle: PublicationLifecycle.ACTIVE },
+        schedule: { revision: 3, status: PublicationScheduleStatus.ACTIVE, mode },
+      };
+      const attemptCount = jest.fn().mockResolvedValue(0);
+      const expire = jest.fn().mockResolvedValue({ count: 1 });
+      const tx = {
+        managedBroadcast: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+        managedBroadcastDelivery: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          count: jest.fn().mockResolvedValue(0),
+        },
+        managedBroadcastCalendarReservation: {
+          deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+      };
+      const prisma = {
+        publicationOccurrence: {
+          findUnique: jest.fn().mockResolvedValue(occurrence),
+          updateMany: expire,
+        },
+        managedBroadcastDelivery: { count: attemptCount },
+        managedBroadcast: tx.managedBroadcast,
+        $transaction: jest.fn(async (callback) => callback(tx)),
+      };
+      const options = {
+        prisma: prisma as never,
+        row: {
+          id: 'broadcast-1',
+          lockToken: 'lease-1',
+          publicationOccurrenceId: 'occurrence-1',
+          publicationContentRevisionId: 'content-1',
+        },
+        occurrenceIndex: 1,
+        reconcileStaleDeliveries: jest.fn().mockResolvedValue(undefined),
+      };
+      return { occurrence, attemptCount, expire, prisma, tx, options };
+    }
+
+    it.each([
+      PublicationScheduleMode.ONCE,
+      PublicationScheduleMode.SLOTS,
+      PublicationScheduleMode.RECURRENCE,
+    ])('stops a never-attempted two-hour-old %s occurrence after materialization', async (mode) => {
+      const harness = createLateHarness(mode);
+      await expect(ensureManagedBroadcastPublicationExecutionActive(harness.options)).resolves.toBe(
+        false,
+      );
+      expect(harness.expire).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            contentRevisionId: 'content-1',
+            scheduleRevision: 3,
+            deliveries: { none: expect.any(Object) },
+          }),
+          data: expect.objectContaining({
+            status:
+              mode === PublicationScheduleMode.RECURRENCE
+                ? PublicationOccurrenceStatus.CANCELED
+                : PublicationOccurrenceStatus.FAILED,
+            dispatchBlockerCode:
+              mode === PublicationScheduleMode.RECURRENCE
+                ? 'PUBLISHER_WINDOW_EXPIRED'
+                : 'PUBLISHER_MISSED_WINDOW_REVIEW',
+          }),
+        }),
+      );
+      expect(harness.options.reconcileStaleDeliveries).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves a partial fanout or an attempted send without a receipt for normal recovery', async () => {
+      const harness = createLateHarness();
+      harness.attemptCount.mockResolvedValue(1);
+      await expect(ensureManagedBroadcastPublicationExecutionActive(harness.options)).resolves.toBe(
+        true,
+      );
+      expect(harness.attemptCount).toHaveBeenCalledWith({
+        where: expect.objectContaining({ publicationOccurrenceId: 'occurrence-1' }),
+      });
+      expect(harness.expire).not.toHaveBeenCalled();
+      expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('does not let the current first pre-dispatch claim bypass the deadline during upload', async () => {
+      const harness = createLateHarness();
+      harness.tx.managedBroadcastDelivery.count.mockResolvedValue(1);
+      await expect(
+        ensureManagedBroadcastPublicationExecutionActive({
+          ...harness.options,
+          preDispatchClaim: { id: 'delivery-1', lockToken: 'delivery-lease-1', attemptCount: 1 },
+        }),
+      ).resolves.toBe(false);
+      expect(harness.attemptCount).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          NOT: {
+            id: 'delivery-1',
+            lockToken: 'delivery-lease-1',
+            attemptCount: 1,
+            status: ManagedBroadcastDeliveryStatus.SENDING,
+            remoteMessageId: null,
+            legacySentWithoutRemoteId: false,
+          },
+        }),
+      });
+      expect(harness.tx.managedBroadcast.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('does not exclude a previous attempt from crash-safe recovery', async () => {
+      const harness = createLateHarness();
+      harness.attemptCount.mockResolvedValue(1);
+      await expect(
+        ensureManagedBroadcastPublicationExecutionActive({
+          ...harness.options,
+          preDispatchClaim: { id: 'delivery-1', lockToken: 'delivery-lease-1', attemptCount: 2 },
+        }),
+      ).resolves.toBe(true);
+      expect(harness.attemptCount.mock.calls[0][0].where).not.toHaveProperty('NOT');
+    });
+
+    it.each([
+      { attemptCount: 0, sendAttemptStarted: false, excluded: true },
+      { attemptCount: 0, sendAttemptStarted: true, excluded: false },
+      { attemptCount: 1, sendAttemptStarted: false, excluded: false },
+    ])(
+      'excludes a live claim only before its first HTTP request (%j)',
+      async ({ attemptCount, sendAttemptStarted, excluded }) => {
+        const harness = createLateHarness();
+        harness.attemptCount.mockImplementation(async ({ where }: { where: { NOT?: unknown } }) =>
+          where.NOT ? 0 : 1,
+        );
+        const result = await ensureManagedBroadcastPublicationExecutionActive({
+          ...harness.options,
+          activeDeliveryClaim: {
+            id: 'delivery-1',
+            lockToken: 'delivery-lease-1',
+            attemptCount,
+            sendAttemptStarted,
+          },
+        });
+        expect(result).toBe(!excluded);
+        if (excluded) {
+          expect(harness.attemptCount.mock.calls[0][0].where.NOT).toMatchObject({
+            id: 'delivery-1',
+            lockToken: 'delivery-lease-1',
+            attemptCount: 1,
+          });
+          expect(harness.expire).toHaveBeenCalledTimes(1);
+        } else {
+          expect(harness.attemptCount.mock.calls[0][0].where).not.toHaveProperty('NOT');
+          expect(harness.expire).not.toHaveBeenCalled();
+        }
+      },
+    );
+
+    it.each([PublicationScheduleMode.NOW, PublicationScheduleMode.ONCE])(
+      'preserves %s recovery with a fresh persisted explicit author retry',
+      async (mode) => {
+        const harness = createLateHarness(mode);
+        harness.occurrence.dispatchBlockerCode = 'PUBLISHER_EXPLICIT_RETRY';
+        harness.occurrence.dispatchBlockedAt = new Date('2026-09-30T08:59:00Z');
+        await expect(
+          ensureManagedBroadcastPublicationExecutionActive(harness.options),
+        ).resolves.toBe(true);
+        expect(harness.attemptCount).not.toHaveBeenCalled();
+      },
+    );
+
+    it('releases only its envelope lease when a revision or concurrent dispatch wins the expiration fence', async () => {
+      const harness = createLateHarness();
+      harness.expire.mockResolvedValue({ count: 0 });
+      await expect(ensureManagedBroadcastPublicationExecutionActive(harness.options)).resolves.toBe(
+        false,
+      );
+      expect(harness.tx.managedBroadcast.updateMany).toHaveBeenCalledWith({
+        where: { id: 'broadcast-1', lockToken: 'lease-1' },
+        data: { lockedAt: null, lockToken: null },
+      });
+      expect(harness.tx.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+      expect(harness.options.reconcileStaleDeliveries).not.toHaveBeenCalled();
     });
   });
 
@@ -133,7 +332,10 @@ describe('publication execution recovery', () => {
       );
 
       await expect(
-        deferPublicationDeliveryAfterPreDispatchThrottle(options as never),
+        deferPublicationDeliveryAfterPreDispatchThrottle({
+          ...options,
+          sendAttemptStarted: false,
+        } as never),
       ).resolves.toEqual(new Date('2026-07-27T12:01:00.000Z'));
       expect(options.context.prisma.managedBroadcast.updateMany).toHaveBeenCalledWith({
         where: {
@@ -319,6 +521,92 @@ describe('publication execution recovery', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it.each([
+    { external: false, sendAttemptStarted: false, undo: true },
+    { external: false, sendAttemptStarted: true, undo: false },
+    { external: false, sendAttemptStarted: undefined, undo: false },
+    { external: true, sendAttemptStarted: false, undo: false },
+    { external: true, sendAttemptStarted: true, undo: false },
+  ])(
+    'keeps real request provenance across capacity deferral (%j)',
+    async ({ external, sendAttemptStarted, undo }) => {
+      const options = createOptions(
+        Object.assign(
+          new Error('Capacity deferred'),
+          external
+            ? { response: { status: 429 }, managedBroadcastSendStarted: true }
+            : { code: 'MAX_API_INTERNAL_RATE_LIMIT', managedBroadcastSendStarted: false },
+        ),
+      );
+      expect(
+        await deferPublicationDeliveryAfterPreDispatchThrottle({
+          ...options,
+          sendAttemptStarted,
+        } as never),
+      ).toBeInstanceOf(Date);
+      const { where, data } =
+        options.context.prisma.managedBroadcastDelivery.updateMany.mock.calls[0][0];
+      expect(data.status).toBe('PENDING');
+      if (undo) {
+        expect(where.attemptCount).toBe(1);
+        expect(data.attemptCount).toEqual({ decrement: 1 });
+      } else {
+        expect(data).not.toHaveProperty('attemptCount');
+      }
+    },
+  );
+
+  it.each([
+    {
+      label: 'two-hour seconds',
+      response: { status: 429, headers: { 'retry-after': '7200' } },
+      retryAt: '2026-09-30T11:01:00Z',
+    },
+    {
+      label: 'HTTP date',
+      response: { status: 429, headers: { 'Retry-After': 'Wed, 30 Sep 2026 11:00:30 GMT' } },
+      retryAt: '2026-09-30T11:01:00Z',
+    },
+    {
+      label: 'longer header than local hint',
+      retryAfterMs: 1000,
+      response: { status: 429, headers: { 'retry-after': ['7200', '30'] } },
+      retryAt: '2026-09-30T11:01:00Z',
+    },
+    {
+      label: 'expired HTTP date',
+      response: { status: 429, headers: { 'retry-after': 'Wed, 30 Sep 2026 08:00:00 GMT' } },
+      retryAt: '2026-09-30T09:01:00Z',
+    },
+    {
+      label: 'negative header',
+      response: { status: 429, headers: { 'retry-after': '-7200' } },
+      retryAt: '2026-09-30T09:01:00Z',
+    },
+    {
+      label: 'invalid header',
+      response: { status: 429, headers: { 'retry-after': 'unknown' } },
+      retryAt: '2026-09-30T09:01:00Z',
+    },
+    {
+      label: 'empty header',
+      response: { status: 429, headers: { 'retry-after': '' } },
+      retryAt: '2026-09-30T09:01:00Z',
+    },
+  ])('persists a safe retry time for $label', ({ retryAt, ...error }) => {
+    expect(resolvePublicationRateLimitRetryAt(error, new Date('2026-09-30T09:00:30Z'))).toEqual(
+      new Date(retryAt),
+    );
+  });
+
+  it('preserves a longer remote retry hint through wrapper causes', () => {
+    const cause = { response: { status: 429, data: { retry_after_ms: 7_200_000 } } };
+    const error = Object.assign(new Error('wrapped'), { retryAfterMs: 2000, cause });
+    expect(resolvePublicationRateLimitRetryAt(error, new Date('2026-09-30T09:00:30Z'))).toEqual(
+      new Date('2026-09-30T11:01:00Z'),
+    );
   });
 
   it('defers an exact pre-dispatch circuit-open rejection to its retry minute', async () => {

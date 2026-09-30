@@ -12,6 +12,7 @@ import {
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import { PUBLISHER_MISSED_WINDOW_BLOCKER_CODE } from './publication-dispatch-issue';
 import {
   buildUnsafePublicationExecutionDeliveryWhere,
   deleteUnstartedPublicationExecutionBroadcasts,
@@ -25,6 +26,7 @@ export type PublicationAccessLossOccurrenceSnapshot = {
   updatedAt: Date;
   scheduleRevision: number;
   contentRevisionId: string;
+  dispatchBlockerCode?: string | null;
 };
 
 class StalePublicationAccessLossRecoveryError extends Error {}
@@ -76,6 +78,15 @@ export async function rollupPublicationOccurrenceWithRouteOutageRecovery(
   deliveries: Parameters<typeof findFullPublicationRouteOutageTarget>[0],
 ): Promise<void> {
   if (status === occurrence.status) {
+    return;
+  }
+  // FLAG: Pre-HTTP cleanup may cancel every delivery while retaining the missed-slot
+  // decision for its author. Actual sends and ambiguous attempts still roll up normally.
+  if (
+    occurrence.status === PublicationOccurrenceStatus.FAILED &&
+    occurrence.dispatchBlockerCode === PUBLISHER_MISSED_WINDOW_BLOCKER_CODE &&
+    status === PublicationOccurrenceStatus.CANCELED
+  ) {
     return;
   }
   const routeOutageTarget = findFullPublicationRouteOutageTarget(deliveries);

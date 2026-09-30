@@ -24,7 +24,11 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import type { BotPermissionBlocker } from '../lib/bot-permission-error';
 import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
-import { getPublisherReadinessPresentation } from '../lib/publisher-readiness';
+import {
+  canPreparePublisherPublicationTarget,
+  getPublisherReadinessPollingInterval,
+  getPublisherReadinessPresentation,
+} from '../lib/publisher-readiness';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import {
   buildPublisherCreateRoute,
@@ -121,6 +125,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     enabled: entityType !== null && entityId.length > 0,
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    refetchInterval: (query) => getPublisherReadinessPollingInterval(query.state.data?.readiness),
   });
   const vkCapabilityQuery = useQuery({
     queryKey: ['publisher-vk-capability', entityType, entityId],
@@ -164,6 +169,10 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     setVkOpen(false);
+    entityRecheckAbortRef.current?.abort();
+    entityRecheckAbortRef.current = null;
+    setEntityRecheckPhase(null);
+    setPermissionBlocker(null);
   }, [entityId, entityType]);
 
   useEffect(() => {
@@ -209,6 +218,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           queryClient.invalidateQueries({ queryKey: PUBLISHER_CATALOG_QUERY_ROOT }),
           vkCapabilityQuery.refetch(),
         ]);
+        if (abortController.signal.aborted) return;
         const nextReadiness = getPublisherReadinessPresentation(result.entity.readiness);
         pushToast({
           tone: result.entity.readiness.canPublish ? 'success' : 'info',
@@ -241,9 +251,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     } finally {
       if (entityRecheckAbortRef.current === abortController) {
         entityRecheckAbortRef.current = null;
-      }
-      if (mountedRef.current) {
-        setEntityRecheckPhase(null);
+        if (mountedRef.current) setEntityRecheckPhase(null);
       }
     }
   }
@@ -383,7 +391,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           <span className="publisher-entity-module__copy">
             <strong>Посты</strong>
           </span>
-          {entity.readiness.canPublish ? (
+          {canPreparePublisherPublicationTarget(entity) ? (
             <Link
               to={buildPublisherCreateRoute(entity)}
               className="publisher-entity-module__action"

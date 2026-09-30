@@ -114,7 +114,6 @@ import { PublisherPolicyService } from './publisher-policy.service';
 import { PublisherCatalogQueryService } from './publisher-catalog-query.service';
 import { PublisherSuggestionService } from './publisher-suggestion.service';
 import { PublisherAutoReplyService } from './publisher-auto-reply.service';
-import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
 import { PublisherSuggestionPublicationProcessor } from './publisher-suggestion-publication.processor';
 import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from './publisher-suggestion-publication.queue';
@@ -234,7 +233,6 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublisherSuggestionService,
     PublisherAutoReplyService,
     PublisherEntityRefreshService,
-    PublisherReadinessService,
     PublisherSuggestionPublicationQueueService,
     ...(roleRunsPublisher(getAppRole()) ? [PublisherSuggestionPublicationProcessor] : []),
     ...(roleRunsPublisher(getAppRole())
@@ -296,7 +294,6 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublicationService,
     PublisherPolicyService,
     PublisherAutoReplyService,
-    PublisherReadinessService,
     VkParsingRateLimitService,
     VkApiClientService,
     VkParsingAccessService,

@@ -46,6 +46,13 @@ export const handlePublicationVideoPreviewRequest: PreviewRequestHandler = ({
   const asset = store.get(uploadId);
   if (!asset) throw new Error('Загрузка видео недоступна.');
   if ((method === 'POST' && segments[3] === 'complete') || method === 'GET') {
+    if (state.publicationVideoUploadVariant === 'failed') {
+      return {
+        status: 'FAILED',
+        uploadId,
+        message: 'MAX не подтвердил видео. Повторите выбор файла.',
+      } satisfies PublicationVideoUploadStatus;
+    }
     return { status: 'READY', uploadId, asset } satisfies PublicationVideoUploadStatus;
   }
   return PREVIEW_NOT_HANDLED;

@@ -726,6 +726,21 @@
     gap: 8px;
   }
 
+  .publications-page:not(.is-editor)
+    .publication-feed-card.has-schedule-decision
+    .publication-feed-card__head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .publications-page:not(.is-editor)
+    .publication-feed-card.has-schedule-decision
+    .publication-feed-card__schedule {
+    max-width: 100%;
+    text-align: left;
+  }
+
   .publications-page:not(.is-editor) .publication-feed-card__status {
     display: inline-flex;
     align-items: center;

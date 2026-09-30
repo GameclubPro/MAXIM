@@ -1,12 +1,36 @@
 import { DelayedError, type Job } from 'bullmq';
 import { PublisherBindingRefreshProcessor } from './publisher-binding-refresh.processor';
 import type { PublisherBindingRefreshJob } from './publisher-binding-refresh.queue';
-import { PublisherCandidateRefreshSupersededError } from './publisher-binding-refresh.service';
+import {
+  PublisherCandidateRefreshSupersededError,
+  PublisherBindingMaintenanceSupersededError,
+} from './publisher-binding-refresh.service';
 import { PUBLISHER_DISPATCH_PAUSE_DEFER_MS } from './publisher-dispatch-job-guard';
 import { PublisherDispatchDisabledError } from './publisher-runtime-boundary.service';
 import { PublisherDispatchPausedError } from './publisher-dispatch-health.service';
 
 describe('PublisherBindingRefreshProcessor', () => {
+  it('keeps superseded roster maintenance retryable instead of acknowledging the lost handoff', async () => {
+    const error = new PublisherBindingMaintenanceSupersededError();
+    const processor = new PublisherBindingRefreshProcessor(
+      { refresh: jest.fn().mockRejectedValue(error) } as never,
+      {} as never,
+      {} as never,
+    );
+    await expect(
+      processor.process({
+        data: {
+          version: 1,
+          chatId: 'chat-1',
+          publisherBotId: 'publik_bot',
+          reason: 'binding_maintenance',
+          requestedAt: new Date().toISOString(),
+        },
+        attemptsMade: 0,
+        attemptsStarted: 1,
+      } as never),
+    ).rejects.toBe(error);
+  });
   const previousRole = process.env.APP_ROLE;
   const previousServiceName = process.env.APP_SERVICE_NAME;
   const candidateJob: PublisherBindingRefreshJob = {

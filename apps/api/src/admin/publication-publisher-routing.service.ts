@@ -31,6 +31,8 @@ import { ManagedEntitiesService } from './managed-entities.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 import { PublisherPolicyService } from './publisher-policy.service';
 import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from './publication-dispatch-issue';
+import { recordPublicationDispatchOutcome } from './publication-delivery-timing';
+import { readPublicationRetryAuthorizedAt } from './publication-late-policy';
 
 const PUBLISHER_BLOCKED_RETRY_MS = 60_000;
 const DIALOG_CONTEXT_PREPARE_CONCURRENCY = 4;
@@ -54,6 +56,9 @@ type PublisherOccurrence = {
   scheduleRevision: number;
   dispatchProfile: PublicationDispatchProfile;
   dispatchFirstBlockedAt?: Date | null;
+  dispatchBlockedAt?: Date | null;
+  dispatchBlockerCode?: string | null;
+  retryAuthorizedAt?: Date | null;
 };
 
 @Injectable()
@@ -311,20 +316,31 @@ export class PublicationPublisherRoutingService {
     ) {
       return false;
     }
-    await this.prisma.publicationOccurrence.updateMany({
+    const deferred = await this.prisma.publicationOccurrence.updateMany({
       where: {
         id: occurrence.id,
         scheduleRevision: occurrence.scheduleRevision,
         status: PublicationOccurrenceStatus.SCHEDULED,
         dispatchFirstBlockedAt: occurrence.dispatchFirstBlockedAt ?? null,
+        dispatchBlockedAt: occurrence.dispatchBlockedAt ?? null,
+        dispatchBlockerCode: occurrence.dispatchBlockerCode ?? null,
+        retryAuthorizedAt: occurrence.retryAuthorizedAt ?? null,
         legacyBroadcasts: { none: {} },
       },
       data: {
+        retryAuthorizedAt: readPublicationRetryAuthorizedAt(occurrence),
         dispatchBlockerCode: error.blockerCode.slice(0, 96),
         dispatchFirstBlockedAt: occurrence.dispatchFirstBlockedAt ?? new Date(),
         dispatchBlockedAt: new Date(),
       },
     });
+    if (deferred.count === 1) {
+      recordPublicationDispatchOutcome(this.logger, {
+        scope: 'deferral',
+        outcome: 'blocked',
+        reason: error.blockerCode,
+      });
+    }
     this.logger.warn(
       {
         occurrenceId: occurrence.id,

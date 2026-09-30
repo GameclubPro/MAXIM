@@ -127,13 +127,16 @@ export const PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS = 30_000;
 export function getPublicationDispatchIssuePresentation(
   issue: PublicationDispatchIssue | 'decision_required' | null,
   requiresScheduleDecision = false,
+  hasFutureSends = false,
 ): PublicationDispatchIssuePresentation | null {
   if (issue === 'decision_required' || requiresScheduleDecision) {
     return {
       canRecheck: false,
-      description: 'Время отправки пропущено. Измените расписание или явно повторите этот запуск.',
-      label: 'Нужно решение',
-      title: 'Запуск пропущен',
+      description: hasFutureSends
+        ? 'Есть пропущенные запуски. В расписании остались другие отправки.'
+        : 'Публикация не отправлена в назначенное время.',
+      label: hasFutureSends ? 'Есть пропущенные отправки' : 'Пропущено время',
+      title: hasFutureSends ? 'Есть пропущенные отправки' : 'Запуск пропущен',
     };
   }
   if (issue === 'actor_access_required') {
@@ -172,6 +175,16 @@ export function resolvePublicationDetailsDispatchIssue(
 }
 
 export function getPublicationFeedStatusLabel(publication: PublicationSummary): string {
+  if (
+    canReviewPublicationScheduleDecision(publication) &&
+    getPublicationActionableDelivery(publication).ambiguous === 0
+  ) {
+    return getPublicationDispatchIssuePresentation(
+      publication.dispatchIssue,
+      true,
+      Boolean(publication.schedule?.nextOccurrenceAt),
+    )!.label;
+  }
   if (publication.lifecycle === 'ERROR') {
     return getPublicationLifecycleLabel(publication.lifecycle);
   }
@@ -186,6 +199,15 @@ export function getPublicationFeedStatusLabel(publication: PublicationSummary): 
       publication.dispatchIssue,
       publication.requiresScheduleDecision,
     )?.label ?? getPublicationLifecycleLabel(publication.lifecycle)
+  );
+}
+
+export function canReviewPublicationScheduleDecision(
+  publication: Pick<PublicationSummary, 'lifecycle' | 'requiresScheduleDecision'>,
+): boolean {
+  return (
+    publication.requiresScheduleDecision === true &&
+    (publication.lifecycle === 'ACTIVE' || publication.lifecycle === 'ERROR')
   );
 }
 
@@ -429,6 +451,9 @@ export function shouldPollPublicationDeliveries(
   publication: Pick<PublicationDetails, 'dispatchIssue' | 'lifecycle' | 'schedule'>,
   delivery: PublicationDeliveryStats,
 ): boolean {
+  if (publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED') {
+    return false;
+  }
   return (
     delivery.pending > 0 ||
     (publication.dispatchIssue === null &&
@@ -442,6 +467,9 @@ export function getPublicationDetailsPollingInterval(
   publication: Pick<PublicationDetails, 'dispatchIssue' | 'lifecycle' | 'schedule'>,
   delivery: PublicationDeliveryStats,
 ): number | false {
+  if (publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED') {
+    return false;
+  }
   if (publication.dispatchIssue !== null) {
     return PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS;
   }
@@ -457,7 +485,13 @@ export function getPublicationListPollingInterval(
     return false;
   }
   if (
-    items.some((item) => !item.dispatchIssue && getPublicationActionableDelivery(item).pending > 0)
+    items.some(
+      (item) =>
+        item.lifecycle !== 'COMPLETED' &&
+        item.lifecycle !== 'CANCELED' &&
+        !item.dispatchIssue &&
+        getPublicationActionableDelivery(item).pending > 0,
+    )
   ) {
     return 5_000;
   }

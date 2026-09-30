@@ -370,6 +370,14 @@ const baseScenarios = [
       },
     ],
     [
+      'publisher-entities-stale',
+      {
+        searchParams: { profile: 'publisher', publisherPolicyState: 'stale' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher'],
+      },
+    ],
+    [
       'publisher-entities-channel-only',
       {
         searchParams: { profile: 'publisher', publisherState: 'channel-only' },
@@ -479,6 +487,13 @@ const baseScenarios = [
         features: ['publisher'],
       },
     ],
+    [
+      'publisher-entity-modules-stale',
+      {
+        searchParams: { profile: 'publisher', publisherPolicyState: 'stale' },
+        features: ['publisher'],
+      },
+    ],
   ]),
   ...defineRouteScenarios('publisher-auto-replies', [
     ['publisher-auto-replies-cold', { searchParams: { profile: 'publisher' } }],
@@ -501,13 +516,22 @@ const baseScenarios = [
       'publications-publisher-access-required',
       { searchParams: { profile: 'publisher' }, features: ['publisher', 'publications'] },
     ],
-    [
+    ...[
       'publications-publisher-missed-window',
+      'publications-publisher-missed-window-card',
+      'publications-publisher-missed-window-future',
+      'publications-publisher-missed-window-future-card',
+    ].map((name) => [
+      name,
       {
-        searchParams: { profile: 'publisher', publicationWindow: 'missed' },
+        searchParams: {
+          profile: 'publisher',
+          view: 'schedules',
+          publicationWindow: name.includes('-future') ? 'missed-future' : 'missed',
+        },
         features: ['publisher', 'publications'],
       },
-    ],
+    ]),
     [
       'publications-publisher-recheck',
       { searchParams: { profile: 'publisher' }, features: ['publisher', 'publications'] },
@@ -660,6 +684,19 @@ const baseScenarios = [
         features: ['publisher', 'broadcast'],
       },
     ],
+    ...['publications-publisher-video-upload', 'publications-publisher-video-upload-failed'].map(
+      (name) => [
+        name,
+        {
+          searchParams: {
+            profile: 'publisher',
+            compose: '1',
+            ...(name.endsWith('-failed') ? { videoUploadState: 'failed' } : {}),
+          },
+          features: ['publisher', 'broadcast'],
+        },
+      ],
+    ),
     [
       'publications-publisher-compose-long',
       {

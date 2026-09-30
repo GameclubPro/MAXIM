@@ -6,8 +6,8 @@ import type {
 const BLOCKER_LABELS: Record<PublisherReadinessBlockerCode, string> = {
   policy_disabled: 'Публик выключен',
   bot_not_connected: 'Публик не добавлен',
-  bot_access_unconfirmed: 'Проверяем доступ',
-  bot_access_expired: 'Доступ нужно обновить',
+  bot_access_unconfirmed: 'Проверяем права Публика',
+  bot_access_expired: 'Проверяем права Публика',
   bot_not_admin: 'Публик не администратор',
   write_permission_missing: 'Нет права публиковать',
   route_quarantined: 'Отправка приостановлена',

@@ -13,6 +13,9 @@ describe('Publisher post-action runtime wiring', () => {
             await import('../system/background-runtime-governor.service');
           const { PublisherPublicationPostActionsService } =
             await import('./publisher-publication-post-actions.service');
+          const { PublisherReadinessService } = await import('./publisher-readiness.service');
+          const { PublisherPublicationAccessPreflightService } =
+            await import('./publisher-publication-access-preflight.service');
           const imports = Reflect.getMetadata(MODULE_METADATA.IMPORTS, PublisherModule);
           const providers = Reflect.getMetadata(MODULE_METADATA.PROVIDERS, PublisherModule);
           expect(imports).toContain(SystemModule);
@@ -20,6 +23,13 @@ describe('Publisher post-action runtime wiring', () => {
             BackgroundRuntimeGovernorService,
           );
           expect(providers.includes(PublisherPublicationPostActionsService)).toBe(
+            role === 'publisher',
+          );
+          expect(providers).toContain(PublisherReadinessService);
+          expect(Reflect.getMetadata(MODULE_METADATA.EXPORTS, PublisherModule)).toContain(
+            PublisherReadinessService,
+          );
+          expect(providers.includes(PublisherPublicationAccessPreflightService)).toBe(
             role === 'publisher',
           );
         });

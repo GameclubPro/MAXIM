@@ -53,6 +53,7 @@ import {
   buildPublicationSaveFeedback,
   buildPublicationSystemButtons,
   buildTestPublicationRequest,
+  canReviewPublicationScheduleDecision,
   buildUpdatePublicationRequest,
   createEmptyPublicationDraft,
   createPublicationDuplicateDraft,
@@ -1919,6 +1920,7 @@ export function PublicationsPage({
   function renderPublicationCard(publication: PublicationSummary) {
     const delivery = getPublicationActionableDelivery(publication);
     const actionCapabilities = getPublicationActionCapabilities(publication);
+    const canReviewScheduleDecision = canReviewPublicationScheduleDecision(publication);
     const pending =
       (actionMutation.isPending && actionMutation.variables?.publication.id === publication.id) ||
       (openPublicationMutation.isPending &&
@@ -1949,7 +1951,8 @@ export function PublicationsPage({
         canEdit={isPublisherProfile && actionCapabilities.canEdit}
         canPause={actionCapabilities.canPause}
         canResume={actionCapabilities.canResume}
-        canRetry={actionCapabilities.canRetry}
+        canRetry={actionCapabilities.canRetry && !canReviewScheduleDecision}
+        requiresScheduleDecision={canReviewScheduleDecision}
         canDuplicate={isPublisherProfile}
         canCancel={actionCapabilities.canCancel}
         editLabel={getPublicationEditActionLabel(actionCapabilities.editScope)}
@@ -1960,6 +1963,7 @@ export function PublicationsPage({
         onPause={() => setActionTarget({ publication, action: 'pause' })}
         onResume={() => setActionTarget({ publication, action: 'resume' })}
         onRetry={() => setDetailsTarget(publication)}
+        onReviewScheduleDecision={() => setDetailsTarget(publication)}
         onDuplicate={() => openPublicationEditor(publication, 'duplicate')}
         onCancel={() => setActionTarget({ publication, action: 'cancel' })}
         footer={

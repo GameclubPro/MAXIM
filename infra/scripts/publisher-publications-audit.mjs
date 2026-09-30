@@ -135,7 +135,8 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
   SELECT o.id AS occurrence_id, o.actor_user_id, o.required_bot_id,
     o.status AS occurrence_status, o.lifecycle,
     CASE WHEN o.dispatch_blocker_code = 'PUBLISHER_ACTOR_ACCESS_REQUIRED'
-      THEN 'actor_access' WHEN o.dispatch_blocker_code IS NULL THEN 'none' ELSE 'other' END AS blocker,
+      THEN 'actor_access' WHEN o.dispatch_blocker_code = 'PUBLISHER_MISSED_WINDOW_REVIEW'
+      THEN 'missed_window' WHEN o.dispatch_blocker_code IS NULL THEN 'none' ELSE 'other' END AS blocker,
     target.target_chat_id, target.entity_type, target.position
   FROM scoped o
   CROSS JOIN LATERAL (
@@ -168,6 +169,8 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
         e.expires_at > statement_timestamp()
         OR (e.expires_at IS NULL AND e.checked_at > statement_timestamp() - interval '7 days')
       ) IS NOT TRUE THEN 'actor_edge_expired'
+      WHEN (e.checked_at > statement_timestamp() - interval '15 minutes') IS NOT TRUE
+        THEN 'actor_authority_stale'
       WHEN chat.entity_type IS DISTINCT FROM t.entity_type THEN 'chat_type_mismatch'
       WHEN b.bot_access_expires_at IS NULL OR b.bot_access_expires_at <= statement_timestamp()
         THEN 'bot_access_expired'
@@ -202,7 +205,8 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
     max(statement_timestamp() - scheduled_at) AS oldest_age
   FROM occurrence_candidates GROUP BY status
 ), blocker_counts AS (
-  SELECT CASE WHEN dispatch_blocker_code IN (
+  SELECT CASE WHEN dispatch_blocker_code = 'PUBLISHER_MISSED_WINDOW_REVIEW'
+    THEN 'missed_window' WHEN dispatch_blocker_code IN (
     'PUBLISHER_ACTOR_ACCESS_REQUIRED', 'PUBLISHER_RUNTIME_UNAVAILABLE', 'PUBLISHER_AUTH_PAUSED',
     'policy_disabled', 'bot_not_connected', 'bot_access_expired', 'bot_access_unconfirmed',
     'bot_not_admin', 'write_permission_missing', 'route_quarantined', 'publisher_bot_changed'

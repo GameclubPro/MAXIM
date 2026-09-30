@@ -300,6 +300,8 @@ function buildPreviewPublisherEntity(
         ? 'write_permission_missing'
         : null;
   const runtimeUnavailable = entityId === 'preview-channel-2';
+  const staleAccess =
+    !refreshedAt && state.publisherPolicyVariant === 'stale' && entityId === PREVIEW_CHAT_ID;
   const channelSuggestionsEnabled =
     entityType === 'channel' && (getPreviewPublisherChannelSuggestions(state)[entityId] ?? false);
   const channelCommentsEnabled =
@@ -327,29 +329,40 @@ function buildPreviewPublisherEntity(
           checkedAt: null,
           retryAt: null,
         }
-      : runtimeUnavailable
+      : staleAccess
         ? {
             state: 'temporarily_unavailable' as const,
             canPublish: false,
             canUseChatComments: false,
             canUseChannelComments: false,
             canPublishSuggestions: false,
-            blockerCode: 'publisher_runtime_unavailable' as const,
-            checkedAt,
-            retryAt: null,
+            blockerCode: 'bot_access_expired' as const,
+            checkedAt: new Date(state.clock.now().getTime() - 20 * 60_000).toISOString(),
+            retryAt: new Date(state.clock.now().getTime() + 60_000).toISOString(),
           }
-        : {
-            state: 'ready' as const,
-            canPublish: true,
-            canUseChatComments:
-              entityType === 'chat' &&
-              getPreviewPublisherChatComments(state)[entityId]?.commentsEnabled === true,
-            canUseChannelComments: channelCommentsEnabled,
-            canPublishSuggestions: channelSuggestionsEnabled,
-            blockerCode: null,
-            checkedAt,
-            retryAt: null,
-          };
+        : runtimeUnavailable
+          ? {
+              state: 'temporarily_unavailable' as const,
+              canPublish: false,
+              canUseChatComments: false,
+              canUseChannelComments: false,
+              canPublishSuggestions: false,
+              blockerCode: 'publisher_runtime_unavailable' as const,
+              checkedAt,
+              retryAt: null,
+            }
+          : {
+              state: 'ready' as const,
+              canPublish: true,
+              canUseChatComments:
+                entityType === 'chat' &&
+                getPreviewPublisherChatComments(state)[entityId]?.commentsEnabled === true,
+              canUseChannelComments: channelCommentsEnabled,
+              canPublishSuggestions: channelSuggestionsEnabled,
+              blockerCode: null,
+              checkedAt,
+              retryAt: null,
+            };
   return publisherEntitySchema.parse({
     id: source.id,
     title: source.title,

@@ -3,6 +3,7 @@ import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 export type PublisherBackgroundWorkLane =
   | 'suggestion_subscriptions'
   | 'binding_refresh'
+  | 'publication_access_preflight'
   | 'chat_comment_recovery'
   | 'comment_notification_recovery'
   | 'auto_reply_recovery'
@@ -22,9 +23,12 @@ export class PublisherBackgroundWorkCoordinatorClosedError extends Error {
 
 type PublisherBackgroundWaiter = {
   lane: PublisherBackgroundWorkLane;
+  queuedAt: number;
   resolve: () => void;
   reject: (error: Error) => void;
 };
+
+const RECOVERY_AGING_MS = 15_000;
 
 @Injectable()
 export class PublisherBackgroundWorkCoordinatorService implements OnModuleDestroy {
@@ -79,7 +83,7 @@ export class PublisherBackgroundWorkCoordinatorService implements OnModuleDestro
       return;
     }
     await new Promise<void>((resolve, reject) => {
-      this.waiters.push({ lane, resolve, reject });
+      this.waiters.push({ lane, queuedAt: Date.now(), resolve, reject });
     });
   }
 
@@ -89,13 +93,22 @@ export class PublisherBackgroundWorkCoordinatorService implements OnModuleDestro
       this.rejectWaiters();
       return;
     }
-    // FLAG: Deadline work may overtake queued recovery lanes, but never interrupts active work and
-    // never changes FIFO ordering among the lower-priority recovery waiters.
+    // FLAG: Keep deadline priority without starving access refresh or recovery. Service the
+    // oldest recovery after 15 seconds; active work is never interrupted. Lane coalescing
+    // already prevents consecutive deadline runs from overtaking the same queued recovery.
     const deadlineIndex = this.waiters.findIndex(
       (waiter) => waiter.lane === 'publication_deadline',
     );
-    const next =
-      deadlineIndex >= 0 ? this.waiters.splice(deadlineIndex, 1)[0] : this.waiters.shift();
+    const recoveryIndex = this.waiters.findIndex(
+      (waiter) => waiter.lane !== 'publication_deadline',
+    );
+    const oldestRecovery = this.waiters[recoveryIndex];
+    const recoveryDue = oldestRecovery && Date.now() - oldestRecovery.queuedAt >= RECOVERY_AGING_MS;
+    const next = recoveryDue
+      ? this.waiters.splice(recoveryIndex, 1)[0]
+      : deadlineIndex >= 0
+        ? this.waiters.splice(deadlineIndex, 1)[0]
+        : this.waiters.shift();
     if (next) {
       this.activeLane = next.lane;
       next.resolve();

@@ -24,7 +24,10 @@ import {
 } from '../lib/api/publisher-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
-import { getPublisherReadinessPresentation } from '../lib/publisher-readiness';
+import {
+  getPublisherReadinessPollingInterval,
+  getPublisherReadinessPresentation,
+} from '../lib/publisher-readiness';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { resolveVirtualListRange } from '../lib/virtual-list';
 import {
@@ -161,6 +164,15 @@ export function PublisherEntitiesPage({
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
+    refetchInterval: (query) => {
+      const intervals =
+        query.state.data?.pages.flatMap((page) =>
+          page.items
+            .map((entity) => getPublisherReadinessPollingInterval(entity.readiness))
+            .filter((interval): interval is number => interval !== false),
+        ) ?? [];
+      return intervals.length > 0 ? Math.min(...intervals) : false;
+    },
   });
   const entities = useMemo(
     () => entitiesQuery.data?.pages.flatMap((page) => page.items) ?? [],
@@ -276,6 +288,7 @@ export function PublisherEntitiesPage({
   useEffect(() => {
     const now = Date.now();
     const nextRetryAt = entities.reduce<number | null>((earliest, entity) => {
+      if (entity.readiness.blockerCode === 'bot_access_expired') return earliest;
       const retryAt = Date.parse(entity.readiness.retryAt ?? '');
       if (!Number.isFinite(retryAt) || retryAt <= now) {
         return earliest;
@@ -309,6 +322,9 @@ export function PublisherEntitiesPage({
       }
       if (refresh.queuedCount === 0) {
         await queryClient.invalidateQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
+        if (abortController.signal.aborted) {
+          return;
+        }
         pushToast({
           tone: 'info',
           title: 'Подключения актуальны',
@@ -325,6 +341,9 @@ export function PublisherEntitiesPage({
           return;
         }
         const result = await entitiesQuery.refetch();
+        if (abortController.signal.aborted) {
+          return;
+        }
         if (result.isError || !result.data) {
           consecutiveReadFailures += 1;
           if (consecutiveReadFailures >= 2) {
@@ -337,6 +356,9 @@ export function PublisherEntitiesPage({
         const nextSummary = result.data.pages[0]?.summary ?? EMPTY_PUBLISHER_SUMMARY;
         if (fingerprintPublisherEntityPage(nextEntities, nextSummary) !== initialFingerprint) {
           await queryClient.invalidateQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
+          if (abortController.signal.aborted) {
+            return;
+          }
           pushToast({
             tone: 'success',
             title: 'Подключения обновлены',
@@ -346,6 +368,9 @@ export function PublisherEntitiesPage({
       }
 
       await queryClient.invalidateQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
+      if (abortController.signal.aborted) {
+        return;
+      }
       pushToast({
         tone: consecutiveReadFailures >= 2 ? 'danger' : 'info',
         title:
@@ -424,11 +449,14 @@ export function PublisherEntitiesPage({
           }),
         isCancelled: () => abortController.signal.aborted,
       });
-      if (result.status === 'cancelled') {
+      if (abortController.signal.aborted || result.status === 'cancelled') {
         return;
       }
       if (result.status === 'updated') {
         await queryClient.invalidateQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
+        if (abortController.signal.aborted) {
+          return;
+        }
         const presentation = getPublisherReadinessPresentation(result.entity.readiness);
         pushToast({
           tone: result.entity.readiness.canPublish ? 'success' : 'info',

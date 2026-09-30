@@ -18,6 +18,11 @@ import { cancelManagedBroadcastTargetDeliveries } from './admin-managed-broadcas
 import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './publication-access-loss-recovery';
 import { PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE } from './admin.service.support';
 import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
+import { PublisherDeliveryDeferredError } from './publisher-managed-broadcast-dispatch';
+import {
+  markMaxPreDispatchGuardRejected,
+  MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+} from '../max/max-action-pre-dispatch-guard';
 
 const AUTOMATED_VERIFICATION_DUE_AT = new Date('2026-07-25T08:00:15.000Z');
 
@@ -89,16 +94,20 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
   const recoveryDeliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
   const recoveryDeliveryCount = jest.fn().mockResolvedValue(0);
   const recoveryTx = {
+    $executeRaw: jest.fn().mockResolvedValue(0),
     managedBroadcast: { updateMany: recoveryBroadcastUpdateMany },
     managedBroadcastDelivery: {
       updateMany: recoveryDeliveryUpdateMany,
       count: recoveryDeliveryCount,
+      findUnique: jest.fn().mockResolvedValue(null),
     },
   };
   const transaction = jest.fn(async (callback) => callback(recoveryTx));
   const publish = jest.fn(async (request: any) => {
     if (dispatchStarted) {
-      request.onDispatchAttempt?.({ botId: 'publisher-bot', job: {} });
+      const context = { botId: 'publisher-bot', job: {} };
+      await request.onDispatchAttempt?.(context);
+      await request.beforeSendMutation?.(context);
     }
     if (error) {
       throw error;
@@ -109,6 +118,7 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
       url: null,
     };
   });
+  const logger = { log: jest.fn(), warn: jest.fn() };
   const runtime = new AdminManagedBroadcastRuntime(
     {
       prisma: {
@@ -124,7 +134,7 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
       },
       maxRoutedPublicationService: { publish },
       assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
-      logger: { log: jest.fn(), warn: jest.fn() },
+      logger,
     } as never,
     PublicationDispatchProfile.PUBLIK_V1,
   );
@@ -156,6 +166,12 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
   jest
     .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastRequestMedia')
     .mockResolvedValue({});
+  jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia').mockResolvedValue({});
+  jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
+    messageText: 'Publication',
+    messageOptions: undefined,
+    commentDialogReference: null,
+  });
   jest
     .spyOn((runtime as any).publicationVerification, 'verifyAfterSend')
     .mockResolvedValue(new Set());
@@ -191,6 +207,7 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
     recoveryBroadcastUpdateMany,
     recoveryDeliveryUpdateMany,
     recoveryDeliveryCount,
+    logger,
   };
 }
 
@@ -198,6 +215,199 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   afterEach(() => {
     jest.useRealTimers();
   });
+
+  it('observes a receipt only after a winning persistence CAS using the original occurrence clock', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-30T10:00:12Z'));
+    const { runtime, row, logger, deliveryUpdateMany } = createPublicationPrismaSendFailureHarness(
+      null,
+      false,
+    );
+    jest
+      .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
+      .mockImplementation(async (_row, _index, _claim, _stale, onTiming) => {
+        if (typeof onTiming === 'function') {
+          onTiming(new Date('2026-09-30T10:00:00Z'), {
+            mode: 'ONCE',
+            intentCreatedAt: new Date('2026-09-30T09:00:00Z'),
+          });
+        }
+        return true;
+      });
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+    const observations = logger.log.mock.calls.filter(
+      ([event]) => event.metric === 'publication_delivery_v1',
+    );
+    expect(observations).toHaveLength(1);
+    expect(observations[0]![0]).toMatchObject({
+      scope: 'delivery',
+      outcome: 'receipt_persisted',
+      mode: 'ONCE',
+      durationMs: 12_000,
+    });
+    expect(JSON.stringify(observations)).not.toContain(row.id);
+    logger.log.mockClear();
+    deliveryUpdateMany.mockImplementation(async ({ data }: any) => ({
+      count: data.status === 'SENT' ? 0 : 1,
+    }));
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+    expect(
+      logger.log.mock.calls.filter(([event]) => event.metric === 'publication_delivery_v1'),
+    ).toEqual([]);
+  });
+
+  it('undoes its first claim when the final permission guard rejects after route selection', async () => {
+    const { runtime, row, publish, deliveryUpdateMany } = createPublicationPrismaSendFailureHarness(
+      null,
+      false,
+    );
+    const denied = new PublisherDeliveryDeferredError('bot_access_expired');
+    jest
+      .spyOn((runtime as any).publisherDispatch, 'assertDeliveryReady')
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(denied);
+    const externalSend = jest.fn();
+    publish.mockImplementation(async (request: any) => {
+      const context = { botId: 'publisher-bot', job: {} };
+      await request.prepareAttempt(context);
+      await request.onDispatchAttempt(context);
+      try {
+        await request.beforeSendMutation(context);
+      } catch (error) {
+        throw markMaxPreDispatchGuardRejected(error, MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE);
+      }
+      return externalSend();
+    });
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+    expect(externalSend).not.toHaveBeenCalled();
+    expect(denied).toMatchObject({ managedBroadcastSendStarted: false });
+    expect(deliveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'SENDING', lockToken: expect.any(String) }),
+        data: expect.objectContaining({ status: 'PENDING', attemptCount: { decrement: 1 } }),
+      }),
+    );
+  });
+
+  it('keeps the first claim unattempted until the final scheduled-window guard passes', async () => {
+    const { runtime, row, publish, recoveryDeliveryUpdateMany } =
+      createPublicationPrismaSendFailureHarness(null, false);
+    let windowExpired = false;
+    const observedClaims: Array<{ attemptCount: number; sendAttemptStarted: boolean }> = [];
+    jest
+      .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
+      .mockImplementation(async (...args: unknown[]) => {
+        const claim = args[2] as { attemptCount: number; sendAttemptStarted: boolean } | undefined;
+        if (windowExpired && claim) {
+          observedClaims.push({ ...claim });
+          return claim.sendAttemptStarted;
+        }
+        return true;
+      });
+    const externalSend = jest.fn();
+    publish.mockImplementation(async (request: any) => {
+      const context = { botId: 'publisher-bot', job: {} };
+      await request.prepareAttempt(context);
+      await request.onDispatchAttempt(context);
+      windowExpired = true;
+      await request.beforeSendMutation(context);
+      return externalSend();
+    });
+    const result = await (runtime as any).processManagedBroadcastOccurrence(
+      row.id,
+      'deadline',
+      new Date(),
+      [ManagedBroadcastStatus.ACTIVE],
+    );
+    expect(observedClaims).toEqual([
+      expect.objectContaining({ attemptCount: 0, sendAttemptStarted: false }),
+    ]);
+    expect(externalSend).not.toHaveBeenCalled();
+    expect(result.status).toBe(ManagedBroadcastStatus.CANCELED);
+    expect(recoveryDeliveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'CANCELED' }) }),
+    );
+  });
+
+  it('retains a real earlier attempt when a later inline retry fails its final permission guard', async () => {
+    const { runtime, row, publish, deliveryUpdateMany } = createPublicationPrismaSendFailureHarness(
+      null,
+      false,
+    );
+    const denied = new PublisherDeliveryDeferredError('bot_access_expired');
+    jest
+      .spyOn((runtime as any).publisherDispatch, 'assertDeliveryReady')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(denied);
+    jest.spyOn(runtime as any, 'resolveManagedBroadcastSendRetryDelayMs').mockReturnValueOnce(0);
+    const externalSend = jest
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error('attachment.not.ready'), { response: { status: 400 } }),
+      );
+    publish.mockImplementation(async (request: any) => {
+      const context = { botId: 'publisher-bot', job: {} };
+      await request.prepareAttempt(context);
+      await request.onDispatchAttempt(context);
+      try {
+        await request.beforeSendMutation(context);
+      } catch (error) {
+        throw markMaxPreDispatchGuardRejected(error, MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE);
+      }
+      return externalSend();
+    });
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(externalSend).toHaveBeenCalledTimes(1);
+    const deferred = deliveryUpdateMany.mock.calls.find(
+      ([query]) => query.data.status === 'PENDING',
+    );
+    expect(deferred?.[0].data).not.toHaveProperty('attemptCount');
+    expect(denied).toMatchObject({ managedBroadcastSendStarted: false });
+  });
+
+  it.each(['deadline', 'immediate'])(
+    'durably defers a %s HTTP 429 without an inline retry before Retry-After',
+    async (reason) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-09-30T10:00:30Z'));
+      const error = Object.assign(new Error('Too many requests'), {
+        response: { status: 429, headers: { 'retry-after': '7200' } },
+      });
+      const { runtime, row, publish, recoveryBroadcastUpdateMany } =
+        createPublicationPrismaSendFailureHarness(error, true);
+      const inlineDelay = jest
+        .spyOn(runtime as any, 'resolveManagedBroadcastSendRetryDelayMs')
+        .mockReturnValue(0);
+      const processing = (runtime as any).processManagedBroadcastOccurrence(
+        row.id,
+        reason,
+        new Date(),
+        [ManagedBroadcastStatus.ACTIVE],
+      );
+      await jest.runAllTimersAsync();
+      const result = await processing;
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(inlineDelay).not.toHaveBeenCalled();
+      expect(result.nextSendAt.getTime()).toBeGreaterThanOrEqual(Date.now() + 7_200_000);
+      expect(recoveryBroadcastUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            nextSendAt: result.nextSendAt,
+            lockedAt: null,
+            lockToken: null,
+          }),
+        }),
+      );
+    },
+  );
 
   it.each([
     ManagedBroadcastDeliveryStatus.SENT,
@@ -3179,7 +3389,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         id: 'delivery-1',
         status: ManagedBroadcastDeliveryStatus.SENDING,
         lockToken: expect.any(String),
-        attemptCount: { gt: 0 },
+        attemptCount: 1,
       },
       data: expect.objectContaining({
         status: ManagedBroadcastDeliveryStatus.PENDING,
@@ -3330,6 +3540,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     const tx = {
       managedBroadcast: { updateMany: managedBroadcastUpdateMany },
       managedBroadcastDelivery: { updateMany: deliveryUpdateMany },
+      $executeRaw: jest.fn().mockResolvedValue(1),
       publicationOccurrence: { updateMany: publicationOccurrenceUpdateMany },
     };
     const runtime = new AdminManagedBroadcastRuntime(
@@ -3364,7 +3575,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     const executionActive = jest
       .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
       .mockImplementation(async (...args: unknown[]) => {
-        const onOccurrenceScheduledAt = args[3] as ((scheduledAt: Date) => void) | undefined;
+        const onOccurrenceScheduledAt = args[4] as ((scheduledAt: Date) => void) | undefined;
         onOccurrenceScheduledAt?.(nextSendAt);
         return true;
       });

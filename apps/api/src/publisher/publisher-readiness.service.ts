@@ -10,6 +10,7 @@ import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
   ChatEntityType,
+  ManagedEntityAccessState,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -79,6 +80,8 @@ const WRITE_PERMISSIONS = new Set([
   'can_post_edit_delete_messages',
 ]);
 
+export const PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS = 15 * 60_000;
+
 @Injectable()
 export class PublisherReadinessService {
   private readonly logger = new Logger(PublisherReadinessService.name);
@@ -103,6 +106,7 @@ export class PublisherReadinessService {
     targets: readonly { chatId: string; entityType: ManagedEntityType }[],
     actorUserId: string,
     requiredBotId: string,
+    options: { maxAgeMs?: number } = {},
   ): Promise<void> {
     if (
       !this.dispatchConfigured ||
@@ -114,6 +118,9 @@ export class PublisherReadinessService {
       return;
     }
     const now = new Date();
+    const maxAgeMs = Number.isFinite(options.maxAgeMs)
+      ? Math.max(60_000, Math.min(PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS, options.maxAgeMs!))
+      : PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS;
     // FLAG: Persisted publication targets may nominate a probe, never grant access. Respect fresh
     // denials and let the Publisher worker revalidate the exact bot/user under its lifecycle fence.
     const uniqueTargets = [...new Map(targets.map((target) => [target.chatId, target])).values()];
@@ -132,8 +139,26 @@ export class PublisherReadinessService {
               userId: actorUserId,
               botId: this.publisherBotId,
               OR: [
-                { expiresAt: { gt: now } },
-                { expiresAt: null, checkedAt: { gt: new Date(now.getTime() - 15 * 60_000) } },
+                {
+                  expiresAt: { gt: now },
+                  OR: [
+                    { state: { not: ManagedEntityAccessState.GRANTED } },
+                    { checkedAt: { gt: new Date(now.getTime() - maxAgeMs) } },
+                  ],
+                },
+                {
+                  expiresAt: null,
+                  OR: [
+                    {
+                      state: ManagedEntityAccessState.GRANTED,
+                      checkedAt: { gt: new Date(now.getTime() - maxAgeMs) },
+                    },
+                    {
+                      state: { not: ManagedEntityAccessState.GRANTED },
+                      checkedAt: { gt: new Date(now.getTime() - 15 * 60_000) },
+                    },
+                  ],
+                },
               ],
             },
           },
@@ -164,7 +189,7 @@ export class PublisherReadinessService {
             chatId: candidate.id,
             publisherBotId: this.publisherBotId,
             candidateUserId: actorUserId,
-            reason: 'stale_user_access',
+            reason: 'publication_actor_due',
             ...nomination,
           });
         } catch (error: unknown) {
@@ -175,6 +200,86 @@ export class PublisherReadinessService {
           return;
         }
       }
+    }
+  }
+
+  async requestBotAccessRefresh(
+    targets: readonly { chatId: string; entityType: ManagedEntityType }[],
+    requiredBotId: string,
+    refreshBefore?: Date,
+  ): Promise<void> {
+    if (
+      !this.dispatchConfigured ||
+      !this.bindingRefreshQueue ||
+      requiredBotId !== this.publisherBotId
+    )
+      return;
+    const ids = [...new Set(targets.map((target) => target.chatId.trim()).filter(Boolean))];
+    for (let offset = 0; offset < ids.length; offset += 200) {
+      const sources = await this.prisma.chat.findMany({
+        where: { id: { in: ids.slice(offset, offset + 200) } },
+        select: {
+          id: true,
+          entityType: true,
+          publicationPolicy: true,
+          publisherSettings: true,
+          publisherBinding: true,
+        },
+      });
+      for (const source of sources) {
+        if (
+          targets.some(
+            (target) =>
+              target.chatId.trim() === source.id &&
+              target.entityType ===
+                (source.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat'),
+          )
+        ) {
+          await this.nominateStaleBotRefresh(source, refreshBefore);
+        }
+      }
+    }
+  }
+
+  private async nominateStaleBotRefresh(
+    source: PublisherReadinessSource,
+    refreshBefore?: Date,
+  ): Promise<void> {
+    const binding = source.publisherBinding;
+    const now = new Date();
+    const refreshThreshold =
+      refreshBefore && Number.isFinite(refreshBefore.getTime())
+        ? new Date(
+            Math.min(now.getTime() + 15 * 60_000, Math.max(now.getTime(), refreshBefore.getTime())),
+          )
+        : now;
+    // FLAG: A stale positive snapshot can nominate an exact-bot probe, never authorize a send.
+    // Fresh denial, removal, disabled policy and route quarantine keep their own boundaries.
+    if (
+      !this.dispatchConfigured ||
+      !this.bindingRefreshQueue ||
+      source.publicationPolicy?.publikEnabled === false ||
+      !binding ||
+      binding.publisherBotId !== this.publisherBotId ||
+      binding.status !== ChatBotMembershipStatus.ACTIVE ||
+      (binding.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
+        binding.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER) ||
+      (binding.botAccessExpiresAt && binding.botAccessExpiresAt > refreshThreshold) ||
+      (binding.sendRouteQuarantinedUntil && binding.sendRouteQuarantinedUntil > now)
+    )
+      return;
+    try {
+      await this.bindingRefreshQueue.enqueue({
+        chatId: source.id,
+        publisherBotId: this.publisherBotId,
+        reason: 'publication_due',
+        requestedAt: now,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Failed to nominate stale Publisher bot access refresh',
+      );
     }
   }
 
@@ -230,20 +335,6 @@ export class PublisherReadinessService {
       });
     }
     if (
-      !binding.botAccessCheckedAt ||
-      !binding.botAccessExpiresAt ||
-      binding.botAccessExpiresAt <= now
-    ) {
-      return publisherEntityReadinessSchema.parse({
-        ...base,
-        state: 'setup_required',
-        blockerCode:
-          binding.botAccessCheckedAt && binding.botAccessExpiresAt
-            ? 'bot_access_expired'
-            : 'bot_access_unconfirmed',
-      });
-    }
-    if (
       binding.botAccessState === ChatBotAccessState.DENIED ||
       binding.botAccessState === ChatBotAccessState.LOST ||
       binding.botAccessState === ChatBotAccessState.CONFIRMED_MEMBER
@@ -252,6 +343,36 @@ export class PublisherReadinessService {
         ...base,
         state: 'setup_required',
         blockerCode: 'bot_not_admin',
+      });
+    }
+    if (
+      !binding.botAccessCheckedAt ||
+      !binding.botAccessExpiresAt ||
+      binding.botAccessExpiresAt <= now
+    ) {
+      return publisherEntityReadinessSchema.parse({
+        ...base,
+        state:
+          binding.botAccessCheckedAt &&
+          binding.botAccessExpiresAt &&
+          (binding.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+            binding.botAccessState === ChatBotAccessState.CONFIRMED_OWNER)
+            ? 'temporarily_unavailable'
+            : 'setup_required',
+        blockerCode:
+          binding.botAccessCheckedAt &&
+          binding.botAccessExpiresAt &&
+          (binding.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+            binding.botAccessState === ChatBotAccessState.CONFIRMED_OWNER)
+            ? 'bot_access_expired'
+            : 'bot_access_unconfirmed',
+        retryAt:
+          binding.botAccessCheckedAt &&
+          binding.botAccessExpiresAt &&
+          (binding.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+            binding.botAccessState === ChatBotAccessState.CONFIRMED_OWNER)
+            ? new Date(now.getTime() + 60_000).toISOString()
+            : null,
       });
     }
     if (
@@ -338,6 +459,7 @@ export class PublisherReadinessService {
       throw new PublisherSetupRequiredException([chatId], 'bot_not_connected');
     }
     const runtimeAvailable = await this.isRuntimeAvailable();
+    if (runtimeAvailable) await this.nominateStaleBotRefresh(source);
     return {
       policy: this.resolvePolicy(source.publicationPolicy),
       readiness: this.resolveReadiness(source, { runtimeAvailable }),
@@ -358,7 +480,9 @@ export class PublisherReadinessService {
     if (!source) {
       throw new PublisherSetupRequiredException([chatId], 'bot_not_connected');
     }
-    return this.assertSourceReady(source, feature, await this.isRuntimeAvailable());
+    const runtimeAvailable = await this.isRuntimeAvailable();
+    if (runtimeAvailable) await this.nominateStaleBotRefresh(source);
+    return this.assertSourceReady(source, feature, runtimeAvailable);
   }
 
   async assertTargetsReady(
@@ -391,6 +515,9 @@ export class PublisherReadinessService {
       this.isRuntimeAvailable(),
     ]);
     const sourcesById = new Map(sources.map((source) => [source.id, source]));
+    if (runtimeAvailable) {
+      for (const source of sources) await this.nominateStaleBotRefresh(source);
+    }
     const routes = uniqueTargets.map((target) => {
       const source = sourcesById.get(target.chatId);
       if (!source) {

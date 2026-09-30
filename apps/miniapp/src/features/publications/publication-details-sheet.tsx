@@ -317,7 +317,11 @@ export function PublicationDetailsSheet({
 
   const details = detailsQuery.data;
   const dispatchIssue = resolvePublicationDetailsDispatchIssue(details, publication);
-  const dispatchIssuePresentation = getPublicationDispatchIssuePresentation(dispatchIssue);
+  const dispatchIssuePresentation = getPublicationDispatchIssuePresentation(
+    dispatchIssue,
+    false,
+    Boolean((details ?? publication).schedule?.nextOccurrenceAt),
+  );
   const actionCapabilities = getPublicationActionCapabilities(details ?? publication);
   const editLabel =
     actionCapabilities.editScope === 'future'
@@ -478,9 +482,11 @@ export function PublicationDetailsSheet({
                       return (
                         <div
                           key={occurrence.id}
+                          data-occurrence-id={occurrence.id}
                           className={cn(
                             `is-${occurrence.status.toLowerCase()}`,
                             occurrence.dispatchIssue && 'has-dispatch-issue',
+                            occurrence.canRetry && 'has-retry-action',
                           )}
                         >
                           <span className="publication-deliveries__copy">
@@ -533,9 +539,22 @@ export function PublicationDetailsSheet({
                                 type="button"
                                 onClick={() => onRetry(details, occurrence)}
                                 disabled={busy}
-                                aria-label="Повторить запуск"
+                                aria-label={`${occurrence.requiresScheduleDecision ? 'Отправить пропущенный запуск' : 'Повторить запуск'}: ${formatDateTime(occurrence.scheduledAt, details.schedule?.timezone)}`}
                               >
                                 <RefreshDouble aria-hidden />
+                                <span className="publication-occurrences__retry-label">
+                                  <span>
+                                    {occurrence.requiresScheduleDecision
+                                      ? 'Отправить пропущенный запуск'
+                                      : 'Повторить запуск'}
+                                  </span>
+                                  <small>
+                                    {formatDateTime(
+                                      occurrence.scheduledAt,
+                                      details.schedule?.timezone,
+                                    )}
+                                  </small>
+                                </span>
                               </button>
                             ) : null}
                           </span>

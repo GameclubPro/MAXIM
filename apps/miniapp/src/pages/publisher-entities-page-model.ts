@@ -192,6 +192,9 @@ export async function pollPublisherEntityRefresh(options: {
     attempts += 1;
     try {
       const currentEntity = await options.readEntity();
+      if (options.isCancelled?.()) {
+        return { status: 'cancelled', entity: lastEntity, attempts };
+      }
       lastEntity = currentEntity;
       lastReadFailed = false;
       consecutiveReadFailures = 0;

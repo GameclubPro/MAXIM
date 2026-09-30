@@ -18,6 +18,7 @@
 
 - Focused validation: `npm run check:api`, `npm run check:prisma`, or a targeted `npm test --workspace @maxim/api -- <spec-or-pattern>` while iterating.
 - Public API build/typecheck/test scripts serialize codegen through repo file locks. Do not invoke `*:unlocked`, `*:source`, raw Prisma Generate, and another API validation concurrently.
+- Run disposable PostgreSQL race checks with `TZ=UTC`: raw `pg` interprets `timestamp without time zone` in the process timezone, while Prisma reads the stored UTC value. Local non-UTC runs otherwise produce false lifecycle/epoch mismatches.
 - The built entrypoint is `dist/apps/api/src/main.js`; `npm run build --workspace @maxim/api` cleans output and checks that stale modules are absent.
 - Prisma 7 uses `apps/api/prisma.config.ts` from repo root or `prisma.config.ts` from this workspace. Dependency security anchors hoist the pinned CLI, so in API containers call `./node_modules/.bin/prisma` from repo root.
 - Runtime code imports Prisma through `src/prisma/prisma-client.ts`, not `@prisma/client`; generated client output is ignored under `src/generated/prisma/`.
@@ -100,6 +101,21 @@
 - Managed broadcast/autopost MAX calls use `MAX_API_SOURCE_TAGS.MANAGED_BROADCAST`. User sends/tests are `interactive`; scheduled/startup delivery is `background` and honors governor pause/slow decisions. Uploads stay on the send lane.
 - Publication `NOW` is user-triggered even when recovered by the action poller: materialize it ahead of background work and dispatch through the immediate lane.
 - Keep DB-only publication rollups outside governor pauses; ambiguous sends require manual review.
+- Publisher bot snapshots remain valid for 15 minutes. Scheduled and urgent bot probes use the
+  lightweight refresh path; separately queued roster/catalog maintenance reuses the fresh exact-bot
+  SQL proof and retries proof supersession. Do not acknowledge superseded maintenance as a completed
+  candidate check. Periodic compaction promotes aged non-active scheduled work without activating
+  delayed jobs.
+- New publication sends and pins require author authority checked within 15 minutes, independently
+  of the three-day discovery grant. Imminent-publication preflight owns its distinct
+  `publication_access_preflight` coordinator lane; different operations must never share a coalescing lane.
+- Never-attempted scheduled occurrences retain the five-minute missed-window policy after
+  materialization. NOW and prior-attempt receipt recovery are separate; only proven pre-dispatch
+  claim deferral may undo the claim's attempt increment.
+- Explicit author retry uses the separate persisted `retryAuthorizedAt` five-minute window;
+  permission/runtime blockers must not erase it. Missed-window cleanup may remove only a
+  whole occurrence's provably untouched execution envelopes; historical attempts and receipts
+  remain fenced. Keep the nullable column during API rollback.
 - A message-send timeout is ambiguous. Never auto-retry an attempted send without `remoteMessageId`; uploads/preparation may retry transport timeouts.
 - Legacy Publication deliveries created by the retired exact-absence classifier remain effectively `AMBIGUOUS`; never reset their remote message IDs through Retry. Normalize only reviewed explicit delivery IDs with `npm run publication:normalize-legacy-absence --workspace @maxim/api -- --delivery-id <id>` first, then repeat with `--apply --actor-user-id <id>` after the dry-run matches.
 - Publisher suggestion recovery keeps literal action/status branches as separately limited `UNION ALL` queries with `(created_at, id)` keyset bounds aligned to their partial indexes. `OR`, `action IN`, or parameterized partial-index predicates are regressions and require both query-shape and representative PostgreSQL-plan coverage.

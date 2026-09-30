@@ -24,6 +24,10 @@ import {
 } from './publisher-dispatch-health.service';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
+import {
+  PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS,
+  PublisherReadinessService,
+} from './publisher-readiness.service';
 
 const POLL_MS = 5_000;
 const LEASE_MS = 120_000;
@@ -31,8 +35,16 @@ const BATCH_SIZE = 20;
 const SWEEP_BUDGET_MS = 10_000;
 const MAX_DELETE_ATTEMPTS = 10;
 const MAX_PIN_ATTEMPTS = 10;
+const PIN_AUTHORITY_WAIT_MS = 30 * 60_000;
 const PIN_UNCONFIRMED = 'Закрепление не подтверждено. Проверьте пост в MAX.';
-class PinAuthorityUnavailableError extends Error {}
+class PinAuthorityUnavailableError extends Error {
+  constructor(
+    message = 'Закрепление отложено до подтверждения прав автора и подключения Публика.',
+    readonly terminalStatus: Status | null = null,
+  ) {
+    super(message);
+  }
+}
 
 const actionSelect = {
   id: true,
@@ -70,6 +82,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
     private readonly background: PublisherBackgroundWorkCoordinatorService,
     private readonly governor: BackgroundRuntimeGovernorService,
     @Optional() private readonly subscriptions?: SuggestionSubscriptionService,
+    @Optional() private readonly readiness?: PublisherReadinessService,
   ) {}
 
   onModuleInit(): void {
@@ -186,7 +199,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
       sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
       timeoutMs: 10_000,
     };
-    const guard = async () => {
+    const guard = async (pin = false) => {
       this.boundary.assertDispatchEnabled();
       await this.health.assertDispatchAllowed();
       if (this.closing || Date.now() >= leaseUntil.getTime())
@@ -195,7 +208,15 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
         where: { chatId: row.targetChatId, publisherBotId: botId, status: 'ACTIVE' },
         select: { chatId: true },
       });
-      if (!binding) throw new Error('Publisher binding unavailable');
+      if (!binding) {
+        if (pin) {
+          throw new PinAuthorityUnavailableError(
+            'Закрепление отменено: подключение Публика недоступно.',
+            Status.FAILED,
+          );
+        }
+        throw new Error('Publisher binding unavailable');
+      }
       await persist({ postActionsToken: token });
     };
 
@@ -217,6 +238,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
         const attempt = row.pinAttemptCount + 1;
         await persist({ pinAttemptCount: attempt });
         let dispatched = false;
+        let authorityError: PinAuthorityUnavailableError | null = null;
         try {
           await this.max.pinMessage(
             row.targetChatId,
@@ -225,7 +247,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
             {
               ...options,
               beforeMutation: async () => {
-                await guard();
+                await guard(true);
                 await this.assertPinAuthority(row, botId);
                 if (deleteAt && deleteAt.getTime() <= Date.now()) throw new Error('Post expired');
                 await persist({ pinStatus: Status.RUNNING });
@@ -239,7 +261,10 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
           const rejected = status !== null && [400, 401, 403, 404, 422].includes(status);
           pinStatus =
             error instanceof PinAuthorityUnavailableError
-              ? Status.PENDING
+              ? (error.terminalStatus ??
+                (Date.now() - row.sentAt.getTime() >= PIN_AUTHORITY_WAIT_MS
+                  ? Status.FAILED
+                  : Status.PENDING))
               : rejected
                 ? Status.FAILED
                 : dispatched && status !== 429
@@ -251,20 +276,30 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
             pinNextAt = new Date(Date.now() + Math.min(3_600_000, 30_000 * 2 ** (attempt - 1)));
           }
           if (error instanceof PinAuthorityUnavailableError) {
-            pinNextAt = new Date(Date.now() + 5 * 60_000);
+            authorityError = error;
+            pinNextAt =
+              pinStatus === Status.PENDING
+                ? new Date(
+                    Math.min(Date.now() + 5 * 60_000, row.sentAt.getTime() + PIN_AUTHORITY_WAIT_MS),
+                  )
+                : null;
             await persist({ pinAttemptCount: row.pinAttemptCount });
           }
         }
         await persist({
           pinStatus,
           pinError:
-            pinStatus === Status.DONE
-              ? null
-              : pinStatus === Status.PENDING
-                ? 'Закрепление отложено до подтверждения прав автора и подключения Публика.'
-                : pinStatus === Status.FAILED
-                  ? 'Не удалось закрепить пост. Проверьте права Публика в MAX.'
-                  : PIN_UNCONFIRMED,
+            authorityError && pinStatus !== Status.PENDING
+              ? authorityError.terminalStatus
+                ? authorityError.message
+                : 'Закрепление отменено: права не удалось подтвердить за 30 минут. Пост опубликован.'
+              : pinStatus === Status.DONE
+                ? null
+                : pinStatus === Status.PENDING
+                  ? 'Закрепление отложено до подтверждения прав автора и подключения Публика.'
+                  : pinStatus === Status.FAILED
+                    ? 'Не удалось закрепить пост. Проверьте права Публика в MAX.'
+                    : PIN_UNCONFIRMED,
         });
       }
     }
@@ -377,17 +412,35 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
 
   private async assertPinAuthority(row: Delivery, botId: string): Promise<void> {
     const publicationId = row.contentRevision?.publicationId;
-    if (!publicationId) throw new PinAuthorityUnavailableError();
+    if (!publicationId) {
+      throw new PinAuthorityUnavailableError(
+        'Исходная публикация недоступна. Закрепление отменено.',
+        Status.FAILED,
+      );
+    }
     const publication = await this.prisma.publication.findFirst({
       where: {
         id: publicationId,
         requiredBotId: botId,
         dispatchProfile: 'PUBLIK_V1',
-        lifecycle: { in: ['ACTIVE', 'COMPLETED'] },
       },
-      select: { actorUserId: true },
+      select: { actorUserId: true, lifecycle: true },
     });
-    if (!publication) throw new PinAuthorityUnavailableError();
+    if (!publication || !publicationId) {
+      throw new PinAuthorityUnavailableError(
+        'Исходная публикация недоступна. Закрепление отменено.',
+        Status.FAILED,
+      );
+    }
+    if (publication.lifecycle === 'CANCELED' || publication.lifecycle === 'DRAFT') {
+      throw new PinAuthorityUnavailableError(
+        'Публикация отменена. Закрепление отменено.',
+        Status.SKIPPED,
+      );
+    }
+    if (!['ACTIVE', 'COMPLETED'].includes(publication.lifecycle)) {
+      throw new PinAuthorityUnavailableError();
+    }
     const now = new Date();
     // FLAG: A new pin needs current author authority. Previously committed timed
     // deletion keeps its original policy and never inherits this permission check.
@@ -398,6 +451,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
         botId,
         state: 'GRANTED',
         userRole: { in: ['OWNER', 'ADMIN'] },
+        checkedAt: { gt: new Date(now.getTime() - PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS) },
         OR: [
           { expiresAt: { gt: now } },
           { expiresAt: null, checkedAt: { gt: new Date(now.getTime() - 7 * 86400_000) } },
@@ -428,6 +482,61 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
       },
       select: { chatId: true },
     });
-    if (!access) throw new PinAuthorityUnavailableError();
+    if (access) return;
+    const edge = await this.prisma.managedEntityAccessEdge.findFirst({
+      where: { chatId: row.targetChatId, userId: publication.actorUserId, botId },
+      select: { state: true, userRole: true, expiresAt: true, checkedAt: true },
+    });
+    const freshEdge =
+      edge &&
+      (edge.expiresAt
+        ? edge.expiresAt > now
+        : edge.checkedAt > new Date(now.getTime() - 7 * 86400_000));
+    if (freshEdge && (edge.state !== 'GRANTED' || !['ADMIN', 'OWNER'].includes(edge.userRole))) {
+      throw new PinAuthorityUnavailableError(
+        'Закрепление отменено: права автора или Публика отозваны.',
+        Status.FAILED,
+      );
+    }
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: row.targetChatId },
+      select: { entityType: true, publicationPolicy: true, publisherBinding: true },
+    });
+    const binding = chat?.publisherBinding;
+    if (
+      !chat ||
+      !binding ||
+      binding.publisherBotId !== botId ||
+      binding.status !== 'ACTIVE' ||
+      chat.publicationPolicy?.publikEnabled === false ||
+      (binding.lifecycleEventAt && binding.lifecycleEventAt > row.sentAt!)
+    ) {
+      throw new PinAuthorityUnavailableError(
+        'Закрепление отменено: подключение Публика или разрешение публикаций изменилось.',
+        Status.FAILED,
+      );
+    }
+    if (
+      binding.botAccessExpiresAt &&
+      binding.botAccessExpiresAt > now &&
+      ['DENIED', 'LOST', 'CONFIRMED_MEMBER'].includes(binding.botAccessState)
+    ) {
+      throw new PinAuthorityUnavailableError(
+        'Закрепление отменено: Публик больше не администратор.',
+        Status.FAILED,
+      );
+    }
+    if (Date.now() - row.sentAt!.getTime() < PIN_AUTHORITY_WAIT_MS) {
+      const targets = [
+        {
+          chatId: row.targetChatId,
+          entityType: chat.entityType === 'CHANNEL' ? ('channel' as const) : ('chat' as const),
+        },
+      ];
+      // FLAG: A probe nomination never grants authority. Existing final guards must pass again.
+      await this.readiness?.requestBotAccessRefresh(targets, botId);
+      await this.readiness?.requestActorAccessRefresh(targets, publication.actorUserId, botId);
+    }
+    throw new PinAuthorityUnavailableError();
   }
 }

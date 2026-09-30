@@ -2135,6 +2135,8 @@ describe('PublicationService', () => {
         legacyBroadcastId: null,
         dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
         requiredBotId: 'publisher-bot',
+        dispatchBlockerCode: mode === 'once' ? 'PUBLISHER_EXPLICIT_RETRY' : null,
+        dispatchBlockedAt: mode === 'once' ? new Date('2026-07-10T12:00:00Z') : null,
         schedule: { timezone: 'Europe/Moscow' },
         contentRevision: {
           text: 'Проверка',
@@ -2173,6 +2175,20 @@ describe('PublicationService', () => {
       );
 
       expect(managedBroadcastCreate).toHaveBeenCalledTimes(2);
+      expect(tx.publicationOccurrence.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            retryAuthorizedAt: occurrence.dispatchBlockedAt,
+            dispatchBlockerCode: null,
+            dispatchBlockedAt: null,
+          }),
+          where: expect.objectContaining({
+            retryAuthorizedAt: null,
+            dispatchBlockerCode: occurrence.dispatchBlockerCode,
+            dispatchBlockedAt: occurrence.dispatchBlockedAt,
+          }),
+        }),
+      );
       expect(managedBroadcastCreate).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
@@ -3476,7 +3492,12 @@ describe('PublicationService', () => {
       const scheduleUpdate = jest.fn();
       const publicationUpdate = jest.fn();
       const occurrenceCreate = jest.fn();
-      const transaction = jest.fn();
+      const transaction = jest.fn(async (callback) =>
+        callback({
+          $executeRaw: jest.fn().mockResolvedValue(1),
+          publicationSchedule: { updateMany: scheduleUpdate },
+        }),
+      );
       const { service, managedEntitiesService } = createService({
         publicationSchedule: {
           findMany: jest.fn().mockResolvedValue([
@@ -3484,6 +3505,7 @@ describe('PublicationService', () => {
               id: 'schedule-access-transient',
               publicationId: 'publication-access-transient',
               revision: 4,
+              nextMaterializeAt: new Date('2026-07-10T08:59:00Z'),
               rule: {
                 mode: 'recurrence',
                 timezone: 'UTC',
@@ -3498,6 +3520,7 @@ describe('PublicationService', () => {
               },
               publication: {
                 id: 'publication-access-transient',
+                version: 3,
                 actorUserId: 'user-1',
                 audienceMode: PublicationAudienceMode.SNAPSHOT,
                 audienceSelection: PublicationAudienceSelection.SELECTED,
@@ -3523,8 +3546,20 @@ describe('PublicationService', () => {
 
       await (service as any).materializeRecurringSchedules(1);
 
-      expect(transaction).not.toHaveBeenCalled();
-      expect(scheduleUpdate).not.toHaveBeenCalled();
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(scheduleUpdate).toHaveBeenCalledWith({
+        where: {
+          id: 'schedule-access-transient',
+          revision: 4,
+          status: PublicationScheduleStatus.ACTIVE,
+          nextMaterializeAt: new Date('2026-07-10T08:59:00Z'),
+          publication: { is: { lifecycle: PublicationLifecycle.ACTIVE, version: 3 } },
+        },
+        data: {
+          nextMaterializeAt: expect.any(Date),
+          lastError: 'PUBLICATION_PREPARATION_TRANSIENT',
+        },
+      });
       expect(publicationUpdate).not.toHaveBeenCalled();
       expect(occurrenceCreate).not.toHaveBeenCalled();
     } finally {
@@ -3964,6 +3999,7 @@ describe('PublicationService', () => {
         status: PublicationOccurrenceStatus.SCHEDULED,
         dispatchBlockerCode: 'PUBLISHER_EXPLICIT_RETRY',
         dispatchBlockedAt: expect.any(Date),
+        retryAuthorizedAt: expect.any(Date),
       },
     });
     expect(tx.managedBroadcast.findMany).not.toHaveBeenCalled();

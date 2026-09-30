@@ -7,6 +7,7 @@ import {
   buildPublicationSystemButtons,
   buildTestPublicationRequest,
   canResumePublication,
+  canReviewPublicationScheduleDecision,
   createEmptyPublicationDraft,
   createPublicationDuplicateDraft,
   filterFuturePublicationSlots,
@@ -192,6 +193,46 @@ test('explains that a 31-day recurrence is not a calendar month', () => {
     title: 'Каждые 31 день',
     description: 'Число месяца будет меняться.',
   });
+});
+
+test('missed runs remain reviewable without delivery rows and do not mark a future send as missed', () => {
+  const publication = {
+    lifecycle: 'ACTIVE',
+    requiresScheduleDecision: true,
+    dispatchIssue: 'target_setup_required',
+    delivery: { total: 0, pending: 0, sent: 0, failed: 0, ambiguous: 0, canceled: 0 },
+    schedule: { mode: 'once', nextOccurrenceAt: null },
+  } as Parameters<typeof getPublicationFeedStatusLabel>[0];
+  assert.equal(getPublicationFeedStatusLabel(publication), 'Пропущено время');
+  assert.equal(canReviewPublicationScheduleDecision(publication), true);
+  assert.equal(getPublicationActionCapabilities(publication).canRetry, false);
+  const withFuture = {
+    ...publication,
+    schedule: { ...publication.schedule!, nextOccurrenceAt: '2030-10-01T16:30:00.000Z' },
+  };
+  assert.equal(getPublicationFeedStatusLabel(withFuture), 'Есть пропущенные отправки');
+  assert.equal(
+    getPublicationFeedStatusLabel({ ...withFuture, lifecycle: 'ERROR' }),
+    'Есть пропущенные отправки',
+  );
+  assert.equal(
+    getPublicationDispatchIssuePresentation('target_setup_required', true)?.canRecheck,
+    false,
+  );
+  for (const lifecycle of ['COMPLETED', 'CANCELED', 'PAUSED', 'DRAFT'] as const) {
+    assert.equal(canReviewPublicationScheduleDecision({ ...publication, lifecycle }), false);
+  }
+  assert.equal(
+    canReviewPublicationScheduleDecision({ ...publication, requiresScheduleDecision: false }),
+    false,
+  );
+  assert.equal(
+    getPublicationFeedStatusLabel({
+      ...publication,
+      delivery: { ...publication.delivery, total: 1, ambiguous: 1 },
+    }),
+    'Нужно проверить',
+  );
 });
 
 test('previews other large recurrence intervals without warning for routine intervals', () => {
@@ -564,6 +605,24 @@ test('keeps mixed Publisher delivery rows fresh while an issue is unresolved', (
     getPublicationDetailsPollingInterval({ ...publication, dispatchIssue: null }, delivery),
     5_000,
   );
+});
+
+test('terminal publications stop aggregate polling despite cached blockers or pending counters', () => {
+  const delivery = { total: 1, pending: 1, sent: 0, failed: 0, ambiguous: 0, canceled: 0 };
+  for (const lifecycle of ['COMPLETED', 'CANCELED'] as const) {
+    for (const dispatchIssue of [null, 'temporarily_unavailable'] as const) {
+      const publication = {
+        lifecycle,
+        dispatchIssue,
+        delivery,
+        schedule: { mode: 'now' as const, nextOccurrenceAt: null },
+      };
+      assert.equal(shouldPollPublicationDeliveries(publication, delivery), false);
+      assert.equal(getPublicationDetailsPollingInterval(publication, delivery), false);
+      assert.equal(getPublicationListPollingInterval('current', [publication]), false);
+      assert.equal(getPublicationListPollingInterval('schedules', [publication]), false);
+    }
+  }
 });
 
 test('detects stale occurrence content from explicit and revision-based projections', () => {

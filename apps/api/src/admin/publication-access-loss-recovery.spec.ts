@@ -148,6 +148,31 @@ describe('publication access-loss recovery', () => {
     });
   });
 
+  it.each([
+    [PublicationOccurrenceStatus.CANCELED, false],
+    [PublicationOccurrenceStatus.SENT, true],
+    [PublicationOccurrenceStatus.AMBIGUOUS, true],
+  ])('preserves missed-slot decision except for actual evidence %s', async (status, updates) => {
+    const { prisma } = createHarness();
+    await rollupPublicationOccurrenceWithRouteOutageRecovery(
+      prisma as never,
+      {
+        ...occurrence,
+        status: PublicationOccurrenceStatus.FAILED,
+        dispatchBlockerCode: 'PUBLISHER_MISSED_WINDOW_REVIEW',
+      },
+      status,
+      [
+        {
+          status: ManagedBroadcastDeliveryStatus.CANCELED,
+          targetChatId: 'chat-1',
+          lastError: null,
+        },
+      ],
+    );
+    expect(prisma.publicationOccurrence.updateMany).toHaveBeenCalledTimes(updates ? 1 : 0);
+  });
+
   it('rolls up and pauses atomically under the publication calendar lock', async () => {
     const { prisma, transaction, tx } = createHarness();
     tx.managedBroadcast.findMany.mockResolvedValue([

@@ -259,7 +259,7 @@ describe('PublisherBindingRefreshQueueService', () => {
     let maxActiveRemovals = 0;
     const jobs = Array.from({ length: 18 }, (_, index) => ({
       id: `scheduled-${index}`,
-      priority: 10,
+      priority: 5,
       timestamp: index,
       data: {
         version: 1,
@@ -339,7 +339,7 @@ describe('PublisherBindingRefreshQueueService', () => {
     const jobs = Array.from({ length: 18 }, (_, index) => ({
       id: `priority-${index}`,
       timestamp: index,
-      priority: index === 0 ? 10 : 20,
+      priority: index === 0 ? 5 : 20,
       data: {
         version: 1,
         chatId: `chat-${index}`,

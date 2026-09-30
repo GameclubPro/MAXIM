@@ -71,8 +71,23 @@ describe('Scheduled publication access refresh', () => {
             userId: 'author',
             botId: 'publik',
             OR: [
-              { expiresAt: { gt: new Date('2026-09-13T12:00:00Z') } },
-              { expiresAt: null, checkedAt: { gt: new Date('2026-09-13T11:45:00Z') } },
+              {
+                expiresAt: { gt: new Date('2026-09-13T12:00:00Z') },
+                OR: [
+                  { state: { not: 'GRANTED' } },
+                  { checkedAt: { gt: new Date('2026-09-13T11:45:00Z') } },
+                ],
+              },
+              {
+                expiresAt: null,
+                OR: [
+                  { state: 'GRANTED', checkedAt: { gt: new Date('2026-09-13T11:45:00Z') } },
+                  {
+                    state: { not: 'GRANTED' },
+                    checkedAt: { gt: new Date('2026-09-13T11:45:00Z') },
+                  },
+                ],
+              },
             ],
           },
         },
@@ -93,7 +108,7 @@ describe('Scheduled publication access refresh', () => {
       chatId: 'chat-stale',
       publisherBotId: 'publik',
       candidateUserId: 'author',
-      reason: 'stale_user_access',
+      reason: 'publication_actor_due',
       requestedAt: new Date('2026-09-13T12:00:00Z'),
       candidateVersion: 'verified:earlier',
     });

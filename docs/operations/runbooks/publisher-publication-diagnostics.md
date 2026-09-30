@@ -25,6 +25,8 @@ Counts describe sampled occurrence/target/delivery slots, not unique users or en
 Repeated schedules can therefore contribute the same recipient more than once. Saturated
 or truncated samples are not a complete inventory. `metadata_ready` does not prove MAX
 write permission: raw permission data is deliberately outside this diagnostic.
+Granted actor metadata older than 15 minutes is classified as `actor_authority_stale`.
+`missed_window` identifies a missed scheduled window requiring an author decision; it is separate from `AMBIGUOUS` delivery results.
 
 Interpret all blockers together with lifecycle and schedule status. A disabled policy or
 fresh denied actor must never be silently enabled or granted access. A missing/expired

@@ -7,7 +7,10 @@ import type {
 import { togglePublicationTargetSelection } from '../src/features/publications/publication-target-selection';
 import type { PublicationTarget } from '../src/features/publications/publication-model';
 import { createApiRequestError } from '../src/lib/api-request-error';
-import { getPublisherReadinessPresentation } from '../src/lib/publisher-readiness';
+import {
+  getPublisherReadinessPollingInterval,
+  getPublisherReadinessPresentation,
+} from '../src/lib/publisher-readiness';
 import {
   canSelectInitialPublicationRouteTarget,
   classifyInitialPublicationTargetRequestError,
@@ -29,7 +32,9 @@ function readiness(
       ? 'ready'
       : blockerCode === 'policy_disabled'
         ? 'disabled'
-        : blockerCode === 'publisher_runtime_unavailable' || blockerCode === 'route_quarantined'
+        : blockerCode === 'publisher_runtime_unavailable' ||
+            blockerCode === 'route_quarantined' ||
+            blockerCode === 'bot_access_expired'
           ? 'temporarily_unavailable'
           : 'setup_required',
     canPublish,
@@ -56,12 +61,13 @@ test('publisher readiness presents every server blocker as a specific user-facin
   const expected: Record<PublisherReadinessBlockerCode, string> = {
     policy_disabled: 'Публик выключен',
     bot_not_connected: 'Публик не добавлен',
-    bot_access_unconfirmed: 'Проверяем доступ',
-    bot_access_expired: 'Доступ нужно обновить',
+    bot_access_unconfirmed: 'Проверяем права Публика',
+    bot_access_expired: 'Проверяем права Публика',
     bot_not_admin: 'Публик не администратор',
     write_permission_missing: 'Нет права публиковать',
     route_quarantined: 'Отправка приостановлена',
     publisher_runtime_unavailable: 'Публик временно недоступен',
+    module_disabled: 'Модуль выключен',
   };
 
   for (const [blockerCode, label] of Object.entries(expected)) {
@@ -72,6 +78,47 @@ test('publisher readiness presents every server blocker as a specific user-facin
     assert.ok(presentation.detail.length > 0);
   }
   assert.equal(getPublisherReadinessPresentation(readiness(null)).label, 'Готов к публикации');
+});
+
+test('expired verification remains a pending check and does not ask for administrator setup', () => {
+  const stale = readiness('bot_access_expired');
+  stale.retryAt = '2026-09-30T12:30:00.000Z';
+  for (const state of ['temporarily_unavailable', 'setup_required'] as const) {
+    const presentation = getPublisherReadinessPresentation({ ...stale, state });
+    assert.equal(presentation.tone, 'temporary');
+    assert.match(presentation.detail, /перепроверяются автоматически/u);
+    assert.match(presentation.detail, /Обновление статуса:/u);
+    assert.doesNotMatch(presentation.detail, /Назначьте|Обновите статус|выдайте/u);
+  }
+  for (const blocker of ['bot_not_admin', 'write_permission_missing'] as const) {
+    assert.equal(getPublisherReadinessPresentation(readiness(blocker)).tone, 'setup');
+  }
+});
+
+test('pending bot checks observe server retry time with bounded reads and stop after completion', () => {
+  const now = Date.parse('2026-09-30T12:00:00.000Z');
+  const stale = readiness('bot_access_expired');
+  assert.equal(getPublisherReadinessPollingInterval(stale, now), 15_000);
+  stale.retryAt = '2026-09-30T12:00:30.000Z';
+  assert.equal(getPublisherReadinessPollingInterval(stale, now), 30_000);
+  stale.retryAt = '2026-09-30T15:00:00.000Z';
+  assert.equal(getPublisherReadinessPollingInterval(stale, now), 60_000);
+  stale.retryAt = '2026-09-30T11:00:00.000Z';
+  assert.equal(getPublisherReadinessPollingInterval(stale, now), 5_000);
+  stale.retryAt = 'invalid';
+  assert.equal(getPublisherReadinessPollingInterval(stale, now), 15_000);
+  for (const blocker of [
+    null,
+    'bot_not_admin',
+    'write_permission_missing',
+    'bot_access_unconfirmed',
+    'publisher_runtime_unavailable',
+    'route_quarantined',
+    'policy_disabled',
+  ] as const) {
+    assert.equal(getPublisherReadinessPollingInterval(readiness(blocker), now), false);
+  }
+  assert.equal(getPublisherReadinessPollingInterval(null, now), false);
 });
 
 test('publisher readiness exposes required permissions and quarantine recovery time', () => {
@@ -207,6 +254,15 @@ for (const blocker of ['bot_access_expired', 'bot_access_unconfirmed'] as const)
     assert.equal(stale.readiness?.canPublish, false);
   });
 }
+
+test('legacy stale setup responses keep target preparation available during rollout', () => {
+  const stale = target('stale', {
+    ...readiness('bot_access_expired'),
+    state: 'setup_required',
+  });
+  assert.equal(togglePublicationTargetSelection([], stale).outcome, 'added');
+  assert.equal(stale.readiness?.canPublish, false);
+});
 
 test('missing metadata, disabled features and denied rights still block draft submission', () => {
   for (const state of [

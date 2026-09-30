@@ -1,8 +1,9 @@
+import { recordPublicationDispatchOutcome } from './publication-delivery-timing';
 import {
   publicationScheduleInputSchema,
   type PublicationScheduleInput,
 } from '@maxim/contracts/publication';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, type Logger } from '@nestjs/common';
 import {
   ManagedBroadcastDeliveryStatus,
   Prisma,
@@ -19,6 +20,7 @@ import {
   PUBLISHER_EXPLICIT_RETRY_CODE,
 } from './publication-dispatch-issue';
 import { isTransientPublicationPrismaError } from './publication-prisma-retry';
+import { isPublicationScheduledWindowExpired } from './publication-late-policy';
 import {
   PublicationPublisherRoutingService,
   type ResolvedPublicationTarget,
@@ -72,6 +74,7 @@ type PublicationOccurrenceDispatchContext = {
   publisherRouting: PublicationPublisherRoutingService;
   logger: {
     warn(context: Record<string, unknown>, message: string): void;
+    log?: Logger['log'];
   };
   resolveTargets: (publication: any) => Promise<ResolvedPublicationTarget[]>;
   createExecution: (
@@ -162,7 +165,7 @@ export async function dispatchScheduledPublicationOccurrences(
   for (const occurrence of occurrences) {
     try {
       if (occurrence.scheduleRevision !== occurrence.schedule.revision) {
-        await context.prisma.publicationOccurrence.updateMany({
+        const canceled = await context.prisma.publicationOccurrence.updateMany({
           where: {
             id: occurrence.id,
             scheduleRevision: occurrence.scheduleRevision,
@@ -180,24 +183,21 @@ export async function dispatchScheduledPublicationOccurrences(
           },
           data: { status: PublicationOccurrenceStatus.CANCELED },
         });
+        if (canceled.count === 1) {
+          recordPublicationDispatchOutcome(context.logger, {
+            mode: occurrence.schedule.mode,
+            scope: 'occurrence',
+            outcome: 'skipped',
+          });
+        }
         continue;
       }
-      if (
-        !(
-          occurrence.dispatchBlockerCode === PUBLISHER_EXPLICIT_RETRY_CODE &&
-          occurrence.dispatchBlockedAt &&
-          occurrence.dispatchBlockedAt.getTime() >= now.getTime() - PUBLICATION_EXECUTION_HORIZON_MS
-        ) &&
-        (occurrence.schedule.mode === PublicationScheduleMode.ONCE ||
-          occurrence.schedule.mode === PublicationScheduleMode.SLOTS ||
-          occurrence.schedule.mode === PublicationScheduleMode.RECURRENCE) &&
-        occurrence.scheduledAt.getTime() < now.getTime() - PUBLICATION_EXECUTION_HORIZON_MS
-      ) {
+      if (isPublicationScheduledWindowExpired(occurrence, now)) {
         // FLAG: Returning access cannot authorize catch-up sends. Only an explicit author
         // retry may execute a missed one-off slot; recurrence continues with future slots.
-        await context.prisma.$transaction(async (tx) => {
+        const expired = await context.prisma.$transaction(async (tx) => {
           await context.lockCalendar(tx);
-          await tx.publicationOccurrence.updateMany({
+          return tx.publicationOccurrence.updateMany({
             where: {
               id: occurrence.id,
               status: PublicationOccurrenceStatus.SCHEDULED,
@@ -205,6 +205,7 @@ export async function dispatchScheduledPublicationOccurrences(
               dispatchBlockerCode: occurrence.dispatchBlockerCode ?? null,
               dispatchBlockedAt: occurrence.dispatchBlockedAt ?? null,
               dispatchFirstBlockedAt: occurrence.dispatchFirstBlockedAt ?? null,
+              retryAuthorizedAt: occurrence.retryAuthorizedAt ?? null,
               schedule: {
                 is: {
                   revision: occurrence.scheduleRevision,
@@ -229,6 +230,13 @@ export async function dispatchScheduledPublicationOccurrences(
             },
           });
         });
+        if (expired?.count === 1) {
+          recordPublicationDispatchOutcome(context.logger, {
+            mode: occurrence.schedule.mode,
+            scope: 'occurrence',
+            outcome: 'missed_window',
+          });
+        }
         continue;
       }
       const targets = await publicationBackgroundAccess.execution(

@@ -196,38 +196,10 @@ describe('PublicationPresenterService', () => {
     expect(partial.schedule).toBeNull();
   });
 
-  it('searches the active exact Publisher catalog by its displayed title or ID fallback', async () => {
-    const queryRaw = jest
-      .fn()
-      .mockResolvedValue([{ chatId: 'fallback-channel', entityType: ChatEntityType.CHANNEL }]);
-    const presenter = new PublicationPresenterService({
-      $queryRaw: queryRaw,
-    } as never);
-
-    await expect(
-      presenter.findPublisherTargetSearchMatches('publisher-bot', 'fallback'),
-    ).resolves.toEqual([{ chatId: 'fallback-channel', entityType: ChatEntityType.CHANNEL }]);
-    const searchSql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
-    const searchValues = extractSqlValues(queryRaw.mock.calls[0]?.[0]);
-    expect(searchSql).toContain('FROM "managed_bot_chat_catalog" AS catalog');
-    expect(searchSql).toContain('catalog."status" = \'ACTIVE\'');
-    expect(searchSql).toContain(
-      'COALESCE(NULLIF(BTRIM(catalog."title"), \'\'), catalog."chat_id") ILIKE ?',
-    );
-    expect(searchValues).toEqual(['publisher-bot', '%fallback%']);
-  });
-
-  it('batches Publisher catalog presentation reads and allows broad searches', async () => {
+  it('batches Publisher catalog presentation reads', async () => {
     const catalogFindMany = jest.fn().mockResolvedValue([]);
-    const queryRaw = jest.fn().mockResolvedValue(
-      Array.from({ length: 501 }, (_, index) => ({
-        chatId: `chat-${index}`,
-        entityType: ChatEntityType.CHAT,
-      })),
-    );
     const presenter = new PublicationPresenterService({
       managedBotChatCatalog: { findMany: catalogFindMany },
-      $queryRaw: queryRaw,
     } as never);
     const targets = Array.from({ length: 201 }, (_, index) => ({
       targetChatId: `chat-${index}`,
@@ -238,9 +210,6 @@ describe('PublicationPresenterService', () => {
     expect(catalogFindMany).toHaveBeenCalledTimes(2);
     expect(catalogFindMany.mock.calls[0]?.[0].where.chatId.in).toHaveLength(200);
     expect(catalogFindMany.mock.calls[1]?.[0].where.chatId.in).toEqual(['chat-200']);
-    await expect(
-      presenter.findPublisherTargetSearchMatches('publisher-bot', 'а'),
-    ).resolves.toHaveLength(501);
   });
 
   it('maps current and historical delivery content revisions without guessing legacy rows', () => {
@@ -418,6 +387,12 @@ describe('PublicationPresenterService', () => {
     expect(sql).toContain('schedule."revision" = occurrence."schedule_revision"');
     expect(sql).toContain('FROM "managed_broadcast_deliveries" AS delivery');
     expect(sql).toContain('current_occurrence."hasExecutionDeliveries" = FALSE');
+    expect(sql).toContain(
+      'current_occurrence."occurrenceStatus" = \'FAILED\'::"PublicationOccurrenceStatus"',
+    );
+    expect(sql).toContain(
+      'current_occurrence."occurrenceBlockerCode" = \'PUBLISHER_MISSED_WINDOW_REVIEW\'',
+    );
     expect(sql).toContain('current_occurrence."occurrenceBlockerCode" AS "blockerCode"');
     expect(sql).toContain('current_occurrence."hasExecutionDeliveries" = TRUE');
     expect(sql).toContain('publication."lifecycle" IN (');

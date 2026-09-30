@@ -271,7 +271,7 @@ describe('Publication performance and pagination', () => {
   it('searches PUBLIK_V1 targets only through the exact active Publisher catalog', async () => {
     const queryRaw = jest
       .fn()
-      .mockResolvedValueOnce([{ chatId: 'publisher-chat', entityType: 'CHAT' }]);
+      .mockResolvedValueOnce([{ id: 'publication-match', updatedAt: new Date() }]);
     const publicationFindMany = jest.fn().mockResolvedValue([]);
     const { service } = createPublicationService({
       publication: { findMany: publicationFindMany },
@@ -287,23 +287,24 @@ describe('Publication performance and pagination', () => {
 
     const catalogSearchSql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
     const catalogSearchValues = extractSqlValues(queryRaw.mock.calls[0]?.[0]);
+    expect(catalogSearchSql).toContain('FROM "publications" AS publication');
+    expect(catalogSearchSql).toContain('publication."actor_user_id" = ?');
     expect(catalogSearchSql).toContain('FROM "managed_bot_chat_catalog" AS catalog');
+    expect(catalogSearchSql).toContain('INNER JOIN LATERAL');
     expect(catalogSearchSql).toContain('catalog."status" = \'ACTIVE\'');
-    expect(catalogSearchValues).toEqual(['publisher-bot', '%Публика%']);
-    const searchBranches = publicationFindMany.mock.calls[0]?.[0].where.AND[0].OR;
-    expect(searchBranches).toContainEqual({
-      targets: {
-        some: {
-          OR: [
-            {
-              entityType: 'CHAT',
-              targetChatId: { in: ['publisher-chat'] },
-            },
-          ],
-        },
-      },
+    expect(catalogSearchSql).toContain('catalog."entity_type" = target."entity_type"');
+    expect(catalogSearchSql).toContain('WHERE target."publication_id" = publication."id"');
+    expect(catalogSearchSql).toMatch(/LIMIT \?$/u);
+    expect(catalogSearchValues).toEqual(
+      expect.arrayContaining(['user-1', 'publisher-bot', '%Публика%']),
+    );
+    expect(catalogSearchValues.at(-1)).toBe(31);
+    expect(publicationFindMany.mock.calls[0]?.[0].where).toMatchObject({
+      actorUserId: 'user-1',
+      dispatchProfile: 'PUBLIK_V1',
+      id: { in: ['publication-match'] },
     });
-    expect(JSON.stringify(searchBranches)).not.toContain('"chat"');
+    expect(publicationFindMany.mock.calls[0]?.[0].where.AND).toBeUndefined();
   });
 
   it('hides publication details owned by another dispatch profile', async () => {
@@ -421,9 +422,9 @@ describe('Publication performance and pagination', () => {
       PublicationDispatchProfile.PUBLIK_V1,
     );
 
-    const selectorSql = extractSqlText(queryRaw.mock.calls[1]?.[0]);
-    const selectorValues = extractSqlValues(queryRaw.mock.calls[1]?.[0]);
-    expect(selectorSql).toContain('INNER JOIN "managed_bot_chat_catalog" AS catalog');
+    const selectorSql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
+    const selectorValues = extractSqlValues(queryRaw.mock.calls[0]?.[0]);
+    expect(selectorSql).toContain('FROM "managed_bot_chat_catalog" AS catalog');
     expect(selectorSql).toContain('catalog."status" = \'ACTIVE\'');
     expect(selectorSql).toContain('catalog."entity_type" = target."entity_type"');
     expect(selectorSql).not.toContain('INNER JOIN "chats" AS chat');

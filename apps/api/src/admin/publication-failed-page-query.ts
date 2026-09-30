@@ -4,6 +4,7 @@ import {
   Prisma,
   PublicationAudienceSelection,
   PublicationDispatchProfile,
+  PublicationLifecycle,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 
@@ -23,9 +24,24 @@ export type FailedPublicationPageIdentifier = {
   updatedAt: Date;
 };
 
+export type PublicationSearchPageParams = Omit<
+  CurrentRevisionFailedPublicationPageParams,
+  'view'
+> & {
+  view: PublicationListCursorPayload['view'];
+  status?: PublicationListCursorPayload['status'];
+};
+
 export async function selectCurrentRevisionFailedPublicationPage(
   prisma: PrismaService,
   params: CurrentRevisionFailedPublicationPageParams,
+): Promise<FailedPublicationPageIdentifier[]> {
+  return selectPublicationSearchPage(prisma, { ...params, status: 'failed' });
+}
+
+export async function selectPublicationSearchPage(
+  prisma: PrismaService,
+  params: PublicationSearchPageParams,
 ): Promise<FailedPublicationPageIdentifier[]> {
   if (!Number.isSafeInteger(params.limit) || params.limit <= 0) {
     return [];
@@ -34,12 +50,14 @@ export async function selectCurrentRevisionFailedPublicationPage(
   const scheduleModeFilter =
     params.view === 'current'
       ? Prisma.sql`schedule."mode" = 'NOW'::"PublicationScheduleMode"`
-      : Prisma.sql`schedule."mode" IN (
+      : params.view === 'schedules'
+        ? Prisma.sql`schedule."mode" IN (
           'ONCE'::"PublicationScheduleMode",
           'SLOTS'::"PublicationScheduleMode",
           'RECURRENCE'::"PublicationScheduleMode"
-        )`;
-  const searchPattern = `%${params.query}%`;
+        )`
+        : Prisma.sql`TRUE`;
+  const searchPattern = `%${params.query.replace(/[\\%_]/gu, '\\$&')}%`;
   const publisherBotId = params.publisherBotId?.trim() ?? '';
   if (
     params.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1 &&
@@ -54,14 +72,18 @@ export async function selectCurrentRevisionFailedPublicationPage(
           EXISTS (
             SELECT 1
             FROM "publication_targets" AS target
-            INNER JOIN "managed_bot_chat_catalog" AS catalog
-              ON catalog."bot_id" = ${publisherBotId}
-              AND catalog."chat_id" = target."target_chat_id"
-              AND catalog."entity_type" = target."entity_type"
-              AND catalog."status" = 'ACTIVE'
+            INNER JOIN LATERAL (
+              SELECT 1 FROM "managed_bot_chat_catalog" AS catalog
+              WHERE catalog."bot_id" = ${publisherBotId}
+                AND catalog."chat_id" = target."target_chat_id"
+                AND catalog."entity_type" = target."entity_type"
+                AND catalog."status" = 'ACTIVE'
+                AND COALESCE(NULLIF(BTRIM(catalog."title"), ''), catalog."chat_id")
+                  ILIKE ${searchPattern}
+              OFFSET 0
+            ) AS catalog_match ON TRUE
             WHERE target."publication_id" = publication."id"
-              AND COALESCE(NULLIF(BTRIM(catalog."title"), ''), catalog."chat_id")
-                ILIKE ${searchPattern}
+            OFFSET 0
           )
         `
       : Prisma.sql`
@@ -71,6 +93,7 @@ export async function selectCurrentRevisionFailedPublicationPage(
             INNER JOIN "chats" AS chat ON chat."id" = target."target_chat_id"
             WHERE target."publication_id" = publication."id"
               AND chat."title" ILIKE ${searchPattern}
+            OFFSET 0
           )
         `;
   const searchFilter = params.query
@@ -82,6 +105,7 @@ export async function selectCurrentRevisionFailedPublicationPage(
             FROM "publication_content_revisions" AS content
             WHERE content."id" = publication."canonical_content_revision_id"
               AND content."text" ILIKE ${searchPattern}
+            OFFSET 0
           )
           OR ${targetSearchFilter}
         )
@@ -108,6 +132,7 @@ export async function selectCurrentRevisionFailedPublicationPage(
             FROM "publication_targets" AS target
             WHERE target."publication_id" = publication."id"
               AND target."entity_type" = CAST(${entityType} AS "ChatEntityType")
+            OFFSET 0
           )
         )
       `
@@ -131,23 +156,19 @@ export async function selectCurrentRevisionFailedPublicationPage(
       `
     : Prisma.empty;
 
-  // FLAG: Keep the current schedule revision equality inside this cursor-bound selector.
-  // Obsolete failed occurrences are history and must never consume a current/schedules page.
-  return prisma.$queryRaw<FailedPublicationPageIdentifier[]>(Prisma.sql`
-    SELECT
-      publication."id" AS "id",
-      publication."updated_at" AS "updatedAt"
-    FROM "publications" AS publication
-    INNER JOIN "publication_schedules" AS schedule
-      ON schedule."publication_id" = publication."id"
-    WHERE publication."actor_user_id" = ${params.actorUserId}
-      ${dispatchProfileFilter}
-      AND publication."lifecycle" IN (
-        'ACTIVE'::"PublicationLifecycle",
-        'PAUSED'::"PublicationLifecycle",
-        'ERROR'::"PublicationLifecycle"
-      )
-      AND ${scheduleModeFilter}
+  const lifecycle =
+    params.view === 'drafts'
+      ? [PublicationLifecycle.DRAFT]
+      : params.view === 'history'
+        ? [PublicationLifecycle.COMPLETED, PublicationLifecycle.CANCELED]
+        : [PublicationLifecycle.ACTIVE, PublicationLifecycle.PAUSED, PublicationLifecycle.ERROR];
+  const lifecycleFilter = Prisma.sql`publication."lifecycle" IN (${Prisma.join(
+    lifecycle.map((value) => Prisma.sql`CAST(${value} AS "PublicationLifecycle")`),
+  )})`;
+  const currentRevisionFailure =
+    params.status === 'failed' && (params.view === 'current' || params.view === 'schedules');
+  const statusFilter = currentRevisionFailure
+    ? Prisma.sql`
       AND (
         publication."lifecycle" = 'ERROR'::"PublicationLifecycle"
         OR EXISTS (
@@ -173,7 +194,48 @@ export async function selectCurrentRevisionFailedPublicationPage(
               )
             )
         )
-      )
+      )`
+    : params.status === 'failed'
+      ? Prisma.sql`
+        AND (
+          publication."lifecycle" = 'ERROR'::"PublicationLifecycle"
+          OR EXISTS (
+            SELECT 1 FROM "publication_occurrences" AS occurrence
+            INNER JOIN "managed_broadcast_deliveries" AS delivery
+              ON delivery."publication_occurrence_id" = occurrence."id"
+            WHERE occurrence."publication_id" = publication."id"
+              AND delivery."status" IN (
+                'FAILED'::"ManagedBroadcastDeliveryStatus",
+                'AMBIGUOUS'::"ManagedBroadcastDeliveryStatus"
+              )
+          )
+        )`
+      : params.status
+        ? Prisma.sql`AND publication."lifecycle" IN (${Prisma.join(
+            (params.status === 'active'
+              ? [PublicationLifecycle.ACTIVE]
+              : params.status === 'paused'
+                ? [PublicationLifecycle.PAUSED]
+                : [PublicationLifecycle.COMPLETED, PublicationLifecycle.CANCELED]
+            ).map((value) => Prisma.sql`CAST(${value} AS "PublicationLifecycle")`),
+          )})`
+        : Prisma.empty;
+
+  // FLAG: Filter actor-owned publications and the exact bot catalog inside one bounded page.
+  // Current failed pages retain schedule revision equality; never preload a catalog ID list.
+  // FLAG: OFFSET 0 preserves correlation; LATERAL prevents scanning the catalog before targets.
+  return prisma.$queryRaw<FailedPublicationPageIdentifier[]>(Prisma.sql`
+    SELECT
+      publication."id" AS "id",
+      publication."updated_at" AS "updatedAt"
+    FROM "publications" AS publication
+    LEFT JOIN "publication_schedules" AS schedule
+      ON schedule."publication_id" = publication."id"
+    WHERE publication."actor_user_id" = ${params.actorUserId}
+      ${dispatchProfileFilter}
+      AND ${lifecycleFilter}
+      AND ${scheduleModeFilter}
+      ${statusFilter}
       ${searchFilter}
       ${entityFilter}
       ${cursorFilter}

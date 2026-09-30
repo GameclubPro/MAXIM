@@ -7,12 +7,14 @@ import {
 } from '../prisma/prisma-client';
 import {
   PublisherCandidateRefreshSupersededError,
+  PublisherBindingMaintenanceSupersededError,
   PublisherBindingRefreshSchedulerService,
   PublisherBindingRefreshService,
 } from './publisher-binding-refresh.service';
 import { buildPublisherForwardedBindingSource } from './publisher-entity-binding-lifecycle.service';
 import { PublisherReadinessService } from './publisher-readiness.service';
 import type { PublisherBindingRefreshJob } from './publisher-binding-refresh.queue';
+import { Logger } from '@nestjs/common';
 
 const createBackgroundWork = () => ({
   runExclusive: jest.fn((_lane: string, operation: () => Promise<unknown>) => operation()),
@@ -28,6 +30,7 @@ describe('PublisherBindingRefreshService', () => {
     botAccessState: ChatBotAccessState;
     botAccessSource: string | null;
     botAccessCheckedAt: Date | null;
+    botAccessExpiresAt?: Date | null;
     lifecycleEventAt: Date | null;
     lifecycleEventType?: string | null;
     lastSeenAt?: Date | null;
@@ -69,6 +72,9 @@ describe('PublisherBindingRefreshService', () => {
               botAccessState: ChatBotAccessState.CONFIRMED_ADMIN as ChatBotAccessState,
               botAccessSource: null as string | null,
               botAccessCheckedAt: bindingState.botAccessCheckedAt,
+              botAccessExpiresAt: bindingState.botAccessCheckedAt
+                ? new Date(bindingState.botAccessCheckedAt.getTime() + 15 * 60_000)
+                : null,
               lifecycleEventAt: null,
               lastSeenAt: new Date('2026-08-26T11:55:00.000Z') as Date | null,
               lastWebhookAt: null as Date | null,
@@ -231,6 +237,7 @@ describe('PublisherBindingRefreshService', () => {
         () => 'https://max.ru/publik_bot?startapp=home',
       ),
     };
+    const refreshQueue = { enqueue: jest.fn().mockResolvedValue('maintenance-1') };
     const service = new PublisherBindingRefreshService(
       prisma as never,
       maxClient as never,
@@ -239,6 +246,7 @@ describe('PublisherBindingRefreshService', () => {
       identityAttestation as never,
       runtimeBoundary as never,
       maxBotLinkService as never,
+      refreshQueue as never,
     );
     return {
       service,
@@ -251,6 +259,7 @@ describe('PublisherBindingRefreshService', () => {
       edgeState,
       maxBotLinkService,
       runtimeBoundary,
+      refreshQueue,
     };
   }
 
@@ -268,6 +277,135 @@ describe('PublisherBindingRefreshService', () => {
     permissions: ['write'],
     permissionsKnown: true,
   };
+
+  it('counts every refresh attempt in bounded identifier-free histograms', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-30T12:00:00Z'));
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    try {
+      const f = createHarness(adminAccess);
+      for (const age of [500, 10_000, 400_000])
+        await f.service.refresh({
+          ...job,
+          reason: 'publication_due',
+          requestedAt: new Date(Date.now() - age).toISOString(),
+        });
+      f.service.onModuleDestroy();
+      const rows = log.mock.calls
+        .filter(([, label]) => label === 'Publisher refresh window')
+        .map(
+          ([row]) =>
+            row as unknown as { attempts: number; queueAgeHistogram: number[]; reason: string },
+        );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        metric: 'publisher_refresh_v1',
+        attempts: 3,
+        returned: 3,
+        thrown: 0,
+        reason: 'publication_due',
+      });
+      expect(rows[0].queueAgeHistogram.reduce((sum, count) => sum + count, 0)).toBe(3);
+      expect(JSON.stringify(rows)).not.toContain(job.chatId);
+      expect(JSON.stringify(rows)).not.toContain(job.publisherBotId);
+    } finally {
+      log.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps a committed bot permission probe successful when telemetry fails', async () => {
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => {
+      throw new Error('logger unavailable');
+    });
+    try {
+      const f = createHarness(adminAccess);
+      await expect(
+        f.service.refresh({ ...job, reason: 'publication_due' }),
+      ).resolves.toBeUndefined();
+      expect(f.prisma.publisherEntityBinding.updateMany).toHaveBeenCalled();
+      expect(() => f.service.onModuleDestroy()).not.toThrow();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it.each(['scheduled_bot_access', 'publication_due'] as const)(
+    'keeps %s lightweight and independently queues fenced roster maintenance',
+    async (reason) => {
+      const f = createHarness(adminAccess);
+      await f.service.refresh({ ...job, reason });
+      expect(f.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+      expect(f.maxClient.getChatSnapshot).not.toHaveBeenCalled();
+      expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
+      expect(f.refreshQueue.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: 'binding_maintenance',
+          chatId: job.chatId,
+          publisherBotId: job.publisherBotId,
+        }),
+      );
+      await f.service.refresh({ ...job, reason: 'binding_maintenance' });
+      expect(f.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+      expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalledTimes(1);
+      expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalled();
+    },
+  );
+
+  it('recovers failed maintenance enqueue without repeating a newer successful bot probe', async () => {
+    const f = createHarness(adminAccess);
+    f.refreshQueue.enqueue.mockRejectedValueOnce(new Error('redis unavailable'));
+    const scheduled = {
+      ...job,
+      reason: 'scheduled_bot_access' as const,
+      requestedAt: new Date(Date.now() - 10_000).toISOString(),
+    };
+    await expect(f.service.refresh(scheduled)).rejects.toThrow('redis unavailable');
+    await f.service.refresh(scheduled, { retrying: true });
+    expect(f.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(f.refreshQueue.enqueue).toHaveBeenCalledTimes(2);
+  });
+
+  it('maintenance requests a bot refresh instead of using an expired proof', async () => {
+    const f = createHarness(adminAccess);
+    f.bindingState.botAccessCheckedAt = new Date(Date.now() - 16 * 60_000);
+    await f.service.refresh({ ...job, reason: 'binding_maintenance' });
+    expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
+    expect(f.refreshQueue.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'scheduled_bot_access' }),
+    );
+  });
+
+  it('retries a superseded active roster handoff with the newer bot proof', async () => {
+    const f = createHarness(adminAccess);
+    f.bindingState.botAccessCheckedAt = new Date(Date.now() - 1_000);
+    f.prisma.managedBotChatCatalog.findUnique.mockResolvedValue({
+      entityType: ChatEntityType.CHAT,
+      title: 'Chat',
+      status: 'ACTIVE',
+      source: 'publisher_targeted_snapshot',
+      lastSeenAt: new Date(),
+    });
+    f.tx.publisherEntityBinding.findUnique.mockImplementationOnce(async () => {
+      f.bindingState.botAccessCheckedAt = new Date();
+      return {
+        publisherBotId: 'publik_bot',
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessSource: null,
+        botAccessCheckedAt: f.bindingState.botAccessCheckedAt,
+        lifecycleEventAt: null,
+        lastWebhookAt: null,
+      };
+    });
+    await expect(
+      f.service.refresh({ ...job, reason: 'binding_maintenance' }),
+    ).rejects.toBeInstanceOf(PublisherBindingMaintenanceSupersededError);
+    await f.service.refresh({ ...job, reason: 'binding_maintenance' }, { retrying: true });
+    expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalledTimes(2);
+    expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalled();
+    expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+  });
 
   const recentCatalog = () => ({
     entityType: ChatEntityType.CHANNEL,

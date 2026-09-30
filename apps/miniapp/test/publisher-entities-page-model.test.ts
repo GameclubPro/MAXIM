@@ -319,3 +319,27 @@ test('publisher refresh polling reports timeout separately from a final status r
   assert.equal(readFailed.attempts, 2);
   assert.equal(readFailed.status === 'read_failed' ? readFailed.error : null, readError);
 });
+
+test('leaving a target during an in-flight status read discards its late result', async () => {
+  const initial = publisherEntity('chat-pending', 'chat', {
+    ready: false,
+    blockerCode: 'bot_access_expired',
+  });
+  const updated = publisherEntity('chat-pending', 'chat', {
+    checkedAt: '2026-09-30T10:00:00.000Z',
+  });
+  let cancelled = false;
+  const result = await pollPublisherEntityRefresh({
+    initialEntity: initial,
+    delaysMs: [100],
+    wait: async () => undefined,
+    readEntity: async () => {
+      cancelled = true;
+      return updated;
+    },
+    isCancelled: () => cancelled,
+  });
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.entity, initial);
+  assert.equal(result.attempts, 1);
+});

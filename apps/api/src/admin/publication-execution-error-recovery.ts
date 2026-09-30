@@ -43,6 +43,7 @@ export async function recoverPublicationExecutionError(options: {
     error: unknown;
   }): Promise<BroadcastOccurrenceResult>;
   readCurrentResult(error: unknown): Promise<BroadcastOccurrenceResult>;
+  onReceiptPersisted?(sentAt: Date): void;
 }): Promise<BroadcastOccurrenceResult | null> {
   const sendAttemptStarted =
     options.activeDeliveryClaim?.sendAttemptStarted === true ||
@@ -77,6 +78,9 @@ export async function recoverPublicationExecutionError(options: {
         });
       }
       options.clearActiveDeliveryClaim();
+      if (settledStatus === 'sent') {
+        options.onReceiptPersisted?.(interruptedDelivery.sentAt ?? new Date());
+      }
       return await options.finalize({
         sentChatIds: settledStatus === 'sent' ? [interruptedDelivery.targetChatId] : [],
         failedChatIds: settledStatus === 'sent' ? [] : [interruptedDelivery.targetChatId],

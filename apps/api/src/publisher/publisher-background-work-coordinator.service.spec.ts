@@ -117,6 +117,31 @@ describe('PublisherBackgroundWorkCoordinatorService', () => {
     expect(duplicate).not.toHaveBeenCalled();
   });
 
+  it('services an aged recovery before a newer deadline without interrupting active work', async () => {
+    jest.useFakeTimers();
+    try {
+      const coordinator = new PublisherBackgroundWorkCoordinatorService();
+      const events: string[] = [];
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const active = coordinator.runExclusive('binding_refresh', () => gate);
+      const recovery = coordinator.runExclusive('suggestion_recovery', async () => {
+        events.push('recovery');
+      });
+      jest.advanceTimersByTime(15_000);
+      const deadline = coordinator.runExclusive('publication_deadline', async () => {
+        events.push('deadline');
+      });
+      await Promise.resolve();
+      expect(events).toEqual([]);
+      release();
+      await Promise.all([active, recovery, deadline]);
+      expect(events).toEqual(['recovery', 'deadline']);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('rejects queued and future lanes during shutdown without starting them', async () => {
     const coordinator = new PublisherBackgroundWorkCoordinatorService();
     let release!: () => void;

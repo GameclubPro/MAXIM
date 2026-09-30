@@ -766,6 +766,12 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publisher-entities-stale',
+    beforeShot: async (page) => {
+      await page.getByText('Проверяем права Публика', { exact: true }).waitFor();
+    },
+  },
+  {
     name: 'publisher-entities-channel-only',
     beforeShot: async (page) => {
       await page.waitForURL((url) => url.searchParams.get('view') === 'channel');
@@ -904,6 +910,14 @@ const scenarioBehaviors = [
       await page
         .getByRole('button', { name: 'Проверить', exact: true })
         .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entity-modules-stale',
+    beforeShot: async (page) => {
+      await page.getByText('Проверяем права Публика', { exact: true }).waitFor();
+      await page.getByText(/Права Публика перепроверяются автоматически/u).waitFor();
+      await page.getByRole('link', { name: /Создать пост для/u }).waitFor();
     },
   },
   {
@@ -1520,6 +1534,82 @@ const scenarioBehaviors = [
       }
     },
   },
+  ...[false, true].map((failUpload) => ({
+    name: failUpload
+      ? 'publications-publisher-video-upload-failed'
+      : 'publications-publisher-video-upload',
+    beforeShot: async (page) => {
+      const fileName = 'synthetic-upload.mp4';
+      const bytes = Buffer.from('00000018667479706d703432000000006d70343269736f6d', 'hex');
+      let uploads = 0;
+      await page.evaluate(() => {
+        window.__publikVideoUploadEvidence = [];
+        const originalSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function (body) {
+          if (body instanceof FormData) {
+            const file = body.get('data');
+            if (file instanceof File) {
+              window.__publikVideoUploadEvidence.push(
+                file.arrayBuffer().then((buffer) => ({
+                  name: file.name,
+                  mimeType: file.type,
+                  bytes: Array.from(new Uint8Array(buffer)),
+                })),
+              );
+            }
+          }
+          return originalSend.call(this, body);
+        };
+      });
+      await page.route('https://preview.okcdn.ru/video/**', async (route) => {
+        const request = route.request();
+        if (request.method() === 'POST') {
+          uploads += 1;
+        }
+        await route.fulfill({
+          status: 200,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          },
+          contentType: 'application/json',
+          body: '{}',
+        });
+      });
+      await page.locator('.publication-target-picker__summary').click();
+      await page.locator('.publication-target-row').first().click();
+      await page.getByRole('button', { name: 'Завершить выбор получателей' }).click();
+      const editor = page.locator('.publication-content-composer .max-rich-text-editor__surface');
+      const text = 'Текст сохранён при загрузке видео.';
+      await editor.fill(text);
+      await page.locator('.publication-video-tool input[type="file"]').setInputFiles({
+        name: fileName,
+        mimeType: 'video/mp4',
+        buffer: bytes,
+      });
+      if (failUpload) {
+        await page
+          .getByText('MAX не подтвердил видео. Повторите выбор файла.', { exact: true })
+          .waitFor();
+      } else {
+        await page.locator('.publication-retained-media').filter({ hasText: fileName }).waitFor();
+      }
+      if ((await editor.textContent())?.trim() !== text || uploads !== 1) {
+        throw new Error(
+          'Publisher video upload lost the draft text or repeated its binary request.',
+        );
+      }
+      const evidence = await page.evaluate(() => Promise.all(window.__publikVideoUploadEvidence));
+      if (
+        evidence.length !== 1 ||
+        evidence[0].name !== fileName ||
+        evidence[0].mimeType !== 'video/mp4' ||
+        !Buffer.from(evidence[0].bytes).equals(bytes)
+      ) {
+        throw new Error('Publisher video multipart upload changed its file bytes, MIME, or name.');
+      }
+    },
+  })),
   {
     name: 'publications-publisher-compose-long',
     beforeShot: async (page) => {
@@ -1623,24 +1713,56 @@ const scenarioBehaviors = [
       }
     },
   },
-  {
-    name: 'publications-publisher-missed-window',
+  ...[
+    'publications-publisher-missed-window',
+    'publications-publisher-missed-window-card',
+    'publications-publisher-missed-window-future',
+    'publications-publisher-missed-window-future-card',
+  ].map((name) => ({
+    name,
     beforeShot: async (page) => {
+      const future = name.includes('-future');
+      const card = page.locator('[data-publication-id="publication-access-required"]');
+      await card
+        .getByText(future ? 'Есть пропущенные отправки' : 'Пропущено время', { exact: true })
+        .waitFor({ state: 'visible' });
+      if (future) {
+        await card
+          .locator('.publication-feed-card__schedule')
+          .filter({ hasText: /^Следующая · /u })
+          .waitFor();
+      }
+      if (name.endsWith('-card')) return;
+      await card.getByRole('button', { name: /^Действия:/u }).click();
       await page
-        .locator(
-          '[data-publication-id="publication-access-required"] .publication-feed-card__surface',
-        )
+        .getByRole('button', { name: 'Разобрать пропущенные отправки', exact: true })
         .click();
       const details = page.getByRole('dialog', { name: 'Объявление для канала' });
       await details
-        .getByText('Запуск пропущен', { exact: true })
+        .getByText(future ? 'Есть пропущенные отправки' : 'Запуск пропущен', { exact: true })
         .first()
         .waitFor({ state: 'visible' });
       await details.getByText(/^Ожидает с /u).waitFor({ state: 'visible' });
       await details.getByText(/^Проверено /u).waitFor({ state: 'visible' });
-      await details.getByRole('button', { name: 'Повторить запуск' }).waitFor({ state: 'visible' });
+      const retry = details.getByRole('button', { name: /^Отправить пропущенный запуск: /u });
+      await retry.waitFor({ state: 'visible' });
+      const occurrence = retry.locator('xpath=ancestor::*[@data-occurrence-id]');
+      const scheduledAt = (await occurrence.locator('strong').textContent())?.trim();
+      if (
+        !scheduledAt ||
+        !(await retry.getAttribute('aria-label'))?.endsWith(scheduledAt) ||
+        !(await occurrence.getAttribute('class'))?.includes('is-failed')
+      ) {
+        throw new Error('Missed-run review sent the post or lost its exact occurrence date.');
+      }
+      if (
+        await details.getByRole('button', { name: 'Проверить подключения', exact: true }).count()
+      ) {
+        throw new Error('Missed-run review was confused with a permission recheck.');
+      }
+      await occurrence.scrollIntoViewIfNeeded();
     },
-  },
+  })),
   {
     name: 'publications-publisher-recheck',
     beforeShot: async (page) => {

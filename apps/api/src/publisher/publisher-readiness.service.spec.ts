@@ -13,6 +13,7 @@ function createService(
   options: {
     source?: PublisherReadinessSource | null;
     runtimeAvailable?: boolean;
+    enqueue?: jest.Mock;
   } = {},
 ) {
   return new PublisherReadinessService(
@@ -31,6 +32,7 @@ function createService(
         return fallback;
       }),
     } as unknown as ConfigService,
+    options.enqueue ? ({ enqueue: options.enqueue } as never) : undefined,
   );
 }
 
@@ -67,6 +69,88 @@ function readySource(overrides: Partial<PublisherReadinessSource> = {}): Publish
 }
 
 describe('PublisherReadinessService', () => {
+  it('nominates one exact-bot refresh while an expired positive snapshot still blocks send', async () => {
+    const source = readySource();
+    source.publisherBinding!.botAccessExpiresAt = new Date(Date.now() - 1);
+    const enqueue = jest.fn().mockResolvedValue('refresh-1');
+    const service = createService({ source, enqueue });
+    await expect(service.assertEntityReady(source.id, 'publication')).rejects.toMatchObject({
+      blockerCode: 'bot_access_expired',
+    });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: source.id,
+        publisherBotId: 'publik-bot',
+        reason: 'publication_due',
+      }),
+    );
+    expect(service.resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
+      state: 'temporarily_unavailable',
+      canPublish: false,
+      blockerCode: 'bot_access_expired',
+      retryAt: expect.any(String),
+    });
+  });
+
+  it.each(['denied', 'removed', 'disabled', 'quarantined', 'runtime_down'] as const)(
+    'never nominates a stale positive probe across %s boundary',
+    async (boundary) => {
+      const source = readySource();
+      source.publisherBinding!.botAccessExpiresAt = new Date(Date.now() - 1);
+      if (boundary === 'denied')
+        source.publisherBinding!.botAccessState = ChatBotAccessState.DENIED;
+      if (boundary === 'removed') source.publisherBinding!.status = ChatBotMembershipStatus.REMOVED;
+      if (boundary === 'disabled')
+        source.publicationPolicy = { publikEnabled: false, revision: 1, updatedAt: new Date() };
+      if (boundary === 'quarantined')
+        source.publisherBinding!.sendRouteQuarantinedUntil = new Date(Date.now() + 60_000);
+      const enqueue = jest.fn();
+      const service = createService({
+        source,
+        enqueue,
+        runtimeAvailable: boundary !== 'runtime_down',
+      });
+      await expect(service.assertEntityReady(source.id, 'publication')).rejects.toThrow();
+      expect(enqueue).not.toHaveBeenCalled();
+      if (boundary === 'denied')
+        expect(service.resolveReadiness(source)).toMatchObject({
+          state: 'setup_required',
+          blockerCode: 'bot_not_admin',
+          retryAt: null,
+        });
+    },
+  );
+
+  it('preserves the stale blocker when Redis nomination fails', async () => {
+    const source = readySource();
+    source.publisherBinding!.botAccessExpiresAt = new Date(Date.now() - 1);
+    const service = createService({
+      source,
+      enqueue: jest.fn().mockRejectedValue(new Error('redis offline')),
+    });
+    await expect(service.assertEntityReady(source.id, 'publication')).rejects.toMatchObject({
+      blockerCode: 'bot_access_expired',
+    });
+  });
+
+  it('does not promise automatic renewal for an expired unknown access verdict', async () => {
+    const source = readySource();
+    source.publisherBinding!.botAccessState = ChatBotAccessState.UNKNOWN;
+    source.publisherBinding!.botAccessExpiresAt = new Date(Date.now() - 1);
+    const enqueue = jest.fn();
+    const service = createService({ source, enqueue });
+    await expect(service.assertEntityReady(source.id, 'publication')).rejects.toMatchObject({
+      blockerCode: 'bot_access_unconfirmed',
+    });
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(service.resolveReadiness(source)).toMatchObject({
+      state: 'setup_required',
+      blockerCode: 'bot_access_unconfirmed',
+      retryAt: null,
+    });
+  });
+
   it('reports ready only with fresh access and a live runtime', () => {
     expect(
       createService().resolveReadiness(readySource(), { runtimeAvailable: true }),

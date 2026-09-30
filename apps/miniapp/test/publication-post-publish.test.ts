@@ -101,3 +101,17 @@ test('presents separate pin and delete outcomes without changing send status', (
     'Удаление через 90 мин',
   ]);
 });
+
+test('a canceled pin does not claim that its deadline expired or keep polling', () => {
+  const actions: PublicationPostActions = {
+    pinStatus: 'SKIPPED',
+    pinError: 'Публикация отменена. Закрепление отменено.',
+    deleteStatus: 'NONE',
+    deleteAt: null,
+    deletedAt: null,
+    deleteError: null,
+  };
+  assert.deepEqual(publicationPostActionLabels(actions), ['Закрепление пропущено']);
+  assert.equal(publicationPostActionsPending(actions), false);
+  assert.equal(publicationPostActionsPollingInterval(actions), false);
+});

@@ -6,19 +6,24 @@ import {
   ManagedBroadcastStatus,
   ManagedBroadcastDeliveryStatus,
   PublicationDispatchProfile,
+  Prisma,
 } from '../prisma/prisma-client';
 import {
   classifyPublisherFailure,
   type PublisherFailureClassification,
 } from '../publisher/publisher-dispatch-health.service';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
-import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from './publication-dispatch-issue';
+import {
+  PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
+  PUBLISHER_EXPLICIT_RETRY_CODE,
+} from './publication-dispatch-issue';
 import { publisherConnectedBindingWhere } from '../publisher/publisher-entity-connection.util';
 import { isTransientPublicationPrismaError } from './publication-prisma-retry';
+import { PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS } from '../publisher/publisher-readiness.service';
+import { recordPublicationDispatchOutcome } from './publication-delivery-timing';
 
 const PUBLISHER_BLOCKED_RETRY_MS = 60_000;
 const PUBLISHER_RUNTIME_BLOCKER = 'PUBLISHER_RUNTIME_UNAVAILABLE';
-const PUBLISHER_ACCESS_LEGACY_GRACE_MS = 7 * 24 * 60 * 60_000;
 
 type PublisherBroadcastRow = {
   id: string;
@@ -81,7 +86,11 @@ export class PublisherManagedBroadcastDispatch {
     return { ready: true };
   }
 
-  async assertDeliveryReady(chatId: string, requiredBotId: string): Promise<void> {
+  async assertDeliveryReady(
+    chatId: string,
+    requiredBotId: string,
+    actorUserId?: string,
+  ): Promise<void> {
     try {
       const boundary = this.context.publisherRuntimeBoundaryService;
       const readiness = this.context.publisherReadinessService;
@@ -94,6 +103,14 @@ export class PublisherManagedBroadcastDispatch {
       const route = await readiness.assertEntityReady(chatId, 'publication');
       if (route.requiredBotId !== requiredBotId) {
         throw new PublisherDeliveryDeferredError('PUBLISHER_BOT_CHANGED');
+      }
+      if (actorUserId !== undefined) {
+        await this.assertActorAdminAccess({
+          targetChatIds: [chatId],
+          actorUserId,
+          entityType: route.entityType,
+          requiredBotId,
+        });
       }
     } catch (error: unknown) {
       if (error instanceof PublisherDeliveryDeferredError) {
@@ -128,7 +145,9 @@ export class PublisherManagedBroadcastDispatch {
     }
 
     const now = new Date();
-    const legacyGraceStart = new Date(now.getTime() - PUBLISHER_ACCESS_LEGACY_GRACE_MS);
+    const authorityFreshAfter = new Date(
+      now.getTime() - PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS,
+    );
     const entityType =
       params.entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
     const edges = await this.context.prisma.managedEntityAccessEdge.findMany({
@@ -139,7 +158,8 @@ export class PublisherManagedBroadcastDispatch {
         entityType,
         state: ManagedEntityAccessState.GRANTED,
         userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-        OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
+        checkedAt: { gt: authorityFreshAfter },
+        OR: [{ expiresAt: { gt: now } }, { expiresAt: null }],
         chat: {
           entityType,
           OR: [
@@ -235,13 +255,12 @@ export class PublisherManagedBroadcastDispatch {
         data: { dispatchBlockerCode: blockerCode, dispatchBlockedAt: blockedAt },
       });
       if (row.publicationOccurrenceId) {
-        await this.context.prisma.publicationOccurrence.updateMany({
-          where: {
-            id: row.publicationOccurrenceId,
-            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-          },
-          data: { dispatchBlockerCode: blockerCode, dispatchBlockedAt: blockedAt },
-        });
+        await this.updateOccurrenceBlocker(
+          this.context.prisma,
+          row.publicationOccurrenceId,
+          blockerCode,
+          blockedAt,
+        );
       }
       return retryAt;
     }
@@ -252,6 +271,7 @@ export class PublisherManagedBroadcastDispatch {
     delivery: PublisherDeliveryRow;
     deliveryLockToken: string;
     blockerCode: string;
+    sendAttemptStarted?: boolean;
   }): Promise<Date> {
     const blockedAt = new Date();
     const retryAt = new Date(blockedAt.getTime() + PUBLISHER_BLOCKED_RETRY_MS);
@@ -260,11 +280,15 @@ export class PublisherManagedBroadcastDispatch {
         id: params.delivery.id,
         status: ManagedBroadcastDeliveryStatus.SENDING,
         lockToken: params.deliveryLockToken,
+        ...(params.sendAttemptStarted === false ? { attemptCount: { gt: 0 } } : {}),
         dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
         requiredBotId: params.row.requiredBotId,
       },
       data: {
         status: ManagedBroadcastDeliveryStatus.PENDING,
+        // FLAG: Only proven pre-dispatch deferral undoes the claim's increment. Keep real
+        // HTTP rejections and all prior attempts attributable to the original execution.
+        ...(params.sendAttemptStarted === false ? { attemptCount: { decrement: 1 } } : {}),
         lockedAt: null,
         lockToken: null,
         lastErrorCode: null,
@@ -273,16 +297,12 @@ export class PublisherManagedBroadcastDispatch {
       },
     });
     if (params.row.publicationOccurrenceId) {
-      await this.context.prisma.publicationOccurrence.updateMany({
-        where: {
-          id: params.row.publicationOccurrenceId,
-          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-        },
-        data: {
-          dispatchBlockerCode: params.blockerCode.slice(0, 96),
-          dispatchBlockedAt: blockedAt,
-        },
-      });
+      await this.updateOccurrenceBlocker(
+        this.context.prisma,
+        params.row.publicationOccurrenceId,
+        params.blockerCode.slice(0, 96),
+        blockedAt,
+      );
     }
     return retryAt;
   }
@@ -393,14 +413,13 @@ export class PublisherManagedBroadcastDispatch {
         return false;
       }
       if (row.publicationOccurrenceId) {
-        await tx.publicationOccurrence.updateMany({
-          where: {
-            id: row.publicationOccurrenceId,
-            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-            dispatchBlockerCode: blockerCode,
-          },
-          data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
-        });
+        await this.updateOccurrenceBlocker(
+          tx,
+          row.publicationOccurrenceId,
+          null,
+          null,
+          blockerCode,
+        );
       }
       await tx.managedBroadcastDelivery.updateMany({
         where: {
@@ -446,16 +465,7 @@ export class PublisherManagedBroadcastDispatch {
         return false;
       }
       if (row.publicationOccurrenceId) {
-        await tx.publicationOccurrence.updateMany({
-          where: {
-            id: row.publicationOccurrenceId,
-            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-          },
-          data: {
-            dispatchBlockerCode: blockerCode,
-            dispatchBlockedAt: blockedAt,
-          },
-        });
+        await this.updateOccurrenceBlocker(tx, row.publicationOccurrenceId, blockerCode, blockedAt);
       }
       await tx.managedBroadcastDelivery.updateMany({
         where: {
@@ -474,6 +484,11 @@ export class PublisherManagedBroadcastDispatch {
     if (!deferred) {
       return { ready: false, leaseLost: true, retryAt: null };
     }
+    recordPublicationDispatchOutcome(this.logger, {
+      scope: 'deferral',
+      outcome: 'blocked',
+      reason: blockerCode,
+    });
     this.logger.warn(
       {
         broadcastId: row.id,
@@ -483,5 +498,26 @@ export class PublisherManagedBroadcastDispatch {
       'Deferred Publik publication because a Publisher-owned guard is unavailable',
     );
     return { ready: false, retryAt };
+  }
+
+  private updateOccurrenceBlocker(
+    client: Pick<Prisma.TransactionClient, '$executeRaw'>,
+    occurrenceId: string,
+    blockerCode: string | null,
+    blockedAt: Date | null,
+    expectedBlockerCode?: string,
+  ): Promise<number> {
+    // FLAG: Promote the original legacy author proof atomically before overwriting its
+    // shared marker. Deferrals must never reset or extend the five-minute authorization.
+    return client.$executeRaw(Prisma.sql`
+      UPDATE "publication_occurrences"
+      SET "retry_authorized_at" = COALESCE("retry_authorized_at",
+            CASE WHEN "dispatch_blocker_code" = ${PUBLISHER_EXPLICIT_RETRY_CODE}
+                 THEN "dispatch_blocked_at" ELSE NULL END),
+          "dispatch_blocker_code" = ${blockerCode}, "dispatch_blocked_at" = ${blockedAt},
+          "updated_at" = ${new Date()}
+      WHERE "id" = ${occurrenceId} AND "dispatch_profile" = 'PUBLIK_V1'
+        ${expectedBlockerCode === undefined ? Prisma.empty : Prisma.sql`AND "dispatch_blocker_code" = ${expectedBlockerCode}`}
+    `);
   }
 }

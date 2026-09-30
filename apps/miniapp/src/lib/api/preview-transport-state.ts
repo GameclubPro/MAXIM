@@ -132,7 +132,8 @@ export type PreviewState = {
   settingsScreenError: 'auth-expired' | 'access-denied' | null;
   moderationActionDelayMs: 0 | 800;
   publisherEntitiesVariant: 'mixed' | 'channel-only' | 'large' | 'empty' | 'error';
-  publisherPolicyVariant: 'normal' | 'setup' | 'permission' | 'error';
+  publisherPolicyVariant: 'normal' | 'setup' | 'permission' | 'error' | 'stale';
+  publicationVideoUploadVariant: 'ready' | 'failed';
   publisherPostImportVariant: 'none' | PublisherPostImportStatus;
   publisherPostImportSession: PublisherPostImportSession | null;
 };
@@ -996,10 +997,13 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     publisherPolicyVariant:
       publisherPolicyState === 'setup' ||
       publisherPolicyState === 'permission' ||
-      publisherPolicyState === 'error'
+      publisherPolicyState === 'error' ||
+      publisherPolicyState === 'stale'
         ? publisherPolicyState
         : 'normal',
     publisherPostImportVariant,
+    publicationVideoUploadVariant:
+      searchParams.get('videoUploadState') === 'failed' ? 'failed' : 'ready',
     publisherPostImportSession: null,
   };
 
@@ -1074,18 +1078,47 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   state.publications = publicationFixtures.publications;
   state.publicationDeliveries = publicationFixtures.deliveries;
 
-  if (new URLSearchParams(search).get('publicationWindow') === 'missed') {
+  const publicationWindowState = new URLSearchParams(search).get('publicationWindow');
+  if (publicationWindowState === 'missed' || publicationWindowState === 'missed-future') {
     const publication = state.publications.find(
       (item) => item.id === 'publication-access-required',
     );
     if (publication) {
+      const missedAt = addHours(now, -4).toISOString();
+      const nextAt = addDays(now, 1).toISOString();
+      const scheduleBase = {
+        status: 'ACTIVE' as const,
+        timezone: 'Europe/Moscow',
+        revision: 1,
+        lastError: null,
+        replaceConflicts: false,
+      };
+      publication.schedule =
+        publicationWindowState === 'missed-future'
+          ? { ...scheduleBase, mode: 'slots', slots: [missedAt, nextAt], nextOccurrenceAt: nextAt }
+          : { ...scheduleBase, mode: 'once', at: missedAt, nextOccurrenceAt: null };
       publication.dispatchIssue = 'target_setup_required';
       publication.requiresScheduleDecision = true;
       for (const occurrence of publication.occurrences) {
+        occurrence.scheduledAt = missedAt;
         occurrence.status = 'FAILED';
         occurrence.dispatchIssue = 'target_setup_required';
         occurrence.requiresScheduleDecision = true;
         occurrence.canRetry = true;
+      }
+      const missedOccurrence = publication.occurrences[0];
+      if (publicationWindowState === 'missed-future' && missedOccurrence) {
+        publication.occurrences.unshift({
+          ...missedOccurrence,
+          id: `${publication.id}-future-occurrence`,
+          scheduledAt: nextAt,
+          status: 'SCHEDULED',
+          dispatchIssue: null,
+          requiresScheduleDecision: false,
+          dispatchBlockedSince: null,
+          dispatchCheckedAt: null,
+          canRetry: false,
+        });
       }
     }
   }

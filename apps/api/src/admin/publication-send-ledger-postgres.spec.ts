@@ -1,0 +1,295 @@
+import { ConfigService } from '@nestjs/config';
+import { Queue, UnrecoverableError } from 'bullmq';
+import { randomUUID } from 'node:crypto';
+import Redis from 'ioredis';
+import { MaxActionLedgerService } from '../max/max-action-ledger.service';
+import { MaxClientService, type MaxActionJob } from '../max/max-client.service';
+import { Prisma, PrismaClient, createPrismaAdapter } from '../prisma/prisma-client';
+import {
+  PublisherDispatchDisabledError,
+  PublisherRuntimeBoundaryService,
+} from '../publisher/publisher-runtime-boundary.service';
+
+const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
+const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
+const integration = databaseUrl && redisUrl ? describe : describe.skip;
+
+type SendHarness = {
+  executeQueuedSendMessage: (
+    job: MaxActionJob,
+    attachments: Record<string, unknown>[],
+    options: { botId: string },
+    beforeMutation?: () => Promise<void>,
+  ) => Promise<Record<string, unknown>>;
+};
+
+integration('Publication send fences on real PostgreSQL and Redis', () => {
+  let db: PrismaClient;
+  let redis: Redis;
+  let queue: Queue<MaxActionJob>;
+  let ledger: MaxActionLedgerService;
+  let job: MaxActionJob;
+  let request: jest.Mock;
+  const botId = `publisher-send-test-${randomUUID()}`;
+  const prefix = `publication-send-test-${randomUUID()}`;
+
+  beforeAll(async () => {
+    const pg = new URL(databaseUrl);
+    const cache = new URL(redisUrl);
+    if (
+      !['localhost', '127.0.0.1'].includes(pg.hostname) ||
+      !pg.pathname.includes('race_test') ||
+      !['localhost', '127.0.0.1'].includes(cache.hostname)
+    ) {
+      throw new Error('Local disposable PostgreSQL race_test and Redis required');
+    }
+    db = new PrismaClient({
+      adapter: createPrismaAdapter(databaseUrl, { max: 3, statement_timeout: 10_000 }),
+    });
+    await db.$connect();
+    redis = new Redis(redisUrl, { maxRetriesPerRequest: 1 });
+    queue = new Queue('publication-send-restore', {
+      prefix,
+      connection: { host: cache.hostname, port: Number(cache.port) },
+    });
+    ledger = new MaxActionLedgerService(db as never);
+  });
+
+  beforeEach(async () => {
+    job = {
+      actionType: 'SEND_MESSAGE',
+      chatId: `publication-chat-${randomUUID()}`,
+      botId,
+      text: 'Synthetic publication receipt fixture',
+      attempt: 1,
+      idempotencyKey: `publication-send-${randomUUID()}`,
+      createdAt: new Date().toISOString(),
+      sourceTag: 'managed_broadcast',
+      routing: { purpose: 'send_message', requiredBotId: botId },
+    } as MaxActionJob;
+    await ledger.recordStarted(job);
+    await ledger.recordPrepared(job);
+    await queue.add('send', job, { jobId: job.idempotencyKey });
+    request = jest.fn().mockResolvedValue({ message_id: `remote-${job.idempotencyKey}` });
+  });
+
+  afterEach(async () => {
+    await queue.obliterate({ force: true });
+    await db.maxActionLedgerEntry.deleteMany({ where: { jobId: job.idempotencyKey } });
+  });
+
+  afterAll(async () => {
+    await queue?.close();
+    await redis?.quit();
+    await db?.$disconnect();
+  });
+
+  function client(selectedLedger = ledger): SendHarness {
+    // FLAG: Exercise the production send/receipt boundary; only MAX HTTP and
+    // unrelated route/rate scheduling are replaced. No network send is available.
+    return Object.assign(Object.create(MaxClientService.prototype), {
+      actionLedgerService: selectedLedger,
+      request,
+      executeMessageMutation: (
+        _kind: string,
+        _chatId: string,
+        run: () => Promise<Record<string, unknown>>,
+      ) => run(),
+      logger: { warn: jest.fn() },
+    }) as SendHarness;
+  }
+
+  async function snapshotQueue(): Promise<Array<{ key: string; value: Buffer }>> {
+    const keys: string[] = [];
+    let cursor = '0';
+    do {
+      const page = await redis.scan(cursor, 'MATCH', `${prefix}:${queue.name}:*`, 'COUNT', 64);
+      cursor = page[0];
+      keys.push(...page[1]);
+      if (keys.length > 64) throw new Error('Synthetic queue exceeded snapshot bound');
+    } while (cursor !== '0');
+    return Promise.all(
+      [...new Set(keys)].map(async (key) => {
+        const value = await redis.dumpBuffer(key);
+        if (!value) throw new Error('Synthetic queue key disappeared');
+        return { key, value };
+      }),
+    );
+  }
+
+  async function restoreQueue(snapshot: Awaited<ReturnType<typeof snapshotQueue>>): Promise<void> {
+    await queue.obliterate({ force: true });
+    for (const { key, value } of snapshot) {
+      await redis.restore(key, 0, value, 'REPLACE');
+    }
+    expect((await queue.getJob(job.idempotencyKey))?.data).toEqual(job);
+  }
+
+  function failReceiptWrite(afterCommit: boolean): MaxActionLedgerService {
+    let injected = false;
+    const adapter = new Proxy(db, {
+      get(target, key) {
+        if (key !== 'maxActionLedgerEntry') return Reflect.get(target, key);
+        return new Proxy(target.maxActionLedgerEntry, {
+          get(delegate, method) {
+            if (method !== 'updateMany') return Reflect.get(delegate, method);
+            return async (args: Parameters<typeof delegate.updateMany>[0]) => {
+              if (!injected && args?.data.remoteMessageId) {
+                injected = true;
+                if (afterCommit) await delegate.updateMany(args);
+                throw new Error('Injected database response loss at receipt commit');
+              }
+              return delegate.updateMany(args);
+            };
+          },
+        });
+      },
+    });
+    return new MaxActionLedgerService(adapter as never);
+  }
+
+  it('permits only one MAX request when concurrent dispatches claim the same intent', async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    request.mockImplementationOnce(async () => {
+      entered();
+      await gate;
+      return { message_id: `remote-${job.idempotencyKey}` };
+    });
+    const first = client().executeQueuedSendMessage(job, [], { botId });
+    await started;
+    try {
+      await expect(client().executeQueuedSendMessage(job, [], { botId })).rejects.toBeInstanceOf(
+        UnrecoverableError,
+      );
+    } finally {
+      release();
+    }
+    await first;
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(await ledger.getCompletedSendDispatch(job)).toBe(`remote-${job.idempotencyKey}`);
+  });
+
+  it('recovers a SQL receipt after repeated restoration of an older Redis queue', async () => {
+    const snapshot = await snapshotQueue();
+    await client().executeQueuedSendMessage(job, [], { botId });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await restoreQueue(snapshot);
+      const restored = (await queue.getJob(job.idempotencyKey))!.data;
+      expect(await client().executeQueuedSendMessage(restored, [], { botId })).toMatchObject({
+        message_id: `remote-${job.idempotencyKey}`,
+      });
+    }
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(
+      await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: job.idempotencyKey } }),
+    ).toMatchObject({
+      status: 'SUCCEEDED',
+      terminal: true,
+      ambiguous: false,
+      dispatchBotId: botId,
+    });
+  });
+
+  it('fences MAX acceptance without a persisted receipt after stale Redis restore', async () => {
+    const snapshot = await snapshotQueue();
+    await expect(
+      client(failReceiptWrite(false)).executeQueuedSendMessage(job, [], { botId }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+    await restoreQueue(snapshot);
+    await expect(client().executeQueuedSendMessage(job, [], { botId })).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(
+      await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: job.idempotencyKey } }),
+    ).toMatchObject({
+      status: 'AMBIGUOUS',
+      terminal: true,
+      ambiguous: true,
+      remoteMessageId: null,
+    });
+  });
+
+  it('recovers a committed receipt with lost acknowledgement even when Redis work disappears', async () => {
+    await client(failReceiptWrite(true)).executeQueuedSendMessage(job, [], { botId });
+    await queue.obliterate({ force: true });
+    expect(await queue.getJob(job.idempotencyKey)).toBeUndefined();
+    expect(await client().executeQueuedSendMessage(job, [], { botId })).toMatchObject({
+      message_id: `remote-${job.idempotencyKey}`,
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not send after a worker stops between durable claim and HTTP', async () => {
+    expect(await ledger.claimSendDispatch(job, botId)).toMatchObject({ kind: 'claimed' });
+    await expect(client().executeQueuedSendMessage(job, [], { botId })).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('keeps the external runtime fence closed when old SQL and Redis lose evidence of MAX acceptance', async () => {
+    const sqlSnapshot = await db.maxActionLedgerEntry.findUniqueOrThrow({
+      where: { jobId: job.idempotencyKey },
+    });
+    const redisSnapshot = await snapshotQueue();
+    await client().executeQueuedSendMessage(job, [], { botId });
+    await db.maxActionLedgerEntry.delete({ where: { jobId: job.idempotencyKey } });
+    await db.maxActionLedgerEntry.create({
+      data: {
+        ...sqlSnapshot,
+        metadata:
+          sqlSnapshot.metadata === null
+            ? Prisma.DbNull
+            : (sqlSnapshot.metadata as Prisma.InputJsonValue),
+      },
+    });
+    await restoreQueue(redisSnapshot);
+    expect(await ledger.getCompletedSendDispatch(job)).toBeNull();
+
+    const oldRole = process.env.APP_ROLE;
+    const oldService = process.env.APP_SERVICE_NAME;
+    let boundary: PublisherRuntimeBoundaryService;
+    try {
+      process.env.APP_ROLE = 'publisher';
+      process.env.APP_SERVICE_NAME = 'api-publisher';
+      boundary = new PublisherRuntimeBoundaryService(
+        new ConfigService({ MAX_PUBLISHER_DISPATCH_ENABLED: false }),
+        {
+          getBotId: () => botId,
+          getRequiredActionToken: () => 'synthetic-no-network-token',
+        } as never,
+      );
+    } finally {
+      if (oldRole === undefined) delete process.env.APP_ROLE;
+      else process.env.APP_ROLE = oldRole;
+      if (oldService === undefined) delete process.env.APP_SERVICE_NAME;
+      else process.env.APP_SERVICE_NAME = oldService;
+    }
+    await expect(
+      client().executeQueuedSendMessage(job, [], { botId }, async () =>
+        boundary.assertDispatchEnabled(),
+      ),
+    ).rejects.toBeInstanceOf(PublisherDispatchDisabledError);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a restored receipt under another required bot without another MAX request', async () => {
+    await client().executeQueuedSendMessage(job, [], { botId });
+    const foreign = {
+      ...job,
+      routing: { purpose: 'send_message', requiredBotId: `${botId}-other` },
+    } as MaxActionJob;
+    await expect(
+      client().executeQueuedSendMessage(foreign, [], { botId: `${botId}-other` }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+});

@@ -318,6 +318,7 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     const deliveryUpdate = jest.fn().mockResolvedValue({ count: 2 });
     const tx = {
       managedBroadcast: { updateMany: broadcastUpdate },
+      $executeRaw: occurrenceUpdate,
       publicationOccurrence: { updateMany: occurrenceUpdate },
       managedBroadcastDelivery: { updateMany: deliveryUpdate },
     };
@@ -355,14 +356,16 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
         data: { lockedAt: new Date('2026-08-27T10:00:00.000Z') },
       }),
     );
-    expect(occurrenceUpdate).toHaveBeenCalledWith({
-      where: {
-        id: 'occurrence-publik',
-        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-        dispatchBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
-      },
-      data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
-    });
+    const blockerWrite = occurrenceUpdate.mock.calls[0][0];
+    expect(blockerWrite.values).toEqual([
+      'PUBLISHER_EXPLICIT_RETRY',
+      null,
+      null,
+      expect.any(Date),
+      'occurrence-publik',
+      'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+    ]);
+    expect(blockerWrite.strings.join('?')).toContain('AND "dispatch_blocker_code" = ?');
     expect(deliveryUpdate).toHaveBeenCalledWith({
       where: {
         broadcastId: 'broadcast-publik',
@@ -526,6 +529,7 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     const deliveryUpdate = jest.fn().mockResolvedValue({ count: 1 });
     const broadcastUpdate = jest.fn().mockResolvedValue({ count: 1 });
     const tx = {
+      $executeRaw: publicationOccurrenceUpdate,
       publicationOccurrence: { updateMany: publicationOccurrenceUpdate },
       managedBroadcastDelivery: { updateMany: deliveryUpdate },
       managedBroadcast: { updateMany: broadcastUpdate },
@@ -579,6 +583,7 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     const deliveryUpdate = jest.fn().mockResolvedValue({ count: 1 });
     const tx = {
       managedBroadcast: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      $executeRaw: occurrenceUpdate,
       publicationOccurrence: { updateMany: occurrenceUpdate },
       managedBroadcastDelivery: { updateMany: deliveryUpdate },
     };
@@ -611,6 +616,7 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     const occurrenceUpdate = jest.fn().mockResolvedValue({ count: 1 });
     const runtime = new AdminManagedBroadcastRuntime({
       prisma: {
+        $executeRaw: occurrenceUpdate,
         publicationOccurrence: { updateMany: occurrenceUpdate },
         managedBroadcastDelivery: { updateMany: deliveryUpdate },
       },

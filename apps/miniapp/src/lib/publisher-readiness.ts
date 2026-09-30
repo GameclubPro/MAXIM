@@ -12,6 +12,20 @@ export type PublisherReadinessPresentation = {
   tone: PublisherReadinessTone;
 };
 
+export function canPreparePublisherPublicationTarget(target: {
+  readiness?: PublisherEntityReadiness | null;
+}): boolean {
+  const readiness = target.readiness;
+  // FLAG: Selecting a stale target only permits preparation. Submission still
+  // requires the server's fresh actor/bot checks after the explicit access refresh.
+  return (
+    readiness?.canPublish === true ||
+    ((readiness?.state === 'setup_required' || readiness?.state === 'temporarily_unavailable') &&
+      (readiness.blockerCode === 'bot_access_expired' ||
+        readiness.blockerCode === 'bot_access_unconfirmed'))
+  );
+}
+
 const BLOCKER_PRESENTATION: Record<
   PublisherReadinessBlockerCode,
   Omit<PublisherReadinessPresentation, 'label'>
@@ -26,11 +40,11 @@ const BLOCKER_PRESENTATION: Record<
   },
   bot_access_unconfirmed: {
     detail: 'Доступ Публика ещё не подтверждён. Обновите статус через несколько секунд.',
-    tone: 'setup',
+    tone: 'temporary',
   },
   bot_access_expired: {
-    detail: 'Права Публика давно не проверялись. Обновите статус через несколько секунд.',
-    tone: 'setup',
+    detail: 'Права Публика перепроверяются автоматически. Расписания сохранены.',
+    tone: 'temporary',
   },
   bot_not_admin: {
     detail: 'Назначьте Публика администратором этого чата или канала.',
@@ -83,13 +97,21 @@ export function getPublisherReadinessPresentation(
 
   if (readiness.blockerCode) {
     const retryAt =
-      readiness.blockerCode === 'route_quarantined'
+      readiness.blockerCode === 'route_quarantined' ||
+      readiness.blockerCode === 'bot_access_expired'
         ? formatPublisherRetryAt(readiness.retryAt)
         : null;
     return {
       label: getPublisherReadinessLabel(readiness),
       ...BLOCKER_PRESENTATION[readiness.blockerCode],
-      ...(retryAt ? { detail: `Следующая проверка: ${retryAt}.` } : {}),
+      ...(retryAt
+        ? {
+            detail:
+              readiness.blockerCode === 'bot_access_expired'
+                ? `Права Публика перепроверяются автоматически. Обновление статуса: ${retryAt}.`
+                : `Следующая проверка: ${retryAt}.`,
+          }
+        : {}),
     };
   }
 
@@ -118,4 +140,15 @@ export function getPublisherReadinessPresentation(
         tone: 'setup',
       };
   }
+}
+
+export function getPublisherReadinessPollingInterval(
+  readiness: PublisherEntityReadiness | null | undefined,
+  nowMs = Date.now(),
+): number | false {
+  if (readiness?.blockerCode !== 'bot_access_expired' || readiness.canPublish) {
+    return false;
+  }
+  const retryAtMs = Date.parse(readiness.retryAt ?? '');
+  return Number.isFinite(retryAtMs) ? Math.min(60_000, Math.max(5_000, retryAtMs - nowMs)) : 15_000;
 }
