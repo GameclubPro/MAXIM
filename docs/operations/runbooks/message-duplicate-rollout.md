@@ -23,7 +23,7 @@ same configured reaction ladder. CHAT counts escalation per author, never across
 without a retrievable original remain unverified in MESSAGE mode; filenames, sizes, previews,
 platform IDs and download URLs are not equality evidence. Unsupported attachments and split
 albums are skipped when the whole message cannot be verified. Complete attachment arrays are
-one logical occurrence. Full mode v2 IMAGE bindings carry imageScope and exact media/source
+one logical occurrence. Full mode v3 IMAGE bindings carry imageScope and exact media/source
 proof. Old message bindings with photos are rejected; they cannot acquire the new policy.
 The separate perceptual/photo-only filter is retired, its authority is permanently OFF and its
 queue consumer only abandons old ordering entries. Never infer equality from media IDs or
@@ -31,7 +31,7 @@ bypass content verification. Legacy storage fields remain for rollback-safe sche
 
 ## Fixed Publication Windows
 
-`dup:window:v1` stores a fixed window per verified fingerprint, anchored to an accepted original's
+`dup:window:v1:<chat-hash>:v2:` stores a fixed window per verified fingerprint, anchored to an accepted original's
 MAX `Message.timestamp`. Deleted/rejected attempts never become originals or extend the window.
 A newly accepted publication after expiry starts a new window. Configured allowed copies and
 qualified violations are counted separately; immunity is checked before reserving a reaction stage.
@@ -54,6 +54,30 @@ the bounded history retention. Lifecycle tombstones and reset cutoffs cover the 
 window. This logic does not change burst, quota or other rolling counters. The new settings digest
 and required original proof reject old queued evidence; no bulk Redis purge is needed.
 A deployment changing the digest starts fresh duplicate history.
+
+V3 bindings include lifecycle revisions for both messages, a stable `originalId`, explicit scope,
+settings policy revision and bounded authorization. Caption edits and one independently verified
+locator refresh preserve the occurrence. An intermediate material version, conflicting timestamp,
+incomplete content or lost state never restores an old binding. A fresh MAX read can revoke stale
+evidence but cannot manufacture a publication or introduction timestamp.
+
+Migration `20260930180000_add_duplicate_policy_revisions` adds server-owned
+`duplicatePolicyRevision` and `duplicateHistoryRevision` with constant-zero defaults. Its row
+trigger covers every writer, including private controls and bulk settings copies. Inserts start
+at zero; updates cannot choose or rewind either revision. Effective matching, schedule, comparison
+window or allowed-repeat changes advance both revisions; reaction-only changes advance action
+authority while preserving history. The first enabled reaction selects the effective interval and
+threshold, and the allowed-repeat clamp includes the explanation stage and enabled reaction count.
+Inactive intervals/thresholds, ignored preset options, unrelated UI fields and retired photo
+toggle/preset writes do not advance revisions. Returning changed settings to earlier values still
+advances the revision, so old bindings cannot regain authority. DAILY ignores saved interval
+durations; INTERVAL ignores saved daily boundaries/timezone. The additive DDL has bounded lock and
+statement timeouts and performs no history backfill or index build.
+
+Both API rollback paths require the v3 lifecycle/action-permit reader and this revision trigger.
+The former current-content-only guard is insufficient for pending v3 decisions, including after
+runtime authority has been disabled. Keep every API role on a compatible exact image before
+releasing the deployment queue fence.
 
 ## Daily Time Periods
 
@@ -95,7 +119,7 @@ do not download; potential repeats trigger bounded verification. Ordering/source
 deferrals expire after ten minutes. Failed source handling must retry rather than acknowledge
 unfinished history work. Monitor queue backlog and failures through the read-only monitor.
 Unavailable ordering registration retries before job submission. Ambiguous queue-add recovery
-preserves incoming eligibility through the absorbing Redis latch; infrastructure failure alone
+preserves incoming eligibility through the absorbing Redis permit; infrastructure failure alone
 must not become a permanent prohibition. Unsupported downloaded binary formats are terminal
 evidence failures, so one unsupported baseline cannot block subsequent verifiable candidates.
 See [Duplicate Miss Audit](../incidents/2026-09-19-duplicate-miss-audit.md) for regression coverage
@@ -107,6 +131,44 @@ before recording the current occurrence. One attempt admits at most 20 uncached 
 the existing 30-second verification deadline; additional work defers with revision-scoped proof
 reuse and the same ten-minute job lifetime. Terminal baseline rejection is cached separately and
 never acts as equality evidence. See [Reliability Plan](../../duplicate-reliability-plan-2026-09-20.md).
+
+Job v2 has an absolute deadline capped at ten minutes from its trusted event timestamp, runtime
+expiry and the current daily period. Re-add and cosmetic edits never extend the same occurrence's
+action lifetime. Per-job permits remain readable after ordering completion and expire physically
+after seven days; that retention does not extend authority. A retry with a missing permit stays
+ineligible. Early suppression commits an immutable SQL revocation under its own nullable claim key
+before mirroring it to Redis, without creating an ordering head or taking another rule's action claim.
+The existing indexed claims retention exceeds the bounded action lifetime.
+
+The first media admission has its own immutable SQL dedupe record with a nullable action key.
+Webhook replay remains a retry even after both BullMQ and Redis state disappear. Only the first
+admission may create a positive permit. A crash before its Redis registration leaves enforcement
+unverified; later retries cannot manufacture authority. Concurrent admission briefly defers while
+the first registration is incomplete. Neither admission nor revocation takes a competing rule's claim.
+
+An authorized action acquires the common SQL claim before reserving its immutable reaction stage.
+A foreign owner consumes no stage. An interrupted own claim resumes the same stage; delivery
+failures and later revocation do not blindly decrement a valid reservation. The final guard reads
+the same SQL denial and Redis permit in `api-action` and before each sanction. Revocation completed
+before the last mutation guard blocks the action; an already dispatched MAX request cannot be cancelled.
+
+Terminal qualification rejection, worker expiry and exhausted attempts release only the exact unused
+duplicate action key in a serializable transaction. An existing delete intent or moderation event
+prevents release; foreign and newer owners are retained. The old unique dedupe tombstone remains and
+the exact authorization events are revoked atomically, so another rule can claim the message while
+the interrupted old duplicate owner cannot reacquire it. Temporary infrastructure failures preserve
+the resumable owner. Cleanup never blindly decrements a reserved reaction stage.
+
+`cleanupOnly` jobs reconcile ownership without analysis or actions. SQL failures retry every
+30 seconds even after the final analysis attempt, until the original deadline plus 24 hours.
+Completed cleanup preserves the positive permit of a materialized intent; terminated cleanup
+revokes it. Simultaneous Redis/SQL failure or a SQL outage exceeding this recovery bound can
+leave the unused claim blocking other rules until reviewed operator recovery or normal retention.
+Never clear claims in bulk or replay moderation to repair cleanup.
+
+Governor pause honors its bounded recommended delay; slow pacing permits progress after one delay
+per job. Followers wait for the head's next eligible time or bounded crash recovery. Expiry ends work
+without treating incomplete proof as a match or successful action. Media retains byte/pixel/decode limits.
 
 ## Operational Diagnostics
 
@@ -126,6 +188,43 @@ since original enqueue including retries, not individual request latency. Guard 
 changed content/history/settings, immunity, manual release, policy rejection and unavailable
 verification. `media.budget_deferred` distinguishes bounded resource deferral from a non-match.
 Continue using persisted delete receipts and authenticated per-chat diagnostics for actual outcomes.
+`worker.cleanup_retry`, `worker.cleanup_completed` and `worker.cleanup_exhausted` describe the
+separate ownership recovery, including no-op cleanup, and never count new moderation actions.
+
+`media.url_malformed`, `media.url_protocol`, `media.url_credentials`, `media.url_port` and
+`media.url_host` classify rejected download attempts using fixed labels. Initial and refreshed
+attempts, worker retries and separate baseline/current proofs can contribute independently.
+These process-local counters are best-effort attempts, not exact rejected-message totals; they
+emit no URLs, credentials, tokens or host values. A photo source rejection can trigger one exact
+MAX message lookup per verification attempt. The same photo/author/chat/message must be confirmed
+and the refreshed URL passes the unchanged downloader policy; a second rejection is terminal.
+
+The closed dashboard reports the active `message-duplicates` queue rather than the retired photo
+queue. Missing registration or an unreadable Redis counter fails that snapshot as unavailable;
+it must not appear as an empty duplicate backlog. Lightweight readiness and operational governor
+snapshots do not add auxiliary queue reads.
+
+Use `./infra/scripts/vps-connect.sh postgres-audit duplicate` for bounded, identifier-free SQL
+diagnostics. Re-provision the reviewed audit role after synchronizing this catalog: Antiduplicate
+requires exactly 17 column SELECT grants and never table SELECT on settings or delete intents.
+The `duplicate_settings` schema-v2 report separates `saved_eligibility` (master switch, MESSAGE
+comparison, scope and valid schedule) from `legacy_compatibility` (retired toggle/presets).
+`image_eligible_count_lower_bound` describes only the capped settings sample; it does not prove
+current DAILY admission, runtime permission or fresh bot capability. SQL reports those runtime
+facts as unobserved. Pair it with a separately dated runtime-control `get` and authenticated
+capability snapshot; the observations are not atomic. Preserve `sample_saturated`, `complete`
+and lower-bound qualifiers when interpreting the report.
+
+If the delete-intent diagnostic times out, use
+`./infra/scripts/vps-connect.sh postgres-audit duplicate --explain` after synchronizing the
+reviewed catalog. This emits only plain JSON EXPLAIN for the fixed intent query, skips execution
+of settings/events reports, and retains the audit-role checks and existing timeouts. Ten literal
+status predicates let the planner use status-specific statistics; each ordered source returns at
+most 65 candidates including the saturation sentinel, with at most 9 reasons per selected intent.
+Inspect that each large status uses the ordered `moderation_delete_intents_retention_idx` scan
+directly below its LIMIT. The local regression includes all competing intent indexes and skewed
+status populations; a production timeout can still reflect host I/O and does not authorize a
+larger timeout, an unbounded scan or a new index without evidence.
 
 ## Runtime Control
 
@@ -182,9 +281,10 @@ is not authority: a removed message requires this exact successfully dispatched 
 and its matching content/revision binding. `MESSAGE_DUPLICATE_ENABLED=false` is an additional
 environment ceiling.
 
-Both API rollback paths require the message-v1 delete guard source capability. Pending intents
+Both API rollback paths require v3 binding, lifecycle and durable/permit authorization source
+capabilities. Pending intents
 can survive a control downgrade, so an older unguarded API is not a valid rollback target.
 Use a retained compatible immutable release and the normal queue-fenced rollback workflow.
-Older v1-only images fail closed on v2 controls/bindings; rollback does not silently downgrade
+Older images do not understand the new protocol and are rejected as targets; rollback does not downgrade
 full sanctions into unguarded deletes. Inspect runtime status after rollback before re-enabling.
 Never remove the shared message action claims or reset counters to replay moderation.

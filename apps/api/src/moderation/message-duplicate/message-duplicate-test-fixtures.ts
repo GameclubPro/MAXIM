@@ -7,6 +7,8 @@ export function duplicateSettings(overrides: Partial<ChatSettings> = {}): ChatSe
     ...chatSettingsSchema.parse({}),
     duplicateDetectionPreset: 'STANDARD',
     antiDuplicateEnabled: true,
+    duplicatePolicyRevision: 0,
+    duplicateHistoryRevision: 0,
     duplicateCompareMode: 'MESSAGE',
     duplicatePhotoEnabled: false,
     duplicateBotMessageEnabled: false,

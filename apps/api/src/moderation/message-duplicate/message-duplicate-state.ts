@@ -21,12 +21,37 @@ export const messageDuplicateOriginalSchema = z
     contentDigest: z.string().regex(/^[a-f0-9]{64}$/),
     mediaHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(10),
     epoch: z.number().int().nonnegative(),
+    revision: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    originalId: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
   })
   .strict();
 
 export const messageDuplicateBindingSchema = z
   .object({
-    version: z.union([z.literal(1), z.literal(2)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    enforcementScope: z.enum(['delete_only', 'full']).optional(),
+    lifecycleRevision: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    policyRevision: z.number().int().nonnegative().optional(),
+    authorization: z
+      .object({
+        jobId: z
+          .string()
+          .regex(/^message-duplicate__[a-f0-9]{64}$/)
+          .optional(),
+        eventTimestampMs: z.number().int().positive(),
+        deadlineAtMs: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
     original: messageDuplicateOriginalSchema.optional(),
     sanction: z
       .object({
@@ -59,10 +84,26 @@ export const messageDuplicateBindingSchema = z
     requiredCount: z.number().int().min(2).max(21),
   })
   .strict()
-  .refine((value) => value.version === 2 || value.sanction === undefined)
+  .refine(
+    (value) =>
+      value.version === 2 ||
+      (value.version === 3 && value.enforcementScope === 'full') ||
+      value.sanction === undefined,
+  )
+  .refine(
+    (value) =>
+      value.version !== 3 ||
+      Boolean(
+        value.original?.revision &&
+        value.original.originalId &&
+        value.lifecycleRevision &&
+        value.enforcementScope &&
+        value.policyRevision !== undefined,
+      ),
+  )
   .refine((value) =>
     value.compareMode === 'IMAGE'
-      ? value.version === 2 &&
+      ? (value.version === 2 || (value.version === 3 && value.enforcementScope === 'full')) &&
         value.imageScope !== undefined &&
         value.hasPhotos &&
         value.mediaHashes.length > 0 &&
@@ -71,6 +112,16 @@ export const messageDuplicateBindingSchema = z
       : value.imageScope === undefined,
   );
 export type MessageDuplicateBinding = z.infer<typeof messageDuplicateBindingSchema>;
+
+export function messageDuplicateEnforcementScope(
+  binding: MessageDuplicateBinding,
+): 'full' | 'delete_only' {
+  return binding.version === 3
+    ? binding.enforcementScope!
+    : binding.version === 2
+      ? 'full'
+      : 'delete_only';
+}
 
 export function parseMessageDuplicateBinding(value: unknown): MessageDuplicateBinding | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -91,7 +142,7 @@ export function isBoundMessageDuplicateDelete(input: {
     input.ruleCode === 'DUPLICATE_DELETE' &&
     input.reasonKey.startsWith('MESSAGE_DUPLICATE:') &&
     binding !== null &&
-    metadata?.enforcementScope === (binding.version === 2 ? 'full' : 'delete_only')
+    metadata?.enforcementScope === messageDuplicateEnforcementScope(binding)
   );
 }
 
@@ -99,13 +150,22 @@ export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   const flow = resolveDuplicateFlowConfig(settings);
   return digestDuplicateContent({
     version: 'text-fixed-window-v5',
+    historyRevision: settings.duplicateHistoryRevision ?? 0,
     schedule: duplicateScheduleDigestInput(settings),
     enabled: settings.antiDuplicateEnabled,
     mode: settings.duplicateCompareMode ?? 'MESSAGE',
-    preset: settings.duplicateDetectionPreset,
-    links: settings.duplicateIgnoreLinksEnabled,
-    phones: settings.duplicateIgnorePhonesEnabled,
-    near: settings.duplicateNearMatchEnabled,
+    fingerprint:
+      settings.duplicateDetectionPreset === 'CUSTOM'
+        ? [
+            false,
+            false,
+            settings.duplicateIgnoreLinksEnabled,
+            settings.duplicateIgnorePhonesEnabled,
+            settings.duplicateNearMatchEnabled,
+          ]
+        : settings.duplicateDetectionPreset === 'STRICT'
+          ? [true, true, false, false, true]
+          : [false, false, false, false, false],
     window: flow.windowSec,
     allowed: flow.allowedCount,
   });
@@ -120,13 +180,14 @@ export function messageDuplicateSanctionSettingsDigest(
       ? exactImageSettingsDigest(settings)
       : messageDuplicateSettingsDigest(settings),
     reactions: resolveDuplicateFlowConfig(settings).reactions,
-    muteHours: settings.duplicateMuteDurationHours,
+    muteHours: settings.duplicateMuteEnabled ? settings.duplicateMuteDurationHours : null,
   });
 }
 
 export function exactImageSettingsDigest(settings: ChatSettings): string {
   return digestDuplicateContent({
     version: 'exact-image-fixed-window-v3',
+    historyRevision: settings.duplicateHistoryRevision ?? 0,
     schedule: duplicateScheduleDigestInput(settings),
     enabled: settings.antiDuplicateEnabled && settings.duplicateCompareMode !== 'TEXT',
     scope: settings.duplicatePhotoScope,

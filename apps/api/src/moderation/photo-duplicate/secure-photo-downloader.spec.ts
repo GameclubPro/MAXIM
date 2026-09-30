@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import {
   PhotoDownloadByteLimitExceededError,
   PhotoDownloadHttpError,
+  PhotoDownloadSourceRejectedError,
   SecurePhotoDownloader,
 } from './secure-photo-downloader';
 
@@ -99,12 +100,45 @@ async function createPng(width = 20, height = 10): Promise<Buffer> {
 }
 
 describe('permanent duplicate download source rejection', () => {
-  it.each(['', 'not-a-url', 'https://untrusted.example/image', 'http://i.oneme.ru/image'])(
-    'does not retry invalid image or binary source %s',
-    async (url) => {
+  it.each([
+    { url: '', reason: 'malformed_url', message: 'Photo URL length is invalid' },
+    {
+      url: `https://i.oneme.ru/${'x'.repeat(2048)}?token=sensitive-query-token`,
+      reason: 'malformed_url',
+      message: 'Photo URL length is invalid',
+    },
+    {
+      url: 'not-a-url?token=sensitive-query-token',
+      reason: 'malformed_url',
+      message: 'Photo URL is invalid',
+    },
+    { url: 'http://i.oneme.ru/image?token=sensitive-query-token', reason: 'protocol' },
+    {
+      url: 'https://user:secret@i.oneme.ru/image?token=sensitive-query-token',
+      reason: 'credentials',
+    },
+    { url: 'https://i.oneme.ru:8443/image?token=sensitive-query-token', reason: 'port' },
+    { url: 'https://untrusted.example/image?token=sensitive-query-token', reason: 'host' },
+  ])(
+    'classifies $reason without exposing source credentials or requesting the URL',
+    async ({ url, reason, message }) => {
       const downloader = new TestDownloader({}, []);
-      await expect(downloader.download(url)).rejects.toBeInstanceOf(UnrecoverableError);
-      await expect(downloader.downloadBinary(url)).rejects.toBeInstanceOf(UnrecoverableError);
+      for (const method of ['download', 'downloadBinary'] as const) {
+        const error = await downloader[method](url).catch((rejected: unknown) => rejected);
+        expect(error).toBeInstanceOf(PhotoDownloadSourceRejectedError);
+        expect(error).toBeInstanceOf(UnrecoverableError);
+        expect(error).toMatchObject({
+          reason,
+          message: message ?? 'Photo URL is not permitted',
+          code: 'PHOTO_DOWNLOAD_SOURCE_REJECTED',
+          retryable: false,
+        });
+        expect(String(error)).not.toContain('sensitive-query-token');
+        expect(JSON.stringify(error)).not.toContain('sensitive-query-token');
+        expect(error).not.toHaveProperty('input');
+        expect(error).not.toHaveProperty('url');
+        expect(error).not.toHaveProperty('cause');
+      }
       expect(downloader.resolvedHostnames).toEqual([]);
       expect(downloader.requested).toEqual([]);
     },
@@ -203,7 +237,27 @@ describe('SecurePhotoDownloader', () => {
       { statusCode: 302, headers: { location: 'https://evil.example/private' } },
     ]);
 
-    await expect(downloader.download('https://i.oneme.ru/image')).rejects.toThrow('not permitted');
+    await expect(downloader.download('https://i.oneme.ru/image')).rejects.toMatchObject({
+      name: 'PhotoDownloadSourceRejectedError',
+      reason: 'host',
+      message: 'Photo URL is not permitted',
+    });
+    expect(downloader.requested).toHaveLength(1);
+    expect(downloader.closes[0]).toHaveBeenCalledTimes(1);
+  });
+
+  it('sanitizes a malformed redirect without another DNS lookup or request', async () => {
+    const downloader = new TestDownloader({}, [
+      { statusCode: 302, headers: { location: 'https://[invalid?token=sensitive-query-token' } },
+    ]);
+    const error = await downloader
+      .download('https://i.oneme.ru/image')
+      .catch((rejected: unknown) => rejected);
+    expect(error).toBeInstanceOf(PhotoDownloadSourceRejectedError);
+    expect(error).toMatchObject({ reason: 'malformed_url', message: 'Photo URL is invalid' });
+    expect(JSON.stringify(error)).not.toContain('sensitive-query-token');
+    expect(error).not.toHaveProperty('input');
+    expect(downloader.resolvedHostnames).toEqual(['i.oneme.ru']);
     expect(downloader.requested).toHaveLength(1);
     expect(downloader.closes[0]).toHaveBeenCalledTimes(1);
   });

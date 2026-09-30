@@ -177,37 +177,120 @@ maxim_topology_require_image_text_stop_list_delete_guard() {
 
 maxim_topology_require_message_duplicate_delete_guard() {
   local commit_sha="$1"
-  local guard_source
-  local executor_source
-  local guard_path="apps/api/src/moderation/message-duplicate/message-duplicate-delete-guard.service.ts"
-  local executor_path="apps/api/src/moderation/moderation-delete-intent.service.ts"
+  local source_path
+  local source
+  local sources=()
+  local source_paths=(
+    apps/api/src/moderation/message-duplicate/message-duplicate-delete-guard.service.ts
+    apps/api/src/moderation/moderation-delete-intent.service.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-state.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-authorization.service.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-state.module.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-enforcement.service.ts
+    apps/api/prisma/schema.prisma
+    apps/api/prisma/migrations/20260930180000_add_duplicate_policy_revisions/migration.sql
+    apps/api/src/moderation/message-duplicate/message-duplicate-admission.service.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate.queue.ts
+  )
 
-  # FLAG: Pending message-v1 intents must never reach an older unguarded DELETE executor.
-  if ! guard_source="$(git show "${commit_sha}:${guard_path}" 2>/dev/null)" ||
-    ! executor_source="$(git show "${commit_sha}:${executor_path}" 2>/dev/null)"; then
-    echo "Rollback target predates the message duplicate delete guard." >&2
-    return 1
-  fi
-  if ! printf '%s\0%s' "$guard_source" "$executor_source" | node -e '
+  # FLAG: Pending v3 decisions outlive environment downgrades. Both rollback paths
+  # must retain lifecycle revisions, durable first admission/revocation and the last permit fence.
+  for source_path in "${source_paths[@]}"; do
+    if ! source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)"; then
+      echo "Rollback target predates the message duplicate v3 action guard." >&2
+      return 1
+    fi
+    sources+=("$source")
+  done
+  if ! printf '%s\0' "${sources[@]}" | node -e '
     const input = require("node:fs").readFileSync(0);
     if (input.length > 4 * 1024 * 1024) process.exit(1);
     const parts = input.toString("utf8").split("\0");
-    if (parts.length !== 2) process.exit(1);
-    const [guard, executor] = parts;
+    if (parts.length !== 11 || parts.pop() !== "") process.exit(1);
+    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue] = parts;
+    const method = (source, marker) => {
+      const start = source.indexOf(marker);
+      const end = source.indexOf("\n  private ", start + 1);
+      return start >= 0 && end > start ? source.slice(start, end) : "";
+    };
+    const count = (source, marker) => source.split(marker).length - 1;
     const start = executor.indexOf("private async runDeletePreDispatchGuards(");
     const end = executor.indexOf("\n  private ", start + 1);
     const boundary = executor.slice(start, end);
+    const check = method(guard, "private async checkMessage(");
+    const permit = method(guard, "private async assertAuthorization(");
+    const qualification = method(guard, "async assertQualificationAuthority(");
+    const authorityStart = guard.indexOf("if (params.authorityOnly)");
+    const authorityEnd = guard.indexOf("return this.assertMessageStillActionable", authorityStart);
+    const authority = guard.slice(authorityStart, authorityEnd);
+    const mutationStart = executor.indexOf("const beforeImmediateDeleteMutation = async () => {");
+    const mutationEnd = executor.indexOf("\n          };", mutationStart);
+    const mutation = executor.slice(mutationStart, mutationEnd);
+    const suggestionProof = mutation.lastIndexOf("await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof)");
+    const finalPermit = mutation.lastIndexOf("await this.messageDuplicateDeleteGuard.assertIntentStillActionable(");
     const valid = start >= 0 && end > start &&
       guard.includes("class MessageDuplicateDeleteGuardService") &&
-      guard.includes("await this.history.stillMatches(") &&
-      guard.includes("message_duplicate_content_changed") &&
+      check.includes("await this.history.stillMatches(") &&
+      check.includes("message_duplicate_content_changed") &&
+      count(check, "await this.assertAuthorization(params.chatId, binding)") >= 2 &&
+      /await this\.assertAuthorization\(params\.chatId, binding\);\s*return .allowed./u.test(check) &&
+      permit.includes("binding.version !== 3") &&
+      permit.includes("binding.lifecycleRevision") &&
+      permit.includes("binding.original?.revision") &&
+      permit.includes("binding.authorization") &&
+      permit.includes("await this.authorization.isAllowed(chatId, binding)") &&
+      qualification.includes("await this.assertAuthorization(chatId, binding)") &&
+      guard.includes("settings.duplicatePolicyRevision !== binding.policyRevision") &&
+      state.includes("z.literal(3)") &&
+      state.includes("lifecycleRevision:") &&
+      state.includes("authorization:") &&
+      state.includes("messageDuplicateEnforcementScope") &&
+      authorization.includes("binding.version !== 3") &&
+      authorization.includes("Date.now() >= authority.deadlineAtMs") &&
+      authorization.includes("moderationViolationMessageClaim.findUnique(") &&
+      authorization.includes("duplicateRevocationKey(chatId, binding.messageId, timestamp)") &&
+      authorization.includes("this.ordering.readActionEligibility(") &&
+      /providers:\s*\[[\s\S]*?MessageDuplicateAuthorizationService/u.test(module) &&
+      /exports:\s*\[[\s\S]*?MessageDuplicateAuthorizationService/u.test(module) &&
+      /providers:\s*\[[\s\S]*?MessageDuplicateAdmissionService/u.test(module) &&
+      /exports:\s*\[[\s\S]*?MessageDuplicateAdmissionService/u.test(module) &&
+      admission.includes("class MessageDuplicateAdmissionService") &&
+      admission.includes("message-duplicate-admission:v1:") &&
+      admission.includes("moderationViolationMessageClaim.createMany(") &&
+      admission.includes("skipDuplicates: true") &&
+      admission.includes("messageActionKey: null") &&
+      admission.includes("moderationViolationMessageClaim.findUnique(") &&
+      admission.includes("registration: created.count > 0 ?") &&
+      /registration:\s*created\.count > 0 \? .initial. : .retry./u.test(admission) &&
+      admission.includes("admittedAtMs: stored.createdAt.getTime()") &&
+      queue.includes("private readonly admission?: MessageDuplicateAdmissionService") &&
+      queue.includes("await this.admission.register(") &&
+      queue.includes("registrationKind = existingJob ?") &&
+      /registrationKind = existingJob \? .retry. : admission\.registration/u.test(queue) &&
+      /this\.ordering\.announce\([\s\S]*?registrationKind,/u.test(queue) &&
+      enforcement.includes("await this.guard.assertQualificationAuthority(") &&
+      enforcement.includes("beforeSanctionMutation:") &&
+      schema.includes("duplicatePolicyRevision") && schema.includes("duplicateHistoryRevision") &&
+      migration.includes("chat_duplicate_policy_signature") &&
+      migration.includes("OLD.\"duplicate_policy_revision\" +") &&
+      migration.includes("OLD.\"duplicate_history_revision\" +") &&
+      migration.includes("BEFORE INSERT OR UPDATE ON \"chat_settings\"") &&
       boundary.includes("intent.messageDuplicateOwned") &&
       boundary.includes("Message duplicate delete guard unavailable") &&
       boundary.includes("await this.messageDuplicateDeleteGuard.assertIntentStillActionable(") &&
+      authorityStart >= 0 && authorityEnd > authorityStart &&
+      authority.includes("await this.assertQualificationAuthority(params.chatId, binding)") &&
+      authority.includes("await this.history.stillMatches(params.chatId, binding)") &&
+      /await this\.assertAuthorization\(params\.chatId, binding\);\s*return .allowed./u.test(authority) &&
+      mutationStart >= 0 && mutationEnd > mutationStart &&
+      suggestionProof >= 0 && finalPermit > suggestionProof &&
+      mutation.slice(suggestionProof, finalPermit).includes("intent.messageDuplicateOwned") &&
+      /assertIntentStillActionable\(\{[^}]*authorityOnly:\s*true,[^}]*\}\)/u.test(mutation.slice(finalPermit)) &&
+      executor.includes("messageDuplicateEnforcementScope(binding)") &&
       executor.includes("AS \"messageDuplicateOwned\"");
     process.exit(valid ? 0 : 1);
   ' >/dev/null 2>&1; then
-    echo "Rollback target lacks the message duplicate pre-dispatch guard capability." >&2
+    echo "Rollback target lacks the message duplicate v3 lifecycle/revocation/pre-dispatch capability." >&2
     return 1
   fi
 }

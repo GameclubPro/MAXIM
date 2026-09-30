@@ -27,6 +27,7 @@ usage() {
   cat <<'USAGE' >&2
 Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|storage|all]
+  ./infra/scripts/vps-postgres-audit.sh duplicate [--explain]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
@@ -72,7 +73,15 @@ fi
 SIGNAL_WINDOW_MIN=''
 RULES_CLEANUP_CHAT_ID=''
 RULES_CLEANUP_EXPLAIN=''
+DUPLICATE_EXPLAIN=''
 case "$AUDIT_MODE" in
+  duplicate)
+    if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
+      usage
+      exit 2
+    fi
+    DUPLICATE_EXPLAIN="${2:-}"
+    ;;
   publisher-publications|storage)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
@@ -89,7 +98,7 @@ case "$AUDIT_MODE" in
     RULES_CLEANUP_CHAT_ID="$2"
     RULES_CLEANUP_EXPLAIN="${3:-}"
     ;;
-  queue|activity|duplicate|publication-schema|all)
+  queue|activity|publication-schema|all)
     if [[ $# -gt 1 ]]; then
       usage
       exit 2
@@ -255,7 +264,12 @@ SELECT CASE
                 'duplicate_photo_enabled',
                 'duplicate_detection_preset',
                 'duplicate_photo_match_preset',
-                'duplicate_photo_scope'
+                'duplicate_photo_scope',
+                'duplicate_compare_mode',
+                'duplicate_window_mode',
+                'duplicate_start_time_minutes',
+                'duplicate_end_time_minutes',
+                'duplicate_timezone'
               )
             )
             OR (
@@ -282,7 +296,7 @@ SELECT CASE
           )
       )
       OR (
-        12 = (
+        17 = (
           SELECT count(DISTINCT (table_name, column_name, privilege_type))
           FROM information_schema.role_column_grants
           WHERE grantee = 'maxim_audit'
@@ -326,7 +340,12 @@ SELECT CASE
               'duplicate_photo_enabled',
               'duplicate_detection_preset',
               'duplicate_photo_match_preset',
-              'duplicate_photo_scope'
+              'duplicate_photo_scope',
+              'duplicate_compare_mode',
+              'duplicate_window_mode',
+              'duplicate_start_time_minutes',
+              'duplicate_end_time_minutes',
+              'duplicate_timezone'
             )
           )
           OR (
@@ -895,6 +914,31 @@ CROSS JOIN duplicate_summary;
 SQL
 }
 
+emit_duplicate_intent_samples() {
+  local status
+  local status_order=0
+  # FLAG: Literal predicates let PostgreSQL cost each status using its own skewed
+  # statistics. Each independently ordered source retains its fixed sentinel cap.
+  for status in OBSERVED PENDING IN_PROGRESS RETRYABLE WAITING_CAPABILITY \
+    AMBIGUOUS SUCCEEDED ALREADY_ABSENT EXPIRED FAILED_TERMINAL; do
+    if ((status_order > 0)); then
+      printf '%s\n' '  UNION ALL'
+    fi
+    status_order=$((status_order + 1))
+    cat <<SQL
+  SELECT $status_order AS status_order, recent.id, recent.status, recent.updated_at
+  FROM (
+    SELECT id, status, updated_at
+    FROM moderation_delete_intents
+    WHERE status = '$status'::"ModerationDeleteIntentStatus"
+      AND updated_at >= statement_timestamp() - make_interval(mins => 1440)
+    ORDER BY updated_at DESC
+    LIMIT $((DUPLICATE_INTENT_SAMPLE_CAP_PER_STATUS + 1))
+  ) AS recent
+SQL
+  done
+}
+
 emit_duplicate_audit() {
   cat <<SQL
 WITH required_duplicate_indexes(
@@ -978,7 +1022,7 @@ WITH required_duplicate_indexes(
     ) = required_duplicate_indexes.key_columns
 )
 SELECT CASE
-  WHEN 12 = (
+  WHEN 17 = (
     SELECT count(DISTINCT (table_name, column_name, privilege_type))
     FROM information_schema.role_column_grants
     WHERE grantee = 'maxim_audit'
@@ -994,6 +1038,9 @@ SELECT CASE
   ELSE 'false'
 END AS duplicate_audit_ready \gset
 \if :duplicate_audit_ready
+SQL
+  if [[ -z "$DUPLICATE_EXPLAIN" ]]; then
+    cat <<SQL
 WITH settings_sample_plus AS MATERIALIZED (
   SELECT
     id,
@@ -1001,7 +1048,12 @@ WITH settings_sample_plus AS MATERIALIZED (
     duplicate_photo_enabled,
     duplicate_detection_preset,
     duplicate_photo_match_preset,
-    duplicate_photo_scope
+    duplicate_photo_scope,
+    duplicate_compare_mode,
+    duplicate_window_mode,
+    duplicate_start_time_minutes,
+    duplicate_end_time_minutes,
+    duplicate_timezone
   FROM chat_settings
   ORDER BY id ASC
   LIMIT $((DUPLICATE_SETTINGS_SAMPLE_CAP + 1))
@@ -1010,26 +1062,58 @@ WITH settings_sample_plus AS MATERIALIZED (
   FROM settings_sample_plus
   ORDER BY id ASC
   LIMIT $DUPLICATE_SETTINGS_SAMPLE_CAP
+), valid_named_timezones AS MATERIALIZED (
+  SELECT lower(name) AS name FROM pg_timezone_names
+), saved_settings AS MATERIALIZED (
+  SELECT *,
+    duplicate_compare_mode = 'MESSAGE'
+      AND duplicate_photo_scope::text IN ('SAME_AUTHOR', 'CHAT')
+      AND (
+        duplicate_window_mode = 'INTERVAL'
+        OR (
+          duplicate_window_mode = 'DAILY'
+          AND duplicate_start_time_minutes BETWEEN 0 AND 1439
+          AND duplicate_end_time_minutes BETWEEN 0 AND 1439
+          AND duplicate_start_time_minutes <> duplicate_end_time_minutes
+          AND (
+            EXISTS (
+              SELECT 1 FROM valid_named_timezones WHERE name = lower(btrim(duplicate_timezone))
+            )
+            OR btrim(duplicate_timezone) ~ '^[+-](0[0-9]|1[0-9]|2[0-3])(:?[0-5][0-9])?$'
+          )
+        )
+      ) AS image_configuration_valid
+  FROM settings_sample
 ), settings_state AS (
   SELECT
     count(*)::bigint AS sampled_count,
     (SELECT count(*) FROM settings_sample_plus) > $DUPLICATE_SETTINGS_SAMPLE_CAP
       AS sample_saturated,
-    count(*) FILTER (WHERE anti_duplicate_enabled)::bigint AS text_enabled,
+    count(*) FILTER (WHERE anti_duplicate_enabled)::bigint AS master_enabled,
+    count(*) FILTER (
+      WHERE anti_duplicate_enabled AND image_configuration_valid
+    )::bigint AS saved_image_eligible,
+    count(*) FILTER (
+      WHERE anti_duplicate_enabled AND duplicate_compare_mode = 'TEXT'
+    )::bigint AS saved_text_only,
+    count(*) FILTER (
+      WHERE anti_duplicate_enabled AND duplicate_compare_mode <> 'TEXT'
+        AND NOT image_configuration_valid
+    )::bigint AS invalid_saved_image_configuration,
     count(*) FILTER (WHERE duplicate_photo_enabled)::bigint AS photo_toggle_enabled,
     count(*) FILTER (
       WHERE anti_duplicate_enabled AND duplicate_photo_enabled
-    )::bigint AS photo_effective_enabled,
+    )::bigint AS legacy_photo_conjunction,
     count(*) FILTER (
       WHERE duplicate_photo_enabled AND NOT anti_duplicate_enabled
-    )::bigint AS photo_enabled_without_text
-  FROM settings_sample
-), text_presets AS (
+    )::bigint AS legacy_photo_without_master
+  FROM saved_settings
+), legacy_text_presets AS (
   SELECT duplicate_detection_preset::text AS preset, count(*)::bigint AS settings_count
   FROM settings_sample
   WHERE anti_duplicate_enabled
   GROUP BY duplicate_detection_preset
-), photo_presets AS (
+), legacy_photo_presets AS (
   SELECT
     duplicate_photo_match_preset::text AS preset,
     duplicate_photo_scope::text AS scope,
@@ -1038,41 +1122,67 @@ WITH settings_sample_plus AS MATERIALIZED (
   WHERE anti_duplicate_enabled
     AND duplicate_photo_enabled
   GROUP BY duplicate_photo_match_preset, duplicate_photo_scope
+), image_policies AS (
+  SELECT duplicate_photo_scope::text AS scope,
+    duplicate_window_mode AS window_mode,
+    count(*)::bigint AS settings_count
+  FROM saved_settings
+  WHERE anti_duplicate_enabled AND image_configuration_valid
+  GROUP BY duplicate_photo_scope, duplicate_window_mode
 )
 SELECT json_build_object(
-  'schema_version', 1,
+  'schema_version', 2,
   'audit', 'duplicate_settings',
+  'observed_at', statement_timestamp(),
   'sample_cap', $DUPLICATE_SETTINGS_SAMPLE_CAP,
   'sampled_count', settings_state.sampled_count,
   'sample_saturated', settings_state.sample_saturated,
   'complete', NOT settings_state.sample_saturated,
-  'text_enabled_count_lower_bound', settings_state.text_enabled,
-  'photo_toggle_enabled_count_lower_bound', settings_state.photo_toggle_enabled,
-  'photo_effective_enabled_count_lower_bound', settings_state.photo_effective_enabled,
-  'photo_enabled_without_text_count_lower_bound', settings_state.photo_enabled_without_text,
-  'text_presets', coalesce(
-    (
-      SELECT json_agg(
-        json_build_object('preset', preset, 'count_lower_bound', settings_count)
-        ORDER BY preset
-      )
-      FROM text_presets
-    ),
-    '[]'::json
+  'runtime_authority', 'not_observed_by_sql',
+  'capability_freshness', 'not_observed_by_sql',
+  'saved_eligibility', json_build_object(
+    'basis', 'master_compare_mode_scope_schedule',
+    'master_enabled_count_lower_bound', settings_state.master_enabled,
+    'image_eligible_count_lower_bound', settings_state.saved_image_eligible,
+    'text_only_count_lower_bound', settings_state.saved_text_only,
+    'invalid_image_configuration_count_lower_bound',
+      settings_state.invalid_saved_image_configuration,
+    'daily_current_period', 'not_evaluated',
+    'image_policies', coalesce(
+      (SELECT json_agg(json_build_object(
+        'scope', scope, 'window_mode', window_mode, 'count_lower_bound', settings_count
+      ) ORDER BY scope, window_mode) FROM image_policies), '[]'::json
+    )
   ),
-  'photo_presets', coalesce(
-    (
-      SELECT json_agg(
-        json_build_object(
-          'preset', preset,
-          'scope', scope,
-          'count_lower_bound', settings_count
+  'legacy_compatibility', json_build_object(
+    'controls_current_image_policy', false,
+    'photo_toggle_enabled_count_lower_bound', settings_state.photo_toggle_enabled,
+    'master_and_photo_toggle_count_lower_bound', settings_state.legacy_photo_conjunction,
+    'photo_toggle_without_master_count_lower_bound', settings_state.legacy_photo_without_master,
+    'text_presets', coalesce(
+      (
+        SELECT json_agg(
+          json_build_object('preset', preset, 'count_lower_bound', settings_count)
+          ORDER BY preset
         )
-        ORDER BY preset, scope
-      )
-      FROM photo_presets
+        FROM legacy_text_presets
+      ),
+      '[]'::json
     ),
-    '[]'::json
+    'photo_presets', coalesce(
+      (
+        SELECT json_agg(
+          json_build_object(
+            'preset', preset,
+            'scope', scope,
+            'count_lower_bound', settings_count
+          )
+          ORDER BY preset, scope
+        )
+        FROM legacy_photo_presets
+      ),
+      '[]'::json
+    )
   )
 )::text
 FROM settings_state;
@@ -1194,6 +1304,11 @@ SELECT json_build_object(
   )
 )::text;
 
+SQL
+  else
+    printf '%s\n' 'EXPLAIN (FORMAT JSON)'
+  fi
+  cat <<SQL
 WITH intent_statuses(status_order, status) AS (
   VALUES
     (1, 'OBSERVED'::"ModerationDeleteIntentStatus"),
@@ -1207,16 +1322,7 @@ WITH intent_statuses(status_order, status) AS (
     (9, 'EXPIRED'::"ModerationDeleteIntentStatus"),
     (10, 'FAILED_TERMINAL'::"ModerationDeleteIntentStatus")
 ), intent_sample_plus AS MATERIALIZED (
-  SELECT intent_statuses.status_order, recent.id, recent.status, recent.updated_at
-  FROM intent_statuses
-  CROSS JOIN LATERAL (
-    SELECT id, status, updated_at
-    FROM moderation_delete_intents
-    WHERE status = intent_statuses.status
-      AND updated_at >= statement_timestamp() - make_interval(mins => 1440)
-    ORDER BY updated_at DESC
-    LIMIT $((DUPLICATE_INTENT_SAMPLE_CAP_PER_STATUS + 1))
-  ) AS recent
+$(emit_duplicate_intent_samples)
 ), ranked_intents AS MATERIALIZED (
   SELECT
     intent_sample_plus.*,

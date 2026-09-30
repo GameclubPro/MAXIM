@@ -91,10 +91,14 @@ import {
 } from './message-duplicate/message-duplicate-delete-guard.service';
 import {
   MESSAGE_DUPLICATE_CLAIM_PREFIX,
+  messageDuplicateEnforcementScope,
+  type MessageDuplicateBinding,
   MESSAGE_DUPLICATE_SOURCE,
   parseMessageDuplicateBinding,
   isBoundMessageDuplicateDelete,
 } from './message-duplicate/message-duplicate-state';
+import { duplicateRevocationKey } from './message-duplicate/message-duplicate-authorization.service';
+import { buildMessageDuplicateJobId } from './message-duplicate/message-duplicate.queue';
 import { digestDuplicateContent } from './message-duplicate/message-duplicate-content';
 import {
   PROFANITY_DELETE_RULE_CODE,
@@ -1473,6 +1477,136 @@ export class ModerationDeleteIntentService {
     }
   }
 
+  async claimMessageActionBeforeQualification(
+    claim: ModerationMessageActionClaimData,
+  ): Promise<'claimed' | 'resumed' | 'blocked'> {
+    if (this.getRolloutForRule(claim.chatId, 'DUPLICATE_DELETE') === 'off') return 'blocked';
+    return this.runSerializableTransaction(async (tx) =>
+      claimDurableModerationMessageAction({
+        model: tx.moderationViolationMessageClaim as unknown as ModerationMessageActionClaimModel,
+        data: claim,
+        resumeKnownOwner: true,
+        inTransaction: true,
+      }),
+    );
+  }
+
+  async releaseUnmaterializedMessageAction(params: {
+    claim: ModerationMessageActionClaimData;
+    owner?: { id: string; createdAt: Date };
+    binding: Pick<
+      MessageDuplicateBinding,
+      'messageId' | 'senderId' | 'eventTimestampMs' | 'authorization'
+    >;
+  }): Promise<boolean> {
+    const { claim, binding } = params;
+    if (
+      claim.ruleCode !== 'DUPLICATE_MESSAGE_ACTION' ||
+      claim.messageId !== binding.messageId ||
+      claim.userId !== binding.senderId ||
+      !binding.authorization
+    )
+      throw new Error('Invalid unmaterialized duplicate action claim');
+    return this.runSerializableTransaction(async (tx) => {
+      const intent = await tx.moderationDeleteIntent.findUnique({
+        where: { chatId_messageId: { chatId: claim.chatId, messageId: claim.messageId } },
+        select: { id: true },
+      });
+      const event = await tx.moderationEvent.findFirst({
+        where: { chatId: claim.chatId, messageId: claim.messageId },
+        select: { id: true },
+      });
+      if (intent || event) return false;
+      const released = await tx.moderationViolationMessageClaim.updateMany({
+        where: {
+          ...claim,
+          ...(params.owner ? { id: params.owner.id } : {}),
+          createdAt: {
+            lte: new Date(binding.authorization!.deadlineAtMs),
+            ...(params.owner ? { equals: params.owner.createdAt } : {}),
+          },
+        },
+        data: { messageActionKey: null },
+      });
+      if (!released.count) return false;
+      // FLAG: Release only our unused action key. Keep the unique owner tombstone and
+      // revoke its exact events atomically so an interrupted old owner cannot reclaim it.
+      await tx.moderationViolationMessageClaim.createMany({
+        data: [...new Set([binding.eventTimestampMs, binding.authorization!.eventTimestampMs])].map(
+          (eventTimestampMs) => ({
+            dedupeKey: duplicateRevocationKey(claim.chatId, claim.messageId, eventTimestampMs),
+            messageActionKey: null,
+            chatId: claim.chatId,
+            userId: claim.userId,
+            messageId: claim.messageId,
+            ruleCode: 'MESSAGE_DUPLICATE_AUTHORIZATION_REVOKED',
+            updateType: 'message_duplicate_authorization',
+          }),
+        ),
+        skipDuplicates: true,
+      });
+      return true;
+    });
+  }
+
+  async releaseTerminatedMessageDuplicateAction(input: {
+    chatId: string;
+    messageId: string;
+    eventTimestampMs: number;
+    deadlineAtMs: number;
+    idempotencyKey: string;
+    comparison?: 'IMAGE';
+  }): Promise<boolean> {
+    if (
+      input.idempotencyKey !==
+        buildMessageDuplicateJobId(
+          input.chatId,
+          input.messageId,
+          input.eventTimestampMs,
+          input.comparison,
+        ) ||
+      input.deadlineAtMs > input.eventTimestampMs + 600000
+    )
+      throw new Error('Invalid terminated duplicate job identity');
+    const messageActionKey = buildMessageScopedModerationActionClaimKey(
+      input.chatId,
+      input.messageId,
+    );
+    const claim = await this.prisma.moderationViolationMessageClaim.findUnique({
+      where: { messageActionKey },
+    });
+    if (
+      !claim ||
+      claim.ruleCode !== 'DUPLICATE_MESSAGE_ACTION' ||
+      claim.updateType !== 'message_action' ||
+      claim.createdAt.getTime() > input.deadlineAtMs ||
+      claim.dedupeKey !==
+        `${MESSAGE_DUPLICATE_CLAIM_PREFIX}${digestDuplicateContent([input.chatId, claim.userId, input.messageId])}`
+    )
+      return false;
+    return this.releaseUnmaterializedMessageAction({
+      owner: { id: claim.id, createdAt: claim.createdAt },
+      claim: {
+        dedupeKey: claim.dedupeKey,
+        messageActionKey,
+        chatId: input.chatId,
+        messageId: input.messageId,
+        userId: claim.userId,
+        ruleCode: claim.ruleCode,
+        updateType: 'message_action',
+      },
+      binding: {
+        messageId: input.messageId,
+        senderId: claim.userId,
+        eventTimestampMs: input.eventTimestampMs,
+        authorization: {
+          eventTimestampMs: input.eventTimestampMs,
+          deadlineAtMs: input.deadlineAtMs,
+        },
+      },
+    });
+  }
+
   async ensureIntentWithMessageActionClaim(params: {
     claim: ModerationMessageActionClaimData;
     intent: EnsureModerationDeleteIntentInput;
@@ -1483,10 +1617,27 @@ export class ModerationDeleteIntentService {
     }
 
     const result = await this.runSerializableTransaction(async (tx) => {
+      const binding = parseMessageDuplicateBinding(params.intent.event?.metadata);
+      if (binding?.version === 3 && binding.authorization) {
+        const denied = await tx.moderationViolationMessageClaim.findFirst({
+          where: {
+            dedupeKey: {
+              in: [
+                ...new Set([binding.eventTimestampMs, binding.authorization.eventTimestampMs]),
+              ].map((timestamp) =>
+                duplicateRevocationKey(params.intent.chatId, binding.messageId, timestamp),
+              ),
+            },
+          },
+          select: { id: true },
+        });
+        if (denied) return { claim: 'blocked', intent: null } as const;
+      }
       const claim = await claimDurableModerationMessageAction({
         model: tx.moderationViolationMessageClaim as unknown as ModerationMessageActionClaimModel,
         data: params.claim,
         resumeKnownOwner: true,
+        inTransaction: true,
       });
       if (claim === 'blocked') {
         return { claim, intent: null } as const;
@@ -1975,6 +2126,20 @@ export class ModerationDeleteIntentService {
             commercialVerifiedReasonKeys = textProof.commercialVerifiedReasonKeys;
             if (suggestionProof)
               await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof);
+            if (this.messageDuplicateDeleteGuard && intent.messageDuplicateOwned) {
+              try {
+                await this.messageDuplicateDeleteGuard.assertIntentStillActionable({
+                  intentId: intent.id,
+                  chatId: intent.chatId,
+                  messageId: intent.messageId,
+                  subjectUserId: intent.subjectUserId,
+                  botId,
+                  authorityOnly: true,
+                });
+              } catch (error) {
+                throw new ModerationDeletePreDispatchGuardError(error);
+              }
+            }
           };
           // FLAG: Retention's remote checks must finish before reserving the DELETE
           // transport slot. Final guards may only revalidate cached evidence and DB authority.
@@ -6796,9 +6961,7 @@ export class ModerationDeleteIntentService {
         claim.updateType !== 'message_action' ||
         claim.ruleCode !== 'DUPLICATE_MESSAGE_ACTION' ||
         intent.ruleCode !== 'DUPLICATE_DELETE' ||
-        (binding.version === 2
-          ? metadata?.enforcementScope !== 'full'
-          : metadata?.enforcementScope !== 'delete_only') ||
+        metadata?.enforcementScope !== messageDuplicateEnforcementScope(binding) ||
         claim.chatId !== intent.chatId ||
         claim.userId !== binding.senderId ||
         claim.messageId !== binding.messageId ||
@@ -6810,7 +6973,9 @@ export class ModerationDeleteIntentService {
           buildMessageScopedModerationActionClaimKey(intent.chatId, intent.messageId) ||
         claim.dedupeKey !==
           `${MESSAGE_DUPLICATE_CLAIM_PREFIX}${digestDuplicateContent([intent.chatId, binding.senderId, binding.messageId])}` ||
-        until.getTime() > binding.eventTimestampMs + binding.windowSeconds * 1000
+        until.getTime() > binding.eventTimestampMs + binding.windowSeconds * 1000 ||
+        (binding.version === 3 &&
+          (!binding.authorization || until.getTime() > binding.authorization.deadlineAtMs))
       ) {
         throw new Error('Message duplicate claim does not match its delete binding');
       }

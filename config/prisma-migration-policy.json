@@ -1,10 +1,15 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260929120000_add_duplicate_daily_window",
-  "baselineNamesSha256": "f0cf66f930770a479e1f0d6fbea819cd6cf0f222b87b14424980dad56cce41f7",
-  "baselineContentsSha256": "ab00baa01003ceca10f8bbd0500d88bc18b16cac930b1258516c6283aa5a46d9",
+  "baselineThrough": "20260930180000_add_duplicate_policy_revisions",
+  "baselineNamesSha256": "2aa67dbb83e664e75dc3db45f653d00408eebd57648d87f96b1c0c288e6f0d7d",
+  "baselineContentsSha256": "50fd38aaf6c2cdf0d1381cf1a2229f5c324c062e23485bee37138b3c72a06e3a",
   "approvedDestructive": {
+    "20260930180000_add_duplicate_policy_revisions": {
+      "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "The two integer columns use legacy-compatible constant-zero defaults and a NOT VALID nonnegative check avoids a full-table validation scan. Existing writers are covered by the row trigger and cannot choose either revision. Matching/window/allowance changes advance history plus action authority; sanction-only changes preserve history. Old readers ignore the additive columns, while pending v3 duplicate decisions require the new lifecycle and action-permit rollback source floor before execution."
+    },
     "20260919090000_add_participant_reports": {
       "reason": "Reviewed static additive policy revision trigger. EXECUTE FUNCTION is a parser false positive; no dynamic SQL or destructive change is present.",
       "twoPhaseRelease": true,

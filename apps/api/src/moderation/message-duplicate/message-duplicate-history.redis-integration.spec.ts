@@ -331,6 +331,369 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(next?.binding.original?.publishedAtMs).toBe(start + 300);
   });
 
+  it.each(['original', 'target'])(
+    'never revives a binding after lifecycle-only A -> B -> A on %s',
+    async (messageId) => {
+      await observe('original', 0);
+      const old = await observe('target', 100);
+      const edit = async (time: number, text: string) =>
+        history.observeLifecycle({
+          chatId,
+          messageId,
+          eventTimestampMs: start + time,
+          content: extractDuplicateMessageContent({ message: { body: { text } } }),
+        });
+      await edit(200, 'different');
+      expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+      await edit(300, 'a');
+      expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+      expect(await history.qualify(chatId, old!.binding)).toBeNull();
+      const fresh = await observe(messageId, 300);
+      const next = await observe('next', 400);
+      expect(next).not.toBeNull();
+      if (messageId === 'original') {
+        expect(next!.binding.original!.revision).not.toBe(old!.binding.original!.revision);
+      } else {
+        expect(fresh?.binding.lifecycleRevision).not.toBe(old!.binding.lifecycleRevision);
+        expect(next!.binding.original!.revision).toBe(old!.binding.original!.revision);
+      }
+    },
+  );
+
+  it('keeps an equal-time conflict revoked after replay and an older event', async () => {
+    await observe('original', 0);
+    const old = await observe('target', 100);
+    const edit = (time: number, text: string) =>
+      history.observeLifecycle({
+        chatId,
+        messageId: 'original',
+        eventTimestampMs: start + time,
+        content: extractDuplicateMessageContent({ message: { body: { text } } }),
+      });
+    await edit(0, 'conflict');
+    await edit(0, 'a');
+    await edit(-1, 'a');
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+    expect(await observe('original', 0)).toBeNull();
+    await observe('original', 200);
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+    expect((await observe('next', 300))?.binding.original?.messageId).toBe('original');
+  });
+
+  it('does not recreate an old lifecycle incarnation after its Redis record disappears', async () => {
+    await observe('original', 0);
+    const old = await observe('target', 100);
+    const key = `dup:window:v1:${digestDuplicateContent(chatId)}:v2:life:${digestDuplicateContent('original')}:MESSAGE`;
+    await inspector.del(key);
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+    await observe('original', 0);
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+    const next = await observe('next', 200);
+    expect(next?.binding.original?.revision).not.toBe(old!.binding.original!.revision);
+    expect(next?.binding.original?.originalId).not.toBe(old!.binding.original!.originalId);
+  });
+
+  it.each(['original', 'target'])(
+    'never restores an old binding after only %s message state disappears',
+    async (messageId) => {
+      await observe('original', 0);
+      const old = await observe('target', 100);
+      const key = `dup:window:v1:${digestDuplicateContent(chatId)}:v2:message:${digestDuplicateContent(messageId)}:MESSAGE`;
+      await inspector.del(key);
+      expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+      const fresh = await observe(messageId, messageId === 'original' ? 0 : 100);
+      expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+      if (messageId === 'target') {
+        expect(fresh?.binding.lifecycleRevision).not.toBe(old!.binding.lifecycleRevision);
+        expect(await history.stillMatches(chatId, fresh!.binding)).toBe(true);
+      } else {
+        const next = await observe('next', 200);
+        expect(next?.binding.original?.revision).not.toBe(old!.binding.original!.revision);
+        expect(next?.binding.original?.originalId).not.toBe(old!.binding.original!.originalId);
+      }
+    },
+  );
+
+  it('does not admit an unknown-time MAX replacement after a later cosmetic event', async () => {
+    await observe('original', 0);
+    const old = await observe('target', 100);
+    const changed = extractDuplicateMessageContent({ message: { body: { text: 'replacement' } } });
+    await history.invalidateLifecycle({ chatId, messageId: 'original', content: changed });
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+    await observe('original', 200, 'replacement');
+    expect(await observe('replacement-first', 300, 'replacement')).toBeNull();
+    const next = await observe('replacement-repeat', 400, 'replacement');
+    expect(next?.binding.original?.messageId).toBe('replacement-first');
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+  });
+
+  it('preserves image escalation and the original identity through caption-only pending refresh', async () => {
+    const input = imageInput();
+    await observe('original', 0, '', input);
+    const first = await observe('first', 100, '', input);
+    expect(await history.qualify(chatId, first!.binding)).toBe(1);
+    const captionContent = {
+      ...input.content,
+      text: 'New caption with another link',
+      rawText: 'New caption with another link',
+    };
+    await history.observeLifecycle({
+      chatId,
+      messageId: 'original',
+      eventTimestampMs: start + 200,
+      publishedAtMs: start,
+      content: captionContent,
+    });
+    await observe('original', 200, '', { ...input, content: captionContent, mediaHashes: [] });
+    expect(await history.stillMatches(chatId, first!.binding)).toBe(true);
+    await observe('original', 200, '', { ...input, content: captionContent });
+    const next = await observe('next', 300, '', input);
+    expect(next?.hit.count).toBe(2);
+    expect(await history.qualify(chatId, next!.binding)).toBe(2);
+    expect(next?.binding.original).toEqual(first!.binding.original);
+  });
+
+  it('does not grant another allowance after a caption-only refresh of the original', async () => {
+    const input = {
+      ...imageInput(),
+      settings: duplicateSettings({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 2 }),
+    };
+    await observe('original', 0, '', input);
+    expect(await observe('allowed', 100, '', input)).toBeNull();
+    await observe('original', 200, '', { ...input, mediaHashes: [] });
+    await observe('original', 200, '', input);
+    const next = await observe('next', 300, '', input);
+    expect(next?.hit.count).toBe(2);
+    expect(await history.qualify(chatId, next!.binding)).toBe(2);
+    expect(next?.binding.original?.publishedAtMs).toBe(start);
+    expect(next?.binding.original?.observedAtMs).toBe(start);
+  });
+
+  it('revokes reused photo locators when independent bytes change and return', async () => {
+    const input = imageInput();
+    await observe('original', 0, '', input);
+    const old = await observe('target', 100, '', input);
+    await observe('original', 200, '', { ...input, mediaHashes: ['b'.repeat(64)] });
+    await observe('original', 300, '', input);
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+    const next = await observe('next', 400, '', input);
+    expect(next?.binding.original?.publishedAtMs).toBe(start + 300);
+    expect(next?.binding.original?.revision).not.toBe(old!.binding.original!.revision);
+  });
+
+  it('retains the original counter only after one independently verified locator refresh', async () => {
+    const input = imageInput();
+    await observe('original', 0, '', input);
+    const old = await observe('target', 100, '', input);
+    expect(await history.qualify(chatId, old!.binding)).toBe(1);
+    const refreshed = extractDuplicateMessageContent({
+      message: {
+        body: {
+          attachments: [
+            { type: 'image', payload: { photo_id: 'renewed', url: 'https://i.oneme.ru/renewed' } },
+          ],
+        },
+      },
+    });
+    await history.observeLifecycle({
+      chatId,
+      messageId: 'original',
+      eventTimestampMs: start + 200,
+      content: refreshed,
+    });
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+    await observe('original', 200, '', { ...input, content: refreshed, mediaHashes: [] });
+    await observe('original', 200, '', { ...input, content: refreshed });
+    const next = await observe('next', 300, '', input);
+    expect(next?.hit.count).toBe(2);
+    expect(next?.binding.original?.originalId).toBe(old!.binding.original!.originalId);
+    expect(next?.binding.original?.revision).not.toBe(old!.binding.original!.revision);
+    expect(next?.binding.original?.publishedAtMs).toBe(start);
+    expect(next?.binding.original?.expiresAtMs).toBe(old!.binding.original!.expiresAtMs);
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+  });
+
+  it('does not retain a counter through an unverified intermediate image source', async () => {
+    const input = imageInput();
+    await observe('original', 0, '', input);
+    const old = await observe('target', 100, '', input);
+    expect(await history.qualify(chatId, old!.binding)).toBe(1);
+    const source = (photoId: string) =>
+      extractDuplicateMessageContent({
+        message: {
+          body: {
+            attachments: [
+              {
+                type: 'image',
+                payload: { photo_id: photoId, url: `https://i.oneme.ru/${photoId}` },
+              },
+            ],
+          },
+        },
+      });
+    for (const [offset, photoId] of [
+      [200, 'intermediate'],
+      [300, 'photo'],
+    ] as const) {
+      await history.observeLifecycle({
+        chatId,
+        messageId: 'original',
+        eventTimestampMs: start + offset,
+        content: source(photoId),
+      });
+    }
+    await observe('original', 300, '', input);
+    const next = await observe('next', 400, '', input);
+    expect(next?.hit.count).toBe(1);
+    expect(next?.binding.original?.originalId).not.toBe(old!.binding.original!.originalId);
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+  });
+
+  it('does not consume a second allowance when an accepted duplicate changes only its locator', async () => {
+    const input = {
+      ...imageInput(),
+      settings: duplicateSettings({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 3 }),
+    };
+    await observe('original', 0, '', input);
+    expect(await observe('allowed', 100, '', input)).toBeNull();
+    const refreshed = extractDuplicateMessageContent({
+      message: {
+        body: {
+          attachments: [
+            { type: 'image', payload: { photo_id: 'new-locator', url: 'https://i.oneme.ru/new' } },
+          ],
+        },
+      },
+    });
+    await observe('allowed', 200, '', { ...input, content: refreshed, mediaHashes: [] });
+    expect(await observe('allowed', 200, '', { ...input, content: refreshed })).toBeNull();
+    expect(await observe('allowed-second', 300, '', input)).toBeNull();
+    const rejected = await observe('rejected', 400, '', input);
+    expect(rejected?.hit.count).toBe(3);
+    expect(await history.qualify(chatId, rejected!.binding)).toBe(3);
+  });
+
+  it('bounds accepted occurrence state across policy changes and verified locator refreshes', async () => {
+    const input = imageInput();
+    for (let revision = 0; revision < 24; revision += 1) {
+      const changed = {
+        settings: duplicateSettings({
+          duplicateWarnEnabled: true,
+          duplicateWarnMaxCount: 2,
+          duplicateHistoryRevision: revision,
+          duplicatePolicyRevision: revision,
+        }),
+      };
+      await observe('original', 0, '', { ...input, ...changed });
+      const refreshed = extractDuplicateMessageContent({
+        message: {
+          body: {
+            attachments: [
+              {
+                type: 'image',
+                payload: {
+                  photo_id: `locator-${revision}`,
+                  url: `https://i.oneme.ru/locator-${revision}`,
+                },
+              },
+            ],
+          },
+        },
+      });
+      expect(
+        await observe('accepted', 100 + revision * 100, '', {
+          ...input,
+          ...changed,
+          content: refreshed,
+        }),
+      ).toBeNull();
+    }
+    const key = `dup:window:v1:${digestDuplicateContent(chatId)}:v2:message:${digestDuplicateContent('accepted')}:IMAGE`;
+    const state = JSON.parse((await inspector.get(key))!);
+    expect(Object.keys(state.accepted).length).toBeLessThanOrEqual(16);
+    const next = await observe('next', 3000, '', {
+      ...input,
+      settings: duplicateSettings({
+        duplicateWarnEnabled: true,
+        duplicateWarnMaxCount: 2,
+        duplicateHistoryRevision: 23,
+        duplicatePolicyRevision: 23,
+      }),
+    });
+    expect(next?.hit.count).toBe(2);
+  });
+
+  it('does not carry another policy context through a pending locator promotion', async () => {
+    const input = {
+      ...imageInput(),
+      settings: duplicateSettings({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 2 }),
+    };
+    await observe('original', 0, '', input);
+    expect(await observe('accepted', 100, '', input)).toBeNull();
+    const refreshed = extractDuplicateMessageContent({
+      message: {
+        body: {
+          attachments: [
+            { type: 'image', payload: { photo_id: 'new-locator', url: 'https://i.oneme.ru/new' } },
+          ],
+        },
+      },
+    });
+    await observe('accepted', 200, '', { ...input, content: refreshed, mediaHashes: [] });
+    const changed = {
+      ...input,
+      settings: { ...input.settings, duplicateHistoryRevision: 1, duplicatePolicyRevision: 1 },
+    };
+    await observe('original', 0, '', changed);
+    expect(await observe('accepted', 200, '', { ...changed, content: refreshed })).toBeNull();
+    const key = `dup:window:v1:${digestDuplicateContent(chatId)}:v2:message:${digestDuplicateContent('accepted')}:IMAGE`;
+    const state = JSON.parse((await inspector.get(key))!);
+    expect(Object.keys(state.accepted)).toHaveLength(1);
+    expect((await observe('next', 300, '', changed))?.hit.count).toBe(2);
+  });
+
+  it('resumes the same qualified count through one verified duplicate locator refresh', async () => {
+    const input = imageInput();
+    await observe('original', 0, '', input);
+    const target = await observe('target', 100, '', input);
+    expect(await history.qualify(chatId, target!.binding)).toBe(1);
+    const refreshed = extractDuplicateMessageContent({
+      message: {
+        body: {
+          attachments: [
+            { type: 'image', payload: { photo_id: 'new-locator', url: 'https://i.oneme.ru/new' } },
+          ],
+        },
+      },
+    });
+    await observe('target', 200, '', { ...input, content: refreshed, mediaHashes: [] });
+    const resumed = await observe('target', 200, '', { ...input, content: refreshed });
+    expect(resumed?.hit.count).toBe(1);
+    expect(await history.qualify(chatId, resumed!.binding)).toBe(1);
+    const next = await observe('next', 300, '', input);
+    expect(next?.hit.count).toBe(2);
+    expect(await history.qualify(chatId, next!.binding)).toBe(2);
+  });
+
+  it('keeps outside-period material introduction through an inside-period cosmetic edit', async () => {
+    const dailySettings = duplicateSettings({
+      duplicateWindowMode: 'DAILY',
+      duplicateStartTimeMinutes: 540,
+      duplicateEndTimeMinutes: 1080,
+      duplicateTimezone: 'UTC',
+      duplicateCompareMode: 'TEXT',
+    });
+    const at = (messageId: string, iso: string, text: string, publishedAtMs?: number) =>
+      observe(messageId, Date.parse(iso) - start, text, { settings: dailySettings, publishedAtMs });
+    const publication = Date.parse('2026-10-01T12:00:00Z');
+    await at('old', '2026-10-01T12:00:00Z', 'a');
+    await at('old', '2026-10-02T08:00:00Z', 'different', publication);
+    await at('old', '2026-10-02T10:00:00Z', ' different ', publication);
+    expect(await at('first', '2026-10-02T10:00:00.100Z', 'different')).toBeNull();
+    const next = await at('next', '2026-10-02T10:00:00.200Z', 'different');
+    expect(next?.binding.original?.messageId).toBe('first');
+  });
+
   it('re-evaluates unchanged content when its comparison settings change', async () => {
     await observe('original', 0);
     await observe('target', 100);

@@ -1,4 +1,7 @@
-import { parseMessageDuplicateBinding } from './message-duplicate-state';
+import {
+  parseMessageDuplicateBinding,
+  type MessageDuplicateBinding,
+} from './message-duplicate-state';
 import {
   extractDuplicateMessageContent,
   digestDuplicateContent,
@@ -32,6 +35,11 @@ import {
 } from './message-duplicate.queue';
 import { MessageDuplicateService } from './message-duplicate.service';
 import { duplicateSettings } from './message-duplicate-test-fixtures';
+import {
+  duplicateRevocationKey,
+  MessageDuplicateAuthorizationService,
+} from './message-duplicate-authorization.service';
+import { MessageDuplicateAdmissionService } from './message-duplicate-admission.service';
 
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL ?? '';
 const localRedis = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(redisUrl);
@@ -106,7 +114,34 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     string,
     { input: EnsureModerationDeleteIntentInput; at: Date; deletedAt: Date | null }
   >();
+  const durableClaims = new Map<string, { id: string; createdAt: Date; [key: string]: unknown }>();
+  const claimedMessages = new Set<string>();
   const intents = {
+    claimMessageActionBeforeQualification: jest.fn(async ({ messageId }: { messageId: string }) => {
+      const resumed = claimedMessages.has(messageId);
+      claimedMessages.add(messageId);
+      return resumed ? 'resumed' : 'claimed';
+    }),
+    releaseUnmaterializedMessageAction: jest.fn(
+      async ({
+        claim,
+        binding,
+      }: {
+        claim: { messageId: string };
+        binding: MessageDuplicateBinding;
+      }) => {
+        if (records.has(`intent:${claim.messageId}`) || !claimedMessages.delete(claim.messageId))
+          return false;
+        for (const eventTimestampMs of new Set([
+          binding.eventTimestampMs,
+          binding.authorization!.eventTimestampMs,
+        ])) {
+          const key = duplicateRevocationKey(chatId, claim.messageId, eventTimestampMs);
+          durableClaims.set(key, { id: key, createdAt: new Date() });
+        }
+        return true;
+      },
+    ),
     ensureIntentWithMessageActionClaim: jest.fn(
       async ({ intent }: { intent: EnsureModerationDeleteIntentInput }) => {
         const id = `intent:${intent.messageId}`;
@@ -132,6 +167,23 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     }),
   };
   const prisma = {
+    moderationViolationMessageClaim: {
+      createMany: jest.fn(
+        async ({ data }: { data: Array<{ dedupeKey: string; [key: string]: unknown }> }) => {
+          let count = 0;
+          for (const row of data) {
+            if (durableClaims.has(row.dedupeKey)) continue;
+            durableClaims.set(row.dedupeKey, { ...row, id: row.dedupeKey, createdAt: new Date() });
+            count += 1;
+          }
+          return { count };
+        },
+      ),
+      findUnique: jest.fn(
+        async ({ where }: { where: { dedupeKey: string } }) =>
+          durableClaims.get(where.dedupeKey) ?? null,
+      ),
+    },
     chatSettings: { findUnique: jest.fn(async () => settings) },
     webhookEvent: {
       findUnique: jest.fn(async ({ where }: { where: { id: string } }) => {
@@ -176,6 +228,8 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
   const immunity = { consumeForMessage: jest.fn(async () => 'not_granted') };
   const governor = { decide: jest.fn(async () => ({ action: 'allow' })) };
   const history = new MessageDuplicateHistoryService(redis);
+  const authorization = new MessageDuplicateAuthorizationService(prisma as never, ordering);
+  const admission = new MessageDuplicateAdmissionService(prisma as never);
   const guard = new MessageDuplicateDeleteGuardService(
     prisma as never,
     max as never,
@@ -184,6 +238,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     policy as never,
     history,
     config,
+    authorization,
   );
   const enforcement = new MessageDuplicateEnforcementService(
     intents as never,
@@ -248,7 +303,8 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     policy as never,
     history,
     enforcement,
-    new MessageDuplicateEnqueueService(queue, ordering),
+    new MessageDuplicateEnqueueService(queue, ordering, admission),
+    authorization,
   );
   const png = await sharp(
     Buffer.from(Array.from({ length: 32 * 24 * 3 }, (_, index) => (index * 17) % 256)),
@@ -373,6 +429,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     sanctions,
     downloads,
     intents,
+    claimedMessages,
     records,
     max,
     inspector,
@@ -381,10 +438,13 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     immunity,
     governor,
     history,
+    guard,
+    authorization,
     queue,
     ordering,
     async close() {
       await redis.deleteKeysByPattern(`dup:window:v1:${digestDuplicateContent(chatId)}:*`);
+      await redis.deleteKeysByPattern(`message-duplicate:ordering:v2:${shortHash(chatId)}:*`);
       await queue.obliterate();
       await queue.close();
       if (keys.size) await inspector.del(...keys);
@@ -599,14 +659,18 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(flow.downloads).toHaveBeenCalledTimes(3);
     });
 
-    it.each(['before-add', 'lost-response', 'unavailable-registration'] as const)(
+    it.each(['before-add', 'lost-response', 'lost-registration-response'] as const)(
       'preserves photo enforcement after a transient %s failure',
       async (failure) => {
         flow = await createFlow();
         await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
         const repeat = flow.prepare({ photo: 'webp' });
-        if (failure === 'unavailable-registration') {
-          jest.spyOn(flow.ordering, 'announce').mockResolvedValueOnce({ kind: 'unavailable' });
+        if (failure === 'lost-registration-response') {
+          const announce = flow.ordering.announce.bind(flow.ordering);
+          jest.spyOn(flow.ordering, 'announce').mockImplementationOnce(async (...args) => {
+            await announce(...args);
+            return { kind: 'unavailable' };
+          });
         } else {
           const add = flow.queue.add.bind(flow.queue);
           jest.spyOn(flow.queue, 'add').mockImplementationOnce(async (...args) => {
@@ -696,8 +760,254 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(flow.deleted).toEqual(['message-3']);
     });
 
-    it('resumes a photo deletion after URL recovery and a transient intent persistence failure', async () => {
+    it('keeps WARN/MUTE escalation after changing only the original photo caption', async () => {
+      flow = await createFlow({
+        duplicateWarnEnabled: true,
+        duplicateMuteEnabled: true,
+        duplicateWarnMaxCount: 1,
+        duplicateMuteMaxCount: 2,
+      });
+      const original = flow.prepare({ photo: 'png', text: 'Original caption' });
+      await flow.processor.process((await flow.ingest(original))!);
+      const first = flow.prepare({ photo: 'png' });
+      await flow.processor.process((await flow.ingest(first))!);
+      expect(flow.sanctions.map((entry) => entry.action)).toEqual(['WARN']);
+      const edited = flow.prepare({
+        id: original.id,
+        photo: 'png',
+        text: 'Changed caption with https://example.org/new',
+        time: first.time + 100,
+        editedFrom: original.time,
+      });
+      await flow.processor.process((await flow.ingest(edited))!);
+      const next = flow.prepare({ photo: 'png', time: edited.time + 100 });
+      await flow.processor.process((await flow.ingest(next))!);
+      expect(flow.deleted).toEqual([first.id, next.id]);
+      expect(flow.sanctions.map((entry) => entry.action)).toEqual(['WARN', 'MUTE']);
+    });
+
+    it('keeps the spent photo allowance after changing only the original caption', async () => {
+      flow = await createFlow({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 2 });
+      const original = flow.prepare({ photo: 'png', text: 'Original caption' });
+      await flow.processor.process((await flow.ingest(original))!);
+      const allowed = flow.prepare({ photo: 'png' });
+      await flow.processor.process((await flow.ingest(allowed))!);
+      expect(flow.deleted).toEqual([]);
+      const edited = flow.prepare({
+        id: original.id,
+        photo: 'png',
+        text: 'Changed caption',
+        time: allowed.time + 100,
+        editedFrom: original.time,
+      });
+      await flow.processor.process((await flow.ingest(edited))!);
+      const next = flow.prepare({ photo: 'png', time: edited.time + 100 });
+      await flow.processor.process((await flow.ingest(next))!);
+      expect(flow.deleted).toEqual([next.id]);
+      expect(flow.sanctions.map((entry) => entry.action)).toEqual(['WARN']);
+    });
+
+    it('blocks a late ordering denial during MAX checks before reserving a stage', async () => {
+      flow = await createFlow({
+        duplicateWarnEnabled: true,
+        duplicateMuteEnabled: true,
+        duplicateWarnMaxCount: 1,
+        duplicateMuteMaxCount: 2,
+      });
+      await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
+      const repeat = flow.prepare({ photo: 'png' });
+      const job = (await flow.ingest(repeat))!;
+      const qualify = jest.spyOn(flow.history, 'qualify');
+      flow.max.getExactMessageRow.mockImplementation(async (_chatId, messageId) => {
+        if (messageId === repeat.id) {
+          await flow.ordering.announce(
+            {
+              chatId: flow.chatId,
+              jobId: job.data.idempotencyKey,
+              sourceCreatedAt: job.data.sourceCreatedAt,
+              deadlineAtMs: job.data.deadlineAtMs,
+            },
+            false,
+          );
+        }
+        return flow.remote.get(messageId) ?? null;
+      });
+      await flow.processor.process(job);
+      expect(qualify).not.toHaveBeenCalled();
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+      expect(flow.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledTimes(1);
+      expect(flow.claimedMessages.has(repeat.id)).toBe(false);
+      await flow.processor.process(job);
+      expect(flow.intents.claimMessageActionBeforeQualification).toHaveBeenCalledTimes(1);
+      expect(flow.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+      const next = flow.prepare({ photo: 'png' });
+      await flow.processor.process((await flow.ingest(next))!);
+      expect(flow.deleted).toEqual([next.id]);
+      expect(flow.sanctions.map((entry) => entry.action)).toEqual(['WARN']);
+    });
+
+    it('blocks a denial after qualification and before persisting the delete intent', async () => {
+      flow = await createFlow({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 1 });
+      await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
+      const repeat = flow.prepare({ photo: 'png' });
+      const job = (await flow.ingest(repeat))!;
+      const persist = flow.intents.ensureIntentWithMessageActionClaim.getMockImplementation()!;
+      flow.intents.ensureIntentWithMessageActionClaim.mockImplementation(async (input) => {
+        await flow.ordering.announce(
+          {
+            chatId: flow.chatId,
+            jobId: job.data.idempotencyKey,
+            sourceCreatedAt: job.data.sourceCreatedAt,
+            deadlineAtMs: job.data.deadlineAtMs,
+          },
+          false,
+        );
+        return persist(input);
+      });
+      await flow.processor.process(job);
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+      const binding = parseMessageDuplicateBinding(
+        flow.records.get(`intent:${repeat.id}`)!.input.event?.metadata,
+      )!;
+      expect(await flow.history.qualified(flow.chatId, binding)).toBe(1);
+      await expect(
+        flow.guard.assertIntentStillActionable({
+          intentId: `intent:${repeat.id}`,
+          chatId: flow.chatId,
+          messageId: repeat.id,
+          subjectUserId: '123',
+          botId: 'bot',
+        }),
+      ).rejects.toThrow('message_duplicate_action_revoked');
+    });
+
+    it('keeps a persisted intent revoked independently of background recovery', async () => {
+      flow = await createFlow({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 1 });
+      await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
+      const repeat = flow.prepare({ photo: 'png' });
+      const job = (await flow.ingest(repeat))!;
+      const persist = flow.intents.ensureIntentWithMessageActionClaim.getMockImplementation()!;
+      flow.intents.ensureIntentWithMessageActionClaim.mockImplementationOnce(async (input) => {
+        await persist(input);
+        throw new Error('Synthetic crash after intent persistence');
+      });
+      await expect(flow.processor.process(job)).rejects.toThrow('after intent persistence');
+      expect(flow.records.has(`intent:${repeat.id}`)).toBe(true);
+      await flow.authorization.revoke({
+        chatId: flow.chatId,
+        messageId: repeat.id,
+        senderId: '123',
+        eventTimestampMs: repeat.time,
+      });
+      await flow.ordering.announce(
+        {
+          chatId: flow.chatId,
+          jobId: job.data.idempotencyKey,
+          sourceCreatedAt: job.data.sourceCreatedAt,
+          deadlineAtMs: job.data.deadlineAtMs,
+        },
+        true,
+      );
+      await expect(
+        flow.guard.assertIntentStillActionable({
+          intentId: `intent:${repeat.id}`,
+          chatId: flow.chatId,
+          messageId: repeat.id,
+          subjectUserId: '123',
+          botId: 'bot',
+        }),
+      ).rejects.toThrow('message_duplicate_action_revoked');
+      await flow.processor.process(job);
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+    });
+
+    it('fails closed when the admitted permit disappears before a worker retry', async () => {
       flow = await createFlow();
+      await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
+      const repeat = flow.prepare({ photo: 'png' });
+      const job = (await flow.ingest(repeat))!;
+      const permit = `message-duplicate:ordering:v2:${shortHash(flow.chatId)}:permit:${createHash('sha256').update(job.data.idempotencyKey).digest('hex')}`;
+      expect(await flow.inspector.hget(permit, 'eligible')).toBe('1');
+      await flow.inspector.del(permit);
+      await flow.processor.process(job);
+      expect(flow.deleted).toEqual([]);
+      expect(flow.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+      expect(flow.sanctions).toEqual([]);
+      expect(await flow.inspector.hget(permit, 'eligible')).toBe('0');
+    });
+
+    it.each(['retained-job', 'lost-job'] as const)(
+      'does not renew a persisted intent through webhook replay after permit loss (%s)',
+      async (state) => {
+        flow = await createFlow({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 1 });
+        await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
+        const repeat = flow.prepare({ photo: 'png' });
+        const job = (await flow.ingest(repeat))!;
+        const persist = flow.intents.ensureIntentWithMessageActionClaim.getMockImplementation()!;
+        flow.intents.ensureIntentWithMessageActionClaim.mockImplementationOnce(async (input) => {
+          await persist(input);
+          throw new Error('Synthetic crash after intent persistence');
+        });
+        await expect(flow.processor.process(job)).rejects.toThrow('after intent persistence');
+        const params = {
+          intentId: `intent:${repeat.id}`,
+          chatId: flow.chatId,
+          messageId: repeat.id,
+          subjectUserId: '123',
+          botId: 'bot',
+        };
+        await expect(flow.guard.assertIntentStillActionable(params)).resolves.toBe('allowed');
+        const permit = `message-duplicate:ordering:v2:${shortHash(flow.chatId)}:permit:${createHash('sha256').update(job.data.idempotencyKey).digest('hex')}`;
+        await flow.inspector.del(permit);
+        if (state === 'lost-job') {
+          await job.remove();
+          jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 5001);
+        }
+        await expect(flow.guard.assertIntentStillActionable(params)).rejects.toThrow(
+          'message_duplicate_action_revoked',
+        );
+        const replay = (await flow.ingest(repeat, true))!;
+        await expect(flow.guard.assertIntentStillActionable(params)).rejects.toThrow(
+          'message_duplicate_action_revoked',
+        );
+        await flow.processor.process(replay);
+        expect(flow.deleted).toEqual([]);
+        expect(flow.sanctions).toEqual([]);
+        expect(await flow.inspector.hget(permit, 'eligible')).toBe('0');
+      },
+    );
+
+    it('keeps an untracked moderation replay denied when tracking resumes', async () => {
+      flow = await createFlow();
+      await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
+      const repeat = flow.prepare({ photo: 'png' });
+      const job = (await flow.ingest(repeat))!;
+      await flow.service.observe({
+        update: repeat.update,
+        webhookEventId: repeat.receipt,
+        eventTimestampMs: repeat.time,
+        settings: flow.settings,
+        botId: 'bot',
+        actionEligible: false,
+        track: false,
+      });
+      await flow.ingest(repeat, true);
+      await flow.processor.process(job);
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+      expect(flow.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+    });
+
+    it('resumes a photo deletion after URL recovery and a transient intent persistence failure', async () => {
+      flow = await createFlow({
+        duplicateWarnEnabled: true,
+        duplicateWarnMaxCount: 1,
+        duplicateMuteEnabled: true,
+        duplicateMuteMaxCount: 2,
+      });
       await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
       const second = flow.prepare({ photo: 'png', missingUrl: true });
       const job = (await flow.ingest(second))!;
@@ -705,8 +1015,15 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
         new Error('temporary intent failure'),
       );
       await expect(flow.processor.process(job)).rejects.toThrow('temporary intent failure');
+      const firstQualification = flow.intents.ensureIntentWithMessageActionClaim.mock.calls[0]![0]
+        .intent.event!.metadata as { count: number };
       await flow.processor.process(job);
+      const resumedQualification = flow.intents.ensureIntentWithMessageActionClaim.mock.calls[1]![0]
+        .intent.event!.metadata as { count: number };
+      expect(resumedQualification.count).toBe(firstQualification.count);
+      expect(flow.intents.claimMessageActionBeforeQualification).toHaveBeenCalledTimes(2);
       expect(flow.deleted).toEqual([second.id]);
+      expect(flow.sanctions).toEqual([{ messageId: second.id, action: 'WARN' }]);
       expect(flow.downloads).toHaveBeenCalledTimes(2);
     });
 

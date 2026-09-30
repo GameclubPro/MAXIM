@@ -17,6 +17,9 @@ import {
 } from './message-duplicate-state';
 import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 import { isDuplicateScheduleOpen } from './message-duplicate-schedule';
+import { MessageDuplicateAuthorizationService } from './message-duplicate-authorization.service';
+import { resolveTrustedDuplicateStateRevision } from '../duplicate-message-revision';
+import { DUPLICATE_JOB_MAX_LIFETIME_MS } from '../photo-duplicate/photo-duplicate-ordering.store';
 
 @Injectable()
 export class MessageDuplicateService {
@@ -26,6 +29,7 @@ export class MessageDuplicateService {
     private readonly history: MessageDuplicateHistoryService,
     private readonly enforcement: MessageDuplicateEnforcementService,
     private readonly queue: MessageDuplicateEnqueueService,
+    private readonly authorization: MessageDuplicateAuthorizationService,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {}
 
@@ -53,7 +57,25 @@ export class MessageDuplicateService {
       chatId: message.chatId,
       messageId: message.messageId,
       eventTimestampMs,
+      publishedAtMs: duplicatePublicationTime(update),
       content: extractDuplicateMessageContent(update.raw),
+    });
+  }
+
+  async revokeActions(update: MaxUpdate): Promise<void> {
+    const message = update.message;
+    if (!message || !['message_created', 'message_edited'].includes(update.type)) return;
+    const revision = resolveTrustedDuplicateStateRevision(
+      update.type,
+      message.createdAt,
+      update.eventTimestampSource,
+    );
+    if (!revision.duplicateStateEventTimestampMs) return;
+    await this.authorization.revoke({
+      chatId: message.chatId,
+      messageId: message.messageId,
+      senderId: message.senderId,
+      eventTimestampMs: revision.duplicateStateEventTimestampMs,
     });
   }
 
@@ -74,6 +96,7 @@ export class MessageDuplicateService {
       !['message_created', 'message_edited'].includes(params.update.type)
     )
       return;
+    if (!params.actionEligible || !params.track) await this.revokeActions(params.update);
     const policy = await this.policy.resolve(message.chatId);
     if (policy.mode === 'off') {
       this.metrics?.record('admission.off');
@@ -162,6 +185,7 @@ export class MessageDuplicateService {
         eventTimestampMs,
         sourceCreatedAt: new Date(eventTimestampMs).toISOString(),
         controlRevision: policy.revision,
+        policyRevision: params.settings.duplicatePolicyRevision,
         settingsDigest: imageOnly
           ? exactImageSettingsDigest(params.settings)
           : messageDuplicateSettingsDigest(params.settings),
@@ -169,6 +193,7 @@ export class MessageDuplicateService {
         actionEligible:
           params.actionEligible &&
           (imageOnly ? policy.mode === 'full' : messageDuplicateActionsEnabled(policy.mode)),
+        deadlineAtMs: eventTimestampMs + DUPLICATE_JOB_MAX_LIFETIME_MS,
       });
       this.metrics?.record('admission.media_queued');
       return;
@@ -179,6 +204,12 @@ export class MessageDuplicateService {
         'Message duplicate content could not be verified',
       );
     if (result && params.actionEligible && messageDuplicateActionsEnabled(policy.mode)) {
+      result.binding.authorization = {
+        eventTimestampMs,
+        deadlineAtMs:
+          Math.min(eventTimestampMs, result.binding.eventTimestampMs) +
+          DUPLICATE_JOB_MAX_LIFETIME_MS,
+      };
       await this.enforcement.enqueue({
         ...result,
         chatId: message.chatId,

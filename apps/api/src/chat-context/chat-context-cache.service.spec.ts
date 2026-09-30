@@ -364,6 +364,8 @@ function buildSettings(chatId: string): ChatSettings {
     duplicateMuteEnabled: true,
     duplicateBanEnabled: true,
     antiDuplicateEnabled: true,
+    duplicatePolicyRevision: 0,
+    duplicateHistoryRevision: 0,
     duplicateCompareMode: 'MESSAGE',
     duplicatePhotoEnabled: false,
     duplicatePhotoMatchPreset: 'SAME_IMAGE',

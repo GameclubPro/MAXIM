@@ -30,7 +30,7 @@ import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm
 import { COMMERCIAL_OCR_QUEUE } from '../moderation/commercial-ocr/commercial-ocr.queue';
 import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-intent.queue';
 import { NIGHT_MODE_TRANSITION_QUEUE } from '../moderation/night-mode-transition.queue';
-import { PHOTO_DUPLICATE_QUEUE } from '../moderation/photo-duplicate/photo-duplicate.queue';
+import { MESSAGE_DUPLICATE_QUEUE } from '../moderation/message-duplicate/message-duplicate.queue';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
   getDefaultWebhookHomeOwnerByQueue,
@@ -81,7 +81,7 @@ export const AUXILIARY_QUEUE_NAMES = [
   ADMIN_SUPER_BAN_QUEUE,
   ADMIN_SUGGESTION_DELIVERY_QUEUE,
   MODERATION_DELETE_INTENT_QUEUE,
-  PHOTO_DUPLICATE_QUEUE,
+  MESSAGE_DUPLICATE_QUEUE,
   COMMERCIAL_OCR_QUEUE,
 ] as const;
 export type AuxiliaryQueueName = (typeof AUXILIARY_QUEUE_NAMES)[number];
@@ -535,9 +535,7 @@ export class QueueMetricsService {
       this.readQueueCounters(this.webhookBackgroundQueue),
       this.readQueueCounters(this.webhookLegacyQueue),
       this.readQueueCounters(this.globalSpammerDenormQueue),
-      ...AUXILIARY_QUEUE_NAMES.map((queueName) =>
-        this.readQueueCounters(this.auxiliaryQueuesByName[queueName]),
-      ),
+      ...AUXILIARY_QUEUE_NAMES.map((queueName) => this.readAuxiliaryQueueCounters(queueName)),
     ]);
     const actionQueueSnapshots = await Promise.all(
       MAX_ACTION_ALL_QUEUE_NAMES.map((queueName) =>
@@ -733,6 +731,14 @@ export class QueueMetricsService {
       ),
       generatedAt: new Date().toISOString(),
     };
+  }
+
+  private async readAuxiliaryQueueCounters(queueName: AuxiliaryQueueName): Promise<QueueCounters> {
+    const queue = this.auxiliaryQueuesByName[queueName];
+    if (queueName === MESSAGE_DUPLICATE_QUEUE && !queue) {
+      throw new Error('Message duplicate queue metrics unavailable');
+    }
+    return this.readQueueCounters(queue);
   }
 
   private async readQueueCounters(queue?: Queue): Promise<QueueCounters> {

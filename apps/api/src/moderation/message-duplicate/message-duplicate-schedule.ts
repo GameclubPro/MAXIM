@@ -17,7 +17,7 @@ export function duplicateScheduleDigestInput(settings: ScheduleSettings) {
         mode: 'DAILY',
         start: settings.duplicateStartTimeMinutes,
         end: settings.duplicateEndTimeMinutes,
-        timezone: settings.duplicateTimezone,
+        timezone: settings.duplicateTimezone.trim().toLowerCase(),
       }
     : { mode: 'INTERVAL' };
 }
@@ -36,11 +36,12 @@ export function resolveDuplicateDailyWindow(
     start === end
   )
     return null;
-  const local = DateTime.fromMillis(atMs, { zone: settings.duplicateTimezone });
+  const timezone = settings.duplicateTimezone.trim().toLowerCase();
+  const local = DateTime.fromMillis(atMs, { zone: timezone });
   if (!local.isValid) return null;
   // FLAG: Calendar days, never 24-hour subtraction: overnight windows must survive DST.
   for (const day of [local, local.minus({ days: 1 })]) {
-    const key = `${settings.duplicateTimezone}:${day.toISODate()}:${start}:${end}`;
+    const key = `${timezone}:${day.toISODate()}:${start}:${end}`;
     let window = windows.get(key);
     if (window === undefined) {
       const startAt = boundary(day, start, 'start');

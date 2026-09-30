@@ -38,6 +38,19 @@ describe('duplicate daily periods', () => {
     ).toBe(ms('2026-09-29T03:15Z'));
   });
 
+  it('uses the same normalized timezone for admission and policy digests', () => {
+    const settings = daily();
+    const equivalent = daily({ duplicateTimezone: '  europe/MOSCOW  ' });
+    const atMs = ms('2026-09-29T06:00Z');
+    expect(resolveDuplicateDailyWindow(equivalent, atMs)).toEqual(
+      resolveDuplicateDailyWindow(settings, atMs),
+    );
+    expect(isDuplicateScheduleOpen(equivalent, atMs, ms('2026-09-29T14:59Z'))).toBe(true);
+    expect(isDuplicateScheduleOpen(equivalent, atMs, ms('2026-09-29T15:00Z'))).toBe(false);
+    for (const digest of [messageDuplicateSettingsDigest, exactImageSettingsDigest])
+      expect(digest(equivalent)).toBe(digest(settings));
+  });
+
   it('keeps an overnight period intact across month/year boundaries', () => {
     const settings = daily({ duplicateStartTimeMinutes: 22 * 60, duplicateEndTimeMinutes: 8 * 60 });
     expect(resolveDuplicateDailyWindow(settings, ms('2027-01-01T02:00Z'))).toEqual({

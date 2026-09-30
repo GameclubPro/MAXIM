@@ -1668,6 +1668,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         });
       };
       const suppressDeferredPhotoAnalysisActions = async (): Promise<void> => {
+        await this.messageDuplicateService?.revokeActions?.(update);
         await enqueueCommercialOcr(false);
       };
 
@@ -1697,6 +1698,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
         }))
       ) {
+        await this.messageDuplicateService?.revokeActions?.(update);
         if (commercialOcrEnqueueBase) {
           const photoSenderAdminCheck = await this.resolveSenderChatAdminCheck(
             chatId,

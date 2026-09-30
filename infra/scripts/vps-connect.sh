@@ -50,6 +50,7 @@ Commands:
   monitor-readonly [duration-sec] [interval-sec]
                               Sample health, ps, restarts, public app, and error logs
   postgres-audit [queue|activity|duplicate|publication-schema|storage|all]
+  postgres-audit duplicate [--explain]
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
   postgres-audit publisher-publications [--explain]
@@ -308,7 +309,7 @@ ERROR
 postgres_audit() {
   local mode="${1:-all}"
 
-  if [[ "$mode" == 'publisher-publications' || "$mode" == 'storage' ]]; then
+  if [[ "$mode" == 'publisher-publications' || "$mode" == 'storage' || "$mode" == 'duplicate' ]]; then
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2

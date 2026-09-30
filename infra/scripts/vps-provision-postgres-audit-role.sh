@@ -157,7 +157,12 @@ GRANT SELECT (
   duplicate_photo_enabled,
   duplicate_detection_preset,
   duplicate_photo_match_preset,
-  duplicate_photo_scope
+  duplicate_photo_scope,
+  duplicate_compare_mode,
+  duplicate_window_mode,
+  duplicate_start_time_minutes,
+  duplicate_end_time_minutes,
+  duplicate_timezone
 ) ON TABLE public.chat_settings TO maxim_audit;
 GRANT SELECT (
   id,
@@ -265,7 +270,7 @@ BEGIN
     RAISE EXCEPTION 'maxim_audit has unexpected direct table privileges';
   END IF;
 
-  IF 12 <> (
+  IF 17 <> (
     SELECT count(DISTINCT (table_name, column_name, privilege_type))
     FROM information_schema.role_column_grants
     WHERE grantee = 'maxim_audit'
@@ -297,7 +302,12 @@ BEGIN
               'duplicate_photo_enabled',
               'duplicate_detection_preset',
               'duplicate_photo_match_preset',
-              'duplicate_photo_scope'
+              'duplicate_photo_scope',
+              'duplicate_compare_mode',
+              'duplicate_window_mode',
+              'duplicate_start_time_minutes',
+              'duplicate_end_time_minutes',
+              'duplicate_timezone'
             )
           )
           OR (
@@ -344,7 +354,12 @@ BEGIN
             'duplicate_photo_enabled',
             'duplicate_detection_preset',
             'duplicate_photo_match_preset',
-            'duplicate_photo_scope'
+            'duplicate_photo_scope',
+            'duplicate_compare_mode',
+            'duplicate_window_mode',
+            'duplicate_start_time_minutes',
+            'duplicate_end_time_minutes',
+            'duplicate_timezone'
           )
         )
         OR (

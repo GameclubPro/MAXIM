@@ -15,6 +15,7 @@ import {
 import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-intent.queue';
 import { PHOTO_DUPLICATE_QUEUE } from '../moderation/photo-duplicate/photo-duplicate.queue';
+import { MESSAGE_DUPLICATE_QUEUE } from '../moderation/message-duplicate/message-duplicate.queue';
 import { PUBLISHER_BINDING_REFRESH_QUEUE } from '../publisher/publisher-binding-refresh.queue';
 import { PUBLISHER_CHAT_COMMENT_QUEUE } from '../publisher/publisher-chat-comment.queue';
 import { PUBLISHER_AUTO_REPLY_QUEUE } from '../publisher/publisher-auto-reply.queue';
@@ -23,14 +24,16 @@ import { PUBLISHER_SUGGESTION_ADMIN_QUEUE } from '../publisher/publisher-suggest
 import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from '../admin/publisher-suggestion-publication.queue';
 import { PUBLISHER_PUBLICATION_WAKEUP_QUEUE } from '../admin/publisher-publication-wakeup.queue';
 
-function createQueueMock(counts: {
-  waiting: number;
-  prioritized: number;
-  active: number;
-  delayed: number;
-  failed: number;
-  completed: number;
-}) {
+function createQueueMock(
+  counts: {
+    waiting: number;
+    prioritized: number;
+    active: number;
+    delayed: number;
+    failed: number;
+    completed: number;
+  } = { waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+) {
   return {
     getJobCounts: jest.fn().mockResolvedValue({
       waiting: counts.waiting,
@@ -160,6 +163,22 @@ describe('QueueMetricsService', () => {
     }
   });
 
+  it('reports missing or unreadable message duplicate counters as unavailable', async () => {
+    const service = Object.create(QueueMetricsService.prototype) as QueueMetricsService;
+    (service as any).auxiliaryQueuesByName = {};
+    await expect(
+      (service as any).readAuxiliaryQueueCounters(MESSAGE_DUPLICATE_QUEUE),
+    ).rejects.toThrow('Message duplicate queue metrics unavailable');
+
+    const error = new Error('Redis read unavailable');
+    (service as any).auxiliaryQueuesByName[MESSAGE_DUPLICATE_QUEUE] = {
+      getJobCounts: jest.fn().mockRejectedValue(error),
+    };
+    await expect((service as any).readAuxiliaryQueueCounters(MESSAGE_DUPLICATE_QUEUE)).rejects.toBe(
+      error,
+    );
+  });
+
   it('builds, coalesces, and caches operational metrics without diagnostic fanout', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-09-02T12:00:00.000Z'));
     try {
@@ -210,8 +229,20 @@ describe('QueueMetricsService', () => {
           }),
         ]),
       );
+      const messageDuplicateQueue = createQueueMock({
+        waiting: 3,
+        prioritized: 0,
+        active: 1,
+        delayed: 10,
+        failed: 2,
+        completed: 50,
+      });
       const moduleRef = {
-        get: jest.fn((token: string) => defaultQueues[token] ?? actionQueues[token]),
+        get: jest.fn((token: string) =>
+          token === getQueueToken(MESSAGE_DUPLICATE_QUEUE)
+            ? messageDuplicateQueue
+            : (defaultQueues[token] ?? actionQueues[token]),
+        ),
       };
       const actionHealthService = {
         refreshSnapshots: jest.fn(),
@@ -286,6 +317,7 @@ describe('QueueMetricsService', () => {
       expect(maxBotRegistry.getOperationalBots).not.toHaveBeenCalled();
       expect(maxBotRegistry.getAllBots).not.toHaveBeenCalled();
       expect(buildPerBotSnapshots).not.toHaveBeenCalled();
+      expect(messageDuplicateQueue.getJobCounts).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
@@ -306,6 +338,7 @@ describe('QueueMetricsService', () => {
       'buildPerBotSnapshots',
       'refreshSnapshots',
       'actionHealthService',
+      'readAuxiliaryQueueCounters',
       'maxBotRegistry',
       'this.getSnapshot(',
     ]) {
@@ -413,6 +446,14 @@ describe('QueueMetricsService', () => {
         failed: 3,
         completed: 44,
       }),
+      [MESSAGE_DUPLICATE_QUEUE]: createQueueMock({
+        waiting: 25,
+        prioritized: 0,
+        active: 2,
+        delayed: 1259,
+        failed: 983,
+        completed: 25000,
+      }),
     };
     const queueProviders: Record<string, ReturnType<typeof createQueueMock> | undefined> = {
       ...Object.fromEntries(
@@ -425,6 +466,7 @@ describe('QueueMetricsService', () => {
         auxiliaryQueues['admin-managed-entities-refresh'],
       [getQueueToken(MODERATION_DELETE_INTENT_QUEUE)]:
         auxiliaryQueues[MODERATION_DELETE_INTENT_QUEUE],
+      [getQueueToken(MESSAGE_DUPLICATE_QUEUE)]: auxiliaryQueues[MESSAGE_DUPLICATE_QUEUE],
       [getQueueToken(PUBLISHER_BINDING_REFRESH_QUEUE)]: createQueueMock({
         waiting: 5,
         prioritized: 0,
@@ -716,7 +758,15 @@ describe('QueueMetricsService', () => {
       active: 1,
       failed: 0,
     });
-    expect(snapshot.auxiliaryQueues).toHaveProperty(PHOTO_DUPLICATE_QUEUE);
+    expect(snapshot.auxiliaryQueues[MESSAGE_DUPLICATE_QUEUE]).toEqual({
+      waiting: 25,
+      prioritized: 0,
+      active: 2,
+      delayed: 1259,
+      failed: 983,
+      completed: 25000,
+    });
+    expect(snapshot.auxiliaryQueues).not.toHaveProperty(PHOTO_DUPLICATE_QUEUE);
     expect(Object.keys(snapshot.auxiliaryQueues).sort()).toEqual([...AUXILIARY_QUEUE_NAMES].sort());
     expect(snapshot.webhookDefaultShards['moderation-default-0']).toEqual({
       waiting: 1,
@@ -894,7 +944,9 @@ describe('QueueMetricsService', () => {
         }),
       };
       const moduleRef = {
-        get: jest.fn(),
+        get: jest.fn((token: string) =>
+          token === getQueueToken(MESSAGE_DUPLICATE_QUEUE) ? createQueueMock() : undefined,
+        ),
       };
       const botRegistry = {
         getAllBots: jest.fn().mockReturnValue([]),
@@ -954,7 +1006,9 @@ describe('QueueMetricsService', () => {
       }),
     };
     const moduleRef = {
-      get: jest.fn(),
+      get: jest.fn((token: string) =>
+        token === getQueueToken(MESSAGE_DUPLICATE_QUEUE) ? createQueueMock() : undefined,
+      ),
     };
     const botRegistry = {
       getAllBots: jest.fn().mockReturnValue([]),
@@ -1039,12 +1093,13 @@ describe('QueueMetricsService', () => {
     const moduleRef = {
       get: jest.fn(
         (token: string) =>
-          Object.fromEntries(
-            DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
+          Object.fromEntries([
+            ...DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
               getQueueToken(queueName),
               defaultQueues[queueName],
             ]),
-          )[token],
+            [getQueueToken(MESSAGE_DUPLICATE_QUEUE), createQueueMock()],
+          ])[token],
       ),
     };
     const botRegistry = {

@@ -139,6 +139,7 @@ export async function claimDurableModerationMessageAction(params: {
   model: ModerationMessageActionClaimModel;
   data: ModerationMessageActionClaimData;
   resumeKnownOwner: boolean;
+  inTransaction?: boolean;
 }): Promise<DurableModerationMessageActionClaimResult> {
   const { data, model } = params;
   let createError: unknown = null;
@@ -159,6 +160,9 @@ export async function claimDurableModerationMessageAction(params: {
       throw new Error('Moderation message action claim storage is unsupported');
     }
   } catch (error: unknown) {
+    // FLAG: A failed statement aborts PostgreSQL transactions. Outside a transaction,
+    // a fresh ownership read can still safely reconcile an ambiguous insert response.
+    if (params.inTransaction) throw error;
     createError = error;
   }
 
@@ -173,6 +177,9 @@ export async function claimDurableModerationMessageAction(params: {
     select: MESSAGE_ACTION_CLAIM_SELECT,
   });
   if (!existing) {
+    // FLAG: A successful conflict insert can hit a released dedupe tombstone whose
+    // action key is NULL. It blocks the old owner even before another rule claims it.
+    if (!createError && model.createMany) return 'blocked';
     throw createError instanceof Error
       ? createError
       : new Error('Moderation message action claim could not be reconciled');

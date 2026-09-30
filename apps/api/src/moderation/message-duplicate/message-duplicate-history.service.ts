@@ -1,4 +1,5 @@
 import { Injectable, Optional } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { raceWithTimeout } from '../../common/promise-timeout.util';
 import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
@@ -14,6 +15,7 @@ import {
   buildMessageDuplicateIdentity,
   digestDuplicateContent,
   exactImageSourceDigest,
+  isExactImageContent,
   type DuplicateMessageContent,
 } from './message-duplicate-content';
 import {
@@ -96,13 +98,22 @@ export class MessageDuplicateHistoryService {
   async observe(
     input: MessageDuplicateObservation,
   ): Promise<{ hit: DuplicateHit; binding: MessageDuplicateBinding } | null> {
-    const dailyWindow = resolveDuplicateDailyWindow(input.settings, input.eventTimestampMs);
-    if (dailyWindow === null) return null;
     const mode = input.imageScope
       ? 'IMAGE'
       : input.settings.duplicateCompareMode === 'TEXT'
         ? 'TEXT'
         : 'MESSAGE';
+    const dailyWindow = resolveDuplicateDailyWindow(input.settings, input.eventTimestampMs);
+    if (dailyWindow === null) {
+      await this.window(input.chatId, {
+        op: 'lifecycle',
+        member: digestDuplicateContent(input.messageId),
+        at: input.eventTimestampMs,
+        publishedAt: input.publishedAtMs ?? input.eventTimestampMs,
+        sources: { [mode]: lifecycleSourceDigest(input.content, mode) },
+      });
+      return null;
+    }
     const mediaHashes = [...(input.mediaHashes ?? [])];
     const identity = buildMessageDuplicateIdentity(input.content, mode, mediaHashes);
     const flow = resolveDuplicateFlowConfig(input.settings);
@@ -150,7 +161,10 @@ export class MessageDuplicateHistoryService {
       at: input.eventTimestampMs,
       publishedAt: input.publishedAtMs ?? input.eventTimestampMs,
       source: sourceDigest,
+      lifecycleSource: lifecycleSourceDigest(input.content, mode),
       identity: identity ?? '',
+      pendingSafe:
+        input.content.complete && (mode !== 'IMAGE' || isExactImageContent(input.content)),
       mediaHashes,
       fingerprints: patterns.map((pattern) => pattern.hash),
       allowed: flow.allowedCount,
@@ -163,7 +177,7 @@ export class MessageDuplicateHistoryService {
       ...(dailyWindow ? { periodStart: dailyWindow.startMs, periodEnd: dailyWindow.endMs } : {}),
     });
     if (mutation.kind === 'replayed') this.metrics?.record('history.replayed');
-    if (!identity || mutation.kind === 'stale') {
+    if (!identity || mutation.kind === 'stale' || !mutation.revision) {
       this.metrics?.record(identity ? 'history.stale' : 'history.unverified');
       return null;
     }
@@ -177,7 +191,10 @@ export class MessageDuplicateHistoryService {
     this.metrics?.record('history.matched');
     const match = { ...pattern, count: selected.qualified ?? selected.count };
     const binding: MessageDuplicateBinding = {
-      version: mode === 'IMAGE' ? 2 : 1,
+      version: 3,
+      enforcementScope: mode === 'IMAGE' ? 'full' : 'delete_only',
+      lifecycleRevision: mutation.revision,
+      policyRevision: input.settings.duplicatePolicyRevision,
       original: messageDuplicateOriginalSchema.parse({
         ...selected.original,
         mediaHashes: Array.isArray(selected.original.mediaHashes)
@@ -217,16 +234,36 @@ export class MessageDuplicateHistoryService {
     chatId: string;
     messageId: string;
     eventTimestampMs: number;
+    publishedAtMs?: number;
     content: DuplicateMessageContent;
   }): Promise<void> {
     await this.window(input.chatId, {
       op: 'lifecycle',
       member: digestDuplicateContent(input.messageId),
       at: input.eventTimestampMs,
+      ...(input.publishedAtMs ? { publishedAt: input.publishedAtMs } : {}),
       sources: {
-        TEXT: duplicateSourceDigest(input.content, 'TEXT'),
-        MESSAGE: duplicateSourceDigest(input.content, 'MESSAGE'),
-        IMAGE: duplicateSourceDigest(input.content, 'IMAGE'),
+        TEXT: lifecycleSourceDigest(input.content, 'TEXT'),
+        MESSAGE: lifecycleSourceDigest(input.content, 'MESSAGE'),
+        IMAGE: lifecycleSourceDigest(input.content, 'IMAGE'),
+      },
+    });
+  }
+
+  async invalidateLifecycle(input: {
+    chatId: string;
+    messageId: string;
+    content: DuplicateMessageContent;
+  }): Promise<void> {
+    // FLAG: A fresh MAX read proves the old evidence stale, but does not establish
+    // when edited content was introduced. A worker clock must not admit a new original.
+    await this.window(input.chatId, {
+      op: 'invalidate',
+      member: digestDuplicateContent(input.messageId),
+      sources: {
+        TEXT: lifecycleSourceDigest(input.content, 'TEXT'),
+        MESSAGE: lifecycleSourceDigest(input.content, 'MESSAGE'),
+        IMAGE: lifecycleSourceDigest(input.content, 'IMAGE'),
       },
     });
   }
@@ -240,7 +277,7 @@ export class MessageDuplicateHistoryService {
     binding: MessageDuplicateBinding,
     afterDelete = false,
   ): Promise<boolean> {
-    if (!binding.original) return false;
+    if (!this.hasCurrentRevision(binding)) return false;
     const result = await this.window(chatId, {
       ...this.checkInput(binding),
       op: 'check',
@@ -250,7 +287,7 @@ export class MessageDuplicateHistoryService {
   }
 
   async qualified(chatId: string, binding: MessageDuplicateBinding): Promise<number | null> {
-    if (!binding.original) return null;
+    if (!this.hasCurrentRevision(binding)) return null;
     const result = await this.window(chatId, {
       ...this.checkInput(binding),
       op: 'check',
@@ -260,7 +297,7 @@ export class MessageDuplicateHistoryService {
   }
 
   async qualify(chatId: string, binding: MessageDuplicateBinding): Promise<number | null> {
-    if (!binding.original) return null;
+    if (!this.hasCurrentRevision(binding)) return null;
     const result = await this.window(chatId, { ...this.checkInput(binding), op: 'qualify' });
     return result.kind === 'ok' ? (result.count ?? null) : null;
   }
@@ -268,6 +305,7 @@ export class MessageDuplicateHistoryService {
   private checkInput(binding: MessageDuplicateBinding) {
     return {
       mode: binding.compareMode,
+      revision: binding.lifecycleRevision,
       member: digestDuplicateContent(binding.messageId),
       author: digestDuplicateContent(binding.senderId),
       source: binding.sourceDigest,
@@ -282,7 +320,11 @@ export class MessageDuplicateHistoryService {
 
   private async window(chatId: string, input: Record<string, unknown>) {
     return raceWithTimeout({
-      operation: () => this.redis.duplicateWindow(chatId, input),
+      operation: () =>
+        this.redis.duplicateWindow(chatId, {
+          ...input,
+          token: digestDuplicateContent(randomUUID()),
+        }),
       timeoutMs: 250,
       onTimeout: () => {
         throw new Error('Message duplicate history deadline exceeded');
@@ -291,6 +333,15 @@ export class MessageDuplicateHistoryService {
       this.metrics?.record('history.unavailable');
       throw error;
     });
+  }
+
+  private hasCurrentRevision(binding: MessageDuplicateBinding): boolean {
+    return (
+      binding.version === 3 &&
+      !!binding.lifecycleRevision &&
+      !!binding.original?.revision &&
+      !!binding.original.originalId
+    );
   }
 
   private buildFingerprints(content: DuplicateMessageContent, settings: ChatSettings) {
@@ -318,4 +369,14 @@ export function duplicateSourceDigest(
     : mode === 'TEXT'
       ? (buildMessageDuplicateIdentity(content, 'TEXT') ?? content.sourceDigest)
       : content.sourceDigest;
+}
+
+function lifecycleSourceDigest(
+  content: DuplicateMessageContent,
+  mode: 'TEXT' | 'MESSAGE' | 'IMAGE',
+): string {
+  const source = duplicateSourceDigest(content, mode);
+  return content.complete && (mode !== 'IMAGE' || isExactImageContent(content))
+    ? source
+    : digestDuplicateContent(['invalid-comparison-content-v2', source]);
 }

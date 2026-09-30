@@ -1141,6 +1141,8 @@ model ChatSettings {
   duplicateMuteEnabled                          Boolean                   @default(false) @map("duplicate_mute_enabled")
   duplicateBanEnabled                           Boolean                   @default(false) @map("duplicate_ban_enabled")
   antiDuplicateEnabled                          Boolean                   @default(false) @map("anti_duplicate_enabled")
+  duplicatePolicyRevision                       Int                       @default(0) @map("duplicate_policy_revision")
+  duplicateHistoryRevision                      Int                       @default(0) @map("duplicate_history_revision")
   duplicatePhotoEnabled                         Boolean                   @default(false) @map("duplicate_photo_enabled")
   duplicatePhotoMatchPreset                     DuplicatePhotoMatchPreset @default(SAME_IMAGE) @map("duplicate_photo_match_preset")
   duplicatePhotoScope                           DuplicatePhotoScope       @default(SAME_AUTHOR) @map("duplicate_photo_scope")

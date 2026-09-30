@@ -725,9 +725,18 @@ test('duplicate audit uses fixed windows and bounds every source before aggregat
   assert.match(sql, /settings_sample_plus AS MATERIALIZED/u);
   assert.match(sql, /FROM chat_settings\s+ORDER BY id ASC\s+LIMIT 5001/u);
   assert.match(sql, /settings_sample AS MATERIALIZED[\s\S]*LIMIT 5000/u);
+  assert.match(sql, /valid_named_timezones AS MATERIALIZED/u);
+  assert.equal([...sql.matchAll(/FROM pg_timezone_names/gu)].length, 1);
+  assert.match(sql, /name = lower\(btrim\(duplicate_timezone\)\)/u);
   assert.match(sql, /'audit', 'duplicate_settings'/u);
-  assert.match(sql, /'text_enabled_count_lower_bound'/u);
-  assert.match(sql, /'photo_effective_enabled_count_lower_bound'/u);
+  assert.match(sql, /'schema_version', 2/u);
+  assert.match(sql, /'saved_eligibility'/u);
+  assert.match(sql, /'image_eligible_count_lower_bound'/u);
+  assert.match(sql, /'legacy_compatibility'/u);
+  assert.match(sql, /'controls_current_image_policy', false/u);
+  assert.match(sql, /'runtime_authority', 'not_observed_by_sql'/u);
+  assert.match(sql, /'capability_freshness', 'not_observed_by_sql'/u);
+  assert.doesNotMatch(sql, /'photo_effective_enabled_count_lower_bound'/u);
   assert.match(sql, /GROUP BY duplicate_detection_preset/u);
   assert.match(sql, /GROUP BY duplicate_photo_match_preset, duplicate_photo_scope/u);
 
@@ -750,11 +759,29 @@ test('duplicate audit uses fixed windows and bounds every source before aggregat
   assert.match(sql, /'unrecognized_rule_count'/u);
 
   assert.match(sql, /intent_sample_plus AS MATERIALIZED/u);
-  assert.match(sql, /CROSS JOIN LATERAL/u);
-  assert.match(
-    sql,
-    /FROM moderation_delete_intents\s+WHERE status = intent_statuses\.status[\s\S]*ORDER BY updated_at DESC\s+LIMIT 65/u,
+  const intentSamples = sql.slice(
+    sql.indexOf('intent_sample_plus AS MATERIALIZED'),
+    sql.indexOf('), ranked_intents AS MATERIALIZED'),
   );
+  const boundedStatuses = [
+    ...intentSamples.matchAll(
+      /FROM moderation_delete_intents\s+WHERE status = '([A-Z_]+)'::"ModerationDeleteIntentStatus"\s+AND updated_at >= statement_timestamp\(\) - make_interval\(mins => 1440\)\s+ORDER BY updated_at DESC\s+LIMIT 65/gu,
+    ),
+  ].map((match) => match[1]);
+  assert.deepEqual(boundedStatuses, [
+    'OBSERVED',
+    'PENDING',
+    'IN_PROGRESS',
+    'RETRYABLE',
+    'WAITING_CAPABILITY',
+    'AMBIGUOUS',
+    'SUCCEEDED',
+    'ALREADY_ABSENT',
+    'EXPIRED',
+    'FAILED_TERMINAL',
+  ]);
+  assert.equal([...intentSamples.matchAll(/UNION ALL/gu)].length, 9);
+  assert.doesNotMatch(intentSamples, /CROSS JOIN LATERAL|status = intent_statuses\.status/u);
   assert.match(sql, /WHERE sample_rank <= 64/u);
   assert.match(
     sql,
@@ -770,6 +797,37 @@ test('duplicate audit uses fixed windows and bounds every source before aggregat
     extractDuplicateReportSql(sql),
     /raw_payload|normalized_payload|error_message|source_ip|chat_id|user_id|message_id|masked_excerpt|candidate_failures|last_error/u,
   );
+});
+
+test('duplicate explain plans only the fixed intent query and forwards no operator SQL', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const result = runAudit(data, ['duplicate', '--explain']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  const reportSql = extractDuplicateReportSql(sql);
+  assert.match(reportSql, /^EXPLAIN \(FORMAT JSON\)\s+WITH intent_statuses/u);
+  assert.equal([...reportSql.matchAll(/EXPLAIN/gu)].length, 1);
+  assert.doesNotMatch(reportSql, /ANALYZE|duplicate_settings|recent_duplicate_moderation/u);
+  assert.match(sql, /required_duplicate_indexes/u);
+  assert.match(sql, /17 = \(/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'duplicate', '--explain']).status, 0);
+  assert.match(
+    readFileSync(data.sshArgs, 'utf8'),
+    /vps-postgres-audit\.sh.*duplicate.*--explain/su,
+  );
+  for (const args of [
+    ['duplicate', '--analyze'],
+    ['duplicate', '--explain', 'SELECT 1'],
+    ['all', '--explain'],
+  ]) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, args).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', ...args]).status, 2);
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
 });
 
 test('all public audit mode includes the duplicate catalog report', (t) => {
@@ -821,6 +879,11 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
       duplicate_detection_preset "DuplicateDetectionPreset" NOT NULL,
       duplicate_photo_match_preset "DuplicatePhotoMatchPreset" NOT NULL,
       duplicate_photo_scope "DuplicatePhotoScope" NOT NULL,
+      duplicate_compare_mode TEXT NOT NULL DEFAULT 'MESSAGE',
+      duplicate_window_mode TEXT NOT NULL DEFAULT 'INTERVAL',
+      duplicate_start_time_minutes INTEGER NOT NULL DEFAULT 540,
+      duplicate_end_time_minutes INTEGER NOT NULL DEFAULT 1080,
+      duplicate_timezone TEXT NOT NULL DEFAULT 'Europe/Moscow',
       chat_id TEXT
     );
     CREATE TABLE moderation_events (
@@ -862,10 +925,26 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
       id TEXT PRIMARY KEY,
       status "ModerationDeleteIntentStatus" NOT NULL,
       updated_at TIMESTAMP NOT NULL,
-      message_id TEXT
+      message_id TEXT,
+      next_attempt_at TIMESTAMP,
+      execute_at TIMESTAMP,
+      lease_expires_at TIMESTAMP,
+      completed_at TIMESTAMP,
+      chat_id TEXT,
+      created_at TIMESTAMP
     );
     CREATE INDEX moderation_delete_intents_retention_idx
       ON moderation_delete_intents(status, updated_at);
+    CREATE INDEX moderation_delete_intents_due_idx
+      ON moderation_delete_intents(status, next_attempt_at, execute_at);
+    CREATE INDEX moderation_delete_intents_lease_idx
+      ON moderation_delete_intents(status, lease_expires_at);
+    CREATE INDEX moderation_delete_intents_completed_id_idx
+      ON moderation_delete_intents(completed_at DESC, id DESC);
+    CREATE INDEX moderation_delete_intents_chat_status_created_idx
+      ON moderation_delete_intents(chat_id, status, created_at);
+    CREATE UNIQUE INDEX moderation_delete_intents_chat_message_key
+      ON moderation_delete_intents(chat_id, message_id);
     CREATE TABLE moderation_delete_intent_reasons (
       id TEXT PRIMARY KEY,
       intent_id TEXT NOT NULL,
@@ -1019,7 +1098,7 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
     extra_settings_update: false,
     extra_intent_select: false,
     extra_reason_select: false,
-    exact_grant_count: 12,
+    exact_grant_count: 17,
   });
 
   const verificationSql = extractProvisionVerificationSql();
@@ -1118,7 +1197,12 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
   await database.exec('SET SESSION AUTHORIZATION postgres;');
   assert.equal(reports.length, 3);
   assert.equal(reports[0]?.audit, 'duplicate_settings');
-  assert.equal(reports[0]?.text_enabled_count_lower_bound, 1);
+  assert.equal(reports[0]?.schema_version, 2);
+  assert.equal(reports[0]?.runtime_authority, 'not_observed_by_sql');
+  assert.equal(reports[0]?.capability_freshness, 'not_observed_by_sql');
+  assert.equal(reports[0]?.saved_eligibility.master_enabled_count_lower_bound, 1);
+  assert.equal(reports[0]?.saved_eligibility.image_eligible_count_lower_bound, 1);
+  assert.equal(reports[0]?.legacy_compatibility.controls_current_image_policy, false);
   assert.equal(reports[1]?.audit, 'recent_duplicate_moderation');
   assert.equal(reports[1]?.rows.length, 2);
   assert.equal(reports[2]?.audit, 'recent_duplicate_delete_intents');
@@ -1166,6 +1250,126 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
     sample_saturated: true,
     complete: false,
   });
+
+  await database.exec(`
+    INSERT INTO chat_settings (
+      id, anti_duplicate_enabled, duplicate_photo_enabled, duplicate_detection_preset,
+      duplicate_photo_match_preset, duplicate_photo_scope, duplicate_compare_mode,
+      duplicate_window_mode, duplicate_start_time_minutes, duplicate_end_time_minutes,
+      duplicate_timezone
+    ) VALUES
+      ('settings-new-image', TRUE, FALSE, 'CUSTOM', 'MINOR_EDITS', 'SAME_AUTHOR',
+        'MESSAGE', 'INTERVAL', 540, 1080, 'Europe/Moscow'),
+      ('settings-text-only', TRUE, TRUE, 'STRICT', 'MINOR_EDITS', 'CHAT',
+        'TEXT', 'INTERVAL', 540, 1080, 'Europe/Moscow'),
+      ('settings-daily-image', TRUE, FALSE, 'STRICT', 'MINOR_EDITS', 'CHAT',
+        'MESSAGE', 'DAILY', 1080, 540, 'Europe/Moscow'),
+      ('settings-daily-equal', TRUE, FALSE, 'STRICT', 'SAME_IMAGE', 'CHAT',
+        'MESSAGE', 'DAILY', 540, 540, 'Europe/Moscow'),
+      ('settings-daily-invalid-zone', TRUE, FALSE, 'STRICT', 'SAME_IMAGE', 'CHAT',
+        'MESSAGE', 'DAILY', 540, 1080, 'invalid/zone'),
+      ('settings-off-photo', FALSE, TRUE, 'STRICT', 'SAME_IMAGE', 'CHAT',
+        'MESSAGE', 'INTERVAL', 540, 1080, 'Europe/Moscow'),
+      ('settings-invalid-compare', TRUE, FALSE, 'STRICT', 'SAME_IMAGE', 'CHAT',
+        'INVALID', 'INTERVAL', 540, 1080, 'Europe/Moscow'),
+      ('settings-invalid-window', TRUE, FALSE, 'STRICT', 'SAME_IMAGE', 'CHAT',
+        'MESSAGE', 'INVALID', 540, 1080, 'Europe/Moscow');
+    SET SESSION AUTHORIZATION maxim_audit;
+  `);
+  const settingsReportSql = reportSql.slice(0, reportSql.indexOf(';') + 1);
+  const updatedSettingsReport = JSON.parse(
+    (await database.query(settingsReportSql)).rows[0].json_build_object,
+  );
+  await database.exec('SET SESSION AUTHORIZATION postgres;');
+  assert.deepEqual(updatedSettingsReport.saved_eligibility, {
+    basis: 'master_compare_mode_scope_schedule',
+    master_enabled_count_lower_bound: 8,
+    image_eligible_count_lower_bound: 3,
+    text_only_count_lower_bound: 1,
+    invalid_image_configuration_count_lower_bound: 4,
+    daily_current_period: 'not_evaluated',
+    image_policies: [
+      { scope: 'CHAT', window_mode: 'DAILY', count_lower_bound: 1 },
+      { scope: 'SAME_AUTHOR', window_mode: 'INTERVAL', count_lower_bound: 2 },
+    ],
+  });
+  assert.equal(
+    updatedSettingsReport.legacy_compatibility.master_and_photo_toggle_count_lower_bound,
+    2,
+  );
+  assert.equal(
+    updatedSettingsReport.legacy_compatibility.photo_toggle_without_master_count_lower_bound,
+    1,
+  );
+  assert.equal(updatedSettingsReport.complete, true);
+  assert.equal(updatedSettingsReport.sampled_count, 10);
+
+  for (const timezone of [
+    'europe/moscow',
+    ' Europe/Moscow ',
+    '+01',
+    '+0100',
+    '+01:00',
+    ' +01:00 ',
+  ]) {
+    await database.query(
+      "UPDATE chat_settings SET duplicate_timezone = $1 WHERE id = 'settings-daily-image'",
+      [timezone],
+    );
+    await database.exec('SET SESSION AUTHORIZATION maxim_audit;');
+    const report = JSON.parse((await database.query(settingsReportSql)).rows[0].json_build_object);
+    await database.exec('SET SESSION AUTHORIZATION postgres;');
+    assert.equal(report.saved_eligibility.image_eligible_count_lower_bound, 3, timezone);
+  }
+
+  await database.exec('REVOKE SELECT (duplicate_compare_mode) ON chat_settings FROM maxim_audit;');
+  assert.equal((await database.query(readinessSql)).rows[0]?.duplicate_audit_ready, 'false');
+  await database.exec(columnResetSql);
+  assert.equal((await database.query(readinessSql)).rows[0]?.duplicate_audit_ready, 'true');
+
+  await database.exec(`
+    INSERT INTO chat_settings (
+      id, anti_duplicate_enabled, duplicate_photo_enabled, duplicate_detection_preset,
+      duplicate_photo_match_preset, duplicate_photo_scope
+    ) SELECT 'zz-settings-' || sample_number::text, TRUE, FALSE, 'STRICT',
+      'SAME_IMAGE', 'SAME_AUTHOR' FROM generate_series(1, 5001) sample(sample_number);
+    SET SESSION AUTHORIZATION maxim_audit;
+  `);
+  const saturatedSettingsReport = JSON.parse(
+    (await database.query(settingsReportSql)).rows[0].json_build_object,
+  );
+  await database.exec('SET SESSION AUTHORIZATION postgres;');
+  assert.equal(saturatedSettingsReport.sampled_count, 5000);
+  assert.equal(saturatedSettingsReport.sample_saturated, true);
+  assert.equal(saturatedSettingsReport.complete, false);
+  assert.equal(saturatedSettingsReport.saved_eligibility.image_eligible_count_lower_bound, 4993);
+
+  await database.exec(`
+    INSERT INTO moderation_delete_intents (id, status, updated_at)
+    SELECT 'intent-skew-' || status::text || '-' || sample_number, status,
+      CURRENT_TIMESTAMP - sample_number * INTERVAL '1 second'
+    FROM unnest(enum_range(NULL::"ModerationDeleteIntentStatus")) AS statuses(status)
+    CROSS JOIN LATERAL generate_series(1, CASE WHEN status = 'SUCCEEDED' THEN 10000 ELSE 1000 END)
+      AS samples(sample_number);
+    ANALYZE moderation_delete_intents;
+  `);
+  const intentSql = reportSql.slice(
+    reportSql.indexOf('WITH intent_statuses(status_order, status)'),
+  );
+  const fullIntentPlan = await database.query(`EXPLAIN (FORMAT JSON, COSTS FALSE) ${intentSql}`);
+  const sourceScans = [];
+  const collectSourceScans = (node, parent = null) => {
+    if (node['Relation Name'] === 'moderation_delete_intents') sourceScans.push({ node, parent });
+    for (const child of node.Plans ?? []) collectSourceScans(child, node);
+  };
+  collectSourceScans(fullIntentPlan.rows[0]['QUERY PLAN'][0].Plan);
+  assert.equal(sourceScans.length, 10);
+  for (const { node: scan, parent } of sourceScans) {
+    assert.equal(parent?.['Node Type'], 'Limit');
+    assert.equal(scan['Index Name'], 'moderation_delete_intents_retention_idx');
+    assert.equal(scan['Scan Direction'], 'Backward');
+    assert.match(scan['Index Cond'], /status.*updated_at/u);
+  }
 
   const indexedQueries = [
     {

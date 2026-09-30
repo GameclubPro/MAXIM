@@ -5,32 +5,46 @@ import type { Queue } from 'bullmq';
 import {
   PhotoDuplicateOrderingStore,
   PhotoDuplicateOrderingUnavailableError,
+  DUPLICATE_JOB_MAX_LIFETIME_MS,
 } from '../photo-duplicate/photo-duplicate-ordering.store';
 import { digestDuplicateContent } from './message-duplicate-content';
+import { MessageDuplicateAdmissionService } from './message-duplicate-admission.service';
 
 export const MESSAGE_DUPLICATE_QUEUE = 'message-duplicates';
-export const MESSAGE_DUPLICATE_JOB_VERSION = 1;
+export const MESSAGE_DUPLICATE_JOB_VERSION = 2;
 export type MessageDuplicateJob = {
-  version: 1;
+  version: 2;
   webhookEventId: string;
   chatId: string;
   messageId: string;
   eventTimestampMs: number;
   controlRevision: number;
+  policyRevision: number;
   settingsDigest: string;
   sourceCreatedAt: string;
   createdAt: string;
+  deadlineAtMs: number;
   actionEligible: boolean;
+  cleanupOnly?: 'completed' | 'terminated';
   comparison?: 'IMAGE';
   idempotencyKey: string;
 };
 
 @Injectable()
 export class MessageDuplicateOrderingStore extends PhotoDuplicateOrderingStore {
-  protected override readonly namespace = 'message-duplicate:ordering:v1';
+  protected override readonly namespace = 'message-duplicate:ordering:v2';
   constructor(config: ConfigService) {
     super(config);
   }
+}
+
+export function buildMessageDuplicateJobId(
+  chatId: string,
+  messageId: string,
+  eventTimestampMs: number,
+  comparison?: 'IMAGE',
+): string {
+  return `message-duplicate__${digestDuplicateContent([chatId, messageId, eventTimestampMs, MESSAGE_DUPLICATE_JOB_VERSION, ...(comparison === 'IMAGE' ? ['image-v1'] : [])])}`;
 }
 
 @Injectable()
@@ -40,24 +54,65 @@ export class MessageDuplicateEnqueueService {
     @InjectQueue(MESSAGE_DUPLICATE_QUEUE)
     private readonly queue?: Queue<MessageDuplicateJob>,
     @Optional() private readonly ordering?: MessageDuplicateOrderingStore,
+    @Optional() private readonly admission?: MessageDuplicateAdmissionService,
   ) {}
 
   async enqueue(
-    input: Omit<MessageDuplicateJob, 'version' | 'createdAt' | 'idempotencyKey'>,
+    input: Omit<
+      MessageDuplicateJob,
+      'version' | 'createdAt' | 'idempotencyKey' | 'deadlineAtMs' | 'cleanupOnly'
+    > & { deadlineAtMs?: number },
   ): Promise<void> {
-    if (!this.queue || !this.ordering) throw new Error('Message duplicate queue unavailable');
-    const id = `message-duplicate__${digestDuplicateContent([input.chatId, input.messageId, input.eventTimestampMs, 1, ...(input.comparison === 'IMAGE' ? ['image-v1'] : [])])}`;
-    const identity = { jobId: id, chatId: input.chatId, sourceCreatedAt: input.sourceCreatedAt };
+    if (!this.queue || !this.ordering || !this.admission)
+      throw new Error('Message duplicate queue unavailable');
+    const id = buildMessageDuplicateJobId(
+      input.chatId,
+      input.messageId,
+      input.eventTimestampMs,
+      input.comparison,
+    );
+    const identity = {
+      jobId: id,
+      chatId: input.chatId,
+      sourceCreatedAt: input.sourceCreatedAt,
+      deadlineAtMs: Math.min(
+        input.deadlineAtMs ?? Number.MAX_SAFE_INTEGER,
+        input.eventTimestampMs + DUPLICATE_JOB_MAX_LIFETIME_MS,
+        Date.now() + DUPLICATE_JOB_MAX_LIFETIME_MS,
+      ),
+    };
+    const admission = await this.admission.register({
+      jobId: id,
+      chatId: input.chatId,
+      messageId: input.messageId,
+    });
+    const existingJob = await this.queue.getJob(id);
+    const registrationKind = existingJob ? 'retry' : admission.registration;
+    if (
+      registrationKind === 'retry' &&
+      !existingJob &&
+      input.actionEligible &&
+      Date.now() - admission.admittedAtMs < 5000 &&
+      !(await this.ordering.readActionEligibility(identity))
+    )
+      throw new PhotoDuplicateOrderingUnavailableError(
+        'Message duplicate initial admission is incomplete',
+      );
     try {
-      const registration = await this.ordering.announce(identity, input.actionEligible === true);
-      if (registration.kind === 'completed') return;
+      const registration = await this.ordering.announce(
+        identity,
+        input.actionEligible === true,
+        registrationKind,
+      );
+      if (registration.kind === 'completed' || registration.kind === 'expired') return;
       if (registration.kind === 'unavailable') throw new PhotoDuplicateOrderingUnavailableError();
       await this.queue.add(
         'message-duplicate-analysis',
         {
           ...input,
-          version: 1,
-          createdAt: new Date().toISOString(),
+          version: MESSAGE_DUPLICATE_JOB_VERSION,
+          createdAt: new Date(registration.admittedAtMs).toISOString(),
+          deadlineAtMs: registration.deadlineAtMs,
           idempotencyKey: id,
           actionEligible: registration.actionEligible,
         },
@@ -73,7 +128,9 @@ export class MessageDuplicateEnqueueService {
     } catch (error) {
       // FLAG: Retry the same eligibility after a lost response. The absorbing Redis latch preserves
       // any concurrent false; a transport failure alone must not permanently suppress enforcement.
-      await this.ordering.announce(identity, input.actionEligible === true).catch(() => undefined);
+      await this.ordering
+        .announce(identity, input.actionEligible === true, 'retry')
+        .catch(() => undefined);
       throw error;
     }
   }

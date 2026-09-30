@@ -25,6 +25,7 @@ function windowResult(repeatCount: number) {
       },
     ) => ({
       kind: 'ok',
+      revision: digestDuplicateContent('duplicate revision'),
       matches: [
         {
           fingerprint: input.fingerprints[0],
@@ -41,6 +42,8 @@ function windowResult(repeatCount: number) {
             contentDigest: input.identity,
             mediaHashes: input.mediaHashes,
             epoch: 0,
+            revision: digestDuplicateContent('original revision'),
+            originalId: digestDuplicateContent('stable original identity'),
           },
         },
       ],
@@ -48,7 +51,184 @@ function windowResult(repeatCount: number) {
   );
 }
 
+async function enforcementCase() {
+  const settings = duplicateSettings({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 1 });
+  const update = duplicateUpdate('repeat', Date.now() - 1000, 'offer');
+  const history = new MessageDuplicateHistoryService({ duplicateWindow: windowResult(2) } as never);
+  const result = await history.observe({
+    chatId: '-123',
+    userId: '123',
+    messageId: 'repeat',
+    eventTimestampMs: Date.parse(update.message!.createdAt),
+    controlRevision: 1,
+    settings,
+    content: extractDuplicateMessageContent(update.raw),
+  });
+  result!.binding.authorization = {
+    eventTimestampMs: Date.parse(update.message!.createdAt),
+    deadlineAtMs: Date.parse(update.message!.createdAt) + 600_000,
+  };
+  const intents = {
+    claimMessageActionBeforeQualification: jest.fn().mockResolvedValue('claimed'),
+    releaseUnmaterializedMessageAction: jest.fn().mockResolvedValue(true),
+    ensureIntentWithMessageActionClaim: jest
+      .fn()
+      .mockResolvedValue({ claim: 'resumed', intent: { intentId: 'intent', rollout: 'execute' } }),
+  };
+  const policy = {
+    resolve: jest.fn().mockResolvedValue({
+      mode: 'full',
+      revision: 1,
+      effectiveAtMs: Date.now() - 10_000,
+      expiresAtMs: Number.MAX_SAFE_INTEGER,
+    }),
+  };
+  const guard = {
+    assertQualificationAuthority: jest.fn().mockResolvedValue(undefined),
+    qualify: jest.fn().mockResolvedValue(2),
+    assertMessageStillActionable: jest.fn().mockResolvedValue('allowed'),
+  };
+  const service = new MessageDuplicateEnforcementService(
+    intents as never,
+    policy as never,
+    guard as never,
+  );
+  const executeFullAction = jest.fn();
+  const params = {
+    ...result!,
+    settings,
+    chatId: '-123',
+    botId: 'bot',
+    update,
+    sourceCreatedAt: update.message!.createdAt,
+    text: 'offer',
+    executeFullAction,
+  };
+  return { intents, policy, guard, service, params, executeFullAction };
+}
+
 describe('message duplicate delete-only action claims', () => {
+  it('releases an interrupted unused owner when runtime policy rejects the retry', async () => {
+    const s = await enforcementCase();
+    s.policy.resolve.mockResolvedValue({ mode: 'off' });
+    expect(await s.service.enqueue(s.params)).toBe(false);
+    expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledTimes(1);
+    expect(s.intents.claimMessageActionBeforeQualification).not.toHaveBeenCalled();
+    expect(s.guard.qualify).not.toHaveBeenCalled();
+    expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+  });
+
+  it('does not reserve the whole-message claim after authorization is revoked', async () => {
+    const s = await enforcementCase();
+    s.guard.assertQualificationAuthority.mockRejectedValue(
+      new MessageDuplicateGuardRejectedError('revoked'),
+    );
+    expect(await s.service.enqueue(s.params)).toBe(false);
+    expect(s.intents.claimMessageActionBeforeQualification).not.toHaveBeenCalled();
+    expect(s.guard.qualify).not.toHaveBeenCalled();
+    expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledTimes(1);
+  });
+  it('releases an interrupted unused claim when a retry loses authority before qualification', async () => {
+    const s = await enforcementCase();
+    s.guard.qualify.mockRejectedValueOnce(new Error('redis unavailable'));
+    await expect(s.service.enqueue(s.params)).rejects.toThrow('redis unavailable');
+    expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+    s.guard.assertQualificationAuthority.mockRejectedValueOnce(
+      new MessageDuplicateGuardRejectedError('revoked'),
+    );
+    expect(await s.service.enqueue(s.params)).toBe(false);
+    expect(s.intents.claimMessageActionBeforeQualification).toHaveBeenCalledTimes(1);
+    expect(s.guard.qualify).toHaveBeenCalledTimes(1);
+    expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledTimes(1);
+    expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+  });
+  it('does not qualify an event whose whole-message claim belongs to another rule', async () => {
+    const s = await enforcementCase();
+    s.intents.claimMessageActionBeforeQualification.mockResolvedValue('blocked');
+    expect(await s.service.enqueue(s.params)).toBe(false);
+    expect(s.guard.qualify).not.toHaveBeenCalled();
+    expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+    expect(s.executeFullAction).not.toHaveBeenCalled();
+    expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+  });
+
+  it.each(['no_match', 'revoked'] as const)(
+    'releases its unused claim after qualification is %s',
+    async (outcome) => {
+      const s = await enforcementCase();
+      if (outcome === 'no_match') s.guard.qualify.mockResolvedValue(null);
+      else s.guard.qualify.mockRejectedValue(new MessageDuplicateGuardRejectedError('revoked'));
+      expect(await s.service.enqueue(s.params)).toBe(false);
+      expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledWith({
+        claim: expect.objectContaining({
+          messageActionKey: buildMessageScopedModerationActionClaimKey('-123', 'repeat'),
+          ruleCode: 'DUPLICATE_MESSAGE_ACTION',
+        }),
+        binding: expect.objectContaining({
+          messageId: 'repeat',
+          authorization: s.params.binding.authorization,
+        }),
+      });
+      expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+    },
+  );
+
+  it('releases its unused claim when authority changes after reserving the stage', async () => {
+    const s = await enforcementCase();
+    s.guard.assertQualificationAuthority
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new MessageDuplicateGuardRejectedError('revoked'));
+    expect(await s.service.enqueue(s.params)).toBe(false);
+    expect(s.guard.qualify).toHaveBeenCalledTimes(1);
+    expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledTimes(1);
+    expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unused claim resumable when qualification infrastructure is temporarily unavailable', async () => {
+    const s = await enforcementCase();
+    s.guard.qualify.mockRejectedValue(new Error('redis unavailable'));
+    await expect(s.service.enqueue(s.params)).rejects.toThrow('redis unavailable');
+    expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+    expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+  });
+
+  it('resumes its existing claim before retrying qualification and intent persistence', async () => {
+    const s = await enforcementCase();
+    s.intents.ensureIntentWithMessageActionClaim.mockRejectedValueOnce(
+      new Error('lost persistence response'),
+    );
+    await expect(s.service.enqueue(s.params)).rejects.toThrow('lost persistence response');
+    expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+    s.intents.claimMessageActionBeforeQualification.mockResolvedValue('resumed');
+    await s.service.enqueue(s.params);
+    expect(
+      s.intents.claimMessageActionBeforeQualification.mock.invocationCallOrder[0],
+    ).toBeLessThan(s.guard.qualify.mock.invocationCallOrder[0]!);
+    expect(
+      s.intents.claimMessageActionBeforeQualification.mock.invocationCallOrder[1],
+    ).toBeLessThan(s.guard.qualify.mock.invocationCallOrder[1]!);
+    expect(
+      s.intents.ensureIntentWithMessageActionClaim.mock.calls[0]![0].intent.event.metadata.count,
+    ).toBe(
+      s.intents.ensureIntentWithMessageActionClaim.mock.calls[1]![0].intent.event.metadata.count,
+    );
+    expect(s.executeFullAction).toHaveBeenCalledTimes(1);
+    expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+  });
+
+  it('rechecks a late revocation in the final delete and sanction callbacks', async () => {
+    const s = await enforcementCase();
+    await s.service.enqueue(s.params);
+    const request = s.executeFullAction.mock.calls[0]![0];
+    s.guard.assertMessageStillActionable.mockRejectedValue(
+      new MessageDuplicateGuardRejectedError('revoked'),
+    );
+    expect(await request.authorizeDelete()).toBe(false);
+    expect(await request.authorizeSanction()).toBe(false);
+    await expect(request.beforeSanctionMutation()).rejects.toThrow('sanction_revoked');
+    expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+  });
+
   it.each(
     [
       [1, null],
@@ -94,7 +274,13 @@ describe('message duplicate delete-only action claims', () => {
         mediaHashes: kind === 'photo' ? ['a'.repeat(64)] : [],
         ...(kind === 'photo' ? { imageScope: 'SAME_AUTHOR' as const } : {}),
       });
+      result!.binding.authorization = {
+        eventTimestampMs: Date.parse(update.message!.createdAt),
+        deadlineAtMs: Date.parse(update.message!.createdAt) + 600_000,
+      };
       const intents = {
+        claimMessageActionBeforeQualification: jest.fn().mockResolvedValue('claimed'),
+        releaseUnmaterializedMessageAction: jest.fn().mockResolvedValue(true),
         ensureIntentWithMessageActionClaim: jest.fn().mockResolvedValue({
           claim: 'claimed',
           intent: { intentId: 'intent', rollout: 'execute' },
@@ -109,6 +295,7 @@ describe('message duplicate delete-only action claims', () => {
         }),
       };
       const guard = {
+        assertQualificationAuthority: jest.fn().mockResolvedValue(undefined),
         qualify: jest.fn().mockResolvedValue(repeatCount),
         assertMessageStillActionable: jest.fn().mockResolvedValue('allowed'),
       };
@@ -135,7 +322,7 @@ describe('message duplicate delete-only action claims', () => {
       expect(request.deleteIntent).toBe(
         intents.ensureIntentWithMessageActionClaim.mock.calls[0]![0].intent,
       );
-      expect(request.deleteIntent.event.metadata.messageDuplicate.version).toBe(2);
+      expect(request.deleteIntent.event.metadata.messageDuplicate.version).toBe(3);
       expect(request.deleteIntent.event.metadata.messageDuplicate.hasPhotos).toBe(kind === 'photo');
       expect(request.deleteIntent.event.metadata.enforcementScope).toBe('full');
       if (expected) {
@@ -187,6 +374,10 @@ describe('message duplicate delete-only action claims', () => {
       content: extractDuplicateMessageContent({ message: { body: { text: 'a' } } }),
     });
     expect(result).not.toBeNull();
+    result!.binding.authorization = {
+      eventTimestampMs: result!.binding.eventTimestampMs,
+      deadlineAtMs: result!.binding.eventTimestampMs + 600_000,
+    };
     const actualGuard = Object.create(ModerationDeleteIntentService.prototype) as {
       assertClaimMatchesIntent: (
         claim: ModerationMessageActionClaimData,
@@ -194,6 +385,8 @@ describe('message duplicate delete-only action claims', () => {
       ) => void;
     };
     const intents = {
+      claimMessageActionBeforeQualification: jest.fn().mockResolvedValue('claimed'),
+      releaseUnmaterializedMessageAction: jest.fn().mockResolvedValue(true),
       ensureIntentWithMessageActionClaim: jest.fn(
         async (input: {
           claim: ModerationMessageActionClaimData;
@@ -215,7 +408,10 @@ describe('message duplicate delete-only action claims', () => {
     const enforcement = new MessageDuplicateEnforcementService(
       intents as never,
       policy as never,
-      { qualify: jest.fn().mockResolvedValue(20) } as never,
+      {
+        assertQualificationAuthority: jest.fn().mockResolvedValue(undefined),
+        qualify: jest.fn().mockResolvedValue(20),
+      } as never,
     );
     const params = {
       ...result!,

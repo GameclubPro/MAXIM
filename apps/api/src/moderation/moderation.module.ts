@@ -69,7 +69,6 @@ import { PHOTO_DUPLICATE_QUEUE } from './photo-duplicate/photo-duplicate.queue';
 import {
   MESSAGE_DUPLICATE_QUEUE,
   MessageDuplicateEnqueueService,
-  MessageDuplicateOrderingStore,
 } from './message-duplicate/message-duplicate.queue';
 import { MessageDuplicateStateModule } from './message-duplicate/message-duplicate-state.module';
 import { MessageDuplicateService } from './message-duplicate/message-duplicate.service';
@@ -135,7 +134,6 @@ const moderationProviders = [
   MessageDuplicateEnqueueService,
   MessageDuplicateEnforcementService,
   MessageDuplicateService,
-  ...(moderationRoleEnabled ? [MessageDuplicateOrderingStore] : []),
   ...(commercialOcrEnqueueEnabled || commercialOcrWorkerEnabled
     ? [CommercialOcrAdmissionStore, CommercialOcrMetricsService]
     : []),

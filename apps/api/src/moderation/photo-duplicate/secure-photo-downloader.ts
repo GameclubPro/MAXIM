@@ -46,6 +46,32 @@ export class PhotoDownloadHttpError extends Error {
   }
 }
 
+export type PhotoDownloadSourceRejectionReason =
+  | 'malformed_url'
+  | 'protocol'
+  | 'credentials'
+  | 'port'
+  | 'host';
+
+export class PhotoDownloadSourceRejectedError extends UnrecoverableError {
+  readonly code = 'PHOTO_DOWNLOAD_SOURCE_REJECTED';
+  readonly retryable = false;
+
+  constructor(
+    readonly reason: PhotoDownloadSourceRejectionReason,
+    options: { invalidLength?: boolean } = {},
+  ) {
+    super(
+      reason === 'malformed_url'
+        ? options.invalidLength
+          ? 'Photo URL length is invalid'
+          : 'Photo URL is invalid'
+        : 'Photo URL is not permitted',
+    );
+    this.name = 'PhotoDownloadSourceRejectedError';
+  }
+}
+
 export class PhotoDownloadByteLimitExceededError extends UnrecoverableError {
   readonly code = 'PHOTO_DOWNLOAD_BYTE_LIMIT_EXCEEDED';
   readonly retryable = false;
@@ -212,7 +238,12 @@ export class SecurePhotoDownloader {
         if (redirectCount >= this.maxRedirects) {
           throw new Error('Photo download exceeded the redirect limit');
         }
-        const nextUrl = new URL(redirectLocation, url);
+        let nextUrl: URL;
+        try {
+          nextUrl = new URL(redirectLocation, url);
+        } catch {
+          throw new PhotoDownloadSourceRejectedError('malformed_url');
+        }
         closeResponse();
         return this.downloadWithin(nextUrl.toString(), redirectCount + 1, deadlineAtMs, binary);
       }
@@ -345,23 +376,19 @@ async function readResponseBody(
 
 function parseAndValidateUrl(rawUrl: string, allowedHosts: readonly string[]): URL {
   if (rawUrl.length === 0 || rawUrl.length > 2_048) {
-    throw new UnrecoverableError('Photo URL length is invalid');
+    throw new PhotoDownloadSourceRejectedError('malformed_url', { invalidLength: true });
   }
   let url: URL;
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new UnrecoverableError('Photo URL is invalid');
+    throw new PhotoDownloadSourceRejectedError('malformed_url');
   }
-  if (
-    url.protocol !== 'https:' ||
-    url.username ||
-    url.password ||
-    (url.port && url.port !== '443') ||
-    !hostMatchesAllowlist(url.hostname, allowedHosts)
-  ) {
-    throw new UnrecoverableError('Photo URL is not permitted');
-  }
+  if (url.protocol !== 'https:') throw new PhotoDownloadSourceRejectedError('protocol');
+  if (url.username || url.password) throw new PhotoDownloadSourceRejectedError('credentials');
+  if (url.port && url.port !== '443') throw new PhotoDownloadSourceRejectedError('port');
+  if (!hostMatchesAllowlist(url.hostname, allowedHosts))
+    throw new PhotoDownloadSourceRejectedError('host');
   return url;
 }
 

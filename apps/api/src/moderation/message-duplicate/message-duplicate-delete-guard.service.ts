@@ -26,8 +26,10 @@ import {
   exactImageSettingsDigest,
   messageDuplicateSanctionSettingsDigest,
   parseMessageDuplicateBinding,
+  messageDuplicateEnforcementScope,
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
+import { MessageDuplicateAuthorizationService } from './message-duplicate-authorization.service';
 
 export class MessageDuplicateGuardRejectedError extends Error {
   constructor(readonly code: string) {
@@ -58,6 +60,7 @@ export class MessageDuplicateDeleteGuardService {
     private readonly policy: MessageDuplicatePolicyService,
     private readonly history: MessageDuplicateHistoryService,
     config: ConfigService,
+    private readonly authorization: MessageDuplicateAuthorizationService,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {
     this.timeoutMs = config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5000;
@@ -69,6 +72,7 @@ export class MessageDuplicateDeleteGuardService {
     messageId: string;
     subjectUserId: string | null;
     botId: string;
+    authorityOnly?: boolean;
   }): Promise<'allowed' | 'absent' | 'not_applicable'> {
     const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: params.intentId },
@@ -102,6 +106,13 @@ export class MessageDuplicateDeleteGuardService {
     const binding = (bindings as MessageDuplicateBinding[]).sort(
       (a, b) => b.eventTimestampMs - a.eventTimestampMs,
     )[0]!;
+    if (params.authorityOnly) {
+      await this.assertQualificationAuthority(params.chatId, binding);
+      if (!(await this.history.stillMatches(params.chatId, binding)))
+        throw new MessageDuplicateGuardRejectedError('message_duplicate_history_changed');
+      await this.assertAuthorization(params.chatId, binding);
+      return 'allowed';
+    }
     return this.assertMessageStillActionable({ ...params, binding });
   }
 
@@ -121,16 +132,49 @@ export class MessageDuplicateDeleteGuardService {
   }
 
   async qualify(params: MessageDuplicateGuardInput): Promise<number | null> {
+    await this.assertQualificationAuthority(params.chatId, params.binding);
     // FLAG: Resume the immutable stage after our own deletion; the sanction guard still
     // requires its exact durable receipt. Never reserve another stage on delivery retry.
     const qualified = await this.history.qualified(params.chatId, params.binding);
-    if (qualified !== null) return qualified;
+    if (qualified !== null) {
+      if (!(await this.history.stillMatches(params.chatId, params.binding, true)))
+        throw new MessageDuplicateGuardRejectedError('message_duplicate_history_changed');
+      await this.assertAuthorization(params.chatId, params.binding);
+      return qualified;
+    }
     if ((await this.assertMessageStillActionable(params)) !== 'allowed') return null;
+    await this.assertAuthorization(params.chatId, params.binding);
     return this.history.qualify(params.chatId, params.binding);
+  }
+
+  async assertQualificationAuthority(
+    chatId: string,
+    binding: MessageDuplicateBinding,
+  ): Promise<void> {
+    await this.assertAuthorization(chatId, binding);
+    await this.assertPolicy(chatId, binding);
+    await this.loadSettings(chatId, binding);
+  }
+
+  private async assertAuthorization(
+    chatId: string,
+    binding: MessageDuplicateBinding,
+  ): Promise<void> {
+    if (
+      binding.version !== 3 ||
+      !binding.lifecycleRevision ||
+      !binding.original?.revision ||
+      !binding.original.originalId ||
+      !binding.authorization
+    )
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_binding_invalid');
+    if (!(await this.authorization.isAllowed(chatId, binding)))
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_action_revoked');
   }
 
   private async checkMessage(params: MessageDuplicateGuardInput): Promise<'allowed' | 'absent'> {
     const { binding } = params;
+    await this.assertAuthorization(params.chatId, binding);
     if (!binding.original)
       throw new MessageDuplicateGuardRejectedError('message_duplicate_binding_invalid');
     if (
@@ -191,6 +235,11 @@ export class MessageDuplicateDeleteGuardService {
         recorded.eventTimestampMs !== binding.eventTimestampMs ||
         recorded.controlRevision !== binding.controlRevision ||
         recorded.settingsDigest !== binding.settingsDigest ||
+        recorded.version !== binding.version ||
+        recorded.enforcementScope !== binding.enforcementScope ||
+        recorded.lifecycleRevision !== binding.lifecycleRevision ||
+        recorded.policyRevision !== binding.policyRevision ||
+        JSON.stringify(recorded.authorization) !== JSON.stringify(binding.authorization) ||
         JSON.stringify(recorded.sanction) !== JSON.stringify(binding.sanction) ||
         JSON.stringify(recorded.original) !==
           JSON.stringify(messageDuplicateOriginalSchema.parse(binding.original))
@@ -220,6 +269,11 @@ export class MessageDuplicateDeleteGuardService {
         buildMessageDuplicateIdentity(content, binding.compareMode, binding.mediaHashes) !==
           binding.contentDigest
       ) {
+        await this.history.invalidateLifecycle({
+          chatId: params.chatId,
+          messageId: params.messageId,
+          content,
+        });
         throw new MessageDuplicateGuardRejectedError('message_duplicate_content_changed');
       }
     }
@@ -254,10 +308,9 @@ export class MessageDuplicateDeleteGuardService {
     ) {
       // FLAG: A missed edit is not proof of removal. Revoke the observed evidence using its
       // actual current content; never manufacture a new publication or penalty from this read.
-      await this.history.observeLifecycle({
+      await this.history.invalidateLifecycle({
         chatId: params.chatId,
         messageId: binding.original.messageId,
-        eventTimestampMs: Date.now(),
         content: originalContent,
       });
       throw new MessageDuplicateGuardRejectedError('message_duplicate_original_changed');
@@ -279,6 +332,7 @@ export class MessageDuplicateDeleteGuardService {
     // FLAG: Re-read policy and settings after external/content checks, including queued intents.
     await this.loadSettings(params.chatId, binding);
     await this.assertPolicy(params.chatId, binding, Boolean(params.sanctionIntentId));
+    await this.assertAuthorization(params.chatId, binding);
     return 'allowed';
   }
 
@@ -290,8 +344,10 @@ export class MessageDuplicateDeleteGuardService {
     const policy = await this.policy.resolve(chatId, true);
     if (
       (requireFull ? policy.mode !== 'full' : !['delete_only', 'full'].includes(policy.mode)) ||
-      (binding.version === 2 && policy.mode !== 'full') ||
-      (requireFull && (binding.version !== 2 || !binding.sanction)) ||
+      binding.version !== 3 ||
+      (messageDuplicateEnforcementScope(binding) === 'full' && policy.mode !== 'full') ||
+      (requireFull &&
+        (messageDuplicateEnforcementScope(binding) !== 'full' || !binding.sanction)) ||
       policy.revision !== binding.controlRevision ||
       binding.eventTimestampMs < policy.effectiveAtMs ||
       !binding.original ||
@@ -304,7 +360,7 @@ export class MessageDuplicateDeleteGuardService {
     if (
       (binding.hasPhotos && binding.compareMode !== 'IMAGE') ||
       (binding.compareMode === 'IMAGE' &&
-        (binding.version !== 2 ||
+        (messageDuplicateEnforcementScope(binding) !== 'full' ||
           !binding.imageScope ||
           !binding.hasPhotos ||
           binding.photoControlRevision !== null))
@@ -321,6 +377,7 @@ export class MessageDuplicateDeleteGuardService {
     if (
       !settings?.antiDuplicateEnabled ||
       settings.chat.entityType !== 'CHAT' ||
+      settings.duplicatePolicyRevision !== binding.policyRevision ||
       (binding.compareMode === 'IMAGE'
         ? exactImageSettingsDigest(settings)
         : messageDuplicateSettingsDigest(settings)) !== binding.settingsDigest ||

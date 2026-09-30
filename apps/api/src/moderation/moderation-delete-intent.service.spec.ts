@@ -698,14 +698,12 @@ describe('ModerationDeleteIntentService', () => {
           events.push('final');
         },
       },
-      recordRemoteSuccessAndFinalize: jest
-        .fn()
-        .mockResolvedValue({
-          kind: 'confirmed',
-          status: 'SUCCEEDED',
-          confirmed: true,
-          intentId: leased.id,
-        }),
+      recordRemoteSuccessAndFinalize: jest.fn().mockResolvedValue({
+        kind: 'confirmed',
+        status: 'SUCCEEDED',
+        confirmed: true,
+        intentId: leased.id,
+      }),
     });
     await service.executeLeasedIntent('intent-1', 'lease-1');
     expect(events).toEqual(['prepare', 'delete-budget', 'final', 'final']);
@@ -931,7 +929,7 @@ describe('ModerationDeleteIntentService', () => {
         await expect(service.executeLeasedIntent('intent-1', 'lease-1')).rejects.toThrow(
           'Message duplicate delete guard unavailable',
         );
-      expect(events).toEqual(available ? ['guard', 'delete'] : []);
+      expect(events).toEqual(available ? ['guard', 'guard', 'delete'] : []);
       expect(remoteDelete).toHaveBeenCalledTimes(available ? 1 : 0);
     },
   );
@@ -5511,6 +5509,64 @@ describe('ModerationDeleteIntentService', () => {
       ).toBe(true);
     },
   );
+
+  it('blocks DELETE when a later commercial check revokes duplicate authority after the full guard', async () => {
+    const intent = {
+      ...baseIntent,
+      messageDuplicateOwned: true,
+      nonCommercialOcrDeleteReason: false,
+    };
+    const events: string[] = [];
+    let revoked = false;
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: intent.id }])
+      .mockResolvedValueOnce([intent]);
+    const remoteDelete = jest.fn();
+    const { service, commercialDeleteGuard } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]),
+        $executeRaw: executeRaw,
+        $transaction: jest.fn(async (callback: (tx: unknown) => unknown) =>
+          callback({ $queryRaw: txQueryRaw, $executeRaw: executeRaw }),
+        ),
+      },
+      { deleteMessage: remoteDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+    commercialDeleteGuard.assertIntentStillActionable.mockImplementation(async () => {
+      events.push('commercial');
+      revoked = true;
+      return 'not_applicable';
+    });
+    const duplicateGuard = {
+      assertIntentStillActionable: jest.fn(async (input: { authorityOnly?: boolean }) => {
+        events.push(input.authorityOnly ? 'duplicate_authority' : 'duplicate_full');
+        if (input.authorityOnly && revoked)
+          throw new MessageDuplicateGuardRejectedError(
+            'message_duplicate_action_authority_revoked',
+          );
+        return 'allowed';
+      }),
+    };
+    Object.defineProperty(service, 'messageDuplicateDeleteGuard', { value: duplicateGuard });
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      status: 'FAILED_TERMINAL',
+    });
+    expect(events).toEqual(['duplicate_full', 'commercial', 'duplicate_authority']);
+    expect(remoteDelete).not.toHaveBeenCalled();
+    expect(duplicateGuard.assertIntentStillActionable).toHaveBeenLastCalledWith(
+      expect.objectContaining({ authorityOnly: true }),
+    );
+    expect(
+      executeRaw.mock.calls.some(([query]) =>
+        query.strings?.join('?').includes('"delete_dispatch_started_at" = NULL'),
+      ),
+    ).toBe(true);
+  });
 
   it.each(
     [false, true].flatMap((hasIndependentReason) =>

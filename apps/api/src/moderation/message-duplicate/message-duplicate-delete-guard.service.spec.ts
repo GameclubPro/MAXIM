@@ -26,7 +26,14 @@ function setup() {
   };
   const content = extractDuplicateMessageContent(update.raw);
   const binding: MessageDuplicateBinding = {
-    version: 1,
+    version: 3,
+    enforcementScope: 'delete_only',
+    lifecycleRevision: 'd'.repeat(64),
+    policyRevision: settings.duplicatePolicyRevision,
+    authorization: {
+      eventTimestampMs: Date.parse(update.message!.createdAt),
+      deadlineAtMs: Date.parse(update.message!.createdAt) + 600_000,
+    },
     senderId: '123',
     messageId: 'm2',
     eventTimestampMs: Date.parse(update.message!.createdAt),
@@ -55,6 +62,8 @@ function setup() {
     contentDigest: binding.contentDigest,
     mediaHashes: [],
     epoch: 0,
+    revision: 'e'.repeat(64),
+    originalId: 'f'.repeat(64),
   };
   const policy = {
     resolve: jest.fn().mockResolvedValue({
@@ -107,7 +116,11 @@ function setup() {
     stillMatches: jest.fn().mockResolvedValue(true),
     remove: jest.fn(),
     observeLifecycle: jest.fn(),
+    invalidateLifecycle: jest.fn(),
+    qualified: jest.fn().mockResolvedValue(null),
+    qualify: jest.fn().mockResolvedValue(1),
   };
+  const authorization = { isAllowed: jest.fn().mockResolvedValue(true) };
   const metrics = { record: jest.fn(), recordGuardRejection: jest.fn() };
   const service = new MessageDuplicateDeleteGuardService(
     prisma as never,
@@ -117,6 +130,7 @@ function setup() {
     policy as never,
     history as never,
     new ConfigService(),
+    authorization as never,
     metrics as never,
   );
   const params = {
@@ -139,6 +153,7 @@ function setup() {
     immunity,
     photos,
     history,
+    authorization,
     metrics,
   };
 }
@@ -181,6 +196,94 @@ describe('scheduled duplicate final action guard', () => {
 });
 
 describe('message duplicate final delete guard', () => {
+  it.each([1, 2] as const)('rejects legacy binding v%i before any MAX lookup', async (version) => {
+    const s = setup();
+    s.binding.version = version;
+    delete s.binding.enforcementScope;
+    delete s.binding.lifecycleRevision;
+    delete s.binding.policyRevision;
+    delete s.binding.original!.revision;
+    delete s.binding.original!.originalId;
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
+      'message_duplicate_binding_invalid',
+    );
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it('blocks a persisted decision after its authorization is revoked', async () => {
+    const s = setup();
+    s.authorization.isAllowed.mockResolvedValue(false);
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
+      /message_duplicate_/,
+    );
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it('rechecks authorization after external content and participant checks', async () => {
+    const s = setup();
+    s.max.getExactMessageRow.mockImplementation(async () => {
+      s.authorization.isAllowed.mockResolvedValue(false);
+      return (duplicateUpdate('m2', s.binding.eventTimestampMs).raw as { message: unknown })
+        .message;
+    });
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
+      /message_duplicate_/,
+    );
+    expect(s.authorization.isAllowed.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(s.history.stillMatches).toHaveBeenCalled();
+  });
+
+  it('rejects a returned settings value with a newer policy revision', async () => {
+    const s = setup();
+    s.settings.duplicatePolicyRevision += 2;
+    expect(messageDuplicateSettingsDigest(s.settings)).toBe(s.binding.settingsDigest);
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
+      'message_duplicate_settings_changed',
+    );
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it('reuses a qualified stage only while its current authorization remains allowed', async () => {
+    const s = setup();
+    s.history.qualified.mockResolvedValue(1);
+    const request = { ...s.params, binding: s.binding };
+    await expect(s.service.qualify(request)).resolves.toBe(1);
+    expect(s.history.qualify).not.toHaveBeenCalled();
+    s.authorization.isAllowed.mockResolvedValue(false);
+    await expect(s.service.qualify(request)).rejects.toThrow(/message_duplicate_/);
+    expect(s.history.qualify).not.toHaveBeenCalled();
+  });
+
+  it('does not reserve a stage after revocation or policy changes during qualification', async () => {
+    for (const change of ['authorization', 'settings', 'history']) {
+      const s = setup();
+      if (change === 'authorization') s.authorization.isAllowed.mockResolvedValue(false);
+      if (change === 'settings') s.settings.duplicatePolicyRevision += 1;
+      if (change === 'history') s.history.stillMatches.mockResolvedValue(false);
+      await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toThrow(
+        /message_duplicate_/,
+      );
+      expect(s.history.qualify).not.toHaveBeenCalled();
+    }
+  });
+
+  it('invalidates a changed original without inventing its edit timestamp', async () => {
+    const s = setup();
+    const original = s.originalRaw as { body: { text: string } };
+    original.body.text = 'Changed remotely';
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
+      'message_duplicate_original_changed',
+    );
+    expect(s.history.invalidateLifecycle).toHaveBeenCalledWith({
+      chatId: s.params.chatId,
+      messageId: s.binding.original!.messageId,
+      content: expect.objectContaining({ text: 'changed remotely' }),
+    });
+    expect(s.history.observeLifecycle).not.toHaveBeenCalled();
+  });
+
   it('rejects queued thumbnail-era evidence before any MAX lookup', async () => {
     const s = setup();
     Object.assign(s.binding, { mediaVersion: 'sha256-v1:sharp-rgb512-pdq-v2' });
@@ -258,7 +361,7 @@ describe('message duplicate final delete guard', () => {
 
   it('allows a renewed photo URL with verified content, but rejects a replacement photo', async () => {
     const s = setup();
-    s.binding.version = 2;
+    s.binding.enforcementScope = 'full';
     s.binding.hasPhotos = true;
     s.binding.compareMode = 'IMAGE';
     s.binding.imageScope = 'SAME_AUTHOR';
@@ -310,7 +413,7 @@ describe('message duplicate final delete guard', () => {
     });
     s.settings.duplicateBanEnabled = true;
     s.settings.duplicateBanMaxCount = 1;
-    s.binding.version = 2;
+    s.binding.enforcementScope = 'full';
     s.binding.sanction = {
       action: 'BAN',
       repeatCount: 1,

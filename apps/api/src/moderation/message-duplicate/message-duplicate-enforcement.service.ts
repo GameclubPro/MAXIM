@@ -46,18 +46,51 @@ export class MessageDuplicateEnforcementService {
   }): Promise<boolean> {
     const policy = await this.policy.resolve(params.chatId, true);
     const imageOnly = params.binding.compareMode === 'IMAGE';
+    const full = policy.mode === 'full';
+    const binding: MessageDuplicateBinding = {
+      ...params.binding,
+      enforcementScope: full ? 'full' : 'delete_only',
+    };
+    if (binding.version !== 3 || !binding.authorization) return false;
+    const claim = {
+      dedupeKey: `${MESSAGE_DUPLICATE_CLAIM_PREFIX}${digestDuplicateContent([params.chatId, binding.senderId, binding.messageId])}`,
+      messageActionKey: buildMessageScopedModerationActionClaimKey(
+        params.chatId,
+        binding.messageId,
+      ),
+      chatId: params.chatId,
+      userId: binding.senderId,
+      messageId: binding.messageId,
+      ruleCode: 'DUPLICATE_MESSAGE_ACTION',
+      updateType: 'message_action' as const,
+    };
+    params.assertLease?.();
     if (
       !messageDuplicateActionsEnabled(policy.mode) ||
       (imageOnly && policy.mode !== 'full') ||
-      (params.binding.hasPhotos && !imageOnly) ||
-      policy.revision !== params.binding.controlRevision ||
-      params.binding.eventTimestampMs < policy.effectiveAtMs
+      (binding.hasPhotos && !imageOnly) ||
+      policy.revision !== binding.controlRevision ||
+      binding.eventTimestampMs < policy.effectiveAtMs
     ) {
       this.metrics?.record('enforcement.policy_changed');
+      await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
       return false;
     }
-    const full = policy.mode === 'full';
-    const binding: MessageDuplicateBinding = { ...params.binding, ...(full ? { version: 2 } : {}) };
+    try {
+      await this.guard.assertQualificationAuthority(params.chatId, binding);
+    } catch (error) {
+      if (error instanceof MessageDuplicateGuardRejectedError) {
+        await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
+        return false;
+      }
+      throw error;
+    }
+    // FLAG: A competing rule must win the durable action claim before qualification
+    // can reserve an escalation stage. Our own interrupted claim is resumable.
+    if ((await this.intents.claimMessageActionBeforeQualification(claim)) === 'blocked') {
+      this.metrics?.record('enforcement.claim_blocked');
+      return false;
+    }
     let repeatCount: number | null;
     try {
       repeatCount = await this.guard.qualify({
@@ -68,10 +101,16 @@ export class MessageDuplicateEnforcementService {
         binding,
       });
     } catch (error) {
-      if (error instanceof MessageDuplicateGuardRejectedError) return false;
+      if (error instanceof MessageDuplicateGuardRejectedError) {
+        await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
+        return false;
+      }
       throw error;
     }
-    if (repeatCount === null) return false;
+    if (repeatCount === null) {
+      await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
+      return false;
+    }
     const decision = full
       ? resolveDuplicateFlowOutcome({
           settings: params.settings,
@@ -91,18 +130,6 @@ export class MessageDuplicateEnforcementService {
     if (full && (!params.update || !params.executeFullAction))
       throw new Error('Full message duplicate action executor unavailable');
     params.assertLease?.();
-    const claim = {
-      dedupeKey: `${MESSAGE_DUPLICATE_CLAIM_PREFIX}${digestDuplicateContent([params.chatId, binding.senderId, binding.messageId])}`,
-      messageActionKey: buildMessageScopedModerationActionClaimKey(
-        params.chatId,
-        binding.messageId,
-      ),
-      chatId: params.chatId,
-      userId: binding.senderId,
-      messageId: binding.messageId,
-      ruleCode: 'DUPLICATE_MESSAGE_ACTION',
-      updateType: 'message_action' as const,
-    };
     const intent: EnsureModerationDeleteIntentInput = {
       chatId: params.chatId,
       messageId: binding.messageId,
@@ -113,7 +140,13 @@ export class MessageDuplicateEnforcementService {
       originBotId: params.botId,
       ruleCode: 'DUPLICATE_DELETE',
       reasonKey: `MESSAGE_DUPLICATE:v1:${binding.eventTimestampMs}`,
-      retryUntilAt: new Date(Math.min(policy.expiresAtMs, binding.original!.expiresAtMs)),
+      retryUntilAt: new Date(
+        Math.min(
+          policy.expiresAtMs,
+          binding.original!.expiresAtMs,
+          binding.authorization.deadlineAtMs,
+        ),
+      ),
       event: {
         userId: binding.senderId,
         eventType: 'MESSAGE',
@@ -130,7 +163,19 @@ export class MessageDuplicateEnforcementService {
         },
       },
     };
+    try {
+      await this.guard.assertQualificationAuthority(params.chatId, binding);
+    } catch (error) {
+      if (error instanceof MessageDuplicateGuardRejectedError) {
+        await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
+        return false;
+      }
+      throw error;
+    }
+    params.assertLease?.();
     const result = await this.intents.ensureIntentWithMessageActionClaim({ claim, intent });
+    if (result.claim === 'blocked')
+      await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
     this.metrics?.record(
       result.claim === 'blocked' ? 'enforcement.claim_blocked' : 'enforcement.intent_handoff',
     );

@@ -9,6 +9,7 @@ describe('message duplicate main-path admission', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
     expect(await service.isAuthoritative('-123')).toBe(true);
     policy.resolve.mockResolvedValue({ mode: 'delete_only' });
@@ -20,11 +21,13 @@ describe('message duplicate main-path admission', () => {
     const enforcement = { enqueue: jest.fn() };
     const queue = { enqueue: jest.fn() };
     const metrics = { record: jest.fn(), recordContentRejection: jest.fn() };
+    const authorization = { revoke: jest.fn() };
     const service = new MessageDuplicateService(
       policy as never,
       history as never,
       enforcement as never,
       queue as never,
+      authorization as never,
       metrics as never,
     );
     const update = duplicateUpdate();
