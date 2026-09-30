@@ -1,11 +1,56 @@
 # План исправления антидубля, 30 сентября 2026
 
-Статус: исправления реализованы; общая валидация и выпуск выполняются. Основание:
+Статус: обязательные runtime-исправления реализованы, проверены и выпущены.
+Эксплуатационные ограничения и дальнейшие улучшения перечислены ниже. Основание:
 [аудит 30 сентября](antiduplicate-audit-2026-09-30.md), исходники
 `cfb93bae1ae730110c05e4c8290e0ab7f391c35c` и датированные read-only снимки VPS.
 Ниже разделены восемь подтверждённых дефектов, дополнительные риски и улучшения.
 План не гарантирует обнаружение всех возможных ошибок. Production-настройки,
 сообщения, санкции и runtime control при его подготовке не менялись.
+
+## Результат выпуска
+
+- Runtime SHA: `87a2d4f5766b447fb9adc65756b0506b3420335b`; release manifest:
+  `release-20260930T173743Z-87a2d4f5766b`. Успешны exact-SHA `Required` и
+  `Analyze JavaScript and TypeScript`, затем штатные strict production smokes.
+  Применена миграция policy/history revisions; все 14 API-ролей, OCR auxiliary
+  и оба активных static-компонента используют проверенные immutable CI images.
+  PostgreSQL/Redis не пересоздавались; webhook pause/drain/image fence сохранён.
+- Полный локальный `npm run check`: API 634 suites / 13 801 tests, contracts 311,
+  miniapp 1426, admin 15; infrastructure/agent checks также прошли. Выполнены реальные
+  Redis/BullMQ/Sharp регрессии, обязательные PostgreSQL races и Prisma checks;
+  miniapp visual smoke прошёл 13 сценариев. Production dependency audit: 0
+  vulnerabilities после обновления Nest Fastify adapter и Axios override.
+- После обновления ровно 17 предусмотренных column grants успешны
+  `postgres-audit duplicate --explain` и все три отчёта `postgres-audit duplicate`.
+  Таймаут сохранён. Насыщенные выборки дают только lower bounds; SQL не доказывает
+  runtime authority, свежесть capability или отсутствие новых failures.
+- Read-only наблюдение 17:45:55Z–17:58:30Z: 48 capacity samples, coverage complete,
+  readiness/queue metrics/fence без failing/unknown samples. Первое пятиминутное
+  окно содержало восстановление system mode и один отказ topology check; второе
+  прошло выбранные service checks без новых перезапусков. Общий lag p95 1.479 s,
+  максимум 2.286 s — это sampled oldest-queue lag, не request latency и не SLA.
+- Все 14 API-ролей имеют restart count 0. OCR auxiliary перезапустился один раз
+  с exit 0, OOM false; причина не установлена. Его health recovery может дать
+  `unexpectedMain=1` в текущем classifier, поэтому отдельный лишний API-контейнер
+  этим сигналом не доказан. Полное окно имеет status degraded; сохранялись
+  предупреждения по диску (минимум 29.524 GiB free), swap usage и swap-in.
+- Ограниченное Redis-чтение обнаружило шесть terminal failures в окне наблюдения:
+  два byte-limit, три unsupported multi-frame, один запрещённый photo URL.
+  Все — v2, точная job identity, одна попытка, `cleanupOnly=terminated`,
+  `actionEligible=false`; это отказы проверки источника, а не успешная модерация.
+  Защитные лимиты и allowlists не расширялись. Живые тестовые сообщения/санкции
+  и переключение runtime control не выполнялись; OCR остался shadow.
+- После основного окна system mode снова перешёл в `degrade` при доступном
+  readiness 200. Снимок очереди 18:04:01Z: wait/active/prioritized/dueNow равны
+  нулю, delayed 467. Диагностика показывает governor pause/slow и ordering
+  deferrals. Это сохраняет ограничение эксплуатационной приёмки; уменьшение
+  текущего lag не доказывает устойчивую ёмкость и не отменяет предупреждение.
+
+Не завершена отдельная эксплуатационная приёмка: sustainable throughput под
+production cgroup-лимитами и переход DAILY в явно назначенном живом тестовом чате.
+Гарантированная очистка claim после повторных stalls/потери BullMQ требует
+дальнейшего SQL cleanup lease/reconciler; текущий отказ остаётся fail-closed.
 
 ## Уточнения реализации
 
@@ -66,8 +111,9 @@
 - SQL-аудит intent использует десять literal status predicates с прежними caps,
   чтобы planner учитывал распределение статусов. `duplicate --explain` выводит
   только обычный план этого запроса; fixture со всеми конкурирующими индексами
-  проверяет ordered retention scan. Production-план и timeout проверяются после
-  синхронизации релиза, без расширения прав или лимитов.
+  проверяет ordered retention scan. Production-план и успешное выполнение
+  проверены после синхронизации релиза; timeout и предусмотренный набор из
+  17 узких column grants сохранены.
 
 Постоянные тесты выполняют реальные Lua-переходы, BullMQ и Sharp, а отдельные
 PostgreSQL tests проверяют триггер, конкурирующие claims и долговечные отзывы.
