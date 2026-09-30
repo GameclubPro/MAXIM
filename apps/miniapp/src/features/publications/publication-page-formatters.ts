@@ -9,6 +9,7 @@ import {
   getPublicationActionableDelivery,
   getPublicationOnceSlot,
   getPublicationTargetTitle,
+  hasPublicationScheduleError,
   type PublicationDraft,
   type PublicationTarget,
 } from './publication-model';
@@ -130,6 +131,11 @@ export function formatPublicationSchedule(publication: PublicationSummary): stri
   if (!schedule) {
     return 'Черновик';
   }
+  if (hasPublicationScheduleError(publication) && !publication.requiresScheduleDecision) {
+    return schedule.nextOccurrenceAt
+      ? `По плану · ${formatDateTime(schedule.nextOccurrenceAt, schedule.timezone)}`
+      : 'Расписание остановлено';
+  }
   if (schedule.mode === 'now') {
     return publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED'
       ? `Создано · ${formatDateTime(publication.createdAt, schedule.timezone)}`
@@ -161,7 +167,11 @@ export function formatPublicationSchedule(publication: PublicationSummary): stri
 
 export function getLifecycleTone(publication: PublicationSummary): PublicationFeedTone {
   const delivery = getPublicationActionableDelivery(publication);
-  if (publication.lifecycle === 'ERROR' || delivery.ambiguous > 0) {
+  if (
+    publication.lifecycle === 'ERROR' ||
+    delivery.ambiguous > 0 ||
+    hasPublicationScheduleError(publication)
+  ) {
     return 'danger';
   }
   if (publication.lifecycle === 'PAUSED' || delivery.failed > 0) {

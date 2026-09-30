@@ -86,6 +86,117 @@ describe('MaxRoutedPublicationService', () => {
     ).not.toContain('bot-1');
   });
 
+  it.each([
+    { label: 'new', recovered: false, url: null },
+    { label: 'new with a direct URL', recovered: false, url: 'https://max.ru/channel-1/mid-1' },
+    { label: 'recovered', recovered: true, url: null },
+    {
+      label: 'recovered with a ledger URL',
+      recovered: true,
+      url: 'https://max.ru/channel-1/mid-1',
+    },
+  ])(
+    'returns a $label receipt without a message lookup when hydration is disabled',
+    async ({ recovered, url }) => {
+      const maxBotLinkService = {
+        resolveBotRoute: jest.fn().mockResolvedValue({
+          purpose: 'send_message',
+          chatId: 'channel-1',
+          primaryBotId: 'bot-1',
+          botId: 'bot-1',
+          candidateBotIds: ['bot-1'],
+          reason: 'primary_confirmed',
+          routingVersion: 7,
+        }),
+      };
+      const receipt = { messageId: 'mid-1', url, chatId: 'channel-1', botId: 'bot-1' };
+      const maxActionDispatchService = {
+        recoverCompletedSend: jest.fn().mockResolvedValue(recovered ? receipt : null),
+        execute: jest.fn().mockResolvedValue(receipt),
+      };
+      const maxClientService = { resolveMessageLink: jest.fn() };
+      const service = new MaxRoutedPublicationService(
+        maxBotLinkService as never,
+        maxActionDispatchService as never,
+        maxClientService as never,
+      );
+
+      await expect(
+        service.publish({
+          entityId: 'channel-1',
+          logicalIdempotencyKey: 'publication:receipt-without-hydration',
+          text: 'publication',
+          trafficClass: 'background',
+          sourceTag: 'managed_broadcast',
+          requiredBotId: 'bot-1',
+          hydrateMessageUrl: false,
+        }),
+      ).resolves.toEqual({
+        ...receipt,
+        candidateBotIds: ['bot-1'],
+        routingVersion: recovered ? null : 7,
+      });
+
+      expect(maxClientService.resolveMessageLink).not.toHaveBeenCalled();
+      if (recovered) {
+        expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalled();
+        expect(maxActionDispatchService.execute).not.toHaveBeenCalled();
+      } else {
+        expect(maxActionDispatchService.execute).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
+  it.each([
+    { label: 'new', recovered: false },
+    { label: 'recovered', recovered: true },
+  ])('hydrates a $label receipt URL by default', async ({ recovered }) => {
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        reason: 'primary_confirmed',
+        routingVersion: 7,
+      }),
+    };
+    const receipt = { messageId: 'mid-1', url: null, botId: 'bot-1' };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(recovered ? receipt : null),
+      execute: jest.fn().mockResolvedValue(receipt),
+    };
+    const maxClientService = {
+      resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/channel-1/mid-1'),
+    };
+    const service = new MaxRoutedPublicationService(
+      maxBotLinkService as never,
+      maxActionDispatchService as never,
+      maxClientService as never,
+    );
+
+    await expect(
+      service.publish({
+        entityId: 'channel-1',
+        logicalIdempotencyKey: 'publication:default-url-hydration',
+        text: 'publication',
+        trafficClass: 'interactive',
+        sourceTag: 'test_publication',
+      }),
+    ).resolves.toMatchObject({
+      messageId: 'mid-1',
+      url: 'https://max.ru/channel-1/mid-1',
+      botId: 'bot-1',
+    });
+
+    expect(maxClientService.resolveMessageLink).toHaveBeenCalledWith('mid-1', {
+      botId: 'bot-1',
+      trafficClass: 'interactive',
+      sourceTag: 'test_publication',
+    });
+  });
+
   it('exposes sticky routing only from an exact future-night session proof', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-27T20:00:01.000Z'));
     const sessionKey = 'v1:Europe/Moscow:23:00:08:00:2026-07-27';

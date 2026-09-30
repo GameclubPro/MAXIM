@@ -503,13 +503,21 @@ export const createPublicationRequestSchema = publicationMutationBaseSchema
   });
 export type CreatePublicationRequest = z.infer<typeof createPublicationRequestSchema>;
 
-export const updatePublicationRequestSchema = publicationMutationBaseSchema.partial().extend({
-  expectedRevision: z.number().int().min(1),
-  requestId: z
-    .string()
-    .trim()
-    .regex(/^[A-Za-z0-9_-]{8,128}$/u),
-});
+// FLAG: PATCH omission must preserve stored fields; only supplied nested objects keep defaults.
+export const updatePublicationRequestSchema = publicationMutationBaseSchema
+  .extend({
+    title: publicationMutationBaseSchema.shape.title.removeDefault(),
+    schedule: publicationMutationBaseSchema.shape.schedule.removeDefault(),
+    intent: publicationMutationBaseSchema.shape.intent.removeDefault(),
+  })
+  .partial()
+  .extend({
+    expectedRevision: z.number().int().min(1),
+    requestId: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_-]{8,128}$/u),
+  });
 export type UpdatePublicationRequest = z.infer<typeof updatePublicationRequestSchema>;
 
 export const testPublicationRequestSchema = z.object({

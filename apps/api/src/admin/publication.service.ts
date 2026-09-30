@@ -771,7 +771,6 @@ export class PublicationService {
       });
       return this.get(publicationId, user, dispatchProfile);
     }
-
     const existing = await this.prisma.publication.findFirst({
       where: {
         id: publicationId,
@@ -800,7 +799,6 @@ export class PublicationService {
         currentRevision: existing.version,
       });
     }
-
     const audienceChanged =
       request.audience !== undefined &&
       !this.isPublicationAudienceEquivalent(request.audience, existing);
@@ -814,7 +812,6 @@ export class PublicationService {
     } else {
       targets = await this.resolvePersistedPublicationTargets(user, existing.targets, rootProfile);
     }
-
     const now = new Date();
     const existingSchedule =
       existing.schedule && existing.schedule.status !== PublicationScheduleStatus.DRAFT
@@ -837,13 +834,24 @@ export class PublicationService {
     ) {
       await this.publisherRouting.assertTargetsReady(targets, existing.requiredBotId);
     }
-
     const currentIntent = existing.lifecycle === PublicationLifecycle.DRAFT ? 'draft' : 'publish';
     const scheduleChanged =
       request.schedule !== undefined &&
       !this.arePublicationSchedulesEquivalent(existingSchedule, schedule);
-    const intentChanged = desiredIntent !== currentIntent;
-    const shouldRebuildSchedule = audienceChanged || scheduleChanged || intentChanged;
+    const scheduleRebuildRequested =
+      audienceChanged || scheduleChanged || desiredIntent !== currentIntent;
+    const repairErroredSchedule =
+      !scheduleRebuildRequested &&
+      request.schedule !== undefined &&
+      request.intent === 'publish' &&
+      rootProfile === PublicationDispatchProfile.PUBLIK_V1 &&
+      existing.lifecycle !== PublicationLifecycle.PAUSED &&
+      schedule?.mode === 'recurrence' &&
+      existing.schedule?.status === PublicationScheduleStatus.ERROR;
+    if (repairErroredSchedule && schedule.maxOccurrences !== null) {
+      throw new BadRequestException('Для перезапуска серии с лимитом задайте новое расписание.');
+    }
+    const shouldRebuildSchedule = scheduleRebuildRequested || repairErroredSchedule;
     PublicationPublisherRoutingService.assertRootUpdateAllowed(
       existing.dispatchProfile,
       shouldRebuildSchedule || request.content !== undefined,
@@ -852,7 +860,7 @@ export class PublicationService {
       desiredIntent === 'publish' && schedule && shouldRebuildSchedule
         ? this.expandInitialSchedule(schedule, now)
         : [];
-    const initialScheduleExhausted = this.isInitialRecurrenceExhausted(schedule, initialSlots, now);
+    const scheduleExhausted = this.isInitialRecurrenceExhausted(schedule, initialSlots, now);
     if (desiredIntent === 'publish' && shouldRebuildSchedule) {
       this.assertPublishableSchedule(schedule, initialSlots, now);
       await this.assertCalendarAvailability(
@@ -867,12 +875,7 @@ export class PublicationService {
       desiredIntent === 'publish' &&
       shouldRebuildSchedule &&
       existing.lifecycle !== PublicationLifecycle.PAUSED
-        ? this.resolveInitialRecurrenceMaterializeAt(
-            schedule,
-            initialSlots,
-            initialScheduleExhausted,
-            now,
-          )
+        ? this.resolveInitialRecurrenceMaterializeAt(schedule, initialSlots, scheduleExhausted, now)
         : null;
     const preparedContent = request.content
       ? await this.publicationContentService.prepareContentRevision(request.content)
@@ -883,7 +886,6 @@ export class PublicationService {
         user.userId,
       );
     }
-
     const nextVersion = existing.version + 1;
     try {
       await this.prisma.$transaction(async (tx: any) => {
@@ -913,7 +915,11 @@ export class PublicationService {
                 ? PublicationLifecycle.DRAFT
                 : existing.lifecycle === PublicationLifecycle.PAUSED
                   ? PublicationLifecycle.PAUSED
-                  : PublicationLifecycle.ACTIVE,
+                  : rootProfile === PublicationDispatchProfile.PUBLIK_V1 &&
+                      !shouldRebuildSchedule &&
+                      existing.schedule?.status === PublicationScheduleStatus.ERROR
+                    ? PublicationLifecycle.ERROR
+                    : PublicationLifecycle.ACTIVE,
           },
         });
         if (updated.count === 0) {
@@ -922,7 +928,6 @@ export class PublicationService {
             message: 'Публикация уже изменена. Обновите экран и повторите правку.',
           });
         }
-
         let contentRevisionId = existing.canonicalContentRevisionId;
         if (preparedContent) {
           const contentRevision =
@@ -942,7 +947,6 @@ export class PublicationService {
         if (!contentRevisionId) {
           throw new BadRequestException('Содержимое публикации не найдено.');
         }
-
         if (audienceChanged && request.audience) {
           await tx.publicationTarget.deleteMany({ where: { publicationId } });
           await tx.publicationTarget.createMany({
@@ -954,7 +958,6 @@ export class PublicationService {
             })),
           });
         }
-
         if (shouldRebuildSchedule) {
           await this.cancelFuturePublicationWork(tx, publicationId, now);
           if (desiredIntent === 'publish' && schedule && initialSlots.length > 0) {
@@ -1120,7 +1123,6 @@ export class PublicationService {
             },
           });
         }
-
         await tx.publicationMutationRecord.create({
           data: {
             actorUserId: user.userId,
@@ -1150,7 +1152,6 @@ export class PublicationService {
       }
       throw error;
     }
-
     await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
       publicationId,
       mutationRequestId: request.requestId,

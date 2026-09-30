@@ -3492,21 +3492,27 @@ export class AdminManagedBroadcastRuntime {
       const sentChatIds: string[] = [];
       const failedChatIds: string[] = [];
       let firstSendError: unknown = null;
-      const markDeliverySentInMemory = async (
+      const recordSentDelivery = async (
         delivery: any,
         sentMessage: MaxPublishedMessage,
         commentDialogReference: ManagedBroadcastCommentDialogReference | null,
+        resolvedBotId: string | undefined,
       ) => {
         if (!sentChatIds.includes(delivery.targetChatId)) {
           sentChatIds.push(delivery.targetChatId);
         }
 
+        // FLAG: Only a winning receipt CAS may request optional dialog-link hydration.
         try {
           await this.messageRuntime.recordDialogReference({
             chatId: delivery.targetChatId,
             actorUserId: row.actorUserId,
             messageId: sentMessage.messageId,
             publishedUrl: sentMessage.url ?? null,
+            publishedUrlRequestOptions:
+              isPublikExecution && resolvedBotId
+                ? { ...maxApiOptions, botId: resolvedBotId }
+                : undefined,
             text: request.normalizedSourceText,
             reference: commentDialogReference,
             source: reason,
@@ -3686,7 +3692,9 @@ export class AdminManagedBroadcastRuntime {
               trafficClass: maxSendOptions.trafficClass ?? 'interactive',
               actionHealthLane: maxSendOptions.actionHealthLane,
               sourceTag: maxSendOptions.sourceTag ?? MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
-              ...(publisherRoute ? { publisherExactBotId: publisherRoute.exactBotId } : {}),
+              ...(publisherRoute
+                ? { publisherExactBotId: publisherRoute.exactBotId, hydrateMessageUrl: false }
+                : {}),
               ...(row.publicationOccurrenceId
                 ? { sendRouteHalfOpenProbe: 'publication_exact_verification' as const }
                 : {}),
@@ -4494,7 +4502,7 @@ export class AdminManagedBroadcastRuntime {
             continue;
           }
           publicationTiming.observeReceipt();
-          await markDeliverySentInMemory(delivery, sentMessage, commentDialogReference);
+          await recordSentDelivery(delivery, sentMessage, commentDialogReference, resolvedBotId);
           activeDeliveryClaim = undefined;
         } catch (error: unknown) {
           if (!firstSendError) {
@@ -4535,7 +4543,7 @@ export class AdminManagedBroadcastRuntime {
             continue;
           }
           publicationTiming.observeReceipt();
-          await markDeliverySentInMemory(delivery, sentMessage, commentDialogReference);
+          await recordSentDelivery(delivery, sentMessage, commentDialogReference, resolvedBotId);
           activeDeliveryClaim = undefined;
           continue;
         }

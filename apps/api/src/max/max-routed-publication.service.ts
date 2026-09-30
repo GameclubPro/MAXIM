@@ -45,6 +45,7 @@ export type MaxRoutedPublicationRequest = {
   sendRouteHalfOpenProbe?: 'publication_exact_verification';
   sendRouteStickyProbe?: MaxFutureNightStickyRouteProbe;
   timeoutMs?: number;
+  hydrateMessageUrl?: boolean;
   ignoreFailureMetricStatuses?: readonly number[];
   prepareAttempt?: (context: MaxRoutedPublicationAttemptContext) => Promise<{
     text?: string;
@@ -247,6 +248,10 @@ export class MaxRoutedPublicationService {
     request: MaxRoutedPublicationRequest,
     result: { messageId: string; botId: string },
   ): Promise<string | null> {
+    // FLAG: A confirmed send receipt can be persisted without a follow-up message lookup.
+    if (request.hydrateMessageUrl === false) {
+      return null;
+    }
     try {
       return await this.maxClientService.resolveMessageLink(result.messageId, {
         botId: result.botId,

@@ -30,6 +30,9 @@
 | F11     | Receipt CAS создаёт identifier-free timing event от исходного scheduledAt или NOW intent до сохранённого receipt; причины deferral/missed/skipped отделены. Все refresh attempts учитываются в ограниченных минутных гистограммах.               |
 | F12     | Новые настоящие PostgreSQL/Redis тесты проверяют авторизацию, SQL планы, гонки и crash/queue restore. MAX HTTP в этих тестах заменён управляемым ответом.                                                                                        |
 | F1/F5   | Ограниченная production-диагностика отдельно показывает устаревшую 15-минутную проверку автора; трёхдневный discovery grant больше не обозначается как готовность к отправке.                                                                    |
+| F13     | Правка текста сохраняет ERROR расписания. Явное сохранение неизменённой неограниченной RECURRENCE проходит проверки и восстановление; ограниченная серия требует нового расписания. Ошибка видна даже при ACTIVE публикации.                     |
+| F14     | Необязательный URL lookup исключён из пути сохранения receipt Публика; ссылку для включённых comment/suggestion features получают только после успешного receipt CAS. Ошибка ссылки не меняет SENT и не препятствует записи dialog reference.    |
+| F15     | «Версия для повтора» сохраняет только title/content и request/revision identity, не создавая новый NOW выход и не меняя audience/schedule/intent. Отсутствующие поля PATCH больше не заполняются create-defaults Zod 4.                          |
 
 ## Уточнения Политики
 
@@ -176,6 +179,55 @@ grant. `publication_due`: девять returned; `publication_actor_due`: 13 ret
 ограниченному materialized sample; новые columns/grants/table sources не добавлены.
 PGlite regression различает одинаковые PENDING deliveries у двух состояний
 расписания без вывода идентификаторов; весь focused audit suite 6/6 прошёл.
+Diagnostic commit `96a91c92138ea1ad4d37927d6af75b05c92948e9` прошёл staged
+static/docs/infra checks (495 infra tests), Required и CodeQL. Обычный
+`deploy main --plan` синхронизировал server tooling и подтвердил отсутствие
+компонентов для пересоздания. Повторные EXPLAIN/report завершились последовательно:
+корреляция использует только Hash Join ограниченных materialized CTE, без новых
+широких table sources.
+
+Единственный sampled SCHEDULED с возрастом 52 163 секунды относится к ACTIVE
+публикации с RECURRENCE schedule в ERROR. Все восемь sampled targets metadata-ready,
+delivery rows отсутствуют. Обработчик требует ACTIVE schedule, поэтому этот выход
+не выполняется. Это установленная причина исключения из обработки; первопричина
+самого ERROR не выводится fixed catalog, её нельзя приписывать истечению прав.
+
+Локальный review обнаружил воспроизводимую ошибку согласованности: publish-правка
+текста/названия выставляла publication lifecycle ACTIVE, но без смены audience,
+schedule или intent не перестраивала прежний ERROR schedule. Интерфейс смотрел
+только lifecycle и скрывал ERROR расписания. Это подтверждённый дефект текущего
+пути обновления, совместимый с sampled состоянием; он не устанавливает причину
+первоначального перехода конкретного production расписания в ERROR.
+Обычная content/title правка сохраняет ERROR, поскольку rollup также ставит ERROR
+после FAILED/PARTIAL/AMBIGUOUS в NOW/ONCE. Автоматическое перестроение NOW из такой
+правки могло бы создать новый send intent. Явное сохранение неизменённого
+неограниченного RECURRENCE использует существующие validation, calendar/revision
+и cancellation guards. Для ограниченного числа повторений требуется новое
+расписание: прежний лимит не сбрасывается при таком восстановлении.
+Прежние attempted/ambiguous остаются отдельными запусками.
+
+Проверка client payload выявила отдельный риск: «Версия для повтора» использовала
+общий update builder, который передавал NOW schedule и SNAPSHOT audience вместе
+с новым содержимым. Такая правка могла создать отдельный NOW occurrence до
+повтора исходного выхода. Для retry-version update передаются только content/title
+и revision/request identity; исходные schedule/audience/intent сохраняются.
+
+Сервисные регрессии также выявили семантику Zod 4: `createBase.partial()` сохраняет
+внутренние defaults, поэтому пропущенные PATCH schedule/title/intent превращались
+в null/пустую строку/publish. Update schema должна сохранять отсутствие этих полей,
+при этом create defaults и defaults внутри явно переданного content остаются.
+
+Другой подтверждённый источник лишней задержки: routed send после MAX success
+мог выполнить один-два GET для получения URL перед сохранением delivery receipt.
+В live dispatcher URL используется только для включённых комментариев/предложений.
+Размер вклада в observed p95 неизвестен. Эта работа исключена для обычных публикаций
+и выполняется после receipt persistence только для включённых кнопок. Сохраняются
+точный bot, исходные lane/source и обычное поведение остальных routed callers.
+Проигравший normal/fallback receipt CAS не запускает lookup; ошибка lookup сохраняет
+SENT и безопасную запись dialog reference без URL. Существующий message runtime
+владеет этой необязательной работой; guard budgets не повышены.
+Распределение бюджета, последовательный fanout и проверки полномочий сохраняются;
+из короткого среза нет основания повышать concurrency или rps.
 
 ## Операционная Приёмка
 

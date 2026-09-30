@@ -20,9 +20,126 @@ import {
   publicationSummarySchema,
   publicationTargetsRefreshResponseSchema,
   retryPublicationOccurrenceRequestSchema,
+  updatePublicationRequestSchema,
 } from '@maxim/contracts/publication';
 
 describe('publication contracts', () => {
+  it('preserves omitted top-level fields in a minimal publication update', () => {
+    const request = { expectedRevision: 2, requestId: 'update_request_1' };
+    expect(updatePublicationRequestSchema.parse(request)).toEqual(request);
+  });
+
+  it('keeps a content-only update limited to content while retaining its nested defaults', () => {
+    expect(
+      updatePublicationRequestSchema.parse({
+        expectedRevision: 2,
+        requestId: 'update_content_1',
+        content: { text: 'Edited post' },
+      }),
+    ).toEqual({
+      expectedRevision: 2,
+      requestId: 'update_content_1',
+      content: { text: 'Edited post', textFormat: 'plain', buttons: [], media: [] },
+    });
+  });
+
+  it('does not materialize defaults for explicitly undefined update fields', () => {
+    const request = {
+      expectedRevision: 2,
+      requestId: 'update_undefined_1',
+      title: undefined,
+      content: undefined,
+      audience: undefined,
+      schedule: undefined,
+      intent: undefined,
+    };
+    expect(updatePublicationRequestSchema.parse(request)).toEqual(request);
+  });
+
+  it('retains an explicit null schedule without adding title or intent mutations', () => {
+    const request = {
+      expectedRevision: 2,
+      requestId: 'update_schedule_1',
+      schedule: null,
+    };
+    expect(updatePublicationRequestSchema.parse(request)).toEqual(request);
+  });
+
+  it('validates explicit update fields and retains defaults inside supplied audience and schedule', () => {
+    expect(
+      updatePublicationRequestSchema.parse({
+        expectedRevision: 2,
+        requestId: 'update_fields_1',
+        title: '  Edited title  ',
+        intent: 'draft',
+        audience: { targets: [{ chatId: 'channel-1', entityType: 'channel' }] },
+        schedule: { mode: 'once', at: '2026-10-01T12:00:00Z' },
+      }),
+    ).toEqual({
+      expectedRevision: 2,
+      requestId: 'update_fields_1',
+      title: 'Edited title',
+      intent: 'draft',
+      audience: {
+        selection: 'SELECTED',
+        mode: 'SNAPSHOT',
+        targets: [{ chatId: 'channel-1', entityType: 'channel' }],
+      },
+      schedule: {
+        mode: 'once',
+        at: '2026-10-01T12:00:00Z',
+        timezone: 'Europe/Moscow',
+        replaceConflicts: false,
+      },
+    });
+  });
+
+  it.each([
+    { title: 'A'.repeat(121) },
+    { title: null },
+    { intent: 'resume' },
+    { intent: null },
+    { content: { text: 'A'.repeat(MAX_PUBLICATION_TEXT_LENGTH + 1) } },
+    { audience: { targets: [] } },
+    { schedule: { mode: 'once', at: 'invalid-time' } },
+  ])('rejects invalid explicitly supplied update fields: %j', (fields) => {
+    expect(
+      updatePublicationRequestSchema.safeParse({
+        expectedRevision: 2,
+        requestId: 'update_invalid_1',
+        ...fields,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('preserves create defaults and still requires a schedule for the default publish intent', () => {
+    const request = {
+      requestId: 'create_defaults_1',
+      content: { text: 'New post' },
+      audience: { targets: [{ chatId: 'chat-1', entityType: 'chat' }] },
+    };
+    expect(createPublicationRequestSchema.safeParse(request).success).toBe(false);
+    expect(createPublicationRequestSchema.parse({ ...request, intent: 'draft' })).toEqual({
+      ...request,
+      title: '',
+      intent: 'draft',
+      schedule: null,
+      content: { text: 'New post', textFormat: 'plain', buttons: [], media: [] },
+      audience: {
+        selection: 'SELECTED',
+        mode: 'SNAPSHOT',
+        targets: [{ chatId: 'chat-1', entityType: 'chat' }],
+      },
+    });
+    expect(
+      createPublicationRequestSchema.parse({ ...request, schedule: { mode: 'now' } }),
+    ).toMatchObject({
+      title: '',
+      intent: 'publish',
+      schedule: { mode: 'now', timezone: 'Europe/Moscow' },
+    });
+  });
+
   it('defaults additive dispatch issues to null and rejects internal blocker codes', () => {
     expect(publicationSummarySchema.shape.dispatchIssue.parse(undefined)).toBeNull();
     expect(publicationOccurrenceSummarySchema.shape.dispatchIssue.parse(undefined)).toBeNull();

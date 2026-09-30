@@ -1,4 +1,4 @@
-import type { PublicationDraft } from './publication-model';
+import type { PublicationDraft, PublicationEditScope } from './publication-model';
 import {
   buildCreatePublicationRequest,
   buildTestPublicationRequest,
@@ -12,6 +12,7 @@ export type PublicationSaveRequestContext =
       publicationId: string;
       expectedRevision: number;
       sessionId?: string | null;
+      editScope?: PublicationEditScope | null;
     };
 
 export type PublicationRetryRequestKeyInput =
@@ -106,6 +107,7 @@ export function buildPublicationSaveRequestKey(
           context.expectedRevision,
           REQUEST_KEY_PLACEHOLDER,
           replaceConflicts,
+          context.kind === 'edit' && context.editScope === 'retry',
         )
       : buildCreatePublicationRequest(draft, REQUEST_KEY_PLACEHOLDER, { replaceConflicts });
 

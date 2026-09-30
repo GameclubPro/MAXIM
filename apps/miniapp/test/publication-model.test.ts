@@ -6,6 +6,7 @@ import {
   buildPublicationSaveFeedback,
   buildPublicationSystemButtons,
   buildTestPublicationRequest,
+  buildUpdatePublicationRequest,
   canResumePublication,
   canReviewPublicationScheduleDecision,
   createEmptyPublicationDraft,
@@ -17,6 +18,7 @@ import {
   getPublicationDispatchIssuePresentation,
   getPublicationExplicitSlotsLimitFeedback,
   getPublicationFeedStatusLabel,
+  getPublicationScheduleErrorPresentation,
   getPublicationListPollingInterval,
   getPublicationPrimaryActionLabel,
   getPublicationRecurrenceIntervalNotice,
@@ -41,7 +43,10 @@ import {
   shouldPersistPublicationDraft,
   toPublicationTarget,
 } from '../src/features/publications/publication-model';
-import { getLifecycleTone } from '../src/features/publications/publication-page-formatters';
+import {
+  formatPublicationSchedule,
+  getLifecycleTone,
+} from '../src/features/publications/publication-page-formatters';
 import {
   buildPublicationDraftStorageKey,
   parsePublicationDraftEnvelope,
@@ -233,6 +238,158 @@ test('missed runs remain reviewable without delivery rows and do not mark a futu
     }),
     'Нужно проверить',
   );
+});
+
+test('an active publication exposes an errored recurrence without retrying an untouched old run', () => {
+  const publication = {
+    lifecycle: 'ACTIVE',
+    requiresScheduleDecision: false,
+    dispatchIssue: null,
+    delivery: { total: 0, pending: 0, sent: 0, failed: 0, ambiguous: 0, canceled: 0 },
+    schedule: {
+      mode: 'recurrence',
+      status: 'ERROR',
+      frequency: 'daily',
+      interval: 1,
+      times: ['19:30'],
+      timezone: 'Europe/Moscow',
+      nextOccurrenceAt: '2026-09-01T16:30:00.000Z',
+      lastError: 'Нет доступного времени для следующей отправки.',
+    },
+  } as Parameters<typeof getPublicationFeedStatusLabel>[0];
+  assert.equal(getPublicationFeedStatusLabel(publication), 'Ошибка расписания');
+  assert.equal(getLifecycleTone(publication), 'danger');
+  assert.equal(formatPublicationSchedule(publication), 'По плану · 01 сент., 19:30');
+  const capabilities = getPublicationActionCapabilities(publication);
+  assert.equal(capabilities.canEdit, true);
+  assert.equal(capabilities.editScope, 'schedule');
+  assert.equal(capabilities.canRetry, false);
+  assert.equal(capabilities.canResume, false);
+  assert.equal(capabilities.canPause, false);
+  assert.deepEqual(getPublicationScheduleErrorPresentation(publication), {
+    canRecheck: false,
+    description: 'Нет доступного времени для следующей отправки.',
+    label: 'Ошибка расписания',
+    title: 'Расписание остановлено',
+  });
+  assert.equal(getPublicationListPollingInterval('schedules', [publication]), false);
+  assert.equal(getPublicationDetailsPollingInterval(publication, publication.delivery), false);
+  for (const lifecycle of ['COMPLETED', 'CANCELED', 'PAUSED', 'DRAFT'] as const) {
+    assert.equal(getPublicationScheduleErrorPresentation({ ...publication, lifecycle }), null);
+    assert.notEqual(
+      getPublicationFeedStatusLabel({ ...publication, lifecycle }),
+      'Ошибка расписания',
+    );
+  }
+  assert.equal(
+    getPublicationFeedStatusLabel({ ...publication, requiresScheduleDecision: true }),
+    'Есть пропущенные отправки',
+  );
+  assert.equal(
+    getPublicationFeedStatusLabel({
+      ...publication,
+      delivery: { ...publication.delivery, total: 1, ambiguous: 1 },
+    }),
+    'Нужно проверить',
+  );
+});
+
+test('schedule error presentation hides technical and sensitive diagnostics', () => {
+  for (const lastError of [
+    null,
+    'PUBLISHER_RUNTIME_UNAVAILABLE',
+    'Проверка не выполнена: token=private-value',
+    'Ошибка запроса https://example.com/private',
+    '{"secret":"private-value"}',
+  ]) {
+    const publication = {
+      lifecycle: 'ACTIVE',
+      schedule: { status: 'ERROR', lastError },
+    } as Parameters<typeof getPublicationScheduleErrorPresentation>[0];
+    assert.equal(
+      getPublicationScheduleErrorPresentation(publication)?.description,
+      'Отправки по этому расписанию остановлены.',
+    );
+  }
+});
+
+test('retry content saves omit a new send while an explicit schedule repair retains publish intent', async () => {
+  const draft = { ...createEmptyPublicationDraft([chatTarget]), text: 'Исправленный текст' };
+  const calls: Array<{ path: string; init?: ApiRequestInit }> = [];
+  const api: ApiTransport = {
+    request: async (path, init) => {
+      calls.push({ path, init });
+      throw new Error('stop');
+    },
+    requestKeepalive: () => undefined,
+  };
+  for (const timingMode of ['now', 'once'] as const) {
+    const contentOnly = buildUpdatePublicationRequest(
+      { ...draft, timingMode, scheduledSlots: ['2026-09-01T16:30:00.000Z'] },
+      2,
+      'retry-version-save',
+      false,
+      true,
+    );
+    assert.deepEqual(Object.keys(contentOnly).sort(), [
+      'content',
+      'expectedRevision',
+      'requestId',
+      'title',
+    ]);
+    assert.equal(contentOnly.content?.text, 'Исправленный текст');
+    await assert.rejects(updatePublication(api, 'publication-live-all', contentOnly), /stop/u);
+    const sent = JSON.parse(calls.at(-1)?.init?.body ?? '{}') as Record<string, unknown>;
+    assert.deepEqual(Object.keys(sent).sort(), Object.keys(contentOnly).sort());
+  }
+  const publishNowDraft = buildUpdatePublicationRequest(draft, 2, 'draft-publish');
+  assert.equal(publishNowDraft.schedule?.mode, 'now');
+  draft.timingMode = 'schedule';
+  draft.scheduleKind = 'recurrence';
+  draft.recurrence = {
+    ...draft.recurrence,
+    frequency: 'daily',
+    times: ['19:30'],
+    startsAt: '2030-10-01T00:00:00.000Z',
+  };
+  const repair = buildUpdatePublicationRequest(draft, 2, 'schedule-repair');
+  assert.equal(repair.intent, 'publish');
+  assert.equal(repair.schedule?.mode, 'recurrence');
+});
+
+test('failed and ambiguous single sends only edit their content version while untouched errors can be rescheduled', () => {
+  const emptyDelivery = {
+    total: 0,
+    pending: 0,
+    sent: 0,
+    failed: 0,
+    ambiguous: 0,
+    canceled: 0,
+  };
+  for (const mode of ['now', 'once'] as const) {
+    const publication = {
+      lifecycle: 'ERROR',
+      delivery: emptyDelivery,
+      schedule: {
+        mode,
+        status: 'ERROR',
+        nextOccurrenceAt: '2026-09-01T16:30:00.000Z',
+      },
+    } as Parameters<typeof getPublicationActionCapabilities>[0];
+    const untouched = getPublicationActionCapabilities(publication);
+    assert.equal(untouched.editScope, 'schedule');
+    assert.equal(untouched.canRetry, false);
+    for (const result of ['failed', 'ambiguous'] as const) {
+      const unresolved = getPublicationActionCapabilities({
+        ...publication,
+        actionableDelivery: { ...emptyDelivery, total: 1, [result]: 1 },
+      });
+      assert.equal(unresolved.editScope, 'retry');
+      assert.equal(unresolved.canRetry, result === 'failed');
+      assert.equal(unresolved.canPause, false);
+      assert.equal(unresolved.canResume, false);
+    }
+  }
 });
 
 test('previews other large recurrence intervals without warning for routine intervals', () => {

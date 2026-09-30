@@ -1,7 +1,11 @@
 import { ServiceUnavailableException, type Logger } from '@nestjs/common';
 import type { ManagedEntityType, SendBroadcastRequest } from '@maxim/contracts';
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
-import { MAX_API_SOURCE_TAGS, type MaxSendMessageOptions } from '../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  type MaxClientService,
+  type MaxSendMessageOptions,
+} from '../max/max-client.service';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
 import type { ManagedBroadcastCommentDialogReference } from './admin-managed-broadcast-ledger';
 import type { ManagedBroadcastResolvedMedia } from './admin.service.support';
@@ -10,6 +14,11 @@ import {
   CHAT_DIALOG_ACTION_AUTO_ATTACH,
 } from './admin.service.support';
 import { readPublisherPreparedDialogContext } from './publisher-dialog-context.service';
+
+type MaxMessageLinkRequestOptions = Exclude<
+  NonNullable<Parameters<MaxClientService['resolveMessageLink']>[1]>,
+  string
+> & { botId: string };
 
 export class AdminManagedBroadcastMessageRuntime {
   constructor(
@@ -106,6 +115,7 @@ export class AdminManagedBroadcastMessageRuntime {
     actorUserId: string;
     messageId: string | null;
     publishedUrl?: string | null;
+    publishedUrlRequestOptions?: MaxMessageLinkRequestOptions;
     text?: string | null;
     reference: ManagedBroadcastCommentDialogReference | null;
     source: string;
@@ -117,7 +127,29 @@ export class AdminManagedBroadcastMessageRuntime {
       return;
     }
     const previewText = params.text?.trim() ? params.text : null;
-    const publishedUrl = params.publishedUrl?.trim() || null;
+    let publishedUrl = params.publishedUrl?.trim() || null;
+    // FLAG: Callers supply lookup options only after persisting a send receipt. Link failure must
+    // not change send recovery or prevent recording the comment/suggestion dialog reference.
+    if (!publishedUrl && params.publishedUrlRequestOptions) {
+      try {
+        publishedUrl = await this.context.maxClient.resolveMessageLink(messageId, {
+          ...params.publishedUrlRequestOptions,
+          sourceTag:
+            params.publishedUrlRequestOptions.sourceTag ?? MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            broadcastId: params.broadcastId,
+            occurrenceIndex: params.occurrenceIndex,
+            messageId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Managed broadcast comment dialog link lookup failed after persisted send receipt',
+        );
+      }
+    }
     const commonPayload = {
       messageId,
       threadId: reference.threadId,

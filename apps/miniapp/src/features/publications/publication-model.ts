@@ -36,12 +36,21 @@ import {
   buildChannelBroadcastSystemButtons,
   type BroadcastSystemButtonPreview,
 } from '../../lib/broadcast-system-buttons';
+import {
+  formatPublicationDeliveryError,
+  PUBLICATION_DELIVERY_ERROR_FALLBACK,
+} from './publication-delivery-error';
 
 export type PublicationView = 'current' | 'schedules' | 'history';
 export type PublicationEditorKind = 'create' | 'edit' | 'duplicate' | 'import' | 'draft';
 export type PublicationEditorContext =
   | { kind: 'create' }
-  | { kind: 'edit'; publicationId: string; expectedRevision: number }
+  | {
+      kind: 'edit';
+      publicationId: string;
+      expectedRevision: number;
+      editScope: PublicationEditScope | null;
+    }
   | { kind: 'duplicate' }
   | { kind: 'draft'; publicationId: string; expectedRevision: number }
   | {
@@ -81,6 +90,7 @@ type PublicationPollingItem = Pick<
   schedule: {
     mode: 'now' | 'once' | 'slots' | 'recurrence';
     nextOccurrenceAt: string | null;
+    status?: NonNullable<PublicationSummary['schedule']>['status'];
   } | null;
 };
 
@@ -123,6 +133,31 @@ export type PublicationDispatchIssuePresentation = {
 };
 
 export const PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS = 30_000;
+
+export function hasPublicationScheduleError(
+  publication: Pick<PublicationSummary, 'lifecycle' | 'schedule'>,
+): boolean {
+  return (
+    (publication.lifecycle === 'ACTIVE' || publication.lifecycle === 'ERROR') &&
+    publication.schedule?.status === 'ERROR'
+  );
+}
+
+export function getPublicationScheduleErrorPresentation(
+  publication: Pick<PublicationSummary, 'lifecycle' | 'schedule'>,
+): PublicationDispatchIssuePresentation | null {
+  if (!hasPublicationScheduleError(publication)) return null;
+  const reason = formatPublicationDeliveryError(publication.schedule?.lastError);
+  return {
+    canRecheck: false,
+    description:
+      reason && reason !== PUBLICATION_DELIVERY_ERROR_FALLBACK
+        ? reason
+        : 'Отправки по этому расписанию остановлены.',
+    label: 'Ошибка расписания',
+    title: 'Расписание остановлено',
+  };
+}
 
 export function getPublicationDispatchIssuePresentation(
   issue: PublicationDispatchIssue | 'decision_required' | null,
@@ -194,6 +229,9 @@ export function getPublicationFeedStatusLabel(publication: PublicationSummary): 
   if (publication.lifecycle !== 'ACTIVE') {
     return getPublicationLifecycleLabel(publication.lifecycle);
   }
+  if (hasPublicationScheduleError(publication)) {
+    return getPublicationScheduleErrorPresentation(publication)!.label;
+  }
   return (
     getPublicationDispatchIssuePresentation(
       publication.dispatchIssue,
@@ -219,6 +257,16 @@ export function getPublicationEditActionLabel(scope: PublicationEditScope | null
     return 'Изменить версию для повтора';
   }
   return 'Изменить расписание';
+}
+
+export function getPublicationEditorTitle(
+  scope: PublicationEditScope | null,
+  importing: boolean,
+): string {
+  if (importing) return 'Черновик';
+  if (scope === 'retry') return 'Версия для повтора';
+  if (scope === 'future') return 'Будущие отправки';
+  return scope === 'schedule' ? 'Расписание' : 'Новый пост';
 }
 
 export type PublicationTarget = {
@@ -393,10 +441,18 @@ export function getPublicationActionCapabilities(
   const scheduleMode = publication.schedule?.mode;
   const hasFutureSends = Boolean(publication.schedule?.nextOccurrenceAt);
   const isMultiSendSchedule = scheduleMode === 'slots' || scheduleMode === 'recurrence';
+  const scheduleError = hasPublicationScheduleError(publication);
+  const hasUnresolvedDelivery = actionableDelivery.failed > 0 || actionableDelivery.ambiguous > 0;
 
   let editScope: PublicationEditScope | null = null;
   if (!terminal) {
-    if (hasFutureSends) {
+    if (scheduleError && isMultiSendSchedule) {
+      editScope = 'schedule';
+    } else if (retryableLifecycle && !isMultiSendSchedule && hasUnresolvedDelivery) {
+      editScope = 'retry';
+    } else if (scheduleError) {
+      editScope = 'schedule';
+    } else if (hasFutureSends) {
       editScope = 'future';
     } else if (retryableLifecycle && actionableDelivery.failed > 0) {
       editScope = 'retry';
@@ -408,7 +464,7 @@ export function getPublicationActionCapabilities(
   return {
     canCancel: !terminal,
     canEdit: editScope !== null,
-    canPause: retryableLifecycle && isMultiSendSchedule,
+    canPause: retryableLifecycle && isMultiSendSchedule && !scheduleError,
     canResume: canResumePublication(publication.lifecycle),
     canRetry: retryableLifecycle && actionableDelivery.failed > 0,
     editScope,
@@ -512,7 +568,11 @@ export function getPublicationListPollingInterval(
   }
 
   const nextActiveOccurrenceMs = items.reduce<number | null>((nearest, item) => {
-    if (item.lifecycle !== 'ACTIVE' || !item.schedule?.nextOccurrenceAt) {
+    if (
+      item.lifecycle !== 'ACTIVE' ||
+      item.schedule?.status === 'ERROR' ||
+      !item.schedule?.nextOccurrenceAt
+    ) {
       return nearest;
     }
     const candidate = Date.parse(item.schedule.nextOccurrenceAt);
@@ -1164,12 +1224,18 @@ export function buildUpdatePublicationRequest(
   expectedRevision: number,
   requestId: string,
   replaceConflicts = false,
+  contentOnly = false,
 ): UpdatePublicationRequest {
-  return {
+  const contentRequest = {
     expectedRevision,
     requestId,
     title: draft.title.trim(),
     content: buildPublicationContent(draft),
+  };
+  if (contentOnly) return contentRequest;
+
+  return {
+    ...contentRequest,
     audience: {
       selection: 'SELECTED',
       mode: 'SNAPSHOT',

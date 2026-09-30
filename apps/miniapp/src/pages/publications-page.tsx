@@ -54,6 +54,8 @@ import {
   buildPublicationSystemButtons,
   buildTestPublicationRequest,
   canReviewPublicationScheduleDecision,
+  hasPublicationScheduleError,
+  getPublicationEditorTitle,
   buildUpdatePublicationRequest,
   createEmptyPublicationDraft,
   createPublicationDuplicateDraft,
@@ -83,7 +85,6 @@ import {
   shouldPersistPublicationDraft,
   type PublicationDraft,
   type PublicationEditorContext,
-  type PublicationEditScope,
   type PublicationEntityFilter,
   type PublicationStatusFilter,
   type PublicationTimingMode,
@@ -698,6 +699,7 @@ export function PublicationsPage({
             context.expectedRevision,
             requestId,
             replaceConflicts,
+            context.kind === 'edit' && context.editScope === 'retry',
           );
           save = () => updatePublication(api, context.publicationId, request);
         } else {
@@ -726,8 +728,7 @@ export function PublicationsPage({
       }
       await invalidatePublicationQueries();
       const feedback = buildPublicationSaveFeedback(publication, {
-        editScope:
-          editorContext?.kind === 'edit' ? (draft.timingMode === 'now' ? 'retry' : 'future') : null,
+        editScope: editorContext?.kind === 'edit' ? editorContext.editScope : null,
         editorKind: editorContext?.kind ?? null,
         timingMode: draft.timingMode,
       });
@@ -837,7 +838,12 @@ export function PublicationsPage({
       replaceDraft(isolatedDraft);
       setEditorContext(
         mode === 'edit'
-          ? { kind: 'edit', publicationId: details.id, expectedRevision: details.version }
+          ? {
+              kind: 'edit',
+              publicationId: details.id,
+              expectedRevision: details.version,
+              editScope: getPublicationActionCapabilities(details).editScope,
+            }
           : mode === 'draft'
             ? { kind: 'draft', publicationId: details.id, expectedRevision: details.version }
             : mode === 'import'
@@ -901,6 +907,7 @@ export function PublicationsPage({
               kind: 'edit',
               publicationId: details.id,
               expectedRevision: details.version,
+              editScope: current?.kind === 'edit' ? current.editScope : null,
             },
       );
       setRevisionConflictPublicationId(null);
@@ -1064,9 +1071,13 @@ export function PublicationsPage({
     editorClosePending;
   const isBusy = operationBusy || mediaPreparing;
   const anyBusy = isBusy || resolveAmbiguousMutation.isPending;
-  const recurrenceError = getRecurrenceError(draft);
-  const timingIssue = getPublicationTimingIssue(draft);
-  const explicitSlotsLimitFeedback = getPublicationExplicitSlotsLimitFeedback(draft);
+  const isRetryVersionEditor =
+    editorContext?.kind === 'edit' && editorContext.editScope === 'retry';
+  const recurrenceError = isRetryVersionEditor ? null : getRecurrenceError(draft);
+  const timingIssue = isRetryVersionEditor ? null : getPublicationTimingIssue(draft);
+  const explicitSlotsLimitFeedback = isRetryVersionEditor
+    ? null
+    : getPublicationExplicitSlotsLimitFeedback(draft);
   const validationIssues = useMemo<BroadcastPublishIssueAction[]>(() => {
     const issues: BroadcastPublishIssueAction[] = [];
     if (imagesNeedReselection) {
@@ -1092,12 +1103,12 @@ export function PublicationsPage({
           focusEditorSection('content', `Максимум ${PUBLICATION_TEXT_MAX_LENGTH} символов.`),
       });
     }
-    if (draft.targets.length === 0) {
+    if (!isRetryVersionEditor && draft.targets.length === 0) {
       issues.push({
         label: 'Получатели',
         onClick: () => focusEditorSection('targets', 'Выберите хотя бы одного получателя.'),
       });
-    } else if (selectedPublisherTargetUnavailable) {
+    } else if (!isRetryVersionEditor && selectedPublisherTargetUnavailable) {
       issues.push({
         label: 'Подключение',
         onClick: () =>
@@ -1140,6 +1151,7 @@ export function PublicationsPage({
     hasButtonErrors,
     hasContent,
     imagesNeedReselection,
+    isRetryVersionEditor,
     recurrenceError,
     selectedPublisherTargetUnavailable,
     timingIssue,
@@ -1622,13 +1634,13 @@ export function PublicationsPage({
       setButtonsOpen(true);
       return reject('content', 'Проверьте текст и ссылку кнопки.');
     }
-    if (draft.targets.length === 0) {
+    if (!isRetryVersionEditor && draft.targets.length === 0) {
       return reject('targets', 'Выберите хотя бы одного получателя.');
     }
-    if (selectedPublisherTargetUnavailable) {
+    if (!isRetryVersionEditor && selectedPublisherTargetUnavailable) {
       return reject('targets', 'Выбранный получатель пока не готов к публикации через Публик.');
     }
-    if (!options.ignoreSchedule) {
+    if (!options.ignoreSchedule && !isRetryVersionEditor) {
       if (reportExplicitSlotsLimit()) {
         return false;
       }
@@ -1921,6 +1933,11 @@ export function PublicationsPage({
     const delivery = getPublicationActionableDelivery(publication);
     const actionCapabilities = getPublicationActionCapabilities(publication);
     const canReviewScheduleDecision = canReviewPublicationScheduleDecision(publication);
+    const scheduleReviewLabel = canReviewScheduleDecision
+      ? 'Разобрать пропущенные отправки'
+      : hasPublicationScheduleError(publication)
+        ? 'Разобрать расписание'
+        : null;
     const pending =
       (actionMutation.isPending && actionMutation.variables?.publication.id === publication.id) ||
       (openPublicationMutation.isPending &&
@@ -1951,8 +1968,8 @@ export function PublicationsPage({
         canEdit={isPublisherProfile && actionCapabilities.canEdit}
         canPause={actionCapabilities.canPause}
         canResume={actionCapabilities.canResume}
-        canRetry={actionCapabilities.canRetry && !canReviewScheduleDecision}
-        requiresScheduleDecision={canReviewScheduleDecision}
+        canRetry={actionCapabilities.canRetry && !scheduleReviewLabel}
+        scheduleReviewLabel={scheduleReviewLabel}
         canDuplicate={isPublisherProfile}
         canCancel={actionCapabilities.canCancel}
         editLabel={getPublicationEditActionLabel(actionCapabilities.editScope)}
@@ -1963,7 +1980,7 @@ export function PublicationsPage({
         onPause={() => setActionTarget({ publication, action: 'pause' })}
         onResume={() => setActionTarget({ publication, action: 'resume' })}
         onRetry={() => setDetailsTarget(publication)}
-        onReviewScheduleDecision={() => setDetailsTarget(publication)}
+        onReviewSchedule={() => setDetailsTarget(publication)}
         onDuplicate={() => openPublicationEditor(publication, 'duplicate')}
         onCancel={() => setActionTarget({ publication, action: 'cancel' })}
         footer={
@@ -2464,18 +2481,8 @@ export function PublicationsPage({
   function renderEditor() {
     const editing = editorContext?.kind === 'edit';
     const importing = editorContext?.kind === 'import' || editorContext?.kind === 'draft';
-    const editScope: PublicationEditScope | null = editing
-      ? draft.timingMode === 'now'
-        ? 'retry'
-        : 'future'
-      : null;
-    const editorTitle = importing
-      ? 'Черновик'
-      : editScope === 'retry'
-        ? 'Версия для повтора'
-        : editScope === 'future'
-          ? 'Будущие отправки'
-          : 'Новый пост';
+    const editScope = editing ? editorContext.editScope : null;
+    const editorTitle = getPublicationEditorTitle(editScope, importing);
     const retainedVideo = draft.retainedAssets.some((asset) => asset.type === 'video');
     const primaryLabel = getPublicationPrimaryActionLabel({
       hasValidationIssues: validationIssues.length > 0,
@@ -2551,7 +2558,7 @@ export function PublicationsPage({
               value={draft.targets}
               compactSummary={isPublisherProfile}
               notice={
-                selectedPublisherTargetUnavailable
+                selectedPublisherTargetUnavailable && !isRetryVersionEditor
                   ? 'Выбранный получатель недоступен. Удалите его.'
                   : null
               }
@@ -2572,7 +2579,11 @@ export function PublicationsPage({
                     }
                   : undefined
               }
-              disabled={isBusy || (!isPublisherProfile && sourcesLoading && targets.length === 0)}
+              disabled={
+                isBusy ||
+                isRetryVersionEditor ||
+                (!isPublisherProfile && sourcesLoading && targets.length === 0)
+              }
               error={fieldError.includes('получател') ? fieldError : null}
               onChange={(nextTargets) => {
                 setDraft((current) => ({ ...current, targets: nextTargets }));
@@ -2630,7 +2641,7 @@ export function PublicationsPage({
             />
           </Suspense>
 
-          {renderTiming()}
+          {editScope === 'retry' ? null : renderTiming()}
 
           <PublicationPostPublishFields
             value={draft.postPublish}
@@ -2676,11 +2687,13 @@ export function PublicationsPage({
                   : saveMutation.isPending
                     ? 'Сохраняем...'
                     : 'Подождите...'
-                : draft.timingMode === 'once'
-                  ? 'Проверить и отложить'
-                  : draft.timingMode === 'schedule'
-                    ? 'Проверить расписание'
-                    : 'Проверить пост'
+                : editScope === 'retry'
+                  ? 'Проверить пост'
+                  : draft.timingMode === 'once'
+                    ? 'Проверить и отложить'
+                    : draft.timingMode === 'schedule'
+                      ? 'Проверить расписание'
+                      : 'Проверить пост'
             }
             primaryDisabled={isBusy}
             onTest={handleTest}
@@ -2727,7 +2740,7 @@ export function PublicationsPage({
               facts={[
                 `Кому · ${formatTargetSummary(draft.targets)}`,
                 ...publicationPostPublishLabels(draft.postPublish),
-                formatTimezoneLabel(draft.scheduleTimezone),
+                editScope === 'retry' ? null : formatTimezoneLabel(draft.scheduleTimezone),
                 editScope === 'retry'
                   ? 'Отправка · после ручного повтора'
                   : `Когда · ${formatDraftTiming(draft)}`,

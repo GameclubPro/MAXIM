@@ -14,6 +14,7 @@ import {
 import { AdminManagedBroadcastPublicationVerification } from './admin-managed-broadcast-publication-verification';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 import { PUBLIK_LEDGER_DISPATCH_MARKER } from './admin-managed-broadcast-ledger-recovery';
+import type { ManagedBroadcastCommentDialogReference } from './admin-managed-broadcast-ledger';
 import { cancelManagedBroadcastTargetDeliveries } from './admin-managed-broadcast-target-failure';
 import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './publication-access-loss-recovery';
 import { PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE } from './admin.service.support';
@@ -23,6 +24,7 @@ import {
   markMaxPreDispatchGuardRejected,
   MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
 } from '../max/max-action-pre-dispatch-guard';
+import type { MaxPublishedMessage } from '../max/max-client.service';
 
 const AUTOMATED_VERIFICATION_DUE_AT = new Date('2026-07-25T08:00:15.000Z');
 
@@ -103,26 +105,31 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
     },
   };
   const transaction = jest.fn(async (callback) => callback(recoveryTx));
-  const publish = jest.fn(async (request: any) => {
-    if (dispatchStarted) {
-      const context = { botId: 'publisher-bot', job: {} };
-      await request.onDispatchAttempt?.(context);
-      await request.beforeSendMutation?.(context);
-    }
-    if (error) {
-      throw error;
-    }
-    return {
-      botId: 'publisher-bot',
-      messageId: 'mid-known-after-dispatch',
-      url: null,
-    };
-  });
+  const publish = jest.fn(
+    async (request: any): Promise<MaxPublishedMessage & { botId: string }> => {
+      if (dispatchStarted) {
+        const context = { botId: 'publisher-bot', job: {} };
+        await request.onDispatchAttempt?.(context);
+        await request.beforeSendMutation?.(context);
+      }
+      if (error) {
+        throw error;
+      }
+      return {
+        botId: 'publisher-bot',
+        messageId: 'mid-known-after-dispatch',
+        url: null,
+      };
+    },
+  );
+  const resolveMessageLink = jest.fn().mockResolvedValue(null);
+  const auditLogCreate = jest.fn().mockResolvedValue({});
   const logger = { log: jest.fn(), warn: jest.fn() };
   const runtime = new AdminManagedBroadcastRuntime(
     {
       prisma: {
         $transaction: transaction,
+        auditLog: { create: auditLogCreate },
         managedBroadcast: {
           updateMany: broadcastUpdateMany,
           findUnique: jest.fn().mockResolvedValue(row),
@@ -132,6 +139,7 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
           updateMany: deliveryUpdateMany,
         },
       },
+      maxClient: { resolveMessageLink },
       maxRoutedPublicationService: { publish },
       assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
       logger,
@@ -207,8 +215,47 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
     recoveryBroadcastUpdateMany,
     recoveryDeliveryUpdateMany,
     recoveryDeliveryCount,
+    resolveMessageLink,
+    auditLogCreate,
     logger,
   };
+}
+
+function createPublicationDialogReceiptHarness(options?: {
+  includeCommentsButton?: boolean;
+  includeSuggestButton?: boolean;
+  url?: string | null;
+}) {
+  const harness = createPublicationPrismaSendFailureHarness(null, false);
+  const commentDialogReference: ManagedBroadcastCommentDialogReference = {
+    entityType: 'chat',
+    threadId: 'thread-publik',
+    includeCommentsButton: options?.includeCommentsButton ?? true,
+    includeSuggestButton: options?.includeSuggestButton ?? false,
+    suggestButtonText: null,
+    customButtons: [],
+    suggestionEntryMode: null,
+    botId: 'publisher-bot',
+    dialogBotId: 'publisher-bot',
+  };
+  jest.spyOn((harness.runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
+    messageText: 'Publication',
+    messageOptions: undefined,
+    commentDialogReference,
+  });
+  const recordDialogReference = jest.spyOn(
+    (harness.runtime as any).messageRuntime,
+    'recordDialogReference',
+  );
+  harness.publish.mockImplementation(async (request: any) => {
+    await request.prepareAttempt({ botId: 'publisher-bot', job: {} });
+    return {
+      botId: 'publisher-bot',
+      messageId: 'mid-known-after-dispatch',
+      url: options?.url ?? null,
+    };
+  });
+  return { ...harness, commentDialogReference, recordDialogReference };
 }
 
 describe('AdminManagedBroadcastRuntime publication execution guard', () => {
@@ -257,6 +304,198 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     expect(
       logger.log.mock.calls.filter(([event]) => event.metric === 'publication_delivery_v1'),
     ).toEqual([]);
+  });
+
+  it('opts an ordinary Publik send out of optional message link hydration', async () => {
+    const { runtime, row, publish, resolveMessageLink } = createPublicationPrismaSendFailureHarness(
+      null,
+      false,
+    );
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        publisherExactBotId: 'publisher-bot',
+        hydrateMessageUrl: false,
+      }),
+    );
+    expect(resolveMessageLink).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { reason: 'deadline', trafficClass: 'background', fallback: false, suggestions: false },
+    { reason: 'deadline', trafficClass: 'background', fallback: true, suggestions: false },
+    { reason: 'immediate', trafficClass: 'interactive', fallback: false, suggestions: true },
+  ])(
+    'hydrates a dialog link after the winning $reason receipt CAS (fallback=$fallback)',
+    async ({ reason, trafficClass, fallback, suggestions }) => {
+      const {
+        runtime,
+        row,
+        deliveryUpdateMany,
+        resolveMessageLink,
+        recordDialogReference,
+        commentDialogReference,
+        auditLogCreate,
+      } = createPublicationDialogReceiptHarness({
+        includeCommentsButton: !suggestions,
+        includeSuggestButton: suggestions,
+      });
+      const events: string[] = [];
+      let receiptWrites = 0;
+      deliveryUpdateMany.mockImplementation(async ({ data }: any) => {
+        if (data.status === ManagedBroadcastDeliveryStatus.SENT) {
+          receiptWrites += 1;
+          if (fallback && receiptWrites === 1) {
+            events.push('receipt_write_failed');
+            throw new Error('temporary receipt write failure');
+          }
+          events.push('receipt_persisted');
+        }
+        return { count: 1 };
+      });
+      resolveMessageLink.mockImplementation(async () => {
+        events.push('link_lookup');
+        expect(events.at(-2)).toBe('receipt_persisted');
+        return 'https://max.ru/channel/mid-known-after-dispatch';
+      });
+      auditLogCreate.mockImplementation(async () => {
+        events.push('reference_recorded');
+        return {};
+      });
+
+      await (runtime as any).processManagedBroadcastOccurrence(row.id, reason, new Date(), [
+        ManagedBroadcastStatus.ACTIVE,
+      ]);
+
+      expect(events).toEqual([
+        ...(fallback ? ['receipt_write_failed'] : []),
+        'receipt_persisted',
+        'link_lookup',
+        'reference_recorded',
+      ]);
+      expect(resolveMessageLink).toHaveBeenCalledWith('mid-known-after-dispatch', {
+        botId: 'publisher-bot',
+        trafficClass,
+        actionHealthLane: trafficClass,
+        sourceTag: 'managed_broadcast',
+      });
+      expect(recordDialogReference).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: 'mid-known-after-dispatch',
+          publishedUrl: null,
+          publishedUrlRequestOptions: {
+            botId: 'publisher-bot',
+            trafficClass,
+            actionHealthLane: trafficClass,
+            sourceTag: 'managed_broadcast',
+          },
+          reference: commentDialogReference,
+        }),
+      );
+      expect(auditLogCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            payload: expect.objectContaining({
+              publishedUrl: 'https://max.ru/channel/mid-known-after-dispatch',
+            }),
+          }),
+        }),
+      );
+    },
+  );
+
+  it.each([false, true])(
+    'skips optional dialog lookup after a lost receipt CAS (fallback=%s)',
+    async (fallback) => {
+      const { runtime, row, deliveryUpdateMany, resolveMessageLink, recordDialogReference } =
+        createPublicationDialogReceiptHarness();
+      let receiptWrites = 0;
+      deliveryUpdateMany.mockImplementation(async ({ data }: any) => {
+        if (data.status !== ManagedBroadcastDeliveryStatus.SENT) return { count: 1 };
+        receiptWrites += 1;
+        if (fallback && receiptWrites === 1) throw new Error('temporary receipt write failure');
+        return { count: 0 };
+      });
+
+      await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+        ManagedBroadcastStatus.ACTIVE,
+      ]);
+
+      expect(receiptWrites).toBe(fallback ? 2 : 1);
+      expect(resolveMessageLink).not.toHaveBeenCalled();
+      expect(recordDialogReference).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a direct MAX URL without a dialog lookup', async () => {
+    const { runtime, row, resolveMessageLink, recordDialogReference } =
+      createPublicationDialogReceiptHarness({
+        url: 'https://max.ru/channel/direct-receipt',
+      });
+
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+
+    expect(resolveMessageLink).not.toHaveBeenCalled();
+    expect(recordDialogReference).toHaveBeenCalledWith(
+      expect.objectContaining({ publishedUrl: 'https://max.ru/channel/direct-receipt' }),
+    );
+  });
+
+  it('skips hydration for a reference with neither comments nor suggestions enabled', async () => {
+    const { runtime, row, resolveMessageLink } = createPublicationDialogReceiptHarness({
+      includeCommentsButton: false,
+      includeSuggestButton: false,
+    });
+
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+
+    expect(resolveMessageLink).not.toHaveBeenCalled();
+  });
+
+  it('records a null dialog link after an optional lookup error without changing its receipt', async () => {
+    const {
+      runtime,
+      row,
+      logger,
+      deliveryUpdateMany,
+      resolveMessageLink,
+      recordDialogReference,
+      auditLogCreate,
+    } = createPublicationDialogReceiptHarness();
+    resolveMessageLink.mockRejectedValue(new Error('temporary link lookup failure'));
+
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+
+    expect(recordDialogReference).toHaveBeenCalledWith(
+      expect.objectContaining({ publishedUrl: null }),
+    );
+    expect(auditLogCreate).toHaveBeenCalledTimes(1);
+    expect(auditLogCreate.mock.calls[0]![0].data.payload).not.toHaveProperty('publishedUrl');
+    expect(
+      deliveryUpdateMany.mock.calls.filter(
+        ([query]) => query.data?.status === ManagedBroadcastDeliveryStatus.SENT,
+      ),
+    ).toHaveLength(1);
+    expect(
+      deliveryUpdateMany.mock.calls.some(
+        ([query]) => query.data?.status === ManagedBroadcastDeliveryStatus.FAILED,
+      ),
+    ).toBe(false);
+    expect(
+      logger.log.mock.calls.filter(([event]) => event.metric === 'publication_delivery_v1'),
+    ).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: 'temporary link lookup failure' }),
+      'Managed broadcast comment dialog link lookup failed after persisted send receipt',
+    );
   });
 
   it('undoes its first claim when the final permission guard rejects after route selection', async () => {

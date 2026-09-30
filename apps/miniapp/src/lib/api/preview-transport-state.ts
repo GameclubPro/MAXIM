@@ -1123,6 +1123,86 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     }
   }
 
+  if (publicationWindowState === 'schedule-error') {
+    const publication = state.publications.find(
+      (item) => item.id === 'publication-access-required',
+    );
+    if (publication) {
+      const scheduledAt = addDays(now, -1).toISOString();
+      publication.schedule = {
+        mode: 'recurrence',
+        frequency: 'daily',
+        interval: 1,
+        weekdays: [],
+        times: ['12:00'],
+        startsAt: scheduledAt,
+        endsAt: null,
+        maxOccurrences: null,
+        replaceConflicts: false,
+        status: 'ERROR',
+        timezone: 'Europe/Moscow',
+        revision: 1,
+        nextOccurrenceAt: scheduledAt,
+        lastError: 'PUBLISHER_RUNTIME_UNAVAILABLE token=preview-only',
+      };
+      publication.lifecycle = 'ACTIVE';
+      publication.dispatchIssue = null;
+      publication.requiresScheduleDecision = false;
+      for (const occurrence of publication.occurrences) {
+        occurrence.scheduledAt = scheduledAt;
+        occurrence.status = 'SCHEDULED';
+        occurrence.dispatchIssue = null;
+        occurrence.requiresScheduleDecision = false;
+        occurrence.dispatchBlockedSince = null;
+        occurrence.dispatchCheckedAt = null;
+        occurrence.canRetry = false;
+      }
+    }
+  }
+
+  if (publicationWindowState === 'retry-once') {
+    const publication = state.publications.find(
+      (item) => item.id === 'publication-access-required',
+    );
+    const occurrence = publication?.occurrences[0];
+    const target = publication?.targets[0];
+    if (publication && occurrence && target) {
+      const scheduledAt = addDays(now, -1).toISOString();
+      publication.schedule = {
+        mode: 'once',
+        at: scheduledAt,
+        status: 'ERROR',
+        timezone: 'Europe/Moscow',
+        revision: 1,
+        nextOccurrenceAt: null,
+        lastError: 'Сообщение не отправлено.',
+        replaceConflicts: false,
+      };
+      publication.lifecycle = 'ERROR';
+      publication.audienceSelection = 'ALL_CHANNELS';
+      publication.audienceMode = 'DYNAMIC';
+      publication.dispatchIssue = null;
+      occurrence.scheduledAt = scheduledAt;
+      occurrence.status = 'FAILED';
+      occurrence.dispatchIssue = null;
+      occurrence.dispatchBlockedSince = null;
+      occurrence.dispatchCheckedAt = null;
+      occurrence.canRetry = true;
+      state.publicationDeliveries.push({
+        id: `${occurrence.id}-delivery-retry`,
+        occurrenceId: occurrence.id,
+        target,
+        status: 'FAILED',
+        contentRevision: 1,
+        usesLatestContent: true,
+        attemptCount: 1,
+        remoteMessageId: null,
+        lastError: 'Сообщение не отправлено.',
+        sentAt: null,
+      });
+    }
+  }
+
   if (publisherPostImportVariant === 'ready') {
     const imported = buildPreviewPublicationDetails(
       state,

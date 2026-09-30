@@ -1763,6 +1763,87 @@ const scenarioBehaviors = [
       await occurrence.scrollIntoViewIfNeeded();
     },
   })),
+  ...[
+    'publications-publisher-schedule-error',
+    'publications-publisher-schedule-error-card',
+    'publications-publisher-schedule-error-edit',
+  ].map((name) => ({
+    name,
+    beforeShot: async (page) => {
+      const card = page.locator('[data-publication-id="publication-access-required"]');
+      await card.getByText('Ошибка расписания', { exact: true }).waitFor({ state: 'visible' });
+      if (!(await card.getAttribute('class'))?.includes('is-danger')) {
+        throw new Error('An errored schedule was presented as an active publication.');
+      }
+      await card
+        .locator('.publication-feed-card__schedule')
+        .filter({ hasText: /^По плану · /u })
+        .waitFor();
+      if (name.endsWith('-card')) return;
+      await card.getByRole('button', { name: /^Действия:/u }).click();
+      await page.getByRole('button', { name: 'Разобрать расписание', exact: true }).click();
+      const details = page.getByRole('dialog', { name: 'Объявление для канала' });
+      const notice = details.locator('.publication-details-dispatch-notice');
+      await notice
+        .getByText('Расписание остановлено', { exact: true })
+        .waitFor({ state: 'visible' });
+      await notice
+        .getByText('Отправки по этому расписанию остановлены.', { exact: true })
+        .waitFor({ state: 'visible' });
+      await details.locator('[data-occurrence-id].is-scheduled').waitFor({ state: 'visible' });
+      if (
+        (await details
+          .getByRole('button', { name: /Повторить запуск|Отправить пропущенный запуск/u })
+          .count()) ||
+        (await notice.getByRole('button').count())
+      ) {
+        throw new Error('An untouched scheduled occurrence offered a retry or permission recheck.');
+      }
+      if (/PUBLISHER_|token=|preview-only/u.test((await details.textContent()) ?? '')) {
+        throw new Error('A schedule failure exposed a technical or sensitive diagnostic.');
+      }
+      const edit = details.getByRole('button', { name: 'Изменить расписание', exact: true });
+      await edit.waitFor({ state: 'visible' });
+      if (name.endsWith('-edit')) {
+        await edit.click();
+        await page.locator('.publication-content-composer').waitFor({ state: 'visible' });
+      }
+    },
+  })),
+  ...['publications-publisher-retry-once-edit', 'publications-publisher-retry-once-review'].map(
+    (name) => ({
+      name,
+      beforeShot: async (page) => {
+        const card = page.locator('[data-publication-id="publication-access-required"]');
+        await card.locator('.publication-feed-card__surface').click();
+        const details = page.getByRole('dialog', { name: 'Объявление для канала' });
+        await details
+          .getByRole('button', { name: 'Изменить версию для повтора', exact: true })
+          .click();
+        await page
+          .getByRole('heading', { name: 'Версия для повтора', exact: true })
+          .waitFor({ state: 'visible' });
+        await page.locator('.publication-content-composer').waitFor({ state: 'visible' });
+        if (
+          !(await page.locator('.publication-target-picker__summary').isDisabled()) ||
+          (await page.locator('.publication-editor-section--timing').count())
+        ) {
+          throw new Error('A retry-version editor exposed audience or timing changes.');
+        }
+        if (name.endsWith('-review')) {
+          await page
+            .locator('.publications-publish-bar')
+            .getByRole('button', { name: 'Проверить пост', exact: true })
+            .click();
+          const review = page.getByRole('dialog', { name: 'Проверка публикации', exact: true });
+          await review
+            .getByText('Отправка · после ручного повтора', { exact: true })
+            .waitFor({ state: 'visible' });
+          await review.getByRole('button', { name: 'Сохранить', exact: true }).waitFor();
+        }
+      },
+    }),
+  ),
   {
     name: 'publications-publisher-recheck',
     beforeShot: async (page) => {

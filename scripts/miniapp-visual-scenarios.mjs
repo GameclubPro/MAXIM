@@ -532,6 +532,34 @@ const baseScenarios = [
         features: ['publisher', 'publications'],
       },
     ]),
+    ...[
+      'publications-publisher-schedule-error',
+      'publications-publisher-schedule-error-card',
+      'publications-publisher-schedule-error-edit',
+    ].map((name) => [
+      name,
+      {
+        searchParams: {
+          profile: 'publisher',
+          view: 'schedules',
+          publicationWindow: 'schedule-error',
+        },
+        features: ['publisher', 'publications'],
+      },
+    ]),
+    ...['publications-publisher-retry-once-edit', 'publications-publisher-retry-once-review'].map(
+      (name) => [
+        name,
+        {
+          searchParams: {
+            profile: 'publisher',
+            view: 'schedules',
+            publicationWindow: 'retry-once',
+          },
+          features: ['publisher', 'publications'],
+        },
+      ],
+    ),
     [
       'publications-publisher-recheck',
       { searchParams: { profile: 'publisher' }, features: ['publisher', 'publications'] },

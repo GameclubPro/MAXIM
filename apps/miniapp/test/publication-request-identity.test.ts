@@ -118,6 +118,43 @@ test('rotates the request ID after a confirmed success clears the current identi
   assert.notEqual(afterSuccess.requestId, beforeSuccess.requestId);
 });
 
+test('save identity distinguishes a retry version from an explicit schedule repair', () => {
+  const draft = createEmptyPublicationDraft([chatTarget]);
+  draft.text = 'Исправленный текст';
+  const context = { kind: 'edit' as const, publicationId: 'publication-1', expectedRevision: 2 };
+  const retryKey = buildPublicationSaveRequestKey(draft, { ...context, editScope: 'retry' }, false);
+  const repairKey = buildPublicationSaveRequestKey(
+    draft,
+    { ...context, editScope: 'schedule' },
+    false,
+  );
+  assert.equal(JSON.stringify(retryKey).includes('"schedule":'), false);
+  assert.equal(JSON.stringify(repairKey).includes('"schedule":'), true);
+  assert.equal(arePublicationRequestKeysEqual(retryKey, repairKey), false);
+});
+
+test('a single scheduled retry save preserves the existing audience and send intent', () => {
+  const draft = createEmptyPublicationDraft([chatTarget]);
+  draft.text = 'Исправленный текст';
+  draft.timingMode = 'once';
+  draft.scheduledSlots = ['2026-09-01T16:30:00.000Z'];
+  const key = buildPublicationSaveRequestKey(
+    draft,
+    {
+      kind: 'edit',
+      publicationId: 'publication-live-all',
+      expectedRevision: 2,
+      editScope: 'retry',
+    },
+    false,
+  );
+  const payload = (key as { payload: Record<string, unknown> }).payload;
+  assert.equal('audience' in payload, false);
+  assert.equal('schedule' in payload, false);
+  assert.equal('intent' in payload, false);
+  assert.equal(payload.expectedRevision, 2);
+});
+
 test('restores a lost pending create across reload without persisting payload content', () => {
   const draft = createEmptyPublicationDraft([chatTarget]);
   draft.title = 'Закрытый план';

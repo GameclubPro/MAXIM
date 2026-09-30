@@ -1,4 +1,4 @@
-const PUBLICATION_DELIVERY_ERROR_FALLBACK = 'Не удалось доставить публикацию.';
+export const PUBLICATION_DELIVERY_ERROR_FALLBACK = 'Не удалось доставить публикацию.';
 
 const RATE_LIMIT_PATTERN =
   /rate[ _-]?limit|too many requests|ограничил(?:а|и)?\s+(?:запрос|отправ)|\b429\b/iu;

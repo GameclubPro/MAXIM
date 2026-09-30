@@ -248,6 +248,63 @@ function createPublicationUpdateTransaction() {
   };
 }
 
+function createPublicationScheduleRepairFixture() {
+  const tx = {
+    ...createPublicationUpdateTransaction(),
+    managedBroadcastCalendarReservation: { findMany: jest.fn().mockResolvedValue([]) },
+  };
+  const publication = {
+    id: 'publication-repair',
+    actorUserId: 'user-1',
+    version: 3,
+    lifecycle: PublicationLifecycle.ACTIVE as PublicationLifecycle,
+    title: 'Stopped recurrence',
+    audienceSelection: PublicationAudienceSelection.SELECTED,
+    audienceMode: PublicationAudienceMode.SNAPSHOT,
+    canonicalContentRevisionId: 'content-old',
+    canonicalContentRevision: { id: 'content-old' },
+    dispatchProfile: PublicationDispatchProfile.PUBLIK_V1 as PublicationDispatchProfile,
+    requiredBotId: 'publisher-bot',
+    targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT, position: 0 }],
+    schedule: {
+      id: 'schedule-repair',
+      revision: 4,
+      status: PublicationScheduleStatus.ERROR as PublicationScheduleStatus,
+      lastError: 'Recurring preparation failed',
+      rule: {
+        mode: 'recurrence',
+        timezone: 'Europe/Moscow',
+        frequency: 'daily',
+        interval: 1,
+        weekdays: [],
+        times: ['18:00'],
+        startsAt: '2026-07-09T09:00:00.000Z',
+        endsAt: null as string | null,
+        maxOccurrences: null as number | null,
+        replaceConflicts: false,
+      },
+    },
+  };
+  tx.publicationOccurrence.findMany.mockImplementation(
+    async (query: { where: { publicationId: unknown } }) =>
+      query.where.publicationId === publication.id ? [{ id: 'occurrence-stale' }] : [],
+  );
+  tx.managedBroadcast.findMany.mockResolvedValue([]);
+  tx.publicationSchedule.update.mockResolvedValue({ id: publication.schedule.id });
+  const transaction = jest.fn((callback: (client: typeof tx) => unknown) => callback(tx));
+  const fixture = createService({
+    publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+    publication: { findFirst: jest.fn().mockResolvedValue(publication) },
+    publicationOccurrence: { findMany: jest.fn().mockResolvedValue([]) },
+    $transaction: transaction,
+  });
+  jest
+    .spyOn(fixture.contentService, 'persistPreparedContentRevision')
+    .mockResolvedValue({ id: 'content-new' } as never);
+  jest.spyOn(fixture.service, 'get').mockResolvedValue({ id: publication.id } as never);
+  return { ...fixture, publication, transaction, tx };
+}
+
 function createOriginalRetryService(
   tx: Record<string, unknown>,
   occurrenceStatus: PublicationOccurrenceStatus = PublicationOccurrenceStatus.FAILED,
@@ -1442,6 +1499,7 @@ describe('PublicationService', () => {
             schedule: {
               id: 'schedule-now',
               revision: 4,
+              status: PublicationScheduleStatus.ACTIVE,
               rule: { mode: 'now', timezone: 'Europe/Moscow' },
             },
           }),
@@ -1494,6 +1552,435 @@ describe('PublicationService', () => {
       jest.useRealTimers();
     }
   });
+
+  it.each([
+    { lifecycle: PublicationLifecycle.ACTIVE, edit: 'title' },
+    { lifecycle: PublicationLifecycle.ACTIVE, edit: 'content' },
+    { lifecycle: PublicationLifecycle.ERROR, edit: 'content' },
+    { lifecycle: PublicationLifecycle.ERROR, edit: 'title' },
+  ] as const)(
+    'rebuilds an errored Publisher recurrence on explicit publish and equal schedule save ($lifecycle, $edit)',
+    async ({ lifecycle, edit }) => {
+      const now = new Date('2026-07-10T09:00:00.000Z');
+      jest.useFakeTimers().setSystemTime(now);
+      try {
+        const { service, tx, publication, publisherRouting, contentService } =
+          createPublicationScheduleRepairFixture();
+        publication.lifecycle = lifecycle;
+
+        await service.update(
+          publication.id,
+          { userId: 'user-1', username: null, displayName: null },
+          {
+            requestId: `repair-${lifecycle}-${edit}`,
+            expectedRevision: publication.version,
+            ...(edit === 'title'
+              ? { title: 'Updated title' }
+              : { content: { text: 'Updated text', textFormat: 'plain', buttons: [], media: [] } }),
+            schedule: { ...publication.schedule.rule },
+            intent: 'publish',
+          },
+        );
+
+        expect(publisherRouting.assertTargetsReady).toHaveBeenCalledWith(
+          expect.arrayContaining([expect.objectContaining({ chatId: 'chat-1' })]),
+          'publisher-bot',
+        );
+        expect(tx.publication.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({ lifecycle, version: publication.version }),
+            data: expect.objectContaining({ lifecycle: PublicationLifecycle.ACTIVE }),
+          }),
+        );
+        expect(tx.publicationSchedule.update).toHaveBeenCalledWith({
+          where: { publicationId: publication.id },
+          data: expect.objectContaining({
+            revision: 5,
+            status: PublicationScheduleStatus.ACTIVE,
+            lastError: null,
+            lastMaterializedAt: now,
+            nextMaterializeAt: expect.any(Date),
+          }),
+          select: { id: true },
+        });
+        const created = tx.publicationOccurrence.createMany.mock.calls[0]?.[0].data as {
+          publicationId: string;
+          scheduleId: string;
+          scheduleRevision: number;
+          scheduledAt: Date;
+          contentRevisionId: string;
+        }[];
+        expect(created.length).toBeGreaterThan(0);
+        expect(created[0]?.scheduledAt).toEqual(new Date('2026-07-10T15:00:00.000Z'));
+        for (const occurrence of created) {
+          expect(occurrence).toMatchObject({
+            publicationId: publication.id,
+            scheduleId: publication.schedule.id,
+            scheduleRevision: 5,
+            contentRevisionId: edit === 'content' ? 'content-new' : 'content-old',
+          });
+          expect(occurrence.scheduledAt.getTime()).toBeGreaterThanOrEqual(now.getTime());
+        }
+        expect(tx.publicationOccurrence.findMany).toHaveBeenCalledWith({
+          where: {
+            publicationId: publication.id,
+            OR: [
+              { status: PublicationOccurrenceStatus.SCHEDULED },
+              { status: PublicationOccurrenceStatus.IN_PROGRESS, scheduledAt: { gte: now } },
+            ],
+            deliveries: {
+              none: {
+                OR: expect.arrayContaining([
+                  { attemptCount: { gt: 0 } },
+                  { lockedAt: { not: null } },
+                  {
+                    status: {
+                      in: expect.arrayContaining([
+                        ManagedBroadcastDeliveryStatus.SENDING,
+                        ManagedBroadcastDeliveryStatus.SENT,
+                        ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                      ]),
+                    },
+                  },
+                ]),
+              },
+            },
+          },
+          select: { id: true },
+        });
+        expect(tx.publicationOccurrence.updateMany).toHaveBeenCalledWith({
+          where: {
+            id: { in: ['occurrence-stale'] },
+            deliveries: { none: expect.any(Object) },
+          },
+          data: { status: PublicationOccurrenceStatus.CANCELED },
+        });
+        expect(tx.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+        expect(contentService.persistPreparedContentRevision).toHaveBeenCalledTimes(
+          edit === 'content' ? 1 : 0,
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each([PublicationLifecycle.ACTIVE, PublicationLifecycle.ERROR])(
+    'keeps an errored schedule stopped on an equal-rule PATCH without publish intent (%s)',
+    async (lifecycle) => {
+      const { service, tx, publication, contentService } = createPublicationScheduleRepairFixture();
+      publication.lifecycle = lifecycle;
+
+      await service.update(
+        publication.id,
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: `preserve-omitted-intent-${lifecycle}`,
+          expectedRevision: publication.version,
+          title: 'Updated title',
+          content: { text: 'Updated text', textFormat: 'plain', buttons: [], media: [] },
+          schedule: { ...publication.schedule.rule },
+        },
+      );
+
+      expect(tx.publication.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            lifecycle: PublicationLifecycle.ERROR,
+            title: 'Updated title',
+          }),
+        }),
+      );
+      expect(contentService.persistPreparedContentRevision).toHaveBeenCalledTimes(1);
+      expect(tx.publicationSchedule.update).not.toHaveBeenCalled();
+      expect(tx.publicationOccurrence.findMany).not.toHaveBeenCalled();
+      expect(tx.publicationOccurrence.createMany).not.toHaveBeenCalled();
+      expect(tx.publicationOccurrence.updateMany).toHaveBeenCalledWith({
+        where: {
+          publicationId: publication.id,
+          scheduleId: publication.schedule.id,
+          scheduleRevision: publication.schedule.revision,
+          status: PublicationOccurrenceStatus.SCHEDULED,
+        },
+        data: { contentRevisionId: 'content-new' },
+      });
+    },
+  );
+
+  it.each([
+    { lifecycle: PublicationLifecycle.ACTIVE, edit: 'title', intent: undefined },
+    { lifecycle: PublicationLifecycle.ACTIVE, edit: 'content', intent: 'publish' },
+    { lifecycle: PublicationLifecycle.ERROR, edit: 'content', intent: undefined },
+    { lifecycle: PublicationLifecycle.ERROR, edit: 'title', intent: 'publish' },
+  ] as const)(
+    'preserves an errored recurrence on a $lifecycle $edit edit without a schedule command',
+    async ({ lifecycle, edit, intent }) => {
+      const { service, tx, publication, contentService } = createPublicationScheduleRepairFixture();
+      publication.lifecycle = lifecycle;
+      publication.schedule.rule.maxOccurrences = 3;
+
+      await service.update(
+        publication.id,
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: `preserve-error-${lifecycle}-${edit}`,
+          expectedRevision: publication.version,
+          ...(edit === 'title'
+            ? { title: 'Updated title' }
+            : { content: { text: 'Updated text', textFormat: 'plain', buttons: [], media: [] } }),
+          ...(intent ? { intent } : {}),
+        },
+      );
+
+      expect(tx.publication.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ lifecycle: PublicationLifecycle.ERROR }),
+        }),
+      );
+      expect(tx.publicationSchedule.update).not.toHaveBeenCalled();
+      expect(tx.publicationOccurrence.createMany).not.toHaveBeenCalled();
+      expect(tx.publicationOccurrence.findMany).not.toHaveBeenCalled();
+      expect(contentService.persistPreparedContentRevision).toHaveBeenCalledTimes(
+        edit === 'content' ? 1 : 0,
+      );
+    },
+  );
+
+  it.each(['title', 'content'] as const)(
+    'keeps an ambiguous NOW publication stopped on an equivalent schedule %s edit',
+    async (edit) => {
+      const { service, tx, publication } = createPublicationScheduleRepairFixture();
+      publication.lifecycle = PublicationLifecycle.ERROR;
+      publication.schedule.rule.mode = 'now';
+
+      await service.update(
+        publication.id,
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: `preserve-ambiguous-now-${edit}`,
+          expectedRevision: publication.version,
+          ...(edit === 'title'
+            ? { title: 'Updated title' }
+            : { content: { text: 'Updated text', textFormat: 'plain', buttons: [], media: [] } }),
+          schedule: { mode: 'now', timezone: 'Europe/Moscow' },
+          intent: 'publish',
+        },
+      );
+
+      expect(tx.publication.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ lifecycle: PublicationLifecycle.ERROR }),
+        }),
+      );
+      expect(tx.publicationSchedule.update).not.toHaveBeenCalled();
+      expect(tx.publicationOccurrence.createMany).not.toHaveBeenCalled();
+      expect(tx.publicationOccurrence.findMany).not.toHaveBeenCalled();
+      if (edit === 'content') {
+        expect(tx.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({
+              publicationOccurrence: {
+                is: {
+                  publicationId: publication.id,
+                  scheduleId: publication.schedule.id,
+                  scheduleRevision: publication.schedule.revision,
+                  status: PublicationOccurrenceStatus.SCHEDULED,
+                },
+              },
+              status: ManagedBroadcastDeliveryStatus.PENDING,
+            }),
+          }),
+        );
+      } else {
+        expect(tx.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    {
+      scenario: 'DRAFT Publisher without an intent command',
+      lifecycle: PublicationLifecycle.DRAFT,
+      status: PublicationScheduleStatus.DRAFT,
+      profile: PublicationDispatchProfile.PUBLIK_V1,
+    },
+    {
+      scenario: 'healthy ACTIVE Publisher',
+      lifecycle: PublicationLifecycle.ACTIVE,
+      status: PublicationScheduleStatus.ACTIVE,
+      profile: PublicationDispatchProfile.PUBLIK_V1,
+    },
+    {
+      scenario: 'PAUSED Publisher with an errored schedule',
+      lifecycle: PublicationLifecycle.PAUSED,
+      status: PublicationScheduleStatus.ERROR,
+      profile: PublicationDispatchProfile.PUBLIK_V1,
+    },
+    {
+      scenario: 'retired legacy publication with an errored schedule',
+      lifecycle: PublicationLifecycle.ACTIVE,
+      status: PublicationScheduleStatus.ERROR,
+      profile: PublicationDispatchProfile.LEGACY_ROUTED,
+    },
+  ])(
+    'preserves the schedule on a title-only $scenario edit',
+    async ({ lifecycle, status, profile }) => {
+      const { service, tx, publication, publisherRouting } =
+        createPublicationScheduleRepairFixture();
+      publication.lifecycle = lifecycle;
+      publication.dispatchProfile = profile;
+      publication.schedule.status = status;
+
+      await service.update(
+        publication.id,
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'preserve-schedule-title',
+          expectedRevision: publication.version,
+          title: 'Title',
+        },
+      );
+
+      expect(tx.publication.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ lifecycle }) }),
+      );
+      expect(tx.publicationSchedule.update).not.toHaveBeenCalled();
+      expect(tx.publicationOccurrence.createMany).not.toHaveBeenCalled();
+      expect(tx.publicationOccurrence.findMany).not.toHaveBeenCalled();
+      if (
+        profile === PublicationDispatchProfile.LEGACY_ROUTED ||
+        lifecycle === PublicationLifecycle.DRAFT
+      ) {
+        expect(publisherRouting.assertTargetsReady).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(['past end date', 'bounded recurrence'] as const)(
+    'rejects unsafe same-rule recurrence recovery before persistence (%s)',
+    async (reason) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-07-10T09:00:00.000Z'));
+      try {
+        const { service, tx, publication, transaction, contentService } =
+          createPublicationScheduleRepairFixture();
+        publication.lifecycle = PublicationLifecycle.ERROR;
+        if (reason === 'past end date') {
+          publication.schedule.rule.endsAt = '2026-07-09T21:00:00.000Z';
+        } else {
+          publication.schedule.rule.maxOccurrences = 3;
+        }
+        const prepare = jest.spyOn(contentService, 'prepareContentRevision');
+
+        const update = service.update(
+          publication.id,
+          { userId: 'user-1', username: null, displayName: null },
+          {
+            requestId: 'repair-exhausted-recurrence',
+            expectedRevision: publication.version,
+            content: { text: 'Updated text', textFormat: 'plain', buttons: [], media: [] },
+            schedule: { ...publication.schedule.rule },
+            intent: 'publish',
+          },
+        );
+        if (reason === 'past end date') {
+          await expect(update).rejects.toMatchObject({
+            response: { code: 'PUBLICATION_SCHEDULE_EMPTY' },
+          });
+        } else {
+          await expect(update).rejects.toThrow(
+            'Для перезапуска серии с лимитом задайте новое расписание.',
+          );
+        }
+
+        expect(prepare).not.toHaveBeenCalled();
+        expect(transaction).not.toHaveBeenCalled();
+        expect(tx.publicationSchedule.update).not.toHaveBeenCalled();
+        expect(tx.publicationOccurrence.createMany).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each(['audience', 'schedule'] as const)(
+    'preserves an explicitly changed %s rebuild for a bounded errored recurrence',
+    async (change) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-07-10T09:00:00.000Z'));
+      try {
+        const { service, tx, publication } = createPublicationScheduleRepairFixture();
+        publication.schedule.rule.maxOccurrences = 3;
+
+        await service.update(
+          publication.id,
+          { userId: 'user-1', username: null, displayName: null },
+          {
+            requestId: `repair-changed-${change}`,
+            expectedRevision: publication.version,
+            schedule: {
+              ...publication.schedule.rule,
+              ...(change === 'schedule' ? { times: ['19:00'] } : {}),
+            },
+            ...(change === 'audience'
+              ? {
+                  audience: {
+                    selection: 'SELECTED',
+                    mode: 'SNAPSHOT',
+                    targets: [{ chatId: 'channel-1', entityType: 'channel' }],
+                  },
+                }
+              : {}),
+            intent: 'publish',
+          },
+        );
+
+        expect(tx.publicationSchedule.update).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              revision: 5,
+              status: PublicationScheduleStatus.ACTIVE,
+            }),
+          }),
+        );
+        expect(tx.publicationOccurrence.createMany.mock.calls[0]?.[0].data).toHaveLength(3);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each(['stale request', 'concurrent mutation'] as const)(
+    'does not reactivate an errored schedule on a revision conflict (%s)',
+    async (scenario) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-07-10T09:00:00.000Z'));
+      try {
+        const { service, tx, publication, transaction } = createPublicationScheduleRepairFixture();
+        publication.lifecycle = PublicationLifecycle.ERROR;
+        tx.publication.updateMany.mockResolvedValue({ count: 0 });
+
+        await expect(
+          service.update(
+            publication.id,
+            { userId: 'user-1', username: null, displayName: null },
+            {
+              requestId: 'repair-revision-conflict',
+              expectedRevision: publication.version - (scenario === 'stale request' ? 1 : 0),
+              title: 'Title',
+              schedule: { ...publication.schedule.rule },
+              intent: 'publish',
+            },
+          ),
+        ).rejects.toMatchObject({ response: { code: 'PUBLICATION_REVISION_CONFLICT' } });
+
+        expect(transaction).toHaveBeenCalledTimes(scenario === 'stale request' ? 0 : 1);
+        expect(tx.publicationSchedule.update).not.toHaveBeenCalled();
+        expect(tx.publicationOccurrence.createMany).not.toHaveBeenCalled();
+        expect(tx.publicationOccurrence.updateMany).not.toHaveBeenCalled();
+        expect(tx.publicationMutationRecord.create).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it('rejects an update when a cached target fails live admin verification', async () => {
     const transaction = jest.fn();
@@ -1754,6 +2241,7 @@ describe('PublicationService', () => {
             schedule: {
               id: 'schedule-recurrence',
               revision: 7,
+              status: PublicationScheduleStatus.ACTIVE,
               rule: persistedRule,
             },
           }),

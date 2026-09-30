@@ -32,6 +32,7 @@ import {
   getPublicationActionableDelivery,
   getPublicationDetailsPollingInterval,
   getPublicationDispatchIssuePresentation,
+  getPublicationScheduleErrorPresentation,
   isPublicationOccurrenceContentStale,
   PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS,
   resolvePublicationDetailsDispatchIssue,
@@ -317,11 +318,15 @@ export function PublicationDetailsSheet({
 
   const details = detailsQuery.data;
   const dispatchIssue = resolvePublicationDetailsDispatchIssue(details, publication);
-  const dispatchIssuePresentation = getPublicationDispatchIssuePresentation(
+  const issuePresentation = getPublicationDispatchIssuePresentation(
     dispatchIssue,
     false,
     Boolean((details ?? publication).schedule?.nextOccurrenceAt),
   );
+  const dispatchIssuePresentation =
+    dispatchIssue === 'decision_required'
+      ? issuePresentation
+      : (getPublicationScheduleErrorPresentation(details ?? publication) ?? issuePresentation);
   const actionCapabilities = getPublicationActionCapabilities(details ?? publication);
   const editLabel =
     actionCapabilities.editScope === 'future'
