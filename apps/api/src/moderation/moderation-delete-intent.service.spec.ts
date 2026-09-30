@@ -1,4 +1,6 @@
 import { ConfigService } from '@nestjs/config';
+import { performance } from 'node:perf_hooks';
+import type { DeleteIntentLeaseCheck } from './moderation-delete-intent-lease';
 
 import { MAX_SEND_FENCE_STALE_MS } from '../max/max-send-ambiguity.util';
 import { Prisma } from '../prisma/prisma-client';
@@ -44,6 +46,11 @@ import { MESSAGE_DUPLICATE_MEDIA_VERSION } from './message-duplicate/message-dup
 import { MessageDuplicateGuardRejectedError } from './message-duplicate/message-duplicate-delete-guard.service';
 
 type ServiceInternals = {
+  renewLease(
+    intentId: string,
+    leaseToken: string,
+    minimumRemainingMs?: number,
+  ): Promise<DeleteIntentLeaseCheck>;
   assertAccessAmbiguousLedgerEvidenceUnchanged(
     tx: { $queryRaw: (query: unknown) => Promise<unknown> },
     expected: ReturnType<typeof accessAmbiguousLedgerEvidence>,
@@ -179,6 +186,18 @@ function createService(
     },
   };
   const queue = { add: jest.fn().mockResolvedValue(undefined) };
+  // Unit fixtures keep intent-load/finalization responses separate from the
+  // new lease SELECT. Real no-op/update/expiry semantics run against PostgreSQL.
+  const leaseDatabase = {
+    ...prisma,
+    $queryRaw: async (query: { strings?: readonly string[] }) => {
+      if (query.strings?.join('?').includes('storage:delete_lease_check')) {
+        const changed = await prisma.$executeRaw(query);
+        return changed > 0 ? [{ renewed: true, remainingMs: 120_000 }] : [];
+      }
+      return prisma.$queryRaw(query);
+    },
+  };
   const deleteMessageOverride = maxClientOverrides.deleteMessage;
   const maxClient = {
     getCurrentChatMemberAccess: jest.fn(),
@@ -237,7 +256,7 @@ function createService(
     ...commercialDeleteGuardOverrides,
   };
   const service = new ModerationDeleteIntentService(
-    prisma as never,
+    leaseDatabase as never,
     maxClient as never,
     maxBotLink as never,
     queue as never,
@@ -5566,6 +5585,98 @@ describe('ModerationDeleteIntentService', () => {
         query.strings?.join('?').includes('"delete_dispatch_started_at" = NULL'),
       ),
     ).toBe(true);
+  });
+
+  it('revalidates duplicate authority after the dispatch-budget SQL check', async () => {
+    const intent = {
+      ...baseIntent,
+      messageDuplicateOwned: true,
+      nonCommercialOcrDeleteReason: false,
+    };
+    let markerWritten = false;
+    let revoked = false;
+    const remoteDelete = jest.fn();
+    const executeRaw = jest.fn(async (query: Prisma.Sql) => {
+      const sql = query.strings.join('?');
+      if (sql.includes('"delete_dispatch_started_at" = CURRENT_TIMESTAMP')) markerWritten = true;
+      if (markerWritten && sql.includes('storage:delete_lease_check')) revoked = true;
+      return 1;
+    });
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValue([intent]),
+        $executeRaw: executeRaw,
+        $transaction: jest.fn(async (callback) =>
+          callback({
+            $queryRaw: jest.fn().mockResolvedValue([intent]),
+            $executeRaw: executeRaw,
+          }),
+        ),
+      },
+      { deleteMessage: remoteDelete },
+      {
+        resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute),
+      },
+    );
+    const guard = {
+      assertIntentStillActionable: jest.fn(async () => {
+        if (revoked)
+          throw new MessageDuplicateGuardRejectedError(
+            'message_duplicate_action_authority_revoked',
+          );
+        return 'allowed';
+      }),
+    };
+    Object.defineProperty(service, 'messageDuplicateDeleteGuard', { value: guard });
+    await service.executeLeasedIntent('intent-1', 'lease-1');
+    expect(revoked).toBe(true);
+    expect(guard.assertIntentStillActionable).toHaveBeenCalled();
+    expect(remoteDelete).not.toHaveBeenCalled();
+  });
+
+  it('fences a slow final authority guard synchronously without another awaited check', async () => {
+    const intent = {
+      ...baseIntent,
+      messageDuplicateOwned: true,
+      nonCommercialOcrDeleteReason: false,
+    };
+    const remoteDelete = jest.fn();
+    const { service } = createService(
+      { MODERATION_DELETE_INTENT_TIMEOUT_MS: 1 },
+      {
+        $queryRaw: jest.fn().mockResolvedValue([intent]),
+        $executeRaw: jest.fn().mockResolvedValue(1),
+      },
+      { deleteMessage: remoteDelete },
+      {
+        resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute),
+      },
+    );
+    const renew = jest
+      .spyOn(service as unknown as ServiceInternals, 'renewLease')
+      .mockImplementation(async () => ({
+        owned: true,
+        renewed: false,
+        remainingBudgetMs: 1_051,
+        proofUntilMonotonicMs: performance.now() + 1_051,
+      }));
+    let checkCountAtFinalPermit = 0;
+    Object.defineProperty(service, 'messageDuplicateDeleteGuard', {
+      value: {
+        assertIntentStillActionable: jest.fn(async (input: { authorityOnly?: boolean }) => {
+          if (input.authorityOnly) {
+            checkCountAtFinalPermit = renew.mock.calls.length;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          return 'allowed';
+        }),
+      },
+    });
+    await service.executeLeasedIntent('intent-1', 'lease-1');
+    expect(checkCountAtFinalPermit).toBeGreaterThan(0);
+    expect(renew).toHaveBeenCalledTimes(checkCountAtFinalPermit);
+    expect(remoteDelete).not.toHaveBeenCalled();
   });
 
   it.each(

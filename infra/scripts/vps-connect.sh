@@ -416,6 +416,19 @@ prepend_webhook_rollout_recovery_env() {
   esac
 }
 
+prepend_post_release_reclaim_env() {
+  local command_var="$1"
+  local -n command_ref="$command_var"
+  case "${MAXIM_DEPLOY_RECLAIM_OLD_IMAGES:-0}" in
+    0|'') ;;
+    1) command_ref="MAXIM_DEPLOY_RECLAIM_OLD_IMAGES=1 $command_ref" ;;
+    *)
+      echo "MAXIM_DEPLOY_RECLAIM_OLD_IMAGES must be 0 or 1." >&2
+      return 2
+      ;;
+  esac
+}
+
 rollback_entrypoint_bootstrap_source() {
   cat <<'BOOTSTRAP'
 set -euo pipefail
@@ -711,7 +724,7 @@ deploy_main() {
     esac
   fi
   prepend_webhook_rollout_recovery_env remote_command
-
+  prepend_post_release_reclaim_env remote_command
   maxim_prepend_git_ssh_transport remote_command "${MAXIM_DEPLOY_GIT_SSH_PORT:-default}"
   remote_exec "$remote_command"
 }

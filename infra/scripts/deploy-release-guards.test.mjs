@@ -314,6 +314,108 @@ test('keeps backup preflight read-only and reclaims only manifest-aware release 
   assert.doesNotMatch(reclaim, /docker container (?:prune|rm)/u);
 });
 
+test('post-release image reclaim is opt-in after successful smokes under the deploy lock', () => {
+  const deploy = read('infra/scripts/vps-pull-build-up.sh');
+  const hook = functionBlock(deploy, 'reclaim_old_release_images');
+  const validate = functionBlock(deploy, 'validate_post_release_reclaim');
+  assert.match(deploy, /MAXIM_DEPLOY_RECLAIM_OLD_IMAGES:-0/u);
+  assert.match(hook, /DEPLOY_MANIFEST_RECORDED.*!= 1/u);
+  assert.match(hook, /--until 168h --minimum-retained-releases 5/u);
+  assert.match(hook, /release-image-reclaim\.mjs/u);
+  assert.doesNotMatch(hook, /docker.*prune|--force/u);
+  assert.ok(
+    callIndex(deploy, 'record_successful_release') <
+      deploy.lastIndexOf('if ! reclaim_old_release_images; then'),
+  );
+  assert.ok(
+    callIndex(deploy, 'acquire_deploy_lock') < callIndex(deploy, 'record_successful_release'),
+  );
+  assert.ok(
+    callIndex(deploy, 'validate_post_release_reclaim') < callIndex(deploy, 'acquire_deploy_lock'),
+  );
+  for (const value of ['0', '1', 'true', '-1', '']) {
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -euo pipefail\n${validate}\nPOST_RELEASE_RECLAIM="$1"\nvalidate_post_release_reclaim`,
+        'reclaim-test',
+        value,
+      ],
+      { encoding: 'utf8' },
+    );
+    assert.equal(result.status, ['0', '1'].includes(value) ? 0 : 2);
+  }
+});
+
+test('operator image reclaim choice forwards only the exact enabled flag', () => {
+  const connect = read('infra/scripts/vps-connect.sh');
+  const helper = functionBlock(connect, 'prepend_post_release_reclaim_env');
+  assert.match(
+    functionBlock(connect, 'deploy_main'),
+    /prepend_post_release_reclaim_env remote_command/u,
+  );
+  for (const value of ['0', '1', 'true', '1;rm']) {
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -euo pipefail\n${helper}\nMAXIM_DEPLOY_RECLAIM_OLD_IMAGES="$1"\ncommand_value='safe-deploy'\nprepend_post_release_reclaim_env command_value\nprintf '%s' "$command_value"`,
+        'forward-test',
+        value,
+      ],
+      { encoding: 'utf8' },
+    );
+    assert.equal(result.status, ['0', '1'].includes(value) ? 0 : 2);
+    if (value === '1') assert.equal(result.stdout, 'MAXIM_DEPLOY_RECLAIM_OLD_IMAGES=1 safe-deploy');
+    if (value === '0') assert.equal(result.stdout, 'safe-deploy');
+  }
+});
+
+test('post-release hook performs no removal without successful publication and exposes failures', () => {
+  const deploy = read('infra/scripts/vps-pull-build-up.sh');
+  const hook = functionBlock(deploy, 'reclaim_old_release_images');
+  const invoke = (enabled, recorded, failure) =>
+    spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -euo pipefail
+${hook}
+df() { printf 'space snapshot\\n'; }
+POST_RELEASE_RECLAIM="$1"
+DEPLOY_MANIFEST_RECORDED="$2"
+RELEASE_STATE_DIR=/safe/state
+node() { printf 'node %s\\n' "$*"; return "$MOCK_FAILURE"; }
+MOCK_FAILURE="$3"
+reclaim_old_release_images`,
+        'reclaim-hook-test',
+        enabled,
+        recorded,
+        failure,
+      ],
+      { encoding: 'utf8' },
+    );
+  for (const [enabled, recorded] of [
+    ['0', '0'],
+    ['0', '1'],
+  ]) {
+    const result = invoke(enabled, recorded, '0');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+  }
+  const unpublished = invoke('1', '0', '0');
+  assert.equal(unpublished.status, 1);
+  assert.doesNotMatch(unpublished.stdout, /node /u);
+  const success = invoke('1', '1', '0');
+  assert.equal(success.status, 0, success.stderr);
+  assert.match(success.stdout, /--until 168h --minimum-retained-releases 5/u);
+  assert.equal(success.stdout.match(/space snapshot/gu)?.length, 2);
+  const failure = invoke('1', '1', '2');
+  assert.equal(failure.status, 1);
+  assert.equal(failure.stdout.match(/space snapshot/gu)?.length, 1);
+});
+
 test('submit helper is staged-only by default and pushes the exact HEAD', () => {
   const submit = read('infra/scripts/local-commit-push.sh');
   assert.match(submit, /STAGE_ALL=0/u);

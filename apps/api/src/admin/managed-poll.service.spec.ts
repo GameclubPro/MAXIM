@@ -2152,106 +2152,138 @@ describe('ManagedPollService creation', () => {
 });
 
 describe('ManagedPollService draft editing', () => {
-  it('preserves omitted draft fields and advances the dispatch revision', async () => {
-    const now = new Date();
-    const images = [
-      {
-        base64: Buffer.from('draft-image').toString('base64'),
-        mimeType: 'image/jpeg',
-        fileName: 'draft.jpg',
-      },
-    ];
-    const poll = {
-      id: 'poll-1',
-      chatId: 'channel-1',
-      actorUserId: 'admin-1',
-      question: '**Старый вопрос**',
-      questionFormat: 'markdown',
-      imageCount: 1,
-      images,
-      status: ManagedPollStatus.DRAFT,
-      visibility: ManagedPollVisibility.OPEN,
-      identitySalt: POLL_IDENTITY_SALT,
-      renderRevision: 0,
-      renderedRevision: 0,
-      publicationMessageId: null,
-      publicationBotId: null,
-      publicationUrl: null,
-      publishedAt: null,
-      closedAt: null,
-      lockedAt: null,
-      lockToken: null,
-      lastError: null,
-      lastRenderError: null,
-      createdAt: now,
-      updatedAt: now,
-      options: [
+  it.each(['omitted', 'equal', 'changed', 'cleared', 'renamed'] as const)(
+    'preserves draft fields and writes images only when %s media changes',
+    async (mediaCase) => {
+      const now = new Date();
+      const images = [
         {
-          id: 'option-1',
-          pollId: 'poll-1',
-          position: 0,
-          text: 'Да',
-          createdAt: now,
-          updatedAt: now,
+          base64: Buffer.from('draft-image').toString('base64'),
+          mimeType: 'image/jpeg',
+          fileName: 'draft.jpg',
         },
+      ];
+      const requestedImages =
+        mediaCase === 'omitted'
+          ? undefined
+          : mediaCase === 'cleared'
+            ? []
+            : images.map((image) => ({
+                ...image,
+                ...(mediaCase === 'changed'
+                  ? { base64: Buffer.from('replacement-image').toString('base64') }
+                  : {}),
+                ...(mediaCase === 'renamed' ? { fileName: 'replacement.jpg' } : {}),
+              }));
+      const expectedImages = requestedImages ?? images;
+      const poll = {
+        id: 'poll-1',
+        chatId: 'channel-1',
+        actorUserId: 'admin-1',
+        question: '**Старый вопрос**',
+        questionFormat: 'markdown',
+        imageCount: 1,
+        images,
+        status: ManagedPollStatus.DRAFT,
+        visibility: ManagedPollVisibility.OPEN,
+        identitySalt: POLL_IDENTITY_SALT,
+        renderRevision: 0,
+        renderedRevision: 0,
+        publicationMessageId: null,
+        publicationBotId: null,
+        publicationUrl: null,
+        publishedAt: null,
+        closedAt: null,
+        lockedAt: null,
+        lockToken: null,
+        lastError: null,
+        lastRenderError: null,
+        createdAt: now,
+        updatedAt: now,
+        options: [
+          {
+            id: 'option-1',
+            pollId: 'poll-1',
+            position: 0,
+            text: 'Да',
+            createdAt: now,
+            updatedAt: now,
+          },
+          {
+            id: 'option-2',
+            pollId: 'poll-1',
+            position: 1,
+            text: 'Нет',
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      };
+      const tx = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: poll.id }]),
+        managedPoll: {
+          findFirst: jest.fn().mockResolvedValue(poll),
+          update: jest.fn().mockImplementation(async ({ data }) => {
+            Object.assign(poll, data, { renderRevision: 1 });
+            return poll;
+          }),
+          findUniqueOrThrow: jest.fn().mockResolvedValue(poll),
+        },
+        managedPollOption: {
+          deleteMany: jest.fn().mockResolvedValue({ count: 2 }),
+          createMany: jest.fn().mockResolvedValue({ count: 2 }),
+        },
+        auditLog: { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) },
+      };
+      const service = new ManagedPollService(
         {
-          id: 'option-2',
-          pollId: 'poll-1',
-          position: 1,
-          text: 'Нет',
-          createdAt: now,
-          updatedAt: now,
+          $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+        } as never,
+        {} as never,
+        { assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined) } as never,
+        { invalidate: jest.fn().mockResolvedValue(undefined) } as never,
+      );
+
+      const result = await service.updateChannelPoll(
+        'channel-1',
+        'poll-1',
+        { userId: 'admin-1' } as never,
+        {
+          question: 'Новый вопрос',
+          expectedUpdatedAt: now.toISOString(),
+          ...(requestedImages ? { images: requestedImages } : {}),
+          options: [
+            { id: 'option-1', text: 'Да' },
+            { id: 'option-2', text: 'Нет' },
+          ],
         },
-      ],
-    };
-    const tx = {
-      $queryRaw: jest.fn().mockResolvedValue([{ id: poll.id }]),
-      managedPoll: {
-        findFirst: jest.fn().mockResolvedValue(poll),
-        update: jest.fn().mockResolvedValue(poll),
-        findUniqueOrThrow: jest.fn().mockResolvedValue(poll),
-      },
-      managedPollOption: {
-        deleteMany: jest.fn().mockResolvedValue({ count: 2 }),
-        createMany: jest.fn().mockResolvedValue({ count: 2 }),
-      },
-      auditLog: { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) },
-    };
-    const service = new ManagedPollService(
-      {
-        $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
-      } as never,
-      {} as never,
-      { assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined) } as never,
-      { invalidate: jest.fn().mockResolvedValue(undefined) } as never,
-    );
+      );
 
-    await service.updateChannelPoll('channel-1', 'poll-1', { userId: 'admin-1' } as never, {
-      question: 'Новый вопрос',
-      expectedUpdatedAt: now.toISOString(),
-      options: [
-        { id: 'option-1', text: 'Да' },
-        { id: 'option-2', text: 'Нет' },
-      ],
-    });
-
-    expect(tx.managedPoll.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          questionFormat: 'markdown',
-          visibility: ManagedPollVisibility.OPEN,
-          imageCount: 1,
-          images,
-          renderRevision: { increment: 1 },
+      expect(tx.managedPoll.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            questionFormat: 'markdown',
+            visibility: ManagedPollVisibility.OPEN,
+            imageCount: expectedImages.length,
+            renderRevision: { increment: 1 },
+          }),
         }),
-      }),
-    );
-    expect(tx.auditLog.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        payload: expect.objectContaining({ visibility: ManagedPollVisibility.OPEN }),
-      }),
-    });
-  });
+      );
+      const updatedData = tx.managedPoll.update.mock.calls[0]?.[0]?.data;
+      if (mediaCase === 'omitted' || mediaCase === 'equal') {
+        expect(updatedData).not.toHaveProperty('images');
+      } else {
+        expect(updatedData.images).toEqual(expectedImages);
+      }
+      expect(result.images).toEqual(expectedImages);
+      expect(poll.renderRevision).toBe(1);
+      expect(tx.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({ visibility: ManagedPollVisibility.OPEN }),
+        }),
+      });
+    },
+  );
 
   it('rejects a stale revision under the row lock before mutating poll options', async () => {
     const updatedAt = new Date('2026-08-19T10:00:00.000Z');

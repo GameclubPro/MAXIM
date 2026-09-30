@@ -66,7 +66,10 @@ export function parseReclaimCutoff(value, now = Date.now()) {
   return parsedDate;
 }
 
-export function readRetainedReleaseImages(stateDir) {
+export function readRetainedReleaseImages(stateDir, { minimumRetainedReleases = 1 } = {}) {
+  if (!Number.isSafeInteger(minimumRetainedReleases) || minimumRetainedReleases < 1) {
+    throw new Error('The minimum retained release count must be a positive integer.');
+  }
   const resolvedStateDir = resolve(stateDir);
   const currentPath = resolve(resolvedStateDir, 'current.json');
   const releasesDir = resolve(resolvedStateDir, 'releases');
@@ -88,9 +91,13 @@ export function readRetainedReleaseImages(stateDir) {
 
   const imageIds = new Set();
   const imageRefs = new Set();
+  const retainedReleaseIds = new Set();
   const manifestPaths = [currentPath, ...releasePaths];
   for (const manifestPath of manifestPaths) {
     const manifest = readValidatedManifest(manifestPath);
+    if (manifestPath !== currentPath) {
+      retainedReleaseIds.add(manifest.releaseId);
+    }
     const components = Object.values(manifest.components ?? {});
     if (components.length === 0) {
       throw new Error(`Retained release manifest has no components: ${manifestPath}`);
@@ -101,6 +108,12 @@ export function readRetainedReleaseImages(stateDir) {
       }
       imageRefs.add(component.imageRef);
     }
+  }
+  if (retainedReleaseIds.size < minimumRetainedReleases) {
+    throw new Error(
+      `At least ${minimumRetainedReleases} distinct retained releases are required; ` +
+        `found ${retainedReleaseIds.size}.`,
+    );
   }
 
   return Object.freeze({
@@ -380,13 +393,19 @@ function parseCli(argv) {
       options.until = requireValue(args, ++index, argument);
     } else if (argument === '--dry-run') {
       options.dryRun = true;
+    } else if (argument === '--minimum-retained-releases') {
+      const value = requireValue(args, ++index, argument);
+      if (!/^[1-9][0-9]*$/u.test(value) || !Number.isSafeInteger(Number(value))) {
+        throw new Error(`${argument} requires a positive integer.`);
+      }
+      options.minimumRetainedReleases = Number(value);
     } else {
       throw new Error(`Unknown argument: ${argument}`);
     }
   }
   if (command !== 'reclaim' || !options.until) {
     throw new Error(
-      'Usage: release-image-reclaim.mjs reclaim --until <duration|timestamp> [--state-dir <path>] [--dry-run]',
+      'Usage: release-image-reclaim.mjs reclaim --until <duration|timestamp> [--state-dir <path>] [--minimum-retained-releases <count>] [--dry-run]',
     );
   }
   return options;
@@ -403,7 +422,7 @@ function requireValue(args, index, argument) {
 function runCli(argv) {
   const options = parseCli(argv);
   const cutoffMs = parseReclaimCutoff(options.until);
-  const retained = readRetainedReleaseImages(options.stateDir);
+  const retained = readRetainedReleaseImages(options.stateDir, options);
   const inventory = readDockerReclaimInventory();
   const candidates = buildReleaseImageReclaimPlan({
     images: inventory.images,
@@ -428,7 +447,7 @@ function runCli(argv) {
     return;
   }
 
-  const revalidatedRetained = readRetainedReleaseImages(options.stateDir);
+  const revalidatedRetained = readRetainedReleaseImages(options.stateDir, options);
   const revalidatedInventory = readDockerReclaimInventory();
   const revalidatedCandidates = buildReleaseImageReclaimPlan({
     images: revalidatedInventory.images,

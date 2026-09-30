@@ -4,6 +4,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Optional,
   Post,
   Query,
   UseGuards,
@@ -22,6 +23,7 @@ import { MaxApiMetricsService } from './max-api-metrics.service';
 import { SystemBotsService } from './system-bots.service';
 import { SystemDashboardService } from './system-dashboard.service';
 import { SystemModeService } from './system-mode.service';
+import { StorageRuntimeMetricsService } from './storage-runtime-metrics.service';
 
 const systemModeBodySchema = z.object({
   mode: z.enum(['normal', 'degrade', 'auto']),
@@ -134,6 +136,7 @@ export class SystemController {
     private readonly maxApiMetricsService: MaxApiMetricsService,
     private readonly systemBotsService: SystemBotsService,
     configService: ConfigService,
+    @Optional() private readonly storageRuntimeMetrics?: StorageRuntimeMetricsService,
   ) {
     this.systemAccessConfig = readSystemAccessConfig(configService);
   }
@@ -146,6 +149,18 @@ export class SystemController {
       this.systemModeService.getEffectiveSnapshot(),
     ]);
     return { queues, mode };
+  }
+
+  @Get('metrics/storage-runtime')
+  async getStorageRuntimeMetrics(@CurrentUser() user: AuthUser) {
+    this.assertSystemAdmin(user);
+    return (
+      this.storageRuntimeMetrics?.getFleetSnapshot() ?? {
+        available: false,
+        observedAt: Date.now(),
+        services: [],
+      }
+    );
   }
 
   @Get('metrics/queues/operational')

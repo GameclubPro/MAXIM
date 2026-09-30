@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ChatSummary, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import { createHash, randomUUID } from 'node:crypto';
@@ -11,6 +11,11 @@ import {
 } from '../max/max-bot-link.service';
 import type { MaxBotChat } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { StorageRuntimeMetricsService } from '../system/storage-runtime-metrics.service';
+import {
+  ChatContextLocalCache,
+  type ChatContextLocalCacheSnapshot,
+} from './chat-context-local-cache';
 
 export type ChatAdminAccessState = 'granted' | 'user_denied' | 'bot_denied';
 
@@ -96,10 +101,6 @@ export type ManagedEntitiesPublishedDiff = {
 };
 type ManagedEntityBotProfileSnapshot = {
   avatarUrl: string | null;
-};
-type LocalChatContextCacheEntry = {
-  value: ChatContext;
-  expiresAtMs: number;
 };
 type OpaqueRedisMutation = {
   expectedRaw: string | null;
@@ -339,10 +340,11 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
   private readonly subscriber: Redis;
-  private readonly localChatContextTtlMs: number;
+  private readonly localChatContextSweepIntervalMs: number;
   private readonly managedEntityHeaderTtlSec: number;
   private readonly managedEntityBotProfileTtlSec: number;
-  private readonly localChatContextCache = new Map<string, LocalChatContextCacheEntry>();
+  private readonly localChatContextCache: ChatContextLocalCache;
+  private localChatContextSweepTimer: NodeJS.Timeout | null = null;
   private readonly chatContextInFlightLoads = new Map<string, Promise<ChatContext>>();
   private readonly localChatContextEpochs = new Map<string, number>();
 
@@ -350,14 +352,31 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     configService: ConfigService,
     private readonly maxBotLinkService: MaxBotLinkService,
+    @Optional() private readonly storageRuntimeMetrics?: StorageRuntimeMetricsService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.subscriber = this.redis.duplicate({ enableReadyCheck: false });
-    this.localChatContextTtlMs = this.readPositiveInt(
+    const localChatContextTtlMs = this.readPositiveInt(
       (configService as { get?: (key: string) => unknown }).get?.(
         'CHAT_CONTEXT_LOCAL_CACHE_TTL_MS',
       ),
       ChatContextCacheService.LOCAL_CHAT_CONTEXT_TTL_MS,
+    );
+    const readCacheLimit = (key: string, fallback: number) =>
+      this.readPositiveInt(
+        (configService as { get?: (key: string) => unknown }).get?.(key),
+        fallback,
+      );
+    this.localChatContextCache = new ChatContextLocalCache({
+      ttlMs: localChatContextTtlMs,
+      maxBytes: readCacheLimit('CHAT_CONTEXT_LOCAL_CACHE_MAX_BYTES', 128 * 1024 * 1024),
+      maxEntries: readCacheLimit('CHAT_CONTEXT_LOCAL_CACHE_MAX_ENTRIES', 2048),
+      maxEntryBytes: readCacheLimit('CHAT_CONTEXT_LOCAL_CACHE_MAX_ENTRY_BYTES', 32 * 1024 * 1024),
+      sweepBatchSize: readCacheLimit('CHAT_CONTEXT_LOCAL_CACHE_SWEEP_BATCH_SIZE', 128),
+    });
+    this.localChatContextSweepIntervalMs = readCacheLimit(
+      'CHAT_CONTEXT_LOCAL_CACHE_SWEEP_INTERVAL_MS',
+      5000,
     );
     this.managedEntityHeaderTtlSec = this.readPositiveInt(
       (configService as { get?: (key: string) => unknown }).get?.(
@@ -370,6 +389,9 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
         'MANAGED_ENTITY_BOT_PROFILE_CACHE_SEC',
       ),
       ChatContextCacheService.DEFAULT_MANAGED_ENTITY_BOT_PROFILE_TTL_SEC,
+    );
+    this.storageRuntimeMetrics?.registerChatContextCacheSnapshot(() =>
+      this.getLocalCacheSnapshot(),
     );
   }
 
@@ -387,15 +409,31 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       this.applyLocalInvalidation(chatId);
     });
     await this.subscriber.subscribe(CHAT_CONTEXT_INVALIDATION_CHANNEL);
+    if (!this.localChatContextSweepTimer) {
+      this.localChatContextSweepTimer = setInterval(
+        () => this.localChatContextCache.sweepExpired(),
+        this.localChatContextSweepIntervalMs,
+      );
+      this.localChatContextSweepTimer.unref();
+    }
   }
 
   async onModuleDestroy() {
+    if (this.localChatContextSweepTimer) {
+      clearInterval(this.localChatContextSweepTimer);
+      this.localChatContextSweepTimer = null;
+    }
+    this.localChatContextCache.clear();
     await this.subscriber.quit();
     await this.redis.quit();
   }
 
   static cacheKey(chatId: string): string {
     return `chat:context:v3:${chatId}`;
+  }
+
+  getLocalCacheSnapshot(): ChatContextLocalCacheSnapshot {
+    return this.localChatContextCache.snapshot();
   }
 
   static adminAccessKey(chatId: string, userId: string): string {
@@ -2277,11 +2315,12 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       if (expectedEpoch !== undefined && this.readChatContextEpoch(chatId) !== expectedEpoch) {
         return value;
       }
-      if (!(await this.writeChatContextAtRevision(chatId, value, expectedRevision))) {
+      const serialized = JSON.stringify(value);
+      if (!(await this.writeChatContextAtRevision(chatId, serialized, expectedRevision))) {
         continue;
       }
       if (expectedEpoch === undefined || this.readChatContextEpoch(chatId) === expectedEpoch) {
-        this.writeLocalChatContext(chatId, value);
+        this.writeLocalChatContext(chatId, value, Buffer.byteLength(serialized));
       }
       return value;
     }
@@ -2302,7 +2341,13 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     if (cached && this.readChatContextEpoch(chatId) === expectedEpoch) {
       try {
         const parsed = JSON.parse(cached) as ChatContext;
-        return this.reconcileCachedChatTitle(chatId, parsed, normalizedTitle, expectedEpoch);
+        return this.reconcileCachedChatTitle(
+          chatId,
+          parsed,
+          normalizedTitle,
+          expectedEpoch,
+          Buffer.byteLength(cached),
+        );
       } catch (error: unknown) {
         this.logger.warn(
           { chatId, err: error instanceof Error ? error.message : String(error) },
@@ -2428,10 +2473,11 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     value: ChatContext,
     normalizedTitle: string | null,
     expectedEpoch?: number,
+    encodedBytes?: number,
   ): ChatContext {
     if (!normalizedTitle || value.title === normalizedTitle) {
       if (expectedEpoch === undefined || this.readChatContextEpoch(chatId) === expectedEpoch) {
-        this.writeLocalChatContext(chatId, value);
+        this.writeLocalChatContext(chatId, value, encodedBytes);
       }
       return value;
     }
@@ -2686,24 +2732,11 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   }
 
   private readLocalChatContext(chatId: string): ChatContext | null {
-    const cached = this.localChatContextCache.get(chatId);
-    if (!cached) {
-      return null;
-    }
-
-    if (cached.expiresAtMs <= Date.now()) {
-      this.localChatContextCache.delete(chatId);
-      return null;
-    }
-
-    return cached.value;
+    return this.localChatContextCache.get(chatId);
   }
 
-  private writeLocalChatContext(chatId: string, value: ChatContext): void {
-    this.localChatContextCache.set(chatId, {
-      value,
-      expiresAtMs: Date.now() + this.localChatContextTtlMs,
-    });
+  private writeLocalChatContext(chatId: string, value: ChatContext, encodedBytes?: number): void {
+    this.localChatContextCache.set(chatId, value, encodedBytes);
   }
 
   private applyLocalInvalidation(chatId: string): void {
@@ -2750,7 +2783,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
 
   private async writeChatContextAtRevision(
     chatId: string,
-    value: ChatContext,
+    serialized: string,
     expectedRevision: string,
   ): Promise<boolean> {
     const committed = await this.redis.eval(
@@ -2759,7 +2792,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       ChatContextCacheService.chatContextRevisionKey(chatId),
       ChatContextCacheService.cacheKey(chatId),
       expectedRevision,
-      JSON.stringify(value),
+      serialized,
       String(ChatContextCacheService.CHAT_CONTEXT_TTL_SEC),
     );
     return Number(committed) === 1;

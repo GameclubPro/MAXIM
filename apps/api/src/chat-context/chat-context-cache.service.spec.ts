@@ -320,6 +320,7 @@ jest.mock('ioredis', () => {
 });
 
 import Redis from 'ioredis';
+import type { ChatContextLocalCache } from './chat-context-local-cache';
 import type { ChatSummary } from '@maxim/contracts';
 import type { ChatSettings } from '../prisma/prisma-client';
 import {
@@ -938,6 +939,169 @@ describe('ChatContextCacheService', () => {
 
     expect(redisInstance.get).toHaveBeenCalledTimes(2);
     expect(redisInstance.eval).not.toHaveBeenCalled();
+  });
+
+  it('keeps a maximal standard notice image and full settings locally during hot reads', async () => {
+    const chatId = 'max-standard-image';
+    const base64 = Buffer.alloc(6_000_000, 1).toString('base64');
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    store.set(
+      ChatContextCacheService.cacheKey(chatId),
+      JSON.stringify({
+        chatId,
+        title: 'Maximal standard image',
+        settings: {
+          ...buildSettings(chatId),
+          botSpeechMedia: {
+            greetingBotMessageText: { base64, mimeType: 'image/jpeg', fileName: 'notice.jpg' },
+          },
+        },
+        domainAllowlist: ['example.com'],
+        adminUserIds: ['user-1'],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+    );
+
+    const first = await service.getChatContext(chatId);
+    expect(base64.length).toBe(8_000_000);
+    expect(first.settings.botSpeechMedia).toEqual({
+      greetingBotMessageText: { base64, mimeType: 'image/jpeg', fileName: 'notice.jpg' },
+    });
+    expect(first.adminUserIds).toEqual(['user-1']);
+    expect(first.settings.nightModeTimezone).toBe('Europe/Moscow');
+    expect(await service.getChatContext(chatId)).toBe(first);
+    expect(await service.getChatContext(chatId)).toBe(first);
+    expect(getRedisMutationMock(service).get).toHaveBeenCalledTimes(1);
+    expect(service.getLocalCacheSnapshot()).toMatchObject({
+      maxBytes: 128 * 1024 * 1024,
+      maxEntryBytes: 32 * 1024 * 1024,
+      entries: 1,
+      hits: 2,
+      misses: 1,
+      oversizedSkips: 0,
+      capacityEvictions: 0,
+    });
+    expect(service.getLocalCacheSnapshot().estimatedBytes).toBeGreaterThan(16_000_000);
+    expect(service.getLocalCacheSnapshot().estimatedBytes).toBeLessThan(32 * 1024 * 1024);
+  });
+
+  it('falls back to Redis after local LRU eviction while preserving complete media settings', async () => {
+    const config = createConfigMock();
+    config.get.mockImplementation((key) =>
+      key === 'CHAT_CONTEXT_LOCAL_CACHE_MAX_ENTRIES' ? 1 : undefined,
+    );
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    for (const chatId of ['chat-a', 'chat-b']) {
+      store.set(
+        ChatContextCacheService.cacheKey(chatId),
+        JSON.stringify({
+          chatId,
+          title: 'Cached chat',
+          settings: {
+            ...buildSettings(chatId),
+            botSpeechMedia: {
+              greetingBotMessageText: { base64: 'aW1hZ2U=', mimeType: 'image/jpeg' },
+            },
+          },
+          adminUserIds: ['user-1'],
+        }),
+      );
+    }
+    await service.getChatContext('chat-a');
+    await service.getChatContext('chat-b');
+    await expect(service.getChatContext('chat-a')).resolves.toMatchObject({
+      adminUserIds: ['user-1'],
+      settings: {
+        botSpeechMedia: {
+          greetingBotMessageText: { base64: 'aW1hZ2U=', mimeType: 'image/jpeg' },
+        },
+      },
+    });
+    expect(getRedisMutationMock(service).get).toHaveBeenCalledTimes(3);
+    expect(service.getLocalCacheSnapshot()).toMatchObject({ entries: 1, capacityEvictions: 2 });
+  });
+
+  it('returns oversized Redis contexts intact without storing or reserializing them locally', async () => {
+    const config = createConfigMock();
+    config.get.mockImplementation((key) =>
+      key === 'CHAT_CONTEXT_LOCAL_CACHE_MAX_ENTRY_BYTES' ? 1024 : undefined,
+    );
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const media = 'x'.repeat(5000);
+    store.set(
+      ChatContextCacheService.cacheKey('large-chat'),
+      JSON.stringify({
+        chatId: 'large-chat',
+        title: 'Large chat',
+        settings: { botSpeechMedia: media },
+      }),
+    );
+    const stringify = jest.spyOn(JSON, 'stringify');
+    try {
+      for (let read = 0; read < 2; read += 1) {
+        await expect(service.getChatContext('large-chat')).resolves.toMatchObject({
+          settings: { botSpeechMedia: media },
+        });
+      }
+      expect(stringify).not.toHaveBeenCalled();
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(getRedisMutationMock(service).get).toHaveBeenCalledTimes(2);
+    expect(service.getLocalCacheSnapshot()).toMatchObject({ entries: 0, estimatedBytes: 0 });
+    expect(service.getLocalCacheSnapshot().oversizedSkips).toBeGreaterThan(0);
+  });
+
+  it('sweeps cold entries in bounded timer batches and stops its timer on shutdown', async () => {
+    jest.useFakeTimers();
+    const config = createConfigMock();
+    config.get.mockImplementation((key) => {
+      if (key === 'CHAT_CONTEXT_LOCAL_CACHE_TTL_MS') return 100;
+      if (key === 'CHAT_CONTEXT_LOCAL_CACHE_SWEEP_INTERVAL_MS') return 1000;
+      if (key === 'CHAT_CONTEXT_LOCAL_CACHE_SWEEP_BATCH_SIZE') return 1;
+      return undefined;
+    });
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    try {
+      await service.onModuleInit();
+      for (const chatId of ['cold-a', 'cold-b']) {
+        store.set(
+          ChatContextCacheService.cacheKey(chatId),
+          JSON.stringify({ chatId, title: chatId }),
+        );
+        await service.getChatContext(chatId);
+      }
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(service.getLocalCacheSnapshot()).toMatchObject({ entries: 1, sweepInspected: 1 });
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(service.getLocalCacheSnapshot()).toMatchObject({ entries: 0, estimatedBytes: 0 });
+      await service.onModuleDestroy();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      await service.onModuleDestroy();
+      jest.useRealTimers();
+    }
   });
 
   it('propagates chat context invalidation to other service instances', async () => {
@@ -1917,13 +2081,10 @@ describe('ChatContextCacheService', () => {
     const committedRevision = store.get(revisionKey);
     const localCache = (
       service as unknown as {
-        localChatContextCache: Map<string, { value: unknown; expiresAtMs: number }>;
+        localChatContextCache: ChatContextLocalCache;
       }
     ).localChatContextCache;
-    localCache.set(chatId, {
-      value: { chatId, adminUserIds: [userId] },
-      expiresAtMs: Date.now() + 30_000,
-    });
+    localCache.set(chatId, { chatId, adminUserIds: [userId] } as never);
     const remoteInvalidation = jest.fn();
     (
       Redis as unknown as {
@@ -1940,7 +2101,7 @@ describe('ChatContextCacheService', () => {
 
     expect(redis.eval).toHaveBeenCalledTimes(2);
     expect(store.get(revisionKey)).toBe(committedRevision);
-    expect(localCache.has(chatId)).toBe(false);
+    expect(localCache.snapshot().entries).toBe(0);
     expect(remoteInvalidation).toHaveBeenCalledWith(
       'chat:context:invalidate:v1',
       JSON.stringify({ chatId }),
@@ -2386,15 +2547,28 @@ describe('ChatContextCacheService', () => {
         upsert: jest.fn(),
       },
     };
+    const config = createConfigMock();
+    config.get.mockImplementation((key) =>
+      key === 'CHAT_CONTEXT_LOCAL_CACHE_MAX_ENTRIES' ? 1 : undefined,
+    );
     const service = new ChatContextCacheService(
       prisma as never,
-      createConfigMock() as never,
+      config as never,
       maxBotLinkService as never,
     );
 
     const pending = service.getChatContext('chat-load-race');
     await Promise.resolve();
     await Promise.resolve();
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    for (const chatId of ['eviction-a', 'eviction-b']) {
+      store.set(
+        ChatContextCacheService.cacheKey(chatId),
+        JSON.stringify({ chatId, title: chatId }),
+      );
+      await service.getChatContext(chatId);
+    }
+    expect(service.getLocalCacheSnapshot().capacityEvictions).toBe(1);
     await service.applyAdminAccessEpochMutation({
       chatId: 'chat-load-race',
       userId: 'user-1',

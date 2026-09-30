@@ -28,6 +28,7 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { isDeepStrictEqual } from 'node:util';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { InternalChannelDialogButtonIdentity } from '../common/channel-dialog-button-identity.util';
@@ -452,7 +453,10 @@ export class ManagedPollService {
           questionFormat,
           visibility,
           imageCount: images.length,
-          images: images as Prisma.InputJsonValue,
+          // FLAG: Keep unchanged TOAST media pointers while the draft lock/revision advances.
+          ...(!isDeepStrictEqual(poll.images, images)
+            ? { images: images as Prisma.InputJsonValue }
+            : {}),
           renderRevision: { increment: 1 },
           lastError: null,
           lastRenderError: null,

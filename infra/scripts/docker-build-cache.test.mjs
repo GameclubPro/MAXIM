@@ -176,6 +176,77 @@ test('packages exact-SHA main images for reuse-only production deploys', () => {
   assert.match(workflow, /sha256sum maxim-image\.tar\.gz/u);
   assert.match(workflow, /retention-days: 1/u);
   assert.match(workflow, /github\.event_name == 'push'/u);
+  assert.match(workflow, /\{\{json \.RootFS\.Layers\}\}/u);
+  assert.match(workflow, /maxim-image-layers\.json/u);
+});
+
+test('production build cache is scoped to trusted main and exact dependency inputs', () => {
+  const workflow = read('.github/workflows/ci.yml');
+  const start = workflow.indexOf('      - name: Restore trusted dependency build cache');
+  const end = workflow.indexOf('      - name: Create isolated image builder', start);
+  const cacheStep = workflow.slice(start, end);
+  assert.notEqual(start, -1);
+  assert.match(
+    cacheStep,
+    /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/u,
+  );
+  assert.match(cacheStep, /actions\/cache@[0-9a-f]{40}/u);
+  assert.match(cacheStep, /main-v1-\$\{\{ matrix\.component \}\}.*amd64/u);
+  for (const input of ['package-lock.json', 'matrix.dockerfile', 'infra/certs/*.pem']) {
+    assert.ok(cacheStep.includes(input), input);
+  }
+  assert.doesNotMatch(cacheStep, /restore-keys:/u);
+  assert.match(workflow, /--driver docker-container --use/u);
+  assert.match(workflow, /--platform linux\/amd64/u);
+});
+
+test('build step never imports or exports main cache for untrusted jobs', () => {
+  const workflow = read('.github/workflows/ci.yml');
+  const start = workflow.indexOf('      - name: Build ${{ matrix.component }} image');
+  const bodyStart = workflow.indexOf('        run: |\n', start) + '        run: |\n'.length;
+  const end = workflow.indexOf('      - name: Smoke native OCR', bodyStart);
+  const body = workflow.slice(bodyStart, end).replace(/^ {10}/gmu, '');
+  const temp = mkdtempSync(join(tmpdir(), 'maxim-cache-trust-'));
+  try {
+    const bin = join(temp, 'bin');
+    const cachePath = join(temp, 'cache');
+    mkdirSync(bin);
+    mkdirSync(cachePath);
+    writeFileSync(join(cachePath, 'index.json'), '{}');
+    writeFileSync(join(bin, 'docker'), '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n');
+    chmodSync(join(bin, 'docker'), 0o755);
+    // Substitute only immutable workflow expressions so Bash executes the real cache branch.
+    const executable = body
+      .replace(/\$\{\{ github\.sha \}\}/gu, 'a'.repeat(40))
+      .replace(/\$\{\{ matrix\.dockerfile \}\}/gu, 'apps/api/Dockerfile');
+    const runBuild = (trusted) =>
+      spawnSync('bash', ['-euo', 'pipefail', '-c', executable], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          TRUSTED_BUILD_CACHE: trusted,
+          BUILD_CACHE_PATH: cachePath,
+          VITE_API_BASE: '',
+          IMAGE_REF: 'maxim-api:test',
+        },
+      });
+    const untrusted = runBuild('false');
+    assert.equal(untrusted.status, 0, untrusted.stderr);
+    assert.doesNotMatch(untrusted.stdout, /--cache-from|--cache-to/u);
+    const hit = runBuild('true');
+    assert.equal(hit.status, 0, hit.stderr);
+    assert.match(hit.stdout, /--cache-from/u);
+    assert.doesNotMatch(hit.stdout, /--cache-to/u);
+    rmSync(join(cachePath, 'index.json'));
+    const miss = runBuild('true');
+    assert.equal(miss.status, 0, miss.stderr);
+    assert.match(miss.stdout, /--cache-to/u);
+    assert.match(miss.stdout, /mode=max/u);
+    assert.doesNotMatch(miss.stdout, /--cache-from/u);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
 });
 
 test('bakes the production API URL into only the Major mini app image', () => {

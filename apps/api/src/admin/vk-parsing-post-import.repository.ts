@@ -3,10 +3,11 @@ import {
   VK_PARSING_MAX_PHOTOS,
   VK_PARSING_MAX_VIDEOS,
 } from '@maxim/contracts';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma, type VkParsingOwnerProfile } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { StorageRuntimeMetricsService } from '../system/storage-runtime-metrics.service';
 import type { VkParsingTextFormat } from './vk-parsing-content';
 import {
   VK_MAX_SEND_AMBIGUOUS_ERROR_PREFIX,
@@ -70,6 +71,20 @@ export type VkParsingPostImportDatabase = Pick<
   'vkParsingPost' | 'vkBotReview' | '$executeRaw'
 >;
 
+export type VkPostImportPersistenceSnapshot = {
+  batches: number;
+  postsAttempted: number;
+  rowsWritten: number;
+  rowsSkippedOrFenced: number;
+  failedBatches: number;
+  durationBuckets: {
+    under100Ms: number;
+    under500Ms: number;
+    under2000Ms: number;
+    atLeast2000Ms: number;
+  };
+};
+
 const VK_POST_STATUS_NEW = 'NEW';
 const VK_POST_STATUS_FAILED = 'FAILED';
 const VK_POST_STATUS_CHANGED_AFTER_PUBLISH = 'CHANGED_AFTER_PUBLISH';
@@ -83,7 +98,30 @@ const VK_POST_IMPORT_CHUNK_SIZE = 50;
 
 @Injectable()
 export class VkParsingPostImportRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly persistenceSnapshot: VkPostImportPersistenceSnapshot = {
+    batches: 0,
+    postsAttempted: 0,
+    rowsWritten: 0,
+    rowsSkippedOrFenced: 0,
+    failedBatches: 0,
+    durationBuckets: { under100Ms: 0, under500Ms: 0, under2000Ms: 0, atLeast2000Ms: 0 },
+  };
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() storageMetrics?: StorageRuntimeMetricsService,
+  ) {
+    storageMetrics?.registerVkPersistenceSnapshot(() => this.getPersistenceSnapshot());
+  }
+
+  // FLAG: These are process-lifetime statement counters, not committed transaction totals.
+  // A skipped row may also be fenced by an active publication; it is not solely a no-op.
+  getPersistenceSnapshot(): VkPostImportPersistenceSnapshot {
+    return {
+      ...this.persistenceSnapshot,
+      durationBuckets: { ...this.persistenceSnapshot.durationBuckets },
+    };
+  }
 
   async findExistingPosts(
     source: VkParsingPostImportSource,
@@ -123,7 +161,28 @@ export class VkParsingPostImportRepository {
     database: VkParsingPostImportDatabase = this.prisma,
   ): Promise<void> {
     for (const chunk of this.chunkItems(posts, VK_POST_IMPORT_CHUNK_SIZE)) {
-      await this.persistImportedPostsChunk(source, chunk, seenAt, database);
+      const startedAt = Date.now();
+      this.persistenceSnapshot.batches += 1;
+      this.persistenceSnapshot.postsAttempted += chunk.length;
+      try {
+        const written = await this.persistImportedPostsChunk(source, chunk, seenAt, database);
+        this.persistenceSnapshot.rowsWritten += written;
+        this.persistenceSnapshot.rowsSkippedOrFenced += chunk.length - written;
+      } catch (error: unknown) {
+        this.persistenceSnapshot.failedBatches += 1;
+        throw error;
+      } finally {
+        const elapsed = Math.max(0, Date.now() - startedAt);
+        const bucket =
+          elapsed < 100
+            ? 'under100Ms'
+            : elapsed < 500
+              ? 'under500Ms'
+              : elapsed < 2000
+                ? 'under2000Ms'
+                : 'atLeast2000Ms';
+        this.persistenceSnapshot.durationBuckets[bucket] += 1;
+      }
     }
   }
 
@@ -310,9 +369,9 @@ export class VkParsingPostImportRepository {
     posts: PreparedVkPostImport[],
     seenAt: Date,
     database: VkParsingPostImportDatabase,
-  ): Promise<void> {
+  ): Promise<number> {
     if (posts.length === 0) {
-      return;
+      return 0;
     }
 
     const rows = posts.map(
@@ -353,7 +412,7 @@ export class VkParsingPostImportRepository {
     // FLAG: Preserve equal stored JSON values so PostgreSQL can reuse their TOAST pointers.
     // Freshness timestamps still advance on every observation; hash equality alone cannot
     // substitute for JSON equality (CDN URLs and raw counters can change independently).
-    await database.$executeRaw(Prisma.sql`
+    return database.$executeRaw(Prisma.sql`
       /* storage:vk_import_upsert */
       INSERT INTO "vk_parsing_posts" (
         "id",
@@ -489,6 +548,47 @@ export class VkParsingPostImportRepository {
         END,
         "updated_at" = CURRENT_TIMESTAMP
       WHERE "vk_parsing_posts"."publish_idempotency_key" IS NULL
+        AND (
+          -- FLAG: Fresh observations still advance every post's timestamps. Only an exact
+          -- replay may skip the heap/index rewrite, after comparing the effective assignments.
+          "vk_parsing_posts"."last_seen_at" IS DISTINCT FROM EXCLUDED."last_seen_at"
+          OR "vk_parsing_posts"."last_availability_checked_at" IS DISTINCT FROM EXCLUDED."last_availability_checked_at"
+          OR ROW(
+            "vk_parsing_posts"."source_id", "vk_parsing_posts"."vk_published_at",
+            "vk_parsing_posts"."url", "vk_parsing_posts"."content_hash", "vk_parsing_posts"."status",
+            "vk_parsing_posts"."has_unsupported_attachments", "vk_parsing_posts"."is_advertising",
+            "vk_parsing_posts"."missing_since_at", "vk_parsing_posts"."missing_seen_count", "vk_parsing_posts"."unavailable_at"
+          ) IS DISTINCT FROM ROW(
+            EXCLUDED."source_id", EXCLUDED."vk_published_at", EXCLUDED."url", EXCLUDED."content_hash", EXCLUDED."status",
+            EXCLUDED."has_unsupported_attachments", EXCLUDED."is_advertising", NULL, 0, NULL
+          )
+          OR (
+            (
+              "vk_parsing_posts"."manual_content_edited_at" IS NULL
+              OR "vk_parsing_posts"."content_hash" IS DISTINCT FROM EXCLUDED."content_hash"
+            )
+            AND ROW(
+              "vk_parsing_posts"."text", "vk_parsing_posts"."text_format",
+              "vk_parsing_posts"."photo_urls", "vk_parsing_posts"."video_urls", "vk_parsing_posts"."link_urls"
+            ) IS DISTINCT FROM ROW(
+              EXCLUDED."text", EXCLUDED."text_format", EXCLUDED."photo_urls", EXCLUDED."video_urls", EXCLUDED."link_urls"
+            )
+          )
+          OR ROW(
+            "vk_parsing_posts"."attachments", "vk_parsing_posts"."attachment_types",
+            "vk_parsing_posts"."unsupported_attachments", "vk_parsing_posts"."advertising_markers", "vk_parsing_posts"."raw"
+          ) IS DISTINCT FROM ROW(
+            EXCLUDED."attachments", EXCLUDED."attachment_types", EXCLUDED."unsupported_attachments",
+            EXCLUDED."advertising_markers", EXCLUDED."raw"
+          )
+          OR (
+            EXCLUDED."status" = ${VK_POST_STATUS_NEW}
+            AND ROW(
+              "vk_parsing_posts"."skipped_at", "vk_parsing_posts"."skip_reason",
+              "vk_parsing_posts"."auto_publish_error", "vk_parsing_posts"."last_error"
+            ) IS DISTINCT FROM ROW(NULL, NULL, NULL, NULL)
+          )
+        )
     `);
   }
 

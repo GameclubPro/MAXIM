@@ -116,6 +116,68 @@ test('validates every retained manifest before returning its image allowlist', (
   assert.throws(() => readRetainedReleaseImages(stateDir), /Invalid retained release manifest/u);
 });
 
+test('automatic reclaim requires five distinct releases, not duplicate manifest files', () => {
+  const stateDir = createReleaseState('a');
+  const manifest = JSON.parse(readFileSync(join(stateDir, 'current.json'), 'utf8'));
+  for (let index = 0; index < 4; index += 1) {
+    writeFileSync(join(stateDir, 'releases', `copy-${index}.json`), JSON.stringify(manifest));
+  }
+  assert.throws(
+    () => readRetainedReleaseImages(stateDir, { minimumRetainedReleases: 5 }),
+    /At least 5 distinct retained releases are required; found 1/u,
+  );
+  for (let index = 0; index < 4; index += 1) {
+    writeFileSync(
+      join(stateDir, 'releases', `copy-${index}.json`),
+      JSON.stringify({
+        ...manifest,
+        releaseId: `release-copy-${index}`,
+      }),
+    );
+  }
+  assert.deepEqual(readRetainedReleaseImages(stateDir, { minimumRetainedReleases: 5 }).imageIds, [
+    imageId('a'),
+  ]);
+});
+
+test('CLI refuses insufficient rollback inventory before Docker mutation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'maxim-release-minimum-'));
+  const stateDir = createReleaseState('a', root);
+  const logPath = join(root, 'docker-log.jsonl');
+  const fakeDocker = createFakeDocker(root, {
+    images: [dockerImage('b', `maxim-api:${gitSha('b')}`)],
+    containers: [],
+  });
+  assert.throws(
+    () =>
+      execFileSync(
+        process.execPath,
+        [
+          helperPath,
+          'reclaim',
+          '--state-dir',
+          stateDir,
+          '--until',
+          '168h',
+          '--minimum-retained-releases',
+          '5',
+        ],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${fakeDocker.binDir}:${process.env.PATH}`,
+            FAKE_DOCKER_FIXTURE: fakeDocker.fixturePath,
+            FAKE_DOCKER_LOG: logPath,
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      ),
+    /At least 5 distinct retained releases/u,
+  );
+  assert.equal(existsSync(logPath), false);
+});
+
 test('CLI preserves retained unlabeled and container images while removing stale protected releases', () => {
   const root = mkdtempSync(join(tmpdir(), 'maxim-release-reclaim-cli-'));
   const stateDir = createReleaseState('a', root);

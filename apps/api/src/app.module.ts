@@ -14,6 +14,7 @@ import { PublisherModule } from './publisher/publisher.module';
 import { SystemModule } from './system/system.module';
 import { WebhookModule } from './webhook/webhook.module';
 import { MessageRetentionModule } from './message-retention/message-retention.module';
+import { StorageRuntimeMetricsModule } from './system/storage-runtime-metrics.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { MessageRetentionModule } from './message-retention/message-retention.mo
         },
       }),
     }),
+    StorageRuntimeMetricsModule,
     PrismaModule,
     MaxBotModule,
     MaxModule,

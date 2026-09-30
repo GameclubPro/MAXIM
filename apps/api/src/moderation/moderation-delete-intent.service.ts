@@ -4,6 +4,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import {
   SuggestionSubscriptionService,
   SUGGESTION_SUBSCRIPTION_DELETE_RULE,
@@ -35,6 +36,8 @@ import {
 } from '../max/max-send-auto-delete-marker';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { StorageRuntimeMetricsService } from '../system/storage-runtime-metrics.service';
+import { checkOrRenewDeleteIntentLease } from './moderation-delete-intent-lease';
 import {
   buildMessageScopedModerationActionClaimKey,
   claimDurableModerationMessageAction,
@@ -328,7 +331,8 @@ type CandidateFailure = {
 };
 
 type IntentLeaseHeartbeat = {
-  renew: () => Promise<boolean>;
+  renew: (minimumRemainingMs?: number) => Promise<boolean>;
+  hasRemainingBudget: (minimumRemainingMs: number) => boolean;
   stop: () => void;
 };
 
@@ -622,6 +626,7 @@ export class ModerationDeleteIntentService {
     @Optional() private readonly reportDeleteGuard?: ReportDeleteGuardService,
     @Optional() private readonly messageRetentionGuard?: MessageRetentionDeleteGuard,
     @Optional() private readonly suggestionSubscriptions?: SuggestionSubscriptionService,
+    @Optional() private readonly storageRuntimeMetrics?: StorageRuntimeMetricsService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -2116,6 +2121,10 @@ export class ModerationDeleteIntentService {
             intent.deleteDispatchStartedAt = new Date();
             intent.deleteDispatchStartedBotId = botId;
             unresolvedDeleteDispatch = true;
+            // FLAG: Admission waits and preparation may consume the lease. SQL
+            // ownership must be checked before the final policy guards; the
+            // duplicate authority permit must remain the final awaited check.
+            await this.assertLeaseForExternalCall(heartbeat, this.deleteTimeoutMs + 1_000);
             const textProof = await this.runDeletePreDispatchGuards(
               intent,
               botId,
@@ -2140,6 +2149,8 @@ export class ModerationDeleteIntentService {
                 throw new ModerationDeletePreDispatchGuardError(error);
               }
             }
+            if (!heartbeat.hasRemainingBudget(this.deleteTimeoutMs + 1_000))
+              throw new ModerationDeleteIntentLeaseLostError();
           };
           // FLAG: Retention's remote checks must finish before reserving the DELETE
           // transport slot. Final guards may only revalidate cached evidence and DB authority.
@@ -5322,26 +5333,33 @@ export class ModerationDeleteIntentService {
     let stopped = false;
     let lost = false;
     let inFlight: Promise<boolean> | null = null;
-    const renew = async (): Promise<boolean> => {
+    let inFlightMinimumRemainingMs = 0;
+    let proofUntilMonotonicMs = 0;
+    const renew = async (minimumRemainingMs = 0): Promise<boolean> => {
       if (stopped || lost) {
         return false;
       }
       if (inFlight) {
-        return inFlight;
+        if (minimumRemainingMs <= inFlightMinimumRemainingMs) return inFlight;
+        if (!(await inFlight)) return false;
+        return renew(minimumRemainingMs);
       }
-      inFlight = this.renewLease(intentId, leaseToken)
+      inFlightMinimumRemainingMs = minimumRemainingMs;
+      inFlight = this.renewLease(intentId, leaseToken, minimumRemainingMs)
         .catch((error: unknown) => {
+          this.storageRuntimeMetrics?.increment('deleteLeaseErrors');
           this.logger.warn(
             { intentId, err: this.errorMessage(error) },
             'Failed to renew moderation delete intent lease; outbound work is fenced',
           );
-          return false;
+          return { owned: false, renewed: false, remainingBudgetMs: 0, proofUntilMonotonicMs: 0 };
         })
-        .then((owned) => {
-          if (!owned) {
+        .then((result) => {
+          proofUntilMonotonicMs = result.proofUntilMonotonicMs;
+          if (!result.owned) {
             lost = true;
           }
-          return owned;
+          return result.owned;
         })
         .finally(() => {
           inFlight = null;
@@ -5353,6 +5371,8 @@ export class ModerationDeleteIntentService {
     timer.unref();
     return {
       renew,
+      hasRemainingBudget: (minimumRemainingMs) =>
+        !stopped && !lost && proofUntilMonotonicMs - performance.now() > minimumRemainingMs,
       stop: () => {
         stopped = true;
         clearInterval(timer);
@@ -5360,23 +5380,26 @@ export class ModerationDeleteIntentService {
     };
   }
 
-  private async renewLease(intentId: string, leaseToken: string): Promise<boolean> {
-    const now = new Date();
-    const leaseExpiresAt = new Date(now.getTime() + this.leaseMs);
-    const changed = await this.prisma.$executeRaw(Prisma.sql`
-      /* storage:delete_lease_renew */
-      UPDATE "moderation_delete_intents"
-      SET "lease_expires_at" = ${leaseExpiresAt}
-      WHERE "id" = ${intentId}
-        AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
-        AND "lease_token" = ${leaseToken}
-        AND "lease_expires_at" > ${now}
-    `);
-    return changed > 0;
+  private async renewLease(intentId: string, leaseToken: string, minimumRemainingMs = 0) {
+    this.storageRuntimeMetrics?.increment('deleteLeaseChecks');
+    const result = await checkOrRenewDeleteIntentLease(this.prisma, {
+      intentId,
+      leaseToken,
+      leaseMs: this.leaseMs,
+      minimumRemainingMs,
+    });
+    this.storageRuntimeMetrics?.increment(
+      result.renewed ? 'deleteLeaseRenewals' : 'deleteLeaseReads',
+    );
+    if (!result.owned) this.storageRuntimeMetrics?.increment('deleteLeaseLost');
+    return result;
   }
 
-  private async assertLeaseForExternalCall(heartbeat: IntentLeaseHeartbeat): Promise<void> {
-    if (!(await heartbeat.renew())) {
+  private async assertLeaseForExternalCall(
+    heartbeat: IntentLeaseHeartbeat,
+    minimumRemainingMs = 0,
+  ): Promise<void> {
+    if (!(await heartbeat.renew(minimumRemainingMs))) {
       throw new ModerationDeleteIntentLeaseLostError();
     }
   }

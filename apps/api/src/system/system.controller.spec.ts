@@ -14,6 +14,27 @@ function createConfigMock(values: Partial<Record<string, string>> = {}): ConfigS
 }
 
 describe('SystemController', () => {
+  it('restricts fleet storage scalars to the existing system-admin boundary', async () => {
+    const getFleetSnapshot = jest.fn().mockResolvedValue({ available: true, services: [] });
+    const controller = new SystemController(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      createConfigMock({ NODE_ENV: 'production', SYSTEM_ADMIN_USER_IDS: '100' }),
+      { getFleetSnapshot } as never,
+    );
+    await expect(controller.getStorageRuntimeMetrics({ userId: '200' } as never)).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(getFleetSnapshot).not.toHaveBeenCalled();
+    await expect(controller.getStorageRuntimeMetrics({ userId: '100' } as never)).resolves.toEqual({
+      available: true,
+      services: [],
+    });
+    expect(getFleetSnapshot).toHaveBeenCalledTimes(1);
+  });
   it('returns only lightweight operational queue metrics to an allowed system admin', async () => {
     const getSnapshot = jest.fn();
     const getOperationalSnapshot = jest.fn().mockResolvedValue({ effectiveLagSec: 2 });

@@ -266,6 +266,27 @@ const envSchema = z.object({
   WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS: z.coerce.number().int().min(10).max(5_000).default(100),
   WEBHOOK_RECEIPT_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(1_024).default(64),
   WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT: z.coerce.number().int().min(2).max(1_024).default(64),
+  CHAT_CONTEXT_LOCAL_CACHE_TTL_MS: z.coerce.number().int().positive().default(30_000),
+  CHAT_CONTEXT_LOCAL_CACHE_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(536_870_912)
+    .default(134_217_728),
+  CHAT_CONTEXT_LOCAL_CACHE_MAX_ENTRIES: z.coerce.number().int().min(1).max(65_536).default(2_048),
+  CHAT_CONTEXT_LOCAL_CACHE_MAX_ENTRY_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(536_870_912)
+    .default(33_554_432),
+  CHAT_CONTEXT_LOCAL_CACHE_SWEEP_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(60_000)
+    .default(5_000),
+  CHAT_CONTEXT_LOCAL_CACHE_SWEEP_BATCH_SIZE: z.coerce.number().int().min(1).max(2_048).default(128),
   ENQUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(200),
   ENQUEUE_BATCH_SIZE: z.coerce.number().int().positive().default(400),
   ENQUEUE_CONCURRENCY: z.coerce.number().int().positive().default(32),

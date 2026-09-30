@@ -30,6 +30,7 @@ RELEASE_STATE_DIR="${MAXIM_RELEASE_STATE_DIR:-/var/lib/maxim-deploy}"
 DEPLOY_MODE="manual"
 DEPLOY_RUNTIME_STARTED=0
 DEPLOY_MANIFEST_RECORDED=0
+POST_RELEASE_RECLAIM="${MAXIM_DEPLOY_RECLAIM_OLD_IMAGES:-0}"
 RECOVERY_BASE_MANIFEST=""
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
@@ -120,6 +121,13 @@ validate_api_ready_timeout() {
   if [[ ! "$API_READY_TIMEOUT_SEC" =~ ^[1-9][0-9]{2,3}$ ]] ||
     ((API_READY_TIMEOUT_SEC < 180 || API_READY_TIMEOUT_SEC > 3600)); then
     echo "MAXIM_DEPLOY_API_READY_TIMEOUT_SEC must be an integer between 180 and 3600." >&2
+    return 2
+  fi
+}
+
+validate_post_release_reclaim() {
+  if [[ "$POST_RELEASE_RECLAIM" != 0 && "$POST_RELEASE_RECLAIM" != 1 ]]; then
+    echo "MAXIM_DEPLOY_RECLAIM_OLD_IMAGES must be 0 or 1." >&2
     return 2
   fi
 }
@@ -978,6 +986,21 @@ record_successful_release() {
   echo "Release manifest committed: $RELEASE_ID"
 }
 
+reclaim_old_release_images() {
+  [[ "$POST_RELEASE_RECLAIM" == 1 ]] || return 0
+  if [[ "$DEPLOY_MANIFEST_RECORDED" != 1 ]]; then
+    echo "Post-release reclaim requires a newly committed successful manifest." >&2
+    return 1
+  fi
+  # FLAG: The caller still holds the shared deploy lock after all strict smokes.
+  echo "Post-release filesystem space before reclaim:"
+  df -B1 /var/lib/docker || return 1
+  node infra/scripts/release-image-reclaim.mjs reclaim \
+    --state-dir "$RELEASE_STATE_DIR" --until 168h --minimum-retained-releases 5 || return 1
+  echo "Post-release filesystem space after reclaim:"
+  df -B1 /var/lib/docker || return 1
+}
+
 wait_for_postgres() {
   local attempts="${1:-120}"
   local i
@@ -1190,6 +1213,7 @@ require_node_24
 require_production_branch_confirmation
 validate_requested_services
 validate_api_ready_timeout
+validate_post_release_reclaim
 acquire_deploy_lock
 trap cleanup EXIT
 sync_branch
@@ -1472,6 +1496,9 @@ fi
 
 if [[ "${#DEPLOYED_COMPONENTS[@]}" -gt 0 ]]; then
   record_successful_release
+  if ! reclaim_old_release_images; then
+    echo "WARNING: release succeeded; optional image reclaim needs operator review." >&2
+  fi
 else
   echo "No active release component changed; current release manifest was preserved."
 fi
