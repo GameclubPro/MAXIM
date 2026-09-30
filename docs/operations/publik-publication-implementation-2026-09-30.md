@@ -205,6 +205,9 @@ schedule или intent не перестраивала прежний ERROR sche
 и cancellation guards. Для ограниченного числа повторений требуется новое
 расписание: прежний лимит не сбрасывается при таком восстановлении.
 Прежние attempted/ambiguous остаются отдельными запусками.
+Для восстановления одинакового ERROR-расписания требуется явно переданный
+`intent: 'publish'`. Отсутствующий intent в PATCH не возобновляет серию,
+даже если клиент передал прежнее правило вместе с названием или содержимым.
 
 Проверка client payload выявила отдельный риск: «Версия для повтора» использовала
 общий update builder, который передавал NOW schedule и SNAPSHOT audience вместе
@@ -228,6 +231,67 @@ SENT и безопасную запись dialog reference без URL. Суще�
 владеет этой необязательной работой; guard budgets не повышены.
 Распределение бюджета, последовательный fanout и проверки полномочий сохраняются;
 из короткого среза нет основания повышать concurrency или rps.
+
+## Проверка Дополнительных Исправлений
+
+Implementation commit: `db27648231c3768485445c5389b58b36ad59d2b5`.
+Staged snapshot проверен через обычный commit/push wrapper:
+
+- API: 643 suites, 13 977 tests без пропусков с настоящими PostgreSQL 16/Redis 7;
+  retention дополнительно 11/11, TypeScript и серверная сборка прошли.
+- Все миграции применены в новой disposable БД; drift соответствует принятому
+  baseline. В этом дополнительном выпуске новых миграций нет.
+- Contracts: 39 suites/324 tests; mini app: 1 439 tests; Safety Desk: 15 tests.
+  Сборки всех потребителей, CSS, прежние bundle budgets и browser smokes прошли.
+- Static/agent checks: 607 tests; preflight, refactor guards, документация
+  и `git diff --check` прошли.
+- Отдельный мобильный набор: 54 strict сценария на Android/iPhone/iPhone SE
+  в двух темах, включая загруженные редакторы recurrence и ONCE retry.
+  Итоговый staged visual smoke также прошёл.
+
+Регрессии закрепляют отсутствие новых отправок при content-only retry update,
+отсутствие create-defaults в PATCH, явное разрешение восстановления серии,
+сохранение её конечного лимита и порядок receipt CAS → optional lookup → reference.
+Получение ссылки после проигранного CAS запрещено; ошибки ссылки не меняют SENT.
+
+## Дополнительный Выпуск
+
+Production release: `release-20260930T204621Z-db27648231c3`.
+Required и CodeQL зелёные для exact SHA `db27648231c3768485445c5389b58b36ad59d2b5`:
+[CI](https://github.com/GameclubPro/MAXIM/actions/runs/36773322860),
+[CodeQL](https://github.com/GameclubPro/MAXIM/actions/runs/36773322780).
+Проверенные immutable CI images предварительно загружены для API, mini app и
+Safety Desk. Обычный `deploy main --auto` выбрал все три компонента из-за изменения
+общего контракта; все 14 API roles, OCR auxiliary и обе active static services
+перешли на этот SHA. PostgreSQL/Redis не пересоздавались, pending migrations нет.
+Очереди защищены при смене версии и возобновлены после exact-image fence.
+Все строгие API/static/OCR smokes прошли; manifest записан. Временные readiness 503
+во время прогрева разрешились обычным ожиданием deploy, без bypass или перезапуска.
+
+Publisher status после выпуска: exact runtime, свежий heartbeat, secrets ready,
+dispatch pause отсутствует. Пять health endpoints успешны. Наблюдение запрошено
+на 180 секунд; его последний полный проход завершился в 20:53:15 UTC.
+Capacity report за 20:49:29–20:53:41 UTC содержит 12 samples, complete coverage,
+max gap 63,577 с. Readiness, queue metrics/fence и fleet 14/14 без failures,
+restarts ноль. Sampled oldest queue lag p50 0,086 с, p95/max 1,131 с.
+Mode в этом окне — degraded/stabilizing; заключительные health checks после окна
+подтвердили normal/healthy и queue lag 0. Disk warning ниже 40 GiB сохраняется
+при примерно 25,5 GiB свободного места; deploy capacity gates пройдены.
+
+Повторные fixed EXPLAIN/report выполнены последовательно: десять Index Scan,
+без physical sequential scans и новых grants. Sample по-прежнему включает
+32 FAILED, 32 AMBIGUOUS (обе группы насыщены) и один SCHEDULED с возрастом
+57 546 секунд. Последний имеет ACTIVE publication, ERROR RECURRENCE schedule,
+восемь metadata-ready targets и ноль delivery rows. Новая версия показывает
+ошибку и даёт безопасный явный schedule-save; существующая строка автоматически
+не возобновлялась. Исторические attempts/receipts не получили нового разрешения
+на отправку, реальная первопричина первоначального ERROR не установлена.
+
+Узкий bounded Publisher log read за 20:49:29–20:53:41 UTC: 38 строк, без насыщения
+и parse failures; receipt_persisted observations отсутствуют. Эта выборка не
+измеряет достигнутую скорость публикаций и не закрывает SLO. Рост concurrency/rps
+не выполнялся. Пользовательские каналы не использовались для тестовых публикаций;
+настоящий MAX WebView и семидневная приёмка остаются отдельными проверками.
 
 ## Операционная Приёмка
 
