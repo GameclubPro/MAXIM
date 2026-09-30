@@ -1,10 +1,10 @@
 # Публик: реализация улучшений, 30 сентября 2026
 
 Основание: [аудит и план](publik-publication-audit-plan-2026-09-30.md).
-Изменения выполняются в изолированном worktree. Чужие незавершённые изменения
+Изменения выполнены в изолированном worktree. Чужие незавершённые изменения
 исходной рабочей папки сохраняются отдельно; опубликованные изменения main
 учитываются при интеграции. PostgreSQL/Redis production не пересоздаются.
-Для устойчивого явного повтора добавляется одно nullable поле `retry_authorized_at`
+Для устойчивого явного повтора добавлено одно nullable поле `retry_authorized_at`
 без DEFAULT, backfill, индекса или изменения существующих публикаций.
 
 ## Реализованное поведение
@@ -77,25 +77,105 @@
 Общий immutable baseline пересчитан; в disposable БД обе миграции применены,
 проверка drift прошла без новых расхождений относительно принятого baseline.
 
-Наборы пересекаются; их суммы не являются числом уникальных тестов. Общая проверка
-release CI и production smokes ещё выполняются. Итоговые результаты
-будут записаны после завершения выпуска.
+Наборы пересекаются; их суммы не являются числом уникальных тестов.
+Окончательный staged snapshot прошёл repo wrapper перед commit:
 
-Первый полный API run в UTC: 636 suites, 13 725 passed, три намеренно пропущенных
-теста; retention SQL дополнительно 10 passed/один optional PostgreSQL race skipped,
-API build прошёл. Не-UTC запуск подтвердил ложные расхождения raw pg/Prisma на три
-часа; workflow CI использует UTC. После последних исправлений выполняется
-проверка точного staged snapshot. Infra validation: 467 tests и ShellCheck прошли.
+- API: 642 suites, 13 932 tests без пропусков, настоящие PostgreSQL/Redis;
+  retention PostgreSQL дополнительно 11/11. Typecheck, build и Prisma прошли.
+- Mini app: 1 433/1 433 tests, TypeScript/CSS и production build прошли;
+  итоговый visual smoke: 13 сценариев, layout/contrast/accessibility прошли.
+- Static/agent checks: 606 tests; infra: 494 tests и ShellCheck прошли.
+- Дополнительные проверки после commit: contracts 39 suites/311 tests;
+  Safety Desk 15 tests, typecheck/build и desktop/narrow browser smoke прошли.
+- Production dependency audit в CI: ноль runtime vulnerabilities.
 
-После интеграции main полный staged API run прошёл: 642 suites, 13 932 tests,
-без пропусков; retention PostgreSQL дополнительно 11/11, API build и Prisma
-прошли. Mini app 1 433/1 433 и TypeScript/CSS прошли. Первый production build
+PostgreSQL tests выполнялись в UTC, как в CI: raw pg/Prisma fixtures вне UTC
+получают расхождения на три часа. Первый production build
 выявил статическую связь modules → publication target selection → editor model →
 runtime contracts/Zod. Единственная eligibility-функция перенесена в лёгкий
 readiness module с re-export для текущих потребителей. Повторный production build
 прошёл без изменения budgets: chat settings 144,3/145,1 КБ, Publisher modules
-48,0/50,0 КБ, VK card 81,2/86,0 КБ gzip. Окончательный staged snapshot проверяется
-повторно перед commit.
+48,0/50,0 КБ, VK card 81,2/86,0 КБ gzip.
+
+Implementation commit: `71b8e8a36ffd771f6267fc23bedcf699210db92b`.
+Release target: `eacc4e88def69fdbacdc6ffde4c35fe4c3f13183`; относительно implementation
+commit этот merge меняет только независимый отчёт антидубля, runtime совпадает.
+Required и Analyze JavaScript and TypeScript зелёные для обоих SHA.
+Для release target: [CI](https://github.com/GameclubPro/MAXIM/actions/runs/36757935956)
+и [CodeQL](https://github.com/GameclubPro/MAXIM/actions/runs/36757936565).
+
+## Выпуск
+
+Production release: `release-20260930T184848Z-eacc4e88def6`, 30 сентября 2026.
+Обычный `deploy main --auto` завершился успешно после green exact-SHA CI.
+API и mini app использовали проверенные immutable CI images без сборки на VPS.
+Воспроизведённый серверный impact plan выбрал только `api-shared` и
+`miniapp-major-static`: изменения общих dependencies и Safety Desk уже находились
+в предыдущем production release `87a2d4f5766b447fb9adc65756b0506b3420335b`.
+Предварительно загруженный admin image не потребовал пересоздания Safety Desk.
+
+- Все 14 API roles и OCR auxiliary перешли на exact target `eacc4e88...`;
+  mini app также на `eacc4e88...`, admin-static наследует подтверждённый `87a2d4f...`.
+- Миграция `20260930190000_add_publication_retry_authorization` успешно применена.
+- Webhook queues были защищены общей pause fence на время смены версии;
+  fence снят после проверки единого API image. PostgreSQL/Redis не пересоздавались.
+- Strict ingress/admin live+ready, public live, OCR isolation/UDS/languages/shadow
+  и `https://major-maksimov.ru/app/` smokes прошли; release manifest записан.
+- Во время ожидания readiness были временные HTTP 503; обычный deploy дождался
+  готовности без повторного запуска, bypass или ручной записи manifest.
+
+Первая проверка после выпуска подтвердила пять health endpoints, точную
+идентичность Publisher runtime, свежий heartbeat, готовые secrets и отсутствие
+Publisher pause. Ingress/admin queue lag был 4,058/4,156 секунды при пороге 10 секунд.
+Общие MAX success counters не используются как доказательство доставки публикаций.
+
+Ограниченные `publisher-publications --explain` и report прошли последовательно:
+10 index scans, без physical sequential scans. Выборка: 65 occurrences;
+FAILED/AMBIGUOUS по 32 и обе насыщены, один SCHEDULED. Из 142 sampled targets
+140 соответствовали `metadata_ready`, два — `binding_not_connected`;
+категорий устаревшего author proof или bot snapshot в этой выборке не было.
+`metadata_ready` подтверждает только выбранные локальные metadata/freshness
+критерии, а не полный MAX write permission или новое разрешение на повтор.
+Из 129 sampled deliveries 117 имели попытку и receipt, четыре — попытку без
+receipt, восемь не имели попытки. Target sample усечён у девяти occurrences,
+delivery sample — у восьми; это не полный census и не измерение нового SLO.
+
+Наблюдение 18:57:01–19:00:45 UTC: запрошено 180 секунд, заключительный тяжёлый
+проход завершился через 224 секунды. Получены 12 capacity samples и четыре полных
+снимка, archive coverage полная, максимальный интервал 56,64 секунды. Все readiness
+HTTP 200; API fleet 14/14 на точном image, restart count ноль, queue fence clear.
+Первые три mode samples были degraded/stabilizing, последний — normal/healthy.
+Sampled oldest queue lag p50 0,159 с, p95/max 1,812 с; это входящая очередь,
+а не задержка публикаций. Свободно 26,96–26,98 GiB, disk warning сохраняется.
+
+Ограниченная ненасыщенная выборка Publisher logs за 18:53:00–19:00:45 UTC:
+612 строк, 526 observations сохранения receipt. Измерены delivery observations,
+а не уникальные посты; возможны fanout, прежние intents и startup recovery.
+
+| Mode/media      | Observations | p50      | p95       | p99       | Max       |
+| --------------- | ------------ | -------- | --------- | --------- | --------- |
+| NOW/text        | 512          | 23,594 с | 137,368 с | 159,171 с | 184,794 с |
+| SLOTS/text      | 8            | 23,298 с | 32,892 с  | 32,892 с  | 32,892 с  |
+| RECURRENCE/text | 6            | 11,382 с | 19,642 с  | 19,642 с  | 19,642 с  |
+
+Эта выборка не подтверждает начальные цели NOW p95 ≤ 3 с или scheduled p95 ≤ 5 с /
+p99 ≤ 15 с. Для проверки целей нужны размер fanout, стадийные измерения и длительный
+baseline. Успешный health или средняя скорость очереди не закрывают эту приёмку.
+
+Refresh windows: 1 594 attempts, 1 554 returned, 40 thrown. `returned` не означает
+grant. `publication_due`: девять returned; `publication_actor_due`: 13 returned /
+один thrown, queue age обоих срочных типов в пределах 60-секундного histogram bucket.
+Обычные scheduled probes: 804 returned, у 567 queue age больше 60 секунд;
+`stale_user_access`: 39 thrown. Зафиксированы 11 author-access deferrals и
+11 соответствующих guard warnings; это одни события, их нельзя суммировать.
+Общие monitor log scans насыщались 14 раз: отсутствие ошибок во всех журналах
+не установлено. Узкий Publisher timing-срез не насыщен.
+
+Дополнительный fixed audit связывает blocker/delivery группы с occurrence status,
+а delivery группы — также со schedule status. Join работает только по уже
+ограниченному materialized sample; новые columns/grants/table sources не добавлены.
+PGlite regression различает одинаковые PENDING deliveries у двух состояний
+расписания без вывода идентификаторов; весь focused audit suite 6/6 прошёл.
 
 ## Операционная Приёмка
 

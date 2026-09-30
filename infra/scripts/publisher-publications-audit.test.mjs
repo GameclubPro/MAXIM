@@ -98,6 +98,59 @@ test('missed-window blockers stay distinct from ambiguous delivery results', asy
   }
 });
 
+test('attributes identical delivery states to distinct occurrence and schedule statuses', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  await db.exec(`
+    INSERT INTO publications VALUES
+      ('private-scheduled-publication', 'private-actor', 'ACTIVE', 'SNAPSHOT', 'SELECTED', 'PUBLIK_V1', 'private-bot', 'private-title'),
+      ('private-progress-publication', 'private-actor', 'ACTIVE', 'SNAPSHOT', 'SELECTED', 'PUBLIK_V1', 'private-bot', 'private-title');
+    INSERT INTO publication_schedules VALUES
+      ('private-active-schedule', 'ONCE', 'ACTIVE', 1, '{}'),
+      ('private-paused-schedule', 'ONCE', 'PAUSED', 1, '{}');
+    INSERT INTO publication_occurrences VALUES
+      ('private-scheduled-occurrence', 'private-scheduled-publication', 'private-active-schedule', 'SCHEDULED', now() - interval '14 hours', 'PUBLIK_V1', 'private-bot', NULL, 'private-content'),
+      ('private-progress-occurrence', 'private-progress-publication', 'private-paused-schedule', 'IN_PROGRESS', now() - interval '1 hour', 'PUBLIK_V1', 'private-bot', NULL, 'private-content');
+    INSERT INTO managed_broadcast_deliveries VALUES
+      ('private-scheduled-delivery', 'private-scheduled-occurrence', now(), 'PENDING', 0, NULL, 'private-error'),
+      ('private-progress-delivery', 'private-progress-occurrence', now(), 'PENDING', 0, NULL, 'private-error');
+  `);
+  const report = (await db.query(query)).rows[0].json_build_object;
+  const attributions = [
+    { occurrence_status: 'SCHEDULED', schedule_status: 'ACTIVE' },
+    { occurrence_status: 'IN_PROGRESS', schedule_status: 'PAUSED' },
+  ];
+  assert.equal(report.blockers.length, 2);
+  assert.equal(report.delivery_states.length, 2);
+  for (const attribution of attributions) {
+    const blocker = report.blockers.find(
+      (row) => row.occurrence_status === attribution.occurrence_status,
+    );
+    assert.deepEqual(blocker, {
+      ...attribution,
+      blocker: 'none',
+      lifecycle: 'ACTIVE',
+      schedule_mode: 'ONCE',
+      audience_mode: 'SNAPSHOT',
+      occurrences: 1,
+    });
+    const delivery = report.delivery_states.find(
+      (row) => row.occurrence_status === attribution.occurrence_status,
+    );
+    assert.deepEqual(delivery, {
+      ...attribution,
+      status: 'PENDING',
+      has_remote_id: false,
+      attempted: false,
+      deliveries: 1,
+    });
+  }
+  assert.equal(report.target_samples_truncated, 0);
+  assert.equal(report.delivery_samples_truncated, 0);
+  assert.doesNotMatch(JSON.stringify(report), /private-|occurrence_id|publication_id|schedule_id/u);
+});
+
 test('source samples are capped and indexed, with explicit truncation', async (t) => {
   const db = new PGlite();
   t.after(() => db.close());

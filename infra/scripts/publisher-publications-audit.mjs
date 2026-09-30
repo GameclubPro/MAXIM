@@ -205,20 +205,23 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
     max(statement_timestamp() - scheduled_at) AS oldest_age
   FROM occurrence_candidates GROUP BY status
 ), blocker_counts AS (
-  SELECT CASE WHEN dispatch_blocker_code = 'PUBLISHER_MISSED_WINDOW_REVIEW'
+  SELECT status AS occurrence_status,
+    CASE WHEN dispatch_blocker_code = 'PUBLISHER_MISSED_WINDOW_REVIEW'
     THEN 'missed_window' WHEN dispatch_blocker_code IN (
     'PUBLISHER_ACTOR_ACCESS_REQUIRED', 'PUBLISHER_RUNTIME_UNAVAILABLE', 'PUBLISHER_AUTH_PAUSED',
     'policy_disabled', 'bot_not_connected', 'bot_access_expired', 'bot_access_unconfirmed',
     'bot_not_admin', 'write_permission_missing', 'route_quarantined', 'publisher_bot_changed'
   ) THEN dispatch_blocker_code WHEN dispatch_blocker_code IS NULL THEN 'none' ELSE 'other' END AS blocker,
     lifecycle, schedule_status, schedule_mode, audience_mode, count(*) AS occurrences
-  FROM scoped GROUP BY 1, 2, 3, 4, 5
+  FROM scoped GROUP BY 1, 2, 3, 4, 5, 6
 ), target_counts AS (
   SELECT occurrence_status, lifecycle, blocker, reason, denial, edge_unexpired, count(*) AS targets
   FROM classified_targets GROUP BY 1, 2, 3, 4, 5, 6
 ), delivery_counts AS (
-  SELECT status, has_remote_id, attempt_count > 0 AS attempted, count(*) AS deliveries
-  FROM delivery_sample GROUP BY 1, 2, 3
+  SELECT o.status AS occurrence_status, o.schedule_status,
+    d.status, d.has_remote_id, d.attempt_count > 0 AS attempted, count(*) AS deliveries
+  FROM delivery_sample d JOIN scoped o ON o.id = d.occurrence_id
+  GROUP BY 1, 2, 3, 4, 5
 )
 SELECT json_build_object(
   'schema_version', 1, 'audit', 'publisher_publications',
@@ -234,9 +237,9 @@ SELECT json_build_object(
   'delivery_samples_truncated', (SELECT count(*) FROM (
     SELECT occurrence_id FROM delivery_candidates GROUP BY occurrence_id HAVING count(*) > 8
   ) capped),
-  'blockers', coalesce((SELECT json_agg(blocker_counts ORDER BY blocker, schedule_mode::text) FROM blocker_counts), '[]'::json),
+  'blockers', coalesce((SELECT json_agg(blocker_counts ORDER BY occurrence_status::text, blocker, schedule_mode::text) FROM blocker_counts), '[]'::json),
   'target_reasons', coalesce((SELECT json_agg(target_counts ORDER BY reason, denial) FROM target_counts), '[]'::json),
-  'delivery_states', coalesce((SELECT json_agg(delivery_counts ORDER BY status::text) FROM delivery_counts), '[]'::json)
+  'delivery_states', coalesce((SELECT json_agg(delivery_counts ORDER BY occurrence_status::text, schedule_status::text, status::text) FROM delivery_counts), '[]'::json)
 );`;
   return `${explain ? 'EXPLAIN (FORMAT JSON) ' : ''}${query}\n`;
 }
