@@ -21,6 +21,7 @@ import {
   type ChatSettings,
 } from '@maxim/contracts';
 import { BadRequestException, ConflictException, type Logger } from '@nestjs/common';
+import { isDeepStrictEqual } from 'node:util';
 import {
   assertLegacyStopWordsWrite,
   omitLegacyStopWordsSettings,
@@ -231,7 +232,8 @@ function normalizeMessageLimitsBlockedLists(settings: ChatSettings): ChatSetting
 }
 
 function areBotSpeechMediaEqual(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
+  // FLAG: JSONB property order must not cause a media repair or duplicate TOAST rewrite.
+  return isDeepStrictEqual(left ?? {}, right ?? {});
 }
 
 function readBotSpeechMediaRecord(value: unknown): Record<string, unknown> {
@@ -823,6 +825,7 @@ export async function saveChatSettings(params: {
     where: { chatId: params.chatId },
     select: {
       ...CHAT_SETTINGS_BOT_CAPABILITY_SELECT,
+      botSpeechMedia: true,
       stopWordsPolicy: true,
       stopWordsRevision: true,
       messageLimitsBlockedWords: true,
@@ -988,6 +991,9 @@ export async function saveChatSettings(params: {
     current: {
       ...DEFAULT_CHAT_SETTINGS,
       ...(currentSettings ?? {}),
+      // FLAG: Raw media is only the write-comparison baseline; capability checks
+      // retain their previous typed default and never receive unsanitized JSONB.
+      botSpeechMedia: DEFAULT_CHAT_SETTINGS.botSpeechMedia,
       reportsDeleteMode:
         currentSettings?.reportsDeleteMode === 'HISTORY_24H' ? 'HISTORY_24H' : 'MESSAGE',
       stopWordsPolicy: currentSettings
@@ -1012,6 +1018,13 @@ export async function saveChatSettings(params: {
     ...majorOwnedSettings,
     ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
   };
+  const { botSpeechMedia, ...majorOwnedSettingsWithoutMedia } = majorOwnedSettings;
+  // FLAG: Compare the raw media at the same updatedAt used by the write CAS;
+  // malformed stored media must still be normalized and explicit clears must persist.
+  const updateSettings =
+    currentSettings && areBotSpeechMediaEqual(currentSettings.botSpeechMedia, botSpeechMedia)
+      ? majorOwnedSettingsWithoutMedia
+      : majorOwnedSettings;
 
   try {
     await params.prisma.$transaction(async (tx) => {
@@ -1029,7 +1042,7 @@ export async function saveChatSettings(params: {
       if (currentSettings) {
         const changed = await tx.chatSettings.updateMany({
           where: { chatId: params.chatId, updatedAt: currentSettings.updatedAt },
-          data: majorOwnedSettings,
+          data: updateSettings,
         });
         if (changed.count !== 1) {
           throw chatSettingsRevisionConflict();

@@ -293,11 +293,14 @@ Redis transfer bytes, RDB size, settings freshness, misses на hot workload.
 поля settings/media: текущие consumers используют inline images для notices.
 Добавлены byte-budget LRU и независимый от hot LRU updates bounded expiry
 sweep. Начальные defaults — 128 МиБ estimated retained bytes на процесс,
-32 МиБ на запись, 2048 entries, sweep 128 entries каждые 5 секунд. Это proxy
+128 МиБ на запись, 2048 entries, sweep 128 entries каждые 5 секунд. Это proxy
 удерживаемых данных, не RSS. Максимальное стандартное изображение
 6 000 000 binary bytes (8 000 000 base64 characters) вместе с settings
-остаётся кешируемым; oversized context возвращается полностью через
-Redis/DB. Снижать caps после canary только по hit/miss, oversized skips,
+остаётся кешируемым, включая контекст с тремя такими notice images
+(около 48 МБ estimated bytes). Общий бюджет процесса остаётся 128 МиБ;
+лимит записи не превышает его, а пользовательский меньший cap сохраняется.
+Oversized context возвращается полностью через Redis/DB. Снижать caps после
+canary только по hit/miss, oversized skips,
 capacity evictions и RSS/GC при сопоставимых окнах. Compact reference
 projection остаётся отдельным шагом с совместимыми readers.
 
@@ -345,6 +348,16 @@ client: по умолчанию 2, у admin 6
 client, затем решать о pool size. Не поднимать concurrency для скрытия I/O.
 
 ### P3. Свежий backup и isolated restore — обязательный gate
+
+**Результат первого attended запуска.** Штатный watched stream от 30 сентября
+22:09 UTC автоматически остановлен примерно через 48 минут: readiness/queue
+watchdog отклонил состояние, задержка достигала около 13 секунд. Временный
+зашифрованный файл удалён штатно; завершённой новой копии и restore нет.
+После остановки bounded audit не показал backup backend, ready вернулся,
+наблюдаемая задержка снизилась примерно до 0,3 секунды. Это не устанавливает
+единственную причину задержки. Автоматического повторного dump нет;
+historical mutation/rewrite по-прежнему закрыты. Следующая попытка требует
+здорового окна и повторного capacity/queue preflight после снижения write load.
 
 В осмотренном `/mnt/maxim-cold/backups/maxim` четыре dump за 24–27 августа;
 последний 27 августа. Не исключены другие внешние копии, но доказательств
@@ -526,6 +539,19 @@ Runtime/API changes: focused tests, PG16 races/query plans на clone,
 
 P7 продолжается до 6 октября 21:00 UTC в прежнем режиме только диагностики.
 Новая постоянная cleanup automation сама этим документом не разрешается.
+
+**Поправки после проверки исполнения.** Due-intent polling нельзя замедлять
+одним общим idle backoff: future `nextAttemptAt` не получает немедленный
+wakeup, а sweeper обеспечивает deadline/lease и Redis-loss recovery.
+Outbox delivery сохраняет прежние 200 мс; ноль recovered rows сам по себе
+не доказывает отсутствие работы, потому что включает skips/errors.
+Coalescing activity/display-name требует durable watermark и crash recovery:
+максимальная метка события без metadata ordering может перезаписать более
+свежее название старым. Эти изменения не включаются без доказательства
+эквивалентности и recovery bound. Создание Admin read client не равно
+открытому pool: соединения уже ленивые. Его используют также worker/private
+bot paths; ограничение только ролью admin может перенести нагрузку в
+moderation primary pool и не является безопасной экономией.
 
 Источник текущих метрик: локальные обезличенные JSON в
 `outputs/maxim-deep-storage-2026-10-01/` этого чата. Исторические окна —

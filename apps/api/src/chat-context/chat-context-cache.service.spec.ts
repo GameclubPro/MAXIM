@@ -980,7 +980,7 @@ describe('ChatContextCacheService', () => {
     expect(getRedisMutationMock(service).get).toHaveBeenCalledTimes(1);
     expect(service.getLocalCacheSnapshot()).toMatchObject({
       maxBytes: 128 * 1024 * 1024,
-      maxEntryBytes: 32 * 1024 * 1024,
+      maxEntryBytes: 128 * 1024 * 1024,
       entries: 1,
       hits: 2,
       misses: 1,
@@ -989,6 +989,65 @@ describe('ChatContextCacheService', () => {
     });
     expect(service.getLocalCacheSnapshot().estimatedBytes).toBeGreaterThan(16_000_000);
     expect(service.getLocalCacheSnapshot().estimatedBytes).toBeLessThan(32 * 1024 * 1024);
+  });
+
+  it('keeps several standard notice images in full settings hot within the total byte budget', async () => {
+    const chatId = 'several-standard-images';
+    const media = {
+      greetingBotMessageText: {
+        base64: Buffer.alloc(6_000_000, 1).toString('base64'),
+        mimeType: 'image/jpeg',
+        fileName: 'greeting.jpg',
+      },
+      nightModeBotMessageText: {
+        base64: Buffer.alloc(6_000_000, 2).toString('base64'),
+        mimeType: 'image/jpeg',
+        fileName: 'closed.jpg',
+      },
+      nightModeOpenMessageText: {
+        base64: Buffer.alloc(6_000_000, 3).toString('base64'),
+        mimeType: 'image/jpeg',
+        fileName: 'opened.jpg',
+      },
+    };
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    store.set(
+      ChatContextCacheService.cacheKey(chatId),
+      JSON.stringify({
+        chatId,
+        title: 'Several standard images',
+        settings: { ...buildSettings(chatId), botSpeechMedia: media },
+        domainAllowlist: ['example.com'],
+        adminUserIds: ['user-1'],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+    );
+
+    const first = await service.getChatContext(chatId);
+    expect(first.settings.botSpeechMedia).toEqual(media);
+    expect(first.adminUserIds).toEqual(['user-1']);
+    expect(first.settings.nightModeTimezone).toBe('Europe/Moscow');
+    expect(await service.getChatContext(chatId)).toBe(first);
+    expect(await service.getChatContext(chatId)).toBe(first);
+    expect(getRedisMutationMock(service).get).toHaveBeenCalledTimes(1);
+    const snapshot = service.getLocalCacheSnapshot();
+    expect(snapshot).toMatchObject({
+      maxBytes: 128 * 1024 * 1024,
+      maxEntryBytes: 128 * 1024 * 1024,
+      entries: 1,
+      hits: 2,
+      misses: 1,
+      oversizedSkips: 0,
+      capacityEvictions: 0,
+    });
+    expect(snapshot.estimatedBytes).toBeGreaterThan(48_000_000);
+    expect(snapshot.estimatedBytes).toBeLessThanOrEqual(snapshot.maxBytes);
   });
 
   it('falls back to Redis after local LRU eviction while preserving complete media settings', async () => {

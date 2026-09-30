@@ -137,6 +137,11 @@ jobs:
         env:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
         run: npm run test:retention-storage --workspace @maxim/api
+      - name: Conservative moderation rollup compatibility with PostgreSQL
+        env:
+          MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
+          TZ: UTC
+        run: npm test --workspace @maxim/api -- chat-moderation-rollup-postgres.spec.ts
 
   commercial-benchmark:
     name: Commercial Benchmark

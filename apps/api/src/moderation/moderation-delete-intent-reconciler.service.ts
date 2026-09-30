@@ -1,11 +1,30 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { performance } from 'node:perf_hooks';
 
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
+import {
+  type StorageDeleteReconcilerPhase,
+  StorageRuntimeMetricsService,
+} from '../system/storage-runtime-metrics.service';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 
 const DEFAULT_SWEEP_INTERVAL_MS = 1_000;
 const DEFAULT_CLEANUP_INTERVAL_MS = 60 * 60_000;
+
+function createPhaseCounters() {
+  return {
+    calls: 0,
+    succeeded: 0,
+    errors: 0,
+    returnedCount: 0,
+    durationBuckets: { under100Ms: 0, under500Ms: 0, under2000Ms: 0, atLeast2000Ms: 0 },
+  };
+}
+
+function incrementSaturated(value: number, amount = 1): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, value + amount);
+}
 
 @Injectable()
 export class ModerationDeleteIntentReconcilerService implements OnModuleInit, OnModuleDestroy {
@@ -16,10 +35,22 @@ export class ModerationDeleteIntentReconcilerService implements OnModuleInit, On
   private nextCleanupAtMs = 0;
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
+  private readonly runtimeMetrics = {
+    tickCalls: 0,
+    skippedInFlight: 0,
+    completedTicks: 0,
+    phases: {
+      staleSendFences: createPhaseCounters(),
+      replacementRecovery: createPhaseCounters(),
+      dueSweep: createPhaseCounters(),
+      retainedPurge: createPhaseCounters(),
+    },
+  };
 
   constructor(
     private readonly deleteIntents: ModerationDeleteIntentService,
     configService: ConfigService,
+    @Optional() metrics?: StorageRuntimeMetricsService,
   ) {
     const configured = Number(configService.get('MODERATION_DELETE_INTENT_SWEEP_INTERVAL_MS'));
     this.intervalMs =
@@ -31,6 +62,7 @@ export class ModerationDeleteIntentReconcilerService implements OnModuleInit, On
       Number.isInteger(cleanupConfigured) && cleanupConfigured > 0
         ? cleanupConfigured
         : DEFAULT_CLEANUP_INTERVAL_MS;
+    metrics?.registerDeleteReconcilerSnapshot(() => this.runtimeMetrics);
   }
 
   onModuleInit(): void {
@@ -50,37 +82,66 @@ export class ModerationDeleteIntentReconcilerService implements OnModuleInit, On
   }
 
   private async tick(): Promise<void> {
+    this.runtimeMetrics.tickCalls = incrementSaturated(this.runtimeMetrics.tickCalls);
     if (this.inFlight) {
+      this.runtimeMetrics.skippedInFlight = incrementSaturated(this.runtimeMetrics.skippedInFlight);
       return;
     }
     this.inFlight = true;
     try {
-      await this.runPhase('stale send fence reconciliation', () =>
+      await this.runPhase('staleSendFences', 'stale send fence reconciliation', () =>
         this.deleteIntents.quarantineStaleReplacementSendFences(),
       );
-      await this.runPhase('replacement cleanup recovery', () =>
+      await this.runPhase('replacementRecovery', 'replacement cleanup recovery', () =>
         this.deleteIntents.recoverReplacementCleanupSources(),
       );
-      await this.runPhase('due intent sweep', () => this.deleteIntents.sweepDueIntents());
+      await this.runPhase('dueSweep', 'due intent sweep', () =>
+        this.deleteIntents.sweepDueIntents(),
+      );
       if (Date.now() >= this.nextCleanupAtMs) {
-        await this.runPhase('retained intent purge', () =>
+        await this.runPhase('retainedPurge', 'retained intent purge', () =>
           this.deleteIntents.purgeRetainedIntents(),
         );
         this.nextCleanupAtMs = Date.now() + this.cleanupIntervalMs;
       }
     } finally {
       this.inFlight = false;
+      this.runtimeMetrics.completedTicks = incrementSaturated(this.runtimeMetrics.completedTicks);
     }
   }
 
-  private async runPhase(label: string, operation: () => Promise<unknown>): Promise<void> {
+  private async runPhase(
+    phase: StorageDeleteReconcilerPhase,
+    label: string,
+    operation: () => Promise<number>,
+  ): Promise<void> {
+    const counters = this.runtimeMetrics.phases[phase];
+    counters.calls = incrementSaturated(counters.calls);
+    const startedAt = performance.now();
     try {
-      await operation();
+      const result = await operation();
+      counters.succeeded = incrementSaturated(counters.succeeded);
+      // FLAG: This is the returned phase scalar, not scanned candidates, pending work,
+      // committed transactions, or an idle signal. Partial effects before a failure are unknown.
+      if (Number.isSafeInteger(result) && result >= 0)
+        counters.returnedCount = incrementSaturated(counters.returnedCount, result);
     } catch (error: unknown) {
+      counters.errors = incrementSaturated(counters.errors);
       this.logger.warn(
         { phase: label, err: error instanceof Error ? error.message : String(error) },
         'Moderation delete intent reconciliation phase failed',
       );
+    } finally {
+      const elapsedMs = performance.now() - startedAt;
+      const bucket =
+        elapsedMs < 100
+          ? 'under100Ms'
+          : elapsedMs < 500
+            ? 'under500Ms'
+            : elapsedMs < 2_000
+              ? 'under2000Ms'
+              : 'atLeast2000Ms';
+      counters.durationBuckets[bucket] = incrementSaturated(counters.durationBuckets[bucket]);
     }
   }
 }

@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
 import {
   sanitizeStorageRuntimeSnapshot,
+  STORAGE_DELETE_RECONCILER_PHASES,
   StorageRuntimeMetricsService,
 } from './storage-runtime-metrics.service';
 
@@ -13,6 +14,26 @@ const mockRedis = {
   disconnect: jest.fn(),
 };
 jest.mock('ioredis', () => ({ __esModule: true, default: jest.fn(() => mockRedis) }));
+
+function deleteReconcilerSnapshot() {
+  return {
+    tickCalls: 1,
+    skippedInFlight: 0,
+    completedTicks: 1,
+    phases: Object.fromEntries(
+      STORAGE_DELETE_RECONCILER_PHASES.map((phase) => [
+        phase,
+        {
+          calls: 1,
+          succeeded: 1,
+          errors: 0,
+          returnedCount: 0,
+          durationBuckets: { under100Ms: 1, under500Ms: 0, under2000Ms: 0, atLeast2000Ms: 0 },
+        },
+      ]),
+    ),
+  };
+}
 
 describe('bounded storage-runtime metrics', () => {
   let metrics: StorageRuntimeMetricsService;
@@ -88,6 +109,60 @@ describe('bounded storage-runtime metrics', () => {
     expect(mockRedis.set).toHaveBeenCalledTimes(1);
     resolve('OK');
     await first;
+  });
+  it('publishes only fixed reconciliation phases with the existing process epoch and report', async () => {
+    const fixture = deleteReconcilerSnapshot();
+    fixture.phases.privateLabel = { ...fixture.phases.dueSweep };
+    metrics.registerDeleteReconcilerSnapshot(() => ({
+      ...fixture,
+      error: 'private-error-fixture',
+      phases: {
+        ...fixture.phases,
+        dueSweep: { ...fixture.phases.dueSweep, payload: 'private-content-fixture' },
+      },
+    }));
+    const before = metrics.getLocalSnapshot()!;
+    await metrics.publish();
+    expect(mockRedis.set).toHaveBeenCalledTimes(1);
+    const encoded = mockRedis.set.mock.calls[0][1];
+    const snapshot = JSON.parse(encoded);
+    expect(snapshot.startedAt).toBe(before.startedAt);
+    expect(Object.keys(snapshot.deleteReconciler.phases)).toEqual(STORAGE_DELETE_RECONCILER_PHASES);
+    expect(snapshot.deleteReconciler.phases.dueSweep.returnedCount).toBe(0);
+    expect(encoded).not.toContain('private');
+    expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(8192);
+  });
+  it('rejects invalid reconciliation counts and allows reports from roles without this provider', () => {
+    const valid = metrics.getLocalSnapshot()!;
+    expect(valid.deleteReconciler).toBeNull();
+    const older = Object.fromEntries(
+      Object.entries(valid).filter(([field]) => field !== 'deleteReconciler'),
+    );
+    expect(sanitizeStorageRuntimeSnapshot(older)?.deleteReconciler).toBeNull();
+    const fixture = deleteReconcilerSnapshot();
+    for (const value of [-1, Infinity, NaN, '1', undefined])
+      expect(
+        sanitizeStorageRuntimeSnapshot({
+          ...valid,
+          deleteReconciler: {
+            ...fixture,
+            phases: {
+              ...fixture.phases,
+              dueSweep: { ...fixture.phases.dueSweep, returnedCount: value },
+            },
+          },
+        }),
+      ).toBeNull();
+  });
+  it('keeps a failing reconciliation provider independent of other local measurements', () => {
+    metrics.increment('deleteLeaseChecks');
+    metrics.registerDeleteReconcilerSnapshot(() => {
+      throw new Error('private-error-fixture');
+    });
+    expect(metrics.getLocalSnapshot()).toMatchObject({
+      deleteReconciler: null,
+      counters: { deleteLeaseChecks: 1 },
+    });
   });
   it('fails softly on Redis and on a local provider exception', async () => {
     metrics.registerChatContextCacheSnapshot(() => {

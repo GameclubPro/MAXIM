@@ -12,6 +12,15 @@ export const STORAGE_RUNTIME_COUNTERS = [
   'deleteLeaseErrors',
 ] as const;
 export type StorageRuntimeCounter = (typeof STORAGE_RUNTIME_COUNTERS)[number];
+export const STORAGE_DELETE_RECONCILER_PHASES = [
+  'staleSendFences',
+  'replacementRecovery',
+  'dueSweep',
+  'retainedPurge',
+] as const;
+export type StorageDeleteReconcilerPhase = (typeof STORAGE_DELETE_RECONCILER_PHASES)[number];
+const DELETE_RECONCILER_FIELDS = ['tickCalls', 'skippedInFlight', 'completedTicks'] as const;
+const DELETE_RECONCILER_PHASE_FIELDS = ['calls', 'succeeded', 'errors', 'returnedCount'] as const;
 const CACHE_FIELDS = [
   'entries',
   'estimatedBytes',
@@ -66,6 +75,24 @@ function checkedNumbers(value: unknown, fields: readonly string[]): Record<strin
   return Object.fromEntries(fields.map((field) => [field, source[field] as number]));
 }
 
+function sanitizeDeleteReconcilerSnapshot(value: unknown) {
+  const counters = checkedNumbers(value, DELETE_RECONCILER_FIELDS);
+  if (!counters) return null;
+  const source = value as Record<string, unknown>;
+  if (!source.phases || typeof source.phases !== 'object' || Array.isArray(source.phases))
+    return null;
+  const phases = source.phases as Record<string, unknown>;
+  const sanitized: Record<string, unknown> = {};
+  for (const phase of STORAGE_DELETE_RECONCILER_PHASES) {
+    const counters = checkedNumbers(phases[phase], DELETE_RECONCILER_PHASE_FIELDS);
+    const value = phases[phase] as Record<string, unknown> | undefined;
+    const durationBuckets = checkedNumbers(value?.durationBuckets, DURATION_FIELDS);
+    if (!counters || !durationBuckets) return null;
+    sanitized[phase] = { ...counters, durationBuckets };
+  }
+  return { ...counters, phases: sanitized };
+}
+
 export function sanitizeStorageRuntimeSnapshot(value: unknown) {
   if (!value || typeof value !== 'object') return null;
   const source = value as Record<string, unknown>;
@@ -86,10 +113,15 @@ export function sanitizeStorageRuntimeSnapshot(value: unknown) {
   const vkCounters = source.vkPersistence == null ? null : checkedNumbers(vk, VK_FIELDS);
   const durations =
     source.vkPersistence == null ? null : checkedNumbers(vk?.durationBuckets, DURATION_FIELDS);
+  const deleteReconciler =
+    source.deleteReconciler == null
+      ? null
+      : sanitizeDeleteReconcilerSnapshot(source.deleteReconciler);
   if (
     !counters ||
     (source.chatContextCache != null && !cache) ||
-    (source.vkPersistence != null && (!vkCounters || !durations))
+    (source.vkPersistence != null && (!vkCounters || !durations)) ||
+    (source.deleteReconciler != null && !deleteReconciler)
   )
     return null;
   return {
@@ -98,6 +130,7 @@ export function sanitizeStorageRuntimeSnapshot(value: unknown) {
     observedAt: source.observedAt,
     counters,
     chatContextCache: cache,
+    deleteReconciler,
     vkPersistence: vk
       ? {
           ...vkCounters,
@@ -150,6 +183,7 @@ export class StorageRuntimeMetricsService implements OnModuleInit, OnModuleDestr
   private readonly counters = fixedNumbers({}, STORAGE_RUNTIME_COUNTERS);
   private cacheProvider: (() => unknown) | null = null;
   private vkProvider: (() => unknown) | null = null;
+  private deleteReconcilerProvider: (() => unknown) | null = null;
   private timer: NodeJS.Timeout | null = null;
   private inFlight: Promise<void> | null = null;
 
@@ -183,6 +217,9 @@ export class StorageRuntimeMetricsService implements OnModuleInit, OnModuleDestr
   registerVkPersistenceSnapshot(provider: () => unknown): void {
     this.vkProvider = provider;
   }
+  registerDeleteReconcilerSnapshot(provider: () => unknown): void {
+    this.deleteReconcilerProvider = provider;
+  }
 
   getLocalSnapshot() {
     const readProvider = (provider: (() => unknown) | null) => {
@@ -199,6 +236,7 @@ export class StorageRuntimeMetricsService implements OnModuleInit, OnModuleDestr
       counters: this.counters,
       chatContextCache: readProvider(this.cacheProvider),
       vkPersistence: readProvider(this.vkProvider),
+      deleteReconciler: readProvider(this.deleteReconcilerProvider),
     });
   }
 

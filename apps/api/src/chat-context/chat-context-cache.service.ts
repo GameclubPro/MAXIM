@@ -371,7 +371,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       ttlMs: localChatContextTtlMs,
       maxBytes: readCacheLimit('CHAT_CONTEXT_LOCAL_CACHE_MAX_BYTES', 128 * 1024 * 1024),
       maxEntries: readCacheLimit('CHAT_CONTEXT_LOCAL_CACHE_MAX_ENTRIES', 2048),
-      maxEntryBytes: readCacheLimit('CHAT_CONTEXT_LOCAL_CACHE_MAX_ENTRY_BYTES', 32 * 1024 * 1024),
+      maxEntryBytes: readCacheLimit('CHAT_CONTEXT_LOCAL_CACHE_MAX_ENTRY_BYTES', 128 * 1024 * 1024),
       sweepBatchSize: readCacheLimit('CHAT_CONTEXT_LOCAL_CACHE_SWEEP_BATCH_SIZE', 128),
     });
     this.localChatContextSweepIntervalMs = readCacheLimit(

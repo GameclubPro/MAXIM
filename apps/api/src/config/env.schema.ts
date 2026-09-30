@@ -279,7 +279,7 @@ const envSchema = z.object({
     .int()
     .min(1)
     .max(536_870_912)
-    .default(33_554_432),
+    .default(134_217_728),
   CHAT_CONTEXT_LOCAL_CACHE_SWEEP_INTERVAL_MS: z.coerce
     .number()
     .int()

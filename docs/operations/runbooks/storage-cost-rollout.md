@@ -1,7 +1,7 @@
 # Storage and bot cost rollout
 
 This first runtime stage reduces delete-lease writes, bounds the local chat-context
-cache and skips unchanged VK import updates. It adds fixed runtime counters and
+cache and skips exact repeated VK import observations. It adds fixed runtime counters and
 trusted-main CI layer reuse. It does not activate historical body/media expiry,
 receipt deletion, database rewrites or notice-upload token reuse. See the
 [full plan](../storage-and-bot-cost-optimization-plan-2026-10-01.md).
@@ -48,6 +48,21 @@ queue-lag percentiles are not API/action response latency. Cache bytes estimate
 retained data, not RSS. VK rows-written counters describe statement activity,
 not committed transactions; skipped rows also include publication fences.
 Table totals already include indexes and TOAST: never add them twice.
+
+The later additive `deleteReconciler` report preserves old reports that lack the
+field. Its fixed phase calls, results, error counts and monotonic duration buckets
+do not change the one-second recovery cadence or hourly cleanup cadence. A
+successful phase's `returnedCount` describes that method's returned scalar; it
+is not an idle/pending/committed-work measurement. See the
+[consumer and metric semantics matrix](../storage-body-lifecycle-consumer-matrix-2026-10-01.md).
+
+The follow-up settings write guard compares JSONB values without depending on
+property order, preserves raw-value repair and the existing `updatedAt` CAS, and
+omits only unchanged media from the UPDATE. The forward-only rollup migration
+preserves legacy arrays, feed/counters and transaction timestamps. It shortcuts
+only physically small canonical empty/singleton arrays and exact unchanged
+hour timestamps; larger or malformed arrays use the original DISTINCT cleanup.
+Neither change rewrites historical rows or promises filesystem reclaim.
 
 ## Release-image reclaim
 
