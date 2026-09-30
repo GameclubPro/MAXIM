@@ -88,7 +88,7 @@
 
 ## Change Discipline
 
-- Bot service traffic must stay out of user group chats and channels: never send diagnostics, permission checks, connection confirmations, test messages, or fallback error replies there. Handle connection checks silently and show their result in the mini app or in the initiating private dialog. Public bot messages are limited to administrator-enabled product features and explicitly requested publications; live test sends require an explicitly designated test destination.
+- Bot service traffic must stay out of user group chats and channels: never send diagnostics, permission checks, test messages, or fallback error replies there. An explicit administrator-authored `Старт` command may publish one successful connection confirmation with the bot's mini app button after fresh bot and user admin checks; if the bot is not an administrator, stay silent. Passive connection checks remain silent and show their result in the mini app or in the initiating private dialog. Other public bot messages are limited to administrator-enabled product features and explicitly requested publications; live test sends require an explicitly designated test destination.
 - Keep edits within the ownership boundary implied by the request; avoid unrelated refactors and metadata churn.
 - Work with a dirty tree: preserve unrelated user and agent changes, stage only owned files, and never revert another change incidentally.
 - Do not use destructive Git commands unless explicitly requested.

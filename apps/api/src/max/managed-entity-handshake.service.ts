@@ -366,6 +366,8 @@ export class ManagedEntityHandshakeService {
           this.buildSuccessReply(context, wasConnected),
           this.buildSettingsButton(context),
         );
+      } else if (isManagedEntityHandshakeStartCommand(context.update)) {
+        await this.replyToStartCommandSafely(context, wasConnected);
       }
       await this.recordSuccessfulOutcomeSafely(
         context,
@@ -811,13 +813,47 @@ export class ManagedEntityHandshakeService {
     );
   }
 
+  private async replyToStartCommandSafely(
+    context: ManagedEntityHandshakeContext,
+    wasConnected: boolean,
+  ): Promise<void> {
+    // FLAG: Only an explicit Start command with confirmed bot AND actor admin access
+    // may publish a connection confirmation. Failures and passive onboarding stay silent.
+    try {
+      await this.maxClient.sendMessage(
+        context.chatId,
+        this.buildSuccessReply(context, wasConnected),
+        { buttons: this.buildSettingsButton(context) },
+        {
+          immediate: true,
+          botId: context.botId,
+          idempotencyKey: `managed-handshake-start:${context.chatId}:${context.update.updateId}`,
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
+          timeoutMs: HANDSHAKE_SEND_TIMEOUT_MS,
+          ignoreFailureMetricStatuses: [403, 404],
+        },
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          updateId: context.update.updateId,
+          chatId: context.chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to send managed entity Start confirmation',
+      );
+    }
+  }
+
   private async replySafely(
     context: ManagedEntityHandshakeContext,
     text: string,
     buttons?: NonNullable<Parameters<MaxClientService['sendMessageImmediateWithId']>[2]>['buttons'],
   ): Promise<void> {
-    // FLAG: Connection checks never publish service messages in managed chats/channels.
-    // Only reply to the initiating private dialog, through the bot that received it.
+    // FLAG: Generic connection replies go only to the initiating private dialog.
+    // Public success confirmations use the explicit, admin-verified Start path above.
     if (context.interaction !== 'forwarded_private') return;
     await this.sendReplySafely({
       update: context.update,

@@ -205,6 +205,7 @@ describe('PublisherBindingRefreshService', () => {
         permissionsKnown: true,
       }),
       sendMessageImmediateWithId: jest.fn().mockResolvedValue('reply-1'),
+      sendMessage: jest.fn().mockResolvedValue({ messageId: 'start-reply-1' }),
     };
     const credentials = {
       getBotId: jest.fn(() => 'publik_bot'),
@@ -226,7 +227,9 @@ describe('PublisherBindingRefreshService', () => {
       }),
     };
     const maxBotLinkService = {
-      buildMiniappStartUrlSync: jest.fn(() => 'https://max.ru/publik_bot?startapp=home'),
+      buildMiniappStartUrlSync: jest.fn<string | null, [string, string?]>(
+        () => 'https://max.ru/publik_bot?startapp=home',
+      ),
     };
     const service = new PublisherBindingRefreshService(
       prisma as never,
@@ -272,6 +275,113 @@ describe('PublisherBindingRefreshService', () => {
     source: 'publisher_targeted_snapshot',
     status: 'ACTIVE',
     lastSeenAt: new Date(Date.now() - 11 * 60_000),
+  });
+
+  const startJob = {
+    ...job,
+    reason: 'webhook_observed',
+    candidateUserId: 'admin-1',
+    candidateVersion: 'start-update-1',
+    replyToStartCommand: true,
+  } as const;
+
+  it('confirms an explicit Start only after bot and actor admin access is committed', async () => {
+    const { service, maxClient, edgeState, maxBotLinkService, tx } = createHarness(adminAccess);
+    edgeState.sourceVersion = startJob.candidateVersion;
+    await service.refresh(startJob);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('подключен к Публику'),
+      {
+        buttons: [
+          [
+            {
+              type: 'link',
+              text: 'Открыть Публик',
+              url: 'https://max.ru/publik_bot?startapp=home',
+            },
+          ],
+        ],
+      },
+      expect.objectContaining({
+        immediate: true,
+        botId: 'publik_bot',
+        idempotencyKey: 'publisher-handshake-start:chat-1:start-update-1',
+      }),
+    );
+    expect(maxClient.sendMessage.mock.invocationCallOrder[0]).toBeGreaterThan(
+      tx.managedEntityAccessEdge.upsert.mock.invocationCallOrder[0],
+    );
+    const [startParam, botId] = maxBotLinkService.buildMiniappStartUrlSync.mock.calls[0];
+    expect(botId).toBe('publik_bot');
+    expect(JSON.parse(Buffer.from(startParam.slice(3), 'base64url').toString('utf8'))).toEqual({
+      v: 1,
+      k: 'route',
+      r: '/',
+    });
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+  });
+
+  it.each(['bot', 'user', 'unknown', 'timeout', 'superseded'])(
+    'keeps an explicit Start silent when %s access is unconfirmed',
+    async (denial) => {
+      const { service, maxClient, edgeState } = createHarness(
+        denial === 'bot' ? { ...adminAccess, isAdmin: false } : adminAccess,
+      );
+      edgeState.sourceVersion =
+        denial === 'superseded' ? 'newer-update' : startJob.candidateVersion;
+      if (denial === 'user')
+        maxClient.getChatMemberAccess.mockResolvedValueOnce({
+          isBot: false,
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+          permissionsKnown: true,
+        });
+      if (denial === 'unknown')
+        maxClient.getChatMemberAccess.mockResolvedValueOnce({
+          isBot: undefined,
+          isAdmin: true,
+          isOwner: false,
+          permissions: [],
+          permissionsKnown: true,
+        } as never);
+      if (denial === 'timeout')
+        maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(new Error('timeout'));
+      if (denial === 'timeout') {
+        await expect(service.refresh(startJob)).rejects.toThrow('timeout');
+      } else if (denial === 'superseded') {
+        await expect(service.refresh(startJob)).rejects.toBeInstanceOf(
+          PublisherCandidateRefreshSupersededError,
+        );
+      } else {
+        await expect(service.refresh(startJob)).resolves.toBeUndefined();
+      }
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['bot_added', 'webhook_observed', 'manual_recheck', 'stale_user_access'] as const)(
+    'keeps %s access refresh silent without an explicit Start request',
+    async (reason) => {
+      const { service, maxClient, edgeState } = createHarness(adminAccess);
+      edgeState.sourceVersion = startJob.candidateVersion;
+      await service.refresh({ ...startJob, reason, replyToStartCommand: undefined });
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves the ledger reply identity on retries and contains ambiguous send errors', async () => {
+    const { service, maxClient, edgeState } = createHarness(adminAccess);
+    edgeState.sourceVersion = startJob.candidateVersion;
+    maxClient.sendMessage.mockRejectedValueOnce(new Error('timeout'));
+    await expect(service.refresh(startJob)).resolves.toBeUndefined();
+    await service.refresh(startJob, { retrying: true });
+    expect(maxClient.sendMessage.mock.calls.map((call) => call[3]?.idempotencyKey)).toEqual([
+      'publisher-handshake-start:chat-1:start-update-1',
+      'publisher-handshake-start:chat-1:start-update-1',
+    ]);
   });
 
   it('reuses recent scheduled metadata without extending its age or reusing permissions', async () => {

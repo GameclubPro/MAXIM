@@ -193,7 +193,7 @@ export class PublisherBindingRefreshService {
       }
       return;
     }
-    if (job.replyChatId?.trim() && !candidateJob) {
+    if ((job.replyChatId?.trim() || job.replyToStartCommand) && !candidateJob) {
       throw new Error('Publisher actor verification reply is missing its candidate user');
     }
     await this.identityAttestation.assertAttested();
@@ -452,6 +452,7 @@ export class PublisherBindingRefreshService {
       return;
     }
     if (rosterResult.status === 'rejected') throw rosterResult.reason;
+    let startCommandAccessGranted = false;
     if (candidateJob) {
       const accessResult = await this.measureStage(timings, 'userAccessMs', () =>
         this.refreshPublisherUserAccess({
@@ -473,6 +474,7 @@ export class PublisherBindingRefreshService {
       if (!accessResult.committed) {
         throw new PublisherCandidateRefreshSupersededError();
       }
+      startCommandAccessGranted = accessResult.state === ManagedEntityAccessState.GRANTED;
       await this.replyForwardedCandidate(
         job,
         accessResult.state === ManagedEntityAccessState.GRANTED ? 'granted' : 'user_denied',
@@ -502,6 +504,9 @@ export class PublisherBindingRefreshService {
         ),
       );
       if (!committed) throw new PublisherCandidateRefreshSupersededError();
+    }
+    if (startCommandAccessGranted && job.replyToStartCommand && job.reason === 'webhook_observed') {
+      await this.replyToStartCommandSafely(job);
     }
   }
 
@@ -1343,6 +1348,39 @@ export class PublisherBindingRefreshService {
         permissionsHash: null,
       },
     });
+  }
+
+  private async replyToStartCommandSafely(job: PublisherBindingRefreshJob): Promise<void> {
+    const miniappUrl = this.maxBotLinkService.buildMiniappStartUrlSync(
+      PUBLISHER_HOME_START_PARAM,
+      this.publisherBotId,
+    );
+    // FLAG: Public confirmation belongs only to an explicit Start after committed
+    // Publisher bot AND actor admin checks. Fence retries by the exact command identity.
+    try {
+      await this.maxClient.sendMessage(
+        job.chatId,
+        'Готово. Чат или канал подключен к Публику и появился в мини-приложении.',
+        miniappUrl
+          ? { buttons: [[{ type: 'link', text: 'Открыть Публик', url: miniappUrl }]] }
+          : undefined,
+        {
+          immediate: true,
+          botId: this.publisherBotId,
+          idempotencyKey: `publisher-handshake-start:${job.chatId}:${job.candidateVersion}`,
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
+          timeoutMs: PUBLISHER_HANDSHAKE_REPLY_TIMEOUT_MS,
+          ignoreFailureMetricStatuses: [403, 404],
+        },
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        { chatId: job.chatId, err: error instanceof Error ? error.message : String(error) },
+        'Failed to send Publisher Start confirmation',
+      );
+    }
   }
 }
 

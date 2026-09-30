@@ -242,6 +242,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
       expect.objectContaining({
         candidateUserId: 'admin-2',
         reason: 'webhook_observed',
+        replyToStartCommand: true,
       }),
     );
     expect(transactionClient.managedEntityAccessEdge.upsert).toHaveBeenLastCalledWith(

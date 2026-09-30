@@ -1,6 +1,29 @@
 import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh.queue';
 
 describe('PublisherBindingRefreshQueueService', () => {
+  it('carries an explicit Start reply request with the exact actor and command version', async () => {
+    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+    await service.enqueue({
+      chatId: '-100',
+      publisherBotId: 'publik-bot',
+      reason: 'webhook_observed',
+      candidateUserId: 'admin-1',
+      candidateVersion: 'start-update-1',
+      replyToStartCommand: true,
+    });
+    expect(queue.add).toHaveBeenCalledWith(
+      'refresh',
+      expect.objectContaining({
+        chatId: '-100',
+        candidateUserId: 'admin-1',
+        candidateVersion: 'start-update-1',
+        replyToStartCommand: true,
+      }),
+      expect.anything(),
+    );
+  });
+
   it('prioritizes manual rechecks and deduplicates until the in-flight job finishes', async () => {
     const queue = { add: jest.fn().mockResolvedValue(undefined) };
     const service = new PublisherBindingRefreshQueueService(queue as never);

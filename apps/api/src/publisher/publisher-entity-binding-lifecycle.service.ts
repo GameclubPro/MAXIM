@@ -419,6 +419,9 @@ export class PublisherEntityBindingLifecycleService {
         publisherBotId: this.publisherBotId,
         reason: kind === 'bot_added' ? 'bot_added' : 'webhook_observed',
         ...(candidateUserId ? { candidateUserId, candidateVersion: update.updateId } : {}),
+        ...(candidateUserId && this.isPublisherHandshakeCommand(update)
+          ? { replyToStartCommand: true }
+          : {}),
         requestedAt: receivedAt,
         eventAt,
       });

@@ -25,6 +25,7 @@ export type PublisherBindingRefreshJob = {
   candidateUserId?: string;
   candidateVersion?: string;
   replyChatId?: string;
+  replyToStartCommand?: boolean;
   requiresReadAccess?: boolean;
   reason: PublisherBindingRefreshReason;
   requestedAt: string;
@@ -206,6 +207,7 @@ export class PublisherBindingRefreshQueueService {
     candidateUserId?: string | null;
     candidateVersion?: string | null;
     replyChatId?: string | null;
+    replyToStartCommand?: boolean;
     requiresReadAccess?: boolean;
     requestedAt?: Date;
     eventAt?: Date | null;
@@ -264,6 +266,7 @@ export class PublisherBindingRefreshQueueService {
         ...(candidateUserId ? { candidateUserId } : {}),
         ...(candidateVersion ? { candidateVersion } : {}),
         ...(replyChatId ? { replyChatId } : {}),
+        ...(params.replyToStartCommand ? { replyToStartCommand: true } : {}),
         ...(params.requiresReadAccess ? { requiresReadAccess: true } : {}),
         reason: params.reason,
         requestedAt: requestedAt.toISOString(),

@@ -182,6 +182,7 @@ function createFixture() {
       messageId: 'reply-1',
       url: null,
     }),
+    sendMessage: jest.fn().mockResolvedValue({ messageId: 'start-reply-1', url: null }),
     deleteMessage: jest.fn().mockResolvedValue(undefined),
   };
   const maxBotLinkService = {
@@ -366,6 +367,26 @@ describe('ManagedEntityHandshakeService', () => {
       }),
     );
     expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessage).toHaveBeenCalledWith(
+      '-100',
+      'Готово, чат подключен.',
+      {
+        buttons: [
+          [{ type: 'link', text: 'Открыть настройки', url: 'https://max.ru/entry?startapp=mr-x' }],
+        ],
+      },
+      expect.objectContaining({
+        immediate: true,
+        botId: 'bot-1',
+        idempotencyKey: 'managed-handshake-start:-100:u-start-1',
+      }),
+    );
+    const startParam = fixture.maxBotLinkService.buildEntryMiniappStartUrlSync.mock.calls[0]?.[0];
+    expect(JSON.parse(Buffer.from(startParam.slice(3), 'base64url').toString('utf8'))).toEqual({
+      v: 1,
+      k: 'route',
+      r: '/chat/-100/settings',
+    });
     expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
       '-100',
       expect.objectContaining({ sourceTag: 'managed_handshake', bypassCache: true }),
@@ -1644,14 +1665,23 @@ describe('ManagedEntityHandshakeService', () => {
   });
 
   it.each(['chat', 'channel'])(
-    'keeps successful, failed and anonymous %s handshakes silent',
+    'keeps failed and anonymous %s handshakes silent',
     async (entityType) => {
-      for (const result of ['connected', 'superseded', 'anonymous', 'timeout']) {
+      for (const result of ['superseded', 'anonymous', 'timeout', 'bot_denied', 'user_denied']) {
         const fixture = createFixture();
         if (result === 'superseded')
           fixture.maxBotLinkService.recordBotAccessProbe.mockResolvedValueOnce(false);
         if (result === 'timeout')
           fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(new Error('timeout'));
+        if (result === 'bot_denied')
+          fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+            userId: 'bot-1',
+            isAdmin: false,
+            isOwner: false,
+            permissions: [],
+          });
+        if (result === 'user_denied')
+          fixture.maxClient.getChatMembersAccess.mockResolvedValueOnce(new Map());
         await fixture.service.handleWebhookUpdate(
           createUpdate({
             message: {
@@ -1661,9 +1691,25 @@ describe('ManagedEntityHandshakeService', () => {
           }),
         );
         expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+        expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
       }
     },
   );
+
+  it('confirms a channel Start once and preserves connection when the send times out', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.sendMessage.mockRejectedValueOnce(new Error('timeout'));
+    const update = createUpdate({ message: { entityType: 'channel' } });
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('rate_limited');
+    expect(fixture.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessage).toHaveBeenCalledWith(
+      '-100',
+      'Готово, канал подключен.',
+      expect.anything(),
+      expect.objectContaining({ botId: 'bot-1', immediate: true }),
+    );
+  });
 
   it('connects a forwarded group chat using the live source entity type', async () => {
     const fixture = createFixture();
