@@ -166,6 +166,14 @@ revokes it. Simultaneous Redis/SQL failure or a SQL outage exceeding this recove
 leave the unused claim blocking other rules until reviewed operator recovery or normal retention.
 Never clear claims in bulk or replay moderation to repair cleanup.
 
+Repeated worker stalls can terminalize a `cleanupOnly` job before its processor runs.
+The unused claim then remains fail-closed and needs exact reviewed operator recovery;
+`worker.cleanup_exhausted` is not emitted for this path. Inspect failed duplicate jobs
+and worker stalled diagnostics. Do not use `job.retry()` as cleanup recovery: BullMQ
+retains its deferred-failure and stalled counters. Guaranteed recovery across queue
+loss requires a SQL cleanup lease persisted atomically at preclaim and a bounded
+reconciler, rather than a best-effort failed-event listener.
+
 Governor pause honors its bounded recommended delay; slow pacing permits progress after one delay
 per job. Followers wait for the head's next eligible time or bounded crash recovery. Expiry ends work
 without treating incomplete proof as a match or successful action. Media retains byte/pixel/decode limits.
