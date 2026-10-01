@@ -44,7 +44,7 @@ export async function readBoundedResponseBuffer(
       throw new ResponseByteLimitExceededError();
     }
     if (declaredLength !== null && declaredLength > 0) {
-      target = Buffer.allocUnsafe(declaredLength);
+      target = Buffer.allocUnsafeSlow(declaredLength);
       allocatedBytes = declaredLength;
     }
     for (;;) {
@@ -71,7 +71,7 @@ export async function readBoundedResponseBuffer(
           if (!tail || tailBytes === tail.length) {
             // FLAG: Actual overflow was checked before copying. Collector capacity never
             // exceeds maxBytes; its object count depends on bounded blocks, not the stream.
-            tail = Buffer.allocUnsafe(
+            tail = Buffer.allocUnsafeSlow(
               Math.min(RESPONSE_BUFFER_BLOCK_BYTES, maxBytes - allocatedBytes),
             );
             allocatedBytes += tail.length;
@@ -89,14 +89,20 @@ export async function readBoundedResponseBuffer(
     if (totalBytes === 0) throw new EmptyResponseBodyError();
     if (target) {
       // FLAG: Do not retain an oversized allocation from a false long Content-Length.
-      return totalBytes === target.length ? target : Buffer.from(target.subarray(0, totalBytes));
+      if (totalBytes === target.length) return target;
+    } else if (blocks.length === 1 && tailBytes === blocks[0]!.length) {
+      return blocks[0]!;
     }
-    if (blocks.length === 1) {
-      return tailBytes === blocks[0]!.length
-        ? blocks[0]!
-        : Buffer.from(blocks[0]!.subarray(0, tailBytes));
+    // FLAG: Owned backing storage must follow the byte budget independently of Node's
+    // shared Buffer pool size. Copy only initialized bytes into one exact unpooled result.
+    const result = Buffer.allocUnsafeSlow(totalBytes);
+    let resultOffset = 0;
+    for (const block of target ? [target] : blocks) {
+      const copiedBytes = Math.min(block.length, totalBytes - resultOffset);
+      block.copy(result, resultOffset, 0, copiedBytes);
+      resultOffset += copiedBytes;
     }
-    return Buffer.concat(blocks, totalBytes);
+    return result;
   } catch (error: unknown) {
     await reader.cancel(error).catch(() => undefined);
     throw error;
