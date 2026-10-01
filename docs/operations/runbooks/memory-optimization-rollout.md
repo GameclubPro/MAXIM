@@ -65,11 +65,27 @@ activity and backup services before retrying or extending timeouts.
 ## Minute-writer activation
 
 Only after every role has the compatible reader and the first release is healthy,
-ship the second release enabling the minute layout. Its API rollback paths must
-reject sources without `MAX_API_METRICS_MINUTE_READER_VERSION = 1` and actual
+ship the second release enabling the minute layout. The activation source defaults
+validated runtime configuration and `.env.example` to `minute`; an existing explicit
+`legacy` environment value still overrides that default. Verify only the effective
+layout enum across all 14 roles, without printing the rest of the environment.
+Production roots validate configuration through `RuntimeCoreModule`; the
+`MaxClientService` fallback remains legacy for callers without validated configuration.
+
+The activation release API rollback paths must reject sources without `MAX_API_METRICS_MINUTE_READER_VERSION = 1` and actual
 `readMaxApiMetricCounts` wiring. The compatibility release is the rollback floor;
 static-only rollback is unaffected. Preserve the source floor after a writer
 downgrade because minute counters can remain for six hours.
+
+Invoke every subsequent API rollback through the current reviewed `main` copy of
+`vps-connect.sh`, including after a ref rollback leaves the VPS checkout detached on
+the compatibility release. The wrapper requires the minute-reader entrypoint marker
+for ref rollback and immutable rollback that selects API; old recovery markers alone
+are insufficient. When necessary, its existing shared-lock bootstrap restores
+retained reviewed `main` tooling after the clean-tree and exact-main checks. It does
+not fetch or relax recovery guards. Current API tooling and static-only immutable
+rollback retain their existing offline fast paths. Do not invoke the older
+compatibility checkout's rollback wrapper or entrypoints directly.
 
 Each event increments exactly one layout. Readers add disjoint legacy and minute
 events for the same second; dual writing would double counts used by governors.
