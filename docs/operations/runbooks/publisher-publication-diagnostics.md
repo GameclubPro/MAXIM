@@ -37,6 +37,18 @@ No report outcome authorizes bulk retry or recreating a failed publication as a 
 This command makes no MAX calls, runs no publication workers and changes no queue or
 application state. Use normal product authentication for any separately reviewed action.
 
+For a fresh Publisher identity and webhook-target check, use the built standalone probe:
+
+```bash
+./infra/scripts/vps-connect.sh exec 'docker compose -f infra/docker-compose.yml exec -T api-publisher node apps/api/dist/apps/api/src/scripts/attest-publisher-identity.js'
+```
+
+Success prints `PUBLISHER_IDENTITY_ATTESTED`. The probe reads `/me` and `/subscriptions`
+without starting the application, sending messages or changing subscriptions. It checks
+the exact bot and webhook target; it does not verify update-type coverage or publication
+delivery. Invoke the built file directly: the runtime image omits the repository-root
+package manifest required by a root-level `npm run --workspace` invocation.
+
 ## Publication Delay Investigation, 2026-09-27
 
 A bounded post-release log sample contained 34 deadline delivery claims with lateness
