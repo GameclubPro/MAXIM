@@ -11,6 +11,10 @@ import {
   type CommercialOcrNativeBehaviorIdentity,
 } from './commercial-ocr-behavior-identity';
 import { NativeTesseractOcrAdapter } from './native-tesseract-ocr.adapter';
+import {
+  NativeOcrSandboxClient,
+  NativeOcrSandboxUnavailableError,
+} from './native-ocr-sandbox.client';
 import type {
   NativeTesseractWorkerRequest,
   NativeTesseractWorkerResponse,
@@ -314,6 +318,320 @@ describe('NativeTesseractOcrAdapter', () => {
       },
     });
   });
+
+  it('retries a restart probe outage without native work until a fresh exact sandbox probe succeeds', async () => {
+    jest.useFakeTimers();
+    const { service, sandbox, identity } = createIsolatedSandboxService();
+    const probe = jest.spyOn(sandbox, 'probe').mockResolvedValue(verifiedNativeIdentity(identity));
+    const boundaryVerified = jest.spyOn(sandbox, 'isVerified').mockReturnValue(true);
+    const recognize = jest
+      .spyOn(sandbox, 'recognize')
+      .mockResolvedValueOnce({ ok: false, reason: 'timeout' })
+      .mockResolvedValue(emptySandboxRecognition());
+
+    try {
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(service.getRuntimeStatus().ready).toBe(true);
+      await expect(service.recognize(Buffer.from('before restart'))).resolves.toMatchObject({
+        ok: false,
+        reason: 'timeout',
+      });
+
+      probe.mockRejectedValue(new NativeOcrSandboxUnavailableError('unavailable'));
+      boundaryVerified.mockReturnValue(false);
+      await jest.advanceTimersByTimeAsync(5_000);
+      await expect(service.recognize(Buffer.from('during restart'))).resolves.toMatchObject({
+        ok: false,
+        reason: 'worker_unavailable',
+      });
+      await expect(service.recognize(Buffer.from('awaiting exact probe'))).resolves.toMatchObject({
+        ok: false,
+        reason: 'worker_unavailable',
+      });
+      expect(recognize).toHaveBeenCalledTimes(1);
+      expect(probe).toHaveBeenCalledTimes(2);
+      expect(service.workers).toHaveLength(0);
+      expect(service.getRuntimeStatus()).toMatchObject({
+        ready: false,
+        behaviorIdentity: { verified: false, mismatchFields: ['boundary.unavailable'] },
+      });
+
+      probe.mockResolvedValue(verifiedNativeIdentity(identity));
+      boundaryVerified.mockReturnValue(true);
+      await jest.advanceTimersByTimeAsync(5_000);
+      await expect(service.recognize(Buffer.from('recovered'))).resolves.toMatchObject({
+        ok: true,
+        status: 'no_text',
+      });
+      expect(recognize).toHaveBeenCalledTimes(2);
+      expect(service.getRuntimeStatus()).toMatchObject({
+        ready: true,
+        behaviorIdentity: { verified: true, mismatchFields: [] },
+        counters: {
+          completed: 1,
+          failed: 3,
+          failuresByReason: { timeout: 1, worker_unavailable: 2 },
+        },
+      });
+      expect(service.workers).toHaveLength(0);
+    } finally {
+      await service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps the initial isolated sandbox transport outage retryable until exact verification', async () => {
+    jest.useFakeTimers();
+    const { service, sandbox, identity } = createIsolatedSandboxService();
+    const probe = jest
+      .spyOn(sandbox, 'probe')
+      .mockRejectedValue(new NativeOcrSandboxUnavailableError('unavailable'));
+    const recognize = jest.spyOn(sandbox, 'recognize').mockResolvedValue(emptySandboxRecognition());
+
+    try {
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      await expect(service.recognize(Buffer.from('initial outage'))).resolves.toMatchObject({
+        ok: false,
+        reason: 'worker_unavailable',
+      });
+      expect(recognize).not.toHaveBeenCalled();
+      expect(probe).toHaveBeenCalledTimes(1);
+
+      probe.mockResolvedValue(verifiedNativeIdentity(identity));
+      await jest.advanceTimersByTimeAsync(5_000);
+      await expect(service.recognize(Buffer.from('verified'))).resolves.toMatchObject({ ok: true });
+      expect(recognize).toHaveBeenCalledTimes(1);
+      expect(service.workers).toHaveLength(0);
+    } finally {
+      await service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(['unverified', 'invalid_response', 'unconfigured'] as const)(
+    'makes a %s probe failure terminal after a transient outage without native work',
+    async (reason) => {
+      jest.useFakeTimers();
+      const { service, sandbox } = createIsolatedSandboxService();
+      const probe = jest
+        .spyOn(sandbox, 'probe')
+        .mockRejectedValue(new NativeOcrSandboxUnavailableError('unavailable'));
+      const recognize = jest.spyOn(sandbox, 'recognize');
+
+      try {
+        service.onModuleInit();
+        await jest.advanceTimersByTimeAsync(0);
+        await expect(service.recognize(Buffer.from('transport outage'))).resolves.toMatchObject({
+          ok: false,
+          reason: 'worker_unavailable',
+        });
+
+        probe.mockRejectedValue(new NativeOcrSandboxUnavailableError(reason));
+        await jest.advanceTimersByTimeAsync(5_000);
+        await expect(service.recognize(Buffer.from('untrusted sandbox'))).resolves.toMatchObject({
+          ok: false,
+          reason: 'artifact_unverified',
+        });
+        await expect(service.recognize(Buffer.from('still untrusted'))).resolves.toMatchObject({
+          ok: false,
+          reason: 'artifact_unverified',
+        });
+        expect(probe).toHaveBeenCalledTimes(2);
+        expect(recognize).not.toHaveBeenCalled();
+        expect(service.workers).toHaveLength(0);
+        expect(service.getRuntimeStatus().behaviorIdentity).toMatchObject({
+          verified: false,
+          mismatchFields: [`boundary.${reason}`],
+        });
+      } finally {
+        await service.onModuleDestroy();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each(['mismatch', 'incomplete', 'unknown'] as const)(
+    'makes a %s verification terminal after a transient outage',
+    async (failure) => {
+      jest.useFakeTimers();
+      const { service, sandbox, identity } = createIsolatedSandboxService();
+      const probe = jest
+        .spyOn(sandbox, 'probe')
+        .mockRejectedValue(new NativeOcrSandboxUnavailableError('unavailable'));
+      const recognize = jest.spyOn(sandbox, 'recognize');
+
+      try {
+        service.onModuleInit();
+        await jest.advanceTimersByTimeAsync(0);
+        await expect(service.recognize(Buffer.from('outage'))).resolves.toMatchObject({
+          reason: 'worker_unavailable',
+        });
+        if (failure === 'unknown') {
+          probe.mockRejectedValue(new Error('unclassified probe failure'));
+        } else {
+          probe.mockResolvedValue(
+            verifiedNativeIdentity({
+              ...identity,
+              ...(failure === 'mismatch'
+                ? { fingerprintSha256: '9'.repeat(64) }
+                : { complete: false }),
+            }),
+          );
+        }
+        await jest.advanceTimersByTimeAsync(5_000);
+        await expect(service.recognize(Buffer.from('invalid verification'))).resolves.toMatchObject(
+          {
+            ok: false,
+            reason: 'artifact_unverified',
+          },
+        );
+        expect(recognize).not.toHaveBeenCalled();
+        expect(service.workers).toHaveLength(0);
+      } finally {
+        await service.onModuleDestroy();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    { label: 'local native probe', config: {} },
+    {
+      label: 'optional sandbox',
+      config: { COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-ocr/native-ocr.sock' },
+    },
+  ])('keeps a $label outage terminal without native work', async ({ config: overrides }) => {
+    const config = new ConfigService({
+      NODE_ENV: 'test',
+      APP_SERVICE_NAME: 'api-media-analysis',
+      ...overrides,
+    });
+    const verify = jest.fn(async () => {
+      throw new NativeOcrSandboxUnavailableError('unavailable');
+    });
+    const service = new VerificationGatedNativeTesseractOcrAdapter(
+      config,
+      verify,
+      completeNativeIdentity(config),
+    );
+    services.push(service);
+    service.onModuleInit();
+    await waitFor(() =>
+      service.getRuntimeStatus().behaviorIdentity.state === 'failed' ? true : undefined,
+    );
+
+    await expect(service.recognize(Buffer.from('unverified'))).resolves.toMatchObject({
+      ok: false,
+      reason: 'artifact_unverified',
+    });
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(service.workers).toHaveLength(0);
+  });
+
+  it('keeps an incomplete expected identity terminal during a transport outage', async () => {
+    jest.useFakeTimers();
+    const { service, sandbox, identity } = createIsolatedSandboxService();
+    Object.defineProperty(service, 'nativeBehaviorIdentity', {
+      configurable: true,
+      value: { ...identity, complete: false },
+    });
+    jest
+      .spyOn(sandbox, 'probe')
+      .mockRejectedValue(new NativeOcrSandboxUnavailableError('unavailable'));
+    const recognize = jest.spyOn(sandbox, 'recognize');
+
+    try {
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      await expect(service.recognize(Buffer.from('incomplete identity'))).resolves.toMatchObject({
+        ok: false,
+        reason: 'artifact_unverified',
+      });
+      expect(recognize).not.toHaveBeenCalled();
+      expect(service.workers).toHaveLength(0);
+    } finally {
+      await service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(['unverified', 'invalid_response', 'unconfigured', 'unknown'] as const)(
+    'blocks native work after a direct %s recognition failure until exact re-verification',
+    async (reason) => {
+      jest.useFakeTimers();
+      const { service, sandbox, identity } = createIsolatedSandboxService();
+      jest.spyOn(sandbox, 'probe').mockResolvedValue(verifiedNativeIdentity(identity));
+      const recognize = jest
+        .spyOn(sandbox, 'recognize')
+        .mockRejectedValue(
+          reason === 'unknown'
+            ? new Error('unclassified recognition failure')
+            : new NativeOcrSandboxUnavailableError(reason),
+        );
+
+      try {
+        service.onModuleInit();
+        await jest.advanceTimersByTimeAsync(0);
+        await expect(service.recognize(Buffer.from('untrusted response'))).resolves.toMatchObject({
+          ok: false,
+          reason: 'artifact_unverified',
+        });
+        await expect(service.recognize(Buffer.from('blocked'))).resolves.toMatchObject({
+          ok: false,
+          reason: 'artifact_unverified',
+        });
+        expect(recognize).toHaveBeenCalledTimes(1);
+        expect(service.workers).toHaveLength(0);
+
+        recognize.mockResolvedValue(emptySandboxRecognition());
+        await jest.advanceTimersByTimeAsync(5_000);
+        await expect(service.recognize(Buffer.from('freshly verified'))).resolves.toMatchObject({
+          ok: true,
+        });
+        expect(recognize).toHaveBeenCalledTimes(2);
+      } finally {
+        await service.onModuleDestroy();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    { nodeEnv: 'production', expectedReason: 'worker_unavailable' },
+    { nodeEnv: 'test', expectedReason: 'artifact_unverified' },
+  ])(
+    'classifies direct transport loss under $nodeEnv without further native work',
+    async ({ nodeEnv, expectedReason }) => {
+      jest.useFakeTimers();
+      const { service, sandbox, identity } = createIsolatedSandboxService({ NODE_ENV: nodeEnv });
+      jest.spyOn(sandbox, 'probe').mockResolvedValue(verifiedNativeIdentity(identity));
+      const recognize = jest
+        .spyOn(sandbox, 'recognize')
+        .mockRejectedValue(new NativeOcrSandboxUnavailableError('unavailable'));
+
+      try {
+        service.onModuleInit();
+        await jest.advanceTimersByTimeAsync(0);
+        await expect(service.recognize(Buffer.from('transport loss'))).resolves.toMatchObject({
+          ok: false,
+          reason: expectedReason,
+        });
+        await expect(
+          service.recognize(Buffer.from('blocked pending probe')),
+        ).resolves.toMatchObject({
+          ok: false,
+          reason: expectedReason,
+        });
+        expect(recognize).toHaveBeenCalledTimes(1);
+        expect(service.workers).toHaveLength(0);
+      } finally {
+        await service.onModuleDestroy();
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it('rejects verified artifacts whose runtime controls drift from production', async () => {
     const config = new ConfigService({
@@ -882,6 +1200,33 @@ function createService(config: Record<string, unknown> = {}): TestNativeTesserac
       ...config,
     }),
   );
+}
+
+function createIsolatedSandboxService(overrides: Record<string, unknown> = {}) {
+  const config = new ConfigService({
+    NODE_ENV: 'production',
+    APP_SERVICE_NAME: 'api-media-analysis',
+    COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-ocr/native-ocr.sock',
+    ...overrides,
+  });
+  const identity = completeNativeIdentity(config);
+  const service = new TestNativeTesseractOcrAdapter(config);
+  Object.defineProperty(service, 'nativeBehaviorIdentity', { configurable: true, value: identity });
+  const sandbox = Reflect.get(service, 'sandbox') as NativeOcrSandboxClient;
+  return { service, sandbox, identity };
+}
+
+function emptySandboxRecognition() {
+  return {
+    ok: true as const,
+    payload: {
+      text: '',
+      aggregateConfidence: null,
+      words: [],
+      lines: [],
+      truncated: false,
+    },
+  };
 }
 
 function completeNativeIdentity(config: ConfigService): CommercialOcrNativeBehaviorIdentity {

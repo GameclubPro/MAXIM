@@ -337,16 +337,22 @@ export class NativeOcrSandboxClient {
         socketStat.nlink !== 1 ||
         (socketStat.mode & 0o777) !== 0o600
       ) {
-        throw new NativeOcrSandboxUnavailableError('unavailable');
+        throw new NativeOcrSandboxUnavailableError('unverified');
       }
       const responseBytes = await this.exchange(request, remainingTimeoutMs(deadlineAtMs), {
         metadataBytes: params.responseMetadataBytes,
         payloadBytes: params.responsePayloadBytes,
       });
-      const response = decodeNativeOcrSandboxFrame(responseBytes, {
-        metadataBytes: params.responseMetadataBytes,
-        payloadBytes: params.responsePayloadBytes,
-      });
+      let response: NativeOcrSandboxFrame;
+      try {
+        response = decodeNativeOcrSandboxFrame(responseBytes, {
+          metadataBytes: params.responseMetadataBytes,
+          payloadBytes: params.responsePayloadBytes,
+        });
+      } catch {
+        // FLAG: A malformed sandbox response must not authorize a transport recovery retry.
+        throw new NativeOcrSandboxUnavailableError('invalid_response');
+      }
       remainingTimeoutMs(deadlineAtMs);
       if (response.kind !== params.responseKind) {
         throw new NativeOcrSandboxUnavailableError('invalid_response');

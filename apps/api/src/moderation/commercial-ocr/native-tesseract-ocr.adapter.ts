@@ -15,7 +15,10 @@ import {
   type CommercialOcrNativeArtifactVerification,
   type CommercialOcrNativeBehaviorIdentity,
 } from './commercial-ocr-behavior-identity';
-import { NativeOcrSandboxClient } from './native-ocr-sandbox.client';
+import {
+  NativeOcrSandboxClient,
+  NativeOcrSandboxUnavailableError,
+} from './native-ocr-sandbox.client';
 import {
   NATIVE_TESSERACT_PAGE_SEGMENTATION_MODES,
   type NativeTesseractFailedOpenResult,
@@ -193,6 +196,8 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
   private sandboxProbeTimer: NodeJS.Timeout | null = null;
   private nativeArtifactVerification: CommercialOcrNativeArtifactVerification | null = null;
   private nativeArtifactVerificationPromise: Promise<void> | null = null;
+  private nativeArtifactVerificationFailureReason: 'artifact_unverified' | 'worker_unavailable' =
+    'artifact_unverified';
   private readonly workerPath = resolveWorkerPath(__dirname);
   private readonly slots: WorkerSlot[] = [];
   private readonly queue: OcrJob[] = [];
@@ -362,6 +367,7 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
     }
     const verification = this.verifyNativeBehaviorIdentity()
       .then((result) => {
+        this.nativeArtifactVerificationFailureReason = 'artifact_unverified';
         const identityMismatch =
           result.verified &&
           result.identity.fingerprintSha256 !== this.nativeBehaviorIdentity.fingerprintSha256;
@@ -385,13 +391,8 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
           this.dispatch();
         }
       })
-      .catch(() => {
-        this.nativeArtifactVerification = {
-          verified: false,
-          status: 'probe_failed',
-          mismatches: ['artifacts.unavailable'],
-          identity: this.nativeBehaviorIdentity,
-        };
+      .catch((error: unknown) => {
+        this.recordNativeArtifactVerificationFailure(error, 'artifacts.unavailable');
       })
       .finally(() => {
         if (this.nativeArtifactVerificationPromise === verification) {
@@ -430,6 +431,7 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
     if (this.shuttingDown) return;
     try {
       const result = await this.sandbox.probe();
+      this.nativeArtifactVerificationFailureReason = 'artifact_unverified';
       const valid =
         result.verified &&
         result.identity.complete &&
@@ -446,14 +448,38 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       if (valid) {
         this.ensureInitialized();
       }
-    } catch {
-      this.nativeArtifactVerification = {
-        verified: false,
-        status: 'probe_failed',
-        mismatches: Object.freeze(['boundary.unavailable']),
-        identity: this.nativeBehaviorIdentity,
-      };
+    } catch (error: unknown) {
+      this.recordNativeArtifactVerificationFailure(error, 'boundary.probe_failed');
     }
+  }
+
+  private recordNativeArtifactVerificationFailure(
+    error: unknown,
+    fallbackMismatch: 'artifacts.unavailable' | 'boundary.probe_failed',
+  ): void {
+    const boundaryReason =
+      this.sandbox.isConfigured() && error instanceof NativeOcrSandboxUnavailableError
+        ? error.reason
+        : null;
+    // FLAG: Only an isolated sandbox transport outage may use bounded job retries.
+    // Artifact or boundary mismatches remain terminal until a fresh exact probe succeeds.
+    this.nativeArtifactVerificationFailureReason =
+      this.sandbox.isRequired() &&
+      this.nativeBehaviorIdentity.complete &&
+      boundaryReason === 'unavailable'
+        ? 'worker_unavailable'
+        : 'artifact_unverified';
+    this.nativeArtifactVerification = {
+      verified: false,
+      status:
+        boundaryReason === 'unverified' || boundaryReason === 'invalid_response'
+          ? 'mismatch'
+          : 'probe_failed',
+      mismatches: Object.freeze([
+        boundaryReason === null ? fallbackMismatch : `boundary.${boundaryReason}`,
+      ]),
+      identity: this.nativeBehaviorIdentity,
+    };
   }
 
   private nativeArtifactsReadyForRecognition(): boolean {
@@ -512,7 +538,12 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
     }
     if (!this.nativeArtifactsReadyForRecognition()) {
       this.startNativeArtifactVerification();
-      return this.failImmediately(startedAt, passLabel, psm, 'artifact_unverified');
+      return this.failImmediately(
+        startedAt,
+        passLabel,
+        psm,
+        this.nativeArtifactVerificationFailureReason,
+      );
     }
 
     if (this.sandbox.isConfigured()) {
@@ -978,12 +1009,13 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       };
       this.recordResult(recognized);
       return recognized;
-    } catch {
+    } catch (error: unknown) {
+      this.recordNativeArtifactVerificationFailure(error, 'boundary.probe_failed');
       const failed = this.buildFailedOpenResult(
         startedAt,
         passLabel,
         psm,
-        this.shuttingDown ? 'shutting_down' : 'worker_unavailable',
+        this.shuttingDown ? 'shutting_down' : this.nativeArtifactVerificationFailureReason,
       );
       this.recordResult(failed);
       return failed;
