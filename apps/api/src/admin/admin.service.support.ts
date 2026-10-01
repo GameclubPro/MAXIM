@@ -43,6 +43,7 @@ export type ApplySettingsToAllChatsResult = {
   sourceChatId: string;
   updatedChats: number;
   appliedChatIds: string[];
+  sourceSettingsRevision?: string;
 };
 
 export type ManagedEntityTypeFilter = ManagedEntityType | 'all';

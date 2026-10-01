@@ -4,6 +4,7 @@ import {
   applySectionTargetPreviewResponseSchema,
   applySectionToAllRequestSchema,
   applySectionToAllResponseSchema,
+  settingsApplyPartialErrorSchema,
   updateSettingsRequestSchema,
   reportSettingsSchema,
   addReportCommandIssues,
@@ -13,8 +14,9 @@ import {
   type ChatSettings,
   type ReportSettings,
   type ChatSummary,
+  type SettingsApplyPartialError,
 } from '@maxim/contracts';
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException } from '@nestjs/common';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -50,6 +52,31 @@ import { stopWordsPolicyStorage } from '../moderation/stop-words/stop-words.poli
 import { assertReportsActivationAvailable } from './report-settings-availability';
 
 const REPORT_SETTINGS_KEYS = Object.keys(reportSettingsSchema.shape) as Array<keyof ReportSettings>;
+const REPORT_COMMAND_SELECT = Object.fromEntries(
+  Object.keys(DEFAULT_CHAT_SETTINGS)
+    .filter((key) => /^admin.*Command(Name|Aliases)$/.test(key))
+    .map((key) => [key, true]),
+) as Partial<Record<keyof ChatSettings, true>>;
+
+function assertReportPolicyForTarget(
+  chatId: string,
+  current: ChatSettings | null,
+  next: ChatSettings,
+  available: boolean,
+): void {
+  assertReportsActivationAvailable(current, next, available);
+  const checked = reportSettingsSchema
+    .superRefine((policy, ctx) => addReportCommandIssues({ ...next, ...policy }, ctx))
+    .safeParse(next);
+  if (!checked.success) {
+    throw new BadRequestException({
+      code: 'REPORTS_COMMAND_CONFLICT',
+      message: 'Команды системы жалоб совпадают с командами администратора в выбранном чате.',
+      chatId,
+      errors: checked.error.format(),
+    });
+  }
+}
 
 type SettingsApplyReadinessRefresh = {
   chatIds: readonly string[];
@@ -117,6 +144,8 @@ export async function applySettingsToAllChats(params: {
   source: AdminActionSource;
   targetOrSettingKeys?: ApplySettingsTarget | readonly (keyof ChatSettings)[];
   settingKeys?: readonly (keyof ChatSettings)[];
+  confirmedTargetChatIds?: readonly string[];
+  expectedSourceSettingsRevision?: string;
   normalizeSettings: (settings: ChatSettings) => ChatSettings;
   resolveTargetChats: (target: ApplySettingsTarget) => Promise<ChatSummary[]>;
   resolveBotAssignmentData: (
@@ -209,6 +238,21 @@ export async function applySettingsToAllChats(params: {
     throw new BadRequestException('Нет доступных чатов для применения настроек.');
   }
   const appliedChatIds = targetChats.map((chat) => chat.id);
+  if (params.confirmedTargetChatIds) {
+    const confirmed = new Set(params.confirmedTargetChatIds);
+    if (
+      confirmed.size !== appliedChatIds.length ||
+      appliedChatIds.some((chatId) => !confirmed.has(chatId))
+    ) {
+      throw new ConflictException({
+        code: 'CHAT_SETTINGS_TARGETS_CHANGED',
+        message: 'Список доступных чатов изменился. Проверьте и подтвердите выбор заново.',
+        partialApplied: false,
+        appliedCount: 0,
+        appliedChatIds: [],
+      });
+    }
+  }
   const filteredSettingKeys = Array.isArray(effectiveSettingKeys)
     ? Array.from(new Set(effectiveSettingKeys)).filter(
         (key): key is keyof ChatSettings => typeof key === 'string' && key in normalizedSettings,
@@ -266,6 +310,10 @@ export async function applySettingsToAllChats(params: {
   };
   delete majorSettingsCreatePayload.settingsRevision;
 
+  const requiresReportPolicyValidation = Object.keys(majorSettingsUpdatePayload).some(
+    (key) => key.startsWith('reports') || /^admin.*Command/.test(key),
+  );
+
   const capabilityRelevantUpdate =
     Boolean(copiedStopWordsPolicy?.enabled) ||
     Object.keys(majorSettingsUpdatePayload).some(
@@ -275,10 +323,15 @@ export async function applySettingsToAllChats(params: {
     );
   const capabilityPreflightConfirmedChatIds = new Set<string>();
   let writeBaselineByChatId = new Map<string, Date>();
-  if (capabilityRelevantUpdate) {
+  if (capabilityRelevantUpdate || requiresReportPolicyValidation) {
     const currentRows = await params.prisma.chatSettings.findMany({
       where: { chatId: { in: appliedChatIds } },
-      select: { chatId: true, updatedAt: true, ...CHAT_SETTINGS_BOT_CAPABILITY_SELECT },
+      select: {
+        chatId: true,
+        updatedAt: true,
+        ...CHAT_SETTINGS_BOT_CAPABILITY_SELECT,
+        ...(requiresReportPolicyValidation ? REPORT_COMMAND_SELECT : {}),
+      },
     });
     const currentByChatId = new Map(currentRows.map((row) => [row.chatId, row]));
     const targetByChatId = new Map(targetChats.map((chat) => [chat.id, chat]));
@@ -295,7 +348,14 @@ export async function applySettingsToAllChats(params: {
           ...(currentByChatId.get(chatId) ?? {}),
         } as ChatSettings;
         const next = { ...current, ...majorSettingsUpdatePayload } as ChatSettings;
-        assertReportsActivationAvailable(current, next, params.reportsAvailable?.(chatId) ?? false);
+        if (requiresReportPolicyValidation) {
+          assertReportPolicyForTarget(
+            chatId,
+            current,
+            next,
+            params.reportsAvailable?.(chatId) ?? false,
+          );
+        }
         const requirements = resolveChatSettingsBotCapabilityRequirements({
           current,
           next,
@@ -370,7 +430,28 @@ export async function applySettingsToAllChats(params: {
   }
 
   const successfullyAppliedChatIds = new Set<string>();
+  if (params.expectedSourceSettingsRevision !== undefined) {
+    // FLAG: Remote preflight may outlive another administrator's edit. Recheck the source before
+    // the first target write while keeping the already confirmed policy snapshot immutable.
+    const source = await params.prisma.chatSettings.findUnique({
+      where: { chatId: params.sourceChatId },
+      select: { updatedAt: true },
+    });
+    if (source?.updatedAt?.toISOString() !== params.expectedSourceSettingsRevision) {
+      throw settingsApplyRevisionConflict(params.sourceChatId, []);
+    }
+    const sourceTargetBaseline = writeBaselineByChatId.get(params.sourceChatId);
+    if (
+      appliedChatIds.includes(params.sourceChatId) &&
+      sourceTargetBaseline?.toISOString() !== params.expectedSourceSettingsRevision
+    ) {
+      throw settingsApplyRevisionConflict(params.sourceChatId, []);
+    }
+  }
+  const outcomesByChatId = new Map<string, SettingsApplyPartialError['outcomes'][number]>();
+  let sourceSettingsRevision = params.expectedSourceSettingsRevision;
   let firstWriteError: unknown = null;
+  let firstFailure: ReturnType<typeof describeSettingsApplyFailure> | null = null;
   let conflictChatId: string | null = null;
   await mapWithConcurrencyLimit(
     appliedChatIds,
@@ -429,28 +510,22 @@ export async function applySettingsToAllChats(params: {
             ? { botSpeechMedia: scopedBotSpeechMedia }
             : {}),
         };
+        let committedSourceRevision: string | undefined;
         try {
-          await params.prisma.$transaction(async (tx) => {
-            if (
-              Object.keys(majorSettingsUpdatePayload).some(
-                (key) => key.startsWith('reports') || /^admin.*Command/.test(key),
-              )
-            ) {
+          committedSourceRevision = await params.prisma.$transaction(async (tx) => {
+            if (requiresReportPolicyValidation) {
               const current = await tx.chatSettings.findUnique({ where: { chatId } });
               const merged = {
                 ...DEFAULT_CHAT_SETTINGS,
                 ...current,
                 ...majorSettingsUpdatePayload,
               };
-              assertReportsActivationAvailable(
-                current,
-                merged,
+              assertReportPolicyForTarget(
+                chatId,
+                current as ChatSettings | null,
+                merged as ChatSettings,
                 params.reportsAvailable?.(chatId) ?? false,
               );
-              const checked = reportSettingsSchema
-                .superRefine((policy, ctx) => addReportCommandIssues({ ...merged, ...policy }, ctx))
-                .safeParse(merged);
-              if (!checked.success) throw new BadRequestException(checked.error.format());
             }
             await tx.chat.upsert({
               where: { id: chatId },
@@ -500,6 +575,19 @@ export async function applySettingsToAllChats(params: {
                 },
               },
             });
+            if (
+              params.expectedSourceSettingsRevision !== undefined &&
+              chatId === params.sourceChatId
+            ) {
+              // FLAG: Return only our own source commit's fence; a later read could borrow another
+              // administrator's revision for the policy snapshot confirmed by this operation.
+              const writtenSource = await tx.chatSettings.findUnique({
+                where: { chatId },
+                select: { updatedAt: true },
+              });
+              return writtenSource?.updatedAt?.toISOString();
+            }
+            return undefined;
           });
         } catch (error: unknown) {
           if ((error as { code?: unknown })?.code === 'P2002') {
@@ -508,10 +596,21 @@ export async function applySettingsToAllChats(params: {
           throw error;
         }
         successfullyAppliedChatIds.add(chatId);
+        if (committedSourceRevision !== undefined) sourceSettingsRevision = committedSourceRevision;
+        outcomesByChatId.set(chatId, { chatId, status: 'APPLIED' });
         await params.chatContextCache.invalidate(chatId);
       } catch (error: unknown) {
+        const applied = successfullyAppliedChatIds.has(chatId);
+        const failure = describeSettingsApplyFailure(error, applied);
+        outcomesByChatId.set(chatId, {
+          chatId,
+          status: applied ? 'APPLIED' : 'FAILED',
+          reasonCode: failure.code,
+          message: failure.message,
+        });
         if (!firstWriteError) {
           firstWriteError = error;
+          firstFailure = failure;
           if (
             error instanceof ConflictException &&
             (error.getResponse() as { code?: unknown })?.code === 'CHAT_SETTINGS_CONCURRENT_UPDATE'
@@ -528,21 +627,25 @@ export async function applySettingsToAllChats(params: {
       successfullyAppliedChatIds.has(chatId),
     );
     if (partialAppliedChatIds.length > 0) {
-      params.scheduleReadinessRefresh({
-        chatIds: partialAppliedChatIds,
-        ...(capabilityPreflightConfirmedChatIds.size > 0
-          ? {
-              skipManagedEntityBotRefreshChatIds: partialAppliedChatIds.filter((chatId) =>
-                capabilityPreflightConfirmedChatIds.has(chatId),
-              ),
-            }
-          : {}),
-        shouldRefreshRequiredSubscription:
-          shouldValidateRequiredSubscription &&
-          params.isRequiredSubscriptionCurrentlyActive(normalizedSettings),
-        requiredSubscriptionChannelIds: normalizedSettings.requiredSubscriptionChannelIds,
-      });
-      await params.onPartialApplied(partialAppliedChatIds);
+      try {
+        params.scheduleReadinessRefresh({
+          chatIds: partialAppliedChatIds,
+          ...(capabilityPreflightConfirmedChatIds.size > 0
+            ? {
+                skipManagedEntityBotRefreshChatIds: partialAppliedChatIds.filter((chatId) =>
+                  capabilityPreflightConfirmedChatIds.has(chatId),
+                ),
+              }
+            : {}),
+          shouldRefreshRequiredSubscription:
+            shouldValidateRequiredSubscription &&
+            params.isRequiredSubscriptionCurrentlyActive(normalizedSettings),
+          requiredSubscriptionChannelIds: normalizedSettings.requiredSubscriptionChannelIds,
+        });
+        await params.onPartialApplied(partialAppliedChatIds);
+      } catch {
+        // FLAG: Follow-up failure cannot erase the exact commits already observed above.
+      }
     }
     if (
       firstWriteError instanceof ConflictException &&
@@ -555,31 +658,139 @@ export async function applySettingsToAllChats(params: {
         appliedCount: partialAppliedChatIds.length,
         appliedChatIds: partialAppliedChatIds.slice(0, 20),
       });
-      throw settingsApplyRevisionConflict(conflictChatId ?? undefined, partialAppliedChatIds);
+      if (partialAppliedChatIds.length === 0) {
+        throw settingsApplyRevisionConflict(conflictChatId ?? undefined, []);
+      }
+    }
+    if (partialAppliedChatIds.length > 0) {
+      throw settingsApplyPartialFailure({
+        sourceChatId: params.sourceChatId,
+        sourceSettingsRevision,
+        targetChatIds: appliedChatIds,
+        appliedChatIds: partialAppliedChatIds,
+        outcomesByChatId,
+        failure: firstFailure!,
+        conflictChatId,
+      });
     }
     throw firstWriteError;
   }
 
-  params.scheduleReadinessRefresh({
-    chatIds: appliedChatIds,
-    ...(capabilityPreflightConfirmedChatIds.size > 0
-      ? {
-          skipManagedEntityBotRefreshChatIds: appliedChatIds.filter((chatId) =>
-            capabilityPreflightConfirmedChatIds.has(chatId),
-          ),
-        }
-      : {}),
-    shouldRefreshRequiredSubscription:
-      shouldValidateRequiredSubscription &&
-      params.isRequiredSubscriptionCurrentlyActive(normalizedSettings),
-    requiredSubscriptionChannelIds: normalizedSettings.requiredSubscriptionChannelIds,
-  });
+  try {
+    params.scheduleReadinessRefresh({
+      chatIds: appliedChatIds,
+      ...(capabilityPreflightConfirmedChatIds.size > 0
+        ? {
+            skipManagedEntityBotRefreshChatIds: appliedChatIds.filter((chatId) =>
+              capabilityPreflightConfirmedChatIds.has(chatId),
+            ),
+          }
+        : {}),
+      shouldRefreshRequiredSubscription:
+        shouldValidateRequiredSubscription &&
+        params.isRequiredSubscriptionCurrentlyActive(normalizedSettings),
+      requiredSubscriptionChannelIds: normalizedSettings.requiredSubscriptionChannelIds,
+    });
+  } catch (error) {
+    throw settingsApplyPartialFailure({
+      sourceChatId: params.sourceChatId,
+      sourceSettingsRevision,
+      targetChatIds: appliedChatIds,
+      appliedChatIds,
+      outcomesByChatId,
+      failure: describeSettingsApplyFailure(error, true),
+      conflictChatId: null,
+    });
+  }
 
   return {
     sourceChatId: params.sourceChatId,
     updatedChats: appliedChatIds.length,
     appliedChatIds,
+    ...(sourceSettingsRevision !== undefined ? { sourceSettingsRevision } : {}),
   };
+}
+
+function describeSettingsApplyFailure(
+  error: unknown,
+  afterCommit = false,
+): { code: SettingsApplyPartialError['causeCode']; message: string } {
+  if (afterCommit) {
+    return {
+      code: 'POST_COMMIT_REFRESH_FAILED',
+      message: 'Настройки сохранены, но обновление состояния не завершено.',
+    };
+  }
+  const response = error instanceof HttpException ? error.getResponse() : null;
+  const code =
+    response && typeof response === 'object' && 'code' in response ? response.code : null;
+  switch (code) {
+    case 'REPORTS_COMMAND_CONFLICT':
+      return { code, message: 'Команда системы жалоб совпадает с командой администратора.' };
+    case 'REPORTS_UNAVAILABLE':
+      return { code, message: 'Приём жалоб приостановлен; включение недоступно.' };
+    case 'CHAT_SETTINGS_CONCURRENT_UPDATE':
+      return { code, message: 'Настройки этого чата изменены другим администратором.' };
+  }
+  if (error instanceof BotCapabilityRequiredException) {
+    return { code: 'BOT_CAPABILITY_REQUIRED', message: 'Боту не хватает прав в этом чате.' };
+  }
+  return { code: 'SETTINGS_WRITE_FAILED', message: 'Не удалось сохранить настройки этого чата.' };
+}
+
+function settingsApplyPartialFailure(params: {
+  sourceChatId: string;
+  sourceSettingsRevision?: string;
+  targetChatIds: readonly string[];
+  appliedChatIds: readonly string[];
+  outcomesByChatId: ReadonlyMap<string, SettingsApplyPartialError['outcomes'][number]>;
+  failure: ReturnType<typeof describeSettingsApplyFailure>;
+  conflictChatId: string | null;
+}): ConflictException {
+  const applied = new Set(params.appliedChatIds);
+  const unchangedChatIds = params.targetChatIds.filter((id) => !applied.has(id));
+  const outcomes = params.targetChatIds.map(
+    (chatId): SettingsApplyPartialError['outcomes'][number] =>
+      params.outcomesByChatId.get(chatId) ?? {
+        chatId,
+        status: 'NOT_ATTEMPTED',
+        reasonCode: 'STOPPED_AFTER_FAILURE',
+        message: 'Применение остановлено после ошибки в другом чате.',
+      },
+  );
+  // FLAG: All counts describe completed transactions; bounded samples never stand for the full retry set.
+  const orderedOutcomes = [...outcomes].sort(
+    (a, b) => Number(b.status !== 'APPLIED') - Number(a.status !== 'APPLIED'),
+  );
+  return new ConflictException(
+    settingsApplyPartialErrorSchema.parse({
+      code:
+        params.failure.code === 'CHAT_SETTINGS_CONCURRENT_UPDATE'
+          ? 'CHAT_SETTINGS_CONCURRENT_UPDATE'
+          : 'SETTINGS_APPLY_PARTIAL',
+      message:
+        unchangedChatIds.length > 0
+          ? 'Настройки применены частично. Проверьте результат и выберите чаты заново.'
+          : 'Настройки сохранены во всех чатах, но обновление состояния не завершено.',
+      partialApplied: true,
+      sourceChatId: params.sourceChatId,
+      ...(params.sourceSettingsRevision !== undefined
+        ? { sourceSettingsRevision: params.sourceSettingsRevision }
+        : {}),
+      targetCount: params.targetChatIds.length,
+      appliedCount: params.appliedChatIds.length,
+      unchangedCount: unchangedChatIds.length,
+      failedCount: outcomes.filter((item) => item.status === 'FAILED').length,
+      notAttemptedCount: outcomes.filter((item) => item.status === 'NOT_ATTEMPTED').length,
+      appliedChatIds: params.appliedChatIds.slice(0, 20),
+      unchangedChatIds: unchangedChatIds.slice(0, 20),
+      outcomes: orderedOutcomes.slice(0, 20),
+      outcomesTruncated: outcomes.length > 20,
+      causeCode: params.failure.code,
+      causeMessage: params.failure.message,
+      ...(params.conflictChatId ? { chatId: params.conflictChatId } : {}),
+    }),
+  );
 }
 
 function settingsApplyRevisionConflict(
@@ -607,6 +818,8 @@ export async function applySettingsSectionToAllChats(params: {
     target: ApplySettingsTarget,
     settingKeys: readonly (keyof ChatSettings)[],
     botSpeechMediaKeys?: readonly string[],
+    confirmedTargetChatIds?: readonly string[],
+    expectedSourceSettingsRevision?: string,
   ) => Promise<ApplySettingsToAllChatsResult>;
   syncDomainAllowlistToChats: (targetChatIds: readonly string[]) => Promise<void>;
 }): Promise<ApplySectionToAllResponse> {
@@ -623,6 +836,12 @@ export async function applySettingsSectionToAllChats(params: {
   ) {
     throw settingsApplyRevisionConflict(params.sourceChatId, []);
   }
+  if (
+    section === 'reports' &&
+    sourceSettings.settingsRevision !== parsed.data.expectedSourceSettingsRevision
+  ) {
+    throw settingsApplyRevisionConflict(params.sourceChatId, []);
+  }
   const result = await params.applySettings(
     sourceSettings,
     parsed.data.target,
@@ -633,6 +852,8 @@ export async function applySettingsSectionToAllChats(params: {
         : []),
     ],
     SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS[section],
+    parsed.data.confirmedTargetChatIds,
+    section === 'reports' ? parsed.data.expectedSourceSettingsRevision : undefined,
   );
 
   if (section === 'links') {

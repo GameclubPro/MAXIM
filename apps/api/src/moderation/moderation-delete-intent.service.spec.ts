@@ -895,6 +895,40 @@ describe('ModerationDeleteIntentService', () => {
     expect(filter.sql).toContain("'MESSAGE_DUPLICATE:%'");
   });
 
+  it('preserves metadata-bound independent scopes when report authority is revoked', () => {
+    const { service } = createService({
+      MODERATION_DELETE_INTENT_MODE: 'off',
+      COMMERCIAL_OCR_ROLLOUT_MODE: 'off',
+      IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on',
+    });
+    const classify = service as unknown as {
+      hasExecutableIndependentReportReason(
+        chatId: string,
+        reasons: Array<{ ruleCode: string; reasonKey: string; metadata: unknown }>,
+      ): boolean;
+    };
+    for (const input of [boundMessageInput(), imageTextStopListClaimedIntentInput().intent]) {
+      expect(
+        classify.hasExecutableIndependentReportReason(input.chatId, [
+          {
+            ruleCode: input.ruleCode!,
+            reasonKey: input.reasonKey,
+            metadata: input.event?.metadata,
+          },
+        ]),
+      ).toBe(true);
+    }
+    expect(
+      classify.hasExecutableIndependentReportReason('chat-1', [
+        { ruleCode: 'DUPLICATE_DELETE', reasonKey: 'DUPLICATE:legacy', metadata: {} },
+      ]),
+    ).toBe(false);
+    expect(
+      classify.hasExecutableIndependentReportReason('chat-1', [
+        { ruleCode: 'ANTI_SPAM', reasonKey: 'ANTI_SPAM', metadata: {} },
+      ]),
+    ).toBe(false);
+  });
   it('persists and schedules a bound duplicate outside the base canary as executable', async () => {
     const persisted = {
       ...baseIntent,
@@ -10591,5 +10625,140 @@ describe('ModerationDeleteIntentService', () => {
     for (const [query] of executeRaw.mock.calls) {
       expect(query?.values).toContain(100);
     }
+  });
+});
+
+describe('persisted participant report execution boundaries', () => {
+  it.each(['off', 'shadow', 'canary', 'on'])(
+    'keeps reports independent of generic mode %s through reload and recovery',
+    (mode) => {
+      const { service } = createService({
+        MODERATION_DELETE_INTENT_MODE: mode,
+        PARTICIPANT_REPORTS_MODE: 'on',
+      });
+      expect(service.getRolloutForRule('chat-1', 'PARTICIPANT_REPORT_DELETE')).toBe('execute');
+      expect(
+        (service as unknown as ServiceInternals).isExecutionEnabledForIntent({
+          ...baseIntent,
+          reportDeleteReason: true,
+          nonCommercialOcrDeleteReason: false,
+        }),
+      ).toBe(true);
+      expect(
+        (service as unknown as ServiceInternals).isExecutionEnabledForIntent({
+          ...baseIntent,
+          reportCounterCleanupReason: true,
+          nonCommercialOcrDeleteReason: false,
+        }),
+      ).toBe(true);
+      const internals = service as unknown as {
+        buildSweepRolloutFilter(): { values: unknown[] };
+        intentSelectSql(alias: string): { values: unknown[] };
+      };
+      expect(internals.buildSweepRolloutFilter().values).toContain('PARTICIPANT_REPORT_DELETE');
+      expect(internals.intentSelectSql('intent').values).toContain('PARTICIPANT_REPORT_DELETE');
+    },
+  );
+  it('rejects new sanctions outside the exact report canary but settles already persisted revoked work', () => {
+    const { service } = createService({
+      MODERATION_DELETE_INTENT_MODE: 'on',
+      PARTICIPANT_REPORTS_MODE: 'canary',
+      PARTICIPANT_REPORTS_CANARY_CHAT_IDS: 'other',
+    });
+    expect(service.getRolloutForRule('chat-1', 'PARTICIPANT_REPORT_DELETE')).toBe('off');
+    expect(service.getRolloutForRule('chat-1', 'PARTICIPANT_REPORT_COUNTER_CLEANUP')).toBe(
+      'execute',
+    );
+    expect(
+      (service as unknown as ServiceInternals).isExecutionEnabledForIntent({
+        ...baseIntent,
+        reportDeleteReason: true,
+      }),
+    ).toBe(true);
+  });
+  it.each([false, true])(
+    'does not use the revoked report itself as independent authority (independent=%s)',
+    async (independent) => {
+      const latest = {
+        ...baseIntent,
+        reportDeleteReason: true,
+        nonCommercialOcrDeleteReason: false,
+      };
+      const tx = {
+        $queryRaw: jest
+          .fn()
+          .mockResolvedValueOnce([{ id: latest.id }])
+          .mockResolvedValueOnce([latest]),
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        moderationDeleteIntentReason: {
+          findMany: jest.fn().mockResolvedValue(independent ? [{ ruleCode: 'SPAM' }] : []),
+        },
+      };
+      const { service, queue } = createService({}, { $transaction: jest.fn(async (fn) => fn(tx)) });
+      const { ReportRejectedError } = await import('./reports/report.util');
+      const error = new ReportRejectedError('revoked');
+      const internals = service as unknown as {
+        finishTerminalPreDispatchGuardRejection(
+          intent: unknown,
+          token: string,
+          details: unknown,
+          error: unknown,
+        ): Promise<{ status: string }>;
+      };
+      const result = await internals.finishTerminalPreDispatchGuardRejection(
+        latest,
+        'lease-1',
+        { errorCode: error.code, message: error.message, statusCode: null },
+        error,
+      );
+      expect(result.status).toBe(independent ? 'RETRYABLE' : 'FAILED_TERMINAL');
+      if (!independent) expect(queue.add).not.toHaveBeenCalled();
+    },
+  );
+  it('does not promote recovered report-only history to urgent queue priority', async () => {
+    const { service, queue } = createService();
+    await (
+      service as unknown as { enqueueWakeup(intent: unknown, priority: number): Promise<void> }
+    ).enqueueWakeup(
+      { ...baseIntent, status: 'PENDING', reportDeleteReason: true, reportHistoryOnly: true },
+      1,
+    );
+    expect(queue.add).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Object),
+      expect.objectContaining({ priority: 10 }),
+    );
+  });
+  it('retains background priority when report-only history is explicitly recovered', async () => {
+    const { service, queue } = createService();
+    jest
+      .spyOn(
+        service as unknown as { loadRequiredIntent(id: string): Promise<unknown> },
+        'loadRequiredIntent',
+      )
+      .mockResolvedValue({
+        ...baseIntent,
+        status: 'PENDING',
+        reportDeleteReason: true,
+        reportHistoryOnly: true,
+      });
+    await service.enqueueCurrentIntentWakeupStrict(baseIntent.id);
+    expect(queue.add).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Object),
+      expect.objectContaining({ priority: 10 }),
+    );
+  });
+  it('accepts lower-priority admission only for an exact historical report binding', async () => {
+    const { service } = createService();
+    await expect(
+      service.ensureReportHistoryIntent({
+        chatId: 'chat-1',
+        messageId: 'target',
+        ruleCode: 'PARTICIPANT_REPORT_DELETE',
+        reasonKey: 'report',
+        event: { metadata: { reportCaseId: 'case', reportTargetMessageId: 'target' } },
+      }),
+    ).rejects.toThrow('history binding');
   });
 });

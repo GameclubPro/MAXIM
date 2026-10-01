@@ -5,7 +5,7 @@ import {
   updateSettingsRequestSchema,
   chatSettingsScreenResponseSchema,
 } from '../src/core.js';
-import { reportSummarySchema } from '../src/reports.js';
+import { reportJournalFiltersSchema, reportSummarySchema } from '../src/reports.js';
 
 describe('participant report settings', () => {
   it('defaults to disabled, three votes, one message and no mute', () => {
@@ -49,5 +49,19 @@ describe('participant report settings', () => {
   it('preserves compatibility for old reports and rejects negative absent counts', () => {
     expect(reportSummarySchema.shape.absent.parse(undefined)).toBe(0);
     expect(reportSummarySchema.shape.absent.safeParse(-1).success).toBe(false);
+  });
+  it('validates journal filters without coercing arrays or arbitrary query objects', () => {
+    expect(
+      reportJournalFiltersSchema.parse({ status: 'ACTIVE', authorId: '  user ' }),
+    ).toMatchObject({ authorId: 'user' });
+    expect(reportJournalFiltersSchema.safeParse({ status: ['ACTIVE'] }).success).toBe(false);
+    expect(reportJournalFiltersSchema.safeParse({ authorId: { not: '' } }).success).toBe(false);
+    expect(
+      reportJournalFiltersSchema.safeParse({
+        from: '2026-10-02T00:00:00Z',
+        to: '2026-10-01T00:00:00Z',
+      }).success,
+    ).toBe(false);
+    expect(reportSummarySchema.shape.detailsArchived.parse(undefined)).toBe(false);
   });
 });

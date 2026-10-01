@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { REPORT_DEFAULT_TRIGGERS, type MaxUpdate, type ReportSettings } from '@maxim/contracts';
 import { MaxClientService } from '../../max/max-client.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -6,6 +6,7 @@ import { ModerationDeleteIntentService } from '../moderation-delete-intent.servi
 import { RedisCounterService } from '../redis-counter.service';
 import { extractRawMessageNode } from '../moderation-update-extractors';
 import { ReportStateService } from './report-state.service';
+import { ReportTelemetryService } from './report-telemetry.service';
 import {
   isEligibleReporter,
   record,
@@ -26,6 +27,7 @@ export class ReportSubmissionService {
     private readonly max: MaxClientService,
     private readonly deletes: ModerationDeleteIntentService,
     private readonly redis: RedisCounterService,
+    @Optional() private readonly telemetry?: ReportTelemetryService,
   ) {}
 
   isCommand(
@@ -54,6 +56,8 @@ export class ReportSubmissionService {
       return false;
     const botId = update.botId;
     if (!botId) return false;
+    let newVote = false;
+    let reachedThreshold = false;
     try {
       if (!this.state.enabled(message.chatId))
         throw new ReportRejectedError('Приём жалоб приостановлен. Жалоба не учтена.');
@@ -66,15 +70,15 @@ export class ReportSubmissionService {
         return false;
       }
       const source = await this.state.source(message.chatId, targetId, botId);
-      if (!source) throw new ReportRejectedError('Исходное сообщение уже удалено.');
+      if (!source) throw new ReportRejectedError('Исходное сообщение уже удалено.', 'source');
       if (source.authorId === message.senderId)
-        throw new ReportRejectedError('Нельзя пожаловаться на своё сообщение.');
+        throw new ReportRejectedError('Нельзя пожаловаться на своё сообщение.', 'source');
       const now = new Date();
       if (
         source.createdAt.getTime() > now.getTime() ||
         source.createdAt.getTime() + REPORT_DAY_MS <= now.getTime()
       )
-        throw new ReportRejectedError('Жалобы принимаются на сообщения не старше суток.');
+        throw new ReportRejectedError('Жалобы принимаются на сообщения не старше суток.', 'source');
       const member = await this.max.getChatMemberAccess(message.chatId, message.senderId, {
         botId,
         bypassCache: true,
@@ -82,9 +86,12 @@ export class ReportSubmissionService {
         trafficClass: 'interactive',
       });
       if (!isEligibleReporter(member, message.senderId, now.getTime()))
-        throw new ReportRejectedError('Для жалобы нужно быть участником чата не менее суток.');
+        throw new ReportRejectedError(
+          'Для жалобы нужно быть участником чата не менее суток.',
+          'membership',
+        );
       if (await this.state.hasActiveSanction(message.chatId, message.senderId))
-        throw new ReportRejectedError('Во время мута жалобы не учитываются.');
+        throw new ReportRejectedError('Во время мута жалобы не учитываются.', 'sanction');
       await this.state.assertAuthor(message.chatId, source.authorId, botId);
       const report = await this.state.transaction(message.chatId, async (tx) => {
         const acceptedAt = new Date();
@@ -97,6 +104,8 @@ export class ReportSubmissionService {
           throw new ReportRejectedError('Команды жалоб изменились. Жалоба не учтена.');
         const where = { chatId_messageId: { chatId: message.chatId, messageId: targetId } };
         let current = await tx.chatReportCase.findUnique({ where });
+        if (current?.detailsArchivedAt)
+          throw new ReportRejectedError('Сбор жалоб по этому сообщению уже закрыт.', 'closed');
         if (
           current &&
           current.contentHash !== source.hash &&
@@ -139,7 +148,7 @@ export class ReportSubmissionService {
           });
         }
         if (current && !['COLLECTING', 'PENDING'].includes(current.status))
-          throw new ReportRejectedError('Сбор жалоб по этому сообщению уже закрыт.');
+          throw new ReportRejectedError('Сбор жалоб по этому сообщению уже закрыт.', 'closed');
         if (current && current.contentHash !== source.hash) {
           current = await tx.chatReportCase.update({
             where,
@@ -171,7 +180,7 @@ export class ReportSubmissionService {
             },
           });
         if (current.expiresAt <= acceptedAt)
-          throw new ReportRejectedError('Срок сбора жалоб истёк.');
+          throw new ReportRejectedError('Срок сбора жалоб истёк.', 'closed');
         const duplicate = await tx.chatReportVote.findFirst({
           where: {
             OR: [
@@ -194,7 +203,10 @@ export class ReportSubmissionService {
             },
           });
           if (!recent.some((v) => v.caseId === current!.id) && recent.length >= 10)
-            throw new ReportRejectedError('Лимит: десять жалоб на разные сообщения за час.');
+            throw new ReportRejectedError(
+              'Лимит: десять жалоб на разные сообщения за час.',
+              'rateLimit',
+            );
           await tx.chatReportVote.create({
             data: {
               caseId: current.id,
@@ -204,6 +216,7 @@ export class ReportSubmissionService {
               commandMessageId: message.messageId,
             },
           });
+          newVote = true;
           const count = await tx.chatReportVote.count({
             where: { caseId: current.id, contentVersion: current.contentVersion },
           });
@@ -214,10 +227,13 @@ export class ReportSubmissionService {
               dueAt: acceptedAt,
             },
           });
+          reachedThreshold = current.status === 'PENDING';
         }
         return current;
       });
       if (!report) throw new ReportRejectedError('Настройки изменены; прежний сбор жалоб отменён.');
+      if (newVote) this.telemetry?.record('accepted');
+      if (reachedThreshold) this.telemetry?.record('threshold');
       await this.deletes.ensureIntent({
         chatId: message.chatId,
         messageId: message.messageId,
@@ -237,6 +253,17 @@ export class ReportSubmissionService {
       return true;
     } catch (error) {
       if (error instanceof ReportRejectedError) {
+        this.telemetry?.record('rejected');
+        const reason = {
+          source: 'rejectedSource',
+          membership: 'rejectedMembership',
+          sanction: 'rejectedSanction',
+          protected: 'rejectedProtected',
+          policy: 'rejectedPolicy',
+          closed: 'rejectedClosed',
+          rateLimit: 'rejectedRateLimit',
+        } as const;
+        this.telemetry?.record(reason[error.reason]);
         await this.feedback(update, error.message);
         return true;
       }

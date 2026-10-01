@@ -86,6 +86,11 @@ describePostgres('PostgreSQL participant reports', () => {
     }),
   };
 
+  Object.assign(deletes, {
+    prepareReportTargetIntent: deletes.ensureIntent,
+    ensureReportHistoryIntent: deletes.ensureIntent,
+  });
+
   function target(id: string, authorId = 'author', createdAt = new Date(Date.now() - 60_000)) {
     rows.set(id, {
       sender: { user_id: authorId, is_bot: false },
@@ -311,6 +316,15 @@ describePostgres('PostgreSQL participant reports', () => {
   it('preserves confirmed journal results when the deletion ledger is purged', async () => {
     const report = await pending('retained-journal');
     const old = new Date(Date.now() - 100 * REPORT_DAY_MS);
+    const earlier = new Date(old.getTime() - REPORT_DAY_MS);
+    const agedReport = await prisma.chatReportCase.update({
+      where: { id: report.id },
+      data: { updatedAt: earlier },
+    });
+    await prisma.chatReportVote.updateMany({
+      where: { caseId: report.id },
+      data: { createdAt: earlier },
+    });
     const statuses = ['SUCCEEDED', 'ALREADY_ABSENT', 'FAILED_TERMINAL'] as const;
     for (const [n, status] of statuses.entries()) {
       const id = `${prefix}-retained-${n}`;
@@ -331,11 +345,12 @@ describePostgres('PostgreSQL participant reports', () => {
         },
       });
       await prisma.chatReportAction.create({
-        data: { caseId: report.id, messageId: id, intentId: id },
+        data: { caseId: report.id, messageId: id, intentId: id, createdAt: earlier },
       });
     }
-    const before = await views.summary(report);
+    const before = await views.summary(agedReport);
     expect(before).toMatchObject({ candidates: 3, deleted: 1, absent: 1, failed: 1, pending: 0 });
+    expect(before.updatedAt).toBe(old.toISOString());
     const retention = Object.assign(Object.create(ModerationDeleteIntentService.prototype), {
       prisma,
       retentionDays: 90,
@@ -353,7 +368,12 @@ describePostgres('PostgreSQL participant reports', () => {
         .map((a) => a.receiptStatus)
         .sort(),
     ).toEqual([...statuses].sort());
-    expect(await views.summary(report)).toEqual(before);
+    expect(
+      (await prisma.chatReportAction.findMany({ where: { caseId: report.id } })).every(
+        (action) => action.receiptUpdatedAt?.getTime() === old.getTime(),
+      ),
+    ).toBe(true);
+    expect(await views.summary(agedReport)).toEqual(before);
   });
 
   it('retries an unavailable MAX membership lookup without recording an optimistic vote', async () => {
@@ -736,6 +756,78 @@ describePostgres('PostgreSQL participant reports', () => {
     await prisma.chatSettings.update({ where: { chatId }, data: { reportsEnabled: false } });
     await expect(guard.assertIntentStillActionable(params)).rejects.toThrow('выключен');
   });
+  it('atomically reserves the final shared history slot between concurrent cases', async () => {
+    const fixtures = await Promise.all(
+      ['pressure', 'first', 'second'].map((name) =>
+        pending(`bounded-${name}`, { history: true, author: `bounded-author-${name}` }),
+      ),
+    );
+    const running: typeof fixtures = [];
+    for (const report of fixtures)
+      running.push(
+        await prisma.chatReportCase.update({
+          where: { id: report.id },
+          data: {
+            status: 'RUNNING',
+            muteProcessed: true,
+            leaseToken: 'bounded-lease',
+            leaseExpiresAt: new Date(Date.now() + 60_000),
+          },
+        }),
+      );
+    await prisma.chatReportAction.createMany({
+      data: Array.from({ length: 199 }, (_, n) => ({
+        caseId: running[0]!.id,
+        messageId: `reserved-${n}`,
+      })),
+    });
+    for (const report of running.slice(1)) {
+      const at = new Date(report.decidedAt!.getTime() - 1000);
+      await prisma.webhookEvent.create({
+        data: {
+          dedupKey: `${prefix}-bounded-${report.id}`,
+          createdAt: at,
+          rawPayload: {},
+          normalizedPayload: {
+            type: 'message_created',
+            message: {
+              chatId,
+              senderId: report.authorId,
+              messageId: `${report.id}-history`,
+              createdAt: at.toISOString(),
+            },
+          },
+        },
+      });
+    }
+    try {
+      await Promise.all(
+        running
+          .slice(1)
+          .map((report) =>
+            (
+              executor as unknown as { scanHistory(report: unknown, token: string): Promise<void> }
+            ).scanHistory(report, 'bounded-lease'),
+          ),
+      );
+      expect(
+        await prisma.chatReportAction.count({
+          where: { caseId: { in: running.map((report) => report.id) } },
+        }),
+      ).toBe(200);
+      const refreshed = await prisma.chatReportCase.findMany({
+        where: { id: { in: running.slice(1).map((report) => report.id) } },
+      });
+      expect(refreshed.filter((report) => report.scanCursorId).length).toBe(1);
+    } finally {
+      await prisma.chatReportCase.deleteMany({
+        where: { id: { in: running.map((report) => report.id) } },
+      });
+      await prisma.webhookEvent.deleteMany({
+        where: { dedupKey: { startsWith: `${prefix}-bounded-` } },
+      });
+    }
+  });
   it('paginates more than 1000 known messages within fixed history bounds and survives replay', async () => {
     const report = await pending('history', { history: true, author: 'history-author' });
     await process(report.id);
@@ -807,7 +899,7 @@ describePostgres('PostgreSQL participant reports', () => {
     expect(await prisma.chatReportAction.count({ where: { caseId: report.id } })).toBe(
       firstPageCount,
     );
-    for (let page = 0; page < 7; page++) {
+    for (let page = 0; page < 64; page++) {
       const actions = await prisma.chatReportAction.findMany({
         where: { caseId: report.id },
         select: { intentId: true },

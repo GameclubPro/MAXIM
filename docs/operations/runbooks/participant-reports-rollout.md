@@ -24,7 +24,7 @@ the journal remain possible. A missing availability field from an older API is u
 
 ## Recovery And Stop
 
-The action role processes due cases in bounded batches. History scans use 200-row keyset pages
+The action role processes due cases in bounded batches. History scans use 25-row keyset pages
 over `webhook_events_report_history_idx`, a fixed decision-time day, and durable delete intents.
 The intent retention transaction snapshots each linked report action's final status before
 removing its queue ledger, so completed journal counts do not become pending again after retention.
@@ -56,6 +56,103 @@ Mute is the existing software mute: new messages are removed, not prevented at t
 History cleanup covers only messages observed by the bot. Never present incomplete work as
 complete. Execution authorization expires one day after the threshold decision.
 
-Both rollback paths require `ReportDeleteGuardService.BINDING_VERSION = 2`, current-case checks,
+Both rollback paths require `ReportDeleteGuardService.BINDING_VERSION = 3`, current-case checks,
 counter guards and the final delete boundary. An older executor is not a valid rollback, even when new report admission is
 disabled: durable intents can survive the process that created them.
+
+## Journal, Bulk Policy And Scheduling
+
+The lightweight `GET /chats/:chatId/reports/availability` response is refreshed when the module
+opens, on focus, and every 30 seconds while open. An existing saved opt-in may be toggled off
+and back on in the same unsaved draft while admission is paused; a new opt-in remains blocked.
+
+The journal uses server filters (`ALL`, `ACTIVE`, `FAILED`, `COMPLETED`, inclusive ISO date range,
+and exact author), filter-bound cursors, and repeatable-read receipt-aware snapshots. Each
+indexed status branch reads at most 21 ordered candidate IDs; a displayed page contains at
+most 20 cases. The client polls only the first page and the selected active detail, never every
+loaded historical page. Terminal details refresh on explicit action or focus. The manual refresh
+updates both the first page and the open detail. Delayed responses cannot restore an obsolete
+status or dismissal action.
+
+Reports bulk apply requires the revision returned by the source section save and the exact
+confirmed target set (at most 500 chats). Every target's merged command aliases are validated
+before the first write and again inside its own revision-checked transaction. A source revision
+or target-set change stops the operation before writes. A late failure returns bounded per-chat
+outcomes and full applied/unchanged/failed/not-attempted counts; samples never authorize an
+automatic replay. The UI preserves a confirmed source save, the final source revision returned
+by its own bulk transaction, and later unsaved local edits. Navigation to another chat cannot
+apply the old source draft to the new chat.
+
+Persisted report deletes have an independent execution classifier. Disabled admission still
+allows a persisted job to reach its final guard and settle a definitive rejection. Report
+reasons cannot masquerade as an independent generic-delete authority. Every report authority
+is evaluated deterministically; an independently valid case can authorize shared work even
+when another case was revoked. Exact public-counter ownership is checked through generic
+bot-message cleanup as well.
+
+The report dispatcher reserves slots for decisions, running work and maintenance, with two
+workers and an eight-second admission/render budget. This budget stops new work; it is not a
+hard cancellation of an already running remote request. Historical deletes use background
+priority (10), including recovery after reload; direct targets retain interactive priority (1).
+History uses 25-event keyset pages and durable reservations under a brief PostgreSQL advisory
+lock: active `RUNNING` cases reserve at most 1,000 pending history actions globally, 200 per chat
+and 400 per origin bot. Revoked queued jobs can remain briefly until their final guards settle;
+they do not retain history admission capacity. Queue/MAX calls happen outside that lock.
+Final-page reservations recover even after the scan was marked
+complete. Render fingerprints and durable event wakeups keep unchanged collections asleep
+until their expiry; ambiguous sends never create a replacement counter.
+
+`ReportTelemetryService` emits process-local aggregate counters and fixed duration buckets,
+without chat, participant, message or case identifiers or message content. These observations
+are baseline measurements, not a claim that production SLOs or live MAX scenarios passed.
+
+## Detailed Data Retention: 30 Days
+
+The selected policy is **30 days**. `PARTICIPANT_REPORTS_DETAIL_RETENTION_DAYS=30` is the default;
+`PARTICIPANT_REPORTS_DETAIL_RETENTION_ENABLED=false` keeps removal disabled during rollout.
+Activate it only after the additive archive/receipt migrations and every compatible API role
+have been deployed and checked. Report admission may remain `off` independently.
+
+Both API rollback paths unconditionally require `ReportViewService.ARCHIVE_READER_VERSION = 1`
+and its retained-total/archived-reporter handling, plus the submission tombstone rejection before
+policy-revision reopening. Turning retention off does not relax this floor: removed details stay
+removed, and older readers would show zero totals or reopen a closed archive.
+
+Removal considers at most five indexed expired cases per pass, rechecking each under the
+existing chat fence and a case row lock. A case must be terminal, have no live lease or linked
+intent, have exhausted its decision/ambiguous-send windows, and have both an old collection
+expiry and an old last-change timestamp. Thus details are retained for at least 30 days after
+recent closing or counter activity. A global Redis admission slot caps deletion at 200 vote/
+action detail rows per minute across action replicas; the service fails closed without that
+slot. Statement/transaction limits bound each pass.
+
+Final counts are frozen before bounded deletion. Case identity, author/message/counter binding,
+policy/content versions, terminal outcome and aggregate totals remain as a tombstone for dedupe,
+counter recovery and late guards. Reporter vote identities and per-message action details are
+removed. This policy does not erase independent moderation sanction records, required security
+audit records or unrelated chat history. The public journal distinguishes an archived detail
+from a missing case and continues to show confirmed deletion, independently confirmed absence
+and failures separately.
+
+For an isolated local database, `npm run reports:retention-preview --workspace @maxim/api --
+--days 30` prints aggregate-only dry-run output. It requires a loopback `race_test` database,
+uses one connection and a two-second statement timeout, and starts no workers. The sample
+covers only the first five indexed candidates and at most 200 detail rows; a zero result can
+mean that those five are blocked, not that the whole backlog is empty. The diagnostic never
+selects production or an arbitrary remote database. Production diagnostics remain limited to
+reviewed fixed operations; do not pass ad hoc SQL or this local script through the VPS wrapper.
+
+## Human Acceptance Before Admission
+
+Keep the environment ceiling `off` when human acceptance will be performed later. The release
+can be validated with disposable PostgreSQL, mocked MAX delivery and browser/WebView emulation;
+those results do not establish live human membership, MAX permissions or actual chat delivery.
+
+When a reviewed test chat is made available, use at least two agreed human members with confirmed
+membership of 24 hours and administrator-approved harmless source messages. Start with threshold
+2, deletion of one message and restriction disabled. Verify one counter across bots, one vote per
+human, duplicate-vote rejection, threshold deletion and matching journal receipts. Then separately
+check the 24-hour observed history, optional software restriction and manual release, policy
+cancellation, expiry, restart recovery, counter disappearance and paused admission. Changing the
+global ceiling or adding a canary chat is an explicit operational step through the normal guarded
+rollout, never a side effect of opening the settings screen.

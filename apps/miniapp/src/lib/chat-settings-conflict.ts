@@ -1,3 +1,4 @@
+import { settingsApplyPartialErrorSchema } from '@maxim/contracts/settings-apply-error';
 import { ApiRequestError } from './api-request-error';
 
 export type ChatSettingsConcurrentUpdate = {
@@ -53,4 +54,10 @@ export function getChatSettingsConcurrentUpdatePresentation(
         title: 'Настройки изменились параллельно',
         description: 'Повторите применение после обновления данных.',
       };
+}
+
+export function parseSettingsApplyPartial(error: unknown) {
+  if (!(error instanceof ApiRequestError) || error.status !== 409) return null;
+  const parsed = settingsApplyPartialErrorSchema.safeParse(error.payload);
+  return parsed.success ? parsed.data : null;
 }

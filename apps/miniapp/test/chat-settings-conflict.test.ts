@@ -112,3 +112,36 @@ test('lazy settings save resolver prepares scoped permission rollback and confli
     description: 'Обновлено чатов: 2. Проверьте результат перед повтором.',
   });
 });
+
+test('structured partial apply preserves full outcome counts even when sample is truncated', async () => {
+  const { parseSettingsApplyPartial } = await import('../src/lib/chat-settings-conflict');
+  const error = createApiRequestError(
+    409,
+    JSON.stringify({
+      code: 'SETTINGS_APPLY_PARTIAL',
+      message: 'Часть настроек применена',
+      partialApplied: true,
+      sourceChatId: 'source',
+      sourceSettingsRevision: '2026-10-01T10:00:00.000Z',
+      targetCount: 40,
+      appliedCount: 30,
+      unchangedCount: 10,
+      failedCount: 1,
+      notAttemptedCount: 9,
+      appliedChatIds: ['source'],
+      unchangedChatIds: ['failed'],
+      outcomes: [],
+      outcomesTruncated: true,
+      causeCode: 'REPORTS_COMMAND_CONFLICT',
+      causeMessage: 'Команда совпадает с командой администратора.',
+    }),
+    'Partial result',
+  );
+  assert.equal(parseSettingsApplyPartial(error)?.appliedCount, 30);
+  assert.equal(parseSettingsApplyPartial(error)?.notAttemptedCount, 9);
+  assert.equal(
+    parseSettingsApplyPartial(error)?.sourceSettingsRevision,
+    '2026-10-01T10:00:00.000Z',
+  );
+  assert.equal(parseSettingsApplyPartial(createApiRequestError(409, '{}', 'Conflict')), null);
+});

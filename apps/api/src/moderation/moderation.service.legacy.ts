@@ -1,3 +1,4 @@
+import { resolveModerationSanctionExpiry } from './moderation-sanction-expiry.util';
 import { CommercialReviewService } from './commercial/commercial-review.service';
 import { collectCommercialCampaignContextFromRedis } from './commercial/commercial-campaign-context';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
@@ -6989,7 +6990,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const latestAction = latestSanctionEvent.action ?? SanctionAction.BAN;
-    const isPermanentMute = this.readPermanentMuteFromMetadata(latestSanctionEvent.metadata);
+    const expiry = resolveModerationSanctionExpiry(
+      latestAction,
+      latestSanctionEvent.metadata,
+      latestSanctionEvent.createdAt,
+      fallbackMuteDurationHours,
+    );
+    const isPermanentMute = expiry.permanent;
     const storedDurationHours = this.readStoredMuteDurationHoursFromMetadata(
       latestSanctionEvent.metadata,
     );
@@ -7016,10 +7023,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const durationHours = storedDurationHours ?? fallbackMuteDurationHours;
-    const expiresAt = new Date(
-      latestSanctionEvent.createdAt.getTime() + durationHours * 60 * 60 * 1000,
-    );
-    if (expiresAt.getTime() <= Date.now()) {
+    const expiresAt = expiry.expiresAt;
+    if (!expiresAt || expiresAt.getTime() <= Date.now()) {
       await this.rememberInactiveActiveMuteState(chatId, userId);
       return null;
     }
@@ -7712,15 +7717,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }) {
     const { chatId, userId, messageId, text, createdAt, settings, raw } = params;
 
+    // FLAG: Counter ownership survives disabled admission and delayed mirrored webhooks.
     if (
-      settings.reportsEnabled &&
-      (await this.reportSubmission?.ownsCounter(
+      await this.reportSubmission?.ownsCounter(
         chatId,
         messageId,
         text,
         this.maxBotContextService?.getActiveBotId() ?? '',
         raw,
-      ))
+      )
     )
       return;
 

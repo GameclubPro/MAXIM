@@ -7,7 +7,7 @@ import { GlassCard } from '../../components/ui/glass-card';
 import { cn } from '../../lib/cn';
 import { DeleteDelayStepper, type FieldErrors, type HintKey } from './settings-page-helpers';
 
-type SettingsExtraSectionProps = {
+export type SettingsExtraSectionProps = {
   draft: Pick<
     ChatSettings,
     'deleteBotMessagesEnabled' | 'deleteBotMessagesDelayMinutes' | 'removeBotsFromGroupEnabled'

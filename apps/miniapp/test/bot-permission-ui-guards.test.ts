@@ -22,6 +22,10 @@ const chatSettingsSource = readFileSync(
   new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
   'utf8',
 );
+const sectionApplySubmitSource = readFileSync(
+  new URL('../src/pages/settings/settings-section-apply-submit.ts', import.meta.url),
+  'utf8',
+);
 const chatSettingsWorkspaceSource = readFileSync(
   new URL('../src/pages/settings/chat-settings-workspace.tsx', import.meta.url),
   'utf8',
@@ -59,13 +63,14 @@ test('chat moderation saves roll rejected enables back before showing the dialog
 });
 
 test('bulk apply keeps an already-saved source while blocking unready targets', () => {
+  assert.match(chatSettingsSource, /applyTargetSavedSourceRef\.current = saved/u);
   assert.match(
-    chatSettingsSource,
-    /applyTargetSavedSourceRef\.current = \{ section, settings: savedSourceSettings \}/u,
+    sectionApplySubmitSource,
+    /onSourceSaved\(\{\s*sourceChatId,\s*section,\s*settings: savedSourceSettings,?\s*\}\)/u,
   );
   assert.match(
     chatSettingsSource,
-    /syncSavedSectionSettings\(savedSource\.section, savedSource\.settings\)/u,
+    /syncSavedSectionSettings\(\s*savedSource\.section,\s*(?:savedSource\.settings|\{[\s\S]*?savedSource\.settings)/u,
   );
   assert.match(chatSettingsSource, /setPermissionBlocker\(resolution\.blocker\)/u);
   assert.match(chatSettingsSaveErrorSource, /getChatSettingsConcurrentUpdatePresentation/u);
