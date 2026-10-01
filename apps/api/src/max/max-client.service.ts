@@ -4167,6 +4167,7 @@ export class MaxClientService implements OnModuleDestroy {
 
   private parseChatMemberAccess(value: unknown): MaxChatMemberAccess {
     const row = this.asRecord(value);
+    const isAdmin = row ? this.isChatAdminMemberRow(row) : false;
     const roleValue = this.readLowerString(
       row?.role ??
         row?.member_role ??
@@ -4195,7 +4196,7 @@ export class MaxClientService implements OnModuleDestroy {
         ? { joinedAtMs: row.join_time }
         : {}),
       isBot: this.readExplicitChatMemberBotState(value),
-      isAdmin: isOwner || (row ? this.isChatAdminMemberRow(row) : false),
+      isAdmin: isOwner || isAdmin,
       isOwner,
       permissions: row ? this.readChatAdminPermissions(row) : [],
       permissionsKnown: row ? this.hasExplicitChatAdminPermissions(row) : false,
@@ -8275,6 +8276,62 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private isChatAdminMemberRow(row: Record<string, unknown>): boolean {
+    // FLAG: Fresh destructive author checks must not turn malformed or conflicting
+    // privilege flags into a regular member. Positive canonical flags outrank legacy role labels.
+    const flagGroups = [
+      [row.is_admin, row.isAdmin, row.admin],
+      [row.is_owner, row.isOwner, row.owner],
+      [row.is_creator, row.isCreator, row.creator],
+      [row.is_moderator, row.isModerator, row.moderator],
+      [row.can_manage_chat, row.canManageChat],
+      [row.can_delete_messages, row.canDeleteMessages],
+    ];
+    for (const flags of flagGroups) {
+      if (
+        flags.some((value) => value !== undefined && typeof value !== 'boolean') ||
+        (flags.includes(true) && flags.includes(false))
+      )
+        throw new Error('Invalid MAX chat member privilege flags');
+    }
+    const roleFields = [
+      row.role,
+      row.member_role,
+      row.memberRole,
+      row.chat_role,
+      row.chatRole,
+      row.status,
+      row.member_status,
+      row.memberStatus,
+    ];
+    if (
+      roleFields.some((value) => value !== undefined && value !== null && typeof value !== 'string')
+    )
+      throw new Error('Invalid MAX chat member role');
+    const roles = roleFields
+      .map((value) => this.readLowerString(value))
+      .filter((value): value is string => value !== null);
+    const privilegedRole = (role: string) => /admin|owner|creator|moderator/u.test(role);
+    const memberRole = (role: string) => /member|user|participant|guest/u.test(role);
+    if (
+      roles.some((role) => privilegedRole(role)) &&
+      roles.some((role) => memberRole(role) && !privilegedRole(role))
+    )
+      throw new Error('Conflicting MAX chat member roles');
+    for (const [role, flags] of [
+      ['owner', flagGroups[1]!],
+      ['creator', flagGroups[2]!],
+      ['moderator', flagGroups[3]!],
+    ] as const) {
+      if (roles.some((value) => value.includes(role)) && flags.includes(false))
+        throw new Error('Conflicting MAX chat member privilege flags and role');
+    }
+    if (flagGroups.some((flags) => flags.includes(true))) return true;
+    if (
+      roles.some((role) => privilegedRole(role)) &&
+      [row.is_admin, row.isAdmin, row.admin].includes(false)
+    )
+      throw new Error('Conflicting MAX chat member privilege flags and role');
+
     const roleValue = this.readLowerString(
       row.role ??
         row.member_role ??
@@ -8304,28 +8361,6 @@ export class MaxClientService implements OnModuleDestroy {
       ) {
         return false;
       }
-    }
-
-    const positiveFlags = [
-      row.is_admin,
-      row.isAdmin,
-      row.admin,
-      row.is_owner,
-      row.isOwner,
-      row.owner,
-      row.is_creator,
-      row.isCreator,
-      row.creator,
-      row.is_moderator,
-      row.isModerator,
-      row.moderator,
-      row.can_manage_chat,
-      row.canManageChat,
-      row.can_delete_messages,
-      row.canDeleteMessages,
-    ];
-    if (positiveFlags.some((value) => value === true)) {
-      return true;
     }
 
     const explicitNegativeFlags = [

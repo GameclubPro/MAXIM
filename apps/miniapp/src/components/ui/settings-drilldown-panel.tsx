@@ -38,6 +38,7 @@ type SettingsDrilldownPanelProps = {
   footer?: ReactNode;
   keepFooterVisibleWhenKeyboardOpen?: boolean;
   confirmCloseWhen?: boolean;
+  closeDisabled?: boolean;
   onDiscardChanges?: () => void;
   initialFocusRef?: RefObject<HTMLElement | null>;
 };
@@ -137,6 +138,7 @@ export function SettingsDrilldownPanel({
   footer,
   keepFooterVisibleWhenKeyboardOpen = false,
   confirmCloseWhen = false,
+  closeDisabled = false,
   onDiscardChanges,
   initialFocusRef,
 }: SettingsDrilldownPanelProps) {
@@ -147,13 +149,14 @@ export function SettingsDrilldownPanel({
   useDialogFocusTrap(open, panelRef, initialFocusRef ?? panelRef);
 
   const requestClose = useCallback(() => {
+    if (closeDisabled) return;
     if (confirmCloseWhen) {
       setDiscardConfirmationOpen(true);
       return;
     }
 
     onClose();
-  }, [confirmCloseWhen, onClose]);
+  }, [closeDisabled, confirmCloseWhen, onClose]);
 
   useNativeBackHandler(
     () => {
@@ -232,6 +235,7 @@ export function SettingsDrilldownPanel({
             type="button"
             className="settings-drilldown__backdrop"
             aria-label="Закрыть панель"
+            disabled={closeDisabled}
             tabIndex={-1}
             onClick={requestClose}
           />
@@ -268,6 +272,7 @@ export function SettingsDrilldownPanel({
                   className="settings-drilldown__close"
                   aria-label="Закрыть панель"
                   onClick={requestClose}
+                  disabled={closeDisabled}
                 >
                   <CloseIcon />
                 </button>
@@ -294,8 +299,10 @@ export function SettingsDrilldownPanel({
             confirmLabel="Не сохранять"
             cancelLabel="Продолжить настройку"
             tone="danger"
+            isBusy={closeDisabled}
             onClose={() => setDiscardConfirmationOpen(false)}
             onConfirm={() => {
+              if (closeDisabled) return;
               setDiscardConfirmationOpen(false);
               onDiscardChanges?.();
               onClose();

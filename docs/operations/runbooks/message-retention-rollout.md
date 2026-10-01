@@ -26,11 +26,11 @@ Keep the mode/cohort aligned across ingress, admin and `api-message-retention`.
 
 `api-message-retention` is a headless shared-image role with a two-connection pool,
 0.5 CPU, 512 MiB memory, one worker and a separate `message-retention` queue. The
-30-second scheduler admits at most 100 outstanding chat wakeups using fixed BullMQ
+adaptive scheduler wakes at one-second resolution, backs off while idle, and admits at most 100 outstanding chat wakeups using fixed BullMQ
 slot IDs, native per-chat deduplication and global concurrency one. Legacy chat-keyed
 jobs drain before slot admission. PostgreSQL owns
 candidates and schedules; queue loss is recoverable. Each visit processes at most
-five deletions, reduced to two under governor slow pressure. Pause prevents new
+five deletions, reduced to two under governor slow pressure. Visited chats return behind ready peers; shadow work is selected independently of previously executable FIFO rows. Pause prevents new
 attempts. Database housekeeping continues in bounded batches when dispatch is off
 or MAX pressure pauses it. Scheduler/cleanup do not run immediately at startup.
 
@@ -66,6 +66,39 @@ ordinary intents, including ownership changes between lookup and claim. Unknown
 remote outcomes retain durable evidence. Terminal errors without a safe automatic
 recovery remain visible and require operator review, not repeated blind deletion.
 
+## Receipts and operator diagnostics
+
+Candidate `outcomeCode` distinguishes protected messages, terminal review, access
+blockers and unresolved receipts. Nullable legacy fields are discovered in bounded
+completed-time pages; the migration does not backfill rows. Reconciliation uses the
+per-chat partial `(chat_id, reconcile_after, message_id)` index. It can finalize a
+paired remote-success receipt without MAX while off, or use authorized exact-message
+presence reads while executing. It never issues DELETE for an ended activation.
+Legacy terminal rows with mutation evidence use the same receipt-only path.
+Authenticated exact group `message_removed` receipts settle the candidate, counters
+and owned intent in the receipt transaction; duplicate receipts release no extra credit.
+
+The closed Safety Desk `/runtime/retention` page reads at most 50 policies and 32
+quota rows, then bounded indexed diagnostics. Its per-chat preview reads at most 20
+review/recovery messages without content. An operator retry requires exact activation,
+policy revision and intent versions, fresh bot access, a sole owned retention reason,
+no dispatch/success evidence and healthy quota. It resets only the scheduling state
+and writes one audit in the same transaction. Unknown outcomes must reconcile first.
+The ordinary deletion retry endpoint rejects retention-owned intents.
+
+Local capacity command (disposable localhost schema only, no MAX; replace the example
+URL with your configured local test database, without URL options):
+
+```sh
+npm run message-retention:capacity --workspace @maxim/api -- \
+  --postgres-url postgresql://localhost:5432/retention_capacity_test \
+  --chats 20000 --candidates 2000000 --scenario retry --samples 100
+```
+
+Its PostgreSQL latency/storage/plans are measurements; transport figures are an
+arithmetic budget model, not sustainable MAX throughput or production certification.
+Run uniform/hot/retry/skew/removed scenarios before raising the rollout gate.
+
 ## Release Gates
 
 1. Keep the runtime off while deploying the additive migration and compatible shared
@@ -76,6 +109,8 @@ recovery remain visible and require operator review, not repeated blind deletion
    `npm run test:retention-storage --workspace @maxim/api` executes the production SQL
    on embedded PostgreSQL. With an explicit localhost `MAXIM_TEST_POSTGRES_URL`, the
    same suite uses a disposable schema and concurrent clients; CI runs that variant.
+   Set localhost `MAXIM_TEST_REDIS_URL` as well for real fixed-slot/two-producer/queue-loss
+   and global-concurrency tests. The wrapper also checks actual Prisma-store row-lock races.
 3. Before enabling capture, compare PostgreSQL/Redis load and webhook/moderation
    p95/p99 under matching traffic, including multi-bot mirrors and removal updates.
    Test 10,000/20,000 chats and two million pending records on a representative
@@ -99,6 +134,6 @@ and recreate the affected roles. This stops new intake/execution, preserving acc
 work. Per-chat disable separately cancels that activation; already dispatched HTTP
 requests cannot be undone. Never delete Redis/Postgres data to stop the module.
 
-Both API rollback paths require the retention-aware guard and critical-sweeper
+Both API rollback paths require the receipt-recovery-aware guard and critical-sweeper
 exclusion. A pre-feature image may execute persisted retention intents as critical
 work and is not a valid rollback target, even when its environment has retention off.

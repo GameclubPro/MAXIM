@@ -15,6 +15,7 @@ import { Client } from 'pg';
 import type { PGlite as EmbeddedPostgres } from '@electric-sql/pglite';
 import { captureRetentionMessage } from '../src/message-retention/message-retention-capture';
 import { purgeRetentionPage } from '../src/message-retention/message-retention-purge';
+import { discoverRetentionReceipts } from '../src/message-retention/message-retention-recovery';
 import { Prisma } from '../src/prisma/prisma-client';
 
 const { PGlite } = createRequire(require.resolve('@prisma/dev'))(
@@ -22,6 +23,13 @@ const { PGlite } = createRequire(require.resolve('@prisma/dev'))(
 ) as typeof import('@electric-sql/pglite');
 const migration = readFileSync(
   resolve(__dirname, '../prisma/migrations/20260920190000_add_message_retention/migration.sql'),
+  'utf8',
+);
+const reconciliationMigration = readFileSync(
+  resolve(
+    __dirname,
+    '../prisma/migrations/20261002020000_add_retention_reconciliation/migration.sql',
+  ),
   'utf8',
 );
 const postgresUrl = process.env.MAXIM_TEST_POSTGRES_URL;
@@ -95,6 +103,7 @@ describe('retention PostgreSQL statements', () => {
         remote_delete_succeeded_at TIMESTAMP(3), remote_delete_succeeded_bot_id TEXT, lease_expires_at TIMESTAMP(3));
     `);
     await db.exec(migration);
+    await db.exec(reconciliationMigration);
   });
   beforeEach(async () => {
     calls = 0;
@@ -282,9 +291,13 @@ describe('retention PostgreSQL statements', () => {
       ],
     );
     await db.query(
-      `INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id,status,completed_at,intent_id)
-      VALUES ('-1',$1,'u1','bot1',CURRENT_TIMESTAMP - INTERVAL '10 days','activation','cancelled',CURRENT_TIMESTAMP - INTERVAL '8 days',$1)`,
-      [id],
+      `INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id,status,completed_at,intent_id,outcome_code)
+      VALUES ('-1',$1,'u1','bot1',CURRENT_TIMESTAMP - INTERVAL '10 days','activation',$2,CURRENT_TIMESTAMP - INTERVAL '8 days',$1,$3)`,
+      [
+        id,
+        status === 'SUCCEEDED' ? 'deleted' : 'cancelled',
+        status === 'SUCCEEDED' ? 'deleted' : 'cancelled',
+      ],
     );
   }
   it('retains ambiguous candidates with their intents, without deleting ordinary moderation', async () => {
@@ -320,6 +333,53 @@ describe('retention PostgreSQL statements', () => {
     assert.deepEqual(
       (await db.query('SELECT count(*)::int AS n FROM message_retention_candidates')).rows[0],
       { n: 500 },
+    );
+  });
+
+  it('discovers ended legacy receipts in bounded pages and wakes their policy without charging quota', async () => {
+    await receipt('legacy-ambiguous', 'AMBIGUOUS', true, true, false);
+    await receipt('legacy-success', 'SUCCEEDED', true, true, false);
+    await db.exec(`UPDATE message_retention_candidates SET outcome_code=NULL,status='cancelled';
+      UPDATE message_retention_policies SET enabled=FALSE,next_run_at=NULL;`);
+    const cursor = await discoverRetentionReceipts(adapter as never, null, new Date());
+    assert.ok(cursor);
+    assert.deepEqual(
+      (
+        await db.query(
+          'SELECT outcome_code,reconcile_after IS NOT NULL AS scheduled FROM message_retention_candidates ORDER BY message_id',
+        )
+      ).rows,
+      [
+        { outcome_code: 'reconciliation', scheduled: true },
+        { outcome_code: 'reconciliation', scheduled: true },
+      ],
+    );
+    assert.deepEqual(
+      (
+        await db.query(
+          'SELECT next_run_at IS NOT NULL AS scheduled,pending_count FROM message_retention_policies',
+        )
+      ).rows,
+      [{ scheduled: true, pending_count: 0 }],
+    );
+    assert.equal((await snapshot()).quota_count, 0);
+    await purgeRetentionPage(adapter as never, null);
+    assert.equal(
+      (await snapshot()).candidates,
+      2,
+      'GC must wait for receipt reconciliation, including known success',
+    );
+  });
+
+  it('preserves a legacy cancelled success until the bounded discovery pass reaches it', async () => {
+    await receipt('legacy-success', 'SUCCEEDED', true, true, false);
+    await db.exec("UPDATE message_retention_candidates SET status='cancelled',outcome_code=NULL");
+    await purgeRetentionPage(adapter as never, null);
+    assert.equal((await snapshot()).candidates, 1);
+    assert.equal(
+      (await db.query<{ n: number }>('SELECT count(*)::int AS n FROM moderation_delete_intents'))
+        .rows[0]!.n,
+      1,
     );
   });
 });

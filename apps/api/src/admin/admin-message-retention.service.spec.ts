@@ -33,7 +33,11 @@ function setup() {
   prisma.$transaction.mockImplementation((work: (tx: unknown) => Promise<unknown>) => work(prisma));
   const access = { assertChatAdminAccess: jest.fn() };
   const capabilities = { assertChatSettingsBotCapabilities: jest.fn() };
-  const store = { allows: jest.fn().mockReturnValue(true), mode: 'on' };
+  const store = {
+    allows: jest.fn().mockReturnValue(true),
+    mode: 'on',
+    diagnostics: jest.fn().mockResolvedValue({ oldestDueAt: null, blockerStatus: null }),
+  };
   const service = new AdminMessageRetentionService(
     prisma as never,
     access as never,
@@ -60,6 +64,19 @@ describe('chat retention settings boundary', () => {
       pendingCount: 0,
     });
     expect(access.assertChatAdminAccess).toHaveBeenCalledWith('-1', user);
+  });
+  it('preserves a terminal blocker with zero active credits and exposes indexed due age', async () => {
+    const { service, store, policy } = setup();
+    policy.enabled = true;
+    store.diagnostics.mockResolvedValue({
+      oldestDueAt: new Date('2026-09-30T10:00:00Z'),
+      blockerStatus: 'error',
+    });
+    await expect(service.read('-1', user)).resolves.toMatchObject({
+      status: 'error',
+      pendingCount: 0,
+      oldestDueAt: '2026-09-30T10:00:00.000Z',
+    });
   });
   it('rejects Publisher credentials and non-group entities', async () => {
     const { service, prisma, access } = setup();
@@ -125,5 +142,19 @@ describe('chat retention settings boundary', () => {
       captureAfter: null,
     });
     expect(prisma.messageRetentionPolicy.update.mock.calls[1][0].data.activationId).not.toBe('old');
+  });
+  it('keeps receipt recovery scheduled when disabling with zero active credits and execution off', async () => {
+    const { service, prisma, policy, store, capabilities } = setup();
+    policy.enabled = true;
+    store.mode = 'off';
+    store.allows.mockReturnValue(false);
+    store.diagnostics.mockResolvedValue({ oldestDueAt: null, blockerStatus: 'delayed' });
+    await service.update('-1', user, { enabled: false, hours: 24, expectedRevision: 0 });
+    expect(prisma.messageRetentionPolicy.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ enabled: false, nextRunAt: expect.any(Date) }),
+      }),
+    );
+    expect(capabilities.assertChatSettingsBotCapabilities).not.toHaveBeenCalled();
   });
 });

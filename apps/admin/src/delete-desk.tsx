@@ -12,6 +12,7 @@ import {
 } from './giveaway-notification-observability';
 import {
   ambiguousSendSourceLabel,
+  canRetryDeleteIntent,
   deleteCapabilityReasonLabel,
   deleteCapabilityStateLabel,
   deleteRolloutLabel,
@@ -283,6 +284,7 @@ function DeleteDetails({
               {item.capability.confirmed ? 'Право подтверждено' : 'Нет подтвержденного права'}
             </span>
             <span className="risk-badge is-neutral">{deleteRolloutLabel(item.rollout)}</span>
+            {item.retentionOwned && <span className="risk-badge is-neutral">Очистка по сроку</span>}
           </div>
           <h2>{item.chatTitle || item.chatId}</h2>
         </div>
@@ -428,21 +430,25 @@ function DeleteDetails({
       {terminal && (
         <footer className="review-actions">
           <div className="action-status" aria-live="polite">
-            {item.rollout === 'execute'
-              ? busy
-                ? 'Возвращаю в очередь...'
-                : 'Повтор сохранит историю попыток и dispatch fence.'
-              : 'Сначала включите chat в canary или global rollout.'}
+            {item.retentionOwned
+              ? 'Диагностика и безопасный повтор доступны в разделе «Очистка».'
+              : canRetryDeleteIntent(item)
+                ? busy
+                  ? 'Возвращаю в очередь...'
+                  : 'Повтор сохранит историю попыток и проверку результата.'
+                : 'Сервер не разрешает повтор для текущего состояния.'}
           </div>
-          <button
-            className="primary-action"
-            type="button"
-            disabled={busy || item.rollout !== 'execute'}
-            onClick={() => onRetry(item)}
-          >
-            <Refresh width={18} height={18} />
-            {busy ? 'Возвращаю' : 'Повторить удаление'}
-          </button>
+          {canRetryDeleteIntent(item) && (
+            <button
+              className="primary-action"
+              type="button"
+              disabled={busy}
+              onClick={() => onRetry(item)}
+            >
+              <Refresh width={18} height={18} />
+              {busy ? 'Возвращаю' : 'Повторить удаление'}
+            </button>
+          )}
         </footer>
       )}
     </article>

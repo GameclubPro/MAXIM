@@ -30,6 +30,8 @@
 - Destructive column removal requires two runtime releases: first ship a client/schema that no longer selects the columns while DB columns remain, then drop them only after every API role runs the compatible client.
 - Statistics participant names use `chat_user_display_names` before temporary local history. `allowRemoteLookup: false` disables MAX calls, not local resolution. Backfill only with bounded `npm run stats:backfill-display-names -- ...` runs.
 - Raw `webhook_events` display-name fallback must keep the shared event-type allowlist and the exact predicate used by `webhook_events_local_display_name_chat_user_created_idx`; broad JSON scans are not an acceptable fallback.
+- Message-retention cancellation releases active credit once and keeps ambiguous/remote-success receipts separately scheduled. Recovery never dispatches DELETE; mode off permits database-only success settlement. Safety Desk retry must atomically check current activation, intent versions, evidence and quota, then schedule the normal guarded worker.
+- Run `test:retention-storage` with explicit localhost `MAXIM_TEST_POSTGRES_URL` and `MAXIM_TEST_REDIS_URL` for real store races and BullMQ slot/concurrency recovery. The same public wrapper owns codegen; no live MAX calls are needed.
 - Retention cleanup runs sequentially in bounded ordered batches and does not run at process startup. Keep a shared total budget for status groups that previously cleaned together.
 
 ## MAX Transport

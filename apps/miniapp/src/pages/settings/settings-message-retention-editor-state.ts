@@ -1,4 +1,41 @@
 import type { MessageRetentionState, UpdateMessageRetention } from '@maxim/contracts/settings';
+import { ApiRequestError } from '../../lib/api-request-error';
+
+export type RetentionDraftState = { chatId: string; draft: UpdateMessageRetention | null };
+export type RetentionDraftAction =
+  | { type: 'snapshot'; chatId: string; state: MessageRetentionState | undefined }
+  | { type: 'edit'; chatId: string; draft: UpdateMessageRetention }
+  | { type: 'discard'; chatId: string };
+
+export function retentionDraftReducer(
+  current: RetentionDraftState,
+  action: RetentionDraftAction,
+): RetentionDraftState {
+  if (action.type === 'edit') return { chatId: action.chatId, draft: action.draft };
+  if (action.type === 'discard' || current.chatId !== action.chatId)
+    return { chatId: action.chatId, draft: null };
+  const { draft } = current;
+  if (
+    draft &&
+    action.state &&
+    draft.enabled === action.state.enabled &&
+    draft.hours === action.state.hours
+  )
+    return { chatId: action.chatId, draft: null };
+  return current;
+}
+
+export function isRetentionRevisionConflict(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    error.status === 409 &&
+    error.code === 'MESSAGE_RETENTION_REVISION_CONFLICT'
+  );
+}
+
+export function isRetentionWriteUncertain(error: unknown): boolean {
+  return !(error instanceof ApiRequestError) || error.status >= 500;
+}
 
 export function retentionEditorState(
   state: MessageRetentionState | undefined,

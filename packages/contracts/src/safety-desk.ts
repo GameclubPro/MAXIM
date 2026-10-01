@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { broadcastTextFormatSchema } from './broadcast-common.js';
+import {
+  messageRetentionHoursSchema,
+  messageRetentionSummarySchema,
+} from './message-retention-summary.js';
 import { VK_PARSING_MAX_VIDEOS } from './vk-parsing-common.js';
 
 export const commercialReviewLabelSchema = z.enum(['COMMERCIAL', 'NOT_COMMERCIAL', 'UNSURE']);
@@ -233,6 +237,8 @@ export const safetyDeskDeleteIntentItemSchema = z.object({
   crossBotEnabled: z.boolean(),
   routingState: z.enum(['READY', 'NO_ELIGIBLE_BOT']),
   rollout: z.enum(['off', 'observed', 'execute']),
+  retentionOwned: z.boolean().default(false),
+  retryAllowed: z.boolean().default(false),
   status: safetyDeskDeleteIntentStatusSchema,
   ageMs: z.number().int().nonnegative(),
   attemptCount: z.number().int().nonnegative(),
@@ -364,3 +370,81 @@ export const safetyDeskRetryDeleteIntentRequestSchema = z
 export type SafetyDeskRetryDeleteIntentRequest = z.infer<
   typeof safetyDeskRetryDeleteIntentRequestSchema
 >;
+
+export const safetyDeskRetentionRuntimeItemSchema = z.object({
+  chatId: z.string().min(1),
+  chatTitle: z.string(),
+  enabled: z.boolean(),
+  hours: messageRetentionHoursSchema,
+  revision: z.number().int().nonnegative(),
+  activationId: z.string().min(1),
+  pendingCount: z.number().int().nonnegative(),
+  deletedCount: z.number().int().nonnegative(),
+  skippedCount: z.number().int().nonnegative(),
+  status: messageRetentionSummarySchema.shape.status,
+  oldestDueAt: z.string().datetime().nullable(),
+  nextRunAt: z.string().datetime().nullable(),
+  hasTerminalReview: z.boolean(),
+  hasUnresolvedReceipt: z.boolean(),
+  captureAfter: z.string().datetime().nullable().optional(),
+  pausedAt: z.string().datetime().nullable().optional(),
+  updatedAt: z.string().datetime().optional(),
+});
+export type SafetyDeskRetentionRuntimeItem = z.infer<typeof safetyDeskRetentionRuntimeItemSchema>;
+
+export const safetyDeskRetentionRuntimeResponseSchema = z.object({
+  generatedAt: z.string().datetime(),
+  mode: z.enum(['off', 'shadow', 'canary', 'on']),
+  nextAfter: z.string().min(1).nullable(),
+  quotas: z
+    .array(
+      z.object({
+        shard: z.number().int().nonnegative(),
+        pendingCount: z.number().int().nonnegative(),
+        cap: z.number().int().positive(),
+      }),
+    )
+    .max(32),
+  items: z.array(safetyDeskRetentionRuntimeItemSchema).max(50),
+});
+export type SafetyDeskRetentionRuntimeResponse = z.infer<
+  typeof safetyDeskRetentionRuntimeResponseSchema
+>;
+
+export const safetyDeskRetentionPreviewItemSchema = z.object({
+  messageId: z.string().min(1),
+  authorId: z.string(),
+  sourceAt: z.string().datetime(),
+  dueAt: z.string().datetime(),
+  status: z.string().min(1),
+  outcomeCode: z.string().nullable(),
+  intentId: z.string().nullable(),
+  intentStatus: safetyDeskDeleteIntentStatusSchema.nullable(),
+  intentUpdatedAt: z.string().datetime().nullable(),
+  intentAttemptCount: z.number().int().nonnegative().nullable(),
+  reconcileAfter: z.string().datetime().nullable(),
+  retryAllowed: z.boolean(),
+});
+export type SafetyDeskRetentionPreviewItem = z.infer<typeof safetyDeskRetentionPreviewItemSchema>;
+
+export const safetyDeskRetentionPreviewResponseSchema = z.object({
+  chatId: z.string().min(1),
+  revision: z.number().int().nonnegative(),
+  activationId: z.string().min(1),
+  items: z.array(safetyDeskRetentionPreviewItemSchema).max(20),
+});
+export type SafetyDeskRetentionPreviewResponse = z.infer<
+  typeof safetyDeskRetentionPreviewResponseSchema
+>;
+
+export const safetyDeskRetryRetentionRequestSchema = z
+  .object({
+    messageId: z.string().trim().min(1),
+    activationId: z.string().trim().min(1),
+    expectedRevision: z.number().int().nonnegative(),
+    intentId: z.string().trim().min(1),
+    expectedIntentUpdatedAt: z.string().datetime(),
+    expectedAttemptCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type SafetyDeskRetryRetentionRequest = z.infer<typeof safetyDeskRetryRetentionRequestSchema>;

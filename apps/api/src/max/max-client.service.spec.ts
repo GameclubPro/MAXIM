@@ -10575,6 +10575,55 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it.each([
+    { role: 'member', is_admin: true, expectedOwner: false },
+    { role: 'member', is_owner: true, expectedOwner: true },
+    { role: 'guest', is_admin: true, expectedOwner: false },
+  ])('protects canonical privilege flags before legacy role $role', async (row) => {
+    const { expectedOwner, ...member } = row;
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({ status: 200, data: { members: [{ user_id: 'user-1', is_bot: false, ...member }] } }),
+        ),
+    };
+    const service = createService(httpService);
+    await expect(
+      service.getChatMemberAccess('chat-1', 'user-1', { bypassCache: true }),
+    ).resolves.toEqual(
+      expect.objectContaining({ userId: 'user-1', isAdmin: true, isOwner: expectedOwner }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it.each([
+    { role: 'member', is_admin: 'false' },
+    { role: 'member', is_admin: null },
+    { role: 'member', is_admin: false, isAdmin: true },
+    { role: 'member', is_owner: false, isOwner: true },
+    { role: 'member', is_owner: true, is_admin: 'false' },
+    { role: 'member', member_role: 'admin' },
+    { role: 'admin', is_admin: false },
+    { role: 'owner', is_owner: false },
+    { role: 'creator', is_creator: false },
+    { role: 'moderator', is_moderator: false },
+    { role: 123, is_admin: false },
+  ])('rejects ambiguous fresh privilege evidence %s', async (member) => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({ status: 200, data: { members: [{ user_id: 'user-1', is_bot: false, ...member }] } }),
+        ),
+    };
+    const service = createService(httpService);
+    await expect(
+      service.getChatMemberAccess('chat-1', 'user-1', { bypassCache: true }),
+    ).rejects.toThrow(/(?:Invalid|Conflicting) MAX chat member/u);
+    await service.onModuleDestroy();
+  });
+
   it('caches targeted chat member access and respects bypassCache', async () => {
     const httpService = {
       request: jest

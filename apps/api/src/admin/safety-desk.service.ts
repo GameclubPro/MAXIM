@@ -107,6 +107,7 @@ type DeleteIntentDiagnosticRow = {
   originBotId: string | null;
   routingPolicy: string;
   messageAuthorKind: string | null;
+  retentionOwned: boolean;
   status: SafetyDeskDeleteIntentStatus;
   executeAt: Date;
   nextAttemptAt: Date;
@@ -281,6 +282,7 @@ const DELETE_INTENT_DIAGNOSTIC_SELECT = {
   originBotId: true,
   routingPolicy: true,
   messageAuthorKind: true,
+  retentionOwned: true,
   status: true,
   executeAt: true,
   nextAttemptAt: true,
@@ -1203,6 +1205,7 @@ export class SafetyDeskService {
         status: true,
         updatedAt: true,
         attemptCount: true,
+        retentionOwned: true,
         reasons: {
           where: {
             ruleCode: {
@@ -1219,6 +1222,8 @@ export class SafetyDeskService {
     if (!intent) {
       throw new NotFoundException('Удаление не найдено.');
     }
+    if (intent.retentionOwned)
+      throw new BadRequestException('Для очистки используйте отдельный раздел старых сообщений.');
     const rollout = this.moderationDeleteIntents.getRolloutForRuleCodes(
       intent.chatId,
       intent.reasons.map((reason) => reason.ruleCode),
@@ -2139,7 +2144,16 @@ export class SafetyDeskService {
         ? confirmedBotIds.filter((botId) => botId === row.originBotId)
         : confirmedBotIds;
 
+    const rollout = this.moderationDeleteIntents.getRolloutForRuleCodes(
+      row.chatId,
+      replacementCleanupRuleCodes,
+    );
     return {
+      retentionOwned: row.retentionOwned === true,
+      retryAllowed:
+        row.retentionOwned !== true &&
+        rollout === 'execute' &&
+        ['FAILED_TERMINAL', 'EXPIRED'].includes(row.status),
       id: row.id,
       chatId: row.chatId,
       chatTitle: row.chat.title,

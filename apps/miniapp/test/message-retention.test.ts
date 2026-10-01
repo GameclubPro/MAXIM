@@ -6,7 +6,13 @@ import {
   updateMessageRetention,
 } from '../src/lib/api/message-retention-client';
 import { PREVIEW_CHAT_ID } from '../src/lib/design-preview';
-import { retentionEditorState } from '../src/pages/settings/settings-message-retention-editor-state';
+import {
+  isRetentionRevisionConflict,
+  isRetentionWriteUncertain,
+  retentionDraftReducer,
+  retentionEditorState,
+} from '../src/pages/settings/settings-message-retention-editor-state';
+import { ApiRequestError } from '../src/lib/api-request-error';
 import { combineManagedEntityLeaveGuards } from '../src/lib/managed-entity-leave-guards';
 
 test('message retention starts off and persists both modes independently', async () => {
@@ -84,6 +90,64 @@ test('preview conflict does not commit the rejected draft', async () => {
     expectedRevision: state.revision,
   });
   assert.equal(saved.enabled, true);
+});
+
+test('accepted drafts stay cleared through later remote updates and chat changes', async () => {
+  const initial = await getMessageRetention(createPreviewApiTransport(), PREVIEW_CHAT_ID);
+  let editor = retentionDraftReducer(
+    { chatId: PREVIEW_CHAT_ID, draft: null },
+    {
+      type: 'edit',
+      chatId: PREVIEW_CHAT_ID,
+      draft: { enabled: true, hours: 24, expectedRevision: initial.revision },
+    },
+  );
+  const accepted = { ...initial, enabled: true, hours: 24 as const, revision: 1 };
+  editor = retentionDraftReducer(editor, {
+    type: 'snapshot',
+    chatId: PREVIEW_CHAT_ID,
+    state: accepted,
+  });
+  const changedAgain = { ...accepted, hours: 48 as const, revision: 2 };
+  editor = retentionDraftReducer(editor, {
+    type: 'snapshot',
+    chatId: PREVIEW_CHAT_ID,
+    state: changedAgain,
+  });
+  assert.equal(editor.draft, null);
+  assert.deepEqual(retentionEditorState(changedAgain, editor.draft), {
+    current: { enabled: true, hours: 48, expectedRevision: 2 },
+    dirty: false,
+    conflict: false,
+  });
+  editor = retentionDraftReducer(editor, {
+    type: 'edit',
+    chatId: PREVIEW_CHAT_ID,
+    draft: { enabled: false, hours: 24, expectedRevision: 2 },
+  });
+  editor = retentionDraftReducer(editor, {
+    type: 'snapshot',
+    chatId: 'other-chat',
+    state: initial,
+  });
+  assert.equal(editor.chatId, 'other-chat');
+  assert.equal(editor.draft, null);
+});
+
+test('capability conflicts and uncertain writes have different recovery from revision conflicts', () => {
+  const capability = new ApiRequestError(409, '{"code":"BOT_CAPABILITY_REQUIRED"}', 'Нет прав');
+  const revision = new ApiRequestError(
+    409,
+    '{"code":"MESSAGE_RETENTION_REVISION_CONFLICT"}',
+    'Конфликт',
+  );
+  assert.equal(isRetentionRevisionConflict(capability), false);
+  assert.equal(isRetentionRevisionConflict(revision), true);
+  assert.equal(isRetentionRevisionConflict(new ApiRequestError(409, '{}', 'Иной конфликт')), false);
+  assert.equal(isRetentionWriteUncertain(capability), false);
+  assert.equal(isRetentionWriteUncertain(revision), false);
+  assert.equal(isRetentionWriteUncertain(new Error('Reply lost')), true);
+  assert.equal(isRetentionWriteUncertain(new ApiRequestError(503, '{}', 'Unavailable')), true);
 });
 
 test('nested leave guards preserve the parent guard and stop navigation on a failed save', async () => {

@@ -1,6 +1,7 @@
-import { Suspense, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Clock } from 'iconoir-react';
-import type { MessageRetentionSummary } from '@maxim/contracts/settings';
+import type { MessageRetentionState, MessageRetentionSummary } from '@maxim/contracts/settings';
 import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
 import type { ApiTransport } from '../../lib/api/transport';
 import { messageRetentionStatusLabels } from './settings-message-retention-model';
@@ -22,11 +23,43 @@ export function SettingsMessageRetentionSection({
   initialSummary?: MessageRetentionSummary;
 }) {
   const [open, setOpen] = useState(false);
-  const [snapshot, setState] = useState<MessageRetentionSummary | null>(null);
-  const state =
-    snapshot && (!initialSummary || snapshot.revision >= initialSummary.revision)
-      ? snapshot
-      : initialSummary;
+  const client = useQueryClient();
+  const summary = useQuery<MessageRetentionSummary>({
+    queryKey: ['message-retention-summary', chatId],
+    enabled: false,
+    initialData: initialSummary,
+    queryFn: async ({ signal }) => {
+      const { getMessageRetention } = await import('../../lib/api/message-retention-client');
+      return getMessageRetention(api, chatId, signal);
+    },
+  });
+  const receiveSnapshot = useCallback(
+    (value: MessageRetentionSummary, receivedAt = Date.now()) => {
+      // Policy revision protects configuration; receipt time protects status from older cached reads.
+      const key = ['message-retention-summary', chatId];
+      const old = client.getQueryState<MessageRetentionSummary>(key);
+      if (
+        old?.data &&
+        (old.data.revision > value.revision ||
+          (old.data.revision === value.revision && old.dataUpdatedAt > receivedAt))
+      )
+        return;
+      client.setQueryData<MessageRetentionSummary>(key, value, { updatedAt: receivedAt });
+    },
+    [chatId, client],
+  );
+  useEffect(() => {
+    if (!initialSummary) return;
+    receiveSnapshot(initialSummary);
+    const full = client.getQueryData<MessageRetentionState>(['message-retention', chatId]);
+    if (
+      full &&
+      (initialSummary.revision > full.revision ||
+        (initialSummary.revision === full.revision && initialSummary.status !== full.status))
+    )
+      void client.invalidateQueries({ queryKey: ['message-retention', chatId], exact: true });
+  }, [initialSummary, receiveSnapshot, chatId, client]);
+  const state = summary.data;
   return (
     <section
       className="settings-section settings-home-entry settings-home-entry--list"
@@ -53,7 +86,12 @@ export function SettingsMessageRetentionSection({
             </p>
           }
         >
-          <Editor api={api} chatId={chatId} onClose={() => setOpen(false)} onSnapshot={setState} />
+          <Editor
+            api={api}
+            chatId={chatId}
+            onClose={() => setOpen(false)}
+            onSnapshot={receiveSnapshot}
+          />
         </Suspense>
       ) : null}
     </section>

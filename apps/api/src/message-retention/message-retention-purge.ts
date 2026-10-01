@@ -42,6 +42,9 @@ export async function purgeRetentionPage(
       WHERE ${lockedPredicate} AND intent."retention_owned" = TRUE
         AND candidate."chat_id" = page."chat_id" AND candidate."message_id" = page."message_id"
         AND candidate."completed_at" < ${cutoff}
+        AND candidate."reconcile_after" IS NULL
+        AND NOT (candidate."outcome_code" IS NULL AND candidate."status" IN ('cancelled', 'skipped')
+          AND intent."status" IN ('SUCCEEDED', 'ALREADY_ABSENT'))
         AND candidate."intent_id" = intent."id"
         AND candidate."chat_id" = intent."chat_id" AND candidate."message_id" = intent."message_id"
         AND (
@@ -54,6 +57,7 @@ export async function purgeRetentionPage(
     ) DELETE FROM "message_retention_candidates" candidate USING page
     WHERE candidate."chat_id" = page."chat_id" AND candidate."message_id" = page."message_id"
       AND candidate."completed_at" < ${cutoff}
+      AND candidate."reconcile_after" IS NULL
       AND (
         candidate."intent_id" IS NULL
         OR EXISTS (SELECT 1 FROM deleted_intents d WHERE d."id" = candidate."intent_id")

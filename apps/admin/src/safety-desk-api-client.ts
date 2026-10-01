@@ -2,6 +2,9 @@ import {
   safetyDeskDecisionResponseSchema,
   safetyDeskDeleteRuntimeResponseSchema,
   safetyDeskQueueResponseSchema,
+  safetyDeskRetentionRuntimeResponseSchema,
+  safetyDeskRetentionPreviewResponseSchema,
+  safetyDeskRetryRetentionRequestSchema,
   type SafetyDeskDecisionResponse,
   type SafetyDeskDeleteIntentItem,
   type SafetyDeskDeleteRuntimeResponse,
@@ -11,6 +14,9 @@ import {
   type CommercialReviewQueueResponse,
   type CommercialReviewItem,
   type CommercialReviewLabel,
+  type SafetyDeskRetentionRuntimeResponse,
+  type SafetyDeskRetentionPreviewResponse,
+  type SafetyDeskRetryRetentionRequest,
 } from '@maxim/contracts/safety-desk';
 import { createAdminApiTransport, type AdminApiTransport } from './admin-request';
 
@@ -64,6 +70,42 @@ export class SafetyDeskApiClient {
       `${SAFETY_DESK_API_BASE}/runtime/deletes`,
       accessCode,
       safetyDeskDeleteRuntimeResponseSchema,
+    );
+  }
+
+  fetchRetentionRuntime(
+    accessCode: string,
+    after: string | null = null,
+  ): Promise<SafetyDeskRetentionRuntimeResponse> {
+    const cursor = after ? `?after=${encodeURIComponent(after)}` : '';
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/runtime/retention${cursor}`,
+      accessCode,
+      safetyDeskRetentionRuntimeResponseSchema,
+    );
+  }
+
+  fetchRetentionPreview(
+    chatId: string,
+    accessCode: string,
+  ): Promise<SafetyDeskRetentionPreviewResponse> {
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/runtime/retention/${encodeURIComponent(chatId)}/preview`,
+      accessCode,
+      safetyDeskRetentionPreviewResponseSchema,
+    );
+  }
+
+  retryRetention(
+    chatId: string,
+    request: SafetyDeskRetryRetentionRequest,
+    accessCode: string,
+  ): Promise<SafetyDeskRetentionPreviewResponse> {
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/runtime/retention/${encodeURIComponent(chatId)}/retry`,
+      accessCode,
+      safetyDeskRetentionPreviewResponseSchema,
+      { method: 'POST', body: safetyDeskRetryRetentionRequestSchema.parse(request) },
     );
   }
 

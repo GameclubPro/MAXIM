@@ -3738,6 +3738,8 @@ model MessageRetentionCandidate {
   nextAttemptAt DateTime  @default(now()) @map("next_attempt_at")
   intentId      String?   @map("intent_id")
   completedAt   DateTime? @map("completed_at")
+  outcomeCode   String?   @map("outcome_code")
+  reconcileAfter DateTime? @map("reconcile_after")
   createdAt     DateTime  @default(now()) @map("created_at")
 
   policy MessageRetentionPolicy @relation(fields: [chatId], references: [chatId], onDelete: Restrict)
@@ -3747,6 +3749,8 @@ model MessageRetentionCandidate {
   @@index([chatId, status, activationId, messageId], map: "message_retention_candidates_activation_idx")
   @@index([chatId, status, nextAttemptAt, messageId], map: "message_retention_candidates_retry_idx")
   @@index([completedAt, chatId, messageId], map: "message_retention_candidates_completed_idx")
+  @@index([chatId, outcomeCode, messageId], map: "message_retention_candidates_outcome_idx")
+  @@index([chatId, status, shadowOnly, sourceAt, messageId], map: "message_retention_candidates_shadow_source_idx")
   @@map("message_retention_candidates")
 }
 

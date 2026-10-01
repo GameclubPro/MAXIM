@@ -843,14 +843,16 @@ export class WebhookService implements OnModuleDestroy {
       status: WebhookStatus.RECEIVED,
     };
     const retentionInput = this.messageRetention?.captureInput(update);
-    if (retentionInput && this.messageRetention) {
+    const removedInput = this.retentionRemovedInput(update);
+    if ((retentionInput || removedInput) && this.messageRetention) {
       const retention = this.messageRetention;
       return this.prisma.$transaction(
         async (tx) => {
           const result = await tx.webhookEvent.createMany({ data: [data], skipDuplicates: true });
           if (!result.count)
             throw Object.assign(new Error('Duplicate webhook receipt'), { code: 'P2002' });
-          await retention.capture(tx, retentionInput);
+          if (retentionInput) await retention.capture(tx, retentionInput);
+          if (removedInput) await retention.settleRemovedMessage(tx, removedInput);
           return webhookEventId;
         },
         { timeout: 2_000, maxWait: 500 },
@@ -882,6 +884,27 @@ export class WebhookService implements OnModuleDestroy {
       },
     });
     return created.id;
+  }
+
+  private retentionRemovedInput(update: MaxUpdate): { chatId: string; messageId: string } | null {
+    if (!update.botId || update.type !== 'message_removed' || !update.message) return null;
+    const { chatId, messageId } = update.message;
+    const raw = update.raw;
+    // FLAG: Only the authenticated official exact group-message removal receipt is proof.
+    // Top-level user_id is the actor, not the original author. No history or MAX lookup is needed.
+    if (
+      !/^-[1-9]\d*$/.test(chatId) ||
+      !messageId ||
+      update.message.postId ||
+      update.message.entityType === 'channel' ||
+      !raw ||
+      raw.update_type !== 'message_removed' ||
+      String(raw.chat_id) !== chatId ||
+      raw.message_id !== messageId ||
+      raw.post_id != null
+    )
+      return null;
+    return { chatId, messageId };
   }
 
   private async loadWebhookReceipt(

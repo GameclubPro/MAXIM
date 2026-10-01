@@ -104,6 +104,8 @@ import { VkPublishService } from './vk-publish.service';
 import { VkSourceService } from './vk-source.service';
 import { VkSyncService } from './vk-sync.service';
 import { SafetyDeskAdminGuard } from './safety-desk-admin.guard';
+import { SafetyDeskRetentionController } from './safety-desk-retention.controller';
+import { SafetyDeskRetentionService } from './safety-desk-retention.service';
 import { SafetyDeskController } from './safety-desk.controller';
 import { SafetyDeskService } from './safety-desk.service';
 import { SupportRequestsController } from './support-requests.controller';
@@ -171,6 +173,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublicationVideoUploadsController,
     PublisherController,
     SafetyDeskController,
+    SafetyDeskRetentionController,
     SupportRequestsController,
   ],
   providers: [
@@ -263,6 +266,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     VkBotReviewService,
     SafetyDeskAdminGuard,
     SafetyDeskService,
+    SafetyDeskRetentionService,
     SupportRequestsService,
     ...(roleRunsPublisher(getAppRole()) ? [VkParsingRunnerService] : []),
     ...(roleRunsPublisher(getAppRole()) ? [VkParsingSyncProcessor] : []),

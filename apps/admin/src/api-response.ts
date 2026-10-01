@@ -1,5 +1,15 @@
 const INVALID_JSON_RESPONSE_MESSAGE = 'Safety Desk API недоступен или вернул некорректный ответ.';
 
+export class AdminApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'AdminApiError';
+  }
+}
+
 function isJsonContentType(contentType: string | null): boolean {
   return Boolean(contentType && /(?:^|[/+])json(?:$|[;\s])/iu.test(contentType));
 }
@@ -24,7 +34,7 @@ export async function readJsonResponse(response: Response): Promise<unknown> {
 
   if (!response.ok) {
     const payload = shouldParseJson ? tryParseJsonPayload(text) : null;
-    throw new Error(readApiErrorMessage(payload, response.status));
+    throw new AdminApiError(readApiErrorMessage(payload, response.status), response.status);
   }
 
   if (!text.trim()) {

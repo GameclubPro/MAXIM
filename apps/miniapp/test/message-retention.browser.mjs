@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
+import { runRetentionRegressions } from './message-retention-regressions.browser.mjs';
 
 const base = process.env.MINIAPP_TEST_BASE_URL ?? 'http://127.0.0.1:5187/app/';
 const output = await mkdtemp(join(tmpdir(), 'maxim-retention-visual-'));
@@ -158,9 +159,12 @@ try {
     await page.screenshot({ path: join(output, `scenario-${scenario}.png`) });
     await context.close();
   }
+  await runRetentionRegressions(browser, base);
   console.log(
-    `Retention UI: responsive, theme, recovery and conflict checks passed; screenshots: ${output}`,
+    `Retention UI: responsive, theme, recovery, permissions, write reconciliation and race checks passed${process.env.MINIAPP_TEST_KEEP_ARTIFACTS === '1' ? `; screenshots: ${output}` : ''}`,
   );
 } finally {
   await browser.close();
+  if (process.env.MINIAPP_TEST_KEEP_ARTIFACTS !== '1')
+    await rm(output, { recursive: true, force: true });
 }

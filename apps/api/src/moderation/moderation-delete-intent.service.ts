@@ -465,6 +465,17 @@ export type BotMessageAutoDeleteAccessAmbiguousHandoffResult =
 export type ModerationDeleteIntentAttemptOptions = {
   /** Fences this inline attempt only; the persisted intent remains the durable recovery owner. */
   beforeDeleteMutation?: () => Promise<void>;
+  /** Retention callers must not execute a concurrent ordinary-moderation takeover. */
+  retentionOnly?: boolean;
+};
+
+export type RetentionIntentAttemptResult = {
+  retentionOwned: boolean;
+  status: IntentRow['status'];
+  lastErrorCode: string | null;
+  nextAttemptAt: Date;
+  guardDisposition?: 'skip' | 'retry';
+  reasonCode?: string;
 };
 
 export class BotMessageAutoDeleteExplicitCleanupConflictError extends Error {
@@ -921,12 +932,42 @@ export class ModerationDeleteIntentService {
             userId: candidate.authorId,
           },
         });
-      await tx.messageRetentionCandidate.update({
+      // FLAG: Cancellation may win while the intent insert waits. Never attach work
+      // using an old candidate snapshot or resurrect an ended activation.
+      await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${candidate.chatId} FOR UPDATE`;
+      const current = await tx.messageRetentionCandidate.findUnique({
         where: {
           chatId_messageId: { chatId: candidate.chatId, messageId: candidate.messageId },
         },
+        include: { policy: true },
+      });
+      if (
+        !current ||
+        !['pending', 'retry'].includes(current.status) ||
+        current.activationId !== candidate.activationId ||
+        !current.policy.enabled ||
+        current.policy.activationId !== current.activationId
+      )
+        throw new MessageRetentionGuardError(
+          'skip',
+          'Retention activation ended',
+          'activation_ended',
+        );
+      const attached = await tx.messageRetentionCandidate.updateMany({
+        where: {
+          chatId: candidate.chatId,
+          messageId: candidate.messageId,
+          activationId: candidate.activationId,
+          status: { in: ['pending', 'retry'] },
+        },
         data: { intentId: intent.id },
       });
+      if (!attached.count)
+        throw new MessageRetentionGuardError(
+          'skip',
+          'Retention candidate changed',
+          'candidate_inactive',
+        );
       return intent.id;
     });
   }
@@ -1777,17 +1818,169 @@ export class ModerationDeleteIntentService {
     if (!existing) {
       throw new Error(`Moderation delete intent ${intentId} does not exist`);
     }
-    if (!this.isExecutionEnabledForIntent(existing)) {
+    if (
+      (options?.retentionOnly && !existing.retentionOwned) ||
+      !this.isExecutionEnabledForIntent(existing)
+    ) {
       return this.toAttemptResult(existing);
     }
 
-    const claimed = await this.claimOne(intentId);
+    const claimed = await this.claimOne(intentId, options?.retentionOnly === true);
     if (!claimed) {
       await this.expireIntentIfDue(intentId);
       const current = await this.loadRequiredIntent(intentId);
       return this.toAttemptResult(current);
     }
     return this.executeLeasedIntent(claimed.id, claimed.leaseToken!, options);
+  }
+
+  async attemptRetentionIntent(intentId: string): Promise<RetentionIntentAttemptResult> {
+    let guard: MessageRetentionGuardError | undefined;
+    try {
+      await this.attemptIntent(intentId, { retentionOnly: true });
+    } catch (error: unknown) {
+      const cause =
+        error instanceof ModerationDeletePreDispatchGuardError ? error.guardError : error;
+      if (!(cause instanceof MessageRetentionGuardError)) throw error;
+      guard = cause;
+    }
+    const current = await this.prisma.moderationDeleteIntent.findUniqueOrThrow({
+      where: { id: intentId },
+      select: { retentionOwned: true, status: true, lastErrorCode: true, nextAttemptAt: true },
+    });
+    const reasonCode =
+      guard?.reasonCode ??
+      (current.lastErrorCode?.startsWith('message_retention_guard:')
+        ? current.lastErrorCode.slice('message_retention_guard:'.length)
+        : undefined);
+    return {
+      ...current,
+      ...(guard || reasonCode
+        ? {
+            guardDisposition:
+              guard?.disposition ?? (TERMINAL_STATUSES.has(current.status) ? 'skip' : 'retry'),
+            reasonCode,
+          }
+        : {}),
+    };
+  }
+
+  async reconcileRetentionIntent(
+    intentId: string,
+    options: { allowRead: boolean; canRead?: () => Promise<boolean> },
+  ): Promise<ModerationDeleteAttemptResult | null> {
+    if (getAppRole() !== 'message-retention' && getAppRole() !== 'all') return null;
+    const existing = await this.loadIntent(intentId);
+    if (!existing?.retentionOwned) return null;
+    if (
+      existing.status === 'SUCCEEDED' ||
+      existing.status === 'ALREADY_ABSENT' ||
+      (TERMINAL_STATUSES.has(existing.status) && !this.hasDeleteMutationEvidence(existing))
+    )
+      return this.toAttemptResult(existing);
+    if (!this.hasDeleteMutationEvidence(existing)) return null;
+    const hasSuccess = Boolean(
+      existing.remoteDeleteSucceededAt && existing.remoteDeleteSucceededBotId,
+    );
+    // FLAG: Mode off allows database-only receipt settlement. Recovery never dispatches DELETE.
+    if (!hasSuccess && !options.allowRead) return this.toAttemptResult(existing);
+    const intent = await this.claimOne(intentId, true, true);
+    if (!intent?.retentionOwned || !intent.leaseToken) return this.toAttemptResult(existing);
+    const leaseToken = intent.leaseToken;
+    const heartbeat = this.startLeaseHeartbeat(intent.id, leaseToken);
+    try {
+      if (intent.remoteDeleteSucceededAt && intent.remoteDeleteSucceededBotId)
+        return this.finalizeRecordedRemoteSuccess(
+          intent,
+          leaseToken,
+          intent.remoteDeleteSucceededBotId,
+        );
+      if (!options.allowRead)
+        return this.finishRetentionReconciliationDeferred(
+          intent,
+          leaseToken,
+          'retention_reconciliation_paused',
+        );
+      const canRead = async () =>
+        options.allowRead &&
+        retentionModeAllows(
+          this.configService.get('MESSAGE_RETENTION_MODE'),
+          this.configService.get('MESSAGE_RETENTION_CANARY_CHAT_IDS'),
+          intent.chatId,
+          true,
+        ) &&
+        Boolean(options.canRead && (await options.canRead()));
+      if (!(await canRead()))
+        return this.finishRetentionReconciliationDeferred(
+          intent,
+          leaseToken,
+          'retention_reconciliation_paused',
+        );
+      const route = await this.resolveDeleteRouteWithRefresh(intent, heartbeat, canRead);
+      const botId = this.filterAndOrderRouteCandidates(intent, route)[0];
+      if (!botId)
+        return this.finishRetentionReconciliationDeferred(
+          intent,
+          leaseToken,
+          'retention_reconciliation_no_access',
+        );
+      const absence = await this.verifyMessageAbsence(intent, botId, heartbeat, canRead);
+      if (absence === 'verified_absent')
+        return this.toAttemptResult(
+          await this.completeAlreadyAbsent(
+            intent.id,
+            leaseToken,
+            botId,
+            'retention_reconciliation_absence',
+          ),
+        );
+      if (absence === 'message_present') {
+        // FLAG: Exact presence settles the old unknown dispatch without rearming its cancelled policy.
+        await this.prisma.$executeRaw(Prisma.sql`
+          UPDATE "moderation_delete_intents" SET
+            "status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus"),
+            "last_error_code" = 'retention_reconciliation_present',
+            "last_error" = 'Exact message presence confirmed; cancelled retention dispatch will not be retried',
+            "delete_dispatch_started_at" = NULL, "delete_dispatch_started_bot_id" = NULL,
+            "completed_at" = CURRENT_TIMESTAMP, "lease_token" = NULL,
+            "lease_expires_at" = NULL, "leased_from_status" = NULL, "updated_at" = CURRENT_TIMESTAMP
+          WHERE "id" = ${intent.id} AND "retention_owned" = TRUE
+            AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+            AND "lease_token" = ${leaseToken}
+            AND "remote_delete_succeeded_at" IS NULL AND "remote_delete_succeeded_bot_id" IS NULL
+        `);
+        return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
+      }
+      return this.finishRetentionReconciliationDeferred(
+        intent,
+        leaseToken,
+        'retention_reconciliation_unknown',
+      );
+    } catch (error: unknown) {
+      if (error instanceof ModerationDeleteIntentLeaseLostError)
+        return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
+      return this.finishRetentionReconciliationDeferred(
+        intent,
+        leaseToken,
+        'retention_reconciliation_unknown',
+      );
+    } finally {
+      await heartbeat.stop();
+    }
+  }
+
+  private async finishRetentionReconciliationDeferred(
+    intent: IntentRow,
+    leaseToken: string,
+    errorCode: string,
+  ): Promise<ModerationDeleteAttemptResult> {
+    return this.finishRetryableAttempt(intent, leaseToken, {
+      status: 'AMBIGUOUS',
+      statusCode: null,
+      errorCode,
+      message: 'Retention receipt requires read-only reconciliation',
+      retryDelayMs: 5 * 60_000,
+    });
   }
 
   async enqueueCurrentIntentWakeupStrict(intentId: string): Promise<void> {
@@ -1980,6 +2173,14 @@ export class ModerationDeleteIntentService {
     ) {
       return this.toAttemptResult(intent);
     }
+    if (options?.retentionOnly && !intent.retentionOwned)
+      return this.finishRetryableAttempt(intent, leaseToken, {
+        status: 'RETRYABLE',
+        statusCode: null,
+        errorCode: 'retention_ownership_changed',
+        message: 'Ordinary moderation owns this intent',
+        retryDelayMs: 1_000,
+      });
     if (!this.isExecutionEnabledForIntent(intent)) {
       await this.releasePausedLease(intent.id, leaseToken);
       return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
@@ -4866,7 +5067,11 @@ export class ModerationDeleteIntentService {
     return { intentId: persisted.id, rollout: effectiveRollout, status: persisted.status };
   }
 
-  private async claimOne(intentId: string): Promise<IntentRow | null> {
+  private async claimOne(
+    intentId: string,
+    retentionOnly = false,
+    receiptOnly = false,
+  ): Promise<IntentRow | null> {
     const now = new Date();
     const leaseToken = randomUUID();
     const leaseExpiresAt = new Date(now.getTime() + this.leaseMs);
@@ -4884,6 +5089,7 @@ export class ModerationDeleteIntentService {
       WHERE "id" = ${intentId}
         AND "execute_at" <= ${now}
         AND (${getAppRole() === 'all'} OR "retention_owned" = ${getAppRole() === 'message-retention'})
+        AND (${!retentionOnly} OR "retention_owned" = TRUE)
         AND "next_attempt_at" <= ${now}
         AND (
           "retry_until_at" > ${now}
@@ -4902,6 +5108,18 @@ export class ModerationDeleteIntentService {
           OR (
             "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
             AND "lease_expires_at" < ${now}
+          )
+          OR (
+            ${receiptOnly} AND "retention_owned" = TRUE
+            AND "status" IN (
+              CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus"),
+              CAST('EXPIRED' AS "ModerationDeleteIntentStatus"),
+              CAST('OBSERVED' AS "ModerationDeleteIntentStatus")
+            )
+            AND ("remote_delete_succeeded_at" IS NOT NULL
+              OR "remote_delete_succeeded_bot_id" IS NOT NULL
+              OR "delete_dispatch_started_at" IS NOT NULL
+              OR "delete_dispatch_started_bot_id" IS NOT NULL)
           )
         )
       RETURNING ${this.intentReturningSql()}
@@ -5077,7 +5295,10 @@ export class ModerationDeleteIntentService {
               })
             : null;
         const independentReasonExecutable =
-          independentReportReasons !== null
+          // FLAG: A sole retention reason is not independent moderation authority.
+          // A concurrent normal writer atomically clears retention_owned before adding its reason.
+          !(guardError instanceof MessageRetentionGuardError && latest.retentionOwned) &&
+          (independentReportReasons !== null
             ? this.hasExecutableIndependentReportReason(latest.chatId, independentReportReasons)
             : !details.errorCode.startsWith('message_duplicate_') &&
               (details.errorCode.startsWith('commercial_text_')
@@ -5109,7 +5330,7 @@ export class ModerationDeleteIntentService {
                     : nightModeCleanupGuardRejected
                       ? latest.nightModeCloseNoticeCleanupReason === true &&
                         latest.nightModeCloseNoticeCleanupOnly !== true
-                      : this.hasExecutableNonCommercialOcrReason(latest));
+                      : this.hasExecutableNonCommercialOcrReason(latest)));
         const now = Date.now();
         // A fresh independent reason does not inherit the obsolete OCR guard failure or its
         // backoff. Requeue it immediately; the next attempt reloads the mixed durable classifiers.
@@ -6013,6 +6234,7 @@ export class ModerationDeleteIntentService {
   private async resolveDeleteRouteWithRefresh(
     intent: IntentRow,
     heartbeat: IntentLeaseHeartbeat,
+    canRead?: () => Promise<boolean>,
   ): Promise<MaxDeleteMessageBotRoute> {
     let route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
       chatId: intent.chatId,
@@ -6033,7 +6255,7 @@ export class ModerationDeleteIntentService {
       Boolean(this.maxBotLinkService.getExecutableBotById(originRecoveryBotId)) &&
       !this.isCandidateBackedOff(intent, originRecoveryBotId, null)
     ) {
-      await this.refreshCandidateAccess(intent, originRecoveryBotId, heartbeat);
+      await this.refreshCandidateAccess(intent, originRecoveryBotId, heartbeat, canRead);
       route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
         chatId: intent.chatId,
         expectedEntityType: intent.entityType,
@@ -6055,7 +6277,7 @@ export class ModerationDeleteIntentService {
       )
       .slice(0, 4);
     for (const candidate of probeCandidates) {
-      await this.refreshCandidateAccess(intent, candidate.botId, heartbeat);
+      await this.refreshCandidateAccess(intent, candidate.botId, heartbeat, canRead);
     }
     if (probeCandidates.length > 0) {
       route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
@@ -6071,10 +6293,12 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     botId: string,
     heartbeat: IntentLeaseHeartbeat,
+    canRead?: () => Promise<boolean>,
   ): Promise<'refreshed' | 'denied' | 'unknown'> {
     let accessProbeStartedAt: Date | null = null;
     try {
       await this.assertLeaseForExternalCall(heartbeat);
+      if (canRead && !(await canRead())) return 'unknown';
       accessProbeStartedAt = new Date();
       const access = await this.maxClient.getCurrentChatMemberAccess(intent.chatId, {
         botId,
@@ -6124,8 +6348,9 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     botId: string,
     heartbeat: IntentLeaseHeartbeat,
+    canRead?: () => Promise<boolean>,
   ): Promise<'verified_absent' | 'message_present' | 'unknown'> {
-    if ((await this.refreshCandidateAccess(intent, botId, heartbeat)) !== 'refreshed') {
+    if ((await this.refreshCandidateAccess(intent, botId, heartbeat, canRead)) !== 'refreshed') {
       return 'unknown';
     }
     const route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
@@ -6141,7 +6366,7 @@ export class ModerationDeleteIntentService {
     }
 
     try {
-      const presence = await this.getExactMessagePresence(intent, botId, heartbeat);
+      const presence = await this.getExactMessagePresence(intent, botId, heartbeat, canRead);
       return presence === 'present' ? 'message_present' : 'verified_absent';
     } catch (error: unknown) {
       if (error instanceof ModerationDeleteIntentLeaseLostError) {
@@ -6155,8 +6380,16 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     botId: string,
     heartbeat: IntentLeaseHeartbeat,
+    canRead?: () => Promise<boolean>,
   ): Promise<'present' | 'absent'> {
     await this.assertLeaseForExternalCall(heartbeat);
+    // FLAG: Each recovery read rechecks the current kill switch and governor after lease renewal.
+    if (canRead && !(await canRead()))
+      throw new MessageRetentionGuardError(
+        'retry',
+        'Retention reconciliation paused',
+        'runtime_disabled',
+      );
     return this.maxClient.getExactMessagePresence(intent.chatId, intent.messageId, {
       botId,
       bypassCache: true,
@@ -6217,7 +6450,8 @@ export class ModerationDeleteIntentService {
       | 'guarded_profanity_predispatch_exact_absence'
       | 'guarded_commercial_text_absence'
       | 'guarded_message_duplicate_absence'
-      | 'guarded_image_text_stop_list_predispatch_exact_absence',
+      | 'guarded_image_text_stop_list_predispatch_exact_absence'
+      | 'retention_reconciliation_absence',
   ): Promise<IntentRow> {
     await this.prisma.$executeRaw(Prisma.sql`
       UPDATE "moderation_delete_intents"
@@ -6927,7 +7161,10 @@ export class ModerationDeleteIntentService {
     const headers = this.asRecord(response?.headers);
     const rawStatus = response?.status ?? row?.statusCode ?? row?.status;
     const statusCode = Number.isFinite(Number(rawStatus)) ? Number(rawStatus) : null;
-    const errorCode = this.firstString(nestedError?.code, data?.code, row?.code, fallbackCode);
+    const errorCode =
+      error instanceof MessageRetentionGuardError && error.reasonCode
+        ? `message_retention_guard:${error.reasonCode}`
+        : this.firstString(nestedError?.code, data?.code, row?.code, fallbackCode);
     const message = this.firstString(
       nestedError?.message,
       data?.message,

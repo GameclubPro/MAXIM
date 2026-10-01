@@ -74,7 +74,9 @@ export class AdminMessageRetentionService {
                 captureAfter: request.enabled ? now : null,
               }
             : {}),
-          nextRunAt: request.enabled || current.pendingCount > 0 ? now : null,
+          // FLAG: Ended receipts retain their own schedule after active credit reaches zero.
+          // A DB-only visit recomputes the next due receipt even when this policy is disabled.
+          nextRunAt: now,
           lastStatus: request.enabled ? 'running' : 'off',
         },
       });
@@ -127,22 +129,15 @@ export class AdminMessageRetentionService {
         skippedCount: 0,
         oldestDueAt: null,
       };
-    const pending = await this.prisma.messageRetentionCandidate.findFirst({
-      where: { chatId, status: 'pending' },
-      orderBy: [{ sourceAt: 'asc' }, { messageId: 'asc' }],
-      select: { sourceAt: true },
-    });
-    const retry = await this.prisma.messageRetentionCandidate.findFirst({
-      where: { chatId, status: 'retry' },
-      orderBy: [{ sourceAt: 'asc' }, { messageId: 'asc' }],
-      select: { sourceAt: true },
-    });
-    const oldest = Math.min(
-      pending?.sourceAt.getTime() ?? Infinity,
-      retry?.sourceAt.getTime() ?? Infinity,
+    const diagnostics = await this.store.diagnostics(chatId);
+    const dueMs = diagnostics.oldestDueAt?.getTime() ?? Infinity;
+    const status = retentionStatus(
+      policy,
+      this.store.mode,
+      runtimeAvailable,
+      dueMs,
+      diagnostics.blockerStatus,
     );
-    const dueMs = oldest + policy.hours * 3_600_000;
-    const status = retentionStatus(policy, this.store.mode, runtimeAvailable, dueMs);
     return {
       enabled: policy.enabled,
       hours: policy.hours === 24 ? 24 : 48,

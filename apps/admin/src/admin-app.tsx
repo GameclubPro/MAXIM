@@ -7,11 +7,14 @@ import { useMemo, useState } from 'react';
 import { DeleteDesk, DeleteRuntimeMetrics } from './delete-desk';
 import { ReviewDesk } from './review-desk';
 import { CommercialReviewDesk } from './commercial-review-desk';
+import { RetentionDeskPane, RetentionRuntimeMetrics } from './retention-desk-shell';
+import { useRetentionDeskControls } from './retention-desk-state';
 import { safetyDeskApiClient, type SafetyDeskDecisionAction } from './safety-desk-api-client';
 import {
   buildDeleteRuntimeSnapshot,
   buildReviewQueueSnapshot,
   buildSupportQueueSnapshot,
+  canRetryDeleteIntent,
   createMutationGuard,
   emptyMetrics,
   emptySupportMetrics,
@@ -49,6 +52,7 @@ export function AdminApp() {
   const [queueItems, setQueueItems] = useState<ModerationItem[]>([]);
   const [supportItems, setSupportItems] = useState<SupportTicket[]>([]);
   const [deleteRuntime, setDeleteRuntime] = useState<SafetyDeskDeleteRuntimeResponse | null>(null);
+  const retention = useRetentionDeskControls();
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [metrics, setMetrics] = useState<Metrics>(emptyMetrics);
   const [supportMetrics, setSupportMetrics] = useState<SupportMetrics>(emptySupportMetrics);
@@ -223,7 +227,10 @@ export function AdminApp() {
   }
 
   async function retryDeleteIntent(item: SafetyDeskDeleteIntentItem) {
-    if (item.status !== 'EXPIRED' && item.status !== 'FAILED_TERMINAL') {
+    if (
+      !canRetryDeleteIntent(item) ||
+      (item.status !== 'EXPIRED' && item.status !== 'FAILED_TERMINAL')
+    ) {
       return;
     }
     const lease = mutationGuard.acquire(`delete-intent:${item.id}`);
@@ -350,9 +357,11 @@ export function AdminApp() {
     const payload =
       view === 'deletes'
         ? { exportedAt, deleteRuntime }
-        : view === 'support'
-          ? { exportedAt, summary: supportMetrics, queue: supportItems }
-          : { exportedAt, summary: metrics, queue: queueItems, audit: auditEntries };
+        : view === 'retention'
+          ? { exportedAt, retentionRuntime: retention.runtime }
+          : view === 'support'
+            ? { exportedAt, summary: supportMetrics, queue: supportItems }
+            : { exportedAt, summary: metrics, queue: queueItems, audit: auditEntries };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -418,6 +427,7 @@ export function AdminApp() {
             className={view === 'review' ? 'is-active' : ''}
             type="button"
             aria-pressed={view === 'review'}
+            disabled={retention.busy}
             onClick={() => setView('review')}
           >
             Публикации
@@ -426,6 +436,7 @@ export function AdminApp() {
             className={view === 'support' ? 'is-active' : ''}
             type="button"
             aria-pressed={view === 'support'}
+            disabled={retention.busy}
             onClick={() => setView('support')}
           >
             Обращения
@@ -434,6 +445,7 @@ export function AdminApp() {
             className={view === 'deletes' ? 'is-active' : ''}
             type="button"
             aria-pressed={view === 'deletes'}
+            disabled={retention.busy}
             onClick={() => setView('deletes')}
           >
             Удаления
@@ -442,9 +454,19 @@ export function AdminApp() {
             className={view === 'commercial' ? 'is-active' : ''}
             type="button"
             aria-pressed={view === 'commercial'}
+            disabled={retention.busy}
             onClick={() => setView('commercial')}
           >
             Коммерческий фильтр
+          </button>
+          <button
+            className={view === 'retention' ? 'is-active' : ''}
+            type="button"
+            aria-pressed={view === 'retention'}
+            disabled={retention.busy}
+            onClick={() => setView('retention')}
+          >
+            Очистка
           </button>
         </div>
         <div className="desk-metrics" aria-label="Сводка">
@@ -462,6 +484,8 @@ export function AdminApp() {
             </>
           ) : view === 'commercial' ? (
             <Metric label="Режим" value="Проверка качества" tone="neutral" />
+          ) : view === 'retention' ? (
+            <RetentionRuntimeMetrics runtime={retention.runtime} />
           ) : (
             <DeleteRuntimeMetrics runtime={deleteRuntime} />
           )}
@@ -481,8 +505,8 @@ export function AdminApp() {
           <button
             className="ghost-action icon-action"
             type="button"
-            disabled={loading || bulkBusy}
-            onClick={() => void refreshQueue()}
+            disabled={loading || bulkBusy || retention.busy}
+            onClick={() => (view === 'retention' ? retention.refresh() : void refreshQueue())}
             title="Обновить"
             aria-label="Обновить"
           >
@@ -526,6 +550,8 @@ export function AdminApp() {
         />
       ) : view === 'commercial' ? (
         <CommercialReviewDesk accessCode={verifiedAccessCode} />
+      ) : view === 'retention' ? (
+        <RetentionDeskPane accessCode={verifiedAccessCode} controls={retention} />
       ) : (
         <DeleteDesk
           busyAmbiguousSendId={busyAmbiguousSendId}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useReducer, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, RefreshDouble, ShieldCheck } from 'iconoir-react';
 import type { MessageRetentionState, UpdateMessageRetention } from '@maxim/contracts/settings';
@@ -12,11 +12,24 @@ import {
 import { ApiRequestError } from '../../lib/api-request-error';
 import { useManagedEntityLeaveGuard } from '../../lib/managed-entity-navigation';
 import {
+  parseBotPermissionBlocker,
+  type BotPermissionBlocker,
+} from '../../lib/bot-permission-error';
+import {
+  isRetentionRevisionConflict,
+  isRetentionWriteUncertain,
   retentionCount,
   retentionDate,
+  retentionDraftReducer,
   retentionEditorState,
 } from './settings-message-retention-editor-state';
 import './settings-message-retention.css';
+
+const PermissionDialog = lazy(() =>
+  import('../../components/bot-permission-required-dialog').then((module) => ({
+    default: module.BotPermissionRequiredDialog,
+  })),
+);
 
 const labels: Record<MessageRetentionState['status'], string> = {
   off: 'Выключено',
@@ -34,7 +47,7 @@ export type SettingsMessageRetentionEditorProps = {
   api: ApiTransport;
   chatId: string;
   onClose: () => void;
-  onSnapshot: (state: MessageRetentionState) => void;
+  onSnapshot: (state: MessageRetentionState, receivedAt: number) => void;
 };
 
 export function SettingsMessageRetentionEditor({
@@ -43,21 +56,48 @@ export function SettingsMessageRetentionEditor({
   onClose,
   onSnapshot,
 }: SettingsMessageRetentionEditorProps) {
-  const [draft, setDraft] = useState<UpdateMessageRetention | null>(null);
+  const [editor, dispatch] = useReducer(retentionDraftReducer, { chatId, draft: null });
+  const draft = editor.chatId === chatId ? editor.draft : null;
+  const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
+  const [uncertainWrite, setUncertainWrite] = useState(false);
+  const [recoveredSave, setRecoveredSave] = useState(false);
   const client = useQueryClient();
   const queryKey = ['message-retention', chatId];
   const save = useMutation({
-    mutationFn: (input: UpdateMessageRetention) => updateMessageRetention(api, chatId, input),
-    onMutate: () => client.cancelQueries({ queryKey, exact: true }),
+    mutationFn: async (input: UpdateMessageRetention): Promise<MessageRetentionState> => {
+      try {
+        return await updateMessageRetention(api, chatId, input);
+      } catch (error) {
+        if (isRetentionWriteUncertain(error)) {
+          // FLAG: A lost PUT reply can conceal a committed destructive policy. Read authority
+          // before offering another write or a discard; an unconfirmed read keeps closing blocked.
+          setUncertainWrite(true);
+          const latest = await query.refetch();
+          if (!latest.isError && latest.data) {
+            setUncertainWrite(false);
+            if (latest.data.enabled === input.enabled && latest.data.hours === input.hours)
+              return latest.data;
+          }
+        }
+        throw error;
+      }
+    },
+    onMutate: () => {
+      setRecoveredSave(false);
+      return client.cancelQueries({ queryKey, exact: true });
+    },
     onSuccess: async (value) => {
       await client.cancelQueries({ queryKey, exact: true });
       client.setQueryData<MessageRetentionState>(queryKey, (old) =>
         old && old.revision > value.revision ? old : value,
       );
-      setDraft(null);
+      dispatch({ type: 'discard', chatId });
+      setPermissionBlocker(null);
+      setUncertainWrite(false);
     },
     onError: (error) => {
-      if (error instanceof ApiRequestError && error.status === 409)
+      setPermissionBlocker(parseBotPermissionBlocker(error));
+      if (isRetentionRevisionConflict(error))
         void client.invalidateQueries({ queryKey, exact: true });
     },
   });
@@ -70,27 +110,48 @@ export function SettingsMessageRetentionEditor({
   });
   const state = query.data;
   useEffect(() => {
-    if (state) onSnapshot(state);
-  }, [state, onSnapshot]);
+    if (state) onSnapshot(state, query.dataUpdatedAt);
+  }, [state, onSnapshot, query.dataUpdatedAt]);
+  useEffect(() => {
+    dispatch({ type: 'snapshot', chatId, state });
+  }, [chatId, state]);
   const { current, dirty, conflict } = retentionEditorState(state, draft);
-  const saveConflict = save.error instanceof ApiRequestError && save.error.status === 409;
-  const error = saveConflict ? null : (save.error ?? query.error);
+  const saveConflict = isRetentionRevisionConflict(save.error);
+  const writeError = saveConflict || recoveredSave ? null : save.error;
+  const closeBlocked = save.isPending || uncertainWrite;
   const showConflict = conflict || saveConflict;
   const change = (patch: Partial<Pick<UpdateMessageRetention, 'enabled' | 'hours'>>) => {
-    if (!current) return;
+    if (!current || closeBlocked) return;
     save.reset();
-    setDraft({ ...current, ...patch });
+    setRecoveredSave(false);
+    setPermissionBlocker(null);
+    dispatch({ type: 'edit', chatId, draft: { ...current, ...patch } });
   };
   const discard = () => {
-    setDraft(null);
+    if (closeBlocked) return;
+    dispatch({ type: 'discard', chatId });
     save.reset();
+    setRecoveredSave(false);
+    setPermissionBlocker(null);
   };
-  const refresh = () => {
-    save.reset();
-    void query.refetch();
+  const refresh = async () => {
+    if (save.isPending) return;
+    const latest = await query.refetch();
+    if (!latest.isError && latest.data) {
+      if (
+        uncertainWrite &&
+        save.variables &&
+        latest.data.enabled === save.variables.enabled &&
+        latest.data.hours === save.variables.hours
+      ) {
+        setRecoveredSave(true);
+        save.reset();
+      }
+      setUncertainWrite(false);
+    }
   };
   const commit = async () => {
-    if (!current || showConflict || query.isError) return false;
+    if (!current || showConflict || query.isError || closeBlocked) return false;
     try {
       await save.mutateAsync(current);
       return true;
@@ -98,7 +159,14 @@ export function SettingsMessageRetentionEditor({
       return false;
     }
   };
-  useManagedEntityLeaveGuard({ dirty, saving: save.isPending, save: commit, discard });
+  // FLAG: Navigation must stay blocked until a write settles, even if a cache update
+  // already matches the draft while its response is still being reconciled.
+  useManagedEntityLeaveGuard({
+    dirty: dirty || closeBlocked,
+    saving: closeBlocked,
+    save: commit,
+    discard,
+  });
   const readStatus = query.error instanceof ApiRequestError ? query.error.status : null;
   const status = query.isError
     ? readStatus === 401
@@ -118,8 +186,9 @@ export function SettingsMessageRetentionEditor({
       title="Удаление старых сообщений"
       className="message-retention-panel"
       onClose={() => {
-        if (!save.isPending) onClose();
+        if (!closeBlocked) onClose();
       }}
+      closeDisabled={closeBlocked}
       confirmCloseWhen={dirty}
       onDiscardChanges={discard}
       headerAction={
@@ -129,7 +198,7 @@ export function SettingsMessageRetentionEditor({
           aria-label="Обновить состояние"
           title="Обновить состояние"
           disabled={save.isPending || query.isFetching}
-          onClick={refresh}
+          onClick={() => void refresh()}
         >
           <RefreshDouble className={query.isFetching ? 'retention-refreshing' : undefined} />
         </button>
@@ -141,14 +210,14 @@ export function SettingsMessageRetentionEditor({
               ? 'Сохранение'
               : dirty
                 ? 'Есть изменения'
-                : save.isSuccess
+                : save.isSuccess || recoveredSave
                   ? 'Сохранено'
                   : ''}
           </span>
           <button
             type="button"
             className="button button--accent"
-            disabled={!dirty || save.isPending || !current || showConflict || query.isError}
+            disabled={!dirty || closeBlocked || !current || showConflict || query.isError}
             onClick={() => void commit()}
           >
             {save.isPending ? 'Сохраняем' : 'Сохранить'}
@@ -177,19 +246,45 @@ export function SettingsMessageRetentionEditor({
             </time>
           ) : null}
         </div>
-        {error ? (
+        {query.error ? (
           <div className="message-retention-feedback" role="alert">
             <strong>
               {state ? 'Не удалось обновить данные' : 'Не удалось загрузить настройки'}
             </strong>
-            <p>{error instanceof Error ? error.message : 'Ошибка соединения'}</p>
+            <p>{query.error instanceof Error ? query.error.message : 'Ошибка соединения'}</p>
             <button
               type="button"
               className="button button--ghost"
               disabled={query.isFetching || save.isPending}
-              onClick={refresh}
+              onClick={() => void refresh()}
             >
               <RefreshDouble aria-hidden /> Повторить
+            </button>
+          </div>
+        ) : null}
+        {writeError ? (
+          <div className="message-retention-feedback" role="alert">
+            <strong>
+              {uncertainWrite
+                ? 'Сохранение пока не подтверждено'
+                : 'Не удалось сохранить изменения'}
+            </strong>
+            <p>{writeError instanceof Error ? writeError.message : 'Ошибка соединения'}</p>
+            {uncertainWrite ? (
+              <p>Проверим настройки на сервере перед повтором или закрытием.</p>
+            ) : null}
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={
+                save.isPending ||
+                query.isFetching ||
+                (!uncertainWrite && (showConflict || query.isError))
+              }
+              onClick={() => void (uncertainWrite ? refresh() : commit())}
+            >
+              <RefreshDouble aria-hidden />{' '}
+              {uncertainWrite ? 'Проверить сохранение' : 'Повторить сохранение'}
             </button>
           </div>
         ) : null}
@@ -201,7 +296,7 @@ export function SettingsMessageRetentionEditor({
               <button
                 type="button"
                 className="button button--ghost"
-                disabled={save.isPending}
+                disabled={closeBlocked}
                 onClick={discard}
               >
                 <RefreshDouble aria-hidden /> Принять настройки
@@ -209,7 +304,7 @@ export function SettingsMessageRetentionEditor({
               <button
                 type="button"
                 className="button button--ghost"
-                disabled={save.isPending || query.isError || !current}
+                disabled={closeBlocked || query.isError || !current}
                 onClick={() => {
                   if (current) save.mutate({ ...current, expectedRevision: state.revision });
                 }}
@@ -240,7 +335,7 @@ export function SettingsMessageRetentionEditor({
                   type="checkbox"
                   role="switch"
                   checked={current.enabled}
-                  disabled={save.isPending || (state.status === 'unavailable' && !current.enabled)}
+                  disabled={closeBlocked || (state.status === 'unavailable' && !current.enabled)}
                   onChange={(event) => change({ enabled: event.target.checked })}
                 />
                 <span className="toggle-switch" aria-hidden>
@@ -248,18 +343,31 @@ export function SettingsMessageRetentionEditor({
                 </span>
               </label>
             </div>
-            <fieldset disabled={save.isPending}>
+            <p className="message-retention-policy">
+              Удаляем только новые сообщения, полученные после включения. Старую историю не очищаем.
+              После повторного включения учёт начинается заново. Удалённые сообщения восстановить
+              нельзя.
+            </p>
+            <fieldset disabled={closeBlocked}>
               <legend>Возраст сообщений</legend>
               <SegmentedControl
                 ariaLabel="Возраст сообщений"
                 value={current.hours === 24 ? '24' : '48'}
                 options={[
-                  { value: '24', label: '24 часа', disabled: save.isPending },
-                  { value: '48', label: '48 часов', disabled: save.isPending },
+                  { value: '24', label: '24 часа', disabled: closeBlocked },
+                  { value: '48', label: '48 часов', disabled: closeBlocked },
                 ]}
                 onChange={(value) => change({ hours: value === '24' ? 24 : 48 })}
               />
             </fieldset>
+            {state.enabled && current.enabled && state.hours !== current.hours ? (
+              <p className="message-retention-policy" role="status">
+                Новый срок применяется и к уже учтённым сообщениям.
+                {current.hours < state.hours
+                  ? ' Сообщения старше 24 часов смогут удаляться сразу после сохранения.'
+                  : ' Ещё не удалённые сообщения будут ожидать 48 часов.'}
+              </p>
+            ) : null}
             <div className="message-retention-exclusions">
               <ShieldCheck aria-hidden />
               <div>
@@ -315,6 +423,19 @@ export function SettingsMessageRetentionEditor({
           </>
         ) : null}
       </div>
+      {permissionBlocker ? (
+        <Suspense fallback={null}>
+          <PermissionDialog
+            id="message-retention-permission"
+            blocker={permissionBlocker}
+            isRechecking={save.isPending}
+            onClose={() => {
+              if (!save.isPending) setPermissionBlocker(null);
+            }}
+            onRecheck={() => void commit()}
+          />
+        </Suspense>
+      ) : null}
     </SettingsDrilldownPanel>
   );
 }

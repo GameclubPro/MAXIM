@@ -5,6 +5,9 @@ import type {
   SafetyDeskDeleteRuntimeResponse,
   SafetyDeskQueueItem,
   SafetyDeskQueueResponse,
+  SafetyDeskRetentionPreviewItem,
+  SafetyDeskRetentionPreviewResponse,
+  SafetyDeskRetryRetentionRequest,
 } from '@maxim/contracts/safety-desk';
 import type {
   SupportRequestAttachment,
@@ -19,7 +22,7 @@ import {
   type SanitizedPreviewHtml,
 } from './safety-desk-preview-security';
 
-export type DeskView = 'review' | 'support' | 'deletes' | 'commercial';
+export type DeskView = 'review' | 'support' | 'deletes' | 'commercial' | 'retention';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
 export type QueueStatus = 'review' | 'approved' | 'rejected' | 'blocked';
 export type QueueSource = 'manual' | 'scheduled' | 'vk';
@@ -279,6 +282,39 @@ export function deleteStatusTone(
     return 'medium';
   }
   return 'high';
+}
+
+// FLAG: retention retries use the dedicated candidate/intent version check; rollout is not permission.
+export function canRetryDeleteIntent(
+  item: Pick<SafetyDeskDeleteIntentItem, 'status' | 'retentionOwned' | 'retryAllowed'>,
+): boolean {
+  return (
+    item.retentionOwned === false &&
+    item.retryAllowed === true &&
+    (item.status === 'EXPIRED' || item.status === 'FAILED_TERMINAL')
+  );
+}
+
+export function buildRetentionRetryRequest(
+  preview: SafetyDeskRetentionPreviewResponse,
+  item: SafetyDeskRetentionPreviewItem,
+): SafetyDeskRetryRetentionRequest | null {
+  if (
+    !item.retryAllowed ||
+    !item.intentId ||
+    !item.intentUpdatedAt ||
+    item.intentAttemptCount === null
+  ) {
+    return null;
+  }
+  return {
+    messageId: item.messageId,
+    activationId: preview.activationId,
+    expectedRevision: preview.revision,
+    intentId: item.intentId,
+    expectedIntentUpdatedAt: item.intentUpdatedAt,
+    expectedAttemptCount: item.intentAttemptCount,
+  };
 }
 
 export function deleteRolloutModeLabel(

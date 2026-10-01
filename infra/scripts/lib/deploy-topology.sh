@@ -391,9 +391,11 @@ maxim_topology_require_message_retention_guard() {
     const source = require("node:fs").readFileSync(0, "utf8");
     process.exit(source.includes("await this.messageRetentionGuard.assertAllowed(") &&
       source.includes("intent.\"retention_owned\" = FALSE") &&
-      source.includes("Retention delete guard unavailable") ? 0 : 1);
+      source.includes("Retention delete guard unavailable") &&
+      source.includes("async reconcileRetentionIntent(") &&
+      source.includes("guardError instanceof MessageRetentionGuardError && latest.retentionOwned") ? 0 : 1);
   '; then
-    echo "Rollback target predates isolated message retention deletion." >&2
+    echo "Rollback target predates isolated message retention receipt recovery." >&2
     return 1
   fi
 }

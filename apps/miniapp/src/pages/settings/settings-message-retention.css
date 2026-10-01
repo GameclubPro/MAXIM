@@ -20,6 +20,13 @@
     margin: 0;
     min-width: 0;
   }
+  body[data-miniapp-profile='moderation'] .message-retention-policy {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--major-muted, var(--color-text-muted));
+    overflow-wrap: anywhere;
+  }
   .message-retention-settings legend {
     margin-bottom: 10px;
     font-size: 14px;
