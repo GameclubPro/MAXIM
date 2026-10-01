@@ -50,11 +50,11 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
     <section
       className="settings-section settings-home-entry settings-home-entry--list"
       style={{ order: 13 }}
-      aria-label="Жалобы"
+      aria-label="Система жалоб"
     >
       <div className="settings-section__head settings-section__head--interactive">
         <SettingsSectionToggle
-          title="Жалобы"
+          title="Система жалоб"
           summary={draft.reportsEnabled ? `Порог: ${draft.reportsThreshold}` : ''}
           status={
             draft.reportsEnabled ? (props.reportsAvailable ? 'Вкл' : 'Приостановлен') : 'Выкл'
@@ -69,7 +69,7 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
       <SettingsDrilldownPanel
         id="settings-reports-content"
         open={expanded}
-        title="Жалобы"
+        title="Система жалоб"
         tone="rose"
         onClose={() => props.toggleSection('reports')}
         headerAction={props.renderApplyTargetHeaderAction('reports')}
@@ -82,7 +82,7 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
             <div
               className="reports-tabs"
               role="tablist"
-              aria-label="Раздел жалоб"
+              aria-label="Система жалоб"
               onKeyDown={(event) => {
                 if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
                 event.preventDefault();

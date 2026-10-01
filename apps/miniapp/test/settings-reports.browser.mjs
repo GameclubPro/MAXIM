@@ -39,12 +39,12 @@ try {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(new URL('chat/preview-chat/settings?preview=1', base).href);
-    await page.getByRole('button', { name: 'Жалобы', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Система жалоб', exact: true }).waitFor();
     await applyNativeVisualMode(page, {
       safeTop: platform === 'ios' ? 47 : 24,
       safeBottom: platform === 'ios' ? 34 : 0,
     });
-    await page.getByRole('button', { name: 'Жалобы', exact: true }).click();
+    await page.getByRole('button', { name: 'Система жалоб', exact: true }).click();
     const panel = page
       .locator('.settings-drilldown__panel')
       .filter({ has: page.locator('.reports-settings') });
@@ -61,7 +61,7 @@ try {
     );
     if (await panel.isVisible())
       await panel.getByRole('button', { name: 'Закрыть панель' }).click();
-    await page.getByRole('button', { name: 'Жалобы', exact: true }).click();
+    await page.getByRole('button', { name: 'Система жалоб', exact: true }).click();
     assert.equal(await panel.getByRole('spinbutton', { name: 'Порог жалоб' }).inputValue(), '6');
     assert.equal(
       await panel.getByRole('textbox', { name: 'Дополнительные команды, до 5' }).inputValue(),
@@ -121,12 +121,12 @@ try {
     await page.goto(
       new URL('chat/preview-chat/settings?preview=1&reportsAvailability=paused', base).href,
     );
-    await page.getByRole('button', { name: 'Жалобы', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Система жалоб', exact: true }).waitFor();
     await applyNativeVisualMode(page, {
       safeTop: platform === 'ios' ? 47 : 24,
       safeBottom: platform === 'ios' ? 34 : 0,
     });
-    await page.getByRole('button', { name: 'Жалобы', exact: true }).click();
+    await page.getByRole('button', { name: 'Система жалоб', exact: true }).click();
     await panel.getByText('Приём жалоб приостановлен оператором.', { exact: true }).waitFor();
     assert.equal(
       await panel.getByRole('switch', { name: 'Жалобы участников', exact: true }).isDisabled(),
@@ -141,12 +141,12 @@ try {
         base,
       ).href,
     );
-    await page.getByRole('button', { name: 'Жалобы', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Система жалоб', exact: true }).waitFor();
     await applyNativeVisualMode(page, {
       safeTop: platform === 'ios' ? 47 : 24,
       safeBottom: platform === 'ios' ? 34 : 0,
     });
-    await page.getByRole('button', { name: 'Жалобы', exact: true }).click();
+    await page.getByRole('button', { name: 'Система жалоб', exact: true }).click();
     const pausedSwitch = panel.getByRole('switch', { name: 'Жалобы участников', exact: true });
     assert.equal(await pausedSwitch.isChecked(), true);
     assert.equal(await pausedSwitch.isDisabled(), false);

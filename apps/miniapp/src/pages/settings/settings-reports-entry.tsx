@@ -13,11 +13,11 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
     <section
       className="settings-section settings-home-entry settings-home-entry--list"
       style={{ order: 13 }}
-      aria-label="Жалобы"
+      aria-label="Система жалоб"
     >
       <div className="settings-section__head settings-section__head--interactive">
         <SettingsSectionToggle
-          title="Жалобы"
+          title="Система жалоб"
           summary={props.draft.reportsEnabled ? `Порог: ${props.draft.reportsThreshold}` : ''}
           status={
             props.draft.reportsEnabled ? (props.reportsAvailable ? 'Вкл' : 'Приостановлен') : 'Выкл'

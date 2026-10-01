@@ -628,7 +628,7 @@ export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
 };
 
 export const SECTION_LABELS: Record<ApplySectionKey, string> = {
-  reports: 'Жалобы',
+  reports: 'Система жалоб',
   links: 'Ссылки',
   greeting: 'Приветствие',
   profanityFilter: 'Мат и оскорбления',
