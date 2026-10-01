@@ -486,6 +486,9 @@
     display: none;
   }
   @media (max-width: 768px) {
+    body[data-miniapp-profile='moderation'] .settings-drilldown__panel--reports {
+      height: calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset));
+    }
     body[data-miniapp-profile='moderation']
       .settings-drilldown__panel--reports
       .settings-drilldown__body {

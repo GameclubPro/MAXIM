@@ -51,6 +51,30 @@ try {
     const panel = page
       .locator('.settings-drilldown__panel')
       .filter({ has: page.locator('.reports-settings') });
+    const panelBounds = async () => {
+      await panel.evaluate((node) =>
+        Promise.all(node.getAnimations().map((animation) => animation.finished.catch(() => {}))),
+      );
+      return panel.boundingBox();
+    };
+    const settingsBounds = width <= 768 ? await panelBounds() : null;
+    const assertStableMobilePanel = async () => {
+      const bounds = await panelBounds();
+      assert.ok(
+        settingsBounds &&
+          bounds &&
+          Math.abs(bounds.height - settingsBounds.height) <= 1 &&
+          Math.abs(bounds.y - settingsBounds.y) <= 1,
+        `${name}: changing reports tabs must preserve panel height and position`,
+      );
+    };
+    if (width <= 768) {
+      assert.ok(settingsBounds && settingsBounds.height >= height - 16);
+      await panel.getByRole('tab', { name: 'Журнал', exact: true }).click();
+      await panel.locator('.reports-journal__item').first().waitFor();
+      await assertStableMobilePanel();
+      await panel.getByRole('tab', { name: 'Настройки', exact: true }).click();
+    }
     await panel.getByRole('switch', { name: 'Жалобы участников', exact: true }).check();
     if (width <= 768) await panel.getByRole('radio', { name: '6 голосов', exact: true }).click();
     else await panel.getByRole('spinbutton', { name: 'Порог жалоб' }).fill('6');
@@ -110,6 +134,17 @@ try {
       );
       await page.setViewportSize({ width, height });
       await panel.getByRole('textbox', { name: 'Дополнительные команды, до 5' }).blur();
+      await page.waitForFunction(
+        (expected) =>
+          getComputedStyle(document.documentElement)
+            .getPropertyValue('--app-viewport-height')
+            .trim() === `${expected}px`,
+        height,
+      );
+      await panel.getByRole('tab', { name: 'Журнал', exact: true }).click();
+      await panel.locator('.reports-journal__item').first().waitFor();
+      await assertStableMobilePanel();
+      await panel.getByRole('tab', { name: 'Настройки', exact: true }).click();
     }
     await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
     await page.waitForFunction(
@@ -137,6 +172,7 @@ try {
     );
     await panel.getByRole('tab', { name: 'Журнал', exact: true }).click();
     await panel.locator('.reports-journal__item').first().waitFor();
+    if (width <= 768) await assertStableMobilePanel();
     await panel.evaluate((node) =>
       Promise.all(node.getAnimations().map((animation) => animation.finished.catch(() => {}))),
     );

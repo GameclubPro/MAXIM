@@ -148,8 +148,9 @@ Keep the environment ceiling `off` when human acceptance will be performed later
 can be validated with disposable PostgreSQL, mocked MAX delivery and browser/WebView emulation;
 those results do not establish live human membership, MAX permissions or actual chat delivery.
 
-When a reviewed test chat is made available, use at least two agreed human members with confirmed
-membership of 24 hours and administrator-approved harmless source messages. Start with threshold
+When a reviewed test chat is made available, use at least two agreed human voters with confirmed
+membership of 24 hours and a separate ordinary author of administrator-approved harmless source
+messages. Self-reports are rejected, so threshold two requires both voters besides the author. Start with threshold
 2, deletion of one message and restriction disabled. Verify one counter across bots, one vote per
 human, duplicate-vote rejection, threshold deletion and matching journal receipts. Then separately
 check the 24-hour observed history, optional software restriction and manual release, policy
