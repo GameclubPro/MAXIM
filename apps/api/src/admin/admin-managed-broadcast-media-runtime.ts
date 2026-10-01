@@ -26,6 +26,7 @@ import {
   readPublicationUploadedVideo,
 } from './publication-video-media';
 import {
+  PUBLICATION_ASSET_METADATA_SELECT,
   PUBLICATION_MAX_IMAGE_BYTES,
   PUBLICATION_MAX_TOTAL_IMAGE_BYTES,
 } from './publication-media-limits';
@@ -63,6 +64,25 @@ export type ManagedBroadcastRequestMedia = Pick<
   | 'mediaMimeType'
   | 'mediaFileName'
 >;
+
+type PublicationExecutionAsset = {
+  id: string;
+  actorUserId: string;
+  sha256: string;
+  sizeBytes: number;
+  mimeType: string;
+  fileName: string;
+  durablePayload: unknown;
+};
+
+export type ManagedBroadcastExecutionMedia = {
+  requestMedia: ManagedBroadcastRequestMedia;
+  publicationSource?: {
+    contentRevisionId: string;
+    actorUserId: string;
+    assets: readonly PublicationExecutionAsset[];
+  };
+};
 
 export class ManagedBroadcastTransientUploadError extends Error {
   constructor(message: string) {
@@ -294,6 +314,189 @@ export class AdminManagedBroadcastMediaRuntime {
     ];
   }
 
+  async loadManagedBroadcastExecutionMedia(
+    row: PersistedManagedBroadcast,
+  ): Promise<ManagedBroadcastExecutionMedia> {
+    if (!row.publicationContentRevisionId) {
+      return { requestMedia: await this.loadManagedBroadcastRequestMedia(row) };
+    }
+
+    // FLAG: Canonical execution loads only immutable metadata here. Bytes belong to the
+    // exact actor/revision and are read sequentially inside pre-dispatch preparation.
+    const revision = await this.prisma.publicationContentRevision.findFirst({
+      where: {
+        id: row.publicationContentRevisionId,
+        publication: { actorUserId: row.actorUserId },
+      },
+      select: {
+        assets: {
+          orderBy: [{ position: 'asc' }],
+          select: {
+            asset: { select: { ...PUBLICATION_ASSET_METADATA_SELECT, actorUserId: true } },
+          },
+        },
+      },
+    });
+    if (!revision || revision.assets.some(({ asset }) => asset.actorUserId !== row.actorUserId)) {
+      throw new BadRequestException('Медиа публикации больше недоступно.');
+    }
+    return {
+      requestMedia: {
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        images: [],
+        mediaType: null,
+        mediaPayload: null,
+        mediaMimeType: '',
+        mediaFileName: '',
+      },
+      publicationSource: {
+        contentRevisionId: row.publicationContentRevisionId,
+        actorUserId: row.actorUserId,
+        assets: revision.assets.map(({ asset }) => asset),
+      },
+    };
+  }
+
+  async resolveManagedBroadcastExecutionMedia(
+    execution: ManagedBroadcastExecutionMedia,
+    payload: SendBroadcastRequest,
+    entityType: ManagedEntityType,
+    sourceChatId: string,
+    actorUserId: string,
+    botId?: string,
+    maxApiOptions?: ManagedBroadcastMaxApiOptions,
+    onProgress?: ManagedBroadcastProgressCallback,
+    options: ManagedBroadcastMediaResolutionOptions = {},
+  ): Promise<ManagedBroadcastResolvedMedia> {
+    const source = execution.publicationSource;
+    if (!source) {
+      return this.resolveManagedBroadcastMedia(
+        payload,
+        entityType,
+        sourceChatId,
+        actorUserId,
+        botId,
+        maxApiOptions,
+        onProgress,
+        options,
+      );
+    }
+    if (source.actorUserId !== actorUserId) {
+      throw new BadRequestException('Медиа публикации больше недоступно.');
+    }
+    const videos = source.assets.filter(
+      (asset) =>
+        this.readObjectPayloadOrNull(asset.durablePayload) !== null ||
+        asset.mimeType.toLowerCase().startsWith('video/'),
+    );
+    if (videos.length > 0) {
+      if (videos.length !== 1 || source.assets.length !== 1) {
+        throw new BadRequestException(
+          'В одной публикации можно добавить либо фотографии, либо одно видео.',
+        );
+      }
+      const asset = videos[0];
+      const payload = this.readObjectPayloadOrNull(asset.durablePayload);
+      let videoPayload: Record<string, unknown>;
+      if (payload && !(PUBLICATION_UPLOADED_VIDEO_FIELD in payload)) {
+        // FLAG: Historical untagged durable payloads retain their existing contract.
+        videoPayload = payload;
+      } else {
+        const mimeType = asset.mimeType.trim().toLowerCase();
+        const uploaded = readPublicationUploadedVideo(payload, botId ?? '');
+        if (!mimeType.startsWith('video/')) {
+          throw new BadRequestException('Видео публикации больше недоступно.');
+        }
+        if (uploaded) {
+          // FLAG: An exact-bot remote video never selects local bytes, even above 24 MB.
+          videoPayload = uploaded;
+        } else {
+          if (asset.sizeBytes > PUBLICATION_MAX_VIDEO_BYTES) {
+            throw new BadRequestException('Видео слишком большое. Максимум 24 МБ.');
+          }
+          const bytes = await this.loadPublicationExecutionAssetBytes(source, asset);
+          videoPayload = await this.uploadManagedBroadcastPublicationVideoBytes(
+            bytes,
+            mimeType,
+            asset.fileName,
+            entityType,
+            sourceChatId,
+            actorUserId,
+            botId,
+            maxApiOptions,
+            onProgress,
+            asset.id,
+          );
+        }
+      }
+      return { attachments: [{ type: 'video', payload: videoPayload }] };
+    }
+
+    const images = source.assets.slice(0, MAX_BROADCAST_IMAGES);
+    const attachments: MaxAttachmentPayload[] = [];
+    for (const asset of images) {
+      // FLAG: Preserve the scheduled execution's existing image cap; authoring/test
+      // limits are separate. Fetch and validate one binary image at a time.
+      if (asset.sizeBytes > BROADCAST_IMAGE_MAX_BYTES) {
+        throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
+      }
+      const bytes = await this.loadPublicationExecutionAssetBytes(source, asset);
+      const validated = await this.validateManagedBroadcastImageBytes(bytes);
+      const imagePayload = await this.uploadManagedBroadcastImageBytes(
+        validated,
+        asset.fileName,
+        entityType,
+        sourceChatId,
+        actorUserId,
+        botId,
+        maxApiOptions,
+        onProgress,
+      );
+      if (imagePayload) attachments.push({ type: 'image', payload: imagePayload });
+    }
+    return images.length === 1
+      ? attachments[0]
+        ? { imagePayload: attachments[0].payload }
+        : {}
+      : attachments.length > 0
+        ? { attachments }
+        : {};
+  }
+
+  private async loadPublicationExecutionAssetBytes(
+    source: NonNullable<ManagedBroadcastExecutionMedia['publicationSource']>,
+    asset: PublicationExecutionAsset,
+  ): Promise<Buffer> {
+    if (!Number.isSafeInteger(asset.sizeBytes) || asset.sizeBytes <= 0) {
+      throw new BadRequestException('Медиа публикации больше недоступно.');
+    }
+    const persisted = await this.prisma.publicationAsset.findFirst({
+      where: {
+        id: asset.id,
+        actorUserId: source.actorUserId,
+        sha256: asset.sha256,
+        sizeBytes: asset.sizeBytes,
+        contentLinks: {
+          some: {
+            contentRevisionId: source.contentRevisionId,
+            contentRevision: { publication: { actorUserId: source.actorUserId } },
+          },
+        },
+      },
+      select: { bytes: true },
+    });
+    const bytes = persisted?.bytes;
+    if (!bytes || bytes.byteLength !== asset.sizeBytes) {
+      throw new BadRequestException('Медиа публикации больше недоступно.');
+    }
+    // FLAG: Publication assets are immutable and MAX validators/transport only read
+    // buffers. A view preserves the owned bytes without base64 or a second copy.
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  }
+
   async loadManagedBroadcastRequestMedia(
     row: PersistedManagedBroadcast,
   ): Promise<ManagedBroadcastRequestMedia> {
@@ -456,6 +659,13 @@ export class AdminManagedBroadcastMediaRuntime {
     options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
   ): Promise<{ buffer: Buffer; mimeType: string; extension: string }> {
     const imageBuffer = this.decodeBroadcastImageBase64(image.base64);
+    return this.validateManagedBroadcastImageBytes(imageBuffer, options);
+  }
+
+  private async validateManagedBroadcastImageBytes(
+    imageBuffer: Buffer,
+    options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
+  ): Promise<{ buffer: Buffer; mimeType: string; extension: string }> {
     const maxBytes = options.trustedPublicationTestPayload
       ? PUBLICATION_MAX_IMAGE_BYTES
       : BROADCAST_IMAGE_MAX_BYTES;
@@ -485,10 +695,32 @@ export class AdminManagedBroadcastMediaRuntime {
     options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
   ): Promise<Record<string, unknown> | undefined> {
     const validated = await this.validateManagedBroadcastImagePayload(image, options);
+    return this.uploadManagedBroadcastImageBytes(
+      validated,
+      image.fileName,
+      entityType,
+      sourceChatId,
+      actorUserId,
+      botId,
+      maxApiOptions,
+      onProgress,
+    );
+  }
+
+  private async uploadManagedBroadcastImageBytes(
+    validated: { buffer: Buffer; mimeType: string; extension: string },
+    fileName: string,
+    entityType: ManagedEntityType,
+    sourceChatId: string,
+    actorUserId: string,
+    botId?: string,
+    maxApiOptions?: ManagedBroadcastMaxApiOptions,
+    onProgress?: ManagedBroadcastProgressCallback,
+  ): Promise<Record<string, unknown> | undefined> {
     const imageBuffer = validated.buffer;
     const imageMimeType = validated.mimeType;
     const imageFileName = canonicalizeAdminMaxMediaFileName(
-      image.fileName,
+      fileName,
       validated.extension,
       'broadcast-image',
     );

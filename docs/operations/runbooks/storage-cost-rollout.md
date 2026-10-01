@@ -1,9 +1,10 @@
 # Storage and bot cost rollout
 
-This first runtime stage reduces delete-lease writes, bounds the local chat-context
-cache and skips exact repeated VK import observations. It adds fixed runtime counters and
-trusted-main CI layer reuse. It does not activate historical body/media expiry,
-receipt deletion, database rewrites or notice-upload token reuse. See the
+The initial runtime stages reduce delete-lease writes, bound the local chat-context
+cache and skip exact repeated VK import observations. They add fixed runtime counters,
+trusted-main CI layer reuse, unchanged settings/rollup write guards and sequential
+binary Publication media preparation. Historical body/media expiry, receipt deletion,
+database rewrites and notice-upload token reuse remain gated. See the
 [full plan](../storage-and-bot-cost-optimization-plan-2026-10-01.md).
 
 ## Release and observation
@@ -64,10 +65,23 @@ only physically small canonical empty/singleton arrays and exact unchanged
 hour timestamps; larger or malformed arrays use the original DISTINCT cleanup.
 Neither change rewrites historical rows or promises filesystem reclaim.
 
+Canonical Publication execution selects only metadata for the exact content
+revision and author before preparation. It then selects immutable bytes for one
+asset at a time under the same revision, author, digest and size predicates, and
+passes a Buffer view through the existing byte validator and upload protocol.
+Image order, filename normalization, per-bot occurrence cache, progress heartbeat,
+retries and pre-send ownership fences stay in place. Media-only posts still use
+the normal message builder. Tagged remote video for the exact bot selects no local
+bytes; the local video cap remains 24 MB and the scheduled image cap remains
+6,000,000 bytes. Public/legacy DTO loaders still support base64. This removes an
+internal conversion and multi-image byte preloading; it does not prove a particular
+RSS reduction or impose a new admission/defer protocol.
+
 ## Release-image reclaim
 
 For a separately reviewed maintenance preview, use the same deploy lock and the
-manifest-aware tool with the five-release floor explicitly set:
+manifest-aware tool with the five-release floor explicitly set. The production
+CLI also defaults to five distinct release IDs and refuses a lower value:
 
 ```bash
 ./infra/scripts/vps-connect.sh exec bash -c '
@@ -99,6 +113,17 @@ It is off by default, runs under the held deploy lock only after a newly committ
 successful release and all strict smokes, and reports filesystem bytes. A reclaim
 warning leaves the successful release valid; inspect it and rerun preview before
 retrying cleanup. Do not retry a deployment solely because optional reclaim failed.
+
+Global release count alone does not provide distinct component versions: static-only
+releases can repeatedly inherit the same API image. Manifest pruning additionally
+preserves representatives of two known distinct image IDs for each active component.
+When that history is missing, it preserves all available manifests; reclaim preview
+reports the gap and apply refuses cleanup. This is image availability, not schema
+compatibility. An API rollback still requires the selected API source to contain the
+live applied migrations and pass every existing source-floor and runtime guard.
+In particular, an image predating a newly applied migration is not automatically a
+valid rollback target. Artifact expiry also limits recovery: the one-day CI artifact
+is not a permanent off-host backup of older releases.
 
 ## Gates for later stages
 

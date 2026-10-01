@@ -11,6 +11,8 @@ import {
   buildReleaseManifest,
   commitReleaseManifest,
   findRecoveryBaseManifest,
+  getReleaseComponentHistory,
+  pruneOldManifests,
   readCurrentManifest,
   readRecoveryBaseManifest,
   readReleaseManifest,
@@ -92,13 +94,167 @@ test('retains at least five release manifests', () => {
     const manifest = buildReleaseManifest({
       releaseId: `release-${index}`,
       targetSha: sha(digit),
-      components: [component('api-shared', digit)],
+      components: [
+        component('api-shared', digit),
+        component('miniapp-major-static', digit),
+        component('admin-static', digit),
+      ],
       createdAt: `2026-01-0${index + 1}T00:00:00.000Z`,
     });
     commitReleaseManifest({ stateDir, manifest, retain: 5 });
   }
   assert.throws(() => readReleaseManifest(stateDir, 'release-0'), /not found/u);
   assert.equal(readReleaseManifest(stateDir, 'release-6').releaseId, 'release-6');
+});
+
+test('static-only churn retains the previous distinct API and admin image manifests', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'maxim-release-component-history-'));
+  for (const [index, digit] of ['a', 'b', 'c', 'd', 'e', 'f', '1', '2', '3', '4'].entries()) {
+    const manifest = buildReleaseManifest({
+      releaseId: `release-${index}`,
+      targetSha: sha(digit),
+      current: readCurrentManifest(stateDir),
+      components:
+        index < 2
+          ? [
+              component('api-shared', digit),
+              component('miniapp-major-static', digit),
+              component('admin-static', digit),
+            ]
+          : [component('miniapp-major-static', digit)],
+      createdAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+    });
+    commitReleaseManifest({ stateDir, manifest });
+  }
+  assert.equal(
+    readReleaseManifest(stateDir, 'release-0').components['api-shared'].imageId,
+    imageId('a'),
+  );
+  assert.equal(
+    readReleaseManifest(stateDir, 'release-9').components['api-shared'].imageId,
+    imageId('b'),
+  );
+  assert.throws(() => readReleaseManifest(stateDir, 'release-1'), /not found/u);
+  for (let index = 5; index <= 9; index++)
+    assert.equal(readReleaseManifest(stateDir, `release-${index}`).releaseId, `release-${index}`);
+});
+
+test('counts physical known image IDs rather than aliases, releases or unknown placeholders', () => {
+  const first = buildReleaseManifest({
+    releaseId: 'first',
+    targetSha: sha('a'),
+    components: [component('api-shared', 'a')],
+  });
+  const alias = buildReleaseManifest({
+    releaseId: 'alias',
+    targetSha: sha('b'),
+    components: [{ ...component('api-shared', 'b'), imageId: imageId('a') }],
+  });
+  const unknown = buildReleaseManifest({
+    releaseId: 'unknown',
+    targetSha: 'unknown',
+    components: [{ ...component('api-shared', 'c'), imageId: 'unknown' }],
+  });
+  assert.deepEqual(getReleaseComponentHistory([first, alias, unknown]), [
+    { component: 'api-shared', distinctKnownImages: 1, state: 'missing' },
+    { component: 'miniapp-major-static', distinctKnownImages: 0, state: 'missing' },
+    { component: 'admin-static', distinctKnownImages: 0, state: 'missing' },
+  ]);
+});
+
+test('preserves all existing manifests when any component lacks known image history', (t) => {
+  const warning = t.mock.method(process.stderr, 'write', () => true);
+  const stateDir = mkdtempSync(join(tmpdir(), 'maxim-release-history-missing-'));
+  for (let index = 0; index < 7; index++) {
+    const manifest = buildReleaseManifest({
+      releaseId: `release-${index}`,
+      targetSha: sha('a'),
+      components: [component('api-shared', 'a')],
+      createdAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+    });
+    commitReleaseManifest({ stateDir, manifest });
+  }
+  assert.equal(readReleaseManifest(stateDir, 'release-0').releaseId, 'release-0');
+  assert.deepEqual(pruneOldManifests(stateDir), []);
+  const output = warning.mock.calls.map(({ arguments: args }) => args[0]).join('');
+  assert.match(output, /api-shared: distinct_known_images=1 state=missing/u);
+  assert.match(output, /preserved 7 manifests/u);
+  assert.doesNotMatch(output, /sha256|release-0|schema.compatib/iu);
+});
+
+test('protects an older current release and unresolved journal during retention', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'maxim-release-protected-history-'));
+  const manifests = [];
+  for (const [index, digit] of ['a', 'b', 'c', 'd', 'e', 'f', '1', '2'].entries()) {
+    const manifest = buildReleaseManifest({
+      releaseId: `release-${index}`,
+      targetSha: sha(digit),
+      components: [
+        component('api-shared', digit),
+        component('miniapp-major-static', digit),
+        component('admin-static', digit),
+      ],
+      createdAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+    });
+    manifests.push(manifest);
+    commitReleaseManifest({ stateDir, manifest, retain: 20 });
+  }
+  writeFileSync(join(stateDir, 'current.json'), JSON.stringify(manifests[0]));
+  writeFileSync(
+    join(stateDir, 'current.invalid-deploy-20260109T000000Z-1.json'),
+    JSON.stringify(manifests[1]),
+  );
+  assert.deepEqual(pruneOldManifests(stateDir), ['release-2.json']);
+  assert.equal(readReleaseManifest(stateDir, 'release-0').releaseId, 'release-0');
+  assert.equal(readReleaseManifest(stateDir, 'release-1').releaseId, 'release-1');
+});
+
+test('validates every historical manifest before deleting any release', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'maxim-release-history-invalid-'));
+  const manifest = buildReleaseManifest({
+    releaseId: 'release-valid',
+    targetSha: sha('a'),
+    components: [component('api-shared', 'a')],
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  commitReleaseManifest({ stateDir, manifest });
+  writeFileSync(join(stateDir, 'releases', 'invalid.json'), JSON.stringify({ schemaVersion: 2 }));
+  assert.throws(() => pruneOldManifests(stateDir), /schemaVersion must be 1/u);
+  assert.equal(readReleaseManifest(stateDir, 'release-valid').releaseId, 'release-valid');
+});
+
+test('preserves all manifests when a journal is legacy or has unknown component metadata', (t) => {
+  t.mock.method(process.stderr, 'write', () => true);
+  for (const journalKind of ['legacy', 'unknown']) {
+    const stateDir = mkdtempSync(join(tmpdir(), 'maxim-release-journal-history-'));
+    for (const [index, digit] of ['a', 'b', 'c', 'd', 'e', 'f', '1'].entries()) {
+      const manifest = buildReleaseManifest({
+        releaseId: `release-${index}`,
+        targetSha: sha(digit),
+        components: [
+          component('api-shared', digit),
+          component('miniapp-major-static', digit),
+          component('admin-static', digit),
+        ],
+        createdAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+      });
+      commitReleaseManifest({ stateDir, manifest, retain: 20 });
+    }
+    const current = readCurrentManifest(stateDir);
+    const name =
+      journalKind === 'legacy'
+        ? 'current.invalid-legacy.json'
+        : 'current.invalid-deploy-20260108T000000Z-1.json';
+    writeFileSync(
+      join(stateDir, name),
+      JSON.stringify({
+        ...current,
+        ...(journalKind === 'unknown' ? { targetSha: 'unknown' } : {}),
+      }),
+    );
+    assert.deepEqual(pruneOldManifests(stateDir), []);
+    assert.equal(readReleaseManifest(stateDir, 'release-0').releaseId, 'release-0');
+  }
 });
 
 test('can merge a recovery release from an explicit validated current manifest file', () => {

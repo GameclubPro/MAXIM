@@ -3451,7 +3451,7 @@ export class AdminManagedBroadcastRuntime {
           ? publicationTiming.scheduledAt
           : null;
       let firstDeadlineClaimLogged = false;
-      const requestMedia = await this.mediaRuntime.loadManagedBroadcastRequestMedia(row);
+      const executionMedia = await this.mediaRuntime.loadManagedBroadcastExecutionMedia(row);
       const request: PreparedManagedBroadcastRequest = {
         payload: {
           text: row.text,
@@ -3464,7 +3464,7 @@ export class AdminManagedBroadcastRuntime {
             buttonUrl: row.buttonUrl,
             buttonText: row.buttonText,
           }),
-          ...requestMedia,
+          ...executionMedia.requestMedia,
           scheduleMode: normalizeBroadcastScheduleMode(row.scheduleMode),
           scheduleTimezone: row.scheduleTimezone,
           scheduledSlots: [],
@@ -3566,7 +3566,8 @@ export class AdminManagedBroadcastRuntime {
             this.heartbeatManagedBroadcastProcessingLock(row.id, currentOccurrence, activeLease);
           mediaByBotId.set(
             cacheKey,
-            await this.mediaRuntime.resolveManagedBroadcastMedia(
+            await this.mediaRuntime.resolveManagedBroadcastExecutionMedia(
+              executionMedia,
               request.payload,
               row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
               row.sourceChatId,
@@ -3580,7 +3581,6 @@ export class AdminManagedBroadcastRuntime {
             ),
           );
         }
-
         return mediaByBotId.get(cacheKey) ?? {};
       };
       const sendDeliveryWithBot = async (

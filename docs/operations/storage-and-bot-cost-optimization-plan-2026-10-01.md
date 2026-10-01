@@ -1,8 +1,9 @@
 # MAXIM: сокращение расходов на хранение и ускорение ботов
 
 Дата: 1 октября 2026, Москва. Замеры: 30 сентября 21:36–21:42 UTC,
-то есть 1 октября 00:36–00:42 MSK. Статус: исследование и план;
-изменения production, удаление данных и новые облачные расходы не выполнялись.
+то есть 1 октября 00:36–00:42 MSK. Таблица ниже сохраняет исходные замеры
+исследования. Внедрение первых безопасных этапов продолжается; точные релизы,
+проверки и ограничения описывает [runbook](runbooks/storage-cost-rollout.md).
 
 ## Вывод
 
@@ -122,7 +123,9 @@ Read-only manifest-aware preview с cutoff 24h нашёл семь незащи�
 Docker; физический `df` выигрыш измеряется после apply, не обещается заранее.
 Стандартный cutoff остаётся 7 дней. Переход к 24h — выбранная maintenance
 политика после review, с сохранением минимум пяти manifests и всех container
-refs. В этой работе только preview, ничего не удалялось.
+refs. После реализации выполнен отдельный locked apply: удалены восемь
+неиспользуемых MAXIM refs, наблюдаемый прирост свободного root — 6,13 ГиБ.
+Другие проекты, volumes и shared cache этой очисткой не затронуты.
 
 Даже ориентировочная экономия кандидатов дала бы около 31 ГиБ root, ниже
 цели 40. Поэтому она не считается достаточной ёмкостью для большого rewrite.
@@ -138,13 +141,23 @@ refs. В этой работе только preview, ничего не удал�
 - Публиковать счётчики `root before/load/after/reclaim`, bytes по immutable
   image и shared/unique слоям. Делить рост DB, релизные пики, RDB временную
   копию и обычное использование. Сохранять enum operation, не secret/env.
-- Сохранять локально пять подтверждённых rollback releases; не снижать этот
-  минимум ради экономии. Более ранние релизы восстанавливать только при
-  наличии проверенного off-host artifact и полной release provenance.
+- Сохранять локально минимум пять полных release manifests и их образы;
+  не снижать этот минимум ради экономии. Выбранный rollback отдельно
+  проверять на schema/runtime compatibility. Более ранние релизы
+  восстанавливать только при наличии проверенного off-host artifact и
+  полной release provenance.
 - Большие сборки выполнять на CI. Exact-SHA preload уже есть; он снижает пик
   build на VPS, но импорт нового полного слоя всё равно занимает место.
 
-**P0b: reuse dependency layers.** CI сейчас использует чистый runner и
+Поправка retention: пять global release IDs не гарантируют пять версий API.
+Сохранять дополнительно representatives двух известных distinct image IDs
+каждого активного компонента; при недостатке истории сохранять имеющиеся
+manifests и отказывать reclaim apply. Наличие образа не доказывает schema
+compatibility: API rollback по-прежнему проверяет исходники выбранного образа
+против реально применённых миграций. CI artifacts живут один день и сами по
+себе не обеспечивают долговременный off-host rollback.
+
+**P0b: reuse dependency layers.** До этих выпусков CI использовал чистый runner и
 `buildx --load` без `cache-from/cache-to`
 ([ci.yml](../../.github/workflows/ci.yml), build step). `npm ci` и COPY production
 node_modules выполняются вновь, хотя lock неизменен
@@ -163,6 +176,15 @@ dependency layer DiffIDs. Не удалять OCR native libraries из обще
 байты двух следующих релизов, green OCR/14-role smokes. Цель эксперимента:
 source-only прирост image storage хотя бы вдвое ниже текущего; это не прогноз.
 Rollback — отключить cache reuse, сохранив immutable refs и защиту releases.
+
+Проверка второго выпуска: cache восстановлен под тем же trusted-main ключом;
+production `npm ci` и COPY root/API node_modules отмечены CACHED. Их DiffIDs
+совпали с первым выпуском. Слой contracts node_modules после application
+copies отличается; полное совпадение всех слоёв не утверждается. Наблюдаемый
+прирост занятого root при втором preload — около 101 МиБ, включая фоновые
+изменения файлового раздела. Logical image inspect size остался около 734 МБ:
+его нельзя сравнивать с прежними 1,54 ГБ verbose inventory и объявлять
+уменьшение образа вдвое.
 
 ### P1. Сократить повторную работу и UPDATE — 3–5 дней
 
@@ -245,6 +267,13 @@ Trigger одновременно пересобирает `affected_user_ids` ч
 старого массива; колонка пока остаётся. Повторный user/hour conflict может
 использовать DO NOTHING, если freshness не имеет читателя. Не редактировать
 старую migration. Проверить exact users/hour/counters/replay на PG16.
+
+Первая forward-only миграция сохраняет legacy массив и прежний DISTINCT
+fallback. Она переиспользует только физически маленькие canonical
+empty/singleton arrays и пропускает hours UPDATE лишь при точном равенстве
+TIMESTAMP(3). Все counters, feeds, поздние события и legacy repairs остаются
+прежними. Удаление обслуживания массива и более широкий DO NOTHING пока
+не включены: это отдельная проверка consumers/совместимости.
 
 **4. Coalesce local activity и display-name refresh.**
 
@@ -337,6 +366,16 @@ bytea → base64 → Buffer; использовать typed binary/reference ada
 Сохранить external contracts, порядок images и legacy video cap.
 Orphan direct-upload token cleanup делать ниже приоритетом: `sizeBytes` —
 размер удалённого видео, при `bytes=null` он не является расходом PostgreSQL.
+
+Первый binary patch относится только к canonical Publication execution:
+метаданные точной версии/автора → последовательный immutable asset read →
+Buffer view → прежние validator/upload/retry/heartbeat. Internal base64 и
+загрузка всех image bytes перед подготовкой исключены. Exact-bot remote
+video не читает bytes, local video cap остаётся 24 MB, scheduled image cap —
+6 000 000 bytes. Public/legacy paths и per-bot occurrence cache сохранены.
+Byte admission остаётся отдельным этапом: он требует bounded ожидания и
+протокола deferral без потери attempt/deadline semantics. Размер encoded
+bytes не ограничивает native decoded RSS; точную экономию RAM ещё измерить.
 
 **Pools по роли.** Primary caps в Compose суммарно 52. Однако AdminModule
 imported во всех ролях, constructor AdminService создаёт дополнительный read

@@ -172,8 +172,8 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
   });
   jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows').mockResolvedValue([delivery]);
   jest
-    .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastRequestMedia')
-    .mockResolvedValue({});
+    .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
+    .mockResolvedValue({ requestMedia: {} });
   jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia').mockResolvedValue({});
   jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
     messageText: 'Publication',
@@ -261,6 +261,79 @@ function createPublicationDialogReceiptHarness(options?: {
 describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('uses canonical execution media once per exact bot and passes it into media-only send preparation', async () => {
+    const { runtime, row, publish } = createPublicationPrismaSendFailureHarness(null, false);
+    row.text = '';
+    const execution = {
+      requestMedia: {
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        images: [],
+        mediaType: null,
+        mediaPayload: null,
+        mediaMimeType: '',
+        mediaFileName: '',
+      },
+      publicationSource: {
+        contentRevisionId: row.publicationContentRevisionId,
+        actorUserId: row.actorUserId,
+        assets: [{ id: 'immutable-image' }],
+      },
+    };
+    jest
+      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
+      .mockResolvedValue(execution);
+    const media = { imagePayload: { token: 'canonical-image' } };
+    const resolve = jest
+      .spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastExecutionMedia')
+      .mockResolvedValue(media);
+    const legacyResolve = jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia');
+    const build = jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
+      messageText: ' ',
+      messageOptions: media,
+      commentDialogReference: null,
+    });
+    publish.mockImplementation(async (request: any) => {
+      const first = await request.prepareAttempt({ botId: 'publisher-bot', job: {} });
+      const second = await request.prepareAttempt({ botId: 'publisher-bot', job: {} });
+      expect(first.text).toBe(' ');
+      expect(first.options).toEqual(media);
+      expect(second.options).toEqual(media);
+      return { botId: 'publisher-bot', messageId: 'mid-media-only', url: null };
+    });
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0]?.[0]).toBe(execution);
+    expect(resolve.mock.calls[0]?.[5]).toBe('publisher-bot');
+    expect(legacyResolve).not.toHaveBeenCalled();
+    expect(build).toHaveBeenCalledTimes(2);
+    expect(build.mock.calls[0]?.[4]).toBe(media);
+  });
+
+  it('keeps binary preparation errors marked before message dispatch', async () => {
+    const { runtime, row, publish } = createPublicationPrismaSendFailureHarness(null, false);
+    const error = new Error('Immutable media is no longer available');
+    jest
+      .spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastExecutionMedia')
+      .mockRejectedValue(error);
+    publish.mockImplementation(async (request: any) => {
+      await request.prepareAttempt({ botId: 'publisher-bot', job: {} });
+      throw new Error('Message dispatch must not start after preparation failure');
+    });
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+    expect(
+      (error as Error & { managedBroadcastSendStarted?: boolean }).managedBroadcastSendStarted,
+    ).toBe(false);
+    expect((runtime as any).messageRuntime.buildMessage).not.toHaveBeenCalled();
   });
 
   it('observes a receipt only after a winning persistence CAS using the original occurrence clock', async () => {
@@ -663,7 +736,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       delivery.status = status;
       const loadMedia = jest.spyOn(
         (runtime as any).mediaRuntime,
-        'loadManagedBroadcastRequestMedia',
+        'loadManagedBroadcastExecutionMedia',
       );
       loadMedia.mockRejectedValue(new Error('Media no longer available'));
       const actorAccess = jest.spyOn((runtime as any).publisherDispatch, 'ensureActorAdminAccess');
@@ -2404,7 +2477,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       );
       const mediaSpy = jest.spyOn(
         (runtime as any).mediaRuntime,
-        'loadManagedBroadcastRequestMedia',
+        'loadManagedBroadcastExecutionMedia',
       );
       const sendSpy = jest.spyOn(runtime as any, 'sendManagedBroadcastMessageImmediateWithId');
 
@@ -3299,8 +3372,8 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     });
     jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows').mockResolvedValue(deliveries);
     jest
-      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastRequestMedia')
-      .mockResolvedValue({});
+      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
+      .mockResolvedValue({ requestMedia: {} });
     jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia').mockResolvedValue({});
     jest.spyOn(runtime as any, 'resolveDeliveryBotAssignment').mockResolvedValue('bot-1');
     jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
@@ -3438,7 +3511,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       const ensureDeliveryRows = jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows');
       const loadMedia = jest.spyOn(
         (runtime as any).mediaRuntime,
-        'loadManagedBroadcastRequestMedia',
+        'loadManagedBroadcastExecutionMedia',
       );
       jest
         .spyOn((runtime as any).publicationVerification, 'verifyAfterSend')
@@ -3595,8 +3668,8 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     });
     jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows').mockResolvedValue(deliveries);
     jest
-      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastRequestMedia')
-      .mockResolvedValue({});
+      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
+      .mockResolvedValue({ requestMedia: {} });
     const verifyAfterSend = jest
       .spyOn((runtime as any).publicationVerification, 'verifyAfterSend')
       .mockResolvedValue(new Set());
@@ -3833,8 +3906,8 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     });
     jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows').mockResolvedValue([delivery]);
     jest
-      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastRequestMedia')
-      .mockResolvedValue({});
+      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
+      .mockResolvedValue({ requestMedia: {} });
     jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia').mockResolvedValue({});
     jest
       .spyOn((runtime as any).publicationVerification, 'verifyAfterSend')
@@ -4303,8 +4376,8 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       .spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows')
       .mockResolvedValue([ambiguousDelivery]);
     jest
-      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastRequestMedia')
-      .mockResolvedValue({});
+      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
+      .mockResolvedValue({ requestMedia: {} });
     const finalizeSpy = jest
       .spyOn(runtime as any, 'finalizeManagedBroadcastOccurrence')
       .mockResolvedValue({

@@ -140,7 +140,7 @@ test('automatic reclaim requires five distinct releases, not duplicate manifest 
   ]);
 });
 
-test('CLI refuses insufficient rollback inventory before Docker mutation', () => {
+test('CLI defaults to five distinct releases and rejects duplicate manifest aliases before Docker', () => {
   const root = mkdtempSync(join(tmpdir(), 'maxim-release-minimum-'));
   const stateDir = createReleaseState('a', root);
   const logPath = join(root, 'docker-log.jsonl');
@@ -148,20 +148,14 @@ test('CLI refuses insufficient rollback inventory before Docker mutation', () =>
     images: [dockerImage('b', `maxim-api:${gitSha('b')}`)],
     containers: [],
   });
+  const manifest = readFileSync(join(stateDir, 'current.json'), 'utf8');
+  for (let index = 0; index < 4; index++)
+    writeFileSync(join(stateDir, 'releases', `copy-${index}.json`), manifest);
   assert.throws(
     () =>
       execFileSync(
         process.execPath,
-        [
-          helperPath,
-          'reclaim',
-          '--state-dir',
-          stateDir,
-          '--until',
-          '168h',
-          '--minimum-retained-releases',
-          '5',
-        ],
+        [helperPath, 'reclaim', '--state-dir', stateDir, '--until', '168h'],
         {
           encoding: 'utf8',
           env: {
@@ -173,14 +167,56 @@ test('CLI refuses insufficient rollback inventory before Docker mutation', () =>
           stdio: ['ignore', 'pipe', 'pipe'],
         },
       ),
-    /At least 5 distinct retained releases/u,
+    /At least 5 distinct retained releases are required; found 1/u,
   );
   assert.equal(existsSync(logPath), false);
+  assert.equal(existsSync(`${fakeDocker.fixturePath}.state`), false);
+});
+
+test('CLI refuses lowering the five-release floor before reading Docker inventory', () => {
+  const root = mkdtempSync(join(tmpdir(), 'maxim-release-floor-'));
+  const stateDir = createCompleteReleaseState('a', root);
+  const logPath = join(root, 'docker-log.jsonl');
+  const fakeDocker = createFakeDocker(root, {
+    images: [dockerImage('b', `maxim-api:${gitSha('b')}`)],
+    containers: [],
+  });
+  for (const value of [1, 2, 3, 4]) {
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [
+            helperPath,
+            'reclaim',
+            '--state-dir',
+            stateDir,
+            '--until',
+            '1h',
+            '--minimum-retained-releases',
+            String(value),
+          ],
+          {
+            encoding: 'utf8',
+            env: {
+              ...process.env,
+              PATH: `${fakeDocker.binDir}:${process.env.PATH}`,
+              FAKE_DOCKER_FIXTURE: fakeDocker.fixturePath,
+              FAKE_DOCKER_LOG: logPath,
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        ),
+      /--minimum-retained-releases requires an integer of at least 5/u,
+    );
+  }
+  assert.equal(existsSync(logPath), false);
+  assert.equal(existsSync(`${fakeDocker.fixturePath}.state`), false);
 });
 
 test('CLI preserves retained unlabeled and container images while removing stale protected releases', () => {
   const root = mkdtempSync(join(tmpdir(), 'maxim-release-reclaim-cli-'));
-  const stateDir = createReleaseState('a', root);
+  const stateDir = createCompleteReleaseState('a', root);
   const logPath = join(root, 'docker-log.jsonl');
   const fakeDocker = createFakeDocker(root, {
     images: [
@@ -216,7 +252,7 @@ test('CLI preserves retained unlabeled and container images while removing stale
 
 test('CLI dry-run reports a canonical local digest without revalidation or mutation', () => {
   const root = mkdtempSync(join(tmpdir(), 'maxim-release-reclaim-dry-run-'));
-  const stateDir = createReleaseState('a', root);
+  const stateDir = createCompleteReleaseState('a', root);
   const logPath = join(root, 'docker-log.jsonl');
   const candidateRef = `maxim-miniapp-major:${gitSha('b')}`;
   const fakeDocker = createFakeDocker(root, {
@@ -276,7 +312,7 @@ test('CLI fails closed before Docker mutation when any retained manifest is malf
 
 test('CLI replans before mutation and fails closed when Docker ownership changes', () => {
   const root = mkdtempSync(join(tmpdir(), 'maxim-release-reclaim-race-'));
-  const stateDir = createReleaseState('a', root);
+  const stateDir = createCompleteReleaseState('a', root);
   const logPath = join(root, 'docker-log.jsonl');
   const candidateRef = `maxim-miniapp-major:${gitSha('b')}`;
   const candidate = dockerImage('b', candidateRef, {}, [`maxim-miniapp-major@${imageId('b')}`]);
@@ -317,7 +353,7 @@ test('CLI replans before mutation and fails closed when Docker ownership changes
 
 test('CLI rereads retained manifests before mutation and preserves a newly protected image', () => {
   const root = mkdtempSync(join(tmpdir(), 'maxim-release-reclaim-manifest-race-'));
-  const stateDir = createReleaseState('a', root);
+  const stateDir = createCompleteReleaseState('a', root);
   const logPath = join(root, 'docker-log.jsonl');
   const replacementPath = join(root, 'replacement-current.json');
   const candidateRef = `maxim-miniapp-major:${gitSha('b')}`;
@@ -364,6 +400,185 @@ test('CLI rereads retained manifests before mutation and preserves a newly prote
   assert.equal(existsSync(logPath), false);
 });
 
+test('dry-run exposes fixed component history counts without using Docker when history is missing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'maxim-release-history-preview-'));
+  const stateDir = createReleaseState('a', root, 5);
+  const output = execFileSync(
+    process.execPath,
+    [helperPath, 'reclaim', '--state-dir', stateDir, '--until', '1h', '--dry-run'],
+    { encoding: 'utf8', env: { ...process.env, PATH: '' } },
+  );
+  assert.match(output, /api-shared: distinct_known_images=1 state=missing/u);
+  assert.match(output, /miniapp-major-static: distinct_known_images=0 state=missing/u);
+  assert.match(output, /admin-static: distinct_known_images=0 state=missing/u);
+  assert.match(output, /image removal is blocked/u);
+  assert.doesNotMatch(output, /sha256|Would remove|schema.compatib/iu);
+});
+
+test('apply refuses missing image history even after five distinct global releases', () => {
+  const root = mkdtempSync(join(tmpdir(), 'maxim-release-history-apply-'));
+  const stateDir = createReleaseState('a', root);
+  const manifest = JSON.parse(readFileSync(join(stateDir, 'current.json'), 'utf8'));
+  for (let index = 0; index < 4; index++)
+    writeFileSync(
+      join(stateDir, 'releases', `copy-${index}.json`),
+      JSON.stringify({ ...manifest, releaseId: `release-copy-${index}` }),
+    );
+  assert.throws(
+    () =>
+      execFileSync(
+        process.execPath,
+        [
+          helperPath,
+          'reclaim',
+          '--state-dir',
+          stateDir,
+          '--until',
+          '1h',
+          '--minimum-retained-releases',
+          '5',
+        ],
+        { encoding: 'utf8', env: { ...process.env, PATH: '' }, stdio: ['ignore', 'pipe', 'pipe'] },
+      ),
+    /Release component history missing; refusing image removal/u,
+  );
+});
+
+test('unresolved journals protect their images without inflating the global release floor', () => {
+  const stateDir = createCompleteReleaseState('a');
+  const journal = buildReleaseManifest({
+    releaseId: 'release-unresolved',
+    targetSha: gitSha('b'),
+    components: [
+      ['api-shared', 'maxim-api'],
+      ['miniapp-major-static', 'maxim-miniapp-major'],
+      ['admin-static', 'maxim-admin'],
+    ].map(([id, repository]) => ({
+      id,
+      sourceSha: gitSha('b'),
+      imageRef: `${repository}:${gitSha('b')}`,
+      imageId: imageId('b'),
+    })),
+  });
+  writeFileSync(
+    join(stateDir, 'current.invalid-deploy-20261001T000000Z-1.json'),
+    JSON.stringify(journal),
+  );
+  const retained = readRetainedReleaseImages(stateDir);
+  assert.ok(retained.imageIds.includes(imageId('b')));
+  assert.ok(retained.imageRefs.includes(`maxim-api:${gitSha('b')}`));
+  assert.equal(retained.journalState, 'verified');
+  assert.throws(
+    () => readRetainedReleaseImages(stateDir, { minimumRetainedReleases: 6 }),
+    /found 5/u,
+  );
+});
+
+test('protects a legacy journal but refuses removal and does not count its unverified version', () => {
+  const stateDir = createCompleteReleaseState('a');
+  const journal = buildReleaseManifest({
+    releaseId: 'legacy-release',
+    targetSha: gitSha('b'),
+    components: [
+      {
+        id: 'api-shared',
+        sourceSha: gitSha('b'),
+        imageRef: `maxim-api:${gitSha('b')}`,
+        imageId: imageId('b'),
+      },
+    ],
+  });
+  writeFileSync(join(stateDir, 'current.invalid-legacy.json'), JSON.stringify(journal));
+  const retained = readRetainedReleaseImages(stateDir);
+  assert.ok(retained.imageIds.includes(imageId('b')));
+  assert.equal(retained.journalState, 'unverified');
+  assert.deepEqual(retained.componentHistory[0], {
+    component: 'api-shared',
+    distinctKnownImages: 2,
+    state: 'present',
+  });
+  assert.throws(
+    () =>
+      execFileSync(
+        process.execPath,
+        [helperPath, 'reclaim', '--state-dir', stateDir, '--until', '1h'],
+        {
+          encoding: 'utf8',
+          env: { ...process.env, PATH: '' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      ),
+    /Release journal history unverified; refusing image removal/u,
+  );
+});
+
+test('apply rechecks sufficient component history immediately before removing an image', () => {
+  const root = mkdtempSync(join(tmpdir(), 'maxim-release-history-race-'));
+  const stateDir = createCompleteReleaseState('a', root, 6);
+  const logPath = join(root, 'docker-log.jsonl');
+  const fakeDocker = createFakeDocker(root, {
+    images: [dockerImage('b', `maxim-api:${gitSha('b')}`)],
+    containers: [],
+  });
+  assert.throws(
+    () =>
+      execFileSync(
+        process.execPath,
+        [helperPath, 'reclaim', '--state-dir', stateDir, '--until', '1h'],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${fakeDocker.binDir}:${process.env.PATH}`,
+            FAKE_DOCKER_FIXTURE: fakeDocker.fixturePath,
+            FAKE_DOCKER_LOG: logPath,
+            FAKE_DOCKER_REMOVE_MANIFEST_PATH: join(stateDir, 'releases', 'release-previous.json'),
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      ),
+    /Release component history missing; refusing image removal/u,
+  );
+  assert.equal(existsSync(logPath), false);
+});
+
+test('apply rechecks the five global releases even when component image history stays sufficient', () => {
+  const root = mkdtempSync(join(tmpdir(), 'maxim-release-global-history-race-'));
+  const stateDir = createCompleteReleaseState('a', root);
+  const logPath = join(root, 'docker-log.jsonl');
+  const fakeDocker = createFakeDocker(root, {
+    images: [dockerImage('b', `maxim-api:${gitSha('b')}`)],
+    containers: [],
+  });
+  assert.throws(
+    () =>
+      execFileSync(
+        process.execPath,
+        [helperPath, 'reclaim', '--state-dir', stateDir, '--until', '1h'],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${fakeDocker.binDir}:${process.env.PATH}`,
+            FAKE_DOCKER_FIXTURE: fakeDocker.fixturePath,
+            FAKE_DOCKER_LOG: logPath,
+            FAKE_DOCKER_REMOVE_MANIFEST_PATH: join(
+              stateDir,
+              'releases',
+              'release-current-copy-0.json',
+            ),
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      ),
+    /At least 5 distinct retained releases are required; found 4/u,
+  );
+  assert.equal(existsSync(logPath), false);
+  assert.ok(
+    readRetainedReleaseImages(stateDir).componentHistory.every(({ state }) => state === 'present'),
+  );
+});
+
 function image(digit, createdAt, repoTags, repoDigests = []) {
   return { id: imageId(digit), createdAt, repoTags, repoDigests };
 }
@@ -378,7 +593,11 @@ function dockerImage(digit, ref, labels = {}, repoDigests = []) {
   };
 }
 
-function createReleaseState(digit, root = mkdtempSync(join(tmpdir(), 'maxim-release-state-'))) {
+function createReleaseState(
+  digit,
+  root = mkdtempSync(join(tmpdir(), 'maxim-release-state-')),
+  retainedReleaseCount = 1,
+) {
   const stateDir = join(root, 'state');
   const releasesDir = join(stateDir, 'releases');
   mkdirSync(releasesDir, { recursive: true });
@@ -398,6 +617,49 @@ function createReleaseState(digit, root = mkdtempSync(join(tmpdir(), 'maxim-rele
   const serialized = `${JSON.stringify(manifest, null, 2)}\n`;
   writeFileSync(join(stateDir, 'current.json'), serialized);
   writeFileSync(join(releasesDir, 'release-retained.json'), serialized);
+  for (let index = 1; index < retainedReleaseCount; index++) {
+    const copy = { ...manifest, releaseId: `release-copy-${index}` };
+    writeFileSync(join(releasesDir, `${copy.releaseId}.json`), JSON.stringify(copy));
+  }
+  return stateDir;
+}
+
+function createCompleteReleaseState(
+  digit,
+  root = mkdtempSync(join(tmpdir(), 'maxim-release-state-')),
+  retainedReleaseCount = 5,
+) {
+  const stateDir = createReleaseState(digit, root);
+  const current = JSON.parse(readFileSync(join(stateDir, 'current.json'), 'utf8'));
+  const makeComponents = (api, miniapp, admin) =>
+    [
+      ['api-shared', 'maxim-api', api],
+      ['miniapp-major-static', 'maxim-miniapp-major', miniapp],
+      ['admin-static', 'maxim-admin', admin],
+    ].map(([id, repository, value]) => ({
+      id,
+      sourceSha: gitSha(value),
+      imageRef: `${repository}:${gitSha(value)}`,
+      imageId: imageId(value),
+    }));
+  const complete = buildReleaseManifest({
+    ...current,
+    components: makeComponents(digit, 'd', 'f'),
+  });
+  const serialized = JSON.stringify(complete);
+  writeFileSync(join(stateDir, 'current.json'), serialized);
+  writeFileSync(join(stateDir, 'releases', 'release-retained.json'), serialized);
+  const previous = buildReleaseManifest({
+    releaseId: 'release-previous',
+    targetSha: gitSha('e'),
+    components: makeComponents('e', '5', '6'),
+    createdAt: '2026-06-30T00:00:00.000Z',
+  });
+  writeFileSync(join(stateDir, 'releases', 'release-previous.json'), JSON.stringify(previous));
+  for (let index = 0; index < retainedReleaseCount - 2; index++) {
+    const copy = { ...complete, releaseId: `release-current-copy-${index}` };
+    writeFileSync(join(stateDir, 'releases', `${copy.releaseId}.json`), JSON.stringify(copy));
+  }
   return stateDir;
 }
 
@@ -410,7 +672,7 @@ function createFakeDocker(root, fixture) {
   writeFileSync(
     dockerPath,
     `#!/usr/bin/env node
-const { appendFileSync, existsSync, readFileSync, writeFileSync } = require('node:fs');
+const { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } = require('node:fs');
 const args = process.argv.slice(2);
 const fixture = JSON.parse(readFileSync(process.env.FAKE_DOCKER_FIXTURE, 'utf8'));
 const snapshots = fixture.inventorySequence || [fixture];
@@ -419,6 +681,9 @@ let snapshotIndex = existsSync(statePath) ? Number(readFileSync(statePath, 'utf8
 if (args[0] === 'image' && args[1] === 'ls') {
   snapshotIndex = Math.min(snapshotIndex + 1, snapshots.length - 1);
   writeFileSync(statePath, String(snapshotIndex));
+  if (snapshotIndex === 0 && process.env.FAKE_DOCKER_REMOVE_MANIFEST_PATH) {
+    unlinkSync(process.env.FAKE_DOCKER_REMOVE_MANIFEST_PATH);
+  }
   if (
     snapshotIndex === 0 &&
     process.env.FAKE_DOCKER_MANIFEST_PATH &&

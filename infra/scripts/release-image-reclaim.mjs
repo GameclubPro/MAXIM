@@ -5,7 +5,12 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { validateManifest } from './release-manifest.mjs';
+import {
+  getReleaseComponentHistory,
+  getRetentionJournalState,
+  listRetentionProtectionManifestPaths,
+  validateManifest,
+} from './release-manifest.mjs';
 
 const dockerImageIdPattern = /^sha256:[0-9a-f]{64}$/u;
 const dockerContainerIdPattern = /^[0-9a-f]{64}$/u;
@@ -92,10 +97,15 @@ export function readRetainedReleaseImages(stateDir, { minimumRetainedReleases = 
   const imageIds = new Set();
   const imageRefs = new Set();
   const retainedReleaseIds = new Set();
-  const manifestPaths = [currentPath, ...releasePaths];
+  const manifestPaths = [
+    ...listRetentionProtectionManifestPaths(resolvedStateDir),
+    ...releasePaths,
+  ];
+  const manifests = [];
   for (const manifestPath of manifestPaths) {
     const manifest = readValidatedManifest(manifestPath);
-    if (manifestPath !== currentPath) {
+    manifests.push(manifest);
+    if (releasePaths.includes(manifestPath)) {
       retainedReleaseIds.add(manifest.releaseId);
     }
     const components = Object.values(manifest.components ?? {});
@@ -120,7 +130,33 @@ export function readRetainedReleaseImages(stateDir, { minimumRetainedReleases = 
     imageIds: Object.freeze([...imageIds].sort()),
     imageRefs: Object.freeze([...imageRefs].sort()),
     manifestPaths: Object.freeze(manifestPaths),
+    componentHistory: getReleaseComponentHistory(
+      manifests.filter(
+        (manifest, index) =>
+          getRetentionJournalState([manifestPaths[index]], [manifest]) !== 'unverified',
+      ),
+    ),
+    journalState: getRetentionJournalState(manifestPaths, manifests),
   });
+}
+
+function hasMissingComponentHistory(retained) {
+  return retained.componentHistory.some(({ state }) => state === 'missing');
+}
+
+function reportComponentHistory(retained) {
+  for (const item of retained.componentHistory)
+    process.stdout.write(
+      `Release component history ${item.component}: distinct_known_images=${item.distinctKnownImages} state=${item.state}\n`,
+    );
+  process.stdout.write(`Release journal history: state=${retained.journalState}\n`);
+}
+
+function assertRetainedHistory(retained) {
+  if (retained.journalState === 'unverified')
+    throw new Error('Release journal history unverified; refusing image removal.');
+  if (hasMissingComponentHistory(retained))
+    throw new Error('Release component history missing; refusing image removal.');
 }
 
 export function buildReleaseImageReclaimPlan({
@@ -384,7 +420,10 @@ function parseGoDurationMs(value) {
 
 function parseCli(argv) {
   const [command, ...args] = argv;
-  const options = { stateDir: process.env.MAXIM_RELEASE_STATE_DIR || '/var/lib/maxim-deploy' };
+  const options = {
+    stateDir: process.env.MAXIM_RELEASE_STATE_DIR || '/var/lib/maxim-deploy',
+    minimumRetainedReleases: 5,
+  };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--state-dir') {
@@ -395,8 +434,12 @@ function parseCli(argv) {
       options.dryRun = true;
     } else if (argument === '--minimum-retained-releases') {
       const value = requireValue(args, ++index, argument);
-      if (!/^[1-9][0-9]*$/u.test(value) || !Number.isSafeInteger(Number(value))) {
-        throw new Error(`${argument} requires a positive integer.`);
+      if (
+        !/^[1-9][0-9]*$/u.test(value) ||
+        !Number.isSafeInteger(Number(value)) ||
+        Number(value) < 5
+      ) {
+        throw new Error(`${argument} requires an integer of at least 5.`);
       }
       options.minimumRetainedReleases = Number(value);
     } else {
@@ -423,6 +466,14 @@ function runCli(argv) {
   const options = parseCli(argv);
   const cutoffMs = parseReclaimCutoff(options.until);
   const retained = readRetainedReleaseImages(options.stateDir, options);
+  reportComponentHistory(retained);
+  if (retained.journalState === 'unverified' || hasMissingComponentHistory(retained)) {
+    if (options.dryRun) {
+      process.stdout.write('Release history missing or unverified; image removal is blocked.\n');
+      return;
+    }
+    assertRetainedHistory(retained);
+  }
   const inventory = readDockerReclaimInventory();
   const candidates = buildReleaseImageReclaimPlan({
     images: inventory.images,
@@ -448,6 +499,7 @@ function runCli(argv) {
   }
 
   const revalidatedRetained = readRetainedReleaseImages(options.stateDir, options);
+  assertRetainedHistory(revalidatedRetained);
   const revalidatedInventory = readDockerReclaimInventory();
   const revalidatedCandidates = buildReleaseImageReclaimPlan({
     images: revalidatedInventory.images,

@@ -270,6 +270,50 @@ export function commitReleaseManifest({ stateDir, manifest, retain = 5 }) {
   return releasePath;
 }
 
+export function listRetentionProtectionManifestPaths(stateDir) {
+  if (!existsSync(stateDir)) return [];
+  const currentPath = resolve(stateDir, 'current.json');
+  return [
+    ...(existsSync(currentPath) ? [currentPath] : []),
+    ...readdirSync(stateDir)
+      .filter((name) => name.startsWith('current.invalid-') && name.endsWith('.json'))
+      .sort()
+      .map((name) => resolve(stateDir, name)),
+  ];
+}
+
+export function getReleaseComponentHistory(manifests) {
+  return Object.freeze(
+    ACTIVE_RELEASE_COMPONENTS.map((component) => {
+      const imageIds = new Set(
+        manifests
+          .map((manifest) => manifest.components?.[component]?.imageId)
+          .filter((id) => typeof id === 'string' && /^sha256:[0-9a-f]{64}$/u.test(id)),
+      );
+      return Object.freeze({
+        component,
+        distinctKnownImages: imageIds.size,
+        state: imageIds.size >= 2 ? 'present' : 'missing',
+      });
+    }),
+  );
+}
+
+export function getRetentionJournalState(manifestPaths, manifests) {
+  let found = false;
+  for (const [index, path] of manifestPaths.entries()) {
+    if (!basename(path).startsWith('current.invalid-')) continue;
+    found = true;
+    if (!recoveryBaseNamePattern.test(basename(path))) return 'unverified';
+    try {
+      validateCompleteReleaseManifest(manifests[index]);
+    } catch {
+      return 'unverified';
+    }
+  }
+  return found ? 'verified' : 'none';
+}
+
 export function pruneOldManifests(stateDir, retain = 5, currentReleaseId = null) {
   if (!Number.isSafeInteger(retain) || retain < 5) {
     throw new Error('Release manifest retention must be at least 5.');
@@ -280,16 +324,54 @@ export function pruneOldManifests(stateDir, retain = 5, currentReleaseId = null)
   }
   const entries = readdirSync(releasesDir)
     .filter((name) => name.endsWith('.json'))
-    .map((name) => ({ name, manifest: readJson(resolve(releasesDir, name)) }))
+    .map((name) => {
+      const manifest = readManifestFile(resolve(releasesDir, name));
+      if (!Number.isFinite(Date.parse(manifest.createdAt)))
+        throw new Error('Retained release manifest has an invalid createdAt.');
+      return { name, manifest };
+    })
     .sort((left, right) => {
       const timeOrder = String(right.manifest.createdAt).localeCompare(
         String(left.manifest.createdAt),
       );
       return timeOrder || right.name.localeCompare(left.name);
     });
+  const protectedPaths = listRetentionProtectionManifestPaths(stateDir);
+  const protectedManifests = protectedPaths.map(readManifestFile);
+  const journalState = getRetentionJournalState(protectedPaths, protectedManifests);
+  const history = getReleaseComponentHistory([
+    ...entries.map(({ manifest }) => manifest),
+    ...protectedManifests.filter(
+      (manifest, index) =>
+        getRetentionJournalState([protectedPaths[index]], [manifest]) !== 'unverified',
+    ),
+  ]);
+  // FLAG: Known image history preserves availability only. API schema/source-floor
+  // compatibility remains the responsibility of the existing rollback preflights.
+  if (journalState === 'unverified' || history.some(({ state }) => state === 'missing')) {
+    for (const item of history) {
+      process.stderr.write(
+        `Release component history ${item.component}: distinct_known_images=${item.distinctKnownImages} state=${item.state}\n`,
+      );
+    }
+    process.stderr.write(`Release journal history: state=${journalState}\n`);
+    process.stderr.write(`Release history missing; preserved ${entries.length} manifests.\n`);
+    return [];
+  }
   const keep = new Set(entries.slice(0, retain).map(({ name }) => name));
   if (currentReleaseId) {
     keep.add(`${currentReleaseId}.json`);
+  }
+  for (const manifest of protectedManifests) keep.add(`${manifest.releaseId}.json`);
+  for (const component of ACTIVE_RELEASE_COMPONENTS) {
+    const seenImageIds = new Set();
+    for (const { name, manifest } of entries) {
+      const imageId = manifest.components?.[component]?.imageId;
+      if (!/^sha256:[0-9a-f]{64}$/u.test(imageId ?? '') || seenImageIds.has(imageId)) continue;
+      seenImageIds.add(imageId);
+      keep.add(name);
+      if (seenImageIds.size >= 2) break;
+    }
   }
   const removed = [];
   for (const { name } of entries) {
