@@ -127,6 +127,41 @@ Observe the `message_retention` source metrics, auxiliary queue, policy counters
 oldest due time, capacity pauses and core moderation latency. Do not run broad
 production aggregates over raw webhook events for this feature.
 
+## Index Migration Recovery
+
+A lock timeout in `20261002020100_index_retention_reconciliation` can
+leave a mixture of missing, valid and invalid indexes. Preserve both immutable
+migrations and the interrupted release journal. Use the fixed recovery command
+from a clean, synchronized checkout with green exact-SHA CI:
+
+```sh
+./infra/scripts/vps-connect.sh recover-message-retention-migration
+./infra/scripts/vps-connect.sh recover-message-retention-migration --apply
+./infra/scripts/vps-connect.sh recover-message-retention-migration
+```
+
+Review preview before apply. The helper verifies the preceding additive receipt,
+column definitions, migration checksum and all three exact index definitions,
+including the reconciliation predicate. Under the shared deploy lock it creates
+missing indexes or reindexes invalid ones concurrently, then verifies their
+readiness/validity before resolving the fixed receipt as applied. Unexpected DDL,
+unrelated failed receipts or concurrent-index artifacts abort. Table size,
+statement and total time are bounded; no candidate rows are changed.
+
+Keep `MESSAGE_RETENTION_MODE=off` and the cohort empty. Recovery does not alter
+queues or finalize a release. After preview confirms all three indexes healthy,
+the receipt applied and no other failures, resume the ordinary release workflow:
+
+```sh
+MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=1 \
+  ./infra/scripts/vps-connect.sh deploy main --auto
+```
+
+Use adoption only for the reviewed interrupted transition, never persist it in
+the production environment. Normal deploy re-proves the queue fence, recreates
+the selected components, runs strict smokes, resumes queues and records the new
+manifest. The no-recreate release finalizer cannot recover an old runtime.
+
 ## Stop And Rollback
 
 Set the runtime mode to `off` through the reviewed runtime-environment/deploy workflow

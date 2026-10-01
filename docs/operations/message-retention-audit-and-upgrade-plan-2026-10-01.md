@@ -487,3 +487,34 @@ canary ещё не аттестованы. До этого расширение 
 параметр, удаляет его перед raw PostgreSQL connection и затем использует свою
 случайную private schema. Повтор публичного wrapper с CI-форматом URL: 50/50,
 без пропусков. Другие параметры и удалённые хосты остаются запрещены.
+
+## Восстановление миграции выпуска
+
+CI runtime-кандидата `a827e9342e80b1c17858513843574c75f428252b` прошёл:
+[Required и сборка образов](https://github.com/GameclubPro/MAXIM/actions/runs/36939032217),
+[CodeQL](https://github.com/GameclubPro/MAXIM/actions/runs/36939032213).
+Все три immutable CI-образа предварительно загружены на VPS через guarded preload.
+
+Первый deploy остановился до обновления сервисов: additive migration
+`20261002020000_add_retention_reconciliation` применена, concurrent-index migration
+`20261002020100_index_retention_reconciliation` получила PostgreSQL `55P03` при
+пятсекундном ожидании блокировки. Prisma сохранила failed receipt, поэтому обычный
+повтор остановился с `P3009`. Read-only health подтвердил нормальный режим,
+готовность PostgreSQL/Redis и малый queue lag; точный блокирующий backend не установлен.
+
+Добавлен fixed preview/apply helper: он сверяет immutable checksums, prerequisite
+receipt, nullable columns и три точных определения индексов. Отсутствующий индекс
+создаётся concurrently, недействительный — reindex concurrently. Только после
+повторной проверки всех индексов Prisma receipt может стать applied. Ожидание
+блокировки ограничено 30 секундами, один DDL — 120 секундами, весь helper — десятью
+минутами; используются общий deploy lock и очистка только собственного backend/container.
+Данные сообщений, очереди и журнал выпуска helper не меняет.
+
+На отдельной disposable PostgreSQL 16 БД воспроизведён настоящий `55P03` при
+`CREATE INDEX CONCURRENTLY` с открытым writer transaction. После rollback writer
+каталог содержал один invalid и два отсутствующих индекса. Actual concurrent
+REINDEX/create завершили все три; receipt проверен, повтор apply бездействует,
+число строк кандидатов не изменилось. БД удалена после проверки.
+
+Продолжение выпуска выполняется штатным deploy с явным принятием прерванного
+журнала и повторной проверкой queue fence. Mode off и пустой cohort сохраняются.
