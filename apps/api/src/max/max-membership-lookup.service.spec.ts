@@ -182,6 +182,34 @@ function readRedisMembershipSnapshot(cacheKey: string): {
   return raw ? (JSON.parse(raw) as { isMember: boolean; checkedAtMs: number }) : null;
 }
 
+function publishMembershipInvalidation(chatId: string, userIds: string[]): void {
+  const payload = JSON.stringify({ chatId, userIds, invalidatedAtMs: Date.now() });
+  for (const subscriber of (
+    Redis as unknown as { __subscribers: Set<(channel: string, payload: string) => void> }
+  ).__subscribers) {
+    subscriber('max:membership:invalidate:v1', payload);
+  }
+}
+
+function readMembershipEpochState(service: MaxMembershipLookupService) {
+  return service as unknown as {
+    cacheEpochs: Map<string, { epoch: number; expiresAtMs: number }>;
+    activeCacheEpochReaders: Map<string, number>;
+    cacheEpochSweepIterator: IterableIterator<unknown> | null;
+    cacheEpochSweepRemaining: number;
+  };
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('MaxMembershipLookupService', () => {
   beforeEach(() => {
     (Redis as unknown as { __store: Map<string, string> }).__store.clear();
@@ -207,6 +235,294 @@ describe('MaxMembershipLookupService', () => {
       duplicate: jest.Mock;
     };
     expect(redisInstance.duplicate).toHaveBeenCalledWith({ enableReadyCheck: false });
+  });
+
+  it('expires a large invalidation-only pub/sub stream without looking up its keys', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T09:00:00.000Z'));
+    const maxClient = { hasChatMember: jest.fn(), getChatMembersAccess: jest.fn() };
+    const registry = {
+      getAllBots: () => [{ id: 'bot-1' }, { id: 'bot-2' }],
+      getBotById: (id: string) => ({ id }),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+      undefined,
+      registry as never,
+    );
+    await service.onModuleInit();
+    for (let index = 0; index < 2000; index++) {
+      publishMembershipInvalidation('channel-idle', [`user-${index}`]);
+    }
+    const state = readMembershipEpochState(service);
+    expect(state.cacheEpochs.size).toBe(12000);
+    expect(state.activeCacheEpochReaders.size).toBe(0);
+
+    await jest.advanceTimersByTimeAsync(5100);
+    expect(state.cacheEpochs.size).toBe(12000);
+    jest.setSystemTime(new Date('2026-03-29T09:02:00.000Z'));
+    await jest.advanceTimersToNextTimerAsync();
+    expect(12000 - state.cacheEpochs.size).toBe(256);
+    expect(state.cacheEpochs.size).toBeGreaterThan(0);
+    await jest.advanceTimersByTimeAsync(100);
+    expect(state.cacheEpochs.size).toBe(0);
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
+  it('retains refreshed invalidation states while sweeping older expired keys', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T09:05:00.000Z'));
+    const service = new MaxMembershipLookupService(
+      { hasChatMember: jest.fn(), getChatMembersAccess: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    await service.onModuleInit();
+    publishMembershipInvalidation('channel-old', ['user-old']);
+    publishMembershipInvalidation('channel-refreshed', ['user-refreshed']);
+    await jest.advanceTimersByTimeAsync(100000);
+    publishMembershipInvalidation('channel-refreshed', ['user-refreshed']);
+    await jest.advanceTimersByTimeAsync(25000);
+
+    const state = readMembershipEpochState(service);
+    expect(state.cacheEpochs.size).toBe(2);
+    expect(state.cacheEpochs.get('max:membership:v1:channel-refreshed:user-refreshed')?.epoch).toBe(
+      2,
+    );
+    await jest.advanceTimersByTimeAsync(100000);
+    expect(state.cacheEpochs.size).toBe(0);
+    await service.onModuleDestroy();
+  });
+
+  it('finishes a bounded sweep pass while new invalidations keep appending keys', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T09:10:00.000Z'));
+    const service = new MaxMembershipLookupService(
+      { hasChatMember: jest.fn(), getChatMembersAccess: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    await service.onModuleInit();
+    for (let index = 0; index < 512; index++) {
+      publishMembershipInvalidation('channel-before-pass', [`user-${index}`]);
+    }
+    const state = readMembershipEpochState(service);
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(state.cacheEpochSweepRemaining).toBe(768);
+    for (let batch = 0; batch < 3; batch++) {
+      for (let index = 0; index < 128; index++) {
+        publishMembershipInvalidation(`channel-added-${batch}`, [`user-${index}`]);
+      }
+      await jest.advanceTimersByTimeAsync(1);
+    }
+
+    expect(state.cacheEpochSweepIterator).toBeNull();
+    expect(state.cacheEpochSweepRemaining).toBe(0);
+    expect(state.cacheEpochs.size).toBe(1792);
+    await jest.advanceTimersByTimeAsync(100);
+    expect(state.cacheEpochSweepIterator).toBeNull();
+    expect(state.cacheEpochs.size).toBe(1792);
+    await jest.advanceTimersByTimeAsync(125000);
+    expect(state.cacheEpochs.size).toBe(0);
+    await service.onModuleDestroy();
+  });
+
+  it.each([
+    ['single', 1],
+    ['batch', 2],
+  ] as const)(
+    'rejects a superseded invalidated %s lookup after its guard state TTL',
+    async (_kind, userCount) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-03-29T09:15:00.000Z'));
+      const older = createDeferred<Map<string, { userId: string; isAdmin: boolean }>>();
+      const maxClient = {
+        hasChatMember: jest.fn(),
+        getChatMembersAccess: jest
+          .fn()
+          .mockImplementationOnce(() => older.promise)
+          .mockResolvedValueOnce(new Map()),
+      };
+      const service = new MaxMembershipLookupService(
+        maxClient as never,
+        createConfigMock({ MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_INTERACTIVE: 180000 }) as never,
+      );
+      await service.onModuleInit();
+      const userIds = Array.from({ length: userCount }, (_, index) => `user-${index}`);
+      const olderLookup = service.getMemberships('channel-late', userIds, 'giveaway_interactive', {
+        forceRefresh: true,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      await service.invalidateMemberships('channel-late', userIds);
+      await expect(
+        service.getMemberships('channel-late', userIds, 'giveaway_interactive', {
+          forceRefresh: true,
+        }),
+      ).resolves.toEqual(new Map(userIds.map((userId) => [userId, false])));
+
+      const state = readMembershipEpochState(service);
+      expect(state.activeCacheEpochReaders.size).toBe(userCount);
+      await jest.advanceTimersByTimeAsync(125000);
+      expect(state.cacheEpochs.size).toBe(userCount);
+      older.resolve(new Map(userIds.map((userId) => [userId, { userId, isAdmin: false }])));
+      await expect(olderLookup).resolves.toEqual(new Map(userIds.map((userId) => [userId, null])));
+      expect(state.activeCacheEpochReaders.size).toBe(0);
+      expect(state.cacheEpochs.size).toBe(0);
+      for (const userId of userIds) {
+        expect(
+          readRedisMembershipSnapshot(`max:membership:v1:channel-late:${userId}`)?.isMember,
+        ).toBe(false);
+      }
+      expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+      await service.onModuleDestroy();
+    },
+  );
+
+  it('releases an invalidated lookup guard when a delayed MAX operation fails after expiry', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T09:20:00.000Z'));
+    const deferred = createDeferred<Map<string, { userId: string; isAdmin: boolean }>>();
+    const service = new MaxMembershipLookupService(
+      { hasChatMember: jest.fn(), getChatMembersAccess: jest.fn(() => deferred.promise) } as never,
+      createConfigMock({ MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_INTERACTIVE: 180000 }) as never,
+    );
+    await service.onModuleInit();
+    const lookup = service.getMembership('channel-error', 'user-error', 'giveaway_interactive', {
+      forceRefresh: true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await service.invalidateMemberships('channel-error', ['user-error']);
+    await jest.advanceTimersByTimeAsync(125000);
+    const state = readMembershipEpochState(service);
+    expect(state.cacheEpochs.size).toBe(1);
+    deferred.reject(Object.assign(new Error('Synthetic network error'), { code: 'ECONNRESET' }));
+    await expect(lookup).resolves.toBeNull();
+    expect(state.activeCacheEpochReaders.size).toBe(0);
+    expect(state.cacheEpochs.size).toBe(0);
+    await service.onModuleDestroy();
+  });
+
+  it('does not reuse an expired epoch number while an older reader is still pending', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T09:22:00.000Z'));
+    const deferred = createDeferred<Map<string, { userId: string; isAdmin: boolean }>>();
+    const service = new MaxMembershipLookupService(
+      { hasChatMember: jest.fn(), getChatMembersAccess: jest.fn(() => deferred.promise) } as never,
+      createConfigMock({ MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_INTERACTIVE: 180000 }) as never,
+    );
+    await service.onModuleInit();
+    await service.invalidateMemberships('channel-refresh-live', ['user-refresh-live']);
+    const lookup = service.getMembership(
+      'channel-refresh-live',
+      'user-refresh-live',
+      'giveaway_interactive',
+      { forceRefresh: true },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await jest.advanceTimersByTimeAsync(125000);
+    await service.invalidateMemberships('channel-refresh-live', ['user-refresh-live']);
+    deferred.resolve(
+      new Map([['user-refresh-live', { userId: 'user-refresh-live', isAdmin: false }]]),
+    );
+    await expect(lookup).resolves.toBeNull();
+    const state = readMembershipEpochState(service);
+    expect(state.activeCacheEpochReaders.size).toBe(0);
+    expect(
+      readRedisMembershipSnapshot('max:membership:v1:channel-refresh-live:user-refresh-live'),
+    ).toBeNull();
+    await jest.advanceTimersByTimeAsync(125000);
+    expect(state.cacheEpochs.size).toBe(0);
+    await service.onModuleDestroy();
+  });
+
+  it('rejects an invalidated Redis read when wall-clock time passes its epoch TTL', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T09:24:00.000Z'));
+    const startedAtMs = Date.now();
+    const deferred = createDeferred<Array<string | null>>();
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(new Map()),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      mget: jest.Mock;
+    };
+    redisInstance.mget.mockImplementationOnce(() => deferred.promise);
+    await service.onModuleInit();
+    const lookup = service.getMembership(
+      'channel-redis-late',
+      'user-redis-late',
+      'giveaway_interactive',
+    );
+    await Promise.resolve();
+    expect(redisInstance.mget).toHaveBeenCalledTimes(1);
+    await service.invalidateMemberships('channel-redis-late', ['user-redis-late']);
+    jest.setSystemTime(startedAtMs + 125000);
+    deferred.resolve([
+      JSON.stringify({
+        isMember: true,
+        checkedAtMs: startedAtMs,
+        probeStartedAtMs: startedAtMs - 1,
+        writerPolicy: 'giveaway_interactive',
+      }),
+    ]);
+    await expect(lookup).resolves.toBe(false);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    const state = readMembershipEpochState(service);
+    expect(state.activeCacheEpochReaders.size).toBe(0);
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(state.cacheEpochs.size).toBe(0);
+    await service.onModuleDestroy();
+  });
+
+  it('releases Redis and MAX readers on error so their expired states can be swept', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T09:25:00.000Z'));
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error('Synthetic network error'), { code: 'ECONNRESET' }),
+        ),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      mget: jest.Mock;
+    };
+    redisInstance.mget.mockRejectedValueOnce(new Error('Synthetic Redis error'));
+    await service.onModuleInit();
+    publishMembershipInvalidation('channel-read-error', ['user-read-error']);
+    await expect(
+      service.getMembership('channel-read-error', 'user-read-error', 'giveaway_interactive'),
+    ).resolves.toBeNull();
+    const state = readMembershipEpochState(service);
+    expect(state.activeCacheEpochReaders.size).toBe(0);
+    await jest.advanceTimersByTimeAsync(125000);
+    expect(state.cacheEpochs.size).toBe(0);
+    await service.onModuleDestroy();
+  });
+
+  it('cancels maintenance during a sweep and does not schedule another callback after shutdown', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T09:30:00.000Z'));
+    const service = new MaxMembershipLookupService(
+      { hasChatMember: jest.fn(), getChatMembersAccess: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    await service.onModuleInit();
+    for (let index = 0; index < 512; index++) {
+      publishMembershipInvalidation('channel-shutdown', [`user-${index}`]);
+    }
+    await jest.advanceTimersByTimeAsync(5000);
+    const state = readMembershipEpochState(service);
+    expect(state.cacheEpochSweepIterator).not.toBeNull();
+    expect(jest.getTimerCount()).toBe(1);
+    await service.onModuleDestroy();
+    expect(state.cacheEpochSweepIterator).toBeNull();
+    expect(state.cacheEpochSweepRemaining).toBe(0);
+    expect(jest.getTimerCount()).toBe(0);
+    await jest.advanceTimersByTimeAsync(125000);
+    expect(jest.getTimerCount()).toBe(0);
+    expect(state.cacheEpochs.size).toBe(1024);
   });
 
   it('does not trust a giveaway snapshot for required-subscription moderation', async () => {

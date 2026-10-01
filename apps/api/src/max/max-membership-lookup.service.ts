@@ -148,6 +148,8 @@ const BASE_MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC = Math.max(
 );
 const MEMBERSHIP_INVALIDATION_CHANNEL = 'max:membership:invalidate:v1';
 const MEMBERSHIP_INVALIDATION_GUARD_TTL_MS = 120_000;
+const MEMBERSHIP_CACHE_EPOCH_SWEEP_INTERVAL_MS = 5_000;
+const MEMBERSHIP_CACHE_EPOCH_SWEEP_BATCH_SIZE = 256;
 const MEMBERSHIP_CACHE_WRITE_LOG_INTERVAL_MS = 10_000;
 const MEMBERSHIP_REDIS_READ_TIMEOUT_MS = 100;
 const MEMBERSHIP_LOOKUP_GUARD_SLACK_MS = 400;
@@ -264,6 +266,11 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly hotChannelStates = new Map<string, HotChannelState>();
   // Invalidation epochs cancel stale work; probe sequences select cache writers across policies.
   private readonly cacheEpochs = new Map<string, CacheEpochState>();
+  private readonly activeCacheEpochReaders = new Map<string, number>();
+  private cacheEpochSweepIterator: IterableIterator<[string, CacheEpochState]> | null = null;
+  private cacheEpochSweepRemaining = 0;
+  private cacheEpochSweepTimer: NodeJS.Timeout | null = null;
+  private destroying = false;
   private readonly seenInvalidationIds = new Map<string, number>();
   private readonly latestProbeSequenceByCacheKey = new Map<string, number>();
   private readonly pendingSingleLookupBatches = new Map<string, PendingSingleLookupBatch>();
@@ -381,9 +388,17 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       );
     });
     await this.subscriber.subscribe(MEMBERSHIP_INVALIDATION_CHANNEL);
+    this.scheduleCacheEpochSweep(MEMBERSHIP_CACHE_EPOCH_SWEEP_INTERVAL_MS);
   }
 
   async onModuleDestroy() {
+    this.destroying = true;
+    if (this.cacheEpochSweepTimer) {
+      clearTimeout(this.cacheEpochSweepTimer);
+      this.cacheEpochSweepTimer = null;
+    }
+    this.cacheEpochSweepIterator = null;
+    this.cacheEpochSweepRemaining = 0;
     this.clearPendingSingleLookupBatchTimers();
     await this.subscriber.quit();
     await this.redis.quit();
@@ -542,46 +557,49 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     if (!options.forceRefresh && unresolvedUserIds.length > 0) {
-      const redisReadEpochByCacheKey = new Map(
-        unresolvedUserIds.map((userId) => {
-          const cacheKey = cacheKeyByUserId.get(userId)!;
-          return [cacheKey, this.readCacheEpoch(cacheKey)] as const;
-        }),
+      const redisReadEpochByCacheKey = this.retainCacheEpochs(
+        unresolvedUserIds.map((userId) => cacheKeyByUserId.get(userId)!),
       );
-      const redisReadKeys = unresolvedUserIds.flatMap((userId) =>
-        this.buildRedisReadKeys(
-          cacheKeyByUserId.get(userId)!,
-          legacyCacheKeyByUserId.get(userId)!,
-          lookupBotId,
-          policyName,
-        ),
-      );
-      const redisSnapshots = await this.readRedisSnapshots(redisReadKeys);
-      const stillUnresolvedUserIds: string[] = [];
+      try {
+        const redisReadKeys = unresolvedUserIds.flatMap((userId) =>
+          this.buildRedisReadKeys(
+            cacheKeyByUserId.get(userId)!,
+            legacyCacheKeyByUserId.get(userId)!,
+            lookupBotId,
+            policyName,
+          ),
+        );
+        const redisSnapshots = await this.readRedisSnapshots(redisReadKeys);
+        const stillUnresolvedUserIds: string[] = [];
 
-      for (const userId of unresolvedUserIds) {
-        const cacheKey = cacheKeyByUserId.get(userId)!;
-        const legacyCacheKey = legacyCacheKeyByUserId.get(userId)!;
-        if (!this.hasSameCacheEpoch(cacheKey, redisReadEpochByCacheKey.get(cacheKey) ?? 0)) {
-          stillUnresolvedUserIds.push(userId);
-          continue;
-        }
-        const redisSnapshot =
-          redisSnapshots.get(cacheKey) ??
-          (this.shouldReadLegacyCache(lookupBotId) ? redisSnapshots.get(legacyCacheKey) : null) ??
-          null;
-        if (redisSnapshot) {
-          const selectedSnapshot = this.storeMemorySnapshot(cacheKey, redisSnapshot);
-          if (this.isSnapshotFresh(selectedSnapshot, policy, now)) {
-            results.set(userId, { membership: selectedSnapshot.isMember, fresh: true });
+        for (const userId of unresolvedUserIds) {
+          const cacheKey = cacheKeyByUserId.get(userId)!;
+          const legacyCacheKey = legacyCacheKeyByUserId.get(userId)!;
+          if (!this.hasSameCacheEpoch(cacheKey, redisReadEpochByCacheKey.get(cacheKey) ?? 0)) {
+            stillUnresolvedUserIds.push(userId);
             continue;
           }
+          const redisSnapshot =
+            redisSnapshots.get(cacheKey) ??
+            (this.shouldReadLegacyCache(lookupBotId) ? redisSnapshots.get(legacyCacheKey) : null) ??
+            null;
+          if (redisSnapshot) {
+            const selectedSnapshot = this.storeMemorySnapshot(cacheKey, redisSnapshot);
+            if (this.isSnapshotFresh(selectedSnapshot, policy, now)) {
+              results.set(userId, { membership: selectedSnapshot.isMember, fresh: true });
+              continue;
+            }
+          }
+
+          stillUnresolvedUserIds.push(userId);
         }
 
-        stillUnresolvedUserIds.push(userId);
+        unresolvedUserIds = stillUnresolvedUserIds;
+      } finally {
+        for (const cacheKey of redisReadEpochByCacheKey.keys()) {
+          this.releaseCacheEpoch(cacheKey);
+        }
       }
-
-      unresolvedUserIds = stillUnresolvedUserIds;
     }
 
     for (const userId of unresolvedUserIds) {
@@ -713,7 +731,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
     const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
     const inFlightKey = this.buildInFlightKey(cacheKey, policyName, allowStaleOnError);
-    const cacheEpoch = this.readCacheEpoch(cacheKey);
+    const cacheEpoch = this.retainCacheEpoch(cacheKey);
     const probeSequence = this.beginProbe(cacheKey);
     const lookupPromise = new Promise<MaxMembershipLookupResolution>((resolve) => {
       batch!.lookups.set(userId, {
@@ -730,6 +748,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         this.inFlight.delete(inFlightKey);
       }
       this.finishProbe(cacheKey, probeSequence);
+      this.releaseCacheEpoch(cacheKey);
     });
 
     this.inFlight.set(inFlightKey, trackedPromise);
@@ -897,11 +916,8 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   ): Map<string, Promise<MaxMembershipLookupResolution>> {
     const normalizedUserIds = Array.from(new Set(userIds));
     const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
-    const cacheEpochByKey = new Map(
-      normalizedUserIds.map((userId) => {
-        const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
-        return [cacheKey, this.readCacheEpoch(cacheKey)] as const;
-      }),
+    const cacheEpochByKey = this.retainCacheEpochs(
+      normalizedUserIds.map((userId) => this.buildCacheKey(chatId, userId, botId, policyName)),
     );
     const probeSequenceByKey = new Map(
       normalizedUserIds.map((userId) => {
@@ -1052,6 +1068,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
             this.inFlight.delete(inFlightKey);
           }
           this.finishProbe(cacheKey, probeSequenceByKey.get(cacheKey) ?? 0);
+          this.releaseCacheEpoch(cacheKey);
         });
       this.inFlight.set(inFlightKey, trackedPromise);
       promises.set(userId, trackedPromise);
@@ -1352,7 +1369,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       return 0;
     }
 
-    if (state.expiresAtMs <= now) {
+    if (state.expiresAtMs <= now && !this.activeCacheEpochReaders.has(cacheKey)) {
       this.cacheEpochs.delete(cacheKey);
       return 0;
     }
@@ -1362,6 +1379,81 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
   private hasSameCacheEpoch(cacheKey: string, epoch: number): boolean {
     return this.readCacheEpoch(cacheKey) === epoch;
+  }
+
+  // FLAG: A reader retains its invalidation epoch until it settles, including superseded
+  // probes. Expiring a live reader's state can reset its epoch to zero and admit a stale result.
+  private retainCacheEpoch(cacheKey: string): number {
+    const epoch = this.readCacheEpoch(cacheKey);
+    this.activeCacheEpochReaders.set(
+      cacheKey,
+      (this.activeCacheEpochReaders.get(cacheKey) ?? 0) + 1,
+    );
+    return epoch;
+  }
+
+  private retainCacheEpochs(cacheKeys: Iterable<string>): Map<string, number> {
+    const epochs = new Map<string, number>();
+    for (const cacheKey of cacheKeys) {
+      if (!epochs.has(cacheKey)) {
+        epochs.set(cacheKey, this.retainCacheEpoch(cacheKey));
+      }
+    }
+    return epochs;
+  }
+
+  private releaseCacheEpoch(cacheKey: string): void {
+    const remainingReaders = (this.activeCacheEpochReaders.get(cacheKey) ?? 0) - 1;
+    if (remainingReaders > 0) {
+      this.activeCacheEpochReaders.set(cacheKey, remainingReaders);
+      return;
+    }
+    this.activeCacheEpochReaders.delete(cacheKey);
+    this.readCacheEpoch(cacheKey);
+  }
+
+  private scheduleCacheEpochSweep(delayMs: number): void {
+    if (this.destroying || this.cacheEpochSweepTimer) {
+      return;
+    }
+    this.cacheEpochSweepTimer = setTimeout(() => {
+      this.cacheEpochSweepTimer = null;
+      this.sweepCacheEpochs();
+      this.scheduleCacheEpochSweep(
+        this.cacheEpochSweepIterator ? 1 : MEMBERSHIP_CACHE_EPOCH_SWEEP_INTERVAL_MS,
+      );
+    }, delayMs);
+    this.cacheEpochSweepTimer.unref();
+  }
+
+  private sweepCacheEpochs(): void {
+    if (!this.cacheEpochSweepIterator) {
+      this.cacheEpochSweepIterator = this.cacheEpochs.entries();
+      this.cacheEpochSweepRemaining = this.cacheEpochs.size;
+    }
+    const now = Date.now();
+    // FLAG: A live Map iterator also visits new insertions. Fix each pass's budget so continuous
+    // invalidations cannot prevent revisiting earlier entries after their expiration.
+    for (
+      let inspected = 0;
+      inspected < MEMBERSHIP_CACHE_EPOCH_SWEEP_BATCH_SIZE && this.cacheEpochSweepRemaining > 0;
+      inspected++
+    ) {
+      const next = this.cacheEpochSweepIterator.next();
+      if (next.done) {
+        this.cacheEpochSweepIterator = null;
+        this.cacheEpochSweepRemaining = 0;
+        return;
+      }
+      this.cacheEpochSweepRemaining--;
+      const [cacheKey, state] = next.value;
+      if (state.expiresAtMs <= now && !this.activeCacheEpochReaders.has(cacheKey)) {
+        this.cacheEpochs.delete(cacheKey);
+      }
+    }
+    if (this.cacheEpochSweepRemaining === 0) {
+      this.cacheEpochSweepIterator = null;
+    }
   }
 
   private beginProbe(cacheKey: string): number {

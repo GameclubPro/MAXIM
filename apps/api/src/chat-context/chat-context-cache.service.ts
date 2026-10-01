@@ -45,6 +45,8 @@ export type ChatContext = {
   rulesPublishedMessageId: string | null;
 };
 
+type ChatContextReadGeneration = { invalidated: boolean; readers: number };
+
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
 type ManagedEntitiesRecentBootstrapEntry = ChatSummary & {
   bootstrapUserIds?: string[];
@@ -346,7 +348,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private readonly localChatContextCache: ChatContextLocalCache;
   private localChatContextSweepTimer: NodeJS.Timeout | null = null;
   private readonly chatContextInFlightLoads = new Map<string, Promise<ChatContext>>();
-  private readonly localChatContextEpochs = new Map<string, number>();
+  private readonly chatContextReadGenerations = new Map<string, ChatContextReadGeneration>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -555,42 +557,72 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
 
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const normalizedTitle = chatTitle?.trim() || null;
-    const expectedEpoch = this.readChatContextEpoch(chatId);
-    const localCached = this.readLocalChatContext(chatId);
-    if (localCached) {
-      const reconciled = this.reconcileCachedChatTitle(
-        chatId,
-        localCached,
-        normalizedTitle,
-        expectedEpoch,
-      );
-      return this.readChatContextEpoch(chatId) === expectedEpoch
-        ? reconciled
-        : this.getChatContext(chatId, normalizedTitle);
-    }
-
-    const existingLoad = this.chatContextInFlightLoads.get(chatId);
-    if (existingLoad) {
-      const resolved = await existingLoad;
-      if (this.readChatContextEpoch(chatId) !== expectedEpoch) {
-        return this.getChatContext(chatId, normalizedTitle);
-      }
-      return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle, expectedEpoch);
-    }
-
-    const loadPromise = this.loadCachedOrSource(chatId, normalizedTitle, expectedEpoch).finally(
-      () => {
-        if (this.chatContextInFlightLoads.get(chatId) === loadPromise) {
-          this.chatContextInFlightLoads.delete(chatId);
+    for (;;) {
+      const generation = this.acquireChatContextReadGeneration(chatId);
+      try {
+        const localCached = this.readLocalChatContext(chatId);
+        if (localCached) {
+          const reconciled = this.reconcileCachedChatTitle(
+            chatId,
+            localCached,
+            normalizedTitle,
+            generation,
+          );
+          if (!this.isChatContextReadGenerationCurrent(chatId, generation)) continue;
+          return reconciled;
         }
-      },
-    );
-    this.chatContextInFlightLoads.set(chatId, loadPromise);
-    const resolved = await loadPromise;
-    if (this.readChatContextEpoch(chatId) !== expectedEpoch) {
-      return this.getChatContext(chatId, normalizedTitle);
+
+        const existingLoad = this.chatContextInFlightLoads.get(chatId);
+        if (existingLoad) {
+          const resolved = await existingLoad;
+          if (!this.isChatContextReadGenerationCurrent(chatId, generation)) continue;
+          return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle, generation);
+        }
+
+        const loadPromise = this.loadCachedOrSource(chatId, normalizedTitle, generation).finally(
+          () => {
+            if (this.chatContextInFlightLoads.get(chatId) === loadPromise) {
+              this.chatContextInFlightLoads.delete(chatId);
+            }
+          },
+        );
+        this.chatContextInFlightLoads.set(chatId, loadPromise);
+        const resolved = await loadPromise;
+        if (!this.isChatContextReadGenerationCurrent(chatId, generation)) continue;
+        return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle, generation);
+      } finally {
+        this.releaseChatContextReadGeneration(chatId, generation);
+      }
     }
-    return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle, expectedEpoch);
+  }
+
+  private acquireChatContextReadGeneration(chatId: string): ChatContextReadGeneration {
+    // FLAG: Only active readers retain a generation. Identity-checked release cannot remove a
+    // newer load, and invalidated objects held by retired readers must never become current again.
+    let generation = this.chatContextReadGenerations.get(chatId);
+    if (!generation) {
+      generation = { invalidated: false, readers: 0 };
+      this.chatContextReadGenerations.set(chatId, generation);
+    }
+    generation.readers += 1;
+    return generation;
+  }
+
+  private releaseChatContextReadGeneration(
+    chatId: string,
+    generation: ChatContextReadGeneration,
+  ): void {
+    generation.readers -= 1;
+    if (generation.readers === 0 && this.chatContextReadGenerations.get(chatId) === generation) {
+      this.chatContextReadGenerations.delete(chatId);
+    }
+  }
+
+  private isChatContextReadGenerationCurrent(
+    chatId: string,
+    generation: ChatContextReadGeneration,
+  ): boolean {
+    return !generation.invalidated && this.chatContextReadGenerations.get(chatId) === generation;
   }
 
   async invalidate(chatId: string) {
@@ -2272,8 +2304,8 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
 
   private async loadAndCache(
     chatId: string,
-    chatTitle?: string | null,
-    expectedEpoch?: number,
+    chatTitle: string | null,
+    generation: ChatContextReadGeneration,
   ): Promise<ChatContext> {
     const title = chatTitle?.trim();
     for (
@@ -2312,14 +2344,14 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
         rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
       };
 
-      if (expectedEpoch !== undefined && this.readChatContextEpoch(chatId) !== expectedEpoch) {
+      if (!this.isChatContextReadGenerationCurrent(chatId, generation)) {
         return value;
       }
       const serialized = JSON.stringify(value);
       if (!(await this.writeChatContextAtRevision(chatId, serialized, expectedRevision))) {
         continue;
       }
-      if (expectedEpoch === undefined || this.readChatContextEpoch(chatId) === expectedEpoch) {
+      if (this.isChatContextReadGenerationCurrent(chatId, generation)) {
         this.writeLocalChatContext(chatId, value, Buffer.byteLength(serialized));
       }
       return value;
@@ -2331,21 +2363,21 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private async loadCachedOrSource(
     chatId: string,
     normalizedTitle: string | null,
-    expectedEpoch: number,
+    generation: ChatContextReadGeneration,
   ): Promise<ChatContext> {
     const key = ChatContextCacheService.cacheKey(chatId);
     const cached = await this.readRedisStringWithin(
       key,
       ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS,
     );
-    if (cached && this.readChatContextEpoch(chatId) === expectedEpoch) {
+    if (cached && this.isChatContextReadGenerationCurrent(chatId, generation)) {
       try {
         const parsed = JSON.parse(cached) as ChatContext;
         return this.reconcileCachedChatTitle(
           chatId,
           parsed,
           normalizedTitle,
-          expectedEpoch,
+          generation,
           Buffer.byteLength(cached),
         );
       } catch (error: unknown) {
@@ -2356,7 +2388,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    return this.loadAndCache(chatId, normalizedTitle, expectedEpoch);
+    return this.loadAndCache(chatId, normalizedTitle, generation);
   }
 
   private async findChatContextRow(chatId: string) {
@@ -2472,11 +2504,11 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     value: ChatContext,
     normalizedTitle: string | null,
-    expectedEpoch?: number,
+    generation: ChatContextReadGeneration,
     encodedBytes?: number,
   ): ChatContext {
     if (!normalizedTitle || value.title === normalizedTitle) {
-      if (expectedEpoch === undefined || this.readChatContextEpoch(chatId) === expectedEpoch) {
+      if (this.isChatContextReadGenerationCurrent(chatId, generation)) {
         this.writeLocalChatContext(chatId, value, encodedBytes);
       }
       return value;
@@ -2486,7 +2518,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       ...value,
       title: normalizedTitle,
     };
-    if (expectedEpoch === undefined || this.readChatContextEpoch(chatId) === expectedEpoch) {
+    if (this.isChatContextReadGenerationCurrent(chatId, generation)) {
       this.writeLocalChatContext(chatId, nextValue);
     }
     void this.runRedisWriteWithin(
@@ -2742,7 +2774,13 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private applyLocalInvalidation(chatId: string): void {
     this.localChatContextCache.delete(chatId);
     this.chatContextInFlightLoads.delete(chatId);
-    this.localChatContextEpochs.set(chatId, this.readChatContextEpoch(chatId) + 1);
+    // FLAG: Idle invalidations retain no keys. Retired objects stay invalid for every pending
+    // reader, even after a newer generation finishes; resetting numeric epochs would allow ABA.
+    const generation = this.chatContextReadGenerations.get(chatId);
+    if (generation) {
+      generation.invalidated = true;
+      this.chatContextReadGenerations.delete(chatId);
+    }
   }
 
   private parseInvalidationPayload(payload: string): string | null {
@@ -2754,10 +2792,6 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     } catch {
       return null;
     }
-  }
-
-  private readChatContextEpoch(chatId: string): number {
-    return this.localChatContextEpochs.get(chatId) ?? 0;
   }
 
   private appendChatAdminUser(context: ChatContext, userId: string): ChatContext {

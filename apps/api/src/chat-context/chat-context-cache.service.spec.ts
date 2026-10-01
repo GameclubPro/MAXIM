@@ -325,6 +325,7 @@ import type { ChatSummary } from '@maxim/contracts';
 import type { ChatSettings } from '../prisma/prisma-client';
 import {
   ChatContextCacheService,
+  type ChatContext,
   type ManagedEntitiesPublishedSnapshot,
 } from './chat-context-cache.service';
 
@@ -602,6 +603,34 @@ function getRedisMutationMock(service: ChatContextCacheService): {
       };
     }
   ).redis;
+}
+
+function getChatContextReadState(service: ChatContextCacheService) {
+  return service as unknown as {
+    chatContextReadGenerations: Map<string, { invalidated: boolean; readers: number }>;
+    chatContextInFlightLoads: Map<string, Promise<ChatContext>>;
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function buildContextRow(chatId: string, adminUserIds = ['user-1']) {
+  return {
+    id: chatId,
+    title: 'Chat title',
+    settings: buildSettings(chatId),
+    domains: [],
+    admins: adminUserIds.map((userId) => ({ userId })),
+    rules: null,
+  };
 }
 
 describe('ChatContextCacheService', () => {
@@ -2585,6 +2614,268 @@ describe('ChatContextCacheService', () => {
     ]);
   });
 
+  it('retains no read generations for idle invalidations delivered through pubsub', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    try {
+      await service.onModuleInit();
+      const subscriber = (
+        service as unknown as { subscriber: { subscribe: jest.Mock; on: jest.Mock } }
+      ).subscriber;
+      const channel = subscriber.subscribe.mock.calls[0]?.[0] as string;
+      const handler = subscriber.on.mock.calls.find(([event]) => event === 'message')?.[1] as (
+        channel: string,
+        payload: string,
+      ) => void;
+      for (let index = 0; index < 100_000; index++) {
+        handler(channel, JSON.stringify({ chatId: `idle-chat-${index}` }));
+      }
+
+      expect(getChatContextReadState(service).chatContextReadGenerations.size).toBe(0);
+      expect(getChatContextReadState(service).chatContextInFlightLoads.size).toBe(0);
+      expect(service.getLocalCacheSnapshot().entries).toBe(0);
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('releases read generations after successful loads, cache hits and rejected loads', async () => {
+    const chatId = 'chat-generation-cleanup';
+    const row = deferred<ReturnType<typeof buildContextRow>>();
+    const started = deferred<void>();
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockImplementation(() => {
+          started.resolve();
+          return row.promise;
+        }),
+        upsert: jest.fn(),
+      },
+    };
+    const service = new ChatContextCacheService(
+      prisma as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const pending = service.getChatContext(chatId);
+    await started.promise;
+    expect(getChatContextReadState(service).chatContextReadGenerations.get(chatId)?.readers).toBe(
+      1,
+    );
+    row.resolve(buildContextRow(chatId));
+    await pending;
+    expect(getChatContextReadState(service).chatContextReadGenerations.size).toBe(0);
+    await service.getChatContext(chatId);
+    expect(getChatContextReadState(service).chatContextReadGenerations.size).toBe(0);
+
+    const failure = new Error('Context read unavailable');
+    const failedRow = deferred<ReturnType<typeof buildContextRow>>();
+    const failedStarted = deferred<void>();
+    prisma.chat.findUnique.mockImplementationOnce(() => {
+      failedStarted.resolve();
+      return failedRow.promise;
+    });
+    const failures = Promise.allSettled([
+      service.getChatContext('chat-generation-error'),
+      service.getChatContext('chat-generation-error'),
+    ]);
+    await failedStarted.promise;
+    expect(
+      getChatContextReadState(service).chatContextReadGenerations.get('chat-generation-error')
+        ?.readers,
+    ).toBe(2);
+    failedRow.reject(failure);
+    await expect(failures).resolves.toEqual([
+      { status: 'rejected', reason: failure },
+      { status: 'rejected', reason: failure },
+    ]);
+    expect(getChatContextReadState(service).chatContextReadGenerations.size).toBe(0);
+    expect(getChatContextReadState(service).chatContextInFlightLoads.size).toBe(0);
+  });
+
+  it('keeps a newer shared load alive when an invalidated coalesced load settles late', async () => {
+    const chatId = 'chat-generation-coalescing';
+    const oldRow = deferred<ReturnType<typeof buildContextRow>>();
+    const newRow = deferred<ReturnType<typeof buildContextRow>>();
+    const oldStarted = deferred<void>();
+    const newStarted = deferred<void>();
+    const prisma = {
+      chat: {
+        findUnique: jest
+          .fn()
+          .mockImplementationOnce(() => {
+            oldStarted.resolve();
+            return oldRow.promise;
+          })
+          .mockImplementationOnce(() => {
+            newStarted.resolve();
+            return newRow.promise;
+          }),
+        upsert: jest.fn(),
+      },
+    };
+    const service = new ChatContextCacheService(
+      prisma as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const first = service.getChatContext(chatId);
+    const second = service.getChatContext(chatId);
+    await oldStarted.promise;
+    const retired = getChatContextReadState(service).chatContextReadGenerations.get(chatId);
+    expect(retired?.readers).toBe(2);
+
+    service.invalidateLocal(chatId);
+    const third = service.getChatContext(chatId);
+    await newStarted.promise;
+    const current = getChatContextReadState(service).chatContextReadGenerations.get(chatId);
+    const newLoad = getChatContextReadState(service).chatContextInFlightLoads.get(chatId);
+    expect(retired?.invalidated).toBe(true);
+    expect(current).not.toBe(retired);
+    oldRow.resolve(buildContextRow(chatId));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(getChatContextReadState(service).chatContextReadGenerations.get(chatId)).toBe(current);
+    expect(current?.readers).toBe(3);
+    expect(getChatContextReadState(service).chatContextInFlightLoads.get(chatId)).toBe(newLoad);
+    expect(getRedisMutationMock(service).eval).not.toHaveBeenCalled();
+    newRow.resolve(buildContextRow(chatId, []));
+    const contexts = await Promise.all([first, second, third]);
+    expect(contexts.every((context) => context.adminUserIds.length === 0)).toBe(true);
+    expect(prisma.chat.findUnique).toHaveBeenCalledTimes(2);
+    expect(getChatContextReadState(service).chatContextReadGenerations.size).toBe(0);
+    expect(getChatContextReadState(service).chatContextInFlightLoads.size).toBe(0);
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    expect(JSON.parse(store.get(ChatContextCacheService.cacheKey(chatId)) ?? 'null')).toEqual(
+      expect.objectContaining({ adminUserIds: [] }),
+    );
+  });
+
+  it('never revives a retired generation after newer reads finish and idle invalidations pass', async () => {
+    const chatId = 'chat-generation-aba';
+    const oldRow = deferred<ReturnType<typeof buildContextRow>>();
+    const oldStarted = deferred<void>();
+    const prisma = {
+      chat: {
+        findUnique: jest
+          .fn()
+          .mockImplementationOnce(() => {
+            oldStarted.resolve();
+            return oldRow.promise;
+          })
+          .mockResolvedValue(buildContextRow(chatId, [])),
+        upsert: jest.fn(),
+      },
+    };
+    const service = new ChatContextCacheService(
+      prisma as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const pending = service.getChatContext(chatId);
+    await oldStarted.promise;
+    const retired = getChatContextReadState(service).chatContextReadGenerations.get(chatId);
+    service.invalidateLocal(chatId);
+    await expect(service.getChatContext(chatId)).resolves.toEqual(
+      expect.objectContaining({ adminUserIds: [] }),
+    );
+    for (let index = 0; index < 10_000; index++) {
+      service.invalidateLocal(`unread-chat-${index}`);
+    }
+    service.invalidateLocal(chatId);
+    await service.getChatContext(chatId);
+    expect(getChatContextReadState(service).chatContextReadGenerations.size).toBe(0);
+    expect(retired?.invalidated).toBe(true);
+
+    oldRow.resolve(buildContextRow(chatId));
+    await expect(pending).resolves.toEqual(expect.objectContaining({ adminUserIds: [] }));
+    expect(getChatContextReadState(service).chatContextReadGenerations.size).toBe(0);
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    expect(JSON.parse(store.get(ChatContextCacheService.cacheKey(chatId)) ?? 'null')).toEqual(
+      expect.objectContaining({ adminUserIds: [] }),
+    );
+  });
+
+  it('rechecks the generation after a committed Redis write is invalidated before resuming', async () => {
+    const chatId = 'chat-generation-after-write';
+    const prisma = {
+      chat: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce(buildContextRow(chatId))
+          .mockResolvedValue(buildContextRow(chatId, [])),
+        upsert: jest.fn(),
+      },
+    };
+    const service = new ChatContextCacheService(
+      prisma as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const redis = getRedisMutationMock(service);
+    const evaluate = redis.eval.getMockImplementation() as (...args: unknown[]) => Promise<unknown>;
+    redis.eval.mockImplementationOnce(async (...args: unknown[]) => {
+      const committed = await evaluate(...args);
+      await service.invalidate(chatId);
+      return committed;
+    });
+
+    await expect(service.getChatContext(chatId)).resolves.toEqual(
+      expect.objectContaining({ adminUserIds: [] }),
+    );
+    expect(prisma.chat.findUnique).toHaveBeenCalledTimes(2);
+    expect(getChatContextReadState(service).chatContextReadGenerations.size).toBe(0);
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    expect(store.get(ChatContextCacheService.chatContextRevisionKey(chatId))).toBe('1');
+    expect(JSON.parse(store.get(ChatContextCacheService.cacheKey(chatId)) ?? 'null')).toEqual(
+      expect.objectContaining({ adminUserIds: [] }),
+    );
+  });
+
+  it('discards a delayed Redis cache reply from a generation invalidated during the read', async () => {
+    const chatId = 'chat-generation-redis-read';
+    const prisma = {
+      chat: { findUnique: jest.fn().mockResolvedValue(buildContextRow(chatId, [])) },
+    };
+    const service = new ChatContextCacheService(
+      prisma as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const context = {
+      chatId,
+      title: 'Chat title',
+      settings: buildSettings(chatId),
+      domainAllowlist: [],
+      adminUserIds: [] as string[],
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    };
+    const reply = deferred<string>();
+    const started = deferred<void>();
+    const redis = getRedisMutationMock(service);
+    redis.get.mockImplementationOnce(() => {
+      started.resolve();
+      return reply.promise;
+    });
+    const pending = service.getChatContext(chatId);
+    await started.promise;
+    service.invalidateLocal(chatId);
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    store.set(ChatContextCacheService.cacheKey(chatId), JSON.stringify(context));
+    await service.getChatContext(chatId);
+    reply.resolve(JSON.stringify({ ...context, adminUserIds: ['user-1'] }));
+
+    const cachedContext = JSON.parse(JSON.stringify(context));
+    await expect(pending).resolves.toEqual(cachedContext);
+    await expect(service.getChatContext(chatId)).resolves.toEqual(cachedContext);
+    expect(redis.eval).not.toHaveBeenCalled();
+    expect(getChatContextReadState(service).chatContextReadGenerations.size).toBe(0);
+  });
+
   it('rejects a stale full-context load after an access mutation bumps the revision', async () => {
     let resolveOldRow!: (value: unknown) => void;
     const oldRow = new Promise((resolve) => {
@@ -2709,15 +3000,28 @@ describe('ChatContextCacheService', () => {
       eventAt: new Date('2026-08-20T10:00:00.000Z'),
     });
 
-    (
-      service as unknown as {
-        reconcileCachedChatTitle: (
-          chatId: string,
-          value: typeof staleContext,
-          title: string,
-        ) => unknown;
-      }
-    ).reconcileCachedChatTitle('chat-title-race', staleContext, 'New title');
+    const internals = service as unknown as {
+      acquireChatContextReadGeneration: (chatId: string) => {
+        invalidated: boolean;
+        readers: number;
+      };
+      releaseChatContextReadGeneration: (
+        chatId: string,
+        generation: { invalidated: boolean; readers: number },
+      ) => void;
+      reconcileCachedChatTitle: (
+        chatId: string,
+        value: typeof staleContext,
+        title: string,
+        generation: { invalidated: boolean; readers: number },
+      ) => unknown;
+    };
+    const generation = internals.acquireChatContextReadGeneration('chat-title-race');
+    try {
+      internals.reconcileCachedChatTitle('chat-title-race', staleContext, 'New title', generation);
+    } finally {
+      internals.releaseChatContextReadGeneration('chat-title-race', generation);
+    }
     await Promise.resolve();
     await Promise.resolve();
 
