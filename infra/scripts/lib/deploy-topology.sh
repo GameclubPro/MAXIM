@@ -1599,3 +1599,40 @@ maxim_topology_build_shared_api_image() {
     --label com.maxim.release-protected=true \
     -t "$source_image" -f apps/api/Dockerfile .
 }
+
+maxim_topology_require_max_api_metrics_minute_reader() {
+  local commit_sha="$1"
+  local counter_source consumer_source key_source
+  # FLAG: Once six-hour minute counters are written, a rollback must retain readers
+  # of that state even if writers are subsequently switched back to legacy.
+  if ! counter_source="$(git show "${commit_sha}:apps/api/src/max/max-api-counter-storage.ts" 2>/dev/null)" ||
+    ! consumer_source="$(git show "${commit_sha}:apps/api/src/system/max-api-metrics.service.ts" 2>/dev/null)" ||
+    ! key_source="$(git show "${commit_sha}:apps/api/src/max/max-api-metrics-key.util.ts" 2>/dev/null)"; then
+    echo "Rollback target predates the MAX API minute metric reader." >&2
+    return 1
+  fi
+  if ! printf '%s\0%s\0%s' "$counter_source" "$consumer_source" "$key_source" | node -e '
+    const input = require("node:fs").readFileSync(0);
+    if (input.byteLength < 1 || input.byteLength > 4 * 1024 * 1024) process.exit(1);
+    const parts = input.toString("utf8").split("\0");
+    if (parts.length !== 3) process.exit(1);
+    const [counter, consumer, keys] = parts;
+    const valid =
+      /export const MAX_API_METRICS_MINUTE_READER_VERSION\s*=\s*1\s*;/u.test(counter) &&
+      /export async function readMaxApiMetricCounts\s*\(/u.test(counter) &&
+      counter.includes("MAX_API_METRICS_MINUTE_READER_VERSION !== 1") &&
+      counter.includes("await redis.mget(...chunk)") &&
+      counter.includes("pipeline.hmget(key, ...entries.map((entry) => entry.field))") &&
+      counter.includes("counts.set(entry.legacyKey, (counts.get(entry.legacyKey) ?? 0) + count)") &&
+      /import\s*\{[^}]*readMaxApiMetricCounts[^}]*\}\s*from\s*\x27\.\.\/max\/max-api-counter-storage\x27/u.test(consumer) &&
+      /private async readCounts\([^)]*\)[^{]*\{\s*return readMaxApiMetricCounts\(this\.redis, keys\);\s*\}/u.test(consumer) &&
+      /const counts = await readMaxApiMetricCounts\(\s*this\.redis,\s*currentBatch\.map\(\(entry\) => entry\.key\)/u.test(consumer) &&
+      consumer.includes("MAX_API_SOURCE_MINUTE_METRICS_KEY_PREFIX") &&
+      keys.includes("maxApiLegacyCounterMinute(key)") &&
+      /MAX_API_SOURCE_MINUTE_METRICS_KEY_PREFIX\s*=\s*\x27maxapi:rps:source:v2\x27/u.test(keys);
+    process.exit(valid ? 0 : 1);
+  ' >/dev/null 2>&1; then
+    echo "Rollback target lacks the wired MAX API minute metric reader." >&2
+    return 1
+  fi
+}

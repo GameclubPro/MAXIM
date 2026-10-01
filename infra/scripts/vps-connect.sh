@@ -1012,7 +1012,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    select_runtime_rollback_recovery_base \
+    maxim_topology_require_max_api_metrics_minute_reader \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1025,10 +1025,24 @@ rollback_release() {
   fi
 
   local remote_command
+  local capability_marker=select_release_recovery_base
+  local rollback_component
+  # FLAG: API rollback after a ref rollback must restore tooling with the minute
+  # reader floor. Static-only rollback keeps its existing image-only offline path.
+  if [[ $# -eq 1 ]]; then
+    capability_marker=maxim_topology_require_max_api_metrics_minute_reader
+  else
+    for rollback_component in "${@:2}"; do
+      if [[ "$rollback_component" == api-shared ]]; then
+        capability_marker=maxim_topology_require_max_api_metrics_minute_reader
+        break
+      fi
+    done
+  fi
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-release-rollback.sh \
-    select_release_recovery_base \
+    "$capability_marker" \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"

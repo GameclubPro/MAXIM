@@ -307,6 +307,7 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   maxim_topology_require_message_duplicate_delete_guard "$API_SOURCE_SHA"
   maxim_topology_require_commercial_text_delete_guard "$API_SOURCE_SHA"
   maxim_topology_require_commercial_ocr_baseline_guard "$API_SOURCE_SHA"
+  maxim_topology_require_max_api_metrics_minute_reader "$API_SOURCE_SHA"
   if maxim_topology_git_compose_has_service "$API_SOURCE_SHA" "$MAXIM_PUBLISHER_SERVICE"; then
     TARGET_HAS_PUBLISHER=1
   else

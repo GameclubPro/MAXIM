@@ -19,8 +19,12 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
-  it('validates the two-release MAX diagnostic counter layout with a legacy writer default', () => {
-    expect(validateEnv(createValidEnv()).MAX_API_METRICS_STORAGE_LAYOUT).toBe('legacy');
+  it('defaults validated MAX diagnostics to minute layout and preserves explicit legacy downgrade', () => {
+    expect(validateEnv(createValidEnv()).MAX_API_METRICS_STORAGE_LAYOUT).toBe('minute');
+    expect(
+      validateEnv(createValidEnv({ MAX_API_METRICS_STORAGE_LAYOUT: 'legacy' }))
+        .MAX_API_METRICS_STORAGE_LAYOUT,
+    ).toBe('legacy');
     expect(
       validateEnv(createValidEnv({ MAX_API_METRICS_STORAGE_LAYOUT: 'minute' }))
         .MAX_API_METRICS_STORAGE_LAYOUT,
