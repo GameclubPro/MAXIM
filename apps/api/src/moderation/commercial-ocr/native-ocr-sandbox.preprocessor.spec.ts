@@ -1,4 +1,9 @@
 import { ConfigService } from '@nestjs/config';
+import {
+  NativeOcrSandboxRequestError,
+  NativeOcrSandboxRequestTimeoutError,
+  NativeOcrSandboxUnavailableError,
+} from './native-ocr-sandbox.client';
 
 import {
   CommercialOcrPreprocessUnavailableError,
@@ -18,9 +23,66 @@ describe('CommercialOcrPreprocessor production sandbox requirement', () => {
       await expect(preprocessor.prepare(Buffer.from('untrusted image'), 'primary')).rejects.toEqual(
         expect.objectContaining<Partial<CommercialOcrPreprocessUnavailableError>>({
           name: 'CommercialOcrPreprocessUnavailableError',
-          retryable: true,
+          retryable: false,
+          reason: 'unconfigured',
         }),
       );
+    } finally {
+      preprocessor.onModuleDestroy();
+    }
+  });
+
+  it.each([
+    ['unavailable', true],
+    ['unverified', false],
+    ['invalid_response', false],
+  ] as const)('preserves %s boundary failures and retry safety', async (reason, retryable) => {
+    const preprocessor = new CommercialOcrPreprocessor(
+      new ConfigService({ COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/tmp/native-ocr-test.sock' }),
+    );
+    jest
+      .spyOn((preprocessor as any).sandbox, 'preprocess')
+      .mockRejectedValueOnce(new NativeOcrSandboxUnavailableError(reason));
+    try {
+      await expect(preprocessor.prepare(Buffer.from('image'), 'primary')).rejects.toMatchObject({
+        reason,
+        retryable,
+      });
+    } finally {
+      preprocessor.onModuleDestroy();
+    }
+  });
+
+  it('preserves an uncertain active response timeout as terminal', async () => {
+    const preprocessor = new CommercialOcrPreprocessor(
+      new ConfigService({ COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/tmp/native-ocr-test.sock' }),
+    );
+    jest
+      .spyOn((preprocessor as any).sandbox, 'preprocess')
+      .mockRejectedValueOnce(new NativeOcrSandboxRequestTimeoutError());
+    try {
+      await expect(preprocessor.prepare(Buffer.from('image'), 'primary')).rejects.toMatchObject({
+        reason: 'request_timeout',
+        retryable: false,
+      });
+    } finally {
+      preprocessor.onModuleDestroy();
+    }
+  });
+
+  it('keeps valid request rejection separate from identity failure', async () => {
+    const preprocessor = new CommercialOcrPreprocessor(
+      new ConfigService({ COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/tmp/native-ocr-test.sock' }),
+    );
+    const mock = jest
+      .spyOn((preprocessor as any).sandbox, 'preprocess')
+      .mockRejectedValueOnce(new NativeOcrSandboxRequestError('capacity_exhausted'));
+    const deadlineAtMs = Date.now() + 30_000;
+    try {
+      await expect(
+        preprocessor.prepare(Buffer.from('image'), 'primary', { deadlineAtMs }),
+      ).rejects.toMatchObject({ reason: 'capacity_exhausted', retryable: false });
+      expect(mock).toHaveBeenCalledWith(expect.any(Buffer), 'primary', 5_000, { deadlineAtMs });
     } finally {
       preprocessor.onModuleDestroy();
     }

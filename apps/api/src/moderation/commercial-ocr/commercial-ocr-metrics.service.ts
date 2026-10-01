@@ -102,9 +102,11 @@ export const COMMERCIAL_OCR_METRIC_COUNTERS = [
   'bullmq.job.defer.source_not_ready',
   'bullmq.job.defer.governor_pressure',
   'bullmq.job.defer.admission_pending',
+  'bullmq.job.defer.native_backpressure',
   'bullmq.job.deadline_exhausted.source_not_ready',
   'bullmq.job.deadline_exhausted.governor_pressure',
   'bullmq.job.deadline_exhausted.admission_pending',
+  'bullmq.job.deadline_exhausted.native_backpressure',
   'source.ready',
   'source.receipt.unavailable',
   'source.receipt.missing',
@@ -136,6 +138,7 @@ export const COMMERCIAL_OCR_METRIC_COUNTERS = [
   'analysis.incomplete.preprocess_timeout',
   'analysis.incomplete.ocr_failed',
   'analysis.incomplete.ocr_timeout',
+  'analysis.incomplete.ocr_request_timeout',
   'analysis.incomplete.ocr_truncated',
   'analysis.incomplete.invalid_ocr_output',
   'analysis.incomplete.pass.none',
@@ -144,6 +147,9 @@ export const COMMERCIAL_OCR_METRIC_COUNTERS = [
   'analysis.retry.download_failed',
   'analysis.retry.ocr_failed',
   'analysis.defer.governor_pressure',
+  'analysis.defer.native_backpressure',
+  'analysis.terminal.complete',
+  'analysis.terminal.incomplete',
   'cache.primary.hit',
   'cache.primary.miss',
   'cache.primary.coalesced',
@@ -154,6 +160,8 @@ export const COMMERCIAL_OCR_METRIC_COUNTERS = [
   'confirmation.completed',
   'stage.download.authorized',
   'stage.download.denied',
+  'stage.ocr_dispatch.authorized',
+  'stage.ocr_dispatch.denied',
   'stage.ocr.authorized',
   'stage.ocr.denied',
   'enforcement.suppressed.admission',
@@ -172,8 +180,15 @@ export type CommercialOcrTerminalDeadlineExhaustedCounters = Readonly<{
   source_not_ready: number;
   governor_pressure: number;
   admission_pending: number;
+  native_backpressure: number;
 }>;
-export type CommercialOcrStage = 'download' | 'preprocess' | 'native' | 'policy' | 'end_to_end';
+export type CommercialOcrStage =
+  | 'download'
+  | 'preprocess'
+  | 'native'
+  | 'policy'
+  | 'end_to_end'
+  | 'event_to_terminal';
 
 type TimedSample = Readonly<{
   value: number;
@@ -339,6 +354,7 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
     native: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
     policy: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
     end_to_end: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
+    event_to_terminal: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
   };
   private readonly cpuSecondsPerImage = new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY);
   private unavailableCpuSamples = 0;
@@ -419,6 +435,8 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
         this.processCounters.get('bullmq.job.deadline_exhausted.governor_pressure') ?? 0,
       admission_pending:
         this.processCounters.get('bullmq.job.deadline_exhausted.admission_pending') ?? 0,
+      native_backpressure:
+        this.processCounters.get('bullmq.job.deadline_exhausted.native_backpressure') ?? 0,
     };
   }
 
@@ -763,6 +781,7 @@ const COMMERCIAL_OCR_STAGES: readonly CommercialOcrStage[] = [
   'native',
   'policy',
   'end_to_end',
+  'event_to_terminal',
 ];
 const COMMERCIAL_OCR_METRIC_COUNTER_SET = new Set<string>(COMMERCIAL_OCR_METRIC_COUNTERS);
 

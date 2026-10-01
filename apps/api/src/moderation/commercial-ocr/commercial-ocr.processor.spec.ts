@@ -116,7 +116,26 @@ describe('CommercialOcrProcessor', () => {
       'end_to_end',
       expect.any(Number),
     );
+    expect(harness.metrics.recordStageDuration).toHaveBeenCalledWith(
+      'event_to_terminal',
+      activeNowMs - Date.parse(data.eventTimestamp),
+    );
     expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
+  });
+
+  it('defers native capacity without consuming an attempt or refreshing the event deadline', async () => {
+    const harness = createHarness({
+      result: { kind: 'defer', reason: 'native_backpressure', delayMs: 5_000 },
+    });
+    await expect(harness.processor.process(harness.job, 'lock-1')).rejects.toBeInstanceOf(
+      DelayedError,
+    );
+    expect(harness.job.moveToDelayed).toHaveBeenCalledWith(activeNowMs + 5_000, 'lock-1');
+    expect(harness.admissionStore.release).not.toHaveBeenCalled();
+    expect(harness.metrics.recordStageDuration).not.toHaveBeenCalledWith(
+      'event_to_terminal',
+      expect.anything(),
+    );
   });
 
   it('drains legacy v1 jobs as commercial-only work during the schema transition', async () => {

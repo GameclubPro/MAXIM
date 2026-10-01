@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import {
   NativeOcrSandboxClient,
   NativeOcrSandboxImageRejectedError,
+  NativeOcrSandboxRequestError,
+  NativeOcrSandboxRequestTimeoutError,
   NativeOcrSandboxUnavailableError,
 } from './native-ocr-sandbox.client';
 import {
@@ -32,11 +34,23 @@ export {
 } from './commercial-ocr-preprocess-config';
 
 export class CommercialOcrPreprocessUnavailableError extends Error {
-  readonly retryable = true;
+  readonly retryable: boolean;
 
-  constructor() {
+  constructor(
+    readonly reason:
+      | 'unconfigured'
+      | 'unavailable'
+      | 'unverified'
+      | 'invalid_response'
+      | 'capacity_exhausted'
+      | 'request_timeout'
+      | 'request_deadline_exceeded'
+      | 'invalid_input'
+      | 'shutting_down' = 'unavailable',
+  ) {
     super('Commercial OCR native preprocess boundary is unavailable');
     this.name = 'CommercialOcrPreprocessUnavailableError';
+    this.retryable = reason === 'unavailable' || reason === 'shutting_down';
   }
 }
 
@@ -67,19 +81,25 @@ export class CommercialOcrPreprocessor implements OnModuleDestroy {
     if (this.sandbox.isConfigured()) {
       const timeoutMs = resolveSandboxPreprocessTimeout(options.deadlineAtMs);
       try {
-        return await this.sandbox.preprocess(input, pass, timeoutMs);
+        return await this.sandbox.preprocess(input, pass, timeoutMs, options);
       } catch (error: unknown) {
         if (error instanceof NativeOcrSandboxImageRejectedError) {
           throw new CommercialOcrImageRejectedError(error.reason);
         }
-        if (error instanceof NativeOcrSandboxUnavailableError) {
-          throw new CommercialOcrPreprocessUnavailableError();
+        if (error instanceof NativeOcrSandboxRequestTimeoutError) {
+          throw new CommercialOcrPreprocessUnavailableError('request_timeout');
+        }
+        if (
+          error instanceof NativeOcrSandboxUnavailableError ||
+          error instanceof NativeOcrSandboxRequestError
+        ) {
+          throw new CommercialOcrPreprocessUnavailableError(error.reason);
         }
         throw error;
       }
     }
     if (!this.localEnabled || !this.localPromise) {
-      throw new CommercialOcrPreprocessUnavailableError();
+      throw new CommercialOcrPreprocessUnavailableError('unconfigured');
     }
     return (await this.localPromise).prepare(input, pass, options);
   }

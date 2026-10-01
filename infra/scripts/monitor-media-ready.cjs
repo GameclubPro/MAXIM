@@ -59,7 +59,7 @@ function summarizeMediaHealth(httpStatus, raw) {
       `ocr=${ocr.ready === true}/${typeof ocr.state === 'string' ? ocr.state : 'unknown'}`,
       `workers=${number(workers.configured)}/${number(workers.live)}/${number(workers.ready)}/${number(workers.busy)}`,
       `nativeQueue=${number(ocr.queueDepth)}`,
-      `bullMqDeadlineExhaustedProcess=source_not_ready:${counter(terminalDeadlineExhausted.source_not_ready)},governor_pressure:${counter(terminalDeadlineExhausted.governor_pressure)},admission_pending:${counter(terminalDeadlineExhausted.admission_pending)}`,
+      `bullMqDeadlineExhaustedProcess=source_not_ready:${counter(terminalDeadlineExhausted.source_not_ready)},governor_pressure:${counter(terminalDeadlineExhausted.governor_pressure)},admission_pending:${counter(terminalDeadlineExhausted.admission_pending)},native_backpressure:${counter(terminalDeadlineExhausted.native_backpressure)}`,
       `failed=${number(counters.failed)}`,
       `restarts=${number(counters.restarts)}`,
       `recycles=${number(counters.recycles)}`,

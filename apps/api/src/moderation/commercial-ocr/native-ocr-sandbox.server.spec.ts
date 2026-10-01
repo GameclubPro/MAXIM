@@ -2,15 +2,49 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createConnection } from 'node:net';
 
 import { NativeOcrSandboxClient } from './native-ocr-sandbox.client';
+import * as nativeOcrSandboxClock from './native-ocr-sandbox.clock';
 import {
   assertNativeOcrSandboxNetworkIsolated,
   startNativeOcrSandboxServer,
   type NativeOcrSandboxServerDependencies,
 } from './native-ocr-sandbox.server';
+import {
+  decodeNativeOcrSandboxFrame,
+  encodeNativeOcrSandboxFrame,
+  NATIVE_OCR_SANDBOX_FRAME_KINDS,
+} from './native-ocr-sandbox.protocol';
+import { parseNativeOcrSandboxRuntimeStatus } from './native-ocr-sandbox.runtime';
 
 describe('native OCR sandbox server containment', () => {
+  it('rejects an unverified monotonic clock before loading native dependencies', async () => {
+    const verifyNativeIdentity = jest.fn();
+    const createPreprocessor = jest.fn();
+    const probeNativeTesseract = jest.fn();
+    const clock = jest
+      .spyOn(nativeOcrSandboxClock, 'assertNativeOcrSandboxSharedClock')
+      .mockImplementation(() => {
+        throw new Error('Unverified shared clock');
+      });
+    try {
+      await expect(
+        startNativeOcrSandboxServer(sandboxEnvironment('/tmp/never-created-ocr.sock'), {
+          ...successfulServerDependencies(),
+          verifyNativeIdentity,
+          createPreprocessor,
+          probeNativeTesseract,
+        }),
+      ).rejects.toThrow('Unverified shared clock');
+      expect(verifyNativeIdentity).not.toHaveBeenCalled();
+      expect(createPreprocessor).not.toHaveBeenCalled();
+      expect(probeNativeTesseract).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('serves preprocessing and recognition over the same bounded Unix protocol', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'maxim-ocr-roundtrip-'));
     const socketPath = join(directory, 'ocr.sock');
@@ -57,7 +91,7 @@ describe('native OCR sandbox server containment', () => {
     const client = new NativeOcrSandboxClient(testClientConfig(environment));
 
     try {
-      const prepared = await client.preprocess(Buffer.from('source'), 'primary', 1_000);
+      const prepared = await client.preprocess(Buffer.from('source'), 'primary', 2_000);
       expect(prepared).toEqual({ bytes: Buffer.from('prepared'), width: 10, height: 5 });
       await expect(client.recognize(prepared.bytes, 6, 1_000)).resolves.toMatchObject({
         ok: true,
@@ -186,8 +220,10 @@ describe('native OCR sandbox server containment', () => {
     const client = new NativeOcrSandboxClient(testClientConfig(environment));
 
     try {
-      const recognition = client.recognize(Buffer.from('prepared'), 6, 1);
-      const outcome = expect(recognition).rejects.toMatchObject({ reason: 'unavailable' });
+      const recognition = client.recognize(Buffer.from('prepared'), 6, 150);
+      const outcome = expect(recognition).rejects.toMatchObject({
+        name: 'NativeOcrSandboxRequestTimeoutError',
+      });
       await nativeStarted;
       await outcome;
       await waitFor(() => signalGroup.mock.calls.length > 0);
@@ -348,7 +384,182 @@ describe('native OCR sandbox server containment', () => {
       }),
     ).toThrow('non-loopback');
   });
+
+  it('expires a queued request without starting native or recycling the active request', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maxim-ocr-queued-expiry-'));
+    const environment = sandboxEnvironment(join(directory, 'ocr.sock'));
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let finishFirst!: (result: ReturnType<typeof emptyRecognition>) => void;
+    const firstResult = new Promise<ReturnType<typeof emptyRecognition>>((resolve) => {
+      finishFirst = resolve;
+    });
+    const runNative = jest.fn(async () => {
+      markStarted();
+      return firstResult;
+    });
+    const fatalExit = jest.fn();
+    const signalGroup = jest.fn(() => true);
+    const lifecycle = jest.fn();
+    const server = await startNativeOcrSandboxServer(environment, {
+      ...successfulServerDependencies(),
+      runNativeTesseract: runNative,
+      signalNativeProcessGroup: signalGroup,
+      fatalExit,
+      recordLifecycleEvent: lifecycle,
+    });
+    const firstClient = new NativeOcrSandboxClient(testClientConfig(environment));
+    const waitingClient = new NativeOcrSandboxClient(testClientConfig(environment));
+    try {
+      const first = firstClient.recognize(Buffer.from('prepared'), 6, 3_000);
+      await started;
+      const waiting = waitingClient.recognize(Buffer.from('prepared'), 6, 300);
+      const rejected = expect(waiting).rejects.toMatchObject({
+        reason: 'request_deadline_exceeded',
+      });
+      const during = await waitForQueuedRuntime(server.socketPath);
+      expect(during).toMatchObject({
+        activeOperation: 'recognize',
+        queueDepth: 1,
+        counters: { started: 1 },
+      });
+      await rejected;
+      expect(waitingClient.isVerified()).toBe(true);
+      expect(waitingClient.getStatus().runtimeStatus).toMatchObject({
+        queueDepth: 0,
+        counters: { started: 1, rejections: { request_deadline_exceeded: 1 } },
+      });
+      finishFirst(emptyRecognition());
+      await expect(first).resolves.toMatchObject({ ok: true });
+      expect(runNative).toHaveBeenCalledTimes(1);
+      expect(signalGroup).not.toHaveBeenCalled();
+      expect(fatalExit).not.toHaveBeenCalled();
+      expect(lifecycle).not.toHaveBeenCalled();
+      expect((await probeRuntime(server.socketPath))?.queueWaitMs.maximum).toBeGreaterThan(100);
+    } finally {
+      finishFirst(emptyRecognition());
+      firstClient.close();
+      waitingClient.close();
+      await server.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('deducts actual queue wait before starting native and reports probes separately', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maxim-ocr-queued-budget-'));
+    const environment = sandboxEnvironment(join(directory, 'ocr.sock'));
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let finishFirst!: (result: ReturnType<typeof emptyRecognition>) => void;
+    const firstResult = new Promise<ReturnType<typeof emptyRecognition>>((resolve) => {
+      finishFirst = resolve;
+    });
+    let calls = 0;
+    const runNative = jest.fn(
+      async (_options: Parameters<NativeOcrSandboxServerDependencies['runNativeTesseract']>[0]) => {
+        if (++calls === 1) {
+          markStarted();
+          return firstResult;
+        }
+        return emptyRecognition();
+      },
+    );
+    const server = await startNativeOcrSandboxServer(environment, {
+      ...successfulServerDependencies(),
+      runNativeTesseract: runNative,
+    });
+    const firstClient = new NativeOcrSandboxClient(testClientConfig(environment));
+    const waitingClient = new NativeOcrSandboxClient(testClientConfig(environment));
+    try {
+      const first = firstClient.recognize(Buffer.from('prepared'), 6, 3_000);
+      await started;
+      const waiting = waitingClient.recognize(Buffer.from('prepared'), 6, 1_000);
+      const during = await waitForQueuedRuntime(server.socketPath);
+      expect(during.remainingBudgetMs).toBeGreaterThan(0);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const afterWait = await probeRuntime(server.socketPath);
+      expect(afterWait?.activeOperation).toBe('recognize');
+      expect(afterWait?.remainingBudgetMs).toBeLessThan(during.remainingBudgetMs! - 100);
+      finishFirst(emptyRecognition());
+      await expect(first).resolves.toMatchObject({ ok: true });
+      await expect(waiting).resolves.toMatchObject({ ok: true });
+      expect(runNative.mock.calls[1]![0].timeoutMs).toBeLessThan(900);
+      expect(runNative.mock.calls[1]![0].timeoutMs).toBeGreaterThan(1);
+      const after = await probeRuntime(server.socketPath);
+      expect(after).toMatchObject({
+        activeOperation: 'idle',
+        remainingBudgetMs: null,
+        queueDepth: 0,
+        counters: { started: 2, completed: 2, failed: 0 },
+      });
+      expect(after?.counters.probes).toBeGreaterThanOrEqual(2);
+      expect(after?.queueWaitMs.maximum).toBeGreaterThanOrEqual(100);
+    } finally {
+      finishFirst(emptyRecognition());
+      firstClient.close();
+      waitingClient.close();
+      await server.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
+
+function emptyRecognition() {
+  return {
+    ok: true as const,
+    payload: { text: '', aggregateConfidence: null, words: [], lines: [], truncated: false },
+  };
+}
+
+async function probeRuntime(socketPath: string) {
+  return new Promise<ReturnType<typeof parseNativeOcrSandboxRuntimeStatus>>((resolve, reject) => {
+    const socket = createConnection({ path: socketPath });
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error('Test probe timed out'));
+    }, 2_000);
+    socket.once('connect', () =>
+      socket.write(
+        encodeNativeOcrSandboxFrame({
+          kind: NATIVE_OCR_SANDBOX_FRAME_KINDS.probeRequest,
+          metadata: {},
+          limits: { metadataBytes: 4 * 1024, payloadBytes: 0 },
+        }),
+      ),
+    );
+    socket.on('data', (chunk: Buffer) => chunks.push(chunk));
+    socket.once('error', reject);
+    socket.once('end', () => {
+      try {
+        const frame = decodeNativeOcrSandboxFrame(Buffer.concat(chunks), {
+          metadataBytes: 64 * 1024,
+          payloadBytes: 0,
+        });
+        resolve(parseNativeOcrSandboxRuntimeStatus(frame.metadata.runtimeStatus));
+      } catch (error) {
+        reject(error);
+      } finally {
+        clearTimeout(timer);
+        socket.destroy();
+      }
+    });
+  });
+}
+
+async function waitForQueuedRuntime(socketPath: string) {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const status = await probeRuntime(socketPath);
+    if (status?.queueDepth === 1) return status;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('Expected a real queued sandbox request');
+}
 
 function sandboxEnvironment(socketPath: string): NodeJS.ProcessEnv {
   return {
@@ -389,6 +600,7 @@ function successfulServerDependencies(): Partial<NativeOcrSandboxServerDependenc
       async () => ({ ok: true }) as const,
     ) as NativeOcrSandboxServerDependencies['probeNativeTesseract'],
     fatalExit: jest.fn(),
+    recordLifecycleEvent: jest.fn(),
   };
 }
 

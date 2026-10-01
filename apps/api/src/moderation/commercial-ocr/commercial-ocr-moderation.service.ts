@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import type { MaxUpdate } from '@maxim/contracts';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -92,7 +93,11 @@ export type CommercialOcrJobProcessResult =
   | {
       kind: 'defer';
       delayMs: number;
-      reason: 'source_not_ready' | 'governor_pressure' | 'admission_pending';
+      reason:
+        | 'source_not_ready'
+        | 'governor_pressure'
+        | 'admission_pending'
+        | 'native_backpressure';
     };
 
 type CommercialOcrJobContext = {
@@ -123,6 +128,7 @@ type CommercialOcrWebhookSource = {
 
 @Injectable()
 export class CommercialOcrModerationService {
+  private nextSlowOcrAtMs = 0;
   private readonly logger = new Logger(CommercialOcrModerationService.name);
   private readonly admissionTombstoneTtlMs: number;
 
@@ -327,7 +333,7 @@ export class CommercialOcrModerationService {
       settings: context.settings,
       ocrVersion: job.ocrVersion,
       deadlineAtMs,
-      authorizeStage: () => this.authorizeHeavyStage(),
+      authorizeStage: (stage) => this.authorizeHeavyStage(stage),
       commercialScanEnabled: purposes.commercial && context.settings.commercialAdsFilterEnabled,
       imageTextStopListScanEnabled:
         imageTextStopListEnabled &&
@@ -361,6 +367,7 @@ export class CommercialOcrModerationService {
       return { kind: 'retry', reason: 'download_failed' };
     }
     if (analysis.kind !== 'complete') {
+      this.metrics.recordCounter('analysis.terminal.incomplete');
       this.metrics.recordCounter(`analysis.incomplete.${analysis.reason}`);
       this.metrics.recordCounter(`analysis.incomplete.pass.${analysis.pass ?? 'none'}`);
       this.logger.log(
@@ -380,6 +387,7 @@ export class CommercialOcrModerationService {
       return { kind: 'completed' };
     }
 
+    this.metrics.recordCounter('analysis.terminal.complete');
     await this.recordReviewObservation(job, jobId, source, analysis.decision);
 
     const imageTextStopListDecision =
@@ -1321,16 +1329,35 @@ export class CommercialOcrModerationService {
     }
   }
 
-  private async authorizeHeavyStage(): Promise<boolean> {
+  private async authorizeHeavyStage(
+    stage: 'download' | 'ocr' | 'ocr_dispatch',
+  ): Promise<{ allowed: boolean; retryAfterMs: number }> {
     try {
       const decision = await this.governor.decide({
         component: GOVERNOR_COMPONENT,
         sourceTag: GOVERNOR_SOURCE_TAG,
         ignoredPressureDomains: ['max_api_traffic'],
       });
-      return decision.action === 'run';
+      const retryAfterMs =
+        Number.isSafeInteger(decision.retryAfterMs) && decision.retryAfterMs > 0
+          ? Math.min(600_000, decision.retryAfterMs)
+          : 30_000;
+      if (decision.action === 'run') return { allowed: true, retryAfterMs: 0 };
+      if (decision.action !== 'slow') return { allowed: false, retryAfterMs };
+      // FLAG: The single OCR consumer may advance one cache-miss pass per slow interval.
+      // Downloads and cache hits do not consume that slot; pause always retains authority.
+      if (stage !== 'ocr') return { allowed: true, retryAfterMs: 0 };
+      const nowMs = performance.now();
+      if (nowMs < this.nextSlowOcrAtMs) {
+        return {
+          allowed: false,
+          retryAfterMs: Math.max(1, Math.ceil(this.nextSlowOcrAtMs - nowMs)),
+        };
+      }
+      this.nextSlowOcrAtMs = nowMs + retryAfterMs;
+      return { allowed: true, retryAfterMs: 0 };
     } catch {
-      return false;
+      return { allowed: false, retryAfterMs: 30_000 };
     }
   }
 

@@ -421,10 +421,14 @@ describe('CommercialOcrAnalysisService', () => {
     expect(authorizeStage.mock.calls.map((call) => call[0])).toEqual([
       'download',
       'ocr',
+      'ocr_dispatch',
       'ocr',
+      'ocr_dispatch',
       'download',
       'ocr',
+      'ocr_dispatch',
       'ocr',
+      'ocr_dispatch',
     ]);
 
     const identities = cache.read.mock.calls.map((call) => call[0] as CommercialOcrCacheIdentity);
@@ -434,42 +438,42 @@ describe('CommercialOcrAnalysisService', () => {
       {
         pass: 'primary',
         psm: 11,
-        preprocessProfile: 'gray-bounded-v3.i40000000.o3000000.s2000',
+        preprocessProfile: 'gray-bounded-v4.i40000000.o3000000.s2000',
       },
       {
         pass: 'primary',
         psm: 11,
-        preprocessProfile: 'gray-bounded-v3.i40000000.o3000000.s2000',
+        preprocessProfile: 'gray-bounded-v4.i40000000.o3000000.s2000',
       },
       {
         pass: 'confirmation',
         psm: 6,
-        preprocessProfile: 'normalized-threshold160-v3.i40000000.o3000000.s2000',
+        preprocessProfile: 'normalized-threshold160-v4.i40000000.o3000000.s2000',
       },
       {
         pass: 'confirmation',
         psm: 6,
-        preprocessProfile: 'normalized-threshold160-v3.i40000000.o3000000.s2000',
+        preprocessProfile: 'normalized-threshold160-v4.i40000000.o3000000.s2000',
       },
       {
         pass: 'primary',
         psm: 11,
-        preprocessProfile: 'gray-bounded-v3.i40000000.o3000000.s2000',
+        preprocessProfile: 'gray-bounded-v4.i40000000.o3000000.s2000',
       },
       {
         pass: 'primary',
         psm: 11,
-        preprocessProfile: 'gray-bounded-v3.i40000000.o3000000.s2000',
+        preprocessProfile: 'gray-bounded-v4.i40000000.o3000000.s2000',
       },
       {
         pass: 'confirmation',
         psm: 6,
-        preprocessProfile: 'normalized-threshold160-v3.i40000000.o3000000.s2000',
+        preprocessProfile: 'normalized-threshold160-v4.i40000000.o3000000.s2000',
       },
       {
         pass: 'confirmation',
         psm: 6,
-        preprocessProfile: 'normalized-threshold160-v3.i40000000.o3000000.s2000',
+        preprocessProfile: 'normalized-threshold160-v4.i40000000.o3000000.s2000',
       },
     ]);
     expect(identities[0]?.contentSha256).toBe(
@@ -536,9 +540,9 @@ describe('CommercialOcrAnalysisService', () => {
     const identities = fixture.cache.read.mock.calls.map(
       (call) => call[0] as CommercialOcrCacheIdentity,
     );
-    expect(identities[0]?.preprocessProfile).toBe('gray-bounded-v3.i20000000.o2000000.s1600');
+    expect(identities[0]?.preprocessProfile).toBe('gray-bounded-v4.i20000000.o2000000.s1600');
     expect(identities.at(-1)?.preprocessProfile).toBe(
-      'normalized-threshold160-v3.i20000000.o2000000.s1600',
+      'normalized-threshold160-v4.i20000000.o2000000.s1600',
     );
   });
 
@@ -715,6 +719,20 @@ describe('CommercialOcrAnalysisService', () => {
     expect(ocrDenied.cache.write).not.toHaveBeenCalled();
   });
 
+  it('checks a fresh pause between preprocessing and native dispatch', async () => {
+    const { service, preprocessor, ocr } = harness();
+    const authorizeStage = jest.fn(async (stage: string) =>
+      stage === 'ocr_dispatch' ? { allowed: false, retryAfterMs: 60_000 } : true,
+    );
+    await expect(analyze(service, { authorizeStage })).resolves.toEqual({
+      kind: 'defer',
+      reason: 'governor_pressure',
+      delayMs: 60_000,
+    });
+    expect(preprocessor.prepare).toHaveBeenCalledTimes(1);
+    expect(ocr.recognize).not.toHaveBeenCalled();
+  });
+
   it('fails open before any I/O when the absolute job deadline has expired', async () => {
     const { service, downloader, preprocessor, ocr, cache } = harness();
     const authorizeStage = jest.fn().mockResolvedValue(true);
@@ -845,12 +863,33 @@ describe('CommercialOcrAnalysisService', () => {
     expect(cache.write).not.toHaveBeenCalled();
   });
 
-  it.each([
-    'capacity_exhausted',
-    'worker_unavailable',
-    'tesseract_failed',
-    'shutting_down',
-  ] as const)('returns a retry for transient OCR failure %s', async (reason) => {
+  it.each(['worker_unavailable', 'tesseract_failed', 'shutting_down'] as const)(
+    'returns a retry for transient OCR failure %s',
+    async (reason) => {
+      const { service, cache } = harness({
+        ocrResults: [
+          {
+            ok: false,
+            status: 'failed_open',
+            passLabel: 'primary',
+            psm: 11,
+            reason,
+            durationMs: 5,
+          },
+        ],
+      });
+
+      await expect(analyze(service)).resolves.toEqual({
+        kind: 'retry',
+        reason: 'ocr_failed',
+        imageIndex: 0,
+        pass: 'primary',
+      });
+      expect(cache.write).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not replay an active operation whose response deadline is uncertain', async () => {
     const { service, cache } = harness({
       ocrResults: [
         {
@@ -858,19 +897,70 @@ describe('CommercialOcrAnalysisService', () => {
           status: 'failed_open',
           passLabel: 'primary',
           psm: 11,
-          reason,
-          durationMs: 5,
+          reason: 'request_timeout',
+          durationMs: 10_000,
         },
       ],
     });
-
     await expect(analyze(service)).resolves.toEqual({
-      kind: 'retry',
-      reason: 'ocr_failed',
+      kind: 'incomplete',
+      reason: 'ocr_request_timeout',
       imageIndex: 0,
       pass: 'primary',
     });
     expect(cache.write).not.toHaveBeenCalled();
+  });
+
+  it.each(['capacity_exhausted', 'request_deadline_exceeded'] as const)(
+    'defers native backpressure %s without spending a transport retry',
+    async (reason) => {
+      const { service, cache } = harness({
+        ocrResults: [
+          {
+            ok: false,
+            status: 'failed_open',
+            passLabel: 'primary',
+            psm: 11,
+            reason,
+            durationMs: 5,
+          },
+        ],
+      });
+      await expect(analyze(service)).resolves.toEqual({
+        kind: 'defer',
+        reason: 'native_backpressure',
+        delayMs: 5_000,
+      });
+      expect(cache.write).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['unverified', 'invalid_response', 'invalid_input'] as const)(
+    'does not retry an unsafe preprocess boundary %s',
+    async (reason) => {
+      const { service, preprocessor, ocr, cache } = harness();
+      preprocessor.prepare.mockRejectedValueOnce(
+        new CommercialOcrPreprocessUnavailableError(reason),
+      );
+      await expect(analyze(service)).resolves.toEqual({
+        kind: 'incomplete',
+        reason: 'ocr_failed',
+        imageIndex: 0,
+        pass: 'primary',
+      });
+      expect(ocr.recognize).not.toHaveBeenCalled();
+      expect(cache.write).not.toHaveBeenCalled();
+    },
+  );
+
+  it('uses the governor delay instead of a fixed retry interval', async () => {
+    const { service, downloader } = harness();
+    await expect(
+      analyze(service, {
+        authorizeStage: jest.fn().mockResolvedValue({ allowed: false, retryAfterMs: 60_000 }),
+      }),
+    ).resolves.toEqual({ kind: 'defer', reason: 'governor_pressure', delayMs: 60_000 });
+    expect(downloader.download).not.toHaveBeenCalled();
   });
 
   it('returns a retry when the OCR adapter rejects unexpectedly', async () => {

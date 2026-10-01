@@ -47,7 +47,7 @@ describe('native OCR sandbox protocol', () => {
       decodeNativeOcrSandboxFrame(Buffer.concat([valid, Buffer.from([0])]), limits),
     ).toThrow('length is invalid');
     const drifted = Buffer.from(valid);
-    drifted.writeUInt8(2, 4);
+    drifted.writeUInt8(1, 4);
     expect(() => decodeNativeOcrSandboxFrame(drifted, limits)).toThrow(
       'protocol version is unsupported',
     );

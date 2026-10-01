@@ -236,6 +236,7 @@ describe('HealthService', () => {
       source_not_ready: 2,
       governor_pressure: 3,
       admission_pending: 1,
+      native_backpressure: 0,
     });
     const commercialOcrMetrics = {
       getSnapshot: jest.fn(),
@@ -269,6 +270,7 @@ describe('HealthService', () => {
             source_not_ready: 2,
             governor_pressure: 3,
             admission_pending: 1,
+            native_backpressure: 0,
           },
           behaviorIdentity: {
             complete: true,
@@ -318,8 +320,8 @@ describe('HealthService', () => {
         ocr: {
           state: 'unavailable',
           ready: false,
-          workers: { configured: 0, live: 0, ready: 0, busy: 0 },
-          queueDepth: 0,
+          workers: { configured: 0, live: 0, ready: 0, busy: null },
+          queueDepth: null,
           bullMqTerminalDeadlineExhaustedProcess: null,
           behaviorIdentity: {
             complete: false,
@@ -538,8 +540,8 @@ describe('HealthService', () => {
     expect(snapshot.checks.ocr).toEqual({
       state: 'unavailable',
       ready: false,
-      workers: { configured: 0, live: 0, ready: 0, busy: 0 },
-      queueDepth: 0,
+      workers: { configured: 0, live: 0, ready: 0, busy: null },
+      queueDepth: null,
       counters: {
         completed: 0,
         failed: 0,
@@ -562,8 +564,8 @@ describe('HealthService', () => {
       queues: {
         bullMq: null,
         native: {
-          depth: 0,
-          busy: 0,
+          depth: null,
+          busy: null,
           workers: 0,
           waitMs: {
             observed: 0,

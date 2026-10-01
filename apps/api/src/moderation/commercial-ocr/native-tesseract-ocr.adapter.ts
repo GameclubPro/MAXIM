@@ -17,6 +17,8 @@ import {
 } from './commercial-ocr-behavior-identity';
 import {
   NativeOcrSandboxClient,
+  NativeOcrSandboxRequestError,
+  NativeOcrSandboxRequestTimeoutError,
   NativeOcrSandboxUnavailableError,
 } from './native-ocr-sandbox.client';
 import {
@@ -27,6 +29,8 @@ import {
   type NativeTesseractPageSegmentationMode,
   type NativeTesseractRecognizeOptions,
 } from './native-tesseract-ocr.types';
+import { NATIVE_OCR_SANDBOX_IPC_GRACE_MS } from './native-ocr-sandbox.protocol';
+import type { NativeOcrSandboxRuntimeStatus } from './native-ocr-sandbox.runtime';
 import type {
   NativeTesseractWorkerRequest,
   NativeTesseractWorkerResponse,
@@ -77,8 +81,13 @@ type WorkerSlot = {
 export type NativeTesseractRuntimeStatus = Readonly<{
   state: 'starting' | 'ready' | 'degraded' | 'shutting_down';
   ready: boolean;
-  workers: Readonly<{ configured: number; live: number; ready: number; busy: number }>;
-  queueDepth: number;
+  workers: Readonly<{ configured: number; live: number; ready: number; busy: number | null }>;
+  queueDepth: number | null;
+  sandboxRuntime?: Readonly<{
+    available: boolean;
+    observedAtMs: number | null;
+    snapshot: NativeOcrSandboxRuntimeStatus | null;
+  }>;
   queueWaitMs: NativeTesseractQueueWaitSnapshot;
   counters: Readonly<{
     completed: number;
@@ -987,13 +996,17 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
     const remainingMs =
       deadlineAtMs === undefined
         ? this.timeoutMs
-        : Math.min(this.timeoutMs, Math.max(0, deadlineAtMs - Date.now() - WORKER_RESULT_GRACE_MS));
+        : Number.isSafeInteger(deadlineAtMs)
+          ? Math.min(
+              this.timeoutMs,
+              Math.max(0, deadlineAtMs - Date.now() - NATIVE_OCR_SANDBOX_IPC_GRACE_MS),
+            )
+          : 0;
     if (remainingMs < 1) {
-      return this.failImmediately(startedAt, passLabel, psm, 'timeout');
+      return this.failImmediately(startedAt, passLabel, psm, 'request_deadline_exceeded');
     }
-    this.queueWaitMs.record(0);
     try {
-      const result = await this.sandbox.recognize(image, psm, remainingMs);
+      const result = await this.sandbox.recognize(image, psm, remainingMs, { deadlineAtMs });
       if (!result.ok) {
         const failed = this.buildFailedOpenResult(startedAt, passLabel, psm, result.reason);
         this.recordResult(failed);
@@ -1010,6 +1023,19 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       this.recordResult(recognized);
       return recognized;
     } catch (error: unknown) {
+      if (
+        error instanceof NativeOcrSandboxRequestError ||
+        error instanceof NativeOcrSandboxRequestTimeoutError
+      ) {
+        const failed = this.buildFailedOpenResult(
+          startedAt,
+          passLabel,
+          psm,
+          error instanceof NativeOcrSandboxRequestTimeoutError ? 'request_timeout' : error.reason,
+        );
+        this.recordResult(failed);
+        return failed;
+      }
       this.recordNativeArtifactVerificationFailure(error, 'boundary.probe_failed');
       const failed = this.buildFailedOpenResult(
         startedAt,
@@ -1024,6 +1050,14 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
 
   private getSandboxRuntimeStatus(): NativeTesseractRuntimeStatus {
     const boundary = this.sandbox.getStatus();
+    const statusAgeMs =
+      boundary.runtimeStatusObservedAtMs === null
+        ? Infinity
+        : Date.now() - boundary.runtimeStatusObservedAtMs;
+    const runtime =
+      boundary.verified && statusAgeMs >= 0 && statusAgeMs <= 2 * SANDBOX_PROBE_INTERVAL_MS
+        ? boundary.runtimeStatus
+        : null;
     const artifactReady = this.nativeArtifactsReadyForRecognition();
     const ready =
       this.initialized &&
@@ -1045,10 +1079,33 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
         configured: this.concurrency,
         live: boundary.verified ? 1 : 0,
         ready: ready ? 1 : 0,
-        busy: boundary.activeRequests > 0 ? 1 : 0,
+        busy: runtime ? (runtime.activeOperation === 'idle' ? 0 : 1) : null,
       },
-      queueDepth: 0,
-      queueWaitMs: this.queueWaitMs.snapshot(),
+      queueDepth: runtime?.queueDepth ?? null,
+      sandboxRuntime: {
+        available: runtime !== null,
+        observedAtMs: boundary.runtimeStatusObservedAtMs,
+        snapshot: runtime,
+      },
+      queueWaitMs: runtime
+        ? {
+            // FLAG: Server queue waits include valid pre-start rejections as well as starts.
+            observed: Math.min(
+              Number.MAX_SAFE_INTEGER,
+              runtime.counters.started +
+                runtime.counters.rejections.capacity_exhausted +
+                runtime.counters.rejections.request_deadline_exceeded +
+                runtime.counters.rejections.shutting_down,
+            ),
+            sampled: runtime.queueWaitMs.samples,
+            capacity: QUEUE_WAIT_SAMPLE_CAPACITY,
+            last: runtime.queueWaitMs.last,
+            average: runtime.queueWaitMs.average,
+            maximum: runtime.queueWaitMs.maximum,
+            p95: null,
+            p99: null,
+          }
+        : this.queueWaitMs.snapshot(),
       counters: {
         completed: this.completedCount,
         failed: this.failedCount,

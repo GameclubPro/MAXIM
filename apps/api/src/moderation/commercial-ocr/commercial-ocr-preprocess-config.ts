@@ -6,8 +6,8 @@ export const COMMERCIAL_OCR_SHARP_CONCURRENCY = 1;
 export const COMMERCIAL_OCR_SHARP_PROCESSING_TIMEOUT_SECONDS = 5;
 
 export const COMMERCIAL_OCR_PREPROCESS_PROFILES = Object.freeze({
-  primary: 'gray-bounded-v3',
-  confirmation: 'normalized-threshold160-v3',
+  primary: 'gray-bounded-v4',
+  confirmation: 'normalized-threshold160-v4',
 } as const);
 
 export type CommercialOcrPassName = keyof typeof COMMERCIAL_OCR_PREPROCESS_PROFILES;

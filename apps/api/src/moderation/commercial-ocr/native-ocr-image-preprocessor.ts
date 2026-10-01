@@ -57,8 +57,19 @@ export class NativeOcrImagePreprocessor {
       this.limits.maxSide / Math.max(orientedWidth, orientedHeight),
       Math.sqrt(this.limits.maxOutputPixels / inputPixels),
     );
-    const width = Math.max(1, Math.round(orientedWidth * outputScale));
-    const height = Math.max(1, Math.round(orientedHeight * outputScale));
+    let width = Math.max(1, Math.min(this.limits.maxSide, Math.round(orientedWidth * outputScale)));
+    let height = Math.max(
+      1,
+      Math.min(this.limits.maxSide, Math.round(orientedHeight * outputScale)),
+    );
+    // FLAG: Independent rounding can exceed the area ceiling even when the floating scale is safe.
+    if (width * height > this.limits.maxOutputPixels) {
+      if (width >= height) {
+        width = Math.max(1, Math.floor(this.limits.maxOutputPixels / height));
+      } else {
+        height = Math.max(1, Math.floor(this.limits.maxOutputPixels / width));
+      }
+    }
 
     let pipeline = sharp(input, {
       limitInputPixels: this.limits.maxInputPixels,
@@ -85,6 +96,26 @@ export class NativeOcrImagePreprocessor {
         throw new CommercialOcrImageRejectedError('too_many_pixels');
       }
       throw new CommercialOcrImageRejectedError('invalid_image');
+    }
+    const outputPixels = prepared.info.width * prepared.info.height;
+    if (
+      !Number.isSafeInteger(prepared.info.width) ||
+      !Number.isSafeInteger(prepared.info.height) ||
+      prepared.info.width < 1 ||
+      prepared.info.height < 1 ||
+      !Number.isSafeInteger(outputPixels)
+    ) {
+      prepared.data.fill(0);
+      throw new CommercialOcrImageRejectedError('invalid_image');
+    }
+    // FLAG: Check native output as well as requested dimensions before it crosses the sandbox.
+    if (
+      prepared.info.width > this.limits.maxSide ||
+      prepared.info.height > this.limits.maxSide ||
+      outputPixels > this.limits.maxOutputPixels
+    ) {
+      prepared.data.fill(0);
+      throw new CommercialOcrImageRejectedError('too_many_pixels');
     }
     return {
       bytes: prepared.data,

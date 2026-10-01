@@ -54,3 +54,44 @@ their own rollout controls. Earlier pending v4 commercial bindings are rejected
 without deletion. Use a compatible fix-forward or reviewed compatible manifest;
 do not weaken the rollback floor or bypass the webhook fence. Postgres and Redis
 remain running throughout application transitions.
+
+## Processing deadlines and diagnostics
+
+Sandbox protocol v2 carries one Linux monotonic deadline for each operation.
+Server, client and cheap probe require a bounded, valid `/proc/self/timens_offsets`
+with zero monotonic offset before accepting this shared kernel clock.
+Waiting and transport consume that budget; the server reserves 1000 ms for native
+teardown and the validated response. The original event deadline still caps every
+operation and BullMQ defer. An expired waiting request never starts native work or
+recycles another request's process. Forced native timeout, active cancellation and
+process-group teardown failure still recycle the whole isolated sandbox.
+
+Docker `--probe` uses only the minimal UDS verifier and an image-owned, root-owned
+0444 expected-fingerprint artifact generated after full native artifact validation.
+It must attest the exact complete native identity and live instance. Server startup
+and the media client's native verification remain mandatory; cheap readiness does
+not replace either check or measure recognition quality.
+
+The shared API image includes real sandbox queue, operation, pending bytes,
+bounded wait/duration samples and fixed rejection counters in full OCR readiness.
+Missing or stale queue/busy diagnostics are `null`, never fabricated zeroes.
+`request_deadline_exceeded` and `capacity_exhausted` represent bounded backpressure;
+they defer without consuming a transport retry or extending the event deadline.
+Native execution timeout remains a terminal incomplete analysis. A local response
+watchdog expiration is separately `request_timeout` / `ocr_request_timeout`: native
+completion is uncertain, so it is terminal and must not become a safe queue retry. Boundary identity
+or malformed-response failures remain fail-closed and do not become temporary
+preprocessing outages. Recycle logs contain fixed reasons and aggregate values only.
+
+There is one production OCR consumer. Under `slow`, it admits at most one cache-miss
+pass per governor retry interval; downloads and cache hits do not consume the slot.
+Fresh `pause` decisions are checked before preprocessing and native dispatch.
+`event_to_terminal` measures event age at terminal completion separately from
+per-attempt `end_to_end`. Completed BullMQ jobs alone do not prove complete analysis;
+use `analysis.terminal.complete`, `analysis.terminal.incomplete`, native failure
+reasons and deadline-exhaustion counters together.
+
+Both preprocess profiles are v4 after enforcing the actual output pixel-area cap.
+The grayscale/threshold transforms, two-pass deletion evidence and admission
+reserve/authority/tombstones are unchanged. Shared raw raster reuse is deferred:
+naive grayscale raw conversion drops alpha and can change 16-bit normalization.

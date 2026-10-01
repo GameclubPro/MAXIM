@@ -87,8 +87,8 @@ describe('CommercialOcrPreprocessor', () => {
     expect([...primaryPixels].some((value) => value !== 0 && value !== 255)).toBe(true);
     expect([...confirmationPixels].every((value) => value === 0 || value === 255)).toBe(true);
     expect(COMMERCIAL_OCR_PREPROCESS_PROFILES).toEqual({
-      primary: 'gray-bounded-v3',
-      confirmation: 'normalized-threshold160-v3',
+      primary: 'gray-bounded-v4',
+      confirmation: 'normalized-threshold160-v4',
     });
   });
 
@@ -105,10 +105,10 @@ describe('CommercialOcrPreprocessor', () => {
 
     expect(defaults).toEqual(COMMERCIAL_OCR_DEFAULT_PREPROCESS_LIMITS);
     expect(resolveCommercialOcrPreprocessCacheProfile('primary', defaults)).toBe(
-      'gray-bounded-v3.i40000000.o3000000.s2000',
+      'gray-bounded-v4.i40000000.o3000000.s2000',
     );
     expect(resolveCommercialOcrPreprocessCacheProfile('primary', tuned)).toBe(
-      'gray-bounded-v3.i20000000.o2000000.s1600',
+      'gray-bounded-v4.i20000000.o2000000.s1600',
     );
   });
 });

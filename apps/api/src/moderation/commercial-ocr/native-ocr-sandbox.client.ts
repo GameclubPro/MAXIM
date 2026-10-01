@@ -1,6 +1,5 @@
 import { lstat } from 'node:fs/promises';
 import { createConnection, type Socket } from 'node:net';
-import { performance } from 'node:perf_hooks';
 
 import {
   commercialOcrCompleteNativeBehaviorIdentitySchema,
@@ -37,6 +36,17 @@ import {
   NATIVE_TESSERACT_MAX_WORDS,
 } from './native-tesseract-tsv';
 import type { NativeTesseractPageSegmentationMode } from './native-tesseract-ocr.types';
+import {
+  createNativeOcrSandboxDeadline,
+  remainingNativeOcrSandboxTimeoutMs,
+} from './native-ocr-sandbox.deadline';
+import { assertNativeOcrSandboxSharedClock } from './native-ocr-sandbox.clock';
+import {
+  isNativeOcrSandboxRequestFailureReason,
+  parseNativeOcrSandboxRuntimeStatus,
+  type NativeOcrSandboxRequestFailureReason,
+  type NativeOcrSandboxRuntimeStatus,
+} from './native-ocr-sandbox.runtime';
 
 const PROBE_TIMEOUT_MS = 6_000;
 const BOUNDARY_VERIFICATION_FRESHNESS_MS = 15_000;
@@ -60,6 +70,8 @@ export type NativeOcrSandboxBoundaryStatus = Readonly<{
   verified: boolean;
   activeRequests: number;
   restarts: number;
+  runtimeStatus: NativeOcrSandboxRuntimeStatus | null;
+  runtimeStatusObservedAtMs: number | null;
 }>;
 
 export class NativeOcrSandboxUnavailableError extends Error {
@@ -78,6 +90,20 @@ export class NativeOcrSandboxImageRejectedError extends Error {
   }
 }
 
+export class NativeOcrSandboxRequestError extends Error {
+  constructor(readonly reason: NativeOcrSandboxRequestFailureReason) {
+    super(`Native OCR sandbox request rejected: ${reason}`);
+    this.name = 'NativeOcrSandboxRequestError';
+  }
+}
+
+export class NativeOcrSandboxRequestTimeoutError extends Error {
+  constructor() {
+    super('Native OCR sandbox request completion was not confirmed before its deadline');
+    this.name = 'NativeOcrSandboxRequestTimeoutError';
+  }
+}
+
 export class NativeOcrSandboxClient {
   private readonly socketPath: string | null;
   private readonly required: boolean;
@@ -87,6 +113,9 @@ export class NativeOcrSandboxClient {
   private readonly maxPreparedImageBytes: number;
   private readonly maxOutputBytes: number;
   private readonly sockets = new Set<Socket>();
+  private readonly operationSockets = new Set<Socket>();
+  private runtimeStatus: NativeOcrSandboxRuntimeStatus | null = null;
+  private runtimeStatusObservedAtMs: number | null = null;
   private verified = false;
   private verifiedAtMs = 0;
   private sandboxInstanceId: string | null = null;
@@ -141,8 +170,10 @@ export class NativeOcrSandboxClient {
       required: this.required,
       configured: this.socketPath !== null,
       verified: this.isVerified(),
-      activeRequests: this.sockets.size,
+      activeRequests: this.operationSockets.size,
       restarts: this.sandboxRestartCount,
+      runtimeStatus: this.isVerified() ? this.runtimeStatus : null,
+      runtimeStatusObservedAtMs: this.isVerified() ? this.runtimeStatusObservedAtMs : null,
     });
   }
 
@@ -163,6 +194,7 @@ export class NativeOcrSandboxClient {
     image: Buffer,
     pass: CommercialOcrPassName,
     timeoutMs: number,
+    options: Readonly<{ deadlineAtMs?: number }> = {},
   ): Promise<CommercialOcrPreparedImage> {
     requireImage(image, this.maxSourceImageBytes);
     const boundedTimeoutMs = requireTimeout(timeoutMs, 1, 5_000);
@@ -173,10 +205,12 @@ export class NativeOcrSandboxClient {
       payload: image,
       requestPayloadBytes: this.maxSourceImageBytes,
       timeoutMs: boundedTimeoutMs + NATIVE_OCR_SANDBOX_IPC_GRACE_MS,
+      deadlineAtMs: options.deadlineAtMs,
       responseMetadataBytes: NATIVE_OCR_SANDBOX_MAX_REQUEST_METADATA_BYTES,
       responsePayloadBytes: this.maxPreparedImageBytes,
     });
     this.acceptBoundary(response.metadata);
+    this.rejectRequestFailure(response.metadata);
     if (response.metadata.status === 'error' && isImageRejectionReason(response.metadata.reason)) {
       throw new NativeOcrSandboxImageRejectedError(response.metadata.reason);
     }
@@ -207,6 +241,7 @@ export class NativeOcrSandboxClient {
     image: Buffer,
     psm: NativeTesseractPageSegmentationMode,
     timeoutMs: number,
+    options: Readonly<{ deadlineAtMs?: number }> = {},
   ): Promise<NativeTesseractRunResult> {
     requireImage(image, this.maxPreparedImageBytes);
     if (psm !== 6 && psm !== 11) {
@@ -220,6 +255,7 @@ export class NativeOcrSandboxClient {
       payload: image,
       requestPayloadBytes: this.maxPreparedImageBytes,
       timeoutMs: boundedTimeoutMs + NATIVE_OCR_SANDBOX_IPC_GRACE_MS,
+      deadlineAtMs: options.deadlineAtMs,
       responseMetadataBytes: Math.min(
         NATIVE_OCR_SANDBOX_MAX_RESPONSE_METADATA_BYTES,
         this.maxOutputBytes + 64 * 1024,
@@ -227,6 +263,7 @@ export class NativeOcrSandboxClient {
       responsePayloadBytes: 0,
     });
     this.acceptBoundary(response.metadata);
+    this.rejectRequestFailure(response.metadata);
     const result = response.metadata.result;
     if (!isNativeTesseractRunResult(result)) {
       this.verified = false;
@@ -244,6 +281,9 @@ export class NativeOcrSandboxClient {
       socket.destroy(new NativeOcrSandboxUnavailableError('unavailable'));
     }
     this.sockets.clear();
+    this.operationSockets.clear();
+    this.runtimeStatus = null;
+    this.runtimeStatusObservedAtMs = null;
   }
 
   private async probeOnce(): Promise<CommercialOcrNativeArtifactVerification> {
@@ -289,12 +329,26 @@ export class NativeOcrSandboxClient {
       throw new NativeOcrSandboxUnavailableError('unverified');
     }
     const instanceId = (boundary as Record<string, unknown>).instanceId as string;
+    const runtimeStatus = parseNativeOcrSandboxRuntimeStatus(metadata.runtimeStatus);
+    if (metadata.runtimeStatus !== undefined && runtimeStatus === null) {
+      this.verified = false;
+      this.verifiedAtMs = 0;
+      throw new NativeOcrSandboxUnavailableError('invalid_response');
+    }
     if (this.sandboxInstanceId !== null && this.sandboxInstanceId !== instanceId) {
       this.sandboxRestartCount += 1;
     }
     this.sandboxInstanceId = instanceId;
     this.verified = true;
     this.verifiedAtMs = Date.now();
+    this.runtimeStatus = runtimeStatus;
+    this.runtimeStatusObservedAtMs = runtimeStatus === null ? null : this.verifiedAtMs;
+  }
+
+  private rejectRequestFailure(metadata: Readonly<Record<string, unknown>>): void {
+    if (metadata.status === 'error' && isNativeOcrSandboxRequestFailureReason(metadata.reason)) {
+      throw new NativeOcrSandboxRequestError(metadata.reason);
+    }
   }
 
   private async request(params: {
@@ -304,6 +358,7 @@ export class NativeOcrSandboxClient {
     payload: Buffer;
     requestPayloadBytes: number;
     timeoutMs: number;
+    deadlineAtMs?: number;
     responseMetadataBytes: number;
     responsePayloadBytes: number;
   }): Promise<NativeOcrSandboxFrame> {
@@ -313,10 +368,28 @@ export class NativeOcrSandboxClient {
     if (!this.socketPath) {
       throw new NativeOcrSandboxUnavailableError('unconfigured');
     }
-    const deadlineAtMs = performance.now() + params.timeoutMs;
+    try {
+      assertNativeOcrSandboxSharedClock();
+    } catch {
+      this.verified = false;
+      this.verifiedAtMs = 0;
+      throw new NativeOcrSandboxUnavailableError('unverified');
+    }
+    if (params.deadlineAtMs !== undefined && !Number.isSafeInteger(params.deadlineAtMs)) {
+      throw new NativeOcrSandboxRequestError('invalid_input');
+    }
+    const totalBudgetMs =
+      params.deadlineAtMs === undefined
+        ? params.timeoutMs
+        : Math.min(params.timeoutMs, params.deadlineAtMs - Date.now());
+    if (totalBudgetMs < 1) throw new NativeOcrSandboxRequestError('request_deadline_exceeded');
+    const deadlineNs = createNativeOcrSandboxDeadline(totalBudgetMs);
     const request = encodeNativeOcrSandboxFrame({
       kind: params.requestKind,
-      metadata: params.metadata,
+      metadata:
+        params.requestKind === NATIVE_OCR_SANDBOX_FRAME_KINDS.probeRequest
+          ? params.metadata
+          : { ...params.metadata, deadlineNs: deadlineNs.toString() },
       payload: params.payload,
       limits: {
         metadataBytes: NATIVE_OCR_SANDBOX_MAX_REQUEST_METADATA_BYTES,
@@ -327,7 +400,7 @@ export class NativeOcrSandboxClient {
     try {
       const socketStat = await waitForBoundedOperation(
         lstat(this.socketPath),
-        remainingTimeoutMs(deadlineAtMs),
+        remainingTimeoutMs(deadlineNs),
       );
       const currentUserId = process.getuid?.();
       if (
@@ -339,10 +412,15 @@ export class NativeOcrSandboxClient {
       ) {
         throw new NativeOcrSandboxUnavailableError('unverified');
       }
-      const responseBytes = await this.exchange(request, remainingTimeoutMs(deadlineAtMs), {
-        metadataBytes: params.responseMetadataBytes,
-        payloadBytes: params.responsePayloadBytes,
-      });
+      const responseBytes = await this.exchange(
+        request,
+        remainingTimeoutMs(deadlineNs),
+        {
+          metadataBytes: params.responseMetadataBytes,
+          payloadBytes: params.responsePayloadBytes,
+        },
+        params.requestKind !== NATIVE_OCR_SANDBOX_FRAME_KINDS.probeRequest,
+      );
       let response: NativeOcrSandboxFrame;
       try {
         response = decodeNativeOcrSandboxFrame(responseBytes, {
@@ -353,7 +431,7 @@ export class NativeOcrSandboxClient {
         // FLAG: A malformed sandbox response must not authorize a transport recovery retry.
         throw new NativeOcrSandboxUnavailableError('invalid_response');
       }
-      remainingTimeoutMs(deadlineAtMs);
+      remainingTimeoutMs(deadlineNs);
       if (response.kind !== params.responseKind) {
         throw new NativeOcrSandboxUnavailableError('invalid_response');
       }
@@ -361,10 +439,23 @@ export class NativeOcrSandboxClient {
     } catch (error: unknown) {
       this.verified = false;
       this.verifiedAtMs = 0;
-      if (error instanceof NativeOcrSandboxUnavailableError) {
+      if (
+        (error instanceof NativeOcrSandboxRequestError ||
+          error instanceof NativeOcrSandboxRequestTimeoutError) &&
+        params.requestKind === NATIVE_OCR_SANDBOX_FRAME_KINDS.probeRequest
+      ) {
+        throw new NativeOcrSandboxUnavailableError('unavailable');
+      }
+      if (
+        error instanceof NativeOcrSandboxUnavailableError ||
+        error instanceof NativeOcrSandboxRequestError ||
+        error instanceof NativeOcrSandboxRequestTimeoutError
+      ) {
         throw error;
       }
       throw new NativeOcrSandboxUnavailableError('unavailable');
+    } finally {
+      request.fill(0);
     }
   }
 
@@ -372,10 +463,12 @@ export class NativeOcrSandboxClient {
     request: Buffer,
     timeoutMs: number,
     limits: Readonly<{ metadataBytes: number; payloadBytes: number }>,
+    operationRequest: boolean,
   ): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const socket = createConnection({ path: this.socketPath! });
       this.sockets.add(socket);
+      if (operationRequest) this.operationSockets.add(socket);
       const chunks: Buffer[] = [];
       let receivedBytes = 0;
       let declaredBytes: number | null = null;
@@ -389,6 +482,7 @@ export class NativeOcrSandboxClient {
         settled = true;
         clearTimeout(timeout);
         this.sockets.delete(socket);
+        this.operationSockets.delete(socket);
         socket.removeAllListeners();
         socket.destroy();
         request.fill(0);
@@ -399,7 +493,9 @@ export class NativeOcrSandboxClient {
         resolve(Buffer.concat(chunks, receivedBytes));
       };
       const timeout = setTimeout(
-        () => finish(new NativeOcrSandboxUnavailableError('unavailable')),
+        // FLAG: No server response proves this operation stayed out of native execution.
+        // Never treat a local watchdog expiry as a retryable queue rejection.
+        () => finish(new NativeOcrSandboxRequestTimeoutError()),
         timeoutMs,
       );
       timeout.unref();
@@ -442,10 +538,10 @@ export class NativeOcrSandboxClient {
   }
 }
 
-function remainingTimeoutMs(deadlineAtMs: number): number {
-  const remaining = Math.floor(deadlineAtMs - performance.now());
-  if (!Number.isFinite(deadlineAtMs) || remaining < 1) {
-    throw new NativeOcrSandboxUnavailableError('unavailable');
+function remainingTimeoutMs(deadlineNs: bigint): number {
+  const remaining = remainingNativeOcrSandboxTimeoutMs(deadlineNs);
+  if (remaining < 1) {
+    throw new NativeOcrSandboxRequestTimeoutError();
   }
   return remaining;
 }
@@ -460,7 +556,7 @@ function waitForBoundedOperation<T>(operation: Promise<T>, timeoutMs: number): P
       callback();
     };
     const timeout = setTimeout(
-      () => finish(() => reject(new NativeOcrSandboxUnavailableError('unavailable'))),
+      () => finish(() => reject(new NativeOcrSandboxRequestTimeoutError())),
       timeoutMs,
     );
     timeout.unref();

@@ -13,6 +13,8 @@ import {
 import { NativeTesseractOcrAdapter } from './native-tesseract-ocr.adapter';
 import {
   NativeOcrSandboxClient,
+  NativeOcrSandboxRequestError,
+  NativeOcrSandboxRequestTimeoutError,
   NativeOcrSandboxUnavailableError,
 } from './native-ocr-sandbox.client';
 import type {
@@ -554,6 +556,116 @@ describe('NativeTesseractOcrAdapter', () => {
     } finally {
       await service.onModuleDestroy();
       jest.useRealTimers();
+    }
+  });
+
+  it.each(['capacity_exhausted', 'request_deadline_exceeded'] as const)(
+    'preserves verified identity after an ordinary %s request rejection',
+    async (reason) => {
+      const { service, sandbox, identity } = createIsolatedSandboxService();
+      jest.spyOn(sandbox, 'probe').mockResolvedValue(verifiedNativeIdentity(identity));
+      const recognize = jest
+        .spyOn(sandbox, 'recognize')
+        .mockRejectedValueOnce(new NativeOcrSandboxRequestError(reason))
+        .mockResolvedValueOnce(emptySandboxRecognition());
+      try {
+        service.onModuleInit();
+        await waitFor(() =>
+          service.getRuntimeStatus().behaviorIdentity.verified ? true : undefined,
+        );
+        const deadlineAtMs = Date.now() + 30_000;
+        await expect(
+          service.recognize(Buffer.from('image'), { deadlineAtMs }),
+        ).resolves.toMatchObject({ ok: false, reason });
+        expect(service.getRuntimeStatus().behaviorIdentity.verified).toBe(true);
+        expect(recognize).toHaveBeenCalledWith(expect.any(Buffer), 11, expect.any(Number), {
+          deadlineAtMs,
+        });
+        await expect(service.recognize(Buffer.from('next image'))).resolves.toMatchObject({
+          ok: true,
+        });
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
+  it('keeps a local response watchdog expiration separate from safe queue rejection', async () => {
+    const { service, sandbox, identity } = createIsolatedSandboxService();
+    jest.spyOn(sandbox, 'probe').mockResolvedValue(verifiedNativeIdentity(identity));
+    jest
+      .spyOn(sandbox, 'recognize')
+      .mockRejectedValueOnce(new NativeOcrSandboxRequestTimeoutError());
+    try {
+      service.onModuleInit();
+      await waitFor(() =>
+        service.getRuntimeStatus().behaviorIdentity.verified ? true : undefined,
+      );
+      await expect(service.recognize(Buffer.from('image'))).resolves.toMatchObject({
+        ok: false,
+        reason: 'request_timeout',
+      });
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('counts rejected waiting requests in native queue observations', async () => {
+    const { service, sandbox } = createIsolatedSandboxService();
+    const metric = { last: 100, average: 50, maximum: 100, samples: 2 };
+    const boundary = sandbox.getStatus();
+    jest.spyOn(sandbox, 'getStatus').mockReturnValue({
+      ...boundary,
+      verified: true,
+      runtimeStatusObservedAtMs: Date.now(),
+      runtimeStatus: {
+        activeOperation: 'idle',
+        queueDepth: 0,
+        pendingBytes: 0,
+        remainingBudgetMs: null,
+        queueWaitMs: metric,
+        durationMs: { preprocess: metric, recognize: metric },
+        counters: {
+          started: 1,
+          completed: 1,
+          failed: 0,
+          probes: 1,
+          rejections: {
+            capacity_exhausted: 0,
+            request_deadline_exceeded: 1,
+            shutting_down: 0,
+            invalid_input: 0,
+          },
+        },
+      },
+    });
+    try {
+      expect(service.getRuntimeStatus().queueWaitMs).toMatchObject({ observed: 2, sampled: 2 });
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('reports missing sandbox queue diagnostics as unknown', async () => {
+    const { service, sandbox, identity } = createIsolatedSandboxService();
+    jest.spyOn(sandbox, 'probe').mockResolvedValue(verifiedNativeIdentity(identity));
+    try {
+      service.onModuleInit();
+      await waitFor(() =>
+        service.getRuntimeStatus().behaviorIdentity.verified ? true : undefined,
+      );
+      expect(service.getRuntimeStatus()).toMatchObject({
+        queueDepth: null,
+        workers: { busy: null },
+        sandboxRuntime: { available: false, snapshot: null },
+      });
+      expect(service.getRuntimeStatus().queueWaitMs).toMatchObject({
+        observed: 0,
+        last: null,
+        average: null,
+      });
+    } finally {
+      await service.onModuleDestroy();
     }
   });
 

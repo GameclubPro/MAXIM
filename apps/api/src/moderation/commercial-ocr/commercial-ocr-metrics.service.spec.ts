@@ -185,6 +185,7 @@ describe('CommercialOcrMetricsService', () => {
       source_not_ready: 0,
       governor_pressure: 2,
       admission_pending: 0,
+      native_backpressure: 0,
     });
     expect(snapshot.releaseCounters.available).toBe(false);
     expect(snapshot.windowCounters).toMatchObject({

@@ -63,8 +63,11 @@ COPY --from=build /app/packages/contracts/package.json ./packages/contracts/pack
 
 RUN node apps/api/dist/apps/api/src/scripts/commercial-ocr-native-build-manifest.js \
     --output /app/apps/api/commercial-ocr-native-build-manifest.json \
+    --probe-output /app/apps/api/commercial-ocr-native-probe-expectation.json \
   && chown root:root /app/apps/api/commercial-ocr-native-build-manifest.json \
+    /app/apps/api/commercial-ocr-native-probe-expectation.json \
   && chmod 0444 /app/apps/api/commercial-ocr-native-build-manifest.json \
+    /app/apps/api/commercial-ocr-native-probe-expectation.json \
   && mkdir -p /run/maxim-ocr \
   && chown node:node /run/maxim-ocr \
   && chmod 0700 /run/maxim-ocr

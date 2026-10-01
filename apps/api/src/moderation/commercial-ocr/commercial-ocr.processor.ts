@@ -26,6 +26,7 @@ const DEFER_REASONS = new Set([
   'source_not_ready',
   'governor_pressure',
   'admission_pending',
+  'native_backpressure',
 ] as const);
 const RETRY_REASONS = new Set(['download_failed', 'ocr_failed'] as const);
 
@@ -37,7 +38,7 @@ type CommercialOcrJobIdentity = {
 type CommercialOcrDeferResult = {
   kind: 'defer';
   delayMs: number;
-  reason: 'source_not_ready' | 'governor_pressure' | 'admission_pending';
+  reason: 'source_not_ready' | 'governor_pressure' | 'admission_pending' | 'native_backpressure';
 };
 
 type CommercialOcrRetryResult = {
@@ -94,6 +95,7 @@ export class CommercialOcrProcessor extends WorkerHost {
     const deadlineAtMs =
       Date.parse(resolveCommercialOcrJobEventTimestamp(job.data)) + this.maxJobAgeMs;
     if (deadlineAtMs <= Date.now()) {
+      this.recordTerminalDuration(job);
       this.metrics.recordCounter('bullmq.job.expired');
       await this.releaseAdmission(identity);
       return;
@@ -109,6 +111,7 @@ export class CommercialOcrProcessor extends WorkerHost {
     } catch (error: unknown) {
       this.metrics.recordCounter('bullmq.job.failed');
       if (error instanceof UnrecoverableError) {
+        this.recordTerminalDuration(job);
         await this.releaseAdmission(identity);
       } else {
         await this.releaseIfFinalAttempt(job, identity);
@@ -121,17 +124,20 @@ export class CommercialOcrProcessor extends WorkerHost {
       );
     }
     if (!isCommercialOcrProcessResult(result)) {
+      this.recordTerminalDuration(job);
       this.metrics.recordCounter('bullmq.job.invalid');
       await this.releaseAdmission(identity);
       throw new UnrecoverableError('Commercial OCR moderation returned an invalid result');
     }
 
     if (result.kind === 'completed') {
+      this.recordTerminalDuration(job);
       this.metrics.recordCounter('bullmq.job.completed');
       await this.releaseAdmission(identity);
       return;
     }
     if (deadlineAtMs <= Date.now()) {
+      this.recordTerminalDuration(job);
       this.metrics.recordCounter('bullmq.job.expired');
       await this.releaseAdmission(identity);
       return;
@@ -209,11 +215,12 @@ export class CommercialOcrProcessor extends WorkerHost {
     }
     const deferUntilMs = Date.now() + result.delayMs;
     if (deferUntilMs >= deadlineAtMs) {
+      this.recordTerminalDuration(job);
       this.metrics.recordCounter(`bullmq.job.deadline_exhausted.${result.reason}`);
       await this.releaseAdmission(identity);
       // FLAG: Governor-denied heavy work remains fail-open and terminal. Returning only prevents
       // the controlled expiry from entering BullMQ failed retention after admission is tombstoned.
-      if (result.reason === 'governor_pressure') {
+      if (result.reason === 'governor_pressure' || result.reason === 'native_backpressure') {
         return;
       }
       throw new UnrecoverableError(`Commercial OCR job deadline exhausted: ${result.reason}`);
@@ -233,8 +240,14 @@ export class CommercialOcrProcessor extends WorkerHost {
   ): Promise<void> {
     const attempts = typeof job.opts.attempts === 'number' ? job.opts.attempts : 1;
     if (job.attemptsMade + 1 >= attempts) {
+      this.recordTerminalDuration(job);
       await this.releaseAdmission(identity);
     }
+  }
+
+  private recordTerminalDuration(job: Job<CommercialOcrJob>): void {
+    const eventAtMs = Date.parse(resolveCommercialOcrJobEventTimestamp(job.data));
+    this.metrics.recordStageDuration('event_to_terminal', Math.max(0, Date.now() - eventAtMs));
   }
 
   private async releaseAdmission(identity: CommercialOcrJobIdentity): Promise<void> {

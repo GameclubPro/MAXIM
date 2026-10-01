@@ -58,6 +58,7 @@ import type {
 
 const DEFAULT_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const GOVERNOR_DEFER_MS = 30_000;
+const NATIVE_BACKPRESSURE_DEFER_MS = 5_000;
 const RETRYABLE_DOWNLOAD_ERROR_CODES = new Set([
   'EAI_AGAIN',
   'ECONNABORTED',
@@ -79,7 +80,11 @@ const RETRYABLE_OCR_FAILURE_REASONS = new Set<NativeTesseractFailureReason>([
   'shutting_down',
 ]);
 
-export type CommercialOcrAnalysisStage = 'download' | 'ocr';
+export type CommercialOcrAnalysisStage = 'download' | 'ocr' | 'ocr_dispatch';
+export type CommercialOcrStageAuthorization = boolean | { allowed: boolean; retryAfterMs: number };
+export type CommercialOcrAuthorizeStage = (
+  stage: CommercialOcrAnalysisStage,
+) => Promise<CommercialOcrStageAuthorization>;
 
 export type CommercialOcrAnalysisIncompleteReason =
   | 'invalid_album'
@@ -90,6 +95,7 @@ export type CommercialOcrAnalysisIncompleteReason =
   | 'preprocess_timeout'
   | 'ocr_failed'
   | 'ocr_timeout'
+  | 'ocr_request_timeout'
   | 'ocr_truncated'
   | 'invalid_ocr_output';
 
@@ -109,7 +115,7 @@ export type CommercialOcrAnalysisResult =
     }
   | {
       kind: 'defer';
-      reason: 'governor_pressure';
+      reason: 'governor_pressure' | 'native_backpressure';
       delayMs: number;
     }
   | {
@@ -150,7 +156,7 @@ export class CommercialOcrAnalysisService {
     settings: ChatSettings;
     ocrVersion: string;
     deadlineAtMs: number;
-    authorizeStage: (stage: CommercialOcrAnalysisStage) => Promise<boolean>;
+    authorizeStage: CommercialOcrAuthorizeStage;
     isLinkAllowlisted?: (link: string) => boolean;
     commercialScanEnabled?: boolean;
     imageTextStopListScanEnabled?: boolean;
@@ -249,8 +255,9 @@ export class CommercialOcrAnalysisService {
           };
         }
         if (context.rawBytes === null || context.contentSha256 === null) {
-          if (!(await this.authorizeStage(params.authorizeStage, 'download'))) {
-            return { kind: 'stop', result: governorDefer() };
+          const authorization = await this.authorizeStage(params.authorizeStage, 'download');
+          if (!authorization.allowed) {
+            return { kind: 'stop', result: governorDefer(authorization.retryAfterMs) };
           }
           if (deadlineExpired(params.deadlineAtMs)) {
             return { kind: 'stop', result: deadlineIncomplete(imageIndex) };
@@ -334,7 +341,7 @@ export class CommercialOcrAnalysisService {
     ocrVersion: string;
     pass: CommercialOcrPassName;
     psm: NativeTesseractPageSegmentationMode;
-    authorizeStage: (stage: CommercialOcrAnalysisStage) => Promise<boolean>;
+    authorizeStage: CommercialOcrAuthorizeStage;
     deadlineAtMs: number;
     imageIndex: number;
     cpuSample: CommercialOcrImageCpuSample;
@@ -362,13 +369,6 @@ export class CommercialOcrAnalysisService {
     if (deadlineExpired(params.deadlineAtMs)) {
       return deadlineIncomplete(params.imageIndex, params.pass);
     }
-    if (!(await this.authorizeStage(params.authorizeStage, 'ocr'))) {
-      return governorDefer();
-    }
-    if (deadlineExpired(params.deadlineAtMs)) {
-      return deadlineIncomplete(params.imageIndex, params.pass);
-    }
-
     const remainingMs = params.deadlineAtMs - Date.now();
     if (remainingMs <= 0) {
       return deadlineIncomplete(params.imageIndex, params.pass);
@@ -386,6 +386,9 @@ export class CommercialOcrAnalysisService {
             value: reread.value,
           };
         }
+        // FLAG: Charge slow-path capacity only for the owner of actual cache-miss native work.
+        const authorization = await this.authorizeStage(params.authorizeStage, 'ocr');
+        if (!authorization.allowed) return governorDefer(authorization.retryAfterMs);
         return this.runLocalOcr(params, identity);
       },
       {
@@ -410,7 +413,7 @@ export class CommercialOcrAnalysisService {
       rawBytes: Buffer;
       pass: CommercialOcrPassName;
       psm: NativeTesseractPageSegmentationMode;
-      authorizeStage: (stage: CommercialOcrAnalysisStage) => Promise<boolean>;
+      authorizeStage: CommercialOcrAuthorizeStage;
       deadlineAtMs: number;
       imageIndex: number;
       cpuSample: CommercialOcrImageCpuSample;
@@ -433,9 +436,19 @@ export class CommercialOcrAnalysisService {
         return deadlineIncomplete(params.imageIndex, params.pass);
       }
       if (error instanceof CommercialOcrPreprocessUnavailableError) {
+        if (error.reason === 'capacity_exhausted' || error.reason === 'request_deadline_exceeded') {
+          return nativeBackpressureDefer();
+        }
+        if (error.retryable)
+          return {
+            kind: 'retry',
+            reason: 'ocr_failed',
+            imageIndex: params.imageIndex,
+            pass: params.pass,
+          };
         return {
-          kind: 'retry',
-          reason: 'ocr_failed',
+          kind: 'incomplete',
+          reason: error.reason === 'request_timeout' ? 'ocr_request_timeout' : 'ocr_failed',
           imageIndex: params.imageIndex,
           pass: params.pass,
         };
@@ -459,6 +472,11 @@ export class CommercialOcrAnalysisService {
       return deadlineIncomplete(params.imageIndex, params.pass);
     }
 
+    const dispatchAuthorization = await this.authorizeStage(params.authorizeStage, 'ocr_dispatch');
+    if (!dispatchAuthorization.allowed) return governorDefer(dispatchAuthorization.retryAfterMs);
+    if (deadlineExpired(params.deadlineAtMs))
+      return deadlineIncomplete(params.imageIndex, params.pass);
+
     let result: Awaited<ReturnType<NativeTesseractOcrAdapter['recognize']>>;
     const nativePassStartedAt = performance.now();
     try {
@@ -480,10 +498,18 @@ export class CommercialOcrAnalysisService {
         pass: params.pass,
       };
     }
-    if (!result.ok && result.reason === 'timeout') {
+    if (
+      !result.ok &&
+      (result.reason === 'capacity_exhausted' || result.reason === 'request_deadline_exceeded')
+    ) {
+      return deadlineExpired(params.deadlineAtMs)
+        ? deadlineIncomplete(params.imageIndex, params.pass)
+        : nativeBackpressureDefer();
+    }
+    if (!result.ok && (result.reason === 'timeout' || result.reason === 'request_timeout')) {
       return {
         kind: 'incomplete',
-        reason: 'ocr_timeout',
+        reason: result.reason === 'request_timeout' ? 'ocr_request_timeout' : 'ocr_timeout',
         imageIndex: params.imageIndex,
         pass: params.pass,
       };
@@ -518,28 +544,33 @@ export class CommercialOcrAnalysisService {
   }
 
   private async authorizeStage(
-    callback: (stage: CommercialOcrAnalysisStage) => Promise<boolean>,
+    callback: CommercialOcrAuthorizeStage,
     stage: CommercialOcrAnalysisStage,
-  ): Promise<boolean> {
-    const authorized = await authorize(callback, stage);
-    this.metrics.recordCounter(`stage.${stage}.${authorized ? 'authorized' : 'denied'}`);
-    return authorized;
+  ): Promise<{ allowed: boolean; retryAfterMs: number }> {
+    let decision: CommercialOcrStageAuthorization;
+    try {
+      decision = await callback(stage);
+    } catch {
+      decision = false;
+    }
+    const allowed =
+      decision === true || (typeof decision === 'object' && decision?.allowed === true);
+    const delay = typeof decision === 'object' ? decision?.retryAfterMs : undefined;
+    const retryAfterMs =
+      Number.isSafeInteger(delay) && (delay as number) > 0
+        ? Math.min(10 * 60_000, delay as number)
+        : GOVERNOR_DEFER_MS;
+    this.metrics.recordCounter(`stage.${stage}.${allowed ? 'authorized' : 'denied'}`);
+    return { allowed, retryAfterMs };
   }
 }
 
-async function authorize(
-  callback: (stage: CommercialOcrAnalysisStage) => Promise<boolean>,
-  stage: CommercialOcrAnalysisStage,
-): Promise<boolean> {
-  try {
-    return (await callback(stage)) === true;
-  } catch {
-    return false;
-  }
+function governorDefer(delayMs: number): Extract<CommercialOcrAnalysisResult, { kind: 'defer' }> {
+  return { kind: 'defer', reason: 'governor_pressure', delayMs };
 }
 
-function governorDefer(): Extract<CommercialOcrAnalysisResult, { kind: 'defer' }> {
-  return { kind: 'defer', reason: 'governor_pressure', delayMs: GOVERNOR_DEFER_MS };
+function nativeBackpressureDefer(): Extract<CommercialOcrAnalysisResult, { kind: 'defer' }> {
+  return { kind: 'defer', reason: 'native_backpressure', delayMs: NATIVE_BACKPRESSURE_DEFER_MS };
 }
 
 function deadlineIncomplete(

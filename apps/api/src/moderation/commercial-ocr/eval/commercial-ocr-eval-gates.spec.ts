@@ -914,8 +914,8 @@ function buildValidProvenance(): CommercialOcrEvalReport['provenance'] {
         digestKind: 'SOURCE_FILES',
         sourceSha256: 'f'.repeat(64),
         profiles: {
-          primary: 'gray-bounded-v3',
-          confirmation: 'normalized-threshold160-v3',
+          primary: 'gray-bounded-v4',
+          confirmation: 'normalized-threshold160-v4',
         },
       },
       detector: { ...detector },

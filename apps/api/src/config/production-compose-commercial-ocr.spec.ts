@@ -83,6 +83,14 @@ describe('production Compose commercial OCR isolation', () => {
         /^\s+ocr-native-sandbox:\n\s+condition:\s+service_healthy\s*$/mu,
       );
     });
+
+    it('keeps the exact lightweight probe CLI and measured healthcheck budget', () => {
+      expect(nativeSandbox).toContain(
+        '- apps/api/dist/apps/api/src/moderation/commercial-ocr/native-ocr-sandbox.entrypoint.js\n        - --probe',
+      );
+      expect(nativeSandbox).toMatch(/^\s+interval:\s+10s\s*$/mu);
+      expect(nativeSandbox).toMatch(/^\s+timeout:\s+8s\s*$/mu);
+    });
   });
 });
 

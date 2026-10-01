@@ -127,6 +127,7 @@ test('media readiness monitor uses the isolated OCR scope and labels omitted dep
           source_not_ready: 2,
           governor_pressure: 18,
           admission_pending: 1,
+          native_backpressure: 4,
           privateReason: 'private payload',
         },
         behaviorIdentity: { verified: true, state: 'verified' },
@@ -140,7 +141,7 @@ test('media readiness monitor uses the isolated OCR scope and labels omitted dep
   assert.match(summary.line, /db=not-probed redis=not-probed/u);
   assert.match(
     summary.line,
-    /bullMqDeadlineExhaustedProcess=source_not_ready:2,governor_pressure:18,admission_pending:1/u,
+    /bullMqDeadlineExhaustedProcess=source_not_ready:2,governor_pressure:18,admission_pending:1,native_backpressure:4/u,
   );
   assert.doesNotMatch(summary.line, /private/u);
   assert.match(summary.line, /failed=not-probed restarts=not-probed recycles=not-probed/u);
@@ -164,7 +165,7 @@ test('media readiness labels missing BullMQ deadline process counters as not pro
   assert.equal(summary.healthy, true);
   assert.match(
     summary.line,
-    /bullMqDeadlineExhaustedProcess=source_not_ready:not-probed,governor_pressure:not-probed,admission_pending:not-probed/u,
+    /bullMqDeadlineExhaustedProcess=source_not_ready:not-probed,governor_pressure:not-probed,admission_pending:not-probed,native_backpressure:not-probed/u,
   );
 });
 

@@ -95,8 +95,8 @@ export type OcrReadinessSnapshot =
         queues: Readonly<{
           bullMq: QueueCounters | null;
           native: Readonly<{
-            depth: number;
-            busy: number;
+            depth: number | null;
+            busy: number | null;
             workers: number;
             waitMs: NativeTesseractQueueWaitSnapshot;
           }>;
@@ -106,8 +106,8 @@ export type OcrReadinessSnapshot =
   | Readonly<{
       state: 'unavailable';
       ready: false;
-      workers: Readonly<{ configured: 0; live: 0; ready: 0; busy: 0 }>;
-      queueDepth: 0;
+      workers: Readonly<{ configured: 0; live: 0; ready: 0; busy: null }>;
+      queueDepth: null;
       counters: Readonly<{
         completed: 0;
         failed: 0;
@@ -130,8 +130,8 @@ export type OcrReadinessSnapshot =
       queues: Readonly<{
         bullMq: null;
         native: Readonly<{
-          depth: 0;
-          busy: 0;
+          depth: null;
+          busy: null;
           workers: 0;
           waitMs: NativeTesseractQueueWaitSnapshot;
         }>;
@@ -150,8 +150,8 @@ export type OcrRuntimeReadinessSnapshot = Readonly<{
 type OcrRuntimeReadinessCheck = Readonly<{
   state: NativeTesseractRuntimeStatus['state'] | 'unavailable';
   ready: boolean;
-  workers: Readonly<{ configured: number; live: number; ready: number; busy: number }>;
-  queueDepth: number;
+  workers: Readonly<{ configured: number; live: number; ready: number; busy: number | null }>;
+  queueDepth: number | null;
   bullMqTerminalDeadlineExhaustedProcess: CommercialOcrTerminalDeadlineExhaustedCounters | null;
   behaviorIdentity: Readonly<{
     complete: boolean;
@@ -197,8 +197,8 @@ function unavailableOcrReadiness(): OcrReadinessSnapshot {
   return {
     state: 'unavailable',
     ready: false,
-    workers: { configured: 0, live: 0, ready: 0, busy: 0 },
-    queueDepth: 0,
+    workers: { configured: 0, live: 0, ready: 0, busy: null },
+    queueDepth: null,
     counters: {
       completed: 0,
       failed: 0,
@@ -220,7 +220,7 @@ function unavailableOcrReadiness(): OcrReadinessSnapshot {
     rolloutMetrics: null,
     queues: {
       bullMq: null,
-      native: { depth: 0, busy: 0, workers: 0, waitMs: emptyNativeQueueWaitSnapshot() },
+      native: { depth: null, busy: null, workers: 0, waitMs: emptyNativeQueueWaitSnapshot() },
     },
   };
 }
@@ -283,8 +283,8 @@ function unavailableOcrRuntimeReadiness(): OcrRuntimeReadinessCheck {
   return {
     state: 'unavailable',
     ready: false,
-    workers: { configured: 0, live: 0, ready: 0, busy: 0 },
-    queueDepth: 0,
+    workers: { configured: 0, live: 0, ready: 0, busy: null },
+    queueDepth: null,
     bullMqTerminalDeadlineExhaustedProcess: null,
     behaviorIdentity: {
       complete: false,
@@ -608,6 +608,7 @@ export class HealthService implements OnModuleDestroy {
           busy: status.workers.busy,
         },
         queueDepth: status.queueDepth,
+        ...(status.sandboxRuntime ? { sandboxRuntime: status.sandboxRuntime } : {}),
         counters: {
           completed: status.counters.completed,
           failed: status.counters.failed,

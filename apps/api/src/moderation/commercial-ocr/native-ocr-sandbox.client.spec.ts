@@ -3,7 +3,12 @@ import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { NativeOcrSandboxClient } from './native-ocr-sandbox.client';
+import {
+  NativeOcrSandboxClient,
+  NativeOcrSandboxRequestError,
+  NativeOcrSandboxRequestTimeoutError,
+} from './native-ocr-sandbox.client';
+import * as nativeOcrSandboxClock from './native-ocr-sandbox.clock';
 import {
   decodeNativeOcrSandboxFrame,
   encodeNativeOcrSandboxFrame,
@@ -109,17 +114,72 @@ describe('NativeOcrSandboxClient Unix transport', () => {
     });
   });
 
-  it('keeps a real transport timeout retryable and closes its request without retaining verification', async () => {
+  it('caps the watchdog by the original message deadline and marks unconfirmed completion separately', async () => {
     await withSandboxTransport(async ({ client, setResponse, connections }) => {
       await expect(client.preprocess(Buffer.from([1]), 'primary', 1_000)).resolves.toBeDefined();
       expect(client.isVerified()).toBe(true);
       setResponse(null);
 
-      await expect(client.preprocess(Buffer.from([1]), 'primary', 1)).rejects.toMatchObject({
-        reason: 'unavailable',
-      });
+      const startedAtMs = Date.now();
+      await expect(
+        client.preprocess(Buffer.from([1]), 'primary', 1_000, {
+          deadlineAtMs: startedAtMs + 50,
+        }),
+      ).rejects.toBeInstanceOf(NativeOcrSandboxRequestTimeoutError);
+      expect(Date.now() - startedAtMs).toBeLessThan(1_000);
       expect(connections()).toBe(2);
       expectBoundaryCleared(client);
+    });
+  });
+
+  it.each(['capacity_exhausted', 'request_deadline_exceeded'] as const)(
+    'keeps an explicit never-started %s server rejection distinct and the boundary verified',
+    async (reason) => {
+      await withSandboxTransport(async ({ client, setRejection, connections }) => {
+        await expect(client.preprocess(Buffer.from([1]), 'primary', 1_000)).resolves.toBeDefined();
+        setRejection(reason);
+
+        await expect(client.preprocess(Buffer.from([1]), 'primary', 1_000)).rejects.toMatchObject({
+          name: NativeOcrSandboxRequestError.name,
+          reason,
+        });
+        expect(connections()).toBe(2);
+        expect(client.isVerified()).toBe(true);
+      });
+    },
+  );
+
+  it('rejects an already-expired message before connecting without invalidating the sandbox', async () => {
+    await withSandboxTransport(async ({ client, connections }) => {
+      await expect(client.preprocess(Buffer.from([1]), 'primary', 1_000)).resolves.toBeDefined();
+      await expect(
+        client.preprocess(Buffer.from([1]), 'primary', 1_000, { deadlineAtMs: Date.now() - 1 }),
+      ).rejects.toMatchObject({
+        name: NativeOcrSandboxRequestError.name,
+        reason: 'request_deadline_exceeded',
+      });
+      expect(connections()).toBe(1);
+      expect(client.isVerified()).toBe(true);
+    });
+  });
+
+  it('clears verification and sends no operation when the shared monotonic clock is unverified', async () => {
+    await withSandboxTransport(async ({ client, connections }) => {
+      await expect(client.preprocess(Buffer.from([1]), 'primary', 1_000)).resolves.toBeDefined();
+      const clock = jest
+        .spyOn(nativeOcrSandboxClock, 'assertNativeOcrSandboxSharedClock')
+        .mockImplementation(() => {
+          throw new Error('Unverified shared clock');
+        });
+      try {
+        await expect(client.preprocess(Buffer.from([1]), 'primary', 1_000)).rejects.toMatchObject({
+          reason: 'unverified',
+        });
+        expect(connections()).toBe(1);
+        expectBoundaryCleared(client);
+      } finally {
+        clock.mockRestore();
+      }
     });
   });
 
@@ -195,6 +255,7 @@ async function withSandboxTransport(
     client: NativeOcrSandboxClient;
     socketPath: string;
     setResponse: (response: Buffer | null) => void;
+    setRejection: (reason: 'capacity_exhausted' | 'request_deadline_exceeded') => void;
     connections: () => number;
   }) => Promise<void>,
 ): Promise<void> {
@@ -205,20 +266,23 @@ async function withSandboxTransport(
   });
   const fingerprint = (client as unknown as { expectedFingerprintSha256: string })
     .expectedFingerprintSha256;
+  const boundaryMetadata = {
+    fingerprintSha256: fingerprint,
+    boundary: {
+      transport: 'unix_socket',
+      network: 'none',
+      environment: 'allowlist',
+      processGroupTeardown: 'verified_or_cgroup_recycle',
+      instanceId: '00000000-0000-4000-8000-000000000001',
+    },
+  };
   let response: Buffer | null = encodeNativeOcrSandboxFrame({
     kind: NATIVE_OCR_SANDBOX_FRAME_KINDS.preprocessResponse,
     metadata: {
       status: 'ok',
       width: 1,
       height: 1,
-      fingerprintSha256: fingerprint,
-      boundary: {
-        transport: 'unix_socket',
-        network: 'none',
-        environment: 'allowlist',
-        processGroupTeardown: 'verified_or_cgroup_recycle',
-        instanceId: '00000000-0000-4000-8000-000000000001',
-      },
+      ...boundaryMetadata,
     },
     payload: Buffer.from([1]),
     limits: { metadataBytes: 4 * 1024, payloadBytes: 1 },
@@ -257,6 +321,13 @@ async function withSandboxTransport(
       socketPath,
       setResponse: (next) => {
         response = next;
+      },
+      setRejection: (reason) => {
+        response = encodeNativeOcrSandboxFrame({
+          kind: NATIVE_OCR_SANDBOX_FRAME_KINDS.preprocessResponse,
+          metadata: { status: 'error', reason, ...boundaryMetadata },
+          limits: { metadataBytes: 4 * 1024, payloadBytes: 0 },
+        });
       },
       connections: () => connectionCount,
     });

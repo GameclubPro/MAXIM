@@ -1,13 +1,15 @@
 import { isAbsolute } from 'node:path';
 
-export const NATIVE_OCR_SANDBOX_PROTOCOL_VERSION = 1 as const;
+export const NATIVE_OCR_SANDBOX_PROTOCOL_VERSION = 2 as const;
 export const NATIVE_OCR_SANDBOX_SOCKET_PATH_ENV =
   'COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH' as const;
 export const NATIVE_OCR_SANDBOX_DEFAULT_SOCKET_PATH = '/run/maxim-ocr/native-ocr.sock';
 export const NATIVE_OCR_SANDBOX_SOCKET_DIRECTORY = '/run/maxim-ocr';
 
 export const NATIVE_OCR_SANDBOX_HEADER_BYTES = 16;
-export const NATIVE_OCR_SANDBOX_IPC_GRACE_MS = 500;
+// FLAG: Native execution keeps its own limit. Reserve teardown (up to 500ms) and
+// response delivery separately, once, inside the caller's immutable total budget.
+export const NATIVE_OCR_SANDBOX_IPC_GRACE_MS = 1_000;
 export const NATIVE_OCR_SANDBOX_MAX_REQUEST_METADATA_BYTES = 4 * 1024;
 export const NATIVE_OCR_SANDBOX_MAX_RESPONSE_METADATA_BYTES = 4 * 1024 * 1024;
 export const NATIVE_OCR_SANDBOX_MAX_SOURCE_IMAGE_BYTES = 32 * 1024 * 1024;

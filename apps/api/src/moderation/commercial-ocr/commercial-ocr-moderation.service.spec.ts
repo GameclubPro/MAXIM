@@ -1096,7 +1096,7 @@ describe('CommercialOcrModerationService', () => {
 
   it.each([
     { action: 'run' as const, authorized: true },
-    { action: 'slow' as const, authorized: false },
+    { action: 'slow' as const, authorized: true },
     { action: 'pause' as const, authorized: false },
   ])(
     'treats governor $action as heavy-stage authorization=$authorized',
@@ -1109,7 +1109,9 @@ describe('CommercialOcrModerationService', () => {
         },
       });
 
-      await expect((harness.service as any).authorizeHeavyStage()).resolves.toBe(authorized);
+      await expect((harness.service as any).authorizeHeavyStage('ocr')).resolves.toMatchObject({
+        allowed: authorized,
+      });
       expect(harness.governor.decide).toHaveBeenCalledWith({
         component: 'commercial-image-ocr',
         sourceTag: 'commercial_image_ocr',
@@ -1118,10 +1120,34 @@ describe('CommercialOcrModerationService', () => {
     },
   );
 
+  it('makes bounded progress under slow pressure while pause overrides an available slot', async () => {
+    const harness = buildHarness({
+      governorDecision: { action: 'slow', retryAfterMs: 20_000, reason: 'fixture pressure' },
+    });
+    const authorize = (stage: 'download' | 'ocr') =>
+      (harness.service as any).authorizeHeavyStage(stage);
+    await expect(authorize('download')).resolves.toMatchObject({ allowed: true });
+    await expect(authorize('ocr')).resolves.toMatchObject({ allowed: true });
+    await expect(authorize('download')).resolves.toMatchObject({ allowed: true });
+    await expect(authorize('ocr')).resolves.toMatchObject({
+      allowed: false,
+      retryAfterMs: expect.any(Number),
+    });
+    harness.governor.decide.mockResolvedValueOnce({
+      action: 'pause',
+      retryAfterMs: 60_000,
+      reason: 'emergency',
+    });
+    await expect(authorize('download')).resolves.toEqual({ allowed: false, retryAfterMs: 60_000 });
+  });
+
   it('fails heavy-stage authorization closed when the governor is unavailable', async () => {
     const harness = buildHarness({ governorError: new Error('redis unavailable') });
 
-    await expect((harness.service as any).authorizeHeavyStage()).resolves.toBe(false);
+    await expect((harness.service as any).authorizeHeavyStage('ocr')).resolves.toEqual({
+      allowed: false,
+      retryAfterMs: 30_000,
+    });
   });
 
   it.each(['download_failed', 'ocr_failed'] as const)(

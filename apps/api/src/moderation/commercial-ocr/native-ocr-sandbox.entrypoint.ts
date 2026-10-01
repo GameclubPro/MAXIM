@@ -8,16 +8,9 @@ export {
 async function main(argv: readonly string[]): Promise<void> {
   restrictNativeOcrSandboxEnvironment(process.env);
   if (argv.length === 1 && argv[0] === '--probe') {
-    const { NativeOcrSandboxClient } = await import('./native-ocr-sandbox.client');
-    const client = new NativeOcrSandboxClient({
-      get: (propertyPath: string): unknown => process.env[propertyPath],
-    });
-    try {
-      await client.probe();
-      process.stdout.write('Native OCR sandbox probe passed.\n');
-    } finally {
-      client.close();
-    }
+    const { runNativeOcrSandboxReadinessProbe } = await import('./native-ocr-sandbox.probe');
+    await runNativeOcrSandboxReadinessProbe(process.env);
+    process.stdout.write('Native OCR sandbox probe passed.\n');
     return;
   }
   if (argv.length > 0) {

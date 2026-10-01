@@ -54,6 +54,8 @@ export type NativeTesseractFailureReason =
   | 'invalid_input'
   | 'artifact_unverified'
   | 'capacity_exhausted'
+  | 'request_timeout'
+  | 'request_deadline_exceeded'
   | 'timeout'
   | 'worker_unavailable'
   | 'tesseract_failed'
