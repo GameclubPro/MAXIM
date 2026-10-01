@@ -79,6 +79,18 @@ export type PreparedPublicationContentRevision = {
   assets: PreparedAssetInput[];
 };
 
+// FLAG: Internal bytes are accepted only from server-owned preparation, never public JSON.
+export type PublicationBinaryMediaInput = {
+  type: 'image' | 'video';
+  bytes: Buffer;
+  fileName: string;
+  mimeType?: string;
+};
+
+export type PublicationBinaryContentInput = Omit<PublicationContentInput, 'media'> & {
+  media: PublicationBinaryMediaInput[];
+};
+
 @Injectable()
 export class PublicationContentService {
   constructor(
@@ -124,6 +136,30 @@ export class PublicationContentService {
       textFormat: content.textFormat,
       buttons: content.buttons,
       assets: await this.prepareAssetInputs(content.media),
+    };
+  }
+
+  async prepareBinaryContentRevision(
+    content: PublicationBinaryContentInput,
+  ): Promise<PreparedPublicationContentRevision> {
+    const postPublish = publicationPostPublishSchema.parse(content.postPublish ?? {});
+    const assets: PreparedAssetInput[] = [];
+    let totalImageBytes = 0;
+    for (const item of content.media) {
+      if (item.type === 'image') {
+        totalImageBytes += item.bytes.length;
+        if (totalImageBytes > PUBLICATION_MAX_TOTAL_IMAGE_BYTES) {
+          throw new BadRequestException('Суммарный размер фото превышает 24 МБ.');
+        }
+      }
+      assets.push(await this.prepareBinaryAssetInput(item));
+    }
+    return {
+      postPublish,
+      text: content.text,
+      textFormat: content.textFormat,
+      buttons: content.buttons,
+      assets,
     };
   }
 
@@ -331,48 +367,17 @@ export class PublicationContentService {
       }
       if (item.type === 'image') {
         const bytes = this.decodeImageBase64(item.base64);
-        if (bytes.length > PUBLICATION_MAX_IMAGE_BYTES) {
-          throw new BadRequestException('Фото слишком большое. Максимум 8 МБ.');
-        }
-        const validated = await this.mapMaxMediaValidation(
-          this.maxClient.validateMediaUploadPayload('image', bytes),
-        );
         totalImageBytes += bytes.length;
-        prepared.push({
-          kind: 'prepared',
-          sha256: createHash('sha256').update(bytes).digest('hex'),
-          mimeType: validated.mimeType,
-          fileName: canonicalizeAdminMaxMediaFileName(
-            item.fileName,
-            validated.extension,
-            'publication-image',
-          ),
-          sizeBytes: bytes.length,
-          bytes,
-          durablePayload: null,
-          expectedType: 'image',
-        });
+        prepared.push(
+          await this.prepareBinaryAssetInput({ type: 'image', bytes, fileName: item.fileName }),
+        );
         continue;
       }
       if (item.base64) {
         const bytes = this.decodeAndValidateVideo(item.base64);
-        const validated = await this.mapMaxMediaValidation(
-          this.maxClient.validateMediaUploadPayload('video', bytes),
+        prepared.push(
+          await this.prepareBinaryAssetInput({ type: 'video', bytes, fileName: item.fileName }),
         );
-        prepared.push({
-          kind: 'prepared',
-          sha256: createHash('sha256').update('video-bytes:').update(bytes).digest('hex'),
-          mimeType: validated.mimeType,
-          fileName: canonicalizeAdminMaxMediaFileName(
-            item.fileName,
-            validated.extension,
-            'publication-video',
-          ),
-          sizeBytes: bytes.length,
-          bytes,
-          durablePayload: null,
-          expectedType: 'video',
-        });
         continue;
       }
       if (!item.payload) {
@@ -395,6 +400,48 @@ export class PublicationContentService {
       throw new BadRequestException('Суммарный размер фото превышает 24 МБ.');
     }
     return prepared;
+  }
+
+  private async prepareBinaryAssetInput(
+    item: PublicationBinaryMediaInput,
+  ): Promise<PreparedAssetInput> {
+    const { bytes, type } = item;
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+      throw new BadRequestException(type === 'image' ? 'Фото пустое.' : 'Видео пустое.');
+    }
+    if (
+      bytes.length > (type === 'image' ? PUBLICATION_MAX_IMAGE_BYTES : PUBLICATION_MAX_VIDEO_BYTES)
+    ) {
+      throw new BadRequestException(
+        type === 'image'
+          ? 'Фото слишком большое. Максимум 8 МБ.'
+          : 'Видео слишком большое. Максимум 24 МБ.',
+      );
+    }
+    const validated =
+      type === 'image'
+        ? await this.mapMaxMediaValidation(
+            this.maxClient.validateMediaUploadPayload('image', bytes),
+          )
+        : await this.mapMaxMediaValidation(
+            this.maxClient.validateMediaUploadPayload('video', bytes),
+          );
+    const digest = createHash('sha256');
+    if (type === 'video') digest.update('video-bytes:');
+    return {
+      kind: 'prepared',
+      sha256: digest.update(bytes).digest('hex'),
+      mimeType: validated.mimeType,
+      fileName: canonicalizeAdminMaxMediaFileName(
+        item.fileName,
+        validated.extension,
+        `publication-${type}`,
+      ),
+      sizeBytes: bytes.length,
+      bytes,
+      durablePayload: null,
+      expectedType: type,
+    };
   }
 
   private async resolvePersistedAssetInputs(

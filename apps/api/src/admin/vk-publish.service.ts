@@ -28,6 +28,16 @@ import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import type { Queue } from 'bullmq';
 import {
+  EmptyResponseBodyError,
+  readBoundedResponseBuffer,
+  ResponseByteLimitExceededError,
+} from '../common/bounded-response-buffer';
+import {
+  MediaByteAdmission,
+  MediaByteAdmissionError,
+  type MediaBytePermit,
+} from '../common/media-byte-admission';
+import {
   containsSupportedMarkdownUrl,
   renderSupportedMarkdownAsHtml,
 } from '../common/max-markdown.util';
@@ -61,6 +71,7 @@ import {
   type PublisherReadyRoute,
 } from '../publisher/publisher-readiness.service';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
+import { StorageRuntimeMetricsService } from '../system/storage-runtime-metrics.service';
 import {
   resolveNewPublicationDispatchRoute,
   type PublisherDispatchRoute,
@@ -329,6 +340,10 @@ const VK_AUTOPUBLISH_RECOVERY_FRESHNESS_HORIZON_MS = 24 * 60 * 60_000;
 const VK_VIDEO_MAX_BYTES = MAX_VIDEO_UPLOAD_MAX_BYTES;
 const VK_VIDEO_FETCH_TIMEOUT_MS = 60_000;
 const VK_VIDEO_UPLOAD_TIMEOUT_MS = 120_000;
+const VK_MEDIA_ENCODED_BUFFER_BUDGET_BYTES = 768 * 1_024 * 1_024;
+const VK_MEDIA_ADMISSION_WAITERS = 32;
+const VK_MEDIA_ADMISSION_WAIT_MS = 15_000;
+const VK_MEDIA_ADMISSION_DEFER_MS = 2_000;
 const VK_ATTACHMENT_SEND_RETRY_DELAYS_MS = [750, 1_500];
 const VK_SUPPORTED_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/webm']);
 
@@ -337,6 +352,10 @@ export class VkPublishService {
   private readonly logger = new Logger(VkPublishService.name);
   private readonly persistedPublishFailures = new WeakSet<object>();
   private readonly publishSourceFences = new Map<string, Promise<void>>();
+  private readonly mediaByteAdmission = new MediaByteAdmission(
+    VK_MEDIA_ENCODED_BUFFER_BUDGET_BYTES,
+    VK_MEDIA_ADMISSION_WAITERS,
+  );
   private readonly queueBatchSize: number;
   private readonly publishLeaseTtlMs: number;
   private readonly mediaConcurrency: number;
@@ -370,6 +389,8 @@ export class VkPublishService {
     private readonly publisherDispatchHealthService?: PublisherDispatchHealthService,
     @Optional()
     private readonly publisherDialogContextService?: PublisherDialogContextService,
+    @Optional()
+    private readonly storageRuntimeMetrics?: StorageRuntimeMetricsService,
   ) {
     this.newDispatchRoute = resolveNewPublicationDispatchRoute(configService);
     this.publisherDispatchConfigured = configService.get<boolean>(
@@ -386,6 +407,17 @@ export class VkPublishService {
       configService.get<number>('VK_PARSING_MEDIA_PREFLIGHT_TTL_MS') ?? 86_400_000,
       configService.get<number>('VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS') ?? 120_000,
     );
+    this.storageRuntimeMetrics?.registerVkMediaAdmissionSnapshot(() =>
+      this.getMediaByteAdmissionSnapshot(),
+    );
+  }
+
+  onModuleDestroy(): void {
+    this.mediaByteAdmission.close();
+  }
+
+  getMediaByteAdmissionSnapshot() {
+    return this.mediaByteAdmission.getSnapshot();
   }
 
   async assertChannelLinkAvailable(
@@ -1007,28 +1039,47 @@ export class VkPublishService {
       trafficClass: 'background' as const,
       sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
     };
-    if (snapshot.payload.videoUrls.length) {
-      const url = snapshot.payload.videoUrls[0]!;
-      const payload = await this.downloadAndUploadVideo(
-        url,
+    const reservationBytes = this.resolveEncodedMediaReservation(snapshot.payload);
+    let permit: MediaBytePermit | null = null;
+    try {
+      if (reservationBytes > 0) {
+        try {
+          // FLAG: Only metadata is retained while admission waits. No raw media is fetched yet.
+          permit = await this.mediaByteAdmission.acquire(reservationBytes, {
+            deadlineAtMs: Date.now() + VK_MEDIA_ADMISSION_WAIT_MS,
+          });
+        } catch (error: unknown) {
+          if (error instanceof MediaByteAdmissionError) {
+            throw new ServiceUnavailableException('Подготовка медиа занята. Повторите позже.');
+          }
+          throw error;
+        }
+      }
+      if (snapshot.payload.videoUrls.length) {
+        const url = snapshot.payload.videoUrls[0]!;
+        const payload = await this.downloadAndUploadVideo(
+          url,
+          request,
+          this.resolveVideoMediaIdentityMap(post).get(url) ?? null,
+        );
+        return {
+          textFormat: snapshot.maxMessage.textFormat,
+          attachments: [{ type: 'video', payload }],
+        };
+      }
+      const photos = await this.downloadAndUploadImages(
+        snapshot.payload.photoUrls,
         request,
-        this.resolveVideoMediaIdentityMap(post).get(url) ?? null,
+        { allowPartialFailures: false, canPublishWithoutPhotos: false },
+        this.resolvePhotoMediaIdentityMap(post),
       );
       return {
         textFormat: snapshot.maxMessage.textFormat,
-        attachments: [{ type: 'video', payload }],
+        attachments: photos.map((payload) => ({ type: 'image' as const, payload })),
       };
+    } finally {
+      permit?.release();
     }
-    const photos = await this.downloadAndUploadImages(
-      snapshot.payload.photoUrls,
-      request,
-      { allowPartialFailures: false, canPublishWithoutPhotos: false },
-      this.resolvePhotoMediaIdentityMap(post),
-    );
-    return {
-      textFormat: snapshot.maxMessage.textFormat,
-      attachments: photos.map((payload) => ({ type: 'image' as const, payload })),
-    };
   }
 
   async publishBotReviewedPost(reviewId: string): Promise<void> {
@@ -1972,6 +2023,7 @@ export class VkPublishService {
       return;
     }
     let publishAttemptsRecorded = 0;
+    let mediaPermit: MediaBytePermit | null = null;
     const confirmedPersistencePending = this.isConfirmedPublishPersistencePending(post.lastError);
     try {
       if (confirmedPersistencePending) {
@@ -2142,6 +2194,26 @@ export class VkPublishService {
         return deferUntil ? { deferUntil } : undefined;
       }
       await this.assertPublisherIntentReady(post);
+      const reservationBytes = this.resolveEncodedMediaReservation({
+        photoUrls: this.readStringArray(post.photoUrls),
+        videoUrls: this.readStringArray(post.videoUrls),
+      });
+      if (reservationBytes > 0) {
+        mediaPermit = this.mediaByteAdmission.tryAcquire(reservationBytes);
+        if (!mediaPermit) {
+          // FLAG: Memory pressure is a pre-dispatch deferral, never a failed attempt.
+          // Preserve the exact MAX intent even when no durable send has happened yet.
+          const deferUntil = await this.deferQueuedPost(
+            post,
+            params.reason,
+            params.idempotencyKey,
+            new Date(Date.now() + VK_MEDIA_ADMISSION_DEFER_MS),
+            undefined,
+            true,
+          );
+          return deferUntil ? { deferUntil } : undefined;
+        }
+      }
       const clearedBlocker = await this.prisma.vkParsingPost.updateMany({
         where: {
           id: post.id,
@@ -2221,6 +2293,8 @@ export class VkPublishService {
         }
       }
       throw error;
+    } finally {
+      mediaPermit?.release();
     }
   }
 
@@ -5589,8 +5663,9 @@ export class VkPublishService {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), VK_IMAGE_FETCH_TIMEOUT_MS);
+    let response: Response | undefined;
     try {
-      const response = await fetch(parsed, { signal: controller.signal });
+      response = await fetch(parsed, { signal: controller.signal });
       if (!response.ok) {
         throw new BadRequestException('Не удалось скачать фото из VK.');
       }
@@ -5606,18 +5681,28 @@ export class VkPublishService {
         throw new BadRequestException('VK вернул не изображение.');
       }
 
-      const buffer = Buffer.from(await response.arrayBuffer());
-      if (buffer.length > VK_IMAGE_MAX_BYTES) {
-        throw new BadRequestException('Фото из VK слишком большое.');
-      }
+      const buffer = await readBoundedResponseBuffer(
+        response,
+        VK_IMAGE_MAX_BYTES,
+        controller.signal,
+      );
 
       return {
         buffer,
         fileName: this.resolveImageFileName(parsed, index),
         mimeType,
       };
+    } catch (error: unknown) {
+      if (error instanceof ResponseByteLimitExceededError) {
+        throw new BadRequestException('Фото из VK слишком большое.');
+      }
+      if (error instanceof EmptyResponseBodyError) {
+        throw new BadRequestException('Не удалось скачать фото из VK.');
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
+      await response?.body?.cancel().catch(() => undefined);
     }
   }
 
@@ -5629,8 +5714,9 @@ export class VkPublishService {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), VK_VIDEO_FETCH_TIMEOUT_MS);
+    let response: Response | undefined;
     try {
-      const response = await fetch(parsed, { signal: controller.signal });
+      response = await fetch(parsed, { signal: controller.signal });
       if (!response.ok) {
         throw new BadRequestException('Не удалось скачать видео из VK.');
       }
@@ -5651,10 +5737,11 @@ export class VkPublishService {
         throw new BadRequestException('VK вернул не видео.');
       }
 
-      const buffer = await this.readResponseBufferWithLimit(response, VK_VIDEO_MAX_BYTES);
-      if (buffer.length === 0) {
-        throw new BadRequestException('Видео из VK оказалось пустым.');
-      }
+      const buffer = await readBoundedResponseBuffer(
+        response,
+        VK_VIDEO_MAX_BYTES,
+        controller.signal,
+      );
       if (contentLength !== null && buffer.length !== contentLength) {
         throw new BadRequestException('Размер скачанного видео VK не совпал с Content-Length.');
       }
@@ -5667,8 +5754,17 @@ export class VkPublishService {
         fileName: this.resolveVideoFileName(parsed, resolvedMimeType),
         mimeType: resolvedMimeType,
       };
+    } catch (error: unknown) {
+      if (error instanceof ResponseByteLimitExceededError) {
+        throw new BadRequestException('Видео из VK слишком большое. Максимум 250 МБ.');
+      }
+      if (error instanceof EmptyResponseBodyError) {
+        throw new BadRequestException('Видео из VK оказалось пустым.');
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
+      await response?.body?.cancel().catch(() => undefined);
     }
   }
 
@@ -5690,39 +5786,6 @@ export class VkPublishService {
     }
 
     return mimeType === 'video/webm' ? 'vk-video.webm' : 'vk-video.mp4';
-  }
-
-  private async readResponseBufferWithLimit(response: Response, maxBytes: number): Promise<Buffer> {
-    if (!response.body) {
-      const buffer = Buffer.from(await response.arrayBuffer());
-      if (buffer.length > maxBytes) {
-        throw new BadRequestException('Видео из VK слишком большое. Максимум 250 МБ.');
-      }
-      return buffer;
-    }
-
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let totalBytes = 0;
-    try {
-      for (;;) {
-        const result = await reader.read();
-        if (result.done) {
-          break;
-        }
-        const chunk = Buffer.from(result.value);
-        totalBytes += chunk.length;
-        if (totalBytes > maxBytes) {
-          await reader.cancel().catch(() => undefined);
-          throw new BadRequestException('Видео из VK слишком большое. Максимум 250 МБ.');
-        }
-        chunks.push(chunk);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-
-    return Buffer.concat(chunks, totalBytes);
   }
 
   private resolveVideoMimeTypeFromUrl(url: URL): string | null {
@@ -6047,14 +6110,37 @@ export class VkPublishService {
   ): Promise<void> {
     const workerCount = Math.max(1, Math.min(concurrency, items.length));
     let nextIndex = 0;
+    let failure: { error: unknown } | null = null;
+    // FLAG: Settle already-started siblings before the caller releases its media permit.
+    // A failed required photo stops new downloads; permitted partial failures stay in the worker.
     await Promise.all(
       Array.from({ length: workerCount }, async () => {
-        while (nextIndex < items.length) {
+        while (!failure && nextIndex < items.length) {
           const index = nextIndex;
           nextIndex += 1;
-          await worker(items[index]!, index);
+          try {
+            await worker(items[index]!, index);
+          } catch (error: unknown) {
+            failure ??= { error };
+          }
         }
       }),
+    );
+    if (failure) throw (failure as { error: unknown }).error;
+  }
+
+  private resolveEncodedMediaReservation(payload: {
+    photoUrls: readonly string[];
+    videoUrls: readonly string[];
+  }): number {
+    // FLAG: Reserve a worst-case bounded reader's chunks plus final copy before fetching.
+    // Use all image lanes conservatively even for background's single lane. This is an
+    // encoded-buffer reservation only; validator/native raster limits remain independent.
+    if (payload.videoUrls.length > 0) return 2 * VK_VIDEO_MAX_BYTES;
+    return (
+      2 *
+      VK_IMAGE_MAX_BYTES *
+      Math.min(payload.photoUrls.length, Math.max(1, this.mediaConcurrency))
     );
   }
 

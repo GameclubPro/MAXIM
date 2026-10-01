@@ -1,3 +1,4 @@
+import { maxApiMinuteCounterAddress } from '../max/max-api-counter-storage';
 import { MaxApiMetricsService } from './max-api-metrics.service';
 import {
   buildMaxApiSourceMetricKey,
@@ -9,10 +10,12 @@ import {
 } from '../max/max-api-metrics-key.util';
 
 const redisStores: Array<Map<string, string>> = [];
+const redisHashStores: Array<Map<string, Map<string, string>>> = [];
 const redisSetStores: Array<Map<string, Set<string>>> = [];
 const redisInstances: Array<{
   scan: jest.Mock<Promise<[string, string[]]>, [string, string, string, string, string]>;
   mget: jest.Mock<Promise<Array<string | null>>, string[]>;
+  pipeline: jest.Mock;
   get: jest.Mock;
   set: jest.Mock;
   sadd: jest.Mock;
@@ -26,6 +29,7 @@ jest.mock('ioredis', () => ({
   default: jest.fn().mockImplementation(() => {
     const store = new Map<string, string>();
     const sets = new Map<string, Set<string>>();
+    const hashes = new Map<string, Map<string, string>>();
     const instance = {
       scan: jest
         .fn()
@@ -38,15 +42,31 @@ jest.mock('ioredis', () => ({
             _countValue: string,
           ) => {
             const normalizedPrefix = pattern.replace(/\*+$/u, '');
-            return ['0', [...store.keys()].filter((key) => key.startsWith(normalizedPrefix))] as [
-              string,
-              string[],
-            ];
+            return [
+              '0',
+              [...store.keys(), ...hashes.keys()].filter((key) => key.startsWith(normalizedPrefix)),
+            ] as [string, string[]];
           },
         ),
       mget: jest
         .fn()
         .mockImplementation(async (...keys: string[]) => keys.map((key) => store.get(key) ?? null)),
+      pipeline: jest.fn().mockImplementation(() => {
+        const commands: Array<{ key: string; fields: string[] }> = [];
+        const pipeline = {
+          hmget: (key: string, ...fields: string[]) => {
+            commands.push({ key, fields });
+            return pipeline;
+          },
+          exec: jest.fn(async () =>
+            commands.map(({ key, fields }) => [
+              null,
+              fields.map((field) => hashes.get(key)?.get(field) ?? null),
+            ]),
+          ),
+        };
+        return pipeline;
+      }),
       get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
       set: jest.fn().mockImplementation(async (key: string, value: string, ...args: unknown[]) => {
         if (args.includes('NX') && store.has(key)) {
@@ -87,6 +107,7 @@ jest.mock('ioredis', () => ({
       quit: jest.fn().mockResolvedValue(undefined),
     };
     redisStores.push(store);
+    redisHashStores.push(hashes);
     redisSetStores.push(sets);
     redisInstances.push(instance);
     return instance;
@@ -123,6 +144,7 @@ function createConfigMock(appServiceName?: string) {
 describe('MaxApiMetricsService', () => {
   beforeEach(() => {
     redisStores.length = 0;
+    redisHashStores.length = 0;
     redisSetStores.length = 0;
     redisInstances.length = 0;
     jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:10:00.000Z'));
@@ -130,6 +152,119 @@ describe('MaxApiMetricsService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('preserves source peaks, governor capacity and outcome totals across a rolling layout transition', async () => {
+    jest.setSystemTime(new Date('2026-04-01T18:10:05.000Z'));
+    const services = Array.from(
+      { length: 3 },
+      () => new MaxApiMetricsService(createConfigMock('api-action') as never),
+    );
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const stems = [
+      'maxapi:rps:global:bot-a',
+      'maxapi:rps:global:bot-a:critical',
+      'maxapi:rps:stack',
+      'maxapi:rps:stack:critical',
+      'maxapi:rps:service:v1:api-action:bot:bot-a:critical',
+      'maxapi:rps:service:v1:api-action:stack:critical',
+      'maxapi:rps:source:v1:bot-a:critical:moderation_delete',
+      'maxapi:rate-limit:v1:internal_limiter:stack:critical',
+      'maxapi:rate-limit:v1:internal_limiter:bot-a:critical',
+      'maxapi:rate-limit:v1:external_429:stack:critical',
+      'maxapi:rate-limit:v1:external_429:bot-a:critical',
+    ];
+    for (const stem of stems) {
+      for (const [sec, count] of [
+        [nowSec - 60, 99],
+        [nowSec - 59, 4],
+        [nowSec - 1, 8],
+        [nowSec, 5],
+        [nowSec + 1, 99],
+      ]) {
+        const key = `${stem}:${sec}`;
+        redisStores[0]!.set(key, String(count));
+        const address = maxApiMinuteCounterAddress(key);
+        for (const instanceIndex of [1, 2]) {
+          const fields =
+            redisHashStores[instanceIndex]!.get(address.key) ?? new Map<string, string>();
+          fields.set(address.field, String(instanceIndex === 1 ? count : count - 1));
+          redisHashStores[instanceIndex]!.set(address.key, fields);
+        }
+        redisStores[2]!.set(key, '1');
+      }
+    }
+    const snapshots = await Promise.all(
+      services.map(async (service) => ({
+        source: await service.getSourceSnapshot({ windowSec: 60 }),
+        sharedBots: await service.getBotRateLimitSnapshot(['bot-a'], { windowSec: 60 }),
+        serviceBots: await service.getBotRateLimitSnapshot(['bot-a'], {
+          windowSec: 60,
+          capacityScope: 'service',
+        }),
+        sharedStack: await service.getStackRateLimitSnapshot({ windowSec: 60 }),
+        serviceStack: await service.getStackRateLimitSnapshot({
+          windowSec: 60,
+          capacityScope: 'service',
+        }),
+        criticalRejects: await service.getStackCriticalLimiterSnapshot({ windowSec: 60 }),
+      })),
+    );
+    expect(snapshots[1]).toEqual(snapshots[0]);
+    expect(snapshots[2]).toEqual(snapshots[0]);
+    expect(snapshots[0]!.source.overall).toMatchObject({
+      totalRequests: 17,
+      peakRps: 8,
+      activeSeconds: 3,
+    });
+    expect(snapshots[0]!.criticalRejects.internalRejects).toBe(17);
+    expect(snapshots[0]!.source.rateLimitOutcomes.stack.external429).toBe(17);
+    expect(snapshots[0]!.serviceBots['bot-a']).toMatchObject({ totalRequests: 17, peakRps: 8 });
+    expect(redisInstances[1]!.scan).toHaveBeenCalledWith(
+      '0',
+      'MATCH',
+      'maxapi:rps:source:v2:*',
+      'COUNT',
+      '500',
+    );
+    await Promise.all(services.map((service) => service.onModuleDestroy()));
+  });
+
+  it('bounds minute outcome expansion and overwrites duplicate SCAN observations', async () => {
+    const service = new MaxApiMetricsService(createConfigMock() as never);
+    const redis = redisInstances[0]!;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const sourceKeys: string[] = [];
+    for (let bot = 0; bot < 40; bot += 1) {
+      const key = `maxapi:rate-limit:v1:internal_limiter:bot-${bot}:critical:${nowSec - 1}`;
+      const address = maxApiMinuteCounterAddress(key);
+      redisHashStores[0]!.set(address.key, new Map([[address.field, '5']]));
+      redisStores[0]!.set(key, '3');
+      sourceKeys.push(address.key);
+    }
+    redis.scan.mockImplementation(async (_cursor, _match, pattern) => [
+      '0',
+      pattern === 'maxapi:rate-limit:v2:*'
+        ? [...sourceKeys, ...sourceKeys]
+        : [...redisStores[0]!.keys()].filter((key) => key.startsWith('maxapi:rate-limit:v1:')),
+    ]);
+    const snapshot = await service.getRateLimitOutcomeSnapshot({ windowSec: 60 });
+    expect(Object.keys(snapshot.bots)).toHaveLength(40);
+    expect(Object.values(snapshot.bots).every((entry) => entry.internalLimiterRejects === 8)).toBe(
+      true,
+    );
+    expect(redis.mget.mock.calls.every((keys) => keys.length <= 2000)).toBe(true);
+    await service.onModuleDestroy();
+  });
+
+  it('keeps a still-live legacy service counter in the partial TTL boundary second', async () => {
+    const service = new MaxApiMetricsService(createConfigMock('api-action') as never);
+    const nowSec = Math.floor(Date.now() / 1000);
+    redisStores[0]!.set(`maxapi:rps:service:v1:api-action:stack:critical:${nowSec - 120}`, '3');
+    await expect(
+      service.getStackRateLimitSnapshot({ windowSec: 600, capacityScope: 'service' }),
+    ).resolves.toMatchObject({ trafficClasses: { critical: { totalRequests: 3, peakRps: 3 } } });
+    await service.onModuleDestroy();
   });
 
   it('round-trips source metric dimensions without delimiter ambiguity', () => {
@@ -168,7 +303,7 @@ describe('MaxApiMetricsService', () => {
     expect(first.overall.totalRequests).toBe(3);
     expect(concurrent.overall.totalRequests).toBe(3);
     expect(later.overall.totalRequests).toBe(3);
-    expect(redis.scan).toHaveBeenCalledTimes(1);
+    expect(redis.scan).toHaveBeenCalledTimes(2);
     expect(store.get(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY)).toBe('1');
     expect(sets.get(MAX_API_SOURCE_DIMENSION_CATALOG_KEY)).toEqual(
       new Set([serializeMaxApiSourceMetricDimension(dimension)]),
@@ -251,7 +386,7 @@ describe('MaxApiMetricsService', () => {
     await expect(service.getSourceTrafficSnapshot({ windowSec: 60 })).resolves.toMatchObject({
       overall: { totalRequests: 0 },
     });
-    expect(redis.scan).toHaveBeenCalledTimes(2);
+    expect(redis.scan).toHaveBeenCalledTimes(3);
     expect(store.get(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY)).toBe('1');
 
     await service.onModuleDestroy();

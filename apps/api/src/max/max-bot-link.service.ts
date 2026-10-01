@@ -52,6 +52,8 @@ import {
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
 const MAX_OBSERVED_WEBHOOK_TOUCH_CACHE_ENTRIES = 10_000;
+const LOCAL_CACHE_SWEEP_INTERVAL_MS = 5_000;
+const LOCAL_CACHE_SWEEP_BATCH_SIZE = 256;
 const NIGHT_MODE_RECONCILIATION_RETRY_DELAY_MS = 5_000;
 const NIGHT_MODE_RECONCILIATION_RETRY_BATCH_SIZE = 50;
 const CHAT_MEMBERSHIP_DEADLOCK_MAX_ATTEMPTS = 3;
@@ -318,6 +320,12 @@ export class MaxBotLinkService implements OnModuleDestroy {
   private readonly chatBotBindingCache = new Map<string, ChatBotBindingCacheEntry>();
   private readonly observedWebhookTouchCache = new Map<string, number>();
   private readonly observedWebhookTouchesInFlight = new Map<string, Promise<void>>();
+  private chatBotBindingSweepIterator: IterableIterator<[string, ChatBotBindingCacheEntry]> | null =
+    null;
+  private chatBotBindingSweepRemaining = 0;
+  private observedWebhookTouchSweepIterator: IterableIterator<[string, number]> | null = null;
+  private observedWebhookTouchSweepRemaining = 0;
+  private localCacheSweepTimer: NodeJS.Timeout | null = null;
   private readonly pendingNightModeReconciliations = new Set<string>();
   private readonly nightModeReconciliationsInFlight = new Map<string, Promise<boolean>>();
   private nightModeReconciliationRetryTimer: NodeJS.Timeout | null = null;
@@ -339,7 +347,88 @@ export class MaxBotLinkService implements OnModuleDestroy {
       clearTimeout(this.nightModeReconciliationRetryTimer);
       this.nightModeReconciliationRetryTimer = null;
     }
+    if (this.localCacheSweepTimer) {
+      clearTimeout(this.localCacheSweepTimer);
+      this.localCacheSweepTimer = null;
+    }
+    this.chatBotBindingSweepIterator = null;
+    this.chatBotBindingSweepRemaining = 0;
+    this.observedWebhookTouchSweepIterator = null;
+    this.observedWebhookTouchSweepRemaining = 0;
+    this.chatBotBindingCache.clear();
+    this.observedWebhookTouchCache.clear();
     this.pendingNightModeReconciliations.clear();
+  }
+
+  private scheduleLocalCacheSweep(delayMs: number): void {
+    if (
+      this.nightModeReconciliationRetryStopped ||
+      this.localCacheSweepTimer ||
+      (this.chatBotBindingCache.size === 0 && this.observedWebhookTouchCache.size === 0)
+    ) {
+      return;
+    }
+    this.localCacheSweepTimer = setTimeout(() => {
+      this.localCacheSweepTimer = null;
+      this.sweepLocalCaches();
+      this.scheduleLocalCacheSweep(
+        this.chatBotBindingSweepIterator || this.observedWebhookTouchSweepIterator
+          ? 1
+          : LOCAL_CACHE_SWEEP_INTERVAL_MS,
+      );
+    }, delayMs);
+    this.localCacheSweepTimer.unref();
+  }
+
+  private sweepLocalCaches(): void {
+    const now = Date.now();
+    if (!this.chatBotBindingSweepIterator) {
+      this.chatBotBindingSweepIterator = this.chatBotBindingCache.entries();
+      this.chatBotBindingSweepRemaining = this.chatBotBindingCache.size;
+    }
+    // FLAG: Synchronous bot resolution falls back on a miss. Preserve every fresh binding and
+    // its exact bot scope; capacity eviction is not safe here. Bound each live-iterator pass.
+    for (
+      let inspected = 0;
+      inspected < LOCAL_CACHE_SWEEP_BATCH_SIZE && this.chatBotBindingSweepRemaining > 0;
+      inspected++
+    ) {
+      const next = this.chatBotBindingSweepIterator.next();
+      if (next.done) {
+        this.chatBotBindingSweepRemaining = 0;
+        break;
+      }
+      this.chatBotBindingSweepRemaining--;
+      if (next.value[1].expiresAtMs < now) {
+        this.chatBotBindingCache.delete(next.value[0]);
+      }
+    }
+    if (this.chatBotBindingSweepRemaining === 0) {
+      this.chatBotBindingSweepIterator = null;
+    }
+
+    if (!this.observedWebhookTouchSweepIterator) {
+      this.observedWebhookTouchSweepIterator = this.observedWebhookTouchCache.entries();
+      this.observedWebhookTouchSweepRemaining = this.observedWebhookTouchCache.size;
+    }
+    for (
+      let inspected = 0;
+      inspected < LOCAL_CACHE_SWEEP_BATCH_SIZE && this.observedWebhookTouchSweepRemaining > 0;
+      inspected++
+    ) {
+      const next = this.observedWebhookTouchSweepIterator.next();
+      if (next.done) {
+        this.observedWebhookTouchSweepRemaining = 0;
+        break;
+      }
+      this.observedWebhookTouchSweepRemaining--;
+      if (next.value[1] <= now) {
+        this.observedWebhookTouchCache.delete(next.value[0]);
+      }
+    }
+    if (this.observedWebhookTouchSweepRemaining === 0) {
+      this.observedWebhookTouchSweepIterator = null;
+    }
   }
 
   getDefaultBotId(): string {
@@ -1268,7 +1357,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
         lastWebhookAt: observedAt,
       },
     });
-    if (touched.count === 0) {
+    if (touched.count === 0 || this.nightModeReconciliationRetryStopped) {
       return;
     }
     this.observedWebhookTouchCache.delete(cacheKey);
@@ -1278,6 +1367,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       if (oldestKey === undefined) break;
       this.observedWebhookTouchCache.delete(oldestKey);
     }
+    this.scheduleLocalCacheSweep(LOCAL_CACHE_SWEEP_INTERVAL_MS);
   }
 
   resolveContactIdSync(botId?: string | null): string | null {
@@ -1322,7 +1412,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
   rememberChatBotBinding(chatId: string, botId: string | null | undefined): void {
     const normalizedChatId = chatId.trim();
     const normalizedBotId = this.resolveOperationalBotId(botId);
-    if (!normalizedChatId || !normalizedBotId) {
+    if (!normalizedChatId || !normalizedBotId || this.nightModeReconciliationRetryStopped) {
       return;
     }
 
@@ -1330,6 +1420,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       botId: normalizedBotId,
       expiresAtMs: Date.now() + CHAT_BOT_CACHE_TTL_MS,
     });
+    this.scheduleLocalCacheSweep(LOCAL_CACHE_SWEEP_INTERVAL_MS);
   }
 
   forgetChatBotBinding(chatId: string): void {

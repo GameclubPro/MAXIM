@@ -1,4 +1,4 @@
-import { BullModule } from '@nestjs/bullmq';
+import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
 import { SuggestionSubscriptionMonitorService } from './suggestion-subscription-monitor.service';
 import { Module } from '@nestjs/common';
@@ -130,15 +130,15 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
   imports: [
     SuggestionSubscriptionModule,
     MessageRetentionStateModule,
-    BullModule.registerQueue({ name: ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE }),
-    BullModule.registerQueue({ name: ADMIN_MANUAL_FANOUT_QUEUE }),
-    BullModule.registerQueue({ name: ADMIN_SUPER_BAN_QUEUE }),
-    BullModule.registerQueue({ name: ADMIN_SUGGESTION_DELIVERY_QUEUE }),
-    BullModule.registerQueue({ name: VK_PARSING_SYNC_QUEUE }),
-    BullModule.registerQueue({ name: VK_PARSING_PUBLISHER_QUEUE }),
-    BullModule.registerQueue({ name: PUBLISHER_SUGGESTION_PUBLICATION_QUEUE }),
-    BullModule.registerQueue({ name: PUBLISHER_SUGGESTION_ADMIN_QUEUE }),
-    BullModule.registerQueue({ name: PUBLISHER_PUBLICATION_WAKEUP_QUEUE }),
+    ...registerRuntimeQueues(ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE),
+    ...registerRuntimeQueues(ADMIN_MANUAL_FANOUT_QUEUE),
+    ...registerRuntimeQueues(ADMIN_SUPER_BAN_QUEUE),
+    ...registerRuntimeQueues(ADMIN_SUGGESTION_DELIVERY_QUEUE),
+    ...registerRuntimeQueues(VK_PARSING_SYNC_QUEUE),
+    ...registerRuntimeQueues(VK_PARSING_PUBLISHER_QUEUE),
+    ...registerRuntimeQueues(PUBLISHER_SUGGESTION_PUBLICATION_QUEUE),
+    ...registerRuntimeQueues(PUBLISHER_SUGGESTION_ADMIN_QUEUE),
+    ...registerRuntimeQueues(PUBLISHER_PUBLICATION_WAKEUP_QUEUE),
     AuthModule,
     ReportsModule,
     MaxModule,

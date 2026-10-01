@@ -1,7 +1,7 @@
-import { BullModule } from '@nestjs/bullmq';
+import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { Module } from '@nestjs/common';
 import { ModerationDeleteIntentModule } from '../moderation/moderation-delete-intent.module';
-import { SystemModule } from '../system/system.module';
+import { SystemRuntimeModule } from '../system/system-runtime.module';
 import { getAppRole } from '../runtime/app-role';
 import { RedisCounterModule } from '../moderation/redis-counter.module';
 import { MessageRetentionStateModule } from './message-retention-state.module';
@@ -12,10 +12,10 @@ import { MESSAGE_RETENTION_QUEUE } from './message-retention.policy';
 @Module({
   imports: [
     MessageRetentionStateModule,
-    SystemModule,
+    SystemRuntimeModule,
     ModerationDeleteIntentModule,
     RedisCounterModule,
-    BullModule.registerQueue({ name: MESSAGE_RETENTION_QUEUE }),
+    ...registerRuntimeQueues(MESSAGE_RETENTION_QUEUE),
   ],
   providers:
     getAppRole() === 'message-retention' || getAppRole() === 'all'

@@ -1,10 +1,10 @@
-import { BullModule } from '@nestjs/bullmq';
+import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { HttpModule } from '@nestjs/axios';
 import { Module } from '@nestjs/common';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { NightModeTransitionModule } from '../moderation/night-mode-transition.module';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
-import { SystemModule } from '../system/system.module';
+import { SystemRuntimeModule } from '../system/system-runtime.module';
 import { ManagedEntityAccessLossService } from './managed-entity-access-loss.service';
 import { MaxActionDispatchService } from './max-action-dispatch.service';
 import { MaxActionLedgerService } from './max-action-ledger.service';
@@ -58,12 +58,12 @@ const maxProviders = [
       timeout: 5_000,
       maxRedirects: 0,
     }),
-    SystemModule,
+    SystemRuntimeModule,
     MaxBotModule,
     ChatContextModule,
     NightModeTransitionModule,
-    BullModule.registerQueue(...MAX_ACTION_ALL_QUEUE_NAMES.map((name) => ({ name }))),
-    BullModule.registerQueue({ name: MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE }),
+    ...registerRuntimeQueues(...MAX_ACTION_ALL_QUEUE_NAMES),
+    ...registerRuntimeQueues(MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE),
   ],
   providers: maxProviders,
   exports: [

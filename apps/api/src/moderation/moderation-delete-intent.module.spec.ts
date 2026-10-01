@@ -2,7 +2,7 @@ import { MODULE_METADATA } from '@nestjs/common/constants';
 
 import { AdminModule } from '../admin/admin.module';
 import { MaxModule } from '../max/max.module';
-import { SystemModule } from '../system/system.module';
+import { SystemRuntimeModule } from '../system/system-runtime.module';
 import { ModerationDeleteIntentModule } from './moderation-delete-intent.module';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import { ModerationModule } from './moderation.module';
@@ -60,6 +60,8 @@ describe('ModerationDeleteIntentModule', () => {
     expect(readModuleMetadata(RuleEngineModule, MODULE_METADATA.EXPORTS)).toContain(
       RuleEngineService,
     );
-    expect(readModuleMetadata(RuleEngineModule, MODULE_METADATA.IMPORTS)).toContain(SystemModule);
+    expect(readModuleMetadata(RuleEngineModule, MODULE_METADATA.IMPORTS)).toContain(
+      SystemRuntimeModule,
+    );
   });
 });

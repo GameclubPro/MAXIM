@@ -1,4 +1,4 @@
-import type { PublicationContentInput, PublicationMediaInput } from '@maxim/contracts/publication';
+import type { PublicationContentInput } from '@maxim/contracts/publication';
 import type {
   PublisherPostImportFailureCode,
   PublisherPostImportOmission,
@@ -6,6 +6,11 @@ import type {
 import { maxUpdateSchema } from '@maxim/contracts';
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
+import {
+  EmptyResponseBodyError,
+  readBoundedResponseBuffer,
+  ResponseByteLimitExceededError,
+} from '../common/bounded-response-buffer';
 import {
   extractIncomingMessageMarkup,
   renderIncomingMarkupAsMarkdown,
@@ -32,7 +37,11 @@ import {
   PUBLISHER_POST_IMPORT_RESULT_TTL_MS,
   PUBLISHER_POST_IMPORT_SECOND_FORWARD_GUARD_MS,
 } from '../publisher/publisher-post-import.service';
-import { PublicationContentService } from './publication-content.service';
+import {
+  PublicationContentService,
+  type PublicationBinaryContentInput,
+  type PublicationBinaryMediaInput,
+} from './publication-content.service';
 import {
   PUBLICATION_MAX_IMAGE_BYTES,
   PUBLICATION_MAX_TOTAL_IMAGE_BYTES,
@@ -164,7 +173,7 @@ export class PublisherPostImportProcessingService {
       }
 
       const content = await this.buildContent(linkedMessage, session.publisherBotId);
-      const prepared = await this.publicationContentService.prepareContentRevision(content);
+      const prepared = await this.publicationContentService.prepareBinaryContentRevision(content);
       await this.publicationContentService.assertPublisherCompatibleContent(
         prepared,
         session.actorUserId,
@@ -304,7 +313,7 @@ export class PublisherPostImportProcessingService {
   private async buildContent(
     linkedMessage: Record<string, unknown>,
     publisherBotId: string,
-  ): Promise<PublicationContentInput & { omissions: PublisherPostImportOmission[] }> {
+  ): Promise<PublicationBinaryContentInput & { omissions: PublisherPostImportOmission[] }> {
     const sourceText = this.extractText(linkedMessage);
     if (sourceText.length > POST_IMPORT_MAX_TEXT_LENGTH) {
       throw new PublisherPostImportTerminalError('text_too_long', 'Forwarded text is too long');
@@ -359,37 +368,13 @@ export class PublisherPostImportProcessingService {
       );
     }
 
-    const media: PublicationMediaInput[] = [];
+    const media: PublicationBinaryMediaInput[] = [];
     if (imageAttachments.length > 0) {
-      const downloadedImages = await this.mapWithConcurrency(
-        imageAttachments,
-        3,
-        async (attachment) => {
-          const url = this.extractAttachmentUrl(attachment, 'image');
-          if (!url) {
-            throw new PublisherPostImportTerminalError(
-              'media_download_failed',
-              'Forwarded image has no durable download URL',
-            );
-          }
-          const downloaded = await this.downloadMedia(url, PUBLICATION_MAX_IMAGE_BYTES, 'image');
-          return this.prepareImportedImage(downloaded);
-        },
-      );
-      const totalBytes = downloadedImages.reduce(
-        (total, downloaded) => total + downloaded.bytes.length,
-        0,
-      );
-      if (totalBytes > PUBLICATION_MAX_TOTAL_IMAGE_BYTES) {
-        throw new PublisherPostImportTerminalError(
-          'media_too_large',
-          'Forwarded images exceed the total media limit',
-        );
-      }
+      const downloadedImages = await this.downloadImportedImages(imageAttachments);
       downloadedImages.forEach((downloaded, index) => {
         media.push({
           type: 'image',
-          base64: downloaded.bytes.toString('base64'),
+          bytes: downloaded.bytes,
           mimeType: downloaded.mimeType,
           fileName: `forwarded-image-${index + 1}.${downloaded.extension}`,
         });
@@ -429,8 +414,7 @@ export class PublisherPostImportProcessingService {
       const downloaded = await this.downloadMedia(url, PUBLICATION_MAX_VIDEO_BYTES, 'video');
       media.push({
         type: 'video',
-        payload: null,
-        base64: downloaded.bytes.toString('base64'),
+        bytes: downloaded.bytes,
         mimeType: downloaded.mimeType,
         fileName: `forwarded-video.${this.extensionForMime(downloaded.mimeType, 'mp4')}`,
       });
@@ -457,6 +441,61 @@ export class PublisherPostImportProcessingService {
       media,
       omissions: [...new Set(omissions)],
     };
+  }
+
+  private async downloadImportedImages(
+    attachments: readonly Record<string, unknown>[],
+  ): Promise<Array<{ bytes: Buffer; mimeType: string; extension: string }>> {
+    const controller = new AbortController();
+    const images = new Array<{ bytes: Buffer; mimeType: string; extension: string }>(
+      attachments.length,
+    );
+    let cursor = 0;
+    let totalBytes = 0;
+    let failure: { error: unknown } | null = null;
+    // FLAG: Keep the existing three download lanes and lease timing. Charge normalized
+    // results immediately, stop new work on failure, and settle cancelled sibling downloads.
+    // Raw input keeps its own limit because normalization can shrink it below the album budget.
+    const workers = Array.from({ length: Math.min(3, attachments.length) }, async () => {
+      try {
+        while (!controller.signal.aborted) {
+          const index = cursor++;
+          if (index >= attachments.length) return;
+          const url = this.extractAttachmentUrl(attachments[index]!, 'image');
+          if (!url) {
+            throw new PublisherPostImportTerminalError(
+              'media_download_failed',
+              'Forwarded image has no durable download URL',
+            );
+          }
+          const raw = await this.downloadMedia(
+            url,
+            PUBLICATION_MAX_IMAGE_BYTES,
+            'image',
+            controller.signal,
+          );
+          if (controller.signal.aborted) return;
+          const downloaded = await this.prepareImportedImage(raw);
+          if (controller.signal.aborted) return;
+          totalBytes += downloaded.bytes.length;
+          if (totalBytes > PUBLICATION_MAX_TOTAL_IMAGE_BYTES) {
+            throw new PublisherPostImportTerminalError(
+              'media_too_large',
+              'Forwarded images exceed the total media limit',
+            );
+          }
+          images[index] = downloaded;
+        }
+      } catch (error: unknown) {
+        if (!failure) {
+          failure = { error };
+          controller.abort(error);
+        }
+      }
+    });
+    await Promise.all(workers);
+    if (failure) throw (failure as { error: unknown }).error;
+    return images;
   }
 
   private async prepareImportedImage(downloaded: {
@@ -493,8 +532,7 @@ export class PublisherPostImportProcessingService {
           const rejectionKind: PublisherPostImportRejectionKind =
             error.code === MAX_IMAGE_UPLOAD_NORMALIZATION_ERROR_CODES.DIMENSIONS_EXCEEDED
               ? 'image_normalization_dimensions_exceeded'
-              : error.code ===
-                  MAX_IMAGE_UPLOAD_NORMALIZATION_ERROR_CODES.INPUT_PIXEL_LIMIT_EXCEEDED
+              : error.code === MAX_IMAGE_UPLOAD_NORMALIZATION_ERROR_CODES.INPUT_PIXEL_LIMIT_EXCEEDED
                 ? 'image_normalization_input_pixel_limit_exceeded'
                 : 'image_normalization_output_too_large';
           throw new PublisherPostImportTerminalError(
@@ -541,13 +579,18 @@ export class PublisherPostImportProcessingService {
     sourceUrl: string,
     maxBytes: number,
     expectedType: 'image' | 'video',
+    signal?: AbortSignal,
   ): Promise<{ bytes: Buffer; mimeType: string }> {
     let current = this.parseAllowedMediaUrl(sourceUrl);
     const controller = new AbortController();
+    const downloadSignal = signal
+      ? AbortSignal.any([controller.signal, signal])
+      : controller.signal;
     const timeout = setTimeout(() => controller.abort(), POST_IMPORT_FETCH_TIMEOUT_MS);
     try {
       for (let redirect = 0; redirect <= 2; redirect += 1) {
-        const response = await fetch(current, { signal: controller.signal, redirect: 'manual' });
+        downloadSignal.throwIfAborted();
+        const response = await fetch(current, { signal: downloadSignal, redirect: 'manual' });
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get('location');
           await response.body?.cancel().catch(() => undefined);
@@ -579,12 +622,18 @@ export class PublisherPostImportProcessingService {
         }
         const declaredSize = Number(response.headers.get('content-length') ?? 0);
         if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+          await response.body?.cancel().catch(() => undefined);
           throw new PublisherPostImportTerminalError(
             expectedType === 'image' ? 'image_too_large' : 'media_too_large',
             'Forwarded media exceeds its size limit',
           );
         }
-        const bytes = await this.readResponseWithLimit(response, maxBytes, expectedType);
+        const bytes = await this.readResponseWithLimit(
+          response,
+          maxBytes,
+          expectedType,
+          downloadSignal,
+        );
         const contentType = (response.headers.get('content-type') ?? '').split(';')[0]!.trim();
         const mimeType = contentType.toLowerCase().startsWith(`${expectedType}/`)
           ? contentType.toLowerCase()
@@ -616,35 +665,22 @@ export class PublisherPostImportProcessingService {
     response: Response,
     maxBytes: number,
     expectedType: 'image' | 'video',
+    signal?: AbortSignal,
   ): Promise<Buffer> {
-    if (!response.body) {
-      throw new PublisherPostImportTerminalError(
-        'media_download_failed',
-        'MAX media body is empty',
-      );
-    }
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined);
+    try {
+      return await readBoundedResponseBuffer(response, maxBytes, signal);
+    } catch (error: unknown) {
+      if (error instanceof ResponseByteLimitExceededError) {
         throw new PublisherPostImportTerminalError(
           expectedType === 'image' ? 'image_too_large' : 'media_too_large',
           'Forwarded media exceeds its size limit',
         );
       }
-      chunks.push(Buffer.from(value));
+      if (error instanceof EmptyResponseBodyError) {
+        throw new PublisherPostImportTerminalError('media_download_failed', 'MAX media is empty');
+      }
+      throw error;
     }
-    if (total === 0) {
-      throw new PublisherPostImportTerminalError('media_download_failed', 'MAX media is empty');
-    }
-    return Buffer.concat(chunks, total);
   }
 
   private parseAllowedMediaUrl(value: string): URL {
@@ -739,30 +775,6 @@ export class PublisherPostImportProcessingService {
     } catch {
       return null;
     }
-  }
-
-  private async mapWithConcurrency<T, R>(
-    values: readonly T[],
-    concurrency: number,
-    operation: (value: T, index: number) => Promise<R>,
-  ): Promise<R[]> {
-    const results = new Array<R>(values.length);
-    let cursor = 0;
-    const workers = Array.from(
-      { length: Math.min(Math.max(1, concurrency), values.length) },
-      async () => {
-        while (true) {
-          const index = cursor;
-          cursor += 1;
-          if (index >= values.length) {
-            return;
-          }
-          results[index] = await operation(values[index]!, index);
-        }
-      },
-    );
-    await Promise.all(workers);
-    return results;
   }
 
   private async loadRemoteIncomingMessage(

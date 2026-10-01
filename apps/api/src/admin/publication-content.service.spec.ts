@@ -48,6 +48,60 @@ function createService(prisma: unknown = {}) {
 }
 
 describe('PublicationContentService', () => {
+  it('prepares imported image and video bytes with the same assets as public base64', async () => {
+    const service = createService();
+    for (const [type, bytes, fileName, mimeType] of [
+      ['image', TINY_JPEG, 'picture.wrong', 'image/jpeg'],
+      ['video', TINY_VALID_MP4, 'clip.wrong', 'video/mp4'],
+    ] as const) {
+      const shared = { text: 'caption', textFormat: 'plain' as const, buttons: [] };
+      const binary = await service.prepareBinaryContentRevision({
+        ...shared,
+        media: [{ type, bytes, fileName, mimeType: 'ignored/untrusted' }],
+      });
+      const publicContent = await service.prepareContentRevision({
+        ...shared,
+        media: [
+          type === 'image'
+            ? { type: 'image', base64: bytes.toString('base64'), fileName, mimeType }
+            : {
+                type: 'video',
+                base64: bytes.toString('base64'),
+                fileName,
+                mimeType,
+                payload: null,
+              },
+        ],
+      });
+      expect(binary).toEqual(publicContent);
+      const asset = binary.assets[0]!;
+      expect(asset.kind).toBe('prepared');
+      if (asset.kind === 'prepared') expect(asset.bytes).toBe(bytes);
+    }
+  });
+
+  it('rejects a binary album at its cumulative limit before validating more images', async () => {
+    const validate = jest.fn().mockResolvedValue({ mimeType: 'image/jpeg', extension: 'jpg' });
+    const service = new PublicationContentService(
+      {} as never,
+      { validateMediaUploadPayload: validate } as never,
+    );
+    const bytes = Buffer.alloc(8_000_000);
+    await expect(
+      service.prepareBinaryContentRevision({
+        text: '',
+        textFormat: 'plain',
+        buttons: [],
+        media: [1, 2, 3, 4, 5].map((index) => ({
+          type: 'image' as const,
+          bytes,
+          fileName: `image-${index}.jpg`,
+        })),
+      }),
+    ).rejects.toThrow('Суммарный размер фото превышает 24 МБ.');
+    expect(validate).toHaveBeenCalledTimes(3);
+  });
+
   it('accepts a confirmed owned direct upload before its first draft link without copying bytes', async () => {
     const asset = {
       id: 'uploaded',

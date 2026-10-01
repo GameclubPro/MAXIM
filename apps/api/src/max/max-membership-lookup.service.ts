@@ -259,6 +259,10 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly botScopedCacheDualReadEnabled: boolean;
   private readonly botScopedCacheDualWriteEnabled: boolean;
   private readonly memoryCache = new Map<string, MembershipCacheSnapshot>();
+  private memoryCacheSweepIterator: IterableIterator<[string, MembershipCacheSnapshot]> | null =
+    null;
+  private memoryCacheSweepRemaining = 0;
+  private memoryCacheSweepTimer: NodeJS.Timeout | null = null;
   private readonly inFlight = new Map<string, Promise<MaxMembershipLookupResolution>>();
   private readonly backoffUntilMs = new Map<string, number>();
   private readonly chatBackoffUntilMs = new Map<string, number>();
@@ -399,6 +403,13 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
     this.cacheEpochSweepIterator = null;
     this.cacheEpochSweepRemaining = 0;
+    if (this.memoryCacheSweepTimer) {
+      clearTimeout(this.memoryCacheSweepTimer);
+      this.memoryCacheSweepTimer = null;
+    }
+    this.memoryCacheSweepIterator = null;
+    this.memoryCacheSweepRemaining = 0;
+    this.memoryCache.clear();
     this.clearPendingSingleLookupBatchTimers();
     await this.subscriber.quit();
     await this.redis.quit();
@@ -1456,6 +1467,50 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
   }
 
+  private scheduleMemoryCacheSweep(delayMs: number): void {
+    if (this.destroying || this.memoryCacheSweepTimer || this.memoryCache.size === 0) {
+      return;
+    }
+    this.memoryCacheSweepTimer = setTimeout(() => {
+      this.memoryCacheSweepTimer = null;
+      this.sweepMemoryCache();
+      this.scheduleMemoryCacheSweep(
+        this.memoryCacheSweepIterator ? 1 : MEMBERSHIP_CACHE_EPOCH_SWEEP_INTERVAL_MS,
+      );
+    }, delayMs);
+    this.memoryCacheSweepTimer.unref();
+  }
+
+  private sweepMemoryCache(): void {
+    if (!this.memoryCacheSweepIterator) {
+      this.memoryCacheSweepIterator = this.memoryCache.entries();
+      this.memoryCacheSweepRemaining = this.memoryCache.size;
+    }
+    const now = Date.now();
+    // FLAG: Retained snapshots also order concurrent writers and provide stale fallback. Only
+    // remove them after the full retention TTL; never evict fencing, readers, probes or backoff.
+    // Fix the pass budget because a live Map iterator can visit newly appended entries.
+    for (
+      let inspected = 0;
+      inspected < MEMBERSHIP_CACHE_EPOCH_SWEEP_BATCH_SIZE && this.memoryCacheSweepRemaining > 0;
+      inspected++
+    ) {
+      const next = this.memoryCacheSweepIterator.next();
+      if (next.done) {
+        this.memoryCacheSweepRemaining = 0;
+        break;
+      }
+      this.memoryCacheSweepRemaining--;
+      const [cacheKey, snapshot] = next.value;
+      if (snapshot.checkedAtMs + this.resolveRetentionTtlMs(snapshot.isMember) <= now) {
+        this.memoryCache.delete(cacheKey);
+      }
+    }
+    if (this.memoryCacheSweepRemaining === 0) {
+      this.memoryCacheSweepIterator = null;
+    }
+  }
+
   private beginProbe(cacheKey: string): number {
     this.nextProbeSequence += 1;
     this.latestProbeSequenceByCacheKey.set(cacheKey, this.nextProbeSequence);
@@ -1661,7 +1716,10 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       return current;
     }
 
-    this.memoryCache.set(cacheKey, incoming);
+    if (!this.destroying) {
+      this.memoryCache.set(cacheKey, incoming);
+      this.scheduleMemoryCacheSweep(MEMBERSHIP_CACHE_EPOCH_SWEEP_INTERVAL_MS);
+    }
     return incoming;
   }
 

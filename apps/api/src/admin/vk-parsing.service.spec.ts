@@ -7452,7 +7452,7 @@ describe('VkParsingService', () => {
       .mockResolvedValueOnce({
         ok: true,
         headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
-        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+        body: new Response(new Uint8Array([1, 2, 3])).body!,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
     await service.processPublishPostJob({
@@ -7641,7 +7641,7 @@ describe('VkParsingService', () => {
       .mockResolvedValueOnce({
         ok: true,
         headers: new Headers({ 'content-type': 'video/mp4', 'content-length': '4' }),
-        arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+        body: new Response(new Uint8Array([1, 2, 3, 4])).body!,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
     await service.processPublishPostJob({
@@ -7747,7 +7747,7 @@ describe('VkParsingService', () => {
         ok: true,
         status: 200,
         headers: new Headers({ 'content-type': 'video/mp4' }),
-        arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+        body: new Response(new Uint8Array([1, 2, 3, 4])).body!,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
     await service.processPublishPostJob({
@@ -7826,7 +7826,7 @@ describe('VkParsingService', () => {
         ok: true,
         status: 200,
         headers: new Headers({ 'content-type': 'text/html' }),
-        arrayBuffer: async () => new TextEncoder().encode('<html></html>').buffer,
+        body: new Response('<html></html>').body!,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
     await expect(
@@ -7896,7 +7896,7 @@ describe('VkParsingService', () => {
       .mockResolvedValueOnce({
         ok: true,
         headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
-        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+        body: new Response(new Uint8Array([1, 2, 3])).body!,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
     await expect(
@@ -8035,7 +8035,7 @@ describe('VkParsingService', () => {
       .mockResolvedValueOnce({
         ok: true,
         headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
-        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+        body: new Response(new Uint8Array([1, 2, 3])).body!,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
     await expect(
@@ -9387,7 +9387,7 @@ describe('VkParsingService', () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
-      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      body: new Response(new Uint8Array([1, 2, 3])).body!,
     } satisfies MockFetchResponse) as unknown as typeof fetch;
 
     const result = await service.publishPost(
@@ -10525,7 +10525,7 @@ describe('VkParsingService', () => {
       .mockResolvedValueOnce({
         ok: true,
         headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
-        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+        body: new Response(new Uint8Array([1, 2, 3])).body!,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
     await service.processPublishPostJob({
@@ -10731,7 +10731,7 @@ describe('VkParsingService', () => {
       .mockResolvedValueOnce({
         ok: true,
         headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
-        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+        body: new Response(new Uint8Array([1, 2, 3])).body!,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
     await service.processPublishPostJob({

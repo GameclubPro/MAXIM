@@ -36,7 +36,10 @@ import {
 } from '../max/max-send-auto-delete-marker';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
-import { StorageRuntimeMetricsService } from '../system/storage-runtime-metrics.service';
+import {
+  STORAGE_DELETE_DUE_SWEEP_STAGES,
+  StorageRuntimeMetricsService,
+} from '../system/storage-runtime-metrics.service';
 import { checkOrRenewDeleteIntentLease } from './moderation-delete-intent-lease';
 import {
   buildMessageScopedModerationActionClaimKey,
@@ -217,6 +220,24 @@ export const MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES = [
 ] as const;
 const BOT_MESSAGE_AUTO_DELETE_RULE_CODE = 'BOT_MESSAGE_AUTO_DELETE';
 const REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE = 'REQUIRED_SUBSCRIPTION_DELETE';
+type DeleteDueSweepStage = (typeof STORAGE_DELETE_DUE_SWEEP_STAGES)[number];
+
+function createDueSweepStageCounters() {
+  return {
+    calls: 0,
+    succeeded: 0,
+    errors: 0,
+    returnedCount: 0,
+    totalDurationMs: 0,
+    maxDurationMs: 0,
+    durationBuckets: { under100Ms: 0, under500Ms: 0, under2000Ms: 0, atLeast2000Ms: 0 },
+  };
+}
+
+function addDueSweepCount(value: number, amount = 1): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, value + amount);
+}
+
 const REPLACEMENT_CLEANUP_RULE_CODE_SET: ReadonlySet<string> = new Set(
   MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
 );
@@ -605,6 +626,22 @@ export class ModerationDeleteIntentService {
   private readonly retentionDays: number;
   private readonly purgeMaxBatches: number;
   private readonly expectedImageOcrNativeBehavior: CommercialOcrNativeBehaviorIdentity;
+  private readonly dueSweepMetrics = {
+    calls: 0,
+    completed: 0,
+    errors: 0,
+    executionDisabled: 0,
+    selectedCount: 0,
+    handoffAttemptedCount: 0,
+    handoffAcknowledgedCount: 0,
+    handoffErrorCount: 0,
+    handoffInsertionUnknownCount: 0,
+    stages: {
+      expire: createDueSweepStageCounters(),
+      select: createDueSweepStageCounters(),
+      handoff: createDueSweepStageCounters(),
+    },
+  };
 
   constructor(
     private readonly prisma: PrismaService,
@@ -701,6 +738,7 @@ export class ModerationDeleteIntentService {
       configService.get('MODERATION_DELETE_INTENT_PURGE_MAX_BATCHES'),
       DEFAULT_PURGE_MAX_BATCHES,
     );
+    storageRuntimeMetrics?.registerDeleteDueSweepSnapshot(() => this.getDueSweepRuntimeSnapshot());
   }
 
   get rolloutMode(): ModerationDeleteIntentMode {
@@ -2379,25 +2417,112 @@ export class ModerationDeleteIntentService {
   }
 
   async sweepDueIntents(): Promise<number> {
-    await this.expireDueIntents();
-    if (!this.hasAnyExecutionScope()) {
-      return 0;
-    }
+    const metrics = this.dueSweepMetrics;
+    metrics.calls = addDueSweepCount(metrics.calls);
+    try {
+      await this.measureDueSweepStage(
+        'expire',
+        () => this.expireDueIntents(),
+        (count) => count,
+      );
+      if (!this.hasAnyExecutionScope()) {
+        metrics.executionDisabled = addDueSweepCount(metrics.executionDisabled);
+        metrics.completed = addDueSweepCount(metrics.completed);
+        return 0;
+      }
 
-    const dueIntents = await this.selectDueIntentIds();
-    await Promise.all(
-      dueIntents.map(async (intent) => {
-        try {
-          await this.enqueueIntentJob(intent.id);
-        } catch (error: unknown) {
-          this.logger.warn(
-            { intentId: intent.id, err: this.errorMessage(error) },
-            'Failed to enqueue due moderation delete intent; DB state remains retryable',
+      const dueIntents = await this.measureDueSweepStage(
+        'select',
+        () => this.selectDueIntentIds(),
+        (intents) => intents.length,
+      );
+      metrics.selectedCount = addDueSweepCount(metrics.selectedCount, dueIntents.length);
+      await this.measureDueSweepStage(
+        'handoff',
+        async () => {
+          let acknowledged = 0;
+          await Promise.all(
+            dueIntents.map(async (intent) => {
+              metrics.handoffAttemptedCount = addDueSweepCount(metrics.handoffAttemptedCount);
+              try {
+                await this.enqueueIntentJob(intent.id);
+                acknowledged++;
+                metrics.handoffAcknowledgedCount = addDueSweepCount(
+                  metrics.handoffAcknowledgedCount,
+                );
+                // FLAG: BullMQ add acknowledges both new and duplicate deterministic jobs.
+                // A receipt is not proof of insertion, pending work, or a completed delete.
+                metrics.handoffInsertionUnknownCount = addDueSweepCount(
+                  metrics.handoffInsertionUnknownCount,
+                );
+              } catch (error: unknown) {
+                metrics.handoffErrorCount = addDueSweepCount(metrics.handoffErrorCount);
+                this.logger.warn(
+                  { intentId: intent.id, err: this.errorMessage(error) },
+                  'Failed to enqueue due moderation delete intent; DB state remains retryable',
+                );
+              }
+            }),
           );
-        }
-      }),
-    );
-    return dueIntents.length;
+          return acknowledged;
+        },
+        (count) => count,
+      );
+      metrics.completed = addDueSweepCount(metrics.completed);
+      // FLAG: Preserve the historical selected-row return contract. Actual Redis
+      // acknowledgements/errors are independent scalars; failed handoffs remain DB-retryable.
+      return dueIntents.length;
+    } catch (error: unknown) {
+      metrics.errors = addDueSweepCount(metrics.errors);
+      throw error;
+    }
+  }
+
+  getDueSweepRuntimeSnapshot() {
+    return {
+      ...this.dueSweepMetrics,
+      stages: Object.fromEntries(
+        STORAGE_DELETE_DUE_SWEEP_STAGES.map((stage) => {
+          const counters = this.dueSweepMetrics.stages[stage];
+          return [stage, { ...counters, durationBuckets: { ...counters.durationBuckets } }];
+        }),
+      ),
+    };
+  }
+
+  private async measureDueSweepStage<T>(
+    stage: DeleteDueSweepStage,
+    operation: () => Promise<T>,
+    returnedCount: (result: T) => number,
+  ): Promise<T> {
+    const counters = this.dueSweepMetrics.stages[stage];
+    counters.calls = addDueSweepCount(counters.calls);
+    const startedAt = performance.now();
+    try {
+      const result = await operation();
+      counters.succeeded = addDueSweepCount(counters.succeeded);
+      const count = returnedCount(result);
+      if (Number.isSafeInteger(count) && count >= 0)
+        counters.returnedCount = addDueSweepCount(counters.returnedCount, count);
+      return result;
+    } catch (error: unknown) {
+      counters.errors = addDueSweepCount(counters.errors);
+      throw error;
+    } finally {
+      const elapsedMs = Math.max(0, performance.now() - startedAt);
+      const durationMs = Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(elapsedMs));
+      counters.totalDurationMs = addDueSweepCount(counters.totalDurationMs, durationMs);
+      counters.maxDurationMs = Math.max(counters.maxDurationMs, durationMs);
+      const bucket =
+        elapsedMs < 100
+          ? 'under100Ms'
+          : elapsedMs < 500
+            ? 'under500Ms'
+            : elapsedMs < 2_000
+              ? 'under2000Ms'
+              : 'atLeast2000Ms';
+      counters.durationBuckets[bucket] = addDueSweepCount(counters.durationBuckets[bucket]);
+    }
   }
 
   async recoverReplacementCleanupSources(): Promise<number> {

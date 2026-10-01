@@ -1,3 +1,4 @@
+import { maxApiMinuteCounterAddress } from './max-api-counter-storage';
 import {
   MAX_API_SOURCE_TAGS,
   MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
@@ -93,6 +94,31 @@ jest.mock('ioredis', () => {
             expiresAtMs: readEntry(key)?.expiresAtMs ?? null,
           });
           return next;
+        }),
+        hincrby: jest
+          .fn()
+          .mockImplementation(async (key: string, field: string, increment: number) => {
+            const entry = readEntry(key);
+            const fields = JSON.parse(entry?.value ?? '{}') as Record<string, string>;
+            const next = Number(fields[field] ?? 0) + increment;
+            fields[field] = String(next);
+            store.set(key, {
+              value: JSON.stringify(fields),
+              expiresAtMs: entry?.expiresAtMs ?? null,
+            });
+            return next;
+          }),
+        hget: jest.fn().mockImplementation(async (key: string, field: string) => {
+          const entry = readEntry(key);
+          return entry
+            ? ((JSON.parse(entry.value) as Record<string, string>)[field] ?? null)
+            : null;
+        }),
+        expireat: jest.fn().mockImplementation(async (key: string, expiresAtSec: number) => {
+          const entry = readEntry(key);
+          if (!entry) return 0;
+          store.set(key, { ...entry, expiresAtMs: expiresAtSec * 1_000 });
+          return 1;
         }),
         expire: jest.fn().mockImplementation(async (key: string, ttlSec: number) => {
           const entry = readEntry(key);
@@ -345,7 +371,9 @@ jest.mock('ioredis', () => {
           ),
         quit: jest.fn().mockResolvedValue(undefined),
         multi: jest.fn().mockImplementation(() => {
-          const operations: Array<['incr' | 'expire' | 'sadd', ...unknown[]]> = [];
+          const operations: Array<
+            ['incr' | 'expire' | 'sadd' | 'hincrby' | 'expireat', ...unknown[]]
+          > = [];
           const pipeline = {
             sadd: (key: string, ...members: string[]) => {
               operations.push(['sadd', key, ...members]);
@@ -353,6 +381,14 @@ jest.mock('ioredis', () => {
             },
             incr: (key: string) => {
               operations.push(['incr', key]);
+              return pipeline;
+            },
+            hincrby: (key: string, field: string, increment: number) => {
+              operations.push(['hincrby', key, field, increment]);
+              return pipeline;
+            },
+            expireat: (key: string, expiresAtSec: number) => {
+              operations.push(['expireat', key, expiresAtSec]);
               return pipeline;
             },
             expire: (key: string, ttlSec: number) => {
@@ -12445,6 +12481,108 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await service.onModuleDestroy();
   });
+
+  it('writes minute counters once per event with exact fields, catalog atomicity and separate TTLs', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:05.000Z'));
+    const service = createService(
+      { request: jest.fn() },
+      {
+        APP_SERVICE_NAME: 'api-action',
+        MAX_API_METRICS_STORAGE_LAYOUT: 'minute',
+      },
+    );
+    const internal = service as unknown as {
+      limiterRedis: {
+        get: jest.Mock;
+        hget: jest.Mock;
+        pttl: jest.Mock;
+        sadd: jest.Mock;
+        multi: jest.Mock;
+      };
+      recordRateLimitUsage: (
+        botId: string,
+        trafficClass: 'background',
+        sourceTag: string,
+      ) => Promise<void>;
+      recordRateLimitOutcome: (params: Record<string, unknown>) => Promise<void>;
+    };
+    const redis = internal.limiterRedis;
+    const nowSec = Math.floor(Date.now() / 1_000);
+    redis.sadd.mockRejectedValueOnce(new Error('catalog unavailable'));
+    // A failed first transaction must not mark the process-local dimension registered.
+    await internal.recordRateLimitUsage('minute-bot', 'background', 'managed_refresh');
+    await internal.recordRateLimitUsage('minute-bot', 'background', 'managed_refresh');
+    await internal.recordRateLimitUsage('minute-bot', 'background', 'managed_refresh');
+    expect(redis.sadd).toHaveBeenCalledTimes(2);
+    expect(redis.multi).toHaveBeenCalledTimes(3);
+    for (const [stem, ttlSec] of [
+      ['maxapi:rps:global:minute-bot', 21600],
+      ['maxapi:rps:global:minute-bot:background', 21600],
+      ['maxapi:rps:stack', 21600],
+      ['maxapi:rps:stack:background', 21600],
+      ['maxapi:rps:source:v1:minute-bot:background:managed_refresh', 21600],
+      ['maxapi:rps:service:v1:api-action:bot:minute-bot:background', 120],
+      ['maxapi:rps:service:v1:api-action:stack:background', 120],
+    ] as const) {
+      const legacyKey = `${stem}:${nowSec}`;
+      const address = maxApiMinuteCounterAddress(legacyKey);
+      if (ttlSec === 120) {
+        await expect(redis.get(legacyKey)).resolves.toBe('2');
+        await expect(redis.pttl(legacyKey)).resolves.toBe(120000);
+        await expect(redis.hget(address.key, address.field)).resolves.toBeNull();
+      } else {
+        await expect(redis.get(legacyKey)).resolves.toBeNull();
+        await expect(redis.hget(address.key, address.field)).resolves.toBe('2');
+        await expect(redis.pttl(address.key)).resolves.toBe((ttlSec + 55) * 1000);
+      }
+    }
+    await internal.recordRateLimitOutcome({
+      origin: 'external_429',
+      botId: 'minute-bot',
+      chatId: null,
+      trafficClass: 'background',
+      reason: 'test',
+    });
+    const outcome = maxApiMinuteCounterAddress(
+      `maxapi:rate-limit:v1:external_429:minute-bot:background:${nowSec}`,
+    );
+    await expect(redis.hget(outcome.key, outcome.field)).resolves.toBe('1');
+    await expect(
+      redis.get(`maxapi:rate-limit:v1:external_429:minute-bot:background:${nowSec}`),
+    ).resolves.toBeNull();
+    jest.setSystemTime(new Date('2026-04-01T18:00:59.000Z'));
+    await internal.recordRateLimitUsage('minute-bot', 'background', 'managed_refresh');
+    const serviceCounter = `maxapi:rps:service:v1:api-action:stack:background:${nowSec + 54}`;
+    await expect(redis.pttl(serviceCounter)).resolves.toBe(120000);
+    await service.onModuleDestroy();
+  });
+
+  it.each(['legacy', 'minute'])(
+    'preserves the partial service TTL boundary second with %s layout',
+    async (layout) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:05.900Z'));
+      const service = createService(
+        { request: jest.fn() },
+        {
+          APP_SERVICE_NAME: 'api-action',
+          MAX_API_METRICS_STORAGE_LAYOUT: layout,
+        },
+      );
+      const internal = service as unknown as {
+        limiterRedis: { get: jest.Mock; pttl: jest.Mock };
+        recordRateLimitUsage: (botId: string, trafficClass: 'background') => Promise<void>;
+      };
+      const nowSec = Math.floor(Date.now() / 1000);
+      const key = `maxapi:rps:service:v1:api-action:stack:background:${nowSec}`;
+      await internal.recordRateLimitUsage('partial-ttl-bot', 'background');
+      jest.setSystemTime(new Date('2026-04-01T18:02:05.100Z'));
+      await expect(internal.limiterRedis.get(key)).resolves.toBe('1');
+      await expect(internal.limiterRedis.pttl(key)).resolves.toBe(800);
+      jest.setSystemTime(new Date('2026-04-01T18:02:05.900Z'));
+      await expect(internal.limiterRedis.get(key)).resolves.toBeNull();
+      await service.onModuleDestroy();
+    },
+  );
 
   it('records shared usage once while isolating service-scoped class metrics', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:10.000Z'));

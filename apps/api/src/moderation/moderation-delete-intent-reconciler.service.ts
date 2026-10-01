@@ -123,6 +123,8 @@ export class ModerationDeleteIntentReconcilerService implements OnModuleInit, On
       counters.succeeded = incrementSaturated(counters.succeeded);
       // FLAG: This is the returned phase scalar, not scanned candidates, pending work,
       // committed transactions, or an idle signal. Partial effects before a failure are unknown.
+      // The due-sweep return counts selected rows; the separate fixed due-sweep report
+      // distinguishes acknowledged Redis handoffs and errors without inferring job insertion.
       if (Number.isSafeInteger(result) && result >= 0)
         counters.returnedCount = incrementSaturated(counters.returnedCount, result);
     } catch (error: unknown) {

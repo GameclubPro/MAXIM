@@ -1,9 +1,9 @@
-import { BullModule } from '@nestjs/bullmq';
+import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
 import { Module } from '@nestjs/common';
 
 import { MaxModule } from '../max/max.module';
-import { SystemModule } from '../system/system.module';
+import { SystemRuntimeModule } from '../system/system-runtime.module';
 import { MessageRetentionStateModule } from '../message-retention/message-retention-state.module';
 import { MessageRetentionDeleteGuard } from '../message-retention/message-retention-delete-guard.service';
 import { ReportStateModule } from './reports/report-state.module';
@@ -35,9 +35,9 @@ const actionRoleProviders = roleRunsAction(getAppRole())
 @Module({
   imports: [
     SuggestionSubscriptionModule,
-    SystemModule,
+    SystemRuntimeModule,
     MessageRetentionStateModule,
-    BullModule.registerQueue({ name: MODERATION_DELETE_INTENT_QUEUE }),
+    ...registerRuntimeQueues(MODERATION_DELETE_INTENT_QUEUE),
     MaxModule,
     ReportStateModule,
     RuleEngineModule,

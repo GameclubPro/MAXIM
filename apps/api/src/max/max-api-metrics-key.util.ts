@@ -1,5 +1,8 @@
+import { maxApiLegacyCounterMinute } from './max-api-counter-storage';
+
 export const MAX_API_SERVICE_RPS_METRICS_KEY_PREFIX = 'maxapi:rps:service:v1';
 export const MAX_API_SOURCE_RPS_METRICS_KEY_PREFIX = 'maxapi:rps:source:v1';
+export const MAX_API_SOURCE_MINUTE_METRICS_KEY_PREFIX = 'maxapi:rps:source:v2';
 export const MAX_API_SOURCE_DIMENSION_CATALOG_KEY = 'maxapi:rps:source-dimensions:v1';
 export const MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY =
   'maxapi:rps:source-dimensions-bootstrap:v1:complete';
@@ -94,11 +97,15 @@ export function parseMaxApiSourceMetricDimension(
 
 export function parseMaxApiSourceMetricKey(key: string): MaxApiSourceMetricEntry | null {
   const prefix = `${MAX_API_SOURCE_RPS_METRICS_KEY_PREFIX}:`;
-  if (!key.startsWith(prefix)) {
+  const minute = maxApiLegacyCounterMinute(key);
+  const counterKey = minute ? `${minute.legacyStem}:${minute.minuteStartSec}` : key;
+  if (!counterKey.startsWith(prefix)) {
     return null;
   }
 
-  const [botId, trafficClassRaw, sourceTag, secRaw, ...rest] = key.slice(prefix.length).split(':');
+  const [botId, trafficClassRaw, sourceTag, secRaw, ...rest] = counterKey
+    .slice(prefix.length)
+    .split(':');
   const sec = Number.parseInt(secRaw ?? '', 10);
   if (
     !botId ||

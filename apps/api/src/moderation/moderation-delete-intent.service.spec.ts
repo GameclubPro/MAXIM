@@ -8867,6 +8867,176 @@ describe('ModerationDeleteIntentService', () => {
     expect(expirySql).toContain('intent."delete_dispatch_started_bot_id" IS NULL');
   });
 
+  it('distinguishes selected rows from acknowledged and failed due-sweep handoffs', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValue([
+        { id: 'private-intent-a' },
+        { id: 'private-intent-b' },
+        { id: 'private-intent-c' },
+      ]);
+    const executeRaw = jest.fn().mockResolvedValue(2);
+    const { service, queue } = createService({}, { $queryRaw: queryRaw, $executeRaw: executeRaw });
+    queue.add.mockRejectedValueOnce(new Error('private-redis-failure'));
+
+    await expect(service.sweepDueIntents()).resolves.toBe(3);
+
+    expect(queue.add).toHaveBeenCalledTimes(3);
+    expect(service.getDueSweepRuntimeSnapshot()).toMatchObject({
+      calls: 1,
+      completed: 1,
+      errors: 0,
+      selectedCount: 3,
+      handoffAttemptedCount: 3,
+      handoffAcknowledgedCount: 2,
+      handoffErrorCount: 1,
+      handoffInsertionUnknownCount: 2,
+      stages: {
+        expire: { calls: 1, succeeded: 1, errors: 0, returnedCount: 2 },
+        select: { calls: 1, succeeded: 1, errors: 0, returnedCount: 3 },
+        handoff: { calls: 1, succeeded: 1, errors: 0, returnedCount: 2 },
+      },
+    });
+    expect(JSON.stringify(service.getDueSweepRuntimeSnapshot())).not.toContain('private-');
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not infer insertion from the deterministic Job returned by BullMQ', async () => {
+    const { service, queue } = createService(
+      {},
+      { $queryRaw: jest.fn().mockResolvedValue([{ id: 'private-existing-intent' }]) },
+    );
+    queue.add.mockResolvedValueOnce({
+      id: 'mdi-private-existing-intent',
+      opts: { priority: 10 },
+    } as never);
+
+    await service.sweepDueIntents();
+
+    expect(service.getDueSweepRuntimeSnapshot()).toMatchObject({
+      selectedCount: 1,
+      handoffAcknowledgedCount: 1,
+      handoffInsertionUnknownCount: 1,
+      handoffErrorCount: 0,
+    });
+    expect(JSON.stringify(service.getDueSweepRuntimeSnapshot())).not.toMatch(
+      /private-|newJobs|existingJobs/,
+    );
+  });
+
+  it('records expiry failure and propagates it before selection or Redis handoff', async () => {
+    const error = new Error('private-expiry-failure');
+    const queryRaw = jest.fn();
+    const { service, queue } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: jest.fn().mockRejectedValue(error) },
+    );
+
+    await expect(service.sweepDueIntents()).rejects.toBe(error);
+
+    expect(queryRaw).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(service.getDueSweepRuntimeSnapshot()).toMatchObject({
+      calls: 1,
+      completed: 0,
+      errors: 1,
+      selectedCount: 0,
+      stages: {
+        expire: { calls: 1, succeeded: 0, errors: 1 },
+        select: { calls: 0 },
+        handoff: { calls: 0 },
+      },
+    });
+    expect(JSON.stringify(service.getDueSweepRuntimeSnapshot())).not.toContain('private-');
+  });
+
+  it('records selection failure without starting a handoff or swallowing the error', async () => {
+    const error = new Error('private-selection-failure');
+    const { service, queue } = createService({}, { $queryRaw: jest.fn().mockRejectedValue(error) });
+
+    await expect(service.sweepDueIntents()).rejects.toBe(error);
+
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(service.getDueSweepRuntimeSnapshot()).toMatchObject({
+      calls: 1,
+      completed: 0,
+      errors: 1,
+      selectedCount: 0,
+      stages: {
+        expire: { calls: 1, succeeded: 1, errors: 0 },
+        select: { calls: 1, succeeded: 0, errors: 1 },
+        handoff: { calls: 0 },
+      },
+    });
+  });
+
+  it('keeps an empty due sweep distinct from acknowledged handoffs', async () => {
+    const { service, queue, prisma } = createService();
+
+    await expect(service.sweepDueIntents()).resolves.toBe(0);
+
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(service.getDueSweepRuntimeSnapshot()).toMatchObject({
+      calls: 1,
+      completed: 1,
+      errors: 0,
+      executionDisabled: 0,
+      selectedCount: 0,
+      handoffAttemptedCount: 0,
+      handoffAcknowledgedCount: 0,
+      stages: {
+        expire: { calls: 1 },
+        select: { calls: 1, returnedCount: 0 },
+        handoff: { calls: 1, returnedCount: 0 },
+      },
+    });
+  });
+
+  it('measures inner stages on the monotonic clock and returns detached fixed snapshots', async () => {
+    const { service } = createService(
+      {},
+      { $queryRaw: jest.fn().mockResolvedValue([{ id: 'private-intent' }]) },
+    );
+    const readings = [0, 99.1, 100, 600, 601, 2601];
+    const monotonic = jest.spyOn(performance, 'now').mockImplementation(() => readings.shift()!);
+    try {
+      await service.sweepDueIntents();
+    } finally {
+      monotonic.mockRestore();
+    }
+
+    expect(service.getDueSweepRuntimeSnapshot()).toMatchObject({
+      stages: {
+        expire: {
+          totalDurationMs: 100,
+          maxDurationMs: 100,
+          durationBuckets: { under100Ms: 1 },
+        },
+        select: {
+          totalDurationMs: 500,
+          maxDurationMs: 500,
+          durationBuckets: { under2000Ms: 1 },
+        },
+        handoff: {
+          totalDurationMs: 2_000,
+          maxDurationMs: 2_000,
+          durationBuckets: { atLeast2000Ms: 1 },
+        },
+      },
+    });
+    const snapshot = service.getDueSweepRuntimeSnapshot();
+    snapshot.calls = 900;
+    snapshot.stages.expire!.calls = 900;
+    snapshot.stages.expire!.durationBuckets.under100Ms = 900;
+    expect(service.getDueSweepRuntimeSnapshot()).toMatchObject({
+      calls: 1,
+      stages: { expire: { calls: 1, durationBuckets: { under100Ms: 1 } } },
+    });
+  });
+
   it('bounds expiry of a 474-row capability backlog and fails closed around mutation evidence', async () => {
     const executeRaw = jest.fn().mockResolvedValue(100);
     const { service } = createService(

@@ -1,4 +1,4 @@
-import { BullModule } from '@nestjs/bullmq';
+import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
 import { Global, Module } from '@nestjs/common';
 import { MaxModule } from '../max/max.module';
@@ -128,15 +128,15 @@ const sharedPublisherProviders = [
     SuggestionSubscriptionModule,
     MaxModule,
     SystemModule,
-    BullModule.registerQueue(
-      { name: PUBLISHER_BINDING_REFRESH_QUEUE },
-      { name: PUBLISHER_CHAT_COMMENT_QUEUE },
-      { name: PUBLISHER_POST_IMPORT_QUEUE },
-      { name: PUBLISHER_AUTO_REPLY_QUEUE },
-      { name: PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE },
-      { name: PUBLISHER_SUGGESTION_ADMIN_QUEUE },
-      { name: PUBLISHER_START_QUEUE },
-      { name: PUBLISHER_VIDEO_UPLOAD_QUEUE },
+    ...registerRuntimeQueues(
+      PUBLISHER_BINDING_REFRESH_QUEUE,
+      PUBLISHER_CHAT_COMMENT_QUEUE,
+      PUBLISHER_POST_IMPORT_QUEUE,
+      PUBLISHER_AUTO_REPLY_QUEUE,
+      PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE,
+      PUBLISHER_SUGGESTION_ADMIN_QUEUE,
+      PUBLISHER_START_QUEUE,
+      PUBLISHER_VIDEO_UPLOAD_QUEUE,
     ),
   ],
   providers: [...sharedPublisherProviders, ...publisherRuntimeProviders],

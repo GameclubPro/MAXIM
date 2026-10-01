@@ -130,7 +130,7 @@ function createFixture(
     }),
   };
   const contentService = {
-    prepareContentRevision: jest.fn(async (content: Record<string, unknown>) => ({
+    prepareBinaryContentRevision: jest.fn(async (content: Record<string, unknown>) => ({
       ...content,
       assets: [],
     })),
@@ -169,14 +169,14 @@ describe('PublisherPostImportProcessingService', () => {
       'incoming-mid-1',
       expect.objectContaining({ botId: 'publik_bot' }),
     );
-    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+    expect(contentService.prepareBinaryContentRevision).toHaveBeenCalledWith(
       expect.objectContaining({
         text: '**Привет** мир',
         textFormat: 'markdown',
         buttons: [],
       }),
     );
-    expect(contentService.prepareContentRevision).not.toHaveBeenCalledWith(
+    expect(contentService.prepareBinaryContentRevision).not.toHaveBeenCalledWith(
       expect.objectContaining({ text: expect.stringContaining('outer') }),
     );
     expect(tx.publicationMutationRecord.create).toHaveBeenCalledWith({
@@ -200,7 +200,7 @@ describe('PublisherPostImportProcessingService', () => {
     await expect(service.process('session-1')).resolves.toBe('ready');
 
     expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
-    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+    expect(contentService.prepareBinaryContentRevision).toHaveBeenCalledWith(
       expect.objectContaining({ text: 'Пост из сохраненного webhook' }),
     );
   });
@@ -235,7 +235,7 @@ describe('PublisherPostImportProcessingService', () => {
     await expect(service.process('session-1')).resolves.toBe('failed');
 
     expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
-    expect(contentService.prepareContentRevision).not.toHaveBeenCalled();
+    expect(contentService.prepareBinaryContentRevision).not.toHaveBeenCalled();
     expect(prisma.publisherPostImportSession.updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -263,7 +263,7 @@ describe('PublisherPostImportProcessingService', () => {
 
     await expect(service.process('session-1')).resolves.toBe('ready');
 
-    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+    expect(contentService.prepareBinaryContentRevision).toHaveBeenCalledWith(
       expect.objectContaining({
         text: 'Текст публикации',
         textFormat: 'plain',
@@ -271,7 +271,7 @@ describe('PublisherPostImportProcessingService', () => {
         omissions: [],
       }),
     );
-    expect(contentService.prepareContentRevision).not.toHaveBeenCalledWith(
+    expect(contentService.prepareBinaryContentRevision).not.toHaveBeenCalledWith(
       expect.objectContaining({ text: expect.stringContaining(previewUrl) }),
     );
   });
@@ -287,7 +287,7 @@ describe('PublisherPostImportProcessingService', () => {
 
     await expect(service.process('session-1')).resolves.toBe('ready');
 
-    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+    expect(contentService.prepareBinaryContentRevision).toHaveBeenCalledWith(
       expect.objectContaining({
         text: shareUrl,
         textFormat: 'plain',
@@ -330,7 +330,7 @@ describe('PublisherPostImportProcessingService', () => {
 
     await expect(service.process('session-1')).resolves.toBe('ready');
 
-    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+    expect(contentService.prepareBinaryContentRevision).toHaveBeenCalledWith(
       expect.objectContaining({
         text: 'Сохраните этот текст',
         media: [],
@@ -361,7 +361,7 @@ describe('PublisherPostImportProcessingService', () => {
 
     await expect(service.process('session-1')).resolves.toBe('failed');
 
-    expect(contentService.prepareContentRevision).not.toHaveBeenCalled();
+    expect(contentService.prepareBinaryContentRevision).not.toHaveBeenCalled();
     expect(prisma.publisherPostImportSession.updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -449,7 +449,7 @@ describe('PublisherPostImportProcessingService', () => {
       select: { botId: true, normalizedPayload: true },
     });
     expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
-    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+    expect(contentService.prepareBinaryContentRevision).toHaveBeenCalledWith(
       expect.objectContaining({ text: 'Пересланный пост', textFormat: 'plain' }),
     );
   });
@@ -474,7 +474,7 @@ describe('PublisherPostImportProcessingService', () => {
 
     await expect(service.process('session-1')).resolves.toBe('ready');
 
-    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+    expect(contentService.prepareBinaryContentRevision).toHaveBeenCalledWith(
       expect.objectContaining({ text: 'a`b', textFormat: 'plain' }),
     );
     expect(tx.publisherPostImportSession.updateMany).toHaveBeenCalledWith(
@@ -505,7 +505,7 @@ describe('PublisherPostImportProcessingService', () => {
 
     await expect(service.process('session-1')).resolves.toBe('ready');
 
-    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+    expect(contentService.prepareBinaryContentRevision).toHaveBeenCalledWith(
       expect.objectContaining({ text: sourceText, textFormat: 'plain' }),
     );
     expect(tx.publisherPostImportSession.updateMany).toHaveBeenCalledWith(
@@ -534,7 +534,7 @@ describe('PublisherPostImportProcessingService', () => {
         botId: string,
       ) => Promise<{
         text: string;
-        media: Array<{ base64: string; mimeType: string; fileName: string }>;
+        media: Array<{ bytes: Buffer; mimeType: string; fileName: string }>;
       }>;
       downloadMedia: () => Promise<{ bytes: Buffer; mimeType: string }>;
     };
@@ -553,7 +553,7 @@ describe('PublisherPostImportProcessingService', () => {
       expect.objectContaining({ mimeType: 'image/jpeg', fileName: 'forwarded-image-1.jpg' }),
     ]);
     await expect(
-      validateMaxMediaUploadPayload('image', Buffer.from(content.media[0]!.base64, 'base64')),
+      validateMaxMediaUploadPayload('image', content.media[0]!.bytes),
     ).resolves.toMatchObject({ format: 'jpeg' });
   });
 
@@ -576,7 +576,7 @@ describe('PublisherPostImportProcessingService', () => {
         botId: string,
       ) => Promise<{
         text: string;
-        media: Array<{ base64: string; mimeType: string; fileName: string }>;
+        media: Array<{ bytes: Buffer; mimeType: string; fileName: string }>;
       }>;
       downloadMedia: () => Promise<{ bytes: Buffer; mimeType: string }>;
     };
@@ -623,7 +623,7 @@ describe('PublisherPostImportProcessingService', () => {
     const { service, contentService, prisma } = createFixture();
     const logger = (service as unknown as { logger: { log: (...args: unknown[]) => void } }).logger;
     const terminalLog = jest.spyOn(logger, 'log').mockImplementation(() => undefined);
-    contentService.prepareContentRevision.mockRejectedValue(
+    contentService.prepareBinaryContentRevision.mockRejectedValue(
       new BadRequestException('Видео повреждено.'),
     );
 
@@ -654,7 +654,7 @@ describe('PublisherPostImportProcessingService', () => {
       buildContent: (
         message: Record<string, unknown>,
         botId: string,
-      ) => Promise<{ media: Array<{ base64: string; fileName: string }> }>;
+      ) => Promise<{ media: Array<{ bytes: Buffer; fileName: string }> }>;
       downloadMedia: (
         url: string,
         maxBytes: number,
@@ -684,12 +684,7 @@ describe('PublisherPostImportProcessingService', () => {
     const content = await contentPromise;
 
     expect(maxActive).toBe(3);
-    expect(content.media.map((item) => Buffer.from(item.base64, 'base64').toString())).toEqual([
-      '1',
-      '2',
-      '3',
-      '4',
-    ]);
+    expect(content.media.map((item) => item.bytes.toString())).toEqual(['1', '2', '3', '4']);
     expect(content.media.map((item) => item.fileName)).toEqual([
       'forwarded-image-1.jpg',
       'forwarded-image-2.jpg',
@@ -698,7 +693,7 @@ describe('PublisherPostImportProcessingService', () => {
     ]);
   });
 
-  it('checks the cumulative image limit after concurrent downloads', async () => {
+  it('checks the cumulative normalized image limit while downloading', async () => {
     const { service } = createFixture();
     const internal = service as unknown as {
       buildContent: (message: Record<string, unknown>, botId: string) => Promise<unknown>;
@@ -720,6 +715,103 @@ describe('PublisherPostImportProcessingService', () => {
         'publik_bot',
       ),
     ).rejects.toMatchObject({ code: 'media_too_large' });
+  });
+
+  it('stops new album work, aborts siblings and settles them before reporting a size failure', async () => {
+    const { service } = createFixture();
+    const internal = service as unknown as {
+      buildContent: (message: Record<string, unknown>, botId: string) => Promise<unknown>;
+      downloadMedia: (
+        url: string,
+        maxBytes: number,
+        type: 'image' | 'video',
+        signal?: AbortSignal,
+      ) => Promise<{ bytes: Buffer; mimeType: string }>;
+    };
+    const started: number[] = [];
+    const settled: number[] = [];
+    const bytes = Buffer.alloc(8_000_000);
+    internal.downloadMedia = jest.fn(async (url, _limit, _type, signal) => {
+      const index = Number(url.split('/').at(-1));
+      started.push(index);
+      if (index <= 3) return { bytes, mimeType: 'image/jpeg' };
+      if (index === 4) return { bytes: Buffer.from([1]), mimeType: 'image/jpeg' };
+      return new Promise<{ bytes: Buffer; mimeType: string }>((_resolve, reject) => {
+        signal!.addEventListener(
+          'abort',
+          () => {
+            settled.push(index);
+            reject(signal!.reason);
+          },
+          { once: true },
+        );
+      });
+    });
+    await expect(
+      internal.buildContent(
+        {
+          attachments: [1, 2, 3, 4, 5, 6, 7, 8].map((index) => ({
+            type: 'image',
+            payload: { url: `https://i.oneme.ru/${index}` },
+          })),
+        },
+        'publik_bot',
+      ),
+    ).rejects.toMatchObject({ code: 'media_too_large' });
+    expect(started).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(settled).toEqual([5, 6]);
+  });
+
+  it('keeps owned binary results without creating base64 representations', async () => {
+    const { service } = createFixture();
+    const internal = service as unknown as {
+      buildContent: (
+        message: Record<string, unknown>,
+        botId: string,
+      ) => Promise<{ media: Array<{ bytes: Buffer }> }>;
+      downloadMedia: () => Promise<{ bytes: Buffer; mimeType: string }>;
+    };
+    const bytes = Buffer.from('owned image');
+    internal.downloadMedia = jest.fn().mockResolvedValue({ bytes, mimeType: 'image/jpeg' });
+    const content = await internal.buildContent(
+      { attachments: [{ type: 'image', payload: { url: 'https://i.oneme.ru/image' } }] },
+      'publik_bot',
+    );
+    expect(content.media[0]!.bytes).toBe(bytes);
+    expect(content.media[0]).not.toHaveProperty('base64');
+  });
+
+  it('applies the album budget after normalization while retaining the per-image source limit', async () => {
+    const { service } = createFixture();
+    const internal = service as unknown as {
+      buildContent: (
+        message: Record<string, unknown>,
+        botId: string,
+      ) => Promise<{ media: unknown[] }>;
+      downloadMedia: () => Promise<{ bytes: Buffer; mimeType: string }>;
+      prepareImportedImage: () => Promise<{ bytes: Buffer; mimeType: string; extension: string }>;
+    };
+    internal.downloadMedia = jest
+      .fn()
+      .mockResolvedValue({ bytes: Buffer.alloc(8_000_000), mimeType: 'image/webp' });
+    internal.prepareImportedImage = jest
+      .fn()
+      .mockResolvedValue({
+        bytes: Buffer.alloc(1_000_000),
+        mimeType: 'image/jpeg',
+        extension: 'jpg',
+      });
+    const content = await internal.buildContent(
+      {
+        attachments: [1, 2, 3, 4].map((index) => ({
+          type: 'image',
+          payload: { url: `https://i.oneme.ru/${index}` },
+        })),
+      },
+      'publik_bot',
+    );
+    expect(content.media).toHaveLength(4);
+    expect(internal.downloadMedia).toHaveBeenCalledTimes(4);
   });
 
   it('resolves token-only forwarded video through the Publisher bot', async () => {

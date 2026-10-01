@@ -200,6 +200,17 @@ function readMembershipEpochState(service: MaxMembershipLookupService) {
   };
 }
 
+function readMembershipMemoryState(service: MaxMembershipLookupService) {
+  type Snapshot = { isMember: boolean; checkedAtMs: number };
+  return service as unknown as {
+    memoryCache: Map<string, Snapshot>;
+    memoryCacheSweepIterator: IterableIterator<unknown> | null;
+    memoryCacheSweepRemaining: number;
+    memoryCacheSweepTimer: NodeJS.Timeout | null;
+    storeMemorySnapshot(key: string, snapshot: Snapshot): Snapshot;
+  };
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -235,6 +246,87 @@ describe('MaxMembershipLookupService', () => {
       duplicate: jest.Mock;
     };
     expect(redisInstance.duplicate).toHaveBeenCalledWith({ enableReadyCheck: false });
+  });
+
+  it('releases expired positive and negative snapshots after idle churn in bounded callbacks', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-01T12:00:00.000Z'));
+    const maxClient = { hasChatMember: jest.fn(), getChatMembersAccess: jest.fn() };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+    const state = readMembershipMemoryState(service);
+    for (let index = 0; index < 12000; index++) {
+      state.storeMemorySnapshot(`idle-${index}`, {
+        isMember: index % 2 === 0,
+        checkedAtMs: Date.now(),
+      });
+    }
+    expect(state.memoryCacheSweepTimer?.hasRef()).toBe(false);
+    jest.setSystemTime(Date.now() + 91000);
+    await jest.advanceTimersToNextTimerAsync();
+    expect(state.memoryCache.size).toBe(12000 - 256);
+    await jest.advanceTimersByTimeAsync(100);
+    expect(state.memoryCache.size).toBe(0);
+    expect(state.memoryCacheSweepIterator).toBeNull();
+    expect(state.memoryCacheSweepTimer).toBeNull();
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
+  it('keeps retained stale positives and refreshed snapshots usable during expiry maintenance', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-01T12:10:00.000Z'));
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn().mockRejectedValue(new Error('temporary MAX failure')),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+    const state = readMembershipMemoryState(service);
+    state.storeMemorySnapshot('max:membership:v1:channel-1:user-1', {
+      isMember: true,
+      checkedAtMs: Date.now(),
+    });
+    state.storeMemorySnapshot('negative-idle', { isMember: false, checkedAtMs: Date.now() });
+    await jest.advanceTimersByTimeAsync(20000);
+    expect(state.memoryCache.has('negative-idle')).toBe(false);
+    await expect(
+      service.getMembership('channel-1', 'user-1', 'giveaway_interactive', {
+        forceRefresh: true,
+      }),
+    ).resolves.toBe(true);
+    state.storeMemorySnapshot('max:membership:v1:channel-1:user-1', {
+      isMember: true,
+      checkedAtMs: Date.now(),
+    });
+    await jest.advanceTimersByTimeAsync(75000);
+    expect(state.memoryCache.has('max:membership:v1:channel-1:user-1')).toBe(true);
+    await service.onModuleDestroy();
+    expect(state.memoryCache.size).toBe(0);
+    expect(state.memoryCacheSweepIterator).toBeNull();
+    expect(state.memoryCacheSweepTimer).toBeNull();
+    state.storeMemorySnapshot('late-after-shutdown', { isMember: true, checkedAtMs: Date.now() });
+    expect(state.memoryCache.size).toBe(0);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('finishes a snapshot sweep pass despite continuous new cache keys', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-01T12:20:00.000Z'));
+    const service = new MaxMembershipLookupService(
+      { hasChatMember: jest.fn(), getChatMembersAccess: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    const state = readMembershipMemoryState(service);
+    for (let index = 0; index < 512; index++) {
+      state.storeMemorySnapshot(`initial-${index}`, { isMember: true, checkedAtMs: Date.now() });
+    }
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(state.memoryCacheSweepRemaining).toBe(256);
+    for (let index = 0; index < 512; index++) {
+      state.storeMemorySnapshot(`new-${index}`, { isMember: true, checkedAtMs: Date.now() });
+    }
+    await jest.advanceTimersByTimeAsync(1);
+    expect(state.memoryCacheSweepIterator).toBeNull();
+    expect(state.memoryCacheSweepRemaining).toBe(0);
+    expect(state.memoryCache.size).toBe(1024);
+    await service.onModuleDestroy();
   });
 
   it('expires a large invalidation-only pub/sub stream without looking up its keys', async () => {

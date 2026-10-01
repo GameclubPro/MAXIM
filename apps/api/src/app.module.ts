@@ -1,55 +1,17 @@
-import { BullModule } from '@nestjs/bullmq';
-import { Module, RequestMethod } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { LoggerModule } from 'nestjs-pino';
+import { Module } from '@nestjs/common';
 import { AdminModule } from './admin/admin.module';
-import { HTTP_LOG_REDACT_PATHS } from './common/http-log-redaction';
-import { validateEnv } from './config/env.schema';
 import { HealthModule } from './health/health.module';
-import { MaxBotModule } from './max/max-bot.module';
 import { MaxModule } from './max/max.module';
 import { ModerationModule } from './moderation/moderation.module';
-import { PrismaModule } from './prisma/prisma.module';
 import { PublisherModule } from './publisher/publisher.module';
 import { SystemModule } from './system/system.module';
 import { WebhookModule } from './webhook/webhook.module';
 import { MessageRetentionModule } from './message-retention/message-retention.module';
-import { StorageRuntimeMetricsModule } from './system/storage-runtime-metrics.module';
+import { RuntimeCoreModule } from './runtime/runtime-core.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      validate: validateEnv,
-      expandVariables: true,
-    }),
-    LoggerModule.forRoot({
-      forRoutes: [{ path: '{*path}', method: RequestMethod.ALL }],
-      pinoHttp: {
-        level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
-        transport:
-          process.env.NODE_ENV === 'production'
-            ? undefined
-            : {
-                target: 'pino-pretty',
-                options: {
-                  singleLine: true,
-                },
-              },
-        redact: HTTP_LOG_REDACT_PATHS,
-      },
-    }),
-    BullModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        connection: {
-          url: config.getOrThrow<string>('REDIS_URL'),
-        },
-      }),
-    }),
-    StorageRuntimeMetricsModule,
-    PrismaModule,
-    MaxBotModule,
+    RuntimeCoreModule,
     MaxModule,
     ModerationModule,
     WebhookModule,

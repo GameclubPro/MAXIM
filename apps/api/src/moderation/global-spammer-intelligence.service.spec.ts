@@ -533,7 +533,148 @@ function createPrismaMock() {
   };
 }
 
+function readSpammerL1State(service: GlobalSpammerIntelligenceService) {
+  return service as unknown as {
+    runtimeProfileL1Cache: Map<string, { snapshot: unknown; expiresAtMs: number }>;
+    runtimeProfileL1SweepIterator: IterableIterator<unknown> | null;
+    runtimeProfileL1SweepRemaining: number;
+    runtimeProfileL1SweepTimer: NodeJS.Timeout | null;
+    writeRuntimeProfileToL1(userId: string, snapshot: null): void;
+    readRuntimeProfileFromL1(userId: string): unknown;
+  };
+}
+
 describe('GlobalSpammerIntelligenceService', () => {
+  describe('bounded runtime profile L1 lifecycle', () => {
+    beforeEach(() => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-10-01T13:00:00.000Z'));
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('releases idle profiles in bounded callbacks without querying Redis or Postgres', async () => {
+      const { prisma } = createPrismaMock();
+      const service = new GlobalSpammerIntelligenceService(prisma as never);
+      const state = readSpammerL1State(service);
+      for (let index = 0; index < 8192; index++) {
+        state.writeRuntimeProfileToL1(`idle-${index}`, null);
+      }
+      expect(state.runtimeProfileL1SweepTimer?.hasRef()).toBe(false);
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(state.runtimeProfileL1Cache.size).toBe(8192 - 256);
+      await jest.advanceTimersByTimeAsync(100);
+      expect(state.runtimeProfileL1Cache.size).toBe(0);
+      expect(state.runtimeProfileL1SweepIterator).toBeNull();
+      expect(state.runtimeProfileL1SweepTimer).toBeNull();
+      expect(prisma.globalSpammerRuntimeProfile.findUnique).not.toHaveBeenCalled();
+      service.onModuleDestroy();
+    });
+
+    it('preserves refreshed negative entries until their original TTL expires', async () => {
+      const { prisma } = createPrismaMock();
+      const service = new GlobalSpammerIntelligenceService(prisma as never);
+      const state = readSpammerL1State(service);
+      state.writeRuntimeProfileToL1('old-negative', null);
+      state.writeRuntimeProfileToL1('refreshed-negative', null);
+      await jest.advanceTimersByTimeAsync(4000);
+      state.writeRuntimeProfileToL1('refreshed-negative', null);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(state.readRuntimeProfileFromL1('old-negative')).toBeUndefined();
+      expect(state.readRuntimeProfileFromL1('refreshed-negative')).toBeNull();
+      await jest.advanceTimersByTimeAsync(4000);
+      expect(state.readRuntimeProfileFromL1('refreshed-negative')).toBeUndefined();
+      service.onModuleDestroy();
+    });
+
+    it('bounds disposable profiles, protects refreshed keys and reloads an evicted profile from the authoritative read model', async () => {
+      const { prisma, runtimeProfiles } = createPrismaMock();
+      const service = new GlobalSpammerIntelligenceService(
+        prisma as never,
+        createConfigMock({
+          SPAMMER_PROFILE_CACHE_ENABLED: 'true',
+          SPAMMER_READ_MODEL_ENFORCEMENT_ENABLED: 'true',
+        }),
+      );
+      const state = readSpammerL1State(service);
+      for (let index = 0; index < 10000; index++) {
+        state.writeRuntimeProfileToL1(`user-${index}`, null);
+      }
+      state.writeRuntimeProfileToL1('user-0', null);
+      state.writeRuntimeProfileToL1('overflow-user', null);
+      expect(state.runtimeProfileL1Cache.size).toBe(10000);
+      expect(state.readRuntimeProfileFromL1('user-0')).toBeNull();
+      expect(state.readRuntimeProfileFromL1('user-1')).toBeUndefined();
+      runtimeProfiles.set('user-1', {
+        userId: 'user-1',
+        registryStatus: 'ACTIVE_CONFIRMED',
+        action: 'DELETE_AND_KICK',
+        confidenceScore: 0.97,
+        shadowScore: null,
+        policyBand: 'CONFIRMED',
+        reason: 'REVIEW_APPROVED',
+        expiresAt: new Date(Date.now() + 60000),
+        suppressedUntil: null,
+        sourceBreakdown: null,
+        campaignBreakdown: null,
+        sourceVersion: 2,
+        staleAfter: new Date(Date.now() + 60000),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await expect(
+        service.evaluatePolicy({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          trigger: 'message',
+          deleteSpammersEnabled: true,
+          recordDecision: false,
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          registryStatus: 'ACTIVE_CONFIRMED',
+          action: 'DELETE_AND_KICK',
+          reason: 'REVIEW_APPROVED',
+        }),
+      );
+      expect(prisma.globalSpammerRuntimeProfile.findUnique).toHaveBeenCalledTimes(1);
+      expect(prisma.globalSpammerRuntimeProfile.findUnique).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+      });
+      expect(prisma.globalSpammer.findUnique).not.toHaveBeenCalled();
+      expect(state.runtimeProfileL1Cache.size).toBe(10000);
+      service.onModuleDestroy();
+    });
+
+    it('finishes an expiry pass under continuing churn and stops during shutdown', async () => {
+      const { prisma } = createPrismaMock();
+      const service = new GlobalSpammerIntelligenceService(prisma as never);
+      const state = readSpammerL1State(service);
+      for (let index = 0; index < 512; index++) {
+        state.writeRuntimeProfileToL1(`initial-${index}`, null);
+      }
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(state.runtimeProfileL1SweepRemaining).toBe(256);
+      for (let index = 0; index < 512; index++) {
+        state.writeRuntimeProfileToL1(`new-${index}`, null);
+      }
+      await jest.advanceTimersByTimeAsync(1);
+      expect(state.runtimeProfileL1SweepIterator).toBeNull();
+      expect(state.runtimeProfileL1Cache.size).toBe(512);
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(state.runtimeProfileL1SweepIterator).not.toBeNull();
+      service.onModuleDestroy();
+      expect(state.runtimeProfileL1Cache.size).toBe(0);
+      expect(state.runtimeProfileL1SweepIterator).toBeNull();
+      expect(state.runtimeProfileL1SweepTimer).toBeNull();
+      state.writeRuntimeProfileToL1('late-after-shutdown', null);
+      await jest.advanceTimersByTimeAsync(60000);
+      expect(state.runtimeProfileL1Cache.size).toBe(0);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+  });
+
   it('ignores spammer observations and enforcement for configured bot users', async () => {
     const { prisma } = createPrismaMock();
     const maxBotRegistry = {

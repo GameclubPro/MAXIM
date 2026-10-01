@@ -1,35 +1,47 @@
-import fastifyCookie from '@fastify/cookie';
-import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
-import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Logger } from 'nestjs-pino';
-import { AppModule } from './app.module';
-import { MiniappRequestSecurityService } from './auth/miniapp-request-security.service';
-import { SanitizedExceptionFilter } from './common/sanitized-exception.filter';
 import { getAppRole, resolveHttpListenHost, roleRunsHttp } from './runtime/app-role';
 import { installRuntimeWorkerShutdown } from './runtime/runtime-worker-shutdown';
-import { WebhookIngressMetricsService } from './system/webhook-ingress-metrics.service';
-import {
-  readMaxWebhookAckDeadlineAtMs,
-  registerMaxWebhookHttpRouteLimits,
-} from './webhook/webhook-http-route-limit';
-import { WebhookIngestionService } from './webhook/webhook-ingestion.service';
+import { loadRuntimeRootModule } from './runtime/runtime-root-module';
 
 async function bootstrap() {
+  const rootModule = await loadRuntimeRootModule(getAppRole());
   const bodyLimit = Number(process.env.JSON_BODY_LIMIT ?? 33_554_432);
   const port = Number(process.env.PORT ?? 3001);
   const role = getAppRole();
   const httpEnabled = roleRunsHttp(role);
 
   if (!httpEnabled) {
-    const context = await NestFactory.createApplicationContext(AppModule, { bufferLogs: true });
+    const context = await NestFactory.createApplicationContext(rootModule, { bufferLogs: true });
     context.useLogger(context.get(Logger));
     installRuntimeWorkerShutdown(context);
     return;
   }
 
+  // FLAG: Headless profiles must not load HTTP ingestion/controllers through bootstrap imports.
+  const [
+    { default: fastifyCookie },
+    { ConfigService },
+    { FastifyAdapter },
+    { MiniappRequestSecurityService },
+    { SanitizedExceptionFilter },
+    { WebhookIngressMetricsService },
+    { readMaxWebhookAckDeadlineAtMs, registerMaxWebhookHttpRouteLimits },
+    { WebhookIngestionService },
+  ] = await Promise.all([
+    import('@fastify/cookie'),
+    import('@nestjs/config'),
+    import('@nestjs/platform-fastify'),
+    import('./auth/miniapp-request-security.service'),
+    import('./common/sanitized-exception.filter'),
+    import('./system/webhook-ingress-metrics.service'),
+    import('./webhook/webhook-http-route-limit'),
+    import('./webhook/webhook-ingestion.service'),
+  ]);
+
   const app = await NestFactory.create<NestFastifyApplication>(
-    AppModule,
+    rootModule,
     new FastifyAdapter({ bodyLimit }),
     {
       bufferLogs: true,

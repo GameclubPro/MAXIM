@@ -1,4 +1,4 @@
-import { BullModule } from '@nestjs/bullmq';
+import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AdminModule } from '../admin/admin.module';
@@ -222,15 +222,13 @@ const moderationProviders = [
 
 @Module({
   imports: [
-    BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
-    BullModule.registerQueue({ name: GLOBAL_SPAMMER_DENORM_QUEUE }),
-    BullModule.registerQueue({ name: PHOTO_DUPLICATE_QUEUE }),
-    BullModule.registerQueue({ name: MESSAGE_DUPLICATE_QUEUE }),
-    BullModule.registerQueue({ name: PUBLISHER_CHAT_COMMENT_QUEUE }),
-    BullModule.registerQueue({ name: PUBLISHER_AUTO_REPLY_QUEUE }),
-    ...(commercialOcrWorkerEnabled
-      ? [BullModule.registerQueue({ name: COMMERCIAL_OCR_QUEUE })]
-      : []),
+    ...registerRuntimeQueues(...ALL_WEBHOOK_QUEUE_NAMES),
+    ...registerRuntimeQueues(GLOBAL_SPAMMER_DENORM_QUEUE),
+    ...registerRuntimeQueues(PHOTO_DUPLICATE_QUEUE),
+    ...registerRuntimeQueues(MESSAGE_DUPLICATE_QUEUE),
+    ...registerRuntimeQueues(PUBLISHER_CHAT_COMMENT_QUEUE),
+    ...registerRuntimeQueues(PUBLISHER_AUTO_REPLY_QUEUE),
+    ...(commercialOcrWorkerEnabled ? registerRuntimeQueues(COMMERCIAL_OCR_QUEUE) : []),
     MaxModule,
     SystemModule,
     ChatContextModule,

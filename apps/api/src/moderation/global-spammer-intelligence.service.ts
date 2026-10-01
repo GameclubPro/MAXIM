@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
 import { createHash, randomUUID } from 'node:crypto';
@@ -563,6 +563,9 @@ const SOURCE_REPUTATION_WINDOW_DAYS = 30;
 const SOURCE_REPUTATION_CACHE_TTL_MS = 30_000;
 const RUNTIME_PROFILE_SOURCE_VERSION = 2;
 const RUNTIME_PROFILE_L1_TTL_MS = 5_000;
+const RUNTIME_PROFILE_L1_MAX_ENTRIES = 10_000;
+const RUNTIME_PROFILE_L1_SWEEP_INTERVAL_MS = 5_000;
+const RUNTIME_PROFILE_L1_SWEEP_BATCH_SIZE = 256;
 const RUNTIME_PROFILE_REDIS_TTL_SEC = 60;
 const RUNTIME_PROFILE_REDIS_NEGATIVE_TTL_SEC = 120;
 const RUNTIME_PROFILE_DEFAULT_STALE_MS = 5 * 60 * 1000;
@@ -600,7 +603,7 @@ const OBSERVATION_FAST_PATH_SOURCES = new Set<GlobalSpammerObservationSource>([
 ]);
 
 @Injectable()
-export class GlobalSpammerIntelligenceService {
+export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
   private readonly logger = new Logger(GlobalSpammerIntelligenceService.name);
   private readonly defaultEnforcementMode: GlobalSpammerEnforcementMode;
   private readonly runtimeProfileCacheEnabled: boolean;
@@ -615,6 +618,12 @@ export class GlobalSpammerIntelligenceService {
     string,
     { snapshot: RuntimeProfileSnapshot | null; expiresAtMs: number }
   >();
+  private runtimeProfileL1SweepIterator: IterableIterator<
+    [string, { snapshot: RuntimeProfileSnapshot | null; expiresAtMs: number }]
+  > | null = null;
+  private runtimeProfileL1SweepRemaining = 0;
+  private runtimeProfileL1SweepTimer: NodeJS.Timeout | null = null;
+  private runtimeProfileL1Stopped = false;
   private sourceReputationCache: {
     expiresAtMs: number;
     rows: SourceReputation[];
@@ -662,6 +671,63 @@ export class GlobalSpammerIntelligenceService {
     this.observationFastPathSources = this.readObservationFastPathSourcesConfig(
       configService?.get<string>('SPAMMER_OBSERVATION_FAST_PATH_SOURCES'),
     );
+  }
+
+  onModuleDestroy(): void {
+    this.runtimeProfileL1Stopped = true;
+    if (this.runtimeProfileL1SweepTimer) {
+      clearTimeout(this.runtimeProfileL1SweepTimer);
+      this.runtimeProfileL1SweepTimer = null;
+    }
+    this.runtimeProfileL1SweepIterator = null;
+    this.runtimeProfileL1SweepRemaining = 0;
+    this.runtimeProfileL1Cache.clear();
+  }
+
+  private scheduleRuntimeProfileL1Sweep(delayMs: number): void {
+    if (
+      this.runtimeProfileL1Stopped ||
+      this.runtimeProfileL1SweepTimer ||
+      this.runtimeProfileL1Cache.size === 0
+    ) {
+      return;
+    }
+    this.runtimeProfileL1SweepTimer = setTimeout(() => {
+      this.runtimeProfileL1SweepTimer = null;
+      this.sweepRuntimeProfileL1();
+      this.scheduleRuntimeProfileL1Sweep(
+        this.runtimeProfileL1SweepIterator ? 1 : RUNTIME_PROFILE_L1_SWEEP_INTERVAL_MS,
+      );
+    }, delayMs);
+    this.runtimeProfileL1SweepTimer.unref();
+  }
+
+  private sweepRuntimeProfileL1(): void {
+    if (!this.runtimeProfileL1SweepIterator) {
+      this.runtimeProfileL1SweepIterator = this.runtimeProfileL1Cache.entries();
+      this.runtimeProfileL1SweepRemaining = this.runtimeProfileL1Cache.size;
+    }
+    const now = Date.now();
+    // FLAG: Only disposable L1 data expires here. A fixed pass budget prevents continuously
+    // appended users from trapping the live Map iterator in one sweep forever.
+    for (
+      let inspected = 0;
+      inspected < RUNTIME_PROFILE_L1_SWEEP_BATCH_SIZE && this.runtimeProfileL1SweepRemaining > 0;
+      inspected++
+    ) {
+      const next = this.runtimeProfileL1SweepIterator.next();
+      if (next.done) {
+        this.runtimeProfileL1SweepRemaining = 0;
+        break;
+      }
+      this.runtimeProfileL1SweepRemaining--;
+      if (next.value[1].expiresAtMs <= now) {
+        this.runtimeProfileL1Cache.delete(next.value[0]);
+      }
+    }
+    if (this.runtimeProfileL1SweepRemaining === 0) {
+      this.runtimeProfileL1SweepIterator = null;
+    }
   }
 
   async recordCommercialObservations(params: {
@@ -3577,10 +3643,22 @@ export class GlobalSpammerIntelligenceService {
     snapshot: RuntimeProfileSnapshot | null,
     ttlMs = RUNTIME_PROFILE_L1_TTL_MS,
   ): void {
+    if (this.runtimeProfileL1Stopped) {
+      return;
+    }
+    // FLAG: Capacity applies only to reconstructible snapshots, including negative entries;
+    // Redis TTLs and authoritative DB profiles are unchanged. Promote refreshed entries.
+    this.runtimeProfileL1Cache.delete(userId);
     this.runtimeProfileL1Cache.set(userId, {
       snapshot: snapshot ? { ...snapshot } : null,
       expiresAtMs: Date.now() + Math.max(1, ttlMs),
     });
+    while (this.runtimeProfileL1Cache.size > RUNTIME_PROFILE_L1_MAX_ENTRIES) {
+      const oldestUserId = this.runtimeProfileL1Cache.keys().next().value;
+      if (oldestUserId === undefined) break;
+      this.runtimeProfileL1Cache.delete(oldestUserId);
+    }
+    this.scheduleRuntimeProfileL1Sweep(RUNTIME_PROFILE_L1_SWEEP_INTERVAL_MS);
   }
 
   private async readRuntimeProfileFromRedis(

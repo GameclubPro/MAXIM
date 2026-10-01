@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { maxApiLegacyCounterMinute, readMaxApiMetricCounts } from '../max/max-api-counter-storage';
 import {
   buildMaxApiServiceBotClassMetricKey,
   buildMaxApiServiceStackClassMetricKey,
@@ -10,6 +11,7 @@ import {
   MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_KEY,
   MAX_API_SOURCE_DIMENSION_CATALOG_KEY,
   MAX_API_SOURCE_RPS_METRICS_KEY_PREFIX,
+  MAX_API_SOURCE_MINUTE_METRICS_KEY_PREFIX,
   normalizeMaxApiRateLimitServiceScope,
   parseMaxApiSourceMetricDimension,
   parseMaxApiSourceMetricKey,
@@ -73,6 +75,7 @@ type SourceBotCounterBucket = {
 
 const MAX_API_GLOBAL_METRICS_KEY_PREFIX = 'maxapi:rps:global';
 const MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX = 'maxapi:rate-limit:v1';
+const MAX_API_RATE_LIMIT_OUTCOME_MINUTE_KEY_PREFIX = 'maxapi:rate-limit:v2';
 const DEFAULT_MAX_API_SOURCE_METRICS_WINDOW_SEC = 10 * 60;
 const MAX_API_SOURCE_METRICS_WINDOW_SEC_LIMIT = 6 * 60 * 60;
 const MAX_API_SOURCE_METRICS_SCAN_COUNT = 500;
@@ -178,9 +181,13 @@ export class MaxApiMetricsService implements OnModuleDestroy {
       }
       const currentBatch = readBatch;
       readBatch = [];
-      const values = await this.redis.mget(...currentBatch.map((entry) => entry.key));
-      currentBatch.forEach((entry, index) => {
-        const count = Number(values[index] ?? 0);
+      const counts = await readMaxApiMetricCounts(
+        this.redis,
+        currentBatch.map((entry) => entry.key),
+        MAX_API_SOURCE_METRICS_READ_BATCH_SIZE,
+      );
+      currentBatch.forEach((entry) => {
+        const count = counts.get(entry.key) ?? 0;
         if (!Number.isFinite(count) || count <= 0) {
           return;
         }
@@ -263,20 +270,62 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     const nowSec = Math.floor(Date.now() / 1_000);
     const windowSec = this.normalizeWindowSec(options.windowSec);
     const startSec = nowSec - windowSec + 1;
-    const keys = await this.scanKeys(`${MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX}:*`);
-    const entries = keys
+    const legacyKeys = await this.scanKeys(`${MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX}:*`);
+    const legacyEntries = [...new Set(legacyKeys)]
       .map((key) => this.parseRateLimitOutcomeKey(key))
       .filter(
         (entry): entry is NonNullable<ReturnType<typeof this.parseRateLimitOutcomeKey>> =>
           entry !== null && entry.sec >= startSec && entry.sec <= nowSec,
       );
-    const countsByKey = await this.readCounts(entries.map((entry) => entry.key));
+    const countsByKey = await this.readCounts(legacyEntries.map((entry) => entry.key));
+    const minuteKeys = await this.scanKeys(`${MAX_API_RATE_LIMIT_OUTCOME_MINUTE_KEY_PREFIX}:*`);
+    let minuteReadBatch: string[] = [];
+    const flushMinuteReadBatch = async (): Promise<void> => {
+      if (minuteReadBatch.length === 0) {
+        return;
+      }
+      const currentBatch = [...new Set(minuteReadBatch)];
+      minuteReadBatch = [];
+      const counts = await readMaxApiMetricCounts(
+        this.redis,
+        currentBatch,
+        MAX_API_SOURCE_METRICS_READ_BATCH_SIZE,
+      );
+      // FLAG: Reads already combine both layouts. Repeated SCAN visits and keys
+      // present in the legacy scan overwrite that observation; never add twice.
+      for (const key of currentBatch) {
+        countsByKey.delete(key);
+      }
+      for (const [key, count] of counts) {
+        countsByKey.set(key, count);
+      }
+    };
+    for (const key of minuteKeys) {
+      const minute = maxApiLegacyCounterMinute(key);
+      if (
+        !minute ||
+        !this.parseRateLimitOutcomeKey(`${minute.legacyStem}:${minute.minuteStartSec}`)
+      ) {
+        continue;
+      }
+      for (
+        let sec = Math.max(startSec, minute.minuteStartSec);
+        sec <= Math.min(nowSec, minute.minuteStartSec + 59);
+        sec += 1
+      ) {
+        minuteReadBatch.push(`${minute.legacyStem}:${sec}`);
+        if (minuteReadBatch.length >= MAX_API_SOURCE_METRICS_READ_BATCH_SIZE) {
+          await flushMinuteReadBatch();
+        }
+      }
+    }
+    await flushMinuteReadBatch();
     const stack = this.createRateLimitOutcomeCounts();
     const bots = new Map<string, MaxApiRateLimitOutcomeCounts>();
 
-    for (const entry of entries) {
-      const count = countsByKey.get(entry.key) ?? 0;
-      if (count <= 0) {
+    for (const [key, count] of countsByKey) {
+      const entry = this.parseRateLimitOutcomeKey(key);
+      if (!entry || count <= 0) {
         continue;
       }
       const target =
@@ -524,44 +573,49 @@ export class MaxApiMetricsService implements OnModuleDestroy {
   }
 
   private async bootstrapSourceDimensionCatalog(lockToken: string): Promise<void> {
-    let cursor = '0';
     const discoveredDimensions = new Set<string>();
     let nextRenewAtMs = Date.now() + MAX_API_SOURCE_DIMENSION_BOOTSTRAP_RENEW_INTERVAL_MS;
-    do {
-      const [nextCursor, keys] = await this.redis.scan(
-        cursor,
-        'MATCH',
-        `${MAX_API_SOURCE_RPS_METRICS_KEY_PREFIX}:*`,
-        'COUNT',
-        String(MAX_API_SOURCE_METRICS_SCAN_COUNT),
-      );
-      cursor = nextCursor;
-      const dimensions: string[] = [];
-      for (const key of keys) {
-        const entry = parseMaxApiSourceMetricKey(key);
-        if (entry) {
-          const dimension = serializeMaxApiSourceMetricDimension(entry);
-          if (!discoveredDimensions.has(dimension)) {
-            discoveredDimensions.add(dimension);
-            dimensions.push(dimension);
+    for (const prefix of [
+      MAX_API_SOURCE_RPS_METRICS_KEY_PREFIX,
+      MAX_API_SOURCE_MINUTE_METRICS_KEY_PREFIX,
+    ]) {
+      let cursor = '0';
+      do {
+        const [nextCursor, keys] = await this.redis.scan(
+          cursor,
+          'MATCH',
+          `${prefix}:*`,
+          'COUNT',
+          String(MAX_API_SOURCE_METRICS_SCAN_COUNT),
+        );
+        cursor = nextCursor;
+        const dimensions: string[] = [];
+        for (const key of keys) {
+          const entry = parseMaxApiSourceMetricKey(key);
+          if (entry) {
+            const dimension = serializeMaxApiSourceMetricDimension(entry);
+            if (!discoveredDimensions.has(dimension)) {
+              discoveredDimensions.add(dimension);
+              dimensions.push(dimension);
+            }
           }
         }
-      }
-      for (
-        let index = 0;
-        index < dimensions.length;
-        index += MAX_API_SOURCE_DIMENSION_CATALOG_WRITE_BATCH_SIZE
-      ) {
-        await this.redis.sadd(
-          MAX_API_SOURCE_DIMENSION_CATALOG_KEY,
-          ...dimensions.slice(index, index + MAX_API_SOURCE_DIMENSION_CATALOG_WRITE_BATCH_SIZE),
-        );
-      }
-      if (Date.now() >= nextRenewAtMs) {
-        await this.assertSourceDimensionBootstrapOwnership(lockToken);
-        nextRenewAtMs = Date.now() + MAX_API_SOURCE_DIMENSION_BOOTSTRAP_RENEW_INTERVAL_MS;
-      }
-    } while (cursor !== '0');
+        for (
+          let index = 0;
+          index < dimensions.length;
+          index += MAX_API_SOURCE_DIMENSION_CATALOG_WRITE_BATCH_SIZE
+        ) {
+          await this.redis.sadd(
+            MAX_API_SOURCE_DIMENSION_CATALOG_KEY,
+            ...dimensions.slice(index, index + MAX_API_SOURCE_DIMENSION_CATALOG_WRITE_BATCH_SIZE),
+          );
+        }
+        if (Date.now() >= nextRenewAtMs) {
+          await this.assertSourceDimensionBootstrapOwnership(lockToken);
+          nextRenewAtMs = Date.now() + MAX_API_SOURCE_DIMENSION_BOOTSTRAP_RENEW_INTERVAL_MS;
+        }
+      } while (cursor !== '0');
+    }
   }
 
   private async assertSourceDimensionBootstrapOwnership(lockToken: string): Promise<void> {
@@ -653,20 +707,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
   }
 
   private async readCounts(keys: readonly string[]): Promise<Map<string, number>> {
-    const counts = new Map<string, number>();
-
-    for (let index = 0; index < keys.length; index += 200) {
-      const chunk = keys.slice(index, index + 200);
-      const values = await this.redis.mget(...chunk);
-      chunk.forEach((key, valueIndex) => {
-        const count = Number(values[valueIndex] ?? 0);
-        if (Number.isFinite(count) && count > 0) {
-          counts.set(key, Math.trunc(count));
-        }
-      });
-    }
-
-    return counts;
+    return readMaxApiMetricCounts(this.redis, keys);
   }
 
   private parseRateLimitOutcomeKey(key: string): {
@@ -692,8 +733,8 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     ) {
       return null;
     }
-    const sec = Number.parseInt(secRaw ?? '', 10);
-    if (!Number.isFinite(sec)) {
+    const sec = Number(secRaw);
+    if (!/^\d+$/u.test(secRaw ?? '') || !Number.isSafeInteger(sec) || sec < 0) {
       return null;
     }
 

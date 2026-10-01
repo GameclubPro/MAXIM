@@ -662,6 +662,18 @@ function createServiceFixture() {
   };
 }
 
+function readBotLinkCacheState(service: MaxBotLinkService) {
+  return service as unknown as {
+    chatBotBindingCache: Map<string, { botId: string; expiresAtMs: number }>;
+    observedWebhookTouchCache: Map<string, number>;
+    observedWebhookTouchesInFlight: Map<string, Promise<void>>;
+    chatBotBindingSweepIterator: IterableIterator<unknown> | null;
+    chatBotBindingSweepRemaining: number;
+    observedWebhookTouchSweepIterator: IterableIterator<unknown> | null;
+    localCacheSweepTimer: NodeJS.Timeout | null;
+  };
+}
+
 describe('MaxBotLinkService', () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-09T10:05:00.000Z'));
@@ -669,6 +681,88 @@ describe('MaxBotLinkService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('reclaims idle bindings and heartbeat cooldowns in bounded callbacks without evicting fresh routes', async () => {
+    const fixture = createServiceFixture();
+    const state = readBotLinkCacheState(fixture.service);
+    const botId = fixture.bots[1]!.id;
+    for (let index = 0; index < 12000; index++) {
+      fixture.service.rememberChatBotBinding(`idle-${index}`, botId);
+    }
+    fixture.prisma.chatBotMembership.updateMany.mockResolvedValue({ count: 1 });
+    await Promise.all(
+      Array.from({ length: 512 }, (_, index) =>
+        fixture.service.observeStoredChatBotWebhook({ chatId: `idle-${index}`, botId }),
+      ),
+    );
+    expect(fixture.service.resolveBotIdSync(null, 'idle-0')).toBe(botId);
+    expect(state.chatBotBindingCache.size).toBe(12000);
+    expect(state.localCacheSweepTimer?.hasRef()).toBe(false);
+    jest.setSystemTime(Date.now() + 600001);
+    await jest.advanceTimersToNextTimerAsync();
+    expect(state.chatBotBindingCache.size).toBe(12000 - 256);
+    expect(state.observedWebhookTouchCache.size).toBe(512 - 256);
+    await jest.advanceTimersByTimeAsync(100);
+    expect(state.chatBotBindingCache.size).toBe(0);
+    expect(state.observedWebhookTouchCache.size).toBe(0);
+    expect(state.localCacheSweepTimer).toBeNull();
+    expect(fixture.prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(512);
+    fixture.service.onModuleDestroy();
+  });
+
+  it('preserves a refreshed exact-bot binding while earlier unused routes expire', async () => {
+    const fixture = createServiceFixture();
+    const botId = fixture.bots[1]!.id;
+    fixture.service.rememberChatBotBinding('old-route', botId);
+    fixture.service.rememberChatBotBinding('refreshed-route', botId);
+    jest.setSystemTime(Date.now() + 599000);
+    fixture.service.rememberChatBotBinding('refreshed-route', botId);
+    await jest.advanceTimersByTimeAsync(5000);
+    const state = readBotLinkCacheState(fixture.service);
+    expect(state.chatBotBindingCache.has('old-route')).toBe(false);
+    expect(fixture.service.resolveBotIdSync(null, 'refreshed-route')).toBe(botId);
+    expect(state.chatBotBindingCache.size).toBe(1);
+    fixture.service.onModuleDestroy();
+  });
+
+  it('ends a bounded binding pass while new routes are appended and cancels it on shutdown', async () => {
+    const fixture = createServiceFixture();
+    const state = readBotLinkCacheState(fixture.service);
+    const botId = fixture.bots[1]!.id;
+    for (let index = 0; index < 512; index++) {
+      fixture.service.rememberChatBotBinding(`initial-${index}`, botId);
+    }
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(state.chatBotBindingSweepRemaining).toBe(256);
+    for (let index = 0; index < 512; index++) {
+      fixture.service.rememberChatBotBinding(`added-${index}`, botId);
+    }
+    await jest.advanceTimersByTimeAsync(1);
+    expect(state.chatBotBindingSweepIterator).toBeNull();
+    expect(state.chatBotBindingSweepRemaining).toBe(0);
+
+    let release!: (value: { count: number }) => void;
+    fixture.prisma.chatBotMembership.updateMany.mockImplementationOnce(
+      () =>
+        new Promise<{ count: number }>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const pending = fixture.service.observeStoredChatBotWebhook({ chatId: 'late-touch', botId });
+    expect(state.observedWebhookTouchesInFlight.size).toBe(1);
+    fixture.service.onModuleDestroy();
+    expect(state.observedWebhookTouchesInFlight.size).toBe(1);
+    release({ count: 1 });
+    await pending;
+    expect(state.observedWebhookTouchesInFlight.size).toBe(0);
+    fixture.service.rememberChatBotBinding('late-binding', botId);
+    expect(state.chatBotBindingCache.size).toBe(0);
+    expect(state.observedWebhookTouchCache.size).toBe(0);
+    expect(state.chatBotBindingSweepIterator).toBeNull();
+    expect(state.observedWebhookTouchSweepIterator).toBeNull();
+    expect(state.localCacheSweepTimer).toBeNull();
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   it('retries a transient PostgreSQL membership deadlock without replaying business work', async () => {

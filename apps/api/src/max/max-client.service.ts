@@ -71,6 +71,10 @@ import type {
   MaxValidatedVideoUpload,
 } from './max-media-upload-validation';
 import {
+  appendMaxApiCounterIncrement,
+  type MaxApiMetricsStorageLayout,
+} from './max-api-counter-storage';
+import {
   buildMaxApiServiceBotClassMetricKey,
   buildMaxApiServiceStackClassMetricKey,
   buildMaxApiSourceMetricKey,
@@ -874,6 +878,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly backgroundGlobalRpsLimit: number;
   private readonly managedRefreshRpsLimit: number;
   private readonly rateLimitServiceScope: string;
+  private readonly metricsStorageLayout: MaxApiMetricsStorageLayout;
   private readonly chatRpsLimit: number;
   private readonly chatMemberAccessAdminCacheTtlSec: number;
   private readonly chatMemberAccessMemberCacheTtlSec: number;
@@ -942,6 +947,8 @@ export class MaxClientService implements OnModuleDestroy {
         .trim()
         .toLowerCase() === 'production';
     this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
+    this.metricsStorageLayout =
+      configService.get<MaxApiMetricsStorageLayout>('MAX_API_METRICS_STORAGE_LAYOUT') ?? 'legacy';
     this.resumableVideoUploadEnabled = configService.get<boolean>(
       'MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED',
       true,
@@ -7488,7 +7495,11 @@ export class MaxClientService implements OnModuleDestroy {
     try {
       const pipeline = this.limiterRedis.multi();
       for (const key of metricKeys) {
-        pipeline.incr(key).expire(key, MAX_API_SOURCE_METRICS_TTL_SEC);
+        appendMaxApiCounterIncrement(
+          pipeline,
+          { key, ttlSec: MAX_API_SOURCE_METRICS_TTL_SEC },
+          this.metricsStorageLayout,
+        );
       }
       await pipeline.exec();
     } catch (error: unknown) {
@@ -7619,7 +7630,7 @@ export class MaxClientService implements OnModuleDestroy {
         pipeline.sadd(MAX_API_SOURCE_DIMENSION_CATALOG_KEY, sourceDimension);
       }
       for (const metric of metrics) {
-        pipeline.incr(metric.key).expire(metric.key, metric.ttlSec);
+        appendMaxApiCounterIncrement(pipeline, metric, this.metricsStorageLayout);
       }
       const results = await pipeline.exec();
       const commandError = results?.find(([error]) => error !== null)?.[0];

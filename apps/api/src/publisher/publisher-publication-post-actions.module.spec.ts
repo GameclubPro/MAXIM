@@ -9,6 +9,7 @@ describe('Publisher post-action runtime wiring', () => {
         await jest.isolateModulesAsync(async () => {
           const { PublisherModule } = await import('./publisher.module');
           const { SystemModule } = await import('../system/system.module');
+          const { SystemRuntimeModule } = await import('../system/system-runtime.module');
           const { BackgroundRuntimeGovernorService } =
             await import('../system/background-runtime-governor.service');
           const { PublisherPublicationPostActionsService } =
@@ -20,6 +21,9 @@ describe('Publisher post-action runtime wiring', () => {
           const providers = Reflect.getMetadata(MODULE_METADATA.PROVIDERS, PublisherModule);
           expect(imports).toContain(SystemModule);
           expect(Reflect.getMetadata(MODULE_METADATA.EXPORTS, SystemModule)).toContain(
+            SystemRuntimeModule,
+          );
+          expect(Reflect.getMetadata(MODULE_METADATA.EXPORTS, SystemRuntimeModule)).toContain(
             BackgroundRuntimeGovernorService,
           );
           expect(providers.includes(PublisherPublicationPostActionsService)).toBe(
