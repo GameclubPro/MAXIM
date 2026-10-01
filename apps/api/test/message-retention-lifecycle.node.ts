@@ -24,14 +24,16 @@ if (postgresUrl) {
   if (
     !['postgres:', 'postgresql:'].includes(localUrl.protocol) ||
     !['localhost', '127.0.0.1', '[::1]'].includes(localUrl.hostname) ||
-    localUrl.search ||
+    (localUrl.search !== '' && localUrl.search !== '?schema=public') ||
     localUrl.hash ||
     !/^\/[^/]+$/.test(localUrl.pathname)
   )
     throw new Error(
-      'Retention lifecycle races require an explicit localhost database URL without options',
+      'Retention lifecycle races require an explicit localhost URL with no options except schema=public',
     );
   // FLAG: This suite never uses DATABASE_URL; all writes target a new private schema on loopback.
+  // The CI public-schema hint is discarded before opening the raw PostgreSQL connection.
+  localUrl.search = '';
   localUrl.hostname = localUrl.hostname === '[::1]' ? '[::1]' : '127.0.0.1';
 }
 

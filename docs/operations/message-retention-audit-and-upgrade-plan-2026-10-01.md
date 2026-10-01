@@ -427,9 +427,8 @@ shadow, специально созданный тестовый контент 
 Реальные проверки PostgreSQL/BullMQ выполняются через публичный
 `test:retention-storage` wrapper. Финальные focused store/runtime/admin suites:
 64/64; retention PostgreSQL/Redis: 39 проверок прошли, включая 23 lifecycle.
-Полный wrapper с дополнительным общим lease suite повторяется на временной БД,
-чьё имя содержит `race_test`, как требует его защитная проверка. Итоговые
-staged/CI/deploy результаты фиксируются после выпуска.
+Полный wrapper с дополнительным общим lease suite: 50/50 без пропусков на временной
+БД, чьё имя содержит `race_test`, как требует его защитная проверка.
 
 Браузер после интеграции: miniapp полный retention runner; Safety Desk 11 workflow
 сценариев и шесть размеров экрана, включая Commercial Review. Найденный overflow
@@ -458,3 +457,33 @@ Transport output CLI — арифметическая верхняя оценк�
 измеренная end-to-end MAX capacity. Production p95/p99 и 72-часовой executing
 canary ещё не аттестованы. До этого расширение остаётся закрытым; текущий mode off
 сохраняется при выпуске исправлений.
+
+## Финальная локальная верификация выпуска
+
+Целевой runtime-коммит: `1ebcc4f584b8d92f06ea39363e92ffd954127e94`.
+Публичный staged verification wrapper прошёл полный набор impact checks:
+
+| Проверка                  | Результат                                                              |
+| ------------------------- | ---------------------------------------------------------------------- |
+| Static / agent tools      | 661/661; lint и refactor guards прошли                                 |
+| Infrastructure            | 549/549; ShellCheck и topology/migration guards прошли                 |
+| Contracts                 | 342/342; экспорт и typecheck прошли                                    |
+| API                       | 661 suites; 14 599 тестов прошли, 237 тестов пропущены в общем прогоне |
+| Реальные PostgreSQL/Redis | 50/50 без пропусков                                                    |
+| Prisma                    | полный migrate deploy и проверка reviewed drift baseline прошли        |
+| Miniapp                   | 1 451/1 451; CSS/typecheck, production build и bundle budgets прошли   |
+| Visual smoke              | локальный preview, изображения и отчёт проверены                       |
+| Safety Desk               | 21/21; typecheck, production build/budgets и smoke прошли              |
+| Retention browser         | miniapp runner; Safety Desk 11 сценариев и 6 размеров экрана           |
+| Production dependencies   | `npm audit --omit=dev --audit-level=high`: 0 уязвимостей               |
+
+Специализированные интеграционные suites дополнительно проверяются выделенными GitHub CI lanes.
+Серверный выпуск выполняется только после зелёных exact-SHA `Required` и
+`Analyze JavaScript and TypeScript`, с CI-образами для всех трёх компонентов.
+Миграции additive; текущее `MESSAGE_RETENTION_MODE=off` сохраняется.
+
+Первый exact-SHA CI выявил несовместимость URL guard нового lifecycle harness
+со стандартным CI `schema=public`. Guard теперь принимает только этот известный
+параметр, удаляет его перед raw PostgreSQL connection и затем использует свою
+случайную private schema. Повтор публичного wrapper с CI-форматом URL: 50/50,
+без пропусков. Другие параметры и удалённые хосты остаются запрещены.
