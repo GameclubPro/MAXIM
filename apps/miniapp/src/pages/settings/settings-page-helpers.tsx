@@ -1,5 +1,7 @@
 import {
   DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES,
+  inferCommercialSliderPosition,
+  resolveCommercialSliderProfile,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
   type BotSpeechMediaImage,
@@ -42,6 +44,16 @@ import {
   ALLOWLIST_NAVIGATION_POLICY_DESCRIPTION as allowlistNavigationPolicyDescription,
   STRICT_NAVIGATION_POLICY_DESCRIPTION as strictNavigationPolicyDescription,
 } from './settings-link-allowlist';
+import {
+  COMMERCIAL_SENSITIVITY_MAX,
+  COMMERCIAL_SENSITIVITY_MIN,
+} from './settings-commercial-filter-controls';
+export {
+  COMMERCIAL_SENSITIVITY_MAX,
+  COMMERCIAL_SENSITIVITY_MIN,
+  TEXT_FILTERS_ADMIN_CONTACT_BUTTON_GROUP,
+  TEXT_FILTERS_BOT_BUTTON_GROUP,
+} from './settings-commercial-filter-controls';
 export { createDefaultApplySettingsTarget } from './settings-apply-target';
 export {
   MESSAGE_COUNT_LIMIT_MAX,
@@ -332,8 +344,6 @@ export const NIGHT_FORCE_CLOSE_MIN_HOURS = 0;
 export const NIGHT_FORCE_CLOSE_MAX_HOURS = 23;
 export const NIGHT_FORCE_CLOSE_MIN_DAYS = 0;
 export const NIGHT_FORCE_CLOSE_MAX_DAYS = 30;
-export const COMMERCIAL_SENSITIVITY_MIN = 0;
-export const COMMERCIAL_SENSITIVITY_MAX = 100;
 export const COMMERCIAL_SOFT_MAX = 24;
 export const COMMERCIAL_BALANCED_MAX = 69;
 export const BOT_MESSAGES_DELETE_DELAY_OPTIONS = DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES;
@@ -351,12 +361,6 @@ export const GREETING_BOT_BUTTON_GROUP = {
   enabledKey: 'greetingBotButtonEnabled',
   urlKey: 'greetingBotButtonUrl',
   textKey: 'greetingBotButtonText',
-} as const satisfies ChatSettingsButtonGroup;
-export const TEXT_FILTERS_BOT_BUTTON_GROUP = {
-  buttonsKey: 'textFiltersBotButtons',
-  enabledKey: 'textFiltersBotButtonEnabled',
-  urlKey: 'textFiltersBotButtonUrl',
-  textKey: 'textFiltersBotButtonText',
 } as const satisfies ChatSettingsButtonGroup;
 export const DUPLICATE_BOT_BUTTON_GROUP = {
   buttonsKey: 'duplicateBotButtons',
@@ -377,10 +381,6 @@ export const LINK_ADMIN_CONTACT_BUTTON_GROUP = {
 export const PROFANITY_ADMIN_CONTACT_BUTTON_GROUP = {
   enabledKey: 'profanityAdminContactButtonEnabled',
   urlKey: 'profanityAdminContactButtonUrl',
-} as const satisfies AdminContactButtonGroup;
-export const TEXT_FILTERS_ADMIN_CONTACT_BUTTON_GROUP = {
-  enabledKey: 'textFiltersAdminContactButtonEnabled',
-  urlKey: 'textFiltersAdminContactButtonUrl',
 } as const satisfies AdminContactButtonGroup;
 export const DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP = {
   enabledKey: 'duplicateAdminContactButtonEnabled',
@@ -582,6 +582,7 @@ export type BotMessageEditorKey =
   | 'requiredSubscription'
   | 'invitationAccess'
   | 'textFilters'
+  | 'profanity'
   | 'duplicate'
   | 'messageLimits'
   | 'stopWords'
@@ -593,6 +594,7 @@ export type WarnMessageEditorKey =
   | 'requiredSubscriptionWarn'
   | 'invitationAccessWarn'
   | 'textFiltersWarn'
+  | 'profanityWarn'
   | 'stopWordsWarn';
 export type SettingsSectionKey =
   | ApplySectionKey
@@ -1121,31 +1123,11 @@ export function resolveCommercialSensitivityConfig(value: number): {
   warnThreshold: number;
   deleteThreshold: number;
 } {
-  const safe = clampCommercialSlider(value);
-
-  if (safe <= COMMERCIAL_SOFT_MAX) {
-    const progress = safe / COMMERCIAL_SOFT_MAX;
-    return {
-      sensitivity: 'BALANCED',
-      warnThreshold: Math.round(60 + (54 - 60) * progress),
-      deleteThreshold: Math.round(82 + (74 - 82) * progress),
-    };
-  }
-
-  if (safe <= COMMERCIAL_BALANCED_MAX) {
-    const progress = (safe - (COMMERCIAL_SOFT_MAX + 1)) / (COMMERCIAL_BALANCED_MAX - 25);
-    return {
-      sensitivity: 'BALANCED',
-      warnThreshold: Math.round(53 + (45 - 53) * progress),
-      deleteThreshold: Math.round(73 + (65 - 73) * progress),
-    };
-  }
-
-  const progress = (safe - 70) / 30;
+  const profile = resolveCommercialSliderProfile(value);
   return {
-    sensitivity: 'STRICT',
-    warnThreshold: Math.round(44 + (38 - 44) * progress),
-    deleteThreshold: Math.round(63 + (55 - 63) * progress),
+    sensitivity: profile.commercialAdsSensitivity,
+    warnThreshold: profile.commercialAdsWarnThreshold,
+    deleteThreshold: profile.commercialAdsDeleteThreshold,
   };
 }
 
@@ -1160,21 +1142,8 @@ export function getCommercialSensitivityLabel(value: number): string {
   return 'Строго';
 }
 
-export function inferCommercialSensitivitySliderValue(settings: ChatSettings): number {
-  const warn = Math.max(10, Math.min(90, settings.commercialAdsWarnThreshold));
-
-  if (settings.commercialAdsSensitivity === 'STRICT') {
-    const progress = Math.max(0, Math.min(1, (44 - warn) / 6));
-    return Math.round(70 + progress * 30);
-  }
-
-  if (warn >= 54) {
-    const progress = Math.max(0, Math.min(1, (60 - warn) / 6));
-    return Math.round(progress * COMMERCIAL_SOFT_MAX);
-  }
-
-  const progress = Math.max(0, Math.min(1, (53 - warn) / 8));
-  return Math.round(25 + progress * (COMMERCIAL_BALANCED_MAX - 25));
+export function inferCommercialSensitivitySliderValue(settings: ChatSettings): number | null {
+  return inferCommercialSliderPosition(settings);
 }
 
 export function normalizeLegacyChatCommentScope(settings: ChatSettings): ChatSettings {

@@ -1,5 +1,7 @@
+import { SECTION_SETTING_KEYS } from '../../pages/settings-page-state';
 import {
   StopWordsMatcher,
+  duplicateDiagnosticsResponseSchema,
   normalizeStopWordsDomain,
   stopWordsPolicySchema,
   stopWordsPreviewRequestSchema,
@@ -30,6 +32,7 @@ import {
   resolveRequiredSubscriptionChannelResponseSchema,
   sendBroadcastTestResultSchema,
   updateChannelPostSignatureRequestSchema,
+  patchSettingsSectionRequestSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
   type BroadcastHandoffResponse,
@@ -170,6 +173,9 @@ export function buildChatSettingsScreen(
   return chatSettingsScreenResponseSchema.parse({
     messageRetention: getPreviewMessageRetention(state, chatId),
     settings: state.chatSettings,
+    commercialPhotoModerationMode: state.chatSettings.commercialAdsFilterEnabled
+      ? 'OBSERVE'
+      : 'OFF',
     reportsAvailable: state.reportsAvailable,
     duplicatePhotoModerationMode: 'FULL',
     duplicateMessageModerationMode: 'FULL',
@@ -456,7 +462,6 @@ export async function handleChatRequest(
     tail[0] === 'duplicate-diagnostics' &&
     (method === 'GET' || (tail[1] === 'recheck' && method === 'POST'))
   ) {
-    const { duplicateDiagnosticsResponseSchema } = await import('@maxim/contracts/settings');
     const now = Date.now();
     return duplicateDiagnosticsResponseSchema.parse({
       generatedAt: new Date(now).toISOString(),
@@ -542,12 +547,65 @@ export async function handleChatRequest(
     });
   }
 
+  if (tail[0] === 'settings' && tail[1] === 'section' && method === 'PATCH') {
+    const request = patchSettingsSectionRequestSchema.parse(parseJsonBody(init));
+    if (request.section === 'stopWords')
+      throw new ApiRequestError(400, '', 'Используйте редактор стоп-слов.');
+    if (request.expectedRevision !== state.chatSettings.settingsRevision) {
+      throw new ApiRequestError(
+        409,
+        JSON.stringify({ code: 'CHAT_SETTINGS_CONCURRENT_UPDATE' }),
+        'Настройки изменились. Черновик сохранён.',
+      );
+    }
+    const keys = new Set<string>(SECTION_SETTING_KEYS[request.section]);
+    const mediaKeys = [...keys].filter((key) => key.endsWith('MessageText'));
+    if (mediaKeys.length) keys.add('botSpeechMedia');
+    if (Object.keys(request.changes).some((key) => !keys.has(key)))
+      throw new Error('Изменения другого блока.');
+    const media = request.changes.botSpeechMedia as
+      | typeof state.chatSettings.botSpeechMedia
+      | undefined;
+    if (media && Object.keys(media).some((key) => !mediaKeys.includes(key)))
+      throw new ApiRequestError(400, '', 'Изображения другого блока.');
+    const mergedMedia = { ...state.chatSettings.botSpeechMedia };
+    if (media)
+      for (const key of mediaKeys) {
+        const field = key as keyof typeof mergedMedia;
+        if (media[field]) mergedMedia[field] = media[field];
+        else delete mergedMedia[field];
+      }
+    state.chatSettings = chatSettingsSchema.parse({
+      ...state.chatSettings,
+      ...request.changes,
+      botSpeechMedia: mergedMedia,
+      settingsRevision: new Date(
+        Math.max(Date.now(), Date.parse(request.expectedRevision) + 1),
+      ).toISOString(),
+    });
+    return cloneJson(state.chatSettings);
+  }
+
   if (tail[0] === 'settings' && tail.length === 1) {
     if (method === 'GET') {
       return cloneJson(state.chatSettings);
     }
 
     if (method === 'PUT') {
+      const request = parseJsonBody(init) as { settingsRevision?: string };
+      if (!request.settingsRevision)
+        throw new ApiRequestError(
+          428,
+          JSON.stringify({ code: 'CHAT_SETTINGS_REVISION_REQUIRED' }),
+          'Обновите экран настроек перед сохранением.',
+        );
+      if (request.settingsRevision !== state.chatSettings.settingsRevision) {
+        throw new ApiRequestError(
+          409,
+          JSON.stringify({ code: 'CHAT_SETTINGS_CONCURRENT_UPDATE' }),
+          'Настройки изменились.',
+        );
+      }
       state.chatSettings = chatSettingsSchema.parse({
         ...(parseJsonBody(init) as object),
         stopWordsPolicy: state.chatSettings.stopWordsPolicy,
@@ -555,6 +613,9 @@ export async function handleChatRequest(
         messageLimitsBlockedWords: state.chatSettings.messageLimitsBlockedWords,
         messageLimitsBlockedDomains: state.chatSettings.messageLimitsBlockedDomains,
         messageLimitsImageTextScanEnabled: state.chatSettings.messageLimitsImageTextScanEnabled,
+        settingsRevision: new Date(
+          Math.max(Date.now(), Date.parse(request.settingsRevision) + 1),
+        ).toISOString(),
       });
       return cloneJson(state.chatSettings);
     }

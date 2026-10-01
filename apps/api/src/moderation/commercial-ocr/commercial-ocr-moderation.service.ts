@@ -21,6 +21,7 @@ import { buildMessageScopedModerationActionClaimKey } from '../moderation-messag
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
 import { createAllowlistLinkMatcher } from '../rule-engine-link-detector';
+import { CommercialReviewService } from '../commercial/commercial-review.service';
 import {
   extractLogicalPhotoAlbumResult,
   type LogicalPhotoAlbum,
@@ -31,7 +32,11 @@ import {
   CommercialOcrAnalysisService,
   type CommercialOcrAnalysisRetryReason,
 } from './commercial-ocr-analysis.service';
-import { isCommercialOcrCyrillicOnlyDeleteDecision } from './commercial-ocr-decision-policy';
+import {
+  isCommercialOcrCyrillicOnlyDeleteDecision,
+  type CommercialOcrDecision,
+} from './commercial-ocr-decision-policy';
+import { COMMERCIAL_OCR_RUNTIME_SOURCE_SHA256 } from './commercial-ocr-detector-source.generated';
 import {
   buildCommercialOcrDeleteBinding,
   COMMERCIAL_OCR_DELETE_RULE_CODE,
@@ -44,13 +49,20 @@ import {
 } from './commercial-ocr-delete-guard.service';
 import {
   isSupportedCommercialOcrJobSchemaVersion,
+  COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
+  resolveCommercialOcrJobEventTimestamp,
   resolveCommercialOcrJobPurposes,
   type CommercialOcrJob,
 } from './commercial-ocr.queue';
 import { CommercialOcrMetricsService } from './commercial-ocr-metrics.service';
-import { CommercialOcrRuntimePolicyService } from './commercial-ocr-runtime-policy.service';
+import {
+  CommercialOcrRuntimePolicyService,
+  sameCommercialOcrEnforcementAuthority,
+  type CommercialOcrEnforcementAuthority,
+} from './commercial-ocr-runtime-policy.service';
 import { resolveCommercialOcrRuntimePolicy } from './commercial-ocr.runtime';
 import { fingerprintCommercialOcrSettingsProfile } from './commercial-ocr-settings-profile';
+import { extractCommercialOcrSourceCreatedAt } from './commercial-ocr-source-time';
 import {
   IMAGE_TEXT_STOP_LIST_POLICY_VERSION,
   type ImageTextStopListDecision,
@@ -128,6 +140,7 @@ export class CommercialOcrModerationService {
     private readonly configService: ConfigService,
     private readonly metrics: CommercialOcrMetricsService,
     @Optional() private readonly nativeOcr?: NativeTesseractOcrAdapter,
+    @Optional() private readonly commercialReview?: CommercialReviewService,
   ) {
     this.admissionTombstoneTtlMs = resolveCommercialOcrReservationTtlMs(configService);
   }
@@ -367,6 +380,8 @@ export class CommercialOcrModerationService {
       return { kind: 'completed' };
     }
 
+    await this.recordReviewObservation(job, jobId, source, analysis.decision);
+
     const imageTextStopListDecision =
       analysis.imageTextStopListDecision ?? ({ kind: 'no_action' } as const);
     if (imageTextStopListEnabled) {
@@ -435,13 +450,18 @@ export class CommercialOcrModerationService {
       return { kind: 'completed' };
     }
 
-    // FLAG: The environment policy is only a processing ceiling. A fresh shared control must
-    // authorize enforcement before the final MAX lookups and again immediately before commit.
+    // FLAG: Re-read explicit baseline/certified authority before MAX lookups and commit. Baseline
+    // also needs a verified live sandbox whose native identity matches this exact release.
     const actionRuntime = await this.runtimePolicy.resolveEffectivePolicy({
       chatId: job.chatId,
       settingsFingerprint: initialSettingsFingerprint,
     });
-    if (!actionRuntime.enforce || deadlineExpired(deadlineAtMs)) {
+    if (
+      !actionRuntime.enforce ||
+      !actionRuntime.authority ||
+      !this.isLiveBaselineAuthorityVerified(actionRuntime.authority) ||
+      deadlineExpired(deadlineAtMs)
+    ) {
       this.metrics.recordCounter(
         deadlineExpired(deadlineAtMs)
           ? 'enforcement.suppressed.deadline'
@@ -466,7 +486,15 @@ export class CommercialOcrModerationService {
       chatId: job.chatId,
       settingsFingerprint: fingerprintCommercialOcrSettingsProfile(authorization.context.settings),
     });
-    if (!preImmunityRuntime.enforce || deadlineExpired(deadlineAtMs)) {
+    if (
+      !preImmunityRuntime.enforce ||
+      !sameCommercialOcrEnforcementAuthority(
+        preImmunityRuntime.authority,
+        actionRuntime.authority,
+      ) ||
+      !this.isLiveBaselineAuthorityVerified(preImmunityRuntime.authority) ||
+      deadlineExpired(deadlineAtMs)
+    ) {
       this.metrics.recordCounter(
         deadlineExpired(deadlineAtMs)
           ? 'enforcement.suppressed.deadline'
@@ -515,15 +543,20 @@ export class CommercialOcrModerationService {
       chatId: job.chatId,
       settingsFingerprint: commitSettingsFingerprint,
     });
-    const controlExpiresAtMs = Date.parse(commitRuntime.controlExpiresAt ?? '');
+    const authority = commitRuntime.authority;
+    const controlExpiresAtMs =
+      authority?.kind === 'CERTIFIED' ? Date.parse(authority.controlExpiresAt) : null;
     const jobDeadlineExceeded = deadlineExpired(deadlineAtMs);
     const runtimeControlExpired =
-      Number.isFinite(controlExpiresAtMs) && controlExpiresAtMs <= Date.now();
+      controlExpiresAtMs !== null &&
+      Number.isFinite(controlExpiresAtMs) &&
+      controlExpiresAtMs <= Date.now();
     if (
       !commitRuntime.enforce ||
-      commitRuntime.controlRevision === null ||
-      commitRuntime.controlExpiresAt === null ||
-      !Number.isFinite(controlExpiresAtMs) ||
+      !authority ||
+      !sameCommercialOcrEnforcementAuthority(authority, actionRuntime.authority) ||
+      !this.isLiveBaselineAuthorityVerified(authority) ||
+      (controlExpiresAtMs !== null && !Number.isFinite(controlExpiresAtMs)) ||
       runtimeControlExpired ||
       jobDeadlineExceeded
     ) {
@@ -536,7 +569,8 @@ export class CommercialOcrModerationService {
       );
       return { kind: 'completed' };
     }
-    const deleteDeadlineAtMs = Math.min(deadlineAtMs, controlExpiresAtMs);
+    const deleteDeadlineAtMs =
+      controlExpiresAtMs === null ? deadlineAtMs : Math.min(deadlineAtMs, controlExpiresAtMs);
     const binding = buildCommercialOcrDeleteBinding({
       ocrVersion: job.ocrVersion,
       senderId: authorization.exactSource.senderId,
@@ -545,8 +579,7 @@ export class CommercialOcrModerationService {
       sourceCreatedAt: authorization.exactSource.sourceCreatedAt,
       expectedImageCount: job.imageCount,
       settings: commitContext.settings,
-      controlRevision: commitRuntime.controlRevision,
-      controlExpiresAt: commitRuntime.controlExpiresAt,
+      authority,
       ocrDeadlineAt: new Date(deleteDeadlineAtMs),
     });
     await this.persistDeleteAction({
@@ -562,6 +595,68 @@ export class CommercialOcrModerationService {
     return { kind: 'completed' };
   }
 
+  private isLiveBaselineAuthorityVerified(
+    authority: CommercialOcrEnforcementAuthority | null,
+  ): boolean {
+    if (!authority) return false;
+    if (authority.kind === 'CERTIFIED') return true;
+    const native = this.nativeOcr?.getRuntimeStatus().behaviorIdentity;
+    return (
+      this.nativeOcr?.isSandboxBoundaryVerified?.() === true &&
+      native?.verified === true &&
+      native.complete === true &&
+      native.fingerprintSha256 === authority.nativeBehaviorIdentitySha256 &&
+      native.runtimeFingerprintSha256 === authority.nativeBehaviorIdentitySha256
+    );
+  }
+
+  private async recordReviewObservation(
+    job: CommercialOcrJob,
+    jobId: string,
+    source: SourceEnvelope,
+    decision: CommercialOcrDecision,
+  ): Promise<void> {
+    if (!this.commercialReview || !resolveCommercialOcrJobPurposes(job).commercial) return;
+    const detections = decision.images.flatMap((image) => [
+      image.primary.detection,
+      image.verification?.detection ?? null,
+    ]);
+    const candidate = detections
+      .filter((detection) => detection !== null)
+      .sort((left, right) => right.confidenceScore - left.confidenceScore)[0];
+    if (!candidate) return;
+    try {
+      // FLAG: OCR-recognized text and contact/critical signatures never enter the review store.
+      // A pending observation is KEEP; only fresh confirmed deletion may produce a DELETE sample.
+      await this.commercialReview.recordCandidate({
+        chatId: job.chatId,
+        userId: source.album.senderId,
+        messageId: job.messageId,
+        text: source.album.caption,
+        score: candidate.confidenceScore,
+        actionBand: candidate.actionBand ?? 'NONE',
+        source: 'OCR',
+        decisionFingerprint: createHash('sha256')
+          .update(
+            JSON.stringify([
+              jobId,
+              COMMERCIAL_OCR_RUNTIME_SOURCE_SHA256,
+              decision.policyVersion,
+              decision.action,
+            ]),
+          )
+          .digest('hex'),
+        detectorVersion: `${job.ocrVersion}:${decision.policyVersion}`,
+        messageDisposition: 'KEEP',
+        requiredPolicyCohorts: candidate.requiredPolicyCohorts ?? [],
+        reviewPriority: candidate.reviewRecommended ? 70 : 50,
+        reasons: decision.reasonCodes,
+      });
+    } catch {
+      this.logger.warn('Commercial OCR review observation unavailable; moderation continues');
+    }
+  }
+
   private async loadSource(
     job: CommercialOcrJob,
     deadlineAtMs: number,
@@ -570,6 +665,7 @@ export class CommercialOcrModerationService {
     | { kind: 'defer'; delayMs: number }
     | { kind: 'terminal' }
   > {
+    let receiptUnavailable = false;
     const initialWebhookEvent = await this.prisma.webhookEvent
       .findUnique({
         where: { id: job.webhookEventId },
@@ -590,18 +686,25 @@ export class CommercialOcrModerationService {
         },
       })
       .catch(() => {
+        receiptUnavailable = true;
         this.logger.warn(
           'Commercial OCR webhook source lookup failed; enforcement remains fail-open',
         );
         return null;
       });
     if (!initialWebhookEvent) {
+      this.metrics.recordCounter(
+        receiptUnavailable ? 'source.receipt.unavailable' : 'source.receipt.missing',
+      );
       return { kind: 'terminal' };
     }
     let webhookEvent: CommercialOcrWebhookSource = initialWebhookEvent;
     if (webhookEvent.status === WebhookStatus.DUPLICATE) {
       const owner = await this.loadCompletedSemanticOwner(job, webhookEvent.normalizedPayload);
       if (owner.kind !== 'ready') {
+        if (owner.kind === 'terminal') {
+          this.metrics.recordCounter('source.receipt.owner_terminal');
+        }
         return owner.kind === 'defer' ? { kind: 'defer', delayMs: 5_000 } : { kind: 'terminal' };
       }
       webhookEvent = owner.value;
@@ -611,6 +714,7 @@ export class CommercialOcrModerationService {
       webhookEvent.nextEnqueueAt === null &&
       !isPendingWebhookTimeoutQuarantineMessage(webhookEvent.errorMessage)
     ) {
+      this.metrics.recordCounter('source.receipt.failed');
       return { kind: 'terminal' };
     }
     if (webhookEvent.status !== WebhookStatus.PROCESSED) {
@@ -619,23 +723,35 @@ export class CommercialOcrModerationService {
 
     const updateRecord = asRecord(webhookEvent.normalizedPayload);
     if (!updateRecord) {
+      this.metrics.recordCounter('source.receipt.invalid');
       return { kind: 'terminal' };
     }
     const update = updateRecord as unknown as MaxUpdate;
     const extraction = extractLogicalPhotoAlbumResult(update);
     if (extraction.kind !== 'complete') {
+      this.metrics.recordCounter('source.receipt.invalid');
       return { kind: 'terminal' };
     }
     const album = extraction.album;
     if (
       album.chatId !== job.chatId ||
       album.messageId !== job.messageId ||
-      album.createdAtMs !== Date.parse(job.sourceCreatedAt) ||
+      album.createdAtMs !== Date.parse(resolveCommercialOcrJobEventTimestamp(job)) ||
       album.images.length !== job.imageCount
     ) {
+      this.metrics.recordCounter('source.identity_mismatch');
       this.logger.warn(
         'Skipped commercial OCR job whose source identity does not match the webhook',
       );
+      return { kind: 'terminal' };
+    }
+
+    if (
+      job.schemaVersion === COMMERCIAL_OCR_JOB_SCHEMA_VERSION &&
+      extractCommercialOcrSourceCreatedAt(update.raw) !==
+        new Date(job.sourceCreatedAt).toISOString()
+    ) {
+      this.metrics.recordCounter('source.creation_time_mismatch');
       return { kind: 'terminal' };
     }
 
@@ -646,13 +762,23 @@ export class CommercialOcrModerationService {
       readString(update.botId) ??
       this.maxBotLinkService.getDefaultBotId();
     const exact = await this.loadExactSource(job, originBotId, deadlineAtMs);
-    if (!exact || exact.authorKind !== 'user' || !sameAlbumSource(album, exact.source, job)) {
+    if (!exact) {
+      return { kind: 'terminal' };
+    }
+    if (exact.authorKind !== 'user') {
+      this.metrics.recordCounter('source.exact.author_ineligible');
+      return { kind: 'terminal' };
+    }
+    if (!sameAlbumSource(album, exact.source, job)) {
+      this.metrics.recordCounter('source.exact.changed');
       return { kind: 'terminal' };
     }
     const refreshed = refreshAlbumDownloadUrls(album, exact.images);
     if (!refreshed) {
+      this.metrics.recordCounter('source.exact.changed');
       return { kind: 'terminal' };
     }
+    this.metrics.recordCounter('source.ready');
     return {
       kind: 'ready',
       value: {
@@ -1050,8 +1176,17 @@ export class CommercialOcrModerationService {
         bypassCache: true,
         timeoutMs,
       });
-      return row ? extractCommercialOcrExactMessageSource(row) : null;
+      if (!row) {
+        this.metrics.recordCounter('source.exact.absent');
+        return null;
+      }
+      const source = extractCommercialOcrExactMessageSource(row);
+      if (!source) {
+        this.metrics.recordCounter('source.exact.invalid');
+      }
+      return source;
     } catch {
+      this.metrics.recordCounter('source.exact.unavailable');
       this.logger.warn('Commercial OCR exact source lookup failed; enforcement remains fail-open');
       return null;
     }
@@ -1284,7 +1419,8 @@ function sameAlbumSource(
     source.chatId === job.chatId &&
     source.messageId === job.messageId &&
     source.senderId === album.senderId &&
-    source.sourceCreatedAt === new Date(album.createdAtMs).toISOString() &&
+    (job.schemaVersion === COMMERCIAL_OCR_JOB_SCHEMA_VERSION ||
+      source.sourceCreatedAt === new Date(album.createdAtMs).toISOString()) &&
     source.sourceCreatedAt === new Date(job.sourceCreatedAt).toISOString() &&
     source.caption === album.caption &&
     source.orderedPhotoIds.length === job.imageCount &&

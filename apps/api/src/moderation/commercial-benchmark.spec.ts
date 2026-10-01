@@ -677,6 +677,8 @@ describe('commercial deterministic benchmark', () => {
           expectedSubtype: item.expectedSubtype,
           actualSubtype: fullPathSignature.primarySubtype,
           actionBand: fullPathSignature.actionBand,
+          actionable: fullPathSignature.actionable,
+          messageDisposition: fullPathSignature.messageDisposition,
         });
       }
     }

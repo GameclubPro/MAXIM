@@ -1,3 +1,5 @@
+import { CommercialReviewService } from './commercial/commercial-review.service';
+import { collectCommercialCampaignContextFromRedis } from './commercial/commercial-campaign-context';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import {
   BadRequestException,
@@ -26,6 +28,7 @@ import {
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   normalizeDeleteBotMessagesDelayMinutes,
+  resolveCommercialSanctionAction,
   type MaxUpdate,
 } from '@maxim/contracts';
 import {
@@ -150,7 +153,10 @@ import {
 } from './moderation-violation-persistence';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.service';
-import { CommercialDeleteGuardService } from './commercial/commercial-delete-guard.service';
+import {
+  CommercialDeleteGuardService,
+  type CommercialSanctionPermit,
+} from './commercial/commercial-delete-guard.service';
 import { bindCommercialTextDeleteIntent } from './commercial/commercial-delete-binding';
 import {
   type ModerationDeleteExecutionResult,
@@ -166,7 +172,10 @@ import {
   hasActionableCompetingViolation,
   resolveCommercialOcrEnqueueCandidate,
 } from './commercial-ocr/commercial-ocr-enqueue-candidate';
-import { consumeLegacyParticipantModerationImmunity } from './participant-moderation-immunity.service';
+import {
+  consumeLegacyParticipantModerationImmunity,
+  ParticipantModerationImmunityService,
+} from './participant-moderation-immunity.service';
 import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
 import { MessageDuplicateService } from './message-duplicate/message-duplicate.service';
 import {
@@ -304,22 +313,7 @@ import {
   resolveNightModeTransitionBotId as resolveNightModeTransitionBotIdForModeration,
   resolveUnifiedBotRoute as resolveUnifiedBotRouteForModeration,
 } from './moderation-bot-routing.util';
-import {
-  COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-  COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC,
-  buildCommercialCampaignFingerprint,
-  buildCommercialCampaignDomainChatsKey,
-  buildCommercialCampaignHandleChatsKey,
-  buildCommercialCampaignLinkChatsKey,
-  buildCommercialCampaignPhoneChatsKey,
-  buildCommercialCampaignSenderChatsKey,
-  buildCommercialCampaignSenderNearTextChatsKey,
-  buildCommercialCampaignSenderTextChatsKey,
-  buildCommercialCampaignSenderVelocityChatsKey,
-  hasCommercialCampaignEvidence,
-  normalizeCommercialCampaignSenderId,
-  type CommercialCampaignContext,
-} from './commercial-campaign.util';
+import type { CommercialCampaignContext } from './commercial-campaign.util';
 import {
   GlobalSpammerIntelligenceService,
   type GlobalSpammerObservationSource,
@@ -572,6 +566,7 @@ type ApplySanctionActionParams = {
   noticeBeforeSend?: () => Promise<void>;
   botSpeechStyle: BotSpeechStyle | null;
   trackAsGlobalSpammer?: boolean;
+  deferGlobalSpammerTrackingUntilConfirmedBan?: boolean;
   persistModerationEvent: PersistModerationEvent;
   assertActiveLease?: () => void | Promise<void>;
   authorizeSanction?: () => Promise<boolean>;
@@ -795,6 +790,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly stopWordsDeleteGuard?: StopWordsDeleteGuardService,
     @Optional() private readonly commercialDeleteGuard?: CommercialDeleteGuardService,
     @Optional() private readonly reportSubmission?: ReportSubmissionService,
+    @Optional() private readonly participantImmunity?: ParticipantModerationImmunityService,
+    @Optional() private readonly commercialReview?: CommercialReviewService,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -1284,6 +1281,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   async consumePhotoDuplicateParticipantImmunity(params: {
     chatId: string;
     userId: string;
+    messageId: string;
     nightModeTimezone: string | null;
   }): Promise<boolean> {
     return this.consumeChatParticipantModerationImmunity(params);
@@ -2051,6 +2049,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               chatId,
               senderId,
               text,
+              eventTimestampMs: duplicateStateEventTimestampMs,
             })
           : null;
       if (settings.commercialAdsFilterEnabled) {
@@ -2254,6 +2253,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         (await this.consumeChatParticipantModerationImmunity({
           chatId,
           userId: senderId,
+          messageId,
           nightModeTimezone: settings.nightModeTimezone,
         }))
       ) {
@@ -2400,30 +2400,87 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const immunityConsumed = await this.consumeChatParticipantModerationImmunity({
-        chatId,
-        userId: senderId,
-        nightModeTimezone: settings.nightModeTimezone,
-      });
-      if (immunityConsumed) {
-        await enqueueCommercialOcr(false);
-        this.logger.debug(
-          {
-            chatId,
-            userId: senderId,
-          },
-          'Moderation bypassed for participant immunity',
+      const captureCommercialReview = (
+        violation: RuleViolation,
+        disposition: 'KEEP' | 'DELETE',
+      ) => {
+        if (!this.commercialReview) return;
+        const metadata = this.asRecord(violation.metadata) ?? {};
+        this.runGlobalSpammerSideEffect(
+          { chatId, userId: senderId, messageId, action: 'record-commercial-review' },
+          () =>
+            this.commercialReview!.recordCandidate({
+              chatId,
+              userId: senderId,
+              messageId,
+              text,
+              score: violation.score * 100,
+              actionBand: this.readString(metadata.actionBand) ?? 'REVIEW_ONLY',
+              source: 'TEXT',
+              decisionFingerprint: createHash('sha256')
+                .update(
+                  JSON.stringify([
+                    text,
+                    metadata.decisionVersion,
+                    metadata.commercialTextRuntimeRevision,
+                    metadata.actionBand,
+                    disposition,
+                  ]),
+                )
+                .digest('hex'),
+              detectorVersion: this.readString(metadata.decisionVersion) ?? 'unknown',
+              messageDisposition: disposition,
+              requiredPolicyCohorts: Array.isArray(metadata.requiredPolicyCohorts)
+                ? metadata.requiredPolicyCohorts.filter(
+                    (cohort): cohort is string => typeof cohort === 'string',
+                  )
+                : [],
+              reasons: Array.isArray(metadata.reasonCodes)
+                ? metadata.reasonCodes.filter(
+                    (reason): reason is string => typeof reason === 'string',
+                  )
+                : [],
+            }),
         );
-
+      };
+      for (const candidate of violations) {
+        if (
+          candidate.ruleCode === 'COMMERCIAL_AD' &&
+          !isCommercialMessageDeleteEligible(
+            this.readString(candidate.metadata?.actionBand),
+            candidate.metadata?.actionable === true,
+            candidate.metadata?.messageDisposition,
+          )
+        )
+          captureCommercialReview(candidate, 'KEEP');
+      }
+      const topViolation = selectTopModerationViolation(violations);
+      if (!topViolation) return;
+      const selectedMetadata = this.asRecord(topViolation.metadata);
+      const consumesImmunity =
+        topViolation.ruleCode !== 'COMMERCIAL_AD' ||
+        isCommercialMessageDeleteEligible(
+          this.readString(selectedMetadata?.actionBand),
+          this.readBoolean(selectedMetadata?.actionable) ??
+            !['ALLOW', 'REVIEW_ONLY'].includes(
+              this.readString(selectedMetadata?.actionBand) ?? 'ALLOW',
+            ),
+          selectedMetadata?.messageDisposition,
+        );
+      if (
+        consumesImmunity &&
+        (await this.consumeChatParticipantModerationImmunity({
+          chatId,
+          userId: senderId,
+          messageId,
+          nightModeTimezone: settings.nightModeTimezone,
+        }))
+      ) {
+        await enqueueCommercialOcr(false);
         return;
       }
-
       await enqueueCommercialOcr(commercialOcrActionEligible);
 
-      const topViolation = selectTopModerationViolation(violations);
-      if (!topViolation) {
-        return;
-      }
       if (
         topViolation.ruleCode === 'MESSAGE_BLOCKED_WORD' ||
         topViolation.ruleCode === 'MESSAGE_BLOCKED_DOMAIN'
@@ -2528,6 +2585,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const requiresConfirmedTextDelete =
         isProfanityViolation ||
         (topViolation.ruleCode === 'COMMERCIAL_AD' && !isCommercialReviewOnly);
+      let commercialSanctionPermit: CommercialSanctionPermit | null = null;
       const claimViolation = async () => {
         if (!isCommercialReviewOnly) {
           this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
@@ -2602,6 +2660,30 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ) {
             return;
           }
+          if (topViolation.ruleCode === 'COMMERCIAL_AD') {
+            captureCommercialReview(topViolation, 'DELETE');
+            commercialSanctionPermit =
+              this.commercialDeleteGuard?.createSanctionPermit({
+                chatId,
+                messageId,
+                subjectUserId: senderId,
+                botId: deleteResult.botId ?? update.botId,
+                deleted: deleteResult.deleted,
+                commercialVerified: deleteResult.commercialVerified === true,
+                evidence: [
+                  {
+                    reasonKey: violationDeleteIntent.reasonKey,
+                    score: topViolation.score,
+                    metadata: violationDeleteIntent.event?.metadata,
+                  },
+                ],
+              }) ?? null;
+            if (
+              !commercialSanctionPermit ||
+              !(await this.commercialDeleteGuard!.authorizeSanction(commercialSanctionPermit))
+            )
+              return;
+          }
           if (!(await claimViolation())) {
             this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'violation-dedup');
             return;
@@ -2635,7 +2717,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       this.markWebhookHotPathStage(hotPathProfile, 'violation-follow-up');
+      const authorizeCommercialSanction =
+        topViolation.ruleCode === 'COMMERCIAL_AD' && !isCommercialReviewOnly
+          ? async () =>
+              !!commercialSanctionPermit &&
+              (await this.commercialDeleteGuard!.authorizeSanction(commercialSanctionPermit))
+          : undefined;
       const runViolationFollowUp = async () => {
+        if (authorizeCommercialSanction && !(await authorizeCommercialSanction())) return;
         const linkMessageOptions =
           topViolation.ruleCode === 'LINK_BLOCKED'
             ? this.buildBotMessageOptions(
@@ -2674,10 +2763,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const textFilterMessageOptions = isTextFilterHit
           ? this.buildBotMessageOptions(
               chatId,
-              settings.textFiltersBotButtons,
-              settings.textFiltersBotButtonEnabled,
-              settings.textFiltersBotButtonUrl,
-              settings.textFiltersBotButtonText,
+              // FLAG: Commercial custom buttons never appear on independent profanity notices.
+              topViolation.ruleCode === 'PROFANITY' ? [] : settings.textFiltersBotButtons,
+              topViolation.ruleCode !== 'PROFANITY' && settings.textFiltersBotButtonEnabled,
+              topViolation.ruleCode === 'PROFANITY' ? '' : settings.textFiltersBotButtonUrl,
+              topViolation.ruleCode === 'PROFANITY' ? '' : settings.textFiltersBotButtonText,
               settings.rulesAttachViolationsEnabled,
               rulesPublishedUrl,
               rulesPublishedMessageId,
@@ -2741,6 +2831,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
             deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
             userFacing: action === SanctionAction.WARN,
+            // FLAG: Recheck after asynchronous contact/media work, immediately before send handoff.
+            beforeSend: authorizeCommercialSanction
+              ? async () => {
+                  if (!(await authorizeCommercialSanction()))
+                    throw new Error('Commercial sanction is no longer authorized');
+                }
+              : undefined,
           });
 
         const actionMuteDurationHours = this.resolveAutomaticMuteDurationHours(
@@ -3039,7 +3136,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   textFilterEscalationSettings.adminContactButtonUrl,
                 ),
                 textFilterMessageOptions ?? undefined,
-                'textFiltersBotMessageText',
+                topViolation.ruleCode === 'PROFANITY'
+                  ? 'profanityBotMessageText'
+                  : 'textFiltersBotMessageText',
               );
             } catch (error: unknown) {
               this.logger.warn(
@@ -3062,14 +3161,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                     userLabel,
                     topViolation.ruleCode,
                     textFilterEscalationSettings?.warnMessageText ??
-                      settings.textFiltersWarnMessageText,
+                      (topViolation.ruleCode === 'PROFANITY'
+                        ? settings.profanityWarnMessageText
+                        : settings.textFiltersWarnMessageText),
                     settings.botSpeechStyle,
                   ),
                   textFilterEscalationSettings?.adminContactButtonEnabled ?? false,
                   textFilterEscalationSettings?.adminContactButtonUrl ?? '',
                 ),
                 textFilterMessageOptions ?? undefined,
-                'textFiltersWarnMessageText',
+                topViolation.ruleCode === 'PROFANITY'
+                  ? 'profanityWarnMessageText'
+                  : 'textFiltersWarnMessageText',
               );
             } catch (error: unknown) {
               this.logger.warn(
@@ -3137,7 +3240,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         let sanctionEventPersisted = false;
         if (action !== SanctionAction.NONE) {
           sanctionEventPersisted = await this.applySanctionAction({
-            beforeSanctionMutation: stopWordsSanctionGuard,
+            authorizeSanction: authorizeCommercialSanction,
+            deferGlobalSpammerTrackingUntilConfirmedBan: authorizeCommercialSanction !== undefined,
+            noticeBeforeSend: authorizeCommercialSanction
+              ? async () => {
+                  if (!(await authorizeCommercialSanction()))
+                    throw new Error('Commercial sanction is no longer authorized');
+                }
+              : undefined,
+            beforeSanctionMutation: authorizeCommercialSanction
+              ? async () => {
+                  await stopWordsSanctionGuard?.();
+                  if (!(await authorizeCommercialSanction()))
+                    throw new Error('Commercial sanction is no longer authorized');
+                }
+              : stopWordsSanctionGuard,
             chatId,
             userId: senderId,
             action,
@@ -4437,7 +4554,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
-      fieldKey: 'textFiltersWarnMessageText',
+      fieldKey:
+        ruleCode === 'PROFANITY' ? 'profanityWarnMessageText' : 'textFiltersWarnMessageText',
       overrideText: templateText,
       replacements: {
         user: userLabel,
@@ -4880,6 +4998,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       noticeBeforeSend,
       botSpeechStyle,
       trackAsGlobalSpammer = true,
+      deferGlobalSpammerTrackingUntilConfirmedBan = false,
       persistModerationEvent,
     } = params;
     if (this.isKnownRuntimeBotUserId(userId)) {
@@ -4998,7 +5117,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
     let banResult: ModerationActionExecutionResult = { ok: false, botId: null };
     try {
-      if (trackAsGlobalSpammer) {
+      const trackBanReputation = async () => {
         await leaseGuard?.assertOwned();
         await this.upsertGlobalSpammerEntry({
           userId,
@@ -5009,7 +5128,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             source: 'sanction',
           },
         });
-      }
+      };
+      if (trackAsGlobalSpammer && !deferGlobalSpammerTrackingUntilConfirmedBan)
+        await trackBanReputation();
 
       try {
         banResult = await this.banMemberImmediatelyWithResult(
@@ -5049,6 +5170,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return false;
       }
       remoteActionConfirmed = true;
+      // FLAG: A rejected commercial BAN never creates reputation; only a guarded,
+      // confirmed remote mutation may contribute its sanction evidence.
+      if (trackAsGlobalSpammer && deferGlobalSpammerTrackingUntilConfirmedBan)
+        await trackBanReputation();
 
       await leaseGuard?.assertOwned();
       await this.rememberInactiveActiveMuteState(chatId, userId);
@@ -5564,41 +5689,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     textFilterViolationCount24h: number,
     settings: { warnEnabled: boolean; banEnabled: boolean; muteEnabled: boolean },
   ): SanctionAction {
-    const count = Number.isInteger(textFilterViolationCount24h)
-      ? Math.max(1, textFilterViolationCount24h)
-      : 1;
-
-    if (count >= 4) {
-      if (settings.banEnabled) {
-        return SanctionAction.BAN;
-      }
-      if (settings.muteEnabled) {
-        return SanctionAction.MUTE;
-      }
-      if (settings.warnEnabled) {
-        return SanctionAction.WARN;
-      }
-      return SanctionAction.NONE;
-    }
-
-    if (count === 3) {
-      if (settings.muteEnabled) {
-        return SanctionAction.MUTE;
-      }
-      if (settings.banEnabled) {
-        return SanctionAction.BAN;
-      }
-      if (settings.warnEnabled) {
-        return SanctionAction.WARN;
-      }
-      return SanctionAction.NONE;
-    }
-
-    if (count === 2 && settings.warnEnabled) {
-      return SanctionAction.WARN;
-    }
-
-    return SanctionAction.NONE;
+    return resolveCommercialSanctionAction(textFilterViolationCount24h, settings) as SanctionAction;
   }
 
   private resolveConfiguredEscalationAction(
@@ -5699,9 +5790,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (ruleCode === 'PROFANITY') {
       return {
         botMessageEnabled: settings.profanityBotMessageEnabled,
-        botMessageText: settings.textFiltersBotMessageText,
+        botMessageText: settings.profanityBotMessageText,
         warnEnabled: settings.profanityWarnEnabled,
-        warnMessageText: settings.textFiltersWarnMessageText,
+        warnMessageText: settings.profanityWarnMessageText,
         banEnabled: settings.profanityBanEnabled,
         muteEnabled: settings.profanityMuteEnabled,
         adminContactButtonEnabled: settings.profanityAdminContactButtonEnabled,
@@ -5770,7 +5861,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
-      fieldKey: 'textFiltersBotMessageText',
+      fieldKey: ruleCode === 'PROFANITY' ? 'profanityBotMessageText' : 'textFiltersBotMessageText',
       overrideText: templateText,
       replacements: {
         user: userLabel,
@@ -14577,8 +14668,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async consumeChatParticipantModerationImmunity(params: {
     chatId: string;
     userId: string;
+    messageId?: string;
     nightModeTimezone: string | null;
   }): Promise<boolean> {
+    if (params.messageId && this.participantImmunity) {
+      return (
+        (await this.participantImmunity.consumeForMessage({
+          ...params,
+          messageId: params.messageId,
+          scope: 'message-moderation:v2',
+        })) === 'granted'
+      );
+    }
     return consumeLegacyParticipantModerationImmunity(this.prisma, params);
   }
 
@@ -17897,161 +17998,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     senderId: string;
     text: string;
+    eventTimestampMs?: number;
   }): Promise<CommercialCampaignContext | null> {
-    const redisCounter = this.redisCounter;
-    if (!redisCounter) {
-      return null;
-    }
-
-    const normalizedSenderId = normalizeCommercialCampaignSenderId(params.senderId);
-    if (!normalizedSenderId) {
-      return null;
-    }
-
-    const fingerprint = buildCommercialCampaignFingerprint(params.text);
-
-    try {
-      const [
-        senderDistinctChatCount,
-        senderDistinctChatCount5m,
-        senderDistinctChatCount30m,
-        senderDistinctChatCount120m,
-        sameTextDistinctChatCount,
-        nearTextDistinctChatCount,
-        phoneChatCounts,
-        linkChatCounts,
-        domainChatCounts,
-        handleChatCounts,
-      ] = await Promise.all([
-        redisCounter
-          .addToSetWithTtl(
-            buildCommercialCampaignSenderChatsKey(normalizedSenderId),
-            params.chatId,
-            COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-          )
-          .then((result) => result.size),
-        redisCounter
-          .addToSetWithTtl(
-            buildCommercialCampaignSenderVelocityChatsKey(
-              normalizedSenderId,
-              COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[0],
-            ),
-            params.chatId,
-            COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[0],
-          )
-          .then((result) => result.size),
-        redisCounter
-          .addToSetWithTtl(
-            buildCommercialCampaignSenderVelocityChatsKey(
-              normalizedSenderId,
-              COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[1],
-            ),
-            params.chatId,
-            COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[1],
-          )
-          .then((result) => result.size),
-        redisCounter
-          .addToSetWithTtl(
-            buildCommercialCampaignSenderVelocityChatsKey(
-              normalizedSenderId,
-              COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[2],
-            ),
-            params.chatId,
-            COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[2],
-          )
-          .then((result) => result.size),
-        fingerprint.textHash
-          ? redisCounter
-              .addToSetWithTtl(
-                buildCommercialCampaignSenderTextChatsKey(normalizedSenderId, fingerprint.textHash),
-                params.chatId,
-                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-              )
-              .then((result) => result.size)
-          : Promise.resolve(0),
-        fingerprint.nearTextHash
-          ? redisCounter
-              .addToSetWithTtl(
-                buildCommercialCampaignSenderNearTextChatsKey(
-                  normalizedSenderId,
-                  fingerprint.nearTextHash,
-                ),
-                params.chatId,
-                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-              )
-              .then((result) => result.size)
-          : Promise.resolve(0),
-        Promise.all(
-          fingerprint.phones.map((phone) =>
-            redisCounter
-              .addToSetWithTtl(
-                buildCommercialCampaignPhoneChatsKey(phone),
-                params.chatId,
-                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-              )
-              .then((result) => result.size),
-          ),
-        ),
-        Promise.all(
-          fingerprint.links.map((link) =>
-            redisCounter
-              .addToSetWithTtl(
-                buildCommercialCampaignLinkChatsKey(link),
-                params.chatId,
-                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-              )
-              .then((result) => result.size),
-          ),
-        ),
-        Promise.all(
-          fingerprint.domains.map((domain) =>
-            redisCounter
-              .addToSetWithTtl(
-                buildCommercialCampaignDomainChatsKey(domain),
-                params.chatId,
-                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-              )
-              .then((result) => result.size),
-          ),
-        ),
-        Promise.all(
-          fingerprint.handles.map((handle) =>
-            redisCounter
-              .addToSetWithTtl(
-                buildCommercialCampaignHandleChatsKey(handle),
-                params.chatId,
-                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-              )
-              .then((result) => result.size),
-          ),
-        ),
-      ]);
-
-      const context: CommercialCampaignContext = {
-        senderDistinctChatCount,
-        sameTextDistinctChatCount,
-        repeatedPhoneDistinctChatCount: Math.max(0, ...phoneChatCounts),
-        repeatedLinkDistinctChatCount: Math.max(0, ...linkChatCounts),
-        nearTextDistinctChatCount,
-        repeatedDomainDistinctChatCount: Math.max(0, ...domainChatCounts),
-        repeatedHandleDistinctChatCount: Math.max(0, ...handleChatCounts),
-        senderDistinctChatCount5m,
-        senderDistinctChatCount30m,
-        senderDistinctChatCount120m,
-      };
-
-      return hasCommercialCampaignEvidence(context) ? context : null;
-    } catch (error) {
-      this.logger.warn(
-        {
-          chatId: params.chatId,
-          userId: params.senderId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Commercial campaign lookup failed; continuing without cross-chat signals',
-      );
-      return null;
-    }
+    return collectCommercialCampaignContextFromRedis(params, {
+      redisCounter: this.redisCounter,
+      onLookupError: (error) => {
+        this.logger.warn(
+          {
+            chatId: params.chatId,
+            userId: params.senderId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Commercial campaign lookup failed; continuing without cross-chat signals',
+        );
+      },
+    });
   }
 
   private isNightModeNoticeMessage(params: {

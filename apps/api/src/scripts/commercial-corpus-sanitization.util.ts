@@ -1,7 +1,8 @@
 import { replaceUrlsInText } from '../common/url-text.util';
 import { replaceCommercialPhoneLikeText } from '../moderation/commercial/commercial-phone';
 
-const NUMBER_SEPARATOR_CHARS = String.raw`\s()./\\‐‑‒–—―-`;
+// FLAG: Financial redaction cannot concatenate a phone and a price from another assertion.
+const NUMBER_SEPARATOR_CHARS = String.raw`\p{Zs}\t()./\\‐‑‒–—―-`;
 const EMAIL_ATOM_CHARS = String.raw`\p{L}\p{N}!#$%&'*+/=?^_\x60{|}~\x2d`;
 const EMAIL_PATTERN = new RegExp(
   String.raw`(?<![${EMAIL_ATOM_CHARS}.])[${EMAIL_ATOM_CHARS}]+(?:\.[${EMAIL_ATOM_CHARS}]+)*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+(?:xn--[a-z0-9-]{2,59}|\p{L}{2,63})(?![\p{L}\p{N}-])`,
@@ -78,7 +79,7 @@ export function sanitizeCommercialCorpusText(
   const withoutEmails = value.replace(EMAIL_PATTERN, '[email]');
   const withoutWebUrls = replaceUrlsInText(withoutEmails, '[url]');
   const withoutUrls = withoutWebUrls.replace(MAX_DEEP_LINK_PATTERN, '[url]');
-  const sanitized = replaceCommercialPhoneLikeText(redactFinancialNumbers(withoutUrls)).replace(
+  const sanitized = redactFinancialNumbers(replaceCommercialPhoneLikeText(withoutUrls)).replace(
     HANDLE_PATTERN,
     '@[handle]',
   );
@@ -93,6 +94,10 @@ export function isCommercialCorpusTextSanitized(value: string): boolean {
 export function hasResidualCommercialContactCandidate(value: string): boolean {
   return (
     /(?<!\d)(?:\+?[78])(?:(?:[\s().\u2010-\u2015/•|-]|\uFE0F|\u20E3)*\d){10}(?!\d)/u.test(value) ||
+    /(?<![\d+])\+[1-9](?:[\p{Zs}\t().\u2010-\u2015/•|-]*\d){6,14}(?!\d)/u.test(value) ||
+    /(?:телефон[а-яё-]*|тел\.?|контакт[а-яё-]*|для\s+связи|[\u260E\u{1F4DE}\u{1F4F1}\u{1F4F2}]\uFE0F?)[^\p{L}\p{N}]{0,24}\d(?:[\p{Zs}\t().\u2010-\u2015/•|-]*\d){9}(?!\d)/iu.test(
+      value,
+    ) ||
     /(?:https?:\/\/|max:\/\/|[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,})/iu.test(value)
   );
 }

@@ -779,8 +779,11 @@ export const chatSettingsSchema = z
       commercialAdsSensitivity: commercialAdsSensitivitySchema.default('BALANCED'),
       commercialAdsWarnThreshold: z.number().int().min(10).max(90).default(45),
       commercialAdsDeleteThreshold: z.number().int().min(20).max(100).default(65),
+      settingsRevision: z.string().datetime().optional(),
       profanityBotMessageEnabled: z.boolean().default(false),
+      profanityBotMessageText: botMessageTextSchema,
       profanityWarnEnabled: z.boolean().default(false),
+      profanityWarnMessageText: botMessageTextSchema,
       profanityBanEnabled: z.boolean().default(false),
       profanityMuteEnabled: z.boolean().default(false),
       profanityMuteDurationHours: autoMuteDurationHoursSchema,
@@ -1961,6 +1964,15 @@ export const updateSettingsRequestSchema = chatSettingsSchema.superRefine((setti
   }
 });
 
+export const patchSettingsSectionRequestSchema = z
+  .object({
+    section: applySettingsSectionSchema,
+    expectedRevision: z.string().datetime(),
+    changes: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+export type PatchSettingsSectionRequest = z.infer<typeof patchSettingsSectionRequestSchema>;
+
 export const addAdminRequestSchema = z.object({
   userId: z.string(),
 });
@@ -2667,6 +2679,7 @@ export const chatSettingsScreenResponseSchema = z.object({
   messageRetention: messageRetentionSummarySchema.optional(),
   settings: chatSettingsSchema,
   reportsAvailable: z.boolean().default(false),
+  commercialPhotoModerationMode: z.enum(['OFF', 'OBSERVE', 'FULL', 'UNKNOWN']).default('UNKNOWN'),
   duplicatePhotoModerationMode: dupe.duplicatePhotoModerationModeSchema.default('OBSERVE'),
   duplicateMessageModerationMode: z.enum(['OFF', 'OBSERVE', 'DELETE_ONLY', 'FULL']).default('OFF'),
   duplicatePhotoPolicyMatrix: dupe.duplicatePhotoPolicyMatrixSchema.optional(),

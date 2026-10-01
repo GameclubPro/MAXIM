@@ -13,6 +13,11 @@ import {
 } from './profanity/profanity-source-context';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { CommercialAdDetector } from './commercial';
+import {
+  CommercialTextRuntimePolicyService,
+  fingerprintCommercialTextSettingsProfile,
+  COMMERCIAL_TEXT_POLICY_COHORTS,
+} from './commercial/commercial-text-runtime-policy.service';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
 import {
   resolveExactProfanityVariantFamily,
@@ -1022,6 +1027,7 @@ export class RuleEngineService {
   constructor(
     private readonly redisCounter: RedisCounterService,
     @Optional() private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
+    @Optional() private readonly commercialTextPolicy?: CommercialTextRuntimePolicyService,
   ) {
     this.duplicateDetector = new RuleEngineDuplicateDetector(redisCounter, () => {
       void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
@@ -1122,11 +1128,16 @@ export class RuleEngineService {
     markRuleEngineDetectStage(profile, 'profanity');
 
     if (settings.commercialAdsFilterEnabled && !params.skipContentFiltersForReport) {
+      const authority = await this.commercialTextPolicy?.authority(
+        params.chatId,
+        fingerprintCommercialTextSettingsProfile(settings),
+      );
       const commercial = this.commercialAdDetector.detect({
         normalizedText: detectionContext.normalizedText,
         rawLoweredText: detectionContext.rawLoweredText,
         settings,
         commercialCampaignContext,
+        promotedPolicyCohorts: authority?.promotedPolicyCohorts ?? COMMERCIAL_TEXT_POLICY_COHORTS,
       });
       if (commercial) {
         violations.push({
@@ -1156,13 +1167,18 @@ export class RuleEngineService {
             policyFpRisk: commercial.policyFpRisk,
             evidenceTier: commercial.evidenceTier,
             subtype: commercial.subtype,
-            actionBand: commercial.actionBand,
-            messageDisposition: commercial.messageDisposition,
+            actionBand:
+              authority?.baselineAllowed === false ? 'REVIEW_ONLY' : commercial.actionBand,
+            messageDisposition:
+              authority?.baselineAllowed === false ? 'KEEP' : commercial.messageDisposition,
+            commercialTextRuntimeRevision: authority?.revision ?? 0,
+            commercialTextRuntimeMode: authority?.mode ?? 'baseline',
+            requiredPolicyCohorts: commercial.requiredPolicyCohorts ?? [],
             reviewPriority: commercial.reviewPriority,
             campaignStrength: commercial.campaignStrength,
             safeContextBucket: commercial.safeContextBucket,
-            actionable: commercial.actionable,
-            recordable: commercial.recordable,
+            actionable: authority?.baselineAllowed !== false && commercial.actionable,
+            recordable: authority?.baselineAllowed !== false && commercial.recordable,
             deleteSuppressed: commercial.deleteSuppressed,
             suppressionReasons: commercial.suppressionReasons,
             reasonCodes: commercial.reasonCodes,

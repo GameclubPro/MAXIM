@@ -88,6 +88,7 @@ const CLAIM_SELECT = {
   messageId: true,
   ruleCode: true,
   updateType: true,
+  createdAt: true,
 } as const;
 
 @Injectable()
@@ -101,10 +102,11 @@ export class ParticipantModerationImmunityService {
     scope: string;
     nightModeTimezone: string | null;
   }): Promise<ParticipantModerationImmunityResult> {
-    const expected = buildClaim(params);
     const now = new Date();
     const timezone = normalizeNightModeTimezone(params.nightModeTimezone ?? '');
     const dateKey = formatDateKeyInTimeZone(now, timezone);
+    // FLAG: Quota belongs to one logical message/day, never to a rule, mirror or edit.
+    const expected = buildClaim({ ...params, scope: `logical-message:v2:${dateKey}` });
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -114,7 +116,7 @@ export class ParticipantModerationImmunityService {
         });
         if (existing) {
           assertOwnedClaim(existing, expected);
-          return 'granted';
+          return this.checkCurrentGrant(tx, params, existing.createdAt);
         }
 
         const rows = await tx.$queryRaw<Array<{ granted: number }>>(Prisma.sql`
@@ -156,7 +158,7 @@ export class ParticipantModerationImmunityService {
           });
           if (concurrent) {
             assertOwnedClaim(concurrent, expected);
-            return 'granted';
+            return this.checkCurrentGrant(tx, params, concurrent.createdAt);
           }
           return 'not_granted';
         }
@@ -178,9 +180,41 @@ export class ParticipantModerationImmunityService {
         throw error;
       }
       assertOwnedClaim(existing, expected);
-      return 'granted';
+      return this.checkCurrentGrant(this.prisma, params, existing.createdAt);
     }
   }
+
+  private async checkCurrentGrant(
+    client: Pick<PrismaService, '$queryRaw'>,
+    params: { chatId: string; userId: string },
+    claimedAt: Date,
+  ): Promise<ParticipantModerationImmunityResult> {
+    // FLAG: An idempotent receipt is not perpetual authority. Expiry, revocation and a
+    // newly created grant cannot inherit an older receipt; current quota is not spent again.
+    const rows = await client.$queryRaw<Array<{ granted: number }>>(Prisma.sql`
+      SELECT 1 AS granted
+      FROM "chat_participant_moderation_immunities"
+      WHERE "chat_id" = ${params.chatId}
+        AND "user_id" = ${params.userId}
+        AND ("expires_at" IS NULL OR "expires_at" > CURRENT_TIMESTAMP)
+        AND "created_at" <= ${claimedAt}
+        AND ("daily_violation_limit" IS NOT NULL OR "expires_at" IS NULL)
+      LIMIT 1
+    `);
+    return rows.length > 0 ? 'granted' : 'not_granted';
+  }
+}
+
+export function buildParticipantModerationImmunityMessageKey(params: {
+  chatId: string;
+  userId: string;
+  messageId: string;
+  dateKey: string;
+}): string {
+  return buildParticipantModerationImmunityClaimKey({
+    ...params,
+    scope: `logical-message:v2:${params.dateKey}`,
+  });
 }
 
 export function buildParticipantModerationImmunityClaimKey(params: {

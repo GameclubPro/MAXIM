@@ -6,6 +6,7 @@ import {
 import { useMemo, useState } from 'react';
 import { DeleteDesk, DeleteRuntimeMetrics } from './delete-desk';
 import { ReviewDesk } from './review-desk';
+import { CommercialReviewDesk } from './commercial-review-desk';
 import { safetyDeskApiClient, type SafetyDeskDecisionAction } from './safety-desk-api-client';
 import {
   buildDeleteRuntimeSnapshot,
@@ -437,6 +438,14 @@ export function AdminApp() {
           >
             Удаления
           </button>
+          <button
+            className={view === 'commercial' ? 'is-active' : ''}
+            type="button"
+            aria-pressed={view === 'commercial'}
+            onClick={() => setView('commercial')}
+          >
+            Коммерческий фильтр
+          </button>
         </div>
         <div className="desk-metrics" aria-label="Сводка">
           {view === 'review' ? (
@@ -451,6 +460,8 @@ export function AdminApp() {
               <Metric label="Новые" value={String(supportMetrics.new)} tone="warning" />
               <Metric label="Закрытые" value={String(supportMetrics.closed)} tone="success" />
             </>
+          ) : view === 'commercial' ? (
+            <Metric label="Режим" value="Проверка качества" tone="neutral" />
           ) : (
             <DeleteRuntimeMetrics runtime={deleteRuntime} />
           )}
@@ -477,10 +488,12 @@ export function AdminApp() {
           >
             <Refresh width={18} height={18} />
           </button>
-          <button className="ghost-action" type="button" onClick={exportForMax}>
-            <Download width={18} height={18} />
-            Экспорт
-          </button>
+          {view !== 'commercial' && (
+            <button className="ghost-action" type="button" onClick={exportForMax}>
+              <Download width={18} height={18} />
+              Экспорт
+            </button>
+          )}
         </div>
       </header>
 
@@ -511,6 +524,8 @@ export function AdminApp() {
           onQueryChange={setSupportQuery}
           onSelect={setSupportSelectedId}
         />
+      ) : view === 'commercial' ? (
+        <CommercialReviewDesk accessCode={verifiedAccessCode} />
       ) : (
         <DeleteDesk
           busyAmbiguousSendId={busyAmbiguousSendId}

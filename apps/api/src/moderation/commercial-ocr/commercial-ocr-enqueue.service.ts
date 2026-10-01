@@ -58,6 +58,7 @@ export class CommercialOcrEnqueueService {
     chatId: string;
     messageId: string;
     sourceCreatedAt: string;
+    eventTimestamp: string;
     imageCount: number;
     actionEligible: boolean;
     commercialScanRequested?: boolean;
@@ -112,7 +113,7 @@ export class CommercialOcrEnqueueService {
     const reservation = await this.admissionStore.reserve({
       jobId,
       chatId: params.chatId,
-      sourceCreatedAt: params.sourceCreatedAt,
+      sourceCreatedAt: params.eventTimestamp,
       imageCount,
       actionEligible:
         requestedActionEligible &&
@@ -161,6 +162,7 @@ export class CommercialOcrEnqueueService {
           chatId: params.chatId,
           messageId: params.messageId,
           sourceCreatedAt: params.sourceCreatedAt,
+          eventTimestamp: params.eventTimestamp,
           imageCount,
           schemaVersion: COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
           ocrVersion,

@@ -4,7 +4,8 @@ import type { QueueJobEnvelope } from '../../common/queue-job-envelope';
 export const COMMERCIAL_OCR_QUEUE = 'commercial-image-ocr';
 export const COMMERCIAL_OCR_JOB_NAME = 'commercial-image-ocr-analysis';
 export const COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION = 1 as const;
-export const COMMERCIAL_OCR_JOB_SCHEMA_VERSION = 2 as const;
+export const COMMERCIAL_OCR_PURPOSE_JOB_SCHEMA_VERSION = 2 as const;
+export const COMMERCIAL_OCR_JOB_SCHEMA_VERSION = 3 as const;
 // FLAG: This behavior identity is image-owned. Production deploys export the target source value
 // only so older immutable images receive their own version during rollback; runtime config must not
 // change the version used by current enqueue, processing, cache, or delete-guard code.
@@ -28,9 +29,11 @@ export type CommercialOcrJob = QueueJobEnvelope<
     chatId: string;
     messageId: string;
     sourceCreatedAt: string;
+    eventTimestamp?: string;
     imageCount: number;
     schemaVersion:
       | typeof COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION
+      | typeof COMMERCIAL_OCR_PURPOSE_JOB_SCHEMA_VERSION
       | typeof COMMERCIAL_OCR_JOB_SCHEMA_VERSION;
     ocrVersion: string;
     actionEligible: boolean;
@@ -65,8 +68,9 @@ export function buildCommercialOcrJobId(params: {
     throw new Error('schemaVersion is invalid');
   }
 
-  // FLAG: Eligibility is absent from identity so a stricter replay targets the same job. Admission
-  // stores the absorbing eligibility latch that the worker must re-read before an action.
+  // FLAG: Eligibility and event time are absent from identity so mirrored events target the same
+  // immutable source and cannot extend an already queued deadline. Admission stores the absorbing
+  // eligibility latch that the worker must re-read before an action.
   const hash = createHash('sha256')
     .update(chatId)
     .update('\0')
@@ -77,7 +81,7 @@ export function buildCommercialOcrJobId(params: {
     .update(String(schemaVersion))
     .update('\0')
     .update(ocrVersion);
-  if (schemaVersion >= COMMERCIAL_OCR_JOB_SCHEMA_VERSION) {
+  if (schemaVersion >= COMMERCIAL_OCR_PURPOSE_JOB_SCHEMA_VERSION) {
     hash
       .update('\0')
       .update(params.commercialScanRequested === true ? 'commercial:1' : 'commercial:0')
@@ -96,15 +100,36 @@ export function normalizeImageTextScanRequested(value: unknown): boolean {
   return value === true;
 }
 
-export function isSupportedCommercialOcrJobSchemaVersion(value: unknown): value is 1 | 2 {
+export function isSupportedCommercialOcrJobSchemaVersion(value: unknown): value is 1 | 2 | 3 {
   return (
     value === COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION ||
+    value === COMMERCIAL_OCR_PURPOSE_JOB_SCHEMA_VERSION ||
     value === COMMERCIAL_OCR_JOB_SCHEMA_VERSION
   );
 }
 
+export function resolveCommercialOcrJobEventTimestamp(
+  job: Pick<CommercialOcrJob, 'schemaVersion' | 'sourceCreatedAt' | 'eventTimestamp'>,
+): string {
+  const timestamp =
+    job.schemaVersion === COMMERCIAL_OCR_JOB_SCHEMA_VERSION
+      ? job.eventTimestamp
+      : job.sourceCreatedAt;
+  if (
+    typeof timestamp !== 'string' ||
+    !Number.isSafeInteger(Date.parse(timestamp)) ||
+    Date.parse(timestamp) <= 0
+  ) {
+    throw new Error('Commercial OCR event timestamp is invalid');
+  }
+  return timestamp;
+}
+
 export function resolveCommercialOcrJobPurposes(
-  job: Pick<CommercialOcrJob, 'schemaVersion' | 'commercialScanRequested' | 'imageTextScanRequested'>,
+  job: Pick<
+    CommercialOcrJob,
+    'schemaVersion' | 'commercialScanRequested' | 'imageTextScanRequested'
+  >,
 ): Readonly<{ commercial: boolean; imageTextStopList: boolean }> {
   if (job.schemaVersion === COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION) {
     return { commercial: true, imageTextStopList: false };

@@ -1234,6 +1234,58 @@ describe('AdminSettingsService chat rules', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
+  it('rejects an old client GET revision before capability checks or any write', async () => {
+    const { legacyAdminService, prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({
+        updatedAt: new Date('2026-10-01T10:00:00.000Z'),
+      }),
+    });
+    await expect(
+      service.updateSettings('chat-1', user as never, {
+        ...chatSettingsSchema.parse({}),
+        settingsRevision: '2026-10-01T09:00:00.000Z',
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'CHAT_SETTINGS_CONCURRENT_UPDATE' }),
+    });
+    expect(prisma.chatSettings.updateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(legacyAdminService.assertChatSettingsBotCapabilities).not.toHaveBeenCalled();
+  });
+
+  it('returns the saved revision captured inside the write transaction', async () => {
+    const original = createPersistedChatSettings();
+    const savedRevision = '2026-10-01T10:00:00.000Z';
+    const { prisma, service } = createService({ currentSettings: original });
+    prisma.chatSettings.findUnique
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce({ updatedAt: new Date(savedRevision) })
+      .mockResolvedValueOnce({ ...original, updatedAt: new Date('2026-10-01T10:00:01.000Z') });
+    const result = await service.updateSettings('chat-1', user as never, {
+      ...chatSettingsSchema.parse({}),
+      settingsRevision: original.updatedAt.toISOString(),
+    });
+    expect(result.settingsRevision).toBe(savedRevision);
+    expect(findChatSettingsWritePayload(prisma)).not.toHaveProperty('settingsRevision');
+  });
+
+  it('returns a coherent fresh snapshot after a read normalization repair', async () => {
+    const stored = createPersistedChatSettings({
+      textFiltersAdminContactButtonUrl: 'example.com',
+      textFiltersAdminContactButtonEnabled: true,
+    });
+    const fresh = createPersistedChatSettings({
+      antiSpamEnabled: false,
+      updatedAt: new Date('2026-10-01T10:00:00.000Z'),
+    });
+    const { prisma, service } = createService({ persistedSettings: stored });
+    prisma.chatSettings.findUnique.mockResolvedValueOnce(fresh);
+    const result = await service.getSettings('chat-1', user as never);
+    expect(prisma.chatSettings.updateMany).toHaveBeenCalled();
+    expect(result.settingsRevision).toBe(fresh.updatedAt.toISOString());
+    expect(result.antiSpamEnabled).toBe(false);
+  });
+
   it('preserves Publik-owned chat comment settings on Major settings writes', async () => {
     const currentSettings = createPersistedChatSettings({
       commentsEnabled: true,

@@ -1,4 +1,5 @@
 import { InfoCircle } from 'iconoir-react';
+import { ApiRequestError } from '../lib/api-request-error';
 import { getStopWords, updateStopWords } from '../lib/api/stop-words-client';
 import { prepareStopWordsInput } from '../lib/stop-words-editor';
 import {
@@ -122,6 +123,7 @@ import {
   updateManagedBroadcast,
   updateRules,
   updateSettings,
+  patchSettingsSection,
 } from '../lib/api/chat-settings-client';
 import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
 import { getGlobalSpammerReviewMetrics } from '../lib/api/spammer-review-client';
@@ -229,6 +231,7 @@ import {
   hasSectionSettingChanges,
   mergeBotSpeechStyleSettings,
   mergeSectionSettings,
+  mergeSectionSettingsAfterSave,
   normalizeRequiredSubscriptionDraftSettings,
   normalizeSectionDraftSettings,
   serializeChatSettingsDraft,
@@ -570,6 +573,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [openMuteDurationKey, setOpenMuteDurationKey] = useState<AutoMuteDurationKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
+  const [settingsConflict, setSettingsConflict] = useState<{
+    section: ApplySectionKey;
+    saved: ChatSettings;
+    draft: ChatSettings;
+    viewingSaved: boolean;
+  } | null>(null);
   const [speechStylePanelOpen, setSpeechStylePanelOpen] = useState(false);
   const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
   const [expandedSections, setExpandedSections] =
@@ -1363,14 +1372,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         );
         return { ...payload, stopWordsPolicy: saved.policy, stopWordsRevision: saved.revision };
       }
-      return updateSettings(api, chatId ?? '', payload, { recheckBotCapabilities });
+      return patchSettingsSection(
+        api,
+        chatId ?? '',
+        section,
+        payload,
+        SECTION_SETTING_KEYS[section],
+        { recheckBotCapabilities },
+      );
     },
     onSuccess: (saved, variables) => {
+      setSettingsConflict(null);
       pendingPermissionRetryRef.current = null;
-      syncSavedSectionSettings(variables.section, saved);
+      syncSavedSectionSettings(variables.section, saved, variables.payload.settingsRevision);
       if (variables.section === 'stopWords') {
         setMessageLimitsBlockedWordsInput('');
         setMessageLimitsBlockedDomainsInput('');
+        void settingsScreenQuery.refetch();
       }
       pushToast({
         tone: 'success',
@@ -1379,6 +1397,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       maxNotify('success');
     },
     onError: async (error, variables) => {
+      if (error instanceof ApiRequestError && error.code === 'CHAT_SETTINGS_CONCURRENT_UPDATE') {
+        const fresh = await settingsScreenQuery.refetch();
+        if (fresh.data)
+          setSettingsConflict({
+            section: variables.section,
+            saved: fresh.data.settings,
+            draft: variables.payload,
+            viewingSaved: false,
+          });
+      }
       if (await handleSettingsPermissionError(error, variables.section, variables)) {
         maxNotify('error');
         return;
@@ -1525,6 +1553,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ? {
               ...current,
               rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
+              settingsRevision: saved.settingsRevision,
             }
           : saved,
       );
@@ -1537,6 +1566,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 settings: {
                   ...current.settings,
                   rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
+                  settingsRevision: saved.settingsRevision,
                 },
               }
             : current,
@@ -1659,7 +1689,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             stopWordsPolicy: savedStopWords.policy,
             stopWordsRevision: savedStopWords.revision,
           }
-        : await updateSettings(api, chatId, sourceSettings);
+        : await patchSettingsSection(
+            api,
+            chatId,
+            section,
+            sourceSettings,
+            SECTION_SETTING_KEYS[section],
+          );
       applyTargetSavedSourceRef.current = { section, settings: savedSourceSettings };
       const result = await applySettingsSectionToAll(
         api,
@@ -2343,10 +2379,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
-  function syncSavedSectionSettings(section: ApplySectionKey, saved: ChatSettings) {
+  function syncSavedSectionSettings(
+    section: ApplySectionKey,
+    saved: ChatSettings,
+    expectedRevision?: string,
+  ) {
     const normalizedSaved = normalizeRequiredSubscriptionDraftSettings(saved);
     setDraft((current) =>
-      current ? mergeSectionSettings(current, normalizedSaved, section) : normalizedSaved,
+      current
+        ? mergeSectionSettingsAfterSave(current, normalizedSaved, section, expectedRevision)
+        : normalizedSaved,
     );
     clearSectionErrors(section);
     queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
@@ -2355,11 +2397,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         current
           ? {
               ...current,
-              settings: mergeSectionSettings(
-                normalizeRequiredSubscriptionDraftSettings(current.settings),
-                normalizedSaved,
-                section,
-              ),
+              settings:
+                section === 'stopWords'
+                  ? mergeSectionSettings(
+                      normalizeRequiredSubscriptionDraftSettings(current.settings),
+                      normalizedSaved,
+                      section,
+                    )
+                  : normalizedSaved,
             }
           : current,
     );
@@ -4315,7 +4360,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? inferCommercialSensitivitySliderValue(draft)
     : 50;
   const commercialSensitivityLabel = getCommercialSensitivityLabel(
-    commercialSensitivitySliderValue,
+    commercialSensitivitySliderValue ?? 69,
   );
   const limitsRulesEnabledCount = [
     draft?.slowModeEnabled,
@@ -4394,7 +4439,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? `${profanityStagesEnabledCount}/4`
     : 'Выкл';
   const commercialFilterHeaderSummary = draft?.commercialAdsFilterEnabled
-    ? `Действий: ${textFiltersStagesEnabledCount} из 4 · ${commercialSensitivityLabel.toLowerCase()}`
+    ? `Удаление рекламы · ${commercialSensitivitySliderValue === null ? 'свои настройки' : commercialSensitivityLabel.toLowerCase()}`
     : 'Выключено';
   const commercialFilterCardStatus = draft?.commercialAdsFilterEnabled
     ? `${textFiltersStagesEnabledCount}/4`
@@ -5029,6 +5074,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     if (!chatId) {
       return;
     }
+    if (settingsConflict?.section === section && settingsConflict.viewingSaved) {
+      setSettingsConflict(null);
+      closeSection(section);
+      return;
+    }
 
     if (!isSectionDirty(section)) {
       closeSection(section);
@@ -5044,6 +5094,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       });
       return;
     }
+    if (settingsConflict?.section === section)
+      payload.settingsRevision = settingsConflict.saved.settingsRevision;
 
     try {
       await mutateSettingsAsync({ section, payload });
@@ -5141,7 +5193,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       saveLabel?: string;
     },
   ) {
-    if (!isSectionDirty(section)) {
+    if (!isSectionDirty(section) && settingsConflict?.section !== section) {
       return null;
     }
 
@@ -5154,6 +5206,33 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           savingSection={savingSection}
           isApplyingSectionToAll={isApplyingSectionToAll}
           applyingSection={applyingSection}
+          conflict={
+            settingsConflict?.section === section
+              ? {
+                  viewingSaved: settingsConflict.viewingSaved,
+                  onToggle: () => {
+                    setDraft((current) =>
+                      current
+                        ? {
+                            ...mergeSectionSettings(
+                              current,
+                              settingsConflict.viewingSaved
+                                ? settingsConflict.draft
+                                : settingsConflict.saved,
+                              section,
+                            ),
+                            settingsRevision: current.settingsRevision,
+                          }
+                        : current,
+                    );
+                    setSettingsConflict({
+                      ...settingsConflict,
+                      viewingSaved: !settingsConflict.viewingSaved,
+                    });
+                  },
+                }
+              : undefined
+          }
           onSaveSection={(targetSection) => void handleSaveSection(targetSection)}
         />
       </Suspense>
@@ -6652,7 +6731,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <div className="settings-native-toggle">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">1. Объяснение</span>
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">1. Объяснение</span>
+                                <EditToggleButton
+                                  label="Редактировать объяснение о нецензурной лексике"
+                                  onClick={() => toggleBotMessageEditor('profanity')}
+                                  disabled={!draft.profanityBotMessageEnabled}
+                                  isOpen={openBotEditorKey === 'profanity'}
+                                />
+                              </div>
 
                               <label
                                 className="settings-native-switch"
@@ -6673,13 +6760,34 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
+                            {draft.profanityBotMessageEnabled &&
+                            openBotEditorKey === 'profanity' ? (
+                              <LazyBotMessageEditor
+                                editorKey="profanity"
+                                {...botSpeechEditorProps!}
+                                botSpeechPreviewContext={botSpeechPreviewContext}
+                                value={draft.profanityBotMessageText}
+                                onChange={(value) =>
+                                  setFieldValue('profanityBotMessageText', value)
+                                }
+                                onReset={() => setFieldValue('profanityBotMessageText', '')}
+                                onClose={() => setOpenBotEditorKey(null)}
+                              />
+                            ) : null}
                           </div>
 
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">
-                                2. Предупреждение
-                              </span>
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">
+                                  2. Предупреждение
+                                </span>
+                                <EditToggleButton
+                                  label="Редактировать предупреждение о нецензурной лексике"
+                                  onClick={() => toggleWarnMessageEditor('profanityWarn')}
+                                  isOpen={openWarnEditorKey === 'profanityWarn'}
+                                />
+                              </div>
 
                               <label
                                 className="settings-native-switch"
@@ -6701,6 +6809,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
+                            {openWarnEditorKey === 'profanityWarn' ? (
+                              <LazyWarnMessageEditor
+                                editorKey="profanityWarn"
+                                {...botSpeechEditorProps!}
+                                botSpeechPreviewContext={botSpeechPreviewContext}
+                                value={draft.profanityWarnMessageText}
+                                onChange={(value) =>
+                                  setFieldValue('profanityWarnMessageText', value)
+                                }
+                                onReset={() => setFieldValue('profanityWarnMessageText', '')}
+                                onClose={() => setOpenWarnEditorKey(null)}
+                              />
+                            ) : null}
                           </div>
 
                           {renderMuteStageToggle({
@@ -6761,6 +6882,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               commercialFilterHeaderSummary={commercialFilterHeaderSummary}
               commercialSensitivityLabel={commercialSensitivityLabel}
               commercialSensitivitySliderValue={commercialSensitivitySliderValue}
+              commercialPhotoModerationMode={
+                settingsScreenQuery.data?.commercialPhotoModerationMode ?? 'UNKNOWN'
+              }
               discardSectionChanges={discardSectionChanges}
               draft={draft}
               expanded={expandedSections.commercialFilter}

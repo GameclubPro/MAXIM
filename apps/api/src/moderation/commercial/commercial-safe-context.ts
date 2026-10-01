@@ -4,6 +4,7 @@ import {
 } from './commercial-evidence';
 import {
   hasQualifiedSourceSideServiceOffer,
+  hasExplicitServiceBookingCard,
   hasUnattributedServiceResponse,
   resolveStandaloneEditorialQuoteContext,
   splitCommercialAssertions,
@@ -246,6 +247,8 @@ export function deriveCommercialSafeContextBucket(params: {
   const hasProfessionalPrivateSaleOverride =
     hasProfessionalLocalRetailOrder ||
     hasProfessionalServiceOffer ||
+    (hasDirectDealSignal &&
+      (hasQualifiedSourceSideServiceOffer(text) || hasExplicitServiceBookingCard(text))) ||
     hasProfessionalApparelRetailOverride ||
     (!hasExplicitPrivateSaleSignal &&
       matchedSignals.includes('goods-retail:bulk-crop-dispatch-offer')) ||

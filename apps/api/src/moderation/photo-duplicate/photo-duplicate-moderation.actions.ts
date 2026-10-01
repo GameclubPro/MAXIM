@@ -47,6 +47,7 @@ export type PhotoDuplicateModerationActions = {
   consumePhotoDuplicateParticipantImmunity(params: {
     chatId: string;
     userId: string;
+    messageId: string;
     nightModeTimezone: string | null;
   }): Promise<boolean>;
   claimPhotoDuplicateAction(params: {

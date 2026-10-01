@@ -305,10 +305,10 @@ const guardedFiles = [
   },
   {
     path: 'packages/contracts/src/core.ts',
-    maxLines: 2721,
+    maxLines: 2732,
     targetLines: 2500,
     reason:
-      'Core retains chat settings composition; this ceiling includes the focused photo-duplicate subpath integration, while new reusable schemas should continue moving to subpath exports.',
+      'Core retains chat settings composition; this ceiling includes separate profanity message fields and commercial photo availability alongside the focused photo-duplicate integration. Reusable commercial thresholds and sanction-ladder policy live in commercial-settings.ts; new reusable schemas should continue moving to subpath exports.',
   },
   {
     path: 'apps/api/src/admin/publication.service.ts',

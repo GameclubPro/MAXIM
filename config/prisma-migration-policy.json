@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
   "baselineThrough": "20261001190000_skip_exact_moderation_rollup_rewrites",
-  "baselineNamesSha256": "ffc3769c1d3f740bc87a47f89b7f85f993032588d9f5b7cbf784530bb4574bb1",
-  "baselineContentsSha256": "f9d58f7f744a2b3774168ad63a4ae1a045ec650059b454f54c0cc5793c2bcba5",
+  "baselineNamesSha256": "2910f3df3cf117737d357c7126f9f375ee0fd9ca39f19df8e854711914ed6789",
+  "baselineContentsSha256": "9c1f899648e6bc911800495d38ef20303de76f27a810d390083faa23a287b150",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -137,6 +137,9 @@
     },
     "20260902120000_add_publisher_auto_reply_matchers": {
       "reason": "Trigger uniqueness and lookup indexes are created on the new table in the same atomic migration as its bounded one-row-per-rule backfill. The redundant rule id/chat unique index is required immediately by the composite ownership foreign key, and the nullable delivery provenance index keeps trigger replacement from scanning the delivery ledger; these Publisher auto-reply tables have bounded recent product history."
+    },
+    "20261001123000_add_commercial_review_samples": {
+      "reason": "All indexes are created atomically on the new empty commercial review sample table. No existing history is scanned, backfilled, or indexed, and the isolated table never participates in global-spammer reputation."
     }
   }
 }

@@ -608,6 +608,23 @@ describe('validateEnv boolean parsing', () => {
     ).toThrow(/wildcard/u);
   });
 
+  it('accepts active baseline without certification while enforcing actionable admission bounds', () => {
+    expect(
+      validateEnv(createValidEnv({ COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline' }))
+        .COMMERCIAL_OCR_ROLLOUT_MODE,
+    ).toBe('baseline');
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline',
+          COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS: '3',
+          COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS: '3',
+          COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS: '4',
+        }),
+      ),
+    ).toThrow(/COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS/u);
+  });
+
   it('keeps commercial OCR off by default with bounded isolated worker resources', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.COMMERCIAL_OCR_ROLLOUT_MODE).toBe('off');

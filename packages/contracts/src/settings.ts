@@ -52,6 +52,8 @@ export {
   scheduleDomainRemovalRequestSchema,
   updateChatRulesRequestSchema,
   updateSettingsRequestSchema,
+  patchSettingsSectionRequestSchema,
+  type PatchSettingsSectionRequest,
   type ApplySectionTargetPreviewRequest,
   type ApplySectionTargetPreviewResponse,
   type ApplySectionToAllRequest,
@@ -138,6 +140,7 @@ export {
   type ParsedStoredAllowlistEntry,
 } from './settings-utils.js';
 export * from './duplicate-diagnostics.js';
+export * from './commercial-settings.js';
 export * from './stop-words.js';
 export * from './message-retention.js';
 export * from './stop-words-legacy-phrases.js';

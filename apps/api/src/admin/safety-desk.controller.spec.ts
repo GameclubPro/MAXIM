@@ -1,6 +1,23 @@
 import { SafetyDeskController } from './safety-desk.controller';
+import { SafetyDeskAdminGuard } from './safety-desk-admin.guard';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
 
 describe('SafetyDeskController night-mode runtime pagination', () => {
+  it('keeps commercial feedback under the closed owner guard and forwards the trusted actor', () => {
+    const commercial = {
+      getQueue: jest.fn().mockReturnValue({ items: [] }),
+      labelItem: jest.fn().mockReturnValue({}),
+    };
+    const controller = new SafetyDeskController({} as never, commercial as never);
+    expect(Reflect.getMetadata(GUARDS_METADATA, SafetyDeskController)).toContain(
+      SafetyDeskAdminGuard,
+    );
+    controller.getCommercialReview({ limit: '50', status: 'PENDING' });
+    expect(commercial.getQueue).toHaveBeenCalledWith({ limit: '50', status: 'PENDING' });
+    const body = { label: 'NOT_COMMERCIAL', expectedUpdatedAt: '2026-10-01T10:00:00.000Z' };
+    controller.labelCommercialReview('sample-1', 'trusted-owner', body);
+    expect(commercial.labelItem).toHaveBeenCalledWith('sample-1', 'trusted-owner', body);
+  });
   it.each([undefined, '0', '50', '1000'])(
     'passes the raw offset query value %p to the bounded service read',
     (offset) => {

@@ -1384,6 +1384,11 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
     maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
   fi
+  if [[ "${MAXIM_COMMERCIAL_OCR_BASELINE:-0}" == 1 ]]; then
+    # FLAG: Persist authority only after the release journal and all producers are quiescent.
+    maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+    node infra/scripts/commercial-ocr-rollout-state.mjs patch-rollout-env .env baseline >/dev/null
+  fi
 
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service_wave "action, publisher and retention" "api-action" "api-publisher" "api-message-retention"

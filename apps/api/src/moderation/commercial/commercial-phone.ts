@@ -1,4 +1,5 @@
-const NUMBER_SEPARATOR_CHARS = String.raw`\s()./\\‐‑‒–—―-`;
+// FLAG: A new assertion cannot extend a number; horizontal Unicode spaces retain phone formatting.
+const NUMBER_SEPARATOR_CHARS = String.raw`\p{Zs}\t()./\\‐‑‒–—―-`;
 const KEYCAP_MARK_PATTERN = String.raw`\uFE0F?\u20E3`;
 const EMOJI_PHONE_SEPARATOR_PATTERN = String.raw`\p{Extended_Pictographic}\uFE0F?`;
 const OBFUSCATED_PHONE_SEPARATOR_PATTERN = String.raw`(?:${KEYCAP_MARK_PATTERN}|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN})`;
@@ -7,7 +8,7 @@ const PHONE_DIGIT_PATTERN = String.raw`\d(?:${KEYCAP_MARK_PATTERN})?`;
 // FLAG: A new line or phone label separates contacts, not digits of one identifier.
 const ADJACENT_DIGIT_SEPARATOR_PATTERN = String.raw`(?:(?![\r\n\u260E\u{1F4DE}\u{1F4F1}\u{1F4F2}])(?:[${NUMBER_SEPARATOR_CHARS}]|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN}))*`;
 const INLINE_NUMBER_SEPARATOR_PATTERN = String.raw`(?:(?![\r\n])[${NUMBER_SEPARATOR_CHARS}])*`;
-const PHONE_CONTEXT_TERM = String.raw`(?:телефон(?:а|у|ом|ы)?|тел\.?|номер\s+телефона|(?:пишите?|звоните?|обращайтесь)\s+по\s+номер[у]?|звон(?:ить|ите|ок|ки)|контакт(?:ы|ный\s+номер)?|связь|для\s+связи|ватсап|whats?app|viber)`;
+const PHONE_CONTEXT_TERM = String.raw`(?:телефон(?:а|у|ом|ы)?|тел\.?|номер\s+телефона|(?:пишите?|звоните?|обращайтесь)\s+по\s+номер[у]?|звон(?:ить|ите|ок|ки)|контакт(?:ы|ный\s+номер)?|связь|для\s+связи|ватсап|whats?app|viber|[\u260E\u{1F4DE}\u{1F4F1}\u{1F4F2}]\uFE0F?)`;
 const NON_PHONE_IDENTIFIER_CONTEXT_TERM = String.raw`(?:заказ(?:а|у|ом|е|ы)?|код(?:а|у|ом|е|ы)?|номер\s+заказа|маркировк\p{L}*|парти\p{L}*|инн|огрн|снилс)`;
 const PHONE_ADJACENT_CONTEXT_SEPARATOR = String.raw`(?:[\s:;,#№()./\\‐‑‒–—―-]|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN})`;
 
@@ -57,8 +58,9 @@ const NON_PHONE_IDENTIFIER_CONTEXT_AFTER_PATTERN = new RegExp(
   'iu',
 );
 const COMPLETE_RUSSIAN_PHONE_SOURCE = String.raw`\+?[78](?:${KEYCAP_MARK_PATTERN})?(?:${PHONE_SEPARATOR_PATTERN}${PHONE_DIGIT_PATTERN}){10}`;
+const COMPLETE_LOCAL_PHONE_SOURCE = String.raw`\d(?:[${NUMBER_SEPARATOR_CHARS}]*\d){9}`;
 const CONTACT_PAIR_SEPARATOR_PATTERN = new RegExp(
-  String.raw`(?<![\d+])(${COMPLETE_RUSSIAN_PHONE_SOURCE})([ \t]*/[ \t]*)(?=${COMPLETE_RUSSIAN_PHONE_SOURCE}(?!\d))`,
+  String.raw`(?<![\d+])((?:${COMPLETE_RUSSIAN_PHONE_SOURCE}|${COMPLETE_LOCAL_PHONE_SOURCE}))([ \t]*/[ \t]*)(?=(?:${COMPLETE_RUSSIAN_PHONE_SOURCE}|${COMPLETE_LOCAL_PHONE_SOURCE})(?!\d))`,
   'gu',
 );
 const SCHEDULE_CONTACT_SEPARATOR_PATTERN = new RegExp(
@@ -113,7 +115,14 @@ function collectCommercialPhones(value: string, firstOnly: boolean): CommercialP
       const text = match[0];
       const end = start + text.length;
       if (contacts.some((contact) => start < contact.end && end > contact.start)) continue;
-      const hasContext = hasAdjacentPhoneContext(scanText, start, text.length);
+      const hasContext =
+        hasAdjacentPhoneContext(scanText, start, text.length) ||
+        contacts.some(
+          (contact) =>
+            contact.end <= start &&
+            start - contact.end <= 16 &&
+            /^[\p{Zs}\t]*[,/;\r\n][\p{Zs}\t\r\n]*$/u.test(scanText.slice(contact.end, start)),
+        );
       let accepted: boolean;
       if (pattern === INTERNATIONAL_PHONE_PATTERN) {
         accepted = true;

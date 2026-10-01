@@ -1,6 +1,6 @@
 import type { ConfigService } from '@nestjs/config';
 
-export const COMMERCIAL_OCR_ROLLOUT_MODES = ['off', 'shadow', 'canary', 'on'] as const;
+export const COMMERCIAL_OCR_ROLLOUT_MODES = ['off', 'shadow', 'baseline', 'canary', 'on'] as const;
 
 export type CommercialOcrRolloutMode = (typeof COMMERCIAL_OCR_ROLLOUT_MODES)[number];
 
@@ -30,7 +30,7 @@ export function resolveCommercialOcrRuntimePolicy(params: {
   if (mode === 'shadow') {
     return { mode, process: true, enforce: false };
   }
-  if (mode === 'on') {
+  if (mode === 'on' || mode === 'baseline') {
     return { mode, process: true, enforce: true };
   }
 

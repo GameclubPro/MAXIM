@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import { extractUrlsFromText, stripUrlsFromText } from '../common/url-text.util';
 import { parseCommercialPhones } from './commercial/commercial-phone';
+import {
+  buildCommercialCampaignSlidingSenderVelocityChatsKey,
+  InMemoryCommercialCampaignSlidingWindow,
+} from './commercial/commercial-campaign-sliding';
 
 const COMMERCIAL_CAMPAIGN_KEY_PREFIX = 'commercial-campaign:v1';
 const COMMERCIAL_CAMPAIGN_PHONE_PATTERN =
@@ -40,6 +44,9 @@ export type CommercialCampaignContext = {
   senderDistinctChatCount5m?: number;
   senderDistinctChatCount30m?: number;
   senderDistinctChatCount120m?: number;
+  shadowSlidingSenderDistinctChatCount5m?: number;
+  shadowSlidingSenderDistinctChatCount30m?: number;
+  shadowSlidingSenderDistinctChatCount120m?: number;
 };
 
 type InMemoryExpiringSet = {
@@ -316,11 +323,12 @@ export function buildCommercialCampaignSenderVelocityChatsKey(
 export class InMemoryCommercialCampaignTracker {
   private readonly sets = new Map<string, InMemoryExpiringSet>();
   private readonly expiryQueues = new Map<number, InMemoryExpiryQueue>();
+  private readonly slidingWindow = new InMemoryCommercialCampaignSlidingWindow();
 
   constructor(private readonly ttlSec = COMMERCIAL_CAMPAIGN_WINDOW_SEC) {}
 
   get retainedKeyCount(): number {
-    return this.sets.size;
+    return this.sets.size + this.slidingWindow.retainedKeyCount;
   }
 
   track(params: {
@@ -368,6 +376,19 @@ export class InMemoryCommercialCampaignTracker {
       params.chatId,
       createdAtMs,
       COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[2],
+    );
+    const slidingVelocityCounts = COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC.map(
+      (windowSeconds) =>
+        this.slidingWindow.observe({
+          key: buildCommercialCampaignSlidingSenderVelocityChatsKey(
+            normalizedSenderId,
+            windowSeconds,
+          ),
+          chatId: params.chatId,
+          eventTimestampMs: createdAtMs,
+          nowMs: createdAtMs,
+          windowSeconds,
+        }).size,
     );
     const sameTextDistinctChatCount = fingerprint.textHash
       ? this.addToSetWithTtl(
@@ -442,6 +463,9 @@ export class InMemoryCommercialCampaignTracker {
       senderDistinctChatCount5m,
       senderDistinctChatCount30m,
       senderDistinctChatCount120m,
+      shadowSlidingSenderDistinctChatCount5m: slidingVelocityCounts[0],
+      shadowSlidingSenderDistinctChatCount30m: slidingVelocityCounts[1],
+      shadowSlidingSenderDistinctChatCount120m: slidingVelocityCounts[2],
     };
   }
 

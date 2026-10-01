@@ -20,14 +20,18 @@ const certifiedSettingsFingerprint = 'a'.repeat(64);
 const certificationSha256 = 'b'.repeat(64);
 const certificationExpiresAt = new Date(now + 24 * 60 * 60_000).toISOString();
 const behaviorIdentitySha256 = 'd'.repeat(64);
-const approvalPublicKeyBase64 = generateKeyPairSync('ed25519').publicKey.export({
-  type: 'spki',
-  format: 'der',
-}).toString('base64');
-const rotatedApprovalPublicKeyBase64 = generateKeyPairSync('ed25519').publicKey.export({
-  type: 'spki',
-  format: 'der',
-}).toString('base64');
+const approvalPublicKeyBase64 = generateKeyPairSync('ed25519')
+  .publicKey.export({
+    type: 'spki',
+    format: 'der',
+  })
+  .toString('base64');
+const rotatedApprovalPublicKeyBase64 = generateKeyPairSync('ed25519')
+  .publicKey.export({
+    type: 'spki',
+    format: 'der',
+  })
+  .toString('base64');
 const approvalKeyIdSha256 = resolveCommercialOcrApprovalKeyIdSha256(approvalPublicKeyBase64)!;
 
 function control(
@@ -72,6 +76,10 @@ function buildService(
     configurable: true,
     value: behaviorIdentitySha256,
   });
+  Object.defineProperty(service, 'nativeBehaviorIdentitySha256', {
+    configurable: true,
+    value: 'b'.repeat(64),
+  });
   (service as any).redis.disconnect();
   return service;
 }
@@ -93,6 +101,63 @@ describe('CommercialOcrRuntimePolicyService', () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+  });
+
+  it('authorizes a release-bound baseline without a signing key or Redis control', async () => {
+    const service = buildService({
+      REDIS_URL: 'redis://127.0.0.1:6379',
+      COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline',
+    });
+    const controlRead = jest
+      .spyOn(service, 'getControlSnapshot')
+      .mockRejectedValue(new Error('Redis unavailable'));
+    await expect(service.resolveEffectivePolicy(policyInput())).resolves.toEqual({
+      mode: 'baseline',
+      process: true,
+      enforce: true,
+      controlRevision: null,
+      controlExpiresAt: null,
+      enforcementAuthority: 'authorized',
+      authority: {
+        kind: 'BASELINE',
+        behaviorIdentitySha256,
+        nativeBehaviorIdentitySha256: 'b'.repeat(64),
+        settingsFingerprint: certifiedSettingsFingerprint,
+      },
+    });
+    expect(controlRead).not.toHaveBeenCalled();
+  });
+
+  it.each(['behaviorIdentitySha256', 'nativeBehaviorIdentitySha256'])(
+    'revokes baseline when the expected production %s is incomplete',
+    async (field) => {
+      const service = buildService({
+        REDIS_URL: 'redis://127.0.0.1:6379',
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline',
+      });
+      Object.defineProperty(service, field, { configurable: true, value: null });
+      await expect(service.resolveEffectivePolicy(policyInput())).resolves.toMatchObject({
+        enforce: false,
+        authority: null,
+      });
+    },
+  );
+
+  it('does not admit baseline into signed controls or let certified mode inherit baseline authorization', async () => {
+    expect(
+      parseCommercialOcrRuntimeControl(JSON.stringify({ ...control(), mode: 'baseline' })),
+    ).toBeNull();
+    const service = buildService({
+      REDIS_URL: 'redis://127.0.0.1:6379',
+      COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline',
+      COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64: approvalPublicKeyBase64,
+    });
+    expect(() => service.previewSetControl({ expectedRevision: null, control: control() })).toThrow(
+      /baseline/u,
+    );
+    await expect(
+      service.resolveEffectivePolicy(policyInput('chat-1', 'invalid')),
+    ).resolves.toMatchObject({ enforce: false, authority: null });
   });
 
   it('uses bounded Redis operations without reconnect resends', () => {
@@ -262,6 +327,7 @@ describe('CommercialOcrRuntimePolicyService', () => {
       controlRevision: null,
       controlExpiresAt: null,
       enforcementAuthority: 'revoked',
+      authority: null,
     });
   });
 
@@ -323,6 +389,7 @@ describe('CommercialOcrRuntimePolicyService', () => {
       enforce: false,
       controlRevision: 1,
       enforcementAuthority: 'revoked',
+      authority: null,
     });
   });
 
@@ -342,6 +409,7 @@ describe('CommercialOcrRuntimePolicyService', () => {
       enforce: false,
       controlRevision: 1,
       enforcementAuthority: 'revoked',
+      authority: null,
     });
     await expect(
       service.resolveEffectivePolicy(policyInput('chat-1', 'invalid')),
@@ -353,8 +421,7 @@ describe('CommercialOcrRuntimePolicyService', () => {
       REDIS_URL: 'redis://127.0.0.1:6379',
       COMMERCIAL_OCR_ROLLOUT_MODE: 'canary',
       COMMERCIAL_OCR_CANARY_CHAT_IDS: 'chat-1,chat-2',
-      COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64:
-        rotatedApprovalPublicKeyBase64,
+      COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64: rotatedApprovalPublicKeyBase64,
     });
     jest.spyOn(service, 'getControlSnapshot').mockResolvedValue({
       kind: 'active',
@@ -367,6 +434,7 @@ describe('CommercialOcrRuntimePolicyService', () => {
       enforce: false,
       controlRevision: 1,
       enforcementAuthority: 'revoked',
+      authority: null,
     });
     expect(() => service.previewSetControl({ expectedRevision: null, control: control() })).toThrow(
       /approval key/u,
@@ -386,6 +454,7 @@ describe('CommercialOcrRuntimePolicyService', () => {
       enforce: false,
       controlRevision: 1,
       enforcementAuthority: 'revoked',
+      authority: null,
     });
     expect(() =>
       service.previewSetControl({
@@ -411,10 +480,11 @@ describe('CommercialOcrRuntimePolicyService', () => {
       mode: 'shadow',
       enforce: false,
       enforcementAuthority: 'revoked',
+      authority: null,
     });
-    expect(() =>
-      service.previewSetControl({ expectedRevision: null, control: control() }),
-    ).toThrow(/behavior identity/u);
+    expect(() => service.previewSetControl({ expectedRevision: null, control: control() })).toThrow(
+      /behavior identity/u,
+    );
   });
 
   it('does not require Redis for env shadow processing', async () => {
@@ -431,6 +501,7 @@ describe('CommercialOcrRuntimePolicyService', () => {
       controlRevision: null,
       controlExpiresAt: null,
       enforcementAuthority: 'revoked',
+      authority: null,
     });
     expect(read).not.toHaveBeenCalled();
   });

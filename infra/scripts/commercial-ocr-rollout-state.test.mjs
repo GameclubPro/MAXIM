@@ -241,6 +241,37 @@ test('builds and verifies matching shadow and canary runtime environments', () =
   assert.throws(() => buildCommercialOcrRolloutEnvUpdates('canary'), /chat cohort is invalid/iu);
 });
 
+test('baseline clears experimental chat scope and preserves unrelated dotenv values', () => {
+  const updates = buildCommercialOcrRolloutEnvUpdates('baseline');
+  assert.deepEqual(updates, {
+    COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline',
+    COMMERCIAL_OCR_CANARY_CHAT_IDS: '',
+  });
+  const patched = patchCommercialOcrRolloutEnv(
+    'KEEP=unchanged\nCOMMERCIAL_OCR_ROLLOUT_MODE=canary\nCOMMERCIAL_OCR_CANARY_CHAT_IDS=-12,42\n',
+    updates,
+  );
+  assert.equal(
+    patched,
+    'KEEP=unchanged\nCOMMERCIAL_OCR_ROLLOUT_MODE=baseline\nCOMMERCIAL_OCR_CANARY_CHAT_IDS=\n',
+  );
+  assert.equal(
+    verifyCommercialOcrRuntimeEnv(
+      {
+        ...updates,
+        APP_ROLE: 'action',
+        APP_SERVICE_NAME: 'api-action',
+        COMMERCIAL_OCR_VERSION: 'tesseract-rus-eng-v2',
+      },
+      'baseline',
+      'tesseract-rus-eng-v2',
+      'api-action',
+    ),
+    true,
+  );
+  assert.throws(() => buildCommercialOcrRolloutEnvUpdates('baseline', cohort()), /mode/u);
+});
+
 test('verifies the exact APP_SERVICE_NAME and APP_ROLE identity for all 13 production roles', () => {
   const shadow = buildCommercialOcrRolloutEnvUpdates('shadow');
   const identities = [

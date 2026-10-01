@@ -141,6 +141,46 @@ describe('commercial detector evidence harness', () => {
     expect(aggregate.qualityCohorts).toEqual(evidence().qualityCohorts);
   });
 
+  it('counts WARN cleanup and respects explicit KEEP, non-actionability, and invalid dispositions', () => {
+    const quality = summarizeCommercialQualityCohorts([
+      {
+        cohorts: [],
+        expected: 'NEGATIVE',
+        detected: true,
+        actionBand: 'WARN',
+        actionable: true,
+        messageDisposition: 'DELETE',
+      },
+      {
+        cohorts: [],
+        expected: 'NEGATIVE',
+        detected: true,
+        actionBand: 'WARN',
+        actionable: true,
+        messageDisposition: 'KEEP',
+      },
+      {
+        cohorts: [],
+        expected: 'NEGATIVE',
+        detected: true,
+        actionBand: 'DELETE',
+        actionable: false,
+        messageDisposition: 'DELETE',
+      },
+      {
+        cohorts: [],
+        expected: 'NEGATIVE',
+        detected: true,
+        actionBand: 'DELETE',
+        actionable: true,
+        messageDisposition: 'unknown',
+      },
+    ]);
+    expect(quality.all.unexpectedDeletes).toBe(1);
+    expect(quality.all.falsePositiveRate).toBe(1);
+    expect(quality.all.cleanupFalsePositiveRate).toBe(0.25);
+  });
+
   it('fails closed when evidence counts or attempt cohort shapes disagree', () => {
     expect(() =>
       parseCommercialDetectorBenchmarkEvidence({

@@ -520,6 +520,7 @@ model Chat {
   karavanStorefrontAllowlistEntries KaravanStorefrontAllowlistEntry[]
   invitationAccessProgress          ChatInvitationAccessProgress[]
   spammerObservations               SpammerObservation[]
+  commercialReviewSamples           CommercialReviewSample[]
   globalSpammerCandidateChats       GlobalSpammerCandidateChat[]
 
   @@index([botId], map: "chats_bot_id_idx")
@@ -1279,6 +1280,8 @@ model ChatSettings {
   commercialAdsSensitivity                      CommercialAdsSensitivity  @default(BALANCED) @map("commercial_ads_sensitivity")
   commercialAdsWarnThreshold                    Int                       @default(45) @map("commercial_ads_warn_threshold")
   commercialAdsDeleteThreshold                  Int                       @default(65) @map("commercial_ads_delete_threshold")
+  profanityBotMessageText                       String                    @default("") @map("profanity_bot_message_text")
+  profanityWarnMessageText                      String                    @default("") @map("profanity_warn_message_text")
   profanityBotMessageEnabled                    Boolean                   @default(false) @map("profanity_bot_message_enabled")
   profanityWarnEnabled                          Boolean                   @default(false) @map("profanity_warn_enabled")
   profanityBanEnabled                           Boolean                   @default(false) @map("profanity_ban_enabled")
@@ -1898,6 +1901,31 @@ model GlobalSpammerCandidateChat {
   @@index([chatId, lastDetectedAt(sort: Desc)], map: "global_spammer_candidate_chats_chat_id_last_detected_at_idx")
   @@index([chatId, candidateUserId], map: "global_spammer_candidate_chats_chat_candidate_idx")
   @@map("global_spammer_candidate_chats")
+}
+
+// FLAG: Quality labels are isolated from spammer intelligence and never affect reputation.
+model CommercialReviewSample {
+  id             String   @id @default(cuid())
+  chatId         String   @map("chat_id")
+  userId         String   @map("user_id")
+  messageId      String   @map("message_id")
+  source         String
+  evidenceHash   String   @unique(map: "commercial_review_samples_evidence_hash_key") @map("evidence_hash")
+  score          Float
+  evidence       Json
+  label          String?
+  reviewPriority Int      @default(50) @map("review_priority")
+  observedAt     DateTime @default(now()) @map("observed_at")
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([label, reviewPriority(sort: Desc), observedAt(sort: Desc), id(sort: Desc)], map: "commercial_review_samples_queue_idx")
+  @@index([reviewPriority(sort: Desc), observedAt(sort: Desc), id(sort: Desc)], map: "commercial_review_samples_all_queue_idx")
+  @@index([expiresAt, id], map: "commercial_review_samples_expiry_idx")
+  @@map("commercial_review_samples")
 }
 
 model SpammerObservation {

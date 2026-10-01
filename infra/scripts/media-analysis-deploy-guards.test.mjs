@@ -464,7 +464,7 @@ compose_args=(-p infra -f infra/docker-compose.yml)
 if maxim_topology_smoke_media_analysis_tesseract compose_args if-present; then exit 9; fi
 `);
   assert.equal(enforcingLegacy.status, 0, enforcingLegacy.stderr);
-  assert.match(enforcingLegacy.stderr, /must run with COMMERCIAL_OCR_ROLLOUT_MODE=shadow/u);
+  assert.match(enforcingLegacy.stderr, /must match the reviewed OCR deployment mode/u);
 
   const required = runTopologyProbe(`
 docker() {

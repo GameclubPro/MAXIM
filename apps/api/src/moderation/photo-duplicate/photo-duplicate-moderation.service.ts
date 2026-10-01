@@ -469,6 +469,7 @@ export class PhotoDuplicateModerationService {
       (await this.actions.consumePhotoDuplicateParticipantImmunity({
         chatId: album.chatId,
         userId: album.senderId,
+        messageId: album.messageId,
         nightModeTimezone: actionContext.settings.nightModeTimezone,
       }))
     ) {

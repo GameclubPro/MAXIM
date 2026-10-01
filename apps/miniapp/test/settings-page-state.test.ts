@@ -15,6 +15,7 @@ import {
   mergeBotSpeechStyleSettings,
   mergeNightSectionSettings,
   mergeSectionSettings,
+  mergeSectionSettingsAfterSave,
   normalizeSectionDraftSettings,
   serializeChatSettingsDraft,
   shouldHydrateSettingsDraftFromServer,
@@ -47,6 +48,43 @@ test('settings polling preserves a locally edited draft', () => {
       serializeChatSettingsDraft(nextServerDraft),
     ),
     false,
+  );
+});
+
+test('revision metadata does not dirty settings and a section save retains its returned write fence', () => {
+  const original = createSettings({ settingsRevision: '2026-10-01T09:00:00.000Z' });
+  const saved = createSettings({ settingsRevision: '2026-10-01T10:00:00.000Z' });
+  assert.equal(serializeChatSettingsDraft(original), serializeChatSettingsDraft(saved));
+  assert.equal(hasSectionSettingChanges(original, saved, 'commercialFilter'), false);
+  assert.equal(
+    mergeSectionSettings(original, saved, 'commercialFilter').settingsRevision,
+    saved.settingsRevision,
+  );
+});
+
+test('resolving a commercial conflict retains the original revision of other dirty sections', () => {
+  const draft = createSettings({
+    settingsRevision: '2026-10-01T09:00:00.000Z',
+    commercialAdsFilterEnabled: true,
+    russianProfanityFilterEnabled: true,
+  });
+  const saved = createSettings({
+    settingsRevision: '2026-10-01T10:01:00.000Z',
+    commercialAdsFilterEnabled: true,
+    russianProfanityFilterEnabled: false,
+  });
+  const next = mergeSectionSettingsAfterSave(
+    draft,
+    saved,
+    'commercialFilter',
+    '2026-10-01T10:00:00.000Z',
+  );
+  assert.equal(next.russianProfanityFilterEnabled, true);
+  assert.equal(next.settingsRevision, draft.settingsRevision);
+  assert.equal(
+    mergeSectionSettingsAfterSave(draft, saved, 'commercialFilter', draft.settingsRevision)
+      .settingsRevision,
+    saved.settingsRevision,
   );
 });
 

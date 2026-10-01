@@ -437,7 +437,8 @@ maxim_topology_require_stop_words_policy_guard() {
 maxim_topology_require_commercial_text_delete_guard() {
   local commit_sha="$1"
   local binding_source guard_source executor_source
-  # FLAG: Pending commercial v1 bindings must never reach an unguarded old executor.
+  # FLAG: Read this invariant twice before changes. Binding v2 and global off authority
+  # must survive rollback; pending commercial reasons cannot reach an earlier executor.
   if ! binding_source="$(git show "${commit_sha}:apps/api/src/moderation/commercial/commercial-delete-binding.ts" 2>/dev/null)" ||
     ! guard_source="$(git show "${commit_sha}:apps/api/src/moderation/commercial/commercial-delete-guard.service.ts" 2>/dev/null)" ||
     ! executor_source="$(git show "${commit_sha}:apps/api/src/moderation/moderation-delete-intent.service.ts" 2>/dev/null)"; then
@@ -456,10 +457,14 @@ maxim_topology_require_commercial_text_delete_guard() {
     const dispatch = boundary.indexOf("if (finalDispatchLeaseToken)");
     const call = boundary.indexOf("await this.commercialDeleteGuard.assertIntentStillActionable(");
     const valid = start >= 0 && end > start && dispatch >= 0 && call > dispatch &&
-      /COMMERCIAL_TEXT_DELETE_BINDING_VERSION\s*=\s*1\s+as const/u.test(binding) &&
+      /COMMERCIAL_TEXT_DELETE_BINDING_VERSION\s*=\s*2\s+as const/u.test(binding) &&
       guard.includes("class CommercialDeleteGuardService") &&
       guard.includes("getExactMessageRow(") && guard.includes("isCommercialTextDeleteBindingCurrent(") &&
       guard.includes("commercial_text_binding_stale") &&
+      guard.includes("await this.assertAuthority(") &&
+      guard.includes("createSanctionPermit(") &&
+      guard.includes("async authorizeSanction(") &&
+      binding.includes("textRuntimeRevision") &&
       boundary.includes("Commercial delete guard unavailable") &&
       executor.includes("commercialVerifiedReasonKeys.length > 0") &&
       executor.includes("Prisma.join(commercialVerifiedReasonKeys)");
@@ -617,7 +622,15 @@ maxim_topology_prepare_commercial_ocr_target() {
   fi
   maxim_topology_require_api_commercial_ocr_version_config \
     "$compose_args_var" "$resolved_version" "$publisher_policy"
-  maxim_topology_require_media_analysis_shadow_config "$compose_args_var"
+  # FLAG: Active baseline is an explicit release operation and requires the target's guard.
+  if [[ "${MAXIM_COMMERCIAL_OCR_BASELINE:-0}" == 1 ]]; then
+    if ! maxim_topology_git_supports_commercial_ocr_baseline "$commit_sha"; then
+      echo "Target lacks strict commercial OCR baseline authority." >&2; return 1
+    fi
+    export COMMERCIAL_OCR_ROLLOUT_MODE=baseline
+    export COMMERCIAL_OCR_CANARY_CHAT_IDS=''
+  fi
+  maxim_topology_require_media_analysis_rollout_config "$compose_args_var" "$commit_sha"
   if [[ "$has_ocr_native_sandbox" -eq 1 ]]; then
     maxim_topology_require_ocr_native_sandbox_config "$compose_args_var"
   fi
@@ -634,6 +647,7 @@ maxim_topology_verify_api_commercial_ocr_version() {
   local entry
   local actual_version
   local matches
+  local actual_mode mode_matches canary_matches actual_canary
 
   if [[ "${#MAXIM_PRODUCTION_API_SERVICES[@]}" -ne 14 ]]; then
     echo "Commercial OCR version verification requires the reviewed 14-role API topology." >&2
@@ -657,14 +671,31 @@ maxim_topology_verify_api_commercial_ocr_version() {
 
     actual_version=""
     matches=0
+    actual_mode=""
+    mode_matches=0
+    canary_matches=0
+    actual_canary=""
     while IFS= read -r entry; do
       if [[ "$entry" == COMMERCIAL_OCR_VERSION=* ]]; then
         actual_version="${entry#COMMERCIAL_OCR_VERSION=}"
         matches=$((matches + 1))
       fi
+      if [[ "$entry" == COMMERCIAL_OCR_ROLLOUT_MODE=* ]]; then
+        actual_mode="${entry#COMMERCIAL_OCR_ROLLOUT_MODE=}"
+        mode_matches=$((mode_matches + 1))
+      fi
+      if [[ "$entry" == COMMERCIAL_OCR_CANARY_CHAT_IDS=* ]]; then
+        actual_canary="${entry#COMMERCIAL_OCR_CANARY_CHAT_IDS=}"
+        canary_matches=$((canary_matches + 1))
+      fi
     done <<<"$container_env"
     if [[ "$matches" -ne 1 || "$actual_version" != "$expected_version" ]]; then
       echo "$service does not run with the target COMMERCIAL_OCR_VERSION." >&2
+      return 1
+    fi
+    if [[ "${MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE:-shadow}" == baseline ]] &&
+      [[ "$mode_matches" -ne 1 || "$actual_mode" != baseline || "$canary_matches" -ne 1 || -n "$actual_canary" ]]; then
+      echo "$service does not run with the reviewed commercial OCR baseline authority." >&2
       return 1
     fi
   done
@@ -739,6 +770,63 @@ maxim_topology_require_ocr_native_sandbox_absent() {
     echo "A pre-sandbox API runtime still has $MAXIM_OCR_NATIVE_SANDBOX_SERVICE." >&2
     return 1
   fi
+}
+
+maxim_topology_require_commercial_ocr_baseline_guard() {
+  local commit_sha="$1"
+  local guard_source worker_source intent_source
+  # FLAG: A pending v5 baseline delete cannot reach a pre-baseline executor after rollback.
+  guard_source="$(git show "${commit_sha}:apps/api/src/moderation/commercial-ocr/commercial-ocr-delete-guard.service.ts" 2>/dev/null)" || return 1
+  worker_source="$(git show "${commit_sha}:apps/api/src/moderation/commercial-ocr/commercial-ocr-moderation.service.ts" 2>/dev/null)" || return 1
+  intent_source="$(git show "${commit_sha}:apps/api/src/moderation/moderation-delete-intent.service.ts" 2>/dev/null)" || return 1
+  if ! printf '%s\0%s\0%s' "$guard_source" "$worker_source" "$intent_source" | node -e '
+    const parts=require("node:fs").readFileSync(0,"utf8").split("\0");
+    if(parts.length!==3) process.exit(1);
+    const [guard,worker,intent]=parts;
+    const valid=/COMMERCIAL_OCR_DELETE_BINDING_VERSION\s*=\s*5\s+as const/u.test(guard) &&
+      guard.includes("sameCommercialOcrEnforcementAuthority(runtime.authority, binding.authority)") &&
+      guard.includes("getExactMessageRow(") && worker.includes("isLiveBaselineAuthorityVerified(") &&
+      worker.includes("sameCommercialOcrEnforcementAuthority(") &&
+      /commercialOcrMode\s*===\s*\x27baseline\x27\s*\?\s*\x27on\x27/u.test(intent);
+    process.exit(valid?0:1);
+  ' >/dev/null 2>&1; then
+    echo "Rollback target lacks strict commercial OCR baseline authority." >&2
+    return 1
+  fi
+}
+
+maxim_topology_git_supports_commercial_ocr_baseline() {
+  local commit_sha="$1"
+  local runtime_source guard_source
+  runtime_source="$(git show "${commit_sha}:apps/api/src/moderation/commercial-ocr/commercial-ocr.runtime.ts" 2>/dev/null)" || return 1
+  guard_source="$(git show "${commit_sha}:apps/api/src/moderation/commercial-ocr/commercial-ocr-delete-guard.service.ts" 2>/dev/null)" || return 1
+  [[ "$runtime_source" == *"'baseline'"* && "$guard_source" == *"BASELINE"* ]] &&
+    maxim_topology_require_commercial_ocr_baseline_guard "$commit_sha"
+}
+
+maxim_topology_require_media_analysis_rollout_config() {
+  local compose_args_var="$1"
+  local commit_sha="$2"
+  local -n compose_args_ref="$compose_args_var"
+  local selected_mode
+  selected_mode="$(docker compose "${compose_args_ref[@]}" config --format json 2>/dev/null | node -e '
+    const config=JSON.parse(require("node:fs").readFileSync(0,"utf8"));
+    const mode=config?.services?.["api-media-analysis"]?.environment?.COMMERCIAL_OCR_ROLLOUT_MODE;
+    if (!["shadow","baseline"].includes(mode)) process.exit(1);
+    if (mode === "baseline") {
+      const services=process.argv.slice(1);
+      if (services.length!==14 || services.some(name => {
+        const env=config?.services?.[name]?.environment;
+        return env?.COMMERCIAL_OCR_ROLLOUT_MODE!==mode || env?.COMMERCIAL_OCR_CANARY_CHAT_IDS!=="";
+      })) process.exit(1);
+    }
+    process.stdout.write(mode);
+  ' "${MAXIM_PRODUCTION_API_SERVICES[@]}")" || { echo "Refusing an unsupported or inconsistent OCR deployment mode." >&2; return 1; }
+  if [[ "$selected_mode" == baseline ]] && ! maxim_topology_git_supports_commercial_ocr_baseline "$commit_sha"; then
+    echo "Target lacks strict commercial OCR baseline authority." >&2
+    return 1
+  fi
+  export MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE="$selected_mode"
 }
 
 maxim_topology_require_media_analysis_shadow_config() {
@@ -1294,8 +1382,8 @@ maxim_topology_smoke_media_analysis_tesseract() {
   fi
 
   if ! docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
-    sh -c 'test "${COMMERCIAL_OCR_ROLLOUT_MODE:-}" = shadow' >/dev/null 2>&1; then
-    echo "$MAXIM_MEDIA_ANALYSIS_SERVICE must run with COMMERCIAL_OCR_ROLLOUT_MODE=shadow for this rollout." >&2
+    sh -c 'test "${COMMERCIAL_OCR_ROLLOUT_MODE:-}" = "$1"' sh "${MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE:-shadow}" >/dev/null 2>&1; then
+    echo "$MAXIM_MEDIA_ANALYSIS_SERVICE must match the reviewed OCR deployment mode." >&2
     return 1
   fi
 
@@ -1367,9 +1455,9 @@ maxim_topology_smoke_media_analysis_tesseract() {
       echo "OCR sandbox retained a Tesseract process after raster smoke." >&2
       return 1
     fi
-    echo "No-network OCR sandbox, Tesseract rus+eng, UDS raster, shadow rollout, and internal OCR readiness smokes passed."
+    echo "No-network OCR sandbox, Tesseract rus+eng, UDS raster, reviewed rollout mode, and internal OCR readiness smokes passed."
   else
-    echo "Tesseract rus+eng, shadow rollout, native worker raster, and internal OCR readiness smokes passed in $MAXIM_MEDIA_ANALYSIS_SERVICE."
+    echo "Tesseract rus+eng, reviewed rollout mode, native worker raster, and internal OCR readiness smokes passed in $MAXIM_MEDIA_ANALYSIS_SERVICE."
   fi
 }
 

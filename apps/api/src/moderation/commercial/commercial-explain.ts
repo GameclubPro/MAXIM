@@ -24,6 +24,7 @@ export type CommercialExplainableMetadata = CommercialExplainableDecision;
 
 export function enrichCommercialDetection<T extends CommercialDetection>(
   detection: T,
+  promotedPolicyCohorts: readonly string[] = [],
 ): T & CommercialExplainableMetadata {
   const matchedSignals = detection.matchedSignals;
   const negativeSignals = detection.negativeSignals;
@@ -88,6 +89,22 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     hasConservativeRecallEvidence: evidence.hasConservativeRecallEvidence,
     hasIndependentCommercialOfferEvidence: evidence.hasIndependentCommercialOfferEvidence,
   });
+  const unpromotedCohorts = (detection.requiredPolicyCohorts ?? []).filter(
+    (cohort) => !promotedPolicyCohorts.includes(cohort),
+  );
+  // FLAG: Broader recognition may produce a review candidate, never new cleanup authority by default.
+  if (unpromotedCohorts.length > 0) {
+    actionPolicy.actionBand = 'REVIEW_ONLY';
+    actionPolicy.messageDisposition = 'KEEP';
+    actionPolicy.actionable = false;
+    actionPolicy.recordable = false;
+    actionPolicy.deleteSuppressed = true;
+    actionPolicy.reviewPriority =
+      actionPolicy.reviewPriority === 'NONE' ? 'MEDIUM' : actionPolicy.reviewPriority;
+    actionPolicy.suppressionReasons.push(
+      ...unpromotedCohorts.map((cohort) => `unpromoted-policy:${cohort}`),
+    );
+  }
   const reasonCodes = buildReasonCodes({
     detection,
     featureVector,

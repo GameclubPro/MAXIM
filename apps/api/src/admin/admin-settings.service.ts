@@ -51,6 +51,9 @@ import {
   saveChatSettings,
 } from './admin-chat-settings';
 import { buildRulesTextFromSettings } from './admin-chat-rules-text-format';
+import { buildSettingsSectionPatch } from './admin-settings-section-patch';
+import { CommercialOcrRuntimePolicyService } from '../moderation/commercial-ocr/commercial-ocr-runtime-policy.service';
+import { fingerprintCommercialOcrSettingsProfile } from '../moderation/commercial-ocr/commercial-ocr-settings-profile';
 import {
   applySettingsSectionToAllChats as applySettingsSectionToAllChatsValue,
   applySettingsToAllChats as applySettingsToAllChatsValue,
@@ -108,6 +111,7 @@ export class AdminSettingsService {
     @Optional() private readonly duplicateDiagnostics?: AdminDuplicateDiagnosticsService,
     @Optional() private readonly reports?: ReportViewService,
     @Optional() private readonly retention?: MessageRetentionStore,
+    @Optional() private readonly commercialOcrRuntimePolicy?: CommercialOcrRuntimePolicyService,
   ) {}
 
   async getDuplicateDiagnostics(chatId: string, user: AuthUser, recheck = false) {
@@ -182,6 +186,10 @@ export class AdminSettingsService {
     return chatSettingsScreenResponseSchema.parse({
       ...(messageRetention ? { messageRetention } : {}),
       settings,
+      commercialPhotoModerationMode: await this.resolveCommercialPhotoModerationMode(
+        chatId,
+        settings,
+      ),
       reportsAvailable: this.reports?.available(chatId) ?? false,
       duplicatePhotoModerationMode: duplicatePhotoPolicy.moderationMode,
       duplicateMessageModerationMode,
@@ -195,6 +203,20 @@ export class AdminSettingsService {
       domains,
       managedBroadcasts: [],
     });
+  }
+
+  private async resolveCommercialPhotoModerationMode(chatId: string, settings: ChatSettings) {
+    if (!settings.commercialAdsFilterEnabled) return 'OFF';
+    if (!this.commercialOcrRuntimePolicy) return 'UNKNOWN';
+    try {
+      const policy = await this.commercialOcrRuntimePolicy.resolveEffectivePolicy({
+        chatId,
+        settingsFingerprint: fingerprintCommercialOcrSettingsProfile(settings),
+      });
+      return policy.enforce ? 'FULL' : policy.process ? 'OBSERVE' : 'OFF';
+    } catch {
+      return 'UNKNOWN';
+    }
   }
 
   async resolveRequiredSubscriptionChannel(
@@ -251,6 +273,22 @@ export class AdminSettingsService {
       await this.reconcileNightModeTransitions([chatId]);
     }
     return settings;
+  }
+
+  async patchSettingsSection(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    options: { forceLiveBotCapabilityCheck?: boolean } = {},
+  ): Promise<ChatSettings> {
+    const current = await this.getSettings(chatId, user);
+    return this.updateSettings(
+      chatId,
+      user,
+      buildSettingsSectionPatch(current, body),
+      'miniapp',
+      options,
+    );
   }
 
   async getRules(

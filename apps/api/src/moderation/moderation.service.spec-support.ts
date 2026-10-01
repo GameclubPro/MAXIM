@@ -922,6 +922,7 @@ function createNumericSenderLinkBanHarness(
 }
 
 function createPhotoAttachmentUpdate(suffix: number): MaxUpdate {
+  const createdAt = new Date().toISOString();
   return {
     updateId: `upd-photo-${suffix}`,
     type: 'message_created',
@@ -931,10 +932,11 @@ function createPhotoAttachmentUpdate(suffix: number): MaxUpdate {
       senderId: 'user-1',
       senderName: 'Алексей',
       text: '',
-      createdAt: new Date().toISOString(),
+      createdAt,
     },
     raw: {
       message: {
+        timestamp: createdAt,
         attachments: [
           {
             type: 'image',
@@ -1738,6 +1740,9 @@ function createRequiredSubscriptionRedisCounter() {
   return {
     stringCache,
     addToSetWithTtl: jest.fn().mockResolvedValue({ added: false, size: 1 }),
+    trackCommercialCampaignSlidingWindow: jest
+      .fn()
+      .mockResolvedValue({ size: 1, saturated: false }),
     incrementWithTtl: jest.fn().mockResolvedValue(1),
     getString: jest.fn(async (key: string) => stringCache.get(key) ?? null),
     setStringWithTtl: jest.fn(async (key: string, value: string) => {

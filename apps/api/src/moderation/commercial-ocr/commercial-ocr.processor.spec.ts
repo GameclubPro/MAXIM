@@ -17,6 +17,7 @@ const data = {
   chatId: 'chat-1',
   messageId: 'message-1',
   sourceCreatedAt: '2026-08-12T08:00:00.000Z',
+  eventTimestamp: '2026-08-12T08:00:00.000Z',
   imageCount: 2,
   schemaVersion: COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
   ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION,
@@ -129,6 +130,7 @@ describe('CommercialOcrProcessor', () => {
       idempotencyKey: legacyJobId,
       commercialScanRequested: undefined,
       imageTextScanRequested: undefined,
+      eventTimestamp: undefined,
     };
     const harness = createHarness({
       dataOverrides: legacyData,
@@ -155,6 +157,41 @@ describe('CommercialOcrProcessor', () => {
     await expect(harness.processor.process(harness.job, 'lock-1')).resolves.toBeUndefined();
 
     expect(harness.metrics.recordQueueWait).not.toHaveBeenCalled();
+  });
+
+  it('keeps the absolute event deadline when creation time differs from event time', async () => {
+    const eventTimestamp = new Date(sourceCreatedAtMs + 150).toISOString();
+    const harness = createHarness({ dataOverrides: { eventTimestamp } });
+    jest.mocked(Date.now).mockReturnValue(deadlineAtMs);
+
+    await harness.processor.process(harness.job, 'lock-1');
+
+    expect(harness.moderationService.processCommercialOcrJob).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceCreatedAt: data.sourceCreatedAt, eventTimestamp }),
+      jobId,
+      deadlineAtMs + 150,
+    );
+    jest.mocked(Date.now).mockReturnValue(deadlineAtMs + 150);
+    harness.moderationService.processCommercialOcrJob.mockClear();
+    await harness.processor.process(harness.job, 'lock-1');
+    expect(harness.moderationService.processCommercialOcrJob).not.toHaveBeenCalled();
+  });
+
+  it('drains v2 jobs using their original event/deadline semantics and purpose identity', async () => {
+    const legacy = { ...jobData, schemaVersion: 2 as const, eventTimestamp: undefined };
+    const legacyJobId = buildCommercialOcrJobId(legacy);
+    const harness = createHarness({
+      dataOverrides: { ...legacy, idempotencyKey: legacyJobId },
+      jobOverrides: { id: legacyJobId },
+    });
+
+    await harness.processor.process(harness.job, 'lock-1');
+
+    expect(harness.moderationService.processCommercialOcrJob).toHaveBeenCalledWith(
+      expect.objectContaining({ schemaVersion: 2 }),
+      legacyJobId,
+      deadlineAtMs,
+    );
   });
 
   it('completes a terminal OCR timeout without a BullMQ retry and releases admission', async () => {
@@ -302,12 +339,14 @@ describe('CommercialOcrProcessor', () => {
     [
       'schema',
       {
-        dataOverrides: { schemaVersion: 3 as typeof COMMERCIAL_OCR_JOB_SCHEMA_VERSION },
+        dataOverrides: { schemaVersion: 4 as typeof COMMERCIAL_OCR_JOB_SCHEMA_VERSION },
       },
     ],
     ['job id', { jobOverrides: { id: `${jobId}-wrong` } }],
     ['idempotency key', { dataOverrides: { idempotencyKey: `${jobId}-wrong` } }],
     ['image count', { dataOverrides: { imageCount: 0 } }],
+    ['event timestamp', { dataOverrides: { eventTimestamp: undefined } }],
+    ['invalid event timestamp', { dataOverrides: { eventTimestamp: 'not-a-date' } }],
     ['action eligibility', { dataOverrides: { actionEligible: 'true' as never } }],
     ['commercial purpose', { dataOverrides: { commercialScanRequested: 'true' as never } }],
     ['image-text purpose', { dataOverrides: { imageTextScanRequested: 'true' as never } }],

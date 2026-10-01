@@ -20,6 +20,7 @@ import {
   revokeKaravanStorefrontAllowlistEntry,
   getSettingsScreen,
   updateSettings,
+  patchSettingsSection,
 } from '../src/lib/api/chat-settings-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
@@ -132,6 +133,40 @@ test('chat settings retry requests an explicit live bot capability recheck', asy
   assert.equal(calls[1]?.path, '/chats/chat-1/settings?recheckBotCapabilities=1');
 });
 
+test('section PATCH sends the original GET revision and only owned settings and media', async () => {
+  const calls: ApiCall[] = [];
+  const revision = '2026-10-01T10:00:00.000Z';
+  const settings = chatSettingsSchema.parse({
+    settingsRevision: revision,
+    commercialAdsFilterEnabled: true,
+  });
+  settings.botSpeechMedia = {
+    textFiltersBotMessageText: { mimeType: 'image/png', base64: 'YQ==', fileName: 'ad.png' },
+    profanityBotMessageText: { mimeType: 'image/png', base64: 'YQ==', fileName: 'word.png' },
+  };
+  await patchSettingsSection(
+    createApiMock(settings, calls),
+    'chat-1',
+    'commercialFilter',
+    settings,
+    ['commercialAdsFilterEnabled', 'textFiltersBotMessageText'],
+    { recheckBotCapabilities: true },
+  );
+  assert.equal(calls[0]?.path, '/chats/chat-1/settings/section?recheckBotCapabilities=1');
+  assert.equal(calls[0]?.init?.method, 'PATCH');
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+    section: 'commercialFilter',
+    expectedRevision: revision,
+    changes: {
+      commercialAdsFilterEnabled: true,
+      textFiltersBotMessageText: '',
+      botSpeechMedia: {
+        textFiltersBotMessageText: settings.botSpeechMedia.textFiltersBotMessageText,
+      },
+    },
+  });
+});
+
 test('chat settings client rejects equal times with notices but allows silent 24/7 mode', async () => {
   const calls: ApiCall[] = [];
   const api = createApiMock(chatSettingsSchema.parse({}), calls);
@@ -216,7 +251,10 @@ test('Karavan storefront allowlist client uses cursor pagination and typed mutat
   );
   assert.equal(revokeResponse.revoked, true);
 
-  assert.equal(calls[0]?.path, '/chats/chat-1/karavan-storefront/allowlist?cursor=cursor-1&limit=25');
+  assert.equal(
+    calls[0]?.path,
+    '/chats/chat-1/karavan-storefront/allowlist?cursor=cursor-1&limit=25',
+  );
   assert.equal(calls[0]?.init?.signal instanceof AbortSignal, true);
   assert.equal(calls[1]?.path, '/chats/chat-1/karavan-storefront/allowlist/handoff');
   assert.equal(calls[1]?.init?.method, 'POST');

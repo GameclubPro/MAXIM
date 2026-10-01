@@ -1,5 +1,6 @@
 import {
   buildParticipantModerationImmunityClaimKey,
+  buildParticipantModerationImmunityMessageKey,
   PARTICIPANT_MODERATION_IMMUNITY_RULE_CODE,
   PARTICIPANT_MODERATION_IMMUNITY_UPDATE_TYPE,
   ParticipantModerationImmunityService,
@@ -14,6 +15,11 @@ const input = {
 };
 
 describe('ParticipantModerationImmunityService', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-10-01T09:00:00Z'));
+  });
+  afterEach(() => jest.useRealTimers());
   it('builds a deterministic scope-sensitive claim key', () => {
     expect(buildParticipantModerationImmunityClaimKey(input)).toBe(
       buildParticipantModerationImmunityClaimKey({ ...input }),
@@ -31,7 +37,10 @@ describe('ParticipantModerationImmunityService', () => {
     expect(harness.prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(harness.tx.moderationViolationMessageClaim.create).toHaveBeenCalledWith({
       data: {
-        dedupeKey: buildParticipantModerationImmunityClaimKey(input),
+        dedupeKey: buildParticipantModerationImmunityMessageKey({
+          ...input,
+          dateKey: '2026-10-01',
+        }),
         messageActionKey: null,
         chatId: 'chat-1',
         userId: 'user-1',
@@ -52,12 +61,40 @@ describe('ParticipantModerationImmunityService', () => {
 
   it('returns a matching positive claim on replay without consuming immunity again', async () => {
     const existing = expectedClaim();
-    const harness = buildHarness({ transactionClaim: existing });
+    const harness = buildHarness({ transactionClaim: existing, consumedRows: [{ granted: 1 }] });
 
     await expect(harness.service.consumeForMessage(input)).resolves.toBe('granted');
 
-    expect(harness.tx.$queryRaw).not.toHaveBeenCalled();
+    expect(harness.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(harness.tx.$queryRaw.mock.calls[0]![0].strings.join('?')).not.toContain('UPDATE');
     expect(harness.tx.moderationViolationMessageClaim.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['revoked', 'expired', 're-created'])(
+    'revokes a prior receipt when current grant is %s',
+    async () => {
+      const h = buildHarness({ transactionClaim: expectedClaim(), consumedRows: [] });
+      await expect(h.service.consumeForMessage(input)).resolves.toBe('not_granted');
+      expect(h.tx.moderationViolationMessageClaim.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('uses one receipt across rule, OCR and edit while preserving the day boundary', async () => {
+    const h = buildHarness({
+      transactionClaim: expectedClaim(),
+      consumedRows: [{ granted: 1 }],
+      currentRows: [{ granted: 1 }],
+    });
+    await expect(h.service.consumeForMessage({ ...input, scope: 'text' })).resolves.toBe('granted');
+    await expect(h.service.consumeForMessage({ ...input, scope: 'image' })).resolves.toBe(
+      'granted',
+    );
+    expect(h.tx.moderationViolationMessageClaim.findUnique.mock.calls[0]![0]).toEqual(
+      h.tx.moderationViolationMessageClaim.findUnique.mock.calls[1]![0],
+    );
+    expect(
+      buildParticipantModerationImmunityMessageKey({ ...input, dateKey: '2026-10-02' }),
+    ).not.toBe(expectedClaim().dedupeKey);
   });
 
   it('does not persist a negative claim when no immunity can be consumed', async () => {
@@ -73,6 +110,7 @@ describe('ParticipantModerationImmunityService', () => {
     const harness = buildHarness({
       consumedRows: [],
       transactionClaims: [null, expectedClaim()],
+      currentRows: [{ granted: 1 }],
     });
 
     await expect(harness.service.consumeForMessage(input)).resolves.toBe('granted');
@@ -87,12 +125,18 @@ describe('ParticipantModerationImmunityService', () => {
       consumedRows: [{ granted: 1 }],
       createError: conflict,
       reconciledClaim: expectedClaim(),
+      currentRows: [{ granted: 1 }],
     });
 
     await expect(harness.service.consumeForMessage(input)).resolves.toBe('granted');
 
     expect(harness.prisma.moderationViolationMessageClaim.findUnique).toHaveBeenCalledWith({
-      where: { dedupeKey: buildParticipantModerationImmunityClaimKey(input) },
+      where: {
+        dedupeKey: buildParticipantModerationImmunityMessageKey({
+          ...input,
+          dateKey: '2026-10-01',
+        }),
+      },
       select: expect.any(Object),
     });
   });
@@ -113,13 +157,14 @@ describe('ParticipantModerationImmunityService', () => {
 
 function expectedClaim() {
   return {
-    dedupeKey: buildParticipantModerationImmunityClaimKey(input),
+    dedupeKey: buildParticipantModerationImmunityMessageKey({ ...input, dateKey: '2026-10-01' }),
     messageActionKey: null,
     chatId: input.chatId,
     userId: input.userId,
     messageId: input.messageId,
     ruleCode: PARTICIPANT_MODERATION_IMMUNITY_RULE_CODE,
     updateType: PARTICIPANT_MODERATION_IMMUNITY_UPDATE_TYPE,
+    createdAt: new Date('2026-10-01T08:59:00Z'),
   };
 }
 
@@ -130,6 +175,7 @@ function buildHarness(
     transactionClaims?: Array<ReturnType<typeof expectedClaim> | null>;
     reconciledClaim?: ReturnType<typeof expectedClaim> | null;
     createError?: Error;
+    currentRows?: Array<{ granted: number }>;
   } = {},
 ) {
   const tx = {
@@ -144,9 +190,13 @@ function buildHarness(
         ? jest.fn().mockRejectedValue(options.createError)
         : jest.fn().mockResolvedValue({}),
     },
-    $queryRaw: jest.fn().mockResolvedValue(options.consumedRows ?? []),
+    $queryRaw: jest
+      .fn()
+      .mockResolvedValueOnce(options.consumedRows ?? [])
+      .mockResolvedValue(options.currentRows ?? []),
   };
   const prisma = {
+    $queryRaw: jest.fn().mockResolvedValue(options.currentRows ?? []),
     moderationViolationMessageClaim: {
       findUnique: jest.fn().mockResolvedValue(options.reconciledClaim ?? null),
     },

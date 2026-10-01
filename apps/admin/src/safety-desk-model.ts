@@ -19,7 +19,7 @@ import {
   type SanitizedPreviewHtml,
 } from './safety-desk-preview-security';
 
-export type DeskView = 'review' | 'support' | 'deletes';
+export type DeskView = 'review' | 'support' | 'deletes' | 'commercial';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
 export type QueueStatus = 'review' | 'approved' | 'rejected' | 'blocked';
 export type QueueSource = 'manual' | 'scheduled' | 'vk';

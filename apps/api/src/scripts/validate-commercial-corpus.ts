@@ -1,6 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
+import { isCommercialMessageDeleteEligible } from '../moderation/commercial/commercial-action-policy';
+import {
+  DEFAULT_COMMERCIAL_HOLDOUT_GAP_HOURS,
+  validateCommercialHoldoutProvenance,
+} from './commercial-corpus-provenance';
+
 import {
   hasResidualCommercialContactCandidate,
   isCommercialCorpusTextSanitized,
@@ -11,6 +17,9 @@ export type CommercialCorpusLabel = 'positive_candidate' | 'negative_candidate' 
 type CommercialSnapshot = {
   hit?: unknown;
   actionBand?: unknown;
+  actionable?: unknown;
+  recordable?: unknown;
+  messageDisposition?: unknown;
   primarySubtype?: unknown;
   subtype?: unknown;
 };
@@ -19,6 +28,8 @@ export type CommercialCorpusRecord = {
   label?: unknown;
   labelSource?: unknown;
   expectedAction?: unknown;
+  expectedDisposition?: unknown;
+  reviewProvenance?: unknown;
   expectedSubtype?: unknown;
   isHardNegative?: unknown;
   policyCategory?: unknown;
@@ -32,10 +43,14 @@ export type CommercialCorpusRecord = {
 
 type CliOptions = CommercialCorpusGateOptions & {
   inputPath: string;
+  developmentInputPath?: string;
 };
 
 export type CommercialCorpusGateOptions = {
   qualityGate?: boolean;
+  developmentRecords?: readonly CommercialCorpusRecord[];
+  holdoutCutoffAt?: string;
+  minHoldoutGapHours?: number;
   requireSanitizationParity?: boolean;
   minPositive: number;
   minNegative: number;
@@ -68,6 +83,8 @@ export type CommercialCorpusMetrics = {
   trustedManualCount: number;
   trustedManualActionComparableCount: number;
   trustedManualActionMismatchCount: number;
+  trustedManualDispositionComparableCount: number;
+  trustedManualDispositionMismatchCount: number;
   trustedManualNegativeCount: number;
   trustedManualNegativeHitCount: number;
   trustedManualNegativeEnforcementCount: number;
@@ -120,12 +137,16 @@ function readCliOptions(argv: readonly string[]): CliOptions {
   const inputPath = readStringOption(argv, '--input');
   if (!inputPath) {
     throw new Error(
-      'Usage: npm run moderation:validate-commercial-corpus -- --input <commercial-corpus.jsonl> [--quality-gate] [--require-sanitization-parity]',
+      'Usage: npm run moderation:validate-commercial-corpus -- --input <commercial-corpus.jsonl> [--quality-gate --development-input <frozen-development.jsonl> --holdout-cutoff <iso> --min-holdout-gap-hours <1..2160>] [--require-sanitization-parity]',
     );
   }
 
   return {
     inputPath,
+    developmentInputPath: readStringOption(argv, '--development-input'),
+    holdoutCutoffAt: readStringOption(argv, '--holdout-cutoff'),
+    minHoldoutGapHours:
+      readNumberOption(argv, '--min-holdout-gap-hours') ?? DEFAULT_COMMERCIAL_HOLDOUT_GAP_HOURS,
     qualityGate: argv.includes('--quality-gate'),
     requireSanitizationParity: argv.includes('--require-sanitization-parity'),
     minPositive:
@@ -194,6 +215,9 @@ function readSnapshot(value: unknown): CommercialSnapshot {
   return {
     hit: record.hit,
     actionBand: record.actionBand,
+    actionable: record.actionable,
+    recordable: record.recordable,
+    messageDisposition: record.messageDisposition,
     primarySubtype: record.primarySubtype,
     subtype: record.subtype,
   };
@@ -209,6 +233,8 @@ function readCorpusRecord(value: unknown): CommercialCorpusRecord | null {
     label: record.label,
     labelSource: record.labelSource,
     expectedAction: record.expectedAction,
+    expectedDisposition: record.expectedDisposition,
+    reviewProvenance: record.reviewProvenance,
     expectedSubtype: record.expectedSubtype,
     isHardNegative: record.isHardNegative,
     policyCategory: record.policyCategory,
@@ -221,8 +247,15 @@ function readCorpusRecord(value: unknown): CommercialCorpusRecord | null {
   };
 }
 
-function isDeleteAction(action: unknown): boolean {
-  return typeof action === 'string' && DELETE_ACTIONS.has(action);
+// FLAG: Legacy snapshots without disposition/actionable retain the documented band adapter.
+// Explicit KEEP, invalid disposition, or non-actionability must never become a cleanup prediction.
+function isSnapshotDeleteEligible(snapshot: CommercialSnapshot): boolean {
+  const action = readString(snapshot.actionBand);
+  return isCommercialMessageDeleteEligible(
+    action,
+    snapshot.actionable === undefined ? isEnforcementAction(action) : snapshot.actionable === true,
+    snapshot.messageDisposition,
+  );
 }
 
 function isEnforcementAction(action: unknown): boolean {
@@ -296,6 +329,8 @@ export function analyzeCommercialCorpusRecords(
   let trustedManualCount = 0;
   let trustedManualActionComparableCount = 0;
   let trustedManualActionMismatchCount = 0;
+  let trustedManualDispositionComparableCount = 0;
+  let trustedManualDispositionMismatchCount = 0;
   let trustedManualNegativeCount = 0;
   let trustedManualNegativeHitCount = 0;
   let trustedManualNegativeEnforcementCount = 0;
@@ -311,6 +346,7 @@ export function analyzeCommercialCorpusRecords(
     const label = readString(record.label);
     const labelSource = readString(record.labelSource);
     const expectedAction = readString(record.expectedAction);
+    const expectedDisposition = readString(record.expectedDisposition);
     const expectedSubtype = readString(record.expectedSubtype);
     const policyCategory = readString(record.policyCategory);
     const segment = readString(record.segment) ?? 'UNKNOWN';
@@ -323,6 +359,7 @@ export function analyzeCommercialCorpusRecords(
     const expectedActionRank = actionRank(expectedAction);
     const currentSubtype = readString(current.primarySubtype) ?? readString(current.subtype);
     const currentHit = current.hit === true;
+    const currentDeleteEligible = isSnapshotDeleteEligible(current);
     const historicalHit = historical.hit === true;
 
     let hasAutoLabelSanitizationDrift = false;
@@ -331,7 +368,10 @@ export function analyzeCommercialCorpusRecords(
       if (
         original.hit !== current.hit ||
         original.actionBand !== current.actionBand ||
-        original.primarySubtype !== current.primarySubtype
+        original.primarySubtype !== current.primarySubtype ||
+        original.actionable !== current.actionable ||
+        original.recordable !== current.recordable ||
+        original.messageDisposition !== current.messageDisposition
       ) {
         hasAutoLabelSanitizationDrift = true;
         autoLabelSanitizationDriftCount += 1;
@@ -358,6 +398,35 @@ export function analyzeCommercialCorpusRecords(
     if (expectedActionRank === null) {
       errors.push(`line ${lineNumber}: unsupported expectedAction ${expectedAction ?? 'null'}`);
     }
+    if (
+      record.expectedDisposition !== undefined &&
+      expectedDisposition !== 'KEEP' &&
+      expectedDisposition !== 'DELETE'
+    ) {
+      errors.push(`line ${lineNumber}: expectedDisposition must be KEEP/DELETE`);
+    }
+    if (
+      current.messageDisposition !== undefined &&
+      current.messageDisposition !== 'KEEP' &&
+      current.messageDisposition !== 'DELETE'
+    ) {
+      errors.push(`line ${lineNumber}: current messageDisposition must be KEEP/DELETE`);
+    }
+    if (current.actionable !== undefined && typeof current.actionable !== 'boolean') {
+      errors.push(`line ${lineNumber}: current actionable must be boolean`);
+    }
+    if (current.recordable !== undefined && typeof current.recordable !== 'boolean') {
+      errors.push(`line ${lineNumber}: current recordable must be boolean`);
+    }
+    if (
+      (current.messageDisposition === 'DELETE' && !currentDeleteEligible) ||
+      (currentDeleteEligible && !currentHit)
+    ) {
+      errors.push(`line ${lineNumber}: incoherent current cleanup decision`);
+    }
+    if (expectedDisposition === 'DELETE' && !isEnforcementAction(expectedAction)) {
+      errors.push(`line ${lineNumber}: expected DELETE requires a cleanup-capable action`);
+    }
 
     pushCount(labelCounts, label);
     pushCount(labelSourceCounts, labelSource ?? 'UNKNOWN');
@@ -375,6 +444,12 @@ export function analyzeCommercialCorpusRecords(
     const isTrustedManual = labelSource === COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE;
     if (isTrustedManual) {
       trustedManualCount += 1;
+      if (expectedDisposition === 'KEEP' || expectedDisposition === 'DELETE') {
+        trustedManualDispositionComparableCount += 1;
+        if (currentDeleteEligible !== (expectedDisposition === 'DELETE')) {
+          trustedManualDispositionMismatchCount += 1;
+        }
+      }
     }
 
     if (typedLabel === 'positive_candidate') {
@@ -401,7 +476,7 @@ export function analyzeCommercialCorpusRecords(
         }
         if (expectedActionRank !== null && expectedActionRank >= 2) {
           autoPositiveEnforcementEligibleCount += 1;
-          if (isEnforcementAction(currentAction)) {
+          if (currentDeleteEligible) {
             autoPositiveEnforcementHitCount += 1;
           }
         }
@@ -434,7 +509,7 @@ export function analyzeCommercialCorpusRecords(
         if (currentHit) {
           autoNegativeHitCount += 1;
         }
-        if (isEnforcementAction(currentAction)) {
+        if (currentDeleteEligible) {
           autoNegativeEnforcementCount += 1;
         }
       } else if (isTrustedManual) {
@@ -442,10 +517,10 @@ export function analyzeCommercialCorpusRecords(
         if (currentHit) {
           trustedManualNegativeHitCount += 1;
         }
-        if (isEnforcementAction(currentAction)) {
+        if (currentDeleteEligible) {
           trustedManualNegativeEnforcementCount += 1;
         }
-        if (isDeleteAction(currentAction)) {
+        if (currentDeleteEligible) {
           trustedManualNegativeDeleteCount += 1;
         }
         if (record.isHardNegative === true && currentActionRank !== null && currentActionRank > 0) {
@@ -480,7 +555,7 @@ export function analyzeCommercialCorpusRecords(
       }
     }
 
-    if (policyCategory === 'campaign_only' && isDeleteAction(currentAction)) {
+    if (policyCategory === 'campaign_only' && currentDeleteEligible) {
       campaignOnlyDeleteCount += 1;
     }
   }
@@ -522,6 +597,8 @@ export function analyzeCommercialCorpusRecords(
       trustedManualCount,
       trustedManualActionComparableCount,
       trustedManualActionMismatchCount,
+      trustedManualDispositionComparableCount,
+      trustedManualDispositionMismatchCount,
       trustedManualNegativeCount,
       trustedManualNegativeHitCount,
       trustedManualNegativeEnforcementCount,
@@ -557,6 +634,17 @@ export function validateCommercialCorpusRecords(
     const trusted = records.filter(
       (record) => record.labelSource === COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE,
     );
+    if (trusted.length !== records.length) {
+      errors.push(`quality_gate_non_manual_holdout_rows=${records.length - trusted.length}`);
+    }
+    const provenance = validateCommercialHoldoutProvenance({
+      holdoutRecords: trusted,
+      developmentRecords: options.developmentRecords,
+      holdoutCutoffAt: options.holdoutCutoffAt,
+      minHoldoutGapHours: options.minHoldoutGapHours,
+    });
+    errors.push(...provenance.errors);
+    diagnostics.push(...provenance.diagnostics);
     for (const [label, minimum] of [
       ['positive_candidate', Math.max(1, options.minPositive)],
       ['negative_candidate', Math.max(1, options.minNegative)],
@@ -565,6 +653,23 @@ export function validateCommercialCorpusRecords(
       const count = trusted.filter((record) => record.label === label).length;
       if (count < minimum)
         errors.push(`quality_gate_trusted_${label}=${count} below min=${minimum}`);
+    }
+    for (const [index, record] of records.entries()) {
+      if (record.labelSource !== COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE) continue;
+      const current = readSnapshot(record.sanitizedBaseline ?? record.current);
+      if (record.expectedDisposition !== 'KEEP' && record.expectedDisposition !== 'DELETE') {
+        errors.push(
+          `line ${index + 1}: quality gate requires independently labelled expectedDisposition KEEP/DELETE`,
+        );
+      }
+      if (
+        typeof current.actionable !== 'boolean' ||
+        (current.messageDisposition !== 'KEEP' && current.messageDisposition !== 'DELETE')
+      ) {
+        errors.push(
+          `line ${index + 1}: quality gate requires explicit current actionable and messageDisposition`,
+        );
+      }
     }
     const residualCount = records.filter(
       (record) =>
@@ -626,6 +731,11 @@ export function validateCommercialCorpusRecords(
   ) {
     errors.push(
       `trusted_manual_enforcement_false_positive_rate=${metrics.trustedManualEnforcementFalsePositiveRate} above max=${options.maxFalsePositiveRate}`,
+    );
+  }
+  if (metrics.trustedManualDispositionMismatchCount > 0) {
+    errors.push(
+      `trusted_manual_disposition_mismatch_count=${metrics.trustedManualDispositionMismatchCount}`,
     );
   }
   if (metrics.trustedManualActionMismatchCount > 0) {
@@ -697,6 +807,9 @@ async function readJsonl(pathname: string): Promise<CommercialCorpusRecord[]> {
 async function main() {
   const options = readCliOptions(process.argv.slice(2));
   const records = await readJsonl(options.inputPath);
+  if (options.developmentInputPath) {
+    options.developmentRecords = await readJsonl(options.developmentInputPath);
+  }
   const { diagnostics, errors, metrics } = validateCommercialCorpusRecords(records, options);
 
   console.log('Commercial corpus validation');
@@ -726,6 +839,9 @@ async function main() {
     )}`,
   );
   console.log(`trusted_manual_action_mismatch_count=${metrics.trustedManualActionMismatchCount}`);
+  console.log(
+    `trusted_manual_disposition_mismatch_count=${metrics.trustedManualDispositionMismatchCount}`,
+  );
   console.log(`trusted_manual_subtype_mismatch_count=${metrics.trustedManualSubtypeMismatchCount}`);
   console.log(`campaign_only_delete_count=${metrics.campaignOnlyDeleteCount}`);
 

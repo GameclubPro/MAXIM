@@ -5993,6 +5993,7 @@ describe('ModerationService participant immunity', () => {
     expect(immunitySpy).toHaveBeenCalledWith({
       chatId: 'chat-1',
       userId: 'user-1',
+      messageId: 'msg-1',
       nightModeTimezone: 'Europe/Moscow',
     });
     expect(prisma.violation.create).not.toHaveBeenCalled();

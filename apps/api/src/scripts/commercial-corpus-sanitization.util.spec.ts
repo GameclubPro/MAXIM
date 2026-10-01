@@ -5,6 +5,34 @@ import {
 } from './commercial-corpus-sanitization.util';
 
 describe('commercial corpus sanitization', () => {
+  it.each(['+7 900 000 10 42', '8 900 000 10 42', '+44 20 7946 0101'])(
+    'preserves a next-line price when redacting %s',
+    (phone) => {
+      const input = `Телефон ${phone}\n500 руб`;
+      expect(sanitizeCommercialCorpusText(input, { preserveLayout: true })).toBe(
+        'Телефон [phone]\n500 руб',
+      );
+      expect(sanitizeCommercialCorpusText(input)).toBe('Телефон [phone] 500 руб');
+    },
+  );
+
+  it.each(['Телефон 9000001042 / 9000001043', '☎ 9000001042', 'Телефон +44 20 7946 0101'])(
+    'detects residual private contacts independently: %s',
+    (input) => {
+      expect(hasResidualCommercialContactCandidate(input)).toBe(true);
+      const sanitized = sanitizeCommercialCorpusText(input);
+      expect(sanitized).toContain('[phone]');
+      expect(hasResidualCommercialContactCandidate(sanitized)).toBe(false);
+      expect(sanitizeCommercialCorpusText(sanitized)).toBe(sanitized);
+    },
+  );
+
+  it('keeps phone, price and payment-card spans separate', () => {
+    const input = 'Телефон 8 900 000 10 42\n500 руб\nКарта 2202.2002.0000.0001';
+    expect(sanitizeCommercialCorpusText(input, { preserveLayout: true })).toBe(
+      'Телефон [phone]\n500 руб\nКарта [card]',
+    );
+  });
   it('redacts schedule-adjacent and slash-separated contacts without merging them', () => {
     const input = 'Работаем 24 на 7 89000001042 / 89000001043';
     expect(hasResidualCommercialContactCandidate(input)).toBe(true);

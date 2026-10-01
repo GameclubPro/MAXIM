@@ -6,6 +6,7 @@ const input = {
   chatId: 'chat-1',
   messageId: 'message-1',
   sourceCreatedAt: '2026-08-12T08:00:00.000Z',
+  eventTimestamp: '2026-08-12T08:00:00.000Z',
   imageCount: 2,
   actionEligible: true,
 };
@@ -44,6 +45,32 @@ function metrics() {
 }
 
 describe('CommercialOcrEnqueueService', () => {
+  it('uses event time for admission age and immutable creation time for the queued source', async () => {
+    const queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
+    const store = admission();
+    const service = new CommercialOcrEnqueueService(
+      queue as never,
+      config() as never,
+      store as never,
+    );
+    const eventTimestamp = '2026-08-12T08:00:00.150Z';
+
+    await service.enqueue({ ...input, eventTimestamp, registerPendingActivation: jest.fn() });
+
+    expect(store.reserve).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceCreatedAt: eventTimestamp }),
+    );
+    expect(queue.add).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        sourceCreatedAt: input.sourceCreatedAt,
+        eventTimestamp,
+        schemaVersion: 3,
+      }),
+      expect.any(Object),
+    );
+  });
+
   it('uses the configured reservation TTL for producer admission and recovery metadata', async () => {
     const queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
     const store = admission();

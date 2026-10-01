@@ -60,7 +60,9 @@ type AccessFixture = {
 };
 
 type HarnessOptions = {
-  mode?: 'on' | 'shadow';
+  mode?: 'on' | 'shadow' | 'baseline';
+  nativeRuntimeFingerprint?: string;
+  nativeComplete?: boolean;
   imageTextRolloutMode?: 'off' | 'shadow' | 'on';
   sandboxBoundaryVerified?: boolean;
   initialSettings?: ChatSettings;
@@ -76,7 +78,14 @@ type HarnessOptions = {
   accessRows?: AccessFixture[];
   immunityResult?: 'granted' | 'not_granted';
   immunityError?: Error;
-  runtimePolicies?: Array<{ enforce: boolean; controlExpiresAt?: string }>;
+  runtimePolicies?: Array<{
+    enforce: boolean;
+    controlExpiresAt?: string;
+    kind?: 'BASELINE' | 'CERTIFIED';
+    behaviorIdentitySha256?: string;
+    settingsFingerprint?: string;
+    nativeBehaviorIdentitySha256?: string;
+  }>;
   governorDecision?: {
     action: 'run' | 'slow' | 'pause';
     retryAfterMs: number;
@@ -86,12 +95,148 @@ type HarnessOptions = {
   webhookStatus?: WebhookStatus;
   webhookError?: Error;
   exactError?: Error;
+  reviewError?: Error;
   activationResult?: CommercialOcrAdmissionActivationResult;
   suppressionResult?: CommercialOcrAdmissionSuppressionResult;
   reservationTtlMs?: number;
 };
 
 describe('CommercialOcrModerationService', () => {
+  it('enforces the strict opt-in baseline with live native attestation and no fictional certificate', async () => {
+    const harness = buildHarness({ mode: 'baseline', sandboxBoundaryVerified: true });
+    await harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs);
+    const persisted =
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim.mock.calls[0]![0];
+    const binding = parseCommercialOcrDeleteBinding(persisted.intent.event.metadata)!;
+    expect(binding.authority).toEqual({
+      kind: 'BASELINE',
+      behaviorIdentitySha256: 'a'.repeat(64),
+      nativeBehaviorIdentitySha256: 'b'.repeat(64),
+      settingsFingerprint: fingerprintCommercialOcrSettingsProfile(settings()),
+    });
+    expect(binding.ocrDeadlineAt).toBe(new Date(activeDeadlineAtMs).toISOString());
+    expect(binding).not.toHaveProperty('controlRevision');
+    expect(binding).not.toHaveProperty('controlExpiresAt');
+    expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { sandboxBoundaryVerified: false },
+    { sandboxBoundaryVerified: true, nativeComplete: false },
+    { sandboxBoundaryVerified: true, nativeRuntimeFingerprint: 'c'.repeat(64) },
+  ])(
+    'keeps the message when the live baseline sandbox cannot attest its exact identity: %o',
+    async (nativeOptions) => {
+      const harness = buildHarness({ mode: 'baseline', ...nativeOptions });
+      await harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs);
+      expect(
+        harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { kind: 'CERTIFIED' as const },
+    { kind: 'BASELINE' as const, behaviorIdentitySha256: 'c'.repeat(64) },
+    { kind: 'BASELINE' as const, nativeBehaviorIdentitySha256: 'c'.repeat(64) },
+    { kind: 'BASELINE' as const, settingsFingerprint: 'c'.repeat(64) },
+  ])('revokes a pending baseline decision when its authority changes: %o', async (changed) => {
+    const harness = buildHarness({
+      mode: 'baseline',
+      sandboxBoundaryVerified: true,
+      runtimePolicies: [{ enforce: true }, { enforce: true }, { enforce: true, ...changed }],
+    });
+    await harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs);
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('captures OCR observations with visible caption only and never labels a pending deletion DELETE', async () => {
+    const harness = buildHarness({ mode: 'baseline', sandboxBoundaryVerified: true });
+    await harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs);
+    expect(harness.commercialReview.recordCandidate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: 'OCR',
+        text: 'Buy now',
+        messageDisposition: 'KEEP',
+        decisionFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      }),
+    );
+    expect(JSON.stringify(harness.commercialReview.recordCandidate.mock.calls)).not.toContain(
+      '79991234567',
+    );
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).toHaveBeenCalledTimes(1);
+    expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(
+      harness.commercialReview.recordCandidate.mock.calls.every(
+        ([record]) => record.messageDisposition === 'KEEP',
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps moderation independent from an unavailable optional review store', async () => {
+    const harness = buildHarness({ reviewError: new Error('review unavailable') });
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({ kind: 'completed' });
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it('analyzes and binds the unchanged immutable photo source despite event timestamp jitter', async () => {
+    const eventTimestamp = '2026-08-12T08:00:00.150Z';
+    const normalizedUpdate = update();
+    normalizedUpdate.message!.createdAt = eventTimestamp;
+    const harness = buildHarness({ normalizedUpdate });
+
+    await harness.service.processCommercialOcrJob(
+      job({ eventTimestamp }),
+      jobId,
+      activeDeadlineAtMs,
+    );
+
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
+    expect(harness.metrics.recordCounter).toHaveBeenCalledWith('source.ready');
+    const persisted =
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim.mock.calls[0]![0];
+    expect(persisted.intent.sourceMessageAt).toBe(sourceCreatedAt);
+    expect(parseCommercialOcrDeleteBinding(persisted.intent.event.metadata)?.sourceCreatedAt).toBe(
+      sourceCreatedAt,
+    );
+  });
+
+  it('rejects a changed immutable creation time even when the event clock still matches', async () => {
+    const normalizedUpdate = update();
+    (
+      (normalizedUpdate.raw as Record<string, unknown>).message as Record<string, unknown>
+    ).timestamp = '2026-08-12T07:59:59.000Z';
+    const harness = buildHarness({ normalizedUpdate });
+
+    await harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs);
+
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(harness.metrics.recordCounter).toHaveBeenCalledWith('source.creation_time_mismatch');
+  });
+
+  it.each([
+    { options: { webhookError: new Error('unavailable') }, counter: 'source.receipt.unavailable' },
+    { options: { exactError: new Error('unavailable') }, counter: 'source.exact.unavailable' },
+    { options: { exactRows: [null] }, counter: 'source.exact.absent' },
+  ])(
+    'records bounded terminal coverage for $counter without analysis',
+    async ({ options, counter }) => {
+      const harness = buildHarness(options);
+      await harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs);
+      expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+      expect(harness.metrics.recordCounter).toHaveBeenCalledWith(counter);
+    },
+  );
+
   it('persists a confirmed image stop-list deletion without storing recognized text', async () => {
     const imageSettings = settings({
       commercialAdsFilterEnabled: false,
@@ -1220,7 +1365,7 @@ describe('CommercialOcrModerationService', () => {
     expect(Object.keys(intent.event.metadata)).toEqual(['commercialOcrBinding']);
     const binding = parseCommercialOcrDeleteBinding(intent.event.metadata);
     expect(binding).toMatchObject({
-      version: 4,
+      version: 5,
       policyVersion: COMMERCIAL_OCR_DECISION_POLICY_VERSION,
       ocrVersion: 'tesseract-rus-eng-v1',
       senderId: 'user-1',
@@ -1250,7 +1395,7 @@ describe('CommercialOcrModerationService', () => {
     expect(persisted.intent.retryUntilAt).toEqual(new Date(controlExpiresAt));
     expect(persisted.intent.commercialOcrDeadlineAt).toEqual(new Date(controlExpiresAt));
     expect(parseCommercialOcrDeleteBinding(persisted.intent.event.metadata)).toMatchObject({
-      controlExpiresAt,
+      authority: { kind: 'CERTIFIED', controlExpiresAt },
       ocrDeadlineAt: controlExpiresAt,
     });
   });
@@ -1375,20 +1520,34 @@ function buildHarness(options: HarnessOptions = {}) {
       intent: { intentId: 'intent-1', rollout: 'execute', status: 'PENDING' },
     }),
   };
+  const defaultControlExpiresAt = new Date(Date.now() + 60_000).toISOString();
   let runtimePolicyIndex = 0;
   const runtimePolicies = options.runtimePolicies ?? [{ enforce: true }];
   const runtimePolicy = {
     resolveEffectivePolicy: jest.fn().mockImplementation(async () => {
       const policy = readSequence(runtimePolicies, runtimePolicyIndex);
       runtimePolicyIndex += 1;
+      const baseline =
+        (policy.kind ?? (options.mode === 'baseline' ? 'BASELINE' : 'CERTIFIED')) === 'BASELINE';
+      const expiresAt = policy.controlExpiresAt ?? defaultControlExpiresAt;
       return {
-        mode: policy.enforce ? 'on' : 'shadow',
+        mode: policy.enforce ? (baseline ? 'baseline' : 'on') : 'shadow',
         process: true,
         enforce: policy.enforce,
-        controlRevision: policy.enforce ? 1 : null,
-        controlExpiresAt: policy.enforce
-          ? (policy.controlExpiresAt ?? new Date(Date.now() + 60_000).toISOString())
-          : null,
+        controlRevision: policy.enforce && !baseline ? 1 : null,
+        controlExpiresAt: policy.enforce && !baseline ? expiresAt : null,
+        authority: !policy.enforce
+          ? null
+          : baseline
+            ? {
+                kind: 'BASELINE',
+                behaviorIdentitySha256: policy.behaviorIdentitySha256 ?? 'a'.repeat(64),
+                nativeBehaviorIdentitySha256: policy.nativeBehaviorIdentitySha256 ?? 'b'.repeat(64),
+                settingsFingerprint:
+                  policy.settingsFingerprint ??
+                  fingerprintCommercialOcrSettingsProfile(initialSettings),
+              }
+            : { kind: 'CERTIFIED', controlRevision: 1, controlExpiresAt: expiresAt },
         enforcementAuthority: policy.enforce ? 'authorized' : 'revoked',
       };
     }),
@@ -1405,8 +1564,15 @@ function buildHarness(options: HarnessOptions = {}) {
       behaviorIdentity: {
         verified: options.sandboxBoundaryVerified ?? false,
         fingerprintSha256: 'b'.repeat(64),
+        complete: options.nativeComplete ?? true,
+        runtimeFingerprintSha256: options.nativeRuntimeFingerprint ?? 'b'.repeat(64),
       },
     }),
+  };
+  const commercialReview = {
+    recordCandidate: options.reviewError
+      ? jest.fn().mockRejectedValue(options.reviewError)
+      : jest.fn().mockResolvedValue(undefined),
   };
   const service = new CommercialOcrModerationService(
     prisma as never,
@@ -1422,6 +1588,7 @@ function buildHarness(options: HarnessOptions = {}) {
     configService,
     metrics as never,
     nativeOcr as never,
+    commercialReview as never,
   );
 
   return {
@@ -1436,6 +1603,7 @@ function buildHarness(options: HarnessOptions = {}) {
     runtimePolicy,
     metrics,
     nativeOcr,
+    commercialReview,
   };
 }
 
@@ -1445,6 +1613,7 @@ function job(overrides: Partial<CommercialOcrJob> = {}): CommercialOcrJob {
     chatId: 'chat-1',
     messageId: 'message-1',
     sourceCreatedAt,
+    eventTimestamp: sourceCreatedAt,
     imageCount: 1,
     schemaVersion: COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
     ocrVersion: 'tesseract-rus-eng-v1',

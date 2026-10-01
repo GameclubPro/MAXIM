@@ -781,7 +781,8 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
     );
   }
   if (
-    (parsed.data.COMMERCIAL_OCR_ROLLOUT_MODE === 'canary' ||
+    (parsed.data.COMMERCIAL_OCR_ROLLOUT_MODE === 'baseline' ||
+      parsed.data.COMMERCIAL_OCR_ROLLOUT_MODE === 'canary' ||
       parsed.data.COMMERCIAL_OCR_ROLLOUT_MODE === 'on') &&
     parsed.data.COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS >
       parsed.data.COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS

@@ -25,7 +25,9 @@ export const BOT_SPEECH_EDITABLE_FIELD_KEYS = [
   'invitationAccessBotMessageText',
   'invitationAccessWarnMessageText',
   'textFiltersBotMessageText',
+  'profanityBotMessageText',
   'textFiltersWarnMessageText',
+  'profanityWarnMessageText',
   'duplicateBotMessageText',
   'messageLimitsBotMessageText',
   'messageLimitsWarnMessageText',
@@ -124,7 +126,9 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       invitationAccessWarnMessageText:
         '{user}, предупреждение: {reason}. Нужно пригласить {required_invites}; прогресс: {invited_count}/{required_invites_count}.',
       textFiltersBotMessageText: '{user}, сообщение {message_status}: {reason}.',
+      profanityBotMessageText: '{user}, сообщение {message_status}: {reason}.',
       textFiltersWarnMessageText: '{user}, предупреждение: {reason}.',
+      profanityWarnMessageText: '{user}, предупреждение: {reason}.',
       duplicateBotMessageText: '{user}, сообщение распознано как повтор. {sanction}',
       messageLimitsBotMessageText: '{user}, сообщение {message_status}: {reason}.',
       messageLimitsWarnMessageText: '{user}, предупреждение: {reason}.',
@@ -178,7 +182,10 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, это предупреждение: {reason}. Нужно пригласить {required_invites}; сейчас {invited_count}/{required_invites_count}.',
       textFiltersBotMessageText:
         '{user}, сообщение {message_status}: {reason}. Давайте дальше без этого.',
+      profanityBotMessageText:
+        '{user}, сообщение {message_status}: {reason}. Давайте дальше без этого.',
       textFiltersWarnMessageText: '{user}, это предупреждение: {reason}. Давайте дальше без этого.',
+      profanityWarnMessageText: '{user}, это предупреждение: {reason}. Давайте дальше без этого.',
       duplicateBotMessageText: '{user}, сообщение повторилось. {sanction}',
       messageLimitsBotMessageText:
         '{user}, сообщение {message_status}: {reason}. Учтите это перед следующей отправкой.',
@@ -237,7 +244,11 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, предупреждение зафиксировано: {reason}. Нужно пригласить {required_invites}; засчитано {invited_count}/{required_invites_count}.',
       textFiltersBotMessageText:
         '{user}, сообщение {message_status}: {reason}. Дальше держимся правил.',
+      profanityBotMessageText:
+        '{user}, сообщение {message_status}: {reason}. Дальше держимся правил.',
       textFiltersWarnMessageText:
+        '{user}, предупреждение зафиксировано: {reason}. Повторять не стоит.',
+      profanityWarnMessageText:
         '{user}, предупреждение зафиксировано: {reason}. Повторять не стоит.',
       duplicateBotMessageText: '{user}, повтор зафиксирован. {sanction}',
       messageLimitsBotMessageText:
@@ -295,7 +306,11 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, предупреждение: {reason}. Нужно пригласить {required_invites}; сейчас {invited_count}/{required_invites_count}. Арифметика здесь без творческих трактовок.',
       textFiltersBotMessageText:
         '{user}, сообщение {message_status}: {reason}. Фильтр сработал без художественных допущений.',
+      profanityBotMessageText:
+        '{user}, сообщение {message_status}: {reason}. Фильтр сработал без художественных допущений.',
       textFiltersWarnMessageText:
+        '{user}, предупреждение: {reason}. Текст проверил фильтр на прочность; фильтр справился.',
+      profanityWarnMessageText:
         '{user}, предупреждение: {reason}. Текст проверил фильтр на прочность; фильтр справился.',
       duplicateBotMessageText: '{user}, сообщение вышло на бис. {sanction}',
       messageLimitsBotMessageText:

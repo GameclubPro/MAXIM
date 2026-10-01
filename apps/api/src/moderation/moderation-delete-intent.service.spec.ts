@@ -23,6 +23,7 @@ import {
   IMAGE_TEXT_STOP_LIST_MESSAGE_ACTION_RULE_CODE,
 } from './commercial-ocr/image-text-stop-list-binding';
 import { resolveExpectedCommercialOcrProductionBehaviorIdentity } from './commercial-ocr/commercial-ocr-behavior-identity';
+import { fingerprintCommercialOcrSettingsProfile } from './commercial-ocr/commercial-ocr-settings-profile';
 import {
   BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE,
   BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_VERSION,
@@ -384,27 +385,39 @@ function nightModeCleanupBinding(
   };
 }
 
-function commercialOcrClaimedIntentInput() {
+function commercialOcrClaimedIntentInput(authorityKind: 'CERTIFIED' | 'BASELINE' = 'CERTIFIED') {
   const chatId = 'chat-1';
   const messageId = 'message-1';
   const userId = 'user-1';
   const sourceMessageAt = new Date(Date.now() - 60_000);
   const deadlineAt = new Date(Date.now() + 60_000);
+  const settings = {
+    commercialAdsFilterEnabled: true,
+    commercialAdsSensitivity: 'BALANCED' as const,
+    commercialAdsWarnThreshold: 45,
+    commercialAdsDeleteThreshold: 65,
+  };
   const binding = buildCommercialOcrDeleteBinding({
-    ocrVersion: 'tesseract-rus-eng-v1',
-    settings: {
-      commercialAdsFilterEnabled: true,
-      commercialAdsSensitivity: 'BALANCED',
-      commercialAdsWarnThreshold: 45,
-      commercialAdsDeleteThreshold: 65,
-    },
+    ocrVersion: authorityKind === 'BASELINE' ? 'tesseract-rus-eng-v2' : 'tesseract-rus-eng-v1',
+    settings,
     senderId: userId,
     orderedPhotoIds: ['photo-1'],
     caption: 'Ремонт квартир',
     sourceCreatedAt: sourceMessageAt,
     expectedImageCount: 1,
-    controlRevision: 1,
-    controlExpiresAt: new Date(Date.now() + 120_000),
+    authority:
+      authorityKind === 'BASELINE'
+        ? {
+            kind: 'BASELINE',
+            behaviorIdentitySha256: 'b'.repeat(64),
+            nativeBehaviorIdentitySha256: 'c'.repeat(64),
+            settingsFingerprint: fingerprintCommercialOcrSettingsProfile(settings),
+          }
+        : {
+            kind: 'CERTIFIED',
+            controlRevision: 1,
+            controlExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+          },
     ocrDeadlineAt: deadlineAt,
   });
   return {
@@ -1611,128 +1624,142 @@ describe('ModerationDeleteIntentService', () => {
     expect(queue.add).not.toHaveBeenCalled();
   });
 
-  it('atomically claims the OCR action, materializes its intent and reason, then enqueues after commit', async () => {
-    const order: string[] = [];
-    const persisted = {
-      ...baseIntent,
-      status: 'PENDING' as const,
-      leaseToken: null,
-      leaseExpiresAt: null,
-      leasedFromStatus: null,
-    };
-    const claimCreateMany = jest.fn(async () => {
-      order.push('claim');
-      return { count: 1 };
-    });
-    let txQueryCount = 0;
-    const txQueryRaw = jest.fn(async () => {
-      order.push(txQueryCount === 0 ? 'intent' : 'reason-state');
-      txQueryCount += 1;
-      return [persisted];
-    });
-    const txExecuteRaw = jest.fn(async () => {
-      order.push('reason');
-      return 1;
-    });
-    const transaction = jest.fn(
-      async (
-        callback: (tx: unknown) => Promise<unknown>,
-        _options: { isolationLevel: Prisma.TransactionIsolationLevel },
-      ) => {
-        order.push('transaction-start');
-        const result = await callback({
-          moderationViolationMessageClaim: { createMany: claimCreateMany },
+  it.each(['on', 'baseline'] as const)(
+    'atomically admits %s OCR and enqueues only after ownership commits with generic deletion off',
+    async (mode) => {
+      const order: string[] = [];
+      const persisted = {
+        ...baseIntent,
+        commercialOcrGuardRequired: true,
+        standardCommercialOcrDeleteReason: true,
+        nonCommercialOcrDeleteReason: false,
+        status: 'PENDING' as const,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        leasedFromStatus: null,
+      };
+      const claimCreateMany = jest.fn(async () => {
+        order.push('claim');
+        return { count: 1 };
+      });
+      let txQueryCount = 0;
+      const txQueryRaw = jest.fn(async () => {
+        order.push(txQueryCount === 0 ? 'intent' : 'reason-state');
+        txQueryCount += 1;
+        return [persisted];
+      });
+      const txExecuteRaw = jest.fn(async () => {
+        order.push('reason');
+        return 1;
+      });
+      const transaction = jest.fn(
+        async (
+          callback: (tx: unknown) => Promise<unknown>,
+          _options: { isolationLevel: Prisma.TransactionIsolationLevel },
+        ) => {
+          order.push('transaction-start');
+          const result = await callback({
+            moderationViolationMessageClaim: { createMany: claimCreateMany },
+            $queryRaw: txQueryRaw,
+            $executeRaw: txExecuteRaw,
+          });
+          order.push('commit');
+          return result;
+        },
+      );
+      const rootQueryRaw = jest.fn(async () => {
+        order.push('post-commit-load');
+        return [persisted];
+      });
+      const { service, prisma, queue } = createService(
+        { MODERATION_DELETE_INTENT_MODE: 'off', COMMERCIAL_OCR_ROLLOUT_MODE: mode },
+        { $transaction: transaction, $queryRaw: rootQueryRaw },
+      );
+      queue.add.mockImplementation(async () => {
+        order.push('enqueue');
+        return undefined;
+      });
+
+      await expect(
+        service.ensureIntentWithMessageActionClaim(
+          commercialOcrClaimedIntentInput(mode === 'baseline' ? 'BASELINE' : 'CERTIFIED'),
+        ),
+      ).resolves.toEqual({
+        claim: 'claimed',
+        intent: { intentId: 'intent-1', rollout: 'execute', status: 'PENDING' },
+      });
+
+      expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+      expect(claimCreateMany).toHaveBeenCalledTimes(1);
+      expect(txQueryRaw).toHaveBeenCalledTimes(2);
+      expect(txExecuteRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.$executeRaw).not.toHaveBeenCalled();
+      expect(queue.add).toHaveBeenCalledWith(
+        'execute-moderation-delete-intent',
+        { intentId: 'intent-1' },
+        expect.objectContaining({ priority: 1 }),
+      );
+      expect(order).toEqual([
+        'transaction-start',
+        'claim',
+        'intent',
+        'reason',
+        'reason-state',
+        'commit',
+        'post-commit-load',
+        'enqueue',
+      ]);
+    },
+  );
+
+  it.each(['on', 'baseline'] as const)(
+    'repairs a missing %s OCR intent and reason when its exact durable claim owner replays with generic deletion off',
+    async (mode) => {
+      const input = commercialOcrClaimedIntentInput(mode === 'baseline' ? 'BASELINE' : 'CERTIFIED');
+      const persisted = {
+        ...baseIntent,
+        commercialOcrGuardRequired: true,
+        standardCommercialOcrDeleteReason: true,
+        nonCommercialOcrDeleteReason: false,
+        status: 'PENDING' as const,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        leasedFromStatus: null,
+      };
+      const claimCreateMany = jest.fn().mockResolvedValue({ count: 0 });
+      const claimFindUnique = jest.fn().mockResolvedValue(input.claim);
+      const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
+      const txExecuteRaw = jest.fn().mockResolvedValue(1);
+      const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+        callback({
+          moderationViolationMessageClaim: {
+            createMany: claimCreateMany,
+            findUnique: claimFindUnique,
+          },
           $queryRaw: txQueryRaw,
           $executeRaw: txExecuteRaw,
-        });
-        order.push('commit');
-        return result;
-      },
-    );
-    const rootQueryRaw = jest.fn(async () => {
-      order.push('post-commit-load');
-      return [persisted];
-    });
-    const { service, prisma, queue } = createService(
-      {},
-      { $transaction: transaction, $queryRaw: rootQueryRaw },
-    );
-    queue.add.mockImplementation(async () => {
-      order.push('enqueue');
-      return undefined;
-    });
+        }),
+      );
+      const { service, queue } = createService(
+        { MODERATION_DELETE_INTENT_MODE: 'off', COMMERCIAL_OCR_ROLLOUT_MODE: mode },
+        { $transaction: transaction, $queryRaw: jest.fn().mockResolvedValue([persisted]) },
+      );
 
-    await expect(
-      service.ensureIntentWithMessageActionClaim(commercialOcrClaimedIntentInput()),
-    ).resolves.toEqual({
-      claim: 'claimed',
-      intent: { intentId: 'intent-1', rollout: 'execute', status: 'PENDING' },
-    });
+      await expect(service.ensureIntentWithMessageActionClaim(input)).resolves.toMatchObject({
+        claim: 'resumed',
+        intent: { intentId: 'intent-1', rollout: 'execute', status: 'PENDING' },
+      });
 
-    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-    });
-    expect(claimCreateMany).toHaveBeenCalledTimes(1);
-    expect(txQueryRaw).toHaveBeenCalledTimes(2);
-    expect(txExecuteRaw).toHaveBeenCalledTimes(1);
-    expect(prisma.$executeRaw).not.toHaveBeenCalled();
-    expect(queue.add).toHaveBeenCalledWith(
-      'execute-moderation-delete-intent',
-      { intentId: 'intent-1' },
-      expect.objectContaining({ priority: 1 }),
-    );
-    expect(order).toEqual([
-      'transaction-start',
-      'claim',
-      'intent',
-      'reason',
-      'reason-state',
-      'commit',
-      'post-commit-load',
-      'enqueue',
-    ]);
-  });
-
-  it('repairs a missing OCR intent and reason when the exact durable claim owner replays', async () => {
-    const input = commercialOcrClaimedIntentInput();
-    const persisted = {
-      ...baseIntent,
-      status: 'PENDING' as const,
-      leaseToken: null,
-      leaseExpiresAt: null,
-      leasedFromStatus: null,
-    };
-    const claimCreateMany = jest.fn().mockResolvedValue({ count: 0 });
-    const claimFindUnique = jest.fn().mockResolvedValue(input.claim);
-    const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
-    const txExecuteRaw = jest.fn().mockResolvedValue(1);
-    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
-      callback({
-        moderationViolationMessageClaim: {
-          createMany: claimCreateMany,
-          findUnique: claimFindUnique,
-        },
-        $queryRaw: txQueryRaw,
-        $executeRaw: txExecuteRaw,
-      }),
-    );
-    const { service, queue } = createService(
-      {},
-      { $transaction: transaction, $queryRaw: jest.fn().mockResolvedValue([persisted]) },
-    );
-
-    await expect(service.ensureIntentWithMessageActionClaim(input)).resolves.toMatchObject({
-      claim: 'resumed',
-      intent: { intentId: 'intent-1', status: 'PENDING' },
-    });
-
-    expect(claimFindUnique).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { messageActionKey: input.claim.messageActionKey } }),
-    );
-    expect(txQueryRaw).toHaveBeenCalledTimes(2);
-    expect(txExecuteRaw).toHaveBeenCalledTimes(1);
-    expect(queue.add).toHaveBeenCalledTimes(1);
-  });
+      expect(claimFindUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { messageActionKey: input.claim.messageActionKey } }),
+      );
+      expect(txQueryRaw).toHaveBeenCalledTimes(2);
+      expect(txExecuteRaw).toHaveBeenCalledTimes(1);
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('atomically persists and enqueues a guarded image stop-list intent in image-only rollout', async () => {
     const input = imageTextStopListClaimedIntentInput();
@@ -2877,6 +2904,76 @@ describe('ModerationDeleteIntentService', () => {
     expect(service.getRolloutForRule('chat-1', 'LINK_BLOCKED_DELETE')).toBe('observed');
     expect(service.getRolloutForRule('*', COMMERCIAL_OCR_DELETE_RULE_CODE)).toBe('observed');
   });
+
+  it.each(['off', 'baseline', 'invalid-mode'])(
+    'admits only commercial baseline when generic deletion mode is %s and image stop-list is off',
+    (genericMode) => {
+      const service = createService({
+        MODERATION_DELETE_INTENT_MODE: genericMode,
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline',
+        COMMERCIAL_OCR_CANARY_CHAT_IDS: '',
+        IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'off',
+      }).service;
+      const internals = service as unknown as ServiceInternals;
+
+      expect(service.getRolloutForInput(commercialOcrClaimedIntentInput('BASELINE').intent)).toBe(
+        'execute',
+      );
+      expect(service.getRolloutForChat('chat-1')).toBe('off');
+      expect(service.getRolloutForRule('chat-1', 'STOP_WORD_DELETE')).toBe('off');
+      expect(service.getRolloutForRule('chat-1', 'LINK_BLOCKED_DELETE')).toBe('off');
+      expect(service.getRolloutForInput(imageTextStopListClaimedIntentInput().intent)).toBe('off');
+      expect(
+        internals.isExecutionEnabledForIntent({
+          chatId: 'chat-1',
+          standardCommercialOcrDeleteReason: true,
+          commercialOcrGuardRequired: true,
+          nonCommercialOcrDeleteReason: false,
+        }),
+      ).toBe(true);
+      expect(
+        internals.isExecutionEnabledForIntent({
+          chatId: 'chat-1',
+          commercialOcrGuardRequired: false,
+          nonCommercialOcrDeleteReason: true,
+        }),
+      ).toBe(false);
+      expect(
+        internals.isExecutionEnabledForIntent({
+          chatId: 'chat-1',
+          standardCommercialOcrDeleteReason: false,
+          imageTextStopListDeleteReason: true,
+          imageTextStopListDeleteOnly: true,
+          commercialOcrDeleteReason: true,
+          commercialOcrGuardRequired: true,
+          nonCommercialOcrDeleteReason: false,
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it.each(['off', 'invalid-mode'])(
+    'does not claim commercial OCR ownership when its mode is %s',
+    async (mode) => {
+      const transaction = jest.fn();
+      const { service, queue } = createService(
+        {
+          MODERATION_DELETE_INTENT_MODE: 'off',
+          COMMERCIAL_OCR_ROLLOUT_MODE: mode,
+        },
+        { $transaction: transaction },
+      );
+
+      await expect(
+        service.ensureIntentWithMessageActionClaim(commercialOcrClaimedIntentInput('BASELINE')),
+      ).resolves.toEqual({
+        claim: 'blocked',
+        intent: null,
+      });
+      expect(transaction).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    },
+  );
 
   it('rechecks the reason-scoped commercial OCR rollout for durable intents', () => {
     const service = createService({
@@ -5983,66 +6080,77 @@ describe('ModerationDeleteIntentService', () => {
     expect(deleteMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('runs the commercial OCR guard on both sides of the dispatch fence', async () => {
-    const intent = { ...baseIntent, commercialOcrGuardRequired: true };
-    const completed = {
-      ...intent,
-      status: 'SUCCEEDED',
-      succeededBotId: 'bot-1',
-      remoteDeleteSucceededAt: new Date(),
-      remoteDeleteSucceededBotId: 'bot-1',
-      leaseToken: null,
-      leaseExpiresAt: null,
-    };
-    const events: string[] = [];
-    const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
-      const sql = query.strings?.join('?') ?? '';
-      if (sql.includes('"delete_dispatch_started_at" = CURRENT_TIMESTAMP')) {
-        events.push('dispatch-fence');
-      }
-      if (sql.includes('COALESCE(intent."commercial_ocr_deadline_at"')) {
-        events.push('commercial-ocr-deadline-fence');
-      }
-      return 1;
-    });
-    const assertIntentStillActionable = jest.fn().mockImplementation(async () => {
-      events.push('commercial-ocr-guard');
-      return 'allowed';
-    });
-    const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]);
-    const { service } = createService(
-      {},
-      { $queryRaw: queryRaw, $executeRaw: executeRaw },
-      {
-        deleteMessage: jest.fn(async () => {
-          events.push('max-delete');
-        }),
-      },
-      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
-      undefined,
-      undefined,
-      { assertIntentStillActionable },
-    );
+  it.each(['on', 'baseline'] as const)(
+    'runs the %s commercial OCR guard on both sides of dispatch with generic deletion off',
+    async (mode) => {
+      const intent = {
+        ...baseIntent,
+        commercialOcrGuardRequired: true,
+        standardCommercialOcrDeleteReason: true,
+        nonCommercialOcrDeleteReason: false,
+      };
+      const completed = {
+        ...intent,
+        status: 'SUCCEEDED',
+        succeededBotId: 'bot-1',
+        remoteDeleteSucceededAt: new Date(),
+        remoteDeleteSucceededBotId: 'bot-1',
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const events: string[] = [];
+      const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+        const sql = query.strings?.join('?') ?? '';
+        if (sql.includes('"delete_dispatch_started_at" = CURRENT_TIMESTAMP')) {
+          events.push('dispatch-fence');
+        }
+        if (sql.includes('COALESCE(intent."commercial_ocr_deadline_at"')) {
+          events.push('commercial-ocr-deadline-fence');
+        }
+        return 1;
+      });
+      const assertIntentStillActionable = jest.fn().mockImplementation(async () => {
+        events.push('commercial-ocr-guard');
+        return 'allowed';
+      });
+      const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]);
+      const { service } = createService(
+        { MODERATION_DELETE_INTENT_MODE: 'off', COMMERCIAL_OCR_ROLLOUT_MODE: mode },
+        { $queryRaw: queryRaw, $executeRaw: executeRaw },
+        {
+          deleteMessage: jest.fn(async () => {
+            events.push('max-delete');
+          }),
+        },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+        undefined,
+        undefined,
+        { assertIntentStillActionable },
+      );
 
-    await service.executeLeasedIntent('intent-1', 'lease-1');
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+        status: 'SUCCEEDED',
+        confirmed: true,
+      });
 
-    expect(assertIntentStillActionable).toHaveBeenCalledTimes(2);
-    expect(assertIntentStillActionable).toHaveBeenNthCalledWith(1, {
-      intentId: 'intent-1',
-      chatId: 'chat-1',
-      messageId: 'message-1',
-      subjectUserId: 'user-1',
-      sourceMessageAt: baseIntent.sourceMessageAt,
-      botId: 'bot-1',
-    });
-    expect(events).toEqual([
-      'commercial-ocr-guard',
-      'dispatch-fence',
-      'commercial-ocr-guard',
-      'commercial-ocr-deadline-fence',
-      'max-delete',
-    ]);
-  });
+      expect(assertIntentStillActionable).toHaveBeenCalledTimes(2);
+      expect(assertIntentStillActionable).toHaveBeenNthCalledWith(1, {
+        intentId: 'intent-1',
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        subjectUserId: 'user-1',
+        sourceMessageAt: baseIntent.sourceMessageAt,
+        botId: 'bot-1',
+      });
+      expect(events).toEqual([
+        'commercial-ocr-guard',
+        'dispatch-fence',
+        'commercial-ocr-guard',
+        'commercial-ocr-deadline-fence',
+        'max-delete',
+      ]);
+    },
+  );
 
   it('blocks MAX delete when the OCR deadline expires during the final asynchronous guard', async () => {
     const intent = {
@@ -6824,55 +6932,58 @@ describe('ModerationDeleteIntentService', () => {
     },
   );
 
-  it('keeps the OCR guard when the attached non-OCR reason is outside its rollout', async () => {
-    const intent = {
-      ...baseIntent,
-      commercialOcrGuardRequired: true,
-      commercialOcrDeleteReason: true,
-      nonCommercialOcrDeleteReason: true,
-    };
-    const terminal = {
-      ...intent,
-      status: 'FAILED_TERMINAL' as const,
-      leaseToken: null,
-      leaseExpiresAt: null,
-      leasedFromStatus: null,
-      lastErrorCode: 'commercial_ocr_runtime_revoked',
-    };
-    const guardError = new CommercialOcrDeleteGuardRejectedError(
-      'commercial_ocr_runtime_revoked',
-      'OCR runtime revoked',
-    );
-    const assertIntentStillActionable = jest.fn().mockRejectedValue(guardError);
-    const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([terminal]);
-    const executeRaw = jest.fn().mockResolvedValue(1);
-    const txQueryRaw = jest
-      .fn()
-      .mockResolvedValueOnce([{ id: intent.id }])
-      .mockResolvedValueOnce([intent]);
-    const transaction = jest.fn(
-      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
-        callback({ $queryRaw: txQueryRaw, $executeRaw: executeRaw }),
-    );
-    const deleteMessage = jest.fn();
-    const { service } = createService(
-      { MODERATION_DELETE_INTENT_MODE: 'shadow', COMMERCIAL_OCR_ROLLOUT_MODE: 'on' },
-      { $queryRaw: queryRaw, $executeRaw: executeRaw, $transaction: transaction },
-      { deleteMessage },
-      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
-      undefined,
-      undefined,
-      { assertIntentStillActionable },
-    );
+  it.each(['on', 'baseline'] as const)(
+    'keeps a fresh %s OCR guard when the attached non-OCR reason is outside its rollout',
+    async (mode) => {
+      const intent = {
+        ...baseIntent,
+        commercialOcrGuardRequired: true,
+        commercialOcrDeleteReason: true,
+        nonCommercialOcrDeleteReason: true,
+      };
+      const terminal = {
+        ...intent,
+        status: 'FAILED_TERMINAL' as const,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        leasedFromStatus: null,
+        lastErrorCode: 'commercial_ocr_runtime_revoked',
+      };
+      const guardError = new CommercialOcrDeleteGuardRejectedError(
+        'commercial_ocr_runtime_revoked',
+        'OCR runtime revoked',
+      );
+      const assertIntentStillActionable = jest.fn().mockRejectedValue(guardError);
+      const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([terminal]);
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const txQueryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([{ id: intent.id }])
+        .mockResolvedValueOnce([intent]);
+      const transaction = jest.fn(
+        async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+          callback({ $queryRaw: txQueryRaw, $executeRaw: executeRaw }),
+      );
+      const deleteMessage = jest.fn();
+      const { service } = createService(
+        { MODERATION_DELETE_INTENT_MODE: 'shadow', COMMERCIAL_OCR_ROLLOUT_MODE: mode },
+        { $queryRaw: queryRaw, $executeRaw: executeRaw, $transaction: transaction },
+        { deleteMessage },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+        undefined,
+        undefined,
+        { assertIntentStillActionable },
+      );
 
-    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
-      kind: 'terminal',
-      status: 'FAILED_TERMINAL',
-    });
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+        kind: 'terminal',
+        status: 'FAILED_TERMINAL',
+      });
 
-    expect(assertIntentStillActionable).toHaveBeenCalledTimes(1);
-    expect(deleteMessage).not.toHaveBeenCalled();
-  });
+      expect(assertIntentStillActionable).toHaveBeenCalledTimes(1);
+      expect(deleteMessage).not.toHaveBeenCalled();
+    },
+  );
 
   it('keeps a concurrent executable reason retryable when an OCR guard rejects terminally', async () => {
     const staleOcrOnlyIntent = {
@@ -7395,7 +7506,7 @@ describe('ModerationDeleteIntentService', () => {
         event: {
           metadata: {
             commercialTextBinding: {
-              version: 1,
+              version: 2,
               decisionVersion: 'commercial-deterministic-v3',
               detectorSourceSha256: 'a'.repeat(64),
               sourceSha256: 'b'.repeat(64),
@@ -8909,6 +9020,41 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('ocr_reason."rule_code" =');
     expect(query?.values).toEqual(
       expect.arrayContaining(['chat-1', COMMERCIAL_OCR_DELETE_RULE_CODE]),
+    );
+  });
+
+  it('recovers due commercial baseline intents through a bounded OCR-only sweep when other policies are off', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([{ id: 'baseline-intent-1' }]);
+    const { service, queue } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'off',
+        MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: false,
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline',
+        COMMERCIAL_OCR_CANARY_CHAT_IDS: '',
+        IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'off',
+      },
+      { $queryRaw: queryRaw },
+    );
+
+    await expect(service.sweepDueIntents()).resolves.toBe(1);
+
+    const query = queryRaw.mock.calls[0]![0];
+    const sql = query.strings?.join('?') ?? '';
+    expect(sql).toMatch(
+      /FALSE\s+AND EXISTS\s*\(\s*SELECT 1\s+FROM "moderation_delete_intent_reasons" base_reason/u,
+    );
+    expect(sql).toMatch(
+      /TRUE\s+AND EXISTS\s*\(\s*SELECT 1\s+FROM "moderation_delete_intent_reasons" ocr_reason/u,
+    );
+    expect(sql).toContain("COALESCE(ocr_reason.\"metadata\"->>'source', '') <> 'image_text_ocr'");
+    expect(sql).not.toContain('image_text_reason');
+    expect(sql).toContain('FOR UPDATE SKIP LOCKED');
+    expect(sql).toContain('LIMIT');
+    expect(query.values).toContain(100);
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: 'baseline-intent-1' },
+      expect.objectContaining({ priority: 10 }),
     );
   });
 

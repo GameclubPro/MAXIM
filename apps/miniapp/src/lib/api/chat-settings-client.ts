@@ -14,6 +14,8 @@ import {
   scheduleDomainRemovalRequestSchema,
   updateChatRulesRequestSchema,
   updateSettingsRequestSchema,
+  patchSettingsSectionRequestSchema,
+  type ApplySettingsSection,
   type ApplySectionToAllResponse,
   type ApplySectionTargetPreviewResponse,
   type ApplySettingsTarget,
@@ -27,6 +29,7 @@ import {
   type PublishChatRulesRequest,
   type ResolveRequiredSubscriptionChannelResponse,
 } from '@maxim/contracts/settings';
+import { BOT_SPEECH_EDITABLE_FIELD_KEYS } from '@maxim/contracts/bot-speech';
 import {
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
@@ -229,6 +232,37 @@ export async function updateSettings(
     body: JSON.stringify(requestBody),
   });
   return chatSettingsSchema.parse(response);
+}
+
+export async function patchSettingsSection(
+  api: ApiTransport,
+  chatId: string,
+  section: ApplySettingsSection,
+  data: ChatSettings,
+  keys: readonly (keyof ChatSettings)[],
+  options: { recheckBotCapabilities?: boolean } = {},
+): Promise<ChatSettings> {
+  const changes: Record<string, unknown> = Object.fromEntries(keys.map((key) => [key, data[key]]));
+  const mediaKeys = BOT_SPEECH_EDITABLE_FIELD_KEYS.filter((key) => keys.includes(key));
+  if (mediaKeys.length > 0) {
+    changes.botSpeechMedia = Object.fromEntries(
+      mediaKeys
+        .filter((key) => data.botSpeechMedia[key])
+        .map((key) => [key, data.botSpeechMedia[key]]),
+    );
+  }
+  const request = patchSettingsSectionRequestSchema.parse({
+    section,
+    expectedRevision: data.settingsRevision,
+    changes,
+  });
+  const query = options.recheckBotCapabilities ? '?recheckBotCapabilities=1' : '';
+  return chatSettingsSchema.parse(
+    await api.request(`/chats/${chatId}/settings/section${query}`, {
+      method: 'PATCH',
+      body: JSON.stringify(request),
+    }),
+  );
 }
 
 export async function getKaravanStorefrontAllowlist(

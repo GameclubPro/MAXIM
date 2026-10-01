@@ -155,7 +155,7 @@ export function normalizeSectionDraftSettings(
 }
 
 export function serializeChatSettingsDraft(settings: ChatSettings): string {
-  return JSON.stringify(settings);
+  return JSON.stringify({ ...settings, settingsRevision: undefined });
 }
 
 export function shouldHydrateSettingsDraftFromServer(
@@ -242,7 +242,9 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'russianProfanityFilterEnabled',
     'profanitySensitivity',
     'profanityBotMessageEnabled',
+    'profanityBotMessageText',
     'profanityWarnEnabled',
+    'profanityWarnMessageText',
     'profanityMuteEnabled',
     'profanityMuteDurationHours',
     'profanityBanEnabled',
@@ -510,6 +512,8 @@ export function mergeNightSectionSettings(
   sourceSettings: ChatSettings,
 ): ChatSettings {
   const nextSettings = { ...targetSettings } as ChatSettings;
+  nextSettings.settingsRevision =
+    sourceSettings.settingsRevision ?? targetSettings.settingsRevision;
   const nextRecord = nextSettings as Record<keyof ChatSettings, unknown>;
   const sourceRecord = sourceSettings as Record<keyof ChatSettings, unknown>;
 
@@ -541,6 +545,8 @@ export function mergeSectionSettings(
   for (const key of SECTION_SETTING_KEYS[section]) {
     nextRecord[key] = sourceRecord[key];
   }
+  nextSettings.settingsRevision =
+    sourceSettings.settingsRevision ?? targetSettings.settingsRevision;
   nextSettings.botSpeechMedia = mergeBotSpeechMediaForKeys(
     targetSettings.botSpeechMedia,
     sourceSettings.botSpeechMedia,
@@ -548,6 +554,25 @@ export function mergeSectionSettings(
   );
 
   return nextSettings;
+}
+
+// FLAG: Resolving one stale section must not rebase other unsaved sections onto a newer fence.
+export function mergeSectionSettingsAfterSave(
+  target: ChatSettings,
+  saved: ChatSettings,
+  section: ApplySectionKey,
+  expectedRevision = target.settingsRevision,
+): ChatSettings {
+  const next = mergeSectionSettings(target, saved, section);
+  const hasOtherChanges = (Object.keys(SECTION_SETTING_KEYS) as ApplySectionKey[]).some(
+    (other) =>
+      other !== section &&
+      (hasSectionSettingChanges(target, saved, other) ||
+        hasSectionBotSpeechMediaChanges(target, saved, other)),
+  );
+  if (target.settingsRevision !== expectedRevision && hasOtherChanges)
+    next.settingsRevision = target.settingsRevision;
+  return next;
 }
 
 export function mergeCommentsSettings(
@@ -574,5 +599,6 @@ export function mergeBotSpeechStyleSettings(
   return {
     ...targetSettings,
     botSpeechStyle: sourceSettings.botSpeechStyle,
+    settingsRevision: sourceSettings.settingsRevision ?? targetSettings.settingsRevision,
   };
 }

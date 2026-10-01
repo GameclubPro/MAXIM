@@ -64,14 +64,22 @@ function harness() {
   };
   const botLink = { isKnownBotUserId: jest.fn().mockReturnValue(false) };
   const immunity = { consumeForMessage: jest.fn().mockResolvedValue('not_granted') };
+  const authority = {
+    revision: 0,
+    baselineAllowed: true,
+    promotedPolicyCohorts: [] as string[],
+    mode: 'baseline',
+  };
+  const policy = { authority: jest.fn().mockImplementation(async () => authority) };
   const service = new CommercialDeleteGuardService(
     prisma as never,
     max as never,
     botLink as never,
     immunity as never,
     new ConfigService({ MODERATION_DELETE_INTENT_TIMEOUT_MS: 5000 }),
+    policy as never,
   );
-  return { service, settings, binding, reason, prisma, max, botLink, immunity };
+  return { service, settings, binding, reason, prisma, max, botLink, immunity, authority, policy };
 }
 
 describe('CommercialDeleteGuardService', () => {
@@ -100,6 +108,84 @@ describe('CommercialDeleteGuardService', () => {
     expect(h.max.getChatMemberAccess).toHaveBeenCalledTimes(1);
     expect(h.prisma.chatSettings.findUnique).toHaveBeenCalledTimes(2);
   });
+
+  it('revokes a pending delete when the global text control is off', async () => {
+    const h = harness();
+    h.authority.baselineAllowed = false;
+    await expect(h.service.assertIntentStillActionable(input)).rejects.toMatchObject({
+      code: 'commercial_text_authority_changed',
+    });
+    expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it('rechecks runtime revision after remote work', async () => {
+    const h = harness();
+    h.max.getExactMessageRow.mockImplementation(async () => {
+      h.authority.revision = 1;
+      return message();
+    });
+    await expect(h.service.assertIntentStillActionable(input)).rejects.toMatchObject({
+      code: 'commercial_text_authority_changed',
+    });
+  });
+
+  it('issues no sanction permit for absent or independently deleted messages', () => {
+    const h = harness();
+    for (const [deleted, commercialVerified] of [
+      [false, true],
+      [true, false],
+    ]) {
+      expect(
+        h.service.createSanctionPermit({
+          ...input,
+          evidence: [h.reason],
+          deleted,
+          commercialVerified,
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it('authorizes only its own short-lived permit without rereading the deleted message', async () => {
+    const h = harness();
+    const permit = h.service.createSanctionPermit({
+      ...input,
+      evidence: [h.reason],
+      deleted: true,
+      commercialVerified: true,
+    })!;
+    await expect(h.service.authorizeSanction({ ...permit })).resolves.toBe(false);
+    await expect(h.service.authorizeSanction(permit)).resolves.toBe(true);
+    expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
+    jest.useFakeTimers();
+    jest.setSystemTime(permit.expiresAtMs);
+    await expect(h.service.authorizeSanction(permit)).resolves.toBe(false);
+  });
+
+  it.each(['disabled', 'settings', 'admin', 'immune', 'runtime'])(
+    'revokes post-delete authority after %s changes',
+    async (change) => {
+      const h = harness();
+      const permit = h.service.createSanctionPermit({
+        ...input,
+        evidence: [h.reason],
+        deleted: true,
+        commercialVerified: true,
+      })!;
+      if (change === 'disabled') h.settings.commercialAdsFilterEnabled = false;
+      if (change === 'settings') h.settings.textFiltersMuteEnabled = false;
+      if (change === 'admin')
+        h.max.getChatMemberAccess.mockResolvedValue({
+          userId: 'user',
+          isAdmin: true,
+          isOwner: false,
+        });
+      if (change === 'immune') h.immunity.consumeForMessage.mockResolvedValue('granted');
+      if (change === 'runtime') h.authority.baselineAllowed = false;
+      await expect(h.service.authorizeSanction(permit)).resolves.toBe(false);
+      expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not delete an edited source under its previous binding', async () => {
     const h = harness();
@@ -156,8 +242,81 @@ describe('CommercialDeleteGuardService', () => {
     expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
   });
 
+  it.each(['runtime-revision', 'required-cohorts'] as const)(
+    'rejects every selected reason with a conflicting %s, in either arrival order',
+    async (change) => {
+      for (const reverse of [false, true]) {
+        const h = harness();
+        h.authority.promotedPolicyCohorts = ['owned-service-contrast-v1'];
+        const other = buildCommercialTextDeleteBinding({
+          text,
+          settings: h.settings,
+          eventTimestampMs: h.binding.eventTimestampMs,
+          campaignContext: null,
+          textRuntimeRevision: change === 'runtime-revision' ? 1 : 0,
+          requiredPolicyCohorts: change === 'required-cohorts' ? ['owned-service-contrast-v1'] : [],
+        });
+        const reasons = [
+          h.reason,
+          {
+            ...h.reason,
+            reasonKey: `${h.reason.reasonKey}:conflicting-policy`,
+            metadata: { messageDisposition: 'DELETE', commercialTextBinding: other },
+          },
+        ];
+        if (reverse) reasons.reverse();
+        h.prisma.moderationDeleteIntentReason.findMany.mockResolvedValue(reasons);
+        await expect(h.service.assertIntentStillActionable(input)).rejects.toMatchObject({
+          code: 'commercial_text_binding_invalid',
+        });
+        expect(h.max.getChatMemberAccess).not.toHaveBeenCalled();
+        expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
+        const permit = h.service.createSanctionPermit({
+          ...input,
+          evidence: reasons,
+          deleted: true,
+          commercialVerified: true,
+        })!;
+        await expect(h.service.authorizeSanction(permit)).resolves.toBe(false);
+        expect(h.max.getChatMemberAccess).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('treats required cohorts as a set and validates the coherent snapshot against current authority', async () => {
+    const h = harness();
+    const binding = buildCommercialTextDeleteBinding({
+      text,
+      settings: h.settings,
+      eventTimestampMs: h.binding.eventTimestampMs,
+      campaignContext: null,
+      requiredPolicyCohorts: ['owned-service-contrast-v1', 'sliding-campaign-v1'],
+    });
+    const other = {
+      ...binding,
+      requiredPolicyCohorts: [...binding.requiredPolicyCohorts].reverse(),
+    };
+    h.prisma.moderationDeleteIntentReason.findMany.mockResolvedValue([
+      { ...h.reason, metadata: { commercialTextBinding: binding } },
+      {
+        ...h.reason,
+        reasonKey: `${h.reason.reasonKey}:coherent-policy`,
+        metadata: { commercialTextBinding: other },
+      },
+    ]);
+    await expect(h.service.assertIntentStillActionable(input)).rejects.toMatchObject({
+      code: 'commercial_text_authority_changed',
+    });
+    expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
+    h.authority.promotedPolicyCohorts = ['owned-service-contrast-v1', 'sliding-campaign-v1'];
+    await expect(h.service.assertIntentStillActionable(input)).resolves.toEqual({
+      kind: 'allowed',
+      reasonKeys: [h.reason.reasonKey, `${h.reason.reasonKey}:coherent-policy`],
+    });
+  });
+
   it.each([
-    { version: 2 },
+    { version: 1 },
     { sourceSha256: 'invalid' },
     { extra: true },
     { campaignContext: { rawText: 'private' } },

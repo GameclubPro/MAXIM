@@ -61,6 +61,12 @@ describe('stored chat settings button URL sanitizer', () => {
       },
       chatSettings: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          ...storedSettings,
+          profanityAdminContactButtonEnabled: false,
+          profanityAdminContactButtonUrl: '',
+          updatedAt: new Date('2026-07-19T08:00:01.000Z'),
+        }),
       },
     };
     const invalidate = jest.fn().mockResolvedValue(undefined);
@@ -80,6 +86,7 @@ describe('stored chat settings button URL sanitizer', () => {
     expect(result.antiSpamEnabled).toBe(true);
     expect(result.profanityAdminContactButtonEnabled).toBe(false);
     expect(result.profanityAdminContactButtonUrl).toBe('');
+    expect(result.settingsRevision).toBe('2026-07-19T08:00:01.000Z');
     expect(prisma.chatSettings.updateMany).toHaveBeenCalledWith({
       where: { chatId: 'chat-1', updatedAt },
       data: expect.objectContaining({

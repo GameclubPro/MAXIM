@@ -3,8 +3,10 @@ import { hasCommercialPhoneLikeText } from './commercial-phone';
 import { hasPaidCommercialPlacementOffer } from './commercial-recall-patterns';
 import {
   COMMERCIAL_OWNED_SERVICE_FRAME,
+  COMMERCIAL_CANDIDATE_SERVICE_CONTRAST_BOUNDARY,
   COMMERCIAL_SERVICE_CONTRAST_BOUNDARY,
   resolveCommercialServiceSpeechAct,
+  type CommercialServiceSpeechAct,
 } from './commercial-service-speech-act';
 import {
   ADS_ATTRIBUTED_COMMERCIAL_FRAME_PATTERN,
@@ -115,11 +117,14 @@ const NAMED_SOURCE_SIDE_SERVICE_ASSERTION_PATTERN =
 const NEGATED_SOURCE_SIDE_SERVICE_ASSERTION_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:больше\s+)?не\s+(?:оказыва(?:ет|ют)|устанавлива(?:ет|ют)|выполня(?:ет|ют)|предлага(?:ет|ют)|предоставля(?:ет|ют)|занима(?:ется|ются)|провод(?:ит|ят)|дела(?:ет|ют)|ремонтиру(?:ет|ют))(?=$|[^\p{L}\p{N}_-])/iu;
 const SOURCE_SIDE_SERVICE_NUMERIC_PRICE_PATTERN =
-  /(?:^|[^\p{L}\p{N}_-])(?:(?:цен[аы]|стоимост[ьи])\s*(?:от\s*)?\d{2,}|от\s+\d{2,}|\d[\d\s.,]{0,16}\s*(?:р(?:уб)?\.?|₽))(?=$|[^\p{L}\p{N}_-])/iu;
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:цен[аы]|стоимост[ьи])\s*(?:от\s*)?\d{2,}|от\s+\d{2,}|\d[\d\s.,]{0,16}\s*(?:р(?:уб(?:ль|ля|лей)?)?\.?|₽))(?=$|[^\p{L}\p{N}_-])/iu;
 const SERVICE_RESPONSE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:звоните|пишите|обращайтесь|записывайтесь)(?![\p{L}\p{N}_-])/iu;
 const STRUCTURED_SERVICE_CARD_PATTERN =
-  /^(?:монтаж|ремонт|установк[а-яё-]*|химчистк[а-яё-]*|перетяжк[а-яё-]*|чистк[а-яё-]*|заточк[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+  /^(?:только\s+)?(?:монтаж|ремонт|установк[а-яё-]*|химчистк[а-яё-]*|перетяжк[а-яё-]*|чистк[а-яё-]*|заточк[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const EXPLICIT_SERVICE_BOOKING_PATTERN =
+  /^(?:(?:я|мы)\s+)?принима(?:ю|ем)\s+заказ[а-яё-]*(?=$|[^\p{L}\p{N}_-])/iu;
+const EXPLICIT_SERVICE_CARD_PATTERN = /^(?:услуг[аи]|сервис)\s+[^.!?;\n]{1,160}$/iu;
 const THIRD_PARTY_SERVICE_RESPONSE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:звоните|пишите|обращайтесь|записывайтесь)(?:[^.!?\n]{0,48})(?:ему|ей|им|мастер[а-яё-]*|подрядчик[а-яё-]*|специалист[а-яё-]*|исполнител[а-яё-]*|к\s+(?:нему|ней|ним)|по\s+(?:(?:их|е[её]|его)\s+(?:номеру|телефону)|(?:номеру|телефону)\s+(?:компани[иия]|из\s+объявлени[а-яё-]*)|контакт[а-яё-]*\s+(?:мастер[а-яё-]*|подрядчик[а-яё-]*|специалист[а-яё-]*|исполнител[а-яё-]*)))(?=$|[^\p{L}\p{N}_-])/iu;
 const BUYER_SERVICE_RESPONSE_PATTERN =
@@ -161,7 +166,7 @@ const ATTRIBUTED_EDITORIAL_QUALIFIER_PATTERN =
 const ATTRIBUTED_REPORT_QUALIFIER_PREFILTER =
   /(?:не\s+предложени[а-яё-]*|это\s+цитат[а-яё-]*|чуж[а-яё-]*\s+объявлени[а-яё-]*|пишите?\s+(?:ей|ему|им)|телефон[а-яё-]*\s+(?:поставщик[а-яё-]*|продавц[а-яё-]*)|контакт[а-яё-]*\s+продавц[а-яё-]*|ничего\s+не\s+прода[а-яё-]*|не\s+продавец|это\s+не\s+реклам[а-яё-]*|дословно(?:[^.!?\n]{0,48})цитир[а-яё-]*)/iu;
 const DEMAND_SIDE_SERVICE_FRAME_PATTERN =
-  /(?:^|[^\p{L}\p{N}_-])(?:(?:сломал[асоь]?|сломан[аыо]?|не\s+работает|перестал[аи]?\s+работать)(?:[\p{L}\p{N}\s,:-]{0,80})(?:холодильник[\p{L}\p{N}_-]*|техник[\p{L}\p{N}_-]*|телефон[\p{L}\p{N}_-]*|машин[а-яё-]*|окн[а-яё-]*|двер[а-яё-]*)|(?:бюджет|объ[её]м)\s*[:,-]?\s*[\d[]|(?:нуж(?:ен|на|но|ны)|требуется)(?:[\p{L}\p{N}\s,:-]{0,48})(?:ремонт|мастер|специалист))(?=$|[^\p{L}\p{N}_-])/iu;
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:сломал[асоь]?|сломан[аыо]?|не\s+работает|перестал[аи]?\s+работать)(?:[\p{L}\p{N}\s,:-]{0,80})(?:холодильник[\p{L}\p{N}_-]*|техник[\p{L}\p{N}_-]*|телефон[\p{L}\p{N}_-]*|машин[а-яё-]*|окн[а-яё-]*|двер[а-яё-]*)|(?:бюджет|объ[её]м)\s*[:,-]?\s*(?:\d+(?:[.,]\d+)?|\[price\])|(?:нуж(?:ен|на|но|ны)|требуется)(?:[\p{L}\p{N}\s,:-]{0,48})(?:ремонт|мастер|специалист))(?=$|[^\p{L}\p{N}_-])/iu;
 const QUOTED_AD_EXAMPLE_FRAME_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:(?:цитир[\p{L}\p{N}_-]*|привод[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s,:«»"'-]{0,80})пример[\p{L}\p{N}_-]*(?:\s+реклам[\p{L}\p{N}_-]*)?|(?:образец|пример)[\p{L}\p{N}_-]*\s+реклам[\p{L}\p{N}_-]*[\s,«»"':-]{0,32}(?:а\s+)?не\s+предложени[\p{L}\p{N}_-]*|не\s+предложени[\p{L}\p{N}_-]*[\s,«»"':-]{0,32}а\s+(?:образец|пример)[\p{L}\p{N}_-]*\s+реклам[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
 const FUEL_PRICE_EDITORIAL_ASSERTION_PATTERN =
@@ -253,6 +258,40 @@ export function hasQualifiedSourceSideServiceOffer(text: string): boolean {
     ) {
       return true;
     }
+  }
+  return false;
+}
+
+export function hasExplicitServiceBookingCard(text: string): boolean {
+  if (text.length > MAX_LOCAL_WINDOW_LENGTH) return false;
+  const inspection = inspectCommercialAssertions(text.toLowerCase());
+  if (!inspection.complete) return false;
+  const assertions = inspection.assertions;
+  if (
+    assertions.some(
+      (assertion) =>
+        resolveCommercialServiceSpeechAct(assertion) !== 'NONE' || isProtectedAssertion(assertion),
+    )
+  )
+    return false;
+  for (let index = 0; index < assertions.length; index += 1) {
+    const source = assertions[index]!;
+    const normalizedSource = normalizeCommercialText(source);
+    if (
+      !EXPLICIT_SERVICE_CARD_PATTERN.test(source) ||
+      (!ADS_SERVICE_SPECIALTY_PATTERNS.some(({ pattern }) => testPattern(pattern, source)) &&
+        !ADS_SERVICE_SPECIALTY_MARKERS.some((marker) => normalizedSource.includes(marker)))
+    )
+      continue;
+    const tail = assertions.slice(index + 1, index + 4);
+    if (!tail.some((assertion) => EXPLICIT_SERVICE_BOOKING_PATTERN.test(assertion))) continue;
+    const window = [source, ...tail].join('. ');
+    if (
+      hasCommercialPhoneLikeText(window) ||
+      ADS_CONTEXTUAL_PHONE_PLACEHOLDER_PATTERN.test(window) ||
+      ADS_HANDLE_CONTACT_PATTERN.test(window)
+    )
+      return true;
   }
   return false;
 }
@@ -402,6 +441,7 @@ function inspectCommercialAssertions(rawLoweredText: string): {
   const assertions = insertNoSpaceDotAssertionBoundaries(boundedText)
     .replace(CONTRASTIVE_SELF_PROMO_BOUNDARY, '\n')
     .replace(COMMERCIAL_SERVICE_CONTRAST_BOUNDARY, '\n')
+    .replace(COMMERCIAL_CANDIDATE_SERVICE_CONTRAST_BOUNDARY, '\n')
     .split(ASSERTION_BOUNDARY)
     .flatMap(splitWarningPrefixedSelfPromo)
     .map((assertion) => assertion.trim())
@@ -466,6 +506,7 @@ function classifyAssertions(
   let protectedCarry = 0;
   let protectedQuoteDelimiters: ProtectedQuoteDelimiter[] = [];
   let ordinaryProtectedCarry = false;
+  let ordinaryProtectedSpeechAct: CommercialServiceSpeechAct = 'NONE';
 
   for (let index = 0; index < assertionTexts.length; index += 1) {
     const text = assertionTexts[index];
@@ -484,6 +525,9 @@ function classifyAssertions(
     const intrinsicOrdinaryProtected =
       includeOrdinaryProtectedContext &&
       (attributedCommercialReport || isOrdinaryProtectedAssertion(text));
+    const serviceSpeechAct = includeOrdinaryProtectedContext
+      ? resolveCommercialServiceSpeechAct(text)
+      : 'NONE';
     const rawAssertion = { text, normalizedText, protectedFrame: false };
     let resetsOrdinaryProtectedCarry = false;
     if (ordinaryProtectedCarry) {
@@ -504,6 +548,10 @@ function classifyAssertions(
       );
       resetsOrdinaryProtectedCarry =
         hasCurrentCommercialOffer &&
+        // FLAG: A complaint's third-party price/contact is not an author's independent offer.
+        (ordinaryProtectedSpeechAct !== 'COMPLAINT' ||
+          hasExplicitSourceSideOffer ||
+          COMMERCIAL_OWNED_SERVICE_FRAME.test(text)) &&
         (hasExplicitSelfPromotion ||
           hasExplicitSourceSideOffer ||
           ((!DEMAND_SIDE_SERVICE_FRAME_PATTERN.test(ordinaryResetWindow.text) ||
@@ -548,8 +596,10 @@ function classifyAssertions(
 
     if (intrinsicOrdinaryProtected) {
       ordinaryProtectedCarry = true;
+      if (serviceSpeechAct !== 'NONE') ordinaryProtectedSpeechAct = serviceSpeechAct;
     } else if (resetsOrdinaryProtectedCarry) {
       ordinaryProtectedCarry = false;
+      ordinaryProtectedSpeechAct = 'NONE';
     }
   }
 

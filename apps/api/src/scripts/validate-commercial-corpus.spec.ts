@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { COMMERCIAL_CORPUS_PROVENANCE_VERSION } from './commercial-corpus-provenance';
 import {
   analyzeCommercialCorpusRecords,
   COMMERCIAL_CORPUS_AUTO_LABEL_SOURCE,
@@ -6,6 +8,9 @@ import {
   type CommercialCorpusRecord,
   validateCommercialCorpusRecords,
 } from './validate-commercial-corpus';
+
+let sampleSequence = 0;
+const sanitizedText = 'Проверочный текст без персональных данных';
 
 function corpusRecord(params: {
   label: 'positive_candidate' | 'negative_candidate' | 'gray_candidate';
@@ -17,20 +22,49 @@ function corpusRecord(params: {
   currentSubtype?: string | null;
   isHardNegative?: boolean;
 }): CommercialCorpusRecord {
+  const sampleId = `sample-${++sampleSequence}`;
   return {
     label: params.label,
     labelSource: params.labelSource ?? COMMERCIAL_CORPUS_AUTO_LABEL_SOURCE,
     expectedAction: params.expectedAction,
+    expectedDisposition:
+      params.expectedAction === 'ALLOW' || params.expectedAction === 'REVIEW_ONLY'
+        ? 'KEEP'
+        : 'DELETE',
+    reviewProvenance: {
+      schemaVersion: COMMERCIAL_CORPUS_PROVENANCE_VERSION,
+      datasetRole: 'HOLDOUT',
+      datasetId: 'holdout-dataset',
+      sampleId,
+      sourceSnapshotSha256: createHash('sha256').update(sampleId).digest('hex'),
+      authorGroupId: `author-${sampleId}`,
+      campaignGroupId: `campaign-${sampleId}`,
+      messageCreatedAt: '2026-08-12T08:00:00.000Z',
+      labelAuthorId: 'label-author',
+      reviewerIds: ['reviewer-one', 'reviewer-two'],
+      reviewedAt: '2026-08-13T08:00:00.000Z',
+      reviewedTextSha256: createHash('sha256').update(sanitizedText).digest('hex'),
+    },
     expectedSubtype:
       params.expectedSubtype ?? (params.label === 'positive_candidate' ? 'SERVICES' : null),
     isHardNegative: params.isHardNegative ?? false,
     policyCategory: params.policyCategory ?? 'none',
     segment: 'SERVICES',
     safeContextBucket: 'none',
-    text: 'Проверочный текст без персональных данных',
+    text: sanitizedText,
     current: {
       hit: params.action !== null,
       actionBand: params.action,
+      actionable:
+        params.action === 'WARN' ||
+        params.action === 'DELETE' ||
+        params.action === 'DELETE_AND_ESCALATE',
+      messageDisposition:
+        params.action === 'WARN' ||
+        params.action === 'DELETE' ||
+        params.action === 'DELETE_AND_ESCALATE'
+          ? 'DELETE'
+          : 'KEEP',
       primarySubtype: params.currentSubtype ?? (params.action ? 'SERVICES' : null),
       subtype: params.currentSubtype ?? (params.action ? 'SERVICES' : null),
     },
@@ -52,9 +86,65 @@ const SMALL_CORPUS_GATES = {
   minEnforcementRecall: 0,
   maxFalsePositiveRate: 1,
   minSubtypeAccuracy: 0,
+  holdoutCutoffAt: '2026-08-01T00:00:00.000Z',
+  developmentRecords: [
+    {
+      reviewProvenance: {
+        schemaVersion: COMMERCIAL_CORPUS_PROVENANCE_VERSION,
+        datasetRole: 'DEVELOPMENT',
+        datasetId: 'development-dataset',
+        sampleId: 'development-sample',
+        sourceSnapshotSha256: 'd'.repeat(64),
+        authorGroupId: 'development-author',
+        campaignGroupId: 'development-campaign',
+        messageCreatedAt: '2026-07-31T00:00:00.000Z',
+      },
+    },
+  ],
 };
 
 describe('commercial corpus trust-aware validation', () => {
+  it('counts legacy WARN as cleanup and rejects explicit KEEP mismatches without rewriting labels', () => {
+    const kept = corpusRecord({
+      label: 'positive_candidate',
+      labelSource: COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE,
+      expectedAction: 'WARN',
+      action: 'WARN',
+    });
+    (kept.current as Record<string, unknown>).messageDisposition = 'KEEP';
+    const warned = corpusRecord({
+      label: 'negative_candidate',
+      labelSource: COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE,
+      expectedAction: 'ALLOW',
+      action: 'WARN',
+    });
+    const result = analyzeCommercialCorpusRecords([kept, warned]);
+    expect(result.metrics.trustedManualNegativeDeleteCount).toBe(1);
+    expect(result.metrics.trustedManualNegativeEnforcementCount).toBe(1);
+    expect(result.metrics.trustedManualDispositionMismatchCount).toBe(2);
+    expect(kept.expectedDisposition).toBe('DELETE');
+  });
+
+  it('cannot certify a manual label string without frozen provenance and expected disposition', () => {
+    const record = corpusRecord({
+      label: 'positive_candidate',
+      labelSource: COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE,
+      expectedAction: 'WARN',
+      action: 'WARN',
+    });
+    delete record.expectedDisposition;
+    delete record.reviewProvenance;
+    const result = validateCommercialCorpusRecords([record], {
+      ...SMALL_CORPUS_GATES,
+      qualityGate: true,
+    });
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        'holdout line 1: valid HOLDOUT reviewProvenance with frozen source identity is required',
+        'line 1: quality gate requires independently labelled expectedDisposition KEEP/DELETE',
+      ]),
+    );
+  });
   it('requires independent positive and negative labels in quality-gate mode', () => {
     const records = [
       corpusRecord({ label: 'positive_candidate', expectedAction: 'WARN', action: 'WARN' }),
@@ -256,6 +346,7 @@ describe('commercial corpus trust-aware validation', () => {
     );
 
     expect(result.metrics.trustedManualActionMismatchCount).toBe(1);
+    expect(result.metrics.trustedManualDispositionMismatchCount).toBe(2);
     expect(result.metrics.trustedManualNegativeHitCount).toBe(2);
     expect(result.metrics.trustedManualNegativeEnforcementCount).toBe(1);
     expect(result.metrics.trustedManualEnforcementFalsePositiveRate).toBe(0.5);

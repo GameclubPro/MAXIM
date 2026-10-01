@@ -1,10 +1,19 @@
-export type CommercialServiceSpeechAct = 'REQUEST' | 'TESTIMONIAL' | 'REFUSAL' | 'NONE';
+export type CommercialServiceSpeechAct =
+  | 'REQUEST'
+  | 'TESTIMONIAL'
+  | 'COMPLAINT'
+  | 'REFUSAL'
+  | 'NONE';
 
 // FLAG: Bounded horizontal padding avoids rescanning a newline run at every boundary.
 const BOUNDARY = String.raw`(?:^|[.!?;\n])[^\S\r\n]{0,32}(?:(?:здравствуйте|добрый\s+(?:день|вечер)|доброе\s+утро|всем\s+привет|соседи|друзья|ребята|коллеги)[\s,!:-]{1,6})?(?:(?:может|подскажите|не\s+подскажете)[\s,]{1,4})?`;
-const TOPIC = String.raw`(?:ремонт[а-яё-]*|мастер[а-яё-]*|сантехник[а-яё-]*|электрик[а-яё-]*|химчист[а-яё-]*|чистк[а-яё-]*|уборк[а-яё-]*|перетяж[а-яё-]*|заточ[а-яё-]*|колодц[а-яё-]*|установк[а-яё-]*|репетитор[а-яё-]*|нян[а-яё-]*|доставк[а-яё-]*|грузоперевоз[а-яё-]*|почин[а-яё-]*|услуг[а-яё-]*)`;
+const TOPIC = String.raw`(?:ремонт[а-яё-]*|мастер[а-яё-]*|сантехник[а-яё-]*|сантехническ[а-яё-]*|электрик[а-яё-]*|химчист[а-яё-]*|чистк[а-яё-]*|уборк[а-яё-]*|перетяж[а-яё-]*|заточ[а-яё-]*|колодц[а-яё-]*|установк[а-яё-]*|репетитор[а-яё-]*|нян[а-яё-]*|доставк[а-яё-]*|грузоперевоз[а-яё-]*|почин[а-яё-]*|услуг[а-яё-]*)`;
 const REQUEST = new RegExp(
   String.raw`${BOUNDARY}(?:(?:кто(?:[-\s](?:нибудь|то))?\s+(?=(?:может|сможет|умеет|ремонтиру|занима|устанавлива|дела|чистит|точит|перетягива|оказыва))[^.!?;\n]{0,110}${TOPIC})|(?:есть\s+(?:(?:ли\s+)?(?:тут|здесь|в\s+чате)\s+)?[^.!?;\n]{0,80}${TOPIC}[^.!?;\n]{0,100}[?？])|(?:(?:ищ(?:у|ем)|нуж(?:ен|на|но|ны))\s+(?!клиент[а-яё-]*|заказ[а-яё-]*)[^.!?;\n]{0,64}${TOPIC}))(?=$|[^\p{L}\p{N}_-])`,
+  'iu',
+);
+const BUYER_REQUEST = new RegExp(
+  String.raw`${BOUNDARY}(?:(?:я|мы)\s+)?(?:(?:хочу|хотим|планирую|планируем|собираюсь|собираемся)\s+(?:заказать|заказывать|воспользоваться)|(?:буду|будем)\s+заказывать|закаж(?:у|ем)|куплю(?=\s+услуг[а-яё-]*))\s+[^.!?;\n]{0,100}${TOPIC}(?=$|[^\p{L}\p{N}_-])`,
   'iu',
 );
 const TESTIMONIAL = new RegExp(
@@ -19,12 +28,26 @@ const REFUSED_REPAIR = new RegExp(
   String.raw`${BOUNDARY}(?:(?:я|мы)\s+)?(?:(?:больше|сейчас|пока)\s+)?не\s+ремонтиру(?:ю|ем)(?=$|[^\p{L}\p{N}_-])`,
   'iu',
 );
+const POSTPOSED_REFUSAL = new RegExp(
+  String.raw`${BOUNDARY}${TOPIC}[^.!?;\n]{0,80}(?:(?:я|мы)\s+)?(?:(?:больше|сейчас|пока)\s+)?не\s+(?:занима(?:юсь|емся)|оказыва(?:ю|ем)|ремонтиру(?:ю|ем)|выполня(?:ю|ем)|предлага(?:ю|ем)|принима(?:ю|ем))(?=$|[^\p{L}\p{N}_-])`,
+  'iu',
+);
+const COMPLAINT = new RegExp(
+  String.raw`${BOUNDARY}(?:(?:жалоб[а-яё-]*\s+на\s+(?:этого\s+)?(?:мастер[а-яё-]*|сервис[а-яё-]*|бригад[а-яё-]*|специалист[а-яё-]*|сантехник[а-яё-]*|электрик[а-яё-]*))|(?:(?:этот|тот|эт[аи]|мо[йяи])\s+)?(?:мастер[а-яё-]*|сервис[а-яё-]*|бригад[а-яё-]*|специалист[а-яё-]*|сантехник[а-яё-]*|электрик[а-яё-]*)[^.!?;\n]{0,80}(?:обман(?:ул[аи]?|ули|ыва[а-яё-]*)\s+(?:меня|нас)|мошенник[а-яё-]*|испорти(?:л[аи]?|ли)\s+(?:мне|нам)))`,
+  'iu',
+);
 
 export function resolveCommercialServiceSpeechAct(text: string): CommercialServiceSpeechAct {
   const candidate = text.trimStart();
-  if (REQUEST.test(candidate)) return 'REQUEST';
+  if (REQUEST.test(candidate) || BUYER_REQUEST.test(candidate)) return 'REQUEST';
   if (TESTIMONIAL.test(candidate)) return 'TESTIMONIAL';
-  if (REFUSAL.test(candidate) || REFUSED_REPAIR.test(candidate)) return 'REFUSAL';
+  if (COMPLAINT.test(candidate)) return 'COMPLAINT';
+  if (
+    REFUSAL.test(candidate) ||
+    REFUSED_REPAIR.test(candidate) ||
+    POSTPOSED_REFUSAL.test(candidate)
+  )
+    return 'REFUSAL';
   return 'NONE';
 }
 
@@ -32,3 +55,8 @@ export const COMMERCIAL_OWNED_SERVICE_FRAME =
   /^(?:(?:а|но|зато|отдельно|также)\s*[:,-]?\s*)?(?:(?:я|мы)\s+)?(?:ремонтиру(?:ю|ем)|оказыва(?:ю|ем)\s+услуг[а-яё-]*|выполня(?:ю|ем)\s+(?:работ[а-яё-]*|ремонт[а-яё-]*)|перетягива(?:ю|ем)|изготавлива(?:ю|ем)|принима(?:ю|ем)\s+заказ[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
 export const COMMERCIAL_SERVICE_CONTRAST_BOUNDARY =
   /,\s*(?=(?:а|но|зато)\s+(?:(?:я|мы)\s+)?(?:ремонтиру(?:ю|ем)|оказыва(?:ю|ем)|выполня(?:ю|ем)|перетягива(?:ю|ем)|изготавлива(?:ю|ем)|принима(?:ю|ем))(?=$|[^\p{L}\p{N}_-]))/giu;
+
+export const COMMERCIAL_OWNED_SERVICE_CONTRAST_COHORT = 'owned-service-contrast-v1';
+// FLAG: Newly recognized contrasts are candidates; their deletion authority requires promotion.
+export const COMMERCIAL_CANDIDATE_SERVICE_CONTRAST_BOUNDARY =
+  /,\s*(?=(?:(?:а|но|зато)\s+(?:(?:я|мы)\s+)?(?:дела(?:ю|ем)|предлага(?:ю|ем)|устанавлива(?:ю|ем))|только\s+(?:ремонт[а-яё-]*|монтаж|установк[а-яё-]*|чистк[а-яё-]*|уборк[а-яё-]*))(?=$|[^\p{L}\p{N}_-]))/giu;

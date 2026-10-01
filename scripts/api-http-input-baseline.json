@@ -95,10 +95,6 @@
       "handlerSha256": "7b9fe68a087f929c18f665a6e15a4329ab9bccabddb0a0e5e5b80f2b1db8b003"
     },
     {
-      "key": "apps/api/src/admin/admin-settings.controller.ts:AdminSettingsController.updateSettings:recheckBotCapabilities",
-      "handlerSha256": "269e444ce792441928abe33068ce3b1c584a21610c6637f8b042f9dcaa4c1613"
-    },
-    {
       "key": "apps/api/src/admin/publication-drafts.controller.ts:PublicationDraftsController.list:query",
       "handlerSha256": "0d8efa8e660c417305dab84267bd2b426e48ef2f3244f218f4aec263f0900190"
     },

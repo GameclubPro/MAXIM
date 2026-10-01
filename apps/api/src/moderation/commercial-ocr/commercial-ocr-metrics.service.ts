@@ -105,6 +105,19 @@ export const COMMERCIAL_OCR_METRIC_COUNTERS = [
   'bullmq.job.deadline_exhausted.source_not_ready',
   'bullmq.job.deadline_exhausted.governor_pressure',
   'bullmq.job.deadline_exhausted.admission_pending',
+  'source.ready',
+  'source.receipt.unavailable',
+  'source.receipt.missing',
+  'source.receipt.owner_terminal',
+  'source.receipt.failed',
+  'source.receipt.invalid',
+  'source.identity_mismatch',
+  'source.creation_time_mismatch',
+  'source.exact.unavailable',
+  'source.exact.absent',
+  'source.exact.invalid',
+  'source.exact.author_ineligible',
+  'source.exact.changed',
   'album.image_count.1',
   'album.image_count.2_3',
   'album.image_count.4_6',
@@ -340,10 +353,9 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
   private shuttingDown = false;
 
   constructor(@Optional() configService?: ConfigService) {
-    this.nativeCpuSamplingAvailable =
-      !configService
-        ?.get<string>('COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH')
-        ?.trim();
+    this.nativeCpuSamplingAvailable = !configService
+      ?.get<string>('COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH')
+      ?.trim();
     this.behaviorIdentity = resolveCommercialOcrBehaviorIdentity(
       resolveCommercialOcrBehaviorDescriptor(configService),
     );
@@ -424,9 +436,7 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
 
   startImageCpuSample(): CommercialOcrImageCpuSample {
     return {
-      startedUsageMicros: this.nativeCpuSamplingAvailable
-        ? this.readCgroupCpuUsageMicros()
-        : null,
+      startedUsageMicros: this.nativeCpuSamplingAvailable ? this.readCgroupCpuUsageMicros() : null,
       nativePasses: 0,
       finished: false,
     };

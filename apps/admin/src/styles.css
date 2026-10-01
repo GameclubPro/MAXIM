@@ -1414,3 +1414,121 @@ button:disabled {
     grid-template-columns: 44px minmax(82px, auto) minmax(0, 1fr);
   }
 }
+
+.commercial-review {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding: 20px;
+}
+.commercial-review__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.commercial-review__header h2 {
+  margin: 0 0 6px;
+}
+.commercial-review__header p,
+.commercial-review__notice {
+  margin: 0;
+  color: var(--muted, #6b7280);
+}
+.commercial-review__layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: 16px;
+  min-height: 0;
+}
+.commercial-review__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 65vh;
+  overflow: auto;
+}
+.commercial-review__list button {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  text-align: left;
+  padding: 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #fff;
+  color: #111827;
+}
+.commercial-review__list button.is-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+.commercial-review__list span {
+  font-size: 12px;
+}
+.commercial-review__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+.commercial-review__detail .message-preview {
+  padding: 18px;
+  overflow-wrap: anywhere;
+}
+.commercial-review__detail .message-preview p {
+  white-space: pre-wrap;
+}
+.commercial-review__facts {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.commercial-review__facts dt {
+  color: #6b7280;
+}
+.commercial-review__facts dd {
+  margin: 0;
+}
+.commercial-review__detail label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.commercial-review__detail textarea {
+  min-height: 85px;
+  resize: vertical;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font: inherit;
+}
+.commercial-review__pagination,
+.commercial-review__filters {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.commercial-review__filters button[aria-pressed='true'] {
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+@media (max-width: 860px) {
+  .commercial-review__layout {
+    grid-template-columns: 1fr;
+  }
+  .commercial-review__list {
+    max-height: 260px;
+  }
+  .commercial-review__header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+}

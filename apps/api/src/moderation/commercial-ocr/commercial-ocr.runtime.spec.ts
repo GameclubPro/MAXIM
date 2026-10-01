@@ -15,6 +15,15 @@ describe('commercial OCR runtime policy', () => {
     );
   });
 
+  it('supports an explicit active baseline ceiling', () => {
+    expect(
+      resolveCommercialOcrRuntimePolicy({
+        chatId: 'chat-1',
+        configService: config({ COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline' }),
+      }),
+    ).toEqual({ mode: 'baseline', process: true, enforce: true });
+  });
+
   it('processes shadow traffic without authorizing deletion', () => {
     expect(
       resolveCommercialOcrRuntimePolicy({

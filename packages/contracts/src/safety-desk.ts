@@ -2,6 +2,50 @@ import { z } from 'zod';
 import { broadcastTextFormatSchema } from './broadcast-common.js';
 import { VK_PARSING_MAX_VIDEOS } from './vk-parsing-common.js';
 
+export const commercialReviewLabelSchema = z.enum(['COMMERCIAL', 'NOT_COMMERCIAL', 'UNSURE']);
+export type CommercialReviewLabel = z.infer<typeof commercialReviewLabelSchema>;
+export const commercialReviewItemSchema = z.object({
+  id: z.string(),
+  chatId: z.string().nullable(),
+  chatTitle: z.string(),
+  source: z.enum(['TEXT', 'OCR']),
+  excerpt: z.string().max(2500),
+  score: z.number().min(0).max(100),
+  actionBand: z.string(),
+  messageDisposition: z.enum(['KEEP', 'DELETE']),
+  requiredPolicyCohorts: z.array(z.string()).max(32),
+  detectorVersion: z.string(),
+  decisionFingerprint: z.string(),
+  reviewPriority: z.number().int().min(0).max(100),
+  reasons: z.array(z.string()).max(32),
+  label: commercialReviewLabelSchema.nullable(),
+  reviewReason: z.string().max(500),
+  reviewedAt: z.string().datetime().nullable(),
+  observedAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type CommercialReviewItem = z.infer<typeof commercialReviewItemSchema>;
+export const commercialReviewQueueQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(500).optional(),
+  status: z.enum(['PENDING', 'REVIEWED', 'ALL']).default('PENDING'),
+});
+export const commercialReviewQueueResponseSchema = z.object({
+  generatedAt: z.string().datetime(),
+  items: z.array(commercialReviewItemSchema),
+  nextCursor: z.string().nullable(),
+});
+export type CommercialReviewQueueResponse = z.infer<typeof commercialReviewQueueResponseSchema>;
+export const commercialReviewDecisionRequestSchema = z
+  .object({
+    expectedUpdatedAt: z.string().datetime(),
+    label: commercialReviewLabelSchema,
+    reason: z.string().trim().max(500).default(''),
+  })
+  .strict();
+export type CommercialReviewDecisionRequest = z.infer<typeof commercialReviewDecisionRequestSchema>;
+
 export const safetyDeskReviewStatusSchema = z.enum(['REVIEW', 'APPROVED', 'REJECTED', 'BLOCKED']);
 export type SafetyDeskReviewStatus = z.infer<typeof safetyDeskReviewStatusSchema>;
 

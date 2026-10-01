@@ -16,6 +16,7 @@ import {
   validateCommercialOcrImageCount,
   validateCommercialOcrVersion,
   isSupportedCommercialOcrJobSchemaVersion,
+  resolveCommercialOcrJobEventTimestamp,
   type CommercialOcrJob,
 } from './commercial-ocr.queue';
 
@@ -90,7 +91,8 @@ export class CommercialOcrProcessor extends WorkerHost {
       this.metrics.recordCounter(resolveAlbumImageCountMetric(job.data.imageCount));
     }
 
-    const deadlineAtMs = Date.parse(job.data.sourceCreatedAt) + this.maxJobAgeMs;
+    const deadlineAtMs =
+      Date.parse(resolveCommercialOcrJobEventTimestamp(job.data)) + this.maxJobAgeMs;
     if (deadlineAtMs <= Date.now()) {
       this.metrics.recordCounter('bullmq.job.expired');
       await this.releaseAdmission(identity);
@@ -169,6 +171,7 @@ export class CommercialOcrProcessor extends WorkerHost {
     if (job.name !== COMMERCIAL_OCR_JOB_NAME) {
       throw new Error('Commercial OCR job name is invalid');
     }
+    resolveCommercialOcrJobEventTimestamp(data);
     validateCommercialOcrImageCount(data.imageCount);
     const jobOcrVersion = validateCommercialOcrVersion(data.ocrVersion);
     if (jobOcrVersion !== COMMERCIAL_OCR_DEFAULT_VERSION) {

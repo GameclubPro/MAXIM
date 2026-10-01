@@ -636,9 +636,13 @@ export class ModerationDeleteIntentService {
     this.canaryChatIds = parseModerationDeleteIntentCanaryChatIds(
       configService.get('MODERATION_DELETE_INTENT_CANARY_CHAT_IDS'),
     );
-    this.commercialOcrMode = normalizeModerationDeleteIntentMode(
-      configService.get('COMMERCIAL_OCR_ROLLOUT_MODE'),
-    );
+    const commercialOcrMode = configService.get('COMMERCIAL_OCR_ROLLOUT_MODE');
+    // FLAG: Baseline admits only commercial OCR candidates; their v5 guard owns fresh authority.
+    // Keep the generic delete-intent and separate image stop-list ceilings unchanged.
+    this.commercialOcrMode =
+      commercialOcrMode === 'baseline'
+        ? 'on'
+        : normalizeModerationDeleteIntentMode(commercialOcrMode);
     this.commercialOcrCanaryChatIds = new Set(
       [
         ...parseModerationDeleteIntentCanaryChatIds(

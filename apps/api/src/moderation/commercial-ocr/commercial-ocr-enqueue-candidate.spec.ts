@@ -1,11 +1,35 @@
 import type { RuleViolation } from '../rule-engine.contract';
 import type { MaxUpdate } from '@maxim/contracts';
+import { WebhookParser } from '../../webhook/webhook.parser';
 import {
   hasActionableCompetingViolation,
   resolveCommercialOcrEnqueueCandidate,
 } from './commercial-ocr-enqueue-candidate';
 
 describe('commercial OCR enqueue candidate policy', () => {
+  it('separates creation identity from the MAX event timestamp without changing parser semantics', () => {
+    const createdAt = '2026-08-12T08:00:00.000Z';
+    const eventTimestamp = '2026-08-12T08:00:00.150Z';
+    const update = new WebhookParser().parse({
+      ...(photoUpdate().raw as Record<string, unknown>),
+      update_type: 'message_created',
+      timestamp: Date.parse(eventTimestamp),
+    });
+    expect(update.message?.createdAt).toBe(eventTimestamp);
+    expect(
+      resolveCommercialOcrEnqueueCandidate({
+        update,
+        webhookEventId: 'event-1',
+        updateType: 'message_created',
+        commercialAdsFilterEnabled: true,
+        hasPhotoAttachment: true,
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        sourceCreatedAt: eventTimestamp,
+      }),
+    ).toMatchObject({ sourceCreatedAt: createdAt, eventTimestamp });
+  });
+
   it('builds an image-text-only candidate only for an enabled non-empty stop-list', () => {
     expect(
       resolveCommercialOcrEnqueueCandidate({
@@ -58,6 +82,12 @@ describe('commercial OCR enqueue candidate policy', () => {
     },
     {
       violations: [commercialViolation({ actionBand: 'DELETE', actionable: false })],
+      expected: false,
+    },
+    {
+      violations: [
+        commercialViolation({ actionBand: 'WARN', actionable: true, messageDisposition: 'KEEP' }),
+      ],
       expected: false,
     },
   ])('returns $expected for competing violations', ({ violations, expected }) => {

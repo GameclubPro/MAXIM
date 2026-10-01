@@ -745,7 +745,8 @@ export async function readChatSettings(params: {
   const sanitizedStoredSettings = sanitizeStoredChatSettings(chat.settings);
   const parsed = chatSettingsSchema.safeParse(sanitizedStoredSettings);
   if (parsed.success) {
-    const normalizedSettings = normalizeChatSettings(parsed.data, undefined, params.chatId);
+    let normalizedSettings = normalizeChatSettings(parsed.data, undefined, params.chatId);
+    let responseStoredSettings = chat.settings;
     const normalizationChanges = {
       ...getStoredChatSettingsSanitizationChanges(chat.settings, parsed.data),
       ...getChatSettingsNormalizationChanges(parsed.data, normalizedSettings),
@@ -758,18 +759,35 @@ export async function readChatSettings(params: {
       if (repaired.count > 0) {
         await params.chatContextCache.invalidate(params.chatId);
       }
+      // FLAG: A repair advances updatedAt. Refresh values and revision together, including a
+      // concurrent winner, so an old settings snapshot never receives a newer write fence.
+      const refreshed = await params.prisma.chatSettings.findUnique({
+        where: { chatId: params.chatId },
+      });
+      if (refreshed) {
+        const refreshedParsed = chatSettingsSchema.safeParse(sanitizeStoredChatSettings(refreshed));
+        if (refreshedParsed.success) {
+          responseStoredSettings = refreshed;
+          normalizedSettings = normalizeChatSettings(
+            refreshedParsed.data,
+            undefined,
+            params.chatId,
+          );
+        }
+      }
     }
 
     let stopWordsPolicy = normalizedSettings.stopWordsPolicy;
     try {
-      stopWordsPolicy = migrateStopWordsPolicy(chat.settings);
+      stopWordsPolicy = migrateStopWordsPolicy(responseStoredSettings);
     } catch {
       params.logger.warn({ chatId: params.chatId }, 'Legacy stop-word policy requires review');
     }
     return {
       ...normalizedSettings,
+      settingsRevision: responseStoredSettings.updatedAt?.toISOString(),
       stopWordsPolicy,
-      stopWordsRevision: chat.settings.stopWordsRevision,
+      stopWordsRevision: responseStoredSettings.stopWordsRevision,
     };
   }
 
@@ -795,7 +813,18 @@ export async function readChatSettings(params: {
     await params.chatContextCache.invalidate(params.chatId);
   }
 
-  return fallback;
+  const refreshed = await params.prisma.chatSettings.findUnique({
+    where: { chatId: params.chatId },
+  });
+  const refreshedParsed =
+    refreshed && chatSettingsSchema.safeParse(sanitizeStoredChatSettings(refreshed));
+  if (refreshedParsed?.success) {
+    return {
+      ...normalizeChatSettings(refreshedParsed.data, undefined, params.chatId),
+      settingsRevision: refreshed!.updatedAt.toISOString(),
+    };
+  }
+  return { ...fallback, settingsRevision: chat.settings.updatedAt?.toISOString() };
 }
 
 export async function saveChatSettings(params: {
@@ -854,10 +883,25 @@ export async function saveChatSettings(params: {
       karavanStorefrontCreateButtonText: true,
       forwardedMessagesEnabled: true,
       updatedAt: true,
+      profanityBotMessageText: true,
+      profanityWarnMessageText: true,
     },
   });
+  // FLAG: Compare the revision observed by the caller, not just the server read during this save.
+  // Internal callers may omit it; public mutation routes require a precondition.
+  if (
+    parsed.data.settingsRevision !== undefined &&
+    parsed.data.settingsRevision !== currentSettings?.updatedAt?.toISOString()
+  )
+    throw chatSettingsRevisionConflict();
   const settingsInput = {
     ...parsed.data,
+    profanityBotMessageText: hasOwnSetting(params.body, 'profanityBotMessageText')
+      ? parsed.data.profanityBotMessageText
+      : (currentSettings?.profanityBotMessageText ?? ''),
+    profanityWarnMessageText: hasOwnSetting(params.body, 'profanityWarnMessageText')
+      ? parsed.data.profanityWarnMessageText
+      : (currentSettings?.profanityWarnMessageText ?? ''),
     slowModeEnabled: hasOwnSetting(params.body, 'slowModeEnabled')
       ? parsed.data.slowModeEnabled
       : (currentSettings?.slowModeEnabled ?? parsed.data.slowModeEnabled),
@@ -1014,6 +1058,7 @@ export async function saveChatSettings(params: {
   const majorOwnedSettings = omitLegacyStopWordsSettings(
     omitStopWordsPolicy(omitPublisherOwnedChatSettings(normalizedSettings)),
   );
+  delete majorOwnedSettings.settingsRevision;
   const createSettings = {
     ...majorOwnedSettings,
     ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
@@ -1026,6 +1071,7 @@ export async function saveChatSettings(params: {
       ? majorOwnedSettingsWithoutMedia
       : majorOwnedSettings;
 
+  let savedRevision: string | undefined;
   try {
     await params.prisma.$transaction(async (tx) => {
       await tx.chat.upsert({
@@ -1064,6 +1110,13 @@ export async function saveChatSettings(params: {
           }),
         },
       });
+      // FLAG: Capture our committed snapshot while the UPDATE lock is held. A later read may
+      // observe another writer and must never lend that newer revision to our older values.
+      const written = await tx.chatSettings.findUnique({
+        where: { chatId: params.chatId },
+        select: { updatedAt: true },
+      });
+      savedRevision = written?.updatedAt?.toISOString();
     });
   } catch (error: unknown) {
     if ((error as { code?: unknown })?.code === 'P2002') {
@@ -1082,6 +1135,7 @@ export async function saveChatSettings(params: {
   });
   const resultingSettings = {
     ...normalizedSettings,
+    settingsRevision: savedRevision,
     commentsEnabled:
       publisherOwnedSettings?.commentsEnabled ??
       DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS.commentsEnabled,

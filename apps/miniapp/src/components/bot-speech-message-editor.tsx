@@ -18,6 +18,7 @@ const BOT_MESSAGE_EDITOR_FIELD_KEYS: Record<BotMessageEditorKey, BotSpeechEditab
   requiredSubscription: 'requiredSubscriptionBotMessageText',
   invitationAccess: 'invitationAccessBotMessageText',
   textFilters: 'textFiltersBotMessageText',
+  profanity: 'profanityBotMessageText',
   duplicate: 'duplicateBotMessageText',
   messageLimits: 'messageLimitsBotMessageText',
   stopWords: 'messageLimitsBotMessageText',
@@ -31,6 +32,7 @@ const WARN_MESSAGE_EDITOR_FIELD_KEYS: Record<WarnMessageEditorKey, BotSpeechEdit
   requiredSubscriptionWarn: 'requiredSubscriptionWarnMessageText',
   invitationAccessWarn: 'invitationAccessWarnMessageText',
   textFiltersWarn: 'textFiltersWarnMessageText',
+  profanityWarn: 'profanityWarnMessageText',
   stopWordsWarn: 'messageLimitsWarnMessageText',
 };
 
@@ -39,7 +41,8 @@ const BOT_MESSAGE_EDITOR_SHEET_TITLES: Record<BotMessageEditorKey, string> = {
   greeting: 'Приветствие',
   requiredSubscription: 'Объяснение о подписке',
   invitationAccess: 'Объяснение о приглашениях',
-  textFilters: 'Объяснение о тексте',
+  textFilters: 'Объяснение о коммерческой рекламе',
+  profanity: 'Объяснение о нецензурной лексике',
   duplicate: 'Объяснение о дублях',
   messageLimits: 'Объяснение об ограничениях',
   stopWords: 'Объяснение о стоп-словах',
@@ -52,7 +55,8 @@ const WARN_MESSAGE_EDITOR_SHEET_TITLES: Record<WarnMessageEditorKey, string> = {
   linkWarn: 'Предупреждение о ссылках',
   requiredSubscriptionWarn: 'Предупреждение о подписке',
   invitationAccessWarn: 'Предупреждение о приглашениях',
-  textFiltersWarn: 'Предупреждение о тексте',
+  textFiltersWarn: 'Предупреждение о рекламе',
+  profanityWarn: 'Предупреждение о нецензурной лексике',
   stopWordsWarn: 'Предупреждение о стоп-словах',
 };
 

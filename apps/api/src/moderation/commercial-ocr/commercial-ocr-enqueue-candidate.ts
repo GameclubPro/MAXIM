@@ -1,13 +1,16 @@
 import type { MaxUpdate } from '@maxim/contracts';
 
 import type { RuleViolation } from '../rule-engine.contract';
+import { isCommercialMessageDeleteEligible } from '../commercial/commercial-action-policy';
 import { extractLogicalPhotoAlbumResult } from '../photo-duplicate/photo-attachment-extractor';
+import { extractCommercialOcrSourceCreatedAt } from './commercial-ocr-source-time';
 
 export type CommercialOcrEnqueueCandidate = Readonly<{
   webhookEventId: string;
   chatId: string;
   messageId: string;
   sourceCreatedAt: string;
+  eventTimestamp: string;
   imageCount: number;
   commercialScanRequested: boolean;
   imageTextScanRequested: boolean;
@@ -45,11 +48,23 @@ export function resolveCommercialOcrEnqueueCandidate(params: {
     return null;
   }
 
+  const sourceCreatedAt = extractCommercialOcrSourceCreatedAt(params.update.raw);
+  const eventTimestampMs = Date.parse(params.sourceCreatedAt);
+  if (
+    sourceCreatedAt === null ||
+    !Number.isSafeInteger(eventTimestampMs) ||
+    eventTimestampMs <= 0 ||
+    result.album.createdAtMs !== eventTimestampMs
+  ) {
+    return null;
+  }
+
   return {
     webhookEventId: params.webhookEventId,
     chatId: params.chatId,
     messageId: params.messageId,
-    sourceCreatedAt: params.sourceCreatedAt,
+    sourceCreatedAt,
+    eventTimestamp: new Date(eventTimestampMs).toISOString(),
     imageCount: result.album.images.length,
     commercialScanRequested: params.commercialAdsFilterEnabled,
     imageTextScanRequested:
@@ -68,9 +83,10 @@ export function hasActionableCompetingViolation(violations: readonly RuleViolati
       typeof violation.metadata?.actionable === 'boolean'
         ? violation.metadata.actionable
         : actionBand !== null && actionBand !== 'ALLOW' && actionBand !== 'REVIEW_ONLY';
-    return (
-      actionable &&
-      (actionBand === 'WARN' || actionBand === 'DELETE' || actionBand === 'DELETE_AND_ESCALATE')
+    return isCommercialMessageDeleteEligible(
+      actionBand,
+      actionable,
+      violation.metadata?.messageDisposition,
     );
   });
 }

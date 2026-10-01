@@ -61,7 +61,11 @@ function installProfanityDeleteGuard(service: ModerationService): void {
 }
 
 function installCommercialDeleteGuard(service: ModerationService) {
-  const guard = { assertMessageStillActionable: jest.fn().mockResolvedValue('allowed') };
+  const guard = {
+    assertMessageStillActionable: jest.fn().mockResolvedValue('allowed'),
+    createSanctionPermit: jest.fn().mockReturnValue({ expiresAtMs: Date.now() + 60_000 }),
+    authorizeSanction: jest.fn().mockResolvedValue(true),
+  };
   Object.assign(service, { commercialDeleteGuard: guard });
   const maxClient = (service as unknown as { maxClient: { deleteMessage: jest.Mock } }).maxClient;
   const remoteDelete = jest.fn(maxClient.deleteMessage.getMockImplementation());
@@ -6632,6 +6636,65 @@ describe('ModerationService', () => {
     });
   });
 
+  it.each([1, 2])(
+    'isolates profanity notices from commercial buttons at strike %s, preserving rules and admin contact',
+    async (strike) => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            domains: [],
+            rules: { publishedUrl: 'https://max.ru/chats/chat-1/message/999' },
+            settings: createSettings({
+              profanityBotMessageEnabled: true,
+              profanityWarnEnabled: true,
+              profanityAdminContactButtonEnabled: true,
+              profanityAdminContactButtonUrl: 'https://max.ru/profanity-admin',
+              textFiltersBotButtonEnabled: true,
+              textFiltersBotButtonUrl: 'https://max.ru/commercial-legacy',
+              textFiltersBotButtonText: 'Коммерческая кнопка',
+              textFiltersBotButtons: [
+                { text: 'Коммерческая кнопка', url: 'https://max.ru/commercial-custom' },
+              ],
+              rulesAttachViolationsEnabled: true,
+            }),
+          }),
+        },
+        violation: { create: jest.fn(), count: jest.fn().mockResolvedValue(strike) },
+        moderationEvent: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+        webhookEvent: { findUnique: jest.fn(), update: jest.fn() },
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        {
+          detect: jest.fn().mockResolvedValue({
+            violations: [{ ruleCode: 'PROFANITY', score: 0.95, reason: 'Profanity detected' }],
+          }),
+        } as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+      installProfanityDeleteGuard(service);
+      await service.handleUpdate(createUpdate());
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      const [, sentText, options] = maxClient.sendMessage.mock.calls[0]!;
+      expect(options).toEqual({
+        button: { text: 'Правила', url: 'https://max.ru/chats/chat-1/message/999' },
+        textFormat: 'html',
+      });
+      expect(sentText).toContain('https://max.ru/profanity-admin');
+      expect(JSON.stringify(maxClient.sendMessage.mock.calls)).not.toContain('commercial-');
+    },
+  );
+
   it('does not send repeated text-filter explanation when warning stage is disabled', async () => {
     const prisma = {
       chat: {
@@ -8098,7 +8161,11 @@ describe('ModerationService', () => {
         maxClient as never,
       );
 
+      const immunity = jest
+        .spyOn(service as any, 'consumeChatParticipantModerationImmunity')
+        .mockResolvedValue(true);
       await service.handleUpdate(createUpdate());
+      expect(immunity).not.toHaveBeenCalled();
 
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
@@ -8636,6 +8703,225 @@ describe('ModerationService', () => {
         }),
       }),
     });
+  });
+
+  it.each([
+    { strike: 1, revokeDuring: 'contact' },
+    { strike: 2, revokeDuring: 'media' },
+  ])(
+    'rechecks commercial notice authority after $revokeDuring work at strike $strike',
+    async ({ strike, revokeDuring }) => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            domains: [],
+            settings: createSettings({
+              commercialAdsFilterEnabled: true,
+              textFiltersBotMessageEnabled: true,
+              textFiltersWarnEnabled: true,
+            }),
+          }),
+        },
+        violation: { create: jest.fn(), count: jest.fn().mockResolvedValue(strike) },
+        moderationEvent: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+        webhookEvent: { findUnique: jest.fn(), update: jest.fn() },
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        {
+          detect: jest.fn().mockResolvedValue({
+            violations: [
+              {
+                ruleCode: 'COMMERCIAL_AD',
+                score: 0.92,
+                reason: 'High confidence ad',
+                metadata: { actionBand: 'DELETE', messageDisposition: 'DELETE' },
+              },
+            ],
+          }),
+        } as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+      const { guard, remoteDelete } = installCommercialDeleteGuard(service);
+      jest
+        .spyOn(
+          service as any,
+          revokeDuring === 'contact'
+            ? 'appendAdminContactMarkdownLink'
+            : 'withBotSpeechMediaOptions',
+        )
+        .mockImplementation(async (...args: unknown[]) => {
+          guard.authorizeSanction.mockResolvedValue(false);
+          return revokeDuring === 'contact' ? args[1] : args[0];
+        });
+      await service.handleUpdate(createUpdate());
+      expect(remoteDelete).toHaveBeenCalledTimes(1);
+      expect(guard.authorizeSanction.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(maxClient.kickMember).not.toHaveBeenCalled();
+      expect(maxClient.banMember).not.toHaveBeenCalled();
+      expect(
+        prisma.moderationEvent.create.mock.calls.some(
+          ([call]) =>
+            call.data.ruleCode === 'COMMERCIAL_AD' && call.data.metadata.sanctionApplied === true,
+        ),
+      ).toBe(false);
+      if (strike === 2)
+        expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({ action: SanctionAction.WARN }),
+        });
+    },
+  );
+
+  it.each(['revoked', 'failed', 'confirmed'] as const)(
+    'records commercial BAN reputation only after a confirmed guarded mutation: %s',
+    async (outcome) => {
+      const effects: string[] = [];
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            domains: [],
+            settings: createSettings({
+              commercialAdsFilterEnabled: true,
+              textFiltersBanEnabled: true,
+            }),
+          }),
+        },
+        violation: { create: jest.fn(), count: jest.fn().mockResolvedValue(3) },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn().mockResolvedValue({ id: 'event' }),
+        },
+        webhookEvent: { findUnique: jest.fn(), update: jest.fn() },
+        globalSpammer: {
+          upsert: jest.fn(async () => {
+            effects.push('reputation');
+          }),
+        },
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        {
+          detect: jest.fn().mockResolvedValue({
+            violations: [
+              {
+                ruleCode: 'COMMERCIAL_AD',
+                score: 0.92,
+                reason: 'High confidence ad',
+                metadata: { actionBand: 'DELETE', messageDisposition: 'DELETE' },
+              },
+            ],
+          }),
+        } as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+      const { guard } = installCommercialDeleteGuard(service);
+      maxClient.banMember.mockImplementation(
+        async (
+          _chatId: string,
+          _userId: string,
+          options?: { beforeImmediateMemberMutation?: () => Promise<void> },
+        ) => {
+          if (outcome === 'revoked') guard.authorizeSanction.mockResolvedValue(false);
+          await options?.beforeImmediateMemberMutation?.();
+          if (outcome === 'failed') throw new Error('Remote mutation failed');
+          effects.push('remote-ban');
+        },
+      );
+      await service.handleUpdate(createUpdate());
+      if (outcome === 'confirmed') {
+        expect(effects).toEqual(['remote-ban', 'reputation']);
+        expect(prisma.globalSpammer.upsert).toHaveBeenCalledTimes(1);
+        expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            create: expect.objectContaining({ lastReason: 'SANCTION_BAN' }),
+          }),
+        );
+      } else {
+        expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+        expect(maxClient.sendMessage).not.toHaveBeenCalled();
+        expect(
+          prisma.moderationEvent.create.mock.calls.some(
+            ([call]) => call.data.action === SanctionAction.BAN,
+          ),
+        ).toBe(false);
+      }
+    },
+  );
+
+  it('rechecks the generic commercial mute notice after sanction persistence', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          domains: [],
+          settings: createSettings({
+            commercialAdsFilterEnabled: true,
+            textFiltersMuteEnabled: true,
+          }),
+        }),
+      },
+      violation: { create: jest.fn(), count: jest.fn().mockResolvedValue(3) },
+      moderationEvent: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      webhookEvent: { findUnique: jest.fn(), update: jest.fn() },
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {
+        detect: jest.fn().mockResolvedValue({
+          violations: [
+            {
+              ruleCode: 'COMMERCIAL_AD',
+              score: 0.92,
+              reason: 'High confidence ad',
+              metadata: { actionBand: 'DELETE', messageDisposition: 'DELETE' },
+            },
+          ],
+        }),
+      } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    const { guard } = installCommercialDeleteGuard(service);
+    prisma.moderationEvent.create.mockImplementation(
+      async ({ data }: { data: { action: SanctionAction } }) => {
+        if (data.action === SanctionAction.MUTE) guard.authorizeSanction.mockResolvedValue(false);
+        return { id: 'event' };
+      },
+    );
+    await service.handleUpdate(createUpdate());
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ action: SanctionAction.MUTE }),
+    });
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('ignores retired topic-filter violations before deletion or sanctions', async () => {

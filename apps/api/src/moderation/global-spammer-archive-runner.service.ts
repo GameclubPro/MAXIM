@@ -1,7 +1,8 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { getAppRole, roleRunsAdmin } from '../runtime/app-role';
 import { GlobalSpammerIntelligenceService } from './global-spammer-intelligence.service';
+import { CommercialReviewService } from './commercial/commercial-review.service';
 
 const DEFAULT_ARCHIVE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_ARCHIVE_LIMIT = 1000;
@@ -10,6 +11,7 @@ const DEFAULT_ARCHIVE_LIMIT = 1000;
 export class GlobalSpammerArchiveRunnerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(GlobalSpammerArchiveRunnerService.name);
   private readonly enabled: boolean;
+  private readonly archiveEnabled: boolean;
   private readonly intervalMs: number;
   private readonly limit: number;
   private timer: NodeJS.Timeout | null = null;
@@ -19,10 +21,10 @@ export class GlobalSpammerArchiveRunnerService implements OnModuleInit, OnModule
   constructor(
     private readonly globalSpammerIntelligence: GlobalSpammerIntelligenceService,
     configService: ConfigService,
+    @Optional() private readonly commercialReview?: CommercialReviewService,
   ) {
-    this.enabled =
-      roleRunsAdmin(getAppRole()) &&
-      configService.get<boolean>('GLOBAL_SPAMMER_ARCHIVE_RUNNER_ENABLED', true);
+    this.enabled = roleRunsAdmin(getAppRole());
+    this.archiveEnabled = configService.get<boolean>('GLOBAL_SPAMMER_ARCHIVE_RUNNER_ENABLED', true);
     this.intervalMs = Math.max(
       60_000,
       configService.get<number>('GLOBAL_SPAMMER_ARCHIVE_INTERVAL_MS', DEFAULT_ARCHIVE_INTERVAL_MS),
@@ -73,6 +75,24 @@ export class GlobalSpammerArchiveRunnerService implements OnModuleInit, OnModule
 
     this.inFlight = true;
     try {
+      // FLAG: Sanitized review retention is independent of reputation archival toggles and runs
+      // only on the existing admin maintenance lane, with at most five bounded batches.
+      let prunedReviewSamples = 0;
+      try {
+        for (let batch = 0; this.commercialReview && batch < 5; batch += 1) {
+          const pruned = await this.commercialReview.pruneExpired(this.limit);
+          prunedReviewSamples += pruned;
+          if (pruned < this.limit) break;
+        }
+      } catch {
+        this.logger.warn({ reason }, 'Commercial review retention unavailable');
+      }
+      if (prunedReviewSamples > 0)
+        this.logger.log(
+          { reason, prunedReviewSamples },
+          'Pruned expired commercial review samples',
+        );
+      if (!this.archiveEnabled) return;
       const result = await this.globalSpammerIntelligence.archiveExpiredRegistryEntries({
         limit: this.limit,
       });

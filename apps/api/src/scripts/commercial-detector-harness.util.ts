@@ -1,7 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
+import { isCommercialMessageDeleteEligible } from '../moderation/commercial/commercial-action-policy';
 
 export const COMMERCIAL_DETECTOR_BENCHMARK_SCHEMA_VERSION =
-  'commercial-detector-benchmark/v1' as const;
+  'commercial-detector-benchmark/v2' as const;
 export const COMMERCIAL_DETECTOR_BENCHMARK_CLOCK = 'process.hrtime.bigint' as const;
 
 export type CommercialDetectorTimingSummary = {
@@ -26,6 +27,8 @@ export type CommercialDetectorQualityObservation = {
   expectedSubtype?: string | null;
   actualSubtype?: string | null;
   actionBand?: string | null;
+  actionable?: boolean;
+  messageDisposition?: unknown;
 };
 
 export type CommercialDetectorQualitySummary = {
@@ -40,6 +43,7 @@ export type CommercialDetectorQualitySummary = {
   subtypeMatches: number;
   recall: number | null;
   falsePositiveRate: number | null;
+  cleanupFalsePositiveRate: number | null;
   subtypeAccuracy: number | null;
   actions: Record<string, number>;
 };
@@ -355,7 +359,15 @@ function summarizeQuality(
       if (observation.detected) {
         falsePositiveHits += 1;
       }
-      if (observation.actionBand === 'DELETE' || observation.actionBand === 'DELETE_AND_ESCALATE') {
+      const action = observation.actionBand ?? null;
+      if (
+        isCommercialMessageDeleteEligible(
+          action,
+          observation.actionable ??
+            (action === 'WARN' || action === 'DELETE' || action === 'DELETE_AND_ESCALATE'),
+          observation.messageDisposition,
+        )
+      ) {
         unexpectedDeletes += 1;
       }
     }
@@ -374,6 +386,7 @@ function summarizeQuality(
     subtypeMatches,
     recall: positives > 0 ? detectedPositives / positives : null,
     falsePositiveRate: negatives > 0 ? falsePositiveHits / negatives : null,
+    cleanupFalsePositiveRate: negatives > 0 ? unexpectedDeletes / negatives : null,
     subtypeAccuracy: expectedSubtypeCases > 0 ? subtypeMatches / expectedSubtypeCases : null,
     actions: Object.fromEntries(
       [...actions.entries()].sort(([left], [right]) => left.localeCompare(right)),
@@ -499,6 +512,10 @@ function readQualitySummary(value: unknown, cohort: string): CommercialDetectorQ
     subtypeMatches: readNonNegativeInteger(summary.subtypeMatches, `${label}.subtypeMatches`),
     recall: readNullableRate(summary.recall, `${label}.recall`),
     falsePositiveRate: readNullableRate(summary.falsePositiveRate, `${label}.falsePositiveRate`),
+    cleanupFalsePositiveRate: readNullableRate(
+      summary.cleanupFalsePositiveRate,
+      `${label}.cleanupFalsePositiveRate`,
+    ),
     subtypeAccuracy: readNullableRate(summary.subtypeAccuracy, `${label}.subtypeAccuracy`),
     actions: readCountRecord(summary.actions, `${label}.actions`),
   };
@@ -517,6 +534,7 @@ function readQualitySummary(value: unknown, cohort: string): CommercialDetectorQ
   if (
     result.recall !== rateOrNull(result.detectedPositives, result.positives) ||
     result.falsePositiveRate !== rateOrNull(result.falsePositiveHits, result.negatives) ||
+    result.cleanupFalsePositiveRate !== rateOrNull(result.unexpectedDeletes, result.negatives) ||
     result.subtypeAccuracy !== rateOrNull(result.subtypeMatches, result.expectedSubtypeCases)
   ) {
     throw new Error(`Commercial detector benchmark ${label} rates do not match counts`);

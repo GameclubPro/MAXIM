@@ -723,6 +723,11 @@ deploy_main() {
         ;;
     esac
   fi
+  case "${MAXIM_COMMERCIAL_OCR_BASELINE:-0}" in
+    0) ;;
+    1) remote_command="MAXIM_COMMERCIAL_OCR_BASELINE=1 $remote_command" ;;
+    *) echo "MAXIM_COMMERCIAL_OCR_BASELINE must be 0 or 1." >&2; return 2 ;;
+  esac
   prepend_webhook_rollout_recovery_env remote_command
   prepend_post_release_reclaim_env remote_command
   maxim_prepend_git_ssh_transport remote_command "${MAXIM_DEPLOY_GIT_SSH_PORT:-default}"

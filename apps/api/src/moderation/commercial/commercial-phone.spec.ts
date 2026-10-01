@@ -28,6 +28,36 @@ function detect(text: string) {
 }
 
 describe('commercial phone matching', () => {
+  it.each(['+7 900 000 10 42', '8 900 000 10 42', '+44 20 7946 0101'])(
+    'does not add a next-line price to %s',
+    (phone) => {
+      const text = `Телефон ${phone}\n500 руб`;
+      const contacts = parseCommercialPhones(text);
+      expect(contacts).toHaveLength(1);
+      expect(contacts[0].normalizedNumber).toBe(
+        phone.startsWith('8') ? '79000001042' : phone.replace(/\D/gu, ''),
+      );
+      expect(text.slice(contacts[0].start, contacts[0].end)).toBe(phone);
+      expect(replaceCommercialPhoneLikeText(text)).toBe('Телефон [phone]\n500 руб');
+    },
+  );
+
+  it.each([' / ', '/', '\n'])('separates contextual local contacts with %j', (separator) => {
+    const text = `Телефон 9000001042${separator}9000001043`;
+    expect(parseCommercialPhones(text).map(({ normalizedNumber }) => normalizedNumber)).toEqual([
+      '9000001042',
+      '9000001043',
+    ]);
+    expect(replaceCommercialPhoneLikeText(text)).toBe(`Телефон [phone]${separator}[phone]`);
+  });
+
+  it.each(['☎', '☎️', '📱', '📲'])('accepts an explicit phone pictogram %s', (context) => {
+    expect(replaceCommercialPhoneLikeText(`${context} 9000001042`)).toBe(`${context} [phone]`);
+  });
+
+  it('does not turn an unlabeled pair of identifiers into contacts', () => {
+    expect(parseCommercialPhones('Коды 1234567890 / 1234567891')).toEqual([]);
+  });
   it.each([' / ', '/', '\n', ' 📲 '])('returns separate source spans for %j', (separator) => {
     const text = `Звоните: 89000001042${separator}89000001043${separator}89000001044`;
     const contacts = parseCommercialPhones(text);

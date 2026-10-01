@@ -173,6 +173,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       ? publisherPostImportState
       : 'none';
   const chatSettings = chatSettingsSchema.parse({
+    settingsRevision: new Date(now).toISOString(),
     reportsEnabled: searchParams.get('reportsOptIn') === '1',
     greetingEnabled: false,
     greetingBotMessageEnabled: false,

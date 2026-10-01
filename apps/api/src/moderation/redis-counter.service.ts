@@ -8,6 +8,12 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import {
+  COMMERCIAL_CAMPAIGN_SLIDING_WINDOW_SCRIPT,
+  COMMERCIAL_SLIDING_CAMPAIGN_MAX_FUTURE_SKEW_MS,
+  COMMERCIAL_SLIDING_CAMPAIGN_MAX_MEMBERS,
+  fingerprintCommercialCampaignSlidingMember,
+} from './commercial/commercial-campaign-sliding';
+import {
   DUPLICATE_EVENT_MAX_FUTURE_SKEW_MS,
   resolveDuplicateHistoryRetentionSeconds,
 } from './duplicate-state';
@@ -673,6 +679,45 @@ export class RedisCounterService implements OnModuleDestroy {
       added: addedCount > 0,
       size,
     };
+  }
+
+  async trackCommercialCampaignSlidingWindow(params: {
+    key: string;
+    chatId: string;
+    eventTimestampMs: number;
+    windowSeconds: number;
+  }): Promise<{ size: number; saturated: boolean }> {
+    if (
+      !/^commercial-campaign:sliding:v1:sender:[a-f0-9]{64}:velocity:(?:300|1800|7200):chats$/u.test(
+        params.key,
+      ) ||
+      !params.chatId.trim() ||
+      !Number.isSafeInteger(params.eventTimestampMs) ||
+      params.eventTimestampMs <= 0 ||
+      ![300, 1800, 7200].includes(params.windowSeconds) ||
+      !params.key.endsWith(`:velocity:${params.windowSeconds}:chats`)
+    )
+      throw new Error('Invalid commercial sliding window observation');
+    const result = (await this.redis.eval(
+      COMMERCIAL_CAMPAIGN_SLIDING_WINDOW_SCRIPT,
+      1,
+      params.key,
+      fingerprintCommercialCampaignSlidingMember(params.chatId),
+      String(params.eventTimestampMs),
+      String(params.windowSeconds),
+      String(COMMERCIAL_SLIDING_CAMPAIGN_MAX_MEMBERS),
+      String(COMMERCIAL_SLIDING_CAMPAIGN_MAX_FUTURE_SKEW_MS),
+    )) as Array<number | string>;
+    const size = Number(result?.[0]);
+    const saturated = Number(result?.[1]);
+    if (
+      !Number.isSafeInteger(size) ||
+      size < 0 ||
+      size > COMMERCIAL_SLIDING_CAMPAIGN_MAX_MEMBERS ||
+      ![0, 1].includes(saturated)
+    )
+      throw new Error('Invalid commercial sliding window result');
+    return { size, saturated: saturated === 1 };
   }
 
   async getString(key: string): Promise<string | null> {

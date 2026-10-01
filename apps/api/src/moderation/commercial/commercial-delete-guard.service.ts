@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.service';
@@ -7,6 +7,13 @@ import { WebhookParser } from '../../webhook/webhook.parser';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
 import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation.service.support';
 import { CommercialAdDetector } from './commercial-ad.detector';
+import { normalizeCommercialRawText } from './commercial-normalization';
+import {
+  CommercialTextRuntimePolicyService,
+  COMMERCIAL_TEXT_POLICY_COHORTS,
+  fingerprintCommercialTextSettingsProfile,
+  type CommercialTextAuthority,
+} from './commercial-text-runtime-policy.service';
 import { isCommercialMessageDeleteEligible } from './commercial-action-policy';
 import {
   COMMERCIAL_TEXT_DELETE_RULE_CODE,
@@ -21,6 +28,7 @@ export class CommercialDeleteGuardRejectedError extends Error {
   reasonFingerprint?: string;
   constructor(
     readonly code:
+      | 'commercial_text_authority_changed'
       | 'commercial_text_settings_disabled'
       | 'commercial_text_author_immune'
       | 'commercial_text_message_changed'
@@ -42,17 +50,23 @@ type GuardInput = {
 type DecisionEvidence = { reasonKey: string; score: number; metadata: unknown };
 type CommercialGuardProof = 'absent' | { kind: 'allowed'; reasonKeys: string[] };
 export const COMMERCIAL_TEXT_MAX_INTENT_REASONS = 64;
+export type CommercialSanctionPermit = Readonly<{ expiresAtMs: number }>;
 
 @Injectable()
 export class CommercialDeleteGuardService {
   private readonly parser = new WebhookParser();
   private readonly detector = new CommercialAdDetector();
+  private readonly issuedPermits = new WeakMap<
+    CommercialSanctionPermit,
+    GuardInput & { evidence: readonly DecisionEvidence[] }
+  >();
   constructor(
     private readonly prisma: PrismaService,
     private readonly maxClient: MaxClientService,
     private readonly maxBotLink: MaxBotLinkService,
     private readonly immunity: ParticipantModerationImmunityService,
     private readonly config: ConfigService,
+    @Optional() private readonly textPolicy?: CommercialTextRuntimePolicyService,
   ) {}
 
   async assertIntentStillActionable(
@@ -94,6 +108,103 @@ export class CommercialDeleteGuardService {
     return result === 'absent' ? result : 'allowed';
   }
 
+  // FLAG: The caller may issue this permit only after this attempt's verified DELETE.
+  // It binds a short follow-up to that exact reason; absent/recovered deletes never qualify.
+  createSanctionPermit(
+    params: GuardInput & {
+      evidence: readonly DecisionEvidence[];
+      deleted: boolean;
+      commercialVerified: boolean;
+    },
+  ): CommercialSanctionPermit | null {
+    if (!params.deleted || !params.commercialVerified || !params.subjectUserId) return null;
+    const bindings = params.evidence.map((reason) => {
+      const metadata = reason.metadata as Record<string, unknown> | null;
+      return readCommercialTextDeleteBinding(metadata?.commercialTextBinding);
+    });
+    if (!bindings.length || bindings.some((binding) => !binding)) return null;
+    const permit = Object.freeze({
+      expiresAtMs: Math.min(
+        Date.now() + 60_000,
+        ...bindings.map((binding) => binding!.deadlineAtMs),
+      ),
+    });
+    this.issuedPermits.set(permit, {
+      chatId: params.chatId,
+      messageId: params.messageId,
+      subjectUserId: params.subjectUserId,
+      botId: params.botId,
+      evidence: structuredClone(params.evidence),
+    });
+    return permit;
+  }
+
+  async authorizeSanction(permit: CommercialSanctionPermit): Promise<boolean> {
+    try {
+      const proof = this.issuedPermits.get(permit);
+      if (!proof || Date.now() >= permit.expiresAtMs) return false;
+      const userId = proof.subjectUserId!;
+      if (this.maxBotLink.isKnownBotUserId(userId)) return false;
+      const settings = await this.loadSettings(proof.chatId, userId);
+      const evidence = this.resolveEvidence(proof.evidence, settings);
+      await this.assertAuthority(proof.chatId, evidence, settings);
+      const access = await this.maxClient.getChatMemberAccess(proof.chatId, userId, {
+        botId: proof.botId,
+        bypassCache: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+        timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5000,
+      });
+      if (access && access.userId !== null && access.userId !== userId) return false;
+      if (access?.isAdmin || access?.isOwner) return false;
+      if (
+        (await this.immunity.consumeForMessage({
+          chatId: proof.chatId,
+          userId,
+          messageId: proof.messageId,
+          scope: 'commercial-sanction:v1',
+          nightModeTimezone: settings.nightModeTimezone,
+        })) === 'granted'
+      )
+        return false;
+      const finalSettings = await this.loadSettings(proof.chatId, userId);
+      const finalEvidence = this.resolveEvidence(proof.evidence, finalSettings);
+      await this.assertAuthority(proof.chatId, finalEvidence, finalSettings);
+      return Date.now() < permit.expiresAtMs;
+    } catch {
+      return false;
+    }
+  }
+
+  private async assertAuthority(
+    chatId: string,
+    evidence: ReturnType<CommercialDeleteGuardService['resolveEvidence']>,
+    settings: CommercialDeleteSettings,
+  ): Promise<CommercialTextAuthority> {
+    const authority = (await this.textPolicy?.authority(
+      chatId,
+      fingerprintCommercialTextSettingsProfile(settings),
+    )) ?? {
+      revision: 0,
+      baselineAllowed: true,
+      promotedPolicyCohorts: COMMERCIAL_TEXT_POLICY_COHORTS,
+      mode: 'baseline' as const,
+    };
+    if (
+      !authority.baselineAllowed ||
+      evidence.bindings.some(
+        (binding) =>
+          binding.textRuntimeRevision !== authority.revision ||
+          binding.requiredPolicyCohorts.some(
+            (cohort) => !authority.promotedPolicyCohorts.includes(cohort),
+          ),
+      )
+    )
+      throw new CommercialDeleteGuardRejectedError('commercial_text_authority_changed');
+    return authority;
+  }
+
   private async verifyMessage(
     params: GuardInput & { evidence: readonly DecisionEvidence[] },
   ): Promise<CommercialGuardProof> {
@@ -103,6 +214,7 @@ export class CommercialDeleteGuardService {
       throw new CommercialDeleteGuardRejectedError('commercial_text_author_immune');
     const settings = await this.loadSettings(params.chatId, userId);
     const evidence = this.resolveEvidence(params.evidence, settings);
+    const authority = await this.assertAuthority(params.chatId, evidence, settings);
     const options = {
       botId: params.botId,
       bypassCache: true,
@@ -146,7 +258,7 @@ export class CommercialDeleteGuardService {
       evidence.binding.sourceSha256 !== fingerprintCommercialDeleteText(message.text)
     )
       throw new CommercialDeleteGuardRejectedError('commercial_text_message_changed');
-    this.assertDetection(message.text, settings, evidence);
+    this.assertDetection(message.text, settings, evidence, authority);
     if (
       (await this.immunity.consumeForMessage({
         chatId: params.chatId,
@@ -159,7 +271,8 @@ export class CommercialDeleteGuardService {
       throw new CommercialDeleteGuardRejectedError('commercial_text_author_immune');
     const finalSettings = await this.loadSettings(params.chatId, userId);
     const finalEvidence = this.resolveEvidence(params.evidence, finalSettings);
-    this.assertDetection(message.text, finalSettings, finalEvidence);
+    const finalAuthority = await this.assertAuthority(params.chatId, finalEvidence, finalSettings);
+    this.assertDetection(message.text, finalSettings, finalEvidence, finalAuthority);
     return { kind: 'allowed', reasonKeys: finalEvidence.reasonKeys };
   }
 
@@ -192,8 +305,19 @@ export class CommercialDeleteGuardService {
       bound.length ? bindings[index]?.eventTimestampMs === latestAt : true,
     );
     const currentBindings = bound.filter((binding) => binding.eventTimestampMs === latestAt);
+    const policySnapshot = (binding: (typeof currentBindings)[number]) =>
+      JSON.stringify([
+        binding.textRuntimeRevision,
+        [...new Set(binding.requiredPolicyCohorts)].sort(),
+      ]);
+    // FLAG: Every selected reason must describe the same source and policy snapshot; an
+    // authorized first reason cannot lend its authority to a conflicting later reason.
     if (
-      currentBindings.some((binding) => binding.sourceSha256 !== currentBindings[0]!.sourceSha256)
+      currentBindings.some(
+        (binding) =>
+          binding.sourceSha256 !== currentBindings[0]!.sourceSha256 ||
+          policySnapshot(binding) !== policySnapshot(currentBindings[0]!),
+      )
     )
       throw new CommercialDeleteGuardRejectedError('commercial_text_binding_invalid');
     if (currentBindings.some((binding) => !isCommercialTextDeleteBindingCurrent(binding, settings)))
@@ -202,6 +326,7 @@ export class CommercialDeleteGuardService {
     return {
       minimumScore: Math.max(...selected.map((reason) => reason.score)),
       binding: currentBindings[0] ?? null,
+      bindings: currentBindings,
       reasonKeys: selected.map((reason) => reason.reasonKey),
       campaignContext: currentBindings.every(
         (binding) =>
@@ -217,10 +342,12 @@ export class CommercialDeleteGuardService {
     text: string,
     settings: CommercialDeleteSettings,
     evidence: ReturnType<CommercialDeleteGuardService['resolveEvidence']>,
+    authority: CommercialTextAuthority,
   ) {
     const detection = this.detector.detect({
       normalizedText: '',
-      rawLoweredText: text.toLowerCase(),
+      rawLoweredText: normalizeCommercialRawText(text),
+      promotedPolicyCohorts: authority.promotedPolicyCohorts,
       settings: settings as import('../../prisma/prisma-client').ChatSettings,
       commercialCampaignContext: evidence.campaignContext,
     });

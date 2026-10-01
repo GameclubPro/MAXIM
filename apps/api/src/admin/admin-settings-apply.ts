@@ -252,6 +252,7 @@ export async function applySettingsToAllChats(params: {
     omitPublisherOwnedChatSettings(settingsUpdatePayload),
   );
   const majorSettingsUpdatePayload = omitLegacyStopWordsSettings(legacySettingsUpdatePayload);
+  delete majorSettingsUpdatePayload.settingsRevision;
   const requestedLegacySettings = Object.fromEntries(
     LEGACY_STOP_WORD_SETTING_KEYS.filter(
       (key) => Object.hasOwn(legacySettingsUpdatePayload, key) && hasOwnSetting(params.body, key),
@@ -263,6 +264,7 @@ export async function applySettingsToAllChats(params: {
     ),
     ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
   };
+  delete majorSettingsCreatePayload.settingsRevision;
 
   const capabilityRelevantUpdate =
     Boolean(copiedStopWordsPolicy?.enabled) ||

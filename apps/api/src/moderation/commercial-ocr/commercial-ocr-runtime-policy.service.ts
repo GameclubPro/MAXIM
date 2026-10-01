@@ -4,7 +4,6 @@ import Redis, { type RedisOptions } from 'ioredis';
 import { z } from 'zod';
 
 import {
-  COMMERCIAL_OCR_ROLLOUT_MODES,
   resolveCommercialOcrRolloutMode,
   resolveCommercialOcrRuntimePolicy,
   type CommercialOcrRuntimePolicy,
@@ -184,7 +183,7 @@ const runtimeControlSchema = z
   .object({
     version: z.literal(1),
     revision: z.number().int().positive().max(COMMERCIAL_OCR_MAX_ACTIVE_CONTROL_REVISION),
-    mode: z.enum(COMMERCIAL_OCR_ROLLOUT_MODES),
+    mode: z.enum(['off', 'shadow', 'canary', 'on']),
     enforcementChatIds: z.array(exactChatIdSchema).max(MAX_CONTROL_CHAT_IDS),
     certificationSha256: sha256Schema,
     certificationExpiresAt: isoTimestampSchema,
@@ -293,10 +292,60 @@ const runtimeControlSchema = z
 
 export type CommercialOcrRuntimeControlV1 = z.infer<typeof runtimeControlSchema>;
 
+// FLAG: Baseline is an explicit product authority, never a fabricated certification/control.
+// Certified expansion retains its independent signed, exact-chat, time-bounded gate.
+const commercialOcrAuthoritySchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('BASELINE'),
+      behaviorIdentitySha256: sha256Schema,
+      nativeBehaviorIdentitySha256: sha256Schema,
+      settingsFingerprint: sha256Schema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('CERTIFIED'),
+      controlRevision: z.number().int().positive().max(COMMERCIAL_OCR_MAX_ACTIVE_CONTROL_REVISION),
+      controlExpiresAt: isoTimestampSchema,
+    })
+    .strict(),
+]);
+
+export type CommercialOcrEnforcementAuthority = z.infer<typeof commercialOcrAuthoritySchema>;
+
+export function parseCommercialOcrEnforcementAuthority(
+  value: unknown,
+): CommercialOcrEnforcementAuthority | null {
+  const parsed = commercialOcrAuthoritySchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+export function sameCommercialOcrEnforcementAuthority(
+  left: CommercialOcrEnforcementAuthority | null,
+  right: CommercialOcrEnforcementAuthority | null,
+): boolean {
+  if (!left || !right || left.kind !== right.kind) return false;
+  if (left.kind === 'BASELINE' && right.kind === 'BASELINE') {
+    return (
+      left.behaviorIdentitySha256 === right.behaviorIdentitySha256 &&
+      left.nativeBehaviorIdentitySha256 === right.nativeBehaviorIdentitySha256 &&
+      left.settingsFingerprint === right.settingsFingerprint
+    );
+  }
+  return (
+    left.kind === 'CERTIFIED' &&
+    right.kind === 'CERTIFIED' &&
+    left.controlRevision === right.controlRevision &&
+    left.controlExpiresAt === right.controlExpiresAt
+  );
+}
+
 export type EffectiveCommercialOcrRuntimePolicy = CommercialOcrRuntimePolicy & {
   controlRevision: number | null;
   controlExpiresAt: string | null;
   enforcementAuthority: 'authorized' | 'revoked' | 'unavailable';
+  authority: CommercialOcrEnforcementAuthority | null;
 };
 
 export type CommercialOcrRuntimeControlSnapshot =
@@ -341,6 +390,7 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
   private readonly redis: Redis;
   private readonly approvalKeyIdSha256: string | null;
   private readonly behaviorIdentitySha256: string | null;
+  private readonly nativeBehaviorIdentitySha256: string | null;
   private redisConnectionAttempt: Promise<void> | null = null;
   private lastFailureLogAtMs = 0;
 
@@ -348,9 +398,11 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
     this.approvalKeyIdSha256 = resolveCommercialOcrApprovalKeyIdSha256(
       configService.get<string>('COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64'),
     );
-    const nativeBehavior = resolveExpectedCommercialOcrProductionBehaviorIdentity(
-      configService,
-    ).identity;
+    const nativeBehavior =
+      resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
+    this.nativeBehaviorIdentitySha256 = nativeBehavior.complete
+      ? nativeBehavior.fingerprintSha256
+      : null;
     this.behaviorIdentitySha256 = nativeBehavior.complete
       ? resolveCommercialOcrBehaviorIdentity(
           resolveCommercialOcrProductionBehaviorDescriptor(configService, nativeBehavior),
@@ -384,11 +436,36 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
         controlRevision: null,
         controlExpiresAt: null,
         enforcementAuthority: 'revoked',
+        authority: null,
       };
     }
 
-    // FLAG: Environment values are only ceilings. Every OCR deletion also requires a fresh,
-    // shared, exact-chat control so a missing or unreadable control revokes pending mutations.
+    if (envPolicy.mode === 'baseline') {
+      if (
+        !this.behaviorIdentitySha256 ||
+        !this.nativeBehaviorIdentitySha256 ||
+        !sha256Schema.safeParse(params.settingsFingerprint).success
+      ) {
+        return this.toFailClosedShadow(envPolicy, 'revoked');
+      }
+      // FLAG: Per-chat opt-in is checked by worker and dispatch guard. Release/native/profile
+      // binding is mandatory; the worker also verifies the live no-network sandbox identity.
+      return {
+        ...envPolicy,
+        controlRevision: null,
+        controlExpiresAt: null,
+        enforcementAuthority: 'authorized',
+        authority: {
+          kind: 'BASELINE',
+          behaviorIdentitySha256: this.behaviorIdentitySha256,
+          nativeBehaviorIdentitySha256: this.nativeBehaviorIdentitySha256,
+          settingsFingerprint: params.settingsFingerprint,
+        },
+      };
+    }
+
+    // FLAG: Certified expansion requires a fresh shared exact-chat control. Environment values
+    // are only ceilings; a missing or unreadable control revokes certified pending mutations.
     const controlResult = await this.readFreshControl();
     if (controlResult.kind !== 'active') {
       return this.toFailClosedShadow(envPolicy, controlResult.kind);
@@ -418,6 +495,7 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
         enforce: false,
         ...metadata,
         enforcementAuthority: 'revoked',
+        authority: null,
       };
     }
     return {
@@ -426,6 +504,7 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
       enforce: true,
       ...metadata,
       enforcementAuthority: 'authorized',
+      authority: { kind: 'CERTIFIED', ...metadata },
     };
   }
 
@@ -615,6 +694,7 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
       controlRevision: null,
       controlExpiresAt: null,
       enforcementAuthority: authority,
+      authority: null,
     };
   }
 
@@ -636,6 +716,11 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
       );
     }
     const envMode = resolveCommercialOcrRolloutMode(this.configService);
+    if (envMode === 'baseline') {
+      throw new CommercialOcrRuntimeControlValidationError(
+        'baseline does not accept certified runtime controls',
+      );
+    }
     if (MODE_RANK[control.mode] > MODE_RANK[envMode]) {
       throw new CommercialOcrRuntimeControlValidationError(
         'control mode exceeds COMMERCIAL_OCR_ROLLOUT_MODE',

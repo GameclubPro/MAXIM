@@ -17,6 +17,10 @@ function probe(mode) {
       local source_path="\${2#*:}"
       if [[ "$MAXIM_TEST_MODE" == unwired && "$source_path" == *moderation-delete-intent.service.ts ]]; then
         sed s/commercialDeleteGuard/removedGuard/g "$MAXIM_TEST_ROOT/$source_path"
+      elif [[ "$MAXIM_TEST_MODE" == old-authority && "$source_path" == *commercial-delete-guard.service.ts ]]; then
+        sed s/assertAuthority/removedAuthority/g "$MAXIM_TEST_ROOT/$source_path"
+      elif [[ "$MAXIM_TEST_MODE" == old-binding && "$source_path" == *commercial-delete-binding.ts ]]; then
+        sed 's/BINDING_VERSION = 2/BINDING_VERSION = 1/g' "$MAXIM_TEST_ROOT/$source_path"
       else
         cat "$MAXIM_TEST_ROOT/$source_path"
       fi
@@ -39,5 +43,6 @@ test('both API rollback paths require commercial binding and final dispatch guar
     );
   const current = probe('current');
   assert.equal(current.status, 0, current.stderr);
-  for (const mode of ['missing', 'unwired']) assert.notEqual(probe(mode).status, 0);
+  for (const mode of ['missing', 'unwired', 'old-authority', 'old-binding'])
+    assert.notEqual(probe(mode).status, 0);
 });

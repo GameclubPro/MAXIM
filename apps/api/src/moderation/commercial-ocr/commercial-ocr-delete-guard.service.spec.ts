@@ -10,6 +10,7 @@ import {
 } from './commercial-ocr-delete-guard.service';
 import { COMMERCIAL_OCR_DECISION_POLICY_VERSION } from './commercial-ocr-decision-policy';
 import { COMMERCIAL_OCR_DEFAULT_VERSION } from './commercial-ocr.queue';
+import type { CommercialOcrEnforcementAuthority } from './commercial-ocr-runtime-policy.service';
 import { fingerprintCommercialOcrSettingsProfile } from './commercial-ocr-settings-profile';
 
 const sourceCreatedAt = '2026-08-12T08:00:00.000Z';
@@ -31,12 +32,63 @@ const baseInput = {
 };
 
 describe('CommercialOcrDeleteGuardService', () => {
+  const baselineAuthority: CommercialOcrEnforcementAuthority = {
+    kind: 'BASELINE',
+    behaviorIdentitySha256: 'a'.repeat(64),
+    nativeBehaviorIdentitySha256: 'b'.repeat(64),
+    settingsFingerprint: fingerprintCommercialOcrSettingsProfile(commercialPolicySettings),
+  };
+
+  it('dispatches a baseline binding only under the same release/native/profile authority', async () => {
+    const harness = buildHarness({ bindingAuthority: baselineAuthority });
+    await expect(harness.service.assertIntentStillActionable(baseInput)).resolves.toBe('allowed');
+    expect(harness.participantImmunity.consumeForMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { ...baselineAuthority, behaviorIdentitySha256: 'c'.repeat(64) },
+    { ...baselineAuthority, nativeBehaviorIdentitySha256: 'c'.repeat(64) },
+    { ...baselineAuthority, settingsFingerprint: 'c'.repeat(64) },
+    { kind: 'CERTIFIED' as const, controlRevision: 1, controlExpiresAt },
+  ])('rejects a pending baseline binding after its authority changes: %o', async (changed) => {
+    const harness = buildHarness({ bindingAuthority: baselineAuthority });
+    const active = {
+      ...runtimeResult('authorized'),
+      mode: 'baseline',
+      authority: baselineAuthority,
+    };
+    harness.runtimePolicy.resolveEffectivePolicy
+      .mockResolvedValueOnce(active)
+      .mockResolvedValueOnce({ ...active, authority: changed });
+    await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+      code: 'commercial_ocr_runtime_control_changed',
+    });
+  });
+
+  it('rejects legacy and ambiguous baseline certificate fields rather than inventing authority', () => {
+    const binding = bindingFor(messageRow(), {}, undefined, baselineAuthority);
+    expect(parseCommercialOcrDeleteBinding({ ...binding, version: 4 })).toBeNull();
+    expect(parseCommercialOcrDeleteBinding({ ...binding, controlRevision: 1 })).toBeNull();
+    expect(
+      parseCommercialOcrDeleteBinding({
+        ...binding,
+        authority: { ...baselineAuthority, controlExpiresAt },
+      }),
+    ).toBeNull();
+    expect(
+      parseCommercialOcrDeleteBinding({
+        ...binding,
+        authority: { ...baselineAuthority, nativeBehaviorIdentitySha256: 'invalid' },
+      }),
+    ).toBeNull();
+  });
+
   it('builds and parses a versioned binding without retaining caption or photo ids', () => {
     const binding = bindingFor(messageRow());
 
     expect(parseCommercialOcrDeleteBinding({ commercialOcrBinding: binding })).toEqual(binding);
     expect(binding).toMatchObject({
-      version: 4,
+      version: 5,
       policyVersion: COMMERCIAL_OCR_DECISION_POLICY_VERSION,
       ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION,
       senderId: 'user-1',
@@ -443,10 +495,11 @@ function buildHarness(
     runtimeEnforcementAuthority?: 'authorized' | 'revoked' | 'unavailable';
     certifiedSettingsFingerprints?: readonly string[];
     bindingOcrVersion?: string;
+    bindingAuthority?: CommercialOcrEnforcementAuthority;
   } = {},
 ) {
   const exactRow = options.exactRow === undefined ? messageRow() : options.exactRow;
-  const binding = bindingFor(messageRow(), {}, options.bindingOcrVersion);
+  const binding = bindingFor(messageRow(), {}, options.bindingOcrVersion, options.bindingAuthority);
   const prisma = {
     moderationDeleteIntentReason: {
       findMany: jest.fn().mockResolvedValue([
@@ -503,6 +556,13 @@ function buildHarness(
           controlRevision: enforce ? 1 : null,
           controlExpiresAt: enforce ? controlExpiresAt : null,
           enforcementAuthority: settingsCertified ? enforcementAuthority : 'revoked',
+          authority: enforce
+            ? (options.bindingAuthority ?? {
+                kind: 'CERTIFIED',
+                controlRevision: 1,
+                controlExpiresAt,
+              })
+            : null,
         };
       }),
   };
@@ -554,6 +614,7 @@ function runtimeResult(authority: 'authorized' | 'revoked' | 'unavailable') {
     controlRevision: enforce ? 1 : null,
     controlExpiresAt: enforce ? controlExpiresAt : null,
     enforcementAuthority: authority,
+    authority: enforce ? { kind: 'CERTIFIED', controlRevision: 1, controlExpiresAt } : null,
   };
 }
 
@@ -561,6 +622,7 @@ function bindingFor(
   row: Record<string, unknown>,
   settingsOverride: Partial<typeof commercialPolicySettings> = {},
   ocrVersion = COMMERCIAL_OCR_DEFAULT_VERSION,
+  authority?: CommercialOcrEnforcementAuthority,
 ) {
   const source = extractCommercialOcrDeleteSource(row);
   if (!source) {
@@ -574,8 +636,7 @@ function bindingFor(
     caption: source.caption,
     sourceCreatedAt: source.sourceCreatedAt,
     expectedImageCount: source.orderedPhotoIds.length,
-    controlRevision: 1,
-    controlExpiresAt,
+    authority: authority ?? { kind: 'CERTIFIED', controlRevision: 1, controlExpiresAt },
     ocrDeadlineAt,
   });
 }

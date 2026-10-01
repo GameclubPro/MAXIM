@@ -17450,6 +17450,7 @@ describe('AdminService settings screen endpoints', () => {
       reportsAvailable: false,
       duplicatePhotoModerationMode: 'OBSERVE',
       duplicateMessageModerationMode: 'OFF',
+      commercialPhotoModerationMode: 'UNKNOWN',
       rules,
       header: createManagedEntityHeaderFixture({
         id: 'chat-1',

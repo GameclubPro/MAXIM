@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  HttpException,
   Param,
   Patch,
   Post,
@@ -11,9 +12,17 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { z } from 'zod';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { AdminSettingsService } from './admin-settings.service';
+
+const recheckBotCapabilitiesSchema = z.literal('1').optional();
+function parseBotCapabilityRecheck(value: unknown): boolean {
+  const parsed = recheckBotCapabilitiesSchema.safeParse(value);
+  if (!parsed.success) throw new BadRequestException('recheckBotCapabilities must equal 1');
+  return parsed.data === '1';
+}
 
 @Controller('v1')
 @UseGuards(InitDataGuard)
@@ -54,13 +63,37 @@ export class AdminSettingsController {
     @Param('chatId') chatId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
-    @Query('recheckBotCapabilities') recheckBotCapabilities?: string,
+    @Query('recheckBotCapabilities') recheckBotCapabilities?: unknown,
   ) {
-    if (recheckBotCapabilities !== undefined && recheckBotCapabilities !== '1') {
-      throw new BadRequestException('recheckBotCapabilities must equal 1');
+    // FLAG: Revisionless public PUT must not restore a stale full client snapshot.
+    if (
+      !body ||
+      typeof body !== 'object' ||
+      !('settingsRevision' in body) ||
+      typeof body.settingsRevision !== 'string'
+    ) {
+      throw new HttpException(
+        {
+          code: 'CHAT_SETTINGS_REVISION_REQUIRED',
+          message: 'Обновите экран настроек перед сохранением.',
+        },
+        428,
+      );
     }
     return this.settingsService.updateSettings(chatId, user, body, 'miniapp', {
-      forceLiveBotCapabilityCheck: recheckBotCapabilities === '1',
+      forceLiveBotCapabilityCheck: parseBotCapabilityRecheck(recheckBotCapabilities),
+    });
+  }
+
+  @Patch('chats/:chatId/settings/section')
+  patchSettingsSection(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+    @Query('recheckBotCapabilities') recheckBotCapabilities?: unknown,
+  ) {
+    return this.settingsService.patchSettingsSection(chatId, user, body, {
+      forceLiveBotCapabilityCheck: parseBotCapabilityRecheck(recheckBotCapabilities),
     });
   }
 

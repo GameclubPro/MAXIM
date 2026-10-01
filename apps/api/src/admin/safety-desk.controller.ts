@@ -1,11 +1,44 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Optional,
+  Param,
+  Post,
+  Query,
+  ServiceUnavailableException,
+  UseGuards,
+} from '@nestjs/common';
 import { SafetyDeskAdminGuard } from './safety-desk-admin.guard';
 import { SafetyDeskService } from './safety-desk.service';
+import { CommercialReviewService } from '../moderation/commercial/commercial-review.service';
 
 @Controller('v1/safety-desk')
 @UseGuards(SafetyDeskAdminGuard)
 export class SafetyDeskController {
-  constructor(private readonly safetyDeskService: SafetyDeskService) {}
+  constructor(
+    private readonly safetyDeskService: SafetyDeskService,
+    @Optional() private readonly commercialReview?: CommercialReviewService,
+  ) {}
+
+  @Get('commercial/review')
+  getCommercialReview(@Query() query: unknown) {
+    if (!this.commercialReview)
+      throw new ServiceUnavailableException('Очередь временно недоступна.');
+    return this.commercialReview.getQueue(query);
+  }
+
+  @Post('commercial/review/:itemId/label')
+  labelCommercialReview(
+    @Param('itemId') itemId: string,
+    @Headers('x-remote-user') remoteUser: string | undefined,
+    @Body() body: unknown,
+  ) {
+    if (!this.commercialReview)
+      throw new ServiceUnavailableException('Очередь временно недоступна.');
+    return this.commercialReview.labelItem(itemId, remoteUser ?? null, body);
+  }
 
   @Get('queue')
   getQueue() {

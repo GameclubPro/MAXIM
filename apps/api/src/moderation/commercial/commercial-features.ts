@@ -7,9 +7,12 @@ import { buildCommercialFeatureVector } from './commercial-explain';
 import { collectCommercialHighRiskRecallHits } from './commercial-high-risk-recall';
 import { normalizeCommercialRawText, normalizeCommercialText } from './commercial-normalization';
 import {
+  hasQualifiedSourceSideServiceOffer,
+  hasExplicitServiceBookingCard,
   hasTransportDemandWithoutOffer,
   resolveCommercialLocalContext,
 } from './commercial-local-context';
+import { resolveCommercialServiceSpeechAct } from './commercial-service-speech-act';
 import { hasCommercialPhoneLikeText, replaceCommercialPhoneLikeText } from './commercial-phone';
 import {
   collectFirstMarkers,
@@ -237,7 +240,7 @@ const DISCUSSION_FUEL_CONTEXT_PREFILTER =
 const DISCUSSION_LOCAL_NEWS_PREFILTER = /(?:подпи[сш]|читайте|школ)/iu;
 
 export function hasCommercialSpamMarkers(text: string): boolean {
-  const rawLoweredText = normalizeCommercialRawText(text.toLowerCase());
+  const rawLoweredText = normalizeCommercialRawText(text);
   const normalizedText = normalizeCommercialText(rawLoweredText);
   if (!normalizedText) {
     return false;
@@ -485,6 +488,25 @@ export function hasCommercialSpamMarkers(text: string): boolean {
     hasChannelPlacementContext ||
     hasPropertyAgentContext ||
     hasCommercialPropertyContext;
+
+  if (
+    !hasRecruitmentContext &&
+    !hasHighRiskCommercialContext &&
+    resolveCommercialServiceSpeechAct(rawLoweredText) !== 'NONE'
+  ) {
+    const localContext = resolveCommercialLocalContext({
+      rawLoweredText,
+      escalationRiskLabels: [],
+      includeOrdinaryProtectedContext: true,
+    });
+    if (
+      localContext.fullyInspected &&
+      localContext.hasProtectedContext &&
+      !localContext.hasIndependentCommercialOffer &&
+      !hasQualifiedSourceSideServiceOffer(rawLoweredText)
+    )
+      return false;
+  }
 
   if (hasSearchRequestContext && !hasSelfPromotionalContext) {
     return false;
@@ -2198,26 +2220,32 @@ export function collectCommercialSignals(params: {
   const hasBlockingSearchRequestContext =
     hasSearchRequestContext && !hasOnlyBareQuestionSearchContext;
 
-  if (
-    (hasImplicitStructuredServiceOffer || !hasTransactional) &&
-    (hasServiceSpecialtyContext || hasServiceOfferContext || hasServiceContext) &&
+  const hasOwnedServiceDeal =
+    (hasServiceSpecialtyContext || hasServiceOfferContext) &&
     !hasBlockingSearchRequestContext &&
-    !(
-      ADS_CONTEXTUAL_PHONE_PATTERN.test(rawLoweredText) ||
-      hasPhoneLikeText ||
-      ADS_MASKED_PHONE_PATTERN.test(rawLoweredText)
-    ) &&
-    !(
-      hasPrivateGoodsItemContext &&
-      !hasBusinessContext &&
-      !hasDealChannel &&
-      !hasPrice &&
-      !hasPhoneContact
-    ) &&
-    (hasImplicitStructuredServiceOffer ||
-      /(?:^|[^\p{L}\p{N}_-])(?:звон(?:ите|ить)?|пишите?|запис[\p{L}\p{N}_-]*|выезд|замер|гаранти[\p{L}\p{N}_-]*|под\s+ключ|ежедневн[\p{L}\p{N}_-]*|круглосуточн[\p{L}\p{N}_-]*|принима(?:ю|ем)\s+заявк[\p{L}\p{N}_-]*|адрес|режим|консультац[\p{L}\p{N}_-]*|договор)(?=$|[^\p{L}\p{N}_-])/iu.test(
-        rawLoweredText,
-      ))
+    (hasQualifiedSourceSideServiceOffer(rawLoweredText) ||
+      hasExplicitServiceBookingCard(rawLoweredText));
+  if (
+    hasOwnedServiceDeal ||
+    ((hasImplicitStructuredServiceOffer || !hasTransactional) &&
+      (hasServiceSpecialtyContext || hasServiceOfferContext || hasServiceContext) &&
+      !hasBlockingSearchRequestContext &&
+      !(
+        ADS_CONTEXTUAL_PHONE_PATTERN.test(rawLoweredText) ||
+        hasPhoneLikeText ||
+        ADS_MASKED_PHONE_PATTERN.test(rawLoweredText)
+      ) &&
+      !(
+        hasPrivateGoodsItemContext &&
+        !hasBusinessContext &&
+        !hasDealChannel &&
+        !hasPrice &&
+        !hasPhoneContact
+      ) &&
+      (hasImplicitStructuredServiceOffer ||
+        /(?:^|[^\p{L}\p{N}_-])(?:звон(?:ите|ить)?|пишите?|запис[\p{L}\p{N}_-]*|выезд|замер|гаранти[\p{L}\p{N}_-]*|под\s+ключ|ежедневн[\p{L}\p{N}_-]*|круглосуточн[\p{L}\p{N}_-]*|принима(?:ю|ем)\s+заявк[\p{L}\p{N}_-]*|адрес|режим|консультац[\p{L}\p{N}_-]*|договор)(?=$|[^\p{L}\p{N}_-])/iu.test(
+          rawLoweredText,
+        )))
   ) {
     addPositive('transaction:structured-service-offer', weights.transactionalKeyword);
     hasTransactional = true;

@@ -26,6 +26,11 @@ import {
 } from './commercial-local-context';
 import { collectFirstPatternLabels, createCommercialTextMatcher } from './commercial-match-utils';
 import { CommercialSecondStageScorer } from './commercial-scorer';
+import { CommercialDetectorDecisionCache } from './commercial-detector-cache';
+import {
+  COMMERCIAL_SLIDING_CAMPAIGN_COHORT,
+  resolveCommercialSlidingCampaignPolicyContext,
+} from './commercial-campaign-sliding';
 import {
   normalizeCommercialRawText,
   normalizeCommercialText,
@@ -36,7 +41,11 @@ import {
   ADS_BOUNDED_WHERE_TO_BUY_REQUEST_PATTERN,
 } from './commercial-patterns';
 import { classifyCommercialDetection } from './commercial-subtypes';
-import { resolveCommercialServiceSpeechAct } from './commercial-service-speech-act';
+import {
+  COMMERCIAL_CANDIDATE_SERVICE_CONTRAST_BOUNDARY,
+  COMMERCIAL_OWNED_SERVICE_CONTRAST_COHORT,
+  resolveCommercialServiceSpeechAct,
+} from './commercial-service-speech-act';
 import { hasPostQuestionPaidServiceOffer } from './commercial-safe-context';
 import type {
   CommercialLegacyEvidenceStrength,
@@ -48,6 +57,11 @@ const COMMERCIAL_WARMUP_SETTINGS = {
   commercialAdsWarnThreshold: 57,
   commercialAdsDeleteThreshold: 77,
 } as unknown as ChatSettings;
+
+export const COMMERCIAL_RELEASE_POLICY_COHORTS = [
+  COMMERCIAL_OWNED_SERVICE_CONTRAST_COHORT,
+  COMMERCIAL_SLIDING_CAMPAIGN_COHORT,
+] as const;
 
 const COMMERCIAL_WARMUP_TEXTS = [
   'ГРУЗОПЕРЕВОЗКИ +7 900 000 10 42',
@@ -362,10 +376,12 @@ export type CommercialDetection = {
   suppressionReasons?: string[];
   reasonCodes?: string[];
   featureVector?: Record<string, number>;
+  requiredPolicyCohorts?: string[];
 };
 
 export class CommercialAdDetector {
   private readonly commercialSecondStageScorer = new CommercialSecondStageScorer();
+  private readonly decisionCache = new CommercialDetectorDecisionCache();
 
   constructor() {
     this.warmUpProcessPatterns();
@@ -376,17 +392,46 @@ export class CommercialAdDetector {
     rawLoweredText: string;
     settings: ChatSettings;
     commercialCampaignContext?: CommercialCampaignContext | null;
+    promotedPolicyCohorts?: readonly string[];
   }): CommercialDetection | null {
-    const detection = this.detectCommercialAd(params);
+    // FLAG: The complete typed input includes raw layout, campaign counters and promoted cohorts.
+    const promotedPolicyCohorts = params.promotedPolicyCohorts ?? COMMERCIAL_RELEASE_POLICY_COHORTS;
+    const cacheKey = this.decisionCache.buildKey({ ...params, promotedPolicyCohorts });
+    const cached = this.decisionCache.read(cacheKey);
+    if (cached.hit) {
+      return cached.detection === null
+        ? null
+        : { ...cached.detection, rawText: params.rawLoweredText };
+    }
+    const campaignPolicy = resolveCommercialSlidingCampaignPolicyContext(
+      params.commercialCampaignContext,
+      promotedPolicyCohorts,
+    );
+    const detection = this.detectCommercialAd({
+      ...params,
+      commercialCampaignContext: campaignPolicy.context,
+    });
+    if (detection && campaignPolicy.requiredPolicyCohorts.length > 0) {
+      detection.requiredPolicyCohorts = [
+        ...new Set([
+          ...(detection.requiredPolicyCohorts ?? []),
+          ...campaignPolicy.requiredPolicyCohorts,
+        ]),
+      ];
+    }
     const reviewSignals = collectAmbiguousTransportReviewSignals(params);
     if (!detection && reviewSignals.length === 0) {
+      this.decisionCache.remember(cacheKey, null);
       return null;
     }
 
     if (!detection) {
-      return enrichCommercialDetection(
+      const review = enrichCommercialDetection(
         buildAmbiguousTransportReviewDetection(params, reviewSignals),
+        promotedPolicyCohorts,
       );
+      this.decisionCache.remember(cacheKey, review);
+      return review;
     }
 
     for (const signal of reviewSignals) {
@@ -394,7 +439,13 @@ export class CommercialAdDetector {
         detection.matchedSignals.push(signal);
       }
     }
-    return enrichCommercialDetection(detection);
+    const result = enrichCommercialDetection(detection, promotedPolicyCohorts);
+    this.decisionCache.remember(cacheKey, result);
+    return result;
+  }
+
+  get cacheStats(): { entries: number; hits: number; misses: number; evictions: number } {
+    return this.decisionCache.stats;
   }
 
   hasCommercialSpamMarkers(text: string): boolean {
@@ -499,6 +550,7 @@ export class CommercialAdDetector {
     )
       return null;
     let isolatedIndependentOffer = false;
+    let requiredPolicyCohorts: string[] = [];
     if (localOfferText) {
       const localRawLoweredText = normalizeCommercialRawText(localOfferText);
       const localNormalizedText = normalizePreparedCommercialText(localRawLoweredText);
@@ -543,6 +595,11 @@ export class CommercialAdDetector {
         hasIndependentLocalEscalationOffer
       ) {
         localState.matchedSignals.push('locality:independent-commercial-offer');
+        COMMERCIAL_CANDIDATE_SERVICE_CONTRAST_BOUNDARY.lastIndex = 0;
+        if (COMMERCIAL_CANDIDATE_SERVICE_CONTRAST_BOUNDARY.test(rawLoweredText)) {
+          requiredPolicyCohorts = [COMMERCIAL_OWNED_SERVICE_CONTRAST_COHORT];
+          localState.matchedSignals.push(`promotion:${COMMERCIAL_OWNED_SERVICE_CONTRAST_COHORT}`);
+        }
         rawLoweredText = localRawLoweredText;
         normalizedText = localNormalizedText;
         state = localState;
@@ -844,6 +901,7 @@ export class CommercialAdDetector {
       hasActionDirectDealEvidence: evidence.hasActionDirectDealEvidence,
       hasNonCampaignDirectDealEvidence: evidence.hasNonCampaignDirectDealEvidence,
       hasEscalationRiskEvidence: evidence.hasEscalationRiskEvidence,
+      ...(requiredPolicyCohorts.length > 0 ? { requiredPolicyCohorts } : {}),
     };
   }
 }

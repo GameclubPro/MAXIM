@@ -7,7 +7,7 @@ import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import { COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256 } from '../commercial-ocr/commercial-ocr-detector-source.generated';
 
 export const COMMERCIAL_TEXT_DELETE_RULE_CODE = 'COMMERCIAL_AD_DELETE';
-export const COMMERCIAL_TEXT_DELETE_BINDING_VERSION = 1 as const;
+export const COMMERCIAL_TEXT_DELETE_BINDING_VERSION = 2 as const;
 export const COMMERCIAL_TEXT_DELETE_MAX_AGE_MS = 5 * 60_000;
 const MAX_FUTURE_SKEW_MS = 30_000;
 
@@ -38,6 +38,9 @@ const campaignSchema = z
     senderDistinctChatCount5m: counter.optional(),
     senderDistinctChatCount30m: counter.optional(),
     senderDistinctChatCount120m: counter.optional(),
+    shadowSlidingSenderDistinctChatCount5m: counter.optional(),
+    shadowSlidingSenderDistinctChatCount30m: counter.optional(),
+    shadowSlidingSenderDistinctChatCount120m: counter.optional(),
   })
   .strict();
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -51,6 +54,11 @@ const bindingSchema = z
     eventTimestampMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     deadlineAtMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     campaignContext: campaignSchema.nullable(),
+    textRuntimeRevision: z.number().int().nonnegative().default(0),
+    requiredPolicyCohorts: z
+      .array(z.enum(['owned-service-contrast-v1', 'sliding-campaign-v1']))
+      .max(2)
+      .default([]),
   })
   .strict();
 export type CommercialTextDeleteBinding = z.infer<typeof bindingSchema>;
@@ -83,6 +91,8 @@ export function buildCommercialTextDeleteBinding(params: {
   settings: CommercialDeleteSettings;
   eventTimestampMs: number;
   campaignContext: CommercialCampaignContext | null;
+  textRuntimeRevision?: number;
+  requiredPolicyCohorts?: readonly string[];
 }): CommercialTextDeleteBinding {
   return bindingSchema.parse({
     version: COMMERCIAL_TEXT_DELETE_BINDING_VERSION,
@@ -93,6 +103,8 @@ export function buildCommercialTextDeleteBinding(params: {
     eventTimestampMs: params.eventTimestampMs,
     deadlineAtMs: params.eventTimestampMs + COMMERCIAL_TEXT_DELETE_MAX_AGE_MS,
     campaignContext: params.campaignContext,
+    textRuntimeRevision: params.textRuntimeRevision ?? 0,
+    requiredPolicyCohorts: params.requiredPolicyCohorts ?? [],
   });
 }
 
@@ -131,8 +143,20 @@ export function bindCommercialTextDeleteIntent(
   },
 ): EnsureModerationDeleteIntentInput {
   if (input.ruleCode !== COMMERCIAL_TEXT_DELETE_RULE_CODE) return input;
+  const eventMetadata = input.event?.metadata;
+  const metadataRecord =
+    eventMetadata && typeof eventMetadata === 'object' && !Array.isArray(eventMetadata)
+      ? (eventMetadata as Record<string, unknown>)
+      : {};
   const commercialTextBinding = buildCommercialTextDeleteBinding({
     ...context,
+    textRuntimeRevision:
+      typeof metadataRecord.commercialTextRuntimeRevision === 'number'
+        ? metadataRecord.commercialTextRuntimeRevision
+        : 0,
+    requiredPolicyCohorts: Array.isArray(metadataRecord.requiredPolicyCohorts)
+      ? (metadataRecord.requiredPolicyCohorts as string[])
+      : [],
     eventTimestampMs:
       input.sourceMessageAt instanceof Date
         ? input.sourceMessageAt.getTime()

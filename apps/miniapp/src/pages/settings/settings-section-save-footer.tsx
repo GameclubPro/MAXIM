@@ -13,6 +13,7 @@ type SettingsSectionSaveFooterProps = {
   isApplyingSectionToAll: boolean;
   applyingSection: ApplySectionKey | null;
   onSaveSection: (section: ApplySectionKey) => void;
+  conflict?: { viewingSaved: boolean; onToggle: () => void };
 };
 
 export function SettingsSectionSaveFooter({
@@ -23,6 +24,7 @@ export function SettingsSectionSaveFooter({
   isApplyingSectionToAll,
   applyingSection,
   onSaveSection,
+  conflict,
 }: SettingsSectionSaveFooterProps) {
   const isCurrentSectionSaving = isSavingSettings && savingSection === section;
   const isCurrentSectionApplying = isApplyingSectionToAll && applyingSection === section;
@@ -30,6 +32,17 @@ export function SettingsSectionSaveFooter({
 
   return (
     <>
+      {conflict ? (
+        <div role="status" className="settings-drilldown__footer-note">
+          <p>
+            Настройки изменились. Ваш черновик сохранён. Сейчас показан{' '}
+            {conflict.viewingSaved ? 'сохранённый вариант' : 'ваш черновик'}.
+          </p>
+          <button type="button" className="button button--secondary" onClick={conflict.onToggle}>
+            {conflict.viewingSaved ? 'Показать мой черновик' : 'Сравнить с сохранённым'}
+          </button>
+        </div>
+      ) : null}
       {footerNote ? <p className="settings-drilldown__footer-note">{footerNote}</p> : null}
       <div className="settings-drilldown__footer-actions is-single-action">
         <button
@@ -41,7 +54,11 @@ export function SettingsSectionSaveFooter({
         >
           {isCurrentSectionSaving || isCurrentSectionApplying
             ? 'Сохраняем...'
-            : (options?.saveLabel ?? 'Сохранить')}
+            : conflict
+              ? conflict.viewingSaved
+                ? 'Оставить сохранённый вариант'
+                : 'Сохранить мой вариант'
+              : (options?.saveLabel ?? 'Сохранить')}
         </button>
       </div>
     </>

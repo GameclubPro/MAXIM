@@ -15,6 +15,7 @@ const job = {
   chatId: 'chat-1',
   messageId: 'message-1',
   sourceCreatedAt: '2026-08-12T08:00:00.000Z',
+  eventTimestamp: '2026-08-12T08:00:00.000Z',
   imageCount: 1,
   schemaVersion: COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
   ocrVersion: 'tesseract-rus-eng-v1',

@@ -6,6 +6,11 @@ import {
   type SafetyDeskDeleteIntentItem,
   type SafetyDeskDeleteRuntimeResponse,
   type SafetyDeskQueueResponse,
+  commercialReviewQueueResponseSchema,
+  commercialReviewItemSchema,
+  type CommercialReviewQueueResponse,
+  type CommercialReviewItem,
+  type CommercialReviewLabel,
 } from '@maxim/contracts/safety-desk';
 import { createAdminApiTransport, type AdminApiTransport } from './admin-request';
 
@@ -15,6 +20,36 @@ export type SafetyDeskDecisionAction = 'approve' | 'reject' | 'recheck';
 
 export class SafetyDeskApiClient {
   constructor(private readonly transport: AdminApiTransport = createAdminApiTransport()) {}
+
+  fetchCommercialReview(
+    accessCode: string,
+    cursor?: string,
+    status: 'PENDING' | 'REVIEWED' | 'ALL' = 'PENDING',
+  ): Promise<CommercialReviewQueueResponse> {
+    const query = new URLSearchParams({ limit: '50', status, ...(cursor ? { cursor } : {}) });
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/commercial/review?${query}`,
+      accessCode,
+      commercialReviewQueueResponseSchema,
+    );
+  }
+
+  labelCommercialReview(
+    item: CommercialReviewItem,
+    label: CommercialReviewLabel,
+    reason: string,
+    accessCode: string,
+  ): Promise<CommercialReviewItem> {
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/commercial/review/${encodeURIComponent(item.id)}/label`,
+      accessCode,
+      commercialReviewItemSchema,
+      {
+        method: 'POST',
+        body: { expectedUpdatedAt: item.updatedAt, label, reason },
+      },
+    );
+  }
 
   fetchQueue(accessCode: string): Promise<SafetyDeskQueueResponse> {
     return this.transport.request(
