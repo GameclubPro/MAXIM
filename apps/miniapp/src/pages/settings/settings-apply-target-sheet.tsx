@@ -167,9 +167,12 @@ export function SettingsApplyTargetSheet({
     !previewError &&
     !isApplying &&
     (!favoriteTargetSelected || favoriteLabelsStatus === 'ready') &&
-    (preview?.updatedChats ?? 0) > 0;
+    (preview?.updatedChats ?? 0) > 0 &&
+    (sheet.section !== 'reports' || (preview?.appliedChatIds.length ?? 0) <= 500);
   const visibleChats = previewMatchesTarget ? (preview?.sampleChats.slice(0, 4) ?? []) : [];
   const remainingChats = Math.max(0, (preview?.updatedChats ?? 0) - visibleChats.length);
+  const reportsTargetLimitExceeded =
+    sheet.section === 'reports' && (preview?.appliedChatIds.length ?? 0) > 500;
 
   function updateFavoriteType(favoriteType: ManagedEntityFavoriteType) {
     if (isApplying) {
@@ -310,6 +313,8 @@ export function SettingsApplyTargetSheet({
             <span>Загружаем категории…</span>
           ) : favoriteTargetSelected && favoriteLabelsStatus === 'error' ? (
             <span className="is-danger">Названия категорий временно недоступны.</span>
+          ) : reportsTargetLimitExceeded ? (
+            <span className="is-danger">Выберите не более 500 чатов за одно применение.</span>
           ) : previewLoading || (!previewError && !previewMatchesTarget) ? (
             <span>Проверяем выбранные чаты…</span>
           ) : previewError ? (

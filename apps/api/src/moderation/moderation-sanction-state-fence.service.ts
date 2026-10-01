@@ -115,13 +115,16 @@ export class ModerationSanctionStateFenceService {
     await this.appendPhase(fence, 'ABORTED');
   }
 
-  async isSanctionEventInvalidated(params: IsSanctionEventInvalidatedParams): Promise<boolean> {
-    const eventCreatedAt = await this.resolveSanctionEventCreatedAt(params);
+  async isSanctionEventInvalidated(
+    params: IsSanctionEventInvalidatedParams,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<boolean> {
+    const eventCreatedAt = await this.resolveSanctionEventCreatedAt(params, db);
     if (!eventCreatedAt) {
       return false;
     }
 
-    const rows = await this.prisma.moderationEvent.findMany({
+    const rows = await db.moderationEvent.findMany({
       where: {
         chatId: params.chatId,
         userId: params.userId,
@@ -209,12 +212,13 @@ export class ModerationSanctionStateFenceService {
 
   private async resolveSanctionEventCreatedAt(
     params: IsSanctionEventInvalidatedParams,
+    db: Prisma.TransactionClient,
   ): Promise<Date | null> {
     if (params.eventCreatedAt instanceof Date && Number.isFinite(params.eventCreatedAt.getTime())) {
       return params.eventCreatedAt;
     }
 
-    const event = await this.prisma.moderationEvent.findUnique({
+    const event = await db.moderationEvent.findUnique({
       where: { id: params.sanctionEventId },
       select: {
         chatId: true,

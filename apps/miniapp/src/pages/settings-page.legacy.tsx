@@ -10,7 +10,7 @@ import {
 import {
   MAX_CHAT_RULES_TEXT_LENGTH,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
-  type ApplySettingsTarget,
+  type SettingsApplyPartialError,
   chatRulesSchema,
   updateSettingsRequestSchema,
   normalizeNavigationAllowlistTarget,
@@ -98,7 +98,6 @@ import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
   addDomain,
-  applySettingsSectionToAll,
   cancelManagedBroadcast,
   clearBroadcastHandoffState,
   createBroadcastRequestId,
@@ -211,13 +210,18 @@ import {
 import { SettingsCommercialFilterSection } from './settings/settings-commercial-filter-section';
 import { SettingsReportsSection } from './settings/settings-reports-entry';
 import {
+  applySettingsSectionWithConfirmedSource,
+  refreshSavedStopWordsSource,
+  type SettingsApplySubmission,
+} from './settings/settings-section-apply-submit';
+import {
   formatDuplicateSettingsSummary,
   resolveDuplicatePhotoPolicyForDraft,
 } from './settings/settings-duplicate-photo-status';
-import { SettingsDuplicatesSection } from './settings/settings-duplicates-section';
-import { SettingsExtraSection } from './settings/settings-extra-section';
+import { SettingsDuplicatesSection } from './settings/settings-duplicates-entry';
+import { SettingsExtraSection } from './settings/settings-extra-entry';
 import { SettingsLimitsSection } from './settings/settings-limits-section';
-import { SettingsNightSection } from './settings/settings-night-section';
+import { SettingsNightSection } from './settings/settings-night-entry';
 import { SettingsMessageRetentionSection } from './settings/settings-message-retention-section';
 import { SettingsStopWordsSection } from './settings/settings-stop-words-section';
 import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
@@ -395,6 +399,11 @@ function preloadSettingsApplyTargetSheet() {
   return settingsApplyTargetSheetPromise;
 }
 const LazySettingsApplyTargetSheet = lazy(preloadSettingsApplyTargetSheet);
+const LazySettingsApplyPartialResult = lazy(() =>
+  import('./settings/settings-apply-partial-result').then((module) => ({
+    default: module.SettingsApplyPartialResult,
+  })),
+);
 const LazySettingsOverviewSearch = lazy(() =>
   import('../components/ui/settings-overview-search').then((module) => ({
     default: module.SettingsOverviewSearch,
@@ -409,6 +418,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { isCompact: isHeaderCompact } = useAutoHideHeader();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const activeChatIdRef = useRef(chatId);
+  activeChatIdRef.current = chatId;
   const [draft, setDraft] = useState<ChatSettings | null>(null);
   const draftRef = useRef<ChatSettings | null>(null);
   const previousSettingsServerSnapshotRef = useRef('');
@@ -512,17 +523,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [pendingMailingPublishReview, setPendingMailingPublishReview] =
     useState<PendingBroadcastPublishReview | null>(null);
   const [rulesResetConfirmationOpen, setRulesResetConfirmationOpen] = useState(false);
-  const [applyTargetSheet, setApplyTargetSheet] = useState<{
-    section: ApplySectionKey;
-    sourceSettings: ChatSettings;
-    target: ApplySettingsTarget;
-  } | null>(null);
+  const [applyTargetSheet, setApplyTargetSheet] = useState<SettingsApplySubmission | null>(null);
   const [applyTargetPreview, setApplyTargetPreview] = useState<Awaited<
     ReturnType<typeof previewApplySettingsSectionTarget>
   > | null>(null);
+  const [applyPartialResult, setApplyPartialResult] = useState<SettingsApplyPartialError | null>(
+    null,
+  );
   const [applyTargetPreviewLoading, setApplyTargetPreviewLoading] = useState(false);
   const [applyTargetPreviewError, setApplyTargetPreviewError] = useState<string | null>(null);
   const applyTargetSavedSourceRef = useRef<{
+    sourceChatId: string;
     section: ApplySectionKey;
     settings: ChatSettings;
   } | null>(null);
@@ -817,6 +828,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           retryDelay: (failureCount: number) => Math.min(800 + failureCount * 400, 2600),
         }
       : {}),
+  });
+  const reportsAvailabilityQuery = useQuery({
+    queryKey: ['report-availability', chatId],
+    queryFn: async ({ signal }) => {
+      const { getReportAvailability } = await import('../lib/api/report-availability-client');
+      return getReportAvailability(api, chatId ?? '', signal);
+    },
+    enabled: Boolean(chatId) && expandedSections.reports,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
+    refetchInterval: expandedSections.reports ? 30_000 : false,
+    refetchIntervalInBackground: false,
   });
   const broadcastHandoffStateQuery = useQuery({
     queryKey: ['broadcast-handoff-state', chatId],
@@ -1660,62 +1683,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const isResettingPublishedRules = resetPublishedRulesMutation.isPending;
 
   const applySectionToAllMutation = useMutation({
-    mutationFn: async ({
-      section,
-      sourceSettings,
-      target,
-    }: {
-      section: ApplySectionKey;
-      sourceSettings: ChatSettings;
-      target: ApplySettingsTarget;
-    }) => {
-      if (!chatId) {
-        throw new Error('Чат не выбран');
-      }
-
+    mutationFn: (variables: SettingsApplySubmission) =>
+      applySettingsSectionWithConfirmedSource(api, variables, (saved) => {
+        applyTargetSavedSourceRef.current = saved;
+      }),
+    onSuccess: (result, variables) => {
       applyTargetSavedSourceRef.current = null;
-      const savedStopWords =
-        section === 'stopWords' && sourceSettings.stopWordsPolicy
-          ? await updateStopWords(
-              api,
-              chatId,
-              sourceSettings.stopWordsPolicy,
-              sourceSettings.stopWordsRevision ?? 0,
-            )
-          : null;
-      const savedSourceSettings = savedStopWords
-        ? {
-            ...sourceSettings,
-            stopWordsPolicy: savedStopWords.policy,
-            stopWordsRevision: savedStopWords.revision,
-          }
-        : await patchSettingsSection(
-            api,
-            chatId,
-            section,
-            sourceSettings,
-            SECTION_SETTING_KEYS[section],
-          );
-      applyTargetSavedSourceRef.current = { section, settings: savedSourceSettings };
-      const result = await applySettingsSectionToAll(
-        api,
-        chatId,
-        section,
-        target,
-        savedStopWords?.revision,
+      syncSavedSectionSettings(
+        result.section,
+        result.sourceSettings,
+        variables.sourceSettings.settingsRevision,
+        variables.sourceChatId,
+        variables.sourceSettings,
       );
-      return {
-        ...result,
-        section,
-        sourceSettings:
-          savedStopWords && result.appliedChatIds.includes(chatId)
-            ? { ...savedSourceSettings, stopWordsRevision: savedStopWords.revision + 1 }
-            : savedSourceSettings,
-      };
-    },
-    onSuccess: (result) => {
-      applyTargetSavedSourceRef.current = null;
-      syncSavedSectionSettings(result.section, result.sourceSettings);
+      if (activeChatIdRef.current !== variables.sourceChatId) return;
       if (result.section === 'stopWords') {
         setMessageLimitsBlockedWordsInput('');
         setMessageLimitsBlockedDomainsInput('');
@@ -1731,28 +1712,52 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     onError: async (error, variables) => {
       let savedSource = applyTargetSavedSourceRef.current;
       applyTargetSavedSourceRef.current = null;
-      const sourceSaved = savedSource?.section === variables.section;
-      if (sourceSaved && variables.section === 'stopWords' && chatId && savedSource) {
-        try {
-          const fresh = await getStopWords(api, chatId);
-          savedSource = {
-            section: 'stopWords',
-            settings: {
-              ...savedSource.settings,
-              stopWordsPolicy: fresh.policy,
-              stopWordsRevision: fresh.revision,
-            },
-          };
-        } catch {
-          /* Preserve the last confirmed source snapshot on transport failure. */
+      const sourceSaved =
+        savedSource?.section === variables.section &&
+        savedSource?.sourceChatId === variables.sourceChatId;
+      if (sourceSaved && variables.section === 'stopWords' && savedSource) {
+        savedSource = await refreshSavedStopWordsSource(api, savedSource);
+        if (activeChatIdRef.current === variables.sourceChatId) {
+          setMessageLimitsBlockedWordsInput('');
+          setMessageLimitsBlockedDomainsInput('');
         }
-        setMessageLimitsBlockedWordsInput('');
-        setMessageLimitsBlockedDomainsInput('');
       }
+      const { parseSettingsApplyPartial } = await import('../lib/chat-settings-conflict');
+      const partial = parseSettingsApplyPartial(error);
       if (sourceSaved && savedSource) {
-        syncSavedSectionSettings(savedSource.section, savedSource.settings);
+        syncSavedSectionSettings(
+          savedSource.section,
+          {
+            ...savedSource.settings,
+            ...(partial?.sourceSettingsRevision
+              ? { settingsRevision: partial.sourceSettingsRevision }
+              : {}),
+          },
+          variables.sourceSettings.settingsRevision,
+          variables.sourceChatId,
+          variables.sourceSettings,
+        );
       }
+      if (partial) {
+        if (activeChatIdRef.current !== variables.sourceChatId) {
+          pushToast({
+            tone: 'info',
+            title: 'Часть настроек применена',
+            description: `Обновлено чатов: ${partial.appliedCount} из ${partial.targetCount}. ${partial.causeMessage}`,
+          });
+          return;
+        }
+        setApplyPartialResult(partial);
+        setApplyTargetSheet(null);
+        void queryClient.invalidateQueries({
+          queryKey: ['settings-screen', variables.sourceChatId],
+        });
+        maxNotify('warning');
+        return;
+      }
+      if (activeChatIdRef.current !== variables.sourceChatId) return;
       const { resolveChatSettingsSaveError } = await import('../lib/chat-settings-save-error');
+      if (activeChatIdRef.current !== variables.sourceChatId) return;
       const persisted = settingsQuery.data;
       const resolution = resolveChatSettingsSaveError(
         error,
@@ -2383,30 +2388,44 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     section: ApplySectionKey,
     saved: ChatSettings,
     expectedRevision?: string,
+    sourceChatId = chatId,
+    submittedSettings?: ChatSettings,
   ) {
     const normalizedSaved = normalizeRequiredSubscriptionDraftSettings(saved);
-    setDraft((current) =>
-      current
-        ? mergeSectionSettingsAfterSave(current, normalizedSaved, section, expectedRevision)
-        : normalizedSaved,
-    );
-    clearSectionErrors(section);
-    queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
-      ['settings-screen', chatId],
-      (current) =>
+    if (activeChatIdRef.current === sourceChatId) {
+      setDraft((current) =>
         current
-          ? {
-              ...current,
-              settings:
-                section === 'stopWords'
-                  ? mergeSectionSettings(
-                      normalizeRequiredSubscriptionDraftSettings(current.settings),
-                      normalizedSaved,
-                      section,
-                    )
-                  : normalizedSaved,
-            }
-          : current,
+          ? mergeSectionSettingsAfterSave(
+              current,
+              normalizedSaved,
+              section,
+              expectedRevision,
+              submittedSettings,
+            )
+          : normalizedSaved,
+      );
+      clearSectionErrors(section);
+    }
+    queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
+      ['settings-screen', sourceChatId],
+      (current) =>
+        current &&
+        Date.parse(current.settings.settingsRevision ?? '') >
+          Date.parse(normalizedSaved.settingsRevision ?? '')
+          ? current
+          : current
+            ? {
+                ...current,
+                settings:
+                  section === 'stopWords'
+                    ? mergeSectionSettings(
+                        normalizeRequiredSubscriptionDraftSettings(current.settings),
+                        normalizedSaved,
+                        section,
+                      )
+                    : normalizedSaved,
+              }
+            : current,
     );
   }
 
@@ -5122,6 +5141,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     void preloadSettingsApplyTargetSheet();
     setApplyTargetSheet({
+      sourceChatId: chatId,
       section,
       sourceSettings: payload,
       target: createDefaultApplySettingsTarget(),
@@ -5134,8 +5154,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     try {
-      await applySectionToAllMutation.mutateAsync(applyTargetSheet);
-      closeSection(applyTargetSheet.section);
+      if (
+        applyTargetSheet.section === 'reports' &&
+        (!applyTargetPreview ||
+          applyTargetPreviewLoading ||
+          applyTargetPreview.appliedChatIds.length > 500)
+      )
+        return;
+      await applySectionToAllMutation.mutateAsync({
+        ...applyTargetSheet,
+        sourceChatId: applyTargetSheet.sourceChatId,
+        confirmedTargetChatIds:
+          applyTargetSheet.section === 'reports' ? applyTargetPreview?.appliedChatIds : undefined,
+      });
+      if (activeChatIdRef.current === applyTargetSheet.sourceChatId)
+        closeSection(applyTargetSheet.section);
     } catch {
       // Errors are handled by the mutation.
     }
@@ -6912,7 +6945,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <SettingsReportsSection
               api={api}
-              reportsAvailable={settingsScreenQuery.data?.reportsAvailable ?? false}
+              reportsAvailable={
+                expandedSections.reports
+                  ? !reportsAvailabilityQuery.isError &&
+                    (reportsAvailabilityQuery.data?.reportsAvailable ?? false)
+                  : (settingsScreenQuery.data?.reportsAvailable ?? false)
+              }
+              reportsAvailabilityLoading={reportsAvailabilityQuery.isPending}
+              persistedReportsEnabled={settingsQuery.data?.reportsEnabled ?? false}
               fieldErrors={fieldErrors}
               chatId={chatId!}
               draft={draft}
@@ -8038,6 +8078,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         />
       </Suspense>
 
+      {applyPartialResult && (
+        <Suspense fallback={null}>
+          <LazySettingsApplyPartialResult
+            result={applyPartialResult}
+            onClose={() => setApplyPartialResult(null)}
+          />
+        </Suspense>
+      )}
       <Suspense fallback={null}>
         <LazyActionConfirmSheet
           id="rules-reset-confirmation"

@@ -25,8 +25,11 @@ try {
   browser = await chromium.launch({ headless: true });
   for (const [name, width, height, theme, platform] of [
     ['iphone-se-light', 320, 568, 'light', 'ios'],
+    ['iphone-se-dark', 320, 568, 'dark', 'ios'],
+    ['iphone-light', 390, 844, 'light', 'ios'],
     ['iphone-dark', 390, 844, 'dark', 'ios'],
     ['android-light', 412, 915, 'light', 'android'],
+    ['android-dark', 412, 915, 'dark', 'android'],
     ['desktop-dark', 1280, 900, 'dark', 'android'],
   ]) {
     const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme });
@@ -48,13 +51,101 @@ try {
     const panel = page
       .locator('.settings-drilldown__panel')
       .filter({ has: page.locator('.reports-settings') });
+    const panelBounds = async () => {
+      await panel.evaluate((node) =>
+        Promise.all(node.getAnimations().map((animation) => animation.finished.catch(() => {}))),
+      );
+      return panel.boundingBox();
+    };
+    const settingsBounds = width <= 768 ? await panelBounds() : null;
+    const assertStableMobilePanel = async () => {
+      const bounds = await panelBounds();
+      assert.ok(
+        settingsBounds &&
+          bounds &&
+          Math.abs(bounds.height - settingsBounds.height) <= 1 &&
+          Math.abs(bounds.y - settingsBounds.y) <= 1,
+        `${name}: changing reports tabs must preserve panel height and position`,
+      );
+    };
+    if (width <= 768) {
+      assert.ok(settingsBounds && settingsBounds.height >= height - 16);
+      await panel.getByRole('tab', { name: 'Журнал', exact: true }).click();
+      await panel.locator('.reports-journal__item').first().waitFor();
+      await assertStableMobilePanel();
+      await panel.getByRole('tab', { name: 'Настройки', exact: true }).click();
+    }
     await panel.getByRole('switch', { name: 'Жалобы участников', exact: true }).check();
-    await panel.getByRole('spinbutton', { name: 'Порог жалоб' }).fill('6');
+    if (width <= 768) await panel.getByRole('radio', { name: '6 голосов', exact: true }).click();
+    else await panel.getByRole('spinbutton', { name: 'Порог жалоб' }).fill('6');
     await panel.getByRole('textbox', { name: 'Дополнительные команды, до 5' }).fill('спам, /alert');
-    await panel.getByRole('combobox', { name: 'Удаление' }).selectOption('HISTORY_24H');
-    await panel.getByRole('switch', { name: 'Мут', exact: true }).check();
-    await panel.getByRole('spinbutton', { name: 'Длительность мута, ч' }).fill('24');
-    await page.screenshot({ path: join(screenshots, `${name}-settings.png`) });
+    if (width <= 768)
+      await panel.getByRole('radio', { name: 'История за 24 часа', exact: true }).click();
+    else await panel.getByRole('combobox', { name: 'Удаление' }).selectOption('HISTORY_24H');
+    await panel.getByRole('switch', { name: 'Ограничить участника', exact: true }).check();
+    await panel.getByRole('spinbutton', { name: 'Длительность ограничения, ч' }).fill('24');
+    const scroller = panel.locator('.settings-drilldown__body');
+    if (width <= 768) {
+      const tracks = await panel.locator('.reports-switch__track').evaluateAll((nodes) =>
+        nodes.map((node) => {
+          const rect = node.getBoundingClientRect();
+          return [rect.width, rect.height];
+        }),
+      );
+      assert.deepEqual(tracks, [
+        [48, 28],
+        [48, 28],
+      ]);
+      const switches = await panel.getByRole('switch').evaluateAll((nodes) =>
+        nodes.map((node) => {
+          const rect = node.getBoundingClientRect();
+          return [rect.width, rect.height];
+        }),
+      );
+      assert.ok(switches.every(([w, h]) => w >= 44 && h >= 44));
+      await panel.getByRole('button', { name: 'Уменьшить длительность ограничения' }).click();
+      assert.equal(
+        await panel.getByRole('spinbutton', { name: 'Длительность ограничения, ч' }).inputValue(),
+        '23',
+      );
+      await panel.getByRole('button', { name: '24 ч', exact: true }).click();
+    }
+    await panel.getByRole('spinbutton', { name: 'Длительность ограничения, ч' }).blur();
+    await scroller.evaluate((node) => {
+      node.scrollTop = 0;
+    });
+    await page.screenshot({ path: join(screenshots, `${name}-settings-top.png`) });
+    if (width <= 768) {
+      await panel.locator('.reports-group--measures').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(screenshots, `${name}-settings-measures.png`) });
+      await panel.locator('.reports-group--commands').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(screenshots, `${name}-settings-commands.png`) });
+      await page.setViewportSize({ width, height: Math.max(360, height - 260) });
+      await panel.getByRole('textbox', { name: 'Дополнительные команды, до 5' }).focus();
+      await panel
+        .getByRole('textbox', { name: 'Дополнительные команды, до 5' })
+        .scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(screenshots, `${name}-keyboard.png`) });
+      const inputBox = await panel
+        .getByRole('textbox', { name: 'Дополнительные команды, до 5' })
+        .boundingBox();
+      assert.ok(
+        inputBox && inputBox.y >= 0 && inputBox.y + inputBox.height <= Math.max(360, height - 260),
+      );
+      await page.setViewportSize({ width, height });
+      await panel.getByRole('textbox', { name: 'Дополнительные команды, до 5' }).blur();
+      await page.waitForFunction(
+        (expected) =>
+          getComputedStyle(document.documentElement)
+            .getPropertyValue('--app-viewport-height')
+            .trim() === `${expected}px`,
+        height,
+      );
+      await panel.getByRole('tab', { name: 'Журнал', exact: true }).click();
+      await panel.locator('.reports-journal__item').first().waitFor();
+      await assertStableMobilePanel();
+      await panel.getByRole('tab', { name: 'Настройки', exact: true }).click();
+    }
     await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
     await page.waitForFunction(
       () => !document.querySelector('.settings-drilldown__footer-actions [aria-busy="true"]'),
@@ -62,16 +153,33 @@ try {
     if (await panel.isVisible())
       await panel.getByRole('button', { name: 'Закрыть панель' }).click();
     await page.getByRole('button', { name: 'Система жалоб', exact: true }).click();
-    assert.equal(await panel.getByRole('spinbutton', { name: 'Порог жалоб' }).inputValue(), '6');
+    if (width <= 768)
+      assert.equal(
+        await panel
+          .getByRole('radio', { name: '6 голосов', exact: true })
+          .getAttribute('aria-checked'),
+        'true',
+      );
+    else
+      assert.equal(await panel.getByRole('spinbutton', { name: 'Порог жалоб' }).inputValue(), '6');
     assert.equal(
       await panel.getByRole('textbox', { name: 'Дополнительные команды, до 5' }).inputValue(),
       'спам, /alert',
     );
     assert.equal(
-      await panel.getByRole('spinbutton', { name: 'Длительность мута, ч' }).inputValue(),
+      await panel.getByRole('spinbutton', { name: 'Длительность ограничения, ч' }).inputValue(),
       '24',
     );
     await panel.getByRole('tab', { name: 'Журнал', exact: true }).click();
+    await panel.locator('.reports-journal__item').first().waitFor();
+    if (width <= 768) await assertStableMobilePanel();
+    await panel.evaluate((node) =>
+      Promise.all(node.getAnimations().map((animation) => animation.finished.catch(() => {}))),
+    );
+    await scroller.evaluate((node) => {
+      node.scrollTop = 0;
+    });
+    await page.screenshot({ path: join(screenshots, `${name}-journal-top.png`) });
     await panel.getByText('Сбор голосов', { exact: true }).click();
     await panel
       .getByRole('link', { name: 'Открыть профиль: Мария Волкова', exact: true })
@@ -80,6 +188,12 @@ try {
       .getByRole('link', { name: 'Открыть профиль: Александр Соколов', exact: true })
       .waitFor();
     await panel.getByRole('button', { name: 'Отклонить жалобы', exact: true }).click();
+    const confirm = page.getByRole('alertdialog', { name: 'Отклонить жалобы?' });
+    await confirm.waitFor();
+    await confirm.getByRole('button', { name: 'Отмена', exact: true }).click();
+    assert.equal(await panel.getByText('Сбор голосов', { exact: true }).count(), 1);
+    await panel.getByRole('button', { name: 'Отклонить жалобы', exact: true }).click();
+    await confirm.getByRole('button', { name: 'Отклонить', exact: true }).click();
     await panel.getByText('Отклонено', { exact: true }).waitFor();
     await panel.getByText('Частично', { exact: true }).click();
     await panel.getByText('Не все сообщения удалось удалить.', { exact: true }).waitFor();
@@ -151,8 +265,36 @@ try {
     assert.equal(await pausedSwitch.isChecked(), true);
     assert.equal(await pausedSwitch.isDisabled(), false);
     await pausedSwitch.uncheck();
-    assert.equal(await pausedSwitch.isDisabled(), true);
+    assert.equal(await pausedSwitch.isDisabled(), false);
+    await pausedSwitch.check();
+    assert.equal(await pausedSwitch.isChecked(), true);
+    await pausedSwitch.uncheck();
     await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+    await page.getByRole('button', { name: 'Система жалоб', exact: true }).click();
+    await pausedSwitch.waitFor();
+    assert.equal(await pausedSwitch.isDisabled(), true);
+    if (name === 'iphone-se-light') {
+      await page.goto(new URL('chat/preview-chat/settings?preview=1', base).href);
+      for (const [title, suffix, label] of [
+        ['Ночной режим', 'night', 'Включить закрытие чата на ночь'],
+        ['Антидубль', 'duplicates', 'Включить антидубль'],
+        ['Сообщения и боты', 'extra', 'Включить удаление собственных сообщений бота'],
+      ]) {
+        await page.getByRole('button', { name: title, exact: true }).click();
+        const lazyPanel = page.locator(`.settings-drilldown__panel--${suffix}`);
+        const toggle = lazyPanel.locator(`label[aria-label="${label}"] input`);
+        await toggle.waitFor();
+        const initial = await toggle.isChecked();
+        await toggle.setChecked(!initial);
+        await lazyPanel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+        await page.getByRole('button', { name: 'Не сохранять', exact: true }).click();
+        await page.getByRole('button', { name: title, exact: true }).click();
+        await toggle.waitFor();
+        assert.equal(await toggle.isChecked(), initial);
+        await lazyPanel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+      }
+    }
+    assert.deepEqual(errors, []);
     await context.close();
     console.log(`PASS ${name}: report controls, save, journal and layout`);
   }

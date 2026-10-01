@@ -16,9 +16,23 @@ export class AdminReportsController {
     @Param('chatId') chatId: string,
     @CurrentUser() user: AuthUser,
     @Query('cursor') cursor?: unknown,
+    @Query('status') status?: unknown,
+    @Query('from') from?: unknown,
+    @Query('to') to?: unknown,
+    @Query('authorId') authorId?: unknown,
   ) {
     await this.access.assertChatAdminAccess(chatId, user);
-    return this.reports.list(chatId, cursor);
+    return this.reports.list(chatId, cursor, {
+      ...(status !== undefined ? { status } : {}),
+      ...(from !== undefined ? { from } : {}),
+      ...(to !== undefined ? { to } : {}),
+      ...(authorId !== undefined ? { authorId } : {}),
+    });
+  }
+  @Get('availability')
+  async availability(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    await this.access.assertChatAdminAccess(chatId, user);
+    return this.reports.availability(chatId);
   }
   @Get(':reportId')
   async detail(

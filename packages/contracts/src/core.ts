@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { reportSettingsShape, addReportCommandIssues } from './reports.js';
+import * as sectionApply from './settings-apply-error.js';
+import { reportSettingsShape, addReportCommandIssues } from './report-settings.js';
 import { MAX_HTTP_BUTTON_URL_LENGTH, normalizeHttpButtonUrl } from './button-url.js';
 import { channelPostSignatureSettingsSchema } from './channel-post-signature.js';
 import { karavanStorefrontTextSettingsShape } from './karavan-storefront-texts.js';
@@ -1491,20 +1492,12 @@ export type ApplySettingsTarget = z.infer<typeof applySettingsTargetSchema>;
 export const applySectionToAllRequestSchema = z
   .object({
     section: applySettingsSectionSchema,
-    expectedSourceRevision: z.number().int().nonnegative().optional(),
+    ...sectionApply.settingsSectionApplyRevisionShape,
     target: applySettingsTargetSchema
       .optional()
       .default({ mode: 'current', favoriteTypes: [], chatIds: [] }),
   })
-  .superRefine((value, ctx) => {
-    if (value.section === 'stopWords' && value.expectedSourceRevision === undefined) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['expectedSourceRevision'],
-        message: 'Обновите раздел стоп-слов перед копированием.',
-      });
-    }
-  });
+  .superRefine(sectionApply.addSettingsSectionApplyIssues);
 export type ApplySectionToAllRequest = z.infer<typeof applySectionToAllRequestSchema>;
 
 export const applySectionToAllResponseSchema = z.object({
@@ -1512,10 +1505,16 @@ export const applySectionToAllResponseSchema = z.object({
   sourceChatId: z.string(),
   updatedChats: z.number().int().min(0),
   appliedChatIds: z.array(z.string()),
+  sourceSettingsRevision: z.string().datetime().optional(),
   targetMode: applySettingsTargetModeSchema.optional().default('current'),
   favoriteTypes: z.array(managedEntityFavoriteTypeSchema).optional().default([]),
 });
 export type ApplySectionToAllResponse = z.infer<typeof applySectionToAllResponseSchema>;
+
+export {
+  settingsApplyPartialErrorSchema,
+  type SettingsApplyPartialError,
+} from './settings-apply-error.js';
 
 export const applySectionTargetPreviewRequestSchema = z.object({
   target: applySettingsTargetSchema

@@ -628,6 +628,8 @@ export class AdminSettingsService {
     },
     settingKeys?: readonly (keyof ChatSettings)[],
     botSpeechMediaKeys?: readonly string[],
+    confirmedTargetChatIds?: readonly string[],
+    expectedSourceSettingsRevision?: string,
   ): Promise<ApplySettingsToAllChatsResult> {
     await this.legacyAdminService.assertManagedEntityAdminAccess(sourceChatId, user.userId, 'chat');
     const shouldReconcileNightModeTransitions = this.shouldReconcileNightModeTransitionsAfterApply(
@@ -644,6 +646,8 @@ export class AdminSettingsService {
       targetOrSettingKeys,
       settingKeys,
       botSpeechMediaKeys,
+      confirmedTargetChatIds,
+      expectedSourceSettingsRevision,
       normalizeSettings: (settings) =>
         this.legacyAdminService.normalizeChatSettingsForApply(sourceChatId, settings),
       resolveTargetChats: (target) =>
@@ -688,7 +692,14 @@ export class AdminSettingsService {
       body,
       source,
       getSourceSettings: () => this.getSettings(sourceChatId, user),
-      applySettings: (settings, target, settingKeys, botSpeechMediaKeys) =>
+      applySettings: (
+        settings,
+        target,
+        settingKeys,
+        botSpeechMediaKeys,
+        confirmedTargetChatIds,
+        expectedSourceSettingsRevision,
+      ) =>
         this.applySettingsToAllChats(
           sourceChatId,
           user,
@@ -697,6 +708,8 @@ export class AdminSettingsService {
           target,
           settingKeys,
           botSpeechMediaKeys,
+          confirmedTargetChatIds,
+          expectedSourceSettingsRevision,
         ),
       syncDomainAllowlistToChats: (targetChatIds) =>
         this.legacyAdminService.syncDomainAllowlistToChatsForSettings(sourceChatId, targetChatIds),

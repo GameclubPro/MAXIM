@@ -402,7 +402,7 @@ export async function handleChatRequest(
   method: string,
   init?: RequestInit,
 ): Promise<unknown> {
-  if (tail[0] === 'reports') return handlePreviewReports(state, chatId, tail, method);
+  if (tail[0] === 'reports') return handlePreviewReports(state, chatId, tail, method, url);
   if (tail[0] === 'karavan-storefront' && tail[1] === 'allowlist') {
     if (tail.length === 2 && method === 'GET') {
       return cloneJson(buildKaravanStorefrontAllowlistResponse(state, url));
@@ -684,9 +684,31 @@ export async function handleChatRequest(
       section?: string;
       target?: unknown;
       expectedSourceRevision?: number;
+      expectedSourceSettingsRevision?: string;
+      confirmedTargetChatIds?: string[];
     } | null;
     const target = applySettingsTargetSchema.parse(payload?.target ?? { mode: 'current' });
     const targetChats = resolvePreviewApplyTargetChats(state, chatId, target);
+    if (payload?.section === 'reports') {
+      if (payload.expectedSourceSettingsRevision !== state.chatSettings.settingsRevision)
+        throw new ApiRequestError(
+          409,
+          JSON.stringify({ code: 'CHAT_SETTINGS_CONCURRENT_UPDATE' }),
+          'Настройки изменились.',
+        );
+      const confirmed = new Set(payload.confirmedTargetChatIds ?? []);
+      if (
+        !confirmed.size ||
+        confirmed.size > 500 ||
+        confirmed.size !== targetChats.length ||
+        targetChats.some((chat) => !confirmed.has(chat.id))
+      )
+        throw new ApiRequestError(
+          409,
+          JSON.stringify({ code: 'CHAT_SETTINGS_TARGETS_CHANGED' }),
+          'Выбранные чаты изменились. Выберите их заново.',
+        );
+    }
     if (payload?.section === 'stopWords') {
       if (payload.expectedSourceRevision !== (state.chatSettings.stopWordsRevision ?? 0))
         throw new ApiRequestError(409, '{}', 'Стоп-слова уже изменены.');

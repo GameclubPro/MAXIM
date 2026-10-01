@@ -89,7 +89,8 @@
     "publication:recover-send-route": "sh -c 'if [ -f dist/apps/api/src/scripts/recover-publication-send-route.js ]; then exec node dist/apps/api/src/scripts/recover-publication-send-route.js \"$@\"; else exec tsx src/scripts/recover-publication-send-route.ts \"$@\"; fi' --",
     "publication:audit-backlog": "sh -c 'if [ -f dist/apps/api/src/scripts/audit-publication-backlog.js ]; then exec node dist/apps/api/src/scripts/audit-publication-backlog.js \"$@\"; else exec tsx src/scripts/audit-publication-backlog.ts \"$@\"; fi' --",
     "publisher:attest-identity": "node dist/apps/api/src/scripts/attest-publisher-identity.js",
-    "moderation:commercial-text-control": "tsx src/scripts/commercial-text-runtime-control.ts"
+    "moderation:commercial-text-control": "tsx src/scripts/commercial-text-runtime-control.ts",
+    "reports:retention-preview": "tsx src/scripts/preview-report-detail-retention.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

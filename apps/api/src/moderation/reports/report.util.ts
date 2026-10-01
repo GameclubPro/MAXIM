@@ -23,6 +23,19 @@ export const REPORT_TERMINAL = [
 
 export class ReportRejectedError extends Error {
   readonly code = 'participant_report_no_longer_authorized';
+  constructor(
+    message: string,
+    readonly reason:
+      | 'source'
+      | 'membership'
+      | 'sanction'
+      | 'protected'
+      | 'policy'
+      | 'closed'
+      | 'rateLimit' = 'policy',
+  ) {
+    super(message);
+  }
 }
 
 export class ReportStaleStateError extends Error {
@@ -78,7 +91,7 @@ export function reportContentHash(row: Record<string, unknown>): string {
           attachments: Array.isArray(body.attachments)
             ? body.attachments.map(attachmentIdentity)
             : [],
-          link: row.link ?? null,
+          link: stableLinkedPhotos(row.link ?? null, 0),
         }),
       ),
     )
@@ -96,6 +109,30 @@ function attachmentIdentity(value: unknown): unknown {
   )
     return { type: 'image', photoId: String(photoId) };
   return value;
+}
+
+function stableLinkedPhotos(value: unknown, depth: number): unknown {
+  if (depth >= 4) return value;
+  const link = record(value);
+  const message = record(link.message);
+  if (!Object.keys(message).length) return value;
+  const body = record(message.body);
+  // FLAG: Signed photo URLs in a linked message are transport metadata just like top-level photos.
+  return {
+    ...link,
+    message: {
+      ...message,
+      ...(Array.isArray(body.attachments)
+        ? {
+            body: {
+              ...body,
+              attachments: body.attachments.map(attachmentIdentity),
+            },
+          }
+        : {}),
+      ...(message.link !== undefined ? { link: stableLinkedPhotos(message.link, depth + 1) } : {}),
+    },
+  };
 }
 
 function canonical(value: unknown): unknown {

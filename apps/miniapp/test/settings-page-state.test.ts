@@ -700,3 +700,23 @@ test('hasSectionBotSpeechMediaChanges detects scoped media changes', () => {
   assert.equal(hasSectionBotSpeechMediaChanges(draft, saved, 'requiredSubscription'), true);
   assert.equal(hasSectionBotSpeechMediaChanges(draft, saved, 'links'), false);
 });
+
+test('edits made during a bulk save stay unsaved while the confirmed revision is retained', () => {
+  const submitted = createSettings({
+    settingsRevision: '2026-10-01T09:00:00.000Z',
+    reportsThreshold: 3,
+  });
+  const current = { ...submitted, reportsThreshold: 6, greetingEnabled: true };
+  const saved = { ...submitted, settingsRevision: '2026-10-01T10:00:00.000Z' };
+  const merged = mergeSectionSettingsAfterSave(
+    current,
+    saved,
+    'reports',
+    submitted.settingsRevision,
+    submitted,
+  );
+  assert.equal(merged.reportsThreshold, 6);
+  assert.equal(merged.greetingEnabled, true);
+  assert.equal(merged.settingsRevision, saved.settingsRevision);
+  assert.equal(hasSectionSettingChanges(merged, saved, 'reports'), true);
+});

@@ -1,10 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MaxClientService } from '../../max/max-client.service';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { Prisma, type ChatReportCase } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookParser } from '../../webhook/webhook.parser';
+import { resolveModerationSanctionExpiry } from '../moderation-sanction-expiry.util';
+import { ModerationSanctionStateFenceService } from '../moderation-sanction-state-fence.service';
 import {
   isEligibleReporter,
   record,
@@ -22,6 +24,7 @@ export class ReportStateService {
     private readonly max: MaxClientService,
     private readonly bots: MaxBotLinkService,
     private readonly config: ConfigService,
+    @Optional() private readonly fences?: ModerationSanctionStateFenceService,
   ) {}
 
   enabled(chatId: string): boolean {
@@ -64,6 +67,14 @@ export class ReportStateService {
       trafficClass: 'critical',
     });
     if (!row) return null;
+    // FLAG: A report must prove message creation time from MAX milliseconds, never ingress fallback.
+    if (
+      typeof row.timestamp !== 'number' ||
+      !Number.isSafeInteger(row.timestamp) ||
+      row.timestamp <= 0 ||
+      row.timestamp > 8_640_000_000_000_000
+    )
+      throw new ReportRejectedError('Неизвестно время сообщения.', 'source');
     const message = this.parser.parse({ update_type: 'message_created', message: row }).message;
     if (
       !message ||
@@ -72,20 +83,25 @@ export class ReportStateService {
       message.entityType === 'channel' ||
       record(row.sender).is_bot !== false
     )
-      throw new ReportRejectedError('Не удалось подтвердить исходное сообщение.');
-    const createdAt = new Date(message.createdAt);
+      throw new ReportRejectedError('Не удалось подтвердить исходное сообщение.', 'source');
+    const createdAt = new Date(row.timestamp);
     if (!Number.isFinite(createdAt.getTime()))
-      throw new ReportRejectedError('Неизвестно время сообщения.');
+      throw new ReportRejectedError('Неизвестно время сообщения.', 'source');
     return { authorId: message.senderId, createdAt, hash: reportContentHash(row), readStartedAt };
   }
 
-  async assertAuthor(chatId: string, userId: string, botId: string): Promise<void> {
+  async assertAuthor(
+    chatId: string,
+    userId: string,
+    botId: string,
+    trafficClass: 'critical' | 'background' = 'critical',
+  ): Promise<void> {
     await this.assertLocalAuthor(chatId, userId);
     const member = await this.max.getChatMemberAccess(chatId, userId, {
       botId,
       bypassCache: true,
       timeoutMs: 5000,
-      trafficClass: 'critical',
+      trafficClass,
     });
     if (
       !member ||
@@ -94,7 +110,10 @@ export class ReportStateService {
       member.isAdmin ||
       member.isOwner
     )
-      throw new ReportRejectedError('Не удалось подтвердить возможность модерации участника.');
+      throw new ReportRejectedError(
+        'Не удалось подтвердить возможность модерации участника.',
+        'protected',
+      );
     await this.assertLocalAuthor(chatId, userId);
   }
 
@@ -104,7 +123,7 @@ export class ReportStateService {
     db: Prisma.TransactionClient = this.prisma,
   ): Promise<void> {
     if (this.bots.isKnownBotUserId(userId))
-      throw new ReportRejectedError('Жалобы на ботов не принимаются.');
+      throw new ReportRejectedError('Жалобы на ботов не принимаются.', 'protected');
     const settings = await db.chatSettings.findUnique({
       where: { chatId },
       select: { chat: { select: { entityType: true, admins: { select: { userId: true } } } } },
@@ -114,12 +133,12 @@ export class ReportStateService {
       settings.chat.entityType !== 'CHAT' ||
       settings.chat.admins.some((a) => a.userId === userId)
     )
-      throw new ReportRejectedError('Участник защищён от жалоб.');
+      throw new ReportRejectedError('Участник защищён от жалоб.', 'protected');
     const immunity = await db.chatParticipantModerationImmunity.findFirst({
       where: { chatId, userId, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
       select: { id: true },
     });
-    if (immunity) throw new ReportRejectedError('Участник защищён от жалоб.');
+    if (immunity) throw new ReportRejectedError('Участник защищён от жалоб.', 'protected');
   }
 
   async hasActiveSanction(
@@ -137,31 +156,49 @@ export class ReportStateService {
         ],
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      select: { action: true, ruleCode: true, metadata: true, createdAt: true },
+      select: { id: true, action: true, ruleCode: true, metadata: true, createdAt: true },
     });
     if (!event || ['MANUAL_UNMUTE', 'MANUAL_UNBAN'].includes(event.ruleCode)) return false;
     const metadata = record(event.metadata);
     if (metadata.sanctionApplied === false) return false;
-    if (metadata.mutePermanent === true) return true;
-    if (event.action === 'BAN' && typeof metadata.muteDurationHours !== 'number') return true;
-    const duration =
-      typeof metadata.muteDurationHours === 'number'
-        ? metadata.muteDurationHours
-        : ((
-            await db.chatSettings.findUnique({
-              where: { chatId },
-              select: { muteDurationHours: true },
-            })
-          )?.muteDurationHours ?? 6);
-    return event.createdAt.getTime() + duration * 3_600_000 > Date.now();
+    if (
+      this.fences &&
+      (await this.fences.isSanctionEventInvalidated(
+        {
+          chatId,
+          userId,
+          sanctionEventId: event.id,
+          eventCreatedAt: event.createdAt,
+        },
+        db,
+      ))
+    )
+      return false;
+    let expiry = resolveModerationSanctionExpiry(event.action, metadata, event.createdAt);
+    if (!expiry.permanent && !expiry.expiresAt && event.action === 'MUTE') {
+      const fallback =
+        (
+          await db.chatSettings.findUnique({
+            where: { chatId },
+            select: { muteDurationHours: true },
+          })
+        )?.muteDurationHours ?? 6;
+      expiry = resolveModerationSanctionExpiry(event.action, metadata, event.createdAt, fallback);
+    }
+    return expiry.permanent || Boolean(expiry.expiresAt && expiry.expiresAt.getTime() > Date.now());
   }
 
-  async assertCase(id: string, botId: string, checkSource = true): Promise<ChatReportCase> {
+  async assertCase(
+    id: string,
+    botId: string,
+    checkSource = true,
+    trafficClass: 'critical' | 'background' = 'critical',
+  ): Promise<ChatReportCase> {
     const report = await this.prisma.chatReportCase.findUniqueOrThrow({ where: { id } });
     await this.assertPolicy(report);
     if (!['PENDING', 'RUNNING'].includes(report.status) || !report.decidedAt)
       throw new ReportRejectedError('Сбор жалоб закрыт.');
-    await this.assertAuthor(report.chatId, report.authorId, botId);
+    await this.assertAuthor(report.chatId, report.authorId, botId, trafficClass);
     if (checkSource) {
       const source = await this.source(report.chatId, report.messageId, botId);
       if (!source || source.hash !== report.contentHash || source.authorId !== report.authorId)

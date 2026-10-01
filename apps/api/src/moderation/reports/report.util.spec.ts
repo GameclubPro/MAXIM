@@ -33,6 +33,30 @@ describe('report trigger and eligibility', () => {
       reportContentHash(photo('two', 'https://cdn.example/a')),
     );
   });
+  it('keeps linked immutable photos stable without hiding linked content edits', () => {
+    const reply = (photoId: string, url: string, text = 'linked text') => ({
+      body: { text: 'reported reply' },
+      link: {
+        type: 'reply',
+        message: {
+          body: {
+            mid: 'linked',
+            text,
+            attachments: [{ type: 'image', payload: { photo_id: photoId, url } }],
+          },
+        },
+      },
+    });
+    expect(reportContentHash(reply('photo', 'https://cdn.example/a?sig=old'))).toBe(
+      reportContentHash(reply('photo', 'https://cdn.example/a?sig=new')),
+    );
+    expect(reportContentHash(reply('other', 'https://cdn.example/a?sig=new'))).not.toBe(
+      reportContentHash(reply('photo', 'https://cdn.example/a?sig=new')),
+    );
+    expect(reportContentHash(reply('photo', 'https://cdn.example/a?sig=new', 'edited'))).not.toBe(
+      reportContentHash(reply('photo', 'https://cdn.example/a?sig=new')),
+    );
+  });
   it('requires an exact, case-insensitive direct reply', () => {
     expect(reportReplyTarget(update(), policy)).toBe('target');
     expect(reportReplyTarget(update({ body: { mid: 'command', text: 'жалоба' } }), policy)).toBe(

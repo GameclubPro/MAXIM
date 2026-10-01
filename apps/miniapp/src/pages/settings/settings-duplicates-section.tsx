@@ -37,7 +37,7 @@ import type {
   SettingsSectionShellProps,
 } from './settings-section-shared';
 
-type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
+export type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
   SettingsMuteDurationProps &
   Pick<
     SettingsSectionEditorProps,

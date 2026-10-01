@@ -6,10 +6,16 @@ import { ReportStateModule } from './report-state.module';
 import { ReportSubmissionService } from './report-submission.service';
 import { ReportExecutionService } from './report-execution.service';
 import { ReportViewService } from './report-view.service';
+import { ReportRetentionService } from './report-retention.service';
 
 @Module({
   imports: [MaxModule, RedisCounterModule, ModerationDeleteIntentModule, ReportStateModule],
-  providers: [ReportSubmissionService, ReportExecutionService, ReportViewService],
+  providers: [
+    ReportSubmissionService,
+    ReportExecutionService,
+    ReportViewService,
+    ReportRetentionService,
+  ],
   exports: [ReportSubmissionService, ReportViewService],
 })
 export class ReportsModule {}

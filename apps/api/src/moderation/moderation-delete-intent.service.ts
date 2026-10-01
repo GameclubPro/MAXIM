@@ -130,6 +130,8 @@ import { getAppRole } from '../runtime/app-role';
 import type { MessageRetentionCandidate } from '../prisma/prisma-client';
 import {
   REPORT_COUNTER_RULE,
+  REPORT_COMMAND_RULE,
+  REPORT_DELETE_RULE,
   REPORT_GUARDED_RULES,
   ReportRejectedError,
 } from './reports/report.util';
@@ -293,6 +295,9 @@ type IntentRow = {
   commercialOcrDeleteReason?: boolean;
   standardCommercialOcrDeleteReason?: boolean;
   nonCommercialOcrDeleteReason?: boolean;
+  reportDeleteReason?: boolean;
+  reportCounterCleanupReason?: boolean;
+  reportHistoryOnly?: boolean;
   linkFamilyDeleteOnly?: boolean;
   photoDuplicateDeleteOnly?: boolean;
   messageDuplicateOwned?: boolean;
@@ -792,13 +797,13 @@ export class ModerationDeleteIntentService {
   ): ModerationDeleteIntentRollout {
     const normalizedRuleCodes = ruleCodes.map((ruleCode) => ruleCode.trim());
     if (normalizedRuleCodes.includes(SUGGESTION_SUBSCRIPTION_DELETE_RULE)) return 'execute';
-    // FLAG: Report policies have their own execution ceiling and never use unguarded deletion.
-    if (
-      normalizedRuleCodes.some(
-        (rule) => REPORT_GUARDED_RULES.has(rule) || rule === REPORT_COUNTER_RULE,
-      )
-    )
-      return 'execute';
+    // FLAG: Counter ownership survives admission disable; sanctions use their own exact-chat ceiling.
+    if (normalizedRuleCodes.includes(REPORT_COUNTER_RULE)) return 'execute';
+    if (normalizedRuleCodes.some((rule) => REPORT_GUARDED_RULES.has(rule))) {
+      if (this.reportsEnabled(chatId)) return 'execute';
+      const independent = normalizedRuleCodes.filter((rule) => !REPORT_GUARDED_RULES.has(rule));
+      return independent.length ? this.getRolloutForRuleCodes(chatId, independent) : 'off';
+    }
     // FLAG: Opt-in traffic policies never fall back to an unguarded legacy delete.
     if (normalizedRuleCodes.some((rule) => TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(rule)))
       return 'execute';
@@ -855,6 +860,34 @@ export class ModerationDeleteIntentService {
     input: EnsureModerationDeleteIntentInput,
   ): Promise<EnsureModerationDeleteIntentResult> {
     return this.persistIntent(input, true);
+  }
+
+  // FLAG: A target is linked durably before mute; its final guard waits for the persisted mute decision.
+  async prepareReportTargetIntent(
+    input: EnsureModerationDeleteIntentInput,
+  ): Promise<EnsureModerationDeleteIntentResult> {
+    const metadata = this.asRecord(input.event?.metadata);
+    if (
+      input.ruleCode !== REPORT_DELETE_RULE ||
+      metadata?.reportTargetMessageId !== input.messageId
+    )
+      throw new Error('Report target binding required');
+    return this.persistIntent(input, false);
+  }
+
+  // FLAG: Only bound historical report work may request lower-priority materialization.
+  async ensureReportHistoryIntent(
+    input: EnsureModerationDeleteIntentInput,
+  ): Promise<EnsureModerationDeleteIntentResult> {
+    const metadata = this.asRecord(input.event?.metadata);
+    if (
+      input.ruleCode !== REPORT_DELETE_RULE ||
+      typeof metadata?.reportCaseId !== 'string' ||
+      typeof metadata.reportTargetMessageId !== 'string' ||
+      metadata.reportTargetMessageId === input.messageId
+    )
+      throw new Error('Report history binding required');
+    return this.persistIntent(input, true, undefined, DELETE_QUEUE_PRIORITY_BACKGROUND);
   }
 
   async ensureRetentionIntent(candidate: MessageRetentionCandidate): Promise<string> {
@@ -1762,7 +1795,12 @@ export class ModerationDeleteIntentService {
     const eligibility = this.classifyIntentWakeupEligibility(intent);
     switch (eligibility) {
       case 'eligible':
-        await this.enqueueIntentJob(intent.id, DELETE_QUEUE_PRIORITY_INTERACTIVE);
+        await this.enqueueIntentJob(
+          intent.id,
+          intent.reportHistoryOnly
+            ? DELETE_QUEUE_PRIORITY_BACKGROUND
+            : DELETE_QUEUE_PRIORITY_INTERACTIVE,
+        );
         return;
       case 'settled_or_in_progress':
         return;
@@ -2207,9 +2245,13 @@ export class ModerationDeleteIntentService {
             botId,
             timeoutMs: this.deleteTimeoutMs,
             trafficClass:
-              intent.retentionOwned || intent.suggestionSubscriptionId ? 'background' : 'critical',
+              intent.retentionOwned || intent.suggestionSubscriptionId || intent.reportHistoryOnly
+                ? 'background'
+                : 'critical',
             actionHealthLane:
-              intent.retentionOwned || intent.suggestionSubscriptionId ? 'background' : 'critical',
+              intent.retentionOwned || intent.suggestionSubscriptionId || intent.reportHistoryOnly
+                ? 'background'
+                : 'critical',
             sourceTag: intent.retentionOwned
               ? MAX_API_SOURCE_TAGS.MESSAGE_RETENTION
               : intent.suggestionSubscriptionId
@@ -2973,7 +3015,7 @@ export class ModerationDeleteIntentService {
     for (let batch = 0; batch < this.purgeMaxBatches; batch += 1) {
       const purged = await this.prisma.$executeRaw(Prisma.sql`
         WITH retained AS (
-          SELECT intent."id", intent."status"
+          SELECT intent."id", intent."status", intent."updated_at"
           FROM "moderation_delete_intents" intent
           WHERE intent."updated_at" < ${cutoff}
             AND intent."retention_owned" = FALSE
@@ -3022,7 +3064,8 @@ export class ModerationDeleteIntentService {
         ), report_receipts AS (
           -- FLAG: Journal receipts survive queue-ledger retention in the same transaction.
           UPDATE "chat_report_actions" action
-          SET "receipt_status" = retained."status"::text
+          SET "receipt_status" = retained."status"::text,
+            "receipt_updated_at" = GREATEST(action."receipt_updated_at", retained."updated_at")
           FROM retained
           WHERE action."intent_id" = retained."id"
           RETURNING action."id"
@@ -3219,6 +3262,9 @@ export class ModerationDeleteIntentService {
             messageId: intent.messageId,
             subjectUserId: intent.subjectUserId,
             botId,
+            trafficClass: intent.reportHistoryOnly ? 'background' : 'critical',
+            isIndependentReasonExecutable: (reasons) =>
+              this.hasExecutableIndependentReportReason(intent.chatId, reasons),
           });
           if (result === 'absent')
             throw new ModerationDeleteGuardedMessageAbsentError('guarded_report_absence');
@@ -3972,6 +4018,7 @@ export class ModerationDeleteIntentService {
     input: EnsureModerationDeleteIntentInput,
     enqueue: boolean,
     transactionClient?: Prisma.TransactionClient,
+    enqueuePriority = DELETE_QUEUE_PRIORITY_INTERACTIVE,
   ): Promise<EnsureModerationDeleteIntentResult> {
     const normalized = this.normalizeInput(input);
     const rollout = this.getRolloutForInput(input);
@@ -4705,6 +4752,33 @@ export class ModerationDeleteIntentService {
       if (storedStandardCommercialOcrDeleteReason !== undefined) {
         effectiveIntent.standardCommercialOcrDeleteReason = storedStandardCommercialOcrDeleteReason;
       }
+      if (intent.id !== intentId && REPORT_GUARDED_RULES.has(normalized.ruleCode)) {
+        // FLAG: A report merged into an existing urgent reason retains that reason's queue priority.
+        const [reportClassifiers] = await tx.$queryRaw<
+          Array<
+            Pick<
+              IntentRow,
+              'reportDeleteReason' | 'reportCounterCleanupReason' | 'reportHistoryOnly'
+            >
+          >
+        >(Prisma.sql`
+          SELECT EXISTS (
+            SELECT 1 FROM moderation_delete_intent_reasons reason
+            WHERE reason.intent_id = ${intent.id} AND reason.rule_code IN (${REPORT_DELETE_RULE}, ${REPORT_COMMAND_RULE})
+          ) AS "reportDeleteReason", EXISTS (
+            SELECT 1 FROM moderation_delete_intent_reasons reason
+            WHERE reason.intent_id = ${intent.id} AND reason.rule_code = ${REPORT_COUNTER_RULE}
+          ) AS "reportCounterCleanupReason", NOT EXISTS (
+            SELECT 1 FROM moderation_delete_intent_reasons reason
+            WHERE reason.intent_id = ${intent.id} AND (
+              reason.rule_code <> ${REPORT_DELETE_RULE}
+              OR reason.metadata->>'reportTargetMessageId' IS NULL
+              OR reason.metadata->>'reportTargetMessageId' = ${normalized.messageId}
+            )
+          ) AS "reportHistoryOnly"
+        `);
+        if (reportClassifiers) Object.assign(effectiveIntent, reportClassifiers);
+      }
       return effectiveIntent;
     };
     const persisted = transactionClient
@@ -4748,7 +4822,8 @@ export class ModerationDeleteIntentService {
     }
     persisted.nonCommercialOcrDeleteReason =
       persisted.nonCommercialOcrDeleteReason === true ||
-      normalized.ruleCode !== COMMERCIAL_OCR_DELETE_RULE_CODE;
+      (normalized.ruleCode !== COMMERCIAL_OCR_DELETE_RULE_CODE &&
+        !REPORT_GUARDED_RULES.has(normalized.ruleCode));
     if (normalizedImageTextBinding) {
       persisted.imageTextStopListDeleteReason = true;
       if (persisted.id === intentId) {
@@ -4756,6 +4831,18 @@ export class ModerationDeleteIntentService {
       }
     }
 
+    if (REPORT_GUARDED_RULES.has(normalized.ruleCode)) {
+      persisted.reportDeleteReason =
+        persisted.reportDeleteReason === true || normalized.ruleCode !== REPORT_COUNTER_RULE;
+      persisted.reportCounterCleanupReason =
+        persisted.reportCounterCleanupReason === true ||
+        normalized.ruleCode === REPORT_COUNTER_RULE;
+      const metadata = this.asRecord(normalized.event.metadata);
+      persisted.reportHistoryOnly ??=
+        normalized.ruleCode === REPORT_DELETE_RULE &&
+        typeof metadata?.reportTargetMessageId === 'string' &&
+        metadata.reportTargetMessageId !== normalized.messageId;
+    }
     if (isBoundMessageDuplicateDelete(input)) persisted.messageDuplicateOwned = true;
     const effectiveRollout =
       persisted.status !== 'OBSERVED' && this.isExecutionEnabledForIntent(persisted)
@@ -4763,7 +4850,12 @@ export class ModerationDeleteIntentService {
         : 'observed';
     if (enqueue && effectiveRollout === 'execute') {
       try {
-        await this.enqueueWakeup(persisted, DELETE_QUEUE_PRIORITY_INTERACTIVE);
+        await this.enqueueWakeup(
+          persisted,
+          normalized.ruleCode === REPORT_DELETE_RULE && persisted.reportHistoryOnly === false
+            ? DELETE_QUEUE_PRIORITY_INTERACTIVE
+            : enqueuePriority,
+        );
       } catch (error: unknown) {
         this.logger.warn(
           { intentId: persisted.id, err: this.errorMessage(error) },
@@ -4977,35 +5069,47 @@ export class ModerationDeleteIntentService {
           details.errorCode === NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE;
         // FLAG: Every message-owned DELETE must pass its binding guard, even with mixed reasons.
         // Its own non-OCR classification cannot resurrect a definitively rejected binding.
+        const independentReportReasons =
+          guardError instanceof ReportRejectedError
+            ? await tx.moderationDeleteIntentReason.findMany({
+                where: { intentId: intent.id, ruleCode: { notIn: [...REPORT_GUARDED_RULES] } },
+                select: { ruleCode: true, reasonKey: true, metadata: true },
+              })
+            : null;
         const independentReasonExecutable =
-          !details.errorCode.startsWith('message_duplicate_') &&
-          (details.errorCode.startsWith('commercial_text_')
-            ? (await tx.moderationDeleteIntentReason.findFirst({
-                where: { intentId: intent.id, ruleCode: { not: COMMERCIAL_TEXT_DELETE_RULE_CODE } },
-                select: { id: true },
-              })) !== null ||
-              (guardError instanceof CommercialDeleteGuardRejectedError &&
-                typeof guardError.reasonFingerprint === 'string' &&
-                guardError.reasonFingerprint !==
-                  fingerprintCommercialDeleteReasons(
-                    await tx.moderationDeleteIntentReason.findMany({
-                      where: { intentId: intent.id },
-                      select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
-                      orderBy: { reasonKey: 'asc' },
-                      take: COMMERCIAL_TEXT_MAX_INTENT_REASONS + 1,
-                    }),
-                  ))
-            : details.errorCode.startsWith('profanity_')
-              ? (await tx.moderationDeleteIntentReason.findFirst({
-                  where: { intentId: intent.id, ruleCode: { not: PROFANITY_DELETE_RULE_CODE } },
-                  select: { id: true },
-                })) !== null
-              : channelCleanupGuardRejected
-                ? this.hasExecutableReasonIgnoringChannelAutoPostCleanup(latest)
-                : nightModeCleanupGuardRejected
-                  ? latest.nightModeCloseNoticeCleanupReason === true &&
-                    latest.nightModeCloseNoticeCleanupOnly !== true
-                  : this.hasExecutableNonCommercialOcrReason(latest));
+          independentReportReasons !== null
+            ? this.hasExecutableIndependentReportReason(latest.chatId, independentReportReasons)
+            : !details.errorCode.startsWith('message_duplicate_') &&
+              (details.errorCode.startsWith('commercial_text_')
+                ? (await tx.moderationDeleteIntentReason.findFirst({
+                    where: {
+                      intentId: intent.id,
+                      ruleCode: { not: COMMERCIAL_TEXT_DELETE_RULE_CODE },
+                    },
+                    select: { id: true },
+                  })) !== null ||
+                  (guardError instanceof CommercialDeleteGuardRejectedError &&
+                    typeof guardError.reasonFingerprint === 'string' &&
+                    guardError.reasonFingerprint !==
+                      fingerprintCommercialDeleteReasons(
+                        await tx.moderationDeleteIntentReason.findMany({
+                          where: { intentId: intent.id },
+                          select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
+                          orderBy: { reasonKey: 'asc' },
+                          take: COMMERCIAL_TEXT_MAX_INTENT_REASONS + 1,
+                        }),
+                      ))
+                : details.errorCode.startsWith('profanity_')
+                  ? (await tx.moderationDeleteIntentReason.findFirst({
+                      where: { intentId: intent.id, ruleCode: { not: PROFANITY_DELETE_RULE_CODE } },
+                      select: { id: true },
+                    })) !== null
+                  : channelCleanupGuardRejected
+                    ? this.hasExecutableReasonIgnoringChannelAutoPostCleanup(latest)
+                    : nightModeCleanupGuardRejected
+                      ? latest.nightModeCloseNoticeCleanupReason === true &&
+                        latest.nightModeCloseNoticeCleanupOnly !== true
+                      : this.hasExecutableNonCommercialOcrReason(latest));
         const now = Date.now();
         // A fresh independent reason does not inherit the obsolete OCR guard failure or its
         // backoff. Requeue it immediately; the next attempt reloads the mixed durable classifiers.
@@ -5639,7 +5743,10 @@ export class ModerationDeleteIntentService {
       return;
     }
     try {
-      await this.enqueueIntentJob(intent.id, priority);
+      await this.enqueueIntentJob(
+        intent.id,
+        intent.reportHistoryOnly ? DELETE_QUEUE_PRIORITY_BACKGROUND : priority,
+      );
     } catch (error: unknown) {
       this.logger.warn(
         { intentId: intent.id, err: this.errorMessage(error) },
@@ -6347,6 +6454,7 @@ export class ModerationDeleteIntentService {
           FROM "moderation_delete_intent_reasons" base_reason
           WHERE base_reason."intent_id" = intent."id"
             AND base_reason."rule_code" <> ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+            AND base_reason."rule_code" NOT IN (${Prisma.join([...REPORT_GUARDED_RULES])})
         )
       )
       OR (
@@ -6357,6 +6465,13 @@ export class ModerationDeleteIntentService {
           WHERE ocr_reason."intent_id" = intent."id"
             AND ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
             AND COALESCE(ocr_reason."metadata"->>'source', '') <> 'image_text_ocr'
+        )
+      )
+      OR EXISTS (
+        SELECT 1 FROM "moderation_delete_intent_reasons" report_reason
+        WHERE report_reason."intent_id" = intent."id" AND (
+          report_reason."rule_code" = ${REPORT_COUNTER_RULE}
+          OR report_reason."rule_code" IN (${REPORT_DELETE_RULE}, ${REPORT_COMMAND_RULE})
         )
       )
       ${replacementCleanupFilter}
@@ -6457,6 +6572,8 @@ export class ModerationDeleteIntentService {
       | 'chatId'
       | 'retentionOwned'
       | 'suggestionSubscriptionId'
+      | 'reportDeleteReason'
+      | 'reportCounterCleanupReason'
       | 'replacementCleanup'
       | 'nonChannelReplacementCleanup'
       | 'channelAutoPostCleanupReason'
@@ -6485,6 +6602,9 @@ export class ModerationDeleteIntentService {
     }
     if (getAppRole() === 'message-retention') return false;
     if (intent.suggestionSubscriptionId) return true;
+    if (intent.reportCounterCleanupReason === true) return true;
+    // FLAG: Persisted report work must reach its final guard even after disable, to settle revocation.
+    if (intent.reportDeleteReason === true) return true;
     if (this.hasExecutableNonCommercialOcrReason(intent)) {
       return true;
     }
@@ -6518,6 +6638,8 @@ export class ModerationDeleteIntentService {
     intent: Pick<
       IntentRow,
       | 'chatId'
+      | 'reportDeleteReason'
+      | 'reportCounterCleanupReason'
       | 'replacementCleanup'
       | 'nonChannelReplacementCleanup'
       | 'channelAutoPostCleanupReason'
@@ -6529,6 +6651,11 @@ export class ModerationDeleteIntentService {
     >,
   ): boolean {
     if (intent.messageDuplicateOwned === true) return true;
+    if (
+      intent.reportCounterCleanupReason === true ||
+      (intent.reportDeleteReason === true && this.reportsEnabled(intent.chatId))
+    )
+      return true;
     if (
       (this.requiredSubscriptionDeleteEnabled &&
         intent.requiredSubscriptionDeleteReason === true) ||
@@ -6579,6 +6706,35 @@ export class ModerationDeleteIntentService {
       canaryChatIds: this.commercialOcrCanaryChatIds,
       chatId,
     });
+  }
+
+  private reportsEnabled(chatId: string): boolean {
+    const mode = this.configService.get<string>('PARTICIPANT_REPORTS_MODE') ?? 'off';
+    return (
+      mode === 'on' ||
+      (mode === 'canary' &&
+        (this.configService.get<string>('PARTICIPANT_REPORTS_CANARY_CHAT_IDS') ?? '')
+          .split(',')
+          .map((id) => id.trim())
+          .filter(Boolean)
+          .includes(chatId))
+    );
+  }
+
+  private hasExecutableIndependentReportReason(
+    chatId: string,
+    reasons: readonly { ruleCode: string; reasonKey?: string; metadata: unknown }[],
+  ): boolean {
+    // FLAG: Keep metadata-bound independent policies executable under their own rollout ceiling.
+    return reasons.some(
+      (reason) =>
+        this.getRolloutForInput({
+          chatId,
+          ruleCode: reason.ruleCode,
+          reasonKey: reason.reasonKey ?? reason.ruleCode,
+          event: { metadata: reason.metadata },
+        }) === 'execute',
+    );
   }
 
   private hasAnyExecutionScope(): boolean {
@@ -7242,6 +7398,7 @@ export class ModerationDeleteIntentService {
 
   private intentSelectSql(alias: string): Prisma.Sql {
     const intentIdColumn = Prisma.raw(`"${alias}"."id"`);
+    const intentMessageIdColumn = Prisma.raw(`"${alias}"."message_id"`);
     return Prisma.sql`
       ${this.intentColumnsSql(alias)},
       ${this.messageDuplicateOwnedSql(intentIdColumn)} AS "messageDuplicateOwned",
@@ -7318,9 +7475,33 @@ export class ModerationDeleteIntentService {
         FROM "moderation_delete_intent_reasons" non_ocr_reason
         WHERE non_ocr_reason."intent_id" = ${intentIdColumn}
           AND non_ocr_reason."rule_code" <> ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+          AND non_ocr_reason."rule_code" NOT IN (${Prisma.join([...REPORT_GUARDED_RULES])})
           AND non_ocr_reason."rule_code" <>
             ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
       ) AS "nonCommercialOcrDeleteReason",
+      EXISTS (
+        SELECT 1 FROM "moderation_delete_intent_reasons" report_reason
+        WHERE report_reason."intent_id" = ${intentIdColumn}
+          AND report_reason."rule_code" IN (${REPORT_DELETE_RULE}, ${REPORT_COMMAND_RULE})
+      ) AS "reportDeleteReason",
+      EXISTS (
+        SELECT 1 FROM "moderation_delete_intent_reasons" report_reason
+        WHERE report_reason."intent_id" = ${intentIdColumn}
+          AND report_reason."rule_code" = ${REPORT_COUNTER_RULE}
+      ) AS "reportCounterCleanupReason",
+      (EXISTS (
+        SELECT 1 FROM "moderation_delete_intent_reasons" history_reason
+        WHERE history_reason."intent_id" = ${intentIdColumn}
+          AND history_reason."rule_code" = ${REPORT_DELETE_RULE}
+          AND history_reason."metadata"->>'reportTargetMessageId' <> ${intentMessageIdColumn}
+      ) AND NOT EXISTS (
+        SELECT 1 FROM "moderation_delete_intent_reasons" urgent_reason
+        WHERE urgent_reason."intent_id" = ${intentIdColumn} AND (
+          urgent_reason."rule_code" <> ${REPORT_DELETE_RULE}
+          OR urgent_reason."metadata"->>'reportTargetMessageId' IS NULL
+          OR urgent_reason."metadata"->>'reportTargetMessageId' = ${intentMessageIdColumn}
+        )
+      )) AS "reportHistoryOnly",
       EXISTS (
         SELECT 1
         FROM "moderation_delete_intent_reasons" image_text_reason

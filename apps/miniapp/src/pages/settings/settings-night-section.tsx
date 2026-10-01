@@ -35,7 +35,7 @@ import type {
   SettingsSectionShellProps,
 } from './settings-section-shared';
 
-type SettingsNightSectionProps = SettingsSectionShellProps &
+export type SettingsNightSectionProps = SettingsSectionShellProps &
   Pick<
     SettingsSectionEditorProps,
     | 'botSpeechEditorProps'

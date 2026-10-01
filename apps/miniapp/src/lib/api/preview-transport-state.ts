@@ -99,6 +99,7 @@ export type PreviewState = {
   chatHeaderParticipantsCount: number;
   chatSettings: ChatSettings;
   reportsAvailable: boolean;
+  reportsScenario?: string;
   chatRules: ChatRules;
   rulesPublicationSequence?: number;
   chatDomains: DomainAllowlistEntry[];
@@ -939,6 +940,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     chatDialogThreads: {},
     chatSettings,
     reportsAvailable: searchParams.get('reportsAvailability') !== 'paused',
+    reportsScenario: searchParams.get('reportsScenario') ?? undefined,
     chatRules,
     chatDomains,
     chatKaravanStorefrontAllowlist,

@@ -8371,3 +8371,25 @@ describe('ModerationService', () => {
     });
   });
 });
+
+describe('report counter ownership after admission disable', () => {
+  it('never gives a known counter to generic auto-delete after a delayed webhook', async () => {
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    const ownsCounter = jest.fn().mockResolvedValue(true);
+    const cleanup = jest.fn();
+    Object.assign(service, {
+      reportSubmission: { ownsCounter },
+      handleBotMessageAutoDelete: cleanup,
+    });
+    await (service as any).handleOwnBotMessageAutoDelete({
+      chatId: 'chat',
+      userId: 'bot-user',
+      messageId: 'counter',
+      text: 'counter',
+      createdAt: new Date().toISOString(),
+      settings: createSettings({ reportsEnabled: false, deleteBotMessagesEnabled: true }),
+    });
+    expect(ownsCounter).toHaveBeenCalledTimes(1);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+});

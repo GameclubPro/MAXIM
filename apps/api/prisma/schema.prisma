@@ -1086,6 +1086,13 @@ model ChatReportCase {
   leaseToken            String?  @map("lease_token")
   leaseExpiresAt        DateTime? @map("lease_expires_at")
   lastError             String?  @map("last_error")
+  detailsArchivedAt     DateTime? @map("details_archived_at")
+  detailsArchiveCompletedAt DateTime? @map("details_archive_completed_at")
+  retainedVotes         Int      @default(0) @map("retained_votes")
+  retainedCandidates    Int      @default(0) @map("retained_candidates")
+  retainedDeleted       Int      @default(0) @map("retained_deleted")
+  retainedAbsent        Int      @default(0) @map("retained_absent")
+  retainedFailed        Int      @default(0) @map("retained_failed")
   createdAt             DateTime @default(now()) @map("created_at")
   updatedAt             DateTime @updatedAt @map("updated_at")
   chat                  Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
@@ -1095,6 +1102,12 @@ model ChatReportCase {
   @@unique([chatId, messageId])
   @@index([chatId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([dueAt, id])
+  @@index([status, dueAt, id], map: "chat_report_cases_status_due_idx")
+  @@index([chatId, counterMessageId], map: "chat_report_cases_chat_counter_idx")
+  @@index([chatId, status, createdAt(sort: Desc), id(sort: Desc)], map: "chat_report_cases_chat_status_created_idx")
+  @@index([chatId, authorId, createdAt(sort: Desc), id(sort: Desc)], map: "chat_report_cases_chat_author_created_idx")
+  @@index([chatId, authorId, status, createdAt(sort: Desc), id(sort: Desc)], map: "chat_report_cases_chat_author_status_created_idx")
+  @@index([detailsArchiveCompletedAt, expiresAt, id], map: "chat_report_cases_archive_expiry_idx")
   @@map("chat_report_cases")
 }
 
@@ -1111,6 +1124,7 @@ model ChatReportVote {
   @@unique([caseId, contentVersion, reporterId])
   @@unique([chatId, commandMessageId])
   @@index([chatId, reporterId, createdAt])
+  @@index([caseId, id], map: "chat_report_votes_archive_page_idx")
   @@map("chat_report_votes")
 }
 
@@ -1120,11 +1134,13 @@ model ChatReportAction {
   messageId   String @map("message_id")
   intentId    String? @map("intent_id")
   receiptStatus String? @map("receipt_status")
+  receiptUpdatedAt DateTime? @map("receipt_updated_at")
   createdAt   DateTime @default(now()) @map("created_at")
   reportCase  ChatReportCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
   @@unique([caseId, messageId])
   @@index([intentId])
+  @@index([caseId, id], map: "chat_report_actions_archive_page_idx")
   @@map("chat_report_actions")
 }
 

@@ -11,8 +11,12 @@ export class AdminReportsService {
     private readonly profiles: ManagedEntitiesService,
   ) {}
 
-  list(chatId: string, cursor?: unknown) {
-    return this.reports.list(chatId, cursor);
+  list(chatId: string, cursor?: unknown, filters: unknown = {}) {
+    return this.reports.list(chatId, cursor, filters);
+  }
+
+  availability(chatId: string) {
+    return this.reports.availability(chatId);
   }
 
   async detail(chatId: string, id: string): Promise<ReportDetail> {

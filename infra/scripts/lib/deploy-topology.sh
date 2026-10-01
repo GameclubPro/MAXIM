@@ -299,6 +299,8 @@ maxim_topology_require_participant_report_guard() {
   local commit_sha="$1"
   local guard_source
   local executor_source
+  local view_source
+  local submission_source
   # FLAG: Persisted report deletes must retain their policy and identity checks after rollback.
   if ! guard_source="$(git show "${commit_sha}:apps/api/src/moderation/reports/report-delete-guard.service.ts" 2>/dev/null)" ||
     ! executor_source="$(git show "${commit_sha}:apps/api/src/moderation/moderation-delete-intent.service.ts" 2>/dev/null)"; then
@@ -312,17 +314,67 @@ maxim_topology_require_participant_report_guard() {
     const start = executor.indexOf("private async runDeletePreDispatchGuards(");
     const end = executor.indexOf("\n  private ", start + 1);
     const boundary = executor.slice(start, end);
+    const independentStart = executor.indexOf("private hasExecutableIndependentReportReason(");
+    const independentEnd = executor.indexOf("\n  private ", independentStart + 1);
+    const independent = executor.slice(independentStart, independentEnd);
     process.exit(start >= 0 && end > start &&
       guard.includes("class ReportDeleteGuardService") &&
-      guard.includes("BINDING_VERSION = 2") &&
+      guard.includes("BINDING_VERSION = 3") &&
       guard.includes("REPORT_COUNTER_RULE") &&
+      guard.includes("counterMessageId: params.messageId") &&
+      guard.includes("for (const reason of reportReasons)") &&
+      guard.includes("params.isIndependentReasonExecutable?.(independentReasons)") &&
+      independentStart >= 0 && independentEnd > independentStart &&
+      independent.includes("this.getRolloutForInput({") &&
+      independent.includes("event: { metadata: reason.metadata }") &&
+      /===\s*\x27execute\x27/u.test(independent) &&
+      executor.includes("if (intent.reportDeleteReason === true) return true;") &&
+      executor.includes("AS \"reportDeleteReason\"") &&
+      executor.includes("AS \"reportCounterCleanupReason\"") &&
       guard.includes("this.state.assertCurrent(") &&
       guard.includes("this.state.assertPolicy(report)") &&
       guard.includes("this.state.assertCase(") &&
       boundary.includes("await this.reportDeleteGuard.assertIntentStillActionable(") &&
+      boundary.includes("this.hasExecutableIndependentReportReason(intent.chatId, reasons)") &&
       boundary.includes("Participant report delete guard unavailable") ? 0 : 1);
   ' >/dev/null 2>&1; then
-    echo "Rollback target lacks the participant report v2 pre-dispatch guard." >&2
+    echo "Rollback target lacks the participant report v3 independent execution/counter guard." >&2
+    return 1
+  fi
+  # FLAG: Archive erasure persists after an environment downgrade; both rollback paths require its readers.
+  if ! view_source="$(git show "${commit_sha}:apps/api/src/moderation/reports/report-view.service.ts" 2>/dev/null)" ||
+    ! submission_source="$(git show "${commit_sha}:apps/api/src/moderation/reports/report-submission.service.ts" 2>/dev/null)"; then
+    echo "Rollback target predates participant report archive readers." >&2
+    return 1
+  fi
+  if ! printf '%s\0%s' "$view_source" "$submission_source" | node -e '
+    const parts = require("node:fs").readFileSync(0, "utf8").split("\0");
+    if (parts.length !== 2) process.exit(1);
+    const [view, submission] = parts;
+    const summaryStart = view.indexOf("private async summaries(");
+    const summaryEnd = view.indexOf("\n  async list(", summaryStart + 1);
+    const summary = view.slice(summaryStart, summaryEnd);
+    const detailStart = view.indexOf("async detail(");
+    const detailEnd = view.indexOf("\n  async dismiss(", detailStart + 1);
+    const detail = view.slice(detailStart, detailEnd);
+    const transactionStart = submission.indexOf("const report = await this.state.transaction(");
+    const tombstone = submission.indexOf("if (current?.detailsArchivedAt)", transactionStart);
+    const reopen = submission.indexOf("current.policyRevision !== policy.reportsRevision", transactionStart);
+    const retainedFields = ["retainedVotes", "retainedCandidates", "retainedDeleted", "retainedAbsent", "retainedFailed"];
+    const compatible = view.includes("ARCHIVE_READER_VERSION = 1") &&
+      summaryStart >= 0 && summaryEnd > summaryStart &&
+      summary.includes("reports.filter((report) => !report.detailsArchivedAt)") &&
+      summary.includes("const archived = Boolean(report.detailsArchivedAt)") &&
+      summary.includes("return reports.map((report) => {") &&
+      retainedFields.every(field => new RegExp("archived\\s*\\?\\s*report\\." + field + "\\b", "u").test(summary)) &&
+      summary.includes("detailsArchived: archived") &&
+      detailStart >= 0 && detailEnd > detailStart &&
+      /const reporters = report\.detailsArchivedAt\s*\?\s*\[\]\s*:/u.test(detail) &&
+      transactionStart >= 0 && tombstone > transactionStart && reopen > tombstone &&
+      /if \(current\?\.detailsArchivedAt\)\s*throw new ReportRejectedError\(/u.test(submission.slice(tombstone, reopen));
+    process.exit(compatible ? 0 : 1);
+  ' >/dev/null 2>&1; then
+    echo "Rollback target lacks participant report archive v1 retained-total/tombstone readers." >&2
     return 1
   fi
 }

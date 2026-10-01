@@ -2,16 +2,23 @@ import { AdminReportsController } from './admin-reports.controller';
 
 describe('report journal access', () => {
   const actor = { userId: 'admin' } as never;
-  it.each(['list', 'detail', 'dismiss'] as const)(
+  it.each(['list', 'detail', 'dismiss', 'availability'] as const)(
     'requires chat-admin authorization for %s',
     async (operation) => {
       const access = { assertChatAdminAccess: jest.fn().mockRejectedValue(new Error('forbidden')) };
-      const reports = { list: jest.fn(), detail: jest.fn(), dismiss: jest.fn() };
+      const reports = {
+        list: jest.fn(),
+        detail: jest.fn(),
+        dismiss: jest.fn(),
+        availability: jest.fn(),
+      };
       const controller = new AdminReportsController(access as never, reports as never);
       const result =
         operation === 'list'
           ? controller.list('chat', actor)
-          : controller[operation]('chat', 'case', actor);
+          : operation === 'availability'
+            ? controller.availability('chat', actor)
+            : controller[operation]('chat', 'case', actor);
       await expect(result).rejects.toThrow('forbidden');
       expect(reports[operation]).not.toHaveBeenCalled();
     },

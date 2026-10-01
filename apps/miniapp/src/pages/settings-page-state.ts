@@ -562,6 +562,7 @@ export function mergeSectionSettingsAfterSave(
   saved: ChatSettings,
   section: ApplySectionKey,
   expectedRevision = target.settingsRevision,
+  submitted?: ChatSettings,
 ): ChatSettings {
   const next = mergeSectionSettings(target, saved, section);
   const hasOtherChanges = (Object.keys(SECTION_SETTING_KEYS) as ApplySectionKey[]).some(
@@ -572,6 +573,16 @@ export function mergeSectionSettingsAfterSave(
   );
   if (target.settingsRevision !== expectedRevision && hasOtherChanges)
     next.settingsRevision = target.settingsRevision;
+  // FLAG: Edits made while a bulk save is in flight remain an unsaved draft.
+  if (
+    submitted &&
+    (hasSectionSettingChanges(target, submitted, section) ||
+      hasSectionBotSpeechMediaChanges(target, submitted, section))
+  ) {
+    const preserved = mergeSectionSettings(next, target, section);
+    preserved.settingsRevision = next.settingsRevision;
+    return preserved;
+  }
   return next;
 }
 

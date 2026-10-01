@@ -1,4 +1,5 @@
 import type { ChatSanctionItem } from '@maxim/contracts';
+import { resolveModerationSanctionExpiry } from '../moderation/moderation-sanction-expiry.util';
 
 export type SanctionFeedRow = {
   id: string;
@@ -29,19 +30,9 @@ export function resolveSanctionState(
   nowMs: number,
 ): Pick<ChatSanctionItem, 'status' | 'expiresAt' | 'endedAt' | 'permanent' | 'releaseAction'> {
   const metadata = readSanctionMetadata(row.metadata);
-  const permanent = row.action === 'BAN' || metadata.mutePermanent === true;
-  let expiresAt: string | null = null;
-  if (!permanent) {
-    const explicit = readSanctionString(metadata.muteExpiresAt);
-    const parsed = explicit ? Date.parse(explicit) : NaN;
-    const hours = metadata.muteDurationHours;
-    const at = Number.isFinite(parsed)
-      ? parsed
-      : typeof hours === 'number' && Number.isFinite(hours) && hours > 0 && hours <= 336
-        ? row.createdAt.getTime() + hours * 3_600_000
-        : NaN;
-    if (Number.isFinite(at) && at > row.createdAt.getTime()) expiresAt = new Date(at).toISOString();
-  }
+  const expiry = resolveModerationSanctionExpiry(row.action, metadata, row.createdAt);
+  const permanent = expiry.permanent;
+  const expiresAt = expiry.expiresAt?.toISOString() ?? null;
   const expiryMs = expiresAt ? Date.parse(expiresAt) : null;
   const nextAt = row.nextEventAt?.getTime() ?? null;
   let status: ChatSanctionItem['status'];
