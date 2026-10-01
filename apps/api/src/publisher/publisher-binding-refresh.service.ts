@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { PUBLISHER_HANDSHAKE_CONFIRMATION_TEXT } from '../max/managed-handshake-confirmation';
 import { createHash } from 'node:crypto';
 import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
 import {
@@ -1608,7 +1609,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     try {
       await this.maxClient.sendMessage(
         job.chatId,
-        'Готово. Чат или канал подключен к Публику и появился в мини-приложении.',
+        PUBLISHER_HANDSHAKE_CONFIRMATION_TEXT,
         miniappUrl
           ? { buttons: [[{ type: 'link', text: 'Открыть Публик', url: miniappUrl }]] }
           : undefined,

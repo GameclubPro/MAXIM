@@ -48,6 +48,7 @@ import {
   type ModerationMessageActionClaimModel,
 } from './moderation-message-action-claim';
 import { buildManagedPublicationAutoDeleteFenceWhere } from './managed-publication-auto-delete-fence';
+import { findManagedHandshakeAutoDeleteOwner } from './managed-handshake-auto-delete-fence';
 import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from './moderation.service.support';
 import {
   MODERATION_DELETE_INTENT_QUEUE,
@@ -325,6 +326,8 @@ type PhotoDuplicateDeleteReasonFence = {
 type ManagedBotMessageOwner = {
   id: string;
   kind:
+    | 'managed_handshake'
+    | 'managed_handshake_in_flight'
     | 'managed_publication'
     | 'managed_publication_in_flight'
     | 'managed_giveaway_publication'
@@ -5780,6 +5783,15 @@ export class ModerationDeleteIntentService {
     >,
   ): Promise<ManagedBotMessageOwner | null> {
     const { chatId, messageId } = intent;
+    const handshake = await findManagedHandshakeAutoDeleteOwner(this.prisma.maxActionLedgerEntry, {
+      chatId,
+      messageId,
+      originBotId: intent.originBotId,
+      sourceMessageAt: intent.sourceMessageAt,
+      allowInFlight: true,
+    });
+    if (handshake) return handshake;
+
     const delivery = await this.prisma.managedBroadcastDelivery.findFirst({
       where: {
         targetChatId: chatId,

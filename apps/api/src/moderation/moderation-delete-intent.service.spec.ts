@@ -157,6 +157,9 @@ function createService(
     managedBroadcastDelivery: {
       findFirst: jest.fn().mockResolvedValue(null),
     },
+    maxActionLedgerEntry: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     managedGiveaway: {
       findFirst: jest.fn().mockResolvedValue(null),
     },
@@ -3457,6 +3460,28 @@ describe('ModerationDeleteIntentService', () => {
 
   it.each([
     {
+      label: 'Major Start confirmation',
+      ownerKind: 'managed_handshake',
+      prismaOwner: {
+        maxActionLedgerEntry: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 'major-start', remoteMessageId: 'message-1' }),
+        },
+      },
+    },
+    {
+      label: 'Publik Start confirmation',
+      ownerKind: 'managed_handshake',
+      prismaOwner: {
+        maxActionLedgerEntry: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 'publisher-start', remoteMessageId: 'message-1' }),
+        },
+      },
+    },
+    {
       label: 'managed publication',
       ownerKind: 'managed_publication',
       prismaOwner: {
@@ -3748,58 +3773,73 @@ describe('ModerationDeleteIntentService', () => {
     );
   });
 
-  it('blocks a transition notice that becomes protected inside the final MAX delete guard', async () => {
-    const autoDeleteIntent = {
-      ...baseIntent,
-      messageAuthorKind: 'bot',
-      routingPolicy: 'origin_only',
-      botMessageAutoDeleteOnly: true,
-    };
-    const blockedIntent = {
-      ...autoDeleteIntent,
-      status: 'FAILED_TERMINAL',
-      leaseToken: null,
-      leaseExpiresAt: null,
-      lastErrorCode: 'managed_output_auto_delete_blocked',
-      lastError: 'Night mode transition notice is protected',
-    };
-    const queryRaw = jest
-      .fn()
-      .mockResolvedValueOnce([autoDeleteIntent])
-      .mockResolvedValueOnce([blockedIntent]);
-    const transitionEventLookup = jest
-      .fn()
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ id: 'night-close-event-1' });
-    const deleteMessageOverride = jest.fn();
-    const { service, prisma, maxBotLink } = createService(
-      {},
-      {
-        $queryRaw: queryRaw,
-        $executeRaw: jest.fn().mockResolvedValue(1),
-        moderationEvent: { findFirst: transitionEventLookup },
-      },
-      { deleteMessage: deleteMessageOverride },
-      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
-    );
+  it.each(['transition notice', 'Start confirmation'])(
+    'blocks a %s that becomes protected inside the final MAX delete guard',
+    async (messageKind) => {
+      const autoDeleteIntent = {
+        ...baseIntent,
+        messageAuthorKind: 'bot',
+        routingPolicy: 'origin_only',
+        botMessageAutoDeleteOnly: true,
+      };
+      const blockedIntent = {
+        ...autoDeleteIntent,
+        status: 'FAILED_TERMINAL',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        lastErrorCode: 'managed_output_auto_delete_blocked',
+        lastError: 'Night mode transition notice is protected',
+      };
+      const queryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([autoDeleteIntent])
+        .mockResolvedValueOnce([blockedIntent]);
+      const transitionEventLookup = jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 'night-close-event-1' });
+      const deleteMessageOverride = jest.fn();
+      const { service, prisma, maxBotLink } = createService(
+        {},
+        {
+          $queryRaw: queryRaw,
+          $executeRaw: jest.fn().mockResolvedValue(1),
+          ...(messageKind === 'transition notice'
+            ? { moderationEvent: { findFirst: transitionEventLookup } }
+            : {
+                maxActionLedgerEntry: {
+                  findFirst: jest
+                    .fn()
+                    .mockResolvedValueOnce(null)
+                    .mockResolvedValueOnce(null)
+                    .mockResolvedValue({ id: 'start-receipt', remoteMessageId: 'message-1' }),
+                },
+              }),
+        },
+        { deleteMessage: deleteMessageOverride },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      );
 
-    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
-      kind: 'terminal',
-      confirmed: false,
-      status: 'FAILED_TERMINAL',
-    });
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+        kind: 'terminal',
+        confirmed: false,
+        status: 'FAILED_TERMINAL',
+      });
 
-    expect(transitionEventLookup).toHaveBeenCalledTimes(2);
-    expect(maxBotLink.resolveDeleteMessageBotRoute).toHaveBeenCalledTimes(1);
-    expect(deleteMessageOverride).not.toHaveBeenCalled();
-    const executedSql = prisma.$executeRaw.mock.calls
-      .map((call: unknown[]) => {
-        const query = call[0] as { strings?: readonly string[] };
-        return query.strings?.join('?') ?? '';
-      })
-      .join('\n');
-    expect(executedSql).not.toContain('"delete_dispatch_started_at" = CURRENT_TIMESTAMP');
-  });
+      if (messageKind === 'transition notice')
+        expect(transitionEventLookup).toHaveBeenCalledTimes(2);
+      else expect(prisma.maxActionLedgerEntry.findFirst).toHaveBeenCalledTimes(3);
+      expect(maxBotLink.resolveDeleteMessageBotRoute).toHaveBeenCalledTimes(1);
+      expect(deleteMessageOverride).not.toHaveBeenCalled();
+      const executedSql = prisma.$executeRaw.mock.calls
+        .map((call: unknown[]) => {
+          const query = call[0] as { strings?: readonly string[] };
+          return query.strings?.join('?') ?? '';
+        })
+        .join('\n');
+      expect(executedSql).not.toContain('"delete_dispatch_started_at" = CURRENT_TIMESTAMP');
+    },
+  );
 
   it('keeps BOT_MESSAGE_AUTO_DELETE ambiguous until MAX confirms exact absence', async () => {
     const autoDeleteIntent = {

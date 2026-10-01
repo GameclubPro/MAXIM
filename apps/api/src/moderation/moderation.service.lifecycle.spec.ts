@@ -49,6 +49,101 @@ function userMentionHtml(displayName: string, userId: string): string {
 }
 
 describe('ModerationService', () => {
+  it.each([
+    { text: 'Готово, чат подключен.', botId: 'major-bot', remoteMessageId: 'confirmation-1' },
+    {
+      text: 'Чат уже подключен. Доступ обновлен.',
+      botId: 'major-bot',
+      remoteMessageId: 'confirmation-1',
+    },
+    {
+      text: 'Готово. Чат или канал подключен к Публику и появился в мини-приложении.',
+      botId: 'publisher-bot',
+      remoteMessageId: 'confirmation-1',
+    },
+    { text: 'Готово, чат подключен.', botId: 'major-bot', remoteMessageId: null },
+    {
+      text: 'Готово. Чат или канал подключен к Публику и появился в мини-приложении.',
+      botId: 'publisher-bot',
+      remoteMessageId: null,
+    },
+  ])(
+    'preserves the Start confirmation with auto-delete enabled: $botId / $remoteMessageId',
+    async ({ text, botId, remoteMessageId }) => {
+      const findFirst = jest.fn();
+      if (remoteMessageId) findFirst.mockResolvedValue({ id: 'start-receipt', remoteMessageId });
+      else
+        findFirst
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ id: 'start-receipt', remoteMessageId });
+      const prisma = { maxActionLedgerEntry: { findFirst } };
+      const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
+      (service as any).maxBotLinkService = {
+        resolveBotIdFromUserId: jest.fn().mockReturnValue(botId),
+      };
+      const scheduleAutoDelete = jest.fn();
+      (service as any).handleBotMessageAutoDelete = scheduleAutoDelete;
+
+      await (service as any).handleOwnBotMessageAutoDelete({
+        chatId: 'chat-1',
+        userId: 'bot-user',
+        messageId: 'confirmation-1',
+        text,
+        createdAt: '2026-10-01T09:00:00.000Z',
+        settings: createSettings({
+          deleteBotMessagesEnabled: true,
+          deleteBotMessagesDelayMinutes: 0.5,
+        }),
+      });
+
+      expect(scheduleAutoDelete).not.toHaveBeenCalled();
+      expect(findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            chatId: 'chat-1',
+            dispatchBotId: botId,
+            remoteMessageId: 'confirmation-1',
+            sourceTag: 'managed_handshake',
+            actionType: 'SEND_MESSAGE',
+          }),
+        }),
+      );
+    },
+  );
+
+  it.each(['Готово, чат подключен.', 'Обычное сообщение бота'])(
+    'retains normal auto-delete when no Start receipt owns the message: %s',
+    async (text) => {
+      const findFirst = jest.fn().mockResolvedValue(null);
+      const prisma = {
+        maxActionLedgerEntry: { findFirst },
+        chatRules: { findUnique: jest.fn().mockResolvedValue(null) },
+        moderationEvent: { findFirst: jest.fn().mockResolvedValue(null) },
+      };
+      const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
+      (service as any).maxBotLinkService = {
+        resolveBotIdFromUserId: jest.fn().mockReturnValue('major-bot'),
+      };
+      const scheduleAutoDelete = jest.fn();
+      (service as any).handleBotMessageAutoDelete = scheduleAutoDelete;
+      await (service as any).handleOwnBotMessageAutoDelete({
+        chatId: 'chat-1',
+        userId: 'bot-user',
+        messageId: 'ordinary-1',
+        text,
+        createdAt: '2026-10-01T09:00:00.000Z',
+        settings: createSettings({
+          deleteBotMessagesEnabled: true,
+          deleteBotMessagesDelayMinutes: 0.5,
+        }),
+      });
+      expect(scheduleAutoDelete).toHaveBeenCalledWith(
+        expect.objectContaining({ messageId: 'ordinary-1', delayMinutes: 0.5 }),
+      );
+      expect(findFirst).toHaveBeenCalledTimes(text === 'Обычное сообщение бота' ? 0 : 2);
+    },
+  );
+
   it('caps violation admin recheck wait to the remaining hot-path budget under pressure', () => {
     const service = new ModerationService(
       {} as never,

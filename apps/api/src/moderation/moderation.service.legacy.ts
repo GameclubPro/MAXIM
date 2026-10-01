@@ -135,6 +135,8 @@ import * as rulesFence from './chat-rules-own-bot-message-classifier';
 import * as protectedEventFence from './own-bot-protected-event-classifier';
 import { ModerationExecutionService } from './moderation-execution.service';
 import { buildManagedPublicationAutoDeleteFenceWhere } from './managed-publication-auto-delete-fence';
+import { findManagedHandshakeAutoDeleteOwner } from './managed-handshake-auto-delete-fence';
+import { isManagedHandshakeConfirmationText } from '../max/managed-handshake-confirmation';
 import {
   createDuplicateDeleteAuthorizationGuard,
   createDuplicateSanctionAuthorization,
@@ -7804,6 +7806,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     settings: ChatSettings;
     raw?: unknown;
   }) {
+    if (isManagedHandshakeConfirmationText(params.text)) {
+      const owner = await findManagedHandshakeAutoDeleteOwner(this.prisma.maxActionLedgerEntry, {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        originBotId:
+          this.maxBotLinkService?.resolveBotIdFromUserId(params.userId) ??
+          this.maxBotContextService?.getActiveBotId(),
+        sourceMessageAt: params.createdAt,
+        allowInFlight: true,
+      });
+      if (owner) return owner.kind;
+    }
+
     const rulesSkipReason = await rulesFence.classify(this.prisma.chatRules, params);
     if (rulesSkipReason) return rulesSkipReason;
 

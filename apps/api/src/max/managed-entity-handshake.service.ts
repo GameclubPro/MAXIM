@@ -1,3 +1,4 @@
+import { buildManagedHandshakeConfirmationText } from './managed-handshake-confirmation';
 import { Injectable, Logger } from '@nestjs/common';
 import type { ManagedEntityType, MaxUpdate } from '@maxim/contracts';
 import { ChatEntityType, ManagedEntityHandshakeOutcomeStatus } from '../prisma/prisma-client';
@@ -935,10 +936,7 @@ export class ManagedEntityHandshakeService {
   }
 
   private buildSuccessReply(context: ManagedEntityHandshakeContext, wasConnected: boolean): string {
-    const entityLabel = context.entityType === 'channel' ? 'Канал' : 'Чат';
-    return wasConnected
-      ? `${entityLabel} уже подключен. Доступ обновлен.`
-      : `Готово, ${entityLabel.toLowerCase()} подключен.`;
+    return buildManagedHandshakeConfirmationText(context.entityType, wasConnected);
   }
 
   private buildSettingsButton(
