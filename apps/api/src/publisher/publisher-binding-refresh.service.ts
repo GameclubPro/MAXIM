@@ -1,5 +1,8 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
-import { PUBLISHER_HANDSHAKE_CONFIRMATION_TEXT } from '../max/managed-handshake-confirmation';
+import {
+  MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS,
+  PUBLISHER_HANDSHAKE_CONFIRMATION_TEXT,
+} from '../max/managed-handshake-confirmation';
 import { createHash } from 'node:crypto';
 import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
 import {
@@ -1617,6 +1620,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
           immediate: true,
           botId: this.publisherBotId,
           idempotencyKey: `publisher-handshake-start:${job.chatId}:${job.candidateVersion}`,
+          autoDeleteDelayMs: MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS,
           trafficClass: 'interactive',
           actionHealthLane: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,

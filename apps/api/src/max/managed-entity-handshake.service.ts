@@ -1,4 +1,7 @@
-import { buildManagedHandshakeConfirmationText } from './managed-handshake-confirmation';
+import {
+  buildManagedHandshakeConfirmationText,
+  MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS,
+} from './managed-handshake-confirmation';
 import { Injectable, Logger } from '@nestjs/common';
 import type { ManagedEntityType, MaxUpdate } from '@maxim/contracts';
 import { ChatEntityType, ManagedEntityHandshakeOutcomeStatus } from '../prisma/prisma-client';
@@ -829,6 +832,7 @@ export class ManagedEntityHandshakeService {
           immediate: true,
           botId: context.botId,
           idempotencyKey: `managed-handshake-start:${context.chatId}:${context.update.updateId}`,
+          autoDeleteDelayMs: MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS,
           trafficClass: 'interactive',
           actionHealthLane: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,

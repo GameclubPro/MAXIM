@@ -445,6 +445,7 @@ describe('PublisherBindingRefreshService', () => {
         immediate: true,
         botId: 'publik_bot',
         idempotencyKey: 'publisher-handshake-start:chat-1:start-update-1',
+        autoDeleteDelayMs: 180_000,
       }),
     );
     expect(maxClient.sendMessage.mock.invocationCallOrder[0]).toBeGreaterThan(

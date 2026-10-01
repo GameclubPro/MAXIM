@@ -379,6 +379,7 @@ describe('ManagedEntityHandshakeService', () => {
         immediate: true,
         botId: 'bot-1',
         idempotencyKey: 'managed-handshake-start:-100:u-start-1',
+        autoDeleteDelayMs: 180_000,
       }),
     );
     const startParam = fixture.maxBotLinkService.buildEntryMiniappStartUrlSync.mock.calls[0]?.[0];
@@ -1707,7 +1708,7 @@ describe('ManagedEntityHandshakeService', () => {
       '-100',
       'Готово, канал подключен.',
       expect.anything(),
-      expect.objectContaining({ botId: 'bot-1', immediate: true }),
+      expect.objectContaining({ botId: 'bot-1', immediate: true, autoDeleteDelayMs: 180_000 }),
     );
   });
 

@@ -1,3 +1,5 @@
+export const MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS = 3 * 60_000;
+
 export const PUBLISHER_HANDSHAKE_CONFIRMATION_TEXT =
   'Готово. Чат или канал подключен к Публику и появился в мини-приложении.';
 
