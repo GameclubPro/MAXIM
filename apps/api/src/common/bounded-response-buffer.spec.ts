@@ -26,16 +26,17 @@ describe('readBoundedResponseBuffer', () => {
     const { response } = streamedResponse([first, new Uint8Array([3, 4])], {
       'content-length': '4',
     });
-    const concat = jest.spyOn(Buffer, 'concat');
+    const allocate = jest.spyOn(Buffer, 'allocUnsafeSlow');
     try {
       const bytes = await readBoundedResponseBuffer(response, 4);
       expect(bytes).toEqual(Buffer.from([1, 2, 3, 4]));
-      expect(concat).not.toHaveBeenCalled();
+      expect(allocate).toHaveBeenCalledTimes(1);
+      expect(bytes.buffer.byteLength).toBe(4);
       first.fill(9);
       expect(bytes[0]).toBe(1);
       expect(response.body!.locked).toBe(false);
     } finally {
-      concat.mockRestore();
+      allocate.mockRestore();
     }
   });
 
@@ -57,7 +58,7 @@ describe('readBoundedResponseBuffer', () => {
   it('checks a single oversized chunk before allocating an owned copy', async () => {
     const { response } = streamedResponse([new Uint8Array(5)]);
     const from = jest.spyOn(Buffer, 'from');
-    const allocate = jest.spyOn(Buffer, 'allocUnsafe');
+    const allocate = jest.spyOn(Buffer, 'allocUnsafeSlow');
     try {
       await expect(readBoundedResponseBuffer(response, 4)).rejects.toBeInstanceOf(
         ResponseByteLimitExceededError,
@@ -86,19 +87,21 @@ describe('readBoundedResponseBuffer', () => {
         }),
         { headers },
       );
-      const concat = jest.spyOn(Buffer, 'concat');
-      const allocate = jest.spyOn(Buffer, 'allocUnsafe');
+      const allocate = jest.spyOn(Buffer, 'allocUnsafeSlow');
       try {
         const bytes = await readBoundedResponseBuffer(response, size);
         expect(bytes).toEqual(expected);
-        expect(concat).toHaveBeenCalledTimes(1);
-        const ownedBlocks = concat.mock.calls[0]![0];
+        expect(bytes.buffer.byteLength).toBe(size);
+        const ownedBlocks = allocate.mock.results
+          .filter((result) => result.type === 'return' && result.value !== bytes)
+          .map((result) => result.value as Buffer);
         expect(ownedBlocks.length).toBeLessThanOrEqual(3);
-        expect(ownedBlocks.reduce((sum, block) => sum + block.length, 0)).toBeLessThanOrEqual(size);
+        expect(
+          ownedBlocks.reduce((sum, block) => sum + block.buffer.byteLength, 0),
+        ).toBeLessThanOrEqual(size);
         expect(allocate.mock.calls.length).toBeLessThanOrEqual(4);
         expect(response.body!.locked).toBe(false);
       } finally {
-        concat.mockRestore();
         allocate.mockRestore();
       }
     },
@@ -111,21 +114,26 @@ describe('readBoundedResponseBuffer', () => {
     const { response } = streamedResponse([first, second], {
       'content-length': String(150 * 1_024),
     });
-    const concat = jest.spyOn(Buffer, 'concat');
+    const allocate = jest.spyOn(Buffer, 'allocUnsafeSlow');
     try {
       const bytes = await readBoundedResponseBuffer(response, limit);
       expect(bytes.length).toBe(first.length + second.length);
       expect(bytes.subarray(0, first.length).every((value) => value === 1)).toBe(true);
       expect(bytes.subarray(first.length).every((value) => value === 2)).toBe(true);
-      const ownedBlocks = concat.mock.calls[0]![0];
+      expect(bytes.buffer.byteLength).toBe(bytes.length);
+      const ownedBlocks = allocate.mock.results
+        .filter((result) => result.type === 'return' && result.value !== bytes)
+        .map((result) => result.value as Buffer);
       expect(ownedBlocks.length).toBe(2);
-      expect(ownedBlocks.reduce((sum, block) => sum + block.length, 0)).toBeLessThanOrEqual(limit);
+      expect(
+        ownedBlocks.reduce((sum, block) => sum + block.buffer.byteLength, 0),
+      ).toBeLessThanOrEqual(limit);
       first.fill(9);
       second.fill(9);
       expect(bytes[0]).toBe(1);
       expect(bytes[first.length]).toBe(2);
     } finally {
-      concat.mockRestore();
+      allocate.mockRestore();
     }
   });
 
@@ -144,8 +152,27 @@ describe('readBoundedResponseBuffer', () => {
     });
     const bytes = await readBoundedResponseBuffer(response, 10000);
     expect(bytes).toEqual(Buffer.from([1, 2]));
-    expect(bytes.buffer.byteLength).toBeLessThan(10000);
+    expect(bytes.buffer.byteLength).toBe(2);
   });
+
+  it.each([8_192, 1_048_576])(
+    'owns exact shrink storage independently of Buffer.poolSize %s',
+    async (poolSize) => {
+      const originalPoolSize = Buffer.poolSize;
+      try {
+        Buffer.poolSize = poolSize;
+        const { response } = streamedResponse([new Uint8Array([1, 2])], {
+          'content-length': '10000',
+        });
+        const bytes = await readBoundedResponseBuffer(response, 10000);
+        expect(Array.from(bytes)).toEqual([1, 2]);
+        expect(bytes.byteOffset).toBe(0);
+        expect(bytes.buffer.byteLength).toBe(2);
+      } finally {
+        Buffer.poolSize = originalPoolSize;
+      }
+    },
+  );
 
   it('does not trust compressed Content-Length as decoded allocation or size', async () => {
     const { response } = streamedResponse([new Uint8Array([1, 2, 3, 4])], {
@@ -198,8 +225,7 @@ describe('readBoundedResponseBuffer', () => {
     );
     const controller = new AbortController();
     const reason = new Error('download aborted after partial body');
-    const concat = jest.spyOn(Buffer, 'concat');
-    const allocate = jest.spyOn(Buffer, 'allocUnsafe');
+    const allocate = jest.spyOn(Buffer, 'allocUnsafeSlow');
     try {
       const result = readBoundedResponseBuffer(response, 1_000, controller.signal);
       const rejection = expect(result).rejects.toBe(reason);
@@ -207,11 +233,9 @@ describe('readBoundedResponseBuffer', () => {
       controller.abort(reason);
       await rejection;
       expect(cancel).toHaveBeenCalledWith(reason);
-      expect(concat).not.toHaveBeenCalled();
       expect(allocate).toHaveBeenCalledTimes(1);
       expect(response.body!.locked).toBe(false);
     } finally {
-      concat.mockRestore();
       allocate.mockRestore();
     }
   });
