@@ -1,7 +1,11 @@
 import type { MaxChatMemberAccess, MaxClientService } from '../max/max-client.service';
 import { ChatBotMembershipStatus, Prisma, type ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
-import { publisherAccessProbeLifecycleSuperseded } from './publisher-access-probe-fence';
+import { PUBLISHER_ROSTER_INTERVAL_MS } from './publisher-access-refresh-policy';
+import {
+  publisherAccessProbeLifecycleWhere,
+  publisherAccessProbeLifecycleSuperseded,
+} from './publisher-access-probe-fence';
 
 const GRANTED_TTL_MS = 3 * 24 * 60 * 60_000;
 const DENIED_TTL_MS = 15 * 60_000;
@@ -92,6 +96,29 @@ export async function syncPublisherAdminRoster(
       binding.botAccessState !== params.botAccessState
     )
       return false;
+
+    // FLAG: Lock the exact proof before granting edges. A zero-row CAS returns before any
+    // grants; SQL failure rolls back both the durable schedule and every access mutation.
+    const scheduled = await tx.publisherEntityBinding.updateMany({
+      where: {
+        chatId,
+        publisherBotId,
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessCheckedAt: params.botAccessCheckedAt,
+        botAccessState: params.botAccessState,
+        AND: [
+          publisherAccessProbeLifecycleWhere(probeStartedAt),
+          {
+            OR: [{ rosterCheckedAt: null }, { rosterCheckedAt: { lte: probeStartedAt } }],
+          },
+        ],
+      },
+      data: {
+        rosterCheckedAt: probeStartedAt,
+        rosterRefreshAfter: new Date(probeStartedAt.getTime() + PUBLISHER_ROSTER_INTERVAL_MS),
+      },
+    });
+    if (scheduled.count !== 1) return false;
 
     const membershipChanges =
       humanAdminIds.length > 0

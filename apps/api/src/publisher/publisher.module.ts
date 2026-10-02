@@ -1,3 +1,4 @@
+import { PublisherAccessRefreshPolicy } from './publisher-access-refresh-policy';
 import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
 import { Global, Module } from '@nestjs/common';
@@ -94,6 +95,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   : [];
 
 const sharedPublisherProviders = [
+  PublisherAccessRefreshPolicy,
   PublisherCommentNotificationService,
   PublisherBackgroundWorkCoordinatorService,
   PublisherRuntimeHeartbeatReaderService,

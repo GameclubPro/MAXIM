@@ -33,7 +33,7 @@ test('requires duplicate, interval, Publisher pause and OCR admission Redis flow
   assert.match(api, /MAXIM_TEST_REDIS_URL: redis:\/\/127\.0\.0\.1:6379/u);
   assert.match(
     api,
-    /run: npm test --workspace @maxim\/api -- 'message-duplicate\|photo-duplicate-history\.redis\|rule-engine-media-cooldown\.redis\|traffic-protection\.redis\|publisher-dispatch-health\.redis\|chat-context-cache\.redis\|publisher-refresh-operation\.redis\|commercial-ocr-admission\.redis'/u,
+    /run: npm test --workspace @maxim\/api -- 'message-duplicate\|photo-duplicate-history\.redis\|rule-engine-media-cooldown\.redis\|traffic-protection\.redis\|publisher-dispatch-health\.redis\|chat-context-cache\.redis\|publisher-refresh-operation\.redis\|publisher-access-refresh\.redis\|commercial-ocr-admission\.redis'/u,
   );
   assert.doesNotMatch(api, /continue-on-error|if:/u);
 });

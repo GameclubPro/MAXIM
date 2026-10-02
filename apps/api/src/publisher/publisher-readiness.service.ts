@@ -274,6 +274,7 @@ export class PublisherReadinessService {
         publisherBotId: this.publisherBotId,
         reason: 'publication_due',
         requestedAt: now,
+        requiredBefore: binding.botAccessExpiresAt ?? now,
       });
     } catch (error: unknown) {
       this.logger.warn(

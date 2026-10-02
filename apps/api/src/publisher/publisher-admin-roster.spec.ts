@@ -7,6 +7,7 @@ describe('Publisher administrator discovery', () => {
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'chat-1' }]),
       publisherEntityBinding: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           publisherBotId: 'publik',
           status: 'ACTIVE',

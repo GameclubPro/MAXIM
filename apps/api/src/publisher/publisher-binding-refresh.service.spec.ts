@@ -15,6 +15,8 @@ import { buildPublisherForwardedBindingSource } from './publisher-entity-binding
 import { PublisherReadinessService } from './publisher-readiness.service';
 import type { PublisherBindingRefreshJob } from './publisher-binding-refresh.queue';
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PublisherAccessRefreshPolicy } from './publisher-access-refresh-policy';
 
 const createBackgroundWork = () => ({
   runExclusive: jest.fn((_lane: string, operation: () => Promise<unknown>) => operation()),
@@ -43,6 +45,7 @@ describe('PublisherBindingRefreshService', () => {
       | Error,
     dispatchEnabled = true,
     publikEnabled: boolean | null = null,
+    policy = new PublisherAccessRefreshPolicy(),
   ) {
     const bindingState = {
       botAccessCheckedAt: null as Date | null,
@@ -155,6 +158,7 @@ describe('PublisherBindingRefreshService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       publisherEntityBinding: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn(
           async (): Promise<HarnessBinding | null> => ({
             publisherBotId: 'publik_bot',
@@ -247,6 +251,7 @@ describe('PublisherBindingRefreshService', () => {
       runtimeBoundary as never,
       maxBotLinkService as never,
       refreshQueue as never,
+      policy,
     );
     return {
       service,
@@ -350,6 +355,67 @@ describe('PublisherBindingRefreshService', () => {
       expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalled();
     },
   );
+
+  it('separates bot refresh from roster maintenance while keeping manual checks immediate', async () => {
+    const policy = new PublisherAccessRefreshPolicy(
+      new ConfigService({ MAX_PUBLISHER_ACCESS_REFRESH_MODE: 'on' }),
+    );
+    const f = createHarness(adminAccess, true, null, policy);
+    await f.service.refresh({ ...job, reason: 'scheduled_bot_access' });
+    expect(f.refreshQueue.enqueue).not.toHaveBeenCalled();
+    expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
+    const source = await f.prisma.chat.findUnique();
+    f.prisma.chat.findUnique.mockResolvedValue({
+      ...source,
+      publisherBinding: {
+        ...source.publisherBinding!,
+        rosterRefreshAfter: new Date(Date.now() + 1800000),
+      },
+    } as never);
+    await f.service.refresh({ ...job, reason: 'binding_maintenance' });
+    expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
+    await f.service.refresh({ ...job, reason: 'manual_recheck' });
+    expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes an actor promoted after its previous proof has become too old for publication', async () => {
+    const f = createHarness(adminAccess);
+    f.edgeState.sourceVersion = 'actor-version';
+    f.edgeState.checkedAt = new Date(Date.now() - 20 * 60_000);
+    await f.service.refresh({
+      ...job,
+      reason: 'stale_user_access',
+      candidateUserId: 'admin-1',
+      candidateVersion: 'actor-version',
+      publicationRequested: true,
+      requestedAt: new Date(Date.now() - 40 * 60_000).toISOString(),
+      publicationRequestedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+    });
+    expect(f.maxClient.getChatMemberAccess).toHaveBeenCalled();
+    expect(f.tx.managedEntityAccessEdge.upsert).toHaveBeenCalled();
+  });
+
+  it('persists maintenance backoff without granting access after a transient MAX failure', async () => {
+    const policy = new PublisherAccessRefreshPolicy(
+      new ConfigService({ MAX_PUBLISHER_ACCESS_REFRESH_MODE: 'on' }),
+    );
+    const f = createHarness(adminAccess, true, null, policy);
+    f.bindingState.botAccessCheckedAt = new Date();
+    f.maxClient.getChatAdminAccesses.mockRejectedValueOnce(
+      Object.assign(new Error('MAX rate limit'), { retryAfterMs: 120000 }),
+    );
+    const before = Date.now();
+    await expect(f.service.refresh({ ...job, reason: 'binding_maintenance' })).rejects.toThrow(
+      'MAX rate limit',
+    );
+    const write = f.prisma.publisherEntityBinding.updateMany.mock.calls.find(
+      ([call]) => 'rosterRefreshAfter' in call.data,
+    )!;
+    expect(
+      (write[0].data as { rosterRefreshAfter: Date }).rosterRefreshAfter.getTime(),
+    ).toBeGreaterThanOrEqual(before + 120000);
+    expect(f.tx.managedEntityAccessEdge.createMany).not.toHaveBeenCalled();
+  });
 
   it('recovers failed maintenance enqueue without repeating a newer successful bot probe', async () => {
     const f = createHarness(adminAccess);
