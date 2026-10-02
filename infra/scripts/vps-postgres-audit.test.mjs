@@ -663,6 +663,31 @@ test('monitor signal audit bounds both indexed source samples before aggregation
   );
 });
 
+test('Publisher access census stays opt-in, bounded and uses the guarded audit session', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const result = runAudit(data, ['publisher-access-census', '--explain']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /publisher_access_census_ready/u);
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\) WITH source AS MATERIALIZED/u);
+  assert.match(sql, /ORDER BY chat_id LIMIT 50001/u);
+  assert.doesNotMatch(sql, /EXPLAIN ANALYZE|capabilities|permissions_snapshot/u);
+  assert.equal(
+    runConnect(data, ['postgres-audit', 'publisher-access-census', '--explain']).status,
+    0,
+  );
+  for (const args of [
+    ['publisher-access-census', 'private-id'],
+    ['publisher-access-census', '--apply'],
+  ]) {
+    assert.notEqual(runAudit(data, args).status, 0);
+    assert.notEqual(runConnect(data, ['postgres-audit', ...args]).status, 0);
+  }
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /publisher_access_census_ready/u);
+});
+
 test('Publisher publication audit uses only fixed bounded SQL and an optional plain EXPLAIN', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));

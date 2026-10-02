@@ -54,6 +54,7 @@ Commands:
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
   postgres-audit publisher-publications [--explain]
+  postgres-audit publisher-access-census [--explain]
   postgres-audit storage [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
@@ -311,7 +312,8 @@ ERROR
 postgres_audit() {
   local mode="${1:-all}"
 
-  if [[ "$mode" == 'publisher-publications' || "$mode" == 'storage' || "$mode" == 'duplicate' ]]; then
+  if [[ "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
+        "$mode" == 'storage' || "$mode" == 'duplicate' ]]; then
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2
