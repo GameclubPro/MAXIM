@@ -83,6 +83,155 @@ integration('Publisher deadline queue on Redis', () => {
     30000,
   );
 
+  it('reproduces a due publication waiting behind all 100 lookahead jobs in the old urgent class', async () => {
+    const { options, queue, service } = setup();
+    const worker = new Worker('access-refresh', async () => undefined, {
+      ...options,
+      autorun: false,
+      concurrency: 2,
+    });
+    try {
+      for (let i = 0; i < 100; i += 1)
+        await service.enqueue({
+          chatId: `future-${i}`,
+          publisherBotId: 'publisher',
+          candidateUserId: 'actor',
+          reason: 'publication_actor_due',
+        });
+      await service.enqueue({
+        chatId: 'actually-due',
+        publisherBotId: 'publisher',
+        reason: 'publication_due',
+      });
+      let jobsBeforeDue = 0;
+      for (;;) {
+        const job = (await worker.getNextJob('baseline'))!;
+        if (job.data.chatId === 'actually-due') {
+          await job.moveToCompleted(undefined, 'baseline', false);
+          break;
+        }
+        jobsBeforeDue += 1;
+        await job.moveToCompleted(undefined, 'baseline', false);
+      }
+      expect(jobsBeforeDue).toBe(100);
+      // At one second per fixture and concurrency two this is at least 50 seconds.
+      expect(Math.floor(jobsBeforeDue / 2) * 1000).toBeGreaterThan(15_000);
+    } finally {
+      await worker.close();
+      await queue.obliterate({ force: true });
+      await queue.close();
+    }
+  });
+
+  it.each([100, 1000])(
+    'bounds preparation of %i targets while urgent and maintenance work both progress',
+    async (size) => {
+      const { options, queue, service } = setup();
+      const starts: string[] = [];
+      const urgentWaits: number[] = [];
+      const worker = new Worker(
+        'access-refresh',
+        async (job) => {
+          starts.push(job.data.chatId);
+          if (job.data.chatId.startsWith('urgent'))
+            urgentWaits.push(Date.now() - Date.parse(job.data.requestedAt));
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        },
+        { ...options, concurrency: 2 },
+      );
+      try {
+        const future = new Date(Date.now() + 240_000);
+        let nominated = 0;
+        let expected = size;
+        const end = Date.now() + 25_000;
+        while (nominated < size) {
+          if (Date.now() > end) throw new Error('Bounded preparation failed to progress');
+          const budget = await service.preparationTargetBudget();
+          for (let i = 0; i < Math.min(budget, size - nominated); i += 1) {
+            await service.enqueue({
+              chatId: `future-${nominated}`,
+              publisherBotId: 'publisher',
+              candidateUserId: `actor-${nominated % 4}`,
+              candidateVersion: 'v1',
+              reason: 'publication_actor_due',
+              publicationUrgentAt: future,
+            });
+            nominated += 1;
+            if (nominated % 25 === 0) {
+              await service.enqueue({
+                chatId: `urgent-${nominated}`,
+                publisherBotId: 'publisher',
+                reason: 'publication_due',
+              });
+              await service.enqueue({
+                chatId: `maintenance-${nominated}`,
+                publisherBotId: 'publisher',
+                reason: 'binding_maintenance',
+              });
+              expected += 2;
+            }
+          }
+          const counts = await queue.getCountsPerPriority([8]);
+          expect(counts['8']).toBeLessThanOrEqual(8);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        while (starts.length < expected) {
+          if (Date.now() > end) throw new Error('Background work failed to drain');
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(new Set(starts.filter((id) => id.startsWith('future'))).size).toBe(size);
+        expect(starts.filter((id) => id.startsWith('maintenance'))).toHaveLength(size / 25);
+        expect(urgentWaits).toHaveLength(size / 25);
+        // These fixture times validate queue behavior, not a production/MAX latency claim.
+        expect(Math.max(...urgentWaits)).toBeLessThan(1000);
+      } finally {
+        await worker.close();
+        await queue.obliterate({ force: true });
+        await queue.close();
+      }
+    },
+    30_000,
+  );
+
+  it('promotes future actor work without replacing its ID, original nomination or delayed retry', async () => {
+    const { options, queue, service } = setup();
+    const worker = new Worker('access-refresh', async () => undefined, {
+      ...options,
+      autorun: false,
+    });
+    try {
+      const base = {
+        chatId: 'chat',
+        publisherBotId: 'publisher',
+        candidateUserId: 'actor',
+        candidateVersion: 'v1',
+        reason: 'publication_actor_due' as const,
+      };
+      const nominatedAt = new Date();
+      const id = await service.enqueue({
+        ...base,
+        requestedAt: nominatedAt,
+        publicationUrgentAt: new Date(Date.now() + 240_000),
+      });
+      const first = (await worker.getNextJob('retry'))!;
+      await first.moveToDelayed(Date.now() + 60_000, 'retry');
+      const before = (await queue.getJob(id!))!;
+      const urgentAt = new Date(Date.now() - 5_000);
+      const restarted = new PublisherBindingRefreshQueueService(queue as never, policy);
+      expect(await restarted.enqueue({ ...base, publicationUrgentAt: urgentAt })).toBe(id);
+      const after = (await queue.getJob(id!))!;
+      expect(after.priority).toBe(5);
+      expect(after.data.publicationRequestedAt).toBe(nominatedAt.toISOString());
+      expect(after.data.publicationUrgentAt).toBe(urgentAt.toISOString());
+      expect(await after.getState()).toBe('delayed');
+      expect(after.timestamp + after.delay).toBe(before.timestamp + before.delay);
+    } finally {
+      await worker.close();
+      await queue.obliterate({ force: true });
+      await queue.close();
+    }
+  });
+
   it('promotes the same delayed bot job across restart without resetting its retry or deadline', async () => {
     const { options, queue, service } = setup();
     let worker: Worker | undefined;

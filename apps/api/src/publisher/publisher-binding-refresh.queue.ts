@@ -1,4 +1,8 @@
 import {
+  publicationPreparationBudget,
+  PUBLISHER_PREFLIGHT_PRIORITY,
+} from './publisher-publication-access-admission';
+import {
   PublisherAccessRefreshPolicy,
   PUBLISHER_BOT_EXPIRY_URGENCY_MS,
   PUBLISHER_ROSTER_INTERVAL_MS,
@@ -41,6 +45,7 @@ export type PublisherBindingRefreshJob = {
   requiredBefore?: string;
   publicationRequested?: boolean;
   publicationRequestedAt?: string;
+  publicationUrgentAt?: string;
 };
 
 const PUBLISHER_REFRESH_JOB_BUCKET_MS = 60_000;
@@ -114,6 +119,11 @@ export class PublisherBindingRefreshQueueService {
     @Optional()
     private readonly policy: PublisherAccessRefreshPolicy = new PublisherAccessRefreshPolicy(),
   ) {}
+
+  async preparationTargetBudget(): Promise<number> {
+    const counts = await this.queue.getCountsPerPriority([1, 5, PUBLISHER_PREFLIGHT_PRIORITY]);
+    return publicationPreparationBudget(counts);
+  }
 
   async compactScheduledBacklog(): Promise<PublisherScheduledBacklogCompactionResult> {
     const scanned: Job<PublisherBindingRefreshJob>[] = [];
@@ -236,6 +246,7 @@ export class PublisherBindingRefreshQueueService {
     requestedAt?: Date;
     eventAt?: Date | null;
     requiredBefore?: Date | null;
+    publicationUrgentAt?: Date;
   }): Promise<string | null> {
     const chatId = params.chatId.trim();
     const publisherBotId = params.publisherBotId.trim();
@@ -247,6 +258,12 @@ export class PublisherBindingRefreshQueueService {
     const publicationRequested =
       this.policy.deadlinePrioritiesEnabled &&
       (params.reason === 'publication_due' || params.reason === 'publication_actor_due');
+    const urgentAt = params.publicationUrgentAt?.getTime();
+    const publicationUrgentAt = publicationRequested
+      ? new Date(
+          urgentAt !== undefined && Number.isFinite(urgentAt) ? urgentAt : requestedAt.getTime(),
+        ).toISOString()
+      : undefined;
     const deadline = params.requiredBefore?.getTime();
     const requiredBefore =
       deadline !== undefined && Number.isFinite(deadline)
@@ -307,12 +324,22 @@ export class PublisherBindingRefreshQueueService {
         requestedAt: requestedAt.toISOString(),
         ...(requiredBefore ? { requiredBefore } : {}),
         ...(publicationRequested
-          ? { publicationRequested: true, publicationRequestedAt: requestedAt.toISOString() }
+          ? {
+              publicationRequested: true,
+              publicationRequestedAt: requestedAt.toISOString(),
+              publicationUrgentAt,
+            }
           : {}),
       },
       {
         jobId,
-        priority: this.priority({ reason: params.reason, requiredBefore, publicationRequested }),
+        priority: this.priority({
+          reason: params.reason,
+          requiredBefore,
+          publicationRequested,
+          publicationUrgentAt,
+          candidateUserId: candidateUserId ?? undefined,
+        }),
         ...(interactiveRecheck
           ? {
               deduplication: {
@@ -386,7 +413,9 @@ export class PublisherBindingRefreshQueueService {
                 data.requiredBefore = ARGV[1]
               end
               if ARGV[4] == '1' then
+                local oldUrgentAt = data.publicationUrgentAt or data.publicationRequestedAt
                 data.publicationRequested = true
+                if not oldUrgentAt or ARGV[6] < oldUrgentAt then data.publicationUrgentAt = ARGV[6] else data.publicationUrgentAt = oldUrgentAt end
                 if not data.publicationRequestedAt or ARGV[5] < data.publicationRequestedAt then data.publicationRequestedAt = ARGV[5] end
               end
               raw = cjson.encode(data)
@@ -400,6 +429,7 @@ export class PublisherBindingRefreshQueueService {
               chatId,
               publicationRequested ? '1' : '0',
               requestedAt.toISOString(),
+              publicationUrgentAt ?? requestedAt.toISOString(),
             ]);
             if (typeof updated === 'string')
               retained.data = JSON.parse(updated) as PublisherBindingRefreshJob;
@@ -494,13 +524,29 @@ export class PublisherBindingRefreshQueueService {
   }
 
   private priority(
-    job: Pick<PublisherBindingRefreshJob, 'reason' | 'requiredBefore' | 'publicationRequested'>,
+    job: Pick<
+      PublisherBindingRefreshJob,
+      | 'reason'
+      | 'requiredBefore'
+      | 'publicationRequested'
+      | 'publicationUrgentAt'
+      | 'candidateUserId'
+    >,
     createdAt?: number,
   ): number {
     if (!this.policy.deadlinePrioritiesEnabled)
       return resolveRefreshPriority(job.reason, createdAt);
     if (job.reason === 'manual_recheck' || job.reason === 'policy_enablement_recheck') return 1;
-    if (job.publicationRequested) return 5;
+    if (job.publicationRequested) {
+      const botDeadline = !job.candidateUserId ? Date.parse(job.requiredBefore ?? '') : Number.NaN;
+      if (
+        Number.isFinite(botDeadline) &&
+        botDeadline <= Date.now() + PUBLISHER_BOT_EXPIRY_URGENCY_MS
+      )
+        return 5;
+      const urgentAt = Date.parse(job.publicationUrgentAt ?? '');
+      return Number.isFinite(urgentAt) && urgentAt > Date.now() ? PUBLISHER_PREFLIGHT_PRIORITY : 5;
+    }
     if (job.reason === 'scheduled_bot_access' || job.reason === 'stale_access') {
       const deadline = Date.parse(job.requiredBefore ?? '');
       return Number.isFinite(deadline) && deadline <= Date.now() + PUBLISHER_BOT_EXPIRY_URGENCY_MS

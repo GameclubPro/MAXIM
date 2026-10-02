@@ -1,3 +1,5 @@
+import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
+import { PublisherBotProofSupersededError } from './publisher-fresh-bot-proof';
 import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
@@ -166,6 +168,7 @@ describe('PublisherBindingRefreshService', () => {
             lifecycleEventAt: null,
             botAccessCheckedAt: bindingState.botAccessCheckedAt,
             botAccessState: bindingState.botAccessState,
+            botAccessExpiresAt: new Date(Date.now() + 15 * 60_000),
             botAccessSource: null as string | null,
             lastWebhookAt: null,
           }),
@@ -282,6 +285,32 @@ describe('PublisherBindingRefreshService', () => {
     permissions: ['write'],
     permissionsKnown: true,
   };
+
+  it('includes late admission before enqueue in urgent latency', async () => {
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    try {
+      const f = createHarness(adminAccess);
+      await f.service.refresh({
+        ...job,
+        reason: 'publication_due',
+        publicationRequested: true,
+        requestedAt: new Date().toISOString(),
+        publicationRequestedAt: new Date().toISOString(),
+        publicationUrgentAt: new Date(Date.now() - 30_000).toISOString(),
+      });
+      f.service.onModuleDestroy();
+      expect(log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metric: 'publisher_refresh_v1',
+          workClass: 'urgent',
+          queueAgeHistogram: [0, 0, 0, 1, 0, 0, 0, 0],
+        }),
+        'Publisher refresh window',
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
 
   it('counts every refresh attempt in bounded identifier-free histograms', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-09-30T12:00:00Z'));
@@ -802,6 +831,39 @@ describe('PublisherBindingRefreshService', () => {
     await f.service.refresh({ ...job, reason: 'stale_access' }, { retrying: true });
     expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
     expect(f.tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('reuses a fresh exact SQL bot proof for an actor without another bot MAX call', async () => {
+    const f = createHarness(adminAccess);
+    const checkedAt = new Date(Date.now() - 60_000);
+    const chat = await f.prisma.chat.findUnique();
+    f.bindingState.botAccessCheckedAt = checkedAt;
+    f.prisma.chat.findUnique.mockResolvedValue({
+      ...chat,
+      publisherBinding: {
+        ...chat.publisherBinding!,
+        ...buildBotAccessSnapshotPersistence(adminAccess, { source: 'probe', now: checkedAt }),
+      },
+    });
+    await f.service.refresh({
+      ...job,
+      reason: 'publication_actor_due',
+      candidateUserId: 'admin-1',
+    });
+    expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(f.maxClient.getChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(f.tx.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+    expect(f.prisma.publisherEntityBinding.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('retries a candidate after losing the exact bot CAS instead of acknowledging unperformed work', async () => {
+    const f = createHarness(adminAccess);
+    f.prisma.publisherEntityBinding.updateMany.mockResolvedValue({ count: 0 });
+    await expect(
+      f.service.refresh({ ...job, reason: 'manual_recheck', candidateUserId: 'admin-1' }),
+    ).rejects.toBeInstanceOf(PublisherBotProofSupersededError);
+    expect(f.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(f.tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
   });
 
   it('stages a missing publication actor edge before a version-fenced MAX verification', async () => {

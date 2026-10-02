@@ -1,4 +1,8 @@
 import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
+import {
+  readPublisherFreshBotProof,
+  PublisherBotProofSupersededError,
+} from './publisher-fresh-bot-proof';
 import { PublisherBotAccessExecutor } from './publisher-bot-access-executor';
 import { PublisherAccessRefreshEvidenceService } from './publisher-access-refresh-evidence.service';
 import {
@@ -66,6 +70,7 @@ const REFRESH_QUEUE_AGE_BUCKETS_MS = [
   1_000, 5_000, 15_000, 60_000, 120_000, 300_000, 600_000,
 ] as const;
 type RefreshMetricBucket = {
+  workClass: 'preparation' | 'urgent' | 'background';
   reason: string;
   retrying: boolean;
   cohort: string;
@@ -149,6 +154,26 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     job: PublisherBindingRefreshJob,
     execution: { retrying: boolean } = { retrying: false },
   ): Promise<void> {
+    const publicationUrgentAt = Date.parse(job.publicationUrgentAt ?? '');
+    const botUrgentAt = !job.candidateUserId
+      ? Date.parse(job.requiredBefore ?? '') - 60_000
+      : Number.NaN;
+    const urgentAt =
+      Number.isFinite(publicationUrgentAt) && Number.isFinite(botUrgentAt)
+        ? Math.min(publicationUrgentAt, botUrgentAt)
+        : publicationUrgentAt;
+    const workClass =
+      job.publicationRequested && Number.isFinite(urgentAt) && urgentAt > Date.now()
+        ? 'preparation'
+        : job.publicationRequested ||
+            [
+              'publication_due',
+              'publication_actor_due',
+              'manual_recheck',
+              'policy_enablement_recheck',
+            ].includes(job.reason)
+          ? 'urgent'
+          : 'background';
     // FLAG: A promoted job retains its durable ID/retry schedule but executes the urgent
     // proof path. Measure queue age from the first publication nomination, never rediscovery.
     if (
@@ -163,7 +188,10 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       job = {
         ...job,
         reason: job.candidateUserId ? 'publication_actor_due' : 'publication_due',
-        requestedAt: job.publicationRequestedAt ?? job.requestedAt,
+        requestedAt:
+          workClass === 'urgent' && Number.isFinite(urgentAt)
+            ? new Date(urgentAt).toISOString()
+            : (job.publicationRequestedAt ?? job.requestedAt),
       };
     }
     const startedAt = performance.now();
@@ -187,7 +215,8 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
             : 'bot';
       outcomes[stage] ??=
         error instanceof PublisherCandidateRefreshSupersededError ||
-        error instanceof PublisherBindingMaintenanceSupersededError
+        error instanceof PublisherBindingMaintenanceSupersededError ||
+        error instanceof PublisherBotProofSupersededError
           ? 'superseded'
           : 'transient_error';
       throw error;
@@ -212,6 +241,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
         ? job.reason
         : 'other';
       this.recordRefreshMetric(
+        workClass,
         reason,
         execution.retrying,
         outcome,
@@ -252,6 +282,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
   }
 
   private recordRefreshMetric(
+    workClass: RefreshMetricBucket['workClass'],
     reason: string,
     retrying: boolean,
     outcome: 'returned' | 'threw',
@@ -263,10 +294,11 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     requiredBefore?: string,
     evidence: RefreshProofEvidence = {},
   ): void {
-    const key = `${reason}:${retrying}:${cohort}`;
+    const key = `${workClass}:${reason}:${retrying}:${cohort}`;
     let bucket = this.metricBuckets.get(key);
     if (!bucket) {
       bucket = {
+        workClass,
         reason,
         retrying,
         cohort,
@@ -326,6 +358,8 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
         this.logger.log(
           {
             metric: 'publisher_refresh_v1',
+            workClass: bucket.workClass,
+            queueAgeBasis: 'urgent_nomination_or_scheduled_boundary_v2',
             windowMs: Math.max(0, Date.now() - this.metricWindowStartedAt),
             reason: bucket.reason,
             cohort: bucket.cohort,
@@ -504,25 +538,40 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     const forwardedCandidateNeedsMaterialization =
       hasExactStagedForwardedCandidate && !bindingHasRefreshEvidence;
     try {
-      const proof = await this.measureStage(timings, 'botAccessMs', () =>
-        this.botAccess.execute({
-          chatId,
-          reason: job.reason,
-          probeStartedAt,
-          materializeForwarded: forwardedCandidateNeedsMaterialization,
-          previous: candidate.publisherBinding ?? undefined,
-        }),
-      );
-      outcomes.bot = proof.outcome;
-      evidence.botCommittedAt = proof.committedAt;
-      if (proof.outcome === 'superseded') {
-        if (candidateJob) throw new PublisherCandidateRefreshSupersededError();
-        return;
+      const reusable =
+        candidateJob && job.reason === 'publication_actor_due'
+          ? readPublisherFreshBotProof(
+              candidate.publisherBinding,
+              this.publisherBotId,
+              probeStartedAt,
+            )
+          : null;
+      if (reusable) {
+        botAccess = reusable;
+        committedBotAccessCheckedAt = candidate.publisherBinding!.botAccessCheckedAt!;
+        committedBotAccessState = candidate.publisherBinding!.botAccessState;
+        outcomes.bot = 'reused';
+      } else {
+        const proof = await this.measureStage(timings, 'botAccessMs', () =>
+          this.botAccess.execute({
+            chatId,
+            reason: job.reason,
+            probeStartedAt,
+            materializeForwarded: forwardedCandidateNeedsMaterialization,
+            previous: candidate.publisherBinding ?? undefined,
+          }),
+        );
+        outcomes.bot = proof.outcome;
+        evidence.botCommittedAt = proof.committedAt;
+        if (proof.outcome === 'superseded') {
+          if (candidateJob) throw new PublisherBotProofSupersededError();
+          return;
+        }
+        botAccess = proof.botAccess;
+        committedBotAccessCheckedAt = proof.checkedAt;
+        committedBotAccessState = proof.snapshot.botAccessState;
+        await this.dispatchHealth.recordAuthenticatedSuccess(probeStartedAt);
       }
-      botAccess = proof.botAccess;
-      committedBotAccessCheckedAt = proof.checkedAt;
-      committedBotAccessState = proof.snapshot.botAccessState;
-      await this.dispatchHealth.recordAuthenticatedSuccess(probeStartedAt);
     } catch (error: unknown) {
       const classification = classifyPublisherFailure(error);
       if (classification === 'global_paused') {
@@ -612,7 +661,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       (committedBotAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
         committedBotAccessState === ChatBotAccessState.CONFIRMED_OWNER);
     // FLAG: Only scheduled bot checks may reuse exact-bot metadata from a recent MAX
-    // snapshot. Never advance its timestamp here or reuse bot/admin permission evidence.
+    // snapshot. Never advance its timestamp here. Bot proof reuse has a separate exact-SQL fence.
     // Webhook/manual/candidate flows still hydrate; lifecycle writes replace this source.
     const catalogAgeMs = publisherCatalog?.lastSeenAt
       ? probeStartedAt.getTime() - publisherCatalog.lastSeenAt.getTime()
