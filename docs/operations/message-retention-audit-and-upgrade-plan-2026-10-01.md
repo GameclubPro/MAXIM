@@ -518,3 +518,36 @@ REINDEX/create завершили все три; receipt проверен, по�
 
 Продолжение выпуска выполняется штатным deploy с явным принятием прерванного
 журнала и повторной проверкой queue fence. Mode off и пустой cohort сохраняются.
+
+## Производственный выпуск завершён
+
+Финальный runtime SHA: `31af815431bf068f0e70ac5a4782eaa671ffdfcf`.
+[CI](https://github.com/GameclubPro/MAXIM/actions/runs/36943474060) и
+[CodeQL](https://github.com/GameclubPro/MAXIM/actions/runs/36943474001) прошли;
+guarded exact-SHA gate проверен перед preload, recovery и deploy. Для recovery
+дополнительно прошли 12 focused тестов, 673 static/agent-tools проверки и
+561 infra-проверка, включая ShellCheck.
+
+Production preview подтвердил один invalid reconciliation index и два отсутствующих.
+Guarded apply выполнил concurrent REINDEX/create и подтвердил exact receipt.
+Повторный preview показал три ready индекса, applied receipt и отсутствие других
+failed migrations. Immutable SQL и checksums не изменялись.
+
+Обычный deploy с caller-only adoption завершился успешно. Все 14 API-ролей,
+изолированный OCR sandbox и оба активных static-компонента работают на финальном
+SHA; PostgreSQL и Redis не пересоздавались. Webhook queues возобновлены после
+проверки точных image IDs. Проверки live/ready ingress/admin, public live,
+Major `/app/`, Safety Desk, OCR isolation/rus+eng/UDS/internal readiness прошли.
+Временные 503 во время запуска завершились успешными bounded readiness retries.
+
+Манифест `release-20261002T002142Z-31af815431bf` записан
+`2026-10-02T00:24:50.004Z`; обе retention migrations включены. Штатная проверка
+current manifest подтверждает отсутствие незавершённого transition journal.
+После пятиминутного recovery window ingress/admin вернулись в `normal/healthy`:
+PostgreSQL/Redis готовы, raw queue lag 0,195–0,243 с, за последнюю минуту 847
+успешных действий, ноль failures/critical. Второй снимок подтвердил совпадение
+фактических image IDs всех 17 контейнеров с манифестом, running/restarts=0 и
+healthy OCR sandbox.
+`MESSAGE_RETENTION_MODE=off`, cohort пуст во всех ролях. В рамках выпуска MAX
+тестовые сообщения и удаления не выполнялись. Измерение реальной MAX capacity и
+72-часовой executing canary остаются отдельными условиями включения.
