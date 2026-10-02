@@ -13,6 +13,10 @@ export { PublisherBindingMaintenanceSupersededError } from './publisher-roster-r
 import { PublisherActorAccessExecutor } from './publisher-actor-access-executor';
 import { PublisherCatalogRefreshExecutor } from './publisher-catalog-refresh-executor';
 import {
+  PUBLISHER_REFRESH_QUEUE_AGE_BASIS,
+  publisherRefreshTiming,
+} from './publisher-refresh-timing';
+import {
   PublisherAccessRefreshPolicy,
   type PublisherAccessProbeOutcome,
 } from './publisher-access-refresh-policy';
@@ -154,6 +158,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     job: PublisherBindingRefreshJob,
     execution: { retrying: boolean } = { retrying: false },
   ): Promise<void> {
+    const measurement = publisherRefreshTiming(job, Date.now());
     const publicationUrgentAt = Date.parse(job.publicationUrgentAt ?? '');
     const botUrgentAt = !job.candidateUserId
       ? Date.parse(job.requiredBefore ?? '') - 60_000
@@ -162,7 +167,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       Number.isFinite(publicationUrgentAt) && Number.isFinite(botUrgentAt)
         ? Math.min(publicationUrgentAt, botUrgentAt)
         : publicationUrgentAt;
-    const workClass =
+    const publicationWorkClass =
       job.publicationRequested && Number.isFinite(urgentAt) && urgentAt > Date.now()
         ? 'preparation'
         : job.publicationRequested ||
@@ -189,16 +194,13 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
         ...job,
         reason: job.candidateUserId ? 'publication_actor_due' : 'publication_due',
         requestedAt:
-          workClass === 'urgent' && Number.isFinite(urgentAt)
+          publicationWorkClass === 'urgent' && Number.isFinite(urgentAt)
             ? new Date(urgentAt).toISOString()
             : (job.publicationRequestedAt ?? job.requestedAt),
       };
     }
     const startedAt = performance.now();
-    const requestedAt = Date.parse(job.requestedAt);
-    const requestedAgeMs = Number.isFinite(requestedAt)
-      ? Math.max(0, Date.now() - requestedAt)
-      : null;
+    const requestedAgeMs = measurement.queueAgeMs;
     const timings: RefreshTimings = {};
     const outcomes: ProbeOutcomes = {};
     const evidence: RefreshProofEvidence = {};
@@ -241,7 +243,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
         ? job.reason
         : 'other';
       this.recordRefreshMetric(
-        workClass,
+        measurement.workClass,
         reason,
         execution.retrying,
         outcome,
@@ -359,7 +361,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
           {
             metric: 'publisher_refresh_v1',
             workClass: bucket.workClass,
-            queueAgeBasis: 'urgent_nomination_or_scheduled_boundary_v2',
+            queueAgeBasis: PUBLISHER_REFRESH_QUEUE_AGE_BASIS,
             windowMs: Math.max(0, Date.now() - this.metricWindowStartedAt),
             reason: bucket.reason,
             cohort: bucket.cohort,

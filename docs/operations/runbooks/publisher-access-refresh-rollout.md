@@ -69,7 +69,15 @@ expiry retries the actor work; removal/new generation or a newer denial grants n
 Start and candidate-connection probes keep fresh remote bot checks.
 
 `publisher_refresh_v1` now includes `workClass=preparation|urgent|background` and
-`queueAgeBasis=urgent_nomination_or_scheduled_boundary_v2`. Preserve the original reason/cohort;
+`queueAgeBasis=all_urgent_refresh_boundaries_v3`. This basis includes manual/policy, lifecycle,
+connection/recovery and access-loss checks, plus ordinary bot checks once their expiry is within
+60 seconds. Bot urgency is measured from expiry minus 60 seconds, including late discovery;
+publication urgency retains its earliest nomination/scheduled boundary. Actor jobs never inherit
+a bot-expiry clock. Future publication preparation and aged maintenance remain separate.
+The timing helper does not rewrite the execution envelope or permission/source-version fences.
+Earlier v2 windows omitted urgent lifecycle/connection and expiring-bot work from the urgent
+histogram; they cannot satisfy the complete urgent-coverage gate or be merged into v3 evidence.
+Preserve the original reason/cohort;
 compare urgent initial attempts separately from preparation, and retain admission and full-cycle
 coverage as independent acceptance requirements. A new classification alone is not an improvement.
 `publisher_preflight_admission_v1` reports bounded per-minute visited-target/cycle counts, observed

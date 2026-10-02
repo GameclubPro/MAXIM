@@ -424,6 +424,19 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       }
       expect(observed).toBe(true);
       if (!degraded && lane === 'received') {
+        // FLAG: Model the settled receipt history when checking planner selectivity. A
+        // tiny all-pending heap can correctly favor a sequential scan for a broad page.
+        for (let offset = 0; offset < 50_000; offset += 1_000) {
+          const history = Array.from({ length: 1_000 }, (_, index) => ({
+            ...row(offset + index),
+            id: `settled-${offset + index}-${suffix}`,
+            dedupKey: `settled-${offset + index}-${suffix}`,
+            status: WebhookStatus.PROCESSED,
+            createdAt: new Date(base - 60_000),
+          }));
+          createdEventIds.push(...history.map(({ id }) => id));
+          await prisma.webhookEvent.createMany({ data: history });
+        }
         await prisma.$executeRaw`ANALYZE webhook_events`;
         const capture = jest.spyOn(prisma, '$queryRaw');
         await reader.selectEnqueueCandidates(now);
@@ -455,6 +468,7 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
         rows[0]!.id,
       );
     },
+    30_000,
   );
 
   it('does not skip capped distinct pages and safely repeats after cursor loss or a failed query', async () => {
