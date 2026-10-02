@@ -1,4 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
+import { ConfigService } from '@nestjs/config';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import {
   ChatEntityType,
@@ -9,6 +10,19 @@ import { WebhookParser } from './webhook.parser';
 import { WebhookService } from './webhook.service';
 
 describe('WebhookService', () => {
+  it('does not execute the outbox admission snapshot after its durable receipt disappears', async () => {
+    const prisma = { webhookEvent: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const service = new WebhookService(prisma as never, new ConfigService(), {} as never);
+    const update = {
+      updateId: 'deleted-receipt',
+      botId: 'bot-a',
+      type: 'bot_removed',
+    } as MaxUpdate;
+    await expect(
+      service.preparePersistedWebhookEvent('deleted-receipt', undefined, update),
+    ).resolves.toMatchObject({ canonical: false, prepared: false, normalizedPayload: null });
+    expect(prisma.webhookEvent.findUnique).toHaveBeenCalledTimes(1);
+  });
   const flushDeferredWebhookWork = async () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -4157,16 +4171,14 @@ describe('WebhookService', () => {
           updateMany: jest.fn(),
         },
         chatBotMembership: {
-          findUnique: jest
-            .fn()
-            .mockResolvedValue({
-              permissionsSnapshot: {
-                checkedAt: new Date().toISOString(),
-                isAdmin: false,
-                isOwner: false,
-                permissions: [],
-              },
-            }),
+          findUnique: jest.fn().mockResolvedValue({
+            permissionsSnapshot: {
+              checkedAt: new Date().toISOString(),
+              isAdmin: false,
+              isOwner: false,
+              permissions: [],
+            },
+          }),
           updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         },
       };

@@ -14,6 +14,11 @@ a time per process. A lifecycle event deferred by capacity reserves the next ava
 five seconds; non-lifecycle work can continue in other slots. These are concurrency budgets,
 not a replacement for existing per-token MAX rate limits.
 
+Outbox calls pass their selected persisted payload as admission context, so independent bots,
+Start and lifecycle events retain their separate allowances. Omitting this context collapses every
+persisted event into `unknown/ordinary`. This snapshot is scheduling metadata only: execution
+reloads the receipt, and a disappeared receipt must never execute from the admission snapshot.
+
 Before an event becomes prepared, the service waits for membership SQL/cache work, binding
 reconciliation, idempotent SQL read models, bootstrap cache completion, any required owner
 recheck, roster queue acknowledgement and explicit Start handling. Read-model/cache invalidation

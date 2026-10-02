@@ -478,10 +478,13 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
   async preparePersistedWebhookEvent(
     webhookEventId: string,
     fallbackUpdate?: MaxUpdate,
+    admissionUpdate: MaxUpdate | undefined = fallbackUpdate,
   ): Promise<PreparedWebhookExecution> {
+    // FLAG: The outbox snapshot supplies scheduling identity only. It must never become
+    // a fallback receipt: execution still reloads the authoritative persisted event.
     return this.preparationAdmission.run(
-      fallbackUpdate?.botId?.trim() || 'unknown',
-      this.preparationClass(fallbackUpdate),
+      admissionUpdate?.botId?.trim() || 'unknown',
+      this.preparationClass(admissionUpdate),
       () => this.preparePersistedWebhookEventAdmitted(webhookEventId, fallbackUpdate),
     );
   }
