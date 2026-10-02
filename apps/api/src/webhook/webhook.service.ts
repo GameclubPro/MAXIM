@@ -1,3 +1,6 @@
+import { WebhookPreparationAdmission } from './webhook-preparation-admission';
+import { readPrismaPoolConfig } from '../prisma/prisma-client';
+import { RuntimeWorkerOwner, type RuntimeWorker } from '../runtime/runtime-worker-shutdown';
 import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ChatSummary, MaxUpdate } from '@maxim/contracts';
@@ -249,7 +252,7 @@ const DURABLE_BOT_LIFECYCLE_UPDATE_TYPES = new Set([
 ]);
 
 @Injectable()
-export class WebhookService implements OnModuleDestroy {
+export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestroy {
   private readonly logger = new Logger(WebhookService.name);
   private static readonly BOT_ADDED_ADMIN_ROSTER_RETRY_WINDOW_MS = 120_000;
   private readonly rawPayloadSampleRate: number;
@@ -279,6 +282,7 @@ export class WebhookService implements OnModuleDestroy {
   private membershipDenialCacheSettledPublicationCount = 0;
   private membershipDenialCacheShuttingDown = false;
   private readonly publisherBotId: string;
+  private readonly preparationAdmission: WebhookPreparationAdmission;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -304,6 +308,11 @@ export class WebhookService implements OnModuleDestroy {
     @Optional() private readonly messageRetention?: MessageRetentionStore,
     @Optional() private readonly suggestionSubscriptions?: SuggestionSubscriptionService,
   ) {
+    super();
+    this.preparationAdmission = new WebhookPreparationAdmission(
+      readPrismaPoolConfig().max ?? 10,
+      (metric) => this.logger.log(metric, 'Webhook bounded preparation'),
+    );
     const configuredPublisherBotId = configService.get<unknown>('MAX_PUBLISHER_BOT_ID');
     this.publisherBotId = buildPublisherBotDescriptor({
       id: typeof configuredPublisherBotId === 'string' ? configuredPublisherBotId : null,
@@ -333,14 +342,35 @@ export class WebhookService implements OnModuleDestroy {
     this.membershipDenialCacheMaxPendingPublications = this.membershipDenialCacheMaxInFlight;
   }
 
+  // FLAG: Drain preparation before Nest disconnects SQL/Redis; excess work stays in receipts.
+  stopWorkerAdmission(): readonly RuntimeWorker[] {
+    this.preparationAdmission.stop();
+    return [
+      {
+        name: 'webhook-preparation',
+        pause: async () => {
+          await this.preparationAdmission.drain();
+          await this.onModuleDestroy();
+        },
+        close: async (force) => {
+          if (!force) await this.preparationAdmission.drain();
+        },
+      },
+    ];
+  }
+
   async onModuleDestroy(): Promise<void> {
+    this.preparationAdmission.stop();
+    this.preparationAdmission.flush();
     this.membershipDenialCacheShuttingDown = true;
-    const tasks = [
+    const tasks: Promise<unknown>[] = [
       ...this.membershipDenialCacheTasks.values(),
       ...this.membershipDenialCachePublications.values(),
     ]
       .filter((task) => task.state === 'pending')
       .map((task) => task.promise);
+    if (this.preparationAdmission.snapshot().inFlight)
+      tasks.push(this.preparationAdmission.drain());
     if (tasks.length === 0) {
       return;
     }
@@ -361,7 +391,7 @@ export class WebhookService implements OnModuleDestroy {
           inFlightTaskCount: this.membershipDenialCacheInFlightTaskCount,
           timeoutMs: MEMBERSHIP_DENIAL_CACHE_SHUTDOWN_WAIT_MS,
         },
-        'Timed out waiting for committed membership denial cache publication during shutdown',
+        'Timed out draining webhook preparation or committed denial cache publication during shutdown',
       );
     }
   }
@@ -380,6 +410,14 @@ export class WebhookService implements OnModuleDestroy {
   }
 
   async repairDuplicateReceiptReadModels(update: MaxUpdate): Promise<void> {
+    return this.preparationAdmission.run(
+      update.botId?.trim() || 'unknown',
+      this.preparationClass(update),
+      () => this.repairDuplicateReceiptReadModelsCore(update),
+    );
+  }
+
+  private async repairDuplicateReceiptReadModelsCore(update: MaxUpdate): Promise<void> {
     if (this.isPublisherUpdate(update)) {
       await this.observePublisherWebhook(update, null, true);
       return;
@@ -438,6 +476,34 @@ export class WebhookService implements OnModuleDestroy {
   }
 
   async preparePersistedWebhookEvent(
+    webhookEventId: string,
+    fallbackUpdate?: MaxUpdate,
+  ): Promise<PreparedWebhookExecution> {
+    return this.preparationAdmission.run(
+      fallbackUpdate?.botId?.trim() || 'unknown',
+      this.preparationClass(fallbackUpdate),
+      () => this.preparePersistedWebhookEventAdmitted(webhookEventId, fallbackUpdate),
+    );
+  }
+
+  private preparationClass(update?: MaxUpdate): 'ordinary' | 'interactive' | 'lifecycle' {
+    if (
+      update &&
+      [
+        'bot_added',
+        'bot_removed',
+        'user_added',
+        'user_removed',
+        'bot_stopped',
+        'dialog_removed',
+      ].includes(update.type.trim().toLowerCase())
+    )
+      return 'lifecycle';
+    if (update && isManagedEntityHandshakeStartCommand(update)) return 'interactive';
+    return 'ordinary';
+  }
+
+  private async preparePersistedWebhookEventAdmitted(
     webhookEventId: string,
     fallbackUpdate?: MaxUpdate,
   ): Promise<PreparedWebhookExecution> {
@@ -783,7 +849,11 @@ export class WebhookService implements OnModuleDestroy {
       return;
     }
 
-    await this.suggestionSubscriptions?.wake(chatId, memberUserIds);
+    try {
+      await this.suggestionSubscriptions?.wake(chatId, memberUserIds);
+    } catch (error: unknown) {
+      throw new WebhookPreparationDeferredError('Suggestion membership wake pending', 1_000, error);
+    }
 
     if (this.membershipLookupService) {
       try {
@@ -797,6 +867,11 @@ export class WebhookService implements OnModuleDestroy {
             err: error instanceof Error ? error.message : String(error),
           },
           'Failed to invalidate MAX membership cache from webhook',
+        );
+        throw new WebhookPreparationDeferredError(
+          'Membership cache invalidation pending',
+          1_000,
+          error,
         );
       }
     }
@@ -1065,26 +1140,19 @@ export class WebhookService implements OnModuleDestroy {
     }
 
     await this.persistMembershipTransition(update);
-    this.deferBackgroundTask(
-      () => this.invalidateMembershipCacheFromWebhook(update),
-      'membership cache invalidation',
-      update,
-    );
+    await this.invalidateMembershipCacheFromWebhook(update);
     const bindingSync = await this.syncChatBotBindingFromWebhook(update);
     this.attachExecutionOwnerBotId(update, bindingSync.executionOwnerBotId);
-    this.deferBackgroundTask(
-      () => this.persistAdminReadModels(update),
-      'admin read model refresh',
-      update,
+    // FLAG: The persisted receipt stays unprepared until these idempotent effects settle.
+    // No callback escapes admission; a retry retains this receipt's semantic/send identity.
+    await this.persistAdminReadModels(update);
+    await this.stageManagedEntityPendingBootstrap(update);
+    await this.schedulePendingExecutionOwnerFailoverRecheck(
+      bindingSync.pendingExecutionOwnerRecheck,
     );
-    this.deferBackgroundTask(
-      () => this.stageManagedEntityPendingBootstrap(update),
-      'managed entity pending bootstrap',
-      update,
-    );
-    this.schedulePendingExecutionOwnerFailoverRecheck(bindingSync.pendingExecutionOwnerRecheck);
     // FLAG: bot_added only updates access/discovery; never publish onboarding hints to the entity.
-    this.deferManagedEntityHandshake(update);
+    // Only explicit Start may confirm connection after fresh bot AND actor checks.
+    await this.completeManagedEntityHandshake(update);
 
     await this.prisma.webhookEvent.updateMany(
       webhookPayloadChange(webhookEventId, this.sanitizeForJsonStorage(update)),
@@ -1092,7 +1160,7 @@ export class WebhookService implements OnModuleDestroy {
 
     return {
       update,
-      executionBotId: bindingSync.executionOwnerBotId ?? update.executionOwnerBotId?.trim() ?? null,
+      executionBotId: update.executionOwnerBotId?.trim() ?? bindingSync.executionOwnerBotId ?? null,
     };
   }
 
@@ -1251,18 +1319,16 @@ export class WebhookService implements OnModuleDestroy {
     }
   }
 
-  private deferManagedEntityHandshake(update: MaxUpdate): void {
-    if (!this.managedEntityHandshakeService || isManagedEntityForwardedRecoveryMessage(update)) {
+  private async completeManagedEntityHandshake(update: MaxUpdate): Promise<void> {
+    if (!this.managedEntityHandshakeService || isManagedEntityForwardedRecoveryMessage(update))
       return;
+    const result = await this.managedEntityHandshakeService.handleWebhookUpdate(update);
+    if (result === 'failed') {
+      throw new WebhookPreparationDeferredError(
+        'Managed entity handshake preparation pending',
+        1_000,
+      );
     }
-
-    this.deferBackgroundTask(
-      async () => {
-        await this.managedEntityHandshakeService?.handleWebhookUpdate(update);
-      },
-      'managed entity handshake',
-      update,
-    );
   }
 
   private readManagedEntityPendingBootstrapUserId(update: MaxUpdate): string | null {
@@ -1273,28 +1339,6 @@ export class WebhookService implements OnModuleDestroy {
 
     const botId = update.botId?.trim() ?? '';
     return senderId !== botId ? senderId : null;
-  }
-
-  private deferBackgroundTask(
-    task: () => Promise<void>,
-    taskName: string,
-    update: Pick<MaxUpdate, 'updateId' | 'type'>,
-  ): void {
-    setImmediate(() => {
-      void Promise.resolve()
-        .then(task)
-        .catch((error: unknown) => {
-          this.logger.warn(
-            {
-              updateId: update.updateId,
-              type: update.type,
-              task: taskName,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Deferred webhook follow-up task failed',
-          );
-        });
-    });
   }
 
   private async syncChatBotBindingFromWebhook(
@@ -1334,7 +1378,7 @@ export class WebhookService implements OnModuleDestroy {
             },
             'Skipped terminal bot lifecycle transition without a trusted event timestamp',
           );
-          this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
+          await this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
           return this.buildChatBotBindingSyncResult(storedOwnerBotId);
         }
 
@@ -1363,7 +1407,7 @@ export class WebhookService implements OnModuleDestroy {
               lifecycleEventType: normalizedType,
               lifecycleSource: 'webhook',
             });
-        this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
+        await this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
         return this.buildChatBotBindingSyncResult(nextOwnerBotId);
       }
 
@@ -1408,7 +1452,7 @@ export class WebhookService implements OnModuleDestroy {
               botId: observedBotId,
             });
           }
-          this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
+          await this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
           return this.buildChatBotBindingSyncResult(
             executionOwnerBotId,
             pendingExecutionOwnerRecheck,
@@ -1418,7 +1462,7 @@ export class WebhookService implements OnModuleDestroy {
 
       if (normalizedType !== 'bot_added' || !trustedLifecycleEventAt) {
         const verifiedBotId = await this.bindIncomingBotAfterLiveProbe(update, chatId, entityType);
-        this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
+        await this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
         return this.buildChatBotBindingSyncResult(verifiedBotId);
       }
 
@@ -1457,7 +1501,7 @@ export class WebhookService implements OnModuleDestroy {
           };
         }
       }
-      this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
+      await this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
       return this.buildChatBotBindingSyncResult(executionOwnerBotId, pendingExecutionOwnerRecheck);
     } catch (error: unknown) {
       this.logger.warn(
@@ -1469,7 +1513,10 @@ export class WebhookService implements OnModuleDestroy {
         },
         'Failed to bind chat to bot during webhook ingest',
       );
-      if (DURABLE_BOT_LIFECYCLE_UPDATE_TYPES.has(normalizedType)) {
+      if (
+        DURABLE_BOT_LIFECYCLE_UPDATE_TYPES.has(normalizedType) ||
+        error instanceof WebhookPreparationDeferredError
+      ) {
         throw error;
       }
       return this.buildChatBotBindingSyncResult(null);
@@ -1599,6 +1646,10 @@ export class WebhookService implements OnModuleDestroy {
       currentOwnerBotId,
       { bypassCache: true },
     );
+    // FLAG: An unknown live result must retain the receipt's required recheck.
+    if (currentOwnerCanHandleUserFacing === null) {
+      throw new WebhookPreparationDeferredError('Current execution owner probe pending', 1_000);
+    }
     if (currentOwnerCanHandleUserFacing !== false) {
       return params.currentOwnerBotId;
     }
@@ -1609,6 +1660,9 @@ export class WebhookService implements OnModuleDestroy {
       incomingBotId,
       { bypassCache: true, allowMembershipRecovery: true },
     );
+    if (incomingBotCanHandleUserFacing === null) {
+      throw new WebhookPreparationDeferredError('Incoming execution owner probe pending', 1_000);
+    }
     if (incomingBotCanHandleUserFacing !== true) {
       return params.currentOwnerBotId;
     }
@@ -1898,6 +1952,13 @@ export class WebhookService implements OnModuleDestroy {
         'Failed to persist admin read model during webhook ingest',
       );
     }
+    const failure = settled.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected')
+      throw new WebhookPreparationDeferredError(
+        'Webhook read model persistence pending',
+        1_000,
+        failure.reason,
+      );
   }
 
   private async persistUserDisplayNameSnapshots(update: MaxUpdate): Promise<void> {
@@ -3535,12 +3596,12 @@ export class WebhookService implements OnModuleDestroy {
     return normalized.length > 0 ? normalized : null;
   }
 
-  private scheduleExecutionOwnerFailoverRecheck(params: {
+  private async scheduleExecutionOwnerFailoverRecheck(params: {
     update: MaxUpdate;
     chatId: string;
     incomingBotId: string | null;
     currentOwnerBotId: string | null;
-  }): void {
+  }): Promise<void> {
     if (!this.maxClient) {
       return;
     }
@@ -3567,39 +3628,33 @@ export class WebhookService implements OnModuleDestroy {
       return;
     }
 
-    this.executionOwnerRecheckBackoffUntilMs.set(
-      backoffKey,
-      Date.now() + EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS,
-    );
-    setTimeout(() => {
-      void this.maybeFailOverExecutionOwner({
+    try {
+      const owner = await this.maybeFailOverExecutionOwner({
         update: params.update,
         chatId,
         incomingBotId,
         currentOwnerBotId,
         allowLiveCheck: true,
-      }).catch((error: unknown) => {
-        this.logger.debug(
-          {
-            chatId,
-            currentOwnerBotId,
-            incomingBotId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Async execution-owner recheck after webhook ingest failed',
-        );
       });
-    }, 0);
+      this.attachExecutionOwnerBotId(params.update, owner);
+      this.executionOwnerRecheckBackoffUntilMs.set(
+        backoffKey,
+        Date.now() + EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS,
+      );
+    } catch (error: unknown) {
+      this.executionOwnerRecheckBackoffUntilMs.delete(backoffKey);
+      throw new WebhookPreparationDeferredError('Execution owner recheck pending', 1_000, error);
+    }
   }
 
-  private schedulePendingExecutionOwnerFailoverRecheck(
+  private async schedulePendingExecutionOwnerFailoverRecheck(
     params: ExecutionOwnerFailoverRecheckParams | null,
-  ): void {
+  ): Promise<void> {
     if (!params) {
       return;
     }
 
-    this.scheduleExecutionOwnerFailoverRecheck(params);
+    await this.scheduleExecutionOwnerFailoverRecheck(params);
   }
 
   private shouldScheduleExecutionOwnerFailoverRecheck(update: MaxUpdate): boolean {
@@ -3613,7 +3668,10 @@ export class WebhookService implements OnModuleDestroy {
     );
   }
 
-  private scheduleChatAdminRosterSyncFromWebhook(update: MaxUpdate, chatId: string): void {
+  private async scheduleChatAdminRosterSyncFromWebhook(
+    update: MaxUpdate,
+    chatId: string,
+  ): Promise<void> {
     if (!this.maxChatAdminRosterSyncService) {
       return;
     }
@@ -3643,7 +3701,7 @@ export class WebhookService implements OnModuleDestroy {
       return;
     }
 
-    void this.maxChatAdminRosterSyncService
+    await this.maxChatAdminRosterSyncService
       .scheduleChatAdminRosterSync({
         chatId,
         botIds: update.botId ? [update.botId] : [],
@@ -3664,6 +3722,11 @@ export class WebhookService implements OnModuleDestroy {
             err: error instanceof Error ? error.message : String(error),
           },
           'Failed to enqueue chat admin roster sync from webhook',
+        );
+        throw new WebhookPreparationDeferredError(
+          'Chat admin roster handoff pending',
+          1_000,
+          error,
         );
       });
   }

@@ -13,6 +13,7 @@ function createCache(
     maxBytes: 10_000,
     maxEntryBytes: 5000,
     sweepBatchSize: 2,
+    now: () => 0,
     ...overrides,
   });
 }
