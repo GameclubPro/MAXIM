@@ -106,7 +106,7 @@ export class PublisherReadinessService {
     targets: readonly { chatId: string; entityType: ManagedEntityType }[],
     actorUserId: string,
     requiredBotId: string,
-    options: { maxAgeMs?: number } = {},
+    options: { maxAgeMs?: number; publicationUrgentAt?: Date; strictEnqueue?: boolean } = {},
   ): Promise<void> {
     if (
       !this.dispatchConfigured ||
@@ -191,12 +191,16 @@ export class PublisherReadinessService {
             candidateUserId: actorUserId,
             reason: 'publication_actor_due',
             ...nomination,
+            ...(options.publicationUrgentAt
+              ? { publicationUrgentAt: options.publicationUrgentAt }
+              : {}),
           });
         } catch (error: unknown) {
           this.logger.warn(
             { err: error instanceof Error ? error.message : String(error) },
             'Failed to enqueue scheduled publication actor access refresh',
           );
+          if (options.strictEnqueue) throw error;
           return;
         }
       }
@@ -207,6 +211,7 @@ export class PublisherReadinessService {
     targets: readonly { chatId: string; entityType: ManagedEntityType }[],
     requiredBotId: string,
     refreshBefore?: Date,
+    options: { publicationUrgentAt?: Date; strictEnqueue?: boolean } = {},
   ): Promise<void> {
     if (
       !this.dispatchConfigured ||
@@ -235,7 +240,7 @@ export class PublisherReadinessService {
                 (source.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat'),
           )
         ) {
-          await this.nominateStaleBotRefresh(source, refreshBefore);
+          await this.nominateStaleBotRefresh(source, refreshBefore, options);
         }
       }
     }
@@ -244,6 +249,7 @@ export class PublisherReadinessService {
   private async nominateStaleBotRefresh(
     source: PublisherReadinessSource,
     refreshBefore?: Date,
+    options: { publicationUrgentAt?: Date; strictEnqueue?: boolean } = {},
   ): Promise<void> {
     const binding = source.publisherBinding;
     const now = new Date();
@@ -275,12 +281,16 @@ export class PublisherReadinessService {
         reason: 'publication_due',
         requestedAt: now,
         requiredBefore: binding.botAccessExpiresAt ?? now,
+        ...(options.publicationUrgentAt
+          ? { publicationUrgentAt: options.publicationUrgentAt }
+          : {}),
       });
     } catch (error: unknown) {
       this.logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
         'Failed to nominate stale Publisher bot access refresh',
       );
+      if (options.strictEnqueue) throw error;
     }
   }
 

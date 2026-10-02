@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 
 export type PublisherAccessProbeOutcome =
+  | 'reused'
   | 'confirmed'
   | 'denied'
   | 'superseded'

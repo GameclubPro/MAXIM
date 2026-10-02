@@ -3002,6 +3002,9 @@ model PublicationOccurrence {
   dispatchBlockedAt   DateTime?                   @map("dispatch_blocked_at")
   dispatchFirstBlockedAt DateTime?                   @map("dispatch_first_blocked_at")
   retryAuthorizedAt   DateTime?                   @map("retry_authorized_at")
+  accessPreflightPosition Int? @map("access_preflight_position")
+  accessPreflightCycleStartedAt DateTime? @map("access_preflight_cycle_started_at")
+  accessPreflightLastCompletedAt DateTime? @map("access_preflight_last_completed_at")
   createdAt           DateTime                    @default(now()) @map("created_at")
   updatedAt           DateTime                    @updatedAt @map("updated_at")
 

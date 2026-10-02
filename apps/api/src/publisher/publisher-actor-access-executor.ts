@@ -10,6 +10,7 @@ import {
 import type { PrismaService } from '../prisma/prisma.service';
 import { publisherAccessProbeLifecycleSuperseded } from './publisher-access-probe-fence';
 import { extractPublisherMaxStatusCode } from './publisher-dispatch-health.service';
+import { PublisherBotProofSupersededError } from './publisher-fresh-bot-proof';
 import type { PublisherAccessProbeOutcome } from './publisher-access-refresh-policy';
 
 const PUBLISHER_USER_ACCESS_GRANTED_TTL_MS = 3 * 24 * 60 * 60_000;
@@ -109,6 +110,7 @@ export class PublisherActorAccessExecutor {
           lifecycleEventAt: true,
           lifecycleEventType: true,
           botAccessCheckedAt: true,
+          botAccessExpiresAt: true,
           botAccessState: true,
         },
       });
@@ -116,11 +118,25 @@ export class PublisherActorAccessExecutor {
         !binding ||
         binding.publisherBotId !== this.publisherBotId ||
         binding.status !== ChatBotMembershipStatus.ACTIVE ||
-        publisherAccessProbeLifecycleSuperseded(binding, params.probeStartedAt) ||
-        binding.botAccessCheckedAt?.getTime() !== params.committedBotAccessCheckedAt.getTime() ||
-        binding.botAccessState !== params.committedBotAccessState
+        publisherAccessProbeLifecycleSuperseded(binding, params.probeStartedAt)
       ) {
         return false;
+      }
+      if (
+        binding.botAccessState !== params.committedBotAccessState &&
+        binding.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
+        binding.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER
+      )
+        return false;
+      // FLAG: A concurrent bot renewal is not completion of the actor check. Retry
+      // without granting against a changed or expired proof; lifecycle revocation above stays terminal.
+      if (
+        binding.botAccessCheckedAt?.getTime() !== params.committedBotAccessCheckedAt.getTime() ||
+        binding.botAccessState !== params.committedBotAccessState ||
+        !binding.botAccessExpiresAt ||
+        binding.botAccessExpiresAt <= new Date()
+      ) {
+        throw new PublisherBotProofSupersededError();
       }
       const candidateEdge = await tx.managedEntityAccessEdge.findUnique({
         where: {

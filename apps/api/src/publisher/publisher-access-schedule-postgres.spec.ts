@@ -1,3 +1,5 @@
+import { PublisherActorAccessExecutor } from './publisher-actor-access-executor';
+import { PublisherBotProofSupersededError } from './publisher-fresh-bot-proof';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient, createPrismaAdapter } from '../prisma/prisma-client';
@@ -106,6 +108,69 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
       },
     });
   }
+
+  it.each(['renewed', 'expired', 'revoked', 'actor_version'])(
+    'fences SQL proof reuse when %s during the actor probe',
+    async (race) => {
+      const binding = (await db.publisherEntityBinding.findUnique({ where: { chatId } }))!;
+      const actor = new PublisherActorAccessExecutor(
+        db as never,
+        {
+          getChatMemberAccess: async () => {
+            if (race === 'actor_version') {
+              await db.managedEntityAccessEdge.create({
+                data: {
+                  chatId,
+                  userId: 'actor',
+                  botId,
+                  entityType: 'CHAT',
+                  state: 'USER_DENIED',
+                  userRole: 'UNKNOWN',
+                  botRole: 'ADMIN',
+                  checkedAt: new Date(),
+                  source: 'test',
+                  sourceVersion: 'v2',
+                },
+              });
+            } else {
+              await db.publisherEntityBinding.update({
+                where: { chatId },
+                data:
+                  race === 'revoked'
+                    ? {
+                        status: 'REMOVED',
+                        lifecycleEventAt: new Date(),
+                        lifecycleEventType: 'bot_removed',
+                      }
+                    : race === 'expired'
+                      ? { botAccessExpiresAt: new Date(0) }
+                      : { botAccessCheckedAt: new Date(binding.botAccessCheckedAt!.getTime() + 1) },
+              });
+            }
+            return { ...adminAccess, userId: 'actor', isBot: false };
+          },
+        } as never,
+        botId,
+      );
+      const running = actor.execute({
+        chatId,
+        entityType: 'CHAT',
+        userId: 'actor',
+        candidateVersion: 'v1',
+        botAccess: { ...adminAccess, userId: null },
+        probeStartedAt: new Date(),
+        committedBotAccessCheckedAt: binding.botAccessCheckedAt!,
+        committedBotAccessState: 'CONFIRMED_ADMIN',
+        interactive: false,
+      });
+      if (race === 'renewed' || race === 'expired')
+        await expect(running).rejects.toBeInstanceOf(PublisherBotProofSupersededError);
+      else expect((await running).committed).toBe(false);
+      expect(await db.managedEntityAccessEdge.count({ where: { chatId, state: 'GRANTED' } })).toBe(
+        0,
+      );
+    },
+  );
 
   it('keeps one exact obligation across repeated scans, retries and observer restart', async () => {
     const previous = await expiringProof();

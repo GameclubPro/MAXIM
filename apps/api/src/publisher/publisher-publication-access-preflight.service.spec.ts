@@ -13,10 +13,17 @@ function harness(
     publicationId: 'publication-1',
     scheduledAt: new Date(now.getTime() + 120_000),
     publication: { actorUserId: 'author-1' },
+    scheduleRevision: 1,
+    accessPreflightPosition: null as number | null,
+    accessPreflightCycleStartedAt: null as Date | null,
   };
   const prisma = {
     publicationOccurrence: {
       findFirst: jest.fn().mockResolvedValueOnce(occurrence).mockResolvedValue(null),
+      updateMany: jest.fn().mockImplementation(async ({ data }) => {
+        Object.assign(occurrence, data);
+        return { count: 1 };
+      }),
     },
     publicationTarget: {
       findMany: jest
@@ -30,15 +37,18 @@ function harness(
     requestBotAccessRefresh: jest.fn().mockResolvedValue(undefined),
     requestActorAccessRefresh: jest.fn().mockResolvedValue(undefined),
   };
-  const service = new PublisherPublicationAccessPreflightService(
-    prisma as never,
-    readiness as never,
-    { getBotId: () => 'publik' } as never,
-    { dispatchEnabled: enabled } as never,
-    { isGloballyPaused: async () => paused } as never,
-    backgroundWork as never,
-  );
-  return { service, prisma, readiness, occurrence };
+  const queue = { preparationTargetBudget: jest.fn().mockResolvedValue(4) };
+  const createService = () =>
+    new PublisherPublicationAccessPreflightService(
+      prisma as never,
+      readiness as never,
+      { getBotId: () => 'publik' } as never,
+      { dispatchEnabled: enabled } as never,
+      { isGloballyPaused: async () => paused } as never,
+      backgroundWork as never,
+      queue as never,
+    );
+  return { service: createService(), createService, prisma, readiness, occurrence, queue };
 }
 
 describe('PublisherPublicationAccessPreflightService', () => {
@@ -68,12 +78,13 @@ describe('PublisherPublicationAccessPreflightService', () => {
       [{ chatId: 'chat-1', entityType: 'chat' }],
       'publik',
       expect.any(Date),
+      { publicationUrgentAt: expect.any(Date), strictEnqueue: true },
     );
     expect(f.readiness.requestActorAccessRefresh).toHaveBeenCalledWith(
       [{ chatId: 'chat-1', entityType: 'chat' }],
       'author-1',
       'publik',
-      { maxAgeMs: expect.any(Number) },
+      { maxAgeMs: expect.any(Number), publicationUrgentAt: expect.any(Date), strictEnqueue: true },
     );
     expect(f.prisma.publicationOccurrence.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -109,14 +120,14 @@ describe('PublisherPublicationAccessPreflightService', () => {
       )
       .mockResolvedValueOnce([]);
     await f.service.runOnce();
-    expect(f.readiness.requestBotAccessRefresh.mock.calls[0][0]).toHaveLength(100);
+    expect(f.readiness.requestBotAccessRefresh.mock.calls[0][0]).toHaveLength(2);
     f.prisma.publicationOccurrence.findFirst
       .mockResolvedValueOnce(f.occurrence)
       .mockResolvedValue(null);
-    await f.service.runOnce();
+    await f.createService().runOnce();
     expect(f.prisma.publicationTarget.findMany.mock.calls[1][0].where).toEqual({
       publicationId: 'publication-1',
-      position: { gt: 99 },
+      position: { gt: 1 },
     });
   });
 
@@ -130,10 +141,54 @@ describe('PublisherPublicationAccessPreflightService', () => {
         }),
     );
     const running = f.service.runOnce();
-    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
     await f.service.runOnce();
     expect(f.readiness.requestBotAccessRefresh).toHaveBeenCalledTimes(1);
     release();
     await running;
+  });
+  it('does not scan or advance durable progress while reserved queue capacity is exhausted', async () => {
+    const f = harness();
+    f.queue.preparationTargetBudget.mockResolvedValue(0);
+    await f.service.runOnce();
+    expect(f.prisma.publicationOccurrence.findFirst).not.toHaveBeenCalled();
+    expect(f.prisma.publicationOccurrence.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps the same page recoverable if the actor Redis acknowledgement fails', async () => {
+    const f = harness();
+    f.readiness.requestActorAccessRefresh.mockRejectedValue(new Error('Redis unavailable'));
+    await f.service.runOnce();
+    expect(f.prisma.publicationOccurrence.updateMany).not.toHaveBeenCalled();
+    expect(f.occurrence.accessPreflightPosition).toBeNull();
+  });
+
+  it('visits the next author while the first occurrence still has a large audience', async () => {
+    const f = harness();
+    f.prisma.publicationOccurrence.findFirst
+      .mockReset()
+      .mockResolvedValueOnce(f.occurrence)
+      .mockResolvedValueOnce({
+        ...f.occurrence,
+        id: 'occurrence-2',
+        publicationId: 'publication-2',
+        publication: { actorUserId: 'author-2' },
+      })
+      .mockResolvedValue(null);
+    f.prisma.publicationTarget.findMany.mockResolvedValue(
+      Array.from({ length: 3 }, (_, position) => ({
+        targetChatId: `chat-${position}`,
+        entityType: ChatEntityType.CHAT,
+        position,
+      })),
+    );
+    await f.service.runOnce();
+    expect(f.readiness.requestActorAccessRefresh.mock.calls.map((call) => call[1])).toEqual([
+      'author-1',
+      'author-2',
+    ]);
+    expect(f.readiness.requestActorAccessRefresh.mock.calls.map((call) => call[0].length)).toEqual([
+      2, 2,
+    ]);
   });
 });

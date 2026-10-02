@@ -33,11 +33,11 @@ Schedules survive queue loss because enqueue never advances SQL success metadata
 
 ## Queue compatibility
 
-Version-one jobs accept optional `requiredBefore`, `publicationRequested` and `publicationRequestedAt` fields. The promotion marker
+Version-one jobs accept optional `requiredBefore`, `publicationRequested` and `publicationRequestedAt` and `publicationUrgentAt` fields. The promotion marker
 preserves an urgent nomination when it shares an existing scheduled job; it is scheduling metadata,
-never send authority. The first publication nomination timestamp measures urgent wait without resetting on rediscovery; promoted actors still need a proof fresh enough for publication. Old jobs without these fields remain valid.
+never send authority. An explicit due nomination uses its first timestamp; lookahead work becomes urgent 60 seconds before its scheduled time. That boundary survives late admission and promotion, so waiting before enqueue remains in urgent latency; promoted actors still need a proof fresh enough for publication. Old jobs without these fields remain valid.
 
-Priorities are manual/policy checks 1, publication/lifecycle checks 5, ordinary bot checks 10,
+Priorities are manual/policy checks 1, urgent publication/lifecycle checks 5, future publication preparation 8, ordinary bot checks 10,
 and background roster/actor/bootstrap work 20. Bot checks become priority 5 within 60 seconds of
 expiry; background jobs may age to 10 after 30 minutes, never to 5 solely from age. A publication
 nomination promotes an exact pending bot or actor job without resetting its ID, attempts or delayed
@@ -45,6 +45,37 @@ retry deadline. Actor coalescing includes candidate version. Interactive replies
 
 Existing backlog compaction is bounded at 5,000 jobs per pass. A truncated pass must be reported
 when assessing rollout latency; it does not prove the whole backlog has been reprioritized.
+
+## Bounded publication preparation
+
+Preflight runs every two seconds, with at most four target nominations and two targets per
+occurrence. Queue admission counts priority 1/5/8 work: two queued urgent jobs close speculative
+admission, and each target reserves room for both its possible bot and actor job within eight
+pending preparation jobs. Already active workers add at most two tasks. This is a speculative
+producer bound, not a hard cap on all due/manual jobs or a new MAX rate limit.
+
+Each occurrence persists its target position after both nomination acknowledgements. A partial
+page yields to other occurrences; a completed cycle wraps for changed audiences and lost Redis
+jobs. Restart resumes the SQL position, and a failed Redis acknowledgement leaves it unchanged.
+These nullable progress columns are observational/scheduling metadata, never permission proof.
+Cancellation/revision fences protect the progress update; all actual sends retain their existing
+author, content, schedule and permission guards. Large overload remains pending/missed under the
+existing publication rules; no target is removed to improve latency.
+
+Publication actor work may reuse the exact fresh SQL bot snapshot, including matching snapshot
+checkedAt, positive state, active lifecycle and at least 30 seconds remaining. Actor persistence
+rechecks the same bot proof and its expiry after the remote user probe. A concurrent renewal or
+expiry retries the actor work; removal/new generation or a newer denial grants nothing. Manual,
+Start and candidate-connection probes keep fresh remote bot checks.
+
+`publisher_refresh_v1` now includes `workClass=preparation|urgent|background` and
+`queueAgeBasis=urgent_nomination_or_scheduled_boundary_v2`. Preserve the original reason/cohort;
+compare urgent initial attempts separately from preparation, and retain admission and full-cycle
+coverage as independent acceptance requirements. A new classification alone is not an improvement.
+`publisher_preflight_admission_v1` reports bounded per-minute visited-target/cycle counts, observed
+overdue targets, maximum admission delay and capacity-deferred ticks. Visited targets include
+already-fresh or denied targets; completion of a cycle is not proof of granted access. An unvisited
+backlog or a zero-sample window cannot pass readiness coverage.
 
 ## Validation and release
 
@@ -59,7 +90,9 @@ probe, proof races, atomic rollback of schedule/edges, indexed access paths and 
 Existing publication authority/send-ledger tests remain the send-safety acceptance gate. Synthetic
 queue order is not a production latency or MAX-throughput guarantee.
 
-The schema change adds two nullable timestamps without backfill/default and two concurrent indexes.
+The scheduler schema changes add two nullable timestamps and two concurrent indexes. The evidence
+release adds its diagnostic obligation table; admission adds three nullable occurrence progress
+columns without backfill/default. No historical SQL is changed.
 Review lock/statement timeouts and the immutable migration baseline. Leave these columns/indexes
 on rollback; never edit historical migration receipts or retry partial concurrent DDL blindly.
 
@@ -98,7 +131,8 @@ environment. The adoption path must re-prove the exact image and queue fence bef
 ## Canary acceptance
 
 Keep the initial deterministic 10% cohort for at least 24 hours. Aggregate identifier-free
-`publisher_refresh_v1` windows by `reason`, `retrying` and `cohort`. `proofOutcomes` counts actual
+`publisher_refresh_v1` windows by `reason`, `workClass`, `retrying` and `cohort`. Keep the
+measurement basis/release separate; never fold older unclassified windows into the new urgent SLA. `proofOutcomes` counts actual
 stage verdicts; `stageAttempts` distinguishes work attempted from deferred jobs. Use roster stage
 attempts for periodic maintenance per eligible cohort/time, and compare the same traffic window.
 `deadlineProbes` and `confirmedBeforeDeadline` describe observed jobs carrying a bot deadline;
