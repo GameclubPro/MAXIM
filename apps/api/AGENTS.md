@@ -135,6 +135,8 @@
 
 ## Managed Entities And Multi-Bot
 
+- Publisher access refresh uses `MAX_PUBLISHER_ACCESS_REFRESH_MODE=off|canary|on`: priorities apply queue-wide while the 30-minute roster cadence is cohort-scoped. Roster schedule/edge writes share the exact-proof SQL transaction; publication promotion preserves job identity and delayed retries. See `docs/operations/runbooks/publisher-access-refresh-rollout.md`.
+
 - Ownership is `Chat.primaryBotId` plus `ChatBotMembership`; `Chat.botId` is transitional compatibility.
 - Centralize primary-bot scoring in `src/max/max-bot-access-policy.util.ts`; routing and ownership repair share this policy.
 - One confirmed eligible active bot is enough. Do not mark a chat failed merely because its primary is weak/denied while another route candidate has rights.

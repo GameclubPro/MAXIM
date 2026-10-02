@@ -1,0 +1,94 @@
+# Publisher access refresh rollout
+
+## Scope and invariants
+
+The access coordinator delegates bot, actor, catalog and roster work to focused executors.
+Bot proofs retain their 15-minute lifetime. Publication authority still requires fresh exact-bot,
+exact-actor evidence and existing lifecycle/source-version fences. A completed queue operation
+is not a permission grant. Worker concurrency stays at two; MAX budgets and ambiguous-send
+recovery remain unchanged.
+
+`MAX_PUBLISHER_ACCESS_REFRESH_MODE` accepts `off`, `canary`, or `on`. Application configuration
+and `.env.example` default to `off`. Production and scale Compose default to `canary` for this
+release; an explicit environment value overrides that default. Every API role receives the same
+setting because several roles produce jobs for the shared queue.
+
+- `off` uses the previous scheduling/priority policy. Additive SQL metadata can remain in place.
+- `canary` separates roster scheduling for the deterministic SHA-256 bucket 0 of 10 over the
+  exact bot/entity pair. Deadline priorities apply to the whole queue; legacy cohort maintenance
+  must not compete with publication checks at priority five.
+- `on` separates roster scheduling for every Publisher binding.
+
+Successful roster synchronization updates `rosterCheckedAt` and `rosterRefreshAfter` atomically
+with access edges. It first locks the parent chat and wins an exact-proof/lifecycle CAS on the
+binding; a failed CAS grants nothing. The next periodic check is due after 30 minutes. Manual,
+Start and connection/lifecycle flows retain immediate checks. Bootstrap initialization visits
+at most 200 bindings per scan and spreads first checks across 30 minutes. Due roster selection
+visits at most 25 rows per minute with a tuple cursor; retries leave evidence unchanged and persist
+at least one minute of scheduling backoff, honoring a larger MAX retry interval or HTTP Retry-After.
+
+Bot selection uses an independent 25-row missing-expiry lane and a 200-row dated lane ordered
+by `(botAccessExpiresAt, chatId)`. Cursors advance past pending/slow work and wrap after exhaustion.
+Schedules survive queue loss because enqueue never advances SQL success metadata.
+
+## Queue compatibility
+
+Version-one jobs accept optional `requiredBefore`, `publicationRequested` and `publicationRequestedAt` fields. The promotion marker
+preserves an urgent nomination when it shares an existing scheduled job; it is scheduling metadata,
+never send authority. The first publication nomination timestamp measures urgent wait without resetting on rediscovery; promoted actors still need a proof fresh enough for publication. Old jobs without these fields remain valid.
+
+Priorities are manual/policy checks 1, publication/lifecycle checks 5, ordinary bot checks 10,
+and background roster/actor/bootstrap work 20. Bot checks become priority 5 within 60 seconds of
+expiry; background jobs may age to 10 after 30 minutes, never to 5 solely from age. A publication
+nomination promotes an exact pending bot or actor job without resetting its ID, attempts or delayed
+retry deadline. Actor coalescing includes candidate version. Interactive replies remain separate.
+
+Existing backlog compaction is bounded at 5,000 jobs per pass. A truncated pass must be reported
+when assessing rollout latency; it does not prove the whole backlog has been reprioritized.
+
+## Validation and release
+
+Run public locked API validation plus Prisma and infrastructure checks. With disposable localhost
+PostgreSQL/Redis, set `TZ=UTC`, `CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL` (database name containing
+`race_test`) and `MAXIM_TEST_REDIS_URL`. The access schedule PostgreSQL suite is part of
+`test:postgres-races`; Redis suites run with normal API tests when their URL is configured.
+
+Coverage includes 1,000/2,000 aged jobs ahead of urgent work at concurrency two, delayed retry
+promotion, actor versions, legacy envelopes, SQL restart/queue-loss recovery, revocation during a
+probe, proof races, atomic rollback of schedule/edges, indexed access paths and manual checks.
+Existing publication authority/send-ledger tests remain the send-safety acceptance gate. Synthetic
+queue order is not a production latency or MAX-throughput guarantee.
+
+The schema change adds two nullable timestamps without backfill/default and two concurrent indexes.
+Review lock/statement timeouts and the immutable migration baseline. Leave these columns/indexes
+on rollback; never edit historical migration receipts or retry partial concurrent DDL blindly.
+
+Deploy through exact-SHA green CI and the regular queue-fenced shared API rollout. Both Compose
+changes affect only the common API environment; select all 14 API roles and the API auxiliary,
+without rebuilding static services or recreating PostgreSQL/Redis. If clean API build capacity is
+below 20 GiB, use verified CI image preload and its own archive-plus-reserve check. Do not lower
+capacity floors. Verify background/OCR restart stability before proceeding.
+
+## Canary acceptance
+
+Keep the initial deterministic 10% cohort for at least 24 hours. Aggregate identifier-free
+`publisher_refresh_v1` windows by `reason`, `retrying` and `cohort`. `proofOutcomes` counts actual
+stage verdicts; `stageAttempts` distinguishes work attempted from deferred jobs. Use roster stage
+attempts for periodic maintenance per eligible cohort/time, and compare the same traffic window.
+`deadlineProbes` and `confirmedBeforeDeadline` describe observed jobs carrying a bot deadline;
+they do not estimate unscheduled bindings or prove fleet-wide coverage by themselves.
+
+Required gates under supported load:
+
+- Initial urgent queue-age histograms: p95 at most 5 seconds and p99 at most 15 seconds.
+- At least 99.9% scheduled bot confirmations before expiry, with sufficient deadline observations
+  and `publisher_access_scan_v1` confirmation that scans completed full cursor cycles without errors.
+- At least 50% fewer periodic roster calls per comparable binding/time versus control/baseline.
+- No increase in denied/stale sends, ambiguous replay, API failures or sustained moderation lag.
+- No lost manual operation identity, missing roster recovery or scan/compaction truncation ignored
+  in the measurement.
+
+Promotion to `on` requires these measured gates, a recorded start/end window and exact deployed SHA.
+Low samples or missing windows mean acceptance is pending. An immediate release smoke cannot
+substitute for the full observation window. Return to explicit `off` through the normal shared API
+environment rollout if regression appears; retain the durable SQL state and pending job identities.

@@ -591,6 +591,8 @@ model PublisherEntityBinding {
   lifecycleEventAt          DateTime?               @map("lifecycle_event_at")
   lifecycleEventType        String?                 @map("lifecycle_event_type")
   lifecycleSource           String?                 @map("lifecycle_source")
+  rosterCheckedAt           DateTime?               @map("roster_checked_at")
+  rosterRefreshAfter        DateTime?               @map("roster_refresh_after")
   createdAt                 DateTime                @default(now()) @map("created_at")
   updatedAt                 DateTime                @updatedAt @map("updated_at")
 
@@ -599,6 +601,8 @@ model PublisherEntityBinding {
   @@index([publisherBotId, status], map: "publisher_entity_bindings_bot_status_idx")
   @@index([botAccessState, botAccessCheckedAt(sort: Desc)], map: "publisher_entity_bindings_access_checked_idx")
   @@index([status, sendRouteQuarantinedUntil], map: "publisher_entity_bindings_status_quarantine_idx")
+  @@index([publisherBotId, status, botAccessExpiresAt, chatId], map: "publisher_bindings_expiry_idx")
+  @@index([publisherBotId, status, rosterRefreshAfter, chatId], map: "publisher_bindings_roster_due_idx")
   @@map("publisher_entity_bindings")
 }
 

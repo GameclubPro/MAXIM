@@ -1,5 +1,10 @@
+import {
+  PublisherAccessRefreshPolicy,
+  PUBLISHER_BOT_EXPIRY_URGENCY_MS,
+  PUBLISHER_ROSTER_INTERVAL_MS,
+} from './publisher-access-refresh-policy';
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
 import type { Job, JobType, Queue } from 'bullmq';
 import { createHash, randomUUID } from 'node:crypto';
 import type { PublisherRefreshOperation } from '@maxim/contracts/publisher';
@@ -33,6 +38,9 @@ export type PublisherBindingRefreshJob = {
   requiresReadAccess?: boolean;
   reason: PublisherBindingRefreshReason;
   requestedAt: string;
+  requiredBefore?: string;
+  publicationRequested?: boolean;
+  publicationRequestedAt?: string;
 };
 
 const PUBLISHER_REFRESH_JOB_BUCKET_MS = 60_000;
@@ -103,6 +111,8 @@ export class PublisherBindingRefreshQueueService {
   constructor(
     @InjectQueue(PUBLISHER_BINDING_REFRESH_QUEUE)
     private readonly queue: Queue<PublisherBindingRefreshJob>,
+    @Optional()
+    private readonly policy: PublisherAccessRefreshPolicy = new PublisherAccessRefreshPolicy(),
   ) {}
 
   async compactScheduledBacklog(): Promise<PublisherScheduledBacklogCompactionResult> {
@@ -188,7 +198,7 @@ export class PublisherBindingRefreshQueueService {
         retained
           .slice(offset, offset + PUBLISHER_SCHEDULED_COMPACTION_REMOVE_CONCURRENCY)
           .map(async (job) => {
-            const priority = resolveRefreshPriority(job.data.reason, job.timestamp);
+            const priority = this.priority(job.data, job.timestamp);
             if (job.priority === priority) return;
             try {
               await job.changePriority({ priority });
@@ -225,6 +235,7 @@ export class PublisherBindingRefreshQueueService {
     requiresReadAccess?: boolean;
     requestedAt?: Date;
     eventAt?: Date | null;
+    requiredBefore?: Date | null;
   }): Promise<string | null> {
     const chatId = params.chatId.trim();
     const publisherBotId = params.publisherBotId.trim();
@@ -233,6 +244,14 @@ export class PublisherBindingRefreshQueueService {
     }
 
     const requestedAt = params.requestedAt ?? new Date();
+    const publicationRequested =
+      this.policy.deadlinePrioritiesEnabled &&
+      (params.reason === 'publication_due' || params.reason === 'publication_actor_due');
+    const deadline = params.requiredBefore?.getTime();
+    const requiredBefore =
+      deadline !== undefined && Number.isFinite(deadline)
+        ? new Date(deadline).toISOString()
+        : undefined;
     const candidateUserId = params.candidateUserId?.trim() || null;
     const candidateVersion = params.candidateVersion?.trim() || null;
     const replyChatId = params.replyChatId?.trim() || null;
@@ -267,6 +286,8 @@ export class PublisherBindingRefreshQueueService {
       publisherBotId,
       ...(candidateUserId ? { candidateUserId } : {}),
       ...(candidateVersion ? { candidateVersion } : {}),
+      ...(replyChatId ? { replyChatId } : {}),
+      ...(params.replyToStartCommand ? { replyToStartCommand: true } : {}),
       reason: params.reason,
       requestedAt: requestedAt.toISOString(),
     });
@@ -284,10 +305,14 @@ export class PublisherBindingRefreshQueueService {
         ...(params.requiresReadAccess ? { requiresReadAccess: true } : {}),
         reason: params.reason,
         requestedAt: requestedAt.toISOString(),
+        ...(requiredBefore ? { requiredBefore } : {}),
+        ...(publicationRequested
+          ? { publicationRequested: true, publicationRequestedAt: requestedAt.toISOString() }
+          : {}),
       },
       {
         jobId,
-        priority: resolveRefreshPriority(params.reason),
+        priority: this.priority({ reason: params.reason, requiredBefore, publicationRequested }),
         ...(interactiveRecheck
           ? {
               deduplication: {
@@ -332,16 +357,57 @@ export class PublisherBindingRefreshQueueService {
         },
       },
     );
-    if (scheduledDeduplicationKey && queued?.id && queued.id !== jobId) {
+    if (
+      scheduledDeduplicationKey &&
+      queued?.id &&
+      (queued.id !== jobId || this.policy.deadlinePrioritiesEnabled)
+    ) {
       // FLAG: Queue.add returns the retained ID on deduplication but its local data
       // describes the new request. Inspect only that exact persisted job for its age.
       const retained = await this.queue.getJob(queued.id);
-      if (
-        retained &&
-        retained.data.reason === params.reason &&
-        this.scheduledDeduplicationKey(retained.data) === scheduledDeduplicationKey
-      ) {
-        const priority = resolveRefreshPriority(retained.data.reason, retained.timestamp);
+      if (retained && this.scheduledDeduplicationKey(retained.data) === scheduledDeduplicationKey) {
+        if (
+          publicationRequested ||
+          (requiredBefore &&
+            (!retained.data.requiredBefore || requiredBefore < retained.data.requiredBefore))
+        ) {
+          if (this.policy.deadlinePrioritiesEnabled) {
+            // FLAG: Concurrent producers may only move the deadline earlier. Preserve the
+            // stored envelope, candidate identity and BullMQ retry/backoff fields atomically.
+            const client = await this.queue.client;
+            client.defineCommand('publisherRefreshPromote', {
+              numberOfKeys: 1,
+              lua: `
+              local raw = redis.call('HGET', KEYS[1], 'data')
+              if not raw then return nil end
+              local data = cjson.decode(raw)
+              if data.publisherBotId ~= ARGV[2] or data.chatId ~= ARGV[3] then return nil end
+              if ARGV[1] ~= '' and (not data.requiredBefore or ARGV[1] < data.requiredBefore) then
+                data.requiredBefore = ARGV[1]
+              end
+              if ARGV[4] == '1' then
+                data.publicationRequested = true
+                if not data.publicationRequestedAt or ARGV[5] < data.publicationRequestedAt then data.publicationRequestedAt = ARGV[5] end
+              end
+              raw = cjson.encode(data)
+              redis.call('HSET', KEYS[1], 'data', raw)
+              return raw`,
+            });
+            const updated = await client.runCommand('publisherRefreshPromote', [
+              this.queue.toKey(retained.id!),
+              requiredBefore ?? '',
+              publisherBotId,
+              chatId,
+              publicationRequested ? '1' : '0',
+              requestedAt.toISOString(),
+            ]);
+            if (typeof updated === 'string')
+              retained.data = JSON.parse(updated) as PublisherBindingRefreshJob;
+          } else {
+            await retained.updateData({ ...retained.data, requiredBefore });
+          }
+        }
+        const priority = this.priority(retained.data, retained.timestamp);
         if (retained.priority > priority) await retained.changePriority({ priority });
       }
     }
@@ -427,6 +493,32 @@ export class PublisherBindingRefreshQueueService {
     };
   }
 
+  private priority(
+    job: Pick<PublisherBindingRefreshJob, 'reason' | 'requiredBefore' | 'publicationRequested'>,
+    createdAt?: number,
+  ): number {
+    if (!this.policy.deadlinePrioritiesEnabled)
+      return resolveRefreshPriority(job.reason, createdAt);
+    if (job.reason === 'manual_recheck' || job.reason === 'policy_enablement_recheck') return 1;
+    if (job.publicationRequested) return 5;
+    if (job.reason === 'scheduled_bot_access' || job.reason === 'stale_access') {
+      const deadline = Date.parse(job.requiredBefore ?? '');
+      return Number.isFinite(deadline) && deadline <= Date.now() + PUBLISHER_BOT_EXPIRY_URGENCY_MS
+        ? 5
+        : 10;
+    }
+    if (
+      job.reason === 'binding_maintenance' ||
+      job.reason === 'stale_user_access' ||
+      job.reason === 'bootstrap'
+    ) {
+      return createdAt !== undefined && Date.now() - createdAt >= PUBLISHER_ROSTER_INTERVAL_MS
+        ? 10
+        : 20;
+    }
+    return 5;
+  }
+
   private operationScope(actorId: string, botId: string): string {
     return createHash('sha256')
       .update(JSON.stringify(['publisher', actorId, botId]))
@@ -436,6 +528,8 @@ export class PublisherBindingRefreshQueueService {
   private scheduledLogicalKey(job: PublisherBindingRefreshJob | null | undefined): string | null {
     if (
       !job ||
+      job.replyChatId ||
+      job.replyToStartCommand ||
       ![
         'stale_access',
         'stale_user_access',
@@ -465,6 +559,9 @@ export class PublisherBindingRefreshQueueService {
       chatId,
       candidateUserId || null,
       candidateVersion || null,
+      ...(this.policy.deadlinePrioritiesEnabled
+        ? [job.requiredBefore ?? null, job.publicationRequested ?? false]
+        : []),
     ]);
   }
 
@@ -475,9 +572,41 @@ export class PublisherBindingRefreshQueueService {
     if (!logicalKey || !job) {
       return null;
     }
-    if (job.reason === 'stale_access') {
+    if (
+      this.policy.deadlinePrioritiesEnabled &&
+      (job.reason === 'scheduled_bot_access' || job.reason === 'publication_due') &&
+      !job.candidateUserId &&
+      !job.candidateVersion &&
+      !job.replyChatId &&
+      !job.replyToStartCommand
+    ) {
+      return JSON.stringify(['bot_access', job.publisherBotId.trim(), job.chatId.trim()]);
+    }
+    if (
+      this.policy.deadlinePrioritiesEnabled &&
+      (job.reason === 'stale_user_access' || job.reason === 'publication_actor_due') &&
+      !job.replyChatId &&
+      !job.replyToStartCommand
+    ) {
+      return JSON.stringify([
+        'actor_access',
+        job.publisherBotId.trim(),
+        job.chatId.trim(),
+        job.candidateUserId?.trim(),
+        job.candidateVersion?.trim() || null,
+      ]);
+    }
+    if (job.reason === 'stale_access' && !this.policy.deadlinePrioritiesEnabled) {
       return logicalKey;
     }
+    if (this.policy.deadlinePrioritiesEnabled)
+      return JSON.stringify([
+        job.reason,
+        job.publisherBotId.trim(),
+        job.chatId.trim(),
+        job.candidateUserId?.trim() || null,
+        job.candidateVersion?.trim() || null,
+      ]);
     return JSON.stringify([
       job.reason,
       job.publisherBotId.trim(),
