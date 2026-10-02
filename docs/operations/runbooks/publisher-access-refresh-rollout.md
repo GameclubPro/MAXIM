@@ -104,6 +104,28 @@ attempts for periodic maintenance per eligible cohort/time, and compare the same
 `deadlineProbes` and `confirmedBeforeDeadline` describe observed jobs carrying a bot deadline;
 they do not estimate unscheduled bindings or prove fleet-wide coverage by themselves.
 
+For a bounded population snapshot, first review the fixed plan, then run:
+
+```bash
+./infra/scripts/vps-connect.sh postgres-audit publisher-access-census --explain
+./infra/scripts/vps-connect.sh postgres-audit publisher-access-census
+```
+
+This opt-in report uses the existing six binding metadata grants and the audit session's time,
+memory and read-only limits. An unfiltered primary-key scan stops at 50,001 rows before any
+status filter, cohort hash or aggregate. Only counts over at most 50,000 rows leave SQL;
+`source_truncated` explicitly marks an incomplete population. The SHA-256 bucket matches the
+runtime's compact JSON bot/entity pair. Both cohorts report active/admin/fresh/expired populations.
+`active_bot_scopes` must be one and agree with the attested runtime scope before using a complete
+snapshot as a population denominator. No new grants or application restart are required.
+
+Collect comparable snapshots throughout the measured interval. Normalize only periodic
+`binding_maintenance` roster attempts against comparable eligible binding/time exposure;
+webhook/manual roster work is separate. Sparse snapshots, population changes and truncated
+samples must remain explicit uncertainties, not be converted into precise binding-hours.
+Fresh evidence in a snapshot cannot retrospectively resolve superseded jobs or prove that a
+previous deadline was met. This report never grants access or repairs/replays a publication.
+
 Required gates under supported load:
 
 - Initial urgent queue-age histograms: p95 at most 5 seconds and p99 at most 15 seconds.

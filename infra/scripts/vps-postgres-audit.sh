@@ -31,6 +31,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
+  ./infra/scripts/vps-postgres-audit.sh publisher-access-census [--explain]
   ./infra/scripts/vps-postgres-audit.sh storage [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
@@ -82,7 +83,7 @@ case "$AUDIT_MODE" in
     fi
     DUPLICATE_EXPLAIN="${2:-}"
     ;;
-  publisher-publications|storage)
+  publisher-publications|publisher-access-census|storage)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -1487,6 +1488,13 @@ emit_sql() {
         publication_args+=("$RULES_CLEANUP_EXPLAIN")
       fi
       node "$ROOT_DIR/infra/scripts/publisher-publications-audit.mjs" "${publication_args[@]}"
+      ;;
+    publisher-access-census)
+      local census_args=()
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+        census_args+=("$RULES_CLEANUP_EXPLAIN")
+      fi
+      node "$ROOT_DIR/infra/scripts/publisher-access-census.mjs" "${census_args[@]}"
       ;;
     all)
       emit_queue_audit
