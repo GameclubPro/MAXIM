@@ -286,6 +286,38 @@ describe('PublisherBindingRefreshService', () => {
     permissionsKnown: true,
   };
 
+  it.each(['bot_added', 'scheduled_bot_access'] as const)(
+    'includes %s in the urgent latency histogram',
+    async (reason) => {
+      const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+      try {
+        const f = createHarness(adminAccess);
+        await f.service.refresh({
+          ...job,
+          reason,
+          requestedAt: new Date(Date.now() - 2_000).toISOString(),
+          ...(reason === 'scheduled_bot_access'
+            ? { requiredBefore: new Date(Date.now() + 30_000).toISOString() }
+            : {}),
+        });
+        f.service.onModuleDestroy();
+        expect(log).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metric: 'publisher_refresh_v1',
+            reason,
+            workClass: 'urgent',
+            queueAgeBasis: 'all_urgent_refresh_boundaries_v3',
+            queueAgeHistogram:
+              reason === 'bot_added' ? [0, 1, 0, 0, 0, 0, 0, 0] : [0, 0, 0, 1, 0, 0, 0, 0],
+          }),
+          'Publisher refresh window',
+        );
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
   it('includes late admission before enqueue in urgent latency', async () => {
     const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     try {
