@@ -1,3 +1,6 @@
+import { ConfigService } from '@nestjs/config';
+import { WebhookService } from './webhook.service';
+import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -114,6 +117,133 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
 
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  function preparationService() {
+    return new WebhookService(
+      prisma as never,
+      new ConfigService({ WEBHOOK_CANONICAL_EXECUTION_MODE: 'on' }),
+      {
+        getStoredChatPrimaryBotId: async () => 'preparation-bot',
+        observeStoredChatBotWebhook: async () => undefined,
+      } as never,
+    );
+  }
+  async function preparationReceipt() {
+    const id = `preparation-${randomUUID()}`;
+    const update = {
+      updateId: id,
+      botId: 'preparation-bot',
+      type: 'message_created',
+      message: {
+        chatId: `-${randomUUID()}`,
+        messageId: `message-${id}`,
+        senderId: '',
+        text: '',
+        createdAt: new Date().toISOString(),
+      },
+    };
+    createdEventIds.push(id);
+    await prisma.webhookEvent.create({
+      data: { id, dedupKey: id, botId: update.botId, rawPayload: {}, normalizedPayload: update },
+    });
+    return { id, update };
+  }
+
+  it.each([
+    'persistAdminReadModels',
+    'stageManagedEntityPendingBootstrap',
+    'schedulePendingExecutionOwnerFailoverRecheck',
+    'completeManagedEntityHandshake',
+  ])('recovers the same durable receipt after failure in %s before READY', async (stage) => {
+    const { id, update } = await preparationReceipt();
+    const first = preparationService();
+    jest
+      .spyOn(first as never, stage as never)
+      .mockRejectedValueOnce(new WebhookPreparationDeferredError('retry fixture', 1_000) as never);
+    await expect(first.preparePersistedWebhookEvent(id, update)).rejects.toBeInstanceOf(
+      WebhookPreparationDeferredError,
+    );
+    const pending = await prisma.webhookExecutionClaim.findFirst({ where: { webhookEventId: id } });
+    expect(pending).toMatchObject({ status: 'PENDING', preparedAt: null, leaseToken: null });
+    expect((await prisma.webhookEvent.findUnique({ where: { id } }))!.status).toBe('RECEIVED');
+    const restarted = preparationService();
+    expect((await restarted.preparePersistedWebhookEvent(id, update)).prepared).toBe(true);
+    const ready = await prisma.webhookExecutionClaim.findFirst({ where: { webhookEventId: id } });
+    expect(ready).toMatchObject({ id: pending!.id, status: 'READY', leaseToken: null });
+    expect(ready!.preparedAt).not.toBeNull();
+    await first.onModuleDestroy();
+    await restarted.onModuleDestroy();
+  });
+
+  it('drains admitted preparation before shutdown and rejects new work without creating a claim', async () => {
+    const { id, update } = await preparationReceipt();
+    const service = preparationService();
+    let reached!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    jest
+      .spyOn(
+        service as unknown as { completeManagedEntityHandshake: () => Promise<void> },
+        'completeManagedEntityHandshake',
+      )
+      .mockImplementation(async () => {
+        reached();
+        await gate;
+      });
+    const running = service.preparePersistedWebhookEvent(id, update);
+    await started;
+    expect(
+      await prisma.webhookExecutionClaim.findFirst({ where: { webhookEventId: id } }),
+    ).toMatchObject({ preparedAt: null, status: 'PENDING' });
+    const workers = service.stopWorkerAdmission();
+    let drained = false;
+    const draining = workers[0]!.pause(false).then(() => {
+      drained = true;
+    });
+    await expect(
+      service.preparePersistedWebhookEvent('not-admitted', update),
+    ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+    expect(
+      await prisma.webhookExecutionClaim.count({ where: { webhookEventId: 'not-admitted' } }),
+    ).toBe(0);
+    expect(drained).toBe(false);
+    release();
+    await Promise.all([running, draining]);
+    expect(drained).toBe(true);
+    expect(
+      await prisma.webhookExecutionClaim.findFirst({ where: { webhookEventId: id } }),
+    ).toMatchObject({ status: 'READY' });
+  });
+
+  it('does not replay completed preparation for a mirrored receipt', async () => {
+    const { id, update } = await preparationReceipt();
+    const service = preparationService();
+    await service.preparePersistedWebhookEvent(id, update);
+    const mirrorId = `preparation-mirror-${randomUUID()}`;
+    createdEventIds.push(mirrorId);
+    const mirror = { ...update, updateId: mirrorId, botId: 'mirror-bot' };
+    await prisma.webhookEvent.create({
+      data: {
+        id: mirrorId,
+        dedupKey: mirrorId,
+        botId: mirror.botId,
+        rawPayload: {},
+        normalizedPayload: mirror,
+      },
+    });
+    const core = jest.spyOn(service as never, 'prepareWebhookEventCore' as never);
+    expect((await service.preparePersistedWebhookEvent(mirrorId, mirror)).canonical).toBe(false);
+    expect(core).not.toHaveBeenCalled();
+    expect(await prisma.webhookEvent.findUnique({ where: { id: mirrorId } })).toMatchObject({
+      status: 'DUPLICATE',
+    });
+    await service.onModuleDestroy();
   });
 
   it('skips identical prepared JSON without changing the heap tuple and persists a changed owner', async () => {
