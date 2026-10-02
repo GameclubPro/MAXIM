@@ -193,6 +193,45 @@ samples must remain explicit uncertainties, not be converted into precise bindin
 Fresh evidence in a snapshot cannot retrospectively resolve superseded jobs or prove that a
 previous deadline was met. This report never grants access or repairs/replays a publication.
 
+### Acceptance protocol for the combined priority refactoring release
+
+Freeze the release identity and protocol before collection. The interrupted earlier observation
+is historical only. Start with instrumented warmup; require complete expiry, missing-expiry,
+roster-init and roster-due cycles and healthy release/fleet readiness. Then use the next full UTC
+hour as the acceptance boundary and collect at least 24 consecutive complete UTC hours. Retain
+only allowlisted aggregates; keep old and new measurement bases in separate archives. Metrics
+readers must accept the `reused` bot outcome without interpreting it as a new committed proof.
+
+Minimum sample requirements for this run are 1,000 initial urgent attempts and 10,000 exact
+obligations overall, with at least 1,000 obligations in each canary/control cohort. These floors
+allow assessment of observed tail rates; they are not statistical confidence guarantees. Report
+per-reason urgent counts and low-volume classes separately. Missing or insufficient traffic extends
+the canary; do not generate synthetic sends into user chats. Confirmed denials, late registration,
+late confirmations and unresolved obligations remain in the fixed denominator.
+
+Use population snapshots at five-minute cadence with gaps no larger than ten minutes. The
+periodic roster denominator is active confirmed-admin/owner binding exposure for each cohort,
+aligned to the exact metric interval. Report integral estimates and conservative exposure ranges
+from neighboring snapshot minima/maxima; record population changes. If either population changes
+by more than 5% within a snapshot interval, or cohorts show material composition differences,
+collect narrower or stratified read-only evidence before claiming comparable savings. Require the
+50% savings threshold even under the conservative exposure estimate. Other reasons and manual/
+webhook calls are reported separately from `binding_maintenance`, including all its retries.
+
+Replace repeated obligation reports for the same hour; never sum them. Missing hours, truncated
+sources/compaction, evidence gaps, unproven scan coverage or a changed release keep acceptance
+pending. Collection gaps may only be filled by bounded overlapping reads with verified release
+identity. Aggregate worker completions do not resolve missing obligations or prove send safety.
+Compare shared webhook preparation limits and duration, outbox oldest-eligible progress, MAX/
+SQL/Redis errors, send/access/moderation outcomes and complete capacity windows. Review the
+release's [preparation](webhook-preparation-bounds.md) and [outbox scan](webhook-outbox-fair-scan.md)
+runbooks alongside Publisher evidence.
+
+The repository-controlled Compose default is sufficient for a later reviewed `on` rollout only
+when a fresh preflight confirms no overriding runtime environment value. Recheck that condition
+at promotion; deploy every selected component through the ordinary guarded wrapper and attest
+all 14 API roles. A missing override today is not a permanent configuration guarantee.
+
 Required gates under supported load:
 
 - Initial urgent queue-age histograms: p95 at most 5 seconds and p99 at most 15 seconds.
