@@ -64,10 +64,36 @@ Review lock/statement timeouts and the immutable migration baseline. Leave these
 on rollback; never edit historical migration receipts or retry partial concurrent DDL blindly.
 
 Deploy through exact-SHA green CI and the regular queue-fenced shared API rollout. Both Compose
-changes affect only the common API environment; select all 14 API roles and the API auxiliary,
-without rebuilding static services or recreating PostgreSQL/Redis. If clean API build capacity is
+changes affect the common API environment. The current conservative impact classifier selects
+all three active release components for a production Compose change: all 14 API roles and their
+auxiliary, Major mini app static and Safety Desk static. Follow the reviewed deploy plan and preload
+every selected component; PostgreSQL/Redis are never recreated by this application rollout. If clean API build capacity is
 below 20 GiB, use verified CI image preload and its own archive-plus-reserve check. Do not lower
 capacity floors. Verify background/OCR restart stability before proceeding.
+
+### Interrupted index migration
+
+If `20261002120100_index_publisher_access_schedule` fails with a lock timeout, leave the
+immutable migration unchanged. Synchronize the reviewed recovery tooling only after exact-SHA
+CI is green, then run:
+
+```bash
+./infra/scripts/vps-connect.sh recover-publisher-access-migration
+./infra/scripts/vps-connect.sh recover-publisher-access-migration --apply
+./infra/scripts/vps-connect.sh recover-publisher-access-migration
+```
+
+Review the preview before apply. The fixed helper verifies the successful additive prerequisite,
+both nullable timestamp definitions, the exact failed receipt/checksum and both index definitions.
+It only creates missing indexes or reindexes matching invalid indexes concurrently, under the
+deploy lock with a 512 MiB table limit, 30-second lock timeout, 120-second statement timeout and
+10-minute overall deadline. Unknown drift, competing failures, leftover concurrent-reindex artifacts
+or unhealthy runtime abort recovery. Resolution requires both indexes valid and verifies the final
+Prisma receipt. No binding/access rows, queues or release journals are changed.
+
+Resume through normal guarded deploy with caller-only `MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=1`
+when the interrupted transition journal requires adoption. Never persist that flag in production
+environment. The adoption path must re-prove the exact image and queue fence before release.
 
 ## Canary acceptance
 
