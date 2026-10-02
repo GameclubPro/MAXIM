@@ -393,6 +393,7 @@ function selectFairEnqueueCandidatesForTest(
   rows: MockWebhookEventRow[],
   query: SqlQuery,
   timeoutExecutionClaimCompleted: boolean,
+  selectionWindowSize: number,
 ): Array<MockWebhookEventRow & { isRecentReceipt: boolean }> {
   const selectionSql = extractSql(query);
   const values = query.values ?? [];
@@ -401,7 +402,6 @@ function selectFairEnqueueCandidatesForTest(
     .sort((left, right) => right.getTime() - left.getTime())[0];
   const limits = values.filter((value): value is number => typeof value === 'number');
   const overscanTake = Math.max(0, ...limits);
-  const selectionWindowSize = Math.max(0, ...limits.filter((value) => value < overscanTake));
   if (!now || selectionWindowSize === 0) {
     return [];
   }
@@ -559,6 +559,13 @@ function createService(params?: {
           webhookRows,
           query,
           params?.timeoutExecutionClaim?.status === 'COMPLETED',
+          (
+            service as unknown as { resolvePrioritySelectionWindowSize: (size: number) => number }
+          ).resolvePrioritySelectionWindowSize(
+            params?.systemMode === 'degrade'
+              ? Math.min(Number(configValues.ENQUEUE_BATCH_SIZE), 100)
+              : Number(configValues.ENQUEUE_BATCH_SIZE),
+          ),
         );
       }
       if (extractSql(query).includes('selected_chat_candidates')) {
@@ -2693,7 +2700,7 @@ describe('WebhookOutboxService', () => {
     expect(selectionSql).not.toContain('LEFT JOIN LATERAL');
     expect(selectionQuery.values).toContain(5_000);
     expect(selectionSql).not.toContain('ordered_message_head_ids AS MATERIALIZED');
-    expect(selectionQuery.values).toContain(6);
+    expect(selectionQuery.values).toContain(3); // Each half retains part of the wider six-candidate lane.
   });
 
   it('continues other work units after a routing failure without dropping the failed receipt', async () => {
