@@ -4,6 +4,7 @@ import {
   type OutboxScanProgress,
 } from './webhook-outbox-scan';
 import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
+import type { MaxUpdate } from '@maxim/contracts';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
@@ -1631,7 +1632,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const prepared = await this.webhookService.preparePersistedWebhookEvent(event.id);
+      const prepared = await this.webhookService.preparePersistedWebhookEvent(
+        event.id,
+        undefined,
+        event.normalizedPayload as MaxUpdate,
+      );
       if (!prepared.canonical) {
         await this.removeNonCanonicalQueuedJob(event);
         return 'advance';

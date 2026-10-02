@@ -1,4 +1,7 @@
 import { WebhookStatus } from '../prisma/prisma-client';
+import type { MaxUpdate } from '@maxim/contracts';
+import { WebhookService } from './webhook.service';
+import { WebhookPreparationAdmission } from './webhook-preparation-admission';
 import { getQueueToken } from '@nestjs/bullmq';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { WebhookOutboxService } from './webhook-outbox.service';
@@ -801,39 +804,41 @@ function createService(params?: {
     }
   }
   const webhookService = {
-    preparePersistedWebhookEvent: jest.fn(async (eventId: string) => {
-      const row = webhookRows.find((candidate) => candidate.id === eventId);
-      if (params?.prepareResult) {
-        return params.prepareResult;
-      }
-      const semanticKey = buildWebhookSemanticEventKey(row?.normalizedPayload);
-      const canonicalEventId = semanticKey
-        ? canonicalEventBySemanticKey.get(semanticKey)
-        : undefined;
-      if (semanticKey && !canonicalEventId) {
-        canonicalEventBySemanticKey.set(semanticKey, eventId);
-      }
-      const canonical = !semanticKey || !canonicalEventId || canonicalEventId === eventId;
-      if (!canonical) {
-        await prisma.webhookEvent.updateMany({
-          where: { id: eventId },
-          data: {
-            status: WebhookStatus.DUPLICATE,
-          },
-        });
-      }
-      return {
-        canonical,
-        prepared: true,
-        normalizedPayload: row?.normalizedPayload ?? null,
-        executionBotId:
-          row?.normalizedPayload && typeof row.normalizedPayload === 'object'
-            ? (((row.normalizedPayload as Record<string, unknown>).executionOwnerBotId as
-                | string
-                | null) ?? null)
-            : null,
-      };
-    }),
+    preparePersistedWebhookEvent: jest.fn(
+      async (eventId: string, _fallbackUpdate?: MaxUpdate, _admissionUpdate?: MaxUpdate) => {
+        const row = webhookRows.find((candidate) => candidate.id === eventId);
+        if (params?.prepareResult) {
+          return params.prepareResult;
+        }
+        const semanticKey = buildWebhookSemanticEventKey(row?.normalizedPayload);
+        const canonicalEventId = semanticKey
+          ? canonicalEventBySemanticKey.get(semanticKey)
+          : undefined;
+        if (semanticKey && !canonicalEventId) {
+          canonicalEventBySemanticKey.set(semanticKey, eventId);
+        }
+        const canonical = !semanticKey || !canonicalEventId || canonicalEventId === eventId;
+        if (!canonical) {
+          await prisma.webhookEvent.updateMany({
+            where: { id: eventId },
+            data: {
+              status: WebhookStatus.DUPLICATE,
+            },
+          });
+        }
+        return {
+          canonical,
+          prepared: true,
+          normalizedPayload: row?.normalizedPayload ?? null,
+          executionBotId:
+            row?.normalizedPayload && typeof row.normalizedPayload === 'object'
+              ? (((row.normalizedPayload as Record<string, unknown>).executionOwnerBotId as
+                  | string
+                  | null) ?? null)
+              : null,
+        };
+      },
+    ),
   };
   const systemModeService = {
     getEffectiveSnapshot: jest.fn().mockResolvedValue({ mode: params?.systemMode ?? 'normal' }),
@@ -1017,6 +1022,71 @@ function createCompletedSemanticOwnerFixture(options?: {
 }
 
 describe('WebhookOutboxService', () => {
+  it.each([
+    ['another bot', 'bot-b', 'message_created', 'ordinary'],
+    ['same-bot lifecycle', 'bot-a', 'bot_removed', 'lifecycle'],
+    ['same-bot Start', 'bot-a', 'message_created', 'Старт'],
+  ])(
+    'preserves admission identity for %s while ordinary preparation is blocked',
+    async (_label, botId, type, text) => {
+      const first = {
+        updateId: 'scope-a',
+        botId: 'bot-a',
+        type: 'message_created',
+        message: { chatId: 'scope-chat-a', messageId: 'scope-message-a', text: 'ordinary' },
+      };
+      const second = {
+        updateId: 'scope-b',
+        botId,
+        type,
+        message: { chatId: 'scope-chat-b', messageId: 'scope-message-b', text },
+      };
+      const fixture = createService({
+        findManyResult: [
+          { id: 'scope-a', enqueueAttempts: 0, normalizedPayload: first },
+          { id: 'scope-b', enqueueAttempts: 0, normalizedPayload: second },
+        ],
+      });
+      const admission = new WebhookPreparationAdmission(4, jest.fn());
+      const realBoundary = Object.create(WebhookService.prototype) as WebhookService;
+      Object.defineProperty(realBoundary, 'preparationAdmission', { value: admission });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started: string[] = [];
+      Object.defineProperty(realBoundary, 'preparePersistedWebhookEventAdmitted', {
+        value: async (id: string) => {
+          started.push(id);
+          await gate;
+          return {
+            canonical: true,
+            prepared: true,
+            normalizedPayload: id === 'scope-a' ? first : second,
+            executionBotId: null,
+            enforced: false,
+          };
+        },
+      });
+      fixture.webhookService.preparePersistedWebhookEvent.mockImplementation((...args) =>
+        realBoundary.preparePersistedWebhookEvent(...args),
+      );
+      const work = (fixture.service as unknown as { enqueueBatch(): Promise<void> }).enqueueBatch();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const startedBeforeRelease = [...started];
+      const active = admission.snapshot();
+      release();
+      await work;
+      expect(startedBeforeRelease.sort()).toEqual(['scope-a', 'scope-b']);
+      expect(active).toMatchObject({ inFlight: 2, pending: 0 });
+      expect(admission.snapshot().inFlight).toBe(0);
+      expect(
+        fixture.prisma.webhookEvent.updateMany.mock.calls.some(([args]) =>
+          args.data.errorMessage?.includes('preparation'),
+        ),
+      ).toBe(false);
+    },
+  );
   it('retains a privacy-safe failure diagnostic only after its retry state commits', async () => {
     const fixture = createService({
       findManyResult: [{ id: 'private-event', enqueueAttempts: 0 }],
@@ -1311,7 +1381,7 @@ describe('WebhookOutboxService', () => {
       webhookService.preparePersistedWebhookEvent.mock.calls.filter(([eventId]) =>
         eventId.startsWith('evt-poison-'),
       ),
-    ).toEqual([['evt-poison-0000']]);
+    ).toEqual([['evt-poison-0000', undefined, expect.any(Object)]]);
   });
 
   it('reserves one bounded slot for membership-leave lifecycle work under distinct-chat load', async () => {
@@ -3020,7 +3090,11 @@ describe('WebhookOutboxService', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(webhookService.preparePersistedWebhookEvent.mock.calls).toEqual([
-      ['evt-chat-older-slow'],
+      [
+        'evt-chat-older-slow',
+        undefined,
+        expect.objectContaining({ updateId: 'update-chat-older-slow' }),
+      ],
     ]);
     expect(queues[queueName].add).not.toHaveBeenCalled();
 
@@ -3070,7 +3144,11 @@ describe('WebhookOutboxService', () => {
       'evt-tie-a',
     ]);
     expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(1);
-    expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledWith('evt-tie-a');
+    expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledWith(
+      'evt-tie-a',
+      undefined,
+      expect.any(Object),
+    );
   });
 
   it('retains bounded preparation concurrency between different chats', async () => {
@@ -3255,6 +3333,8 @@ describe('WebhookOutboxService', () => {
     expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(1);
     expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledWith(
       'evt-after-terminal-failure',
+      undefined,
+      expect.any(Object),
     );
     expect(queues[queueName].add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
       'evt-after-terminal-failure',
@@ -3758,7 +3838,11 @@ describe('WebhookOutboxService', () => {
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
     expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(1);
-    expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledWith('evt-omitted-older');
+    expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledWith(
+      'evt-omitted-older',
+      undefined,
+      expect.any(Object),
+    );
     expect(queues[queueName].add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
       'evt-omitted-older',
     ]);
