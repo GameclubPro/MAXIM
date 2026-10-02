@@ -219,6 +219,146 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     );
   });
 
+  it.each(
+    [false, true]
+      .flatMap((degraded) =>
+        ['received', 'failed', 'queued', 'background'].map((lane) => ({
+          degraded,
+          lane,
+          batchSize: degraded ? 40 : 100,
+        })),
+      )
+      .concat([{ degraded: true, lane: 'received', batchSize: 1 }]),
+  )(
+    'reaches middle backlog despite a blocked hot head and a growing tail (degraded=$degraded, lane=$lane, batch=$batchSize)',
+    async ({ degraded, lane, batchSize }) => {
+      Object.defineProperty(reader, 'enqueueScans', {
+        value: new Map(),
+        configurable: true,
+        writable: true,
+      });
+      const suffix = randomUUID();
+      const hotChat = `middle-hot-${suffix}`;
+      const middleId = `middle-independent-${suffix}`;
+      const half = degraded ? 1200 : 6000;
+      const base = Date.parse('2026-08-16T00:00:00.000Z');
+      const now = new Date(base + 100_000_000);
+      const row = (index: number) => ({
+        id: `middle-${String(index).padStart(6, '0')}-${suffix}`,
+        dedupKey: `middle-${index}-${suffix}`,
+        status:
+          lane === 'received'
+            ? WebhookStatus.RECEIVED
+            : lane === 'failed'
+              ? WebhookStatus.FAILED
+              : WebhookStatus.QUEUED,
+        nextEnqueueAt: lane === 'failed' ? new Date(base) : null,
+        queueName: lane === 'background' ? 'moderation-background' : null,
+        createdAt: new Date(base + index * 1000),
+        rawPayload: {},
+        normalizedPayload: { type: 'message_created', message: { chatId: hotChat } },
+      });
+      const rows = Array.from({ length: half * 2 + 1 }, (_, index) => row(index));
+      rows[half] = {
+        ...rows[half]!,
+        id: middleId,
+        normalizedPayload: {
+          type: 'message_created',
+          message: { chatId: `independent-${suffix}` },
+        },
+      };
+      createdEventIds.push(...rows.map(({ id }) => id));
+      for (let start = 0; start < rows.length; start += 1000)
+        await prisma.webhookEvent.createMany({ data: rows.slice(start, start + 1000) });
+      await prisma.webhookEvent.update({
+        where: { id: rows[0]!.id },
+        data: { nextEnqueueAt: new Date(now.getTime() + 60_000) },
+      });
+      let observed = false;
+      for (let pass = 0; pass < 8; pass += 1) {
+        const tail = { ...row(half * 2 + 1 + pass), createdAt: new Date(now.getTime() + pass + 1) };
+        createdEventIds.push(tail.id);
+        await prisma.webhookEvent.create({ data: tail });
+        const candidates = await reader.selectEnqueueCandidates(
+          new Date(now.getTime() + pass + 1),
+          {
+            degraded,
+            batchSize,
+            enqueueConcurrency: 2,
+            includeQueuedRepair: true,
+            includeCompletedTimeoutRepair: true,
+            expandSelectedChats: false,
+          },
+        );
+        observed ||= candidates.some(({ id }) => id === middleId);
+      }
+      expect(observed).toBe(true);
+      if (!degraded && lane === 'received') {
+        const capture = jest.spyOn(prisma, '$queryRaw');
+        await reader.selectEnqueueCandidates(now);
+        const query = capture.mock.calls[0]![0] as Prisma.Sql;
+        capture.mockRestore();
+        const explained = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+          Prisma.sql`EXPLAIN (ANALYZE, FORMAT JSON) ${query}`,
+        );
+        const nodes = collectExplainNodes(explained);
+        const pools = nodes.filter((node) => node['Subplan Name'] === 'CTE page_pool');
+        expect(pools).toHaveLength(4);
+        expect(pools.every((node) => Number(node['Actual Rows']) <= 2500)).toBe(true);
+        expect(
+          nodes.some(
+            (node) =>
+              node['Node Type'] === 'Seq Scan' && node['Relation Name'] === 'webhook_events',
+          ),
+        ).toBe(false);
+        expect(query.sql).not.toMatch(/\bOFFSET\b/);
+      }
+
+      expect((await reader.findOrderedWebhookHeadsForChats([hotChat])).get(hotChat)?.id).toBe(
+        rows[0]!.id,
+      );
+    },
+  );
+
+  it('does not skip capped distinct pages and safely repeats after cursor loss or a failed query', async () => {
+    const service = reader as unknown as {
+      enqueueScans?: Map<string, unknown>;
+      prisma: PrismaClient;
+    };
+    service.enqueueScans = new Map();
+    const suffix = randomUUID();
+    const base = Date.parse('2026-08-17T00:00:00Z');
+    const rows = Array.from({ length: 800 }, (_, index) => ({
+      id: `scan-cap-${String(index).padStart(4, '0')}-${suffix}`,
+      dedupKey: `scan-cap-${index}-${suffix}`,
+      createdAt: new Date(base + index),
+      status: WebhookStatus.RECEIVED,
+      rawPayload: {},
+      normalizedPayload: {
+        type: 'message_created',
+        message: { chatId: `scan-chat-${index}-${suffix}` },
+      },
+    }));
+    createdEventIds.push(...rows.map(({ id }) => id));
+    await prisma.webhookEvent.createMany({ data: rows });
+    const now = new Date(base + 10_000);
+    const observed = new Set<string>();
+    for (let pass = 0; pass < 12; pass++) {
+      for (const candidate of await reader.selectEnqueueCandidates(now)) observed.add(candidate.id);
+      if (pass === 1) {
+        const state = JSON.stringify([...service.enqueueScans.entries()]);
+        const failure = jest
+          .spyOn(prisma, '$queryRaw')
+          .mockRejectedValueOnce(new Error('SQL unavailable'));
+        await expect(reader.selectEnqueueCandidates(now)).rejects.toThrow('SQL unavailable');
+        expect(JSON.stringify([...service.enqueueScans.entries()])).toBe(state);
+        failure.mockRestore();
+        service.enqueueScans = new Map(); // Process restart: durable rows are not advanced or removed.
+      }
+    }
+    expect(rows.every(({ id }) => observed.has(id))).toBe(true);
+  });
+
   it('collapses a 4k hot chat inside bounded lane scans without probing every global head', async () => {
     const suffix = randomUUID();
     const poisonChat = `outbox-poison-${suffix}`;
@@ -420,7 +560,9 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     await (captureService as OrderedWebhookHeadReader).selectEnqueueCandidates(now);
     expect(capturedSelectionQuery).not.toBeNull();
     expect(capturedSelectionQuery!.sql).not.toContain('LATERAL');
-    expect(capturedSelectionQuery!.values.filter((value) => value === 5_000)).toHaveLength(5);
+    expect(capturedSelectionQuery!.values.filter((value) => value === 5_000)).toHaveLength(1);
+    // Four oldest lanes divide their original 5k pool between head and keyset page.
+    expect(capturedSelectionQuery!.values.filter((value) => value === 2_500)).toHaveLength(12);
 
     const plan = await prisma.$transaction(async (transaction) => {
       await transaction.$executeRaw`SET LOCAL enable_seqscan = off`;

@@ -1,3 +1,8 @@
+import {
+  buildBoundedEnqueueWorkUnitsSql,
+  type OutboxScanState,
+  type OutboxScanProgress,
+} from './webhook-outbox-scan';
 import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -237,6 +242,8 @@ type WebhookEnqueueCandidate = {
   errorMessage: string | null;
   normalizedPayload: unknown;
   isRecentReceipt?: boolean;
+  isBacklogScan?: boolean;
+  scanProgress?: OutboxScanProgress | null;
 };
 
 type WebhookEnqueueStateSnapshot = Pick<
@@ -392,39 +399,9 @@ function buildEnqueueEligibilitySql(now: Date, includeCompletedTimeoutRepair = t
   };
 }
 
-function buildBoundedEnqueueWorkUnitsSql(params: {
-  eligibility: Prisma.Sql;
-  scanDirection: 'ASC' | 'DESC';
-  resultDirection: 'ASC' | 'DESC';
-  overscanTake: number;
-  candidateTake: number;
-}): Prisma.Sql {
-  const scanDirection = Prisma.raw(params.scanDirection);
-  const resultDirection = Prisma.raw(params.resultDirection);
-
-  return Prisma.sql`
-    SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-    FROM (
-      SELECT DISTINCT ON ("work_unit_key") bounded_pool.*
-      FROM (
-        SELECT
-          ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL},
-          ${FAIR_WEBHOOK_WORK_UNIT_KEY_SQL} AS "work_unit_key"
-        FROM "webhook_events"
-        WHERE ${params.eligibility}
-        ORDER BY "created_at" ${scanDirection}, "id" ${scanDirection}
-        LIMIT ${params.overscanTake}
-      ) bounded_pool
-      ORDER BY "work_unit_key" ASC, "created_at" ASC, "id" ASC
-    ) collapsed_work_units
-    ORDER BY "created_at" ${resultDirection}, "id" ${resultDirection}
-    LIMIT ${params.candidateTake}
-  `;
-}
-
 function buildEmptyEnqueueCandidatesSql(): Prisma.Sql {
   return Prisma.sql`
-    SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
+    SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}, FALSE AS "isBacklogScan", NULL::jsonb AS "scanProgress"
     FROM "webhook_events"
     WHERE FALSE
   `;
@@ -447,6 +424,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly userDisplayNameRetentionDays: number;
   private readonly retentionBatchDelayMs = RETENTION_CLEANUP_BATCH_DELAY_MS;
 
+  private enqueueScans?: Map<string, OutboxScanState>;
   private poller: NodeJS.Timeout | null = null;
   private cleaner: NodeJS.Timeout | null = null;
   private maintenanceScheduler: NodeJS.Timeout | null = null;
@@ -743,14 +721,20 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         ? DEGRADED_WEBHOOK_WORK_UNIT_OVERSCAN_SIZE
         : WEBHOOK_WORK_UNIT_OVERSCAN_SIZE,
     );
+    const scans = (this.enqueueScans ??= new Map<string, OutboxScanState>());
     const backlogReceiptCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
+      columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
+      workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
       eligibility: eligibility.received,
+      rotation: { lane: 'received', state: scans.get('received') ?? { horizon: now, after: null } },
       scanDirection: 'ASC',
       resultDirection: 'ASC',
       overscanTake,
       candidateTake: backlogReceiptTake,
     });
     const recentReceiptCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
+      columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
+      workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
       eligibility: eligibility.received,
       scanDirection: 'DESC',
       resultDirection: 'DESC',
@@ -758,7 +742,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       candidateTake: recentReceiptTake,
     });
     const failedCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
+      columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
+      workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
       eligibility: eligibility.failed,
+      rotation: { lane: 'failed', state: scans.get('failed') ?? { horizon: now, after: null } },
       scanDirection: 'ASC',
       resultDirection: 'ASC',
       overscanTake,
@@ -766,7 +753,13 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     });
     const staleUserFacingQueuedCandidatesSql = admission.includeQueuedRepair
       ? buildBoundedEnqueueWorkUnitsSql({
+          columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
+          workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
           eligibility: eligibility.staleUserFacingQueued,
+          rotation: {
+            lane: 'staleUserFacingQueued',
+            state: scans.get('staleUserFacingQueued') ?? { horizon: now, after: null },
+          },
           scanDirection: 'ASC',
           resultDirection: 'ASC',
           overscanTake,
@@ -775,7 +768,13 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       : buildEmptyEnqueueCandidatesSql();
     const staleBackgroundQueuedCandidatesSql = admission.includeQueuedRepair
       ? buildBoundedEnqueueWorkUnitsSql({
+          columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
+          workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
           eligibility: eligibility.staleBackgroundQueued,
+          rotation: {
+            lane: 'staleBackgroundQueued',
+            state: scans.get('staleBackgroundQueued') ?? { horizon: now, after: null },
+          },
           scanDirection: 'ASC',
           resultDirection: 'ASC',
           overscanTake,
@@ -813,7 +812,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         "timeout_quarantine_expires_at" AS "timeoutQuarantineExpiresAt",
         "error_message" AS "errorMessage",
         "normalized_payload" AS "normalizedPayload",
-        "isRecentReceipt"
+        "isRecentReceipt",
+        "isBacklogScan",
+        "scanProgress"
       FROM (
         SELECT backlog_receipt_candidates.*, FALSE AS "isRecentReceipt", 0 AS "selectionGroup"
         FROM backlog_receipt_candidates
@@ -844,7 +845,23 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         CASE WHEN "selectionGroup" <> 1 THEN "id" END ASC
     `);
 
-    return this.mergeEnqueueCandidates(candidates, selectionWindowSize);
+    // FLAG: Commit cursor progress only after the whole SQL statement succeeds. Cursor loss
+    // repeats a bounded scan; it never removes receipts or relaxes the exact-head CAS fence.
+    for (const candidate of candidates) {
+      const progress = candidate.scanProgress;
+      if (!progress) continue;
+      if (progress.complete) scans.delete(progress.lane);
+      else if (progress.afterMs !== null && progress.afterId !== null) {
+        scans.set(progress.lane, {
+          horizon: scans.get(progress.lane)?.horizon ?? now,
+          after: { createdAt: new Date(progress.afterMs), id: progress.afterId },
+        });
+      }
+    }
+    return this.mergeEnqueueCandidates(
+      candidates.filter((candidate) => candidate.id !== null),
+      selectionWindowSize,
+    );
   }
 
   private mergeEnqueueCandidates(
@@ -855,7 +872,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     for (const candidate of candidates) {
       const existing = uniqueById.get(candidate.id);
       if (!existing || candidate.isRecentReceipt) {
-        uniqueById.set(candidate.id, candidate);
+        uniqueById.set(candidate.id, {
+          ...candidate,
+          isBacklogScan: candidate.isBacklogScan || existing?.isBacklogScan,
+        });
+      } else if (candidate.isBacklogScan) {
+        existing.isBacklogScan = true;
       }
     }
 
@@ -865,7 +887,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       const workUnitKey = chatId ? `chat:${chatId}` : `event:${candidate.id}`;
       const existing = uniqueWorkUnits.get(workUnitKey);
       if (!existing || this.compareCandidateSequence(candidate, existing) < 0) {
-        uniqueWorkUnits.set(workUnitKey, candidate);
+        uniqueWorkUnits.set(workUnitKey, {
+          ...candidate,
+          isBacklogScan: candidate.isBacklogScan || existing?.isBacklogScan,
+        });
+      } else if (candidate.isBacklogScan) {
+        existing.isBacklogScan = true;
       }
     }
 
@@ -1105,12 +1132,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     );
     const selectedReceipts = [
       ...recentReceipts.slice(0, recentReceiptTake),
-      ...backlogReceipts.slice(0, Math.max(0, receivedTake - recentReceiptTake)),
+      ...this.reserveScanCandidates(backlogReceipts, Math.max(0, receivedTake - recentReceiptTake)),
     ];
-    const unselectedReceipts = [
-      ...recentReceipts.slice(recentReceiptTake),
-      ...backlogReceipts.slice(Math.max(0, receivedTake - recentReceiptTake)),
-    ];
+    const selectedReceiptIds = new Set(selectedReceipts.map((candidate) => candidate.id));
+    const unselectedReceipts = [...recentReceipts, ...backlogReceipts].filter(
+      (candidate) => !selectedReceiptIds.has(candidate.id),
+    );
 
     if (selectedReceipts.length < receivedTake) {
       selectedReceipts.push(
@@ -1120,13 +1147,29 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
     const selected = [
       ...selectedReceipts,
-      ...recoveryCandidates.slice(0, Math.max(0, take - selectedReceipts.length)),
+      ...this.reserveScanCandidates(
+        recoveryCandidates,
+        Math.max(0, take - selectedReceipts.length),
+      ),
     ];
     if (selected.length < take) {
       selected.push(...unselectedReceipts.slice(0, take - selected.length));
     }
 
     return selected;
+  }
+
+  private reserveScanCandidates<T extends WebhookEnqueueCandidate>(
+    candidates: readonly T[],
+    take: number,
+  ): T[] {
+    // FLAG: Keep a quarter of each existing backlog/recovery allowance for the rotating scan.
+    // This preserves the recent receipt reserve and keeps capped pages visible past final priority.
+    const scan = candidates
+      .filter((candidate) => candidate.isBacklogScan)
+      .slice(0, Math.ceil(take / 4));
+    const ids = new Set(scan.map((candidate) => candidate.id));
+    return [...scan, ...candidates.filter((candidate) => !ids.has(candidate.id))].slice(0, take);
   }
 
   private comparePrioritizedCandidates(
