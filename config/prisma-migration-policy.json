@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261002120100_index_publisher_access_schedule",
-  "baselineNamesSha256": "59438c8895f62bc47502e81080fe6c04ad9fe748c654e7c653ec793317184ab4",
-  "baselineContentsSha256": "1b317d89e5fab9116c43927341d798493969b1e545500167b0c8cc3f302c06f2",
+  "baselineThrough": "20261002180000_add_publisher_refresh_obligations",
+  "baselineNamesSha256": "0aeb586af845679b916bc932d90eccdedd2fa068828d2fe6ffa44e0212e6ef31",
+  "baselineContentsSha256": "caac1e7bcca408804277badc849886794cf6d754f7bc389b6305746765623071",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -140,6 +140,9 @@
     },
     "20261001123000_add_commercial_review_samples": {
       "reason": "All indexes are created atomically on the new empty commercial review sample table. No existing history is scanned, backfilled, or indexed, and the isolated table never participates in global-spammer reputation."
+    },
+    "20261002180000_add_publisher_refresh_obligations": {
+      "reason": "Both indexes belong to the new empty diagnostic obligation table; no existing table, data or index is rewritten. They are created before runtime can write observations."
     }
   }
 }

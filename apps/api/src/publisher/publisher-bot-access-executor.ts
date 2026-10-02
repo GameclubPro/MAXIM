@@ -5,6 +5,10 @@ import type { PrismaService } from '../prisma/prisma.service';
 import { publisherAccessProbeLifecycleWhere } from './publisher-access-probe-fence';
 import type { PublisherBindingRefreshReason } from './publisher-binding-refresh.queue';
 import type { PublisherAccessProbeOutcome } from './publisher-access-refresh-policy';
+import type {
+  PublisherAccessRefreshEvidenceService,
+  PublisherRefreshProof,
+} from './publisher-access-refresh-evidence.service';
 const PUBLISHER_ACCESS_SNAPSHOT_TTL_MS = 15 * 60_000;
 
 export class PublisherBotAccessExecutor {
@@ -12,12 +16,14 @@ export class PublisherBotAccessExecutor {
     private readonly prisma: PrismaService,
     private readonly maxClient: MaxClientService,
     private readonly publisherBotId: string,
+    private readonly evidence?: PublisherAccessRefreshEvidenceService,
   ) {}
   async execute(params: {
     chatId: string;
     reason: PublisherBindingRefreshReason;
     probeStartedAt: Date;
     materializeForwarded: boolean;
+    previous?: PublisherRefreshProof;
   }) {
     const botAccess = await this.maxClient.getCurrentChatMemberAccess(params.chatId, {
       botId: this.publisherBotId,
@@ -35,12 +41,22 @@ export class PublisherBotAccessExecutor {
       now: checkedAt,
       ttlMs: PUBLISHER_ACCESS_SNAPSHOT_TTL_MS,
     });
+    let committedAt: Date | null = null;
     if (!params.materializeForwarded) {
       const committed = await this.prisma.publisherEntityBinding.updateMany({
         where: {
           chatId: params.chatId,
           publisherBotId: this.publisherBotId,
           status: ChatBotMembershipStatus.ACTIVE,
+          // FLAG: Diagnostic settlement must name the exact proof replaced by this CAS.
+          // A concurrent newer proof or denial is supersession, never an old-proof success.
+          ...(params.previous
+            ? {
+                botAccessCheckedAt: params.previous.botAccessCheckedAt,
+                botAccessExpiresAt: params.previous.botAccessExpiresAt,
+                botAccessState: params.previous.botAccessState,
+              }
+            : {}),
           AND: [
             publisherAccessProbeLifecycleWhere(params.probeStartedAt),
             {
@@ -59,7 +75,23 @@ export class PublisherBotAccessExecutor {
         },
       });
       if (committed.count === 0)
-        return { outcome: 'superseded' as const, botAccess, snapshot, checkedAt };
+        return {
+          outcome: 'superseded' as const,
+          botAccess,
+          snapshot,
+          checkedAt,
+          committedAt: null,
+        };
+      committedAt = new Date();
+      if (params.previous) {
+        await this.evidence?.recordCommittedProof({
+          chatId: params.chatId,
+          previous: params.previous,
+          probeStartedAt: params.probeStartedAt,
+          committedAt,
+          outcome: botAccess.isAdmin || botAccess.isOwner ? 'confirmed' : 'denied',
+        });
+      }
     }
     return {
       outcome: (botAccess.isAdmin || botAccess.isOwner
@@ -68,6 +100,9 @@ export class PublisherBotAccessExecutor {
       botAccess,
       snapshot,
       checkedAt,
+      // FLAG: The remote response is not a durable proof. This upper bound is captured
+      // after the autocommit acknowledgement, before unrelated catalog/roster work.
+      committedAt,
     };
   }
 }

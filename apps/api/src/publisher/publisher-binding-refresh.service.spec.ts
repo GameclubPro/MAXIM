@@ -334,6 +334,58 @@ describe('PublisherBindingRefreshService', () => {
     }
   });
 
+  it('measures the committed bot proof before slow catalog and roster work finishes', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-02T12:00:00Z'));
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    try {
+      const f = createHarness(adminAccess);
+      const snapshot = await f.maxClient.getChatSnapshot();
+      f.maxClient.getChatSnapshot.mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-10-02T12:00:10Z'));
+        return snapshot;
+      });
+      await f.service.refresh({
+        ...job,
+        requestedAt: new Date().toISOString(),
+        requiredBefore: '2026-10-02T12:00:05Z',
+      });
+      f.service.onModuleDestroy();
+      expect(log).toHaveBeenCalledWith(
+        expect.objectContaining({ deadlineProbes: 1, confirmedBeforeDeadline: 1 }),
+        'Publisher refresh window',
+      );
+    } finally {
+      log.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not count a fast remote response whose SQL commit finishes after the deadline', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-02T12:00:00Z'));
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    try {
+      const f = createHarness(adminAccess);
+      f.prisma.publisherEntityBinding.updateMany.mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-10-02T12:00:10Z'));
+        return { count: 1 };
+      });
+      await f.service.refresh({
+        ...job,
+        reason: 'publication_due',
+        requestedAt: new Date().toISOString(),
+        requiredBefore: '2026-10-02T12:00:05Z',
+      });
+      f.service.onModuleDestroy();
+      expect(log).toHaveBeenCalledWith(
+        expect.objectContaining({ deadlineProbes: 1, confirmedBeforeDeadline: 0 }),
+        'Publisher refresh window',
+      );
+    } finally {
+      log.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it.each(['scheduled_bot_access', 'publication_due'] as const)(
     'keeps %s lightweight and independently queues fenced roster maintenance',
     async (reason) => {

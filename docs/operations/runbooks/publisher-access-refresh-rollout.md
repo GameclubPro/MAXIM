@@ -104,6 +104,39 @@ attempts for periodic maintenance per eligible cohort/time, and compare the same
 `deadlineProbes` and `confirmedBeforeDeadline` describe observed jobs carrying a bot deadline;
 they do not estimate unscheduled bindings or prove fleet-wide coverage by themselves.
 
+The evidence release adds `deadlineEvidenceBasis=committed_proof_attempt_v2`: the attempt
+counter uses the acknowledgement time of the committed bot proof, before optional catalog,
+roster or reply work. Forwarded candidates acquire that time only after their materialization
+transaction succeeds. Superseded probes remain unresolved in attempt metrics. Do not merge
+old end-of-job observations with this new basis or treat either attempt ratio as the SLA denominator.
+
+`publisher_access_refresh_obligations` stores one diagnostic obligation for the exact
+bot/entity/old-proof timestamp/expiry once the old proof enters the five-minute renewal horizon.
+The scanner records selected obligations before enqueue; a successful probe also registers a
+replaced eligible proof that was not previously scanned. A repeated scan or retry cannot reset
+the deadline or overwrite the first settlement. A pending obligation remains unsuccessful after
+expiry, including when its binding is subsequently deleted. Confirmed denials are separate and
+never count as successful renewals. SQL evidence is not a permission source or a send ledger.
+Telemetry errors emit identifier-free `publisher_access_evidence_gap_v1`; they leave committed
+permissions intact but make the affected acceptance interval incomplete.
+
+Each scheduler scan emits `publisher_access_obligations_v1` for the previous complete UTC hour.
+Replace repeated reports for the same release/from/to/cohort, never sum overlapping copies.
+The indexed source is capped at 50,001 rows, with aggregates over at most 50,000 and explicit
+`sourceTruncated`. A complete source reports obligations, confirmed-in-time, confirmed-late,
+denied, unresolved and registered-after-deadline counts. Empty/missing reports do not prove an
+empty fleet. Combine these denominators with complete expiry cursor cycles and the independent
+population census: registration alone cannot prove that a never-scanned binding was covered.
+Begin acceptance only after a full initialization/expiry scan cycle and instrumented warmup;
+discard release gaps, missing windows and mixed measurement semantics. The first partial hour
+is not a complete acceptance hour.
+
+Evidence remains available for seven days. Each scan deletes at most 500 expired rows from
+this new diagnostic table only; no binding, access edge, receipt, publication or send ledger is
+deleted. Rollback leaves the additive table in place. Old runtimes do not write obligations, so
+their intervals cannot pass the new evidence gate. Periodic compaction now emits its bounded
+result as `publisher_access_compaction_v1`, including truncation, even when no jobs changed.
+
 For a bounded population snapshot, first review the fixed plan, then run:
 
 ```bash

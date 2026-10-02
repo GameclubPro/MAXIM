@@ -1,5 +1,6 @@
 import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
 import { PublisherBotAccessExecutor } from './publisher-bot-access-executor';
+import { PublisherAccessRefreshEvidenceService } from './publisher-access-refresh-evidence.service';
 import {
   PublisherBindingMaintenanceSupersededError,
   PublisherRosterRefreshExecutor,
@@ -58,6 +59,7 @@ const PUBLISHER_HANDSHAKE_REPLY_TIMEOUT_MS = 1_500;
 type RefreshTimingStage = 'botAccessMs' | 'catalogMs' | 'rosterMs' | 'userAccessMs';
 type ProbeOutcomes = Partial<Record<'bot' | 'actor' | 'roster', PublisherAccessProbeOutcome>>;
 type RefreshTimings = Partial<Record<RefreshTimingStage, number>>;
+type RefreshProofEvidence = { botCommittedAt?: Date | null };
 const REFRESH_TIMING_SAMPLE_INTERVAL_MS = 30_000;
 const REFRESH_METRIC_WINDOW_MS = 60_000;
 const REFRESH_QUEUE_AGE_BUCKETS_MS = [
@@ -71,6 +73,7 @@ type RefreshMetricBucket = {
   stageAttempts: Record<string, number>;
   deadlineProbes: number;
   confirmedBeforeDeadline: number;
+  deadlineEvidence: Record<string, number>;
   count: number;
   thrown: number;
   totalElapsedMs: number;
@@ -116,9 +119,15 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     @Optional() private readonly refreshQueue?: PublisherBindingRefreshQueueService,
     @Optional()
     private readonly refreshPolicy: PublisherAccessRefreshPolicy = new PublisherAccessRefreshPolicy(),
+    @Optional() evidence?: PublisherAccessRefreshEvidenceService,
   ) {
     this.publisherBotId = credentials.getBotId();
-    this.botAccess = new PublisherBotAccessExecutor(prisma, maxClient, this.publisherBotId);
+    this.botAccess = new PublisherBotAccessExecutor(
+      prisma,
+      maxClient,
+      this.publisherBotId,
+      evidence,
+    );
     this.actorAccess = new PublisherActorAccessExecutor(prisma, maxClient, this.publisherBotId);
     this.catalogRefresh = new PublisherCatalogRefreshExecutor(
       prisma,
@@ -164,9 +173,10 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       : null;
     const timings: RefreshTimings = {};
     const outcomes: ProbeOutcomes = {};
+    const evidence: RefreshProofEvidence = {};
     let outcome: 'returned' | 'threw' = 'threw';
     try {
-      await this.refreshBinding(job, execution.retrying, timings, outcomes);
+      await this.refreshBinding(job, execution.retrying, timings, outcomes, evidence);
       outcome = 'returned';
     } catch (error: unknown) {
       const stage =
@@ -213,6 +223,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
         outcomes,
         timings,
         job.requiredBefore,
+        evidence,
       );
       if (now - this.lastTimingSampleAt >= REFRESH_TIMING_SAMPLE_INTERVAL_MS) {
         this.lastTimingSampleAt = now;
@@ -250,6 +261,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     outcomes: ProbeOutcomes,
     timings: RefreshTimings,
     requiredBefore?: string,
+    evidence: RefreshProofEvidence = {},
   ): void {
     const key = `${reason}:${retrying}:${cohort}`;
     let bucket = this.metricBuckets.get(key);
@@ -262,6 +274,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
         stageAttempts: {},
         deadlineProbes: 0,
         confirmedBeforeDeadline: 0,
+        deadlineEvidence: {},
         count: 0,
         thrown: 0,
         totalElapsedMs: 0,
@@ -280,8 +293,17 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     const deadline = Date.parse(requiredBefore ?? '');
     if (outcomes.bot && Number.isFinite(deadline)) {
       bucket.deadlineProbes += 1;
-      if (outcomes.bot === 'confirmed' && Date.now() <= deadline)
-        bucket.confirmedBeforeDeadline += 1;
+      const committedAt = evidence.botCommittedAt?.getTime();
+      const verdict =
+        outcomes.bot === 'confirmed' && committedAt !== undefined && Number.isFinite(committedAt)
+          ? committedAt <= deadline
+            ? 'confirmed_in_time'
+            : 'confirmed_late'
+          : outcomes.bot === 'confirmed' || outcomes.bot === 'superseded'
+            ? 'unresolved'
+            : outcomes.bot;
+      bucket.deadlineEvidence[verdict] = (bucket.deadlineEvidence[verdict] ?? 0) + 1;
+      if (verdict === 'confirmed_in_time') bucket.confirmedBeforeDeadline += 1;
     }
     bucket.count += 1;
     bucket.thrown += outcome === 'threw' ? 1 : 0;
@@ -311,6 +333,9 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
             stageAttempts: bucket.stageAttempts,
             deadlineProbes: bucket.deadlineProbes,
             confirmedBeforeDeadline: bucket.confirmedBeforeDeadline,
+            // FLAG: These are attempt diagnostics, not a deduplicated obligation denominator.
+            deadlineEvidence: bucket.deadlineEvidence,
+            deadlineEvidenceBasis: 'committed_proof_attempt_v2',
             retrying: bucket.retrying,
             attempts: bucket.count,
             thrown: bucket.thrown,
@@ -349,6 +374,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     retrying: boolean,
     timings: RefreshTimings,
     outcomes: ProbeOutcomes,
+    evidence: RefreshProofEvidence,
   ): Promise<void> {
     const candidateUserId = job.candidateUserId?.trim() ?? '';
     const candidateJob = candidateUserId.length > 0;
@@ -484,9 +510,11 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
           reason: job.reason,
           probeStartedAt,
           materializeForwarded: forwardedCandidateNeedsMaterialization,
+          previous: candidate.publisherBinding ?? undefined,
         }),
       );
       outcomes.bot = proof.outcome;
+      evidence.botCommittedAt = proof.committedAt;
       if (proof.outcome === 'superseded') {
         if (candidateJob) throw new PublisherCandidateRefreshSupersededError();
         return;
@@ -559,6 +587,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     if (forwardedCandidateNeedsMaterialization) {
       await this.materializeForwardedCandidate({
         job,
+        evidence,
         botAccess,
         probeStartedAt,
         botAccessCheckedAt: committedBotAccessCheckedAt,
@@ -702,6 +731,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
 
   private async materializeForwardedCandidate(params: {
     job: PublisherBindingRefreshJob;
+    evidence: RefreshProofEvidence;
     botAccess: MaxChatMemberAccess;
     probeStartedAt: Date;
     botAccessCheckedAt: Date;
@@ -939,6 +969,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     if (!committed) {
       throw new PublisherCandidateRefreshSupersededError();
     }
+    params.evidence.botCommittedAt = new Date();
     await this.replyForwardedCandidate(params.job, 'granted');
   }
 

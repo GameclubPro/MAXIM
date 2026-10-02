@@ -606,6 +606,23 @@ model PublisherEntityBinding {
   @@map("publisher_entity_bindings")
 }
 
+// FLAG: Diagnostic obligations never grant access and deliberately outlive binding deletion.
+model PublisherAccessRefreshObligation {
+  publisherBotId String   @map("publisher_bot_id")
+  chatId         String   @map("chat_id")
+  proofCheckedAt DateTime @map("proof_checked_at")
+  requiredBefore DateTime @map("required_before")
+  observedAt     DateTime @default(now()) @map("observed_at")
+  cohort         String
+  resolution     String   @default("pending")
+  committedAt    DateTime? @map("committed_at")
+
+  @@id([publisherBotId, chatId, proofCheckedAt, requiredBefore], map: "publisher_refresh_obligations_pkey")
+  @@index([publisherBotId, requiredBefore], map: "publisher_refresh_obligations_deadline_idx")
+  @@index([requiredBefore], map: "publisher_refresh_obligations_retention_idx")
+  @@map("publisher_access_refresh_obligations")
+}
+
 model PublisherEntitySettings {
   chatId                    String   @id @map("chat_id")
   chatCommentsEnabled       Boolean  @default(false) @map("chat_comments_enabled")

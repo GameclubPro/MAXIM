@@ -19,12 +19,16 @@ import {
 import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh.queue';
 import { PublisherDispatchHealthService } from './publisher-dispatch-health.service';
 import { PublisherAccessRefreshPolicy } from './publisher-access-refresh-policy';
+import {
+  PublisherAccessRefreshEvidenceService,
+  PUBLISHER_ACCESS_REFRESH_AHEAD_MS,
+} from './publisher-access-refresh-evidence.service';
 
 const PUBLISHER_FORWARDED_CANDIDATE_SOURCE = `${PUBLISHER_ACCESS_CANDIDATE_SOURCE}_forwarded`;
 const PUBLISHER_REFRESH_SCAN_INTERVAL_MS = 60_000;
 const PUBLISHER_READY_REFRESH_BATCH_SIZE = 200;
 const PUBLISHER_DISCOVERY_REFRESH_BATCH_SIZE = 25;
-const PUBLISHER_BINDING_ACCESS_REFRESH_AHEAD_MS = 5 * 60_000;
+const PUBLISHER_BINDING_ACCESS_REFRESH_AHEAD_MS = PUBLISHER_ACCESS_REFRESH_AHEAD_MS;
 // At 25 actor edges per minute, the scheduler can nominate 18k unique edges in this window.
 const PUBLISHER_USER_ACCESS_REFRESH_AHEAD_MS = 12 * 60 * 60_000;
 const PUBLISHER_UNKNOWN_REPROBE_COOLDOWN_MS = 5 * 60_000;
@@ -34,7 +38,11 @@ const PUBLISHER_USER_ACCESS_REFRESH_BATCH_SIZE = 25;
 const PUBLISHER_PENDING_CANDIDATE_RETRY_MS = 60_000;
 const PUBLISHER_DENIED_USER_ACCESS_REPROBE_COOLDOWN_MS = 6 * 60 * 60_000;
 const PUBLISHER_ACTOR_EVIDENCE_LOOKBACK_MS = 30 * 24 * 60 * 60_000;
-type PublisherBindingRefreshCandidate = { chatId: string; botAccessExpiresAt?: Date | null };
+type PublisherBindingRefreshCandidate = {
+  chatId: string;
+  botAccessCheckedAt?: Date | null;
+  botAccessExpiresAt?: Date | null;
+};
 type PublisherUserAccessRefreshCandidate = {
   chatId: string;
   userId: string;
@@ -68,6 +76,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
     private readonly bindingLifecycle: PublisherEntityBindingLifecycleService,
     @Optional()
     private readonly policy: PublisherAccessRefreshPolicy = new PublisherAccessRefreshPolicy(),
+    @Optional() private readonly evidence?: PublisherAccessRefreshEvidenceService,
   ) {
     this.publisherBotId = credentials.getBotId();
     // FLAG: Resolve before scanning so this worker can never probe with another bot token.
@@ -118,7 +127,11 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         Date.now() - this.lastBacklogCompactionAt >= PUBLISHER_REFRESH_SCAN_INTERVAL_MS &&
         this.refreshQueue.compactScheduledBacklog
       ) {
-        await this.refreshQueue.compactScheduledBacklog();
+        const compacted = await this.refreshQueue.compactScheduledBacklog();
+        this.logger.log(
+          { metric: 'publisher_access_compaction_v1', ...compacted },
+          'Publisher scheduled refresh backlog coverage',
+        );
         this.lastBacklogCompactionAt = Date.now();
       }
       await this.backgroundWork.runExclusive('binding_refresh', async () => {
@@ -130,6 +143,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         // FLAG: Publisher webhooks own binding creation; this scan only refreshes existing evidence.
         await this.bindingLifecycle.recoverHistoricalActorCandidates(now);
         const readyBindings = await this.readReadyRefreshCandidates(now);
+        await this.evidence?.observeDue(this.publisherBotId, readyBindings, now);
         const discoveryBindings = await this.readDiscoveryRefreshCandidates(now);
         const userAccessBindings = await this.readUserAccessRefreshCandidates(now);
 
@@ -153,6 +167,8 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
           });
         }
         if (this.policy.deadlinePrioritiesEnabled) await this.scheduleRoster(now);
+        await this.evidence?.maintain(now);
+        await this.evidence?.reportCompletedHour(this.publisherBotId, now);
         for (const binding of userAccessBindings) {
           await this.refreshQueue.enqueue({
             chatId: binding.chatId,
@@ -230,7 +246,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         botAccessExpiresAt: null,
         ...(this.nullExpiryCursor ? { chatId: { gt: this.nullExpiryCursor } } : {}),
       },
-      select: { chatId: true, botAccessExpiresAt: true },
+      select: { chatId: true, botAccessCheckedAt: true, botAccessExpiresAt: true },
       orderBy: { chatId: 'asc' },
       take: 25,
     });
@@ -253,7 +269,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
             }
           : {}),
       },
-      select: { chatId: true, botAccessExpiresAt: true },
+      select: { chatId: true, botAccessCheckedAt: true, botAccessExpiresAt: true },
       orderBy: [{ botAccessExpiresAt: 'asc' }, { chatId: 'asc' }],
       take: PUBLISHER_READY_REFRESH_BATCH_SIZE,
     });

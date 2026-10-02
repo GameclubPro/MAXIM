@@ -1,4 +1,5 @@
 import { PublisherAccessRefreshPolicy } from './publisher-access-refresh-policy';
+import { PublisherAccessRefreshEvidenceService } from './publisher-access-refresh-evidence.service';
 import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
 import { Global, Module } from '@nestjs/common';
@@ -80,6 +81,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
       PublisherRuntimeBoundaryService,
       PublisherRuntimeHeartbeatWriterService,
       PublisherBindingRefreshService,
+      PublisherAccessRefreshEvidenceService,
       PublisherBindingRefreshProcessor,
       PublisherBindingRefreshSchedulerService,
       PublisherWebhookSubscriptionReconcilerService,
