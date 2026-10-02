@@ -4,6 +4,9 @@ import { PrismaClient, createPrismaAdapter } from '../prisma/prisma-client';
 import { PublisherAccessRefreshPolicy } from './publisher-access-refresh-policy';
 import { PublisherBindingRefreshSchedulerService } from './publisher-binding-refresh-scheduler.service';
 import { syncPublisherAdminRoster } from './publisher-admin-roster';
+import { PublisherAccessRefreshEvidenceService } from './publisher-access-refresh-evidence.service';
+import { PublisherBotAccessExecutor } from './publisher-bot-access-executor';
+import { Logger } from '@nestjs/common';
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL ?? '';
 const integration = databaseUrl ? describe : describe.skip;
 
@@ -59,6 +62,7 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
   });
   afterEach(async () => {
     await db.chat.deleteMany({ where: { publisherBinding: { is: { publisherBotId: botId } } } });
+    await db.publisherAccessRefreshObligation.deleteMany({ where: { publisherBotId: botId } });
   });
   afterAll(async () => {
     await db?.$disconnect();
@@ -82,6 +86,326 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
     publisherBotId: botId,
     probeStartedAtMs: p.probeStartedAt.getTime(),
     members: [{ userId: 'admin', isBot: false, isAdmin: true, isOwner: false, permissions: [] }],
+  });
+
+  const adminAccess = {
+    isAdmin: true,
+    isOwner: false,
+    permissions: ['write'],
+    permissionsKnown: true,
+  };
+  function evidence() {
+    return new PublisherAccessRefreshEvidenceService(db as never, policy);
+  }
+  async function expiringProof(deadline = new Date(Date.now() + 30_000)) {
+    return db.publisherEntityBinding.update({
+      where: { chatId },
+      data: {
+        botAccessCheckedAt: new Date(deadline.getTime() - 15 * 60_000),
+        botAccessExpiresAt: deadline,
+      },
+    });
+  }
+
+  it('keeps one exact obligation across repeated scans, retries and observer restart', async () => {
+    const previous = await expiringProof();
+    await Promise.all([
+      evidence().observeDue(botId, [previous], new Date()),
+      evidence().observeDue(botId, [previous], new Date()),
+    ]);
+    const executor = new PublisherBotAccessExecutor(
+      db as never,
+      { getCurrentChatMemberAccess: async () => adminAccess } as never,
+      botId,
+      evidence(),
+    );
+    const result = await executor.execute({
+      chatId,
+      previous,
+      probeStartedAt: new Date(),
+      reason: 'scheduled_bot_access',
+      materializeForwarded: false,
+    });
+    expect(result.outcome).toBe('confirmed');
+    const first = await db.publisherAccessRefreshObligation.findMany({
+      where: { publisherBotId: botId },
+    });
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ resolution: 'confirmed', committedAt: result.committedAt });
+    expect(first[0].committedAt!.getTime()).toBeLessThanOrEqual(first[0].requiredBefore.getTime());
+    await evidence().observeDue(botId, [previous], new Date());
+    await evidence().recordCommittedProof({
+      chatId,
+      previous,
+      probeStartedAt: new Date(),
+      committedAt: new Date(previous.botAccessExpiresAt!.getTime() + 1),
+      outcome: 'denied',
+    });
+    expect(
+      await db.publisherAccessRefreshObligation.findMany({ where: { publisherBotId: botId } }),
+    ).toEqual(first);
+  });
+
+  it('registers an overdue obligation even when a proof was never enqueued by the scanner', async () => {
+    const previous = await expiringProof(new Date(Date.now() - 10_000));
+    const result = await new PublisherBotAccessExecutor(
+      db as never,
+      { getCurrentChatMemberAccess: async () => adminAccess } as never,
+      botId,
+      evidence(),
+    ).execute({
+      chatId,
+      previous,
+      probeStartedAt: new Date(),
+      reason: 'scheduled_bot_access',
+      materializeForwarded: false,
+    });
+    const row = await db.publisherAccessRefreshObligation.findFirstOrThrow({
+      where: { publisherBotId: botId },
+    });
+    expect(row.resolution).toBe('confirmed');
+    expect(row.committedAt).toEqual(result.committedAt);
+    expect(row.committedAt!.getTime()).toBeGreaterThan(row.requiredBefore.getTime());
+  });
+
+  it('leaves a failed probe pending and includes it after its deadline and binding deletion', async () => {
+    const to = new Date(Math.floor(Date.now() / 3_600_000) * 3_600_000);
+    const previous = await expiringProof(new Date(to.getTime() - 10_000));
+    await evidence().observeDue(botId, [previous], new Date());
+    const executor = new PublisherBotAccessExecutor(
+      db as never,
+      {
+        getCurrentChatMemberAccess: async () => {
+          throw new Error('probe timeout');
+        },
+      } as never,
+      botId,
+      evidence(),
+    );
+    await expect(
+      executor.execute({
+        chatId,
+        previous,
+        probeStartedAt: new Date(),
+        reason: 'scheduled_bot_access',
+        materializeForwarded: false,
+      }),
+    ).rejects.toThrow('probe timeout');
+    await db.chat.delete({ where: { id: chatId } });
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    try {
+      await evidence().reportCompletedHour(botId, new Date());
+      expect(log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metric: 'publisher_access_obligations_v1',
+          cohorts: [
+            {
+              cohort: 'separated',
+              obligations: 1,
+              confirmedInTime: 0,
+              confirmedLate: 0,
+              denied: 0,
+              unresolved: 1,
+              registeredAfterDeadline: 1,
+              sourceTruncated: false,
+            },
+          ],
+        }),
+        'Publisher access obligation hour',
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toContain(botId);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(chatId);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('does not settle a replaced proof after a concurrent revoke during the MAX probe', async () => {
+    const previous = await expiringProof();
+    await evidence().observeDue(botId, [previous], new Date());
+    const probeStartedAt = new Date();
+    const executor = new PublisherBotAccessExecutor(
+      db as never,
+      {
+        getCurrentChatMemberAccess: async () => {
+          await db.publisherEntityBinding.update({
+            where: { chatId },
+            data: {
+              status: 'REMOVED',
+              lifecycleEventType: 'bot_removed',
+              lifecycleEventAt: new Date(probeStartedAt.getTime() + 1),
+            },
+          });
+          return adminAccess;
+        },
+      } as never,
+      botId,
+      evidence(),
+    );
+    const result = await executor.execute({
+      chatId,
+      previous,
+      probeStartedAt,
+      reason: 'scheduled_bot_access',
+      materializeForwarded: false,
+    });
+    expect(result.outcome).toBe('superseded');
+    expect(result.committedAt).toBeNull();
+    expect(
+      await db.publisherAccessRefreshObligation.findFirstOrThrow({
+        where: { publisherBotId: botId },
+      }),
+    ).toMatchObject({ resolution: 'pending', committedAt: null });
+  });
+
+  it('retains a committed grant when diagnostic persistence is unavailable', async () => {
+    const previous = await expiringProof();
+    const failedEvidence = new PublisherAccessRefreshEvidenceService(
+      {
+        publisherAccessRefreshObligation: {
+          upsert: async () => {
+            throw new Error('evidence unavailable');
+          },
+        },
+      } as never,
+      policy,
+    );
+    const warning = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await new PublisherBotAccessExecutor(
+        db as never,
+        { getCurrentChatMemberAccess: async () => adminAccess } as never,
+        botId,
+        failedEvidence,
+      ).execute({
+        chatId,
+        previous,
+        probeStartedAt: new Date(),
+        reason: 'scheduled_bot_access',
+        materializeForwarded: false,
+      });
+      expect(result.outcome).toBe('confirmed');
+      expect(
+        (await db.publisherEntityBinding.findUniqueOrThrow({ where: { chatId } }))
+          .botAccessCheckedAt,
+      ).toEqual(result.checkedAt);
+      expect(warning).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metric: 'publisher_access_evidence_gap_v1',
+          reason: 'resolution_write_failed',
+        }),
+        expect.any(String),
+      );
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('bounds diagnostic retention and preserves recent unresolved evidence', async () => {
+    const now = new Date();
+    const old = new Date(now.getTime() - 8 * 24 * 3_600_000);
+    await db.publisherAccessRefreshObligation.createMany({
+      data: Array.from({ length: 510 }, (_, i) => ({
+        publisherBotId: botId,
+        chatId: `old-${i}`,
+        proofCheckedAt: new Date(old.getTime() - 900_000),
+        requiredBefore: old,
+        cohort: 'separated',
+      })),
+    });
+    const previous = await expiringProof(new Date(now.getTime() - 10_000));
+    await evidence().observeDue(botId, [previous], now);
+    await evidence().maintain(now);
+    expect(
+      await db.publisherAccessRefreshObligation.count({ where: { publisherBotId: botId } }),
+    ).toBe(11);
+    expect(
+      await db.publisherAccessRefreshObligation.findFirst({
+        where: { publisherBotId: botId, chatId },
+      }),
+    ).not.toBeNull();
+  });
+
+  it('does not inflate the denominator with early refreshes of a still-fresh proof', async () => {
+    const previous = await db.publisherEntityBinding.findUniqueOrThrow({ where: { chatId } });
+    await evidence().observeDue(botId, [previous], new Date());
+    await evidence().recordCommittedProof({
+      chatId,
+      previous,
+      probeStartedAt: new Date(),
+      committedAt: new Date(),
+      outcome: 'confirmed',
+    });
+    expect(
+      await db.publisherAccessRefreshObligation.count({ where: { publisherBotId: botId } }),
+    ).toBe(0);
+  });
+
+  it('keeps a confirmed remote denial out of the renewal numerator', async () => {
+    const previous = await expiringProof();
+    const result = await new PublisherBotAccessExecutor(
+      db as never,
+      {
+        getCurrentChatMemberAccess: async () => ({
+          ...adminAccess,
+          isAdmin: false,
+          permissions: [],
+        }),
+      } as never,
+      botId,
+      evidence(),
+    ).execute({
+      chatId,
+      previous,
+      probeStartedAt: new Date(),
+      reason: 'scheduled_bot_access',
+      materializeForwarded: false,
+    });
+    expect(result.outcome).toBe('denied');
+    expect(
+      await db.publisherAccessRefreshObligation.findFirstOrThrow({
+        where: { publisherBotId: botId },
+      }),
+    ).toMatchObject({ resolution: 'denied', committedAt: result.committedAt });
+  });
+
+  it('reports truncated evidence explicitly under bounded PostgreSQL memory', async () => {
+    const to = new Date(Math.floor(Date.now() / 3_600_000) * 3_600_000);
+    const deadline = new Date(to.getTime() - 10_000);
+    await db.$executeRaw`
+      INSERT INTO publisher_access_refresh_obligations
+        (publisher_bot_id, chat_id, proof_checked_at, required_before, cohort)
+      SELECT ${botId}, 'cap-' || value, ${new Date(deadline.getTime() - 900_000)}::timestamp,
+        ${deadline}::timestamp, 'separated' FROM generate_series(1, 50001) AS value
+    `;
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const warning = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      await db.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe("SET LOCAL work_mem = '1MB'");
+        await tx.$executeRawUnsafe("SET LOCAL temp_file_limit = '8MB'");
+        await new PublisherAccessRefreshEvidenceService(tx as never, policy).reportCompletedHour(
+          botId,
+          new Date(),
+        );
+      });
+      expect(warning).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cohorts: [
+            expect.objectContaining({
+              obligations: 50000,
+              unresolved: 50000,
+              sourceTruncated: true,
+            }),
+          ],
+        }),
+        'Publisher access obligation hour',
+      );
+    } finally {
+      log.mockRestore();
+      warning.mockRestore();
+    }
   });
 
   it('recovers a lost queue nomination after restart and stops scheduling after atomic success', async () => {
