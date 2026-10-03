@@ -61,3 +61,18 @@ baseline shrinks from 16 to 14 exceptions. No new cache or persistence format is
 Before changing the boundary, 37 focused tests passed on the old implementation, including
 new denial/no-I/O and transaction/audit/cache ordering cases. Runtime tests construct these
 components independently of `AdminService`. Release verification remains per PR.
+
+## Participants and statistics state ownership
+
+Participant pages, channel statistics and activity dashboards own their response maps and
+pending refreshes inside their runtimes. The assembly supplies typed authorization, profile,
+client and cross-domain feed capabilities. Participant details reuse the same runtime as
+participant lists; no caller constructs a fresh runtime from a legacy object. Pure date,
+number, profile and participant-query helpers no longer call back into `AdminService`.
+The unsafe-context baseline shrinks from 14 to 11 exceptions. Cache keys, TTLs, authorization
+on cache hits and identity checks before failed-promise eviction are preserved.
+
+Before extraction, the focused service/runtime suite passed 465 tests. Existing behavioral
+cases remain; obsolete context-forwarding tests now cover only the remaining capabilities.
+Additional independent channel-statistics cases exercise concurrent reads, revoked cached
+access, late failure after invalidation, per-channel invalidation and refresh coalescing.

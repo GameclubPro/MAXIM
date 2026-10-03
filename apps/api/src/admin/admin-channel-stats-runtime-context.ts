@@ -1,6 +1,4 @@
 import type {
-  ChannelStatsBucket,
-  ChannelStatsQuery,
   ManagedEntityBotCapability,
   ManagedEntityType,
   MembershipActivityPage,
@@ -19,9 +17,6 @@ export type AdminChannelStatsRuntimeContext = {
   readonly chatContextCache: ChatContextCacheService;
   readonly logger: Logger;
   readonly channelStatsCollector?: ChannelStatsCollectorService;
-  readonly channelStatsRefreshRuns: Map<string, Promise<void>>;
-  resolveChannelStatsFrom(range: ChannelStatsQuery['range'], to: Date): Date;
-  resolveChannelStatsBucket(range: ChannelStatsQuery['range']): ChannelStatsBucket;
   getMembershipActivityFeedPage(
     chatId: string,
     from: Date,
@@ -31,85 +26,26 @@ export type AdminChannelStatsRuntimeContext = {
     profileOptions?: ResolveUserProfilesOptions,
   ): Promise<MembershipActivityPage>;
   buildEmptyMembershipActivityPage(): MembershipActivityPage;
-  invalidateChannelStatsResponseCache(chatId: string): void;
   resolveAssistBotAssignment(
     chatId: string,
     capability: ManagedEntityBotCapability,
   ): Promise<string | undefined>;
-  readTrimmedString(value: unknown): string | null;
-  toIsoString(value: unknown): string | null;
-  toSafeInteger(value: unknown): number;
+
+  assertReadOnlyChatAdmin(
+    chatId: string,
+    userId: string,
+    entityType?: ManagedEntityType | null,
+    options?: { forceRemote?: boolean; timeoutMs?: number },
+  ): Promise<void>;
+  ensureEntityType(
+    chatId: string,
+    userId: string,
+    expectedEntityType: ManagedEntityType,
+  ): Promise<void>;
 };
 
-type AdminChannelStatsRuntimeContextTarget = AdminChannelStatsRuntimeContext;
-
 export function createAdminChannelStatsRuntimeContext(
-  target: object,
+  target: AdminChannelStatsRuntimeContext,
 ): AdminChannelStatsRuntimeContext {
-  const typedTarget = target as AdminChannelStatsRuntimeContextTarget;
-
-  return {
-    get prisma(): PrismaService {
-      return typedTarget.prisma;
-    },
-    get maxClient(): MaxClientService {
-      return typedTarget.maxClient;
-    },
-    get chatContextCache(): ChatContextCacheService {
-      return typedTarget.chatContextCache;
-    },
-    get logger(): Logger {
-      return typedTarget.logger;
-    },
-    get channelStatsCollector(): ChannelStatsCollectorService | undefined {
-      return typedTarget.channelStatsCollector;
-    },
-    get channelStatsRefreshRuns(): Map<string, Promise<void>> {
-      return typedTarget.channelStatsRefreshRuns;
-    },
-    resolveChannelStatsFrom(range: ChannelStatsQuery['range'], to: Date): Date {
-      return typedTarget.resolveChannelStatsFrom(range, to);
-    },
-    resolveChannelStatsBucket(range: ChannelStatsQuery['range']): ChannelStatsBucket {
-      return typedTarget.resolveChannelStatsBucket(range);
-    },
-    getMembershipActivityFeedPage(
-      chatId: string,
-      from: Date,
-      to: Date,
-      query: MembershipActivityQuery,
-      entityType?: ManagedEntityType,
-      profileOptions?: ResolveUserProfilesOptions,
-    ): Promise<MembershipActivityPage> {
-      return typedTarget.getMembershipActivityFeedPage(
-        chatId,
-        from,
-        to,
-        query,
-        entityType,
-        profileOptions,
-      );
-    },
-    buildEmptyMembershipActivityPage(): MembershipActivityPage {
-      return typedTarget.buildEmptyMembershipActivityPage();
-    },
-    invalidateChannelStatsResponseCache(chatId: string): void {
-      return typedTarget.invalidateChannelStatsResponseCache(chatId);
-    },
-    resolveAssistBotAssignment(
-      chatId: string,
-      capability: ManagedEntityBotCapability,
-    ): Promise<string | undefined> {
-      return typedTarget.resolveAssistBotAssignment(chatId, capability);
-    },
-    readTrimmedString(value: unknown): string | null {
-      return typedTarget.readTrimmedString(value);
-    },
-    toIsoString(value: unknown): string | null {
-      return typedTarget.toIsoString(value);
-    },
-    toSafeInteger(value: unknown): number {
-      return typedTarget.toSafeInteger(value);
-    },
-  };
+  return target;
 }

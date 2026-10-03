@@ -1,3 +1,14 @@
+import { readTrimmedString } from './admin-legacy-utils';
+import { toIsoString, toSafeInteger, resolveLogsDashboardFrom } from './admin-statistics-values';
+import { channelStatsQuerySchema } from '@maxim/contracts';
+import { BadRequestException } from '@nestjs/common';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
+import {
+  CHANNEL_STATS_RESPONSE_CACHE_TTL_MS,
+  CHANNEL_STATS_REFRESHING_RESPONSE_CACHE_TTL_MS,
+  SLOW_CHANNEL_STATS_THRESHOLD_MS,
+  type TimedPromiseCacheEntry,
+} from './admin.service.support';
 import {
   channelStatsResponseSchema,
   type ChannelStatsBucket,
@@ -86,6 +97,75 @@ type ChannelStatsDailySource = ChannelStatsDailyRow['source'];
 type ChannelStatsDailyConfidence = ChannelStatsDailyRow['confidence'];
 
 export class AdminChannelStatsRuntime {
+  async getChannelStats(
+    chatId: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<ChannelStatsResponse> {
+    await this.context.assertReadOnlyChatAdmin(chatId, user.userId, 'channel', {
+      forceRemote: true,
+    });
+    await this.context.ensureEntityType(chatId, user.userId, 'channel');
+
+    const parsed = channelStatsQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const cacheKey = this.buildChannelStatsResponseCacheKey(chatId, user.userId, parsed.data);
+    const cached = this.channelStatsResponseCache.get(cacheKey);
+    if (cached && cached.expiresAtMs > Date.now()) {
+      return cached.promise;
+    }
+
+    const entry: TimedPromiseCacheEntry<ChannelStatsResponse> = {
+      expiresAtMs: Date.now() + CHANNEL_STATS_RESPONSE_CACHE_TTL_MS,
+      promise: Promise.resolve(null as never),
+    };
+    const pending = this.buildChannelStatsResponse(chatId, parsed.data)
+      .then((response) => {
+        entry.expiresAtMs =
+          Date.now() +
+          (response.meta.refreshQueued
+            ? CHANNEL_STATS_REFRESHING_RESPONSE_CACHE_TTL_MS
+            : CHANNEL_STATS_RESPONSE_CACHE_TTL_MS);
+        return response;
+      })
+      .catch((error: unknown) => {
+        const current = this.channelStatsResponseCache.get(cacheKey);
+        if (current?.promise === pending) {
+          this.channelStatsResponseCache.delete(cacheKey);
+        }
+        throw error;
+      });
+    entry.promise = pending;
+    this.channelStatsResponseCache.set(cacheKey, entry);
+
+    const startedAtMs = Date.now();
+    const response = await pending;
+    const totalMs = Date.now() - startedAtMs;
+    if (totalMs >= SLOW_CHANNEL_STATS_THRESHOLD_MS) {
+      this.logger.warn(
+        {
+          chatId,
+          userId: user.userId,
+          totalMs,
+          range: parsed.data.range,
+          includeActivityPreview: parsed.data.includeActivityPreview,
+          cacheHit: false,
+          refreshQueued: response.meta.refreshQueued,
+        },
+        'Slow channel stats request completed',
+      );
+    }
+
+    return response;
+  }
+
+  private readonly channelStatsResponseCache = new Map<
+    string,
+    TimedPromiseCacheEntry<ChannelStatsResponse>
+  >();
   constructor(private readonly context: AdminChannelStatsRuntimeContext) {}
 
   private get prisma(): PrismaService {
@@ -108,16 +188,14 @@ export class AdminChannelStatsRuntime {
     return this.context.channelStatsCollector;
   }
 
-  private get channelStatsRefreshRuns(): Map<string, Promise<void>> {
-    return this.context.channelStatsRefreshRuns;
-  }
+  private readonly channelStatsRefreshRuns = new Map<string, Promise<void>>();
 
   private resolveChannelStatsFrom(range: ChannelStatsQuery['range'], to: Date): Date {
-    return this.context.resolveChannelStatsFrom(range, to);
+    return resolveLogsDashboardFrom(range, to);
   }
 
   private resolveChannelStatsBucket(range: ChannelStatsQuery['range']): ChannelStatsBucket {
-    return this.context.resolveChannelStatsBucket(range);
+    return range === '24h' ? 'hour' : 'day';
   }
 
   private getMembershipActivityFeedPage(
@@ -142,8 +220,11 @@ export class AdminChannelStatsRuntime {
     return this.context.buildEmptyMembershipActivityPage();
   }
 
-  private invalidateChannelStatsResponseCache(chatId: string): void {
-    return this.context.invalidateChannelStatsResponseCache(chatId);
+  invalidateChannelStatsResponseCache(chatId: string): void {
+    const prefix = `${chatId}:`;
+    for (const key of this.channelStatsResponseCache.keys()) {
+      if (key.startsWith(prefix)) this.channelStatsResponseCache.delete(key);
+    }
   }
 
   private resolveAssistBotAssignment(
@@ -154,15 +235,15 @@ export class AdminChannelStatsRuntime {
   }
 
   private readTrimmedString(value: unknown): string | null {
-    return this.context.readTrimmedString(value);
+    return readTrimmedString(value);
   }
 
   private toIsoString(value: unknown): string | null {
-    return this.context.toIsoString(value);
+    return toIsoString(value);
   }
 
   private toSafeInteger(value: unknown): number {
-    return this.context.toSafeInteger(value);
+    return toSafeInteger(value);
   }
 
   async buildChannelStatsResponse(
