@@ -46,6 +46,7 @@
 - If SSH stalls before the banner, check Yandex security-group `22/tcp` reachability first and use `yc compute ssh` as the recovery path when configured.
 - GitHub Actions Deploy is manual-only. Local `vps-connect.sh deploy` is the routine path unless hosted-runner SSH reachability is known to work.
 - Deploy and rollback scripts run on the backend VPS. Invoke them locally only through the wrapper/SSH.
+- Incident evidence must retain exact time/release boundaries, truncation/gaps and an allowlisted failure stage/code. Run `postgres-audit` catalog calls sequentially (shared lock); never substitute inline live SQL. For shell-over-stdin diagnostics, redirect non-reading child commands from `/dev/null` and require every expected stage, since exit zero alone may describe an incomplete probe.
 - Keep Yandex and VK Cloud credentials in ignored local files or configured CLI profiles; never print or commit service-account keys.
 
 ## Deploy And Rollback

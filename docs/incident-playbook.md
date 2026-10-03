@@ -3,6 +3,12 @@
 Start read-only. Preserve logs and current state before applying a repair, migration, queue mutation,
 DNS change, or container recreation.
 
+Retain only allowlisted aggregates/classifications from production logs, plus exact UTC windows,
+release/SHA, failed stage and exit status; do not persist raw logs, message content, identifiers or
+credentials. State whether samples are complete, capped, rate-limited or missing. A script returning
+zero without every expected stage is incomplete. For a shell script sent over stdin, keep child
+commands from consuming the remaining script (`</dev/null` unless that child needs explicit input).
+
 ## Common Snapshot
 
 ```bash
@@ -60,6 +66,11 @@ filtered role logs without reconciling webhooks or sending bot messages.
    unresolved earlier execution in that same chat. The probe uses the exact ordered-head index;
    never remove the fence or replay the old event merely because its heartbeat deadline elapsed.
 
+   Run catalog calls sequentially because they share a lock. The last preparation-capacity marker
+   describes that row's most recent deferral, not a fleet-wide cause. FAILED rows may be historical
+   quarantine: report fresh deltas separately. Raw readiness, normal/healthy mode, burst state,
+   exact images and queue fences must be assessed together; HTTP 200 may be hysteresis.
+
 2. Inspect queue-owner logs:
 
    ```bash
@@ -78,6 +89,20 @@ filtered role logs without reconciling webhooks or sending bot messages.
    mutation is a separate authorized repair, not a diagnostic step.
 6. Ready can lag live while queues drain after deploy. Confirm that effective lag and oldest queued
    timestamps are improving before recreating workers.
+
+7. Compare complete windows of ingress, SQL selection, preparation duration/admission, ordered-head
+   progress, retries and action outcomes under comparable load. Rate-limited batch logs are not a
+   throughput denominator. Missing samples or low counts remain incomplete. Distinguish urgent
+   nomination delay from queue wait after nomination; a completed job is not permission evidence.
+8. Reproduce a proposed correction with a failing local regression before deploying it. Use real
+   PostgreSQL/Redis for query plans, retained-history bounds, leases and duplicate settlement. Stop
+   only verified owned collectors during a release change; preserve capacity collection where possible.
+   After runtime changes, restart homogeneous acceptance clocks and cycles. Do not retry the same
+   unsuccessful deployment without a changed evidenced basis, or replace readiness with a longer
+   timeout solely to make a release pass.
+
+See the [3 October 2026 queue review](operations/incidents/2026-10-03-queue-backlog.md) for the
+confirmed coupled defects and the limits of their measured attribution.
 
 ## API Container Restart Or Failed Rollout
 

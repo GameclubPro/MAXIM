@@ -25,6 +25,9 @@ that the preview scaffold is absent before saving. A scenario reload must not pr
 emulator image labeled as a native-layout success.
 
 1. Read the scoped notes and inspect the worktree. Keep unrelated changes separate.
+   Check `node scripts/agent/doctor.mjs --browser` when preparing a machine. The
+   [local environment guide](development/agent-local-environment.md) includes disposable native
+   PostgreSQL/Redis validation when a Docker daemon is unavailable.
 2. Run `node scripts/agent/preflight.mjs` before expensive suites. It is an early error check, not
    release approval; it neither builds nor repairs generated files automatically.
 3. Use focused tests while editing. Run the indicated generator if preflight reports stale
@@ -77,6 +80,10 @@ operator verification, not disabling host-key checks.
   migration's lock, concurrent-index, timeout and invalid-index recovery behavior on representative
   local data. During a slow production migration, use only the approved read-only audit catalog;
   do not retry deployment or issue repair SQL without establishing its state.
+- For hot-path SQL, measure rows, loops and sorting on representative real-store history, including
+  nonmatching rows and correlated probes before/after the limit. Keep due work progressing while
+  retained recovery pages advance. The [3 October queue review](operations/incidents/2026-10-03-queue-backlog.md)
+  records why correct results on small mocked datasets missed expensive plans.
 - Include mobile light/dark, safe-area, scroll and keyboard checks for changed UI flows. Run local
   visuals against the worktree before an explicitly selected production-origin smoke.
 - New enforcement remains opt-in behind an execution-time switch. Preserve rollback source floors

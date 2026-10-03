@@ -41,6 +41,7 @@
 - Run `node scripts/agent/preflight.mjs` for early read-only generator, contract-export, and HTTP-input checks; it also runs before `agent:verify` and in CI. It is not a replacement for impact checks or exact-SHA CI. See `docs/development-reliability-plan.md` for the release checklist.
 - Public API validation scripts now serialize generated-contract and Prisma work. Do not bypass them with `*:unlocked` or `*:source` commands unless a repo script intentionally owns the lock.
 - Use Node 24 LTS. Root `.nvmrc` pins `24`; Docker dependency layers must remain lockfile-based with `npm ci`.
+- Check local readiness with `node scripts/agent/doctor.mjs --browser`. For disposable native PostgreSQL 16/Redis 7, use `node scripts/agent/with-test-stores.mjs --migrate -- <public validation command>`; it owns isolated stores, UTC and cleanup. See `docs/development/agent-local-environment.md`. Report store-dependent skips; a green mock-only run is not real-store coverage.
 - Local start:
   - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d postgres redis`
   - `npm run dev:all`, or `npm run dev:api`, `npm run dev:miniapp`, and `npm run dev:admin`
@@ -106,4 +107,5 @@
   - encode narrow invariants as tests, types, helpers, or code comments instead of growing agent notes;
   - never record secrets, guesses, one-off output, personal notes, or temporary production state.
 - Prefix new sensitive-zone comments with `FLAG:`. Before editing a flagged block, read the invariant twice; do not remove flags incidentally.
+- For queue incidents, preserve exact windows and release identity before a correction. Separate ingress rate, SQL selection, preparation, ordered-head/retry waits and execution outcomes; a last-error marker, queue count or HTTP 200 alone cannot identify the cause or prove recovery. Use `docs/incident-playbook.md`.
 - When topology, deploy scripts, service names, or core workflows change, update the relevant scoped notes and active runbooks in the same work.
