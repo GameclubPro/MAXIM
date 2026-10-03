@@ -102,6 +102,72 @@ describe('Webhook durable preparation admission', () => {
     expect(admission.snapshot()).toMatchObject({ inFlight: 0, pending: 0, botScopes: 0 });
   });
 
+  it.each([false, true])(
+    'releases a consumed lifecycle reservation after its task settles (failed=%s)',
+    async (fails) => {
+      const admission = new WebhookPreparationAdmission(4, jest.fn());
+      const a = gate();
+      const b = gate();
+      const first = admission.run('bot-a', 'ordinary', () => a.promise);
+      const second = admission.run('bot-b', 'ordinary', () => b.promise);
+      try {
+        await expect(
+          admission.run('bot-c', 'lifecycle', async () => undefined),
+        ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+        b.release();
+        await second;
+        const lifecycle = admission.run('bot-c', 'lifecycle', async () => {
+          if (fails) throw new Error('Required follow-up failed');
+        });
+        if (fails) await expect(lifecycle).rejects.toThrow('Required follow-up failed');
+        else await lifecycle;
+        await expect(admission.run('bot-b', 'ordinary', async () => 'progress')).resolves.toBe(
+          'progress',
+        );
+        expect(admission.snapshot()).toMatchObject({ inFlight: 1, pending: 0 });
+      } finally {
+        a.release();
+        b.release();
+        await Promise.all([first, second]);
+      }
+    },
+  );
+
+  it('preserves a later lifecycle reservation when an earlier admitted task finishes', async () => {
+    const admission = new WebhookPreparationAdmission(4, jest.fn());
+    const a = gate();
+    const b = gate();
+    const lifecycleGate = gate();
+    const first = admission.run('bot-a', 'ordinary', () => a.promise);
+    const second = admission.run('bot-b', 'ordinary', () => b.promise);
+    let lifecycle: Promise<void> | undefined;
+    try {
+      await expect(
+        admission.run('bot-c', 'lifecycle', async () => undefined),
+      ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+      b.release();
+      await second;
+      lifecycle = admission.run('bot-c', 'lifecycle', () => lifecycleGate.promise);
+      await expect(
+        admission.run('bot-d', 'lifecycle', async () => undefined),
+      ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+      lifecycleGate.release();
+      await lifecycle;
+      await expect(
+        admission.run('bot-b', 'ordinary', async () => undefined),
+      ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+      await admission.run('bot-d', 'lifecycle', async () => undefined);
+      await expect(admission.run('bot-b', 'ordinary', async () => 'progress')).resolves.toBe(
+        'progress',
+      );
+    } finally {
+      a.release();
+      b.release();
+      lifecycleGate.release();
+      await Promise.all([first, second, lifecycle]);
+    }
+  });
+
   it.each([NaN, Infinity, 0, -1])(
     'rejects invalid pool budget %s instead of losing the bound',
     (pool) => {

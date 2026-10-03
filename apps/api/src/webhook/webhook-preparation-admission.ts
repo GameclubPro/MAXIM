@@ -46,6 +46,9 @@ export class WebhookPreparationAdmission {
         new WebhookPreparationDeferredError('Webhook preparation capacity unavailable', 1_000),
       );
     }
+    // FLAG: Admission consumes the next-slot reservation. Never clear it on completion,
+    // which could erase a newer reservation created while this lifecycle task was running.
+    if (workClass === 'lifecycle') this.reserveLifecycleUntil = 0;
     botCounts[workClass] += 1;
     this.byBot.set(botId, botCounts);
     this.byClass[workClass] += 1;
