@@ -2,7 +2,7 @@ import { formatDeleteBotMessagesDelayLabel, type ChatSettings } from '@maxim/con
 import {
   formatPrivateControlEnumValue,
   formatPrivateControlTime,
-} from './private-control-input-values';
+} from './private-control-setting-format';
 import {
   resolvePrivateDuplicateAllowedCount,
   resolvePrivateDuplicateSharedWindowSec,

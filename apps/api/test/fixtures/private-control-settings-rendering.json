@@ -1,0 +1,868 @@
+{
+  "source": "e4c960ad46369a68409b656efe7632f62adeec18",
+  "cases": [
+    {
+      "kind": "chat",
+      "section": "links",
+      "view": "basic",
+      "settings": {},
+      "expected": {
+        "summary": [
+          "Политика: только предупреждать",
+          "Санкции: WARN выкл • MUTE выкл (6ч) • BAN выкл",
+          "Сообщение бота: выкл • кнопка выкл"
+        ],
+        "buttons": [
+          [
+            {
+              "type": "callback",
+              "text": "🎚 Режим проверки ссылок: Только предупреждать",
+              "payload": "pc2|noop",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✅ Только предупреждать",
+              "payload": "pc2|set_enum|links|linkPolicy|ALERT_ONLY",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "◻️ Разрешать только цели из списка разрешённых",
+              "payload": "pc2|set_enum|links|linkPolicy|ALLOWLIST_ONLY",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "◻️ Удалять все кликабельные ссылки",
+              "payload": "pc2|set_enum|links|linkPolicy|BLOCKLIST_ONLY",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Показывать сообщение бота",
+              "payload": "pc2|toggle|links|linkBotMessageEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Выдавать предупреждение",
+              "payload": "pc2|toggle|links|linkWarnEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Выдавать мут",
+              "payload": "pc2|toggle|links|linkMuteEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "➖",
+              "payload": "pc2|step_number|links|linkMuteDurationHours|-1",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "Срок мута (часы): 6ч",
+              "payload": "pc2|noop",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "➕",
+              "payload": "pc2|step_number|links|linkMuteDurationHours|1",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "◻️ 1ч",
+              "payload": "pc2|set_number_preset|links|linkMuteDurationHours|1",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "✅ 6ч",
+              "payload": "pc2|set_number_preset|links|linkMuteDurationHours|6",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "◻️ 24ч",
+              "payload": "pc2|set_number_preset|links|linkMuteDurationHours|24",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Банить нарушителя",
+              "payload": "pc2|toggle|links|linkBanEnabled",
+              "intent": "default"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "kind": "chat",
+      "section": "duplicates",
+      "view": "basic",
+      "settings": {},
+      "expected": {
+        "summary": [
+          "Антидубли: выкл • после 1 дубл. • окно 43200с",
+          "Одинаковые картинки: вкл • У одного автора • общая цепочка действий",
+          "Этапы: объяснение выкл • WARN выкл • MUTE выкл (6ч) • BAN выкл",
+          "Кнопка: выкл"
+        ],
+        "buttons": [
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Включить антидубли",
+              "payload": "pc2|toggle|duplicates|antiDuplicateEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Шаг 1: объяснение",
+              "payload": "pc2|toggle|duplicates|duplicateBotMessageEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Шаг 2: предупреждение",
+              "payload": "pc2|toggle|duplicates|duplicateWarnEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Шаг 3: мут",
+              "payload": "pc2|toggle|duplicates|duplicateMuteEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "➖",
+              "payload": "pc2|step_number|duplicates|duplicateMuteDurationHours|-1",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "Срок мута (часы): 6ч",
+              "payload": "pc2|noop",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "➕",
+              "payload": "pc2|step_number|duplicates|duplicateMuteDurationHours|1",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "◻️ 1ч",
+              "payload": "pc2|set_number_preset|duplicates|duplicateMuteDurationHours|1",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "✅ 6ч",
+              "payload": "pc2|set_number_preset|duplicates|duplicateMuteDurationHours|6",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "◻️ 24ч",
+              "payload": "pc2|set_number_preset|duplicates|duplicateMuteDurationHours|24",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Шаг 4: бан",
+              "payload": "pc2|toggle|duplicates|duplicateBanEnabled",
+              "intent": "default"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "kind": "chat",
+      "section": "duplicates",
+      "view": "advanced",
+      "settings": {
+        "antiDuplicateEnabled": true,
+        "duplicateWindowMode": "DAILY",
+        "duplicateStartTimeMinutes": 480,
+        "duplicateEndTimeMinutes": 1200,
+        "duplicateCompareMode": "MESSAGE"
+      },
+      "expected": {
+        "summary": [
+          "Антидубли: вкл • после 1 дубл. • ежедневно 08:00–20:00 (Europe/Moscow)",
+          "Одинаковые картинки: вкл • У одного автора • общая цепочка действий",
+          "Этапы: объяснение выкл • WARN выкл • MUTE выкл (6ч) • BAN выкл",
+          "Кнопка: выкл"
+        ],
+        "buttons": [
+          [
+            {
+              "type": "callback",
+              "text": "🎚 Что проверять: Сообщение целиком",
+              "payload": "pc2|noop",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✅ Сообщение целиком",
+              "payload": "pc2|set_enum|duplicates|duplicateCompareMode|MESSAGE",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "◻️ Текст и подпись",
+              "payload": "pc2|set_enum|duplicates|duplicateCompareMode|TEXT",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "🎚 Чьи картинки сравнивать: У одного автора",
+              "payload": "pc2|noop",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✅ У одного автора",
+              "payload": "pc2|set_enum|duplicates|duplicatePhotoScope|SAME_AUTHOR",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "◻️ Во всём чате",
+              "payload": "pc2|set_enum|duplicates|duplicatePhotoScope|CHAT",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "➖",
+              "payload": "pc2|step_number|duplicates|duplicateWarnWindowSec|-3600",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "Окно дублей (сек): 12ч",
+              "payload": "pc2|noop",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "➕",
+              "payload": "pc2|step_number|duplicates|duplicateWarnWindowSec|3600",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "◻️ 1ч",
+              "payload": "pc2|set_number_preset|duplicates|duplicateWarnWindowSec|3600",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "◻️ 6ч",
+              "payload": "pc2|set_number_preset|duplicates|duplicateWarnWindowSec|21600",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "◻️ 24ч",
+              "payload": "pc2|set_number_preset|duplicates|duplicateWarnWindowSec|86400",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "➖",
+              "payload": "pc2|step_number|duplicates|duplicateWarnMaxCount|-1",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "Разрешено дублей: 2",
+              "payload": "pc2|noop",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "➕",
+              "payload": "pc2|step_number|duplicates|duplicateWarnMaxCount|1",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "◻️ 0",
+              "payload": "pc2|set_number_preset|duplicates|duplicateWarnMaxCount|0",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "◻️ 1",
+              "payload": "pc2|set_number_preset|duplicates|duplicateWarnMaxCount|1",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "◻️ 3",
+              "payload": "pc2|set_number_preset|duplicates|duplicateWarnMaxCount|3",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✏️ Текст сообщения бота: —",
+              "payload": "pc2|set_input|duplicates|duplicateBotMessageText",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Показывать кнопку",
+              "payload": "pc2|toggle|duplicates|duplicateBotButtonEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✏️ Ссылка кнопки: —",
+              "payload": "pc2|set_input|duplicates|duplicateBotButtonUrl",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✏️ Текст кнопки: Открыть",
+              "payload": "pc2|set_input|duplicates|duplicateBotButtonText",
+              "intent": "default"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "kind": "chat",
+      "section": "night",
+      "view": "advanced",
+      "settings": {
+        "nightModeEnabled": true,
+        "nightModeForceCloseEnabled": true,
+        "nightModeForceCloseForever": false,
+        "nightModeForceCloseDays": 2,
+        "nightModeForceCloseHours": 3,
+        "nightModeTimezone": "Europe/Moscow"
+      },
+      "expected": {
+        "summary": [
+          "Ночной режим: вкл",
+          "Окно: 23:00-08:00 • Europe/Moscow",
+          "Сообщение: выкл • кнопка выкл",
+          "Ручное закрытие: вкл • 2д 3ч"
+        ],
+        "buttons": [
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Показывать сообщение бота",
+              "payload": "pc2|toggle|night|nightModeBotMessageEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✏️ Текст сообщения бота: —",
+              "payload": "pc2|set_input|night|nightModeBotMessageText",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Показывать кнопку",
+              "payload": "pc2|toggle|night|nightModeBotButtonEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✏️ Ссылка кнопки: —",
+              "payload": "pc2|set_input|night|nightModeBotButtonUrl",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✏️ Текст кнопки: Открыть",
+              "payload": "pc2|set_input|night|nightModeBotButtonText",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✅ Закрыть группу вручную",
+              "payload": "pc2|toggle|night|nightModeForceCloseEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Держать закрытой бессрочно",
+              "payload": "pc2|toggle|night|nightModeForceCloseForever",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "➖",
+              "payload": "pc2|step_number|night|nightModeForceCloseHours|-1",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "Часы ручного закрытия: 3",
+              "payload": "pc2|noop",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "➕",
+              "payload": "pc2|step_number|night|nightModeForceCloseHours|1",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "➖",
+              "payload": "pc2|step_number|night|nightModeForceCloseDays|-1",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "Дни ручного закрытия: 2",
+              "payload": "pc2|noop",
+              "intent": "default"
+            },
+            {
+              "type": "callback",
+              "text": "➕",
+              "payload": "pc2|step_number|night|nightModeForceCloseDays|1",
+              "intent": "default"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "kind": "channel",
+      "section": "comments",
+      "settings": {
+        "commentsEnabled": true,
+        "commentsModerationEnabled": true,
+        "commentsMessageText": "  Правила 💬   Правила 💬   Правила 💬   Правила 💬   Правила 💬   Правила 💬 "
+      },
+      "expected": {
+        "summary": ["Комментарии: вкл", "Модерация комментариев: вкл", "Текст-подсказка: задан"],
+        "buttons": [
+          [
+            {
+              "type": "callback",
+              "text": "✅ Комментарии в приложении",
+              "payload": "pc2|toggle_channel|comments|commentsEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✅ Модерация комментариев ботом",
+              "payload": "pc2|toggle_channel|comments|commentsModerationEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✏️ Текст-подсказка для участников: Правила 💬 П…",
+              "payload": "pc2|set_channel_input|comments|commentsMessageText",
+              "intent": "default"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "kind": "channel",
+      "section": "post_suggestions",
+      "settings": {
+        "postSuggestionsEnabled": true,
+        "postSuggestionsEntryMode": "BOT",
+        "postSuggestionsText": "   ",
+        "postSuggestionsButtonText": "Предложить 🔔"
+      },
+      "expected": {
+        "summary": [
+          "Предложка: вкл",
+          "Режим: бот",
+          "Кнопка: выкл",
+          "Текст для участников: по умолчанию"
+        ],
+        "buttons": [
+          [
+            {
+              "type": "callback",
+              "text": "✅ Подсказка «Предложить пост»",
+              "payload": "pc2|toggle_channel|post_suggestions|postSuggestionsEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Требовать подписку",
+              "payload": "pc2|toggle_channel|post_suggestions|postSuggestionsRequireSubscription",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Удалять посты после отписки",
+              "payload": "pc2|toggle_channel|post_suggestions|postSuggestionsDeleteOnUnsubscribe",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✏️ Требования для участников: —",
+              "payload": "pc2|set_channel_input|post_suggestions|postSuggestionsText",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "⬜ Показывать кнопку перехода",
+              "payload": "pc2|toggle_channel|post_suggestions|postSuggestionsButtonEnabled",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✏️ Название кнопки: Предложить 🔔",
+              "payload": "pc2|set_channel_input|post_suggestions|postSuggestionsButtonText",
+              "intent": "default"
+            }
+          ],
+          [
+            {
+              "type": "callback",
+              "text": "✏️ Ссылка кнопки (из MAX): —",
+              "payload": "pc2|set_channel_input|post_suggestions|postSuggestionsButtonUrl",
+              "intent": "default"
+            }
+          ]
+        ]
+      }
+    }
+  ],
+  "search": [
+    {
+      "query": "",
+      "expected": []
+    },
+    {
+      "query": "  МУТ  ",
+      "expected": [
+        {
+          "section": "links",
+          "key": "linkMuteEnabled",
+          "label": "Выдавать мут",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "links",
+          "key": "linkMuteDurationHours",
+          "label": "Срок мута (часы)",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "profanityFilter",
+          "key": "profanityMuteEnabled",
+          "label": "Выдавать мут",
+          "sectionLabel": "Фильтр нецензурной лексики"
+        },
+        {
+          "section": "profanityFilter",
+          "key": "profanityMuteDurationHours",
+          "label": "Срок мута (часы)",
+          "sectionLabel": "Фильтр нецензурной лексики"
+        },
+        {
+          "section": "commercialFilter",
+          "key": "textFiltersMuteEnabled",
+          "label": "Выдавать мут",
+          "sectionLabel": "Фильтр коммерческой рекламы"
+        },
+        {
+          "section": "commercialFilter",
+          "key": "textFiltersMuteDurationHours",
+          "label": "Срок мута (часы)",
+          "sectionLabel": "Фильтр коммерческой рекламы"
+        },
+        {
+          "section": "duplicates",
+          "key": "duplicateMuteEnabled",
+          "label": "Шаг 3: мут",
+          "sectionLabel": "Дубли сообщений"
+        },
+        {
+          "section": "duplicates",
+          "key": "duplicateMuteDurationHours",
+          "label": "Срок мута (часы)",
+          "sectionLabel": "Дубли сообщений"
+        }
+      ]
+    },
+    {
+      "query": "timezone",
+      "expected": [
+        {
+          "section": "night",
+          "key": "nightModeTimezone",
+          "label": "Часовой пояс",
+          "sectionLabel": "Ночной режим"
+        }
+      ]
+    },
+    {
+      "query": "Ссылка",
+      "expected": [
+        {
+          "section": "links",
+          "key": "linkPolicy",
+          "label": "Режим проверки ссылок",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "links",
+          "key": "linkBotMessageEnabled",
+          "label": "Показывать сообщение бота",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "links",
+          "key": "linkBotMessageText",
+          "label": "Текст сообщения бота",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "links",
+          "key": "linkWarnEnabled",
+          "label": "Выдавать предупреждение",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "links",
+          "key": "linkWarnMessageText",
+          "label": "Текст предупреждения",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "links",
+          "key": "linkMuteEnabled",
+          "label": "Выдавать мут",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "links",
+          "key": "linkMuteDurationHours",
+          "label": "Срок мута (часы)",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "links",
+          "key": "linkBanEnabled",
+          "label": "Банить нарушителя",
+          "sectionLabel": "Модерация ссылок"
+        }
+      ]
+    },
+    {
+      "query": "кнопка",
+      "expected": [
+        {
+          "section": "links",
+          "key": "linkBotButtonEnabled",
+          "label": "Показывать кнопку",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "links",
+          "key": "linkBotButtonUrl",
+          "label": "Ссылка кнопки",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "links",
+          "key": "linkBotButtonText",
+          "label": "Текст кнопки",
+          "sectionLabel": "Модерация ссылок"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingBotButtonEnabled",
+          "label": "Показывать кнопку",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingBotButtonUrl",
+          "label": "Ссылка кнопки",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingBotButtonText",
+          "label": "Текст кнопки",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingRulesButtonEnabled",
+          "label": "Показывать кнопку правил",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "commercialFilter",
+          "key": "textFiltersBotButtonEnabled",
+          "label": "Показывать кнопку",
+          "sectionLabel": "Фильтр коммерческой рекламы"
+        }
+      ]
+    },
+    {
+      "query": "приветствие",
+      "expected": [
+        {
+          "section": "greeting",
+          "key": "greetingEnabled",
+          "label": "Включить приветствие",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingBotMessageEnabled",
+          "label": "Отправлять приветствие",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingDeleteBotMessageEnabled",
+          "label": "Удалять приветствие",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingDeleteBotMessageDelayMinutes",
+          "label": "Задержка удаления приветствия",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingBotMessageText",
+          "label": "Текст приветствия",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingBotButtonEnabled",
+          "label": "Показывать кнопку",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingBotButtonUrl",
+          "label": "Ссылка кнопки",
+          "sectionLabel": "Приветствие"
+        },
+        {
+          "section": "greeting",
+          "key": "greetingBotButtonText",
+          "label": "Текст кнопки",
+          "sectionLabel": "Приветствие"
+        }
+      ]
+    },
+    {
+      "query": "нет-совпадений",
+      "expected": []
+    }
+  ]
+}
