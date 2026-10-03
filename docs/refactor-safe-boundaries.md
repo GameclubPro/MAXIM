@@ -222,3 +222,16 @@ only its matching saved cloud draft before restoring the create draft.
 Browser cases cover dirty close/keep/discard, local edits rebased onto a fresh revision,
 missing-image restoration, failed opening and local recovery after a failed cloud flush.
 The existing direct video-upload browser scenarios retain the real page coverage.
+
+## Closed-chat message moderation boundary
+
+`ClosedChatMessageModerationService` receives explicit intent, semantic claim, guarded-delete,
+event and logging capabilities. Chat-only selection, immunity and fresh access checks retain
+their positions in the existing event handler. The service preserves intent-before-claim,
+execution/event ordering, exact reason keys/metadata and the previous exception boundaries.
+Thin legacy delegates keep existing entry-point tests and method interception compatible.
+
+Independent tests cover night/timed/permanent close, storage failures, duplicate claims,
+already-absent/unconfirmed outcomes and intent-owned events. The explicit PostgreSQL race
+lane also runs the closed-chat suite with real intent persistence, semantic claims and Redis
+wakeups, including restarts before/after the claim and execution disabled after persistence.

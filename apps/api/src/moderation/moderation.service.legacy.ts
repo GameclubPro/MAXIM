@@ -1,3 +1,8 @@
+import {
+  ClosedChatMessageModerationService,
+  type NightClosedChatMessage,
+  type ManuallyClosedChatMessage,
+} from './closed-chat-message-moderation.service';
 import { resolveModerationSanctionExpiry } from './moderation-sanction-expiry.util';
 import { CommercialReviewService } from './commercial/commercial-review.service';
 import { collectCommercialCampaignContextFromRedis } from './commercial/commercial-campaign-context';
@@ -628,6 +633,13 @@ const DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE = 'DUPLICATE_MESSAGE_ACTION';
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly blockedDomainDetector = new MessageLimitsBlockedDomainDetector();
   private readonly logger = new Logger(ModerationService.name);
+  private readonly closedChatMessageModeration = new ClosedChatMessageModerationService({
+    ensureIntent: (input) => this.ensureModerationDeleteIntent(input),
+    claimAction: (input) => this.claimMessageScopedModerationAction(input),
+    executeDelete: (input) => this.executeModerationDelete(input),
+    createEvent: (input) => this.createBotModerationEvent(input),
+    warn: (context, message) => this.logger.warn(context, message),
+  });
   private readonly replacementAttachMarkerStore: ReplacementAttachMarkerStore;
   private readonly channelAutoPostLegacyRecovery: ChannelAutoPostLegacyRecovery;
   private readonly channelAutoPostMutationGuard: ChannelAutoPostMutationGuard;
@@ -10173,175 +10185,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return { source: 'SANCTION_BAN', score: 0.62, forceRegistry: false, ttlDays: 14 };
   }
 
-  private async handleNightModeMessage(params: {
-    chatId: string;
-    userId: string;
-    messageId: string;
-    text: string;
-    createdAt: string;
-    nightModeStartTimeMinutes: number;
-    nightModeEndTimeMinutes: number;
-    nightModeTimezone: string;
-  }) {
-    const {
-      chatId,
-      userId,
-      messageId,
-      text,
-      createdAt,
-      nightModeStartTimeMinutes,
-      nightModeEndTimeMinutes,
-      nightModeTimezone,
-    } = params;
-    const startMinutes = this.normalizeDayMinutes(nightModeStartTimeMinutes, 23 * 60);
-    const endMinutes = this.normalizeDayMinutes(nightModeEndTimeMinutes, 8 * 60);
-    const timezone = this.normalizeNightModeTimezone(nightModeTimezone);
-    const deleteIntent: EnsureModerationDeleteIntentInput = {
-      chatId,
-      messageId,
-      reasonKey: 'NIGHT_MODE_DELETE',
-      ruleCode: 'NIGHT_MODE_DELETE',
-      subjectUserId: userId,
-      sourceMessageAt: createdAt,
-      entityType: 'CHAT',
-      messageAuthorKind: 'user',
-      event: {
-        userId,
-        eventType: 'MESSAGE',
-        maskedExcerpt: maskText(text),
-        score: 0.6,
-        metadata: {
-          reason: 'Message removed while chat is closed for the night',
-          nightModeTimezone: timezone,
-          nightModeStartTime: this.formatMinutesAsTime(startMinutes),
-          nightModeEndTime: this.formatMinutesAsTime(endMinutes),
-        },
-      },
-    };
-    await this.ensureModerationDeleteIntent(deleteIntent);
-    const claimed = await this.claimMessageScopedModerationAction({
-      chatId,
-      userId,
-      messageId,
-      ruleCode: 'NIGHT_MODE_DELETE',
-    });
-    if (!claimed) {
-      return;
-    }
-
-    try {
-      const deleteResult = await this.executeModerationDelete(deleteIntent);
-      if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
-        await this.createBotModerationEvent({
-          data: {
-            chatId,
-            userId,
-            messageId,
-            eventType: EventType.MESSAGE,
-            ruleCode: 'NIGHT_MODE_DELETE',
-            action: SanctionAction.DELETE_MESSAGE,
-            maskedExcerpt: maskText(text),
-            score: 0.6,
-            operator: Operator.BOT,
-            metadata: {
-              reason: 'Message removed while chat is closed for the night',
-              nightModeTimezone: timezone,
-              nightModeStartTime: this.formatMinutesAsTime(startMinutes),
-              nightModeEndTime: this.formatMinutesAsTime(endMinutes),
-            },
-          },
-        });
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to delete message during night mode',
-      );
-    }
+  private handleNightModeMessage(params: NightClosedChatMessage) {
+    return this.closedChatMessageModeration.handleNightModeMessage(params);
   }
 
-  private async handleNightModeForceCloseMessage(params: {
-    chatId: string;
-    userId: string;
-    messageId: string;
-    text: string;
-    createdAt: string;
-    nightModeForceCloseForever: boolean;
-    nightModeForceCloseUntil: string;
-  }) {
-    const { chatId, userId, messageId, text, createdAt } = params;
-    const deleteIntent: EnsureModerationDeleteIntentInput = {
-      chatId,
-      messageId,
-      reasonKey: 'MANUAL_GROUP_CLOSE_DELETE',
-      ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
-      subjectUserId: userId,
-      sourceMessageAt: createdAt,
-      entityType: 'CHAT',
-      messageAuthorKind: 'user',
-      event: {
-        userId,
-        eventType: 'MESSAGE',
-        maskedExcerpt: maskText(text),
-        score: 0.6,
-        metadata: {
-          reason: 'Message removed while group is manually closed',
-          closeMode: params.nightModeForceCloseForever ? 'forever' : 'timed',
-          closeUntil: params.nightModeForceCloseForever ? null : params.nightModeForceCloseUntil,
-        },
-      },
-    };
-    await this.ensureModerationDeleteIntent(deleteIntent);
-    const claimed = await this.claimMessageScopedModerationAction({
-      chatId,
-      userId,
-      messageId,
-      ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
-    });
-    if (!claimed) {
-      return;
-    }
-
-    try {
-      const deleteResult = await this.executeModerationDelete(deleteIntent);
-      if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
-        await this.createBotModerationEvent({
-          data: {
-            chatId,
-            userId,
-            messageId,
-            eventType: EventType.MESSAGE,
-            ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
-            action: SanctionAction.DELETE_MESSAGE,
-            maskedExcerpt: maskText(text),
-            score: 0.6,
-            operator: Operator.BOT,
-            metadata: {
-              reason: 'Message removed while group is manually closed',
-              closeMode: params.nightModeForceCloseForever ? 'forever' : 'timed',
-              closeUntil: params.nightModeForceCloseForever
-                ? null
-                : params.nightModeForceCloseUntil,
-            },
-          },
-        });
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to delete message during manual group close',
-      );
-    }
+  private handleNightModeForceCloseMessage(params: ManuallyClosedChatMessage) {
+    return this.closedChatMessageModeration.handleNightModeForceCloseMessage(params);
   }
 
   private async handleRequiredSubscriptionMessage(params: {
