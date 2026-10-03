@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "exceptions": [
+    {
+      "key": "apps/api/src/admin/admin-channel-dialog-mapping-runtime-context.ts:createAdminChannelDialogMappingRuntimeContext",
+      "definitionSha256": "7421fd7e6947597107a55c201f81b31f2e41f970e6ecc0330d56a6cf22a62191"
+    },
+    {
+      "key": "apps/api/src/admin/admin-channel-stats-runtime-context.ts:createAdminChannelStatsRuntimeContext",
+      "definitionSha256": "afc67b40cde92c1b63ff342779f3e8b1187107e3c06a1c13a6c5ae6d91a8f4cf"
+    },
+    {
+      "key": "apps/api/src/admin/admin-channel-suggestion-image-runtime-context.ts:createAdminChannelSuggestionImageRuntimeContext",
+      "definitionSha256": "4a5859fb2dbffba430806c97623058ce22eb22848f17d5c0ce415c4d05ef0257"
+    },
+    {
+      "key": "apps/api/src/admin/admin-channel-suggestion-publication-runtime.ts:createAdminChannelSuggestionPublicationRuntimeContext",
+      "definitionSha256": "52b55779cdec3ca80d1445eb5f2e9d51eb19cf3f3ffff1b90d64870b57866537"
+    },
+    {
+      "key": "apps/api/src/admin/admin-chat-rules-text-runtime-context.ts:createAdminChatRulesTextRuntimeContext",
+      "definitionSha256": "b8493370da2370796b3b8b03ea119f823eb30da37d3605309851c9f2a018883c"
+    },
+    {
+      "key": "apps/api/src/admin/admin-domain-allowlist-runtime-context.ts:createAdminDomainAllowlistRuntimeContext",
+      "definitionSha256": "f612eb6d0f102af21a5b001c926f619539edb9273704e5d445b9e8c889e7f8df"
+    },
+    {
+      "key": "apps/api/src/admin/admin-logs-dashboard-runtime-context.ts:createAdminLogsDashboardRuntimeContext",
+      "definitionSha256": "c5f58b9d2bba3c31a28b815c479fcc41dcc82a4905ca28e9b176345202cac77e"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-broadcast-runtime-context.ts:createAdminManagedBroadcastRuntimeContext",
+      "definitionSha256": "6ddb564af2fefcf36b5df271d242cc0d0c47c4233377bf8efd8325187971a0e3"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities-runtime-context.ts:createAdminManagedEntitiesRuntimeContext",
+      "definitionSha256": "db6c11fb6e3d05c0e314dc36d5191c1c079f37b5d4621299920a51bc9d5af3bb"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entity-access-runtime-context.ts:createAdminManagedEntityAccessRuntimeContext",
+      "definitionSha256": "adab08669a8d55af44e02c02786b9fba430d8bf1aa5bfb56b17582539d6207eb"
+    },
+    {
+      "key": "apps/api/src/admin/admin-manual-moderation-runtime-context.ts:createAdminManualModerationRuntimeContext",
+      "definitionSha256": "f1b25551ff3deacb502599b3d68877940662e093fe56fb7381af3140e085ab32"
+    },
+    {
+      "key": "apps/api/src/admin/admin-participants-runtime-context.ts:createAdminParticipantsRuntimeContext",
+      "definitionSha256": "55a19b363917fa9875abfc0bb32a02ce8005b75fafe190a9813bbfd80fbe47d5"
+    },
+    {
+      "key": "apps/api/src/admin/admin-required-subscription-runtime-context.ts:createAdminRequiredSubscriptionRuntimeContext",
+      "definitionSha256": "b0577451608e7348bcd6fe93204ccb8f238ea2008403e80d6308d668000d940a"
+    },
+    {
+      "key": "apps/api/src/admin/admin-suggestion-delivery-runtime-context.ts:createAdminSuggestionDeliveryRuntimeContext",
+      "definitionSha256": "020e1d19215d772d66684ac66aec7da9149ca5120a3f191ba3506901c11ec8ac"
+    },
+    {
+      "key": "apps/api/src/admin/channel-dialog-legacy.port.ts:legacy-import:./admin.service",
+      "definitionSha256": "a1b03d4f56e88e6e03b3febbee2111eede4c8e1262bea57be46bf5488f430e74"
+    },
+    {
+      "key": "apps/api/src/admin/managed-entities-legacy.port.ts:legacy-import:./admin.service",
+      "definitionSha256": "a1b03d4f56e88e6e03b3febbee2111eede4c8e1262bea57be46bf5488f430e74"
+    }
+  ]
+}

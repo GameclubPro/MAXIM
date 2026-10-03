@@ -1,6 +1,7 @@
 import { dirname, relative, resolve } from 'node:path';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { findContractsArchitectureViolations } from './check-contract-exports.mjs';
+import { assertRuntimeContextBoundaries } from './check-runtime-contexts.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
@@ -518,6 +519,13 @@ for (const violation of findContractsArchitectureViolations(root)) {
       'Generated contract JS must live under dist/, not tracked src/.',
     ].join('\n'),
   );
+}
+
+try {
+  assertRuntimeContextBoundaries(root);
+} catch (error) {
+  failed = true;
+  console.error(error.message);
 }
 
 if (failed) {
