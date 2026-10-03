@@ -1,12 +1,15 @@
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
-import { buildPrivateSectionSummaryLines } from './private-control-section-summaries';
+import * as settingsRenderer from './private-control-settings-renderer';
+import {
+  buildPrivateCallbackButton,
+  buildPrivateCallbackPayload,
+} from './private-control-callback-buttons';
 import { randomBytes } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import {
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
   broadcastHandoffStateSchema,
-  formatDeleteBotMessagesDelayLabel,
   managedGiveawayHandoffRequestSchema,
   MAX_CHAT_RULES_TEXT_LENGTH,
   profileMentionHandoffRequestSchema,
@@ -114,7 +117,6 @@ import {
   PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS,
   RULES_HANDOFF_DEDUP_WINDOW_MS,
   RULES_HANDOFF_START_PAYLOAD,
-  SEARCH_RESULT_LIMIT,
   SUPPORT_CHAT_URL,
 } from './private-control.constants';
 import { extractPrivateControlUserErrorDetails } from './private-control-bad-request.util';
@@ -144,7 +146,6 @@ import type {
   PrivateContext,
   PrivateScreen,
   PrivateSectionKey,
-  PrivateSectionView,
   PrivateSession,
   PrivateSuggestionDraft,
   PrivateView,
@@ -217,8 +218,6 @@ import {
   readPrivateControlString,
 } from './private-control-formatting.util';
 import {
-  formatPrivateControlEnumValue,
-  formatPrivateControlSettingValue,
   formatPrivateControlTime,
   parsePrivateControlBroadcastSendAt,
   parsePrivateControlDateInput,
@@ -2763,7 +2762,7 @@ export class PrivateControlService {
         const view = await this.renderSectionCardScreen(context, session, section);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: `${config.label}: ${this.formatNumberPreset(config, nextValue)}`,
+          notification: `${config.label}: ${settingsRenderer.formatNumberPreset(config, nextValue)}`,
         });
         return;
       }
@@ -2801,7 +2800,7 @@ export class PrivateControlService {
         const view = await this.renderSectionCardScreen(context, session, section);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: `${config.label}: ${this.formatNumberPreset(config, bounded)}`,
+          notification: `${config.label}: ${settingsRenderer.formatNumberPreset(config, bounded)}`,
         });
         return;
       }
@@ -2884,7 +2883,7 @@ export class PrivateControlService {
         this.pushHistory(session);
         session.section = section;
         session.screen = 'section';
-        session.sectionView = this.resolveSectionViewForField(section, key);
+        session.sectionView = settingsRenderer.resolveSectionViewForField(section, key);
         const view = await this.renderSectionCardScreen(context, session, section);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -5609,10 +5608,10 @@ export class PrivateControlService {
     const lines: string[] = [
       privateMarkdownTitle(CHANNEL_SECTION_LABELS[section]),
       '',
-      ...this.buildChannelSectionSummary(section, settings),
+      ...settingsRenderer.buildChannelSectionSummary(section, settings),
     ];
 
-    const rows = this.buildChannelSectionRows(section, settings);
+    const rows = settingsRenderer.buildChannelSectionRows(section, settings);
 
     rows.push([
       this.callbackButton('⬅️ Назад', this.cb('back')),
@@ -5688,10 +5687,10 @@ export class PrivateControlService {
       '',
       `Режим: ${session.sectionView === 'basic' ? 'Основное' : 'Ещё параметры'}`,
       '',
-      ...this.buildSectionSummaryLines(section, settings, session.sectionView),
+      ...settingsRenderer.buildSectionSummaryLines(section, settings, session.sectionView),
     ];
 
-    const rows = this.buildSectionActionRows(section, settings, session.sectionView);
+    const rows = settingsRenderer.buildSectionActionRows(section, settings, session.sectionView);
     if (section === 'limits') {
       const route = this.buildEntitySettingsMiniappRoute(
         session.selectedChatId,
@@ -7084,7 +7083,7 @@ export class PrivateControlService {
   }
 
   private renderSearchResultsScreen(query: string): PrivateView {
-    const matches = this.findSettingMatches(query);
+    const matches = settingsRenderer.findSettingMatches(query);
     const lines: string[] = [`Результаты поиска: «${compactPrivateText(query, 60)}»`, ''];
 
     if (matches.length === 0) {
@@ -7117,217 +7116,6 @@ export class PrivateControlService {
     };
   }
 
-  private findSettingMatches(query: string): Array<{
-    section: PrivateSectionKey;
-    key: keyof ChatSettings;
-    label: string;
-    sectionLabel: string;
-  }> {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) {
-      return [];
-    }
-
-    const results: Array<{
-      section: PrivateSectionKey;
-      key: keyof ChatSettings;
-      label: string;
-      sectionLabel: string;
-    }> = [];
-    for (const section of SECTION_ORDER) {
-      for (const field of SECTION_FIELDS[section]) {
-        const fieldKey = String(field.key);
-        const aliases = this.buildFieldAliases(section, fieldKey, field.label);
-        if (!aliases.some((item) => item.includes(normalized))) {
-          continue;
-        }
-
-        results.push({
-          section,
-          key: field.key,
-          label: field.label,
-          sectionLabel: SECTION_LABELS[section],
-        });
-      }
-    }
-
-    return results.slice(0, SEARCH_RESULT_LIMIT);
-  }
-
-  private buildFieldAliases(section: PrivateSectionKey, key: string, label: string): string[] {
-    const aliasMap: Record<string, string[]> = {
-      link: ['ссылка', 'домен', 'allowlist', 'blocklist'],
-      greeting: ['приветствие', 'новичок'],
-      profanity: ['мат', 'оскорб'],
-      commercial: ['реклама', 'коммерция'],
-      duplicate: ['дубль', 'повтор'],
-      spam: ['спам'],
-      night: ['ночной', 'тишина'],
-      broadcast: ['автопостинг'],
-      button: ['кнопка', 'url'],
-      message: ['сообщение', 'текст'],
-      ban: ['бан'],
-      mute: ['мут', 'мью', 'mute'],
-      kick: ['кик'],
-      warn: ['предупреждение'],
-      timezone: ['часовой пояс', 'timezone'],
-    };
-
-    const loweredKey = key.toLowerCase();
-    const normalized: string[] = [
-      label.toLowerCase(),
-      loweredKey,
-      SECTION_LABELS[section].toLowerCase(),
-      ...loweredKey
-        .split(/_|(?=[A-Z])/)
-        .map((part) => part.toLowerCase())
-        .filter(Boolean),
-    ];
-
-    for (const [needle, aliases] of Object.entries(aliasMap)) {
-      if (loweredKey.includes(needle)) {
-        normalized.push(...aliases.map((value) => value.toLowerCase()));
-      }
-    }
-
-    return Array.from(new Set(normalized));
-  }
-
-  private buildSectionFieldConfigs(
-    section: PrivateSectionKey,
-    view: PrivateSectionView,
-  ): SettingFieldConfig[] {
-    const allowed = new Set(SECTION_CARD_FIELDS[section][view]);
-    return SECTION_FIELDS[section].filter((field) => allowed.has(field.key));
-  }
-
-  private buildSectionSummaryLines(
-    section: PrivateSectionKey,
-    settings: ChatSettings,
-    view: PrivateSectionView,
-  ): string[] {
-    return buildPrivateSectionSummaryLines(section, settings, view, {
-      boolean: (value) => this.describeBooleanCompact(value),
-      linkPolicy: (value) => this.describeLinkPolicy(value),
-    });
-  }
-
-  private buildSectionActionRows(
-    section: PrivateSectionKey,
-    settings: ChatSettings,
-    view: PrivateSectionView,
-  ): MaxMessageButton[][] {
-    const fieldConfigs = this.buildSectionFieldConfigs(section, view);
-    const rows: MaxMessageButton[][] = [];
-
-    for (const field of fieldConfigs) {
-      const currentValue = settings[field.key];
-      if (field.type === 'boolean') {
-        rows.push([
-          this.callbackButton(
-            `${currentValue ? '✅' : '⬜'} ${field.label}`,
-            this.cb('toggle', section, String(field.key)),
-          ),
-        ]);
-        continue;
-      }
-
-      if (field.type === 'enum') {
-        rows.push([
-          this.callbackButton(
-            `🎚 ${field.label}: ${compactPrivateText(formatPrivateControlSettingValue(currentValue, field.type), 20)}`,
-            this.cb('noop'),
-          ),
-        ]);
-        rows.push(
-          ...(field.enumValues ?? []).map((enumValue) => [
-            this.callbackButton(
-              `${currentValue === enumValue ? '✅' : '◻️'} ${formatPrivateControlEnumValue(enumValue)}`,
-              this.cb('set_enum', section, String(field.key), enumValue),
-            ),
-          ]),
-        );
-        continue;
-      }
-
-      if (field.type === 'number') {
-        const numericValue =
-          typeof currentValue === 'number' && Number.isFinite(currentValue)
-            ? currentValue
-            : (field.min ?? 0);
-        const step = field.step ?? 1;
-
-        rows.push([
-          this.callbackButton(
-            '➖',
-            this.cb('step_number', section, String(field.key), String(-step)),
-          ),
-          this.callbackButton(
-            `${field.label}: ${compactPrivateText(this.formatNumberPreset(field, numericValue), 12)}`,
-            this.cb('noop'),
-          ),
-          this.callbackButton(
-            '➕',
-            this.cb('step_number', section, String(field.key), String(step)),
-          ),
-        ]);
-
-        if (field.presets?.length) {
-          rows.push(
-            field.presets
-              .slice(0, 3)
-              .map((preset) =>
-                this.callbackButton(
-                  `${numericValue === preset ? '✅' : '◻️'} ${this.formatNumberPreset(field, preset)}`,
-                  this.cb('set_number_preset', section, String(field.key), String(preset)),
-                ),
-              ),
-          );
-        }
-        continue;
-      }
-
-      if (field.type === 'timezone') {
-        rows.push([
-          this.callbackButton(
-            `✏️ ${field.label}`,
-            this.cb('set_input', section, String(field.key)),
-          ),
-        ]);
-        continue;
-      }
-
-      rows.push([
-        this.callbackButton(
-          `✏️ ${field.label}: ${compactPrivateText(formatPrivateControlSettingValue(currentValue, field.type), 20)}`,
-          this.cb('set_input', section, String(field.key)),
-        ),
-      ]);
-    }
-
-    return rows;
-  }
-
-  private buildChannelSectionSummary(
-    section: ChannelSectionKey,
-    settings: ChannelSettings,
-  ): string[] {
-    if (section === 'post_suggestions') {
-      return [
-        `Предложка: ${this.describeBooleanCompact(settings.postSuggestionsEnabled)}`,
-        `Режим: ${settings.postSuggestionsEntryMode === 'MINIAPP' ? 'мини-апп' : 'бот'}`,
-        `Кнопка: ${this.describeBooleanCompact(settings.postSuggestionsButtonEnabled)}`,
-        `Текст для участников: ${settings.postSuggestionsText.trim() ? 'задан' : 'по умолчанию'}`,
-      ];
-    }
-
-    return [
-      `Комментарии: ${this.describeBooleanCompact(settings.commentsEnabled)}`,
-      `Модерация комментариев: ${this.describeBooleanCompact(settings.commentsModerationEnabled)}`,
-      `Текст-подсказка: ${settings.commentsMessageText.trim() ? 'задан' : 'по умолчанию'}`,
-    ];
-  }
-
   private buildChannelEngagementPublishRequest(
     settings: ChannelSettings,
   ): PublishChannelEngagementRequest {
@@ -7344,74 +7132,6 @@ export class PrivateControlService {
       commentsButtonText: '💬 Комментарии',
       suggestButtonText: settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
     };
-  }
-
-  private buildChannelSectionRows(
-    section: ChannelSectionKey,
-    settings: ChannelSettings,
-  ): MaxMessageButton[][] {
-    const rows: MaxMessageButton[][] = [];
-    for (const field of CHANNEL_SECTION_FIELDS[section]) {
-      if (field.type === 'boolean') {
-        rows.push([
-          this.callbackButton(
-            `${settings[field.key] ? '✅' : '⬜'} ${field.label}`,
-            this.cb('toggle_channel', section, String(field.key)),
-          ),
-        ]);
-        continue;
-      }
-
-      rows.push([
-        this.callbackButton(
-          `✏️ ${field.label}: ${compactPrivateText(formatPrivateControlSettingValue(settings[field.key], field.type), 18)}`,
-          this.cb('set_channel_input', section, String(field.key)),
-        ),
-      ]);
-    }
-
-    return rows;
-  }
-
-  private describeLinkPolicy(value: ChatSettings['linkPolicy']): string {
-    if (value === 'BLOCKLIST_ONLY') {
-      return 'удалять все ссылки';
-    }
-    if (value === 'ALLOWLIST_ONLY') {
-      return 'удалять кроме allowlist';
-    }
-    return 'только предупреждать';
-  }
-
-  private describeBooleanCompact(value: boolean): string {
-    return value ? 'вкл' : 'выкл';
-  }
-
-  private formatNumberPreset(field: SettingFieldConfig, value: number): string {
-    const key = String(field.key).toLowerCase();
-    if (key === 'deletebotmessagesdelayminutes' || key === 'greetingdeletebotmessagedelayminutes') {
-      return formatDeleteBotMessagesDelayLabel(value);
-    }
-    if (key.includes('windowsec')) {
-      return value % 3600 === 0 ? `${value / 3600}ч` : `${Math.round(value / 60)}м`;
-    }
-    if (key.includes('durationhours') || key.includes('cooldownhours')) {
-      return `${value}ч`;
-    }
-    if (key.includes('minutes') || key.includes('cooldownminutes')) {
-      return `${value}м`;
-    }
-    if (key.includes('maxlength')) {
-      return `${value} симв.`;
-    }
-    return String(value);
-  }
-
-  private resolveSectionViewForField(
-    section: PrivateSectionKey,
-    key: keyof ChatSettings,
-  ): PrivateSectionView {
-    return SECTION_CARD_FIELDS[section].advanced.includes(key) ? 'advanced' : 'basic';
   }
 
   private pushHistory(session: PrivateSession): void {
@@ -8826,12 +8546,7 @@ export class PrivateControlService {
     payload: string,
     intent: 'default' | 'positive' | 'negative' = 'default',
   ): MaxMessageButton {
-    return {
-      type: 'callback',
-      text: compactPrivateText(text, 48),
-      payload,
-      intent,
-    };
+    return buildPrivateCallbackButton(text, payload, intent);
   }
 
   private buildFooterButtons(config?: {
@@ -8926,8 +8641,7 @@ export class PrivateControlService {
   }
 
   private cb(action: string, ...args: string[]): string {
-    const filtered = args.map((arg) => arg.trim()).filter((arg) => arg.length > 0);
-    return [MAX_CALLBACK_PREFIX, action, ...filtered].join('|');
+    return buildPrivateCallbackPayload(action, ...args);
   }
 
   private resolveMiniappUrl(): string | null {

@@ -1624,26 +1624,6 @@ describe('PrivateControlService', () => {
     expect(adminService.updateSettings).not.toHaveBeenCalled();
   });
 
-  it('keeps independent stop-word policy out of the legacy limits summary', () => {
-    const { service } = createHarness();
-    const summary = (
-      service as unknown as {
-        buildSectionSummaryLines: (
-          section: 'limits',
-          settings: typeof defaultSettings,
-          view: 'basic',
-        ) => string[];
-      }
-    ).buildSectionSummaryLines(
-      'limits',
-      { ...defaultSettings, messageLimitsImageTextScanEnabled: true },
-      'basic',
-    );
-
-    expect(summary.join('\n')).not.toContain('Текст на фото:');
-    expect(summary.join('\n')).not.toContain('Стоп-слова:');
-  });
-
   it('treats /legacy and /modern as aliases for the current interface', async () => {
     const { service, maxClient, chats } = createHarness();
 
@@ -2957,32 +2937,6 @@ describe('PrivateControlService', () => {
     expect(buildRequest).toThrow(
       'Включите комментарии или предложения постов в настройках канала.',
     );
-  });
-
-  it('uses channel comments terminology in the settings summary', () => {
-    const { service } = createHarness({
-      channelSettings: {
-        ...defaultChannelSettings,
-        commentsEnabled: true,
-        commentsModerationEnabled: false,
-      },
-    });
-    const summary = (
-      service as unknown as {
-        buildChannelSectionSummary(
-          section: 'comments',
-          settings: typeof defaultChannelSettings,
-        ): string[];
-      }
-    ).buildChannelSectionSummary('comments', {
-      ...defaultChannelSettings,
-      commentsEnabled: true,
-      commentsModerationEnabled: false,
-    });
-
-    expect(summary[0]).toMatch(/^Комментарии:/u);
-    expect(summary[1]).toMatch(/^Модерация комментариев:/u);
-    expect(summary.join('\n')).not.toContain('Обсуж');
   });
 
   it.each([

@@ -50,10 +50,10 @@ const guardedFiles = [
   },
   {
     path: 'apps/api/src/moderation/private-control.service.legacy.ts',
-    maxLines: 9885,
+    maxLines: 9555,
     targetLines: 9000,
     reason:
-      'PrivateControlService is a legacy hotspot; this ceiling includes per-target callback rate-limit identity and the signed Karavan allowlist handoff/forwarded-user duration flow at the existing delivery boundary, while session, draft normalization, and render builders should keep moving to focused modules.',
+      'PrivateControlService retains callback and session orchestration; settings search, summaries, value formatting and callback rows now live in pure rendering modules and must not return here.',
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.legacy.tsx',
