@@ -40,7 +40,8 @@ const Redis = require('ioredis');
   assert.equal(process.env.REDIS_URL, process.env.MAXIM_TEST_REDIS_URL);
   assert.equal(process.env.TZ, 'UTC');
   const pg = new Client({connectionString: process.env.DATABASE_URL});
-  const redis = new Redis(process.env.REDIS_URL);
+  // Existing integration fixtures intentionally use CI-compatible host/port connections.
+  const redis = new Redis({host: redisUrl.hostname, port: Number(redisUrl.port)});
   try {
     await pg.connect();
     assert.equal((await pg.query('SHOW TimeZone')).rows[0].TimeZone, 'UTC');

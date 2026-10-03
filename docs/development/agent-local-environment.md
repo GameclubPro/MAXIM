@@ -64,8 +64,9 @@ node scripts/agent/with-test-stores.mjs --migrate -- npm test --workspace @maxim
 ```
 
 The runner requires a non-root Linux/macOS shell (WSL is supported). Each invocation creates a
-private directory, randomly named `race_test` database, fresh credentials and independent loopback
-ports. PostgreSQL server and clients use UTC. Redis persistence is disabled. Inherited `DATABASE_URL`,
+private directory, randomly named `race_test` database, fresh PostgreSQL credentials and independent loopback
+ports. PostgreSQL server and clients use UTC. Redis matches CI's host/port-only fixture contract,
+with persistence disabled and its owned process verified through a private Unix socket. Inherited `DATABASE_URL`,
 `REDIS_URL`, `CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL`, `MAXIM_TEST_POSTGRES_URL` and
 `MAXIM_TEST_REDIS_URL` are replaced only for child processes. URLs are not printed or written into
 repository env files. `--migrate` uses the public Prisma deployment script against that empty local

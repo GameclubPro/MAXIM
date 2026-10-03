@@ -145,7 +145,9 @@ export async function withTestStores(options) {
     const redisConfig = join(directory, 'redis.conf');
     await writeFile(
       redisConfig,
-      `bind 127.0.0.1\nport ${redisPort}\nprotected-mode yes\nrequirepass ${password}\nsave ""\nappendonly no\ndaemonize no\n`,
+      // FLAG: Existing real-store fixtures construct Redis connections from host/port only.
+      // Match CI's local Redis contract; never expose this disposable instance off loopback.
+      `bind 127.0.0.1\nport ${redisPort}\nprotected-mode yes\nunixsocket ${join(directory, 'redis.sock')}\nunixsocketperm 700\nsave ""\nappendonly no\ndaemonize no\n`,
       { mode: 0o600 },
     );
     redis = start('redis-server', [redisConfig]);
@@ -157,7 +159,8 @@ export async function withTestStores(options) {
       PGDATABASE: 'postgres',
       PGPASSWORD: password,
     };
-    const redisEnv = { ...env, REDISCLI_AUTH: password };
+    const redisEnv = { ...env };
+    delete redisEnv.REDISCLI_AUTH;
     const deadline = Date.now() + 20_000;
     let ready = false;
     while (Date.now() < deadline && !interrupted) {
@@ -166,11 +169,8 @@ export async function withTestStores(options) {
           throw new Error(`Local store exited: ${(await child.done).output}`);
       }
       const pg = await start('pg_isready', ['-q', '-t', '1'], pgEnv).done;
-      const ping = await start(
-        'redis-cli',
-        ['-h', '127.0.0.1', '-p', String(redisPort), 'PING'],
-        redisEnv,
-      ).done;
+      const ping = await start('redis-cli', ['-s', join(directory, 'redis.sock'), 'PING'], redisEnv)
+        .done;
       if (!pg.code && !ping.code && ping.output.trim() === 'PONG') {
         ready = true;
         break;
@@ -178,6 +178,14 @@ export async function withTestStores(options) {
       await delay(100);
     }
     if (!ready) throw new Error('Local stores did not become ready within 20 seconds');
+    const redisIdentity = await run(
+      'redis-cli',
+      ['-s', join(directory, 'redis.sock'), 'INFO', 'server'],
+      redisEnv,
+    );
+    if (!redisIdentity.split(/\r?\n/u).includes(`process_id:${redis.pid}`)) {
+      throw new Error('Disposable Redis process identity mismatch');
+    }
     await run('createdb', [database], pgEnv);
     const timezone = await run('psql', ['-X', '-A', '-t', '-c', 'SHOW TimeZone'], {
       ...pgEnv,
@@ -187,7 +195,7 @@ export async function withTestStores(options) {
     // FLAG: Always replace inherited production/test URLs. This invocation owns a new empty
     // database, private credentials, loopback listeners and no pre-existing Redis data.
     const postgresUrl = `postgresql://maxim_agent:${password}@127.0.0.1:${postgresPort}/${database}?schema=public`;
-    const redisUrl = `redis://:${password}@127.0.0.1:${redisPort}/0`;
+    const redisUrl = `redis://127.0.0.1:${redisPort}/0`;
     Object.assign(env, {
       DATABASE_URL: postgresUrl,
       CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL: postgresUrl,
