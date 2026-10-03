@@ -1,0 +1,1433 @@
+[
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [null],
+    "expected": []
+  },
+  {
+    "method": "readChannelSuggestionImageAssets",
+    "args": [null],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogSuggestionReviewStatus",
+    "args": [null],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionMediaType",
+    "args": [null],
+    "expected": null
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": [null],
+    "expected": []
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": [null],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionTextMarkup",
+    "args": [null],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [false],
+    "expected": []
+  },
+  {
+    "method": "readChannelSuggestionImageAssets",
+    "args": [false],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogSuggestionReviewStatus",
+    "args": [false],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionMediaType",
+    "args": [false],
+    "expected": null
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": [false],
+    "expected": []
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": [false],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionTextMarkup",
+    "args": [false],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [0],
+    "expected": []
+  },
+  {
+    "method": "readChannelSuggestionImageAssets",
+    "args": [0],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogSuggestionReviewStatus",
+    "args": [0],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionMediaType",
+    "args": [0],
+    "expected": null
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": [0],
+    "expected": []
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": [0],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionTextMarkup",
+    "args": [0],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [""],
+    "expected": []
+  },
+  {
+    "method": "readChannelSuggestionImageAssets",
+    "args": [""],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogSuggestionReviewStatus",
+    "args": [""],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionMediaType",
+    "args": [""],
+    "expected": null
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": [""],
+    "expected": []
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": [""],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionTextMarkup",
+    "args": [""],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [[]],
+    "expected": []
+  },
+  {
+    "method": "readChannelSuggestionImageAssets",
+    "args": [[]],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogSuggestionReviewStatus",
+    "args": [[]],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionMediaType",
+    "args": [[]],
+    "expected": null
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": [[]],
+    "expected": []
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": [[]],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionTextMarkup",
+    "args": [[]],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [{}],
+    "expected": []
+  },
+  {
+    "method": "readChannelSuggestionImageAssets",
+    "args": [{}],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogSuggestionReviewStatus",
+    "args": [{}],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionMediaType",
+    "args": [{}],
+    "expected": null
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": [{}],
+    "expected": []
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": [{}],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionTextMarkup",
+    "args": [{}],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": ["  IMAGE  "],
+    "expected": []
+  },
+  {
+    "method": "readChannelSuggestionImageAssets",
+    "args": ["  IMAGE  "],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogSuggestionReviewStatus",
+    "args": ["  IMAGE  "],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionMediaType",
+    "args": ["  IMAGE  "],
+    "expected": "image"
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": ["  IMAGE  "],
+    "expected": []
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": ["  IMAGE  "],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionTextMarkup",
+    "args": ["  IMAGE  "],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": ["markdown"],
+    "expected": []
+  },
+  {
+    "method": "readChannelSuggestionImageAssets",
+    "args": ["markdown"],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogSuggestionReviewStatus",
+    "args": ["markdown"],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionMediaType",
+    "args": ["markdown"],
+    "expected": null
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": ["markdown"],
+    "expected": []
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": ["markdown"],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionTextMarkup",
+    "args": ["markdown"],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [
+      [
+        {
+          "bad": true
+        }
+      ]
+    ],
+    "expected": []
+  },
+  {
+    "method": "readChannelSuggestionImageAssets",
+    "args": [
+      [
+        {
+          "bad": true
+        }
+      ]
+    ],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogSuggestionReviewStatus",
+    "args": [
+      [
+        {
+          "bad": true
+        }
+      ]
+    ],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionMediaType",
+    "args": [
+      [
+        {
+          "bad": true
+        }
+      ]
+    ],
+    "expected": null
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": [
+      [
+        {
+          "bad": true
+        }
+      ]
+    ],
+    "expected": []
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": [
+      [
+        {
+          "bad": true
+        }
+      ]
+    ],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionTextMarkup",
+    "args": [
+      [
+        {
+          "bad": true
+        }
+      ]
+    ],
+    "expected": []
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [
+      [
+        {
+          "kind": "photo",
+          "payload": {
+            "url": "https://example.com/image",
+            "width": 10,
+            "height": 20,
+            "size": 100
+          },
+          "mimeType": "image/png",
+          "fileName": "image.png"
+        },
+        {
+          "type": "document",
+          "payload": {
+            "token": "file"
+          },
+          "mime_type": "image/png",
+          "file_name": "doc.pdf",
+          "width": "12",
+          "height": 14
+        },
+        {
+          "type": "invalid",
+          "payload": {
+            "token": "unknown"
+          }
+        },
+        {
+          "kind": "file",
+          "base64": "  data  ",
+          "preview_base64": "preview"
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "kind": "image",
+        "payload": {
+          "url": "https://example.com/image",
+          "width": 10,
+          "height": 20,
+          "size": 100
+        },
+        "mimeType": "image/png",
+        "fileName": "image.png",
+        "previewBase64": null,
+        "width": 0,
+        "height": 0
+      },
+      {
+        "kind": "image",
+        "payload": {
+          "token": "file"
+        },
+        "mimeType": "image/png",
+        "fileName": "doc.pdf",
+        "previewBase64": null,
+        "width": 12,
+        "height": 14
+      },
+      {
+        "kind": "file",
+        "base64": "data",
+        "mimeType": null,
+        "fileName": null,
+        "previewBase64": "preview",
+        "width": 0,
+        "height": 0
+      }
+    ]
+  },
+  {
+    "method": "buildChannelDialogCommentAttachments",
+    "args": [
+      [
+        {
+          "kind": "image",
+          "payload": {
+            "url": "https://example.com/image",
+            "width": 10,
+            "height": 20,
+            "size": 100
+          },
+          "mimeType": "image/png",
+          "fileName": "image.png",
+          "previewBase64": null,
+          "width": 0,
+          "height": 0
+        },
+        {
+          "kind": "image",
+          "payload": {
+            "token": "file"
+          },
+          "mimeType": "image/png",
+          "fileName": "doc.pdf",
+          "previewBase64": null,
+          "width": 12,
+          "height": 14
+        },
+        {
+          "kind": "file",
+          "base64": "data",
+          "mimeType": null,
+          "fileName": null,
+          "previewBase64": "preview",
+          "width": 0,
+          "height": 0
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "kind": "image",
+        "url": "https://example.com/image",
+        "previewUrl": "https://example.com/image",
+        "fileName": "image.png",
+        "mimeType": "image/png",
+        "size": 100,
+        "width": null,
+        "height": null
+      },
+      {
+        "kind": "image",
+        "url": null,
+        "previewUrl": null,
+        "fileName": "doc.pdf",
+        "mimeType": "image/png",
+        "size": null,
+        "width": 12,
+        "height": 14
+      }
+    ]
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [
+      [
+        {
+          "kind": "photo",
+          "payload": {
+            "url": "https://example.com/image",
+            "width": 10,
+            "height": 20,
+            "size": 100
+          },
+          "mimeType": "image/svg+xml",
+          "fileName": "image.png"
+        },
+        {
+          "type": "document",
+          "payload": {
+            "token": "file"
+          },
+          "mime_type": "image/svg+xml",
+          "file_name": "doc.pdf",
+          "width": "12",
+          "height": 14
+        },
+        {
+          "type": "invalid",
+          "payload": {
+            "token": "unknown"
+          }
+        },
+        {
+          "kind": "file",
+          "base64": "  data  ",
+          "preview_base64": "preview"
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "kind": "image",
+        "payload": {
+          "url": "https://example.com/image",
+          "width": 10,
+          "height": 20,
+          "size": 100
+        },
+        "mimeType": "image/svg+xml",
+        "fileName": "image.png",
+        "previewBase64": null,
+        "width": 0,
+        "height": 0
+      },
+      {
+        "kind": "file",
+        "payload": {
+          "token": "file"
+        },
+        "mimeType": "image/svg+xml",
+        "fileName": "doc.pdf",
+        "previewBase64": null,
+        "width": 12,
+        "height": 14
+      },
+      {
+        "kind": "file",
+        "base64": "data",
+        "mimeType": null,
+        "fileName": null,
+        "previewBase64": "preview",
+        "width": 0,
+        "height": 0
+      }
+    ]
+  },
+  {
+    "method": "buildChannelDialogCommentAttachments",
+    "args": [
+      [
+        {
+          "kind": "image",
+          "payload": {
+            "url": "https://example.com/image",
+            "width": 10,
+            "height": 20,
+            "size": 100
+          },
+          "mimeType": "image/svg+xml",
+          "fileName": "image.png",
+          "previewBase64": null,
+          "width": 0,
+          "height": 0
+        },
+        {
+          "kind": "file",
+          "payload": {
+            "token": "file"
+          },
+          "mimeType": "image/svg+xml",
+          "fileName": "doc.pdf",
+          "previewBase64": null,
+          "width": 12,
+          "height": 14
+        },
+        {
+          "kind": "file",
+          "base64": "data",
+          "mimeType": null,
+          "fileName": null,
+          "previewBase64": "preview",
+          "width": 0,
+          "height": 0
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "kind": "image",
+        "url": "https://example.com/image",
+        "previewUrl": "https://example.com/image",
+        "fileName": "image.png",
+        "mimeType": "image/svg+xml",
+        "size": 100,
+        "width": null,
+        "height": null
+      },
+      {
+        "kind": "file",
+        "url": null,
+        "previewUrl": null,
+        "fileName": "doc.pdf",
+        "mimeType": "image/svg+xml",
+        "size": null,
+        "width": 12,
+        "height": 14
+      }
+    ]
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [
+      [
+        {
+          "kind": "photo",
+          "payload": {
+            "url": "https://example.com/image",
+            "width": 10,
+            "height": 20,
+            "size": 100
+          },
+          "mimeType": "application/pdf",
+          "fileName": "image.png"
+        },
+        {
+          "type": "document",
+          "payload": {
+            "token": "file"
+          },
+          "mime_type": "application/pdf",
+          "file_name": "doc.pdf",
+          "width": "12",
+          "height": 14
+        },
+        {
+          "type": "invalid",
+          "payload": {
+            "token": "unknown"
+          }
+        },
+        {
+          "kind": "file",
+          "base64": "  data  ",
+          "preview_base64": "preview"
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "kind": "image",
+        "payload": {
+          "url": "https://example.com/image",
+          "width": 10,
+          "height": 20,
+          "size": 100
+        },
+        "mimeType": "application/pdf",
+        "fileName": "image.png",
+        "previewBase64": null,
+        "width": 0,
+        "height": 0
+      },
+      {
+        "kind": "file",
+        "payload": {
+          "token": "file"
+        },
+        "mimeType": "application/pdf",
+        "fileName": "doc.pdf",
+        "previewBase64": null,
+        "width": 12,
+        "height": 14
+      },
+      {
+        "kind": "file",
+        "base64": "data",
+        "mimeType": null,
+        "fileName": null,
+        "previewBase64": "preview",
+        "width": 0,
+        "height": 0
+      }
+    ]
+  },
+  {
+    "method": "buildChannelDialogCommentAttachments",
+    "args": [
+      [
+        {
+          "kind": "image",
+          "payload": {
+            "url": "https://example.com/image",
+            "width": 10,
+            "height": 20,
+            "size": 100
+          },
+          "mimeType": "application/pdf",
+          "fileName": "image.png",
+          "previewBase64": null,
+          "width": 0,
+          "height": 0
+        },
+        {
+          "kind": "file",
+          "payload": {
+            "token": "file"
+          },
+          "mimeType": "application/pdf",
+          "fileName": "doc.pdf",
+          "previewBase64": null,
+          "width": 12,
+          "height": 14
+        },
+        {
+          "kind": "file",
+          "base64": "data",
+          "mimeType": null,
+          "fileName": null,
+          "previewBase64": "preview",
+          "width": 0,
+          "height": 0
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "kind": "image",
+        "url": "https://example.com/image",
+        "previewUrl": "https://example.com/image",
+        "fileName": "image.png",
+        "mimeType": "application/pdf",
+        "size": 100,
+        "width": null,
+        "height": null
+      },
+      {
+        "kind": "file",
+        "url": null,
+        "previewUrl": null,
+        "fileName": "doc.pdf",
+        "mimeType": "application/pdf",
+        "size": null,
+        "width": 12,
+        "height": 14
+      }
+    ]
+  },
+  {
+    "method": "readChannelDialogAttachmentAssets",
+    "args": [
+      [
+        {
+          "kind": "photo",
+          "payload": {
+            "url": "https://example.com/image",
+            "width": 10,
+            "height": 20,
+            "size": 100
+          },
+          "mimeType": null,
+          "fileName": "image.png"
+        },
+        {
+          "type": "document",
+          "payload": {
+            "token": "file"
+          },
+          "mime_type": null,
+          "file_name": "doc.pdf",
+          "width": "12",
+          "height": 14
+        },
+        {
+          "type": "invalid",
+          "payload": {
+            "token": "unknown"
+          }
+        },
+        {
+          "kind": "file",
+          "base64": "  data  ",
+          "preview_base64": "preview"
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "kind": "image",
+        "payload": {
+          "url": "https://example.com/image",
+          "width": 10,
+          "height": 20,
+          "size": 100
+        },
+        "mimeType": null,
+        "fileName": "image.png",
+        "previewBase64": null,
+        "width": 0,
+        "height": 0
+      },
+      {
+        "kind": "file",
+        "payload": {
+          "token": "file"
+        },
+        "mimeType": null,
+        "fileName": "doc.pdf",
+        "previewBase64": null,
+        "width": 12,
+        "height": 14
+      },
+      {
+        "kind": "file",
+        "base64": "data",
+        "mimeType": null,
+        "fileName": null,
+        "previewBase64": "preview",
+        "width": 0,
+        "height": 0
+      }
+    ]
+  },
+  {
+    "method": "buildChannelDialogCommentAttachments",
+    "args": [
+      [
+        {
+          "kind": "image",
+          "payload": {
+            "url": "https://example.com/image",
+            "width": 10,
+            "height": 20,
+            "size": 100
+          },
+          "mimeType": null,
+          "fileName": "image.png",
+          "previewBase64": null,
+          "width": 0,
+          "height": 0
+        },
+        {
+          "kind": "file",
+          "payload": {
+            "token": "file"
+          },
+          "mimeType": null,
+          "fileName": "doc.pdf",
+          "previewBase64": null,
+          "width": 12,
+          "height": 14
+        },
+        {
+          "kind": "file",
+          "base64": "data",
+          "mimeType": null,
+          "fileName": null,
+          "previewBase64": "preview",
+          "width": 0,
+          "height": 0
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "kind": "image",
+        "url": "https://example.com/image",
+        "previewUrl": "https://example.com/image",
+        "fileName": "image.png",
+        "mimeType": null,
+        "size": 100,
+        "width": null,
+        "height": null
+      },
+      {
+        "kind": "file",
+        "url": null,
+        "previewUrl": null,
+        "fileName": "doc.pdf",
+        "mimeType": null,
+        "size": null,
+        "width": 12,
+        "height": 14
+      }
+    ]
+  },
+  {
+    "method": "normalizeChannelSuggestionImages",
+    "args": [{}],
+    "expected": []
+  },
+  {
+    "method": "normalizeChannelSuggestionImages",
+    "args": [
+      {
+        "images": []
+      }
+    ],
+    "expected": []
+  },
+  {
+    "method": "normalizeChannelSuggestionImages",
+    "args": [
+      {
+        "imageBase64": " old ",
+        "imageMimeType": " image/png ",
+        "imageFileName": " old.png "
+      }
+    ],
+    "expected": [
+      {
+        "base64": "old",
+        "mimeType": "image/png",
+        "fileName": "old.png"
+      }
+    ]
+  },
+  {
+    "method": "normalizeChannelSuggestionImages",
+    "args": [
+      {
+        "images": [
+          {
+            "base64": " new ",
+            "mimeType": " image/jpeg ",
+            "fileName": " a.jpg "
+          }
+        ],
+        "imageBase64": "old"
+      }
+    ],
+    "expected": [
+      {
+        "base64": "new",
+        "mimeType": "image/jpeg",
+        "fileName": "a.jpg"
+      }
+    ]
+  },
+  {
+    "method": "normalizeChannelSuggestionImages",
+    "args": [
+      {
+        "mediaType": "image",
+        "mediaPayload": {
+          "token": "remote"
+        },
+        "imageBase64": "old"
+      }
+    ],
+    "expected": [
+      {
+        "payload": {
+          "token": "remote"
+        },
+        "mimeType": null,
+        "fileName": null
+      }
+    ]
+  },
+  {
+    "method": "normalizeChannelSuggestionImages",
+    "args": [
+      {
+        "images": [
+          {
+            "type": "video",
+            "payload": {
+              "token": "video"
+            },
+            "mimeType": "video/mp4"
+          },
+          {
+            "base64": "second"
+          },
+          {
+            "base64": " "
+          }
+        ]
+      }
+    ],
+    "expected": [
+      {
+        "type": "video",
+        "payload": {
+          "token": "video"
+        },
+        "mimeType": "video/mp4",
+        "fileName": null
+      },
+      {
+        "base64": "second",
+        "mimeType": null,
+        "fileName": null
+      }
+    ]
+  },
+  {
+    "method": "normalizeChannelSuggestionImages",
+    "args": [
+      {
+        "images": [
+          {
+            "base64": "image-0"
+          },
+          {
+            "base64": "image-1"
+          },
+          {
+            "base64": "image-2"
+          },
+          {
+            "base64": "image-3"
+          },
+          {
+            "base64": "image-4"
+          },
+          {
+            "base64": "image-5"
+          },
+          {
+            "base64": "image-6"
+          },
+          {
+            "base64": "image-7"
+          },
+          {
+            "base64": "image-8"
+          },
+          {
+            "base64": "image-9"
+          },
+          {
+            "base64": "image-10"
+          },
+          {
+            "base64": "image-11"
+          },
+          {
+            "base64": "image-12"
+          },
+          {
+            "base64": "image-13"
+          },
+          {
+            "base64": "image-14"
+          },
+          {
+            "base64": "image-15"
+          }
+        ]
+      }
+    ],
+    "expected": [
+      {
+        "base64": "image-0",
+        "mimeType": null,
+        "fileName": null
+      },
+      {
+        "base64": "image-1",
+        "mimeType": null,
+        "fileName": null
+      },
+      {
+        "base64": "image-2",
+        "mimeType": null,
+        "fileName": null
+      },
+      {
+        "base64": "image-3",
+        "mimeType": null,
+        "fileName": null
+      },
+      {
+        "base64": "image-4",
+        "mimeType": null,
+        "fileName": null
+      },
+      {
+        "base64": "image-5",
+        "mimeType": null,
+        "fileName": null
+      },
+      {
+        "base64": "image-6",
+        "mimeType": null,
+        "fileName": null
+      },
+      {
+        "base64": "image-7",
+        "mimeType": null,
+        "fileName": null
+      },
+      {
+        "base64": "image-8",
+        "mimeType": null,
+        "fileName": null
+      },
+      {
+        "base64": "image-9",
+        "mimeType": null,
+        "fileName": null
+      }
+    ]
+  },
+  {
+    "method": "normalizeChannelSuggestionImages",
+    "args": [
+      {
+        "images": [
+          {
+            "payload": {},
+            "base64": "fallback"
+          }
+        ]
+      }
+    ],
+    "expected": [
+      {
+        "base64": "fallback",
+        "mimeType": null,
+        "fileName": null
+      }
+    ]
+  },
+  {
+    "method": "readChannelSuggestionImageAssets",
+    "args": [
+      [
+        {
+          "payload": {
+            "token": "remote"
+          },
+          "base64": "ignored",
+          "mimeType": " image/png "
+        },
+        {
+          "base64": " data ",
+          "fileName": " photo.png "
+        },
+        {
+          "base64": " "
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "payload": {
+          "token": "remote"
+        },
+        "mimeType": "image/png",
+        "fileName": null
+      },
+      {
+        "base64": "data",
+        "mimeType": null,
+        "fileName": "photo.png"
+      }
+    ]
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": [
+      [
+        {
+          "emoji": " 👍 ",
+          "userIds": ["a", "a", "b", ""]
+        },
+        {
+          "emoji": "👍",
+          "userIds": ["c"]
+        },
+        {
+          "emoji": "❤️",
+          "userIds": ["b", "d", "e"]
+        },
+        {
+          "emoji": "!",
+          "userIds": []
+        }
+      ],
+      "a"
+    ],
+    "expected": [
+      {
+        "emoji": "❤️",
+        "count": 3,
+        "reactedByMe": false
+      },
+      {
+        "emoji": "👍",
+        "count": 3,
+        "reactedByMe": true
+      }
+    ]
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": [
+      [
+        {
+          "emoji": " 👍 ",
+          "userIds": ["a", "a", "b", ""]
+        },
+        {
+          "emoji": "👍",
+          "userIds": ["c"]
+        },
+        {
+          "emoji": "❤️",
+          "userIds": ["b", "d", "e"]
+        },
+        {
+          "emoji": "!",
+          "userIds": []
+        }
+      ],
+      " b "
+    ],
+    "expected": [
+      {
+        "emoji": "❤️",
+        "count": 3,
+        "reactedByMe": true
+      },
+      {
+        "emoji": "👍",
+        "count": 3,
+        "reactedByMe": true
+      }
+    ]
+  },
+  {
+    "method": "readDialogReactionGroups",
+    "args": [
+      [
+        {
+          "emoji": " 👍 ",
+          "userIds": ["a", "a", "b", ""]
+        },
+        {
+          "emoji": "👍",
+          "userIds": ["c"]
+        },
+        {
+          "emoji": "❤️",
+          "userIds": ["b", "d", "e"]
+        },
+        {
+          "emoji": "!",
+          "userIds": []
+        }
+      ],
+      null
+    ],
+    "expected": [
+      {
+        "emoji": "❤️",
+        "count": 3,
+        "reactedByMe": false
+      },
+      {
+        "emoji": "👍",
+        "count": 3,
+        "reactedByMe": false
+      }
+    ]
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": [
+      {
+        "messageId": " mid ",
+        "text": " text ",
+        "authorDisplayName": " User "
+      }
+    ],
+    "expected": {
+      "messageId": "mid",
+      "authorDisplayName": "User",
+      "text": "text"
+    }
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": [
+      {
+        "messageId": "mid",
+        "text": ""
+      }
+    ],
+    "expected": null
+  },
+  {
+    "method": "readDialogReplyPreview",
+    "args": [
+      {
+        "messageId": 1,
+        "text": "text"
+      }
+    ],
+    "expected": null
+  },
+  {
+    "method": "readChannelSuggestionTextMarkup",
+    "args": [
+      [
+        {
+          "type": "strong",
+          "from": 2,
+          "length": 4
+        },
+        {
+          "type": "user_mention",
+          "from": 7,
+          "length": 3,
+          "user_id": 123
+        },
+        {
+          "type": "link",
+          "from": 0,
+          "length": 5,
+          "url": " https://example.com "
+        },
+        {
+          "type": "invalid",
+          "from": 0,
+          "length": 2
+        },
+        {
+          "type": "strong",
+          "from": -1,
+          "length": 1
+        }
+      ]
+    ],
+    "expected": [
+      {
+        "from": 2,
+        "length": 4,
+        "type": "strong",
+        "url": null,
+        "userLink": null
+      },
+      {
+        "from": 7,
+        "length": 3,
+        "type": "user_mention",
+        "url": null,
+        "userLink": "max://user/123"
+      },
+      {
+        "from": 0,
+        "length": 5,
+        "type": "link",
+        "url": "https://example.com",
+        "userLink": null
+      },
+      {
+        "from": 0,
+        "length": 1,
+        "type": "strong",
+        "url": null,
+        "userLink": null
+      }
+    ]
+  },
+  {
+    "method": "readStoredChannelSuggestionActor",
+    "args": [
+      "author",
+      {
+        "actorUserId": "author",
+        "authorUsername": " name ",
+        "authorDisplayName": " User ",
+        "authorAvatarUrl": " https://example.com/avatar ",
+        "authorProfileUrl": "https://max.ru/user"
+      }
+    ],
+    "expected": {
+      "userId": "author",
+      "username": "name",
+      "displayName": "User",
+      "avatarUrl": "https://example.com/avatar",
+      "profileUrl": "https://max.ru/user"
+    }
+  },
+  {
+    "method": "readStoredChannelSuggestionActor",
+    "args": [
+      "other",
+      {
+        "actorUserId": "author",
+        "authorUsername": " name ",
+        "authorDisplayName": " User ",
+        "authorAvatarUrl": " https://example.com/avatar ",
+        "authorProfileUrl": "https://max.ru/user"
+      }
+    ],
+    "expected": {
+      "userId": "other",
+      "username": null,
+      "displayName": null,
+      "avatarUrl": null,
+      "profileUrl": null
+    }
+  }
+]

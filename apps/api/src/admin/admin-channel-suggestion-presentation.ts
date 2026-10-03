@@ -174,7 +174,7 @@ export function buildPublishedChannelSuggestionMessagePayload(
   suggestionText: string,
   textFormat: BroadcastTextFormat,
   textMarkup: ChannelSuggestionTextMarkup[],
-): ChannelSuggestionMessagePayload {
+): ChannelSuggestionMessagePayload & { textFormat: 'html' | 'markdown' } {
   const hasMeaningfulSuggestionText = suggestionText.trim().length > 0;
   const richTextHtml = hasMeaningfulSuggestionText
     ? renderChannelSuggestionTextHtml(suggestionText, textMarkup, textFormat)

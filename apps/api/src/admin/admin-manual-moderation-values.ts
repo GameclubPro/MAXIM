@@ -1,3 +1,5 @@
+import { readObjectPayloadOrNull } from './admin-value-readers';
+export { readObjectPayloadOrNull } from './admin-value-readers';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import {
   manualModerationActionResultSchema,
@@ -197,12 +199,4 @@ export function extractHttpErrorMessage(error: unknown): string {
 
 export function escapeMarkdownPlainText(value: string): string {
   return value.replace(/([\\`*_[\]()~+#])/g, '\\$1');
-}
-
-export function readObjectPayloadOrNull(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-
-  return value as Record<string, unknown>;
 }

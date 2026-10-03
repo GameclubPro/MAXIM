@@ -8,7 +8,6 @@ const ADMIN_SERVICE_TEST_SUPPORT_IMPORT_PATTERN =
 const ALLOWED_ADMIN_SERVICE_IMPORTS = [
   'admin/admin-settings.service.ts',
   'admin/admin.module.ts',
-  'admin/channel-dialog-legacy.port.ts',
   'admin/managed-giveaway.service.ts',
   'admin/managed-poll.service.ts',
   'admin/manual-moderation.service.ts',

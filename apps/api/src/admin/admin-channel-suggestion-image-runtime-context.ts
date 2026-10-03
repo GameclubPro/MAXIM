@@ -16,36 +16,8 @@ export type AdminChannelSuggestionImageRuntimeContext = {
   readTrimmedString(value: unknown): string | null;
 };
 
-type AdminChannelSuggestionImageRuntimeContextTarget = AdminChannelSuggestionImageRuntimeContext;
-
 export function createAdminChannelSuggestionImageRuntimeContext(
-  target: object,
+  dependencies: AdminChannelSuggestionImageRuntimeContext,
 ): AdminChannelSuggestionImageRuntimeContext {
-  const typedTarget = target as AdminChannelSuggestionImageRuntimeContextTarget;
-
-  return {
-    get logger(): Logger {
-      return typedTarget.logger;
-    },
-    get prisma(): Pick<PrismaService, 'channelSuggestionImageAsset'> {
-      return typedTarget.prisma;
-    },
-    normalizeChannelSuggestionImages(
-      params: NormalizeChannelSuggestionImagesParams,
-    ): ChannelSuggestionImageAsset[] {
-      return typedTarget.normalizeChannelSuggestionImages(params);
-    },
-    readChannelSuggestionImageAssets(value: unknown): ChannelSuggestionImageAsset[] {
-      return typedTarget.readChannelSuggestionImageAssets(value);
-    },
-    readChannelSuggestionMediaType(value: unknown): 'image' | 'video' | null {
-      return typedTarget.readChannelSuggestionMediaType(value);
-    },
-    readObjectPayloadOrNull(value: unknown): Record<string, unknown> | null {
-      return typedTarget.readObjectPayloadOrNull(value);
-    },
-    readTrimmedString(value: unknown): string | null {
-      return typedTarget.readTrimmedString(value);
-    },
-  };
+  return dependencies;
 }
