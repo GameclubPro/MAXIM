@@ -167,6 +167,7 @@ try {
       await disclosure.waitFor();
       if ((await disclosure.getAttribute('aria-expanded')) !== 'true') await disclosure.click();
       await page.getByLabel('Добавить по ссылке').waitFor();
+      await page.getByLabel('Найти чат или канал', { exact: true }).waitFor();
       await page.locator('.required-subscription__source-skeleton').waitFor({ state: 'hidden' });
       await applyNativeVisualMode(page, {
         safeTop: platform === 'ios' ? 44 : 24,
