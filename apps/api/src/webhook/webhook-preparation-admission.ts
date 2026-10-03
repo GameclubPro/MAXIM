@@ -22,9 +22,7 @@ export class WebhookPreparationAdmission {
     this.maxInFlight = Math.max(1, Math.min(8, Math.floor(poolMax / 2)));
   }
 
-  run<T>(botId: string, workClass: WorkClass, task: () => Promise<T>): Promise<T> {
-    // FLAG: No waiting promises are retained on overload. The existing receipt/outbox
-    // remains the queue, with a typed non-exhausting retry instead of RAM-only work.
+  private availability(botId: string, workClass: WorkClass) {
     const botCounts = this.byBot.get(botId) ?? { ordinary: 0, interactive: 0, lifecycle: 0 };
     const botActive = botCounts[workClass];
     const botClassLimit = Math.max(1, Math.floor(this.maxInFlight / 2));
@@ -40,12 +38,43 @@ export class WebhookPreparationAdmission {
       reserved ||
       botActive >= botClassLimit ||
       (workClass === 'interactive' && this.byClass.interactive >= 1);
+    return { botCounts, botActive, botClassLimit, globalFull, limited };
+  }
+
+  canRun(botId: string, workClass: WorkClass): boolean {
+    const availability = this.availability(botId, workClass);
+    this.reserveLifecycle(workClass, availability);
+    return !availability.limited;
+  }
+
+  nextCompletion(): Promise<void> | null {
+    return this.active.size > 0 ? Promise.race(this.active) : null;
+  }
+
+  private reserveLifecycle(
+    workClass: WorkClass,
+    availability: ReturnType<WebhookPreparationAdmission['availability']>,
+  ) {
+    // FLAG: Scheduling hints must preserve the same eligible lifecycle next-slot reserve
+    // as actual rejected admission, without retaining a task or counting an attempt.
+    if (
+      workClass === 'lifecycle' &&
+      !this.closed &&
+      availability.globalFull &&
+      availability.botActive < availability.botClassLimit
+    )
+      this.reserveLifecycleUntil = Date.now() + 5_000;
+  }
+
+  run<T>(botId: string, workClass: WorkClass, task: () => Promise<T>): Promise<T> {
+    // FLAG: No waiting promises are retained on overload. The existing receipt/outbox
+    // remains the queue, with a typed non-exhausting retry instead of RAM-only work.
+    const availability = this.availability(botId, workClass);
+    const { botCounts, limited } = availability;
     if (limited) {
       // FLAG: A bot already using its lifecycle quota cannot consume another slot.
       // Its excess work must not reserve idle global capacity away from other classes/bots.
-      if (workClass === 'lifecycle' && !this.closed && globalFull && botActive < botClassLimit) {
-        this.reserveLifecycleUntil = Date.now() + 5_000;
-      }
+      this.reserveLifecycle(workClass, availability);
       this.metrics.deferred[workClass] += 1;
       this.flushIfDue();
       return Promise.reject(

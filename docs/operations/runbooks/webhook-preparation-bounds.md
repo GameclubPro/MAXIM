@@ -24,6 +24,18 @@ Start and lifecycle events retain their separate allowances. Omitting this conte
 persisted event into `unknown/ordinary`. This snapshot is scheduling metadata only: execution
 reloads the receipt, and a disappeared receipt must never execute from the admission snapshot.
 
+The outbox checks the same admission budgets before dispatching its already selected bounded
+work units. A busy bot/class no longer consumes the selection through rejected preparations and
+SQL retry writes. Independent classes/bots can proceed; a released preparation slot can admit
+the next selected receipt even while an earlier queue handoff is finishing. These hints preserve
+eligible lifecycle reservations but grant no slot or permission: actual admission and exact-head
+checks remain mandatory. There are still no waiting task promises or new persistent/RAM queues.
+Only the existing worker-count bound of running units is retained. After capacity contention,
+additional dispatch is limited to one poll interval (capped at one second); already running work
+drains, and undispatched receipts remain unchanged in SQL for the next selection. External work
+or a reservation alone cannot keep an otherwise idle batch waiting. `preparationBlocked` also
+counts these undispatched units; admission `deferred` counts only actual rejected calls.
+
 Before an event becomes prepared, the service waits for membership SQL/cache work, binding
 reconciliation, idempotent SQL read models, bootstrap cache completion, any required owner
 recheck, roster queue acknowledgement and explicit Start handling. Read-model/cache invalidation

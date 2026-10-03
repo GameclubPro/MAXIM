@@ -1370,33 +1370,66 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : [])),
     );
     const workerCount = Math.max(1, Math.min(enqueueConcurrency, workUnits.length));
-    let nextIndex = 0;
-
-    const runWorker = async () => {
-      while (true) {
-        const currentIndex = nextIndex;
-        nextIndex += 1;
-
-        const workUnit = workUnits[currentIndex];
-        if (!workUnit) {
-          return;
-        }
-
-        try {
-          await this.enqueueCandidateSequence(
-            workUnit,
-            workUnit.chatId ? (orderedHeadsByChatId.get(workUnit.chatId) ?? null) : null,
-            progress,
-          );
-        } catch {
-          // FLAG: Isolate a failed unit and drain every worker before the next poll starts.
-          // The persisted receipt remains retryable; never log its payload or an unsafe error.
-          progress.workUnitErrors += 1;
-        }
+    const dispatched = new Set<WebhookEnqueueWorkUnit>();
+    const active = new Set<Promise<void>>();
+    let capacityDeadlineMs: number | null = null;
+    const runUnit = async (workUnit: WebhookEnqueueWorkUnit) => {
+      try {
+        await this.enqueueCandidateSequence(
+          workUnit,
+          workUnit.chatId ? (orderedHeadsByChatId.get(workUnit.chatId) ?? null) : null,
+          progress,
+        );
+      } catch {
+        // FLAG: Isolate a failed unit and drain every worker before the next poll starts.
+        // The persisted receipt remains retryable; never log its payload or an unsafe error.
+        progress.workUnitErrors += 1;
       }
     };
 
-    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+    // FLAG: Revisit only this already-bounded selection while its admitted work drains.
+    // Do not create waiting task promises or write SQL backoff for known busy slots.
+    // A slow preparation cannot keep admitting this batch ahead of fresh priority work:
+    // after one poll interval of contention, leave undispatched receipts in SQL.
+    try {
+      while (dispatched.size < workUnits.length) {
+        if (capacityDeadlineMs !== null && Date.now() >= capacityDeadlineMs) break;
+        for (const workUnit of workUnits) {
+          if (active.size >= workerCount) break;
+          if (dispatched.has(workUnit)) continue;
+          const orderedHead = workUnit.chatId
+            ? (orderedHeadsByChatId.get(workUnit.chatId) ?? null)
+            : null;
+          const first = workUnit.chatId
+            ? workUnit.candidates.find(
+                (event) => orderedHead && this.compareCandidateSequence(orderedHead, event) === 0,
+              )
+            : workUnit.candidates[0];
+          // Ordering rejection and timeout settlement need no preparation slot. Their
+          // existing execution fences still run, including when all slots are occupied.
+          if (
+            first &&
+            !isPendingWebhookTimeoutQuarantineMessage(first.errorMessage) &&
+            !this.webhookService.canPreparePersistedWebhookEvent(
+              first.normalizedPayload as MaxUpdate,
+            )
+          ) {
+            capacityDeadlineMs ??= Date.now() + Math.max(1, Math.min(this.pollIntervalMs, 1_000));
+            continue;
+          }
+          dispatched.add(workUnit);
+          const task = runUnit(workUnit).finally(() => active.delete(task));
+          active.add(task);
+        }
+        if (dispatched.size === workUnits.length || active.size === 0) break;
+        const completion =
+          active.size < workerCount ? this.webhookService.nextPreparationCompletion() : null;
+        await Promise.race(completion ? [...active, completion] : active);
+      }
+    } finally {
+      await Promise.all(active);
+    }
+    progress.preparationBlocked += workUnits.length - dispatched.size;
     return progress;
   }
 

@@ -10,6 +10,32 @@ function gate() {
 }
 
 describe('Webhook durable preparation admission', () => {
+  it('preserves lifecycle reservation and shutdown when the outbox checks scheduling availability', async () => {
+    const admission = new WebhookPreparationAdmission(4, jest.fn());
+    const a = gate();
+    const b = gate();
+    const first = admission.run('a', 'ordinary', () => a.promise);
+    const second = admission.run('b', 'ordinary', () => b.promise);
+    try {
+      expect(admission.canRun('c', 'lifecycle')).toBe(false);
+      const completion = admission.nextCompletion();
+      b.release();
+      await completion;
+      expect(admission.canRun('b', 'ordinary')).toBe(false);
+      expect(admission.canRun('c', 'lifecycle')).toBe(true);
+      await admission.run('c', 'lifecycle', async () => undefined);
+      expect(admission.canRun('b', 'ordinary')).toBe(true);
+      admission.stop();
+      expect(admission.canRun('b', 'ordinary')).toBe(false);
+      expect(admission.canRun('c', 'lifecycle')).toBe(false);
+    } finally {
+      a.release();
+      b.release();
+      await Promise.all([first, second]);
+    }
+    expect(admission.nextCompletion()).toBeNull();
+  });
+
   it('bounds 1,000 pending calls from a slow bot while another bot progresses', async () => {
     const report = jest.fn();
     const admission = new WebhookPreparationAdmission(4, report);
