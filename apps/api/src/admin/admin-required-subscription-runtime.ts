@@ -1,3 +1,4 @@
+import { mergeManagedBotChatCatalogRows } from './admin-managed-bot-catalog-values';
 import { BadRequestException, ServiceUnavailableException, type Logger } from '@nestjs/common';
 import type { ChatSettings, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
@@ -20,18 +21,18 @@ import {
 } from './admin-legacy-utils';
 import type {
   AdminRequiredSubscriptionRuntimeContext,
-  CreateRequiredSubscriptionManagedEntityHeaderParams,
   ResolveRequiredSubscriptionCandidateBotIdsOptions,
 } from './admin-required-subscription-runtime-context';
 import { resolveRequiredSubscriptionChannelByKnownLink } from './admin-required-subscription-catalog';
 import {
   ADMIN_ACTION_HEALTH_LANE,
   REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
-  type ManagedBotChatCatalogSnapshotRow,
-  type ManagedEntitiesDiscoverySnapshot,
   mapManagedEntityTypeToChatEntityType,
 } from './admin.service.support';
-import { sanitizePublicManagedEntityHeader } from './admin-managed-entity-header';
+import {
+  createManagedEntityHeader,
+  sanitizePublicManagedEntityHeader,
+} from './admin-managed-entity-header';
 
 type RequiredSubscriptionProbePersistenceResult =
   | { status: 'persisted' }
@@ -63,18 +64,6 @@ export class AdminRequiredSubscriptionRuntime {
 
   private get maxBotRegistry(): MaxBotRegistryService | undefined {
     return this.context.maxBotRegistry;
-  }
-
-  private createManagedEntityHeader(
-    params: CreateRequiredSubscriptionManagedEntityHeaderParams,
-  ): ManagedEntityHeader {
-    return this.context.createManagedEntityHeader(params);
-  }
-
-  private mergeManagedBotChatCatalogRows(
-    rows: readonly ManagedBotChatCatalogSnapshotRow[],
-  ): ManagedEntitiesDiscoverySnapshot {
-    return this.context.mergeManagedBotChatCatalogRows(rows);
   }
 
   private resolveBotAssignment(chatId: string): Promise<string | undefined> {
@@ -219,7 +208,10 @@ export class AdminRequiredSubscriptionRuntime {
         normalizedLink,
         catalog: this.prisma.managedBotChatCatalog,
         normalizeLink: (value) => this.normalizeRequiredSubscriptionChannelLink(value),
-        mergeCatalogRows: (rows) => this.mergeManagedBotChatCatalogRows(rows),
+        mergeCatalogRows: (rows) =>
+          mergeManagedBotChatCatalogRows(rows, (botId) =>
+            this.context.normalizeRuntimeManagedEntityBotId(botId),
+          ),
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -362,7 +354,7 @@ export class AdminRequiredSubscriptionRuntime {
     const entityType = snapshot.entityType;
     const prismaEntityType = mapManagedEntityTypeToChatEntityType(entityType);
 
-    const header = this.createManagedEntityHeader({
+    const header = createManagedEntityHeader({
       id: normalizedChatId,
       title: snapshot.title?.trim() || normalizedChatId,
       entityType,

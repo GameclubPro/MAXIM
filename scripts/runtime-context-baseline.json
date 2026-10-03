@@ -18,14 +18,6 @@
       "definitionSha256": "6ddb564af2fefcf36b5df271d242cc0d0c47c4233377bf8efd8325187971a0e3"
     },
     {
-      "key": "apps/api/src/admin/admin-manual-moderation-runtime-context.ts:createAdminManualModerationRuntimeContext",
-      "definitionSha256": "f1b25551ff3deacb502599b3d68877940662e093fe56fb7381af3140e085ab32"
-    },
-    {
-      "key": "apps/api/src/admin/admin-required-subscription-runtime-context.ts:createAdminRequiredSubscriptionRuntimeContext",
-      "definitionSha256": "b0577451608e7348bcd6fe93204ccb8f238ea2008403e80d6308d668000d940a"
-    },
-    {
       "key": "apps/api/src/admin/admin-suggestion-delivery-runtime-context.ts:createAdminSuggestionDeliveryRuntimeContext",
       "definitionSha256": "020e1d19215d772d66684ac66aec7da9149ca5120a3f191ba3506901c11ec8ac"
     },

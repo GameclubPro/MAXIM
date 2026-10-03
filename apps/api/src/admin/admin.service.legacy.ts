@@ -1,3 +1,19 @@
+import { mergeManagedBotChatCatalogRows } from './admin-managed-bot-catalog-values';
+import { createManagedEntityHeader } from './admin-managed-entity-header';
+import {
+  resolveManualMuteResultFromLedger,
+  isAmbiguousAttemptedMaxMemberMutation,
+  isManualModerationTransientMaxError,
+  isRetryableManualFanoutPreparationError,
+  isManualModerationOrderingFailure,
+  summarizeManualModerationCleanup,
+  summarizeManualMuteFanout,
+  summarizeManualBanFanout,
+  buildManualModerationFanoutOperationKey,
+  extractHttpErrorMessage,
+  escapeMarkdownPlainText,
+  readObjectPayloadOrNull,
+} from './admin-manual-moderation-values';
 import { createManagedEntitiesRefreshState } from './admin-managed-entities-refresh-state';
 import { AdminManagedEntitiesSnapshotRuntime } from './admin-managed-entities-snapshot-runtime';
 import { mergeManagedEntityGroups } from './admin-managed-entities-snapshot-codec';
@@ -122,7 +138,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type { Queue } from 'bullmq';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   ChatContextCacheService,
   type ManagedEntitiesPublishedSnapshot,
@@ -145,10 +161,7 @@ import {
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
-import {
-  isAmbiguousMaxMutationError,
-  isAmbiguousMaxSendError,
-} from '../max/max-send-ambiguity.util';
+import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import {
   MaxBotLinkService,
   type MaxBotRoute,
@@ -824,9 +837,82 @@ export class AdminService implements OnModuleDestroy {
           owner.resolveUserProfiles(chatId, entityType, userIds, options),
       }),
     ))(this);
-  private readonly manualModerationRuntime = new AdminManualModerationRuntime(
-    createAdminManualModerationRuntimeContext(this),
-  );
+  private readonly manualModerationRuntime = ((owner: AdminService) =>
+    new AdminManualModerationRuntime(
+      createAdminManualModerationRuntimeContext({
+        get logger(): Logger {
+          return owner.logger;
+        },
+        get adminSuperBanQueue(): Queue<AdminSuperBanJob> | undefined {
+          return owner.adminSuperBanQueue;
+        },
+        get adminManualFanoutQueue(): Queue<AdminManualFanoutJob> | undefined {
+          return owner.adminManualFanoutQueue;
+        },
+        enqueueManualModerationFanout: (job) => owner.enqueueManualModerationFanout(job),
+        isKnownRuntimeBotUserId: (userId) => owner.isKnownRuntimeBotUserId(userId),
+        isSuperBanDeveloperUserId: (userId) => owner.isSuperBanDeveloperUserId(userId),
+        processDeveloperSuperBanJob: (job) => owner.processDeveloperSuperBanJob(job),
+        processManualSystemBan: (chatId, targetUserId, actor, source, options) =>
+          owner.applyManualSystemBan(chatId, targetUserId, actor, source, options),
+        processManualModerationAction: (chatId, targetUserId, actor, body, source, options) =>
+          owner.applyManualModerationAction(chatId, targetUserId, actor, body, source, options),
+        resolveManualCommandFanoutChats: (actor, sourceChatId) =>
+          owner.resolveManualCommandFanoutChats(actor, sourceChatId),
+        runManualSourceCleanupWithLedger: (params) =>
+          owner.runManualSourceCleanupWithLedger(params),
+        applyManualMuteFanout: (params) => owner.applyManualMuteFanout(params),
+        applyManualSystemBanFanout: (params) => owner.applyManualSystemBanFanout(params),
+        resolveManualGroupCommandCleanupBotId: (chatId, preferredBotId) =>
+          owner.resolveManualGroupCommandCleanupBotId(chatId, preferredBotId),
+        resolveManualModerationTargetDisplayName: (chatId, targetUserId, options) =>
+          owner.resolveManualModerationTargetDisplayName(chatId, targetUserId, options),
+        deleteManualGroupCommandTargetMessage: (job, options) =>
+          owner.deleteManualGroupCommandTargetMessage(job, options),
+        deleteManualGroupCommandMessage: (chatId, messageId, options) =>
+          owner.deleteManualGroupCommandMessage(chatId, messageId, options),
+        readManualModerationFanoutIntentRow: (params) =>
+          owner.readManualModerationFanoutIntentRow(params),
+
+        resolveManualModerationActionBotAssignment: ({ chatId, action, options }) =>
+          owner.resolveManualModerationActionBotAssignment(chatId, action, options),
+        assertBotCanDeleteMessages: (chatId, botId) =>
+          owner.assertBotCanDeleteMessages(chatId, botId),
+        deleteRecentTrackedMessagesForManualAction: (chatId, targetUserId, options) =>
+          owner.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId, options),
+        runManualBanSourceCleanup: (chatId, targetUserId, actorUserId, options) =>
+          owner.runManualBanSourceCleanup(chatId, targetUserId, actorUserId, options),
+        runManualBanFanoutInlineSummary: (params) => owner.runManualBanFanoutInlineSummary(params),
+
+        normalizeManualModerationBotId: (value) => owner.normalizeManualModerationBotId(value),
+        canResolveCurrentChatMemberAccess: () =>
+          typeof owner.maxClient.getCurrentChatMemberAccess === 'function',
+        resolveDeliveryBotAssignment: (chatId) => owner.resolveDeliveryBotAssignment(chatId),
+
+        claimManualModerationFanoutLedgerEntry: (params) =>
+          owner.claimManualModerationFanoutLedgerEntry(params),
+        completeManualModerationFanoutLedgerEntry: (params) =>
+          owner.completeManualModerationFanoutLedgerEntry(params),
+        markManualModerationFanoutLedgerFailed: (params) =>
+          owner.markManualModerationFanoutLedgerFailed(params),
+        findSettledManualGroupCommandOutcomeRows: ({ jobId, chatId, targetUserId }) =>
+          owner.prisma.manualModerationFanoutLedgerEntry.findMany({
+            where: {
+              jobId,
+              operation: {
+                in: ['COMMAND_NOTICE_OUTCOME', 'COMMAND_NOTICE_SUCCESS', 'COMMAND_NOTICE_FAILURE'],
+              },
+              targetChatId: chatId,
+              targetUserId,
+              status: { in: ['SUCCEEDED', 'AMBIGUOUS'] },
+            },
+            select: { operation: true },
+            take: 3,
+          }),
+        sendMessage: (chatId, text, options, dispatchOptions) =>
+          owner.maxClient.sendMessage(chatId, text, options, dispatchOptions),
+      }),
+    ))(this);
   private readonly managedEntitiesSnapshotRuntime = new AdminManagedEntitiesSnapshotRuntime({
     filterToRuntimeScope: (chats) => this.filterManagedEntitiesToRuntimeScope(chats),
     loadAllowlist: (userId, entityType) => this.listChatsFromAllowlistUncached(userId, entityType),
@@ -931,9 +1017,36 @@ export class AdminService implements OnModuleDestroy {
           owner.resolveParticipantCleanupBotAssignment(chatId),
       }),
     ))(this);
-  private readonly requiredSubscriptionRuntime = new AdminRequiredSubscriptionRuntime(
-    createAdminRequiredSubscriptionRuntimeContext(this),
-  );
+  private readonly requiredSubscriptionRuntime = ((owner: AdminService) =>
+    new AdminRequiredSubscriptionRuntime(
+      createAdminRequiredSubscriptionRuntimeContext({
+        get prisma(): PrismaService {
+          return owner.prisma;
+        },
+        get maxClient(): MaxClientService {
+          return owner.maxClient;
+        },
+        get chatContextCache(): ChatContextCacheService {
+          return owner.chatContextCache;
+        },
+        get logger(): Logger {
+          return owner.logger;
+        },
+        get maxBotLinkService(): MaxBotLinkService | undefined {
+          return owner.maxBotLinkService;
+        },
+        get maxBotRegistry(): MaxBotRegistryService | undefined {
+          return owner.maxBotRegistry;
+        },
+        normalizeRuntimeManagedEntityBotId: (botId) =>
+          owner.normalizeRuntimeManagedEntityBotId(botId),
+        resolveBotAssignment: (chatId) => owner.resolveBotAssignment(chatId),
+        resolveCandidateBotIdsForChat: (chatId, options) =>
+          owner.resolveCandidateBotIdsForChat(chatId, options),
+        refreshManagedEntityBotAccessSnapshots: (chatId, entityType, reason) =>
+          refreshBots(owner.maxBotExecutionPlanner, owner.logger, chatId, entityType, reason),
+      }),
+    ))(this);
   private readonly suggestionDeliveryRuntime = new AdminSuggestionDeliveryRuntime(
     createAdminSuggestionDeliveryRuntimeContext(this),
   );
@@ -3816,46 +3929,6 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private createManagedEntityHeader(params: {
-    id: string;
-    title: string;
-    entityType: ManagedEntityType;
-    link?: string | null;
-    participantsCount?: number | null;
-    avatarUrl?: string | null;
-    primaryBotId?: string | null;
-    assignedBots?: ManagedEntityAssignedBot[];
-    sharedMode?: ManagedEntityHeader['sharedMode'];
-  }): ManagedEntityHeader {
-    const assignedBots = [...(params.assignedBots ?? [])];
-    return {
-      id: params.id,
-      title: params.title,
-      entityType: params.entityType,
-      link: params.link ?? null,
-      participantsCount: params.participantsCount ?? null,
-      ...(this.readTrimmedString(params.avatarUrl) ? { avatarUrl: params.avatarUrl } : {}),
-      primaryBotId: this.readTrimmedString(params.primaryBotId) ?? null,
-      assignedBots,
-      sharedMode: params.sharedMode ?? (assignedBots.length > 1 ? 'shared-standby' : 'owned'),
-      accessDiagnostics: {
-        state: 'ok',
-        lastDetectedAt: null,
-        lastCheckedAt: null,
-        freshUntil: null,
-        source: 'unknown',
-        activeBotCount: assignedBots.length,
-        lostBots: [],
-      },
-      viewerAccess: {
-        state: 'checking',
-        reason: null,
-        checkedAt: null,
-        canEdit: false,
-      },
-    };
-  }
-
   private async attachManagedEntityBotAssignments(chats: ChatSummary[]): Promise<ChatSummary[]> {
     return this.managedEntitiesRuntime.attachManagedEntityBotAssignments(chats);
   }
@@ -6238,38 +6311,9 @@ export class AdminService implements OnModuleDestroy {
   private mergeManagedBotChatCatalogRows(
     rows: readonly ManagedBotChatCatalogSnapshotRow[],
   ): ManagedEntitiesDiscoverySnapshot {
-    const byChatId = new Map<string, MaxBotChat>();
-    for (const row of rows) {
-      const chatId = this.readTrimmedString(row.chatId);
-      const botId = this.normalizeRuntimeManagedEntityBotId(row.botId);
-      if (!chatId || !botId) {
-        continue;
-      }
-
-      const lastEventTimeNumber =
-        row.lastEventTime !== null ? Number.parseInt(row.lastEventTime, 10) : Number.NaN;
-      const existing = byChatId.get(chatId);
-      if (existing) {
-        existing.botIds = Array.from(new Set([...(existing.botIds ?? []), botId]));
-        if (!existing.botId) {
-          existing.botId = botId;
-        }
-        continue;
-      }
-
-      byChatId.set(chatId, {
-        chatId,
-        title: this.readTrimmedString(row.title),
-        link: this.readTrimmedString(row.link),
-        avatarUrl: this.readTrimmedString(row.avatarUrl),
-        entityType: fromPrismaEntityType(row.entityType),
-        lastEventTime: Number.isFinite(lastEventTimeNumber) ? lastEventTimeNumber : null,
-        botId,
-        botIds: [botId],
-      });
-    }
-
-    return [...byChatId.values()];
+    return mergeManagedBotChatCatalogRows(rows, (botId) =>
+      this.normalizeRuntimeManagedEntityBotId(botId),
+    );
   }
 
   private async loadManagedBotChatMembershipCatalogSnapshot(
@@ -6441,7 +6485,7 @@ export class AdminService implements OnModuleDestroy {
           this.normalizeRuntimeManagedEntityBotId(chat.botId) ??
           this.normalizeRuntimeManagedEntityBotId(existingHeader?.primaryBotId);
         await this.chatContextCache.setManagedEntityHeader?.(
-          this.createManagedEntityHeader({
+          createManagedEntityHeader({
             id: chatId,
             title,
             entityType: chat.entityType,
@@ -9958,12 +10002,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private isManualModerationOrderingFailure(error: unknown): boolean {
-    return (
-      error instanceof ModerationSanctionStateChangedError ||
-      error instanceof ModerationSanctionStateLockBusyError ||
-      error instanceof ModerationSanctionStateLockLeaseLostError ||
-      error instanceof ModerationSanctionStateLockUnavailableError
-    );
+    return isManualModerationOrderingFailure(error);
   }
 
   private isRetryableManualModerationOrderingFailure(error: unknown): boolean {
@@ -9993,12 +10032,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private isAmbiguousAttemptedMaxMemberMutation(error: unknown): boolean {
-    if (!wasMaxMemberMutationAttempted(error)) {
-      return false;
-    }
-
-    const cause = this.readObjectPayloadOrNull(error)?.cause;
-    return isAmbiguousMaxMutationError(error) || isAmbiguousMaxMutationError(cause);
+    return isAmbiguousAttemptedMaxMemberMutation(error);
   }
 
   private describeManualModerationActionSource(source: AdminActionSource): string {
@@ -11274,7 +11308,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private isRetryableManualFanoutPreparationError(error: unknown): boolean {
-    return !(error instanceof BadRequestException || error instanceof ForbiddenException);
+    return isRetryableManualFanoutPreparationError(error);
   }
 
   private buildManualFanoutActor(actor: {
@@ -11428,24 +11462,7 @@ export class AdminService implements OnModuleDestroy {
     rootIntentKey?: string | null;
     extra?: Array<string | number | boolean | null | undefined>;
   }): string {
-    const rootKey =
-      this.readTrimmedString(params.rootIntentKey) ??
-      this.readTrimmedString(params.jobId) ??
-      'direct';
-    const digest = createHash('sha256')
-      .update(
-        [
-          rootKey,
-          params.operation,
-          params.sourceChatId.trim(),
-          params.targetChatId.trim(),
-          params.targetUserId.trim(),
-          ...(params.extra ?? []).map((value) => String(value ?? '')),
-        ].join('\n'),
-      )
-      .digest('hex')
-      .slice(0, 32);
-    return `manual_moderation_fanout:v1:${params.operation}:${digest}`;
+    return buildManualModerationFanoutOperationKey(params);
   }
 
   private isTerminalManualModerationFanoutLedgerStatus(
@@ -11536,29 +11553,7 @@ export class AdminService implements OnModuleDestroy {
       mutePermanent: boolean;
     },
   ): ManualModerationActionResult {
-    const metadata = this.readObjectPayloadOrNull(row.metadata);
-    const mutePermanent =
-      typeof metadata?.mutePermanent === 'boolean'
-        ? metadata.mutePermanent
-        : fallback.mutePermanent;
-    const muteDurationHours = mutePermanent
-      ? null
-      : typeof metadata?.muteDurationHours === 'number' &&
-          Number.isFinite(metadata.muteDurationHours)
-        ? metadata.muteDurationHours
-        : fallback.muteDurationHours;
-    const muteExpiresAt = mutePermanent
-      ? null
-      : (this.toIsoString(metadata?.muteExpiresAt) ??
-        (fallback.muteExpiresAt ? fallback.muteExpiresAt.toISOString() : null));
-    return manualModerationActionResultSchema.parse({
-      ok: true,
-      action: 'MUTE',
-      userId: fallback.userId,
-      muteDurationHours,
-      muteExpiresAt,
-      message: mutePermanent ? 'Мут включён без срока.' : `Мут включён на ${muteDurationHours} ч.`,
-    });
+    return resolveManualMuteResultFromLedger(row, fallback);
   }
 
   private resolveManualBanExecutionModeFromLedger(
@@ -12726,12 +12721,7 @@ export class AdminService implements OnModuleDestroy {
     pendingMessageIds: string[];
     failedMessageIds: string[];
   }) {
-    return {
-      candidateCount: result.candidateMessageIds.length,
-      deletedCount: result.deletedMessageIds.length,
-      pendingCount: result.pendingMessageIds.length,
-      failedCount: result.failedMessageIds.length,
-    };
+    return summarizeManualModerationCleanup(result);
   }
 
   private summarizeManualBanFanout(result: {
@@ -12741,16 +12731,7 @@ export class AdminService implements OnModuleDestroy {
     deletedMessageCount: number;
     failedMessageDeleteCount: number;
   }) {
-    return {
-      removedChatsCount: result.removedChatIds.length,
-      removedChatIds: result.removedChatIds,
-      skippedChatsCount: result.skippedChatIds.length,
-      skippedChatIds: result.skippedChatIds,
-      failedChatsCount: result.failedChatIds.length,
-      failedChatIds: result.failedChatIds,
-      deletedMessageCount: result.deletedMessageCount,
-      failedMessageDeleteCount: result.failedMessageDeleteCount,
-    };
+    return summarizeManualBanFanout(result);
   }
 
   private summarizeManualMuteFanout(result: {
@@ -12758,14 +12739,7 @@ export class AdminService implements OnModuleDestroy {
     skippedChatIds: string[];
     failedChatIds: string[];
   }) {
-    return {
-      mutedChatsCount: result.mutedChatIds.length,
-      mutedChatIds: result.mutedChatIds,
-      skippedChatsCount: result.skippedChatIds.length,
-      skippedChatIds: result.skippedChatIds,
-      failedChatsCount: result.failedChatIds.length,
-      failedChatIds: result.failedChatIds,
-    };
+    return summarizeManualMuteFanout(result);
   }
 
   private async prepareManualModerationTarget(
@@ -13122,30 +13096,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private isManualModerationTransientMaxError(error: unknown): boolean {
-    const status = extractMaxErrorStatus(error);
-    if (
-      (status !== null && status >= 500 && status <= 599) ||
-      isMaxApiThrottleError(error) ||
-      isMaxApiTimeoutError(error)
-    ) {
-      return true;
-    }
-
-    const message = (
-      this.extractMaxApiErrorMessage(error) ||
-      this.extractHttpErrorMessage(error) ||
-      (error instanceof Error ? error.message : String(error))
-    )
-      .trim()
-      .toLowerCase();
-
-    return (
-      message.includes('rate limit exceeded') ||
-      message.includes('circuit breaker') ||
-      message.includes('timeout') ||
-      message.includes('временно огранич') ||
-      (message.includes('max') && message.includes('повторите'))
-    );
+    return isManualModerationTransientMaxError(error);
   }
 
   private isAmbiguousMaxMemberModerationError(message: string): boolean {
@@ -13157,21 +13108,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private extractHttpErrorMessage(error: unknown): string {
-    const response = (error as { response?: unknown })?.response;
-    if (typeof response === 'string' && response.trim()) {
-      return response.trim();
-    }
-
-    const responseMessage = (error as { response?: { message?: unknown } })?.response?.message;
-    if (typeof responseMessage === 'string' && responseMessage.trim()) {
-      return responseMessage.trim();
-    }
-
-    if (error instanceof Error && error.message.trim()) {
-      return error.message.trim();
-    }
-
-    return '';
+    return extractHttpErrorMessage(error);
   }
 
   private isAddRemoveMembersPermission(permission: string): boolean {
@@ -16630,11 +16567,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private readObjectPayloadOrNull(value: unknown): Record<string, unknown> | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-
-    return value as Record<string, unknown>;
+    return readObjectPayloadOrNull(value);
   }
 
   private readTrimmedString(value: unknown): string | null {
@@ -19095,7 +19028,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private escapeMarkdownPlainText(value: string): string {
-    return value.replace(/([\\`*_[\]()~+#])/g, '\\$1');
+    return escapeMarkdownPlainText(value);
   }
 
   private parseChannelSuggestionFromBotPayload(body: unknown): ChannelSuggestionFromBotPayload {
@@ -22663,7 +22596,7 @@ export class AdminService implements OnModuleDestroy {
         }
 
         await this.chatContextCache.setManagedEntityHeader(
-          this.createManagedEntityHeader({
+          createManagedEntityHeader({
             id: chat.id,
             title,
             entityType: chat.entityType,
@@ -22904,7 +22837,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     await this.chatContextCache.setManagedEntityHeader?.(
-      this.createManagedEntityHeader({
+      createManagedEntityHeader({
         id: chat.id,
         title,
         entityType: chat.entityType,

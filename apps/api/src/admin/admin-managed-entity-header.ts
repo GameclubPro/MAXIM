@@ -21,7 +21,7 @@ type ManagedEntityHeaderCache = Pick<
   'getManagedEntityHeader' | 'setManagedEntityHeader'
 >;
 
-function createManagedEntityHeader(params: {
+export function createManagedEntityHeader(params: {
   id: string;
   title: string;
   entityType: ManagedEntityType;
