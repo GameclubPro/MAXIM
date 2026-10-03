@@ -36,6 +36,12 @@ drains, and undispatched receipts remain unchanged in SQL for the next selection
 or a reservation alone cannot keep an otherwise idle batch waiting. `preparationBlocked` also
 counts these undispatched units; admission `deferred` counts only actual rejected calls.
 
+The outbox rearms one poll timer after its active batch drains. The configured interval is a
+minimum between poll starts: a short batch waits the remainder, while an overdue batch yields
+to the event loop and starts the next selection without waiting for another fixed timer slot.
+Polls never overlap, and shutdown prevents an active batch from rearming the timer. Selection,
+preparation concurrency and the contention deadline above keep their existing bounds.
+
 Before an event becomes prepared, the service waits for membership SQL/cache work, binding
 reconciliation, idempotent SQL read models, bootstrap cache completion, any required owner
 recheck, roster queue acknowledgement and explicit Start handling. Read-model/cache invalidation

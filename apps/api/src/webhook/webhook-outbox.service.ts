@@ -428,6 +428,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
   private enqueueScans?: Map<string, OutboxScanState>;
   private poller: NodeJS.Timeout | null = null;
+  private polling = false;
   private cleaner: NodeJS.Timeout | null = null;
   private maintenanceScheduler: NodeJS.Timeout | null = null;
   private retentionMaintenanceDue = false;
@@ -519,14 +520,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit() {
-    if (!this.enabled) {
+    if (!this.enabled || this.polling) {
       return;
     }
-
-    this.poller = setInterval(() => {
-      void this.tick();
-    }, this.pollIntervalMs);
-    this.poller.unref();
+    this.polling = true;
 
     this.maintenanceScheduler = setInterval(() => {
       this.retentionMaintenanceDue = true;
@@ -538,12 +535,13 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }, WEBHOOK_RETENTION_CLEANUP_INTERVAL_MS);
     this.cleaner.unref();
 
-    void this.tick();
+    void this.poll();
   }
 
   onModuleDestroy() {
+    this.polling = false;
     if (this.poller) {
-      clearInterval(this.poller);
+      clearTimeout(this.poller);
       this.poller = null;
     }
     if (this.cleaner) {
@@ -555,6 +553,20 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       this.maintenanceScheduler = null;
     }
     this.retentionMaintenanceDue = false;
+  }
+
+  private async poll() {
+    const startedAt = performance.now();
+    await this.tick();
+    if (!this.polling) return;
+    // FLAG: Keep polls serialized and at least one configured interval apart. A batch
+    // that outlives that interval has already waited; do not add another fixed timer slot.
+    // Rearm only after all admitted work drains, and never after module shutdown.
+    this.poller = setTimeout(() => {
+      this.poller = null;
+      void this.poll();
+    }, Math.max(0, this.pollIntervalMs - (performance.now() - startedAt)));
+    this.poller.unref();
   }
 
   private async tick() {
