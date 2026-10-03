@@ -132,13 +132,13 @@ export type AdminChannelSuggestionPublicationRuntimeContext = {
   readonly channelPostSignatureService?: {
     preparePostText(
       chatId: string,
-      input: { text: string; textFormat: string },
+      input: { text: string; textFormat: MaxSendMessageOptions['textFormat'] },
       options: {
         entityType: 'channel';
         trafficClass: 'interactive';
         sourceTag: string;
       },
-    ): Promise<{ text: string; textFormat: MaxSendMessageOptions['textFormat'] }>;
+    ): Promise<{ text: string; textFormat?: MaxSendMessageOptions['textFormat'] }>;
     buildPostButton?(
       chatId: string,
       options: {
@@ -185,7 +185,7 @@ export type AdminChannelSuggestionPublicationRuntimeContext = {
     suggestionId: string,
     chatId: string,
     payload: Record<string, unknown>,
-  ): Promise<void>;
+  ): Promise<number | void>;
   readObjectPayload(value: Prisma.JsonValue): Record<string, unknown>;
   readObjectPayloadOrNull(value: unknown): Record<string, unknown> | null;
   readLowerString(value: unknown): string | null;
@@ -202,9 +202,9 @@ export type AdminChannelSuggestionPublicationRuntimeContext = {
 };
 
 export function createAdminChannelSuggestionPublicationRuntimeContext(
-  target: object,
+  dependencies: AdminChannelSuggestionPublicationRuntimeContext,
 ): AdminChannelSuggestionPublicationRuntimeContext {
-  return target as AdminChannelSuggestionPublicationRuntimeContext;
+  return dependencies;
 }
 
 export class AdminChannelSuggestionPublicationRuntime {
@@ -1420,7 +1420,7 @@ export class AdminChannelSuggestionPublicationRuntime {
           params.chatId,
           {
             text: messageTextPayload.text,
-            textFormat: messageTextPayload.textFormat ?? 'plain',
+            textFormat: messageTextPayload.textFormat,
           },
           {
             entityType: 'channel',

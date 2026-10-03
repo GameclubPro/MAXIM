@@ -1,21 +1,4 @@
 {
   "version": 1,
-  "exceptions": [
-    {
-      "key": "apps/api/src/admin/admin-channel-dialog-mapping-runtime-context.ts:createAdminChannelDialogMappingRuntimeContext",
-      "definitionSha256": "7421fd7e6947597107a55c201f81b31f2e41f970e6ecc0330d56a6cf22a62191"
-    },
-    {
-      "key": "apps/api/src/admin/admin-channel-suggestion-image-runtime-context.ts:createAdminChannelSuggestionImageRuntimeContext",
-      "definitionSha256": "4a5859fb2dbffba430806c97623058ce22eb22848f17d5c0ce415c4d05ef0257"
-    },
-    {
-      "key": "apps/api/src/admin/admin-channel-suggestion-publication-runtime.ts:createAdminChannelSuggestionPublicationRuntimeContext",
-      "definitionSha256": "52b55779cdec3ca80d1445eb5f2e9d51eb19cf3f3ffff1b90d64870b57866537"
-    },
-    {
-      "key": "apps/api/src/admin/channel-dialog-legacy.port.ts:legacy-import:./admin.service",
-      "definitionSha256": "a1b03d4f56e88e6e03b3febbee2111eede4c8e1262bea57be46bf5488f430e74"
-    }
-  ]
+  "exceptions": []
 }

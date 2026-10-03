@@ -1,3 +1,4 @@
+import * as channelDialogValues from './admin-channel-dialog-values';
 import { mergeManagedBotChatCatalogRows } from './admin-managed-bot-catalog-values';
 import { createManagedEntityHeader } from './admin-managed-entity-header';
 import {
@@ -180,12 +181,7 @@ import {
 } from './admin-settings-bot-capability.service';
 import type { ChatSettingsBotCapabilityRequirement } from './chat-settings-bot-capability';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import {
-  escapeHtml,
-  escapeHtmlAttribute,
-  isMaxTextMarkupType,
-  normalizeMaxUserMentionLink,
-} from '../common/max-text-markup.util';
+import { escapeHtml, escapeHtmlAttribute } from '../common/max-text-markup.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
@@ -802,14 +798,93 @@ export class AdminService implements OnModuleDestroy {
     );
   })(this);
   private readonly channelDialogMappingRuntime = new AdminChannelDialogMappingRuntime(
-    createAdminChannelDialogMappingRuntimeContext(this),
+    createAdminChannelDialogMappingRuntimeContext(channelDialogValues),
   );
-  private readonly channelSuggestionImageRuntime = new AdminChannelSuggestionImageRuntime(
-    createAdminChannelSuggestionImageRuntimeContext(this),
-  );
-  readonly channelSuggestionPublicationRuntime = new AdminChannelSuggestionPublicationRuntime(
-    createAdminChannelSuggestionPublicationRuntimeContext(this),
-  );
+  private readonly channelSuggestionImageRuntime = ((owner: AdminService) =>
+    new AdminChannelSuggestionImageRuntime(
+      createAdminChannelSuggestionImageRuntimeContext({
+        get logger() {
+          return owner.logger;
+        },
+        get prisma() {
+          return owner.prisma;
+        },
+        normalizeChannelSuggestionImages: channelDialogValues.normalizeChannelSuggestionImages,
+        readChannelSuggestionImageAssets: channelDialogValues.readChannelSuggestionImageAssets,
+        readChannelSuggestionMediaType: channelDialogValues.readChannelSuggestionMediaType,
+        readObjectPayloadOrNull: channelDialogValues.readObjectPayloadOrNull,
+        readTrimmedString: channelDialogValues.readTrimmedString,
+      }),
+    ))(this);
+  readonly channelSuggestionPublicationRuntime = ((owner: AdminService) => {
+    // FLAG: Constructor-owned clients must remain lazy; authorization and send ordering stay in the runtime.
+    return new AdminChannelSuggestionPublicationRuntime(
+      createAdminChannelSuggestionPublicationRuntimeContext({
+        get suggestionSubscriptions() {
+          return owner.suggestionSubscriptions;
+        },
+        get logger() {
+          return owner.logger;
+        },
+        get prisma() {
+          return owner.prisma;
+        },
+        get maxClient() {
+          return owner.maxClient;
+        },
+        get maxRoutedPublicationService() {
+          return owner.maxRoutedPublicationService;
+        },
+        get channelSuggestionImageRuntime() {
+          return owner.channelSuggestionImageRuntime;
+        },
+        get publisherReadinessService() {
+          return owner.publisherReadinessService;
+        },
+        get publisherRuntimeBoundaryService() {
+          return owner.publisherRuntimeBoundaryService;
+        },
+        get publisherDispatchHealthService() {
+          return owner.publisherDispatchHealthService;
+        },
+        get publisherSuggestionPublicationQueue() {
+          return owner.publisherSuggestionPublicationQueue;
+        },
+        get publisherDialogContextService() {
+          return owner.publisherDialogContextService;
+        },
+        get channelPostSignatureService() {
+          return owner.channelPostSignatureService;
+        },
+        assertChatAdmin: (chatId, userId, expectedType) =>
+          owner.assertChatAdmin(chatId, userId, expectedType),
+        ensureEntityType: (chatId, userId, expectedType) =>
+          owner.ensureEntityType(chatId, userId, expectedType),
+        resolveChannelSuggestionPublicationBotAssignment: (chatId) =>
+          owner.resolveChannelSuggestionPublicationBotAssignment(chatId),
+        resolveDeliveryBotAssignment: (chatId) => owner.resolveDeliveryBotAssignment(chatId),
+        resolveChannelSuggestionAuthorAttribution: (chatId, actor, options) =>
+          owner.resolveChannelSuggestionAuthorAttribution(chatId, actor, options),
+        resolveChannelSuggestionAttachments: (suggestion, botId) =>
+          owner.resolveChannelSuggestionAttachments(suggestion, botId),
+        getPublicChannelSettings: (chatId) => owner.getPublicChannelSettings(chatId),
+        buildChannelDialogButton: (chatId, type, threadId, text, botId, suggestionEntryMode) =>
+          owner.buildChannelDialogButton(chatId, type, threadId, text, botId, suggestionEntryMode),
+        syncChannelSuggestionAdminReviewMessages: (suggestionId, chatId, payload) =>
+          owner.syncChannelSuggestionAdminReviewMessages(suggestionId, chatId, payload),
+        readObjectPayload: channelDialogValues.readObjectPayload,
+        readObjectPayloadOrNull: channelDialogValues.readObjectPayloadOrNull,
+        readLowerString: channelDialogValues.readLowerString,
+        readTrimmedString: channelDialogValues.readTrimmedString,
+        readRawString: channelDialogValues.readRawString,
+        readChannelSuggestionMediaType: channelDialogValues.readChannelSuggestionMediaType,
+        readChannelSuggestionTextMarkup: channelDialogValues.readChannelSuggestionTextMarkup,
+        readStoredChannelSuggestionActor: channelDialogValues.readStoredChannelSuggestionActor,
+        normalizeBroadcastTextFormat: channelDialogValues.normalizeBroadcastTextFormat,
+        sleep: (ms) => owner.sleep(ms),
+      }),
+    );
+  })(this);
 
   private readonly channelStatsRuntime = ((owner: AdminService) =>
     new AdminChannelStatsRuntime(
@@ -8453,7 +8528,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private normalizeBroadcastTextFormat(value: string): 'markdown' | 'plain' {
-    return value === 'markdown' ? 'markdown' : 'plain';
+    return channelDialogValues.normalizeBroadcastTextFormat(value);
   }
 
   private resolveManagedBroadcastSendRetryDelayMs(
@@ -14487,109 +14562,23 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private readChannelDialogAttachmentAssets(value: unknown): ChannelDialogAttachmentAsset[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return value
-      .map((item) => this.readChannelDialogAttachmentAsset(item))
-      .filter((attachment): attachment is ChannelDialogAttachmentAsset => attachment !== null)
-      .slice(0, MAX_CHANNEL_DIALOG_ATTACHMENTS);
+    return channelDialogValues.readChannelDialogAttachmentAssets(value);
   }
 
   private readChannelDialogAttachmentAsset(value: unknown): ChannelDialogAttachmentAsset | null {
-    const row = this.readObjectPayloadOrNull(value);
-    if (!row) {
-      return null;
-    }
-
-    const mimeType = this.readTrimmedString(row.mimeType ?? row.mime_type);
-    const fileName = this.readTrimmedString(row.fileName ?? row.file_name ?? row.filename);
-    const kind = this.resolveChannelDialogAttachmentKind(row.kind ?? row.type, mimeType, fileName);
-    if (!kind) {
-      return null;
-    }
-
-    const payload = this.readObjectPayloadOrNull(row.payload);
-    if (payload && Object.keys(payload).length > 0) {
-      return {
-        kind,
-        payload,
-        mimeType,
-        fileName,
-        previewBase64: this.readTrimmedString(row.previewBase64 ?? row.preview_base64),
-        width: this.toSafeInteger(row.width ?? row.w),
-        height: this.toSafeInteger(row.height ?? row.h),
-      };
-    }
-
-    const base64 = this.readTrimmedString(row.base64);
-    if (!base64) {
-      return null;
-    }
-
-    return {
-      kind,
-      base64,
-      mimeType,
-      fileName,
-      previewBase64: this.readTrimmedString(row.previewBase64 ?? row.preview_base64),
-      width: this.toSafeInteger(row.width ?? row.w),
-      height: this.toSafeInteger(row.height ?? row.h),
-    };
+    return channelDialogValues.readChannelDialogAttachmentAsset(value);
   }
 
   private buildChannelDialogCommentAttachments(
     attachments: ChannelDialogAttachmentAsset[],
   ): ChannelDialogAttachment[] {
-    return attachments
-      .map((attachment) => this.mapChannelDialogAttachmentAsset(attachment))
-      .filter((attachment): attachment is ChannelDialogAttachment => attachment !== null);
+    return channelDialogValues.buildChannelDialogCommentAttachments(attachments);
   }
 
   private mapChannelDialogAttachmentAsset(
     attachment: ChannelDialogAttachmentAsset,
   ): ChannelDialogAttachment | null {
-    if (!attachment.payload || Object.keys(attachment.payload).length === 0) {
-      return null;
-    }
-
-    const payload = attachment.payload;
-    const fileName =
-      this.readTrimmedString(
-        attachment.fileName ??
-          payload.file_name ??
-          payload.fileName ??
-          payload.filename ??
-          payload.name,
-      ) ?? null;
-    const mimeType =
-      this.readTrimmedString(attachment.mimeType ?? payload.mime_type ?? payload.mimeType) ?? null;
-    const kind = this.resolveChannelDialogAttachmentKind(attachment.kind, mimeType, fileName);
-    if (!kind) {
-      return null;
-    }
-    const width = this.toSafeInteger(attachment.width ?? payload.width ?? payload.w);
-    const height = this.toSafeInteger(attachment.height ?? payload.height ?? payload.h);
-    const size = this.toSafeInteger(payload.size);
-    const url = this.readTrimmedString(payload.url) ?? null;
-    const previewBase64 = this.readTrimmedString(attachment.previewBase64 ?? payload.previewBase64);
-    const previewUrl =
-      url ||
-      (kind === 'image' && previewBase64 && this.canBuildChannelDialogImagePreview(mimeType)
-        ? `data:${mimeType};base64,${previewBase64}`
-        : null);
-
-    return {
-      kind,
-      url,
-      previewUrl,
-      fileName,
-      mimeType,
-      size: size > 0 ? size : null,
-      width: width > 0 ? width : null,
-      height: height > 0 ? height : null,
-    };
+    return channelDialogValues.mapChannelDialogAttachmentAsset(attachment);
   }
 
   private buildChannelDialogReplyPreviewText(payload: Record<string, unknown>): string {
@@ -14637,76 +14626,19 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private readChannelSuggestionImageAssets(value: unknown): ChannelSuggestionImageAsset[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return value
-      .map((item) => this.readChannelSuggestionImageAsset(item))
-      .filter((image): image is ChannelSuggestionImageAsset => image !== null)
-      .slice(0, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES);
+    return channelDialogValues.readChannelSuggestionImageAssets(value);
   }
 
   private readChannelSuggestionImageAsset(value: unknown): ChannelSuggestionImageAsset | null {
-    const row = this.readObjectPayloadOrNull(value);
-    if (!row) {
-      return null;
-    }
-
-    const payload = this.readObjectPayloadOrNull(row.payload);
-    if (payload && Object.keys(payload).length > 0) {
-      return {
-        payload,
-        mimeType: this.readTrimmedString(row.mimeType),
-        fileName: this.readTrimmedString(row.fileName),
-      };
-    }
-
-    const base64 = this.readTrimmedString(row.base64);
-    if (!base64) {
-      return null;
-    }
-
-    return {
-      base64,
-      mimeType: this.readTrimmedString(row.mimeType),
-      fileName: this.readTrimmedString(row.fileName),
-    };
+    return channelDialogValues.readChannelSuggestionImageAsset(value);
   }
 
   private readChannelSuggestionTextMarkup(value: unknown): ChannelSuggestionTextMarkup[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return value
-      .map((item) => this.readChannelSuggestionTextMarkupItem(item))
-      .filter((item): item is ChannelSuggestionTextMarkup => item !== null);
+    return channelDialogValues.readChannelSuggestionTextMarkup(value);
   }
 
   private readChannelSuggestionTextMarkupItem(value: unknown): ChannelSuggestionTextMarkup | null {
-    const row = this.readObjectPayloadOrNull(value);
-    if (!row) {
-      return null;
-    }
-
-    const type = this.readLowerString(row.type);
-    const from = this.toSafeInteger(row.from);
-    const length = this.toSafeInteger(row.length);
-    if (!type || from < 0 || length <= 0 || !isMaxTextMarkupType(type)) {
-      return null;
-    }
-
-    return {
-      from,
-      length,
-      type,
-      url: this.readTrimmedString(row.url),
-      userLink: normalizeMaxUserMentionLink(
-        row.userLink ?? row.user_link,
-        row.userId ?? row.user_id,
-      ),
-    };
+    return channelDialogValues.readChannelSuggestionTextMarkupItem(value);
   }
 
   private normalizeChannelSuggestionImages(params: {
@@ -14719,72 +14651,13 @@ export class AdminService implements OnModuleDestroy {
     mediaMimeType?: string | null;
     mediaFileName?: string | null;
   }): ChannelSuggestionImageAsset[] {
-    const normalizedImages: ChannelSuggestionImageAsset[] = [];
-
-    for (const image of params.images ?? []) {
-      if (image.payload && Object.keys(image.payload).length > 0) {
-        normalizedImages.push({
-          ...(image.type === 'video' ? { type: 'video' as const } : {}),
-          payload: image.payload,
-          mimeType: image.mimeType?.trim() || null,
-          fileName: image.fileName?.trim() || null,
-        });
-      } else {
-        const base64 = image.base64?.trim() ?? '';
-        if (!base64) {
-          continue;
-        }
-
-        normalizedImages.push({
-          ...(image.type === 'video' ? { type: 'video' as const } : {}),
-          base64,
-          mimeType: image.mimeType?.trim() || null,
-          fileName: image.fileName?.trim() || null,
-        });
-      }
-
-      if (normalizedImages.length >= MAX_CHANNEL_DIALOG_SUGGEST_IMAGES) {
-        break;
-      }
-    }
-
-    if (normalizedImages.length > 0) {
-      return normalizedImages;
-    }
-
-    if (params.mediaType === 'image' && params.mediaPayload) {
-      return [
-        {
-          payload: params.mediaPayload,
-          mimeType: params.mediaMimeType?.trim() || null,
-          fileName: params.mediaFileName?.trim() || null,
-        },
-      ];
-    }
-
-    const imageBase64 = params.imageBase64?.trim() ?? '';
-    if (!imageBase64) {
-      return [];
-    }
-
-    return [
-      {
-        base64: imageBase64,
-        mimeType: params.imageMimeType?.trim() || null,
-        fileName: params.imageFileName?.trim() || null,
-      },
-    ];
+    return channelDialogValues.normalizeChannelSuggestionImages(params);
   }
 
   private readChannelDialogSuggestionReviewStatus(
     value: unknown,
   ): ChannelDialogSuggestionReviewStatus | null {
-    const normalized = this.readLowerString(value);
-    if (normalized === 'pending' || normalized === 'published' || normalized === 'cancelled') {
-      return normalized;
-    }
-
-    return null;
+    return channelDialogValues.readChannelDialogSuggestionReviewStatus(value);
   }
 
   private async resolveDialogReplyPreview(params: {
@@ -16340,80 +16213,18 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private readDialogReplyPreview(value: unknown): ChannelDialogReplyPreview | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-
-    const row = value as Record<string, unknown>;
-    const messageId = this.readTrimmedString(row.messageId);
-    const text = this.readTrimmedString(row.text);
-    if (!messageId || !text) {
-      return null;
-    }
-
-    return {
-      messageId,
-      authorDisplayName: this.readTrimmedString(row.authorDisplayName),
-      text,
-    };
+    return channelDialogValues.readDialogReplyPreview(value);
   }
 
   private readDialogReactionGroups(
     value: unknown,
     currentUserId?: string | null,
   ): ChannelDialogReactionGroup[] {
-    const normalizedCurrentUserId = this.readTrimmedString(currentUserId);
-    return this.readDialogReactionEntries(value).map((entry) => ({
-      emoji: entry.emoji,
-      count: entry.userIds.length,
-      reactedByMe: normalizedCurrentUserId
-        ? entry.userIds.includes(normalizedCurrentUserId)
-        : false,
-    }));
+    return channelDialogValues.readDialogReactionGroups(value, currentUserId);
   }
 
   private readDialogReactionEntries(value: unknown): Array<{ emoji: string; userIds: string[] }> {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    const grouped = new Map<string, Set<string>>();
-    for (const item of value) {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) {
-        continue;
-      }
-
-      const row = item as Record<string, unknown>;
-      const emoji = this.readTrimmedString(row.emoji);
-      if (!emoji) {
-        continue;
-      }
-
-      const userIds = Array.isArray(row.userIds)
-        ? row.userIds
-            .map((userId) => this.readTrimmedString(userId))
-            .filter((userId): userId is string => Boolean(userId))
-        : [];
-      if (userIds.length === 0) {
-        continue;
-      }
-
-      const bucket = grouped.get(emoji) ?? new Set<string>();
-      for (const userId of userIds) {
-        bucket.add(userId);
-      }
-      grouped.set(emoji, bucket);
-    }
-
-    return Array.from(grouped.entries())
-      .map(([emoji, userIds]) => ({
-        emoji,
-        userIds: Array.from(userIds),
-      }))
-      .sort(
-        (left, right) =>
-          right.userIds.length - left.userIds.length || left.emoji.localeCompare(right.emoji),
-      );
+    return channelDialogValues.readDialogReactionEntries(value);
   }
 
   private toggleDialogReactionEntries(
@@ -16458,10 +16269,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private readObjectPayload(value: Prisma.JsonValue): Record<string, unknown> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return {};
-    }
-    return value as Record<string, unknown>;
+    return channelDialogValues.readObjectPayload(value);
   }
 
   private readObjectPayloadOrNull(value: unknown): Record<string, unknown> | null {
@@ -16469,20 +16277,15 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private readTrimmedString(value: unknown): string | null {
-    if (typeof value !== 'string') {
-      return null;
-    }
-    const normalized = value.trim();
-    return normalized.length > 0 ? normalized : null;
+    return channelDialogValues.readTrimmedString(value);
   }
 
   private readRawString(value: unknown): string | null {
-    return typeof value === 'string' ? value : null;
+    return channelDialogValues.readRawString(value);
   }
 
   private readLowerString(value: unknown): string | null {
-    const normalized = this.readTrimmedString(value);
-    return normalized ? normalized.toLowerCase() : null;
+    return channelDialogValues.readLowerString(value);
   }
 
   private async syncCommentsButtonCount(params: {
@@ -17537,16 +17340,7 @@ export class AdminService implements OnModuleDestroy {
     actorUserId: string,
     payload: Record<string, unknown>,
   ): ChannelSuggestionActor {
-    const payloadActorUserId = this.readTrimmedString(payload.actorUserId);
-    const canUseStoredIdentity = !payloadActorUserId || payloadActorUserId === actorUserId;
-
-    return {
-      userId: actorUserId,
-      username: canUseStoredIdentity ? this.readTrimmedString(payload.authorUsername) : null,
-      displayName: canUseStoredIdentity ? this.readTrimmedString(payload.authorDisplayName) : null,
-      avatarUrl: canUseStoredIdentity ? this.readTrimmedString(payload.authorAvatarUrl) : null,
-      profileUrl: canUseStoredIdentity ? this.readTrimmedString(payload.authorProfileUrl) : null,
-    };
+    return channelDialogValues.readStoredChannelSuggestionActor(actorUserId, payload);
   }
 
   private async enqueueChannelSuggestionDelivery(
@@ -19050,14 +18844,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private canBuildChannelDialogImagePreview(mimeType: string | null | undefined): boolean {
-    const normalized = mimeType?.trim().toLowerCase() ?? '';
-    return (
-      normalized === 'image/bmp' ||
-      normalized === 'image/gif' ||
-      normalized === 'image/jpeg' ||
-      normalized === 'image/png' ||
-      normalized === 'image/webp'
-    );
+    return channelDialogValues.canBuildChannelDialogImagePreview(mimeType);
   }
 
   private normalizeMaxUploadImageMimeType(mimeType: string | null | undefined): string {
@@ -19238,37 +19025,22 @@ export class AdminService implements OnModuleDestroy {
     mimeType?: string | null,
     fileName?: string | null,
   ): 'image' | 'file' | null {
-    const normalizedKind = this.readLowerString(kind);
-    if (
-      normalizedKind === 'image' ||
-      normalizedKind === 'photo' ||
-      normalizedKind === 'picture' ||
-      this.isChannelDialogImageLikeAttachment(mimeType, fileName)
-    ) {
-      return 'image';
-    }
-
-    if (normalizedKind === 'file' || normalizedKind === 'document' || normalizedKind === 'doc') {
-      return 'file';
-    }
-
-    return null;
+    return channelDialogValues.resolveChannelDialogAttachmentKind(kind, mimeType, fileName);
   }
 
   private isChannelDialogImageLikeAttachment(
     mimeType?: string | null,
     fileName?: string | null,
   ): boolean {
-    return this.isChannelDialogImageMimeType(mimeType) || this.isLikelyImageFileName(fileName);
+    return channelDialogValues.isChannelDialogImageLikeAttachment(mimeType, fileName);
   }
 
   private isChannelDialogImageMimeType(value?: string | null): boolean {
-    const normalized = this.readLowerString(value);
-    return Boolean(normalized && normalized.startsWith('image/') && normalized !== 'image/svg+xml');
+    return channelDialogValues.isChannelDialogImageMimeType(value);
   }
 
   private isLikelyImageFileName(value?: string | null): boolean {
-    return Boolean(value && /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(value));
+    return channelDialogValues.isLikelyImageFileName(value);
   }
 
   private async uploadChannelSuggestionImage(
@@ -19517,12 +19289,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private readChannelSuggestionMediaType(value: unknown): 'image' | 'video' | null {
-    const normalized = this.readLowerString(value);
-    if (normalized === 'image' || normalized === 'video') {
-      return normalized;
-    }
-
-    return null;
+    return channelDialogValues.readChannelSuggestionMediaType(value);
   }
 
   private async findLatestPrivateChatIdForUser(

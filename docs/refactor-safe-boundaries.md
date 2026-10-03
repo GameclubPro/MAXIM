@@ -123,3 +123,19 @@ without constructing `AdminService`. The legacy test facade no longer forwards f
 broadcast methods through `any`; existing occurrence and reconciliation scenarios invoke
 the owning runtime. Unsafe-context exceptions decrease from six to four. Persisted
 publication, delivery, callback and queue formats remain unchanged.
+
+## Dialog and suggestion capability boundary
+
+The remaining dialog mapping, suggestion image and suggestion publication contexts now use
+explicit dependencies. Parsing, attachment classification, reactions and stored actor
+identity are pure functions; generic value readers are shared without importing the manual
+moderation runtime. The dialog facade declares independent signatures using the existing
+contract types. All 16 original unsafe-context exceptions have now been removed.
+
+An 89-case corpus captured from the compiled legacy class protects normal and malformed
+payload interpretation. Independent tests cover viewer/admin permissions and required
+versus legacy image storage. Existing suggestion publication scenarios retain crash,
+ambiguous-send and bot-scope coverage. Explicit composition exposed two previously hidden
+type mismatches: review synchronization returns a count, and published suggestion text is
+always HTML or Markdown. Types now express those existing results; the unreachable plain
+fallback is removed without changing generated content or ledger digests.

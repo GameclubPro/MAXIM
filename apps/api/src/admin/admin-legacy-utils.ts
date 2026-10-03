@@ -1,3 +1,5 @@
+import { readTrimmedString } from './admin-value-readers';
+export { readTrimmedString } from './admin-value-readers';
 import type {
   ChannelOverview,
   ChannelSettings,
@@ -12,14 +14,6 @@ import {
   parseChatIdAsBigInt as parseChatIdAsBigIntValue,
 } from '../common/chat-id.util';
 import { ChatEntityType, Prisma } from '../prisma/prisma-client';
-
-export function readTrimmedString(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-}
 
 export function normalizeAppBaseUrl(value: string | undefined): string | null {
   if (typeof value !== 'string') {
