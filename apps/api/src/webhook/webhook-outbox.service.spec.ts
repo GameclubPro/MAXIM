@@ -804,6 +804,8 @@ function createService(params?: {
     }
   }
   const webhookService = {
+    canPreparePersistedWebhookEvent: jest.fn((_update?: MaxUpdate) => true),
+    nextPreparationCompletion: jest.fn<Promise<void> | null, []>(() => null),
     preparePersistedWebhookEvent: jest.fn(
       async (eventId: string, _fallbackUpdate?: MaxUpdate, _admissionUpdate?: MaxUpdate) => {
         const row = webhookRows.find((candidate) => candidate.id === eventId);
@@ -1022,6 +1024,137 @@ function createCompletedSemanticOwnerFixture(options?: {
 }
 
 describe('WebhookOutboxService', () => {
+  function capacityFixture(count: number, prepare: (id: string) => Promise<void>) {
+    const fixture = createService({
+      systemMode: 'degrade',
+      configOverrides: { ENQUEUE_POLL_INTERVAL_MS: 200, ENQUEUE_CONCURRENCY: 4 },
+      findManyResult: Array.from({ length: count }, (_, index) => ({
+        id: `capacity-${index}`,
+        enqueueAttempts: 0,
+        createdAt: new Date(1_770_000_000_000 + index),
+        normalizedPayload: {
+          updateId: `capacity-${index}`,
+          botId: 'same-bot',
+          type: 'message_created',
+          message: { chatId: `capacity-chat-${index}`, messageId: `capacity-message-${index}` },
+        },
+      })),
+    });
+    const metrics = jest.fn();
+    const admission = new WebhookPreparationAdmission(4, metrics);
+    const boundary = Object.create(WebhookService.prototype) as WebhookService;
+    const original = fixture.webhookService.preparePersistedWebhookEvent.getMockImplementation()!;
+    Object.defineProperty(boundary, 'preparationAdmission', { value: admission });
+    Object.defineProperty(boundary, 'preparePersistedWebhookEventAdmitted', {
+      value: async (id: string) => {
+        await prepare(id);
+        return original(id);
+      },
+    });
+    fixture.webhookService.canPreparePersistedWebhookEvent.mockImplementation((update) =>
+      boundary.canPreparePersistedWebhookEvent(update),
+    );
+    fixture.webhookService.nextPreparationCompletion.mockImplementation(() =>
+      boundary.nextPreparationCompletion(),
+    );
+    fixture.webhookService.preparePersistedWebhookEvent.mockImplementation((...args) =>
+      boundary.preparePersistedWebhookEvent(...args),
+    );
+    const run = () =>
+      (fixture.service as unknown as { enqueueBatch(): Promise<void> }).enqueueBatch();
+    const capacityWrites = () =>
+      fixture.prisma.webhookEvent.updateMany.mock.calls.filter(([args]) =>
+        args.data.errorMessage?.includes('preparation capacity'),
+      );
+    return { ...fixture, admission, metrics, run, capacityWrites };
+  }
+
+  it('reuses a released preparation slot within its bounded selected batch without retry writes', async () => {
+    const started: string[] = [];
+    const fixture = capacityFixture(8, async (id) => {
+      started.push(id);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+    await fixture.run();
+    fixture.admission.flush();
+    expect(started).toHaveLength(8);
+    expect(fixture.capacityWrites()).toHaveLength(0);
+    expect(Object.values(fixture.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(8);
+    expect(fixture.metrics).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        peakInFlight: 1,
+        pending: 0,
+        deferred: { ordinary: 0, interactive: 0, lifecycle: 0 },
+      }),
+    );
+  });
+
+  it('yields undispatched receipts after one poll interval of capacity contention without backoff churn', async () => {
+    let now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const fixture = capacityFixture(8, async () => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        now += 1_000;
+      });
+      await fixture.run();
+      expect(fixture.webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(1);
+      expect(fixture.capacityWrites()).toHaveLength(0);
+      expect(
+        fixture.prisma.webhookEvent.updateMany.mock.calls.every(
+          ([args]) => args.where.id === 'capacity-0',
+        ),
+      ).toBe(true);
+      expect(fixture.admission.snapshot().inFlight).toBe(0);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('starts the next preparation when its slot frees while an earlier queue handoff is still running', async () => {
+    const started: string[] = [];
+    const fixture = capacityFixture(3, async (id) => {
+      started.push(id);
+    });
+    let release!: () => void;
+    const handoff = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const route = fixture.webhookRoutingService.resolveQueueName.getMockImplementation()!;
+    fixture.webhookRoutingService.resolveQueueName.mockImplementation(async (id, payload) => {
+      if (id === 'capacity-0') await handoff;
+      return route(id, payload);
+    });
+    const work = fixture.run();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const beforeRelease = [...started];
+    release();
+    await work;
+    expect(beforeRelease).toEqual(['capacity-0', 'capacity-1', 'capacity-2']);
+    expect(fixture.capacityWrites()).toHaveLength(0);
+  });
+
+  it('leaves receipts in SQL without waiting for preparation owned outside its batch', async () => {
+    const fixture = capacityFixture(3, async () => undefined);
+    let release!: () => void;
+    const external = fixture.admission.run(
+      'same-bot',
+      'ordinary',
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    try {
+      await fixture.run();
+      expect(fixture.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+      expect(fixture.prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await external;
+    }
+  });
+
   it.each([
     ['another bot', 'bot-b', 'message_created', 'ordinary'],
     ['same-bot lifecycle', 'bot-a', 'bot_removed', 'lifecycle'],
@@ -1070,6 +1203,12 @@ describe('WebhookOutboxService', () => {
       });
       fixture.webhookService.preparePersistedWebhookEvent.mockImplementation((...args) =>
         realBoundary.preparePersistedWebhookEvent(...args),
+      );
+      fixture.webhookService.canPreparePersistedWebhookEvent.mockImplementation((update) =>
+        realBoundary.canPreparePersistedWebhookEvent(update),
+      );
+      fixture.webhookService.nextPreparationCompletion.mockImplementation(() =>
+        realBoundary.nextPreparationCompletion(),
       );
       const work = (fixture.service as unknown as { enqueueBatch(): Promise<void> }).enqueueBatch();
       await new Promise<void>((resolve) => setImmediate(resolve));

@@ -475,6 +475,24 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     }
   }
 
+  canPreparePersistedWebhookEvent(admissionUpdate?: MaxUpdate): boolean {
+    // FLAG: This is only a scheduling hint. Actual admission and persisted receipt reload
+    // remain mandatory; a positive hint grants neither a slot nor execution authority.
+    try {
+      return this.preparationAdmission.canRun(
+        admissionUpdate?.botId?.trim() || 'unknown',
+        this.preparationClass(admissionUpdate),
+      );
+    } catch {
+      // Let the normal per-receipt preparation/error path handle malformed stored data.
+      return true;
+    }
+  }
+
+  nextPreparationCompletion(): Promise<void> | null {
+    return this.preparationAdmission.nextCompletion();
+  }
+
   async preparePersistedWebhookEvent(
     webhookEventId: string,
     fallbackUpdate?: MaxUpdate,
