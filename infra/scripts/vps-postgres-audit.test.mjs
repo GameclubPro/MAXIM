@@ -552,6 +552,22 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
   assert.ok(received.oldest_retry_in_seconds > 0 && received.oldest_retry_in_seconds <= 60);
   assert.equal(report.rows.find((row) => row.status === 'QUEUED').oldest_preparation_state, null);
   assert.doesNotMatch(JSON.stringify(report), /private-secret-error|Webhook preparation deferred/u);
+  for (const [message, expected] of [
+    ['Webhook preparation capacity unavailable', 'preparation_capacity'],
+    ['Webhook preparation capacity unavailable: private-suffix', 'preparation_deferred'],
+    ['Required owner probe is pending: private-identity', 'preparation_deferred'],
+  ]) {
+    await database.query('UPDATE webhook_events SET error_message = $1', [
+      `Webhook preparation deferred: ${message}`,
+    ]);
+    const classified = await database.query(statement);
+    const classifiedReport = JSON.parse(Object.values(classified.rows[0])[0]);
+    assert.equal(
+      classifiedReport.rows.find((row) => row.status === 'RECEIVED').oldest_preparation_state,
+      expected,
+    );
+    assert.doesNotMatch(JSON.stringify(classifiedReport), /private-|capacity unavailable/u);
+  }
   await database.query(`UPDATE webhook_events SET normalized_payload = $1`, [
     JSON.stringify({ type: 'message_created', message: { chatId: 'private-chat' } }),
   ]);
@@ -593,6 +609,17 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
     null,
   );
   assert.doesNotMatch(JSON.stringify(retryReport), /private-chat|private-secret-error|fixture/u);
+  await database.query("UPDATE webhook_events SET error_message = $1 WHERE status = 'FAILED'", [
+    'Webhook preparation deferred: Webhook preparation capacity unavailable',
+  ]);
+  const capacityResult = await database.query(statement);
+  const capacityReport = JSON.parse(Object.values(capacityResult.rows[0])[0]);
+  assert.equal(
+    capacityReport.rows.find((row) => row.status === 'RECEIVED').oldest_ordering_predecessor
+      .error_kind,
+    'preparation_capacity',
+  );
+  assert.doesNotMatch(JSON.stringify(capacityReport), /private-|capacity unavailable/u);
   for (const [error, family] of [
     ['Foreign key constraint violated: private-identity', 'foreign_key'],
     ['Webhook preparation lease was lost before READY for private-event', 'preparation_lease_lost'],

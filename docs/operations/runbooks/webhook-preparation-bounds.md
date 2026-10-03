@@ -56,3 +56,10 @@ preparation duration, capacity deferrals, oldest eligible receipt progress, pool
 and moderation lag across comparable traffic. Persistent deferrals with absent progress require
 investigation; raising worker or SQL concurrency is not the default repair. This package has no
 schema migration. Rollback retains receipts, claims and send ledger identities; never clear them.
+
+The read-only `postgres-audit queue` report classifies the exact stored preparation-capacity
+marker as `preparation_capacity` for the oldest receipt and its indexed ordering predecessor.
+Other typed deferrals remain separate or `preparation_deferred`. This adds no source scan or
+grants and emits no error text. A single snapshot identifies that receipt's last deferral, not
+the full queue's cause or the duration of a capacity wait; compare repeated bounded observations
+with admission metrics and oldest-eligible progress before changing runtime scheduling.
