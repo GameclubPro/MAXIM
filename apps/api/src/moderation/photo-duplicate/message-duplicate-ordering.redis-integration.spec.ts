@@ -155,6 +155,46 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
     await expect(store.announce(job, true, 'retry')).resolves.toEqual({ kind: 'expired' });
   });
 
+  it('settles an immediate replay of expired media without a job or renewed authority', async () => {
+    const admittedAtMs = Date.now();
+    const eventTimestampMs = admittedAtMs - 600_001;
+    const messageId = randomUUID();
+    const job = {
+      jobId: buildMessageDuplicateJobId(chatId, messageId, eventTimestampMs),
+      chatId,
+      sourceCreatedAt: new Date(eventTimestampMs).toISOString(),
+      deadlineAtMs: eventTimestampMs + 600_000,
+    };
+    identities.push(job);
+    const durable = {
+      register: jest
+        .fn()
+        .mockResolvedValueOnce({ registration: 'initial', admittedAtMs })
+        .mockResolvedValue({ registration: 'retry', admittedAtMs }),
+    };
+    const queue = { add: jest.fn(), getJob: jest.fn().mockResolvedValue(null) };
+    const enqueue = new MessageDuplicateEnqueueService(queue as never, store, durable as never);
+    const input = {
+      webhookEventId: 'expired-fixture',
+      chatId,
+      messageId,
+      eventTimestampMs,
+      sourceCreatedAt: job.sourceCreatedAt,
+      controlRevision: 1,
+      policyRevision: 0,
+      settingsDigest: 'a'.repeat(64),
+      actionEligible: true,
+    };
+    await enqueue.enqueue(input);
+    await expect(enqueue.enqueue(input)).resolves.toBeUndefined();
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(await store.readActionEligibility(job)).toBe(false);
+    expect(await inspector.hget(`${prefix}:permit:${hash(job.jobId)}`, 'deadlineAtMs')).toBe(
+      String(job.deadlineAtMs),
+    );
+    expect(await inspector.zcard(`${prefix}:pending`)).toBe(0);
+  });
+
   it('defers followers until a paused head and recovers after its completion', async () => {
     const head = identity();
     const follower = identity(1000);
