@@ -1,4 +1,7 @@
-import { createAdminManagedEntitiesRuntimeContext } from './admin-managed-entities-runtime-context';
+import {
+  createAdminManagedEntitiesRuntimeContext,
+  type AdminManagedEntitiesRuntimeContext,
+} from './admin-managed-entities-runtime-context';
 
 describe('AdminManagedEntitiesRuntimeContext', () => {
   it('exposes managed entities infrastructure through typed accessors', () => {
@@ -13,7 +16,6 @@ describe('AdminManagedEntitiesRuntimeContext', () => {
       attachManagedEntityFavoriteTypes: jest.fn(),
       attachManagedEntityFavoriteTypesToDiff: jest.fn(),
       collectManagedEntitiesForMassAction: jest.fn(),
-      createManagedEntitiesRefreshState: jest.fn(),
       ensureEntityType: jest.fn(),
       isManagedEntityRuntimeBotId: jest.fn(),
       listManagedEntitiesDetailed: jest.fn(),
@@ -22,7 +24,9 @@ describe('AdminManagedEntitiesRuntimeContext', () => {
       runManagedEntitiesBoundedRefreshJob: jest.fn(),
       runManagedEntitiesRemoteFullRefresh: jest.fn(),
     };
-    const context = createAdminManagedEntitiesRuntimeContext(target);
+    const context = createAdminManagedEntitiesRuntimeContext(
+      target as unknown as AdminManagedEntitiesRuntimeContext,
+    );
 
     expect(context.prisma).toBe(target.prisma);
     expect(context.chatContextCache).toBe(target.chatContextCache);
@@ -75,9 +79,6 @@ describe('AdminManagedEntitiesRuntimeContext', () => {
           },
         ]);
       },
-      createManagedEntitiesRefreshState(cursor: number | null, backoffActive: boolean) {
-        return { cursor, backoffActive, marker: this.prefix };
-      },
       ensureEntityType(chatId: string, userId: string, entityType: string): Promise<void> {
         this.adminCalls.push(`entity:${this.readTrimmedString(chatId)}:${userId}:${entityType}`);
         return Promise.resolve();
@@ -105,7 +106,9 @@ describe('AdminManagedEntitiesRuntimeContext', () => {
         });
       },
     };
-    const context = createAdminManagedEntitiesRuntimeContext(target);
+    const context = createAdminManagedEntitiesRuntimeContext(
+      target as unknown as AdminManagedEntitiesRuntimeContext,
+    );
 
     await context.assertChatAdmin(' chat-1 ', 'admin-1', 'chat');
     await context.assertReadOnlyChatAdmin(' chat-1 ', 'admin-1');
@@ -125,11 +128,6 @@ describe('AdminManagedEntitiesRuntimeContext', () => {
     await expect(
       context.collectManagedEntitiesForMassAction(user, 'chat', { discoveryMode: 'cached-first' }),
     ).resolves.toEqual([{ id: 'legacy:admin-1:chat:cached-first' }]);
-    expect(context.createManagedEntitiesRefreshState(5, false)).toEqual({
-      cursor: 5,
-      backoffActive: false,
-      marker: 'legacy',
-    });
     expect(context.isManagedEntityRuntimeBotId(' bot-1 ')).toBe(true);
     await expect(context.listManagedEntitiesDetailed(user, 'channel')).resolves.toEqual({
       items: [{ id: 'legacy:admin-1:channel' }],

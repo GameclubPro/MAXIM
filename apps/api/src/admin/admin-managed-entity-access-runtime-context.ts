@@ -1,7 +1,10 @@
 import type { Logger } from '@nestjs/common';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { PrismaService } from '../prisma/prisma.service';
-import type { ManagedEntityAccessStateValue } from './admin.service.support';
+import type {
+  ManagedEntityAccessStateValue,
+  ManagedEntityAccessEdgeClient,
+} from './admin.service.support';
 
 export type MarkManagedEntityAccessEdgesDeniedForUserParams = {
   chatId: string;
@@ -18,49 +21,12 @@ export type AdminManagedEntityAccessRuntimeContext = {
   readonly managedEntitiesRuntimeBotIds: ReadonlySet<string>;
   forgetManagedEntitiesLastSuccessChat(userId: string, chatId: string): void;
   invalidateManagedEntitiesAllowlistCache(userId: string): void;
-  markManagedEntityAccessEdgesDeniedForUser(
-    params: MarkManagedEntityAccessEdgesDeniedForUserParams,
-  ): Promise<void>;
+  readonly accessEdges: Pick<ManagedEntityAccessEdgeClient, 'updateMany'> | null;
   normalizeManagedEntityAccessBotId(botId: string | null | undefined): string | null;
-  readTrimmedString(value: unknown): string | null;
 };
 
-type AdminManagedEntityAccessRuntimeContextTarget = AdminManagedEntityAccessRuntimeContext;
-
 export function createAdminManagedEntityAccessRuntimeContext(
-  target: object,
+  target: AdminManagedEntityAccessRuntimeContext,
 ): AdminManagedEntityAccessRuntimeContext {
-  const typedTarget = target as AdminManagedEntityAccessRuntimeContextTarget;
-
-  return {
-    get prisma(): PrismaService {
-      return typedTarget.prisma;
-    },
-    get chatContextCache(): ChatContextCacheService {
-      return typedTarget.chatContextCache;
-    },
-    get logger(): Logger {
-      return typedTarget.logger;
-    },
-    get managedEntitiesRuntimeBotIds(): ReadonlySet<string> {
-      return typedTarget.managedEntitiesRuntimeBotIds;
-    },
-    forgetManagedEntitiesLastSuccessChat(userId: string, chatId: string): void {
-      typedTarget.forgetManagedEntitiesLastSuccessChat(userId, chatId);
-    },
-    invalidateManagedEntitiesAllowlistCache(userId: string): void {
-      typedTarget.invalidateManagedEntitiesAllowlistCache(userId);
-    },
-    markManagedEntityAccessEdgesDeniedForUser(
-      params: MarkManagedEntityAccessEdgesDeniedForUserParams,
-    ): Promise<void> {
-      return typedTarget.markManagedEntityAccessEdgesDeniedForUser(params);
-    },
-    normalizeManagedEntityAccessBotId(botId: string | null | undefined): string | null {
-      return typedTarget.normalizeManagedEntityAccessBotId(botId);
-    },
-    readTrimmedString(value: unknown): string | null {
-      return typedTarget.readTrimmedString(value);
-    },
-  };
+  return target;
 }

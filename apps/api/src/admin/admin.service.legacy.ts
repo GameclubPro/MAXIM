@@ -1,3 +1,6 @@
+import { createManagedEntitiesRefreshState } from './admin-managed-entities-refresh-state';
+import { AdminManagedEntitiesSnapshotRuntime } from './admin-managed-entities-snapshot-runtime';
+import { mergeManagedEntityGroups } from './admin-managed-entities-snapshot-codec';
 import { toSafeInteger, toIsoString } from './admin-statistics-values';
 import { SuggestionSubscriptionService } from '../suggestions/suggestion-subscription.service';
 import { MaxMemberRestoreUnavailableError } from '../max/max-member-restore-capability';
@@ -296,7 +299,10 @@ import {
   AdminManagedEntityAccessRuntime,
   type PrunePersistedChatAccessOptions,
 } from './admin-managed-entity-access-runtime';
-import { createAdminManagedEntityAccessRuntimeContext } from './admin-managed-entity-access-runtime-context';
+import {
+  createAdminManagedEntityAccessRuntimeContext,
+  type MarkManagedEntityAccessEdgesDeniedForUserParams,
+} from './admin-managed-entity-access-runtime-context';
 import { AdminManagedEntitiesRuntime } from './admin-managed-entities-runtime';
 import { createAdminManagedEntitiesRuntimeContext } from './admin-managed-entities-runtime-context';
 import { AdminParticipantsRuntime } from './admin-participants-runtime';
@@ -439,13 +445,11 @@ import {
   MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE,
   MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE,
   MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE,
-  MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS,
   MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS,
   MANAGED_ENTITIES_ACCESS_EDGE_RESPONSE_BUDGET_MS,
   MANAGED_ENTITIES_ACCESS_EDGE_RESPONSE_LIMIT,
   MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_REVALIDATION_LIMIT,
   MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS,
-  MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS,
   MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS,
   MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS,
   MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS,
@@ -465,7 +469,6 @@ import {
   MANAGED_ENTITIES_REFRESH_BACKOFF_MS,
   MANAGED_ENTITIES_REFRESH_FRESHNESS_WINDOW_MS,
   MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS,
-  MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS,
   MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS,
   MANAGED_ENTITIES_REFRESH_QUEUE_LAG_SLOW_PATH_MAX_SEC,
   MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS,
@@ -526,7 +529,6 @@ import {
   type ManagedEntitiesListResult,
   type ManagedEntitiesRefreshPresentation,
   type ManagedEntitiesRefreshJobOutcome,
-  type ManagedEntitiesManualRefreshBlockReason,
   type ManagedEntitiesPublishedSnapshotReadResult,
   type ManagedEntitiesPublishedDiffReadResult,
   type ChannelPublicationEngagementContext,
@@ -537,7 +539,6 @@ import {
   type AssertChatAdminOptions,
   type AdminReadBypassOptions,
   type TimedPromiseCacheEntry,
-  type TimedValueCacheEntry,
   type AdminAccessResolution,
   type ManagedEntityAccessRoleValue,
   type ManagedEntityAccessStateValue,
@@ -826,12 +827,78 @@ export class AdminService implements OnModuleDestroy {
   private readonly manualModerationRuntime = new AdminManualModerationRuntime(
     createAdminManualModerationRuntimeContext(this),
   );
-  private readonly managedEntityAccessRuntime = new AdminManagedEntityAccessRuntime(
-    createAdminManagedEntityAccessRuntimeContext(this),
-  );
-  private readonly managedEntitiesRuntime = new AdminManagedEntitiesRuntime(
-    createAdminManagedEntitiesRuntimeContext(this),
-  );
+  private readonly managedEntitiesSnapshotRuntime = new AdminManagedEntitiesSnapshotRuntime({
+    filterToRuntimeScope: (chats) => this.filterManagedEntitiesToRuntimeScope(chats),
+    loadAllowlist: (userId, entityType) => this.listChatsFromAllowlistUncached(userId, entityType),
+  });
+  private readonly managedEntityAccessRuntime = ((owner: AdminService) =>
+    new AdminManagedEntityAccessRuntime(
+      createAdminManagedEntityAccessRuntimeContext({
+        get prisma(): PrismaService {
+          return owner.prisma;
+        },
+        get chatContextCache(): ChatContextCacheService {
+          return owner.chatContextCache;
+        },
+        get logger(): Logger {
+          return owner.logger;
+        },
+        get managedEntitiesRuntimeBotIds(): ReadonlySet<string> {
+          return owner.managedEntitiesRuntimeBotIds;
+        },
+        forgetManagedEntitiesLastSuccessChat: (userId, chatId) =>
+          owner.managedEntitiesSnapshotRuntime.forgetManagedEntitiesLastSuccessChat(userId, chatId),
+        invalidateManagedEntitiesAllowlistCache: (userId) =>
+          owner.managedEntitiesSnapshotRuntime.invalidateManagedEntitiesAllowlistCache(userId),
+        get accessEdges() {
+          return owner.getManagedEntityAccessEdgeClient();
+        },
+        normalizeManagedEntityAccessBotId: (botId) =>
+          owner.normalizeManagedEntityAccessBotId(botId),
+      }),
+    ))(this);
+  private readonly managedEntitiesRuntime = ((owner: AdminService) =>
+    new AdminManagedEntitiesRuntime(
+      createAdminManagedEntitiesRuntimeContext({
+        get prisma(): PrismaService {
+          return owner.prisma;
+        },
+        get chatContextCache(): ChatContextCacheService {
+          return owner.chatContextCache;
+        },
+        get maxClient(): MaxClientService {
+          return owner.maxClient;
+        },
+        get logger(): Logger {
+          return owner.logger;
+        },
+        get maxBotRegistry(): MaxBotRegistryService | undefined {
+          return owner.maxBotRegistry;
+        },
+        assertChatAdmin: (chatId, userId, entityType, options) =>
+          owner.assertChatAdmin(chatId, userId, entityType, options),
+        assertReadOnlyChatAdmin: (chatId, userId, entityType, options) =>
+          owner.assertReadOnlyChatAdmin(chatId, userId, entityType, options),
+        attachManagedEntityFavoriteTypes: (userId, items) =>
+          owner.attachManagedEntityFavoriteTypes(userId, items),
+        attachManagedEntityFavoriteTypesToDiff: (userId, diff) =>
+          owner.attachManagedEntityFavoriteTypesToDiff(userId, diff),
+        collectManagedEntitiesForMassAction: (user, entityType, options) =>
+          owner.collectManagedEntitiesForMassAction(user, entityType, options),
+        ensureEntityType: (chatId, userId, expectedEntityType) =>
+          owner.ensureEntityType(chatId, userId, expectedEntityType),
+        isManagedEntityRuntimeBotId: (botId) => owner.isManagedEntityRuntimeBotId(botId),
+        listManagedEntitiesDetailed: (user, entityType, options) =>
+          owner.listManagedEntitiesDetailed(user, entityType, options),
+
+        resolveBackgroundReadBotAssignment: (chatId) =>
+          owner.resolveBackgroundReadBotAssignment(chatId),
+        runManagedEntitiesBoundedRefreshJob: (user, entityType, options) =>
+          owner.runManagedEntitiesBoundedRefreshJob(user, entityType, options),
+        runManagedEntitiesRemoteFullRefresh: (user, entityType, options) =>
+          owner.runManagedEntitiesRemoteFullRefresh(user, entityType, options),
+      }),
+    ))(this);
 
   private readonly participantsRuntime = ((owner: AdminService) =>
     new AdminParticipantsRuntime(
@@ -897,14 +964,7 @@ export class AdminService implements OnModuleDestroy {
     Promise<ChatSummary>
   >();
   private readonly managedEntitiesBackgroundRefreshRuns = new Map<string, Promise<void>>();
-  private readonly managedEntitiesAllowlistCache = new Map<
-    string,
-    TimedPromiseCacheEntry<ChatSummary[]>
-  >();
-  private readonly managedEntitiesLastSuccessCache = new Map<
-    string,
-    TimedValueCacheEntry<ChatSummary[]>
-  >();
+
   private readonly managedEntitiesReadPrisma: PrismaClient | null;
   private readonly managedEntitiesResponseWarmupRuns = new Map<
     string,
@@ -1359,7 +1419,7 @@ export class AdminService implements OnModuleDestroy {
         new Set(cached.map((item) => item.id)),
         { source: 'default' },
       );
-      const cachedWithEdges = this.mergeManagedEntityGroups(cached, edgeItems);
+      const cachedWithEdges = mergeManagedEntityGroups(cached, edgeItems);
       const initial = await mergeWithLightweightBootstrap(cachedWithEdges);
       if (edgeItems.length > 0) {
         this.scheduleManagedEntitiesPublishedSnapshotRebuild(user.userId, entityType);
@@ -1408,7 +1468,7 @@ export class AdminService implements OnModuleDestroy {
             items: [],
             refresh: null,
           };
-      const discoveredItems = this.mergeManagedEntityGroups(initial, discovered.items);
+      const discoveredItems = mergeManagedEntityGroups(initial, discovered.items);
       const items =
         discoveredItems.length > 0
           ? await this.attachManagedEntityBotAssignments(
@@ -1510,8 +1570,8 @@ export class AdminService implements OnModuleDestroy {
     );
     const responseBaseItems =
       responseWarmup && responseWarmup.items.length > 0
-        ? this.mergeManagedEntityGroups(responseWarmup.items, cached, edgeItems)
-        : this.mergeManagedEntityGroups(cached, edgeItems);
+        ? mergeManagedEntityGroups(responseWarmup.items, cached, edgeItems)
+        : mergeManagedEntityGroups(cached, edgeItems);
     const mergedCached = shouldMergeLightweightBootstrap
       ? await mergeWithLightweightBootstrap(responseBaseItems)
       : responseBaseItems;
@@ -1729,7 +1789,7 @@ export class AdminService implements OnModuleDestroy {
       }
 
       this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
-      return this.mergeManagedEntityGroups(snapshotItems, edgeItems);
+      return mergeManagedEntityGroups(snapshotItems, edgeItems);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -2522,7 +2582,7 @@ export class AdminService implements OnModuleDestroy {
         displayName: null,
         chatTitle: null,
       };
-      const revalidated = this.mergeManagedEntityGroups(
+      const revalidated = mergeManagedEntityGroups(
         await this.revalidateCachedManagedEntities(user, allowlist),
         edgeItems,
       );
@@ -2609,7 +2669,7 @@ export class AdminService implements OnModuleDestroy {
     );
     const snapshotIds = new Set(items.map((item) => item.id));
     const recentBotAdded = bootstrap.recentBotAdded.filter((chat) => !snapshotIds.has(chat.id));
-    const bootstrapCandidates = this.mergeManagedEntityGroups(recentBotAdded);
+    const bootstrapCandidates = mergeManagedEntityGroups(recentBotAdded);
     if (bootstrapCandidates.length === 0) {
       return snapshotItems;
     }
@@ -2954,7 +3014,7 @@ export class AdminService implements OnModuleDestroy {
         userId,
         entityType,
       );
-      return this.createManagedEntitiesRefreshState(
+      return createManagedEntitiesRefreshState(
         pausedCursor,
         true,
         backgroundPauseDecision.retryAfterMs,
@@ -2989,15 +3049,10 @@ export class AdminService implements OnModuleDestroy {
           userId,
           entityType,
         );
-        return this.createManagedEntitiesRefreshState(
-          MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
-          false,
-          0,
-          {
-            totalCandidates: presentation.totalCandidates,
-            lastSyncedAt: freshness.lastSyncedAt ?? presentation.lastSyncedAt,
-          },
-        );
+        return createManagedEntitiesRefreshState(MANAGED_ENTITIES_REFRESH_CURSOR_DONE, false, 0, {
+          totalCandidates: presentation.totalCandidates,
+          lastSyncedAt: freshness.lastSyncedAt ?? presentation.lastSyncedAt,
+        });
       }
     }
 
@@ -3012,15 +3067,10 @@ export class AdminService implements OnModuleDestroy {
           userId,
           entityType,
         );
-        return this.createManagedEntitiesRefreshState(
-          MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
-          false,
-          0,
-          {
-            totalCandidates: presentation.totalCandidates,
-            lastSyncedAt: freshness.lastSyncedAt ?? presentation.lastSyncedAt,
-          },
-        );
+        return createManagedEntitiesRefreshState(MANAGED_ENTITIES_REFRESH_CURSOR_DONE, false, 0, {
+          totalCandidates: presentation.totalCandidates,
+          lastSyncedAt: freshness.lastSyncedAt ?? presentation.lastSyncedAt,
+        });
       }
     }
 
@@ -3038,7 +3088,7 @@ export class AdminService implements OnModuleDestroy {
       );
     }
 
-    return this.createManagedEntitiesRefreshState(cursor, false);
+    return createManagedEntitiesRefreshState(cursor, false);
   }
 
   private async runManagedEntitiesRemoteFullRefresh(
@@ -3141,31 +3191,13 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private mergeManagedEntityGroups(...groups: readonly ChatSummary[][]): ChatSummary[] {
-    const merged: ChatSummary[] = [];
-    const seen = new Set<string>();
-
-    for (const group of groups) {
-      for (const chat of group) {
-        if (seen.has(chat.id)) {
-          continue;
-        }
-
-        seen.add(chat.id);
-        merged.push(chat);
-      }
-    }
-
-    return merged;
-  }
-
   private mergeManagedEntitiesWithLightweightBootstrap(
     items: readonly ChatSummary[],
     bootstrap: {
       recentBotAdded: ChatSummary[];
     },
   ): ChatSummary[] {
-    return this.mergeManagedEntityGroups(bootstrap.recentBotAdded, [...items]);
+    return mergeManagedEntityGroups(bootstrap.recentBotAdded, [...items]);
   }
 
   private async loadManagedEntitiesLightweightBootstrap(
@@ -3265,20 +3297,6 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityTypeFilter,
   ): string {
     return `${userId}:${entityType}:allowlist-warmup`;
-  }
-
-  private buildManagedEntitiesAllowlistCacheKey(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-  ): string {
-    return `${userId}:${entityType}:allowlist`;
-  }
-
-  private buildManagedEntitiesLastSuccessCacheKey(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-  ): string {
-    return `${userId}:${entityType}:last-success`;
   }
 
   private buildManagedEntitiesRuntimeChatScopeFilter(): Prisma.ChatWhereInput | null {
@@ -3615,169 +3633,38 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private async markManagedEntityAccessEdgesDeniedForUser(params: {
-    chatId: string;
-    userId: string;
-    state: Exclude<ManagedEntityAccessStateValue, 'GRANTED'>;
-    deniedReason: string;
-    source: string;
-  }): Promise<void> {
-    const client = this.getManagedEntityAccessEdgeClient();
-    if (!client?.updateMany) {
-      return;
-    }
-
-    const chatId = this.readTrimmedString(params.chatId);
-    const userId = this.readTrimmedString(params.userId);
-    if (!chatId || !userId) {
-      return;
-    }
-
-    try {
-      await client.updateMany({
-        where: {
-          chatId,
-          userId,
-          // FLAG: MAX moderation verdicts never mutate the independent Publisher access edge.
-          botId: { in: [...this.managedEntitiesRuntimeBotIds] },
-        },
-        data: {
-          state: params.state,
-          userRole: params.state === 'USER_DENIED' ? 'MEMBER' : 'UNKNOWN',
-          botRole: params.state === 'BOT_DENIED' ? 'MEMBER' : 'UNKNOWN',
-          checkedAt: new Date(),
-          expiresAt: null,
-          deniedReason: params.deniedReason,
-          source: params.source,
-        },
-      });
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          state: params.state,
-          source: params.source,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to mark managed entity access edges denied',
-      );
-    }
-  }
-
-  private readManagedEntitiesLastSuccessSnapshotExact(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-  ): ChatSummary[] {
-    const key = this.buildManagedEntitiesLastSuccessCacheKey(userId, entityType);
-    const entry = this.managedEntitiesLastSuccessCache.get(key);
-    if (!entry) {
-      return [];
-    }
-    if (entry.expiresAtMs <= Date.now()) {
-      this.managedEntitiesLastSuccessCache.delete(key);
-      return [];
-    }
-
-    return entry.value.map((chat) => this.cloneManagedEntitySummary(chat));
+  private markManagedEntityAccessEdgesDeniedForUser(
+    params: MarkManagedEntityAccessEdgesDeniedForUserParams,
+  ): Promise<void> {
+    return this.managedEntityAccessRuntime.markManagedEntityAccessEdgesDeniedForUser(params);
   }
 
   private readManagedEntitiesLastSuccessSnapshot(
     userId: string,
     entityType: ManagedEntityTypeFilter,
   ): ChatSummary[] {
-    const direct = this.filterManagedEntitiesToRuntimeScope(
-      this.readManagedEntitiesLastSuccessSnapshotExact(userId, entityType),
+    return this.managedEntitiesSnapshotRuntime.readManagedEntitiesLastSuccessSnapshot(
+      userId,
+      entityType,
     );
-    if (direct.length > 0 || entityType === 'all') {
-      return direct;
-    }
-
-    return this.filterManagedEntitiesToRuntimeScope(
-      this.readManagedEntitiesLastSuccessSnapshotExact(userId, 'all'),
-    ).filter((chat) => chat.entityType === entityType);
-  }
-
-  private rememberManagedEntitiesLastSuccessSnapshot(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-    chats: readonly ChatSummary[],
-  ): void {
-    if (chats.length === 0) {
-      return;
-    }
-
-    const key = this.buildManagedEntitiesLastSuccessCacheKey(userId, entityType);
-    this.managedEntitiesLastSuccessCache.set(key, {
-      expiresAtMs: Date.now() + MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS,
-      value: chats.map((chat) => this.cloneManagedEntitySummary(chat)),
-    });
-  }
-
-  private mergeManagedEntitiesLastSuccessSnapshot(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-    chats: readonly ChatSummary[],
-  ): void {
-    if (chats.length === 0) {
-      return;
-    }
-
-    const merged = this.mergeManagedEntityGroups(
-      chats.map((chat) => this.cloneManagedEntitySummary(chat)),
-      this.readManagedEntitiesLastSuccessSnapshotExact(userId, entityType),
-    );
-    this.rememberManagedEntitiesLastSuccessSnapshot(userId, entityType, merged);
   }
 
   private rememberManagedEntitiesLastSuccessChats(
     userId: string,
     chats: readonly ChatSummary[],
   ): void {
-    if (chats.length === 0) {
-      return;
-    }
-
-    this.mergeManagedEntitiesLastSuccessSnapshot(userId, 'all', chats);
-
-    const chatsOnly = chats.filter((chat) => chat.entityType === 'chat');
-    if (chatsOnly.length > 0) {
-      this.mergeManagedEntitiesLastSuccessSnapshot(userId, 'chat', chatsOnly);
-    }
-
-    const channelsOnly = chats.filter((chat) => chat.entityType === 'channel');
-    if (channelsOnly.length > 0) {
-      this.mergeManagedEntitiesLastSuccessSnapshot(userId, 'channel', channelsOnly);
-    }
+    return this.managedEntitiesSnapshotRuntime.rememberManagedEntitiesLastSuccessChats(
+      userId,
+      chats,
+    );
   }
 
   private forgetManagedEntitiesLastSuccessChat(userId: string, chatId: string): void {
-    const prefix = `${userId}:`;
-    for (const [key, entry] of this.managedEntitiesLastSuccessCache.entries()) {
-      if (!key.startsWith(prefix)) {
-        continue;
-      }
-
-      const remaining = entry.value.filter((chat) => chat.id !== chatId);
-      if (remaining.length === 0) {
-        this.managedEntitiesLastSuccessCache.delete(key);
-        continue;
-      }
-
-      this.managedEntitiesLastSuccessCache.set(key, {
-        expiresAtMs: entry.expiresAtMs,
-        value: remaining.map((chat) => this.cloneManagedEntitySummary(chat)),
-      });
-    }
+    return this.managedEntitiesSnapshotRuntime.forgetManagedEntitiesLastSuccessChat(userId, chatId);
   }
 
   private invalidateManagedEntitiesAllowlistCache(userId: string): void {
-    const prefix = `${userId}:`;
-    for (const key of this.managedEntitiesAllowlistCache.keys()) {
-      if (key.startsWith(prefix)) {
-        this.managedEntitiesAllowlistCache.delete(key);
-      }
-    }
+    return this.managedEntitiesSnapshotRuntime.invalidateManagedEntitiesAllowlistCache(userId);
   }
 
   private listChatsFromAllowlistWithinResponseBudget(
@@ -4057,7 +3944,7 @@ export class AdminService implements OnModuleDestroy {
     const lastSyncedAt =
       (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(userId, entityType)) ?? null;
 
-    return this.createManagedEntitiesRefreshState(
+    return createManagedEntitiesRefreshState(
       backoffActive ? null : MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
       backoffActive,
       nextPollAfterMs,
@@ -5417,7 +5304,7 @@ export class AdminService implements OnModuleDestroy {
         refresh:
           options.includeRefreshState === true
             ? options.fullScan === true
-              ? this.createManagedEntitiesRefreshState(nextCursor, false, undefined, {
+              ? createManagedEntitiesRefreshState(nextCursor, false, undefined, {
                   totalCandidates: candidateChats.length,
                   lastSyncedAt:
                     completedAt ??
@@ -5427,19 +5314,14 @@ export class AdminService implements OnModuleDestroy {
                     )) ??
                     null,
                 })
-              : this.createManagedEntitiesRefreshState(
-                  MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
-                  false,
-                  0,
-                  {
-                    totalCandidates: null,
-                    lastSyncedAt:
-                      (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(
-                        user.userId,
-                        entityType,
-                      )) ?? null,
-                  },
-                )
+              : createManagedEntitiesRefreshState(MANAGED_ENTITIES_REFRESH_CURSOR_DONE, false, 0, {
+                  totalCandidates: null,
+                  lastSyncedAt:
+                    (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(
+                      user.userId,
+                      entityType,
+                    )) ?? null,
+                })
             : null,
       };
       const resultWithAdminCheckCount = this.withManagedEntitiesAdminCheckCount(
@@ -5950,7 +5832,7 @@ export class AdminService implements OnModuleDestroy {
         refresh:
           options.includeRefreshState === true
             ? options.fullScan === true
-              ? this.createManagedEntitiesRefreshState(nextCursor, false, undefined, {
+              ? createManagedEntitiesRefreshState(nextCursor, false, undefined, {
                   totalCandidates: supportedCandidateChats.length,
                   lastSyncedAt:
                     completedAt ??
@@ -8121,7 +8003,7 @@ export class AdminService implements OnModuleDestroy {
         createdAt: new Date().toISOString(),
         entityType: 'chat',
       });
-    const selectableChats = this.mergeManagedEntityGroups([sourceChat], availableChats);
+    const selectableChats = mergeManagedEntityGroups([sourceChat], availableChats);
     const selectableById = new Map(selectableChats.map((chat) => [chat.id, chat]));
 
     if (target.mode === 'current') {
@@ -21911,125 +21793,6 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private createManagedEntitiesRefreshState(
-    cursor: number | null,
-    backoffActive: boolean,
-    nextPollAfterMsOverride?: number,
-    presentation: ManagedEntitiesRefreshPresentation = {
-      totalCandidates: null,
-      lastSyncedAt: null,
-    },
-  ): ManagedEntitiesRefreshState {
-    const normalizedNextPollAfterMs =
-      typeof nextPollAfterMsOverride === 'number'
-        ? Math.max(0, Math.ceil(nextPollAfterMsOverride))
-        : backoffActive
-          ? MANAGED_ENTITIES_REFRESH_BACKOFF_MS
-          : cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
-            ? 0
-            : cursor === null
-              ? MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS
-              : MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS;
-    const manualRefreshBlock = this.resolveManagedEntitiesManualRefreshBlockState(
-      cursor,
-      backoffActive,
-      normalizedNextPollAfterMs,
-      presentation.lastSyncedAt ?? null,
-    );
-    const totalCandidates =
-      typeof presentation.totalCandidates === 'number' &&
-      Number.isFinite(presentation.totalCandidates)
-        ? Math.max(0, Math.trunc(presentation.totalCandidates))
-        : null;
-    const processedCandidates =
-      totalCandidates === null
-        ? null
-        : cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
-          ? totalCandidates
-          : cursor === null
-            ? 0
-            : Math.max(0, Math.min(totalCandidates, Math.trunc(cursor)));
-    const progressPercent =
-      cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
-        ? 100
-        : totalCandidates === null
-          ? null
-          : totalCandidates === 0
-            ? 100
-            : processedCandidates === null
-              ? null
-              : Math.max(
-                  0,
-                  Math.min(100, Math.round((processedCandidates / totalCandidates) * 100)),
-                );
-
-    return {
-      complete: cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
-      cursor,
-      backoffActive,
-      nextPollAfterMs: normalizedNextPollAfterMs,
-      processedCandidates,
-      totalCandidates,
-      progressPercent,
-      lastSyncedAt: presentation.lastSyncedAt ?? null,
-      manualRefreshBlockedReason: manualRefreshBlock.reason,
-      manualRefreshRetryAfterMs: manualRefreshBlock.retryAfterMs,
-    };
-  }
-
-  private resolveManagedEntitiesManualRefreshBlockState(
-    cursor: number | null,
-    backoffActive: boolean,
-    nextPollAfterMs: number,
-    lastSyncedAt: string | null,
-  ): {
-    reason: ManagedEntitiesManualRefreshBlockReason | null;
-    retryAfterMs: number | null;
-  } {
-    if (backoffActive) {
-      return {
-        reason: 'backoff',
-        retryAfterMs: Math.max(0, Math.ceil(nextPollAfterMs)),
-      };
-    }
-
-    if (typeof cursor === 'number' && cursor >= 0) {
-      return {
-        reason: 'in_progress',
-        retryAfterMs: Math.max(0, Math.ceil(nextPollAfterMs)),
-      };
-    }
-
-    if (!lastSyncedAt) {
-      return {
-        reason: null,
-        retryAfterMs: null,
-      };
-    }
-
-    const lastSyncedAtMs = Date.parse(lastSyncedAt);
-    if (!Number.isFinite(lastSyncedAtMs)) {
-      return {
-        reason: null,
-        retryAfterMs: null,
-      };
-    }
-
-    const recentSyncRemainingMs =
-      MANAGED_ENTITIES_MANUAL_REFRESH_RECENT_SYNC_WINDOW_MS - (Date.now() - lastSyncedAtMs);
-    if (recentSyncRemainingMs <= 0) {
-      return {
-        reason: null,
-        retryAfterMs: null,
-      };
-    }
-
-    return {
-      reason: 'recent_sync',
-      retryAfterMs: Math.max(0, Math.ceil(recentSyncRemainingMs)),
-    };
-  }
-
   private async loadManagedEntitiesRefreshPresentationData(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -22125,12 +21888,7 @@ export class AdminService implements OnModuleDestroy {
       : undefined;
     const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
 
-    return this.createManagedEntitiesRefreshState(
-      cursor,
-      backoffActive,
-      nextPollAfterMs,
-      presentation,
-    );
+    return createManagedEntitiesRefreshState(cursor, backoffActive, nextPollAfterMs, presentation);
   }
 
   private async isManagedEntitiesBackgroundRefreshPaused(
@@ -22398,24 +22156,7 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     entityType: ManagedEntityTypeFilter,
   ): Promise<ChatSummary[]> {
-    const cacheKey = this.buildManagedEntitiesAllowlistCacheKey(userId, entityType);
-    const cachedEntry = this.managedEntitiesAllowlistCache.get(cacheKey);
-    if (cachedEntry && cachedEntry.expiresAtMs > Date.now()) {
-      return cachedEntry.promise;
-    }
-
-    const pending = this.listChatsFromAllowlistUncached(userId, entityType).catch((error) => {
-      if (this.managedEntitiesAllowlistCache.get(cacheKey)?.promise === pending) {
-        this.managedEntitiesAllowlistCache.delete(cacheKey);
-      }
-      throw error;
-    });
-    this.managedEntitiesAllowlistCache.set(cacheKey, {
-      expiresAtMs: Date.now() + MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS,
-      promise: pending,
-    });
-
-    return pending;
+    return this.managedEntitiesSnapshotRuntime.listChatsFromAllowlist(userId, entityType);
   }
 
   private async listChatsFromAllowlistUncached(

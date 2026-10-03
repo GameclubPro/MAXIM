@@ -76,3 +76,18 @@ Before extraction, the focused service/runtime suite passed 465 tests. Existing 
 cases remain; obsolete context-forwarding tests now cover only the remaining capabilities.
 Additional independent channel-statistics cases exercise concurrent reads, revoked cached
 access, late failure after invalidation, per-channel invalidation and refresh coalescing.
+
+## Managed entities access and snapshot ownership
+
+Discovery snapshots and coalesced allowlist reads now have one owner with two explicit
+capabilities: runtime-scope filtering and the existing uncached loader. User/type keys,
+TTL boundaries, clone behavior, first-entity-wins ordering, actor-wide invalidation and
+late-rejection identity checks remain unchanged. Access denial mutations live with access
+pruning and retain the exact Major bot scope. Refresh presentation is a standalone function.
+The managed-entities facade port declares independent signatures; unsafe-context exceptions
+shrink from 11 to 8. Full discovery orchestration and SQL query policy remain unchanged.
+
+Before transfer, 84 focused tests passed, including seven new snapshot/cache cases. After
+transfer, 506 focused tests passed across service, access, discovery and snapshot boundaries.
+Independent access-runtime tests cover bot-scope isolation, live capability replacement,
+blank identity and best-effort persistence failure. Release verification remains per PR.

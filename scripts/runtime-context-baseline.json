@@ -18,14 +18,6 @@
       "definitionSha256": "6ddb564af2fefcf36b5df271d242cc0d0c47c4233377bf8efd8325187971a0e3"
     },
     {
-      "key": "apps/api/src/admin/admin-managed-entities-runtime-context.ts:createAdminManagedEntitiesRuntimeContext",
-      "definitionSha256": "db6c11fb6e3d05c0e314dc36d5191c1c079f37b5d4621299920a51bc9d5af3bb"
-    },
-    {
-      "key": "apps/api/src/admin/admin-managed-entity-access-runtime-context.ts:createAdminManagedEntityAccessRuntimeContext",
-      "definitionSha256": "adab08669a8d55af44e02c02786b9fba430d8bf1aa5bfb56b17582539d6207eb"
-    },
-    {
       "key": "apps/api/src/admin/admin-manual-moderation-runtime-context.ts:createAdminManualModerationRuntimeContext",
       "definitionSha256": "f1b25551ff3deacb502599b3d68877940662e093fe56fb7381af3140e085ab32"
     },
@@ -39,10 +31,6 @@
     },
     {
       "key": "apps/api/src/admin/channel-dialog-legacy.port.ts:legacy-import:./admin.service",
-      "definitionSha256": "a1b03d4f56e88e6e03b3febbee2111eede4c8e1262bea57be46bf5488f430e74"
-    },
-    {
-      "key": "apps/api/src/admin/managed-entities-legacy.port.ts:legacy-import:./admin.service",
       "definitionSha256": "a1b03d4f56e88e6e03b3febbee2111eede4c8e1262bea57be46bf5488f430e74"
     }
   ]

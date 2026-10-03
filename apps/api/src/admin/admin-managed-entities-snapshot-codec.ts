@@ -154,3 +154,21 @@ export function buildManagedEntitiesPublishedSnapshotDiff(
     changeCount,
   };
 }
+
+export function mergeManagedEntityGroups(...groups: readonly ChatSummary[][]): ChatSummary[] {
+  const merged: ChatSummary[] = [];
+  const seen = new Set<string>();
+
+  for (const group of groups) {
+    for (const chat of group) {
+      if (seen.has(chat.id)) {
+        continue;
+      }
+
+      seen.add(chat.id);
+      merged.push(chat);
+    }
+  }
+
+  return merged;
+}
