@@ -210,3 +210,15 @@ Revision conflicts retain the original refresh and feedback behavior. Confirmati
 preserve their ordering around publication details, pending guards and native Back handling.
 Browser checks exercise actual payloads, duplicate-click prevention, retries after a lost
 response, revision conflicts and original/latest content selection through the real API client.
+
+## Publication editor session boundary
+
+The editor session composes the existing local composer and cloud autosave controller. It
+owns edit/create/import context, the isolated-edit baseline and saved create draft, close
+confirmation, route changes and focus return. The page still owns save/test request identities,
+media upload cancellation and submission validation. A successful isolated publication clears
+only its matching saved cloud draft before restoring the create draft.
+
+Browser cases cover dirty close/keep/discard, local edits rebased onto a fresh revision,
+missing-image restoration, failed opening and local recovery after a failed cloud flush.
+The existing direct video-upload browser scenarios retain the real page coverage.

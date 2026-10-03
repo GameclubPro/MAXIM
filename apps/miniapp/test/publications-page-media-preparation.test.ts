@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+const sessionSource = readFileSync(
+  new URL('../src/features/publications/use-publication-editor-session.ts', import.meta.url),
+  'utf8',
+);
 const pageSource = readFileSync(
   new URL('../src/pages/publications-page.tsx', import.meta.url),
   'utf8',
@@ -43,7 +47,7 @@ test('publishing page owns media preparation and blocks review, test, publish, a
     contentEditorSource,
     /<BroadcastContentComposer[\s\S]*?disabled=\{operationBusy\}[\s\S]*?onImagePreparationChange=\{onImagePreparationChange\}/u,
   );
-  assert.match(pageSource, /function requestCloseEditor[\s\S]*?if \(isBusy\) \{/u);
+  assert.match(sessionSource, /function requestCloseEditor[\s\S]*?if \(isBusy\) \{/u);
   assert.match(pageSource, /function submitPublication[\s\S]*?if \(mediaPreparing\) \{/u);
   assert.match(pageSource, /function handlePrimaryAction[\s\S]*?if \(mediaPreparing\) \{/u);
   assert.match(
@@ -55,7 +59,7 @@ test('publishing page owns media preparation and blocks review, test, publish, a
 
 test('pending image work protects native and browser close before the first image is ready', () => {
   assert.match(
-    pageSource,
+    sessionSource,
     /usePublicationComposer\([\s\S]*?isPublisherProfile,[\s\S]*?mediaPreparing \|\| videoPreparing,[\s\S]*?userId,/u,
   );
   assert.match(composerHookSource, /pendingWork \|\| hasDraft/u);
@@ -74,7 +78,7 @@ test('picker return state is also cleared when the native picker is cancelled', 
 
 test('editor close flushes the latest autosave and successful publication awaits draft clearing', () => {
   assert.match(
-    pageSource,
+    sessionSource,
     /function requestCloseEditor[\s\S]*?setEditorClosePending\(true\)[\s\S]*?flushDraft\(\)/u,
   );
   assert.match(pageSource, /await clearDraft\(\);[\s\S]*?closeEditor\(false\);/u);
@@ -97,10 +101,10 @@ test('missing persisted photo bytes require explicit reselection or dismissal', 
 });
 
 test('isolated editors snapshot, reset, and restore create media recovery atomically', () => {
-  assert.match(pageSource, /savedCreateDraftRef\.current = \{ draft, missingImageCount \}/u);
-  assert.match(pageSource, /replaceDraft\(isolatedDraft\)/u);
+  assert.match(sessionSource, /savedCreateDraftRef\.current = \{ draft, missingImageCount \}/u);
+  assert.match(sessionSource, /replaceDraft\(isolatedDraft\)/u);
   assert.match(
-    pageSource,
+    sessionSource,
     /function restoreCreateDraftAndClose[\s\S]*?replaceDraft\([\s\S]*?savedCreateDraft\?\.draft[\s\S]*?savedCreateDraft\?\.missingImageCount/u,
   );
   assert.match(
