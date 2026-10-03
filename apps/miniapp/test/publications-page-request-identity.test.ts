@@ -7,8 +7,19 @@ const pageSource = readFileSync(
   'utf8',
 );
 
+const actionSource = readFileSync(
+  new URL('../src/features/publications/use-publication-actions.ts', import.meta.url),
+  'utf8',
+);
 function getMutationBlock(start: string, end: string): string {
-  return pageSource.slice(pageSource.indexOf(start), pageSource.indexOf(end));
+  const source =
+    start.includes('actionMutation') ||
+    start.includes('retryMutation') ||
+    start.includes('resolveAmbiguousMutation')
+      ? actionSource
+      : pageSource;
+  const endAt = source.indexOf(end);
+  return source.slice(source.indexOf(start), endAt < 0 ? undefined : endAt);
 }
 
 function assertStableMutationIdentity(

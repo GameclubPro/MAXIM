@@ -129,7 +129,10 @@ test('publication editor and details preserve the server text format', () => {
   assert.match(reviewSheetSource, /sourceFormat=\{sourceFormat\}/u);
   assert.doesNotMatch(publicationsSource, /<small>\{draft\.text\.trim\(\)/u);
   assert.match(
-    publicationsSource,
+    readFileSync(
+      new URL('../src/features/publications/publication-action-sheets.tsx', import.meta.url),
+      'utf8',
+    ),
     /sourceFormat=\{actionTarget\.publication\.contentPreviewFormat\}/u,
   );
 });

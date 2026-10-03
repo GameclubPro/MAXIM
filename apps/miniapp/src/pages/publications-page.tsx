@@ -1,12 +1,13 @@
+import { usePublicationActions } from '../features/publications/use-publication-actions';
+import {
+  PublicationActionSheet,
+  PublicationDeliveryActionSheets,
+} from '../features/publications/publication-action-sheets';
 import { usePublicationList } from '../features/publications/use-publication-list';
 import { usePublicationCalendar } from '../features/publications/use-publication-calendar';
 import { publicationQueryKeys as queryKeys } from '../features/publications/publication-query-keys';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  type PublicationDetails,
-  type PublicationOccurrenceSummary,
-  type PublicationSummary,
-} from '@maxim/contracts/publication';
+import { type PublicationSummary } from '@maxim/contracts/publication';
 import type { MiniappProfile, PublisherPostImportOmission } from '@maxim/contracts/publisher';
 import {
   Clock,
@@ -73,7 +74,6 @@ import {
   hasPublicationDraftChanges,
   getPublicationTimingIssue,
   isIsolatedPublicationEditor,
-  isPublicationOccurrenceContentStale,
   isPublicationRevisionConflictError,
   PUBLICATION_TEXT_MAX_LENGTH,
   publicationDraftNeedsVideoReselection,
@@ -94,7 +94,6 @@ import {
   PUBLICATION_TEST_RESULT_PENDING_FEEDBACK,
   isPublicationTestResultPendingError,
 } from '../features/publications/publication-request-identity';
-import { PublicationRetrySheet } from '../features/publications/publication-retry-sheet';
 import { PublisherPostImportStatus } from '../features/publications/publisher-post-import-status';
 import { PublicationTargetNotices } from '../features/publications/publication-target-notices';
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
@@ -113,12 +112,7 @@ import { usePublisherPostImportController } from '../features/publications/use-p
 import { isPublisherDraftRouteId } from '../features/publications/publisher-post-import-route';
 import {
   createPublication,
-  cancelPublication,
   getPublication,
-  pausePublication,
-  resumePublication,
-  retryPublicationOccurrence,
-  resolvePublicationAmbiguousDelivery,
   testPublication,
   updatePublication,
 } from '../lib/api/publication-client';
@@ -189,40 +183,6 @@ const LazyBroadcastSchedulePlanner = lazy(() =>
     default: module.BroadcastSchedulePlanner,
   })),
 );
-
-type PublicationActionTarget = {
-  publication: PublicationSummary;
-  action: 'cancel' | 'pause' | 'resume';
-};
-
-type PublicationAmbiguousTarget = {
-  publicationId: string;
-  occurrenceId: string;
-  deliveryId: string;
-  resolution: 'mark_sent' | 'mark_failed';
-};
-
-type PublicationRetryTarget =
-  | {
-      publicationId: string;
-      occurrenceId: string;
-      contentMode: 'original';
-    }
-  | {
-      publicationId: string;
-      occurrenceId: string;
-      contentMode: 'latest';
-      expectedPublicationVersion: number;
-      expectedContentRevision: number;
-    };
-
-type PublicationRetryChoiceTarget = {
-  publicationId: string;
-  occurrenceId: string;
-  publicationVersion: number;
-  originalContentRevision?: number;
-  latestContentRevision: number;
-};
 
 export function PublicationsPage({
   api,
@@ -338,12 +298,19 @@ export function PublicationsPage({
   const [revisionConflictPublicationId, setRevisionConflictPublicationId] = useState<string | null>(
     null,
   );
-  const [actionTarget, setActionTarget] = useState<PublicationActionTarget | null>(null);
-  const [detailsTarget, setDetailsTarget] = useState<PublicationSummary | null>(null);
-  const [ambiguousTarget, setAmbiguousTarget] = useState<PublicationAmbiguousTarget | null>(null);
-  const [retryChoiceTarget, setRetryChoiceTarget] = useState<PublicationRetryChoiceTarget | null>(
-    null,
-  );
+  const publicationActions = usePublicationActions(api, requestIds);
+  const {
+    setActionTarget,
+    detailsTarget,
+    setDetailsTarget,
+    ambiguousTarget,
+    setAmbiguousTarget,
+    retryChoiceTarget,
+    actionMutation,
+    retryMutation,
+    resolveAmbiguousMutation,
+    requestPublicationRetry,
+  } = publicationActions;
   const contentSectionRef = useRef<HTMLElement | null>(null);
   const targetsSectionRef = useRef<HTMLElement | null>(null);
   const timingSectionRef = useRef<HTMLElement | null>(null);
@@ -649,113 +616,6 @@ export function PublicationsPage({
         title: describeUserFacingError(error, 'Не удалось обновить публикацию'),
       }),
   });
-  const actionMutation = useMutation({
-    mutationFn: ({ publication, action }: PublicationActionTarget) => {
-      const payload = {
-        expectedRevision: publication.version,
-        requestId: requestIds.resolveActionRequestId(publication.id, action, publication.version),
-      };
-      if (action === 'cancel') {
-        return cancelPublication(api, publication.id, payload);
-      }
-      return action === 'pause'
-        ? pausePublication(api, publication.id, payload)
-        : resumePublication(api, publication.id, payload);
-    },
-    onSuccess: async (_, variables) => {
-      requestIds.confirmActionSuccess();
-      setActionTarget(null);
-      setDetailsTarget(null);
-      await invalidatePublicationQueries();
-      pushToast({
-        tone: variables.action === 'cancel' ? 'info' : 'success',
-        title:
-          variables.action === 'cancel'
-            ? 'Публикация отменена'
-            : variables.action === 'pause'
-              ? 'Расписание на паузе'
-              : 'Расписание запущено',
-      });
-    },
-    onError: async (error) => {
-      if (isPublicationRevisionConflictError(error)) {
-        setActionTarget(null);
-        await Promise.all([
-          invalidatePublicationQueries(),
-          queryClient.invalidateQueries({ queryKey: ['publications', 'details'] }),
-        ]);
-        pushToast({ tone: 'info', title: 'Публикация обновлена' });
-        return;
-      }
-      pushToast({
-        tone: 'danger',
-        title: describeUserFacingError(error, 'Не удалось выполнить действие'),
-      });
-    },
-  });
-  const retryMutation = useMutation({
-    mutationFn: (target: PublicationRetryTarget) =>
-      retryPublicationOccurrence(api, target.publicationId, target.occurrenceId, {
-        requestId: requestIds.resolveRetryRequestId(target),
-        contentMode: target.contentMode,
-        ...(target.contentMode === 'latest'
-          ? {
-              expectedPublicationVersion: target.expectedPublicationVersion,
-              expectedContentRevision: target.expectedContentRevision,
-            }
-          : {}),
-      }),
-    onSuccess: async () => {
-      requestIds.confirmRetrySuccess();
-      setRetryChoiceTarget(null);
-      await Promise.all([
-        invalidatePublicationQueries(),
-        queryClient.invalidateQueries({ queryKey: ['publications', 'details'] }),
-        queryClient.invalidateQueries({ queryKey: ['publications', 'deliveries'] }),
-      ]);
-      pushToast({ tone: 'success', title: 'Повтор поставлен в очередь' });
-    },
-    onError: async (error) => {
-      if (isPublicationRevisionConflictError(error)) {
-        setRetryChoiceTarget(null);
-        await Promise.all([
-          invalidatePublicationQueries(),
-          queryClient.invalidateQueries({ queryKey: ['publications', 'details'] }),
-          queryClient.invalidateQueries({ queryKey: ['publications', 'deliveries'] }),
-        ]);
-        pushToast({ tone: 'info', title: 'Публикация обновлена' });
-        return;
-      }
-      pushToast({
-        tone: 'danger',
-        title: describeUserFacingError(error, 'Не удалось повторить отправку'),
-      });
-    },
-  });
-  const resolveAmbiguousMutation = useMutation({
-    mutationFn: (target: PublicationAmbiguousTarget) =>
-      resolvePublicationAmbiguousDelivery(api, target.publicationId, target.occurrenceId, {
-        requestId: requestIds.resolveAmbiguousRequestId(target),
-        deliveryId: target.deliveryId,
-        resolution: target.resolution,
-      }),
-    onSuccess: async () => {
-      requestIds.confirmAmbiguousSuccess();
-      setAmbiguousTarget(null);
-      await Promise.all([
-        invalidatePublicationQueries(),
-        queryClient.invalidateQueries({ queryKey: ['publications', 'details'] }),
-        queryClient.invalidateQueries({ queryKey: ['publications', 'deliveries'] }),
-      ]);
-      pushToast({ tone: 'success', title: 'Статус обновлён' });
-    },
-    onError: (error) =>
-      pushToast({
-        tone: 'danger',
-        title: describeUserFacingError(error, 'Не удалось сохранить статус'),
-      }),
-  });
-
   const visibleCustomButtons = draft.buttonEnabled ? trimBroadcastLinkButtons(draft.buttons) : [];
   const previewTarget =
     draft.targets.find((target) => getPublicationTargetKey(target) === previewTargetKey) ??
@@ -1000,27 +860,6 @@ export function PublicationsPage({
       next.delete('compose');
     }
     setSearchParams(next, { replace: true });
-  }
-
-  function requestPublicationRetry(
-    publication: PublicationDetails,
-    occurrence: PublicationOccurrenceSummary,
-  ) {
-    if (isPublicationOccurrenceContentStale(occurrence, publication.content.revision)) {
-      setRetryChoiceTarget({
-        publicationId: publication.id,
-        occurrenceId: occurrence.id,
-        publicationVersion: publication.version,
-        originalContentRevision: occurrence.contentRevision,
-        latestContentRevision: publication.content.revision,
-      });
-      return;
-    }
-    retryMutation.mutate({
-      publicationId: publication.id,
-      occurrenceId: occurrence.id,
-      contentMode: 'original',
-    });
   }
 
   function focusEditorSection(section: 'content' | 'targets' | 'timing', message: string) {
@@ -2371,11 +2210,6 @@ export function PublicationsPage({
     );
   }
 
-  const cancelsFutureSends = Boolean(
-    actionTarget?.action === 'cancel' &&
-    getPublicationActionCapabilities(actionTarget.publication).hasFutureSends,
-  );
-
   return (
     <div
       className={cn(
@@ -2507,47 +2341,7 @@ export function PublicationsPage({
         }}
       />
 
-      <ActionConfirmSheet
-        id="publication-action"
-        open={actionTarget !== null}
-        title={
-          actionTarget?.action === 'cancel'
-            ? cancelsFutureSends
-              ? 'Отменить будущие отправки?'
-              : 'Отменить публикацию?'
-            : actionTarget?.action === 'pause'
-              ? 'Поставить на паузу?'
-              : 'Запустить расписание?'
-        }
-        summary={
-          cancelsFutureSends
-            ? 'Будущие отправки отменятся, а ошибки нельзя будет повторить.'
-            : undefined
-        }
-        previewTitle={
-          actionTarget?.publication.title ? (
-            actionTarget.publication.title
-          ) : actionTarget?.publication.contentPreview ? (
-            <MaxMarkdownPreview
-              value={actionTarget.publication.contentPreview}
-              sourceFormat={actionTarget.publication.contentPreviewFormat}
-              normalizeWhitespace
-            />
-          ) : undefined
-        }
-        confirmLabel={
-          actionTarget?.action === 'cancel'
-            ? 'Отменить'
-            : actionTarget?.action === 'pause'
-              ? 'Пауза'
-              : 'Запустить'
-        }
-        confirmBusyLabel="Сохраняем..."
-        tone={actionTarget?.action === 'cancel' ? 'danger' : 'accent'}
-        isBusy={actionMutation.isPending}
-        onClose={() => !actionMutation.isPending && setActionTarget(null)}
-        onConfirm={() => actionTarget && actionMutation.mutate(actionTarget)}
-      />
+      <PublicationActionSheet actions={publicationActions} />
 
       {detailsTarget ? (
         <Suspense fallback={null}>
@@ -2581,49 +2375,7 @@ export function PublicationsPage({
           />
         </Suspense>
       ) : null}
-
-      <PublicationRetrySheet
-        open={retryChoiceTarget !== null}
-        busy={retryMutation.isPending}
-        onClose={() => !retryMutation.isPending && setRetryChoiceTarget(null)}
-        onSelect={(contentMode) => {
-          if (!retryChoiceTarget) {
-            return;
-          }
-          if (contentMode === 'latest') {
-            retryMutation.mutate({
-              publicationId: retryChoiceTarget.publicationId,
-              occurrenceId: retryChoiceTarget.occurrenceId,
-              contentMode,
-              expectedPublicationVersion: retryChoiceTarget.publicationVersion,
-              expectedContentRevision: retryChoiceTarget.latestContentRevision,
-            });
-            return;
-          }
-          retryMutation.mutate({
-            publicationId: retryChoiceTarget.publicationId,
-            occurrenceId: retryChoiceTarget.occurrenceId,
-            contentMode,
-          });
-        }}
-      />
-
-      <ActionConfirmSheet
-        id="publication-resolve-ambiguous"
-        open={ambiguousTarget !== null}
-        title={
-          ambiguousTarget?.resolution === 'mark_sent'
-            ? 'Сообщение опубликовано?'
-            : 'Сообщение не отправлено?'
-        }
-        summary="Это ручная проверка неоднозначной отправки."
-        confirmLabel="Подтвердить"
-        confirmBusyLabel="Сохраняем..."
-        tone={ambiguousTarget?.resolution === 'mark_failed' ? 'danger' : 'accent'}
-        isBusy={resolveAmbiguousMutation.isPending}
-        onClose={() => !resolveAmbiguousMutation.isPending && setAmbiguousTarget(null)}
-        onConfirm={() => ambiguousTarget && resolveAmbiguousMutation.mutate(ambiguousTarget)}
-      />
+      <PublicationDeliveryActionSheets actions={publicationActions} />
     </div>
   );
 }
