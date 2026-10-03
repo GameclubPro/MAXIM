@@ -6656,6 +6656,9 @@ export class ModerationDeleteIntentService {
   }
 
   private buildSweepRolloutFilter(): Prisma.Sql {
+    // FLAG: Keep EXISTS probes correlated to this intent. OFFSET 0 prevents PostgreSQL
+    // from hashing whole reason inventories once per status despite the outer LIMIT.
+    // It changes no eligibility condition and uses the existing intent/reason index.
     const baseFilter = this.buildBaseRolloutFilter(Prisma.sql`intent."chat_id"`);
     const commercialOcrFilter = this.buildCommercialOcrRolloutFilter(Prisma.sql`intent."chat_id"`);
     const imageTextStopListFilter =
@@ -6669,6 +6672,7 @@ export class ModerationDeleteIntentService {
                 AND image_text_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
                 AND COALESCE(image_text_reason."metadata"->>'source', '') = 'image_text_ocr'
                 AND COALESCE(image_text_reason."metadata"->>'enforcementScope', '') = 'delete_only'
+              OFFSET 0
             )
           )
         `
@@ -6682,6 +6686,7 @@ export class ModerationDeleteIntentService {
               AND execution_reason."rule_code" IN (${Prisma.join([
                 ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
               ])})
+            OFFSET 0
           )
         `
       : Prisma.empty;
@@ -6693,6 +6698,7 @@ export class ModerationDeleteIntentService {
             WHERE required_subscription_reason."intent_id" = intent."id"
               AND required_subscription_reason."rule_code" =
                 ${REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE}
+            OFFSET 0
           )
         `
       : Prisma.empty;
@@ -6705,6 +6711,7 @@ export class ModerationDeleteIntentService {
           WHERE base_reason."intent_id" = intent."id"
             AND base_reason."rule_code" <> ${COMMERCIAL_OCR_DELETE_RULE_CODE}
             AND base_reason."rule_code" NOT IN (${Prisma.join([...REPORT_GUARDED_RULES])})
+          OFFSET 0
         )
       )
       OR (
@@ -6715,6 +6722,7 @@ export class ModerationDeleteIntentService {
           WHERE ocr_reason."intent_id" = intent."id"
             AND ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
             AND COALESCE(ocr_reason."metadata"->>'source', '') <> 'image_text_ocr'
+          OFFSET 0
         )
       )
       OR EXISTS (
@@ -6723,11 +6731,12 @@ export class ModerationDeleteIntentService {
           report_reason."rule_code" = ${REPORT_COUNTER_RULE}
           OR report_reason."rule_code" IN (${REPORT_DELETE_RULE}, ${REPORT_COMMAND_RULE})
         )
+        OFFSET 0
       )
       ${replacementCleanupFilter}
       ${requiredSubscriptionDeleteFilter}
       ${imageTextStopListFilter}
-      OR ${this.messageDuplicateOwnedSql(Prisma.sql`intent."id"`)}
+      OR ${this.messageDuplicateOwnedSql(Prisma.sql`intent."id"`, true)}
       OR intent."suggestion_subscription_id" IS NOT NULL
       OR (
         EXISTS (
@@ -6735,6 +6744,7 @@ export class ModerationDeleteIntentService {
           FROM "moderation_delete_intent_reasons" auto_delete_reason
           WHERE auto_delete_reason."intent_id" = intent."id"
             AND auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
+          OFFSET 0
         )
       )
     )`;
@@ -7640,12 +7650,16 @@ export class ModerationDeleteIntentService {
     return this.intentColumnsSql(alias);
   }
 
-  private messageDuplicateOwnedSql(intentIdColumn: Prisma.Sql): Prisma.Sql {
+  private messageDuplicateOwnedSql(
+    intentIdColumn: Prisma.Sql,
+    preserveCorrelation = false,
+  ): Prisma.Sql {
     return Prisma.sql`EXISTS (
       SELECT 1 FROM "moderation_delete_intent_reasons" message_duplicate_reason
       WHERE message_duplicate_reason."intent_id" = ${intentIdColumn}
         AND (message_duplicate_reason."reason_key" LIKE 'MESSAGE_DUPLICATE:%'
           OR message_duplicate_reason."metadata"->>'duplicateSource' = 'message_v1')
+      ${preserveCorrelation ? Prisma.sql`OFFSET 0` : Prisma.empty}
     )`;
   }
 
@@ -7893,12 +7907,14 @@ export class ModerationDeleteIntentService {
         FROM "moderation_delete_intent_reasons" retry_cap_auto_delete_reason
         WHERE retry_cap_auto_delete_reason."intent_id" = ${intentIdColumn}
           AND retry_cap_auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
+        OFFSET 0
       )
       AND NOT EXISTS (
         SELECT 1
         FROM "moderation_delete_intent_reasons" retry_cap_other_reason
         WHERE retry_cap_other_reason."intent_id" = ${intentIdColumn}
           AND retry_cap_other_reason."rule_code" <> ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
+        OFFSET 0
       )
     )`;
   }

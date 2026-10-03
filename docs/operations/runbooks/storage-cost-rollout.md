@@ -66,6 +66,13 @@ in-progress prefix requires an expired lease. `FOR UPDATE SKIP LOCKED` remains i
 each prefix, with at most five batch prefixes locked for the statement's lifetime.
 Selection does not claim an execution lease or authorize an external retry.
 
+The sweep's reason `EXISTS` probes retain their intent correlation with `OFFSET 0`.
+Without that planner boundary, PostgreSQL can build hashed subplans by scanning the
+whole reason inventory repeatedly for each status prefix, even when very few intents
+are selected. The predicates and retry-cap evidence checks are unchanged. The real
+PostgreSQL fixture checks reason-row visits as well as intent-row visits, with optional
+rollout scopes both enabled and disabled; one bounded outer LIMIT alone is insufficient.
+
 This is not a physical scan cap: rejecting eligibility predicates, equal due-time groups
 or locked rows can require more index visits. The disposable PostgreSQL regression
 compares a 50,000-row mixed-status population, verifies ordered results and concurrent

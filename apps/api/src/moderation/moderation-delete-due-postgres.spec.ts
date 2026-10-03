@@ -16,6 +16,7 @@ describePostgres('PostgreSQL delete due selection', () => {
   let explain = false;
   let plan: Plan;
   let service: ModerationDeleteIntentService;
+  let createService: (overrides?: Record<string, unknown>) => ModerationDeleteIntentService;
 
   beforeAll(async () => {
     const url = new URL(databaseUrl);
@@ -69,22 +70,24 @@ describePostgres('PostgreSQL delete due selection', () => {
         return result.rows;
       },
     };
-    service = new ModerationDeleteIntentService(
-      prisma as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      new ConfigService({
-        MODERATION_DELETE_INTENT_MODE: 'shadow',
-        COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline',
-        MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: false,
-        MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: false,
-      }),
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    createService = (overrides = {}) =>
+      new ModerationDeleteIntentService(
+        prisma as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        new ConfigService({
+          MODERATION_DELETE_INTENT_MODE: 'shadow',
+          COMMERCIAL_OCR_ROLLOUT_MODE: 'baseline',
+          MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: false,
+          MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: false,
+          ...overrides,
+        }),
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+      );
   });
 
   afterAll(async () => {
@@ -98,6 +101,7 @@ describePostgres('PostgreSQL delete due selection', () => {
 
   beforeEach(async () => {
     explain = false;
+    service = createService();
     await client.query('TRUNCATE moderation_delete_intent_reasons, moderation_delete_intents');
   });
 
@@ -120,27 +124,54 @@ describePostgres('PostgreSQL delete due selection', () => {
     await client.query('ANALYZE moderation_delete_intent_reasons');
   }
 
-  it('finds the first mixed-status batch without scanning the complete due population', async () => {
-    await seed(50_000);
-    explain = true;
-    await select();
-    const scans: Plan[] = [];
-    const visit = (node: Plan) => {
-      if (node['Relation Name'] === 'moderation_delete_intents') scans.push(node);
-      node.Plans?.forEach(visit);
-    };
-    visit(plan);
-    const visited = scans.reduce(
-      (sum, node) =>
-        sum +
-        (Number(node['Actual Rows']) + Number(node['Rows Removed by Filter'] ?? 0)) *
-          Number(node['Actual Loops']),
-      0,
-    );
-    expect(visited).toBeLessThan(2_000);
-    explain = false;
-    expect(await select()).toEqual(Array.from({ length: 100 }, (_, n) => ({ id: String(n + 1) })));
-  });
+  it.each([false, true])(
+    'bounds intent and reason scans with optional scopes %s',
+    async (optionalScopes) => {
+      if (optionalScopes)
+        service = createService({
+          MODERATION_DELETE_INTENT_MODE: 'canary',
+          MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-fixture',
+          MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: true,
+          MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true,
+          IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on',
+        });
+      await seed(50_000);
+      explain = true;
+      await select();
+      const scans: Plan[] = [];
+      const visit = (node: Plan) => {
+        if (node['Relation Name'] === 'moderation_delete_intents') scans.push(node);
+        node.Plans?.forEach(visit);
+      };
+      visit(plan);
+      const visited = scans.reduce(
+        (sum, node) =>
+          sum +
+          (Number(node['Actual Rows']) + Number(node['Rows Removed by Filter'] ?? 0)) *
+            Number(node['Actual Loops']),
+        0,
+      );
+      expect(visited).toBeLessThan(2_000);
+      const reasonScans: Plan[] = [];
+      const visitReasons = (node: Plan) => {
+        if (node['Relation Name'] === 'moderation_delete_intent_reasons') reasonScans.push(node);
+        node.Plans?.forEach(visitReasons);
+      };
+      visitReasons(plan);
+      const reasonRowsVisited = reasonScans.reduce(
+        (sum, node) =>
+          sum +
+          (Number(node['Actual Rows']) + Number(node['Rows Removed by Filter'] ?? 0)) *
+            Number(node['Actual Loops']),
+        0,
+      );
+      expect(reasonRowsVisited).toBeLessThan(10_000);
+      explain = false;
+      expect(await select()).toEqual(
+        Array.from({ length: 100 }, (_, n) => ({ id: String(n + 1) })),
+      );
+    },
+  );
 
   it('keeps due, lease, retention, rollout and retry-evidence predicates in every status lane', async () => {
     await seed(30);
