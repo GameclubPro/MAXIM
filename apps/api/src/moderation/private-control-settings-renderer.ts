@@ -29,41 +29,40 @@ import type {
   SettingFieldConfig,
 } from './private-control.types';
 
-export function findSettingMatches(query: string): Array<{
+type SettingMatch = {
   section: PrivateSectionKey;
   key: keyof ChatSettings;
   label: string;
   sectionLabel: string;
-}> {
+};
+
+// FLAG: Only static catalog descriptors are shared; each caller receives fresh result objects.
+const settingSearchIndex = Object.freeze(
+  SECTION_ORDER.flatMap((section) =>
+    SECTION_FIELDS[section].map((field) =>
+      Object.freeze({
+        result: Object.freeze({
+          section,
+          key: field.key,
+          label: field.label,
+          sectionLabel: SECTION_LABELS[section],
+        }),
+        aliases: Object.freeze(buildFieldAliases(section, String(field.key), field.label)),
+      }),
+    ),
+  ),
+);
+
+export function findSettingMatches(query: string): SettingMatch[] {
   const normalized = query.trim().toLowerCase();
-  if (!normalized) {
-    return [];
+  if (!normalized) return [];
+  const results: SettingMatch[] = [];
+  for (const entry of settingSearchIndex) {
+    if (!entry.aliases.some((alias) => alias.includes(normalized))) continue;
+    results.push({ ...entry.result });
+    if (results.length === SEARCH_RESULT_LIMIT) break;
   }
-
-  const results: Array<{
-    section: PrivateSectionKey;
-    key: keyof ChatSettings;
-    label: string;
-    sectionLabel: string;
-  }> = [];
-  for (const section of SECTION_ORDER) {
-    for (const field of SECTION_FIELDS[section]) {
-      const fieldKey = String(field.key);
-      const aliases = buildFieldAliases(section, fieldKey, field.label);
-      if (!aliases.some((item) => item.includes(normalized))) {
-        continue;
-      }
-
-      results.push({
-        section,
-        key: field.key,
-        label: field.label,
-        sectionLabel: SECTION_LABELS[section],
-      });
-    }
-  }
-
-  return results.slice(0, SEARCH_RESULT_LIMIT);
+  return results;
 }
 
 export function buildFieldAliases(
