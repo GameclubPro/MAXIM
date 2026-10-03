@@ -1,3 +1,4 @@
+import { useSettingsRules } from './settings/use-settings-rules';
 import { useSettingsDraft } from './settings/use-settings-draft';
 import { useSettingsRequiredSubscription } from './settings/use-settings-required-subscription';
 import { InfoCircle } from 'iconoir-react';
@@ -12,12 +13,10 @@ import {
   MAX_CHAT_RULES_TEXT_LENGTH,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   type SettingsApplyPartialError,
-  chatRulesSchema,
   updateSettingsRequestSchema,
   normalizeNavigationAllowlistTarget,
   normalizeStoredNavigationAllowlistEntry,
   stepDeleteBotMessagesDelayMinutes,
-  type ChatRules,
   type ChatSettings,
   type ChatSettingsScreenResponse,
   type DomainAllowlistEntry,
@@ -65,7 +64,6 @@ import {
   lazy,
   startTransition,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -110,28 +108,21 @@ import {
   getManagedBroadcastCalendar,
   getSettingsScreen,
   previewApplySettingsSectionTarget,
-  publishRules,
   removeDomain,
   recheckManagedEntityAccess,
-  resetPublishedRules,
   retryManagedBroadcast,
   scheduleDomainRemoval,
   sendBroadcast,
   sendBroadcastTest,
   updateManagedAutopostRule,
   updateManagedBroadcast,
-  updateRules,
   updateSettings,
 } from '../lib/api/chat-settings-client';
 import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
 import { getGlobalSpammerReviewMetrics } from '../lib/api/spammer-review-client';
 import { getMe } from '../lib/api/me-client';
 import type { ApiTransport } from '../lib/api/transport';
-import type {
-  BroadcastHandoffPayload,
-  SendBroadcastPayload,
-  UpdateChatRulesPayload,
-} from '../lib/api/shared-types';
+import type { BroadcastHandoffPayload, SendBroadcastPayload } from '../lib/api/shared-types';
 import {
   buildBroadcastLinkButtonLegacyFields,
   createEmptyBroadcastLinkButton,
@@ -240,15 +231,6 @@ import {
   type DuplicateDetectionPreset,
   type NumericChatSettingKey,
 } from './settings-page.constants';
-import {
-  buildRulesTextFromSettingsScreen,
-  getRulesPublicationFeedback,
-  type RulesPublicationMode,
-  mergeSavedRulesIntoSettingsScreen,
-  runRulesSaveAttempt,
-  serializeRulesDraftPayload,
-  shouldHydrateRulesDraftFromServer,
-} from './settings-rules-state';
 import { createManagedEntityHeader } from '../lib/managed-entity-header';
 import {
   FieldErrors,
@@ -274,7 +256,6 @@ import {
   LazyManagedEntityAccessDiagnosticsBanner,
   LazySettingsAdminCommandsSection,
   preloadBotSpeechMessageEditorSheet,
-  AUTO_SAVE_DELAY_MS,
   AUTO_MUTE_DURATION_MIN_HOURS,
   AUTO_MUTE_DURATION_MAX_HOURS,
   AUTO_MUTE_DURATION_PRESET_HOURS,
@@ -409,17 +390,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { pushToast } = useToast();
   const activeChatIdRef = useRef(chatId);
   activeChatIdRef.current = chatId;
-  const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
-  const [rulesPublicationMode, setRulesPublicationMode] =
-    useState<RulesPublicationMode>('new_message');
-  const [rulesTextError, setRulesTextError] = useState('');
-  const [rulesImageError, setRulesImageError] = useState('');
-  const [isPreparingRulesImage, setIsPreparingRulesImage] = useState(false);
-  const rulesImagePreparingRef = useRef(false);
-  const [rulesButtonErrors, setRulesButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>([]);
-  const [rulesButtonFieldsTouched, setRulesButtonFieldsTouched] = useState(false);
-  const [rulesButtonsSheetOpen, setRulesButtonsSheetOpen] = useState(false);
-  const [rulesButtonRevealSignal, setRulesButtonRevealSignal] = useState(0);
+
   const [domainInput, setDomainInput] = useState('');
   const [domainInputKind, setDomainInputKind] = useState<NavigationAllowlistKind>('WEB_DOMAIN');
   const [domainInputError, setDomainInputError] = useState('');
@@ -499,7 +470,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   } | null>(null);
   const [pendingMailingPublishReview, setPendingMailingPublishReview] =
     useState<PendingBroadcastPublishReview | null>(null);
-  const [rulesResetConfirmationOpen, setRulesResetConfirmationOpen] = useState(false);
+
   const [applyTargetSheet, setApplyTargetSheet] = useState<SettingsApplySubmission | null>(null);
   const [applyTargetPreview, setApplyTargetPreview] = useState<Awaited<
     ReturnType<typeof previewApplySettingsSectionTarget>
@@ -548,11 +519,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingHistoryFilter, setMailingHistoryFilter] =
     useState<BroadcastHistoryFilter>('future');
   const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState<string | null>(null);
-  const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
-  const [isPreparingRulesPublish, setIsPreparingRulesPublish] = useState(false);
-  const rulesDraftRef = useRef<ChatRules | null>(null);
+
   const giveawayCardRef = useRef<ManagedGiveawayCardHandle | null>(null);
-  const previousRulesServerSnapshotRef = useRef('');
+
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
   const [openMuteDurationKey, setOpenMuteDurationKey] = useState<AutoMuteDurationKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
@@ -629,17 +598,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setApplyTargetPreview(null);
     setApplyTargetPreviewError(null);
     setApplyTargetPreviewLoading(false);
-    setRulesDraft(null);
-    setRulesPublicationMode('new_message');
-    setRulesTextError('');
-    setRulesImageError('');
-    setRulesButtonErrors([]);
-    setRulesButtonFieldsTouched(false);
-    setRulesButtonsSheetOpen(false);
-    setRulesButtonRevealSignal(0);
-    setRulesFailedSnapshot('');
-    setIsPreparingRulesPublish(false);
-    previousRulesServerSnapshotRef.current = '';
     setMailingTargetMode('current');
     setMailingTargetChatIds(chatId ? [chatId] : []);
     setMailingLastScopedTargetMode('current');
@@ -1027,10 +985,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     error: settingsScreenQuery.error,
   };
 
-  useLayoutEffect(() => {
-    rulesDraftRef.current = rulesDraft;
-  }, [rulesDraft]);
-
   useEffect(() => {
     preloadBotSpeechMessageEditorSheet();
   }, []);
@@ -1101,6 +1055,109 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     settingsScreenQuery.data?.requiredSubscriptionChannels,
     settingsScreenQuery.data?.settings,
   ]);
+
+  const updateRulesAttachMutation = useMutation({
+    onMutate: () => ({ chatId, setDraft, isCurrentSettingsScope }),
+    mutationFn: (enabled: boolean) => {
+      const base = settingsQuery.data ?? draft;
+      if (!chatId || !base) {
+        throw new Error('Чат не выбран');
+      }
+
+      return updateSettings(api, chatId, {
+        ...base,
+        rulesAttachViolationsEnabled: enabled,
+      });
+    },
+    onSuccess: (saved, _enabled, scope) => {
+      scope?.setDraft((current) =>
+        current
+          ? {
+              ...current,
+              rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
+              settingsRevision: saved.settingsRevision,
+            }
+          : saved,
+      );
+      queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
+        ['settings-screen', scope?.chatId],
+        (current) =>
+          current
+            ? {
+                ...current,
+                settings: {
+                  ...current.settings,
+                  rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
+                  settingsRevision: saved.settingsRevision,
+                },
+              }
+            : current,
+      );
+      if (!scope?.isCurrentSettingsScope()) return;
+      pushToast({
+        tone: 'success',
+        title: saved.rulesAttachViolationsEnabled
+          ? 'Кнопка «Правила» включена'
+          : 'Кнопка «Правила» выключена',
+      });
+      maxNotify('success');
+    },
+    onError: (error, _enabled, scope) => {
+      if (!scope?.isCurrentSettingsScope()) return;
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось обновить кнопку «Правила»',
+        description: formatApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
+  const {
+    rulesDraft,
+    setRulesDraft,
+    rulesPublicationMode,
+    setRulesPublicationMode,
+    rulesTextError,
+    setRulesTextError,
+    rulesImageError,
+    setRulesImageError,
+    isPreparingRulesImage,
+    handleRulesImagePreparationChange,
+    rulesButtonErrors,
+    setRulesButtonErrors,
+    setRulesButtonFieldsTouched,
+    rulesButtonsSheetOpen,
+    setRulesButtonsSheetOpen,
+    rulesButtonRevealSignal,
+    isPreparingRulesPublish,
+    rulesResetConfirmationOpen,
+    setRulesResetConfirmationOpen,
+    reportRulesAutofillError,
+    buildRulesDraftFromCurrentSettings,
+    saveRulesDraftNow,
+    handleSaveRulesDraft,
+    handlePublishRules,
+    handleResetPublishedRules,
+    confirmResetPublishedRules,
+    handleRulesButtonsEnabledChange,
+    handleRulesAdminContactButtonChange,
+    hasRulesChanges,
+    rulesPublishedUrl,
+    hasPublishedRules,
+    isSavingRules,
+    isPublishingRules,
+    isResettingPublishedRules,
+    isRulesDraftEditingDisabled,
+    isRulesBusy,
+  } = useSettingsRules({
+    api,
+    chatId,
+    serverRules: rulesQuery.data,
+    currentRulesTextSource,
+    isUpdatingRulesAttachment: updateRulesAttachMutation.isPending,
+    pushToast,
+  });
 
   const chatTitle = useMemo(() => {
     if (!chatId) {
@@ -1231,29 +1288,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ]);
 
   useEffect(() => {
-    if (!rulesQuery.data) {
-      return;
-    }
-
-    const nextServerDraft = chatRulesSchema.parse(rulesQuery.data);
-    const shouldHydrate = shouldHydrateRulesDraftFromServer({
-      currentDraft: rulesDraftRef.current,
-      previousServerSnapshot: previousRulesServerSnapshotRef.current,
-      nextServerDraft,
-    });
-    previousRulesServerSnapshotRef.current = serializeRulesDraftPayload(nextServerDraft);
-    if (!shouldHydrate) {
-      return;
-    }
-
-    setRulesDraft(nextServerDraft);
-    setRulesTextError('');
-    setRulesButtonErrors([]);
-    setRulesButtonFieldsTouched(false);
-    setRulesButtonRevealSignal(0);
-  }, [rulesQuery.data]);
-
-  useEffect(() => {
     if (!scheduleDomain) {
       return;
     }
@@ -1267,23 +1301,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
   }, [domainsQuery.data, scheduleDomain]);
 
-  const rulesDraftSnapshot = useMemo(
-    () => (rulesDraft ? serializeRulesDraftPayload(rulesDraft) : ''),
-    [rulesDraft],
-  );
-
-  const rulesServerSnapshot = useMemo(
-    () => (rulesQuery.data ? serializeRulesDraftPayload(rulesQuery.data) : ''),
-    [rulesQuery.data],
-  );
-
-  const hasRulesChanges = Boolean(
-    rulesDraft && rulesQuery.data && rulesDraftSnapshot !== rulesServerSnapshot,
-  );
-  const rulesPublication = rulesDraft ?? rulesQuery.data;
-  const rulesPublishedMessageId = rulesPublication?.publishedMessageId ?? null;
-  const rulesPublishedUrl = rulesPublication?.publishedUrl ?? null;
-  const hasPublishedRules = Boolean(rulesPublishedMessageId || rulesPublishedUrl);
   const recheckAccessMutation = useMutation({
     mutationFn: () => recheckManagedEntityAccess(api, 'chat', chatId ?? ''),
     onSuccess: () => {
@@ -1331,95 +1348,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
   const isSavingSpeechStyle = saveSpeechStyleMutation.isPending;
 
-  const saveRulesMutation = useMutation({
-    mutationFn: (payload: UpdateChatRulesPayload) => updateRules(api, chatId ?? '', payload),
-    onSuccess: (saved, payload) => {
-      const payloadSnapshot = serializeRulesDraftPayload(payload);
-      queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
-        ['settings-screen', chatId],
-        (current) => mergeSavedRulesIntoSettingsScreen(current, saved),
-      );
-      setRulesDraft((current) => {
-        if (!current) {
-          return saved;
-        }
-        const currentSnapshot = serializeRulesDraftPayload(current);
-        return currentSnapshot === payloadSnapshot ? saved : current;
-      });
-      setRulesTextError('');
-      setRulesButtonErrors([]);
-      setRulesButtonFieldsTouched(false);
-      setRulesButtonRevealSignal(0);
-      setRulesFailedSnapshot('');
-      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
-    },
-    onError: (error, payload) => {
-      setRulesFailedSnapshot(serializeRulesDraftPayload(payload));
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось сохранить черновик правил',
-        description: formatApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
-  const isSavingRules = saveRulesMutation.isPending;
-  const mutateRules = saveRulesMutation.mutate;
-  const mutateRulesAsync = saveRulesMutation.mutateAsync;
-
-  const updateRulesAttachMutation = useMutation({
-    mutationFn: (enabled: boolean) => {
-      const base = settingsQuery.data ?? draft;
-      if (!chatId || !base) {
-        throw new Error('Чат не выбран');
-      }
-
-      return updateSettings(api, chatId, {
-        ...base,
-        rulesAttachViolationsEnabled: enabled,
-      });
-    },
-    onSuccess: (saved) => {
-      setDraft((current) =>
-        current
-          ? {
-              ...current,
-              rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
-              settingsRevision: saved.settingsRevision,
-            }
-          : saved,
-      );
-      queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
-        ['settings-screen', chatId],
-        (current) =>
-          current
-            ? {
-                ...current,
-                settings: {
-                  ...current.settings,
-                  rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
-                  settingsRevision: saved.settingsRevision,
-                },
-              }
-            : current,
-      );
-      pushToast({
-        tone: 'success',
-        title: saved.rulesAttachViolationsEnabled
-          ? 'Кнопка «Правила» включена'
-          : 'Кнопка «Правила» выключена',
-      });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось обновить кнопку «Правила»',
-        description: formatApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
   const isHeaderSaving =
     isSavingSettings ||
     isSavingRules ||
@@ -1436,60 +1364,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         onImageChange: setBotSpeechMediaImage,
       }
     : undefined;
-
-  const publishRulesMutation = useMutation({
-    mutationFn: (mode: RulesPublicationMode) => publishRules(api, chatId ?? '', { mode }),
-    onSuccess: (result) => {
-      const updated = chatRulesSchema.parse({
-        ...(rulesDraft ?? rulesQuery.data ?? {}),
-        publishedMessageId: result.messageId,
-        publishedUrl: result.url,
-        publishedAt: result.publishedAt,
-      });
-      setRulesDraft(updated);
-      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
-      pushToast({
-        tone: 'success',
-        ...getRulesPublicationFeedback(result, rulesPublishedMessageId),
-      });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось опубликовать правила',
-        description: formatApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
-  const isPublishingRules = publishRulesMutation.isPending;
-
-  const resetPublishedRulesMutation = useMutation({
-    mutationFn: () => resetPublishedRules(api, chatId ?? ''),
-    onSuccess: (updated) => {
-      const nextDraft = chatRulesSchema.parse({
-        ...(rulesDraft ?? updated),
-        publishedMessageId: null,
-        publishedUrl: null,
-        publishedAt: null,
-      });
-      setRulesDraft(nextDraft);
-      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
-      pushToast({
-        tone: 'success',
-        title: 'Пост правил удалён',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось удалить пост правил',
-        description: formatApiError(error),
-      });
-    },
-  });
-  const isResettingPublishedRules = resetPublishedRulesMutation.isPending;
 
   const applySectionToAllMutation = useMutation({
     mutationFn: (variables: SettingsApplySubmission) =>
@@ -2116,152 +1990,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return null;
   }
 
-  function validateRulesDraft(
-    value: ChatRules,
-    options: { forceButtonErrors?: boolean } = {},
-  ): UpdateChatRulesPayload | null {
-    const normalizedText = value.text;
-    if (normalizedText.length > MAX_CHAT_RULES_TEXT_LENGTH) {
-      setRulesTextError(`Максимум ${MAX_CHAT_RULES_TEXT_LENGTH} символов.`);
-      return null;
-    }
-    setRulesTextError('');
-
-    if (value.imageBase64) {
-      if (!value.imageMimeType.toLowerCase().startsWith('image/')) {
-        setRulesImageError('Поддерживаются только изображения.');
-        return null;
-      }
-    }
-
-    const shouldShowButtonErrors = Boolean(options.forceButtonErrors || rulesButtonFieldsTouched);
-    const normalizedButtonState = buildBroadcastLinkButtonLegacyFields(value.buttons);
-    if (value.buttonEnabled) {
-      const nextButtonErrors = validateBroadcastLinkButtons(value.buttons);
-      if (hasBroadcastLinkButtonErrors(nextButtonErrors)) {
-        setRulesButtonErrors(shouldShowButtonErrors ? nextButtonErrors : []);
-        return null;
-      }
-      setRulesButtonErrors([]);
-    } else {
-      setRulesButtonErrors([]);
-    }
-
-    /* eslint-disable @typescript-eslint/no-unused-vars -- Rest excludes server-only metadata. */
-    const {
-      publishedMessageId: _publishedMessageId,
-      publishedUrl: _publishedUrl,
-      publishedAt: _publishedAt,
-      ...editableDraft
-    } = value;
-    /* eslint-enable @typescript-eslint/no-unused-vars */
-    return {
-      ...editableDraft,
-      buttonUrl: normalizedButtonState.buttonUrl,
-      buttonText: normalizedButtonState.buttonText,
-      adminContactButtonUrl: value.adminContactButtonEnabled ? value.adminContactButtonUrl : '',
-    };
-  }
-
-  function reportRulesAutofillError(error: unknown) {
-    const description = error instanceof Error ? error.message : 'Не удалось собрать текст правил.';
-    setRulesTextError(description);
-    pushToast({
-      tone: 'danger',
-      title: 'Не удалось собрать текст правил',
-      description,
-    });
-    maxNotify('error');
-  }
-
-  function buildRulesDraftFromCurrentSettings(value: ChatRules): ChatRules {
-    if (!currentRulesTextSource) {
-      throw new Error('Настройки чата ещё загружаются.');
-    }
-
-    return {
-      ...value,
-      autoTextEnabled: true,
-      text: buildRulesTextFromSettingsScreen(currentRulesTextSource),
-      textFormat: 'plain',
-    };
-  }
-
-  function prepareRulesDraftForSubmit(value: ChatRules): ChatRules | null {
-    if (!value.autoTextEnabled) {
-      return value;
-    }
-
-    try {
-      const nextDraft = buildRulesDraftFromCurrentSettings(value);
-      setRulesTextError('');
-      if (serializeRulesDraftPayload(nextDraft) !== serializeRulesDraftPayload(value)) {
-        const applyAutofill = (current: ChatRules | null) =>
-          current
-            ? {
-                ...current,
-                text: nextDraft.text,
-                textFormat: nextDraft.textFormat,
-                autoTextEnabled: true,
-              }
-            : current;
-        // FLAG: Fast save receipts must compare against this prepared draft, not the previous render.
-        rulesDraftRef.current = applyAutofill(rulesDraftRef.current ?? value);
-        setRulesDraft(applyAutofill);
-      }
-      return nextDraft;
-    } catch (error) {
-      reportRulesAutofillError(error);
-      return null;
-    }
-  }
-
-  async function saveRulesDraftNow(
-    options: { forceButtonErrors?: boolean; draft?: ChatRules } = {},
-  ): Promise<ChatRules | null> {
-    const targetDraft = options.draft ?? rulesDraft;
-    if (!targetDraft || rulesImagePreparingRef.current) {
-      return null;
-    }
-
-    const payload = validateRulesDraft(targetDraft, options);
-    if (!payload) {
-      return null;
-    }
-
-    return mutateRulesAsync(payload);
-  }
-
-  async function handleSaveRulesDraft() {
-    if (!rulesDraft || !hasRulesChanges || isRulesBusy) {
-      return;
-    }
-
-    const preparedRulesDraft = prepareRulesDraftForSubmit(rulesDraft);
-    if (!preparedRulesDraft) {
-      return;
-    }
-
-    try {
-      const attempt = await runRulesSaveAttempt({
-        submittedDraft: preparedRulesDraft,
-        save: () =>
-          saveRulesDraftNow({
-            forceButtonErrors: true,
-            draft: preparedRulesDraft,
-          }),
-        getCurrentDraft: () => rulesDraftRef.current,
-      });
-      if (!attempt?.isCurrent) {
-        return;
-      }
-      pushToast({ tone: 'success', title: 'Черновик правил сохранён' });
-      maxNotify('success');
-    } catch {
-      // The mutation reports the actionable error and keeps the draft available for retry.
-    }
-  }
-
   function secondsToHours(value: number): number {
     return Math.max(1, Math.round(value / 3600));
   }
@@ -2459,57 +2187,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     clearFieldError('duplicateNearMatchEnabled');
   }
 
-  useEffect(() => {
-    if (!rulesFailedSnapshot || rulesFailedSnapshot === rulesDraftSnapshot) {
-      return;
-    }
-
-    setRulesFailedSnapshot('');
-  }, [rulesDraftSnapshot, rulesFailedSnapshot]);
-
-  useEffect(() => {
-    if (
-      !chatId ||
-      !rulesDraft ||
-      !hasRulesChanges ||
-      isSavingRules ||
-      isPreparingRulesImage ||
-      isPreparingRulesPublish ||
-      isPublishingRules
-    ) {
-      return;
-    }
-
-    if (rulesFailedSnapshot && rulesFailedSnapshot === rulesDraftSnapshot) {
-      return;
-    }
-
-    const parsed = validateRulesDraft(rulesDraft);
-    if (!parsed) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      if (!rulesImagePreparingRef.current) mutateRules(parsed);
-    }, AUTO_SAVE_DELAY_MS);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [
-    chatId,
-    hasRulesChanges,
-    isPreparingRulesImage,
-    isPreparingRulesPublish,
-    isPublishingRules,
-    isSavingRules,
-    mutateRules,
-    rulesButtonFieldsTouched,
-    rulesDraft,
-    rulesDraftSnapshot,
-    rulesFailedSnapshot,
-  ]);
-
   function handleAddDomain() {
     if (!chatId || isDomainMutationPending) {
       return;
@@ -2600,71 +2277,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
-  async function handlePublishRules() {
-    if (!chatId || !rulesDraft || isRulesBusy || rulesImagePreparingRef.current) {
-      return;
-    }
-
-    const preparedRulesDraft = prepareRulesDraftForSubmit(rulesDraft);
-    if (!preparedRulesDraft) {
-      return;
-    }
-
-    if (!preparedRulesDraft.autoTextEnabled && !preparedRulesDraft.text.trim()) {
-      setRulesTextError('Введите текст правил перед публикацией.');
-      return;
-    }
-    setRulesTextError('');
-
-    if (preparedRulesDraft.text.length > MAX_CHAT_RULES_TEXT_LENGTH) {
-      setRulesTextError(`Максимум ${MAX_CHAT_RULES_TEXT_LENGTH} символов.`);
-      return;
-    }
-
-    const nextRulesSnapshot = serializeRulesDraftPayload(preparedRulesDraft);
-    const shouldSavePreparedRules = nextRulesSnapshot !== rulesServerSnapshot;
-
-    if (
-      !shouldSavePreparedRules &&
-      !validateRulesDraft(preparedRulesDraft, { forceButtonErrors: true })
-    ) {
-      return;
-    }
-
-    setIsPreparingRulesPublish(true);
-    try {
-      if (shouldSavePreparedRules) {
-        const attempt = await runRulesSaveAttempt({
-          submittedDraft: preparedRulesDraft,
-          save: () =>
-            saveRulesDraftNow({
-              forceButtonErrors: true,
-              draft: preparedRulesDraft,
-            }),
-          getCurrentDraft: () => rulesDraftRef.current,
-        });
-        if (!attempt) {
-          return;
-        }
-        if (!attempt.isCurrent) {
-          pushToast({
-            tone: 'info',
-            title: 'Правила изменились',
-            description: 'Сохраните актуальную версию и повторите публикацию.',
-          });
-          maxNotify('warning');
-          return;
-        }
-      }
-
-      publishRulesMutation.mutate(hasPublishedRules ? rulesPublicationMode : 'new_message');
-    } catch {
-      // The save mutation reports the actionable error and preserves the latest draft.
-    } finally {
-      setIsPreparingRulesPublish(false);
-    }
-  }
-
   function handleManagedPostLinkClick(event: MouseEvent<HTMLElement>, url: string) {
     if (!(window.MAX?.WebApp ?? window.WebApp)) {
       return;
@@ -2672,19 +2284,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     event.preventDefault();
     openMaxBotLink(url);
-  }
-
-  function handleResetPublishedRules() {
-    if (!chatId || !hasPublishedRules || isResettingPublishedRules) {
-      return;
-    }
-
-    setRulesResetConfirmationOpen(true);
-  }
-
-  function confirmResetPublishedRules() {
-    setRulesResetConfirmationOpen(false);
-    resetPublishedRulesMutation.mutate();
   }
 
   function resetMailingComposer() {
@@ -2894,53 +2493,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     setMailingButtons([]);
     setMailingButtonErrors([]);
-  }
-
-  function handleRulesButtonsEnabledChange(enabled: boolean) {
-    setRulesButtonFieldsTouched(true);
-    setRulesButtonErrors([]);
-    if (enabled && (rulesDraft?.buttons.length ?? 0) === 0) {
-      setRulesButtonRevealSignal((value) => value + 1);
-    }
-    setRulesDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      if (!enabled) {
-        return {
-          ...current,
-          buttons: [],
-          buttonEnabled: false,
-          buttonUrl: '',
-          buttonText: DEFAULT_RULES_POST_BUTTON_TEXT,
-        };
-      }
-
-      const buttons =
-        current.buttons.length > 0 ? current.buttons : [createEmptyBroadcastLinkButton()];
-      const buttonState = buildBroadcastLinkButtonLegacyFields(buttons);
-
-      return {
-        ...current,
-        buttons,
-        buttonEnabled: true,
-        buttonUrl: buttonState.buttonUrl,
-        buttonText: buttonState.buttonText,
-      };
-    });
-  }
-
-  function handleRulesAdminContactButtonChange(enabled: boolean, url: string) {
-    setRulesDraft((current) =>
-      current
-        ? {
-            ...current,
-            adminContactButtonEnabled: enabled,
-            adminContactButtonUrl: enabled ? url : '',
-          }
-        : current,
-    );
   }
 
   function validateMailingButtonDraft() {
@@ -3880,12 +3432,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const rulesAdminContactButtonSummary = rulesDraft?.adminContactButtonEnabled
     ? 'Включено'
     : 'Выключено';
-  const isRulesDraftEditingDisabled =
-    isPreparingRulesPublish ||
-    isPublishingRules ||
-    isResettingPublishedRules ||
-    updateRulesAttachMutation.isPending;
-  const isRulesBusy = isSavingRules || isRulesDraftEditingDisabled || isPreparingRulesImage;
   const rulesSaveLabel = isSavingRules
     ? 'Сохраняем...'
     : hasRulesChanges
@@ -5749,11 +5295,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       disabled={isRulesDraftEditingDisabled}
                                       textError={rulesTextError}
                                       imageError={rulesImageError}
-                                      onImagePreparationChange={(preparing) => {
-                                        rulesImagePreparingRef.current = preparing;
-                                        setIsPreparingRulesImage(preparing);
-                                        if (preparing) setRulesImageError('');
-                                      }}
+                                      onImagePreparationChange={handleRulesImagePreparationChange}
                                       messageAriaLabel="Пост правил"
                                       textPlaceholder="Текст правил"
                                       textAriaLabel="Текст правил"

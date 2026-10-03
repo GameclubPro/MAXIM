@@ -6,6 +6,10 @@ const settingsPageSource = readFileSync(
   new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
   'utf8',
 );
+const rulesControllerSource = readFileSync(
+  new URL('../src/pages/settings/use-settings-rules.ts', import.meta.url),
+  'utf8',
+);
 const publisherModulesSource = readFileSync(
   new URL('../src/pages/publisher-entity-modules-page.tsx', import.meta.url),
   'utf8',
@@ -90,24 +94,24 @@ test('rules reset uses the in-app confirmation sheet', () => {
 });
 
 test('rules publication does not replace a missing new link with the previous post URL', () => {
-  assert.match(settingsPageSource, /const rulesPublication = rulesDraft \?\? rulesQuery\.data;/u);
+  assert.match(rulesControllerSource, /const rulesPublication = rulesDraft \?\? serverRules;/u);
   assert.match(
-    settingsPageSource,
+    rulesControllerSource,
     /rulesPublishedUrl = rulesPublication\?\.publishedUrl \?\? null/u,
   );
   assert.doesNotMatch(
-    settingsPageSource,
-    /rulesDraft\?\.publishedUrl \?\? rulesQuery\.data\?\.publishedUrl/u,
+    rulesControllerSource,
+    /rulesDraft\?\.publishedUrl \?\? serverRules\?\.publishedUrl/u,
   );
 });
 
 test('rules autosave keeps draft editors enabled so mobile keyboard focus survives', () => {
   assert.match(
-    settingsPageSource,
-    /const isRulesDraftEditingDisabled =\s*isPreparingRulesPublish \|\|\s*isPublishingRules \|\|\s*isResettingPublishedRules \|\|\s*updateRulesAttachMutation\.isPending;/u,
+    rulesControllerSource,
+    /const isRulesDraftEditingDisabled =\s*isPreparingRulesPublish \|\|\s*isPublishingRules \|\|\s*isResettingPublishedRules \|\|\s*isUpdatingRulesAttachment;/u,
   );
   assert.match(
-    settingsPageSource,
+    rulesControllerSource,
     /const isRulesBusy = isSavingRules \|\| isRulesDraftEditingDisabled \|\| isPreparingRulesImage;/u,
   );
 
@@ -120,8 +124,12 @@ test('rules autosave keeps draft editors enabled so mobile keyboard focus surviv
   );
   assert.match(rulesComposerSource, /disabled=\{isRulesDraftEditingDisabled\}/u);
   assert.match(rulesComposerSource, /onImagePreparationChange=/u);
-  assert.match(rulesComposerSource, /rulesImagePreparingRef\.current = preparing/u);
-  assert.match(settingsPageSource, /!targetDraft \|\| rulesImagePreparingRef\.current/u);
+  assert.match(
+    rulesComposerSource,
+    /onImagePreparationChange=\{handleRulesImagePreparationChange\}/u,
+  );
+  assert.match(rulesControllerSource, /rulesImagePreparingRef\.current = preparing/u);
+  assert.match(rulesControllerSource, /!targetDraft \|\| rulesImagePreparingRef\.current/u);
   assert.match(rulesComposerSource, /sourceFormat=\{rulesDraft\.textFormat\}/u);
   assert.match(rulesComposerSource, /textFormat: 'markdown'/u);
   assert.doesNotMatch(rulesComposerSource, /disabled=\{isRulesBusy\}/u);
@@ -135,28 +143,28 @@ test('rules autosave keeps draft editors enabled so mobile keyboard focus surviv
 });
 
 test('rules expose an explicit save action and commit successful saves to query cache', () => {
-  assert.match(settingsPageSource, /async function handleSaveRulesDraft\(\)/u);
+  assert.match(rulesControllerSource, /async function handleSaveRulesDraft\(\)/u);
   assert.match(
-    settingsPageSource,
-    /queryClient\.setQueryData<ChatSettingsScreenResponse \| undefined>\(\s*\['settings-screen', chatId\],[\s\S]*?mergeSavedRulesIntoSettingsScreen\(current, saved\)/u,
+    rulesControllerSource,
+    /queryClient\.setQueryData<ChatSettingsScreenResponse \| undefined>\(\s*\['settings-screen', requestScope\.chatId\],[\s\S]*?mergeSavedRulesIntoSettingsScreen\(current, saved\)/u,
   );
   assert.match(
     settingsPageSource,
     /className="button button--ghost rules-publish-bar__save"[\s\S]*?handleSaveRulesDraft\(\)[\s\S]*?rulesSaveLabel/u,
   );
   assert.match(
-    settingsPageSource,
-    /handleSaveRulesDraft\(\)[\s\S]*?runRulesSaveAttempt\([\s\S]*?if \(!attempt\?\.isCurrent\) \{\s*return;\s*\}[\s\S]*?Черновик правил сохранён/u,
+    rulesControllerSource,
+    /handleSaveRulesDraft\(\)[\s\S]*?runRulesSaveAttempt\([\s\S]*?if \(!isCurrentRulesScope\(\) \|\| !attempt\?\.isCurrent\) \{\s*return;\s*\}[\s\S]*?Черновик правил сохранён/u,
   );
   assert.match(
-    settingsPageSource,
-    /handlePublishRules\(\)[\s\S]*?runRulesSaveAttempt\([\s\S]*?if \(!attempt\.isCurrent\)[\s\S]*?Правила изменились[\s\S]*?return;[\s\S]*?publishRulesMutation\.mutate\(hasPublishedRules \? rulesPublicationMode : 'new_message'\)/u,
+    rulesControllerSource,
+    /handlePublishRules\(\)[\s\S]*?runRulesSaveAttempt\([\s\S]*?if \(!attempt\.isCurrent\)[\s\S]*?Правила изменились[\s\S]*?return;[\s\S]*?publishRulesMutation\.mutate\(\{[\s\S]*?mode: hasPublishedRules \? rulesPublicationMode : 'new_message'/u,
   );
 });
 
 test('rules publication errors keep their actionable detail visible', () => {
-  assert.match(settingsPageSource, /title: 'Не удалось опубликовать правила'/u);
-  assert.match(settingsPageSource, /description: formatApiError\(error\)/u);
+  assert.match(rulesControllerSource, /title: 'Не удалось опубликовать правила'/u);
+  assert.match(rulesControllerSource, /description: formatApiError\(error\)/u);
   assert.match(
     broadcastAutopostPolishSource,
     /body\.settings-drilldown-open \.toast--danger \.toast__body p \{[\s\S]*?display: -webkit-box;/u,

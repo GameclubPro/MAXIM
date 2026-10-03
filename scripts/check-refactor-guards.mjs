@@ -57,8 +57,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.legacy.tsx',
-    maxLines: 7869,
-    targetLines: 7500,
+    maxLines: 7411,
+    targetLines: 7000,
     reason:
       'SettingsPage remains a legacy shell; this ceiling includes the photo-duplicate mode plumbing and the scoped Karavan storefront allowlist section bridge into focused settings modules, while route state and workspaces should continue moving out.',
   },

@@ -9,6 +9,7 @@ import {
   stopChildProcess,
 } from '../../../scripts/miniapp-local-server.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
+import { setPhoneKeyboard } from '../../../scripts/miniapp-smartphone.mjs';
 import {
   applyNativeVisualMode,
   installNativeVisualModeInitScript,
@@ -141,6 +142,26 @@ try {
       const save = page.locator('.rules-publish-bar__save');
       const publish = page.getByRole('button', { name: 'Опубликовать в чат', exact: true });
       await editor.fill('Правила с фотографией. Текст сохраняется при ошибке.');
+      if (platform !== 'web') {
+        await editor.focus();
+        const mode = platform === 'ios' ? 'visual' : 'resize';
+        await setPhoneKeyboard(page, { mode, height: 260 });
+        await page.waitForTimeout(900);
+        assert.equal(await editor.evaluate((node) => node === document.activeElement), true);
+        await editor.scrollIntoViewIfNeeded();
+        assert.equal(
+          await editor.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            return (
+              rect.top < visualViewport.height + visualViewport.offsetTop &&
+              rect.bottom > visualViewport.offsetTop
+            );
+          }),
+          true,
+        );
+        await page.screenshot({ path: path.join(screenshots, `${name}-keyboard.png`) });
+        await setPhoneKeyboard(page, { mode, open: false });
+      }
       await input.setInputFiles({
         name: 'empty.jpg',
         mimeType: 'image/jpeg',
@@ -210,6 +231,9 @@ try {
         .evaluateAll((buttons) => buttons.forEach((button) => button.click()));
       await image.scrollIntoViewIfNeeded();
       await page.screenshot({ path: path.join(screenshots, `${name}-attached.png`) });
+      await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      await page.locator('.settings-drilldown__panel--rules').waitFor({ state: 'hidden' });
+      assert.equal(new URL(page.url()).pathname.endsWith('/settings'), true);
 
       await page.goto(`${baseUrl}chat/preview-chat/settings?preview=1&focus=links`);
       const explanation = page.getByLabel('Включить объяснение для модерации ссылок');

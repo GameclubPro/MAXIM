@@ -170,3 +170,19 @@ waiting. Browser cases cover real PATCH bodies, network failures, version confli
 background refresh, late replies, a repeated visit and navigation during conflict refresh.
 The existing leave guard receives a setter bound to its originating visit. Speech-style
 completion uses the same scoped synchronization. No layout or contract format changes.
+
+## Rules editor ownership
+
+`useSettingsRules` owns the rules draft, validation, image-preparation gate, hydration baseline,
+autosave timer, publication mode and reset confirmation. It reuses the existing serialization,
+button validation, automatic text generation and save-before-publish comparison. Each network
+operation carries its originating visit and chat; stale completion updates/invalidate only
+that chat's cache and cannot publish after navigation or show messages on another screen.
+Image callbacks and the workspace leave guard use the same scoped draft setter.
+
+Independent browser scenarios cover PUT payloads, edits during autosave, failed-save retry
+suppression, navigation between save and publication, late publication results, duplicate
+clicks and missing publication links. The real settings route also exercises native image
+selection, decoder failure/cancellation, editor closing, save/publish gating, keyboard focus
+and native Back across iPhone/Android light/dark and a desktop viewport. These browser suites
+run in the existing CI lane; no production chat is used for test publication.

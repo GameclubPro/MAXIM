@@ -183,6 +183,10 @@ jobs:
         run: node apps/miniapp/test/settings-required-subscription.browser.mjs
       - name: Settings draft saves and response races
         run: node apps/miniapp/test/settings-draft.browser.mjs
+      - name: Rules drafts, publication races and image preparation
+        run: |
+          node apps/miniapp/test/settings-rules.browser.mjs
+          node apps/miniapp/test/rules-image-picker.browser.mjs
 
   admin:
     name: Safety Desk
