@@ -10,11 +10,14 @@ per process, using the same `PRISMA_PG_POOL_MAX`/legacy pool reader as Prisma (d
 There is no pending RAM queue. Each bot/work-class pair gets at most half those slots, rounded
 down with a floor of one. Ordinary traffic, explicit Start and lifecycle transitions have separate
 classes, so one slow Start does not occupy that bot's ordinary allowance. Only one Start runs at
-a time per process. A lifecycle event deferred by capacity reserves the next available slot for
+a time per process. A lifecycle event deferred only by global capacity reserves the next available slot for
 up to five seconds, until a lifecycle task is admitted; non-lifecycle work can continue in other
 slots. Admission consumes that reservation even if the task subsequently fails. Completion never
 clears a newer reservation created by a later deferral. These are concurrency budgets,
 not a replacement for existing per-token MAX rate limits.
+An event blocked by its own bot/class quota does not create or extend a global reservation:
+that bot cannot use another slot until its current work finishes. Independent ordinary work can
+use the spare global capacity; an existing reservation for other eligible lifecycle work remains.
 
 Outbox calls pass their selected persisted payload as admission context, so independent bots,
 Start and lifecycle events retain their separate allowances. Omitting this context collapses every
