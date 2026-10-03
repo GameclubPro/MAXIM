@@ -2646,6 +2646,57 @@ describe('WebhookOutboxService', () => {
     );
   });
 
+  it('starts an overdue poll after its active batch drains without waiting for another timer slot', async () => {
+    jest.useFakeTimers();
+    const { service } = createService({ configOverrides: { ENQUEUE_POLL_INTERVAL_MS: 200 } });
+    (service as unknown as RetentionInternals).enabled = true;
+    const starts: number[] = [];
+    let active = 0;
+    let peak = 0;
+    const batch = jest.spyOn(service as any, 'enqueueBatch').mockImplementation(async () => {
+      starts.push(Date.now());
+      peak = Math.max(peak, ++active);
+      await new Promise<void>((resolve) => setTimeout(resolve, 450));
+      active -= 1;
+    });
+    const began = Date.now();
+    try {
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(451);
+      expect(starts[0]).toBe(began);
+      expect(starts[1] - began).toBeGreaterThanOrEqual(450);
+      expect(starts[1] - began).toBeLessThanOrEqual(451);
+      expect(peak).toBe(1);
+      expect(batch).toHaveBeenCalledTimes(2);
+    } finally {
+      service.onModuleDestroy();
+      await jest.advanceTimersByTimeAsync(1_000);
+      jest.useRealTimers();
+    }
+  });
+
+  it('paces short polls and stops rearming after shutdown during an active batch', async () => {
+    jest.useFakeTimers();
+    const { service } = createService({ configOverrides: { ENQUEUE_POLL_INTERVAL_MS: 200 } });
+    (service as unknown as RetentionInternals).enabled = true;
+    const batch = jest.spyOn(service as any, 'enqueueBatch').mockImplementation(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    });
+    try {
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(199);
+      expect(batch).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(batch).toHaveBeenCalledTimes(2);
+      service.onModuleDestroy();
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(batch).toHaveBeenCalledTimes(2);
+    } finally {
+      service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
   it('smooths webhook retention every 30 seconds and defers maintenance for one hour', async () => {
     jest.useFakeTimers();
     const { service } = createService({
