@@ -1,3 +1,5 @@
+import { createManagedEntitiesRefreshState } from './admin-managed-entities-refresh-state';
+import { readTrimmedString } from './admin-legacy-utils';
 import type {
   ChatSummary,
   ManagedEntitiesListResponse,
@@ -31,7 +33,6 @@ import type {
   ManagedEntitiesListOptions,
   ManagedEntitiesListResult,
   ManagedEntitiesRefreshJobOutcome,
-  ManagedEntitiesRefreshPresentation,
   ManagedEntityBotAssignmentsRow,
   ManagedEntityBotProfileSnapshot,
   ManagedEntityTypeFilter,
@@ -120,20 +121,6 @@ export class AdminManagedEntitiesRuntime {
     return this.context.collectManagedEntitiesForMassAction(user, entityType, options);
   }
 
-  private createManagedEntitiesRefreshState(
-    cursor: number | null,
-    backoffActive: boolean,
-    nextPollAfterMsOverride?: number,
-    presentation?: ManagedEntitiesRefreshPresentation,
-  ): ManagedEntitiesRefreshState {
-    return this.context.createManagedEntitiesRefreshState(
-      cursor,
-      backoffActive,
-      nextPollAfterMsOverride,
-      presentation,
-    );
-  }
-
   private ensureEntityType(
     chatId: string,
     userId: string,
@@ -152,10 +139,6 @@ export class AdminManagedEntitiesRuntime {
     options?: ManagedEntitiesListOptions,
   ): Promise<ManagedEntitiesListResult> {
     return this.context.listManagedEntitiesDetailed(user, entityType, options);
-  }
-
-  private readTrimmedString(value: unknown): string | null {
-    return this.context.readTrimmedString(value);
   }
 
   private resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined> {
@@ -225,7 +208,7 @@ export class AdminManagedEntitiesRuntime {
       attachFavoriteTypes: (userId, items) => this.attachManagedEntityFavoriteTypes(userId, items),
       attachFavoriteTypesToDiff: (userId, diff) =>
         this.attachManagedEntityFavoriteTypesToDiff(userId, diff),
-      createIdleRefreshState: () => this.createManagedEntitiesRefreshState(null, false),
+      createIdleRefreshState: () => createManagedEntitiesRefreshState(null, false),
     });
   }
 
@@ -253,7 +236,7 @@ export class AdminManagedEntitiesRuntime {
   }
 
   createIdleManagedEntitiesRefreshStateForManagedEntities(): ManagedEntitiesRefreshState {
-    return this.createManagedEntitiesRefreshState(null, false);
+    return createManagedEntitiesRefreshState(null, false);
   }
 
   getChatHeader(
@@ -438,9 +421,7 @@ export class AdminManagedEntitiesRuntime {
   ): T {
     const persisted = assignmentsByChatId.get(entity.id) ?? null;
     const primaryBotId =
-      this.readTrimmedString(persisted?.primaryBotId) ??
-      this.readTrimmedString(persisted?.botId) ??
-      null;
+      readTrimmedString(persisted?.primaryBotId) ?? readTrimmedString(persisted?.botId) ?? null;
     const botMetaById = new Map<string, ManagedEntityBotMeta>(
       (
         (this.maxBotRegistry?.getAllBots?.() as readonly ManagedEntityBotMeta[] | undefined) ?? []
@@ -449,7 +430,7 @@ export class AdminManagedEntitiesRuntime {
     const existingBotProfilesById = new Map(
       (Array.isArray(entity.assignedBots) ? entity.assignedBots : [])
         .map((bot) => {
-          const normalizedBotId = this.readTrimmedString(bot.botId);
+          const normalizedBotId = readTrimmedString(bot.botId);
           if (!normalizedBotId) {
             return null;
           }
@@ -457,7 +438,7 @@ export class AdminManagedEntitiesRuntime {
           return [
             normalizedBotId,
             {
-              avatarUrl: this.readTrimmedString(bot.avatarUrl) ?? null,
+              avatarUrl: readTrimmedString(bot.avatarUrl) ?? null,
             } satisfies ManagedEntityBotProfileSnapshot,
           ] as const;
         })
@@ -469,7 +450,7 @@ export class AdminManagedEntitiesRuntime {
     const assignedBots: ManagedEntityAssignedBot[] = [];
 
     for (const membership of persisted?.botMemberships ?? []) {
-      const normalizedBotId = this.readTrimmedString(membership.botId);
+      const normalizedBotId = readTrimmedString(membership.botId);
       if (!normalizedBotId || seenBotIds.has(normalizedBotId)) {
         continue;
       }
@@ -559,7 +540,7 @@ export class AdminManagedEntitiesRuntime {
     const missingBotIds: string[] = [];
 
     for (const bot of header.assignedBots) {
-      const normalizedBotId = this.readTrimmedString(bot.botId);
+      const normalizedBotId = readTrimmedString(bot.botId);
       if (!normalizedBotId) {
         continue;
       }
@@ -567,7 +548,7 @@ export class AdminManagedEntitiesRuntime {
         continue;
       }
 
-      const existingAvatarUrl = this.readTrimmedString(bot.avatarUrl) ?? null;
+      const existingAvatarUrl = readTrimmedString(bot.avatarUrl) ?? null;
       if (existingAvatarUrl) {
         cachedProfilesByBotId.set(normalizedBotId, {
           avatarUrl: existingAvatarUrl,
@@ -579,7 +560,7 @@ export class AdminManagedEntitiesRuntime {
         await this.chatContextCache.getManagedEntityBotProfile?.(normalizedBotId);
       if (cachedProfile) {
         cachedProfilesByBotId.set(normalizedBotId, {
-          avatarUrl: this.readTrimmedString(cachedProfile.avatarUrl) ?? null,
+          avatarUrl: readTrimmedString(cachedProfile.avatarUrl) ?? null,
         });
         continue;
       }
@@ -597,7 +578,7 @@ export class AdminManagedEntitiesRuntime {
             sourceTag: MAX_API_SOURCE_TAGS.SETTINGS_BOT_PROFILE,
           });
           const snapshot = {
-            avatarUrl: this.readTrimmedString(profile.avatarUrl) ?? null,
+            avatarUrl: readTrimmedString(profile.avatarUrl) ?? null,
           } satisfies ManagedEntityBotProfileSnapshot;
           cachedProfilesByBotId.set(botId, snapshot);
           await this.chatContextCache.setManagedEntityBotProfile?.(botId, snapshot);
@@ -629,7 +610,7 @@ export class AdminManagedEntitiesRuntime {
     return {
       ...header,
       assignedBots: header.assignedBots.map((bot) => {
-        const normalizedBotId = this.readTrimmedString(bot.botId);
+        const normalizedBotId = readTrimmedString(bot.botId);
         if (!normalizedBotId) {
           return bot;
         }
@@ -637,7 +618,7 @@ export class AdminManagedEntitiesRuntime {
         const cachedProfile = cachedProfilesByBotId.get(normalizedBotId);
         return {
           ...bot,
-          avatarUrl: cachedProfile?.avatarUrl ?? this.readTrimmedString(bot.avatarUrl) ?? null,
+          avatarUrl: cachedProfile?.avatarUrl ?? readTrimmedString(bot.avatarUrl) ?? null,
         };
       }),
     };

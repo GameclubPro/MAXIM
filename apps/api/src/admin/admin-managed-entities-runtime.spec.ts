@@ -36,18 +36,6 @@ function createContext(
     ) as never,
     attachManagedEntityFavoriteTypesToDiff: jest.fn(async (_userId, diff) => diff),
     collectManagedEntitiesForMassAction: jest.fn().mockResolvedValue([]),
-    createManagedEntitiesRefreshState: jest.fn().mockReturnValue({
-      complete: false,
-      cursor: null,
-      backoffActive: false,
-      nextPollAfterMs: 1500,
-      processedCandidates: null,
-      totalCandidates: null,
-      progressPercent: null,
-      lastSyncedAt: null,
-      manualRefreshBlockedReason: null,
-      manualRefreshRetryAfterMs: null,
-    }),
     ensureEntityType: jest.fn().mockResolvedValue(undefined),
     isManagedEntityRuntimeBotId: jest.fn((botId) => botId === 'bot-1'),
     listManagedEntitiesDetailed: jest.fn().mockResolvedValue({
@@ -65,9 +53,6 @@ function createContext(
       ],
       refresh: null,
     }),
-    readTrimmedString: jest.fn((value) =>
-      typeof value === 'string' && value.trim() ? value.trim() : null,
-    ),
     resolveBackgroundReadBotAssignment: jest.fn().mockResolvedValue('bot-1'),
     runManagedEntitiesBoundedRefreshJob: jest.fn().mockResolvedValue({ continueAfterMs: 1500 }),
     runManagedEntitiesRemoteFullRefresh: jest.fn().mockResolvedValue(null),

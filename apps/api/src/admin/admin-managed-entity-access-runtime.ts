@@ -1,3 +1,4 @@
+import { readTrimmedString } from './admin-legacy-utils';
 import type { ManagedEntityType } from '@maxim/contracts';
 import type { Logger } from '@nestjs/common';
 import { Prisma } from '../prisma/prisma-client';
@@ -5,10 +6,7 @@ import type { ChatContextCacheService } from '../chat-context/chat-context-cache
 import type { MaxChatMemberAccess } from '../max/max-client.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import { isPrismaKnownError, toPrismaEntityType } from './admin-legacy-utils';
-import type {
-  AdminManagedEntityAccessRuntimeContext,
-  MarkManagedEntityAccessEdgesDeniedForUserParams,
-} from './admin-managed-entity-access-runtime-context';
+import type { AdminManagedEntityAccessRuntimeContext } from './admin-managed-entity-access-runtime-context';
 import {
   MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS,
   type AdminAccessResolution,
@@ -47,18 +45,58 @@ export class AdminManagedEntityAccessRuntime {
     this.context.invalidateManagedEntitiesAllowlistCache(userId);
   }
 
-  private markManagedEntityAccessEdgesDeniedForUser(
-    params: MarkManagedEntityAccessEdgesDeniedForUserParams,
-  ): Promise<void> {
-    return this.context.markManagedEntityAccessEdgesDeniedForUser(params);
+  async markManagedEntityAccessEdgesDeniedForUser(params: {
+    chatId: string;
+    userId: string;
+    state: Exclude<ManagedEntityAccessStateValue, 'GRANTED'>;
+    deniedReason: string;
+    source: string;
+  }): Promise<void> {
+    const client = this.context.accessEdges;
+    if (!client?.updateMany) {
+      return;
+    }
+
+    const chatId = readTrimmedString(params.chatId);
+    const userId = readTrimmedString(params.userId);
+    if (!chatId || !userId) {
+      return;
+    }
+
+    try {
+      await client.updateMany({
+        where: {
+          chatId,
+          userId,
+          // FLAG: MAX moderation verdicts never mutate the independent Publisher access edge.
+          botId: { in: [...this.context.managedEntitiesRuntimeBotIds] },
+        },
+        data: {
+          state: params.state,
+          userRole: params.state === 'USER_DENIED' ? 'MEMBER' : 'UNKNOWN',
+          botRole: params.state === 'BOT_DENIED' ? 'MEMBER' : 'UNKNOWN',
+          checkedAt: new Date(),
+          expiresAt: null,
+          deniedReason: params.deniedReason,
+          source: params.source,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          state: params.state,
+          source: params.source,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to mark managed entity access edges denied',
+      );
+    }
   }
 
   private normalizeManagedEntityAccessBotId(botId: string | null | undefined): string | null {
     return this.context.normalizeManagedEntityAccessBotId(botId);
-  }
-
-  private readTrimmedString(value: unknown): string | null {
-    return this.context.readTrimmedString(value);
   }
 
   buildAdminAccessUserIdVariants(value: string | null | undefined): string[] {
@@ -87,7 +125,7 @@ export class AdminManagedEntityAccessRuntime {
     }
 
     for (const [candidateUserId, access] of accessByUserId) {
-      const normalizedCandidateUserId = this.readTrimmedString(candidateUserId)?.toLowerCase();
+      const normalizedCandidateUserId = readTrimmedString(candidateUserId)?.toLowerCase();
       if (normalizedCandidateUserId && variants.has(normalizedCandidateUserId)) {
         return access;
       }
@@ -161,8 +199,8 @@ export class AdminManagedEntityAccessRuntime {
     resolution: Extract<AdminAccessResolution, { status: 'granted' | 'denied' }>;
     probeStartedAt: Date;
   }): Promise<boolean> {
-    const chatId = this.readTrimmedString(params.chatId);
-    const userId = this.readTrimmedString(params.userId);
+    const chatId = readTrimmedString(params.chatId);
+    const userId = readTrimmedString(params.userId);
     if (!chatId || !userId || !Number.isFinite(params.probeStartedAt.getTime())) {
       return false;
     }
@@ -469,8 +507,8 @@ export class AdminManagedEntityAccessRuntime {
     userId: string,
     source: 'bootstrap_recent_bot_added' | 'remote_admin_access',
   ): void {
-    const normalizedChatId = this.readTrimmedString(chatId);
-    const normalizedUserId = this.readTrimmedString(userId);
+    const normalizedChatId = readTrimmedString(chatId);
+    const normalizedUserId = readTrimmedString(userId);
     if (!normalizedChatId || !normalizedUserId) {
       return;
     }
