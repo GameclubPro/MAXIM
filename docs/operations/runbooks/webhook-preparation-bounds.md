@@ -11,7 +11,9 @@ There is no pending RAM queue. Each bot/work-class pair gets at most half those 
 down with a floor of one. Ordinary traffic, explicit Start and lifecycle transitions have separate
 classes, so one slow Start does not occupy that bot's ordinary allowance. Only one Start runs at
 a time per process. A lifecycle event deferred by capacity reserves the next available slot for
-five seconds; non-lifecycle work can continue in other slots. These are concurrency budgets,
+up to five seconds, until a lifecycle task is admitted; non-lifecycle work can continue in other
+slots. Admission consumes that reservation even if the task subsequently fails. Completion never
+clears a newer reservation created by a later deferral. These are concurrency budgets,
 not a replacement for existing per-token MAX rate limits.
 
 Outbox calls pass their selected persisted payload as admission context, so independent bots,
