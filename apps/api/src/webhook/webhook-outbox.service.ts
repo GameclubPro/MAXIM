@@ -58,6 +58,7 @@ const DEGRADED_ENQUEUE_CONCURRENCY = 4;
 const DEGRADED_QUEUED_REPAIR_INTERVAL_MS = 5_000;
 const ENQUEUE_ADMISSION_MODE_CACHE_MS = 5_000;
 const COMPLETED_TIMEOUT_REPAIR_INTERVAL_MS = 5_000;
+const COMPLETED_TIMEOUT_REPAIR_RAW_ROWS = 200;
 const SLOW_ENQUEUE_BATCH_MS = 1_000;
 const SLOW_ENQUEUE_BATCH_LOG_INTERVAL_MS = 30_000;
 const CANONICAL_PREPARATION_PENDING_RETRY_MS = 1_000;
@@ -577,7 +578,16 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const now = new Date();
     const admission = await this.resolveEnqueueAdmission(now);
     const admissionFinishedAtMs = Date.now();
-    const candidates = await this.selectEnqueueCandidates(now, admission);
+    let candidates: WebhookEnqueueCandidate[];
+    try {
+      candidates = await this.selectEnqueueCandidates(now, admission);
+    } finally {
+      // FLAG: Leave live/due-only polls after slow or failed recovery scans too.
+      // Scheduling only from the start can make a >5s scan run on every poll.
+      if (admission.includeCompletedTimeoutRepair) {
+        this.nextCompletedTimeoutRepairAtMs = Date.now() + COMPLETED_TIMEOUT_REPAIR_INTERVAL_MS;
+      }
+    }
     const selectionFinishedAtMs = Date.now();
 
     const prioritizedCandidates = await this.prioritizeCandidates(
@@ -722,6 +732,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         ? DEGRADED_WEBHOOK_WORK_UNIT_OVERSCAN_SIZE
         : WEBHOOK_WORK_UNIT_OVERSCAN_SIZE,
     );
+    const repairRawTake = admission.includeCompletedTimeoutRepair
+      ? COMPLETED_TIMEOUT_REPAIR_RAW_ROWS
+      : 0;
+    const repairCandidateTake = admission.includeCompletedTimeoutRepair
+      ? Math.min(50, Math.max(2, Math.floor(selectionWindowSize / 4)))
+      : 0;
     const scans = (this.enqueueScans ??= new Map<string, OutboxScanState>());
     const backlogReceiptCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
       columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
@@ -745,13 +761,31 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const failedCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
       columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
       workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
-      eligibility: eligibility.failed,
+      eligibility: Prisma.sql`"status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" <= ${now}`,
       rotation: { lane: 'failed', state: scans.get('failed') ?? { horizon: now, after: null } },
       scanDirection: 'ASC',
       resultDirection: 'ASC',
-      overscanTake,
-      candidateTake: selectionWindowSize,
+      overscanTake: overscanTake - repairRawTake,
+      candidateTake: selectionWindowSize - repairCandidateTake,
     });
+    // FLAG: Bound historical rows before claim/semantic-owner probes. Due retries have an
+    // independent lane so ineligible history cannot consume their traversal budget.
+    const completedTimeoutCandidatesSql = admission.includeCompletedTimeoutRepair
+      ? buildBoundedEnqueueWorkUnitsSql({
+          columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
+          workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
+          sourceEligibility: Prisma.sql`"status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" IS NULL`,
+          eligibility: eligibility.failed,
+          rotation: {
+            lane: 'completedTimeout',
+            state: scans.get('completedTimeout') ?? { horizon: now, after: null },
+          },
+          scanDirection: 'ASC',
+          resultDirection: 'ASC',
+          overscanTake: repairRawTake,
+          candidateTake: repairCandidateTake,
+        })
+      : buildEmptyEnqueueCandidatesSql();
     const staleUserFacingQueuedCandidatesSql = admission.includeQueuedRepair
       ? buildBoundedEnqueueWorkUnitsSql({
           columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
@@ -793,7 +827,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         ${recentReceiptCandidatesSql}
       ),
       failed_candidates AS (
-        ${failedCandidatesSql}
+        SELECT * FROM (${failedCandidatesSql}) due_retries
+        UNION ALL
+        SELECT * FROM (${completedTimeoutCandidatesSql}) completed_timeout
       ),
       stale_user_facing_queued_candidates AS (
         ${staleUserFacingQueuedCandidatesSql}
