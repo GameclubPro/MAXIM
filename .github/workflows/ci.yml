@@ -179,6 +179,8 @@ jobs:
         run: node apps/miniapp/test/settings-reports.browser.mjs
       - name: Participant report journal polling and response races
         run: node apps/miniapp/test/report-journal-races.browser.mjs
+      - name: Required subscription drafts and response races
+        run: node apps/miniapp/test/settings-required-subscription.browser.mjs
 
   admin:
     name: Safety Desk

@@ -139,3 +139,18 @@ ambiguous-send and bot-scope coverage. Explicit composition exposed two previous
 type mismatches: review synchronization returns a count, and published suggestion text is
 always HTML or Markdown. Types now express those existing results; the unreachable plain
 fallback is removed without changing generated content or ledger digests.
+
+## Required-subscription UI ownership
+
+The required-subscription controller owns source lookup, refresh state, locally resolved
+headers and source-selection actions. The page retains the settings draft; functional
+updates preserve unrelated edits. Lookup replies carry chat, generation, request and input
+identity, so navigation, unmount and subsequent input invalidate stale effects. Failed
+lookup and a full selection reached during lookup preserve the entered link. Server
+refreshes no longer discard metadata for unsaved external sources.
+
+The browser suite runs against the extracted controller and real source-input component,
+asserting request bodies, delayed success/error, navigation, duplicate clicks, concurrent
+draft edits, selection limits and error retention. It also opens the actual settings route
+on iPhone/Android in light/dark themes. CI runs this suite in the existing Mini App lane.
+Existing mini app tests and production gzip/CSS budgets remain required.
