@@ -145,6 +145,9 @@ Webhook replay remains a retry even after both BullMQ and Redis state disappear.
 admission may create a positive permit. A crash before its Redis registration leaves enforcement
 unverified; later retries cannot manufacture authority. Concurrent admission briefly defers while
 the first registration is incomplete. Neither admission nor revocation takes a competing rule's claim.
+That brief wait applies only while the incoming action deadline is still open. An already-expired
+replay reaches the existing Redis terminal settlement immediately: it creates no media job, renews
+no authority and does not fail the ordered webhook merely because its permit is correctly false.
 
 An authorized action acquires the common SQL claim before reserving its immutable reaction stage.
 A foreign owner consumes no stage. An interrupted own claim resumes the same stage; delivery

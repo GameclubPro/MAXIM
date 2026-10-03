@@ -92,6 +92,9 @@ export class MessageDuplicateEnqueueService {
       registrationKind === 'retry' &&
       !existingJob &&
       input.actionEligible &&
+      // FLAG: An expired deadline must reach Redis terminal settlement; its false
+      // permit is expected and cannot become usable after waiting for initial admission.
+      identity.deadlineAtMs > Date.now() &&
       Date.now() - admission.admittedAtMs < 5000 &&
       !(await this.ordering.readActionEligibility(identity))
     )

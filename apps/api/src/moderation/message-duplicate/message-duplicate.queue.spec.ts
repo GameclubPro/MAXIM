@@ -409,6 +409,41 @@ describe('message duplicate queue', () => {
     expect(ordering.announce).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
   });
+  it.each(['event', 'explicit'] as const)(
+    'settles an expired %s deadline on a fresh admission replay without blocking the webhook',
+    async (deadlineSource) => {
+      const now = Date.now();
+      const durable = admission();
+      durable.register.mockResolvedValue({ registration: 'retry', admittedAtMs: now });
+      const queue = { add: jest.fn(), getJob: jest.fn().mockResolvedValue(null) };
+      const ordering = {
+        announce: jest.fn().mockResolvedValue({ kind: 'expired' }),
+        readActionEligibility: jest.fn().mockResolvedValue(false),
+      };
+      const service = new MessageDuplicateEnqueueService(
+        queue as never,
+        ordering as never,
+        durable as never,
+      );
+      const input = jobData();
+      if (deadlineSource === 'event') {
+        input.eventTimestampMs = now - 600_001;
+        input.sourceCreatedAt = new Date(input.eventTimestampMs).toISOString();
+      } else {
+        input.deadlineAtMs = now - 1;
+      }
+
+      await expect(service.enqueue(input)).resolves.toBeUndefined();
+
+      expect(ordering.readActionEligibility).not.toHaveBeenCalled();
+      expect(ordering.announce).toHaveBeenCalledWith(
+        expect.objectContaining({ deadlineAtMs: now - 1 }),
+        true,
+        'retry',
+      );
+      expect(queue.add).not.toHaveBeenCalled();
+    },
+  );
   it('abandons a final processing failure and rejects malformed envelopes', async () => {
     const ordering = {
       runInOrder: jest.fn().mockRejectedValue(new Error('download')),
