@@ -47,6 +47,36 @@ describe('Webhook durable preparation admission', () => {
     expect(JSON.stringify(report.mock.calls)).not.toContain('bot-a');
   });
 
+  it.each([false, true])(
+    'does not reserve another slot for lifecycle work blocked by its own bot quota (initially full=%s)',
+    async (initiallyFull) => {
+      const admission = new WebhookPreparationAdmission(4, jest.fn());
+      const lifecycleGate = gate();
+      const ordinaryGate = gate();
+      const lifecycle = admission.run('bot-a', 'lifecycle', () => lifecycleGate.promise);
+      const ordinary = initiallyFull
+        ? admission.run('bot-b', 'ordinary', () => ordinaryGate.promise)
+        : Promise.resolve();
+      try {
+        await expect(
+          admission.run('bot-a', 'lifecycle', async () => undefined),
+        ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+        ordinaryGate.release();
+        await ordinary;
+        // The rejected bot already holds its lifecycle allowance. It cannot use the
+        // other slot, which must remain available to independent ordinary work.
+        await expect(admission.run('bot-b', 'ordinary', async () => 'progress')).resolves.toBe(
+          'progress',
+        );
+        expect(admission.snapshot()).toMatchObject({ inFlight: 1, lifecycle: 1, pending: 0 });
+      } finally {
+        lifecycleGate.release();
+        ordinaryGate.release();
+        await Promise.all([lifecycle, ordinary]);
+      }
+    },
+  );
+
   it('does not let a slow Start handshake occupy the same bot ordinary-event allowance', async () => {
     const admission = new WebhookPreparationAdmission(4, jest.fn());
     const pending = gate();

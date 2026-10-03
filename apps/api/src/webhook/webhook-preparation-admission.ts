@@ -27,6 +27,8 @@ export class WebhookPreparationAdmission {
     // remains the queue, with a typed non-exhausting retry instead of RAM-only work.
     const botCounts = this.byBot.get(botId) ?? { ordinary: 0, interactive: 0, lifecycle: 0 };
     const botActive = botCounts[workClass];
+    const botClassLimit = Math.max(1, Math.floor(this.maxInFlight / 2));
+    const globalFull = this.active.size >= this.maxInFlight;
     const reserved =
       workClass !== 'lifecycle' &&
       this.maxInFlight > 1 &&
@@ -34,12 +36,16 @@ export class WebhookPreparationAdmission {
       this.active.size >= this.maxInFlight - 1;
     const limited =
       this.closed ||
-      this.active.size >= this.maxInFlight ||
+      globalFull ||
       reserved ||
-      botActive >= Math.max(1, Math.floor(this.maxInFlight / 2)) ||
+      botActive >= botClassLimit ||
       (workClass === 'interactive' && this.byClass.interactive >= 1);
     if (limited) {
-      if (workClass === 'lifecycle') this.reserveLifecycleUntil = Date.now() + 5_000;
+      // FLAG: A bot already using its lifecycle quota cannot consume another slot.
+      // Its excess work must not reserve idle global capacity away from other classes/bots.
+      if (workClass === 'lifecycle' && !this.closed && globalFull && botActive < botClassLimit) {
+        this.reserveLifecycleUntil = Date.now() + 5_000;
+      }
       this.metrics.deferred[workClass] += 1;
       this.flushIfDue();
       return Promise.reject(
