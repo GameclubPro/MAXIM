@@ -24068,7 +24068,9 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const processPromise = (service as any).processManagedBroadcastOccurrence(
+    const processPromise = (
+      service as any
+    ).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
@@ -24190,7 +24192,7 @@ describe('AdminService.sendBroadcast', () => {
     };
     (service as any).maxRoutedPublicationService = maxRoutedPublicationService;
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
@@ -24427,7 +24429,9 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const processPromise = (service as any).processManagedBroadcastOccurrence(
+    const processPromise = (
+      service as any
+    ).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
@@ -24535,7 +24539,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
@@ -24644,7 +24648,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
@@ -24846,7 +24850,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
@@ -24994,7 +24998,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
@@ -25058,7 +25062,9 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const snapshot = (service as any).createManagedBroadcastDeliverySnapshot(
+    const snapshot = (
+      service as any
+    ).managedBroadcastRuntime.createManagedBroadcastDeliverySnapshot(
       {
         id: 'broadcast-1',
         sourceChatId: 'chat-1',
@@ -25148,13 +25154,15 @@ describe('AdminService.sendBroadcast', () => {
 
     expect(baseRow).not.toBeNull();
 
-    const currentSnapshot = (service as any).createManagedBroadcastDeliverySnapshot(baseRow, []);
-    const currentSummary = (service as any).mapManagedBroadcastSummary(
+    const currentSnapshot = (
+      service as any
+    ).managedBroadcastRuntime.createManagedBroadcastDeliverySnapshot(baseRow, []);
+    const currentSummary = (service as any).managedBroadcastRuntime.mapManagedBroadcastSummary(
       baseRow,
       currentSnapshot,
       [],
     );
-    const currentDetails = (service as any).mapManagedBroadcastDetails(
+    const currentDetails = (service as any).managedBroadcastRuntime.mapManagedBroadcastDetails(
       baseRow,
       currentSnapshot,
       [],
@@ -25168,16 +25176,15 @@ describe('AdminService.sendBroadcast', () => {
       applyToAllChats: false,
       targetChatIds: ['chat-2'],
     };
-    const selectedSnapshot = (service as any).createManagedBroadcastDeliverySnapshot(
-      selectedRow,
-      [],
-    );
-    const selectedSummary = (service as any).mapManagedBroadcastSummary(
+    const selectedSnapshot = (
+      service as any
+    ).managedBroadcastRuntime.createManagedBroadcastDeliverySnapshot(selectedRow, []);
+    const selectedSummary = (service as any).managedBroadcastRuntime.mapManagedBroadcastSummary(
       selectedRow,
       selectedSnapshot,
       [],
     );
-    const selectedDetails = (service as any).mapManagedBroadcastDetails(
+    const selectedDetails = (service as any).managedBroadcastRuntime.mapManagedBroadcastDetails(
       selectedRow,
       selectedSnapshot,
       [],
@@ -25192,9 +25199,19 @@ describe('AdminService.sendBroadcast', () => {
       applyToAllChats: true,
       targetChatIds: ['chat-1', 'chat-2'],
     };
-    const allSnapshot = (service as any).createManagedBroadcastDeliverySnapshot(allRow, []);
-    const allSummary = (service as any).mapManagedBroadcastSummary(allRow, allSnapshot, []);
-    const allDetails = (service as any).mapManagedBroadcastDetails(allRow, allSnapshot, []);
+    const allSnapshot = (
+      service as any
+    ).managedBroadcastRuntime.createManagedBroadcastDeliverySnapshot(allRow, []);
+    const allSummary = (service as any).managedBroadcastRuntime.mapManagedBroadcastSummary(
+      allRow,
+      allSnapshot,
+      [],
+    );
+    const allDetails = (service as any).managedBroadcastRuntime.mapManagedBroadcastDetails(
+      allRow,
+      allSnapshot,
+      [],
+    );
 
     expect(allSummary.targetMode).toBe('all');
     expect(allDetails.targetMode).toBe('all');
@@ -25206,9 +25223,19 @@ describe('AdminService.sendBroadcast', () => {
       mediaMimeType: 'video/mp4',
       mediaFileName: 'announce.mp4',
     };
-    const videoSnapshot = (service as any).createManagedBroadcastDeliverySnapshot(videoRow, []);
-    const videoSummary = (service as any).mapManagedBroadcastSummary(videoRow, videoSnapshot, []);
-    const videoDetails = (service as any).mapManagedBroadcastDetails(videoRow, videoSnapshot, []);
+    const videoSnapshot = (
+      service as any
+    ).managedBroadcastRuntime.createManagedBroadcastDeliverySnapshot(videoRow, []);
+    const videoSummary = (service as any).managedBroadcastRuntime.mapManagedBroadcastSummary(
+      videoRow,
+      videoSnapshot,
+      [],
+    );
+    const videoDetails = (service as any).managedBroadcastRuntime.mapManagedBroadcastDetails(
+      videoRow,
+      videoSnapshot,
+      [],
+    );
 
     expect(videoSummary.hasVideo).toBe(true);
     expect(videoDetails.mediaType).toBe('video');
@@ -25234,9 +25261,19 @@ describe('AdminService.sendBroadcast', () => {
       cycleCount: 0,
       sentCount: 0,
     };
-    const snapshot = (service as any).createManagedBroadcastDeliverySnapshot(legacyRow, []);
-    const summary = (service as any).mapManagedBroadcastSummary(legacyRow, snapshot, []);
-    const details = (service as any).mapManagedBroadcastDetails(legacyRow, snapshot, []);
+    const snapshot = (
+      service as any
+    ).managedBroadcastRuntime.createManagedBroadcastDeliverySnapshot(legacyRow, []);
+    const summary = (service as any).managedBroadcastRuntime.mapManagedBroadcastSummary(
+      legacyRow,
+      snapshot,
+      [],
+    );
+    const details = (service as any).managedBroadcastRuntime.mapManagedBroadcastDetails(
+      legacyRow,
+      snapshot,
+      [],
+    );
 
     expect(summary.cycleCount).toBe(1);
     expect(details.cycleCount).toBe(1);
@@ -25419,7 +25456,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
@@ -25551,7 +25588,9 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const processPromise = (service as any).processManagedBroadcastOccurrence(
+    const processPromise = (
+      service as any
+    ).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
@@ -25722,7 +25761,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:55:00.000Z'),
@@ -25909,7 +25948,7 @@ describe('AdminService.sendBroadcast', () => {
     );
     serviceRef.current = service;
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
@@ -26001,7 +26040,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:55:00.000Z'),
@@ -26097,7 +26136,9 @@ describe('AdminService.sendBroadcast', () => {
       { invalidate: jest.fn() } as never,
       createConfigMock() as never,
     );
-    const processPromise = (service as any).processManagedBroadcastOccurrence(
+    const processPromise = (
+      service as any
+    ).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:55:00.000Z'),
@@ -26195,7 +26236,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:55:00.000Z'),
@@ -27152,7 +27193,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const result = await (service as any).managedBroadcastRuntime.processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:55:00.000Z'),
@@ -27442,103 +27483,6 @@ describe('AdminService.sendBroadcast', () => {
     const commentsTokenPayload = decodeBase64UrlJson<{ d: string }>(commentsToken.slice(4));
 
     expect(commentsTokenPayload.d).toBeTruthy();
-  });
-
-  it('splits custom broadcast link buttons into MAX-safe rows before the comments button', async () => {
-    const prisma = createPrismaMock();
-    prisma.chatSettings.upsert.mockResolvedValue({
-      chatId: 'chat-1',
-      commentsEnabled: true,
-      commentsAdminsEnabled: false,
-      commentsAllEnabled: false,
-      commentsChatBroadcastsEnabled: true,
-    });
-
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
-    };
-    const chatContextCache = createChatContextCacheMock();
-
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
-
-    const buttons = await (
-      service as unknown as Pick<AdminServicePrivateAccess, 'resolveBroadcastButtons'>
-    ).resolveBroadcastButtons('chat-1', 'chat', {
-      includeCustomButton: false,
-      customButtonText: '',
-      customButtonUrl: '',
-      customButtons: [
-        { text: 'Кнопка 1', url: 'https://max.ru/one' },
-        { text: 'Кнопка 2', url: 'https://max.ru/two' },
-        { text: 'Кнопка 3', url: 'https://max.ru/three' },
-        { text: 'Кнопка 4', url: 'https://max.ru/four' },
-      ],
-    });
-
-    expect(buttons.slice(0, 2)).toEqual([
-      [
-        { type: 'link', text: 'Кнопка 1', url: 'https://max.ru/one' },
-        { type: 'link', text: 'Кнопка 2', url: 'https://max.ru/two' },
-        { type: 'link', text: 'Кнопка 3', url: 'https://max.ru/three' },
-      ],
-      [{ type: 'link', text: 'Кнопка 4', url: 'https://max.ru/four' }],
-    ]);
-    expect(buttons[2]?.[0]?.text).toBe('💬 Комментарии · 0');
-  });
-
-  it('keeps custom channel broadcast link buttons on separate MAX rows', async () => {
-    const prisma = createPrismaMock();
-    prisma.channelSettings.upsert.mockResolvedValue({
-      chatId: 'channel-1',
-      postSuggestionsEnabled: false,
-      postSuggestionsEntryMode: 'FORM',
-      postSuggestionsButtonText: 'Предложить пост',
-      commentsEnabled: false,
-    });
-
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
-    };
-    const chatContextCache = createChatContextCacheMock();
-
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
-
-    const buttons = await (
-      service as unknown as Pick<AdminServicePrivateAccess, 'resolveBroadcastButtons'>
-    ).resolveBroadcastButtons('channel-1', 'channel', {
-      includeCustomButton: false,
-      customButtonText: '',
-      customButtonUrl: '',
-      customButtons: [
-        { text: 'Зайти в Караван🐪', url: 'https://max.ru/karavan' },
-        { text: 'Открыть свою витрину 🏪', url: 'https://max.ru/storefront' },
-        { text: 'Тех поддержка ⚙️', url: 'https://max.ru/support' },
-      ],
-    });
-
-    expect(buttons).toEqual([
-      [{ type: 'link', text: 'Зайти в Караван🐪', url: 'https://max.ru/karavan' }],
-      [
-        {
-          type: 'link',
-          text: 'Открыть свою витрину 🏪',
-          url: 'https://max.ru/storefront',
-        },
-      ],
-      [{ type: 'link', text: 'Тех поддержка ⚙️', url: 'https://max.ru/support' }],
-    ]);
   });
 
   it.each([

@@ -108,3 +108,18 @@ Unsafe-context exceptions shrink from 8 to 6. The focused suite passed 468 tests
 manual-notice cases additionally verify claim/attempt/send/receipt order, duplicate claims,
 lost MAX replies and failed receipt commits. Existing independent subscription epoch/race
 cases remain active. Full release validation is required for this slice.
+
+## Broadcast and suggestion delivery capability boundary
+
+Broadcast and suggestion-delivery runtimes receive explicit lazy capabilities. Broadcast
+throttle timestamps now belong to each runtime; governor and system-mode warnings retain
+one shared 60-second suppression interval within that runtime. Suggestion recovery retains
+the existing job identifier, eight attempts, exponential backoff and failed/completed-job
+retry behavior.
+
+Broadcast button construction has a separate typed dependency boundary. Chat/channel row
+ordering, comments/suggestion flags, bot scope and copied persisted button rows are checked
+without constructing `AdminService`. The legacy test facade no longer forwards four private
+broadcast methods through `any`; existing occurrence and reconciliation scenarios invoke
+the owning runtime. Unsafe-context exceptions decrease from six to four. Persisted
+publication, delivery, callback and queue formats remain unchanged.
