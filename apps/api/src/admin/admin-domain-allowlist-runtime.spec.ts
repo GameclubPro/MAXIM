@@ -36,15 +36,57 @@ function createRuntime(rows: Array<{ domain: string; removeAfterAt?: Date | null
   };
   const assertChatAdmin = jest.fn().mockResolvedValue(undefined);
   const runtime = new AdminDomainAllowlistRuntime({
-    prisma,
-    chatContextCache,
+    prisma: prisma as never,
+    chatContextCache: chatContextCache as never,
     assertChatAdmin,
-  } as never);
+  });
 
   return { runtime, prisma, chatContextCache, assertChatAdmin };
 }
 
 describe('AdminDomainAllowlistRuntime typed navigation targets', () => {
+  it.each(['list', 'details', 'add', 'remove', 'schedule'] as const)(
+    'performs no data access after denied authority for %s',
+    async (operation) => {
+      const { runtime, prisma, chatContextCache, assertChatAdmin } = createRuntime();
+      const denied = new Error('access revoked');
+      assertChatAdmin.mockRejectedValueOnce(denied);
+      const actions = {
+        list: () => runtime.getDomainAllowlist('chat-1', ADMIN_USER),
+        details: () => runtime.getDomainAllowlistDetails('chat-1', ADMIN_USER),
+        add: () => runtime.addDomain('chat-1', ADMIN_USER, { domain: 'example.com' }),
+        remove: () => runtime.removeDomain('chat-1', ADMIN_USER, 'example.com'),
+        schedule: () => runtime.scheduleDomainRemoval('chat-1', ADMIN_USER, 'example.com', {}),
+      };
+      await expect(actions[operation]()).rejects.toBe(denied);
+      expect(assertChatAdmin).toHaveBeenCalledWith('chat-1', ADMIN_USER.userId);
+      expect(prisma.domainAllowlist.findMany).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(chatContextCache.invalidate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('checks authority before entering the transaction and invalidates only after commit', async () => {
+    const { runtime, prisma, chatContextCache, assertChatAdmin } = createRuntime();
+    let committed = false;
+    prisma.$transaction.mockImplementation(
+      async (write: (tx: typeof prisma) => Promise<unknown>) => {
+        expect(assertChatAdmin).toHaveBeenCalledTimes(1);
+        const result = await write(prisma);
+        expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+        expect(chatContextCache.invalidate).not.toHaveBeenCalled();
+        committed = true;
+        return result;
+      },
+    );
+    chatContextCache.invalidate.mockImplementation(async () => {
+      expect(committed).toBe(true);
+    });
+    await runtime.addDomain('chat-1', ADMIN_USER, { domain: 'example.com' });
+    expect(chatContextCache.invalidate).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
+  });
+
   it('never writes, removes malformed rows, or invalidates cache while reading legacy entries', async () => {
     const early = new Date(Date.now() + 60_000);
     const later = new Date(Date.now() + 120_000);

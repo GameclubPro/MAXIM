@@ -8,26 +8,18 @@ export type AdminDomainAllowlistRuntimeContext = {
   assertChatAdmin(chatId: string, userId: string, entityType?: ManagedEntityType): Promise<void>;
 };
 
-type AdminDomainAllowlistRuntimeContextTarget = {
-  prisma: PrismaService;
-  chatContextCache: ChatContextCacheService;
-  assertChatAdmin(chatId: string, userId: string, entityType?: ManagedEntityType): Promise<void>;
-};
-
 export function createAdminDomainAllowlistRuntimeContext(
-  target: object,
+  target: AdminDomainAllowlistRuntimeContext,
 ): AdminDomainAllowlistRuntimeContext {
-  const typedTarget = target as AdminDomainAllowlistRuntimeContextTarget;
-
   return {
     get prisma(): PrismaService {
-      return typedTarget.prisma;
+      return target.prisma;
     },
     get chatContextCache(): ChatContextCacheService {
-      return typedTarget.chatContextCache;
+      return target.chatContextCache;
     },
     assertChatAdmin(chatId: string, userId: string, entityType?: ManagedEntityType): Promise<void> {
-      return typedTarget.assertChatAdmin(chatId, userId, entityType);
+      return target.assertChatAdmin(chatId, userId, entityType);
     },
   };
 }

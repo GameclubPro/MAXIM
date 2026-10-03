@@ -1,30 +1,50 @@
-import { MAX_CHAT_RULES_TEXT_LENGTH, type BroadcastTextFormat } from '@maxim/contracts';
-import type { MaxSendMessageOptions } from '../max/max-client.service';
+import { MAX_CHAT_RULES_TEXT_LENGTH } from '@maxim/contracts';
 import { AdminChatRulesTextRuntime } from './admin-chat-rules-text-runtime';
+import {
+  createAdminChatRulesTextRuntimeContext,
+  type AdminChatRulesTextRuntimeContext,
+} from './admin-chat-rules-text-runtime-context';
 
-type RulesTextRuntimeHarness = {
-  normalizeImportedRulesText(value: string | null | undefined): string | null;
-  buildFormattedRulesPublicationText(
-    chatId: string,
-    sourceText: string,
-    options: {
-      textFormat: BroadcastTextFormat;
-      adminContactButtonEnabled: boolean;
-      adminContactButtonUrl: string;
-    },
-  ): Promise<{
-    text: string;
-    textFormat: MaxSendMessageOptions['textFormat'];
-  }>;
-};
-
-function createRuntime(): RulesTextRuntimeHarness {
-  return new AdminChatRulesTextRuntime({
-    maxBotTokenValidationSecrets: [],
-  } as never) as unknown as RulesTextRuntimeHarness;
+function createRuntime(
+  overrides: Partial<AdminChatRulesTextRuntimeContext> = {},
+): AdminChatRulesTextRuntime {
+  return new AdminChatRulesTextRuntime(
+    createAdminChatRulesTextRuntimeContext({
+      prisma: {} as never,
+      chatContextCache: { invalidate: jest.fn() } as never,
+      maxClient: { getChatMemberProfiles: jest.fn() } as never,
+      logger: { warn: jest.fn() } as never,
+      maxBotTokenValidationSecrets: [],
+      getSettings: jest.fn(),
+      getDomainAllowlistDetails: jest.fn(),
+      resolveRequiredSubscriptionChannelHeaders: jest.fn(),
+      resolveUserDisplayNames: jest.fn(),
+      resolveChatSettingsReadBotAssignmentData: jest.fn(),
+      ...overrides,
+    }),
+  );
 }
 
 describe('AdminChatRulesTextRuntime publication formatting', () => {
+  it('does not read allowlist or subscription channels when the authorized settings read fails', async () => {
+    const denied = new Error('access revoked');
+    const getSettings = jest.fn().mockRejectedValue(denied);
+    const getDomainAllowlistDetails = jest.fn();
+    const resolveRequiredSubscriptionChannelHeaders = jest.fn();
+    const runtime = createRuntime({
+      getSettings,
+      getDomainAllowlistDetails,
+      resolveRequiredSubscriptionChannelHeaders,
+    });
+    const user = { userId: 'admin-1', username: null, displayName: null, chatTitle: null };
+    await expect(runtime.buildAutofilledRulesTextFromCurrentSettings('chat-1', user)).rejects.toBe(
+      denied,
+    );
+    expect(getSettings).toHaveBeenCalledWith('chat-1', user);
+    expect(getDomainAllowlistDetails).not.toHaveBeenCalled();
+    expect(resolveRequiredSubscriptionChannelHeaders).not.toHaveBeenCalled();
+  });
+
   it('rejects an oversized formatted import instead of truncating its markup', () => {
     const runtime = createRuntime();
     const exact = 'A'.repeat(MAX_CHAT_RULES_TEXT_LENGTH);

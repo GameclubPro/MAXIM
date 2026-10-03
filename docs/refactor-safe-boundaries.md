@@ -49,3 +49,15 @@ guard and relevant context exceptions afterwards. Real-store cases run through t
 validation wrappers. Browser scenarios exercise user actions and request results in addition
 to architectural source checks. Retain current release source floors and observe strict
 smokes plus at least 30 minutes of runtime health before the next production slice.
+
+## Allowlist and rules dependency boundary
+
+The allowlist and rule-text runtimes now accept explicit capabilities. Their composition in
+`AdminService` preserves lazy access to constructor-owned clients, cache identity and method
+receivers. Rules no longer expose arbitrary property reads/writes or require `as any` calls;
+obsolete forwarding methods and copied unused imports have been removed. The unsafe-context
+baseline shrinks from 16 to 14 exceptions. No new cache or persistence format is introduced.
+
+Before changing the boundary, 37 focused tests passed on the old implementation, including
+new denial/no-I/O and transaction/audit/cache ordering cases. Runtime tests construct these
+components independently of `AdminService`. Release verification remains per PR.
