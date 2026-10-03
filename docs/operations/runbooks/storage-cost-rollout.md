@@ -57,6 +57,22 @@ successful phase's `returnedCount` describes that method's returned scalar; it
 is not an idle/pending/committed-work measurement. See the
 [consumer and metric semantics matrix](../storage-body-lifecycle-consumer-matrix-2026-10-01.md).
 
+Delete recovery selects an ordered prefix separately for each of its five fixed active
+statuses, using the existing `(status, next_attempt_at, execute_at)` index. It then orders
+at most five batch prefixes by the original due/creation keys and retains the original
+total batch limit. This avoids a whole-population sort before a mixed-status LIMIT.
+Each prefix retains all due, rollout, retry-evidence and retention predicates; only the
+in-progress prefix requires an expired lease. `FOR UPDATE SKIP LOCKED` remains inside
+each prefix, with at most five batch prefixes locked for the statement's lifetime.
+Selection does not claim an execution lease or authorize an external retry.
+
+This is not a physical scan cap: rejecting eligibility predicates, equal due-time groups
+or locked rows can require more index visits. The disposable PostgreSQL regression
+compares a 50,000-row mixed-status population, verifies ordered results and concurrent
+lock skipping, and checks that selection does not traverse the full eligible fixture.
+Use the existing per-stage runtime duration counters to assess the live effect; do not
+infer recovery from a single plan or Redis handoff acknowledgement.
+
 The follow-up settings write guard compares JSONB values without depending on
 property order, preserves raw-value repair and the existing `updatedAt` CAS, and
 omits only unchanged media from the UPDATE. The forward-only rollup migration

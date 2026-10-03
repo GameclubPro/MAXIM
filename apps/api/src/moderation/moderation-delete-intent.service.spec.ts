@@ -9229,10 +9229,10 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('intent."commercial_ocr_guard_required" = FALSE');
     expect(sql).toContain('retry_cap_other_reason."rule_code" <>');
     expect(sql).not.toContain('retry_cap_other_reason."rule_code" NOT IN');
-    expect(sql.match(/intent\."remote_delete_succeeded_at" IS NOT NULL/gu)).toHaveLength(2);
-    expect(sql.match(/intent\."remote_delete_succeeded_bot_id" IS NOT NULL/gu)).toHaveLength(2);
-    expect(sql.match(/intent\."delete_dispatch_started_at" IS NOT NULL/gu)).toHaveLength(2);
-    expect(sql.match(/intent\."delete_dispatch_started_bot_id" IS NOT NULL/gu)).toHaveLength(2);
+    expect(sql.match(/intent\."remote_delete_succeeded_at" IS NOT NULL/gu)).toHaveLength(10);
+    expect(sql.match(/intent\."remote_delete_succeeded_bot_id" IS NOT NULL/gu)).toHaveLength(10);
+    expect(sql.match(/intent\."delete_dispatch_started_at" IS NOT NULL/gu)).toHaveLength(10);
+    expect(sql.match(/intent\."delete_dispatch_started_bot_id" IS NOT NULL/gu)).toHaveLength(10);
     expect(query?.values).toEqual(
       expect.arrayContaining([
         5,

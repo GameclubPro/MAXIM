@@ -5130,11 +5130,11 @@ export class ModerationDeleteIntentService {
   private async selectDueIntentIds(): Promise<Array<{ id: string }>> {
     const now = new Date();
     const rolloutFilter = this.buildSweepRolloutFilter();
-    return this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      WITH candidates AS (
-        SELECT intent."id"
+    const selectStatus = (status: Prisma.Sql, leaseFilter = Prisma.empty) => Prisma.sql`
+        SELECT intent."id", intent."next_attempt_at", intent."created_at"
         FROM "moderation_delete_intents" intent
-        WHERE intent."execute_at" <= ${now}
+        WHERE intent."status" = ${status}
+          AND intent."execute_at" <= ${now}
           AND intent."retention_owned" = FALSE
           AND intent."next_attempt_at" <= ${now}
           AND (
@@ -5145,24 +5145,40 @@ export class ModerationDeleteIntentService {
             OR intent."delete_dispatch_started_bot_id" IS NOT NULL
           )
           AND ${rolloutFilter}
-          AND (
-            intent."status" IN (
-              CAST('PENDING' AS "ModerationDeleteIntentStatus"),
-              CAST('RETRYABLE' AS "ModerationDeleteIntentStatus"),
-              CAST('WAITING_CAPABILITY' AS "ModerationDeleteIntentStatus"),
-              CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus")
-            )
-            OR (
-              intent."status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
-              AND intent."lease_expires_at" < ${now}
-            )
-          )
+          ${leaseFilter}
         ORDER BY intent."next_attempt_at" ASC, intent."created_at" ASC
         LIMIT ${this.sweepBatchSize}
         FOR UPDATE SKIP LOCKED
+    `;
+    // FLAG: A fixed status lets the existing (status, next_attempt_at, execute_at)
+    // index find each ordered prefix without sorting the whole mixed-status population.
+    // Every lane keeps all eligibility/authority predicates. Locks are statement-local,
+    // at most five batch prefixes; only the original total batch is handed to workers.
+    return this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      WITH pending AS MATERIALIZED (
+        ${selectStatus(Prisma.sql`CAST('PENDING' AS "ModerationDeleteIntentStatus")`)}
+      ), retryable AS MATERIALIZED (
+        ${selectStatus(Prisma.sql`CAST('RETRYABLE' AS "ModerationDeleteIntentStatus")`)}
+      ), waiting AS MATERIALIZED (
+        ${selectStatus(Prisma.sql`CAST('WAITING_CAPABILITY' AS "ModerationDeleteIntentStatus")`)}
+      ), ambiguous AS MATERIALIZED (
+        ${selectStatus(Prisma.sql`CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus")`)}
+      ), in_progress AS MATERIALIZED (
+        ${selectStatus(
+          Prisma.sql`CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")`,
+          Prisma.sql`AND intent."lease_expires_at" < ${now}`,
+        )}
+      ), candidates AS (
+        SELECT * FROM pending
+        UNION ALL SELECT * FROM retryable
+        UNION ALL SELECT * FROM waiting
+        UNION ALL SELECT * FROM ambiguous
+        UNION ALL SELECT * FROM in_progress
       )
       SELECT candidates."id"
       FROM candidates
+      ORDER BY candidates."next_attempt_at" ASC, candidates."created_at" ASC
+      LIMIT ${this.sweepBatchSize}
     `);
   }
 
