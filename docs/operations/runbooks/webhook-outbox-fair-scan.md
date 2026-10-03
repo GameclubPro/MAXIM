@@ -7,6 +7,20 @@ rotating keyset page. Normal mode retains 5,000 raw rows per lane, degraded mode
 existing larger configured selection window). The recent-receipt lane retains its original pool.
 No OFFSET, new global JSON scan, routing move, new queue or migration is introduced.
 
+Retained timeout recovery has a separate traversal from due FAILED retries. At most 200
+FAILED rows with no retry date are materialized before testing quarantine markers and exact
+completed claims/semantic owners: 100 oldest rows plus a 100-row rotating page. That allowance
+comes from the existing failed-lane budget, leaving 4,800 normal or 800 degraded raw rows for
+due retries during recovery passes. Candidate allowances also share the existing failed-lane
+limit. Other polls give due retries the whole allowance. Empty eligible recovery pages still
+advance over their raw source, so unmatched history cannot restart the cursor at the same head.
+Proof/owner predicates and the later settlement fences remain unchanged.
+
+Optional timeout recovery waits five seconds after selection finishes, including failed or slow
+queries. Measuring only from query start would run recovery on every poll when it takes over
+five seconds, starving live receipt throughput. The fixed source cap bounds proof evaluation;
+it is not a wall-clock SLA, and a large retained history can require many recovery passes.
+
 Each rotating lane uses `(created_at, id)` and a creation-time horizon fixed when the cycle begins.
 Newer arrivals cannot keep extending that cycle. Short pages wrap; an empty page also completes
 the cycle. Rows that become due behind the cursor are revisited after wrap. The cursor advances
@@ -14,7 +28,7 @@ across the raw page tail, rather than its single collapsed hot-chat representati
 candidate limit is reached, it advances only through the raw prefix preceding the first unreturned
 work unit. This avoids skipping capped independent units or walking one repeated chat row per poll.
 
-Cursor updates follow successful completion of the SQL statement. Four in-memory lane cursors
+Cursor updates follow successful completion of the SQL statement. Five in-memory lane cursors
 are the only additional retained state. They are selection hints, not receipts or delivery state;
 restart repeats scans and the existing durable outbox remains authoritative. A failed SQL statement
 does not advance the cursors. Paused repair lanes keep their cursor and resume inside the existing
@@ -34,6 +48,9 @@ PostgreSQL coverage exercises capped distinct pages, cursor loss, SQL failure, e
 retained timeout quarantine and completed-claim repair. Disposable EXPLAIN ANALYZE confirms bounded
 page output and indexed source scans in the burst fixture; production must use plain EXPLAIN only.
 These fixtures establish algorithm behavior, not an SLA for arbitrary overload.
+The retained-history fixture additionally checks the materialized source and claim-probe bounds,
+progress through 1,200 ineligible timeout rows, and continued live/due selection. Slow-query tests
+check the recovery cooldown after both success and failure.
 
 Deploy as part of the shared API image through exact-SHA CI and the guarded wrapper. Compare
 oldest eligible receipt progress, enqueue/queue latency, database activity, recovery progress and

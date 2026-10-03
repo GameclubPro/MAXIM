@@ -447,7 +447,7 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
         );
         const nodes = collectExplainNodes(explained);
         const pools = nodes.filter((node) => node['Subplan Name'] === 'CTE page_pool');
-        expect(pools).toHaveLength(4);
+        expect(pools).toHaveLength(5);
         expect(pools.every((node) => Number(node['Actual Rows']) <= 2500)).toBe(true);
         expect(
           nodes
@@ -712,8 +712,8 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     expect(capturedSelectionQuery).not.toBeNull();
     expect(capturedSelectionQuery!.sql).not.toContain('LATERAL');
     expect(capturedSelectionQuery!.values.filter((value) => value === 5_000)).toHaveLength(1);
-    // Four oldest lanes divide their original 5k pool between head and keyset page.
-    expect(capturedSelectionQuery!.values.filter((value) => value === 2_500)).toHaveLength(12);
+    // Three unchanged oldest lanes split 5k; FAILED shares 4,800 due + 200 recovery rows.
+    expect(capturedSelectionQuery!.values.filter((value) => value === 2_500)).toHaveLength(9);
 
     const plan = await prisma.$transaction(async (transaction) => {
       await transaction.$executeRaw`SET LOCAL enable_seqscan = off`;
@@ -777,6 +777,87 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       await blocker;
     }
     await expect(prisma.$queryRaw`SELECT 1 AS ok`).resolves.toEqual([{ ok: 1 }]);
+  });
+
+  it('bounds timeout proof probes before filtering history while live receipts and due retries progress', async () => {
+    (reader as unknown as { enqueueScans: Map<string, unknown> }).enqueueScans = new Map();
+    const suffix = randomUUID();
+    const base = Date.parse('2026-09-01T00:00:00Z');
+    const now = new Date(base + 60_000);
+    const history = Array.from({ length: 1_201 }, (_, index) => ({
+      id: `timeout-bound-${String(index).padStart(4, '0')}-${suffix}`,
+      dedupKey: `timeout-bound-${index}-${suffix}`,
+      createdAt: new Date(base + index),
+      status: WebhookStatus.FAILED,
+      rawPayload: {},
+      errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:fixture: retained`,
+      normalizedPayload: {
+        type: 'message_created',
+        message: { chatId: `timeout-chat-${index}-${suffix}`, messageId: `message-${index}` },
+      },
+    }));
+    const repair = history.at(-1)!;
+    const due = {
+      ...repair,
+      id: `due-${suffix}`,
+      dedupKey: `due-${suffix}`,
+      nextEnqueueAt: now,
+      normalizedPayload: { type: 'message_created', message: { chatId: `due-${suffix}` } },
+    };
+    const live = {
+      ...due,
+      id: `live-${suffix}`,
+      dedupKey: `live-${suffix}`,
+      status: WebhookStatus.RECEIVED,
+      normalizedPayload: { type: 'message_created', message: { chatId: `live-${suffix}` } },
+    };
+    createdEventIds.push(...history.map(({ id }) => id), due.id, live.id);
+    await prisma.webhookEvent.createMany({ data: [...history, due, live] });
+    await prisma.webhookExecutionClaim.create({
+      data: {
+        id: `claim-${suffix}`,
+        kind: 'EXECUTION',
+        semanticKey: `timeout-bound-${suffix}`,
+        webhookEventId: repair.id,
+        status: WebhookExecutionClaimStatus.COMPLETED,
+        preparedAt: now,
+        completedAt: now,
+      },
+    });
+    const capture = jest.spyOn(prisma, '$queryRaw');
+    let query: Prisma.Sql;
+    try {
+      const first = await reader.selectEnqueueCandidates(now);
+      query = capture.mock.calls[0]![0] as Prisma.Sql;
+      expect(first.map(({ id }) => id)).toEqual(expect.arrayContaining([due.id, live.id]));
+      // The completed row lies beyond the first physical recovery page. Checking all
+      // historical claims before LIMIT would incorrectly reach it in this first pass.
+      expect(first.map(({ id }) => id)).not.toContain(repair.id);
+    } finally {
+      capture.mockRestore();
+    }
+    const explained = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+      Prisma.sql`EXPLAIN (ANALYZE, FORMAT JSON) ${query!}`,
+    );
+    const nodes = collectExplainNodes(explained);
+    const rawPools = nodes.filter((node) =>
+      ['CTE head_source', 'CTE page_source'].includes(String(node['Subplan Name'])),
+    );
+    expect(rawPools).toHaveLength(2);
+    expect(rawPools.every((node) => Number(node['Actual Rows']) <= 100)).toBe(true);
+    expect(
+      nodes
+        .filter((node) => node['Relation Name'] === 'webhook_execution_claims')
+        .every((node) => Number(node['Actual Loops']) <= 200),
+    ).toBe(true);
+    let recovered = false;
+    for (let pass = 0; pass < 14; pass++) {
+      const candidates = await reader.selectEnqueueCandidates(now);
+      expect(candidates.map(({ id }) => id)).toEqual(expect.arrayContaining([due.id, live.id]));
+      recovered ||= candidates.some(({ id }) => id === repair.id);
+      expect(candidates.every(({ id }) => [due.id, live.id, repair.id].includes(id))).toBe(true);
+    }
+    expect(recovered).toBe(true);
   });
 
   it('selects a retained snake-case mirror only from a clean completed semantic owner', async () => {

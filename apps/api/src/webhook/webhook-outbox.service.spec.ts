@@ -1256,7 +1256,7 @@ describe('WebhookOutboxService', () => {
     expect(failedCandidatesIndex).toBeGreaterThanOrEqual(0);
     expect(staleQueuedCandidatesIndex).toBeGreaterThan(failedCandidatesIndex);
     expect(semanticOwnerPredicateIndex).toBeGreaterThanOrEqual(0);
-    expect(failedCandidatesLimitIndex).toBeGreaterThan(semanticOwnerPredicateIndex);
+    expect(failedCandidatesLimitIndex).toBeLessThan(semanticOwnerPredicateIndex);
     expect(selectionSql).toContain(`"webhook_events"."normalized_payload"->'message'->>'chat_id'`);
     expect(selectionSql).toContain(
       `"webhook_events"."normalized_payload"->'message'->>'message_id'`,
@@ -1670,6 +1670,38 @@ describe('WebhookOutboxService', () => {
         jest.setSystemTime(new Date('2026-09-14T09:00:05.000Z'));
         await internals.enqueueBatch();
         expect(selectionQueries().at(-1)).toContain('semantic_owner');
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'leaves a full retry-free interval after slow timeout selection (failed=%s)',
+    async (failed) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-09-14T09:00:00.000Z'));
+      try {
+        const { service, prisma } = createService({ systemMode: 'degrade' });
+        const internals = service as unknown as { enqueueBatch: () => Promise<void> };
+        prisma.$queryRaw.mockImplementationOnce(async () => {
+          jest.setSystemTime(Date.now() + 6_000);
+          if (failed) throw new Error('slow selection failed');
+          return [];
+        });
+        if (failed) await expect(internals.enqueueBatch()).rejects.toThrow('slow selection failed');
+        else await internals.enqueueBatch();
+        expect(extractSql(prisma.$queryRaw.mock.calls[0]![0])).toContain('semantic_owner');
+        prisma.$queryRaw.mockClear();
+
+        jest.setSystemTime(Date.now() + 200);
+        await internals.enqueueBatch();
+        expect(extractSql(prisma.$queryRaw.mock.calls[0]![0])).not.toContain('semantic_owner');
+        expect(extractSql(prisma.$queryRaw.mock.calls[0]![0])).toContain('"next_enqueue_at" <= ?');
+
+        prisma.$queryRaw.mockClear();
+        jest.setSystemTime(new Date('2026-09-14T09:00:11.000Z'));
+        await internals.enqueueBatch();
+        expect(extractSql(prisma.$queryRaw.mock.calls[0]![0])).toContain('semantic_owner');
       } finally {
         jest.useRealTimers();
       }

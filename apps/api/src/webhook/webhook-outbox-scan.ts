@@ -11,6 +11,9 @@ export type OutboxScanProgress = {
 
 type ScanQuery = {
   eligibility: Prisma.Sql;
+  // FLAG: Materialize this indexed source before expensive proof predicates. Cursor
+  // progress must count its raw rows even when eligibility rejects the entire page.
+  sourceEligibility?: Prisma.Sql;
   columns: Prisma.Sql;
   workUnitKey: Prisma.Sql;
   scanDirection: 'ASC' | 'DESC';
@@ -25,12 +28,22 @@ export function buildBoundedEnqueueWorkUnitsSql(params: ScanQuery): Prisma.Sql {
   const scanDirection = Prisma.raw(params.scanDirection);
   const resultDirection = Prisma.raw(params.resultDirection);
   return Prisma.sql`
+    ${
+      params.sourceEligibility
+        ? Prisma.sql`WITH head_source AS MATERIALIZED (
+      SELECT ${params.columns} FROM "webhook_events"
+      WHERE ${params.sourceEligibility}
+      ORDER BY "created_at" ${scanDirection}, "id" ${scanDirection}
+      LIMIT ${params.overscanTake}
+    )`
+        : Prisma.empty
+    }
     SELECT ${params.columns}, FALSE AS "isBacklogScan", NULL::jsonb AS "scanProgress"
     FROM (
       SELECT DISTINCT ON ("work_unit_key") bounded_pool.*
       FROM (
         SELECT ${params.columns}, ${params.workUnitKey} AS "work_unit_key"
-        FROM "webhook_events"
+        FROM ${params.sourceEligibility ? Prisma.sql`head_source AS "webhook_events"` : Prisma.sql`"webhook_events"`}
         WHERE ${params.eligibility}
         ORDER BY "created_at" ${scanDirection}, "id" ${scanDirection}
         LIMIT ${params.overscanTake}
@@ -55,14 +68,24 @@ function buildRotatingScan(params: ScanQuery): Prisma.Sql {
   const after = state.after
     ? Prisma.sql`AND ("created_at", "id") > (${state.after.createdAt}, ${state.after.id})`
     : Prisma.empty;
+  const rawPage = Prisma.raw(params.sourceEligibility ? 'page_source' : 'page_pool');
   // FLAG: Both pools share the old raw scan budget. The horizon cannot move with new arrivals.
   // Advance across the scanned raw tail, except when the distinct candidate cap leaves unseen
   // work units: consume only the raw prefix before the first unreturned representative.
   // Repeated rows of one work unit must not advance the cursor just one row per poll.
   return Prisma.sql`
-    WITH page_pool AS MATERIALIZED (
+    WITH ${
+      params.sourceEligibility
+        ? Prisma.sql`page_source AS MATERIALIZED (
+      SELECT ${params.columns} FROM "webhook_events"
+      WHERE ${params.sourceEligibility} AND "created_at" <= ${state.horizon} ${after}
+      ORDER BY "created_at" ASC, "id" ASC LIMIT ${pageSize}
+    ),`
+        : Prisma.empty
+    }
+    page_pool AS MATERIALIZED (
       SELECT ${params.columns}, ${params.workUnitKey} AS "work_unit_key"
-      FROM "webhook_events"
+      FROM ${params.sourceEligibility ? Prisma.sql`page_source AS "webhook_events"` : Prisma.sql`"webhook_events"`}
       WHERE ${params.eligibility} AND "created_at" <= ${state.horizon} ${after}
       ORDER BY "created_at" ASC, "id" ASC LIMIT ${pageSize}
     ),
@@ -74,7 +97,7 @@ function buildRotatingScan(params: ScanQuery): Prisma.Sql {
       SELECT ${params.columns} FROM page_units ORDER BY "created_at", "id" LIMIT ${pageTake}
     ),
     page_counts AS (
-      SELECT (SELECT COUNT(*) FROM page_pool) AS raw_count,
+      SELECT (SELECT COUNT(*) FROM ${rawPage}) AS raw_count,
              (SELECT COUNT(*) FROM page_units) > ${pageTake} AS capped
     ),
     first_unreturned AS (
@@ -83,7 +106,7 @@ function buildRotatingScan(params: ScanQuery): Prisma.Sql {
       ORDER BY "created_at", "id" LIMIT 1
     ),
     scan_tail AS (
-      SELECT "created_at", "id" FROM page_pool
+      SELECT "created_at", "id" FROM ${rawPage}
       WHERE NOT (SELECT capped FROM page_counts)
         OR ("created_at", "id") < (SELECT "created_at", "id" FROM first_unreturned)
       ORDER BY "created_at" DESC, "id" DESC LIMIT 1
