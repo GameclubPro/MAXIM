@@ -126,6 +126,7 @@ export type ManualModerationFanoutLedgerOperation =
   | 'COMMAND_NOTICE_FAILURE';
 
 export type ManualModerationFanoutLedgerRowView = {
+  metadata?: Prisma.JsonValue | null;
   status: ManualModerationFanoutLedgerStatus;
   moderationEventId: string | null;
 };
@@ -246,9 +247,6 @@ export type AdminManualModerationRuntimeContext = {
     actor: AuthUser;
     targetChats?: ChatSummary[];
   }): Promise<ManualBanFanoutResult>;
-  resolveManualMuteCommandFollowUpSummaries(
-    params: ManualMuteFollowUpInput,
-  ): Promise<ManualMuteFollowUpSummary>;
   resolveManualGroupCommandCleanupBotId(
     chatId: string,
     preferredBotId?: string | null,
@@ -277,19 +275,7 @@ export type AdminManualModerationRuntimeContext = {
     targetChatId: string;
     targetUserId: string;
   }): Promise<ManualModerationFanoutLedgerRowView | null>;
-  resolveManualMuteResultFromLedger(
-    row: ManualModerationFanoutLedgerRowView,
-    fallback: {
-      userId: string;
-      muteDurationHours: number | null;
-      muteExpiresAt: Date | null;
-      mutePermanent: boolean;
-    },
-  ): ManualModerationActionResult;
-  isAmbiguousAttemptedMaxMemberMutation(error: unknown): boolean;
-  isManualModerationTransientMaxError(error: unknown): boolean;
-  isRetryableManualFanoutPreparationError(error: unknown): boolean;
-  isManualModerationOrderingFailure(error: unknown): boolean;
+
   resolveManualModerationActionBotAssignment(
     input: ManualModerationActionBotAssignmentInput,
   ): Promise<string | undefined>;
@@ -306,15 +292,11 @@ export type AdminManualModerationRuntimeContext = {
     options: { botId?: string; leaseGuard?: ModerationSanctionStateLeaseGuard },
   ): Promise<ManualModerationCleanupResult>;
   runManualBanFanoutInlineSummary(params: ManualBanFollowUpInput): Promise<ManualBanFanoutSummary>;
-  summarizeManualModerationCleanup(
-    result: ManualModerationCleanupResult,
-  ): ManualModerationCleanupSummary;
-  summarizeManualMuteFanout(result: ManualMuteFanoutResult): ManualMuteFanoutSummary;
-  summarizeManualBanFanout(result: ManualBanFanoutResult): ManualBanFanoutSummary;
+
   normalizeManualModerationBotId(value: unknown): string | null;
   canResolveCurrentChatMemberAccess(): boolean;
-  resolveDeliveryBotAssignment(chatId: string): Promise<string | null>;
-  buildManualModerationFanoutOperationKey(params: ManualModerationFanoutOperationKeyInput): string;
+  resolveDeliveryBotAssignment(chatId: string): Promise<string | null | undefined>;
+
   claimManualModerationFanoutLedgerEntry(
     params: ManualModerationFanoutLedgerClaimInput,
   ): Promise<ManualModerationFanoutLedgerClaimView>;
@@ -335,132 +317,10 @@ export type AdminManualModerationRuntimeContext = {
     options: MaxSendMessageOptions,
     dispatchOptions: MaxActionDispatchOptions,
   ): Promise<MaxPublishedMessage | void>;
-  extractMaxApiErrorMessage(error: unknown): string;
-  extractHttpErrorMessage(error: unknown): string;
-  escapeMarkdownPlainText(value: string): string;
-  readTrimmedString(value: unknown): string | null;
-};
-
-type AdminManualModerationRuntimeContextTarget = Omit<
-  AdminManualModerationRuntimeContext,
-  | 'processManualSystemBan'
-  | 'processManualModerationAction'
-  | 'resolveManualModerationActionBotAssignment'
-> & {
-  maxClient: {
-    getCurrentChatMemberAccess?: unknown;
-    sendMessage: AdminManualModerationRuntimeContext['sendMessage'];
-  };
-  prisma: {
-    manualModerationFanoutLedgerEntry: {
-      findMany(args: unknown): Promise<Array<{ operation: string }>>;
-    };
-  };
-  applyManualSystemBan: AdminManualModerationRuntimeContext['processManualSystemBan'];
-  applyManualModerationAction: AdminManualModerationRuntimeContext['processManualModerationAction'];
-  resolveManualModerationActionBotAssignment(
-    chatId: string,
-    action: ManualModerationBotAction,
-    options?: ResolveManualModerationActionBotAssignmentOptions,
-  ): Promise<string | undefined>;
 };
 
 export function createAdminManualModerationRuntimeContext(
-  target: object,
+  target: AdminManualModerationRuntimeContext,
 ): AdminManualModerationRuntimeContext {
-  const typedTarget = target as AdminManualModerationRuntimeContextTarget;
-
-  return {
-    get logger(): Logger {
-      return typedTarget.logger;
-    },
-    get adminSuperBanQueue(): Queue<AdminSuperBanJob> | undefined {
-      return typedTarget.adminSuperBanQueue;
-    },
-    get adminManualFanoutQueue(): Queue<AdminManualFanoutJob> | undefined {
-      return typedTarget.adminManualFanoutQueue;
-    },
-    enqueueManualModerationFanout: (job) => typedTarget.enqueueManualModerationFanout(job),
-    isKnownRuntimeBotUserId: (userId) => typedTarget.isKnownRuntimeBotUserId(userId),
-    isSuperBanDeveloperUserId: (userId) => typedTarget.isSuperBanDeveloperUserId(userId),
-    processDeveloperSuperBanJob: (job) => typedTarget.processDeveloperSuperBanJob(job),
-    processManualSystemBan: (chatId, targetUserId, actor, source, options) =>
-      typedTarget.applyManualSystemBan(chatId, targetUserId, actor, source, options),
-    processManualModerationAction: (chatId, targetUserId, actor, body, source, options) =>
-      typedTarget.applyManualModerationAction(chatId, targetUserId, actor, body, source, options),
-    resolveManualCommandFanoutChats: (actor, sourceChatId) =>
-      typedTarget.resolveManualCommandFanoutChats(actor, sourceChatId),
-    runManualSourceCleanupWithLedger: (params) =>
-      typedTarget.runManualSourceCleanupWithLedger(params),
-    applyManualMuteFanout: (params) => typedTarget.applyManualMuteFanout(params),
-    applyManualSystemBanFanout: (params) => typedTarget.applyManualSystemBanFanout(params),
-    resolveManualMuteCommandFollowUpSummaries: (params) =>
-      typedTarget.resolveManualMuteCommandFollowUpSummaries(params),
-    resolveManualGroupCommandCleanupBotId: (chatId, preferredBotId) =>
-      typedTarget.resolveManualGroupCommandCleanupBotId(chatId, preferredBotId),
-    resolveManualModerationTargetDisplayName: (chatId, targetUserId, options) =>
-      typedTarget.resolveManualModerationTargetDisplayName(chatId, targetUserId, options),
-    deleteManualGroupCommandTargetMessage: (job, options) =>
-      typedTarget.deleteManualGroupCommandTargetMessage(job, options),
-    deleteManualGroupCommandMessage: (chatId, messageId, options) =>
-      typedTarget.deleteManualGroupCommandMessage(chatId, messageId, options),
-    readManualModerationFanoutIntentRow: (params) =>
-      typedTarget.readManualModerationFanoutIntentRow(params),
-    resolveManualMuteResultFromLedger: (row, fallback) =>
-      typedTarget.resolveManualMuteResultFromLedger(row, fallback),
-    isAmbiguousAttemptedMaxMemberMutation: (error) =>
-      typedTarget.isAmbiguousAttemptedMaxMemberMutation(error),
-    isManualModerationTransientMaxError: (error) =>
-      typedTarget.isManualModerationTransientMaxError(error),
-    isRetryableManualFanoutPreparationError: (error) =>
-      typedTarget.isRetryableManualFanoutPreparationError(error),
-    isManualModerationOrderingFailure: (error) =>
-      typedTarget.isManualModerationOrderingFailure(error),
-    resolveManualModerationActionBotAssignment: ({ chatId, action, options }) =>
-      typedTarget.resolveManualModerationActionBotAssignment(chatId, action, options),
-    assertBotCanDeleteMessages: (chatId, botId) =>
-      typedTarget.assertBotCanDeleteMessages(chatId, botId),
-    deleteRecentTrackedMessagesForManualAction: (chatId, targetUserId, options) =>
-      typedTarget.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId, options),
-    runManualBanSourceCleanup: (chatId, targetUserId, actorUserId, options) =>
-      typedTarget.runManualBanSourceCleanup(chatId, targetUserId, actorUserId, options),
-    runManualBanFanoutInlineSummary: (params) =>
-      typedTarget.runManualBanFanoutInlineSummary(params),
-    summarizeManualModerationCleanup: (result) =>
-      typedTarget.summarizeManualModerationCleanup(result),
-    summarizeManualMuteFanout: (result) => typedTarget.summarizeManualMuteFanout(result),
-    summarizeManualBanFanout: (result) => typedTarget.summarizeManualBanFanout(result),
-    normalizeManualModerationBotId: (value) => typedTarget.normalizeManualModerationBotId(value),
-    canResolveCurrentChatMemberAccess: () =>
-      typeof typedTarget.maxClient.getCurrentChatMemberAccess === 'function',
-    resolveDeliveryBotAssignment: (chatId) => typedTarget.resolveDeliveryBotAssignment(chatId),
-    buildManualModerationFanoutOperationKey: (params) =>
-      typedTarget.buildManualModerationFanoutOperationKey(params),
-    claimManualModerationFanoutLedgerEntry: (params) =>
-      typedTarget.claimManualModerationFanoutLedgerEntry(params),
-    completeManualModerationFanoutLedgerEntry: (params) =>
-      typedTarget.completeManualModerationFanoutLedgerEntry(params),
-    markManualModerationFanoutLedgerFailed: (params) =>
-      typedTarget.markManualModerationFanoutLedgerFailed(params),
-    findSettledManualGroupCommandOutcomeRows: ({ jobId, chatId, targetUserId }) =>
-      typedTarget.prisma.manualModerationFanoutLedgerEntry.findMany({
-        where: {
-          jobId,
-          operation: {
-            in: ['COMMAND_NOTICE_OUTCOME', 'COMMAND_NOTICE_SUCCESS', 'COMMAND_NOTICE_FAILURE'],
-          },
-          targetChatId: chatId,
-          targetUserId,
-          status: { in: ['SUCCEEDED', 'AMBIGUOUS'] },
-        },
-        select: { operation: true },
-        take: 3,
-      }),
-    sendMessage: (chatId, text, options, dispatchOptions) =>
-      typedTarget.maxClient.sendMessage(chatId, text, options, dispatchOptions),
-    extractMaxApiErrorMessage: (error) => typedTarget.extractMaxApiErrorMessage(error),
-    extractHttpErrorMessage: (error) => typedTarget.extractHttpErrorMessage(error),
-    escapeMarkdownPlainText: (value) => typedTarget.escapeMarkdownPlainText(value),
-    readTrimmedString: (value) => typedTarget.readTrimmedString(value),
-  };
+  return target;
 }

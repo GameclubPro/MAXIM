@@ -1,111 +1,45 @@
-import { ChatEntityType } from '../prisma/prisma-client';
-import { createAdminRequiredSubscriptionRuntimeContext } from './admin-required-subscription-runtime-context';
+import { AdminRequiredSubscriptionRuntime } from './admin-required-subscription-runtime';
+import {
+  createAdminRequiredSubscriptionRuntimeContext,
+  type AdminRequiredSubscriptionRuntimeContext,
+} from './admin-required-subscription-runtime-context';
 
-describe('AdminRequiredSubscriptionRuntimeContext', () => {
-  it('exposes required subscription infrastructure through typed accessors', () => {
+describe('required subscription capabilities', () => {
+  it('preserves live dependency identity and method receivers without a legacy target', async () => {
     const target = {
-      prisma: { chat: {} },
-      maxClient: { getChatSnapshot: jest.fn() },
-      chatContextCache: { setManagedEntityHeader: jest.fn() },
-      logger: { warn: jest.fn() },
-      maxBotExecutionPlanner: { refreshChatBotCapabilitySnapshots: jest.fn() },
-      maxBotLinkService: { bindDiscoveredChatBots: jest.fn() },
-      maxBotRegistry: { getBotById: jest.fn() },
-      createManagedEntityHeader: jest.fn(),
-      mergeManagedBotChatCatalogRows: jest.fn(),
-      resolveBotAssignment: jest.fn(),
-      resolveCandidateBotIdsForChat: jest.fn(),
-    };
-    const context = createAdminRequiredSubscriptionRuntimeContext(target);
-
-    expect(context.prisma).toBe(target.prisma);
-    expect(context.maxClient).toBe(target.maxClient);
-    expect(context.chatContextCache).toBe(target.chatContextCache);
-    expect(context.logger).toBe(target.logger);
-    expect(context.maxBotLinkService).toBe(target.maxBotLinkService);
-    expect(context.maxBotRegistry).toBe(target.maxBotRegistry);
-  });
-
-  it('delegates required subscription ports without losing the legacy target context', async () => {
-    const target = {
-      prefix: 'legacy',
-      prisma: { chat: {} },
-      maxClient: { getChatSnapshot: jest.fn() },
-      chatContextCache: { setManagedEntityHeader: jest.fn() },
-      logger: { warn: jest.fn() },
-      maxBotExecutionPlanner: {
-        refreshChatBotCapabilitySnapshots: jest.fn().mockResolvedValue(undefined),
-      },
-      createManagedEntityHeader(params: { id: string; title: string }) {
-        return {
-          id: params.id,
-          title: `${this.prefix}:${params.title}`,
-          entityType: 'channel',
-        };
-      },
-      mergeManagedBotChatCatalogRows(rows: ReadonlyArray<{ chatId: string }>) {
-        return rows.map((row) => ({
-          chatId: `${this.prefix}:${row.chatId}`,
-          title: null,
-          lastEventTime: null,
-          entityType: 'channel',
-          link: null,
-          avatarUrl: null,
-        }));
-      },
-      resolveBotAssignment(chatId: string): Promise<string | undefined> {
+      prefix: 'runtime',
+      prisma: {} as never,
+      maxClient: {} as never,
+      chatContextCache: {} as never,
+      logger: {} as never,
+      maxBotLinkService: {} as never,
+      maxBotRegistry: {} as never,
+      normalizeRuntimeManagedEntityBotId: jest.fn(),
+      resolveBotAssignment(chatId: string) {
         return Promise.resolve(`${this.prefix}:${chatId}`);
       },
-      resolveCandidateBotIdsForChat(
-        chatId: string,
-        options?: { includeDiscoveryFallback?: boolean },
-      ): Promise<string[]> {
-        return Promise.resolve([
-          `${this.prefix}:${chatId}:${options?.includeDiscoveryFallback ?? false}`,
-        ]);
-      },
-    };
+      resolveCandidateBotIdsForChat: jest.fn().mockResolvedValue(['major-1']),
+      refreshManagedEntityBotAccessSnapshots: jest.fn().mockResolvedValue(undefined),
+    } satisfies AdminRequiredSubscriptionRuntimeContext & { prefix: string };
     const context = createAdminRequiredSubscriptionRuntimeContext(target);
-
-    expect(
-      context.createManagedEntityHeader({
-        id: 'channel-1',
-        title: 'Channel',
-        entityType: 'channel',
-      }).title,
-    ).toBe('legacy:Channel');
-    expect(
-      context.mergeManagedBotChatCatalogRows([
-        {
-          botId: 'bot-1',
-          chatId: 'channel-1',
-          entityType: ChatEntityType.CHANNEL,
-          title: null,
-          link: null,
-          avatarUrl: null,
-          lastEventTime: null,
-          lastSeenAt: new Date(),
-        },
-      ]),
-    ).toEqual([
-      {
-        chatId: 'legacy:channel-1',
-        title: null,
-        lastEventTime: null,
-        entityType: 'channel',
-        link: null,
-        avatarUrl: null,
-      },
-    ]);
-    await expect(context.resolveBotAssignment('channel-1')).resolves.toBe('legacy:channel-1');
+    new AdminRequiredSubscriptionRuntime(context);
+    expect(context.prisma).toBe(target.prisma);
+    expect(context.maxClient).toBe(target.maxClient);
+    const next = {} as never;
+    target.maxClient = next;
+    expect(context.maxClient).toBe(next);
+    await expect(context.resolveBotAssignment('chat-1')).resolves.toBe('runtime:chat-1');
     await expect(
-      context.resolveCandidateBotIdsForChat('channel-1', { includeDiscoveryFallback: true }),
-    ).resolves.toEqual(['legacy:channel-1:true']);
-    await context.refreshManagedEntityBotAccessSnapshots('channel-1', 'channel', 'settings');
-
-    expect(target.maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledWith({
-      chatId: 'channel-1',
-      entityType: 'channel',
+      context.resolveCandidateBotIdsForChat('chat-1', { includeDiscoveryFallback: true }),
+    ).resolves.toEqual(['major-1']);
+    expect(target.resolveCandidateBotIdsForChat).toHaveBeenCalledWith('chat-1', {
+      includeDiscoveryFallback: true,
     });
+    await context.refreshManagedEntityBotAccessSnapshots('chat-1', 'chat', 'settings');
+    expect(target.refreshManagedEntityBotAccessSnapshots).toHaveBeenCalledWith(
+      'chat-1',
+      'chat',
+      'settings',
+    );
   });
 });

@@ -91,3 +91,20 @@ Before transfer, 84 focused tests passed, including seven new snapshot/cache cas
 transfer, 506 focused tests passed across service, access, discovery and snapshot boundaries.
 Independent access-runtime tests cover bot-scope isolation, live capability replacement,
 blank identity and best-effort persistence failure. Release verification remains per PR.
+
+## Manual actions and required-subscription capabilities
+
+Manual moderation and required-subscription runtimes now receive explicit capabilities.
+Manual notice identity, persisted-result interpretation, error classification and summaries
+use independent functions. The group-mute follow-up calls its own runtime directly rather
+than round-tripping through a legacy forwarding method. The existing external lease boundary
+is unchanged. Delivery-bot capabilities explicitly describe their existing null/undefined
+fallback, and ledger views describe the metadata already returned by persistence.
+
+Required-subscription headers reuse the existing equivalent header builder. Catalog merging
+accepts an explicit bot-normalization capability and preserves row order, bot scope and
+metadata precedence. Neither domain adds a cache or changes queue/ledger/persistence formats.
+Unsafe-context exceptions shrink from 8 to 6. The focused suite passed 468 tests; independent
+manual-notice cases additionally verify claim/attempt/send/receipt order, duplicate claims,
+lost MAX replies and failed receipt commits. Existing independent subscription epoch/race
+cases remain active. Full release validation is required for this slice.

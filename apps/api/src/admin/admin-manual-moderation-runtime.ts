@@ -1,4 +1,19 @@
 import {
+  resolveManualMuteResultFromLedger,
+  isAmbiguousAttemptedMaxMemberMutation,
+  isManualModerationTransientMaxError,
+  isRetryableManualFanoutPreparationError,
+  isManualModerationOrderingFailure,
+  summarizeManualModerationCleanup,
+  summarizeManualMuteFanout,
+  summarizeManualBanFanout,
+  buildManualModerationFanoutOperationKey,
+  extractHttpErrorMessage,
+  escapeMarkdownPlainText,
+} from './admin-manual-moderation-values';
+import { readTrimmedString } from './admin-legacy-utils';
+import { extractMaxApiErrorMessage } from './admin-chat-rules';
+import {
   BadRequestException,
   ForbiddenException,
   ServiceUnavailableException,
@@ -142,10 +157,6 @@ export class AdminManualModerationRuntime {
     return this.context.processDeveloperSuperBanJob(job);
   }
 
-  private readTrimmedString(value: unknown): string | null {
-    return this.context.readTrimmedString(value);
-  }
-
   async fanoutGroupMuteAfterNotice(
     job: AdminManualGroupModerationCommandJob,
     actor: AuthUser,
@@ -155,7 +166,7 @@ export class AdminManualModerationRuntime {
       return;
     }
 
-    await this.context.resolveManualMuteCommandFollowUpSummaries({
+    await this.resolveManualMuteCommandFollowUpSummaries({
       sourceChatId: job.sourceChatId,
       targetUserId: job.targetUserId,
       actor,
@@ -277,7 +288,7 @@ export class AdminManualModerationRuntime {
         params.fanoutAllChats,
       ),
       sourceChatId: params.sourceChatId,
-      commandBotId: this.readTrimmedString(params.commandBotId),
+      commandBotId: readTrimmedString(params.commandBotId),
       targetUserId: params.targetUserId,
       targetSenderName: params.targetSenderName ?? null,
       targetMessageId: params.targetMessageId ?? null,
@@ -317,7 +328,7 @@ export class AdminManualModerationRuntime {
         params.targetUserId,
       ),
       sourceChatId: params.sourceChatId,
-      commandBotId: this.readTrimmedString(params.commandBotId),
+      commandBotId: readTrimmedString(params.commandBotId),
       targetUserId: params.targetUserId,
       targetSenderName: params.targetSenderName ?? null,
       targetMessageId: params.targetMessageId ?? null,
@@ -469,7 +480,7 @@ export class AdminManualModerationRuntime {
     mutePermanent: boolean;
     source: ManualModerationFanoutSource;
   }): Promise<ManualMuteFanoutTargetPreparation> {
-    const operationKey = this.context.buildManualModerationFanoutOperationKey({
+    const operationKey = buildManualModerationFanoutOperationKey({
       operation: 'FANOUT_MUTE_RECORD',
       sourceChatId: params.sourceChatId,
       targetChatId: params.targetChatId,
@@ -560,7 +571,7 @@ export class AdminManualModerationRuntime {
     logContext: { targetChatId: string; targetUserId: string; actorUserId: string };
     logMessage: string;
   }): Promise<ManualMuteFanoutTargetPreparation> {
-    const retryable = this.context.isRetryableManualFanoutPreparationError(params.error);
+    const retryable = isRetryableManualFanoutPreparationError(params.error);
     const persistedError =
       params.error && typeof params.error === 'object' && 'cause' in params.error
         ? ((params.error as { cause?: unknown }).cause ?? params.error)
@@ -648,7 +659,7 @@ export class AdminManualModerationRuntime {
         );
         return;
       }
-      const result = this.context.resolveManualMuteResultFromLedger(sourceMuteLedger, {
+      const result = resolveManualMuteResultFromLedger(sourceMuteLedger, {
         userId: job.targetUserId,
         muteDurationHours:
           job.mutePermanent === true
@@ -751,7 +762,7 @@ export class AdminManualModerationRuntime {
       } else if (
         error instanceof ManualModerationOutcomeUncertainError ||
         wasMaxMemberMutationConfirmed(error) ||
-        this.context.isAmbiguousAttemptedMaxMemberMutation(error)
+        isAmbiguousAttemptedMaxMemberMutation(error)
       ) {
         const targetLabel = formatManualModerationUserLabel(targetDisplayName, job.targetUserId);
         const noticeBotId = await this.resolveManualGroupCommandNoticeBotId(
@@ -795,7 +806,7 @@ export class AdminManualModerationRuntime {
             commandMessageId: job.commandMessageId,
             action: job.action,
           },
-          text: `Команда «${failedActionLabel}» не выполнена: ${this.context.escapeMarkdownPlainText(
+          text: `Команда «${failedActionLabel}» не выполнена: ${escapeMarkdownPlainText(
             publicErrorMessage,
           )}`,
           deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
@@ -927,7 +938,7 @@ export class AdminManualModerationRuntime {
       ) {
         return;
       }
-      operationKey = this.context.buildManualModerationFanoutOperationKey({
+      operationKey = buildManualModerationFanoutOperationKey({
         operation: 'COMMAND_NOTICE_OUTCOME',
         sourceChatId: params.chatId,
         targetChatId: params.chatId,
@@ -1043,8 +1054,8 @@ export class AdminManualModerationRuntime {
     }
 
     return (
-      this.context.extractMaxApiErrorMessage(error) ||
-      this.context.extractHttpErrorMessage(error) ||
+      extractMaxApiErrorMessage(error) ||
+      extractHttpErrorMessage(error) ||
       (error instanceof Error ? error.message : 'Unknown error')
     );
   }
@@ -1121,7 +1132,7 @@ export class AdminManualModerationRuntime {
     ) {
       return true;
     }
-    if (this.context.isManualModerationTransientMaxError(error)) {
+    if (isManualModerationTransientMaxError(error)) {
       return true;
     }
 
@@ -1168,7 +1179,7 @@ export class AdminManualModerationRuntime {
         },
       );
     } catch (error: unknown) {
-      if (this.context.isManualModerationOrderingFailure(error)) {
+      if (isManualModerationOrderingFailure(error)) {
         throw error;
       }
       this.logger.warn(
@@ -1185,8 +1196,8 @@ export class AdminManualModerationRuntime {
     try {
       const fanout = await this.context.applyManualMuteFanout(params);
       return {
-        sourceMessageCleanup: this.context.summarizeManualModerationCleanup(sourceCleanup),
-        crossChatMuteFanout: this.context.summarizeManualMuteFanout(fanout),
+        sourceMessageCleanup: summarizeManualModerationCleanup(sourceCleanup),
+        crossChatMuteFanout: summarizeManualMuteFanout(fanout),
       };
     } catch (error: unknown) {
       this.logger.warn(
@@ -1199,8 +1210,8 @@ export class AdminManualModerationRuntime {
         'Failed to run manual mute fanout after source chat mute',
       );
       return {
-        sourceMessageCleanup: this.context.summarizeManualModerationCleanup(sourceCleanup),
-        crossChatMuteFanout: this.context.summarizeManualMuteFanout({
+        sourceMessageCleanup: summarizeManualModerationCleanup(sourceCleanup),
+        crossChatMuteFanout: summarizeManualMuteFanout({
           mutedChatIds: [],
           skippedChatIds: [],
           failedChatIds: [],
@@ -1233,7 +1244,7 @@ export class AdminManualModerationRuntime {
       { leaseGuard: params.leaseGuard },
     );
     return {
-      sourceMessageCleanup: this.context.summarizeManualModerationCleanup(sourceCleanup),
+      sourceMessageCleanup: summarizeManualModerationCleanup(sourceCleanup),
       crossChatFanout: await this.context.runManualBanFanoutInlineSummary(params),
     };
   }
@@ -1246,7 +1257,7 @@ export class AdminManualModerationRuntime {
       return this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId);
     }
 
-    return this.context.summarizeManualModerationCleanup(
+    return summarizeManualModerationCleanup(
       await this.context.runManualBanSourceCleanup(
         params.sourceChatId,
         params.targetUserId,
@@ -1273,7 +1284,7 @@ export class AdminManualModerationRuntime {
 
     try {
       const fanout = await this.context.applyManualSystemBanFanout(params);
-      return this.context.summarizeManualBanFanout(fanout);
+      return summarizeManualBanFanout(fanout);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -1284,7 +1295,7 @@ export class AdminManualModerationRuntime {
         },
         'Failed to run manual system ban fanout after source chat ban',
       );
-      return this.context.summarizeManualBanFanout({
+      return summarizeManualBanFanout({
         removedChatIds: [],
         skippedChatIds: [],
         failedChatIds: [],
