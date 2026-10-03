@@ -187,6 +187,8 @@ jobs:
         run: |
           node apps/miniapp/test/settings-rules.browser.mjs
           node apps/miniapp/test/rules-image-picker.browser.mjs
+      - name: Publication feed filters, cursors and calendar scope
+        run: node apps/miniapp/test/publication-list.browser.mjs
 
   admin:
     name: Safety Desk

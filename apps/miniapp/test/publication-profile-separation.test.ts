@@ -8,6 +8,10 @@ const publicationsSource = readFileSync(
   new URL('../src/pages/publications-page.tsx', import.meta.url),
   'utf8',
 );
+const listControllerSource = readFileSync(
+  new URL('../src/features/publications/use-publication-list.ts', import.meta.url),
+  'utf8',
+);
 const contentEditorSource = readFileSync(
   new URL('../src/features/publications/publication-content-editor-section.tsx', import.meta.url),
   'utf8',
@@ -83,7 +87,7 @@ test('Major keeps legacy-routed management but cannot enter the publication edit
   assert.match(publicationsSource, /allowEdit=\{isPublisherProfile\}/u);
   assert.match(publicationsSource, /isPublisherProfile && hasSavedDraft/u);
   assert.match(publicationsSource, /isPublisherProfile &&[\s\S]*?publisherCanCreate/u);
-  assert.match(publicationsSource, /enabled: !isEditor && !isLegacyView/u);
+  assert.match(listControllerSource, /enabled: !isEditor && !isLegacyView/u);
   assert.match(detailsSource, /allowEdit && actionCapabilities\.canEdit/u);
 });
 
