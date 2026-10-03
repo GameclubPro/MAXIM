@@ -14,14 +14,6 @@
       "definitionSha256": "52b55779cdec3ca80d1445eb5f2e9d51eb19cf3f3ffff1b90d64870b57866537"
     },
     {
-      "key": "apps/api/src/admin/admin-managed-broadcast-runtime-context.ts:createAdminManagedBroadcastRuntimeContext",
-      "definitionSha256": "6ddb564af2fefcf36b5df271d242cc0d0c47c4233377bf8efd8325187971a0e3"
-    },
-    {
-      "key": "apps/api/src/admin/admin-suggestion-delivery-runtime-context.ts:createAdminSuggestionDeliveryRuntimeContext",
-      "definitionSha256": "020e1d19215d772d66684ac66aec7da9149ca5120a3f191ba3506901c11ec8ac"
-    },
-    {
       "key": "apps/api/src/admin/channel-dialog-legacy.port.ts:legacy-import:./admin.service",
       "definitionSha256": "a1b03d4f56e88e6e03b3febbee2111eede4c8e1262bea57be46bf5488f430e74"
     }

@@ -739,13 +739,7 @@ export class AdminManagedBroadcastRuntime {
     return this.context.maxRoutedPublicationService;
   }
 
-  private get managedBroadcastDegradePauseLogAtMs(): number {
-    return this.context.managedBroadcastDegradePauseLogAtMs;
-  }
-
-  private set managedBroadcastDegradePauseLogAtMs(value: number) {
-    this.context.managedBroadcastDegradePauseLogAtMs = value;
-  }
+  private managedBroadcastDegradePauseLogAtMs = 0;
 
   private resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {
     return this.context.resolveSystemModeSnapshot();

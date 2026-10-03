@@ -57,46 +57,6 @@ export type AdminManagedBroadcastRuntimeContext = {
   readonly publisherRuntimeBoundaryService?: PublisherRuntimeBoundaryService;
   readonly publisherReadinessService?: PublisherReadinessService;
   readonly publisherDispatchHealthService?: PublisherDispatchHealthService;
-  managedBroadcastDegradePauseLogAtMs: number;
-  resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
-  resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;
-  resolvePrivateDeliveryBotId(botId?: string | null): string | undefined;
-  resolvePrivateDialogChatId(user: AuthUser, botId?: string | null): Promise<string | null>;
-  listChatsForMassBroadcast(
-    user: AuthUser,
-    options?: { discoveryMode?: 'full' | 'cached-first' },
-  ): Promise<ChatSummary[]>;
-  assertManagedEntityAdminAccess(
-    chatId: string,
-    userId: string,
-    entityType: ManagedEntityType,
-  ): Promise<void>;
-  assertManagedEntityReadAccess(
-    chatId: string,
-    userId: string,
-    entityType: ManagedEntityType,
-    options?: AdminReadBypassOptions,
-  ): Promise<void>;
-  resolveBroadcastButtonContext(
-    chatId: string,
-    entityType: ManagedEntityType,
-    options: ManagedBroadcastButtonContextOptions,
-    botId?: string,
-  ): Promise<ManagedBroadcastButtonContextResult>;
-};
-
-type AdminManagedBroadcastRuntimeContextTarget = {
-  prisma: PrismaService;
-  maxClient: MaxClientService;
-  logger: Logger;
-  backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService;
-  managedEntityAccessLossService?: ManagedEntityAccessLossService;
-  maxRoutedPublicationService?: MaxRoutedPublicationService;
-  channelPostSignatureService?: ChannelPostSignatureService;
-  publisherRuntimeBoundaryService?: PublisherRuntimeBoundaryService;
-  publisherReadinessService?: PublisherReadinessService;
-  publisherDispatchHealthService?: PublisherDispatchHealthService;
-  managedBroadcastDegradePauseLogAtMs: number;
   resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
   resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;
   resolvePrivateDeliveryBotId(botId?: string | null): string | undefined;
@@ -125,87 +85,7 @@ type AdminManagedBroadcastRuntimeContextTarget = {
 };
 
 export function createAdminManagedBroadcastRuntimeContext(
-  target: object,
+  dependencies: AdminManagedBroadcastRuntimeContext,
 ): AdminManagedBroadcastRuntimeContext {
-  const typedTarget = target as AdminManagedBroadcastRuntimeContextTarget;
-
-  return {
-    get prisma(): PrismaService {
-      return typedTarget.prisma;
-    },
-    get maxClient(): MaxClientService {
-      return typedTarget.maxClient;
-    },
-    get logger(): Logger {
-      return typedTarget.logger;
-    },
-    get backgroundRuntimeGovernorService(): BackgroundRuntimeGovernorService | undefined {
-      return typedTarget.backgroundRuntimeGovernorService;
-    },
-    get managedEntityAccessLossService(): ManagedEntityAccessLossService | undefined {
-      return typedTarget.managedEntityAccessLossService;
-    },
-    get maxRoutedPublicationService(): MaxRoutedPublicationService | undefined {
-      return typedTarget.maxRoutedPublicationService;
-    },
-    get channelPostSignatureService(): ChannelPostSignatureService | undefined {
-      return typedTarget.channelPostSignatureService;
-    },
-    get publisherRuntimeBoundaryService(): PublisherRuntimeBoundaryService | undefined {
-      return typedTarget.publisherRuntimeBoundaryService;
-    },
-    get publisherReadinessService(): PublisherReadinessService | undefined {
-      return typedTarget.publisherReadinessService;
-    },
-    get publisherDispatchHealthService(): PublisherDispatchHealthService | undefined {
-      return typedTarget.publisherDispatchHealthService;
-    },
-    get managedBroadcastDegradePauseLogAtMs(): number {
-      return typedTarget.managedBroadcastDegradePauseLogAtMs;
-    },
-    set managedBroadcastDegradePauseLogAtMs(value: number) {
-      typedTarget.managedBroadcastDegradePauseLogAtMs = value;
-    },
-    resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {
-      return typedTarget.resolveSystemModeSnapshot();
-    },
-    resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined> {
-      return typedTarget.resolveDeliveryBotAssignment(chatId);
-    },
-    resolvePrivateDeliveryBotId(botId?: string | null): string | undefined {
-      return typedTarget.resolvePrivateDeliveryBotId(botId);
-    },
-    resolvePrivateDialogChatId(user: AuthUser, botId?: string | null): Promise<string | null> {
-      return typedTarget.resolvePrivateDialogChatId(user, botId);
-    },
-    listChatsForMassBroadcast(
-      user: AuthUser,
-      options?: { discoveryMode?: 'full' | 'cached-first' },
-    ): Promise<ChatSummary[]> {
-      return typedTarget.listChatsForMassBroadcast(user, options);
-    },
-    assertManagedEntityAdminAccess(
-      chatId: string,
-      userId: string,
-      entityType: ManagedEntityType,
-    ): Promise<void> {
-      return typedTarget.assertManagedEntityAdminAccess(chatId, userId, entityType);
-    },
-    assertManagedEntityReadAccess(
-      chatId: string,
-      userId: string,
-      entityType: ManagedEntityType,
-      options?: AdminReadBypassOptions,
-    ): Promise<void> {
-      return typedTarget.assertManagedEntityReadAccess(chatId, userId, entityType, options);
-    },
-    resolveBroadcastButtonContext(
-      chatId: string,
-      entityType: ManagedEntityType,
-      options: ManagedBroadcastButtonContextOptions,
-      botId?: string,
-    ): Promise<ManagedBroadcastButtonContextResult> {
-      return typedTarget.resolveBroadcastButtonContext(chatId, entityType, options, botId);
-    },
-  };
+  return dependencies;
 }

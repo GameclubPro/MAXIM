@@ -9,26 +9,8 @@ export type AdminSuggestionDeliveryRuntimeContext = {
   processChannelSuggestionDeliveryJobWithinTimeout(auditLogId: string): Promise<void>;
 };
 
-type AdminSuggestionDeliveryRuntimeContextTarget = {
-  logger: Logger;
-  adminSuggestionDeliveryQueue?: Queue<AdminSuggestionDeliveryJob>;
-  processChannelSuggestionDeliveryJobWithinTimeout(auditLogId: string): Promise<void>;
-};
-
 export function createAdminSuggestionDeliveryRuntimeContext(
-  target: object,
+  dependencies: AdminSuggestionDeliveryRuntimeContext,
 ): AdminSuggestionDeliveryRuntimeContext {
-  const typedTarget = target as AdminSuggestionDeliveryRuntimeContextTarget;
-
-  return {
-    get logger(): Logger {
-      return typedTarget.logger;
-    },
-    get adminSuggestionDeliveryQueue(): Queue<AdminSuggestionDeliveryJob> | undefined {
-      return typedTarget.adminSuggestionDeliveryQueue;
-    },
-    processChannelSuggestionDeliveryJobWithinTimeout(auditLogId: string): Promise<void> {
-      return typedTarget.processChannelSuggestionDeliveryJobWithinTimeout(auditLogId);
-    },
-  };
+  return dependencies;
 }

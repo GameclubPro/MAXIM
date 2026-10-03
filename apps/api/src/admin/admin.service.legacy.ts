@@ -389,7 +389,12 @@ import {
   normalizeManagedBroadcastButtons as normalizeManagedBroadcastButtonsValue,
   type ManagedBroadcastLegacyButtonState,
 } from './admin-managed-broadcast-buttons';
-import { createAdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
+import {
+  createAdminManagedBroadcastRuntimeContext,
+  type ManagedBroadcastButtonContextOptions,
+  type ManagedBroadcastButtonContextResult,
+} from './admin-managed-broadcast-runtime-context';
+import { resolveManagedBroadcastButtonContext } from './admin-managed-broadcast-button-context';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
 import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
@@ -714,9 +719,55 @@ const DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES = [
 @Injectable()
 export class AdminService implements OnModuleDestroy {
   private readonly logger = new Logger(AdminService.name);
-  private readonly managedBroadcastRuntime = new AdminManagedBroadcastRuntime(
-    createAdminManagedBroadcastRuntimeContext(this),
-  );
+  private readonly managedBroadcastRuntime = ((owner: AdminService) => {
+    // FLAG: Resolve constructor-owned dependencies lazily and preserve their receivers.
+    return new AdminManagedBroadcastRuntime(
+      createAdminManagedBroadcastRuntimeContext({
+        get prisma() {
+          return owner.prisma;
+        },
+        get maxClient() {
+          return owner.maxClient;
+        },
+        get logger() {
+          return owner.logger;
+        },
+        get backgroundRuntimeGovernorService() {
+          return owner.backgroundRuntimeGovernorService;
+        },
+        get managedEntityAccessLossService() {
+          return owner.managedEntityAccessLossService;
+        },
+        get maxRoutedPublicationService() {
+          return owner.maxRoutedPublicationService;
+        },
+        get channelPostSignatureService() {
+          return owner.channelPostSignatureService;
+        },
+        get publisherRuntimeBoundaryService() {
+          return owner.publisherRuntimeBoundaryService;
+        },
+        get publisherReadinessService() {
+          return owner.publisherReadinessService;
+        },
+        get publisherDispatchHealthService() {
+          return owner.publisherDispatchHealthService;
+        },
+        resolveSystemModeSnapshot: () => owner.resolveSystemModeSnapshot(),
+        resolveDeliveryBotAssignment: (chatId) => owner.resolveDeliveryBotAssignment(chatId),
+        resolvePrivateDeliveryBotId: (botId) => owner.resolvePrivateDeliveryBotId(botId),
+        resolvePrivateDialogChatId: (user, botId) => owner.resolvePrivateDialogChatId(user, botId),
+        listChatsForMassBroadcast: (user, options) =>
+          owner.listChatsForMassBroadcast(user, options),
+        assertManagedEntityAdminAccess: (chatId, userId, entityType) =>
+          owner.assertManagedEntityAdminAccess(chatId, userId, entityType),
+        assertManagedEntityReadAccess: (chatId, userId, entityType, options) =>
+          owner.assertManagedEntityReadAccess(chatId, userId, entityType, options),
+        resolveBroadcastButtonContext: (chatId, entityType, options, botId) =>
+          owner.resolveBroadcastButtonContext(chatId, entityType, options, botId),
+      }),
+    );
+  })(this);
   private readonly publisherCommentKeyboardRouting: PublisherCommentKeyboardRouting;
   private readonly publisherDialogProfileRuntime: PublisherDialogProfileRuntime;
   private readonly dialogAdminAccessRuntime: AdminDialogAdminAccessRuntime;
@@ -1047,9 +1098,21 @@ export class AdminService implements OnModuleDestroy {
           refreshBots(owner.maxBotExecutionPlanner, owner.logger, chatId, entityType, reason),
       }),
     ))(this);
-  private readonly suggestionDeliveryRuntime = new AdminSuggestionDeliveryRuntime(
-    createAdminSuggestionDeliveryRuntimeContext(this),
-  );
+  private readonly suggestionDeliveryRuntime = ((owner: AdminService) => {
+    // FLAG: Resolve constructor-owned dependencies lazily and preserve their receivers.
+    return new AdminSuggestionDeliveryRuntime(
+      createAdminSuggestionDeliveryRuntimeContext({
+        get logger() {
+          return owner.logger;
+        },
+        get adminSuggestionDeliveryQueue() {
+          return owner.adminSuggestionDeliveryQueue;
+        },
+        processChannelSuggestionDeliveryJobWithinTimeout: (auditLogId) =>
+          owner.processChannelSuggestionDeliveryJobWithinTimeout(auditLogId),
+      }),
+    );
+  })(this);
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
@@ -1096,7 +1159,6 @@ export class AdminService implements OnModuleDestroy {
   >();
   private moderationSanctionStateLockFallback: ModerationSanctionStateLockService | null = null;
   private moderationSanctionStateFenceFallback: ModerationSanctionStateFenceService | null = null;
-  private managedBroadcastDegradePauseLogAtMs = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -8390,24 +8452,8 @@ export class AdminService implements OnModuleDestroy {
     return this.managedBroadcastRuntime.processDueDeadlinePublicationBroadcasts(...args);
   }
 
-  private processManagedBroadcastOccurrence(...args: any[]) {
-    return (this.managedBroadcastRuntime as any).processManagedBroadcastOccurrence(...args);
-  }
-
-  private createManagedBroadcastDeliverySnapshot(...args: any[]) {
-    return (this.managedBroadcastRuntime as any).createManagedBroadcastDeliverySnapshot(...args);
-  }
-
-  private mapManagedBroadcastSummary(...args: any[]) {
-    return (this.managedBroadcastRuntime as any).mapManagedBroadcastSummary(...args);
-  }
-
-  private mapManagedBroadcastDetails(...args: any[]) {
-    return (this.managedBroadcastRuntime as any).mapManagedBroadcastDetails(...args);
-  }
-
-  private normalizeBroadcastTextFormat(...args: any[]) {
-    return (this.managedBroadcastRuntime as any).normalizeBroadcastTextFormat(...args);
+  private normalizeBroadcastTextFormat(value: string): 'markdown' | 'plain' {
+    return value === 'markdown' ? 'markdown' : 'plain';
   }
 
   private resolveManagedBroadcastSendRetryDelayMs(
@@ -8603,174 +8649,26 @@ export class AdminService implements OnModuleDestroy {
     return (await this.resolveBroadcastButtonContext(chatId, entityType, options, botId)).buttons;
   }
 
-  private async resolveBroadcastButtonContext(
+  private resolveBroadcastButtonContext(
     chatId: string,
     entityType: ManagedEntityType,
-    options: {
-      customButtons?: BroadcastLinkButton[];
-      buttonEnabled?: boolean;
-      buttonUrl?: string;
-      buttonText?: string;
-      includeCustomButton: boolean;
-      customButtonText: string;
-      customButtonUrl: string;
-    },
+    options: ManagedBroadcastButtonContextOptions,
     botId?: string,
-  ): Promise<{
-    buttons: MaxMessageButton[][];
-    commentDialogReference: {
-      entityType: ManagedEntityType;
-      threadId: string;
-      includeCommentsButton: boolean;
-      includeSuggestButton: boolean;
-      suggestButtonText: string | null;
-      customButtons: BroadcastLinkButton[];
-      suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
-      botId: string | null;
-      buttonRows?: MaxMessageButton[][];
-      commentsButton?: { rowIndex: number; columnIndex: number; baseText: string | null } | null;
-    } | null;
-  }> {
-    const customButtons = this.normalizeManagedBroadcastButtons(options.customButtons, {
-      buttonEnabled: options.includeCustomButton,
-      buttonUrl: options.customButtonUrl,
-      buttonText: options.customButtonText,
-    });
-    const customButtonRows = this.buildBroadcastLinkButtonRows(
-      customButtons,
-      entityType === 'channel' ? { buttonsPerRow: 1 } : undefined,
+  ): Promise<ManagedBroadcastButtonContextResult> {
+    return resolveManagedBroadcastButtonContext(
+      {
+        prisma: this.prisma,
+        channelPostSignatureService: this.channelPostSignatureService,
+        shouldIncludeChatCommentsButton: (settings) =>
+          this.shouldIncludeChatCommentsButton(settings),
+        buildChatDialogButton: (...args) => this.dialogLinkHelper.buildChatDialogButton(...args),
+        buildChannelDialogButton: (...args) => this.buildChannelDialogButton(...args),
+      },
+      chatId,
+      entityType,
+      options,
+      botId,
     );
-
-    if (entityType === 'chat') {
-      const chatSettings = await this.prisma.chatSettings.upsert({
-        where: { chatId },
-        create: { chatId },
-        update: {},
-        select: {
-          commentsEnabled: true,
-          commentsAdminsEnabled: true,
-          commentsAllEnabled: true,
-          commentsChatBroadcastsEnabled: true,
-        },
-      });
-      const threadId = randomUUID();
-      let commentDialogReference: {
-        entityType: ManagedEntityType;
-        threadId: string;
-        includeCommentsButton: boolean;
-        includeSuggestButton: boolean;
-        suggestButtonText: string | null;
-        customButtons: BroadcastLinkButton[];
-        suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
-        botId: string | null;
-      } | null = null;
-
-      if (this.shouldIncludeChatCommentsButton(chatSettings)) {
-        customButtonRows.push([
-          this.dialogLinkHelper.buildChatDialogButton(
-            chatId,
-            'comments',
-            threadId,
-            formatCommentsButtonText('💬 Комментарии', 0),
-            botId,
-          ),
-        ]);
-        commentDialogReference = {
-          entityType: 'chat',
-          threadId,
-          includeCommentsButton: true,
-          includeSuggestButton: false,
-          suggestButtonText: null,
-          customButtons,
-          suggestionEntryMode: null,
-          botId: botId ?? null,
-        };
-      }
-
-      return {
-        buttons: customButtonRows,
-        commentDialogReference,
-      };
-    }
-
-    if (entityType !== 'channel') {
-      return {
-        buttons: customButtonRows,
-        commentDialogReference: null,
-      };
-    }
-
-    const channelSettings = await this.prisma.channelSettings.upsert({
-      where: { chatId },
-      create: {
-        chatId,
-        commentsEnabled: false,
-      },
-      update: {},
-      select: {
-        postSuggestionsEnabled: true,
-        postSuggestionsEntryMode: true,
-        postSuggestionsButtonText: true,
-        commentsEnabled: true,
-      },
-    });
-    const threadId = randomUUID();
-    const includeCommentsButton = channelSettings.commentsEnabled;
-    const includeSuggestButton = channelSettings.postSuggestionsEnabled;
-    const suggestButtonText =
-      channelSettings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
-
-    const commentsButton = includeCommentsButton
-      ? this.buildChannelDialogButton(
-          chatId,
-          'comments',
-          threadId,
-          formatCommentsButtonText('💬 Комментарии', 0),
-          botId,
-        )
-      : null;
-    const suggestButton = includeSuggestButton
-      ? this.buildChannelDialogButton(
-          chatId,
-          'suggest',
-          threadId,
-          suggestButtonText,
-          botId,
-          channelSettings.postSuggestionsEntryMode,
-        )
-      : null;
-    const ctaButton = await this.channelPostSignatureService?.buildPostButton(chatId, {
-      entityType: 'channel',
-      trafficClass: 'background',
-      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
-    });
-    const rows = buildChannelPostActionRows({
-      commentsButton,
-      suggestButton,
-      ctaButton,
-      customButtonRows,
-    });
-
-    return {
-      buttons: rows,
-      commentDialogReference:
-        includeCommentsButton || includeSuggestButton
-          ? {
-              entityType: 'channel',
-              threadId,
-              includeCommentsButton,
-              includeSuggestButton,
-              suggestButtonText: includeSuggestButton ? suggestButtonText : null,
-              customButtons,
-              suggestionEntryMode: channelSettings.postSuggestionsEntryMode,
-              botId: botId ?? null,
-              buttonRows: rows.map((row) => row.map((button) => ({ ...button }))),
-              commentsButton: includeCommentsButton
-                ? { rowIndex: 0, columnIndex: 0, baseText: '💬 Комментарии' }
-                : null,
-            }
-          : null,
-    };
   }
 
   private buildChannelDialogButton(

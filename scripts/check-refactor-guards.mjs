@@ -8,7 +8,7 @@ const root = resolve(import.meta.dirname, '..');
 const guardedFiles = [
   {
     path: 'apps/api/src/admin/admin.service.legacy.ts',
-    maxLines: 23108,
+    maxLines: 23007,
     targetLines: 22500,
     reason:
       'AdminService remains a legacy hotspot; this ceiling includes the shared crash-safe Major/Publisher suggestion delivery ledger and sanction lock/fence guards at existing side-effect boundaries, while unrelated domains should keep moving to focused services.',
@@ -22,7 +22,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/api/src/admin/admin.service.spec.ts',
-    maxLines: 31711,
+    maxLines: 31648,
     targetLines: 30000,
     reason:
       'AdminService tests should keep moving by complete domain into focused specs instead of regrowing the legacy all-domain test file.',
