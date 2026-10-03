@@ -1,3 +1,6 @@
+import { readTrimmedString } from './admin-legacy-utils';
+import { toSafeInteger, resolveLogsDashboardFrom } from './admin-statistics-values';
+import { buildUserProfileUrl, normalizeMaxProfileUrl } from './admin-profile-links';
 import {
   chatParticipantImmunitySchema,
   chatParticipantImmunityUpdateRequestSchema,
@@ -33,7 +36,7 @@ import {
   type MaxChatRosterMember,
   type MaxChatRosterUnavailableReason,
 } from '../max/max-client.service';
-import type { Prisma } from '../prisma/prisma-client';
+import { SanctionAction, type Prisma } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
   buildChatParticipantsPageCacheKey,
@@ -112,12 +115,10 @@ export class AdminParticipantsRuntime {
     return this.context.managedEntityAccessLossService;
   }
 
-  private get chatParticipantsPageCache(): Map<
+  private readonly chatParticipantsPageCache = new Map<
     string,
     TimedPromiseCacheEntry<ChatParticipantsPage>
-  > {
-    return this.context.chatParticipantsPageCache;
-  }
+  >();
 
   private assertReadOnlyChatAdmin(
     chatId: string,
@@ -134,7 +135,22 @@ export class AdminParticipantsRuntime {
     from: Date,
     to: Date,
   ): Prisma.ModerationEventWhereInput {
-    return this.context.buildParticipantViolationCountWhere(chatId, userIds, from, to);
+    return {
+      chatId,
+      userId: {
+        in: [...userIds],
+      },
+      createdAt: { gte: from, lte: to },
+      action: {
+        in: [
+          SanctionAction.WARN,
+          SanctionAction.DELETE_MESSAGE,
+          SanctionAction.MUTE,
+          SanctionAction.KICK,
+          SanctionAction.BAN,
+        ],
+      },
+    };
   }
 
   private buildProfileMentionHandoffUrl(
@@ -154,7 +170,7 @@ export class AdminParticipantsRuntime {
   }
 
   private buildUserProfileUrl(username: string | null): string | null {
-    return this.context.buildUserProfileUrl(username);
+    return buildUserProfileUrl(username);
   }
 
   private ensureEntityType(
@@ -172,7 +188,7 @@ export class AdminParticipantsRuntime {
   }
 
   private normalizeMaxProfileUrl(value: string | null): string | null {
-    return this.context.normalizeMaxProfileUrl(value);
+    return normalizeMaxProfileUrl(value);
   }
 
   private prepareManualModerationTarget(
@@ -182,7 +198,7 @@ export class AdminParticipantsRuntime {
   }
 
   private readTrimmedString(value: unknown): string | null {
-    return this.context.readTrimmedString(value);
+    return readTrimmedString(value);
   }
 
   private resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined> {
@@ -194,11 +210,11 @@ export class AdminParticipantsRuntime {
   }
 
   private resolveLogsDashboardFrom(range: ChatParticipantsQuery['range'], to: Date): Date {
-    return this.context.resolveLogsDashboardFrom(range, to);
+    return resolveLogsDashboardFrom(range, to);
   }
 
   private toSafeInteger(value: unknown): number {
-    return this.context.toSafeInteger(value);
+    return toSafeInteger(value);
   }
 
   async getChatParticipantsPage(

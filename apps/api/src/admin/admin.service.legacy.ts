@@ -1,3 +1,4 @@
+import { toSafeInteger, toIsoString } from './admin-statistics-values';
 import { SuggestionSubscriptionService } from '../suggestions/suggestion-subscription.service';
 import { MaxMemberRestoreUnavailableError } from '../max/max-member-restore-capability';
 import {
@@ -16,7 +17,6 @@ import {
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   chatSettingsScreenResponseSchema,
   channelSettingsScreenResponseSchema,
-  channelStatsQuerySchema,
   channelDialogResponseSchema,
   type ChannelDialogNotificationMode,
   type ChannelDialogNotificationScope,
@@ -39,13 +39,10 @@ import {
   type ToggleChannelDialogReactionResponse,
   type ChatParticipantImmunityUpdateResult,
   type ChatParticipantsPage,
-  type ChatParticipantsQuery,
   type ChatUnavailableParticipantsCleanupResult,
   type ChannelDialogType,
   type ChannelSuggestionVideoInput,
-  type ChannelStatsBucket,
   type ChannelStatsQuery,
-  type ChannelStatsRange,
   type ChannelStatsResponse,
   type ChannelOverview,
   type ApplySectionToAllResponse,
@@ -55,7 +52,6 @@ import {
   type ManagedBroadcastCalendarResponse,
   type ManagedEntityFavoriteType,
   type MembershipActivityPage,
-  type MembershipActivityQuery,
   type ManagedBroadcastSummary,
   type ManagedEntityBotCapability,
   type ChannelSettings,
@@ -431,9 +427,6 @@ import {
   CHANNEL_SUGGESTION_DELIVERY_RECOVERY_STALE_MS,
   CHANNEL_SUGGESTION_SEND_TIMEOUT_MS,
   CHANNEL_SUGGESTION_UPLOAD_TIMEOUT_MS,
-  CHANNEL_STATS_RESPONSE_CACHE_TTL_MS,
-  CHANNEL_STATS_REFRESHING_RESPONSE_CACHE_TTL_MS,
-  SLOW_CHANNEL_STATS_THRESHOLD_MS,
   RESOLVED_USER_PROFILE_CACHE_TTL_MS,
   ONE_HOUR_MS,
   TWENTY_FOUR_HOURS_MS,
@@ -568,7 +561,6 @@ import {
   type ChannelDialogAttachmentAsset,
   type ChannelSuggestionTextMarkup,
   type ChannelSuggestionDeliveryInput,
-  type MembershipEventRow,
   type ChannelDialogMessageSource,
   type DialogMessageEntityType,
   type CommentDialogNotificationKind,
@@ -753,9 +745,44 @@ export class AdminService implements OnModuleDestroy {
   readonly channelSuggestionPublicationRuntime = new AdminChannelSuggestionPublicationRuntime(
     createAdminChannelSuggestionPublicationRuntimeContext(this),
   );
-  private readonly channelStatsRuntime = new AdminChannelStatsRuntime(
-    createAdminChannelStatsRuntimeContext(this),
-  );
+
+  private readonly channelStatsRuntime = ((owner: AdminService) =>
+    new AdminChannelStatsRuntime(
+      createAdminChannelStatsRuntimeContext({
+        get prisma() {
+          return owner.prisma;
+        },
+        get maxClient() {
+          return owner.maxClient;
+        },
+        get chatContextCache() {
+          return owner.chatContextCache;
+        },
+        get logger() {
+          return owner.logger;
+        },
+        get channelStatsCollector() {
+          return owner.channelStatsCollector;
+        },
+        getMembershipActivityFeedPage: (chatId, from, to, query, entityType, profileOptions) =>
+          owner.logsDashboardRuntime.getMembershipActivityFeedPage(
+            chatId,
+            from,
+            to,
+            query,
+            entityType,
+            profileOptions,
+          ),
+        buildEmptyMembershipActivityPage: () =>
+          owner.logsDashboardRuntime.buildEmptyMembershipActivityPage(),
+        resolveAssistBotAssignment: (chatId, capability) =>
+          owner.resolveAssistBotAssignment(chatId, capability),
+        assertReadOnlyChatAdmin: (chatId, userId, entityType, options) =>
+          owner.assertReadOnlyChatAdmin(chatId, userId, entityType, options),
+        ensureEntityType: (chatId, userId, expectedEntityType) =>
+          owner.ensureEntityType(chatId, userId, expectedEntityType),
+      }),
+    ))(this);
   private readonly domainAllowlistRuntime = ((owner: AdminService) => {
     // FLAG: Resolve dependencies lazily; constructor-owned clients and secrets initialize later.
     return new AdminDomainAllowlistRuntime(
@@ -771,9 +798,31 @@ export class AdminService implements OnModuleDestroy {
       }),
     );
   })(this);
-  private readonly logsDashboardRuntime = new AdminLogsDashboardRuntime(
-    createAdminLogsDashboardRuntimeContext(this),
-  );
+
+  private readonly logsDashboardRuntime = ((owner: AdminService) =>
+    new AdminLogsDashboardRuntime(
+      createAdminLogsDashboardRuntimeContext({
+        get prisma() {
+          return owner.prisma;
+        },
+        get logger() {
+          return owner.logger;
+        },
+        get chatContextCache() {
+          return owner.chatContextCache;
+        },
+        assertChatAdmin: (chatId, userId, entityType, options) =>
+          owner.assertChatAdmin(chatId, userId, entityType, options),
+        assertReadOnlyChatAdmin: (chatId, userId, entityType, options) =>
+          owner.assertReadOnlyChatAdmin(chatId, userId, entityType, options),
+        buildProfileMentionHandoffUrl: (chatId, entityType, userId, displayName) =>
+          owner.buildProfileMentionHandoffUrl(chatId, entityType, userId, displayName),
+        ensureEntityType: (chatId, userId, expectedEntityType) =>
+          owner.ensureEntityType(chatId, userId, expectedEntityType),
+        resolveUserProfiles: (chatId, entityType, userIds, options) =>
+          owner.resolveUserProfiles(chatId, entityType, userIds, options),
+      }),
+    ))(this);
   private readonly manualModerationRuntime = new AdminManualModerationRuntime(
     createAdminManualModerationRuntimeContext(this),
   );
@@ -783,9 +832,38 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedEntitiesRuntime = new AdminManagedEntitiesRuntime(
     createAdminManagedEntitiesRuntimeContext(this),
   );
-  private readonly participantsRuntime = new AdminParticipantsRuntime(
-    createAdminParticipantsRuntimeContext(this),
-  );
+
+  private readonly participantsRuntime = ((owner: AdminService) =>
+    new AdminParticipantsRuntime(
+      createAdminParticipantsRuntimeContext({
+        get prisma() {
+          return owner.prisma;
+        },
+        get maxClient() {
+          return owner.maxClient;
+        },
+        get logger() {
+          return owner.logger;
+        },
+        get managedEntityAccessLossService() {
+          return owner.managedEntityAccessLossService;
+        },
+        assertReadOnlyChatAdmin: (chatId, userId, entityType, options) =>
+          owner.assertReadOnlyChatAdmin(chatId, userId, entityType, options),
+        buildProfileMentionHandoffUrl: (chatId, entityType, userId, displayName, botId) =>
+          owner.buildProfileMentionHandoffUrl(chatId, entityType, userId, displayName, botId),
+        ensureEntityType: (chatId, userId, expectedEntityType) =>
+          owner.ensureEntityType(chatId, userId, expectedEntityType),
+        getManagedEntityHeader: (chatId, user, entityType, options) =>
+          owner.getManagedEntityHeader(chatId, user, entityType, options),
+        prepareManualModerationTarget: (chatId, targetUserIdRaw, user, options) =>
+          owner.prepareManualModerationTarget(chatId, targetUserIdRaw, user, options),
+        resolveBackgroundReadBotAssignment: (chatId) =>
+          owner.resolveBackgroundReadBotAssignment(chatId),
+        resolveParticipantCleanupBotAssignment: (chatId) =>
+          owner.resolveParticipantCleanupBotAssignment(chatId),
+      }),
+    ))(this);
   private readonly requiredSubscriptionRuntime = new AdminRequiredSubscriptionRuntime(
     createAdminRequiredSubscriptionRuntimeContext(this),
   );
@@ -838,28 +916,7 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedEntitiesDiscoveryHeaderPrimeCooldownUntilMs = new Map<string, number>();
   private readonly managedEntitiesCatalogSyncCursorByScope = new Map<string, number>();
   private managedEntitiesDegradePauseLogAtMs = 0;
-  private readonly logsDashboardResponseCache = new Map<
-    string,
-    TimedPromiseCacheEntry<LogsDashboardResponse>
-  >();
-  private readonly channelStatsResponseCache = new Map<
-    string,
-    TimedPromiseCacheEntry<ChannelStatsResponse>
-  >();
-  private readonly channelStatsRefreshRuns = new Map<string, Promise<void>>();
-  private readonly moderationFeedPageCache = new Map<
-    string,
-    TimedPromiseCacheEntry<ModerationFeedPage>
-  >();
   private readonly adminAccessValidationRosterSyncScheduledAtMs = new Map<string, number>();
-  private readonly membershipActivityFeedPageCache = new Map<
-    string,
-    TimedPromiseCacheEntry<MembershipActivityPage>
-  >();
-  private readonly chatParticipantsPageCache = new Map<
-    string,
-    TimedPromiseCacheEntry<ChatParticipantsPage>
-  >();
   private readonly resolvedUserProfileCache = new Map<
     string,
     TimedPromiseCacheEntry<ResolvedUserProfile>
@@ -6597,64 +6654,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     query: unknown,
   ): Promise<ChannelStatsResponse> {
-    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'channel', {
-      forceRemote: true,
-    });
-    await this.ensureEntityType(chatId, user.userId, 'channel');
-
-    const parsed = channelStatsQuerySchema.safeParse(query);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const cacheKey = this.buildChannelStatsResponseCacheKey(chatId, user.userId, parsed.data);
-    const cached = this.channelStatsResponseCache.get(cacheKey);
-    if (cached && cached.expiresAtMs > Date.now()) {
-      return cached.promise;
-    }
-
-    const entry: TimedPromiseCacheEntry<ChannelStatsResponse> = {
-      expiresAtMs: Date.now() + CHANNEL_STATS_RESPONSE_CACHE_TTL_MS,
-      promise: Promise.resolve(null as never),
-    };
-    const pending = this.buildChannelStatsResponse(chatId, parsed.data)
-      .then((response) => {
-        entry.expiresAtMs =
-          Date.now() +
-          (response.meta.refreshQueued
-            ? CHANNEL_STATS_REFRESHING_RESPONSE_CACHE_TTL_MS
-            : CHANNEL_STATS_RESPONSE_CACHE_TTL_MS);
-        return response;
-      })
-      .catch((error: unknown) => {
-        const current = this.channelStatsResponseCache.get(cacheKey);
-        if (current?.promise === pending) {
-          this.channelStatsResponseCache.delete(cacheKey);
-        }
-        throw error;
-      });
-    entry.promise = pending;
-    this.channelStatsResponseCache.set(cacheKey, entry);
-
-    const startedAtMs = Date.now();
-    const response = await pending;
-    const totalMs = Date.now() - startedAtMs;
-    if (totalMs >= SLOW_CHANNEL_STATS_THRESHOLD_MS) {
-      this.logger.warn(
-        {
-          chatId,
-          userId: user.userId,
-          totalMs,
-          range: parsed.data.range,
-          includeActivityPreview: parsed.data.includeActivityPreview,
-          cacheHit: false,
-          refreshQueued: response.meta.refreshQueued,
-        },
-        'Slow channel stats request completed',
-      );
-    }
-
-    return response;
+    return this.channelStatsRuntime.getChannelStats(chatId, user, query);
   }
 
   private buildChannelStatsResponse(
@@ -6668,18 +6668,6 @@ export class AdminService implements OnModuleDestroy {
     ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsResponseCacheKey']>
   ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsResponseCacheKey']> {
     return this.channelStatsRuntime.buildChannelStatsResponseCacheKey(...args);
-  }
-
-  private shouldRefreshChannelStats(
-    ...args: Parameters<AdminChannelStatsRuntime['shouldRefreshChannelStats']>
-  ): ReturnType<AdminChannelStatsRuntime['shouldRefreshChannelStats']> {
-    return this.channelStatsRuntime.shouldRefreshChannelStats(...args);
-  }
-
-  private scheduleChannelStatsRefresh(
-    ...args: Parameters<AdminChannelStatsRuntime['scheduleChannelStatsRefresh']>
-  ): ReturnType<AdminChannelStatsRuntime['scheduleChannelStatsRefresh']> {
-    return this.channelStatsRuntime.scheduleChannelStatsRefresh(...args);
   }
 
   async getChannelActivityFeed(
@@ -8966,6 +8954,10 @@ export class AdminService implements OnModuleDestroy {
     query: unknown,
   ): Promise<ModerationFeedPage> {
     return this.logsDashboardRuntime.getChatModerationFeed(chatId, user, query);
+  }
+
+  getChatParticipantDetails(chatId: string, targetUserId: string, user: AuthUser, query: unknown) {
+    return this.participantsRuntime.getChatParticipantDetails(chatId, targetUserId, user, query);
   }
 
   async getChatParticipantsPage(
@@ -14284,192 +14276,10 @@ export class AdminService implements OnModuleDestroy {
     return this.logsDashboardRuntime.resolveLogsDashboardFrom(range, to);
   }
 
-  private buildParticipantViolationCountWhere(
-    chatId: string,
-    userIds: readonly string[],
-    from: Date,
-    to: Date,
-  ): Prisma.ModerationEventWhereInput {
-    return {
-      chatId,
-      userId: {
-        in: [...userIds],
-      },
-      createdAt: { gte: from, lte: to },
-      action: {
-        in: [
-          SanctionAction.WARN,
-          SanctionAction.DELETE_MESSAGE,
-          SanctionAction.MUTE,
-          SanctionAction.KICK,
-          SanctionAction.BAN,
-        ],
-      },
-    };
-  }
-
-  private resolveChannelStatsFrom(range: ChannelStatsRange, to: Date): Date {
-    return this.resolveLogsDashboardFrom(range, to);
-  }
-
-  private resolveChannelStatsBucket(range: ChannelStatsRange): ChannelStatsBucket {
-    return range === '24h' ? 'hour' : 'day';
-  }
-
-  private async getMembershipActivityFeedPage(
-    chatId: string,
-    from: Date,
-    to: Date,
-    query: MembershipActivityQuery,
-    entityType: ManagedEntityType = 'chat',
-    profileOptions: ResolveUserProfilesOptions = {},
-  ): Promise<MembershipActivityPage> {
-    return this.logsDashboardRuntime.getMembershipActivityFeedPage(
-      chatId,
-      from,
-      to,
-      query,
-      entityType,
-      profileOptions,
-    );
-  }
-
-  private async buildChatParticipantsPage(
-    chatId: string,
-    userId: string,
-    query: ChatParticipantsQuery,
-    entityType: ManagedEntityType = 'chat',
-  ): Promise<ChatParticipantsPage> {
-    return (this.participantsRuntime as any).buildChatParticipantsPage(
-      chatId,
-      userId,
-      query,
-      entityType,
-    );
-  }
-
-  private buildEmptyModerationFeedPage(): ModerationFeedPage {
-    return this.logsDashboardRuntime.buildEmptyModerationFeedPage();
-  }
-
-  private buildEmptyMembershipActivityPage(): MembershipActivityPage {
-    return this.logsDashboardRuntime.buildEmptyMembershipActivityPage();
-  }
-
-  private async getMembershipEventRows(
-    chatId: string,
-    from: Date,
-    to: Date,
-    eventTypes: readonly string[],
-    options: {
-      cursor?: { createdAt: string; id: string } | null;
-      limit?: number;
-      order?: 'asc' | 'desc';
-    } = {},
-  ): Promise<MembershipEventRow[]> {
-    return this.logsDashboardRuntime.getMembershipEventRows(chatId, from, to, eventTypes, options);
-  }
-
-  private buildPreviousChannelStatsPeriodSnapshot(
-    ...args: Parameters<AdminChannelStatsRuntime['buildPreviousChannelStatsPeriodSnapshot']>
-  ): ReturnType<AdminChannelStatsRuntime['buildPreviousChannelStatsPeriodSnapshot']> {
-    return this.channelStatsRuntime.buildPreviousChannelStatsPeriodSnapshot(...args);
-  }
-
-  private buildChannelStatsComparison(
-    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsComparison']>
-  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsComparison']> {
-    return this.channelStatsRuntime.buildChannelStatsComparison(...args);
-  }
-
-  private buildChannelStatsDeltaMetric(
-    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsDeltaMetric']>
-  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsDeltaMetric']> {
-    return this.channelStatsRuntime.buildChannelStatsDeltaMetric(...args);
-  }
-
-  private buildChannelStatsSignals(
-    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsSignals']>
-  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsSignals']> {
-    return this.channelStatsRuntime.buildChannelStatsSignals(...args);
-  }
-
-  private buildChannelStatsBestWindows(
-    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsBestWindows']>
-  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsBestWindows']> {
-    return this.channelStatsRuntime.buildChannelStatsBestWindows(...args);
-  }
-
-  private resolveChannelStatsMoscowWindow(
-    ...args: Parameters<AdminChannelStatsRuntime['resolveChannelStatsMoscowWindow']>
-  ): ReturnType<AdminChannelStatsRuntime['resolveChannelStatsMoscowWindow']> {
-    return this.channelStatsRuntime.resolveChannelStatsMoscowWindow(...args);
-  }
-
-  private formatChannelStatsSignedInteger(
-    ...args: Parameters<AdminChannelStatsRuntime['formatChannelStatsSignedInteger']>
-  ): ReturnType<AdminChannelStatsRuntime['formatChannelStatsSignedInteger']> {
-    return this.channelStatsRuntime.formatChannelStatsSignedInteger(...args);
-  }
-
-  private formatChannelStatsCompactCount(
-    ...args: Parameters<AdminChannelStatsRuntime['formatChannelStatsCompactCount']>
-  ): ReturnType<AdminChannelStatsRuntime['formatChannelStatsCompactCount']> {
-    return this.channelStatsRuntime.formatChannelStatsCompactCount(...args);
-  }
-
-  private buildChannelStatsBucketStarts(
-    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsBucketStarts']>
-  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsBucketStarts']> {
-    return this.channelStatsRuntime.buildChannelStatsBucketStarts(...args);
-  }
-
-  private floorChannelStatsBucket(
-    ...args: Parameters<AdminChannelStatsRuntime['floorChannelStatsBucket']>
-  ): ReturnType<AdminChannelStatsRuntime['floorChannelStatsBucket']> {
-    return this.channelStatsRuntime.floorChannelStatsBucket(...args);
-  }
-
-  private shiftChannelStatsBucket(
-    ...args: Parameters<AdminChannelStatsRuntime['shiftChannelStatsBucket']>
-  ): ReturnType<AdminChannelStatsRuntime['shiftChannelStatsBucket']> {
-    return this.channelStatsRuntime.shiftChannelStatsBucket(...args);
-  }
-
   private buildParticipantSeries(
     ...args: Parameters<AdminChannelStatsRuntime['buildParticipantSeries']>
   ): ReturnType<AdminChannelStatsRuntime['buildParticipantSeries']> {
     return this.channelStatsRuntime.buildParticipantSeries(...args);
-  }
-
-  private buildMembershipSeriesFromBucketRows(
-    ...args: Parameters<AdminChannelStatsRuntime['buildMembershipSeriesFromBucketRows']>
-  ): ReturnType<AdminChannelStatsRuntime['buildMembershipSeriesFromBucketRows']> {
-    return this.channelStatsRuntime.buildMembershipSeriesFromBucketRows(...args);
-  }
-
-  private buildPostViewMetrics(
-    ...args: Parameters<AdminChannelStatsRuntime['buildPostViewMetrics']>
-  ): ReturnType<AdminChannelStatsRuntime['buildPostViewMetrics']> {
-    return this.channelStatsRuntime.buildPostViewMetrics(...args);
-  }
-
-  private buildChannelStatsSummary(
-    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsSummary']>
-  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsSummary']> {
-    return this.channelStatsRuntime.buildChannelStatsSummary(...args);
-  }
-
-  private buildChannelStatsMembershipDelta(
-    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsMembershipDelta']>
-  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsMembershipDelta']> {
-    return this.channelStatsRuntime.buildChannelStatsMembershipDelta(...args);
-  }
-
-  private buildChannelStatsMembershipFlow(
-    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsMembershipFlow']>
-  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsMembershipFlow']> {
-    return this.channelStatsRuntime.buildChannelStatsMembershipFlow(...args);
   }
 
   private buildChannelStatsDailySummary(
@@ -14478,76 +14288,10 @@ export class AdminService implements OnModuleDestroy {
     return this.channelStatsRuntime.buildChannelStatsDailySummary(...args);
   }
 
-  private buildChannelStatsDailyMembershipFlows(
-    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsDailyMembershipFlows']>
-  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsDailyMembershipFlows']> {
-    return this.channelStatsRuntime.buildChannelStatsDailyMembershipFlows(...args);
-  }
-
-  private buildChannelStatsViewWindowSummary(
-    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsViewWindowSummary']>
-  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsViewWindowSummary']> {
-    return this.channelStatsRuntime.buildChannelStatsViewWindowSummary(...args);
-  }
-
-  private resolveLastAudienceCountAt(
-    ...args: Parameters<AdminChannelStatsRuntime['resolveLastAudienceCountAt']>
-  ): ReturnType<AdminChannelStatsRuntime['resolveLastAudienceCountAt']> {
-    return this.channelStatsRuntime.resolveLastAudienceCountAt(...args);
-  }
-
-  private floorChannelStatsDay(
-    ...args: Parameters<AdminChannelStatsRuntime['floorChannelStatsDay']>
-  ): ReturnType<AdminChannelStatsRuntime['floorChannelStatsDay']> {
-    return this.channelStatsRuntime.floorChannelStatsDay(...args);
-  }
-
-  private floorChannelStatsMoscowDay(
-    ...args: Parameters<AdminChannelStatsRuntime['floorChannelStatsMoscowDay']>
-  ): ReturnType<AdminChannelStatsRuntime['floorChannelStatsMoscowDay']> {
-    return this.channelStatsRuntime.floorChannelStatsMoscowDay(...args);
-  }
-
-  private formatChannelStatsMoscowDate(
-    ...args: Parameters<AdminChannelStatsRuntime['formatChannelStatsMoscowDate']>
-  ): ReturnType<AdminChannelStatsRuntime['formatChannelStatsMoscowDate']> {
-    return this.channelStatsRuntime.formatChannelStatsMoscowDate(...args);
-  }
-
-  private toDateOrNull(
-    ...args: Parameters<AdminChannelStatsRuntime['toDateOrNull']>
-  ): ReturnType<AdminChannelStatsRuntime['toDateOrNull']> {
-    return this.channelStatsRuntime.toDateOrNull(...args);
-  }
-
-  private buildContentSeriesFromBucketRows(
-    ...args: Parameters<AdminChannelStatsRuntime['buildContentSeriesFromBucketRows']>
-  ): ReturnType<AdminChannelStatsRuntime['buildContentSeriesFromBucketRows']> {
-    return this.channelStatsRuntime.buildContentSeriesFromBucketRows(...args);
-  }
-
-  private buildContentTotals(
-    ...args: Parameters<AdminChannelStatsRuntime['buildContentTotals']>
-  ): ReturnType<AdminChannelStatsRuntime['buildContentTotals']> {
-    return this.channelStatsRuntime.buildContentTotals(...args);
-  }
-
-  private sumChannelPostMetricViews(
-    ...args: Parameters<AdminChannelStatsRuntime['sumChannelPostMetricViews']>
-  ): ReturnType<AdminChannelStatsRuntime['sumChannelPostMetricViews']> {
-    return this.channelStatsRuntime.sumChannelPostMetricViews(...args);
-  }
-
   private buildAverageViewsSeriesFromPostMetrics(
     ...args: Parameters<AdminChannelStatsRuntime['buildAverageViewsSeriesFromPostMetrics']>
   ): ReturnType<AdminChannelStatsRuntime['buildAverageViewsSeriesFromPostMetrics']> {
     return this.channelStatsRuntime.buildAverageViewsSeriesFromPostMetrics(...args);
-  }
-
-  private buildTopPosts(
-    ...args: Parameters<AdminChannelStatsRuntime['buildTopPosts']>
-  ): ReturnType<AdminChannelStatsRuntime['buildTopPosts']> {
-    return this.channelStatsRuntime.buildTopPosts(...args);
   }
 
   private hydrateTopPostPreviews(
@@ -14556,91 +14300,12 @@ export class AdminService implements OnModuleDestroy {
     return this.channelStatsRuntime.hydrateTopPostPreviews(...args);
   }
 
-  private buildTopReactions(
-    ...args: Parameters<AdminChannelStatsRuntime['buildTopReactions']>
-  ): ReturnType<AdminChannelStatsRuntime['buildTopReactions']> {
-    return this.channelStatsRuntime.buildTopReactions(...args);
+  private toSafeInteger(value: unknown) {
+    return toSafeInteger(value);
   }
 
-  private readChannelPostReactions(
-    ...args: Parameters<AdminChannelStatsRuntime['readChannelPostReactions']>
-  ): ReturnType<AdminChannelStatsRuntime['readChannelPostReactions']> {
-    return this.channelStatsRuntime.readChannelPostReactions(...args);
-  }
-
-  private readChannelPostReaction(
-    ...args: Parameters<AdminChannelStatsRuntime['readChannelPostReaction']>
-  ): ReturnType<AdminChannelStatsRuntime['readChannelPostReaction']> {
-    return this.channelStatsRuntime.readChannelPostReaction(...args);
-  }
-
-  private resolveOfficialCoverageFrom(
-    ...args: Parameters<AdminChannelStatsRuntime['resolveOfficialCoverageFrom']>
-  ): ReturnType<AdminChannelStatsRuntime['resolveOfficialCoverageFrom']> {
-    return this.channelStatsRuntime.resolveOfficialCoverageFrom(...args);
-  }
-
-  private toSafeInteger(value: unknown): number {
-    if (typeof value === 'number') {
-      return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
-    }
-
-    if (typeof value === 'bigint') {
-      return value > 0n ? Number(value) : 0;
-    }
-
-    if (typeof value === 'string') {
-      const parsed = Number.parseInt(value, 10);
-      return Number.isNaN(parsed) ? 0 : Math.max(0, parsed);
-    }
-
-    if (value && typeof value === 'object') {
-      const numericObject = value as {
-        toNumber?: () => number;
-        toString?: () => string;
-      };
-      if (typeof numericObject.toNumber === 'function') {
-        const parsed = numericObject.toNumber();
-        return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
-      }
-
-      if (typeof numericObject.toString === 'function') {
-        const stringValue = numericObject.toString();
-        if (stringValue && stringValue !== '[object Object]') {
-          const parsed = Number(stringValue);
-          return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
-        }
-      }
-    }
-
-    return 0;
-  }
-
-  private toIsoString(value: unknown): string | null {
-    if (value instanceof Date) {
-      return Number.isFinite(value.getTime()) ? value.toISOString() : null;
-    }
-
-    if (typeof value === 'number') {
-      if (!Number.isFinite(value)) {
-        return null;
-      }
-
-      const parsed = new Date(value);
-      return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
-    }
-
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const normalized = value.trim();
-    if (!normalized) {
-      return null;
-    }
-
-    const parsed = new Date(normalized);
-    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+  private toIsoString(value: unknown) {
+    return toIsoString(value);
   }
 
   private async resolveUserDisplayNames(
@@ -23752,30 +23417,15 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private invalidateLogsDashboardResponseCache(chatId: string): void {
-    const prefix = `${chatId}:`;
-    for (const key of this.logsDashboardResponseCache.keys()) {
-      if (key.startsWith(prefix)) {
-        this.logsDashboardResponseCache.delete(key);
-      }
-    }
+    this.logsDashboardRuntime.invalidateLogsDashboardResponseCache(chatId);
   }
 
   private invalidateChannelStatsResponseCache(chatId: string): void {
-    const prefix = `${chatId}:`;
-    for (const key of this.channelStatsResponseCache.keys()) {
-      if (key.startsWith(prefix)) {
-        this.channelStatsResponseCache.delete(key);
-      }
-    }
+    this.channelStatsRuntime.invalidateChannelStatsResponseCache(chatId);
   }
 
   private invalidateModerationFeedPageCache(chatId: string): void {
-    const prefix = `${chatId}:`;
-    for (const key of this.moderationFeedPageCache.keys()) {
-      if (key.startsWith(prefix)) {
-        this.moderationFeedPageCache.delete(key);
-      }
-    }
+    this.logsDashboardRuntime.invalidateModerationFeedPageCache(chatId);
   }
 
   private invalidateChatParticipantsPageCache(chatId: string): void {

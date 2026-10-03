@@ -38,17 +38,7 @@ function harness() {
     assertReadOnlyChatAdmin: jest.fn().mockResolvedValue(undefined),
     ensureEntityType: jest.fn().mockResolvedValue(undefined),
     resolveBackgroundReadBotAssignment: jest.fn().mockResolvedValue('bot-1'),
-    resolveLogsDashboardFrom: jest.fn(
-      (_range: string, now: Date) => new Date(now.getTime() - 604800000),
-    ),
-    buildParticipantViolationCountWhere: jest.fn((chatId: string, userIds: string[]) => ({
-      chatId,
-      userId: { in: userIds },
-    })),
-    normalizeMaxProfileUrl: jest.fn(() => null),
-    buildUserProfileUrl: jest.fn(() => null),
     buildProfileMentionHandoffUrl: jest.fn(() => null),
-    toSafeInteger: (value: number) => value,
   };
   const runtime = new AdminParticipantsRuntime(
     context as unknown as AdminParticipantsRuntimeContext,
@@ -60,6 +50,8 @@ function harness() {
 }
 
 describe('Participant details', () => {
+  beforeEach(() => jest.useFakeTimers().setSystemTime(new Date('2026-10-03T12:00:00.000Z')));
+  afterEach(() => jest.useRealTimers());
   it('loads exactly the event user without scanning or searching the roster', async () => {
     const { load, maxClient, prisma, context } = harness();
     await expect(load()).resolves.toMatchObject({
@@ -92,7 +84,15 @@ describe('Participant details', () => {
       where: { chatId_userId: { chatId: 'chat-1', userId: 'user-1' } },
     });
     expect(prisma.moderationEvent.count).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1', userId: { in: ['user-1'] } },
+      where: {
+        chatId: 'chat-1',
+        userId: { in: ['user-1'] },
+        createdAt: {
+          gte: new Date('2026-09-26T12:00:00.000Z'),
+          lte: new Date('2026-10-03T12:00:00.000Z'),
+        },
+        action: { in: ['WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN'] },
+      },
     });
   });
 

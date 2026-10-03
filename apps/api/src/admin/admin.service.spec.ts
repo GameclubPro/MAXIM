@@ -17758,7 +17758,7 @@ describe('AdminService.getChannelStats', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    const helpers = service as unknown as {
+    const helpers = service['channelStatsRuntime'] as unknown as {
       buildChannelStatsResponseCacheKey: (
         chatId: string,
         userId: string,
@@ -17804,7 +17804,10 @@ describe('AdminService.getChannelStats', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    const buildResponseSpy = jest.spyOn(service as any, 'buildChannelStatsResponse');
+    const buildResponseSpy = jest.spyOn(
+      service['channelStatsRuntime'],
+      'buildChannelStatsResponse',
+    );
 
     await expect(
       service.getChannelStats(

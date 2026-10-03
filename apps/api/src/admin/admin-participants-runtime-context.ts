@@ -1,16 +1,10 @@
 import type { Logger } from '@nestjs/common';
-import type {
-  ChatParticipantsPage,
-  ChatParticipantsQuery,
-  ManagedEntityHeader,
-  ManagedEntityType,
-} from '@maxim/contracts';
+import type { ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import type { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import type { MaxClientService } from '../max/max-client.service';
-import type { Prisma } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
-import type { AdminReadBypassOptions, TimedPromiseCacheEntry } from './admin.service.support';
+import type { AdminReadBypassOptions } from './admin.service.support';
 
 export type PrepareManualModerationTargetOptions = {
   skipActorAdminCheck?: boolean;
@@ -21,7 +15,6 @@ export type AdminParticipantsRuntimeContext = {
   readonly maxClient: MaxClientService;
   readonly logger: Logger;
   readonly managedEntityAccessLossService?: ManagedEntityAccessLossService;
-  readonly chatParticipantsPageCache: Map<string, TimedPromiseCacheEntry<ChatParticipantsPage>>;
   assertReadOnlyChatAdmin(
     chatId: string,
     userId: string,
@@ -31,12 +24,6 @@ export type AdminParticipantsRuntimeContext = {
       timeoutMs?: number;
     },
   ): Promise<void>;
-  buildParticipantViolationCountWhere(
-    chatId: string,
-    userIds: readonly string[],
-    from: Date,
-    to: Date,
-  ): Prisma.ModerationEventWhereInput;
   buildProfileMentionHandoffUrl(
     chatId: string,
     entityType: ManagedEntityType,
@@ -44,7 +31,6 @@ export type AdminParticipantsRuntimeContext = {
     displayName: string | null,
     botId?: string | null,
   ): string | null;
-  buildUserProfileUrl(username: string | null): string | null;
   ensureEntityType(
     chatId: string,
     userId: string,
@@ -56,120 +42,18 @@ export type AdminParticipantsRuntimeContext = {
     entityType: ManagedEntityType,
     options?: AdminReadBypassOptions,
   ): Promise<ManagedEntityHeader>;
-  normalizeMaxProfileUrl(value: string | null): string | null;
   prepareManualModerationTarget(
     chatId: string,
     targetUserIdRaw: string,
     user: AuthUser,
     options?: PrepareManualModerationTargetOptions,
   ): Promise<string>;
-  readTrimmedString(value: unknown): string | null;
   resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined>;
   resolveParticipantCleanupBotAssignment(chatId: string): Promise<string | undefined>;
-  resolveLogsDashboardFrom(range: ChatParticipantsQuery['range'], to: Date): Date;
-  toSafeInteger(value: unknown): number;
 };
 
-type AdminParticipantsRuntimeContextTarget = AdminParticipantsRuntimeContext;
-
 export function createAdminParticipantsRuntimeContext(
-  target: object,
+  target: AdminParticipantsRuntimeContext,
 ): AdminParticipantsRuntimeContext {
-  const typedTarget = target as AdminParticipantsRuntimeContextTarget;
-
-  return {
-    get prisma(): PrismaService {
-      return typedTarget.prisma;
-    },
-    get maxClient(): MaxClientService {
-      return typedTarget.maxClient;
-    },
-    get logger(): Logger {
-      return typedTarget.logger;
-    },
-    get managedEntityAccessLossService(): ManagedEntityAccessLossService | undefined {
-      return typedTarget.managedEntityAccessLossService;
-    },
-    get chatParticipantsPageCache(): Map<string, TimedPromiseCacheEntry<ChatParticipantsPage>> {
-      return typedTarget.chatParticipantsPageCache;
-    },
-    assertReadOnlyChatAdmin(
-      chatId: string,
-      userId: string,
-      entityType?: ManagedEntityType | null,
-      options?: {
-        forceRemote?: boolean;
-        timeoutMs?: number;
-      },
-    ): Promise<void> {
-      return typedTarget.assertReadOnlyChatAdmin(chatId, userId, entityType, options);
-    },
-    buildParticipantViolationCountWhere(
-      chatId: string,
-      userIds: readonly string[],
-      from: Date,
-      to: Date,
-    ): Prisma.ModerationEventWhereInput {
-      return typedTarget.buildParticipantViolationCountWhere(chatId, userIds, from, to);
-    },
-    buildProfileMentionHandoffUrl(
-      chatId: string,
-      entityType: ManagedEntityType,
-      userId: string,
-      displayName: string | null,
-      botId?: string | null,
-    ): string | null {
-      return typedTarget.buildProfileMentionHandoffUrl(
-        chatId,
-        entityType,
-        userId,
-        displayName,
-        botId,
-      );
-    },
-    buildUserProfileUrl(username: string | null): string | null {
-      return typedTarget.buildUserProfileUrl(username);
-    },
-    ensureEntityType(
-      chatId: string,
-      userId: string,
-      expectedEntityType: ManagedEntityType,
-    ): Promise<void> {
-      return typedTarget.ensureEntityType(chatId, userId, expectedEntityType);
-    },
-    getManagedEntityHeader(
-      chatId: string,
-      user: AuthUser,
-      entityType: ManagedEntityType,
-      options?: AdminReadBypassOptions,
-    ): Promise<ManagedEntityHeader> {
-      return typedTarget.getManagedEntityHeader(chatId, user, entityType, options);
-    },
-    normalizeMaxProfileUrl(value: string | null): string | null {
-      return typedTarget.normalizeMaxProfileUrl(value);
-    },
-    prepareManualModerationTarget(
-      chatId: string,
-      targetUserIdRaw: string,
-      user: AuthUser,
-      options?: PrepareManualModerationTargetOptions,
-    ): Promise<string> {
-      return typedTarget.prepareManualModerationTarget(chatId, targetUserIdRaw, user, options);
-    },
-    readTrimmedString(value: unknown): string | null {
-      return typedTarget.readTrimmedString(value);
-    },
-    resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined> {
-      return typedTarget.resolveBackgroundReadBotAssignment(chatId);
-    },
-    resolveParticipantCleanupBotAssignment(chatId: string): Promise<string | undefined> {
-      return typedTarget.resolveParticipantCleanupBotAssignment(chatId);
-    },
-    resolveLogsDashboardFrom(range: ChatParticipantsQuery['range'], to: Date): Date {
-      return typedTarget.resolveLogsDashboardFrom(range, to);
-    },
-    toSafeInteger(value: unknown): number {
-      return typedTarget.toSafeInteger(value);
-    },
-  };
+  return target;
 }

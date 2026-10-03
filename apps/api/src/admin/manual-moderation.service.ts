@@ -18,8 +18,6 @@ import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service
 import { AdminService } from './admin.service';
 import { type ResolvedUserProfile } from './admin.service.support';
 import { ChatSanctionsService } from './chat-sanctions.service';
-import { AdminParticipantsRuntime } from './admin-participants-runtime';
-import { createAdminParticipantsRuntimeContext } from './admin-participants-runtime-context';
 
 type GlobalSpammerProfileMode = 'full' | 'local';
 type GlobalSpammerDiagnosticsMode = 'shell' | 'full';
@@ -93,9 +91,7 @@ export class ManualModerationService {
   }
 
   getChatParticipantDetails(chatId: string, targetUserId: string, user: AuthUser, query: unknown) {
-    return new AdminParticipantsRuntime(
-      createAdminParticipantsRuntimeContext(this.legacyAdminService),
-    ).getChatParticipantDetails(chatId, targetUserId, user, query);
+    return this.legacyAdminService.getChatParticipantDetails(chatId, targetUserId, user, query);
   }
 
   updateChatParticipantImmunity(

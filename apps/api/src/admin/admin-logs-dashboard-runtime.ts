@@ -1,3 +1,5 @@
+import { readTrimmedString } from './admin-legacy-utils';
+import { toIsoString, resolveLogsDashboardFrom } from './admin-statistics-values';
 import {
   logsDashboardQuerySchema,
   logsDashboardResponseSchema,
@@ -61,23 +63,20 @@ export class AdminLogsDashboardRuntime {
     return this.context.chatContextCache;
   }
 
-  private get logsDashboardResponseCache(): Map<
+  private readonly logsDashboardResponseCache = new Map<
     string,
     TimedPromiseCacheEntry<LogsDashboardResponse>
-  > {
-    return this.context.logsDashboardResponseCache;
-  }
+  >();
 
-  private get moderationFeedPageCache(): Map<string, TimedPromiseCacheEntry<ModerationFeedPage>> {
-    return this.context.moderationFeedPageCache;
-  }
+  private readonly moderationFeedPageCache = new Map<
+    string,
+    TimedPromiseCacheEntry<ModerationFeedPage>
+  >();
 
-  private get membershipActivityFeedPageCache(): Map<
+  private readonly membershipActivityFeedPageCache = new Map<
     string,
     TimedPromiseCacheEntry<MembershipActivityPage>
-  > {
-    return this.context.membershipActivityFeedPageCache;
-  }
+  >();
 
   private assertChatAdmin(
     chatId: string,
@@ -115,7 +114,7 @@ export class AdminLogsDashboardRuntime {
   }
 
   private readTrimmedString(value: unknown): string | null {
-    return this.context.readTrimmedString(value);
+    return readTrimmedString(value);
   }
 
   private resolveUserProfiles(
@@ -128,7 +127,7 @@ export class AdminLogsDashboardRuntime {
   }
 
   private toIsoString(value: unknown): string | null {
-    return this.context.toIsoString(value);
+    return toIsoString(value);
   }
 
   async getLogsDashboard(
@@ -289,17 +288,7 @@ export class AdminLogsDashboardRuntime {
   }
 
   resolveLogsDashboardFrom(range: LogsDashboardRange, to: Date): Date {
-    const toTimestamp = to.getTime();
-
-    if (range === '24h') {
-      return new Date(toTimestamp - 24 * 60 * 60 * 1000);
-    }
-
-    if (range === '30d') {
-      return new Date(toTimestamp - 30 * 24 * 60 * 60 * 1000);
-    }
-
-    return new Date(toTimestamp - 7 * 24 * 60 * 60 * 1000);
+    return resolveLogsDashboardFrom(range, to);
   }
 
   async getMembershipActivityFeedPage(
