@@ -714,9 +714,36 @@ export class AdminService implements OnModuleDestroy {
   private readonly publisherCommentKeyboardRouting: PublisherCommentKeyboardRouting;
   private readonly publisherDialogProfileRuntime: PublisherDialogProfileRuntime;
   private readonly dialogAdminAccessRuntime: AdminDialogAdminAccessRuntime;
-  private readonly chatRulesTextRuntime = new AdminChatRulesTextRuntime(
-    createAdminChatRulesTextRuntimeContext(this),
-  );
+  private readonly chatRulesTextRuntime = ((owner: AdminService) => {
+    // FLAG: Resolve dependencies lazily; constructor-owned clients and secrets initialize later.
+    return new AdminChatRulesTextRuntime(
+      createAdminChatRulesTextRuntimeContext({
+        get prisma() {
+          return owner.prisma;
+        },
+        get chatContextCache() {
+          return owner.chatContextCache;
+        },
+        get maxClient() {
+          return owner.maxClient;
+        },
+        get logger() {
+          return owner.logger;
+        },
+        get maxBotTokenValidationSecrets() {
+          return owner.maxBotTokenValidationSecrets;
+        },
+        getSettings: (chatId, user) => owner.getSettings(chatId, user),
+        getDomainAllowlistDetails: (chatId, user) => owner.getDomainAllowlistDetails(chatId, user),
+        resolveRequiredSubscriptionChannelHeaders: (channelIds) =>
+          owner.resolveRequiredSubscriptionChannelHeaders(channelIds),
+        resolveUserDisplayNames: (chatId, userIds) =>
+          owner.resolveUserDisplayNames(chatId, userIds),
+        resolveChatSettingsReadBotAssignmentData: (chatId) =>
+          owner.resolveChatSettingsReadBotAssignmentData(chatId),
+      }),
+    );
+  })(this);
   private readonly channelDialogMappingRuntime = new AdminChannelDialogMappingRuntime(
     createAdminChannelDialogMappingRuntimeContext(this),
   );
@@ -729,9 +756,21 @@ export class AdminService implements OnModuleDestroy {
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(
     createAdminChannelStatsRuntimeContext(this),
   );
-  private readonly domainAllowlistRuntime = new AdminDomainAllowlistRuntime(
-    createAdminDomainAllowlistRuntimeContext(this),
-  );
+  private readonly domainAllowlistRuntime = ((owner: AdminService) => {
+    // FLAG: Resolve dependencies lazily; constructor-owned clients and secrets initialize later.
+    return new AdminDomainAllowlistRuntime(
+      createAdminDomainAllowlistRuntimeContext({
+        get prisma() {
+          return owner.prisma;
+        },
+        get chatContextCache() {
+          return owner.chatContextCache;
+        },
+        assertChatAdmin: (chatId, userId, entityType) =>
+          owner.assertChatAdmin(chatId, userId, entityType),
+      }),
+    );
+  })(this);
   private readonly logsDashboardRuntime = new AdminLogsDashboardRuntime(
     createAdminLogsDashboardRuntimeContext(this),
   );
@@ -6754,9 +6793,9 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<ChatRules> {
     await this.assertManagedEntityReadAccess(chatId, user.userId, 'chat', options);
 
-    const rules = await this.upsertChatRules(chatId);
-    const hydratedRules = await this.hydratePublishedRulesUrl(chatId, rules);
-    return this.mapChatRules(hydratedRules);
+    const rules = await this.chatRulesTextRuntime.upsertChatRules(chatId);
+    const hydratedRules = await this.chatRulesTextRuntime.hydratePublishedRulesUrl(chatId, rules);
+    return this.chatRulesTextRuntime.mapChatRules(hydratedRules);
   }
 
   async updateRules(
@@ -6785,16 +6824,18 @@ export class AdminService implements OnModuleDestroy {
     await this.assertChatAdmin(chatId, user.userId, 'chat');
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
-    const currentRules = await this.upsertChatRules(chatId);
+    const currentRules = await this.chatRulesTextRuntime.upsertChatRules(chatId);
     const sourceMessageId = this.readTrimmedString(input.sourceMessageId);
-    let sourceMessageUrl = this.normalizePublishedRulesUrl(input.sourceMessageUrl);
+    let sourceMessageUrl = this.chatRulesTextRuntime.normalizePublishedRulesUrl(
+      input.sourceMessageUrl,
+    );
     if (!sourceMessageId && !sourceMessageUrl) {
       throw new BadRequestException('Не удалось определить сообщение с правилами.');
     }
 
     if (!sourceMessageUrl && sourceMessageId) {
       try {
-        sourceMessageUrl = this.normalizePublishedRulesUrl(
+        sourceMessageUrl = this.chatRulesTextRuntime.normalizePublishedRulesUrl(
           await this.maxClient.resolveMessageLink(sourceMessageId),
         );
       } catch (error: unknown) {
@@ -6810,7 +6851,7 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    let normalizedSourceText = this.normalizeImportedRulesText(input.text);
+    let normalizedSourceText = this.chatRulesTextRuntime.normalizeImportedRulesText(input.text);
     let normalizedSourceTextFormat: ChatRules['textFormat'] = 'plain';
     const maxClientWithMessageMarkdown = this.maxClient as MaxClientService & {
       getMessageTextAsMarkdown?: MaxClientService['getMessageTextAsMarkdown'];
@@ -6822,7 +6863,8 @@ export class AdminService implements OnModuleDestroy {
       try {
         const formattedSourceText =
           await maxClientWithMessageMarkdown.getMessageTextAsMarkdown(sourceMessageId);
-        const normalizedFormattedSourceText = this.normalizeImportedRulesText(formattedSourceText);
+        const normalizedFormattedSourceText =
+          this.chatRulesTextRuntime.normalizeImportedRulesText(formattedSourceText);
         if (normalizedFormattedSourceText) {
           normalizedSourceText = normalizedFormattedSourceText;
           normalizedSourceTextFormat = 'markdown';
@@ -6907,7 +6949,7 @@ export class AdminService implements OnModuleDestroy {
     });
     await this.chatContextCache.invalidate(chatId);
 
-    return this.mapChatRules(updatedRules);
+    return this.chatRulesTextRuntime.mapChatRules(updatedRules);
   }
 
   async publishRules(
@@ -8888,85 +8930,6 @@ export class AdminService implements OnModuleDestroy {
     return resolveRulesImageFileNameValue(fileName, mimeType);
   }
 
-  private normalizeChatRulesDraft(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).normalizeChatRulesDraft(...args);
-  }
-
-  private normalizeImportedRulesText(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).normalizeImportedRulesText(...args);
-  }
-
-  private upsertChatRules(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).upsertChatRules(...args);
-  }
-
-  private mapChatRules(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).mapChatRules(...args);
-  }
-
-  private hydratePublishedRulesUrl(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).hydratePublishedRulesUrl(...args);
-  }
-
-  private normalizePublishedRulesUrl(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).normalizePublishedRulesUrl(...args);
-  }
-
-  private buildChatRulesButtonRows(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).buildChatRulesButtonRows(...args);
-  }
-
-  private buildFormattedRulesPublicationText(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).buildFormattedRulesPublicationText(...args);
-  }
-
-  private resolveAdminContactFallbackDisplayName(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).resolveAdminContactFallbackDisplayName(...args);
-  }
-
-  private buildAutofilledRulesTextFromCurrentSettings(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).buildAutofilledRulesTextFromCurrentSettings(...args);
-  }
-
-  private buildRulesTextFromSettings(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).buildRulesTextFromSettings(...args);
-  }
-
-  private buildRulesTextItemsFromSettings(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).buildRulesTextItemsFromSettings(...args);
-  }
-
-  private buildRulesSanctionsSummary(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).buildRulesSanctionsSummary(...args);
-  }
-
-  private resolveRulesDuplicateAllowedCount(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).resolveRulesDuplicateAllowedCount(...args);
-  }
-
-  private formatRulesDuplicateAllowanceLabel(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).formatRulesDuplicateAllowanceLabel(...args);
-  }
-
-  private formatRulesPreviewList(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).formatRulesPreviewList(...args);
-  }
-
-  private formatRulesConjunctionList(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).formatRulesConjunctionList(...args);
-  }
-
-  private formatRulesHoursLabel(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).formatRulesHoursLabel(...args);
-  }
-
-  private formatRulesMinutesLabel(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).formatRulesMinutesLabel(...args);
-  }
-
-  private formatRulesTime(...args: any[]) {
-    return (this.chatRulesTextRuntime as any).formatRulesTime(...args);
-  }
   private resolveChannelDialogIntroText(
     settings: ChannelSettings,
     dialogType: ChannelDialogType,
@@ -14200,7 +14163,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     user: AuthUser,
   ): Promise<string> {
-    return this.buildAutofilledRulesTextFromCurrentSettings(chatId, user);
+    return this.chatRulesTextRuntime.buildAutofilledRulesTextFromCurrentSettings(chatId, user);
   }
 
   async buildFormattedChatRulesPublicationText(
@@ -14215,7 +14178,11 @@ export class AdminService implements OnModuleDestroy {
     text: string;
     textFormat: MaxSendMessageOptions['textFormat'];
   }> {
-    return this.buildFormattedRulesPublicationText(chatId, sourceText, options);
+    return this.chatRulesTextRuntime.buildFormattedRulesPublicationText(
+      chatId,
+      sourceText,
+      options,
+    );
   }
 
   async sendPublishedChatRulesPrivateConfirmation(

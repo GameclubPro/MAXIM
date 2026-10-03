@@ -18,14 +18,6 @@
       "definitionSha256": "52b55779cdec3ca80d1445eb5f2e9d51eb19cf3f3ffff1b90d64870b57866537"
     },
     {
-      "key": "apps/api/src/admin/admin-chat-rules-text-runtime-context.ts:createAdminChatRulesTextRuntimeContext",
-      "definitionSha256": "b8493370da2370796b3b8b03ea119f823eb30da37d3605309851c9f2a018883c"
-    },
-    {
-      "key": "apps/api/src/admin/admin-domain-allowlist-runtime-context.ts:createAdminDomainAllowlistRuntimeContext",
-      "definitionSha256": "f612eb6d0f102af21a5b001c926f619539edb9273704e5d445b9e8c889e7f8df"
-    },
-    {
       "key": "apps/api/src/admin/admin-logs-dashboard-runtime-context.ts:createAdminLogsDashboardRuntimeContext",
       "definitionSha256": "c5f58b9d2bba3c31a28b815c479fcc41dcc82a4905ca28e9b176345202cac77e"
     },

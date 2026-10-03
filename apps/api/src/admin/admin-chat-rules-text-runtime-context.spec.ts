@@ -1,17 +1,6 @@
 import { createAdminChatRulesTextRuntimeContext } from './admin-chat-rules-text-runtime-context';
 
 describe('AdminChatRulesTextRuntimeContext', () => {
-  it('reads and writes legacy target properties through a typed bridge', () => {
-    const target = { value: 1 } as { value: number; extra?: string };
-    const context = createAdminChatRulesTextRuntimeContext(target);
-
-    expect(context.read('value')).toBe(1);
-
-    context.write('extra', 'ok');
-
-    expect(target.extra).toBe('ok');
-  });
-
   it('exposes chat rules runtime infrastructure through explicit typed accessors', async () => {
     const settings = {
       linkPolicy: 'ALLOWLIST_ONLY',
@@ -23,10 +12,10 @@ describe('AdminChatRulesTextRuntimeContext', () => {
     const displayNames = new Map([['user-1', 'Admin Name']]);
     const botAssignment = { botId: 'bot-1', primaryBotId: 'bot-1' };
     const target = {
-      prisma: { chatRules: {} },
-      chatContextCache: { invalidate: jest.fn() },
-      maxClient: { getChatMemberProfiles: jest.fn() },
-      logger: { log: jest.fn(), warn: jest.fn() },
+      prisma: { chatRules: {} } as never,
+      chatContextCache: { invalidate: jest.fn() } as never,
+      maxClient: { getChatMemberProfiles: jest.fn() } as never,
+      logger: { log: jest.fn(), warn: jest.fn() } as never,
       maxBotTokenValidationSecrets: ['token-1'],
       getSettings: jest.fn().mockResolvedValue(settings),
       getDomainAllowlistDetails: jest.fn().mockResolvedValue(domains),
@@ -36,11 +25,18 @@ describe('AdminChatRulesTextRuntimeContext', () => {
     };
     const context = createAdminChatRulesTextRuntimeContext(target);
 
+    expect(Object.keys(context)).not.toContain('read');
+    expect(Object.keys(context)).not.toContain('write');
     expect(context.prisma).toBe(target.prisma);
     expect(context.chatContextCache).toBe(target.chatContextCache);
     expect(context.maxClient).toBe(target.maxClient);
     expect(context.logger).toBe(target.logger);
     expect(context.maxBotTokenValidationSecrets).toBe(target.maxBotTokenValidationSecrets);
+    // Dependencies may finish initializing after the runtime is constructed.
+    target.maxBotTokenValidationSecrets = ['later-token'];
+    target.chatContextCache = { invalidate: jest.fn() } as never;
+    expect(context.maxBotTokenValidationSecrets).toBe(target.maxBotTokenValidationSecrets);
+    expect(context.chatContextCache).toBe(target.chatContextCache);
     await expect(context.getSettings('chat-1', {} as never)).resolves.toBe(settings);
     await expect(context.getDomainAllowlistDetails('chat-1', {} as never)).resolves.toBe(domains);
     expect(context.isRequiredSubscriptionCurrentlyActive(settings)).toBe(true);

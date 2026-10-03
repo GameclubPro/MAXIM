@@ -3,13 +3,15 @@ import { createAdminDomainAllowlistRuntimeContext } from './admin-domain-allowli
 describe('AdminDomainAllowlistRuntimeContext', () => {
   it('exposes prisma and chat context cache through typed accessors', () => {
     const target = {
-      prisma: { domainAllowlist: {} },
-      chatContextCache: { invalidate: jest.fn() },
+      prisma: { domainAllowlist: {} } as never,
+      chatContextCache: { invalidate: jest.fn() } as never,
       assertChatAdmin: jest.fn(),
     };
     const context = createAdminDomainAllowlistRuntimeContext(target);
 
     expect(context.prisma).toBe(target.prisma);
+    expect(context.chatContextCache).toBe(target.chatContextCache);
+    target.chatContextCache = { invalidate: jest.fn() } as never;
     expect(context.chatContextCache).toBe(target.chatContextCache);
   });
 
@@ -17,8 +19,8 @@ describe('AdminDomainAllowlistRuntimeContext', () => {
     const target = {
       prefix: 'legacy',
       calls: [] as string[],
-      prisma: { domainAllowlist: {} },
-      chatContextCache: { invalidate: jest.fn() },
+      prisma: { domainAllowlist: {} } as never,
+      chatContextCache: { invalidate: jest.fn() } as never,
       async assertChatAdmin(chatId: string, userId: string, entityType?: string): Promise<void> {
         this.calls.push(`${this.prefix}:${chatId}:${userId}:${entityType ?? 'default'}`);
       },

@@ -24,52 +24,37 @@ export type AdminChatRulesTextRuntimeContext = {
   ): Promise<ManagedEntityHeader[]>;
   resolveUserDisplayNames(chatId: string, userIds: string[]): Promise<Map<string, string>>;
   resolveChatSettingsReadBotAssignmentData(chatId: string): Promise<ResolvedBotAssignmentData>;
-  read(prop: PropertyKey): unknown;
-  write(prop: PropertyKey, value: unknown): void;
 };
 
-type AdminChatRulesTextRuntimeContextTarget = {
-  prisma: PrismaService;
-  chatContextCache: ChatContextCacheService;
-  maxClient: MaxClientService;
-  logger: Logger;
-  maxBotTokenValidationSecrets: readonly string[];
-  getSettings(chatId: string, user: AuthUser): Promise<ChatSettings>;
-  getDomainAllowlistDetails(chatId: string, user: AuthUser): Promise<DomainAllowlistEntry[]>;
-  resolveRequiredSubscriptionChannelHeaders(
-    channelIds: readonly string[],
-  ): Promise<ManagedEntityHeader[]>;
-  resolveUserDisplayNames(chatId: string, userIds: string[]): Promise<Map<string, string>>;
-  resolveChatSettingsReadBotAssignmentData(chatId: string): Promise<ResolvedBotAssignmentData>;
-};
+type AdminChatRulesTextRuntimeDependencies = Omit<
+  AdminChatRulesTextRuntimeContext,
+  'isRequiredSubscriptionCurrentlyActive'
+>;
 
 export function createAdminChatRulesTextRuntimeContext(
-  target: object,
+  target: AdminChatRulesTextRuntimeDependencies,
 ): AdminChatRulesTextRuntimeContext {
-  const targetRecord = target as Record<PropertyKey, unknown>;
-  const typedTarget = target as AdminChatRulesTextRuntimeContextTarget;
-
   return {
     get prisma(): PrismaService {
-      return typedTarget.prisma;
+      return target.prisma;
     },
     get chatContextCache(): ChatContextCacheService {
-      return typedTarget.chatContextCache;
+      return target.chatContextCache;
     },
     get maxClient(): MaxClientService {
-      return typedTarget.maxClient;
+      return target.maxClient;
     },
     get logger(): Logger {
-      return typedTarget.logger;
+      return target.logger;
     },
     get maxBotTokenValidationSecrets(): readonly string[] {
-      return typedTarget.maxBotTokenValidationSecrets;
+      return target.maxBotTokenValidationSecrets;
     },
     getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
-      return typedTarget.getSettings(chatId, user);
+      return target.getSettings(chatId, user);
     },
     getDomainAllowlistDetails(chatId: string, user: AuthUser): Promise<DomainAllowlistEntry[]> {
-      return typedTarget.getDomainAllowlistDetails(chatId, user);
+      return target.getDomainAllowlistDetails(chatId, user);
     },
     isRequiredSubscriptionCurrentlyActive(settings: ChatSettings): boolean {
       return isRequiredSubscriptionActive(settings);
@@ -77,19 +62,13 @@ export function createAdminChatRulesTextRuntimeContext(
     resolveRequiredSubscriptionChannelHeaders(
       channelIds: readonly string[],
     ): Promise<ManagedEntityHeader[]> {
-      return typedTarget.resolveRequiredSubscriptionChannelHeaders(channelIds);
+      return target.resolveRequiredSubscriptionChannelHeaders(channelIds);
     },
     resolveUserDisplayNames(chatId: string, userIds: string[]): Promise<Map<string, string>> {
-      return typedTarget.resolveUserDisplayNames(chatId, userIds);
+      return target.resolveUserDisplayNames(chatId, userIds);
     },
     resolveChatSettingsReadBotAssignmentData(chatId: string): Promise<ResolvedBotAssignmentData> {
-      return typedTarget.resolveChatSettingsReadBotAssignmentData(chatId);
-    },
-    read(prop: PropertyKey): unknown {
-      return targetRecord[prop];
-    },
-    write(prop: PropertyKey, value: unknown): void {
-      targetRecord[prop] = value;
+      return target.resolveChatSettingsReadBotAssignmentData(chatId);
     },
   };
 }
