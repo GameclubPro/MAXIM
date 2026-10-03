@@ -202,7 +202,10 @@ test('stop-word image scanning is an explicit persisted switch', () => {
   assert.match(settingsStopWordsEditorSource, /label="Проверять изображения"/u);
   assert.match(settingsStopWordsEditorSource, /checked=\{policy\.imageScanEnabled\}/u);
   assert.match(settingsStopWordsEditorSource, /update\(\{ \.\.\.policy, imageScanEnabled \}\)/u);
-  assert.match(settingsPageSource, /updateStopWords\(/u);
+  assert.match(
+    readFileSync(new URL('../src/pages/settings/use-settings-draft.ts', import.meta.url), 'utf8'),
+    /updateStopWords\(/u,
+  );
 });
 
 test('speech style opens on the selected radio and supports arrow navigation', () => {

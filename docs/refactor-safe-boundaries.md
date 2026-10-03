@@ -154,3 +154,19 @@ asserting request bodies, delayed success/error, navigation, duplicate clicks, c
 draft edits, selection limits and error retention. It also opens the actual settings route
 on iPhone/Android in light/dark themes. CI runs this suite in the existing Mini App lane.
 Existing mini app tests and production gzip/CSS budgets remain required.
+
+## Settings draft and section-save ownership
+
+`useSettingsDraft` owns the settings draft, hydration baseline, field errors, permission
+retry and section conflict state. Section saves retain the source chat and a per-visit
+identity, including navigation away and back to the same chat. Cache updates remain scoped
+to that source; UI effects require the current visit. The draft present at submission is
+kept separately from the normalized request payload, preserving edits made during a save
+without discarding prepared stop-word inputs. Saved stop-word buffers clear only if unchanged.
+
+The existing section merge and revision rules, stop-word endpoint and permission rollback
+remain in use. Conflict presentation retains the latest draft, including edits made while
+waiting. Browser cases cover real PATCH bodies, network failures, version conflicts,
+background refresh, late replies, a repeated visit and navigation during conflict refresh.
+The existing leave guard receives a setter bound to its originating visit. Speech-style
+completion uses the same scoped synchronization. No layout or contract format changes.

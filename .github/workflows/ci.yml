@@ -181,6 +181,8 @@ jobs:
         run: node apps/miniapp/test/report-journal-races.browser.mjs
       - name: Required subscription drafts and response races
         run: node apps/miniapp/test/settings-required-subscription.browser.mjs
+      - name: Settings draft saves and response races
+        run: node apps/miniapp/test/settings-draft.browser.mjs
 
   admin:
     name: Safety Desk
