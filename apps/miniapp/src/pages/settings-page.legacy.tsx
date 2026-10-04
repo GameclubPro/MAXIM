@@ -1,7 +1,7 @@
+import { useSettingsDraft } from './settings/use-settings-draft';
 import { useSettingsRequiredSubscription } from './settings/use-settings-required-subscription';
 import { InfoCircle } from 'iconoir-react';
-import { ApiRequestError } from '../lib/api-request-error';
-import { getStopWords, updateStopWords } from '../lib/api/stop-words-client';
+import { getStopWords } from '../lib/api/stop-words-client';
 import { prepareStopWordsInput } from '../lib/stop-words-editor';
 import {
   RequiredSubscriptionExternalSource,
@@ -122,7 +122,6 @@ import {
   updateManagedBroadcast,
   updateRules,
   updateSettings,
-  patchSettingsSection,
 } from '../lib/api/chat-settings-client';
 import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
 import { getGlobalSpammerReviewMetrics } from '../lib/api/spammer-review-client';
@@ -188,7 +187,6 @@ import {
   toManagedBroadcastTargetPreview,
 } from '../lib/broadcast-audience-presentation';
 import { maxNotify, openMaxBotLink } from '../lib/max-bridge';
-import type { BotPermissionBlocker } from '../lib/bot-permission-error';
 import { shouldRetryTransientApiError } from '../lib/api-retry';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
@@ -226,19 +224,14 @@ import { SettingsMessageRetentionSection } from './settings/settings-message-ret
 import { SettingsStopWordsSection } from './settings/settings-stop-words-section';
 import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
 import {
-  BOT_SPEECH_SYNC_SETTING_KEYS,
   SECTION_SETTING_KEYS,
   type ApplySectionKey,
   enableDefaultSanctionStages,
   hasSectionBotSpeechMediaChanges,
   hasSectionSettingChanges,
-  mergeBotSpeechStyleSettings,
   mergeSectionSettings,
-  mergeSectionSettingsAfterSave,
   normalizeRequiredSubscriptionDraftSettings,
   normalizeSectionDraftSettings,
-  serializeChatSettingsDraft,
-  shouldHydrateSettingsDraftFromServer,
 } from './settings-page-state';
 import {
   PROFANITY_SENSITIVITY_HINTS,
@@ -316,7 +309,6 @@ import {
   resolveDuplicateAllowedCount,
   resolveDuplicateAllowedCountMax,
   buildDuplicateFlowSettings,
-  normalizeDuplicateFlowSettings,
   LINK_POLICY_OPTIONS,
   RUSSIAN_TIMEZONE_OPTIONS,
   resolveBotSpeechPreviewContext,
@@ -344,7 +336,6 @@ import {
   resolveCommercialSensitivityConfig,
   getCommercialSensitivityLabel,
   inferCommercialSensitivitySliderValue,
-  normalizeLegacyChatCommentScope,
   formatRequiredSubscriptionCount,
   formatRequiredSubscriptionEntityLabel,
   formatRequiredSubscriptionLinkPreview,
@@ -418,14 +409,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { pushToast } = useToast();
   const activeChatIdRef = useRef(chatId);
   activeChatIdRef.current = chatId;
-  const [draft, setDraft] = useState<ChatSettings | null>(null);
-  const draftRef = useRef<ChatSettings | null>(null);
-  const previousSettingsServerSnapshotRef = useRef('');
-  const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
   const [rulesPublicationMode, setRulesPublicationMode] =
     useState<RulesPublicationMode>('new_message');
-  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [rulesTextError, setRulesTextError] = useState('');
   const [rulesImageError, setRulesImageError] = useState('');
   const [isPreparingRulesImage, setIsPreparingRulesImage] = useState(false);
@@ -528,10 +514,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     section: ApplySectionKey;
     settings: ChatSettings;
   } | null>(null);
-  const pendingPermissionRetryRef = useRef<{
-    section: ApplySectionKey;
-    payload: ChatSettings;
-  } | null>(null);
   const applyTargetOverlayStyle = useVisualViewportOverlayStyle(Boolean(applyTargetSheet));
 
   useEffect(() => {
@@ -575,12 +557,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [openMuteDurationKey, setOpenMuteDurationKey] = useState<AutoMuteDurationKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
-  const [settingsConflict, setSettingsConflict] = useState<{
-    section: ApplySectionKey;
-    saved: ChatSettings;
-    draft: ChatSettings;
-    viewingSaved: boolean;
-  } | null>(null);
   const [speechStylePanelOpen, setSpeechStylePanelOpen] = useState(false);
   const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
   const [expandedSections, setExpandedSections] =
@@ -590,14 +566,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const appliedLegacyEditorTargetRef = useRef<string | null>(null);
   const broadcastDraftRestoreEpochRef = useRef(0);
   const [broadcastDraftRestoreReady, setBroadcastDraftRestoreReady] = useState(false);
-
-  useLayoutEffect(() => {
-    draftRef.current = draft;
-  }, [draft]);
-
-  useEffect(() => {
-    previousSettingsServerSnapshotRef.current = '';
-  }, [chatId]);
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
@@ -802,6 +770,54 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           retryDelay: (failureCount: number) => Math.min(800 + failureCount * 400, 2600),
         }
       : {}),
+  });
+  const {
+    draft,
+    setDraft,
+    fieldErrors,
+    setFieldErrors,
+    permissionBlocker,
+    setPermissionBlocker,
+    pendingPermissionRetryRef,
+    settingsConflict,
+    setSettingsConflict,
+    hasChanges,
+    clearFieldError,
+    syncSavedSectionSettings,
+    syncSavedBotSpeechStyle,
+    handleSettingsPermissionError,
+    saveSectionMutation,
+    isSavingSettings,
+    savingSection,
+    mutateSettingsAsync,
+    isCurrentSettingsScope,
+  } = useSettingsDraft({
+    api,
+    chatId,
+    serverSettings: settingsScreenQuery.data?.settings,
+    refetchSettings: settingsScreenQuery.refetch,
+    onHydrated: () => setDuplicateWindowInputValue(null),
+    onStopWordsSaved: () => {
+      setMessageLimitsBlockedWordsInput((value) =>
+        value === messageLimitsBlockedWordsInput ? '' : value,
+      );
+      setMessageLimitsBlockedDomainsInput((value) =>
+        value === messageLimitsBlockedDomainsInput ? '' : value,
+      );
+    },
+    onSaved: (section) => {
+      pushToast({ tone: 'success', title: `Блок «${SECTION_LABELS[section]}» сохранен` });
+      maxNotify('success');
+    },
+    onError: (error, section, permission) => {
+      if (!permission)
+        pushToast({
+          tone: 'danger',
+          title: `Не удалось сохранить блок «${SECTION_LABELS[section]}»`,
+          description: formatApiError(error),
+        });
+      maxNotify('error');
+    },
   });
   const reportsAvailabilityQuery = useQuery({
     queryKey: ['report-availability', chatId],
@@ -1112,32 +1128,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [chatId, chatTitle]);
 
   useEffect(() => {
-    if (!settingsQuery.data) {
-      return;
-    }
-
-    const nextServerDraft = normalizeDuplicateFlowSettings(
-      normalizeLegacyChatCommentScope(
-        normalizeRequiredSubscriptionDraftSettings(settingsQuery.data),
-      ),
-    );
-    const nextServerSnapshot = serializeChatSettingsDraft(nextServerDraft);
-    const shouldHydrate = shouldHydrateSettingsDraftFromServer(
-      draftRef.current ? serializeChatSettingsDraft(draftRef.current) : '',
-      previousSettingsServerSnapshotRef.current,
-      nextServerSnapshot,
-    );
-    previousSettingsServerSnapshotRef.current = nextServerSnapshot;
-    if (!shouldHydrate) {
-      return;
-    }
-
-    setDraft(nextServerDraft);
-    setFieldErrors({});
-    setDuplicateWindowInputValue(null);
-  }, [settingsQuery.data]);
-
-  useEffect(() => {
     if (!broadcastHandoffStateQuery.data || !handoffRequested) {
       return;
     }
@@ -1277,132 +1267,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
   }, [domainsQuery.data, scheduleDomain]);
 
-  const draftSnapshot = useMemo(() => (draft ? serializeChatSettingsDraft(draft) : ''), [draft]);
   const rulesDraftSnapshot = useMemo(
     () => (rulesDraft ? serializeRulesDraftPayload(rulesDraft) : ''),
     [rulesDraft],
   );
 
-  const serverSnapshot = useMemo(
-    () =>
-      settingsQuery.data
-        ? serializeChatSettingsDraft(
-            normalizeDuplicateFlowSettings(
-              normalizeLegacyChatCommentScope(
-                normalizeRequiredSubscriptionDraftSettings(settingsQuery.data),
-              ),
-            ),
-          )
-        : '',
-    [settingsQuery.data],
-  );
   const rulesServerSnapshot = useMemo(
     () => (rulesQuery.data ? serializeRulesDraftPayload(rulesQuery.data) : ''),
     [rulesQuery.data],
   );
 
-  const hasChanges = Boolean(draft && settingsQuery.data && draftSnapshot !== serverSnapshot);
   const hasRulesChanges = Boolean(
     rulesDraft && rulesQuery.data && rulesDraftSnapshot !== rulesServerSnapshot,
   );
-  async function handleSettingsPermissionError(
-    error: unknown,
-    section: ApplySectionKey | null,
-    retry?: { section: ApplySectionKey; payload: ChatSettings },
-  ): Promise<boolean> {
-    const { resolveChatSettingsSaveError } = await import('../lib/chat-settings-save-error');
-    const persisted = settingsQuery.data;
-    const resolution = resolveChatSettingsSaveError(
-      error,
-      persisted ? normalizeRequiredSubscriptionDraftSettings(persisted) : null,
-      section ? SECTION_SETTING_KEYS[section] : undefined,
-      retry !== undefined,
-    );
-    if (resolution?.kind !== 'permission' || !resolution.revert) {
-      return false;
-    }
-
-    setDraft((current) => (current ? (resolution.revert?.(current) ?? current) : current));
-    pendingPermissionRetryRef.current = retry ?? null;
-    setPermissionBlocker(resolution.blocker);
-    return true;
-  }
-
   const rulesPublication = rulesDraft ?? rulesQuery.data;
   const rulesPublishedMessageId = rulesPublication?.publishedMessageId ?? null;
   const rulesPublishedUrl = rulesPublication?.publishedUrl ?? null;
   const hasPublishedRules = Boolean(rulesPublishedMessageId || rulesPublishedUrl);
-  const saveSectionMutation = useMutation({
-    mutationFn: async ({
-      section,
-      payload,
-      recheckBotCapabilities,
-    }: {
-      section: ApplySectionKey;
-      payload: ChatSettings;
-      recheckBotCapabilities?: boolean;
-    }) => {
-      if (section === 'stopWords' && payload.stopWordsPolicy) {
-        const saved = await updateStopWords(
-          api,
-          chatId ?? '',
-          payload.stopWordsPolicy,
-          payload.stopWordsRevision ?? 0,
-        );
-        return { ...payload, stopWordsPolicy: saved.policy, stopWordsRevision: saved.revision };
-      }
-      return patchSettingsSection(
-        api,
-        chatId ?? '',
-        section,
-        payload,
-        SECTION_SETTING_KEYS[section],
-        { recheckBotCapabilities },
-      );
-    },
-    onSuccess: (saved, variables) => {
-      setSettingsConflict(null);
-      pendingPermissionRetryRef.current = null;
-      syncSavedSectionSettings(variables.section, saved, variables.payload.settingsRevision);
-      if (variables.section === 'stopWords') {
-        setMessageLimitsBlockedWordsInput('');
-        setMessageLimitsBlockedDomainsInput('');
-        void settingsScreenQuery.refetch();
-      }
-      pushToast({
-        tone: 'success',
-        title: `Блок «${SECTION_LABELS[variables.section]}» сохранен`,
-      });
-      maxNotify('success');
-    },
-    onError: async (error, variables) => {
-      if (error instanceof ApiRequestError && error.code === 'CHAT_SETTINGS_CONCURRENT_UPDATE') {
-        const fresh = await settingsScreenQuery.refetch();
-        if (fresh.data)
-          setSettingsConflict({
-            section: variables.section,
-            saved: fresh.data.settings,
-            draft: variables.payload,
-            viewingSaved: false,
-          });
-      }
-      if (await handleSettingsPermissionError(error, variables.section, variables)) {
-        maxNotify('error');
-        return;
-      }
-      pendingPermissionRetryRef.current = null;
-      pushToast({
-        tone: 'danger',
-        title: `Не удалось сохранить блок «${SECTION_LABELS[variables.section]}»`,
-        description: formatApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
-  const isSavingSettings = saveSectionMutation.isPending;
-  const savingSection = saveSectionMutation.variables?.section ?? null;
-  const mutateSettingsAsync = saveSectionMutation.mutateAsync;
-
   const recheckAccessMutation = useMutation({
     mutationFn: () => recheckManagedEntityAccess(api, 'chat', chatId ?? ''),
     onSuccess: () => {
@@ -1424,10 +1305,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
 
   const saveSpeechStyleMutation = useMutation({
+    onMutate: () => ({ isCurrentSettingsScope, syncSavedBotSpeechStyle }),
     mutationFn: ({ payload }: { style: BotSpeechStyle; payload: ChatSettings }) =>
       updateSettings(api, chatId ?? '', payload),
-    onSuccess: (saved, variables) => {
-      syncSavedBotSpeechStyle(saved);
+    onSuccess: (saved, variables, scope) => {
+      scope?.syncSavedBotSpeechStyle(saved);
+      if (!scope?.isCurrentSettingsScope()) return;
       setSpeechStylePanelOpen(false);
       setPendingSpeechStyle(null);
       pushToast({
@@ -1436,7 +1319,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       });
       maxNotify('success');
     },
-    onError: (error) => {
+    onError: (error, _variables, scope) => {
+      if (!scope?.isCurrentSettingsScope()) return;
       pushToast({
         tone: 'danger',
         title: 'Не удалось применить стиль речи',
@@ -2099,18 +1983,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  function clearFieldError(key: keyof ChatSettings) {
-    setFieldErrors((current) => {
-      if (!current[key]) {
-        return current;
-      }
-
-      const next = { ...current };
-      delete next[key];
-      return next;
-    });
-  }
-
   function setFieldValue<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
     clearFieldError(key);
@@ -2203,102 +2075,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ariaLabel={ariaLabel}
         nested
       />
-    );
-  }
-
-  function clearSectionErrors(section: ApplySectionKey) {
-    setFieldErrors((current) => {
-      let changed = false;
-      const next = { ...current };
-
-      for (const key of SECTION_SETTING_KEYS[section]) {
-        if (!next[key]) {
-          continue;
-        }
-
-        delete next[key];
-        changed = true;
-      }
-
-      return changed ? next : current;
-    });
-  }
-
-  function clearBotSpeechErrors() {
-    setFieldErrors((current) => {
-      let changed = false;
-      const next = { ...current };
-
-      for (const key of BOT_SPEECH_SYNC_SETTING_KEYS) {
-        if (!next[key]) {
-          continue;
-        }
-
-        delete next[key];
-        changed = true;
-      }
-
-      return changed ? next : current;
-    });
-  }
-
-  function syncSavedSectionSettings(
-    section: ApplySectionKey,
-    saved: ChatSettings,
-    expectedRevision?: string,
-    sourceChatId = chatId,
-    submittedSettings?: ChatSettings,
-  ) {
-    const normalizedSaved = normalizeRequiredSubscriptionDraftSettings(saved);
-    if (activeChatIdRef.current === sourceChatId) {
-      setDraft((current) =>
-        current
-          ? mergeSectionSettingsAfterSave(
-              current,
-              normalizedSaved,
-              section,
-              expectedRevision,
-              submittedSettings,
-            )
-          : normalizedSaved,
-      );
-      clearSectionErrors(section);
-    }
-    queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
-      ['settings-screen', sourceChatId],
-      (current) =>
-        current &&
-        Date.parse(current.settings.settingsRevision ?? '') >
-          Date.parse(normalizedSaved.settingsRevision ?? '')
-          ? current
-          : current
-            ? {
-                ...current,
-                settings:
-                  section === 'stopWords'
-                    ? mergeSectionSettings(
-                        normalizeRequiredSubscriptionDraftSettings(current.settings),
-                        normalizedSaved,
-                        section,
-                      )
-                    : normalizedSaved,
-              }
-            : current,
-    );
-  }
-
-  function syncSavedBotSpeechStyle(saved: ChatSettings) {
-    setDraft((current) => (current ? mergeBotSpeechStyleSettings(current, saved) : saved));
-    clearBotSpeechErrors();
-    queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
-      ['settings-screen', chatId],
-      (current) =>
-        current
-          ? {
-              ...current,
-              settings: mergeBotSpeechStyleSettings(current.settings, saved),
-            }
-          : current,
     );
   }
 
@@ -4976,7 +4752,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     try {
       await mutateSettingsAsync({ section, payload });
-      closeSection(section);
+      if (isCurrentSettingsScope()) closeSection(section);
     } catch {
       // Errors are handled by the mutation.
     }
