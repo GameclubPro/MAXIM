@@ -54,6 +54,8 @@ try {
       const previews = [];
       let saved;
       let responseStatus = 500;
+      let observationState = 'NO_DATA';
+      const diagnosticRequests = [];
       page.on('pageerror', (error) => errors.push(error.message));
       await page.route('**/api/**', async (route) => {
         const request = route.request();
@@ -61,6 +63,40 @@ try {
         if (!pathname.startsWith('/api/')) return route.continue();
         const screen = await page.evaluate(() => window.__ANTIDUPLICATE_SCREEN__);
         saved ??= screen.settings;
+        if (/\/duplicate-diagnostics(?:\/recheck)?$/u.test(pathname)) {
+          diagnosticRequests.push({ pathname, method: request.method() });
+          const time = new Date().toISOString();
+          await route.fulfill({
+            json: {
+              generatedAt: time,
+              enabled: true,
+              mode: 'FULL',
+              capability: { state: 'CONFIRMED', checkedAt: time },
+              history: {
+                available: true,
+                since: time,
+                sampledIntents: 0,
+                limited: false,
+                attempts: [],
+              },
+              observation: {
+                state: observationState,
+                since: time,
+                until: time,
+                basis: 'ATTEMPTS',
+                completeness: 'BEST_EFFORT',
+                supportedAttempts: observationState === 'AVAILABLE' ? 2 : null,
+                verifiedAttempts: observationState === 'AVAILABLE' ? 0 : null,
+                coverage: observationState === 'AVAILABLE' ? 0 : null,
+                outcomes:
+                  observationState === 'AVAILABLE'
+                    ? [{ outcome: 'COMPARISON_FAILED', count: 2 }]
+                    : [],
+              },
+            },
+          });
+          return;
+        }
         if (request.method() === 'GET' && pathname === '/api/chats/chat-a/settings-screen') {
           await route.fulfill({ json: { ...screen, settings: saved } });
           return;
@@ -116,6 +152,54 @@ try {
         safeBottom: platform === 'ios' ? 34 : 0,
       });
       const panel = page.locator('.settings-drilldown__panel--duplicates');
+      const diagnostics = panel.locator('.duplicate-diagnostics');
+      await diagnostics.getByText('Проверка и история', { exact: true }).click();
+      await diagnostics.getByText('Данные о проверках ещё не поступили', { exact: true }).waitFor();
+      assert.equal(await diagnostics.getByText(/\(0%\)/u).count(), 0);
+      await diagnostics.getByText('Проверка и история', { exact: true }).click();
+      observationState = 'AVAILABLE';
+      const rechecked = page.waitForResponse((response) =>
+        response.url().endsWith('/duplicate-diagnostics/recheck'),
+      );
+      await diagnostics.getByRole('button', { name: 'Проверить права', exact: true }).click();
+      await rechecked;
+      await diagnostics.getByText('Проверка и история', { exact: true }).click();
+      await diagnostics
+        .getByText('Сравнение завершено: 0 из 2 поддерживаемых попыток (0%)', { exact: true })
+        .waitFor();
+      await diagnostics.getByText('Сравнение не завершилось', { exact: true }).waitFor();
+      await diagnostics
+        .getByText('Результат сравнения не подтверждает удаление сообщения.', { exact: true })
+        .waitFor();
+      assert.equal(await diagnostics.getByText('Удалено', { exact: true }).count(), 0);
+      await diagnostics.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: path.join(screenshots, `${name}-diagnostics.png`) });
+      observationState = 'UNAVAILABLE';
+      const unavailable = page.waitForResponse((response) =>
+        response.url().endsWith('/duplicate-diagnostics/recheck'),
+      );
+      await diagnostics.getByRole('button', { name: 'Проверить права', exact: true }).click();
+      await unavailable;
+      await diagnostics
+        .getByText('Статистика проверок временно недоступна', { exact: true })
+        .waitFor();
+      assert.equal(await diagnostics.getByText(/\(0%\)/u).count(), 0);
+      assert.ok(
+        diagnosticRequests.some(
+          (request) =>
+            request.method === 'GET' &&
+            request.pathname === '/api/chats/chat-a/duplicate-diagnostics',
+        ),
+      );
+      assert.equal(
+        diagnosticRequests.filter(
+          (request) =>
+            request.method === 'POST' &&
+            request.pathname === '/api/chats/chat-a/duplicate-diagnostics/recheck',
+        ).length,
+        2,
+      );
+      await diagnostics.getByText('Проверка и история', { exact: true }).click();
       const compare = panel.getByRole('combobox', { name: 'Сравнение сообщений' });
       const master = panel.locator('label[aria-label="Включить антидубль"] input');
       await master.uncheck();
@@ -236,7 +320,7 @@ try {
       );
       assert.deepEqual(errors, []);
       console.log(
-        `PASS ${name}: real anti-duplicate controls, DAILY/timezone, native Back, 500/409 draft retention, current-chat request and manual-rule preservation`,
+        `PASS ${name}: real anti-duplicate controls, DAILY/timezone, native Back, 500/409 draft retention, current-chat request, manual-rule preservation and truthful observation coverage`,
       );
     } finally {
       await context.close();

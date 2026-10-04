@@ -35,7 +35,10 @@ document.body.dataset.miniappProfile = 'moderation';
 window.WebApp?.BackButton?.onClick(() => runNativeBackHandlers());
 const api: ApiTransport = {
   async request(path, init) {
-    if (/\/settings-screen(?:\?|$)/u.test(path) || (init?.method && init.method !== 'GET')) {
+    if (
+      /\/(?:settings-screen|duplicate-diagnostics)(?:\?|$)/u.test(path) ||
+      (init?.method && init.method !== 'GET')
+    ) {
       const response = await fetch(`/api${path}`, init);
       const body = await response.text();
       if (!response.ok) throw new ApiRequestError(response.status, body, 'Не удалось сохранить');
