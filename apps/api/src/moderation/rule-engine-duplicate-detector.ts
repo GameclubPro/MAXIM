@@ -544,7 +544,8 @@ export class RuleEngineDuplicateDetector {
     if (!this.hasSufficientApproximateContent(normalized)) {
       return null;
     }
-    const tokens = normalized.match(/[a-zа-яё0-9]+/giu) ?? [];
+    const matches = [...normalized.matchAll(/[\p{L}\p{N}][\p{L}\p{M}\p{N}]*/gu)];
+    const tokens = matches.map((match) => match[0]);
     const numericTokens = this.extractNearNumericTokens(compactText, config);
     const uniqueLongTokens = new Set(tokens.filter((token) => token.length >= 4));
     if (
@@ -554,8 +555,24 @@ export class RuleEngineDuplicateDetector {
       return null;
     }
 
-    // FLAG: Word order, short words, repeated words and numeric values can change meaning.
-    return JSON.stringify({ tokens, numericTokens });
+    // FLAG: All scripts/marks and their order are evidence. Symbols, emoji joiners and
+    // operator punctuation also carry meaning; preserve their position between words.
+    // Retain the whole protected gap so spacing cannot join previously separate emoji.
+    const protectedGaps: Array<[number, string]> = [];
+    let end = 0;
+    const protectGap = (until: number, beforeToken: number) => {
+      const gap = normalized.slice(end, until);
+      const numericBoundary =
+        /\p{N}/u.test(tokens[beforeToken - 1] ?? '') || /\p{N}/u.test(tokens[beforeToken] ?? '');
+      if (/[^\p{P}\p{Z}\s]|[%‰‱*/\\^|&#@]/u.test(gap) || (numericBoundary && /\S/u.test(gap)))
+        protectedGaps.push([beforeToken, gap]);
+    };
+    matches.forEach((match, index) => {
+      protectGap(match.index, index);
+      end = match.index + match[0].length;
+    });
+    protectGap(normalized.length, tokens.length);
+    return JSON.stringify({ version: 2, tokens, numericTokens, protectedGaps });
   }
 
   private extractNearNumericTokens(
@@ -577,7 +594,7 @@ export class RuleEngineDuplicateDetector {
       return false;
     }
 
-    const tokens = value.match(/[a-zа-яё0-9]+/giu) ?? [];
+    const tokens = value.match(/[\p{L}\p{N}][\p{L}\p{M}\p{N}]*/gu) ?? [];
     const uniqueLongTokens = new Set(tokens.filter((token) => token.length >= 4));
     return (
       tokens.length >= NEAR_DUPLICATE_MIN_TOKEN_COUNT &&
