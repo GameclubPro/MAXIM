@@ -10,16 +10,8 @@ import {
   formatDeleteBotMessagesDelayLabel,
 } from '@maxim/contracts/settings';
 import { type BroadcastImage, type SendBroadcastResult } from '@maxim/contracts/broadcast';
-import {
-  BOT_SPEECH_STYLE_OPTIONS,
-  type BotSpeechMediaFieldKey,
-  type BotSpeechStyle,
-} from '@maxim/contracts/bot-speech';
+import type { BotSpeechMediaFieldKey } from '@maxim/contracts/bot-speech';
 import { Suspense, lazy, type ReactNode } from 'react';
-import botSpeechRobotImage from '../../../../../bot.webp';
-import botSpeechFriendlyImage from '../../../../../frendly.webp';
-import botSpeechIronicImage from '../../../../../joker.webp';
-import botSpeechPoliceImage from '../../../../../police.webp';
 import type { BroadcastSchedulePlannerSelectionState } from '../../components/broadcast-schedule-planner';
 import { normalizeComposerBroadcastImages } from '../../lib/broadcast-image-list-basic';
 import type { PublishedRulesButtonToggleProps } from '../../components/published-rules-button-toggle';
@@ -78,7 +70,6 @@ export {
   type EditToggleButtonProps,
 } from './settings-edit-toggle-button';
 export { SettingsHintAnchor } from './settings-hint-anchor';
-export { buildSpeechStylePreviewSamples } from '../../lib/bot-speech-style-preview';
 export {
   ALLOWLIST_MATCH_OPTIONS,
   ALLOWLIST_NAVIGATION_POLICY_DESCRIPTION,
@@ -683,20 +674,6 @@ export const LINK_POLICY_OPTIONS: Array<{
 ];
 
 export { RUSSIAN_TIMEZONE_OPTIONS } from './settings-timezones';
-
-export const BOT_SPEECH_STYLE_ICON_ASSETS = {
-  robot: botSpeechRobotImage,
-  friendly: botSpeechFriendlyImage,
-  police: botSpeechPoliceImage,
-  ironic: botSpeechIronicImage,
-} as const;
-
-export const BOT_SPEECH_STYLE_SELECTOR_LABELS: Record<BotSpeechStyle, string> = {
-  ROBOT: 'Робот',
-  FRIENDLY: 'Друг',
-  POLICE: 'Коп',
-  IRONIC: 'Шут',
-};
 
 export {
   DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
@@ -1319,28 +1296,6 @@ export function TrashIcon() {
         d="M7.25 3.75H12.75M4.75 6H15.25M8 8.5V13.25M12 8.5V13.25M6.5 6L6.96 14.26C7 15 7.61 15.58 8.35 15.58H11.65C12.39 15.58 13 15 13.04 14.26L13.5 6"
         stroke="currentColor"
         strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-export function BotSpeechStyleIcon({
-  iconKey,
-}: {
-  iconKey: (typeof BOT_SPEECH_STYLE_OPTIONS)[number]['iconKey'];
-}) {
-  return <img src={BOT_SPEECH_STYLE_ICON_ASSETS[iconKey]} alt="" loading="lazy" />;
-}
-
-export function StyleSelectedIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <path
-        d="M5.5 10.4L8.3 13.2L14.6 6.9"
-        stroke="currentColor"
-        strokeWidth="2.1"
         strokeLinecap="round"
         strokeLinejoin="round"
       />

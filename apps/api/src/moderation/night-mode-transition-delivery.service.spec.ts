@@ -999,7 +999,7 @@ describe('NightModeTransitionDeliveryService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+      '🌙 Перерыв в общении: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
       expect.objectContaining({
         textFormat: 'html',
         imagePayload: { token: 'image-token' },
@@ -1042,26 +1042,26 @@ describe('NightModeTransitionDeliveryService', () => {
       scenario: 'whitespace-only override',
       settings: { nightModeBotMessageText: ' \t\n ' },
       expectedText:
-        '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+        '🌙 Перерыв в общении: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
     },
     {
       transition: 'open',
       scenario: 'whitespace-only override',
       settings: { nightModeOpenMessageText: ' \t\n ' },
-      expectedText: 'Чат снова открыт. Можно отправлять сообщения.',
+      expectedText: 'Чат снова открыт.',
     },
     {
       transition: 'close',
       scenario: 'placeholder-only override',
       settings: { nightModeBotMessageText: '{user}' },
       expectedText:
-        '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+        '🌙 Перерыв в общении: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
     },
     {
       transition: 'open',
       scenario: 'placeholder-only override',
       settings: { nightModeOpenMessageText: '{user}' },
-      expectedText: 'Чат снова открыт. Можно отправлять сообщения.',
+      expectedText: 'Чат снова открыт.',
     },
     {
       transition: 'close',
@@ -1234,7 +1234,7 @@ describe('NightModeTransitionDeliveryService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Чат снова открыт. Можно отправлять сообщения.',
+      'Чат снова открыт.',
       expect.objectContaining({ textFormat: 'html' }),
       expect.objectContaining({
         trafficClass: 'background',
