@@ -25,6 +25,7 @@ PRESERVED_MIGRATION_COMPOSE_FILE=""
 RELEASE_MANIFEST_HELPER=""
 SMOKE_HELPER=""
 WEBHOOK_ROLLOUT_HELPER=""
+PHOTO_NATIVE_BOUNDARY_HELPER=""
 APPLIED_MIGRATIONS_FILE=""
 RECOVERY_BASE_MANIFEST=""
 TARGET_HAS_MEDIA_ANALYSIS=0
@@ -180,6 +181,7 @@ cleanup() {
   [[ -z "$RELEASE_MANIFEST_HELPER" ]] || rm -f "$RELEASE_MANIFEST_HELPER"
   [[ -z "$SMOKE_HELPER" ]] || rm -f "$SMOKE_HELPER"
   [[ -z "$WEBHOOK_ROLLOUT_HELPER" ]] || rm -f "$WEBHOOK_ROLLOUT_HELPER"
+  [[ -z "$PHOTO_NATIVE_BOUNDARY_HELPER" ]] || rm -f "$PHOTO_NATIVE_BOUNDARY_HELPER"
   [[ -z "$APPLIED_MIGRATIONS_FILE" ]] || rm -f "$APPLIED_MIGRATIONS_FILE"
   release_deploy_lock
 }
@@ -450,6 +452,9 @@ record_runtime_rollback_release() {
       )
     fi
   fi
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    args+=(--smoke api-photo-native-sandbox-isolation --smoke api-photo-native-sandbox-uds)
+  fi
   if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
     args+=(--current-manifest-file "$RECOVERY_BASE_MANIFEST")
   fi
@@ -503,6 +508,9 @@ cp infra/scripts/release-manifest.mjs "$RELEASE_MANIFEST_HELPER"
 cp scripts/smoke-http.mjs "$SMOKE_HELPER"
 cp "$MAXIM_WEBHOOK_ROLLOUT_CONTROL_HELPER" "$WEBHOOK_ROLLOUT_HELPER"
 MAXIM_WEBHOOK_ROLLOUT_CONTROL_HELPER="$WEBHOOK_ROLLOUT_HELPER"
+PHOTO_NATIVE_BOUNDARY_HELPER="$(mktemp --suffix=.cjs)"
+cp "$MAXIM_PHOTO_NATIVE_BOUNDARY_HELPER" "$PHOTO_NATIVE_BOUNDARY_HELPER"
+MAXIM_PHOTO_NATIVE_BOUNDARY_HELPER="$PHOTO_NATIVE_BOUNDARY_HELPER"
 COMPOSE_FILES=(--env-file "$ROOT_DIR/.env" -p infra -f "$PRESERVED_COMPOSE_FILE")
 MIGRATION_COMPOSE_FILES=("${COMPOSE_FILES[@]}" -f "$PRESERVED_MIGRATION_COMPOSE_FILE")
 maxim_topology_prepare_commercial_ocr_target \
@@ -511,6 +519,7 @@ maxim_topology_prepare_commercial_ocr_target \
   TARGET_HAS_MEDIA_ANALYSIS \
   TARGET_COMMERCIAL_OCR_VERSION \
   TARGET_HAS_OCR_NATIVE_SANDBOX
+maxim_topology_prepare_photo_native_target "${TARGET_FULL_SHA}" COMPOSE_FILES
 CURRENT_HEAD="$(git rev-parse --short HEAD)"
 TARGET_HEAD="${TARGET_FULL_SHA:0:12}"
 ROLLBACK_API_IMAGE="maxim-api:runtime-rollback-${TARGET_FULL_SHA}"
@@ -527,6 +536,7 @@ maxim_topology_build_shared_api_image "$ROLLBACK_API_IMAGE" "$TARGET_FULL_SHA"
 ROLLBACK_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_API_IMAGE")"
 maxim_topology_require_ocr_native_sandbox_image_capability \
   "$ROLLBACK_API_IMAGE_ID" "$TARGET_HAS_OCR_NATIVE_SANDBOX"
+maxim_topology_require_photo_native_image_capability "${ROLLBACK_API_IMAGE_ID}"
 begin_runtime_rollback_transition
 ROLLBACK_RUNTIME_STARTED=1
 verify_inherited_static_components
@@ -585,6 +595,7 @@ if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
       COMPOSE_FILES "$ROLLBACK_API_IMAGE_ID" with-media
   fi
 fi
+maxim_topology_reconcile_photo_native_sandbox COMPOSE_FILES "$ROLLBACK_API_IMAGE_ID"
 recreate_runtime_api_wave moderation "${MAXIM_WEBHOOK_MODERATION_SERVICES[@]}"
 recreate_runtime_api_wave enqueue api-enqueue
 maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
@@ -611,6 +622,10 @@ fi
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
 if contains_service "api-admin" "${SERVICES[@]}"; then
   wait_for_url "http://127.0.0.1:3002/api/health/live" 180
+fi
+maxim_topology_verify_photo_native_sandbox_for_image COMPOSE_FILES "$ROLLBACK_API_IMAGE_ID"
+if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+  maxim_topology_smoke_photo_native_sandbox_uds COMPOSE_FILES "$ROLLBACK_API_IMAGE_ID"
 fi
 maxim_webhook_resume_after_api_fence COMPOSE_FILES
 wait_for_url "http://127.0.0.1:3001/api/health/ready" 180

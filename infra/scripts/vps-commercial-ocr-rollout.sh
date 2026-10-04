@@ -398,6 +398,7 @@ resolve_release_fence() {
     fail "Could not derive the commercial OCR version from the active source."
     return 1
   fi
+  maxim_topology_prepare_photo_native_target "$CHECKOUT_SHA" COMPOSE_FILES
   if maxim_topology_git_has_ocr_native_sandbox "$CHECKOUT_SHA"; then
     EXPECTED_HAS_OCR_NATIVE_SANDBOX=1
     maxim_topology_require_ocr_native_sandbox_config COMPOSE_FILES
@@ -425,6 +426,7 @@ resolve_release_fence() {
   fi
   maxim_topology_require_ocr_native_sandbox_image_capability \
     "$MANIFEST_IMAGE_ID" "$EXPECTED_HAS_OCR_NATIVE_SANDBOX"
+  maxim_topology_require_photo_native_image_capability "$MANIFEST_IMAGE_ID"
   export MAXIM_API_IMAGE="$MANIFEST_IMAGE_REF"
   export COMMERCIAL_OCR_VERSION="$EXPECTED_OCR_VERSION"
 }
@@ -470,6 +472,13 @@ read_running_api_inventory() {
   expected_auxiliary=none
   if [[ "$EXPECTED_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
     expected_auxiliary="$MAXIM_OCR_NATIVE_SANDBOX_SERVICE"
+  fi
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    if [[ "$expected_auxiliary" == none ]]; then
+      expected_auxiliary="$MAXIM_PHOTO_NATIVE_SANDBOX_SERVICE"
+    else
+      expected_auxiliary+=",$MAXIM_PHOTO_NATIVE_SANDBOX_SERVICE"
+    fi
   fi
   if [[ "${#running_ids[@]}" -eq 0 ]]; then
     inventory_json="$(
@@ -648,6 +657,7 @@ verify_runtime() {
   else
     maxim_topology_require_ocr_native_sandbox_absent COMPOSE_FILES || return 1
   fi
+  maxim_topology_verify_photo_native_sandbox_for_image COMPOSE_FILES "$MANIFEST_IMAGE_ID" || return 1
   verify_no_unreviewed_running_api_containers "$deadline" || return 1
 }
 

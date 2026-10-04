@@ -22,6 +22,13 @@
 - `ocr-native-sandbox` is an auxiliary of the shared API image, not a separate API role. It has
   no network, API identity, runtime env file, or secrets and is reachable only from
   `api-media-analysis` through the project-scoped `ocr_native_ipc` Unix-socket volume.
+- `photo-native-sandbox` is a second shared-image auxiliary with its own 1 CPU/1 GiB/64 PID
+  budget. It has no network, API identity, runtime env file, or secrets; only
+  `api-moderation-background` mounts its `photo_native_ipc` socket volume, read-only. Deploy and
+  rollback stop that consumer before replacing the auxiliary, attest the exact source/image
+  capability and isolation, and run the bounded hash fixture before releasing the queue fence.
+  A compatible target predating the auxiliary removes its container; it never starts native work
+  in another role. Keep both auxiliaries outside the 14-role API list and in runtime inventory.
 - Public health/webhooks go to `api-ingress`; `/api/v1/` and closed owner APIs go to `api-admin`; queue roles do not own public HTTP traffic.
 - The domain-separated Publisher dialog signing key is mounted only in `api-admin`, `api-action`, and `api-publisher`. Keep the Publisher bot token exclusive to `api-publisher` and init-data verification keys exclusive to `api-admin`.
 - Plain Publisher private starts use `publisher-start`, consumed only by `api-publisher`; preserve its pre-send dispatch marker on retries and retain jobs longer than the one-day accepted event age.
