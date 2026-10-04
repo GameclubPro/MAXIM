@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" != --bounded ]]; then
-  exec timeout --kill-after=8s 180s bash "$0" --bounded "$@"
+  exec timeout --kill-after=20s 180s bash "$0" --bounded "$@"
 fi
 shift
 [[ "$#" -eq 1 && "$1" =~ ^maxim-api:[a-f0-9]{40}$ ]] || exit 2
