@@ -29,6 +29,10 @@
   capability and isolation, and run the bounded hash fixture before releasing the queue fence.
   A compatible target predating the auxiliary removes its container; it never starts native work
   in another role. Keep both auxiliaries outside the 14-role API list and in runtime inventory.
+- The Docker API CI lane runs `smoke-photo-native-ci.sh` against the exact built image: strict
+  production attestation and live cgroup limits, controlled child kill/reap, then a separate
+  fault-fixture container's fatal exit/restart and next canonical hash. It is CI-only, bounded
+  below two minutes, and must never reuse production volumes, credentials, or MAX destinations.
 - Public health/webhooks go to `api-ingress`; `/api/v1/` and closed owner APIs go to `api-admin`; queue roles do not own public HTTP traffic.
 - The domain-separated Publisher dialog signing key is mounted only in `api-admin`, `api-action`, and `api-publisher`. Keep the Publisher bot token exclusive to `api-publisher` and init-data verification keys exclusive to `api-admin`.
 - Plain Publisher private starts use `publisher-start`, consumed only by `api-publisher`; preserve its pre-send dispatch marker on retries and retain jobs longer than the one-day accepted event age.
