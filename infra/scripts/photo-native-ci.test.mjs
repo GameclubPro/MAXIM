@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
@@ -110,4 +111,67 @@ test('stdin execution used inside the canonical container actually evaluates the
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Photo native CI fixture failed/u);
+});
+
+test('outer timeout terminates a blocked Docker CLI and runs owned cleanup', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-photo-ci-timeout-'));
+  let childPid;
+  try {
+    const source = readFileSync(join(root, 'infra/scripts/smoke-photo-native-ci.sh'), 'utf8');
+    // Exercise the real script and trap with a shortened deadline, without a daemon.
+    const script = join(directory, 'smoke.sh');
+    assert.equal(source.split('--kill-after=8s 110s').length, 2);
+    writeFileSync(script, source.replace('--kill-after=8s 110s', '--kill-after=2s 1s'));
+    writeFileSync(
+      join(directory, 'docker'),
+      `#!/usr/bin/env bash
+case "$1" in
+  context) echo 'unix:///var/run/docker.sock' ;;
+  image)
+    case "$*" in
+      *Config.Labels*) echo "$GITHUB_SHA" ;;
+      *) echo 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ;;
+    esac ;;
+  info)
+    echo "$$" > "$PHOTO_TIMEOUT_TEST_DIR/child.pid"
+    exec sleep 30 ;;
+  ps)
+    echo cleanup > "$PHOTO_TIMEOUT_TEST_DIR/cleanup-ran" ;;
+  *) exit 2 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    const result = spawnSync('bash', [script, image], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 5000,
+      env: {
+        ...process.env,
+        PATH: `${directory}:${process.env.PATH}`,
+        GITHUB_ACTIONS: 'true',
+        GITHUB_SHA: 'a'.repeat(40),
+        DOCKER_HOST: '',
+        DOCKER_CONTEXT: '',
+        PHOTO_TIMEOUT_TEST_DIR: directory,
+        TMPDIR: directory,
+      },
+    });
+    childPid = Number(readFileSync(join(directory, 'child.pid'), 'utf8'));
+    assert.equal(result.status, 124, result.stderr);
+    assert.equal(existsSync(join(directory, 'cleanup-ran')), true);
+    assert.throws(() => process.kill(childPid, 0), { code: 'ESRCH' });
+  } finally {
+    // Clean up only the exact synthetic process if the regression itself fails.
+    const marker = join(directory, 'child.pid');
+    if (!childPid && existsSync(marker)) childPid = Number(readFileSync(marker, 'utf8'));
+    if (Number.isSafeInteger(childPid) && childPid > 1) {
+      try {
+        process.kill(childPid, 'SIGKILL');
+      } catch (error) {
+        if (error.code !== 'ESRCH') throw error;
+      }
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
