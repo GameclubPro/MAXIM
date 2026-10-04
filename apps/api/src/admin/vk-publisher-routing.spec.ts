@@ -570,6 +570,10 @@ describe('VK Publik routing', () => {
     fixture.maxRoutedPublicationService.publish.mockImplementation(async (request: any) => {
       const context = { botId: 'publisher-bot', job: {} };
       preparedOptions = (await request.prepareAttempt(context)).options;
+      expect(preparedOptions?.marketplacePublication).toEqual({
+        purpose: 'VK_IMPORT',
+        entityId: post.chatId,
+      });
       await request.onDispatchAttempt(context);
       await request.beforeSendMutation(context);
       return {

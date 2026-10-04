@@ -154,6 +154,10 @@ function createHarness(
   const maxRoutedPublicationService = {
     publish: jest.fn().mockImplementation(async (request: any) => {
       const prepared = await request.prepareAttempt({ botId: 'bot-1', job: {} });
+      expect(prepared.options.marketplacePublication).toEqual({
+        purpose: 'APPROVED_SUGGESTION',
+        entityId: request.entityId,
+      });
       await request.beforeSendMutation({
         botId: 'bot-1',
         job: { text: prepared.text, options: prepared.options },
@@ -306,6 +310,10 @@ describe('AdminChannelSuggestionPublicationRuntime', () => {
     });
     maxRoutedPublicationService.publish.mockImplementation(async (request: any) => {
       const prepared = await request.prepareAttempt({ botId: 'publisher-bot', job: {} });
+      expect(prepared.options.marketplacePublication).toEqual({
+        purpose: 'APPROVED_SUGGESTION',
+        entityId: request.entityId,
+      });
       await request.onDispatchAttempt({ botId: 'publisher-bot', job: prepared });
       await request.beforeSendMutation({ botId: 'publisher-bot', job: prepared });
       return {

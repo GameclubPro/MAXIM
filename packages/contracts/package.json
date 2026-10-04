@@ -118,6 +118,10 @@
     "./vk-parsing": {
       "types": "./dist/vk-parsing.d.ts",
       "default": "./dist/vk-parsing.js"
+    },
+    "./marketplace-integration": {
+      "types": "./dist/marketplace-integration.d.ts",
+      "default": "./dist/marketplace-integration.js"
     }
   },
   "files": [
