@@ -22,6 +22,10 @@ import {
   type ApiTransport,
 } from '../src/lib/api/transport';
 
+const sessionSource = readFileSync(
+  new URL('../src/features/publications/use-publication-editor-session.ts', import.meta.url),
+  'utf8',
+);
 const pageSource = readFileSync(
   new URL('../src/pages/publications-page.tsx', import.meta.url),
   'utf8',
@@ -220,21 +224,21 @@ test('publication import stays isolated and reloadable without replacing the man
     pageSource,
     /editorContext\?\.kind === 'edit' \|\| editorContext\?\.kind === 'import'/u,
   );
-  assert.match(pageSource, /savedCreateDraftRef\.current = \{ draft, missingImageCount \}/u);
-  assert.match(pageSource, /replaceDraft\(isolatedDraft\)/u);
+  assert.match(sessionSource, /savedCreateDraftRef\.current = \{ draft, missingImageCount \}/u);
+  assert.match(sessionSource, /replaceDraft\(isolatedDraft\)/u);
   assert.match(
-    pageSource,
+    sessionSource,
     /replaceDraft\([\s\S]*?savedCreateDraft\?\.draft[\s\S]*?savedCreateDraft\?\.missingImageCount/u,
   );
-  assert.match(pageSource, /mode === 'import'[\s\S]*?expectedRevision: details\.version/u);
-  assert.match(pageSource, /setComposeRoute\(true,[\s\S]*?importDraftId/u);
+  assert.match(sessionSource, /mode === 'import'[\s\S]*?expectedRevision: details\.version/u);
+  assert.match(sessionSource, /setComposeRoute\(true,[\s\S]*?importDraftId/u);
   assert.match(controllerSource, /getPublisherPostImportByToken\(api, validRouteToken/u);
   assert.match(controllerSource, /enabled: enabled && !editorOpen && routeToken === null/u);
   assert.match(
     controllerSource,
     /searchParams\.get\('create'\) === '1'[\s\S]*?setCreateSheetOpen\(true\)/u,
   );
-  assert.match(pageSource, /function setComposeRoute[\s\S]*?next\.delete\('create'\)/u);
+  assert.match(sessionSource, /function setComposeRoute[\s\S]*?next\.delete\('create'\)/u);
   assert.match(controllerSource, /function closeCreateSheet[\s\S]*?clearCreateRoute\(\)/u);
   assert.match(controllerSource, /function startImport[\s\S]*?clearCreateRoute\(\)/u);
   assert.match(controllerSource, /session\.omissions/u);

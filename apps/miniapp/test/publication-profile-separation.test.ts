@@ -4,6 +4,10 @@ import test from 'node:test';
 import { stripPublisherOnlyPublicationRouteParams } from '../src/features/publications/publication-page-options';
 
 const appSource = readFileSync(new URL('../src/app.tsx', import.meta.url), 'utf8');
+const sessionSource = readFileSync(
+  new URL('../src/features/publications/use-publication-editor-session.ts', import.meta.url),
+  'utf8',
+);
 const publicationsSource = readFileSync(
   new URL('../src/pages/publications-page.tsx', import.meta.url),
   'utf8',
@@ -70,15 +74,12 @@ test('publication route binds an explicit workspace profile', () => {
 });
 
 test('Major keeps legacy-routed management but cannot enter the publication editor', () => {
+  assert.match(sessionSource, /const isEditor = isPublisherProfile && editorContext !== null;/u);
   assert.match(
-    publicationsSource,
-    /const isEditor = isPublisherProfile && editorContext !== null;/u,
-  );
-  assert.match(
-    publicationsSource,
+    sessionSource,
     /if \(!isPublisherProfile \|\| !hydrated \|\| initialComposeRouteAppliedRef\.current\)/u,
   );
-  assert.match(publicationsSource, /stripPublisherOnlyPublicationRouteParams\(searchParams\)/u);
+  assert.match(sessionSource, /stripPublisherOnlyPublicationRouteParams\(searchParams\)/u);
   assert.match(
     publicationsSource,
     /canEdit=\{isPublisherProfile && actionCapabilities\.canEdit\}/u,
@@ -104,7 +105,7 @@ test('Major drops direct composer and target routes without changing list filter
 
 test('Major never hydrates drafts or publication targets', () => {
   assert.match(
-    publicationsSource,
+    sessionSource,
     /usePublicationComposer\([\s\S]*?persistenceEnabled,[\s\S]*?isPublisherProfile/u,
   );
   assert.match(publicationsSource, /usePublicationTargetSources\(api, isPublisherProfile\)/u);
