@@ -1,4 +1,5 @@
 import { registerRuntimeQueues } from '../runtime/runtime-queues';
+import { MarketplaceStateModule } from '../integrations/marketplace/marketplace-state.module';
 import { HttpModule } from '@nestjs/axios';
 import { Module } from '@nestjs/common';
 import { ChatContextModule } from '../chat-context/chat-context.module';
@@ -60,6 +61,7 @@ const maxProviders = [
     }),
     SystemRuntimeModule,
     MaxBotModule,
+    MarketplaceStateModule,
     ChatContextModule,
     NightModeTransitionModule,
     ...registerRuntimeQueues(...MAX_ACTION_ALL_QUEUE_NAMES),

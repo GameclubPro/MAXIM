@@ -1,3 +1,20 @@
+import { MarketplaceStateModule } from '../integrations/marketplace/marketplace-state.module';
+import {
+  MARKETPLACE_PUBLISHER_ACCESS_QUEUE,
+  MarketplacePublisherAccessQueueService,
+} from '../integrations/marketplace/marketplace-publisher-access.queue';
+import { MarketplacePublisherAccessProcessor } from '../integrations/marketplace/marketplace-publisher-access.processor';
+import { MarketplaceAccessService } from '../integrations/marketplace/marketplace-access.service';
+import { MarketplaceProfileService } from '../integrations/marketplace/marketplace-profile.service';
+import { MarketplaceStatisticsService } from '../integrations/marketplace/marketplace-statistics.service';
+import { MarketplaceNativeProjectionService } from '../integrations/marketplace/marketplace-native-projection.service';
+import { MarketplaceCollectorService } from '../integrations/marketplace/marketplace-collector.service';
+import { MarketplaceRuntimeService } from '../integrations/marketplace/marketplace-runtime.service';
+import { MarketplaceIntegrationGuard } from '../integrations/marketplace/marketplace-integration.guard';
+import {
+  MarketplaceIntegrationController,
+  MarketplaceProfileController,
+} from '../integrations/marketplace/marketplace.controller';
 import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
 import { SuggestionSubscriptionMonitorService } from './suggestion-subscription-monitor.service';
@@ -142,6 +159,8 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     ...registerRuntimeQueues(PUBLISHER_SUGGESTION_ADMIN_QUEUE),
     ...registerRuntimeQueues(PUBLISHER_PUBLICATION_WAKEUP_QUEUE),
     AuthModule,
+    MarketplaceStateModule,
+    ...registerRuntimeQueues(MARKETPLACE_PUBLISHER_ACCESS_QUEUE),
     ReportsModule,
     MaxModule,
     ChatContextModule,
@@ -156,6 +175,8 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdminMessageRetentionController,
     AdminReportsController,
     AdvertisingPlacementController,
+    MarketplaceIntegrationController,
+    MarketplaceProfileController,
     AdminManagedEntitiesController,
     AdminSettingsController,
     AdminStopWordsController,
@@ -183,6 +204,15 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdminMessageRetentionService,
     AdminReportsService,
     AdvertisingPlacementService,
+    MarketplaceAccessService,
+    MarketplacePublisherAccessQueueService,
+    ...(roleRunsPublisher(getAppRole()) ? [MarketplacePublisherAccessProcessor] : []),
+    MarketplaceProfileService,
+    MarketplaceStatisticsService,
+    MarketplaceCollectorService,
+    MarketplaceNativeProjectionService,
+    MarketplaceRuntimeService,
+    MarketplaceIntegrationGuard,
     AdminService,
     {
       provide: MANAGED_ENTITIES_LEGACY_PORT,

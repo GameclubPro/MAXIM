@@ -301,8 +301,12 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       const first = await request.prepareAttempt({ botId: 'publisher-bot', job: {} });
       const second = await request.prepareAttempt({ botId: 'publisher-bot', job: {} });
       expect(first.text).toBe(' ');
-      expect(first.options).toEqual(media);
-      expect(second.options).toEqual(media);
+      const expected = {
+        ...media,
+        marketplacePublication: { purpose: 'PUBLICATION', entityId: request.entityId },
+      };
+      expect(first.options).toEqual(expected);
+      expect(second.options).toEqual(expected);
       return { botId: 'publisher-bot', messageId: 'mid-media-only', url: null };
     });
     await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [

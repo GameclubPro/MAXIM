@@ -1166,3 +1166,26 @@ describe('validateEnv boolean parsing', () => {
     ).toThrow(/KARAVAN_STOREFRONT_CATALOG_URL must use public https/u);
   });
 });
+
+describe('shared marketplace token configuration', () => {
+  it.each(['SVYAZKA_ANALYTICS_TOKEN', 'SVYAZKA_PROFILE_TOKEN'] as const)(
+    'accepts absent or provisioned keys and rejects incompatible %s values',
+    (key) => {
+      expect(validateEnv(createValidEnv())[key]).toBeUndefined();
+      const valid = 'ab12'.repeat(16);
+      expect(validateEnv(createValidEnv({ [key]: valid }))[key]).toBe(valid);
+      for (const malformed of [
+        '',
+        'a'.repeat(32),
+        'a'.repeat(63),
+        'a'.repeat(65),
+        'A'.repeat(64),
+        'z'.repeat(64),
+      ]) {
+        expect(() => validateEnv(createValidEnv({ [key]: malformed }))).toThrow(
+          new RegExp(key, 'u'),
+        );
+      }
+    },
+  );
+});
