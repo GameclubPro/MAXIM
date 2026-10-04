@@ -8,8 +8,8 @@ import { digestDuplicateContent } from './message-duplicate-content';
 import { buildMessageDuplicateJobId } from './message-duplicate.queue';
 import {
   buildMessageScopedModerationActionClaimKey,
-  claimDurableModerationMessageAction,
-  type ModerationMessageActionClaimModel,
+  claimPersistedModerationMessageViolation,
+  type ModerationViolationMessageClaimModel,
   type ModerationMessageActionClaimData,
 } from '../moderation-message-action-claim';
 import {
@@ -103,17 +103,14 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       own: ModerationMessageActionClaimData,
     ) => {
       if (own.ruleCode !== 'DUPLICATE_MESSAGE_ACTION') {
-        return prisma.$transaction(
-          (tx) =>
-            claimDurableModerationMessageAction({
-              model:
-                tx.moderationViolationMessageClaim as unknown as ModerationMessageActionClaimModel,
-              data: own,
-              resumeKnownOwner: true,
-              inTransaction: true,
-            }),
-          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-        );
+        // Ordinary rules use an atomic insert and fresh ownership reconciliation.
+        const result = await claimPersistedModerationMessageViolation({
+          model:
+            prisma.moderationViolationMessageClaim as unknown as ModerationViolationMessageClaimModel,
+          data: own,
+          resumeKnownActionOwner: true,
+        });
+        return result === 'duplicate' ? 'blocked' : result;
       }
       const binding = cleanupBindings.get(own.dedupeKey) ?? bindingFor(own, Date.now());
       cleanupBindings.set(own.dedupeKey, binding);
@@ -264,6 +261,100 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         await prisma.moderationViolationMessageClaim.count({
           where: { chatId, messageId: 'race' },
         }),
+      ).toBe(1);
+    });
+
+    it('retries a real PostgreSQL COMMIT serialization failure through public preclaim', async () => {
+      const own = canonicalClaim('commit-conflict-owner');
+      const competing = claim('commit-conflict-peer', 'STOP_WORD');
+      const binding = bindingFor(own, Date.now());
+      let firstRead!: () => void;
+      let peerInserted!: () => void;
+      let ownerInserted!: () => void;
+      const readReached = new Promise<void>((resolve) => {
+        firstRead = resolve;
+      });
+      const peerReached = new Promise<void>((resolve) => {
+        peerInserted = resolve;
+      });
+      const ownerReached = new Promise<void>((resolve) => {
+        ownerInserted = resolve;
+      });
+      const readRange = (tx: Prisma.TransactionClient) =>
+        tx.moderationViolationMessageClaim.findMany({
+          where: { chatId, messageId: { in: [own.messageId, competing.messageId] } },
+          select: { id: true },
+        });
+      let attempts = 0;
+      let completedCallbacks = 0;
+      const failures: unknown[] = [];
+      const database = {
+        $transaction: async (
+          operation: (tx: Prisma.TransactionClient) => Promise<unknown>,
+          options: { isolationLevel?: Prisma.TransactionIsolationLevel },
+        ) => {
+          const attempt = ++attempts;
+          try {
+            return await prisma.$transaction(async (tx) => {
+              if (attempt === 1) {
+                // Force a real write-skew cycle: both snapshots read the same absent rows.
+                await readRange(tx);
+                firstRead();
+                await peerReached;
+              }
+              const result = await operation(tx);
+              if (attempt === 1) {
+                ownerInserted();
+                // The peer commits first; this completed callback then fails at COMMIT.
+                await peer;
+              }
+              completedCallbacks += 1;
+              return result;
+            }, options);
+          } catch (error) {
+            failures.push(error);
+            throw error;
+          }
+        },
+      };
+      const pending = serviceFor(database).claimMessageActionBeforeQualification(own, binding);
+      const outcome = pending.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await readReached;
+      const peer = prisma.$transaction(
+        async (tx) => {
+          await readRange(tx);
+          await tx.moderationViolationMessageClaim.create({ data: competing });
+          peerInserted();
+          await ownerReached;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+      await peer;
+      const result = await outcome;
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({
+        name: 'DriverAdapterError',
+        message: 'TransactionWriteConflict',
+        cause: { kind: 'TransactionWriteConflict' },
+      });
+      expect(completedCallbacks).toBe(attempts);
+      expect(result).toEqual({ value: 'claimed' });
+      expect(attempts).toBe(2);
+      const owner = await prisma.moderationViolationMessageClaim.findUniqueOrThrow({
+        where: { dedupeKey: own.dedupeKey },
+        include: { duplicateCleanup: true },
+      });
+      expect(owner.messageActionKey).toBe(own.messageActionKey);
+      expect(owner.duplicateCleanup).toMatchObject({
+        eventTimestampMs: BigInt(binding.eventTimestampMs),
+        authorizationTimestampMs: BigInt(binding.authorization!.eventTimestampMs),
+        deadlineAt: new Date(binding.authorization!.deadlineAtMs),
+      });
+      expect(
+        await prisma.moderationViolationMessageClaim.count({ where: { dedupeKey: own.dedupeKey } }),
       ).toBe(1);
     });
 
