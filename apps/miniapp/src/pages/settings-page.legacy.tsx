@@ -1,3 +1,4 @@
+import { SettingsOverviewSearchPlaceholder } from '../components/ui/settings-overview-search-placeholder';
 import { useSettingsRules } from './settings/use-settings-rules';
 import { useSettingsDraft } from './settings/use-settings-draft';
 import { useSettingsRequiredSubscription } from './settings/use-settings-required-subscription';
@@ -4588,7 +4589,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </Suspense>
           ) : null}
 
-          <Suspense fallback={null}>
+          <Suspense fallback={<SettingsOverviewSearchPlaceholder />}>
             <LazySettingsOverviewSearch
               key={chatId}
               containerId="chat-settings-overview"
