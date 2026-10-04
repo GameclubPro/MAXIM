@@ -9,6 +9,7 @@ import {
   extractDuplicateMessageContent,
   exactImageSourceDigest,
 } from './message-duplicate-content';
+import { duplicateSourceDigest } from './message-duplicate-history.service';
 import {
   MESSAGE_DUPLICATE_MEDIA_VERSION,
   messageDuplicateSettingsDigest,
@@ -100,11 +101,12 @@ function setup() {
   const targetLookup = max.getExactMessageRow;
   const originalUpdate = duplicateUpdate('m1', binding.original.publishedAtMs);
   const originalRaw = (originalUpdate.raw as { message: unknown }).message;
+  const originalLookup = jest.fn(async () => originalRaw);
   const guardedMax = {
     ...max,
     getExactMessageRow: async (chatId: string, messageId: string, options: unknown) =>
       messageId === 'm1'
-        ? originalRaw
+        ? originalLookup()
         : (targetLookup as (...args: unknown[]) => Promise<unknown>)(chatId, messageId, options),
   };
   const bots = { isKnownBotUserId: jest.fn().mockReturnValue(false) };
@@ -147,6 +149,7 @@ function setup() {
   return {
     service,
     originalRaw,
+    originalLookup,
     binding,
     params,
     settings,
@@ -308,6 +311,75 @@ describe('message duplicate final delete guard', () => {
     expect(s.history.observeLifecycle).not.toHaveBeenCalled();
   });
 
+  it.each(
+    (['current', 'original'] as const).flatMap((stage) =>
+      (['TEXT', 'MESSAGE'] as const).map((mode) => ({ stage, mode })),
+    ),
+  )(
+    'revokes $mode evidence when the $stage hidden links swap visible ranges',
+    async ({ stage, mode }) => {
+      const s = setup();
+      s.settings.duplicateCompareMode = mode;
+      s.binding.compareMode = mode;
+      s.binding.settingsDigest = messageDuplicateSettingsDigest(s.settings);
+      const linked = (messageId: string, swapped = false) => {
+        const update = duplicateUpdate(messageId, s.binding.eventTimestampMs, 'Первый второй');
+        const raw = (update.raw as { message: { body: Record<string, unknown> } }).message;
+        raw.body.markup = [
+          {
+            type: 'link',
+            from: 0,
+            length: 6,
+            url: `https://example.org/${swapped ? 'second' : 'first'}`,
+          },
+          {
+            type: 'link',
+            from: 7,
+            length: 6,
+            url: `https://example.org/${swapped ? 'first' : 'second'}`,
+          },
+        ];
+        return update;
+      };
+      const recorded = linked('m2');
+      const content = extractDuplicateMessageContent(recorded.raw);
+      s.binding.sourceDigest = duplicateSourceDigest(content, mode);
+      s.binding.contentDigest = buildMessageDuplicateIdentity(content, mode)!;
+      Object.assign(s.binding.original!, {
+        sourceDigest: s.binding.sourceDigest,
+        contentDigest: s.binding.contentDigest,
+      });
+      s.max.getExactMessageRow.mockResolvedValue((recorded.raw as { message: unknown }).message);
+      s.originalLookup.mockResolvedValue(
+        (linked('m1').raw as { message: typeof s.originalRaw }).message,
+      );
+      await expect(s.service.assertIntentStillActionable(s.params)).resolves.toBe('allowed');
+
+      const changedUpdate = linked(stage === 'current' ? 'm2' : 'm1', true);
+      const changedContent = extractDuplicateMessageContent(changedUpdate.raw);
+      expect(changedContent.text).toBe(content.text);
+      const targetSet = (value: typeof content) =>
+        value.navigationTargets.map((target) => target.normalizedTarget).sort();
+      expect(targetSet(changedContent)).toEqual(targetSet(content));
+      const changed = (changedUpdate.raw as { message: typeof s.originalRaw }).message;
+      if (stage === 'current') s.max.getExactMessageRow.mockResolvedValue(changed);
+      else s.originalLookup.mockResolvedValue(changed);
+      await expect(s.service.assertIntentStillActionable(s.params)).rejects.toMatchObject({
+        code:
+          stage === 'current'
+            ? 'message_duplicate_content_changed'
+            : 'message_duplicate_original_changed',
+      });
+      expect(s.history.invalidateLifecycle).toHaveBeenCalledWith({
+        chatId: s.params.chatId,
+        messageId: stage === 'current' ? 'm2' : 'm1',
+        content: expect.objectContaining({ text: content.text }),
+      });
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(s.history.observeLifecycle).not.toHaveBeenCalled();
+    },
+  );
+
   it('rejects queued thumbnail-era evidence before any MAX lookup', async () => {
     const s = setup();
     Object.assign(s.binding, { mediaVersion: 'sha256-v1:sharp-rgb512-pdq-v2' });
@@ -427,6 +499,87 @@ describe('message duplicate final delete guard', () => {
       'content_changed',
     );
   });
+
+  it.each(
+    (['current', 'original'] as const).flatMap((stage) =>
+      (['link', 'callback'] as const).map((type) => ({ stage, type })),
+    ),
+  )('revokes IMAGE evidence after the $stage keyboard $type action changes', async ({ stage, type }) => {
+    const s = setup();
+    s.settings.duplicatePhotoScope = 'SAME_AUTHOR';
+    Object.assign(s.binding, {
+      enforcementScope: 'full',
+      hasPhotos: true,
+      compareMode: 'IMAGE',
+      imageScope: 'SAME_AUTHOR',
+      settingsDigest: exactImageSettingsDigest(s.settings),
+      mediaHashes: ['c'.repeat(64)],
+    });
+    s.policy.resolve.mockResolvedValue({
+      mode: 'full',
+      revision: 1,
+      effectiveAtMs: Date.now() - 10000,
+      expiresAtMs: Number.MAX_SAFE_INTEGER,
+    });
+    const image = (messageId: string, action: string) =>
+      duplicateUpdate(messageId, s.binding.eventTimestampMs, 'caption', [
+        { type: 'image', payload: { photo_id: 'photo', url: 'https://i.oneme.ru/photo' } },
+        {
+          type: 'inline_keyboard',
+          payload: {
+            buttons: [
+              [
+                {
+                  type,
+                  text: 'Open',
+                  ...(type === 'link'
+                    ? { url: `https://example.org/${action}` }
+                    : { payload: action }),
+                },
+              ],
+            ],
+          },
+        },
+      ]);
+    const recorded = image('m2', 'recorded-action');
+    const content = extractDuplicateMessageContent(recorded.raw);
+    s.binding.sourceDigest = exactImageSourceDigest(content);
+    s.binding.contentDigest = buildMessageDuplicateIdentity(
+      content,
+      'IMAGE',
+      s.binding.mediaHashes,
+    )!;
+    Object.assign(s.binding.original!, {
+      sourceDigest: s.binding.sourceDigest,
+      contentDigest: s.binding.contentDigest,
+      mediaHashes: s.binding.mediaHashes,
+    });
+    s.max.getExactMessageRow.mockResolvedValue((recorded.raw as { message: unknown }).message);
+    s.originalLookup.mockResolvedValue(
+      (image('m1', 'recorded-action').raw as { message: typeof s.originalRaw }).message,
+    );
+    await expect(s.service.assertIntentStillActionable(s.params)).resolves.toBe('allowed');
+
+    const changed = (image(stage === 'current' ? 'm2' : 'm1', 'new-action').raw as {
+      message: typeof s.originalRaw;
+    }).message;
+    if (stage === 'current') s.max.getExactMessageRow.mockResolvedValue(changed);
+    else s.originalLookup.mockResolvedValue(changed);
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toMatchObject({
+      code:
+        stage === 'current'
+          ? 'message_duplicate_content_changed'
+          : 'message_duplicate_original_changed',
+    });
+    expect(s.history.invalidateLifecycle).toHaveBeenCalledWith({
+      chatId: s.params.chatId,
+      messageId: stage === 'current' ? 'm2' : 'm1',
+      content: expect.objectContaining({ complete: true, actions: expect.any(Array) }),
+    });
+    expect(s.history.remove).not.toHaveBeenCalled();
+    expect(s.history.observeLifecycle).not.toHaveBeenCalled();
+  });
+
   function full() {
     const s = setup();
     s.policy.resolve.mockResolvedValue({
@@ -498,6 +651,110 @@ describe('message duplicate final delete guard', () => {
     await expect(s.service.assertMessageStillActionable(s.request)).rejects.toThrow(
       'unproven_absence',
     );
+  });
+
+  it.each([
+    { code: 'message.not.found' },
+    { error: { code: 'message_not_found' } },
+    { code: 'message.not_found' },
+  ])(
+    'recognizes structured current-message absence without authorizing a sanction (%j)',
+    async (data) => {
+      const s = full();
+      const absent = { response: { status: 404, data } };
+      s.max.getExactMessageRow.mockRejectedValue(absent);
+      await expect(s.service.assertMessageStillActionable(s.request)).rejects.toMatchObject({
+        code: 'message_duplicate_unproven_absence',
+      });
+      expect(s.metrics.record).toHaveBeenCalledWith('guard.current_lookup_confirmed_absent');
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.unavailable');
+      expect(s.originalLookup).not.toHaveBeenCalled();
+      expect(s.history.remove).not.toHaveBeenCalled();
+
+      await expect(
+        s.service.assertMessageStillActionable({ ...s.request, sanctionIntentId: undefined }),
+      ).resolves.toBe('absent');
+    },
+  );
+
+  it('allows a sanction after structured absence only with our unchanged exact successful DELETE receipt', async () => {
+    const s = full();
+    s.max.getExactMessageRow.mockRejectedValue({
+      response: { status: 404, data: { code: 'message.not.found' } },
+    });
+    const receipt = {
+      chatId: s.params.chatId,
+      messageId: s.params.messageId,
+      subjectUserId: s.binding.senderId,
+      remoteDeleteSucceededAt: new Date(),
+      reasons: [
+        {
+          createdAt: new Date(Date.now() - 500),
+          metadata: { duplicateSource: 'message_v1', messageDuplicate: { ...s.binding } },
+        },
+      ],
+    };
+    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(receipt);
+    await expect(s.service.assertMessageStillActionable(s.request)).resolves.toBe('allowed');
+    expect(s.originalLookup).toHaveBeenCalledTimes(1);
+    receipt.reasons[0]!.metadata.messageDuplicate.contentDigest = 'a'.repeat(64);
+    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toMatchObject({
+      code: 'message_duplicate_unproven_absence',
+    });
+  });
+
+  it.each([
+    { code: 'message.not.found' },
+    { error: { code: 'message_not_found' } },
+    { code: 'message.not_found' },
+  ])(
+    'tombstones a confirmed absent original without inventing a new publication (%j)',
+    async (data) => {
+      const s = setup();
+      s.originalLookup.mockRejectedValue({ response: { status: 404, data } });
+      await expect(s.service.assertIntentStillActionable(s.params)).rejects.toMatchObject({
+        code: 'message_duplicate_original_missing',
+      });
+      expect(s.history.remove).toHaveBeenCalledWith('-123', 'm1');
+      expect(s.history.observeLifecycle).not.toHaveBeenCalled();
+      expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
+      expect(s.metrics.record).toHaveBeenCalledWith('guard.original_lookup_confirmed_absent');
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.unavailable');
+    },
+  );
+
+  it.each(
+    [
+      ['bare 404', { response: { status: 404, data: {} } }],
+      [
+        'chat 404',
+        {
+          response: { status: 404, data: { code: 'chat.not.found', message: 'Message not found' } },
+        },
+      ],
+      ['proxy text', { response: { status: 404, data: { message: 'Message not found' } } }],
+      ['forbidden', { response: { status: 403, data: { code: 'message.not.found' } } }],
+      ['server error', { response: { status: 500, data: { code: 'message.not.found' } } }],
+      [
+        'successful error payload',
+        { response: { status: 200, data: { code: 'message.not.found' } } },
+      ],
+      ['malformed body', { response: { status: 404, data: [{ code: 'message.not.found' }] } }],
+      ['transport', new Error('Private source unavailable https://secret.example')],
+    ].flatMap(([reason, error]) =>
+      (['current', 'original'] as const).map((stage) => ({ reason, error, stage })),
+    ),
+  )('preserves $stage evidence and retry for $reason', async ({ stage, error }) => {
+    const s = setup();
+    if (stage === 'current') s.max.getExactMessageRow.mockRejectedValue(error);
+    else s.originalLookup.mockRejectedValue(error);
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toBe(error);
+    expect(s.history.remove).not.toHaveBeenCalled();
+    expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
+    expect(s.metrics.record).toHaveBeenCalledWith(`guard.${stage}_lookup_unavailable`);
+    expect(s.metrics.record).toHaveBeenCalledWith('guard.unavailable');
+    expect(s.metrics.record).not.toHaveBeenCalledWith(`guard.${stage}_lookup_confirmed_absent`);
+    expect(JSON.stringify(s.metrics.record.mock.calls)).not.toMatch(/secret|https/);
   });
 
   it('uses server receipt ordering instead of comparing the MAX clock with the database clock', async () => {

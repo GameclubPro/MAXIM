@@ -244,13 +244,174 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
     expect(firstResult.next).toMatchObject({ jobId: second.jobId });
     expect(firstResult.next!.nextEligibleAtMs).toBeLessThanOrEqual(Date.now());
     await store.postpone(second, future, 'head');
-    await store.postpone(second, Date.now() + 30_000, 'ordering');
+    await expect(store.postpone(second, Date.now() + 30_000, 'ordering')).resolves.toBe(future);
     const third = identity(-1000);
     await store.announce(third, true);
     const result = await store.runInOrder(third, true, async () => undefined);
     if (result.kind !== 'completed') throw new Error('Preceding turn did not complete');
     expect(result.next).toEqual({ jobId: second.jobId, nextEligibleAtMs: future });
   });
+
+  it('keeps inherited recovery pacing while the current head lease is occupied', async () => {
+    const head = identity();
+    await store.announce(head, true);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const running = store.runInOrder(head, true, async () => {
+      entered();
+      await held;
+    });
+    try {
+      await raceWithTimeout({
+        operation: started,
+        timeoutMs: 10_000,
+        onTimeout: () => {
+          throw new Error('Head lease did not start within the bounded budget');
+        },
+      });
+      const future = Date.now() + 30_000;
+      await expect(store.postpone(head, future, 'ordering')).resolves.toBe(future);
+    } finally {
+      release();
+      await running;
+    }
+  });
+
+  it.each(['before_postpone', 'before_move'] as const)(
+    'repairs an active follower promotion lost %s without a recovery-delay cascade',
+    async (raceAt) => {
+      const queueName = `test-ordering-active-promotion-${randomUUID()}`;
+      const queue = new Queue<MessageDuplicateJob>(queueName, { connection: { url: redisUrl } });
+      let enteredRace!: () => void;
+      let releaseFollower!: () => void;
+      let releaseHead!: () => void;
+      let completedHead!: () => void;
+      let completedFollower!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enteredRace = resolve;
+      });
+      const followerHeld = new Promise<void>((resolve) => {
+        releaseFollower = resolve;
+      });
+      const headHeld = new Promise<void>((resolve) => {
+        releaseHead = resolve;
+      });
+      const headCompleted = new Promise<void>((resolve) => {
+        completedHead = resolve;
+      });
+      const followerCompleted = new Promise<void>((resolve) => {
+        completedFollower = resolve;
+      });
+      const withinBudget = (operation: Promise<void>) =>
+        raceWithTimeout({
+          operation,
+          timeoutMs: 10_000,
+          onTimeout: () => {
+            throw new Error('Active follower promotion retained an inherited recovery delay');
+          },
+        });
+      const observed: string[] = [];
+      const execution = {
+        processMessageDuplicateJob: jest.fn(async (job: MessageDuplicateJob) => {
+          observed.push(job.messageId);
+          if (job.messageId === 'head') await headHeld;
+        }),
+      };
+      const metrics = { record: jest.fn() };
+      const processor = new MessageDuplicateProcessor(
+        execution as never,
+        store,
+        metrics as never,
+        queue,
+      );
+      const originalPostpone = store.postpone.bind(store);
+      let intercepted = false;
+      let worker: Worker<MessageDuplicateJob> | undefined;
+      try {
+        const at = Date.now() - 10_000;
+        const jobs: MessageDuplicateJob[] = ['head', 'follower'].map((messageId, index) => {
+          const eventTimestampMs = at + index;
+          const sourceCreatedAt = new Date(eventTimestampMs).toISOString();
+          const idempotencyKey = buildMessageDuplicateJobId('-900003', messageId, eventTimestampMs);
+          identities.push({
+            jobId: idempotencyKey,
+            chatId: '-900003',
+            sourceCreatedAt,
+            deadlineAtMs: eventTimestampMs + 600_000,
+          });
+          return {
+            version: 2,
+            webhookEventId: `receipt-${messageId}`,
+            chatId: '-900003',
+            messageId,
+            eventTimestampMs,
+            sourceCreatedAt,
+            createdAt: new Date().toISOString(),
+            deadlineAtMs: eventTimestampMs + 600_000,
+            settingsDigest: 'a'.repeat(64),
+            controlRevision: 1,
+            policyRevision: 0,
+            actionEligible: true,
+            idempotencyKey,
+          };
+        });
+        jest.spyOn(store, 'postpone').mockImplementation(async (jobIdentity, nextAt, kind) => {
+          if (jobIdentity.jobId !== jobs[1]!.idempotencyKey || kind !== 'ordering' || intercepted)
+            return originalPostpone(jobIdentity, nextAt, kind);
+          intercepted = true;
+          const effectiveNextAt =
+            raceAt === 'before_move'
+              ? await originalPostpone(jobIdentity, nextAt, kind)
+              : undefined;
+          enteredRace();
+          await followerHeld;
+          return effectiveNextAt ?? originalPostpone(jobIdentity, nextAt, kind);
+        });
+        for (const [index, job] of jobs.entries()) {
+          await store.announce(identities[index]!, true);
+          await queue.add('compare', job, { jobId: job.idempotencyKey, attempts: 5 });
+        }
+        worker = new Worker<MessageDuplicateJob>(
+          queueName,
+          (job, token) => processor.process(job, token),
+          { connection: { url: redisUrl }, concurrency: 2 },
+        );
+        worker.on('completed', (job) => {
+          if (job.data.messageId === 'head') completedHead();
+          else completedFollower();
+        });
+        await withinBudget(entered);
+        const follower = await queue.getJob(jobs[1]!.idempotencyKey);
+        expect(await follower!.getState()).toBe('active');
+        releaseHead();
+        await withinBudget(headCompleted);
+        expect(metrics.record).toHaveBeenCalledWith('worker.wakeup_unavailable');
+        expect(await follower!.getState()).toBe('active');
+        releaseFollower();
+        await withinBudget(followerCompleted);
+        expect(observed).toEqual(['head', 'follower']);
+        expect(execution.processMessageDuplicateJob.mock.calls[1]![0].actionEligible).toBe(true);
+        expect(await queue.getJobCounts('delayed', 'active', 'waiting', 'failed')).toMatchObject({
+          delayed: 0,
+          active: 0,
+          waiting: 0,
+          failed: 0,
+        });
+      } finally {
+        releaseHead();
+        releaseFollower();
+        await worker?.close();
+        await queue.obliterate({ force: true });
+        await queue.close();
+      }
+    },
+  );
 
   it('drains ten warm jobs without a 30-second cascade and lets a quiet chat progress', async () => {
     const queueName = `test-ordering-throughput-${randomUUID()}`;

@@ -2,6 +2,7 @@ import type { ChatSettings } from '../prisma/prisma-client';
 import { normalizeForDetection } from './rule-engine-normalization';
 import { adaptMaxMessageNavigationView } from './navigation/max-navigation-view.adapter';
 import { extractNavigationEvidence } from './navigation/navigation-evidence.extractor';
+import { extractClientClickableTextEvidence } from './navigation/client-clickable-text.extractor';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import {
   DUPLICATE_STATE_BUDGET_MS,
@@ -596,6 +597,120 @@ describe('RuleEngineDuplicateDetector', () => {
         navigationTargets: [navigationTarget('https://example.com/two')],
       }),
     ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+  });
+
+  it.each(['STANDARD', 'STRICT', 'CUSTOM'] as const)(
+    'preserves hidden destination associations in exact and approximate %s matching',
+    async (preset) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({
+        duplicateDetectionPreset: preset,
+        duplicateNearMatchEnabled: true,
+        duplicateWarnEnabled: false,
+        duplicateWarnMaxCount: 1,
+      });
+      const text =
+        'Participants can purchase comfortable iPhone equipment or practical Samsung devices today';
+      const targets = (swapped: boolean) =>
+        navigationTargetsFromMessage({
+          body: {
+            text,
+            markup: ['iPhone', 'Samsung'].map((anchor, index) => ({
+              type: 'link',
+              from: text.indexOf(anchor),
+              length: anchor.length,
+              url: `https://example.com/${swapped ? 1 - index : index}`,
+            })),
+          },
+        });
+      const first = detector.buildFingerprints(text, settings, targets(false));
+      const swapped = detector.buildFingerprints(text, settings, targets(true));
+      expect(first.some((part) => part.type === 'exact')).toBe(true);
+      if (preset !== 'STANDARD') expect(first.some((part) => part.type === 'near')).toBe(true);
+      for (const part of first) {
+        expect(swapped.find((candidate) => candidate.type === part.type)?.value).not.toBe(
+          part.value,
+        );
+      }
+      const detect = (messageId: string, eventTimestampMs: number, swap: boolean) =>
+        detector.detectWithin({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId,
+          eventTimestampMs,
+          rawText: text,
+          compactText: normalizeForDetection(text),
+          settings,
+          navigationTargets: targets(swap),
+        });
+      await expect(detect('first', 100, false)).resolves.toEqual({});
+      await expect(detect('swapped', 200, true)).resolves.toEqual({});
+      await expect(detect('repeated', 300, true)).resolves.toMatchObject({ hit: { count: 1 } });
+    },
+  );
+
+  it.each([true, false])(
+    'preserves visible case-sensitive URL order with navigation evidence supplied=%s',
+    (provided) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings();
+      const fingerprint = (text: string) => {
+        const view = adaptMaxMessageNavigationView({ body: { text } });
+        return detector.buildFingerprints(
+          text,
+          settings,
+          provided
+            ? extractNavigationEvidence(view, {
+                plainTextCandidates: extractClientClickableTextEvidence(view),
+              }).targets
+            : undefined,
+        )[0]!.value;
+      };
+      expect(fingerprint('https://example.com/One https://example.com/one')).not.toBe(
+        fingerprint('https://example.com/one https://example.com/One'),
+      );
+      expect(fingerprint('  https://example.com/one\nhttps://example.com/One  ')).toBe(
+        fingerprint('https://example.com/one https://example.com/One'),
+      );
+      if (!provided)
+        expect(fingerprint('VISIT https://example.com/one')).toBe(
+          JSON.stringify({
+            text: 'visit https://example.com/one',
+            navigationIdentity: ['link:https://example.com/one'],
+          }),
+        );
+    },
+  );
+
+  it('preserves CUSTOM value matching when the same link moves to another hidden anchor', () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const settings = buildSettings({
+      duplicateDetectionPreset: 'CUSTOM',
+      duplicateIgnoreLinksEnabled: true,
+    });
+    const fingerprints = (from: number) =>
+      detector.buildFingerprints(
+        'Buy Buy',
+        settings,
+        navigationTargetsFromMessage({
+          body: {
+            text: 'Buy Buy',
+            markup: [{ type: 'link', from, length: 3, url: 'https://example.com/same' }],
+          },
+        }),
+      );
+    const first = fingerprints(0);
+    const moved = fingerprints(4);
+    expect(first.find((part) => part.type === 'exact')?.value).not.toBe(
+      moved.find((part) => part.type === 'exact')?.value,
+    );
+    expect(first.find((part) => part.type === 'link')?.value).toBe(
+      moved.find((part) => part.type === 'link')?.value,
+    );
   });
 
   it('matches the same structured link across different visible text in custom mode', async () => {

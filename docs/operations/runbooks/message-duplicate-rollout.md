@@ -268,6 +268,16 @@ emit no URLs, credentials, tokens or host values. A photo source rejection can t
 MAX message lookup per verification attempt. The same photo/author/chat/message must be confirmed
 and the refreshed URL passes the unchanged downloader policy; a second rejection is terminal.
 
+`guard.current_lookup_unavailable` and `guard.original_lookup_unavailable` locate a failed exact
+message read while preserving the aggregate `guard.unavailable` counter and retry behavior.
+`guard.current_lookup_confirmed_absent` and `guard.original_lookup_confirmed_absent` count exact
+lookup absence, including a structured HTTP 404 with a message-specific MAX error code. Bare
+HTTP 404, chat errors, free-form text, transport errors and other statuses remain unknown and
+cannot remove evidence. Confirmed original absence tombstones that original without inventing
+a new publication time. Confirmed current absence alone cannot authorize sanctions: the exact
+successful DELETE receipt and every existing binding/policy check remain required. These fixed
+labels disclose no message, chat, user, source or error payload.
+
 The closed dashboard reports the active `message-duplicates` queue rather than the retired photo
 queue. Missing registration or an unreadable Redis counter fails that snapshot as unavailable;
 it must not appear as an empty duplicate backlog. Lightweight readiness and operational governor

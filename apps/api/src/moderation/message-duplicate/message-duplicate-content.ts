@@ -77,6 +77,46 @@ export function normalizeMessageDuplicateText(value: string): string {
   return value.normalize('NFC').toLowerCase().replace(/\s+/gu, ' ').trim();
 }
 
+export function duplicateNavigationAnchorIdentityKeys(
+  rawText: string,
+  targets: readonly NavigationTargetEvidence[] = [],
+): string[] {
+  const keys = new Set<string>();
+  for (const target of targets) {
+    for (const origin of target.origins) {
+      // FLAG: Lowercased prose already preserves ordinary visible URL positions. Add binding
+      // only when it would lose a case-sensitive destination, keeping plain history compatible.
+      const lossyVisibleTarget =
+        origin.carrier === 'plain_text' &&
+        target.normalizedTarget !== target.normalizedTarget.toLowerCase();
+      if (
+        origin.carrier !== 'link_markup' &&
+        origin.carrier !== 'user_mention_markup' &&
+        !lossyVisibleTarget
+      )
+        continue;
+      const { from, end, visibleText, status } = origin.range;
+      if (status !== 'valid' || from === null || end === null || visibleText === null) continue;
+      // FLAG: A destination set loses which repeated anchor opens which target. Bind the
+      // normalized prefix and anchor as well; raw offsets alone break cosmetic text edits.
+      const hasLocalRange = rawText.slice(from, end) === visibleText;
+      keys.add(
+        `anchor:${digestDuplicateContent([
+          lossyVisibleTarget ? 'visible-target-anchor-v1' : 'markup-anchor-v1',
+          origin.carrier,
+          target.kind,
+          target.normalizedTarget,
+          hasLocalRange
+            ? normalizeMessageDuplicateText(rawText.slice(0, from))
+            : [origin.contentFingerprint, from, end],
+          normalizeMessageDuplicateText(visibleText),
+        ])}`,
+      );
+    }
+  }
+  return [...keys].sort();
+}
+
 export function extractDuplicateMessageContent(
   raw: unknown,
   webhook = true,
@@ -91,6 +131,7 @@ export function extractDuplicateMessageContent(
   const media: DuplicateMediaSource[] = [];
   let reason: DuplicateMessageContent['reason'] = selected ? 'complete' : 'missing_message';
   let totalText = 0;
+  let joinedTextLength = 0;
   let attachmentsSeen = 0;
   let nodesSeen = 0;
   const seen = new Set<object>();
@@ -117,7 +158,11 @@ export function extractDuplicateMessageContent(
       reject('content_limit');
       return;
     }
-    if (text) texts.push(text);
+    const textOffset = joinedTextLength + (text && texts.length > 0 ? 1 : 0);
+    if (text) {
+      texts.push(text);
+      joinedTextLength = textOffset + text.length;
+    }
     for (const key of ['markup', 'text_markup', 'caption_markup']) {
       if (
         body[key] !== undefined &&
@@ -135,7 +180,19 @@ export function extractDuplicateMessageContent(
     if (evidence.diagnostics.length > 0) reject('invalid_content');
     for (const target of evidence.targets) {
       navigation.add(`${target.kind}:${target.normalizedTarget}`);
-      navigationTargets.push(target);
+      navigationTargets.push({
+        ...target,
+        // FLAG: Forwarded bodies have local UTF16 ranges. Remap to the same concatenated
+        // text used by equality so identical anchors in different bodies stay distinct.
+        origins: target.origins.map((origin) => ({
+          ...origin,
+          range: {
+            ...origin.range,
+            from: origin.range.from === null ? null : origin.range.from + textOffset,
+            end: origin.range.end === null ? null : origin.range.end + textOffset,
+          },
+        })),
+      });
     }
     if (
       body.attachments !== undefined &&
@@ -269,6 +326,8 @@ export function extractDuplicateMessageContent(
   if (selected) visit(selected, 0);
   const rawText = texts.join('\n');
   const text = normalizeMessageDuplicateText(rawText);
+  for (const key of duplicateNavigationAnchorIdentityKeys(rawText, navigationTargets))
+    navigation.add(key);
   const links = [...navigation].sort();
   return {
     rawText,
@@ -306,7 +365,12 @@ export function buildMessageDuplicateIdentity(
       mediaHashes.some((hash) => !/^[a-f0-9]{64}$/.test(hash))
     )
       return null;
-    return digestDuplicateContent({ version: 1, mode, images: [...mediaHashes].sort() });
+    return digestDuplicateContent({
+      version: 1,
+      mode,
+      images: [...mediaHashes].sort(),
+      ...(content.actions.length > 0 ? { actions: content.actions } : {}),
+    });
   }
   if (!content.complete && !(mode === 'TEXT' && content.reason === 'unsupported_attachment'))
     return null;
@@ -336,7 +400,7 @@ export function buildMessageDuplicateIdentity(
 
 export function isExactImageContent(content: DuplicateMessageContent): boolean {
   // FLAG: Deleting a mixed or partial album could discard new content. Require the complete
-  // photo set; captions do not define image equality, and every photo still needs verified bytes.
+  // photo set; captions do not define image equality, buttons do, and every photo needs bytes.
   return (
     content.complete &&
     content.media.length > 0 &&
@@ -345,14 +409,17 @@ export function isExactImageContent(content: DuplicateMessageContent): boolean {
 }
 
 export function exactImageSourceDigest(content: DuplicateMessageContent): string {
+  const images = content.media
+    .map((item) =>
+      item.kind === 'photo' && item.photoId
+        ? digestDuplicateContent(['photo', item.photoId])
+        : item.identity,
+    )
+    .sort();
+  // FLAG: Preserve the deployed digest for photos without buttons. Legacy keyboard evidence
+  // lacks its action binding and must fail fresh validation instead of authorizing deletion.
   return digestDuplicateContent(
-    content.media
-      .map((item) =>
-        item.kind === 'photo' && item.photoId
-          ? digestDuplicateContent(['photo', item.photoId])
-          : item.identity,
-      )
-      .sort(),
+    content.actions.length > 0 ? { images, actions: content.actions } : images,
   );
 }
 
@@ -366,6 +433,7 @@ export function canRefreshDuplicatePhotoSources(
   return (
     original.complete &&
     current.complete &&
+    digestDuplicateContent(original.actions) === digestDuplicateContent(current.actions) &&
     (imageOnly
       ? isExactImageContent(original) && isExactImageContent(current)
       : digestDuplicateContent([original.text, original.navigation, original.actions]) ===

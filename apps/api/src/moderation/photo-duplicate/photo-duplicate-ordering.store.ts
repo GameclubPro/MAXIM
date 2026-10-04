@@ -152,16 +152,27 @@ if redis.call('PTTL', KEYS[1]) < 0 then redis.call('PEXPIRE', KEYS[1], ARGV[3]) 
 return 1
 `;
 
+// FLAG: A follower may become head while its Bull job is still active and cannot be promoted.
+// Clear only inherited waits for an unlocked current head; explicit deferrals retain authority.
 const POSTPONE_SCRIPT = `
 local member = redis.call('HGET', KEYS[1], ARGV[1])
-if not member then return 0 end
+if not member then return ARGV[2] end
 local deadline_at_ms = tonumber(redis.call('HGET', KEYS[3], 'deadlineAtMs')) or 0
 local existing_explicit = redis.call('HGET', KEYS[2], ARGV[1] .. ':explicit') == '1'
-if ARGV[4] == 'head' or not existing_explicit then
-  redis.call('HSET', KEYS[2], ARGV[1], math.min(tonumber(ARGV[2]), deadline_at_ms), ARGV[1] .. ':explicit', ARGV[4] == 'head' and '1' or '0')
-  redis.call('PEXPIRE', KEYS[2], ARGV[3])
+local next_eligible = math.min(tonumber(ARGV[2]), deadline_at_ms)
+if ARGV[4] == 'ordering' and not existing_explicit and
+    redis.call('ZRANGE', KEYS[4], 0, 0)[1] == member and redis.call('EXISTS', KEYS[5]) == 0 then
+  local redis_time = redis.call('TIME')
+  local now_ms = (tonumber(redis_time[1]) * 1000) + math.floor(tonumber(redis_time[2]) / 1000)
+  next_eligible = math.min(next_eligible, now_ms)
 end
-return 1
+if ARGV[4] == 'head' or not existing_explicit then
+  redis.call('HSET', KEYS[2], ARGV[1], next_eligible, ARGV[1] .. ':explicit', ARGV[4] == 'head' and '1' or '0')
+  redis.call('PEXPIRE', KEYS[2], ARGV[3])
+else
+  next_eligible = math.min(tonumber(redis.call('HGET', KEYS[2], ARGV[1])) or next_eligible, deadline_at_ms)
+end
+return tostring(next_eligible)
 `;
 
 const RENEW_TURN_SCRIPT = `
@@ -497,25 +508,37 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
     input: PhotoDuplicateOrderingIdentity,
     nextEligibleAtMs: number,
     kind: 'head' | 'ordering' = 'head',
-  ): Promise<void> {
+  ): Promise<number> {
     const normalized = validateIdentity(input);
     if (!Number.isSafeInteger(nextEligibleAtMs) || nextEligibleAtMs <= 0)
       throw new Error('nextEligibleAtMs is invalid');
     const keys = buildOrderingKeys(normalized.chatId, normalized.jobId, this.namespace);
     try {
-      await this.runRedisOperation(
+      const response = await this.runRedisOperation(
         this.redis.eval(
           POSTPONE_SCRIPT,
-          3,
+          5,
           keys.members,
           keys.nextEligible,
           keys.permit,
+          keys.pending,
+          keys.lock,
           normalized.jobId,
           String(nextEligibleAtMs),
           String(DUPLICATE_JOB_MAX_LIFETIME_MS + PENDING_RECOVERY_GRACE_MS * 2),
           kind,
         ),
       );
+      if (
+        typeof response !== 'number' &&
+        typeof response !== 'string' &&
+        !Buffer.isBuffer(response)
+      )
+        throw new Error('Invalid photo duplicate ordering wakeup');
+      const effectiveNextEligibleAtMs = Number(readRedisValue(response));
+      if (!Number.isSafeInteger(effectiveNextEligibleAtMs) || effectiveNextEligibleAtMs <= 0)
+        throw new Error('Invalid photo duplicate ordering wakeup');
+      return effectiveNextEligibleAtMs;
     } catch (error: unknown) {
       throw new PhotoDuplicateOrderingUnavailableError(
         'Photo duplicate ordering wakeup is unavailable',
