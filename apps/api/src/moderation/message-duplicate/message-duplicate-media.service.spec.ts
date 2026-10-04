@@ -8,7 +8,11 @@ import {
   messageDuplicateSettingsDigest,
   exactImageSettingsDigest,
 } from './message-duplicate-state';
-import { duplicateSettings, duplicateUpdate } from './message-duplicate-test-fixtures';
+import {
+  duplicateSettings,
+  duplicateUpdate,
+  preUnicodeNearSettingsDigests,
+} from './message-duplicate-test-fixtures';
 import type { MessageDuplicateJob } from './message-duplicate.queue';
 import {
   PhotoDownloadHttpError,
@@ -139,6 +143,22 @@ function setup() {
 }
 
 describe('bounded message duplicate media analysis', () => {
+  it.each(['STRICT', 'CUSTOM'] as const)(
+    'rejects queued pre-Unicode %s evidence before media work',
+    async (preset) => {
+      const s = setup();
+      s.settings.duplicateDetectionPreset = preset;
+      s.settings.duplicateNearMatchEnabled = true;
+      const job = s.job('old-policy', 0);
+      job.settingsDigest = preUnicodeNearSettingsDigests[preset];
+      await s.service.process(job, s.lease);
+      expect(s.downloads).not.toHaveBeenCalled();
+      expect(s.history.observe).not.toHaveBeenCalled();
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+      expect(s.metrics.record).toHaveBeenCalledWith('media.settings_rejected');
+    },
+  );
+
   it('expires scheduled media work before downloading or using history', async () => {
     const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-29T14:59Z'));
     try {
@@ -276,6 +296,68 @@ describe('bounded message duplicate media analysis', () => {
     s.photos.fingerprintAlbum.mockResolvedValue(complete);
     return { ...s, photoJob, complete };
   }
+
+  it('charges every album member when an outer hash checkpoint contains only a prefix', async () => {
+    const s = photoSetup();
+    const job = s.photoJob('partial', 0, 'https://i.oneme.ru/first');
+    const update = (
+      s.rows.get(job.webhookEventId) as { normalizedPayload: ReturnType<typeof duplicateUpdate> }
+    ).normalizedPayload;
+    const { extractDuplicateMessageContent } = await import('./message-duplicate-content');
+    const one = extractDuplicateMessageContent(update.raw);
+    const content = {
+      ...one,
+      media: [
+        one.media[0]!,
+        {
+          ...one.media[0]!,
+          identity: 'second',
+          photoId: 'second',
+          url: 'https://i.oneme.ru/second',
+        },
+      ],
+    };
+    s.photos.fingerprintAlbum.mockResolvedValue({
+      kind: 'incomplete',
+      reason: 'album_decode_budget_exceeded',
+    });
+    const boundary = s.service as unknown as {
+      hashMedia: (
+        content: typeof one,
+        source: typeof update,
+        ttl: number,
+        deadline: number,
+        bot: string,
+        cached: (string | null)[],
+        budget: { remaining: number },
+        receiptId: string,
+      ) => Promise<unknown>;
+    };
+    await expect(
+      boundary.hashMedia(
+        content,
+        update,
+        3600,
+        Date.now() + 30_000,
+        'bot',
+        ['a'.repeat(64), null],
+        { remaining: 20 },
+        job.webhookEventId,
+      ),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(s.photos.fingerprintAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({
+        receiptId: job.webhookEventId,
+        images: [
+          expect.objectContaining({ downloadUrl: 'https://i.oneme.ru/first' }),
+          expect.objectContaining({ downloadUrl: 'https://i.oneme.ru/second' }),
+        ],
+      }),
+      3600,
+      expect.any(Number),
+    );
+    expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+  });
 
   it('verifies exact photo copies with different IDs and forwards full action execution', async () => {
     const s = photoSetup();

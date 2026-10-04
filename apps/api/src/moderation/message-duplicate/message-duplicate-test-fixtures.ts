@@ -2,6 +2,12 @@ import { chatSettingsSchema } from '@maxim/contracts';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { WebhookParser } from '../../webhook/webhook.parser';
 
+// Recorded from the pre-Unicode matcher at 1333fa9 with duplicateSettings below.
+export const preUnicodeNearSettingsDigests = {
+  STRICT: '1a1c2877f9325e5f2563d675c4ad27c05b097bdcf22210205525f4be1ea06da5',
+  CUSTOM: '0f816f04439405d78f988f0eefe7b353cb29d650365aa6c9b6fd6be5598d65d0',
+} as const;
+
 export function duplicateSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
     ...chatSettingsSchema.parse({}),

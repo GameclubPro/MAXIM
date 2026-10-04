@@ -148,8 +148,13 @@ export function isBoundMessageDuplicateDelete(input: {
 
 export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   const flow = resolveDuplicateFlowConfig(settings);
+  const nearEnabled =
+    settings.duplicateDetectionPreset === 'STRICT' ||
+    (settings.duplicateDetectionPreset === 'CUSTOM' && settings.duplicateNearMatchEnabled);
   return digestDuplicateContent({
-    version: 'text-fixed-window-v5',
+    // FLAG: Old near grants/jobs must fail the fresh guard, not merely miss new history.
+    // Exact-only and IMAGE authority keep their existing versions and comparison semantics.
+    version: nearEnabled ? 'text-fixed-window-unicode-near-v6' : 'text-fixed-window-v5',
     historyRevision: settings.duplicateHistoryRevision ?? 0,
     schedule: duplicateScheduleDigestInput(settings),
     enabled: settings.antiDuplicateEnabled,

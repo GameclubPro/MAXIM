@@ -19,6 +19,7 @@ const paths = {
     'apps/api/prisma/migrations/20260930180000_add_duplicate_policy_revisions/migration.sql',
   admission: 'apps/api/src/moderation/message-duplicate/message-duplicate-admission.service.ts',
   queue: 'apps/api/src/moderation/message-duplicate/message-duplicate.queue.ts',
+  detector: 'apps/api/src/moderation/rule-engine-duplicate-detector.ts',
 };
 function probe(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-duplicate-floor-'));
@@ -66,6 +67,27 @@ test('requires the message-v3 reader, durable admission and last action permit o
 
 const mutations = [
   ['state', 'z.literal(3)', 'z.literal(4)'],
+  ['state', 'text-fixed-window-unicode-near-v6', 'text-fixed-window-v5'],
+  ['state', 'version: nearEnabled ?', 'version: false ?'],
+  ['detector', '/[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N}]*/gu', '/[a-zа-яё0-9]+/giu'],
+  [
+    'detector',
+    'const gap = normalized.slice(end, until);',
+    'const gap = normalized.slice(end, until).trim();',
+  ],
+  ['detector', 'protectedGaps.push([beforeToken, gap])', 'protectedGaps.push([0, gap])'],
+  ['detector', '/[^\\p{P}\\p{Z}\\s]|[%‰‱*/\\\\^|&#@]/u.test(gap)', 'false'],
+  ['detector', 'numericBoundary && /\\S/u.test(gap)', 'false'],
+  [
+    'detector',
+    'JSON.stringify({ version: 2, tokens, numericTokens, protectedGaps })',
+    'JSON.stringify({ tokens, numericTokens })',
+  ],
+  [
+    'guard',
+    'messageDuplicateSettingsDigest(settings)) !== binding.settingsDigest',
+    'messageDuplicateSettingsDigest(settings)) === binding.settingsDigest',
+  ],
   ['guard', 'binding.lifecycleRevision', 'binding.removedLifecycleRevision'],
   ['guard', 'settings.duplicatePolicyRevision !== binding.policyRevision', 'false'],
   ['guard', 'await this.authorization.isAllowed(chatId, binding)', 'true'],

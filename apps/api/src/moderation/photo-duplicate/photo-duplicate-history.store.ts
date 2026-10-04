@@ -980,7 +980,17 @@ function validateCachedPhotoFingerprint(fingerprint: PhotoFingerprint): PhotoFin
   ) {
     throw new Error('Photo fingerprint cache value is invalid');
   }
+  const cost = fingerprint.decodeCost;
+  if (
+    cost !== undefined &&
+    (!Number.isSafeInteger(cost?.encodedBytes) ||
+      cost.encodedBytes <= 0 ||
+      !Number.isSafeInteger(cost?.pixels) ||
+      cost.pixels <= 0)
+  )
+    throw new Error('Photo fingerprint cache resource cost is invalid');
   return {
+    ...(cost ? { decodeCost: { encodedBytes: cost.encodedBytes, pixels: cost.pixels } } : {}),
     algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
     canonicalHash: fingerprint.canonicalHash,
     pdqHash: fingerprint.pdqHash,

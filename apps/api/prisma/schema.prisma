@@ -3814,3 +3814,110 @@ model PublisherStartIntent {
   @@index([status, nextEnqueueAt, id], map: "publisher_start_intents_due_idx")
   @@map("publisher_start_intents")
 }
+
+model MarketplaceBinding {
+  id                  String                            @id @db.Uuid
+  actorUserId         String                            @map("actor_user_id")
+  entityId            String                            @map("entity_id")
+  kind                String
+  profile             String
+  botId               String                            @map("bot_id")
+  state               String                            @default("UNKNOWN")
+  revision            Int                               @default(0)
+  checkedAt           DateTime?                         @map("checked_at") @db.Timestamptz(6)
+  validUntil          DateTime?                         @map("valid_until") @db.Timestamptz(6)
+  updatedAt           DateTime                          @default(now()) @map("updated_at") @db.Timestamptz(6)
+  metadata            Json                              @default("{}")
+  statisticsConsent   Boolean                           @default(false) @map("statistics_consent")
+  collectionOwner     String                            @default("SHADOW") @map("collection_owner")
+  collectionMetrics   Json                              @default("[]") @map("collection_metrics")
+  appendEnabled       Boolean                           @default(false) @map("append_enabled")
+  appendRevision      Int                               @default(0) @map("append_revision")
+  profileRevision     Int                               @default(0) @map("profile_revision")
+  profileSnapshot     Json?                             @map("profile_snapshot")
+  publicUrl           String?                           @map("public_url")
+  publicVerifiedUntil DateTime?                         @map("public_verified_until") @db.Timestamptz(6)
+  generationId        String?                           @map("generation_id") @db.Uuid
+  statisticsCheckedAt DateTime?                         @map("statistics_checked_at") @db.Timestamptz(6)
+  nativeHistoryCheckedAt DateTime? @map("native_history_checked_at") @db.Timestamptz(6)
+  nativeFullCheckedAt DateTime? @map("native_full_checked_at") @db.Timestamptz(6)
+  nativeAudienceCheckedAt DateTime? @map("native_audience_checked_at") @db.Timestamptz(6)
+  historyFrom         DateTime?                         @map("history_from") @db.Timestamptz(6)
+  historyTo           DateTime?                         @map("history_to") @db.Timestamptz(6)
+  historyCursor       DateTime?                         @map("history_cursor") @db.Timestamptz(6)
+  historyComplete     Boolean                           @default(false) @map("history_complete")
+  historySignature    String?                           @map("history_signature")
+  discoveryFrom       DateTime?                         @map("discovery_from") @db.Timestamptz(6)
+  discoveryTo         DateTime?                         @map("discovery_to") @db.Timestamptz(6)
+  historyAnomaly      Boolean                           @default(false) @map("history_anomaly")
+  buttonDiagnostic    String?                           @map("button_diagnostic")
+  nextCollectAt       DateTime                          @default(now()) @map("next_collect_at") @db.Timestamptz(6)
+  nextAccessAt        DateTime                          @default(now()) @map("next_access_at") @db.Timestamptz(6)
+  leaseId             String?                           @map("lease_id") @db.Uuid
+  leaseUntil          DateTime?                         @map("lease_until") @db.Timestamptz(6)
+  generations         MarketplaceStatisticsGeneration[]
+  posts               MarketplacePostSample[]
+  audience            MarketplaceAudienceObservation[]
+  policyRequests      MarketplacePolicyRequest[]
+
+  @@unique([actorUserId, entityId, profile], map: "marketplace_bindings_actor_user_id_entity_id_profile_key")
+  @@index([nextCollectAt, id], map: "marketplace_bindings_collect_idx")
+  @@index([nextAccessAt, id], map: "marketplace_bindings_access_idx")
+  @@index([entityId, state], map: "marketplace_bindings_entity_idx")
+  @@map("marketplace_bindings")
+}
+
+model MarketplaceStatisticsGeneration {
+  id        String             @id @db.Uuid
+  bindingId String             @map("binding_id") @db.Uuid
+  manifest  Json
+  rows      Json
+  createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  binding   MarketplaceBinding @relation(fields: [bindingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([createdAt, id], map: "marketplace_generations_expiry_idx")
+  @@map("marketplace_statistics_generations")
+}
+
+model MarketplacePostSample {
+  bindingId    String             @map("binding_id") @db.Uuid
+  messageId    String             @map("message_id")
+  publishedAt  DateTime           @map("published_at") @db.Timestamptz(6)
+  views        Int?
+  observedAt   DateTime?          @map("observed_at") @db.Timestamptz(6)
+  views24      Int?               @map("views_24")
+  captured24   DateTime?          @map("captured_24") @db.Timestamptz(6)
+  views48      Int?               @map("views_48")
+  captured48   DateTime?          @map("captured_48") @db.Timestamptz(6)
+  nextSampleAt DateTime?          @map("next_sample_at") @db.Timestamptz(6)
+  binding      MarketplaceBinding @relation(fields: [bindingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([bindingId, messageId])
+  @@index([nextSampleAt, bindingId, messageId], map: "marketplace_post_samples_due_idx")
+  @@index([bindingId, publishedAt, messageId], map: "marketplace_post_samples_history_idx")
+  @@index([publishedAt, bindingId, messageId], map: "marketplace_post_samples_expiry_idx")
+  @@map("marketplace_post_samples")
+}
+
+model MarketplaceAudienceObservation {
+  bindingId  String             @map("binding_id") @db.Uuid
+  bucket     DateTime           @db.Timestamptz(6)
+  audience   Int
+  observedAt DateTime           @map("observed_at") @db.Timestamptz(6)
+  binding    MarketplaceBinding @relation(fields: [bindingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([bindingId, bucket])
+  @@index([bucket, bindingId], map: "marketplace_audience_expiry_idx")
+  @@map("marketplace_audience_observations")
+}
+
+model MarketplacePolicyRequest {
+  requestId   String             @id @map("request_id") @db.Uuid
+  bindingId   String             @map("binding_id") @db.Uuid
+  payloadHash String             @map("payload_hash")
+  result      Json
+  createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  binding     MarketplaceBinding @relation(fields: [bindingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("marketplace_policy_requests")
+}

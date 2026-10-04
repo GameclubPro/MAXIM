@@ -7,6 +7,12 @@ import FormData from 'form-data';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { readMaxMemberActivity } from './max-member-activity.util';
+import { MarketplaceStateService } from '../integrations/marketplace/marketplace-state.service';
+import {
+  appendMarketplacePublicationButton,
+  isMarketplacePublicationTarget,
+  type MarketplacePublicationIntent,
+} from './marketplace-publication-button';
 import { assertMaxMemberRestoreAvailable } from './max-member-restore-capability';
 import {
   refreshExistingInlineKeyboardText,
@@ -133,6 +139,7 @@ export type MaxBotChat = {
 export type MaxChatSnapshot = {
   chatId: string;
   title: string | null;
+  description?: string | null;
   participantsCount: number | null;
   status: string | null;
   isPublic: boolean | null;
@@ -418,6 +425,8 @@ export type MaxMessageButton =
   | MaxChatButton;
 
 export type MaxSendMessageOptions = {
+  /** Trusted public-post intent; never accepted from HTTP input or applied to edits/DMs. */
+  marketplacePublication?: MarketplacePublicationIntent;
   button?: MaxLinkButton;
   buttons?: MaxMessageButton[][];
   imagePayload?: Record<string, unknown>;
@@ -940,6 +949,8 @@ export class MaxClientService implements OnModuleDestroy {
     @Optional()
     @InjectQueue(MAX_ACTION_BACKGROUND_QUEUE)
     private readonly backgroundActionQueue?: Queue<MaxActionJob>,
+    @Optional()
+    private readonly marketplaceState?: MarketplaceStateService,
   ) {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
     this.isProduction =
@@ -1162,6 +1173,15 @@ export class MaxClientService implements OnModuleDestroy {
       chatId,
       async () => {
         await options?.beforeSend?.();
+        const publicationOptions = await this.prepareMarketplacePublicationOptions(
+          chatId,
+          options,
+          requestOptions.botId ?? this.getCurrentBot().id,
+        );
+        const currentAttachments =
+          publicationOptions === options
+            ? attachments
+            : this.buildMessageAttachments(publicationOptions);
         return this.request<Record<string, unknown>>('post', '/messages', {
           params: {
             chat_id: chatId,
@@ -1170,7 +1190,7 @@ export class MaxClientService implements OnModuleDestroy {
             text: hasText ? normalizedText : null,
             ...(hasText && options?.textFormat ? { format: options.textFormat } : {}),
             ...(messageLink ? { link: messageLink } : {}),
-            ...(attachments.length > 0 ? { attachments } : {}),
+            ...(currentAttachments.length > 0 ? { attachments: currentAttachments } : {}),
           },
           ...(timeoutMs ? { timeout: timeoutMs } : {}),
         });
@@ -1729,6 +1749,11 @@ export class MaxClientService implements OnModuleDestroy {
       },
     );
     return this.normalizeMessageRows(data);
+  }
+
+  parseChannelMessageSnapshot(chatId: string, raw: unknown): MaxChannelMessageSnapshot | null {
+    const row = this.asRecord(raw);
+    return row ? this.parseMessageSnapshot(chatId, row) : null;
   }
 
   async listMessageSnapshots(
@@ -3109,6 +3134,9 @@ export class MaxClientService implements OnModuleDestroy {
     const snapshot: MaxChatSnapshot = {
       chatId: normalizedChatId,
       title: this.readTrimmedString(data.title ?? data.name),
+      ...(typeof data.description === 'string'
+        ? { description: this.readTrimmedString(data.description) }
+        : {}),
       participantsCount: this.readNullableInteger(
         data.participants_count ??
           data.participantsCount ??
@@ -3171,6 +3199,9 @@ export class MaxClientService implements OnModuleDestroy {
     const snapshot: MaxChatSnapshot = {
       chatId: normalizedChatId,
       title: this.readTrimmedString(data.title ?? data.name),
+      ...(typeof data.description === 'string'
+        ? { description: this.readTrimmedString(data.description) }
+        : {}),
       participantsCount: this.readNullableInteger(
         data.participants_count ??
           data.participantsCount ??
@@ -3999,6 +4030,9 @@ export class MaxClientService implements OnModuleDestroy {
     return (
       typeof row.chatId === 'string' &&
       (typeof row.title === 'string' || row.title === null) &&
+      (row.description === undefined ||
+        row.description === null ||
+        typeof row.description === 'string') &&
       (typeof row.participantsCount === 'number' || row.participantsCount === null) &&
       (typeof row.status === 'string' || row.status === null) &&
       (typeof row.isPublic === 'boolean' || row.isPublic === null) &&
@@ -5792,6 +5826,37 @@ export class MaxClientService implements OnModuleDestroy {
     return Math.min(normalized, MAX_ACTION_DELAY_MS);
   }
 
+  private async prepareMarketplacePublicationOptions(
+    chatId: string,
+    options: MaxSendMessageOptions | undefined,
+    botId: string,
+  ): Promise<MaxSendMessageOptions | undefined> {
+    if (
+      !options ||
+      !this.marketplaceState ||
+      !isMarketplacePublicationTarget(chatId, options.marketplacePublication)
+    )
+      return options;
+    try {
+      const binding = await this.marketplaceState.resolvePublicationButton({ chatId, botId });
+      if (!binding) return options;
+      const result = appendMarketplacePublicationButton(options, binding.url);
+      if (result.outcome === 'KEYBOARD_FULL') {
+        await this.marketplaceState.recordButtonDiagnostic({
+          chatId,
+          botId,
+          revision: binding.revision,
+          code: 'KEYBOARD_FULL',
+        });
+      }
+      return result.options;
+    } catch {
+      // FLAG: Optional profile integration failure cannot cancel an authorized publication.
+      this.logger.warn('Optional marketplace publication button is unavailable');
+      return options;
+    }
+  }
+
   private buildMessageAttachments(options?: MaxSendMessageOptions): Record<string, unknown>[] {
     const attachments: Record<string, unknown>[] = [];
     const imageAttachment = this.buildImageAttachment(options?.imagePayload);
@@ -6862,6 +6927,17 @@ export class MaxClientService implements OnModuleDestroy {
     mutationOptions: MaxApiRequestOptions,
     beforeMutation?: () => Promise<void>,
   ): Promise<MaxQueuedSendResponse> {
+    let currentAttachments = attachments;
+    const preparePublication = async () => {
+      const options = await this.prepareMarketplacePublicationOptions(
+        action.chatId,
+        action.options,
+        this.readTrimmedString(mutationOptions.botId) ?? this.getCurrentBot().id,
+      );
+      currentAttachments =
+        options === action.options ? attachments : this.buildMessageAttachments(options);
+      return options === action.options ? action : { ...action, options };
+    };
     const messageLink = this.buildMessageLinkData(action.options?.messageLink);
     const hasText = typeof action.text === 'string' && action.text.trim().length > 0;
     if (!hasText && attachments.length === 0 && !messageLink) {
@@ -6876,7 +6952,7 @@ export class MaxClientService implements OnModuleDestroy {
           text: hasText ? action.text : null,
           ...(hasText && action.options?.textFormat ? { format: action.options.textFormat } : {}),
           ...(messageLink ? { link: messageLink } : {}),
-          ...(attachments.length > 0 ? { attachments } : {}),
+          ...(currentAttachments.length > 0 ? { attachments: currentAttachments } : {}),
         },
         ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
       });
@@ -6891,6 +6967,7 @@ export class MaxClientService implements OnModuleDestroy {
               beforeMutation,
               MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
             );
+            await preparePublication();
             return sendRequest();
           },
           mutationOptions,
@@ -6913,7 +6990,10 @@ export class MaxClientService implements OnModuleDestroy {
         action.chatId,
         async () => {
           const botId = this.readTrimmedString(mutationOptions.botId) ?? this.getCurrentBot().id;
-          const claim = await this.actionLedgerService!.claimSendDispatch(action, botId);
+          // FLAG: Resolve after throttle waits but before the durable send fence. A recovered or
+          // ambiguous send is never republished, including when the optional profile policy changed.
+          const publicationAction = await preparePublication();
+          const claim = await this.actionLedgerService!.claimSendDispatch(publicationAction, botId);
           if (claim.kind === 'recovered') {
             const dispatchBotId = this.assertRecoveredSendDispatchBot(action, claim.dispatchBotId);
             const completedSendDispatch: MaxCompletedSendDispatch = {

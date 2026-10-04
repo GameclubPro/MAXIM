@@ -4,6 +4,7 @@ import { PDQ } from 'pdq-wasm';
 import sharp from 'sharp';
 import {
   PhotoDecodeBudget,
+  type PhotoDecodeCost,
   PhotoDecodePipelineCapacityError,
   PhotoDecodePipelineGate,
 } from './photo-decode-resource';
@@ -47,6 +48,7 @@ export type PhotoFingerprint = {
   canonicalHash: string;
   pdqHash: string;
   pdqQuality: number;
+  decodeCost?: PhotoDecodeCost;
 };
 
 export type PhotoAlbumFingerprint = {
@@ -145,6 +147,14 @@ export class PhotoFingerprintService implements OnModuleInit {
       maxEncodedBytes: this.maxAlbumInputBytes,
       maxPixels: this.maxAlbumInputPixels,
     });
+  }
+
+  reserveCachedFingerprint(fingerprint: PhotoFingerprint, budget: PhotoDecodeBudget): boolean {
+    const cost = fingerprint.decodeCost;
+    if (!cost || cost.encodedBytes > this.maxInputBytes || cost.pixels > this.maxInputPixels) {
+      throw new PhotoFingerprintRejectedError('unsupported_image');
+    }
+    return budget.tryReserve(cost);
   }
 
   async fingerprint(
@@ -258,6 +268,7 @@ export class PhotoFingerprintService implements OnModuleInit {
       canonicalHash,
       pdqHash,
       pdqQuality,
+      decodeCost: { encodedBytes: encodedImage.byteLength, pixels: pixelCount },
     };
   }
 }

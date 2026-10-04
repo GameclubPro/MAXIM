@@ -24,6 +24,7 @@ export type ExtractedPhotoAttachment = {
 };
 
 export type LogicalPhotoAlbum = {
+  receiptId?: string;
   chatId: string;
   messageId: string;
   senderId: string;

@@ -8,6 +8,8 @@ import { digestDuplicateContent } from './message-duplicate-content';
 import { buildMessageDuplicateJobId } from './message-duplicate.queue';
 import {
   buildMessageScopedModerationActionClaimKey,
+  claimPersistedModerationMessageViolation,
+  type ModerationViolationMessageClaimModel,
   type ModerationMessageActionClaimData,
 } from '../moderation-message-action-claim';
 import {
@@ -94,6 +96,25 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         windowSeconds: 600,
         requiredCount: 2,
       };
+    };
+    const cleanupBindings = new Map<string, MessageDuplicateBinding>();
+    const preclaim = async (
+      service: ModerationDeleteIntentService,
+      own: ModerationMessageActionClaimData,
+    ) => {
+      if (own.ruleCode !== 'DUPLICATE_MESSAGE_ACTION') {
+        // Ordinary rules use an atomic insert and fresh ownership reconciliation.
+        const result = await claimPersistedModerationMessageViolation({
+          model:
+            prisma.moderationViolationMessageClaim as unknown as ModerationViolationMessageClaimModel,
+          data: own,
+          resumeKnownActionOwner: true,
+        });
+        return result === 'duplicate' ? 'blocked' : result;
+      }
+      const binding = cleanupBindings.get(own.dedupeKey) ?? bindingFor(own, Date.now());
+      cleanupBindings.set(own.dedupeKey, binding);
+      return service.claimMessageActionBeforeQualification(own, binding);
     };
     const handoffFor = (
       own: ModerationMessageActionClaimData,
@@ -227,18 +248,15 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
     it('gives concurrent rules one durable owner before any stage can be reserved', async () => {
       const duplicate = claim('race');
       const other = claim('race', 'STOP_WORD');
-      const results = await Promise.all([
-        intents.claimMessageActionBeforeQualification(duplicate),
-        intents.claimMessageActionBeforeQualification(other),
-      ]);
+      const results = await Promise.all([preclaim(intents, duplicate), preclaim(intents, other)]);
       expect(results.sort()).toEqual(['blocked', 'claimed']);
       const owner = await prisma.moderationViolationMessageClaim.findUniqueOrThrow({
         where: { messageActionKey: duplicate.messageActionKey },
       });
       const winning = owner.ruleCode === duplicate.ruleCode ? duplicate : other;
       const losing = owner.ruleCode === duplicate.ruleCode ? other : duplicate;
-      expect(await intents.claimMessageActionBeforeQualification(winning)).toBe('resumed');
-      expect(await intents.claimMessageActionBeforeQualification(losing)).toBe('blocked');
+      expect(await preclaim(intents, winning)).toBe('resumed');
+      expect(await preclaim(intents, losing)).toBe('blocked');
       expect(
         await prisma.moderationViolationMessageClaim.count({
           where: { chatId, messageId: 'race' },
@@ -246,18 +264,110 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       ).toBe(1);
     });
 
+    it('retries a real PostgreSQL COMMIT serialization failure through public preclaim', async () => {
+      const own = canonicalClaim('commit-conflict-owner');
+      const competing = claim('commit-conflict-peer', 'STOP_WORD');
+      const binding = bindingFor(own, Date.now());
+      let firstRead!: () => void;
+      let peerInserted!: () => void;
+      let ownerInserted!: () => void;
+      const readReached = new Promise<void>((resolve) => {
+        firstRead = resolve;
+      });
+      const peerReached = new Promise<void>((resolve) => {
+        peerInserted = resolve;
+      });
+      const ownerReached = new Promise<void>((resolve) => {
+        ownerInserted = resolve;
+      });
+      const readRange = (tx: Prisma.TransactionClient) =>
+        tx.moderationViolationMessageClaim.findMany({
+          where: { chatId, messageId: { in: [own.messageId, competing.messageId] } },
+          select: { id: true },
+        });
+      let attempts = 0;
+      let completedCallbacks = 0;
+      const failures: unknown[] = [];
+      const database = {
+        $transaction: async (
+          operation: (tx: Prisma.TransactionClient) => Promise<unknown>,
+          options: { isolationLevel?: Prisma.TransactionIsolationLevel },
+        ) => {
+          const attempt = ++attempts;
+          try {
+            return await prisma.$transaction(async (tx) => {
+              if (attempt === 1) {
+                // Force a real write-skew cycle: both snapshots read the same absent rows.
+                await readRange(tx);
+                firstRead();
+                await peerReached;
+              }
+              const result = await operation(tx);
+              if (attempt === 1) {
+                ownerInserted();
+                // The peer commits first; this completed callback then fails at COMMIT.
+                await peer;
+              }
+              completedCallbacks += 1;
+              return result;
+            }, options);
+          } catch (error) {
+            failures.push(error);
+            throw error;
+          }
+        },
+      };
+      const pending = serviceFor(database).claimMessageActionBeforeQualification(own, binding);
+      const outcome = pending.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await readReached;
+      const peer = prisma.$transaction(
+        async (tx) => {
+          await readRange(tx);
+          await tx.moderationViolationMessageClaim.create({ data: competing });
+          peerInserted();
+          await ownerReached;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+      await peer;
+      const result = await outcome;
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({
+        name: 'DriverAdapterError',
+        message: 'TransactionWriteConflict',
+        cause: { kind: 'TransactionWriteConflict' },
+      });
+      expect(completedCallbacks).toBe(attempts);
+      expect(result).toEqual({ value: 'claimed' });
+      expect(attempts).toBe(2);
+      const owner = await prisma.moderationViolationMessageClaim.findUniqueOrThrow({
+        where: { dedupeKey: own.dedupeKey },
+        include: { duplicateCleanup: true },
+      });
+      expect(owner.messageActionKey).toBe(own.messageActionKey);
+      expect(owner.duplicateCleanup).toMatchObject({
+        eventTimestampMs: BigInt(binding.eventTimestampMs),
+        authorizationTimestampMs: BigInt(binding.authorization!.eventTimestampMs),
+        deadlineAt: new Date(binding.authorization!.deadlineAtMs),
+      });
+      expect(
+        await prisma.moderationViolationMessageClaim.count({ where: { dedupeKey: own.dedupeKey } }),
+      ).toBe(1);
+    });
+
     it('resumes an interrupted own claim without transferring it to another rule', async () => {
       const own = claim('crash');
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('claimed');
+      expect(await preclaim(intents, own)).toBe('claimed');
       // A fresh service process sees the same committed owner after an interrupted qualification.
       const recovered = Object.create(
         ModerationDeleteIntentService.prototype,
       ) as ModerationDeleteIntentService;
       Object.assign(recovered, { prisma, getRolloutForRule: () => 'execute' });
-      expect(await recovered.claimMessageActionBeforeQualification(own)).toBe('resumed');
-      expect(await recovered.claimMessageActionBeforeQualification(claim('crash', 'OTHER'))).toBe(
-        'blocked',
-      );
+      expect(await preclaim(recovered, own)).toBe('resumed');
+      expect(await preclaim(recovered, claim('crash', 'OTHER'))).toBe('blocked');
     });
 
     it('releases only an unused owner and fences its old authorization before a foreign claim', async () => {
@@ -270,7 +380,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         eventTimestampMs,
         authorization: { eventTimestampMs, deadlineAtMs: eventTimestampMs + 600000 },
       };
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('claimed');
+      expect(await preclaim(intents, own)).toBe('claimed');
       expect(
         await intents.releaseUnmaterializedMessageAction({ claim: own, binding: binding as never }),
       ).toBe(true);
@@ -278,11 +388,9 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         where: { dedupeKey: own.dedupeKey },
       });
       expect(tombstone.messageActionKey).toBeNull();
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('blocked');
-      expect(
-        await intents.claimMessageActionBeforeQualification(claim(own.messageId, 'OTHER')),
-      ).toBe('claimed');
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('blocked');
+      expect(await preclaim(intents, own)).toBe('blocked');
+      expect(await preclaim(intents, claim(own.messageId, 'OTHER'))).toBe('claimed');
+      expect(await preclaim(intents, own)).toBe('blocked');
       const authorization = new MessageDuplicateAuthorizationService(prisma as never, {} as never);
       expect(await authorization.isAllowed(chatId, binding as never)).toBe(false);
       expect(
@@ -294,7 +402,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       const eventTimestampMs = Date.now();
       const own = claim('terminated');
       own.dedupeKey = `message-duplicate-action:v1:${digestDuplicateContent([chatId, own.userId, own.messageId])}`;
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('claimed');
+      expect(await preclaim(intents, own)).toBe('claimed');
       const job = {
         chatId,
         messageId: own.messageId,
@@ -303,12 +411,10 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         idempotencyKey: buildMessageDuplicateJobId(chatId, own.messageId, eventTimestampMs),
       };
       expect(await intents.releaseTerminatedMessageDuplicateAction(job)).toBe(true);
-      expect(
-        await intents.claimMessageActionBeforeQualification(claim(own.messageId, 'OTHER')),
-      ).toBe('claimed');
+      expect(await preclaim(intents, claim(own.messageId, 'OTHER'))).toBe('claimed');
       const fresh = claim('fresh');
       fresh.dedupeKey = `message-duplicate-action:v1:${digestDuplicateContent([chatId, fresh.userId, fresh.messageId])}`;
-      expect(await intents.claimMessageActionBeforeQualification(fresh)).toBe('claimed');
+      expect(await preclaim(intents, fresh)).toBe('claimed');
       const oldTimestamp = eventTimestampMs - 720000;
       expect(
         await intents.releaseTerminatedMessageDuplicateAction({
@@ -319,7 +425,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
           idempotencyKey: buildMessageDuplicateJobId(chatId, fresh.messageId, oldTimestamp),
         }),
       ).toBe(false);
-      expect(await intents.claimMessageActionBeforeQualification(fresh)).toBe('resumed');
+      expect(await preclaim(intents, fresh)).toBe('resumed');
     });
 
     it('retains a materialized or foreign owner during terminal cleanup', async () => {
@@ -331,7 +437,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         eventTimestampMs: Date.now(),
         authorization: { eventTimestampMs: Date.now(), deadlineAtMs: Date.now() + 600000 },
       };
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('claimed');
+      expect(await preclaim(intents, own)).toBe('claimed');
       await prisma.moderationDeleteIntent.create({
         data: {
           id: `${chatId}:materialized`,
@@ -344,11 +450,9 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         await intents.releaseUnmaterializedMessageAction({ claim: own, binding: binding as never }),
       ).toBe(false);
       expect(await intents.releaseTerminatedMessageDuplicateAction(jobFor(own))).toBe(false);
-      expect(
-        await intents.claimMessageActionBeforeQualification(claim(own.messageId, 'OTHER')),
-      ).toBe('blocked');
+      expect(await preclaim(intents, claim(own.messageId, 'OTHER'))).toBe('blocked');
       const foreign = claim('foreign', 'OTHER');
-      expect(await intents.claimMessageActionBeforeQualification(foreign)).toBe('claimed');
+      expect(await preclaim(intents, foreign)).toBe('claimed');
       expect(
         await intents.releaseUnmaterializedMessageAction({
           claim: claim('foreign'),
@@ -356,7 +460,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         }),
       ).toBe(false);
       expect(await intents.releaseTerminatedMessageDuplicateAction(jobFor(foreign))).toBe(false);
-      expect(await intents.claimMessageActionBeforeQualification(foreign)).toBe('resumed');
+      expect(await preclaim(intents, foreign)).toBe('resumed');
     });
 
     it.each(['handoff', 'cleanup'] as const)(
@@ -365,7 +469,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         const own = canonicalClaim(`concurrent-${winner}`);
         const binding = bindingFor(own, Date.now());
         const input = handoffFor(own, binding);
-        expect(await intents.claimMessageActionBeforeQualification(own)).toBe('claimed');
+        expect(await preclaim(intents, own)).toBe('claimed');
         const pause = pauseFirstTransactionRead(
           winner === 'handoff' ? 'moderationEvent' : 'moderationViolationMessageClaim',
         );
@@ -404,7 +508,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
           expect(materialized).not.toBeNull();
           expect(owner.messageActionKey).toBe(own.messageActionKey);
           expect(revoked).toBeNull();
-          expect(await intents.claimMessageActionBeforeQualification(own)).toBe('resumed');
+          expect(await preclaim(intents, own)).toBe('resumed');
         } else {
           expect(first).toBe(true);
           expect(second).toEqual({ claim: 'blocked', intent: null });
@@ -415,9 +519,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
             claim: 'blocked',
             intent: null,
           });
-          expect(
-            await intents.claimMessageActionBeforeQualification(claim(own.messageId, 'OTHER')),
-          ).toBe('claimed');
+          expect(await preclaim(intents, claim(own.messageId, 'OTHER'))).toBe('claimed');
         }
       },
     );
@@ -425,7 +527,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
     it('rolls back owner release when the durable denial writer is unavailable', async () => {
       const own = canonicalClaim('failed-cleanup');
       const binding = bindingFor(own, Date.now());
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('claimed');
+      expect(await preclaim(intents, own)).toBe('claimed');
       const unavailable = serviceFor({
         $transaction: (
           operation: (tx: Prisma.TransactionClient) => Promise<unknown>,
@@ -458,7 +560,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         where: { dedupeKey: own.dedupeKey },
       });
       expect(retained.messageActionKey).toBe(own.messageActionKey);
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('resumed');
+      expect(await preclaim(intents, own)).toBe('resumed');
       expect(
         await prisma.moderationViolationMessageClaim.findUnique({
           where: {
@@ -471,7 +573,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
     it('retains an event-only materialized owner during terminal cleanup', async () => {
       const own = canonicalClaim('event-only');
       const job = jobFor(own);
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('claimed');
+      expect(await preclaim(intents, own)).toBe('claimed');
       await prisma.moderationEvent.create({
         data: {
           chatId,
@@ -483,7 +585,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         },
       });
       expect(await intents.releaseTerminatedMessageDuplicateAction(job)).toBe(false);
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('resumed');
+      expect(await preclaim(intents, own)).toBe('resumed');
     });
 
     it('retains a newer exact owner replacing the initially observed terminated reservation', async () => {
@@ -524,10 +626,75 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       proceed();
       expect(await pending).toBe(false);
       expect(fresh.createdAt.getTime()).toBeGreaterThan(job.deadlineAtMs);
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('resumed');
+      expect(await preclaim(intents, own)).toBe('resumed');
       expect(
         await prisma.moderationViolationMessageClaim.findUnique({
           where: { dedupeKey: duplicateRevocationKey(chatId, own.messageId, job.eventTimestampMs) },
+        }),
+      ).toBeNull();
+    });
+
+    it('commits the original recovery obligation with a real prequalification claim', async () => {
+      const own = canonicalClaim('preclaim-obligation');
+      const binding = bindingFor(own, Date.now());
+      expect(await intents.claimMessageActionBeforeQualification(own, binding)).toBe('claimed');
+      const owner = await prisma.moderationViolationMessageClaim.findUniqueOrThrow({
+        where: { messageActionKey: own.messageActionKey },
+        include: { duplicateCleanup: true },
+      });
+      expect(owner.duplicateCleanup).toMatchObject({
+        claimId: owner.id,
+        claimCreatedAt: owner.createdAt,
+        eventTimestampMs: BigInt(binding.eventTimestampMs),
+        authorizationTimestampMs: BigInt(binding.authorization!.eventTimestampMs),
+        deadlineAt: new Date(binding.authorization!.deadlineAtMs),
+      });
+      expect(
+        await intents.claimMessageActionBeforeQualification(own, {
+          ...binding,
+          authorization: {
+            ...binding.authorization!,
+            deadlineAtMs: binding.authorization!.deadlineAtMs - 1,
+          },
+        }),
+      ).toBe('blocked');
+      expect(await intents.claimMessageActionBeforeQualification(own, binding)).toBe('resumed');
+    });
+
+    it('cannot leave a claim behind when the obligation store fails', async () => {
+      const own = canonicalClaim('obligation-write-failure');
+      const failing = serviceFor({
+        $transaction: (
+          operation: (tx: Prisma.TransactionClient) => Promise<unknown>,
+          options: object,
+        ) =>
+          prisma.$transaction(
+            (tx) =>
+              operation(
+                new Proxy(tx, {
+                  get(target, key) {
+                    if (key !== 'messageDuplicateClaimCleanup') return Reflect.get(target, key);
+                    return new Proxy(tx.messageDuplicateClaimCleanup, {
+                      get(model, method) {
+                        if (method === 'createMany')
+                          return async () => {
+                            throw new Error('obligation unavailable');
+                          };
+                        return Reflect.get(model, method);
+                      },
+                    });
+                  },
+                }),
+              ),
+            options,
+          ),
+      });
+      await expect(
+        failing.claimMessageActionBeforeQualification(own, bindingFor(own, Date.now())),
+      ).rejects.toThrow('obligation unavailable');
+      expect(
+        await prisma.moderationViolationMessageClaim.findUnique({
+          where: { dedupeKey: own.dedupeKey },
         }),
       ).toBeNull();
     });
@@ -550,11 +717,11 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
     };
 
     it('recovers a lost queue job once from SQL and keeps an old worker revoked', async () => {
-      const { own, binding } = await abandonedClaim('lost-queue');
+      const { own, binding, owner } = await abandonedClaim('lost-queue');
       const recovered = serviceFor();
       expect(await recovered.reconcileExpiredMessageDuplicateActions()).toBe(1);
       expect(await recovered.reconcileExpiredMessageDuplicateActions()).toBe(0);
-      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('blocked');
+      expect(await preclaim(intents, own)).toBe('blocked');
       expect(
         await prisma.moderationViolationMessageClaim.findUnique({
           where: {
@@ -563,7 +730,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         }),
       ).not.toBeNull();
       expect(
-        await prisma.messageDuplicateClaimCleanup.count({ where: { claim: { chatId } } }),
+        await prisma.messageDuplicateClaimCleanup.count({ where: { claimId: owner.id } }),
       ).toBe(0);
     });
 
@@ -662,6 +829,39 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       expect(counts.reduce((sum, count) => sum + count, 0)).toBe(1);
     });
 
+    it('selects only due obligations through the due index under skewed retained history', async () => {
+      const future = new Date(Date.now() + 3_600_000);
+      const claims = Array.from({ length: 2048 }, (_, i) => ({
+        id: `${chatId}:skew:${i}`,
+        ...canonicalClaim(`skew-${i}`),
+      }));
+      await prisma.moderationViolationMessageClaim.createMany({ data: claims });
+      await prisma.messageDuplicateClaimCleanup.createMany({
+        data: claims.map((own) => ({
+          claimId: own.id,
+          claimCreatedAt: new Date(),
+          eventTimestampMs: BigInt(Date.now()),
+          authorizationTimestampMs: BigInt(Date.now()),
+          deadlineAt: future,
+        })),
+      });
+      await abandonedClaim('due-index-one');
+      await abandonedClaim('due-index-two');
+      await prisma.$executeRawUnsafe('ANALYZE message_duplicate_claim_cleanup');
+      const explain = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
+        EXPLAIN (ANALYZE, FORMAT JSON)
+        SELECT "claim_id" FROM "message_duplicate_claim_cleanup"
+        WHERE "deadline_at" <= ${new Date()}
+        ORDER BY "deadline_at", "claim_id" LIMIT 25
+      `);
+      const json = JSON.stringify(explain);
+      expect(json).toContain('message_duplicate_claim_cleanup_due_idx');
+      const plan = (explain[0]!['QUERY PLAN'] as Array<{ Plan: { 'Actual Rows': number } }>)[0]!
+        .Plan;
+      expect(plan['Actual Rows']).toBe(2);
+      expect(await serviceFor().reconcileExpiredMessageDuplicateActions()).toBe(2);
+    });
+
     it('records one initial admission across concurrent processes and total queue loss', async () => {
       const admission = new MessageDuplicateAdmissionService(prisma as never);
       const input = { chatId, messageId: 'admission', jobId: `${chatId}:admission` };
@@ -671,9 +871,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       expect(new Set(results.map((result) => result.admittedAtMs)).size).toBe(1);
       const recovered = new MessageDuplicateAdmissionService(prisma as never);
       expect(await recovered.register(input)).toEqual({ ...results[0], registration: 'retry' });
-      expect(
-        await intents.claimMessageActionBeforeQualification(claim(input.messageId, 'OTHER')),
-      ).toBe('claimed');
+      expect(await preclaim(intents, claim(input.messageId, 'OTHER'))).toBe('claimed');
     });
 
     it('concurrent revocations survive Redis failure and never occupy the action owner', async () => {
@@ -698,9 +896,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
           where: { chatId, messageId: input.messageId },
         }),
       ).toBe(1);
-      expect(
-        await intents.claimMessageActionBeforeQualification(claim(input.messageId, 'OTHER')),
-      ).toBe('claimed');
+      expect(await preclaim(intents, claim(input.messageId, 'OTHER'))).toBe('claimed');
       const oldBinding = {
         version: 3,
         messageId: input.messageId,

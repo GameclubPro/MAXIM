@@ -1,4 +1,7 @@
 import {
+  registerDuplicateClaimCleanup,
+  assertDuplicateCleanupBinding,
+  type DuplicateCleanupBinding,
   releaseUnusedDuplicateClaim,
   reconcileDuplicateClaimCleanup,
 } from './message-duplicate/message-duplicate-claim-cleanup';
@@ -1607,16 +1610,33 @@ export class ModerationDeleteIntentService {
 
   async claimMessageActionBeforeQualification(
     claim: ModerationMessageActionClaimData,
+    binding: DuplicateCleanupBinding,
   ): Promise<'claimed' | 'resumed' | 'blocked'> {
-    if (this.getRolloutForRule(claim.chatId, 'DUPLICATE_DELETE') === 'off') return 'blocked';
-    return this.runSerializableTransaction(async (tx) =>
-      claimDurableModerationMessageAction({
-        model: tx.moderationViolationMessageClaim as unknown as ModerationMessageActionClaimModel,
-        data: claim,
-        resumeKnownOwner: true,
-        inTransaction: true,
-      }),
-    );
+    assertDuplicateCleanupBinding(claim, binding);
+    if (
+      this.getRolloutForRule(claim.chatId, 'DUPLICATE_DELETE') === 'off' ||
+      Date.now() >= binding.authorization!.deadlineAtMs
+    )
+      return 'blocked';
+    const registrationRejected = new Error('Duplicate cleanup generation changed');
+    try {
+      return await this.runSerializableTransaction(async (tx) => {
+        const result = await claimDurableModerationMessageAction({
+          model: tx.moderationViolationMessageClaim as unknown as ModerationMessageActionClaimModel,
+          data: claim,
+          resumeKnownOwner: true,
+          inTransaction: true,
+        });
+        if (result === 'blocked') return result;
+        // FLAG: Claim and its original cleanup deadline commit together. Rejecting
+        // a generation also rolls back a newly created claim, never leaving an orphan.
+        if (!(await registerDuplicateClaimCleanup(tx, claim, binding))) throw registrationRejected;
+        return result;
+      });
+    } catch (error) {
+      if (error === registrationRejected) return 'blocked';
+      throw error;
+    }
   }
 
   async releaseUnmaterializedMessageAction(params: {
@@ -1756,6 +1776,18 @@ export class ModerationDeleteIntentService {
       const intent = await this.persistIntent(params.intent, false, tx);
       if (!intent.intentId) {
         throw new Error('Claimed moderation message action did not materialize a delete intent');
+      }
+      if (binding?.version === 3) {
+        // FLAG: Durable intent ownership replaces preclaim cleanup atomically.
+        // The due queue contains abandoned work, not every successful deletion.
+        await tx.messageDuplicateClaimCleanup.deleteMany({
+          where: {
+            claim: {
+              dedupeKey: params.claim.dedupeKey,
+              messageActionKey: params.claim.messageActionKey,
+            },
+          },
+        });
       }
       return { claim, intent } as const;
     });
@@ -7630,6 +7662,18 @@ export class ModerationDeleteIntentService {
     if (code === 'P2034') {
       return true;
     }
+    // FLAG: Prisma's pg adapter can expose a typed conflict directly at COMMIT,
+    // after the callback completed. Retry the whole transaction, never a partial write
+    // or an ambiguous connection failure, under the existing three-attempt bound.
+    if (
+      error instanceof Error &&
+      error.name === 'DriverAdapterError' &&
+      error.cause !== null &&
+      typeof error.cause === 'object' &&
+      'kind' in error.cause &&
+      error.cause.kind === 'TransactionWriteConflict'
+    )
+      return true;
     return this.errorMessage(error).toLowerCase().includes('could not serialize access');
   }
 
