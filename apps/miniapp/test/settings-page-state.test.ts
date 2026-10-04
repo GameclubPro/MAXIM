@@ -13,6 +13,7 @@ import {
   hasSectionBotSpeechMediaChanges,
   hasSectionSettingChanges,
   mergeBotSpeechStyleSettings,
+  rebaseSettingsAfterBotSpeechStyleSave,
   mergeNightSectionSettings,
   mergeSectionSettings,
   mergeSectionSettingsAfterSave,
@@ -254,6 +255,69 @@ test('mergeBotSpeechStyleSettings changes only the inherited base style', () => 
   assert.equal(merged.linkBotMessageText, '  Свой текст.\n');
   assert.equal(merged.messageLimitsWarnMessageText, '   ');
   assert.deepEqual(merged.botSpeechMedia, current.botSpeechMedia);
+});
+
+test('a style receipt preserves all draft bytes without promoting an incomplete baseline revision', () => {
+  const current = createSettings({
+    settingsRevision: '2026-10-04T09:00:00.000Z',
+    greetingBotMessageText: '  **Свой текст** {user}\r\n ',
+    linkWarnMessageText: '   ',
+  });
+  const receipt = {
+    botSpeechStyle: 'IRONIC' as const,
+    settingsRevision: '2026-10-04T10:00:00.000Z',
+  };
+  assert.deepEqual(mergeBotSpeechStyleSettings(current, receipt), {
+    ...current,
+    botSpeechStyle: receipt.botSpeechStyle,
+  });
+});
+
+test('style refresh rebases remote edits while preserving local text, image and unrelated drafts', () => {
+  const baseline = createSettings({ settingsRevision: '2026-10-04T09:00:00.000Z' });
+  const image = { base64: 'local-image', mimeType: 'image/jpeg' as const, fileName: 'mine.jpg' };
+  const current = {
+    ...baseline,
+    greetingBotMessageText: '  **Локальный** {user}\r\n ',
+    nightModeStartTimeMinutes: 600,
+    botSpeechMedia: { greetingBotMessageText: image },
+  };
+  const fresh = {
+    ...baseline,
+    botSpeechStyle: 'IRONIC' as const,
+    linkBotMessageText: '  Изменение другого администратора\n',
+    settingsRevision: '2026-10-04T10:00:00.000Z',
+  };
+  const rebased = rebaseSettingsAfterBotSpeechStyleSave(current, baseline, fresh);
+  assert.equal(rebased.greetingBotMessageText, current.greetingBotMessageText);
+  assert.equal(rebased.botSpeechMedia.greetingBotMessageText, image);
+  assert.equal(rebased.nightModeStartTimeMinutes, 600);
+  assert.equal(rebased.linkBotMessageText, fresh.linkBotMessageText);
+  assert.equal(rebased.botSpeechStyle, fresh.botSpeechStyle);
+  assert.equal(rebased.settingsRevision, fresh.settingsRevision);
+});
+
+test('style refresh cannot bless a conflicting custom message or image with the new revision', () => {
+  const baseline = createSettings({ settingsRevision: '2026-10-04T09:00:00.000Z' });
+  for (const key of ['greetingBotMessageText', 'botSpeechMedia'] as const) {
+    const localValue =
+      key === 'botSpeechMedia'
+        ? { greetingBotMessageText: { base64: 'local', mimeType: 'image/jpeg' as const } }
+        : '  Свой текст\n';
+    const remoteValue =
+      key === 'botSpeechMedia'
+        ? { greetingBotMessageText: { base64: 'remote', mimeType: 'image/jpeg' as const } }
+        : 'Чужое изменение';
+    const current = createSettings({ ...baseline, [key]: localValue });
+    const fresh = createSettings({
+      ...baseline,
+      [key]: remoteValue,
+      settingsRevision: '2026-10-04T10:00:00.000Z',
+    });
+    const rebased = rebaseSettingsAfterBotSpeechStyleSave(current, baseline, fresh);
+    assert.deepEqual(rebased[key], current[key]);
+    assert.equal(rebased.settingsRevision, baseline.settingsRevision);
+  }
 });
 
 test('mergeNightSectionSettings syncs nightModeRulesButtonEnabled as part of section save', () => {

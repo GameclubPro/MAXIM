@@ -16,6 +16,8 @@ export type SpeechStylePreviewSamples = {
   warning: string;
   mute: string;
   ban: string;
+  duplicate: string;
+  night: string;
 };
 
 function getEditableTemplate(
@@ -74,7 +76,7 @@ export function buildSpeechStylePreviewSamples(
       previewContext,
     ),
     warning: renderPreview(
-      getEditableTemplate(style, 'textFiltersWarnMessageText', previewContext),
+      getEditableTemplate(style, 'profanityWarnMessageText', previewContext),
       {
         user: 'Алексей',
         warning: 'предупреждение за грубую лексику',
@@ -94,6 +96,23 @@ export function buildSpeechStylePreviewSamples(
     ban: renderPreview(
       getSystemTemplate(style, 'permanentBanNotice', previewContext),
       { user: 'Алексей' },
+      previewContext,
+    ),
+    duplicate: renderPreview(
+      getEditableTemplate(style, 'duplicateBotMessageText', previewContext),
+      {
+        user: 'Алексей',
+        sanction: getSystemTemplate(style, 'duplicatePassiveDeleted', previewContext),
+      },
+      previewContext,
+    ),
+    night: renderPreview(
+      getEditableTemplate(style, 'nightModeBotMessageText', previewContext),
+      {
+        night_window: '23:00–08:00',
+        night_timezone: 'МСК',
+        night_status: 'Новые сообщения удаляются до 08:00.',
+      },
       previewContext,
     ),
   };
