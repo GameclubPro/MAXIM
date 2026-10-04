@@ -22,6 +22,11 @@ import {
   type ResolveRequiredSubscriptionChannelResponse,
 } from '@maxim/contracts';
 import {
+  updateBotSpeechStyleRequestSchema,
+  updateBotSpeechStyleResponseSchema,
+  type UpdateBotSpeechStyleResponse,
+} from '@maxim/contracts/bot-speech';
+import {
   BadRequestException,
   Injectable,
   Logger,
@@ -33,6 +38,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MiniappAccessObservabilityService } from '../auth/miniapp-access-observability.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
 import { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
 import { PhotoDuplicateRuntimePolicyService } from '../moderation/photo-duplicate/photo-duplicate-runtime-policy.service';
@@ -289,6 +295,56 @@ export class AdminSettingsService {
       'miniapp',
       options,
     );
+  }
+
+  async updateBotSpeechStyle(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<UpdateBotSpeechStyleResponse> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    const parsed = updateBotSpeechStyleRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const botAssignmentData =
+      await this.legacyAdminService.resolveChatSettingsWriteBotAssignmentData(chatId);
+    const saved = await this.prisma.$transaction(async (tx) => {
+      await tx.chat.upsert({
+        where: { id: chatId },
+        create: {
+          id: chatId,
+          title: `Chat ${chatId}`,
+          entityType: ChatEntityType.CHAT,
+          catalogKind: ChatCatalogKind.MANAGED,
+          ...botAssignmentData,
+        },
+        update: { catalogKind: ChatCatalogKind.MANAGED },
+      });
+      // FLAG: Style changes never write editable copy or media, including concurrent custom edits.
+      const settings = await tx.chatSettings.upsert({
+        where: { chatId },
+        create: { chatId, botSpeechStyle: parsed.data.botSpeechStyle },
+        update: { botSpeechStyle: parsed.data.botSpeechStyle },
+        select: { botSpeechStyle: true, updatedAt: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: 'UPDATE_SETTINGS',
+          payload: { source, settingKeys: ['botSpeechStyle'] },
+        },
+      });
+      return updateBotSpeechStyleResponseSchema.parse({
+        botSpeechStyle: settings.botSpeechStyle,
+        settingsRevision: settings.updatedAt.toISOString(),
+      });
+    });
+    await this.chatContextCache.invalidate(chatId);
+    return saved;
   }
 
   async getRules(

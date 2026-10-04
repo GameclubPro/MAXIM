@@ -8,7 +8,10 @@ import { EventType, Operator, Prisma, SanctionAction } from '../prisma/prisma-cl
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import type { MaxSendMessageOptions } from '../max/max-client.service';
 import { withModerationReleaseButton } from './moderation-release-callback.util';
-import { REQUIRED_SUBSCRIPTION_RULE_CODE } from './moderation.service.support';
+import {
+  MAX_ACTIVE_MUTE_DURATION_HOURS,
+  REQUIRED_SUBSCRIPTION_RULE_CODE,
+} from './moderation.service.support';
 
 export type RequiredSubscriptionNoticeAction = Extract<
   SanctionAction,
@@ -29,6 +32,7 @@ export type RequiredSubscriptionPersistedDecision = {
   action: RequiredSubscriptionNoticeAction;
   eventId: string | null;
   violationCount24h: number | null;
+  muteDurationHours: number | null;
 };
 
 export const REQUIRED_SUBSCRIPTION_NOTICE_PLAN_VERSION = 1 as const;
@@ -327,11 +331,20 @@ export class RequiredSubscriptionNoticePlanStore {
       rawViolationCount > 0
         ? rawViolationCount
         : null;
+    const rawMuteDurationHours = metadata?.muteDurationHours;
+    const muteDurationHours =
+      typeof rawMuteDurationHours === 'number' &&
+      Number.isInteger(rawMuteDurationHours) &&
+      rawMuteDurationHours >= 1 &&
+      rawMuteDurationHours <= MAX_ACTIVE_MUTE_DURATION_HOURS
+        ? rawMuteDurationHours
+        : null;
 
     return {
       action,
       eventId: readString(event.id),
       violationCount24h,
+      muteDurationHours,
     };
   }
 }

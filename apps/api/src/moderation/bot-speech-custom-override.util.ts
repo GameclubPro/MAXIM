@@ -173,7 +173,7 @@ function buildMessageLimitsReasonContext(params: MessageLimitsContextParams): {
           : 'слишком длинное сообщение',
       inheritedReason:
         actual !== null && maximum !== null
-          ? `длина сообщения ${actual} символов при лимите ${maximum}`
+          ? `длина сообщения ${formatMessageCharacterCount(actual)} при лимите ${maximum}`
           : 'сообщение превышает допустимую длину',
       replacements: {
         actual_length: actual !== null ? String(actual) : '',
@@ -196,7 +196,7 @@ function buildMessageLimitsReasonContext(params: MessageLimitsContextParams): {
     const hours = normalizeIntegerInRange(params.messageCountLimitWindowHours, 1, 24, 1);
     return {
       legacyReason: `слишком частая отправка сообщений: не более ${count} за ${hours}ч`,
-      inheritedReason: `лимит ${count} сообщений за ${hours} ч превышен`,
+      inheritedReason: `превышен лимит сообщений: ${count} за ${hours} ч`,
       replacements: {
         message_limit_count: String(count),
         message_limit_window_hours: String(hours),
@@ -279,6 +279,20 @@ export function resolveMessageLimitsSanctionReason(
     ? buildMessageLimitsBlockedReason(ruleCode, blockedWord)
     : (inheritedReasons[ruleCode] ?? 'нарушено ограничение на отправку сообщений');
   return resolveBotSpeechPlaceholder(templateText, legacyReason, inheritedReason);
+}
+
+function formatMessageCharacterCount(count: number): string {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  const unit =
+    lastTwo >= 11 && lastTwo <= 14
+      ? 'символов'
+      : last === 1
+        ? 'символ'
+        : last >= 2 && last <= 4
+          ? 'символа'
+          : 'символов';
+  return `${count} ${unit}`;
 }
 
 function normalizePositiveNumber(value: number | undefined): number | null {

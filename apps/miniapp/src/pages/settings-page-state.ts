@@ -605,11 +605,50 @@ export function mergeCommentsSettings(
 
 export function mergeBotSpeechStyleSettings(
   targetSettings: ChatSettings,
-  sourceSettings: ChatSettings,
+  sourceSettings: Pick<ChatSettings, 'botSpeechStyle'>,
 ): ChatSettings {
   return {
     ...targetSettings,
     botSpeechStyle: sourceSettings.botSpeechStyle,
-    settingsRevision: sourceSettings.settingsRevision ?? targetSettings.settingsRevision,
   };
+}
+
+export function rebaseSettingsAfterBotSpeechStyleSave(
+  current: ChatSettings,
+  baseline: ChatSettings,
+  fresh: ChatSettings,
+): ChatSettings {
+  const next = { ...fresh };
+  const nextRecord = next as Record<keyof ChatSettings, unknown>;
+  const equal = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+  let hasConflict = false;
+
+  for (const key of Object.keys(current) as Array<keyof ChatSettings>) {
+    if (key === 'settingsRevision' || key === 'botSpeechStyle' || key === 'botSpeechMedia')
+      continue;
+    if (equal(current[key], baseline[key])) continue;
+    nextRecord[key] = current[key];
+    if (!equal(fresh[key], baseline[key]) && !equal(fresh[key], current[key])) hasConflict = true;
+  }
+
+  next.botSpeechMedia = { ...fresh.botSpeechMedia };
+  for (const key of new Set([
+    ...Object.keys(baseline.botSpeechMedia),
+    ...Object.keys(current.botSpeechMedia),
+  ]) as Set<BotSpeechMediaFieldKey>) {
+    if (equal(current.botSpeechMedia[key], baseline.botSpeechMedia[key])) continue;
+    if (current.botSpeechMedia[key]) next.botSpeechMedia[key] = current.botSpeechMedia[key];
+    else delete next.botSpeechMedia[key];
+    if (
+      !equal(fresh.botSpeechMedia[key], baseline.botSpeechMedia[key]) &&
+      !equal(fresh.botSpeechMedia[key], current.botSpeechMedia[key])
+    )
+      hasConflict = true;
+  }
+
+  // FLAG: A style receipt cannot authorize overwriting concurrent edits to custom messages.
+  if (hasConflict || current.settingsRevision !== baseline.settingsRevision) {
+    next.settingsRevision = current.settingsRevision;
+  }
+  return next;
 }

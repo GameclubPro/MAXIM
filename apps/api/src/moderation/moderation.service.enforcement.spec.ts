@@ -5267,7 +5267,10 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Предупреждение за повтор зафиксировано.'),
+      duplicateExplanation(
+        'Алексей',
+        'Вынесено предупреждение. Копию в трёх экземплярах здесь не требуют.',
+      ),
     );
   });
 
@@ -5346,7 +5349,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Повтор удалён.'),
+      duplicateExplanation('Алексей', 'Копия удалена. Для протокола достаточно одного экземпляра.'),
     );
   });
 
@@ -5658,7 +5661,10 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Предупреждение за повтор зафиксировано.'),
+      duplicateExplanation(
+        'Алексей',
+        'Вынесено предупреждение. Копию в трёх экземплярах здесь не требуют.',
+      ),
       {
         button: {
           text: 'Правила',
@@ -5852,7 +5858,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Повтор удалён.'),
+      duplicateExplanation('Алексей', 'Копия удалена. Для протокола достаточно одного экземпляра.'),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -6096,7 +6102,7 @@ describe('ModerationService', () => {
       );
       (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
         'chat-1',
-        duplicateExplanation('Алексей', 'За повторные сообщения включён мут на 6ч.'),
+        duplicateExplanation('Алексей', 'Назначен мут на 6ч.'),
       );
       expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
