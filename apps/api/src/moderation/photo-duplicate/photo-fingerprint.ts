@@ -37,6 +37,8 @@ export type SupportedPhotoFormat = 'jpeg' | 'png' | 'webp' | 'gif' | 'avif' | 'h
 export type PhotoFingerprintRejectionReason =
   | 'unsupported_image'
   | 'unsupported_multi_frame'
+  | 'image_byte_limit_exceeded'
+  | 'image_pixel_limit_exceeded'
   | 'album_decode_budget_exceeded'
   | 'decode_capacity_exceeded'
   | 'decode_deadline_exceeded';
@@ -48,6 +50,13 @@ export class PhotoFingerprintRejectedError extends Error {
   ) {
     super(`Photo fingerprint rejected: ${reason}`, options);
     this.name = 'PhotoFingerprintRejectedError';
+  }
+}
+
+export class PhotoNativeUnavailableError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super('Photo native decoder unavailable', options);
+    this.name = 'PhotoNativeUnavailableError';
   }
 }
 
@@ -165,9 +174,11 @@ export class PhotoFingerprintService implements OnModuleInit {
 
   reserveCachedFingerprint(fingerprint: PhotoFingerprint, budget: PhotoDecodeBudget): boolean {
     const cost = fingerprint.decodeCost;
-    if (!cost || cost.encodedBytes > this.maxInputBytes || cost.pixels > this.maxInputPixels) {
-      throw new PhotoFingerprintRejectedError('unsupported_image');
-    }
+    if (!cost) throw new PhotoFingerprintRejectedError('unsupported_image');
+    if (cost.encodedBytes > this.maxInputBytes)
+      throw new PhotoFingerprintRejectedError('image_byte_limit_exceeded');
+    if (cost.pixels > this.maxInputPixels)
+      throw new PhotoFingerprintRejectedError('image_pixel_limit_exceeded');
     return budget.tryReserve(cost);
   }
 
@@ -181,7 +192,7 @@ export class PhotoFingerprintService implements OnModuleInit {
     } = {},
   ): Promise<PhotoFingerprint> {
     if (encodedImage.byteLength === 0 || encodedImage.byteLength > this.maxInputBytes) {
-      throw new Error('Photo input byte length is outside the configured bounds');
+      throw new PhotoFingerprintRejectedError('image_byte_limit_exceeded');
     }
 
     const waitingSince = performance.now();
@@ -211,15 +222,16 @@ export class PhotoFingerprintService implements OnModuleInit {
             remainingPixels,
             expectedFormat: options.expectedFormat,
           }),
-        );
+        ).catch((cause: unknown) => {
+          throw new PhotoNativeUnavailableError({ cause });
+        });
         if (result.kind === 'rejected') {
-          if (result.reason === 'native_unavailable')
-            throw new Error('Photo native decoder unavailable');
+          if (result.reason === 'native_unavailable') throw new PhotoNativeUnavailableError();
           throw new PhotoFingerprintRejectedError(result.reason);
         }
         const cost = result.fingerprint.decodeCost!;
         if (cost.encodedBytes !== encodedImage.byteLength || cost.pixels > this.maxInputPixels)
-          throw new Error('Photo sandbox resource proof mismatch');
+          throw new PhotoNativeUnavailableError();
         if (
           options.albumBudget &&
           !this.reserveCachedFingerprint(result.fingerprint, options.albumBudget)
@@ -263,6 +275,10 @@ export class PhotoFingerprintService implements OnModuleInit {
     try {
       metadata = await image.metadata();
     } catch (error: unknown) {
+      // FLAG: Sharp emits a fixed pixel-limit failure before returning metadata. Only
+      // this bounded classification crosses IPC/metrics; native error text stays private.
+      if (error instanceof Error && error.message.toLowerCase().includes('pixel limit'))
+        throw new PhotoFingerprintRejectedError('image_pixel_limit_exceeded', { cause: error });
       throw new PhotoFingerprintRejectedError('unsupported_image', { cause: error });
     }
 
@@ -289,7 +305,7 @@ export class PhotoFingerprintService implements OnModuleInit {
     }
     const pixelCount = width * height;
     if (!Number.isSafeInteger(pixelCount) || pixelCount > this.maxInputPixels) {
-      throw new PhotoFingerprintRejectedError('unsupported_image');
+      throw new PhotoFingerprintRejectedError('image_pixel_limit_exceeded');
     }
     if (
       options.albumBudget &&

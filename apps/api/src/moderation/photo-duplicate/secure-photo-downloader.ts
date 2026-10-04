@@ -46,6 +46,20 @@ export class PhotoDownloadHttpError extends Error {
   }
 }
 
+export class PhotoDownloadTimeoutError extends Error {
+  constructor() {
+    super('Photo download timed out');
+    this.name = 'PhotoDownloadTimeoutError';
+  }
+}
+
+export class PhotoDownloadFormatRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PhotoDownloadFormatRejectedError';
+  }
+}
+
 export type PhotoDownloadSourceRejectionReason =
   | 'malformed_url'
   | 'protocol'
@@ -119,7 +133,10 @@ export class SecurePhotoDownloader {
     const release = await this.acquireSlot(deadlineAtMs);
     try {
       const result = await this.downloadWithin(rawUrl, 0, deadlineAtMs, false);
-      if (!result.format) throw new Error('Photo response has an unsupported image signature');
+      if (!result.format)
+        throw new PhotoDownloadFormatRejectedError(
+          'Photo response has an unsupported image signature',
+        );
       return { bytes: result.bytes, format: result.format };
     } finally {
       release();
@@ -192,7 +209,7 @@ export class SecurePhotoDownloader {
           });
         },
       );
-      request.setTimeout(timeoutMs, () => request.destroy(new Error('Photo download timed out')));
+      request.setTimeout(timeoutMs, () => request.destroy(new PhotoDownloadTimeoutError()));
       request.once('error', reject);
       request.end();
     });
@@ -260,7 +277,9 @@ export class SecurePhotoDownloader {
       if (binary) {
         // FLAG: An error page must never become proof that two unavailable media files match.
         if (contentType && /^(text\/|application\/(?:json|xml|problem\+json))/u.test(contentType)) {
-          throw new Error('Binary attachment returned a document or error response');
+          throw new PhotoDownloadFormatRejectedError(
+            'Binary attachment returned a document or error response',
+          );
         }
       } else validateResponseContentType(contentTypeValue);
       const contentLength = parseContentLength(response.headers['content-length']);
@@ -277,7 +296,9 @@ export class SecurePhotoDownloader {
       const bytes = Buffer.concat(body.chunks, body.byteLength);
       const magicFormat = binary ? null : detectSupportedPhotoImageFormat(bytes);
       if (!binary && !magicFormat) {
-        throw new Error('Photo response has an unsupported image signature');
+        throw new PhotoDownloadFormatRejectedError(
+          'Photo response has an unsupported image signature',
+        );
       }
       return {
         bytes,
@@ -455,7 +476,7 @@ function validateResponseContentType(value: string | string[] | undefined): void
     contentType !== 'application/octet-stream' &&
     !contentType.startsWith('image/')
   ) {
-    throw new Error('Photo response content type is not an image');
+    throw new PhotoDownloadFormatRejectedError('Photo response content type is not an image');
   }
 }
 
@@ -517,7 +538,7 @@ async function withDeadline<T>(operation: Promise<T>, deadlineAtMs: number): Pro
     return await Promise.race([
       operation,
       new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error('Photo download timed out')), timeoutMs);
+        timeout = setTimeout(() => reject(new PhotoDownloadTimeoutError()), timeoutMs);
         timeout.unref?.();
       }),
     ]);
@@ -531,7 +552,7 @@ async function withDeadline<T>(operation: Promise<T>, deadlineAtMs: number): Pro
 function remainingMs(deadlineAtMs: number): number {
   const remaining = Math.trunc(deadlineAtMs - Date.now());
   if (remaining <= 0) {
-    throw new Error('Photo download timed out');
+    throw new PhotoDownloadTimeoutError();
   }
   return remaining;
 }

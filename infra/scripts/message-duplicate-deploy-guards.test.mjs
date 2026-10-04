@@ -20,6 +20,9 @@ const paths = {
   admission: 'apps/api/src/moderation/message-duplicate/message-duplicate-admission.service.ts',
   queue: 'apps/api/src/moderation/message-duplicate/message-duplicate.queue.ts',
   detector: 'apps/api/src/moderation/rule-engine-duplicate-detector.ts',
+  phones: 'apps/api/src/moderation/duplicate-phone-evidence.ts',
+  content: 'apps/api/src/moderation/message-duplicate/message-duplicate-content.ts',
+  history: 'apps/api/src/moderation/message-duplicate/message-duplicate-history.service.ts',
 };
 function probe(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-duplicate-floor-'));
@@ -67,22 +70,68 @@ test('requires the message-v3 reader, durable admission and last action permit o
 
 const mutations = [
   ['state', 'z.literal(3)', 'z.literal(4)'],
-  ['state', 'text-fixed-window-unicode-near-v6', 'text-fixed-window-v5'],
-  ['state', 'version: nearEnabled ?', 'version: false ?'],
+  ['state', 'text-fixed-window-safe-text-v7', 'text-fixed-window-unicode-near-v6'],
+  ['state', 'version: safeTextMatchingEnabled ?', 'version: false ?'],
+  ['state', 'nearEnabled || phoneValueMatchingEnabled', 'nearEnabled'],
+  [
+    'state',
+    "settings.duplicateDetectionPreset === 'CUSTOM' && settings.duplicateIgnorePhonesEnabled",
+    'false',
+  ],
   ['detector', '/[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N}]*/gu', '/[a-zа-яё0-9]+/giu'],
   [
     'detector',
     'const gap = normalized.slice(end, until);',
     'const gap = normalized.slice(end, until).trim();',
   ],
-  ['detector', 'protectedGaps.push([beforeToken, gap])', 'protectedGaps.push([0, gap])'],
-  ['detector', '/[^\\p{P}\\p{Z}\\s]|[%‰‱*/\\\\^|&#@]/u.test(gap)', 'false'],
-  ['detector', 'numericBoundary && /\\S/u.test(gap)', 'false'],
   [
     'detector',
-    'JSON.stringify({ version: 2, tokens, numericTokens, protectedGaps })',
+    'protectedGaps.push([beforeToken, protectedGap])',
+    'protectedGaps.push([0, protectedGap])',
+  ],
+  ['detector', 'if (!/\\S/u.test(gap)) return;', 'if (!/[^\\p{P}\\p{Z}\\s]/u.test(gap)) return;'],
+  [
+    'detector',
+    '/[^\\p{P}\\p{Z}\\s]/u.test(gap) ? gap : gap.replace(/\\s+/gu,',
+    'false ? gap : gap.replace(/\\s+/gu,',
+  ],
+  [
+    'detector',
+    'JSON.stringify({ version: 3, tokens, numericTokens, protectedGaps })',
     'JSON.stringify({ tokens, numericTokens })',
   ],
+  ['detector', 'extractDuplicatePhoneNumbers(rawText)', 'extractDetectedPhoneNumbers(rawText)'],
+  ['detector', 'stripDuplicatePhoneNumbers(value)', 'stripDetectedPhoneNumbers(value)'],
+  ['detector', 'stripDuplicatePhoneNumbers(source)', 'stripDetectedPhoneNumbers(source)'],
+  ['detector', "value = replaceUrlsInText(value, ' ');", 'value = stripUrlsFromText(value);'],
+  ['detector', "source = replaceUrlsInText(source, ' ');", 'source = stripUrlsFromText(source);'],
+  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 1', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 0'],
+  ['phones', 'hasProtectedValueContext(before, after)', 'false'],
+  [
+    'phones',
+    "const international = candidate.startsWith('+') && /^[1-9]\\d{9,14}$/u.test(digits);",
+    'const international = true;',
+  ],
+  ['phones', 'const labelled = PHONE_CONTEXT.test(before);', 'const labelled = true;'],
+  ['phones', 'if (!international && !labelled) return null;', ''],
+  [
+    'phones',
+    'if (!international && !labelled) return null;',
+    "if (!candidate.startsWith('+') && !grouped && !labelled) return null;",
+  ],
+  ['phones', '\\.(?![ \\t])', '\\.'],
+  ['content', 'if (!isDuplicateContentComparable(content, mode)) return null;', ''],
+  [
+    'content',
+    "content.complete || (mode === 'TEXT' && content.reason === 'unsupported_attachment')",
+    'content.complete',
+  ],
+  [
+    'history',
+    'pendingSafe: isDuplicateContentComparable(input.content, mode)',
+    'pendingSafe: input.content.complete',
+  ],
+  ['history', 'return isDuplicateContentComparable(content, mode)', 'return content.complete'],
   [
     'guard',
     'messageDuplicateSettingsDigest(settings)) !== binding.settingsDigest',

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { duplicateDiagnosticsResponseSchema } from '../src/duplicate-diagnostics';
+import {
+  duplicateDiagnosticsResponseSchema,
+  duplicateDiagnosticsQuerySchema,
+  duplicateMessageLinkResponseSchema,
+  duplicateObservationOutcomeSchema,
+} from '../src/duplicate-diagnostics';
 
 const time = '2026-09-14T12:00:00.000Z';
 const payload = {
@@ -10,6 +15,35 @@ const payload = {
   history: { available: true, since: time, sampledIntents: 0, limited: false, attempts: [] },
 };
 describe('duplicate diagnostics contract', () => {
+  it('accepts every supported observation outcome together and rejects a larger payload', () => {
+    const outcomes = duplicateObservationOutcomeSchema.options.map((outcome) => ({
+      outcome,
+      count: 1,
+    }));
+    const observation = {
+      state: 'AVAILABLE',
+      since: time,
+      until: time,
+      basis: 'ATTEMPTS',
+      completeness: 'BEST_EFFORT',
+      supportedAttempts: outcomes.length,
+      verifiedAttempts: 0,
+      coverage: 0,
+      outcomes,
+    };
+    expect(
+      duplicateDiagnosticsResponseSchema.parse({ ...payload, observation }).observation?.outcomes,
+    ).toEqual(outcomes);
+    expect(
+      duplicateDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        observation: {
+          ...observation,
+          outcomes: [...outcomes, outcomes[0]],
+        },
+      }).success,
+    ).toBe(false);
+  });
   it('keeps absent telemetry compatible and rejects invented coverage or arbitrary outcome labels', () => {
     expect(duplicateDiagnosticsResponseSchema.parse(payload).observation).toBeUndefined();
     const observation = {
@@ -73,7 +107,7 @@ describe('duplicate diagnostics contract', () => {
     expect(
       duplicateDiagnosticsResponseSchema.safeParse({
         ...payload,
-        history: { ...payload.history, attempts: Array(6).fill(attempt) },
+        history: { ...payload.history, attempts: Array(21).fill(attempt) },
       }).success,
     ).toBe(false);
     expect(
@@ -81,6 +115,32 @@ describe('duplicate diagnostics contract', () => {
         ...payload,
         history: { ...payload.history, attempts: [{ ...attempt, outcome: 'PROBABLY_DELETED' }] },
       }).success,
+    ).toBe(false);
+  });
+  it('bounds pages and accepts only verified credential-free HTTPS MAX links', () => {
+    expect(duplicateDiagnosticsQuerySchema.parse({}).limit).toBe(5);
+    expect(duplicateDiagnosticsQuerySchema.parse({ limit: '20' }).limit).toBe(20);
+    for (const limit of [0, 21, 'not-a-number'])
+      expect(duplicateDiagnosticsQuerySchema.safeParse({ limit }).success).toBe(false);
+    expect(
+      duplicateMessageLinkResponseSchema.parse({
+        state: 'AVAILABLE',
+        url: 'https://max.ru/c/123/456',
+      }).url,
+    ).toBeTruthy();
+    for (const url of [
+      'http://max.ru/c/123/456',
+      'https://max.ru.evil/c/123',
+      'https://max.ru@evil/c/123',
+      'https://user:pass@max.ru/c/123',
+      'https://max.ru:444/c/123',
+    ]) {
+      expect(
+        duplicateMessageLinkResponseSchema.safeParse({ state: 'AVAILABLE', url }).success,
+      ).toBe(false);
+    }
+    expect(
+      duplicateMessageLinkResponseSchema.safeParse({ state: 'AVAILABLE', url: null }).success,
     ).toBe(false);
   });
 });

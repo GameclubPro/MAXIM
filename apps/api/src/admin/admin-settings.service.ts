@@ -120,11 +120,25 @@ export class AdminSettingsService {
     @Optional() private readonly commercialOcrRuntimePolicy?: CommercialOcrRuntimePolicyService,
   ) {}
 
-  async getDuplicateDiagnostics(chatId: string, user: AuthUser, recheck = false) {
+  async getDuplicateDiagnostics(chatId: string, user: AuthUser, recheck = false, query?: unknown) {
     await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
     if (!this.duplicateDiagnostics)
       throw new ServiceUnavailableException('Duplicate diagnostics unavailable');
-    return this.duplicateDiagnostics.read(chatId, recheck);
+    return query === undefined
+      ? this.duplicateDiagnostics.read(chatId, recheck)
+      : this.duplicateDiagnostics.read(chatId, recheck, query);
+  }
+
+  async getDuplicateMessageLink(
+    chatId: string,
+    user: AuthUser,
+    intentId: string,
+    role: 'target' | 'original',
+  ) {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    if (!this.duplicateDiagnostics)
+      throw new ServiceUnavailableException('Duplicate diagnostics unavailable');
+    return this.duplicateDiagnostics.readMessageLink(chatId, intentId, role);
   }
 
   async getSettings(

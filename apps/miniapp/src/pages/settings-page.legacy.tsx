@@ -709,6 +709,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     queryClient,
   ]);
 
+  const meQuery = useQuery({
+    queryKey: ['me', chatId ?? null],
+    queryFn: ({ signal }) =>
+      getMe(api, { chatId: chatId ?? undefined, entityType: 'chat', signal }),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
   const settingsScreenQuery = useQuery({
     queryKey: ['settings-screen', chatId],
     queryFn: ({ signal }) =>
@@ -754,6 +761,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   } = useSettingsDraft({
     api,
     chatId,
+    userId: meQuery.data?.userId ?? null,
     serverSettings: settingsScreenQuery.data?.settings,
     refetchSettings: settingsScreenQuery.refetch,
     onHydrated: () => setDuplicateWindowInputValue(null),
@@ -865,13 +873,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       });
       maxNotify('error');
     },
-  });
-  const meQuery = useQuery({
-    queryKey: ['me', chatId ?? null],
-    queryFn: ({ signal }) =>
-      getMe(api, { chatId: chatId ?? undefined, entityType: 'chat', signal }),
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
   });
   const spammerReviewMetricsQuery = useQuery({
     queryKey: ['global-spammer-review-metrics', chatId, 'summary'],
@@ -3533,7 +3534,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const duplicateSharedWindowHours = draft
     ? secondsToHours(resolveDuplicateSharedWindowSec(draft))
     : 12;
-  const duplicatesHeaderSummary = formatDuplicateSettingsSummary(draft, duplicateSharedWindowHours);
+  const duplicatesHeaderSummary = formatDuplicateSettingsSummary(
+    draft,
+    duplicateSharedWindowHours,
+    duplicatePhotoModerationPolicy,
+  );
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,

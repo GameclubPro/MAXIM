@@ -111,7 +111,10 @@ describe('message duplicate delete-only action claims', () => {
   it('releases an interrupted unused owner when runtime policy rejects the retry', async () => {
     const s = await enforcementCase();
     s.policy.resolve.mockResolvedValue({ mode: 'off' });
-    expect(await s.service.enqueue(s.params)).toBe(false);
+    expect(await s.service.enqueue(s.params)).toEqual({
+      kind: 'rejected',
+      reason: 'policy_changed',
+    });
     expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledTimes(1);
     expect(s.intents.claimMessageActionBeforeQualification).not.toHaveBeenCalled();
     expect(s.guard.qualify).not.toHaveBeenCalled();
@@ -123,7 +126,10 @@ describe('message duplicate delete-only action claims', () => {
     s.guard.assertQualificationAuthority.mockRejectedValue(
       new MessageDuplicateGuardRejectedError('revoked'),
     );
-    expect(await s.service.enqueue(s.params)).toBe(false);
+    expect(await s.service.enqueue(s.params)).toEqual({
+      kind: 'rejected',
+      reason: 'qualification_rejected',
+    });
     expect(s.intents.claimMessageActionBeforeQualification).not.toHaveBeenCalled();
     expect(s.guard.qualify).not.toHaveBeenCalled();
     expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledTimes(1);
@@ -136,7 +142,10 @@ describe('message duplicate delete-only action claims', () => {
     s.guard.assertQualificationAuthority.mockRejectedValueOnce(
       new MessageDuplicateGuardRejectedError('revoked'),
     );
-    expect(await s.service.enqueue(s.params)).toBe(false);
+    expect(await s.service.enqueue(s.params)).toEqual({
+      kind: 'rejected',
+      reason: 'qualification_rejected',
+    });
     expect(s.intents.claimMessageActionBeforeQualification).toHaveBeenCalledTimes(1);
     expect(s.guard.qualify).toHaveBeenCalledTimes(1);
     expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledTimes(1);
@@ -145,7 +154,10 @@ describe('message duplicate delete-only action claims', () => {
   it('does not qualify an event whose whole-message claim belongs to another rule', async () => {
     const s = await enforcementCase();
     s.intents.claimMessageActionBeforeQualification.mockResolvedValue('blocked');
-    expect(await s.service.enqueue(s.params)).toBe(false);
+    expect(await s.service.enqueue(s.params)).toEqual({
+      kind: 'rejected',
+      reason: 'claim_blocked',
+    });
     expect(s.guard.qualify).not.toHaveBeenCalled();
     expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
     expect(s.executeFullAction).not.toHaveBeenCalled();
@@ -158,7 +170,10 @@ describe('message duplicate delete-only action claims', () => {
       const s = await enforcementCase();
       if (outcome === 'no_match') s.guard.qualify.mockResolvedValue(null);
       else s.guard.qualify.mockRejectedValue(new MessageDuplicateGuardRejectedError('revoked'));
-      expect(await s.service.enqueue(s.params)).toBe(false);
+      expect(await s.service.enqueue(s.params)).toEqual({
+        kind: 'rejected',
+        reason: 'qualification_rejected',
+      });
       expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledWith({
         claim: expect.objectContaining({
           messageActionKey: buildMessageScopedModerationActionClaimKey('-123', 'repeat'),
@@ -178,7 +193,10 @@ describe('message duplicate delete-only action claims', () => {
     s.guard.assertQualificationAuthority
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new MessageDuplicateGuardRejectedError('revoked'));
-    expect(await s.service.enqueue(s.params)).toBe(false);
+    expect(await s.service.enqueue(s.params)).toEqual({
+      kind: 'rejected',
+      reason: 'qualification_rejected',
+    });
     expect(s.guard.qualify).toHaveBeenCalledTimes(1);
     expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledTimes(1);
     expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
@@ -393,7 +411,7 @@ describe('message duplicate delete-only action claims', () => {
           intent: EnsureModerationDeleteIntentInput;
         }) => {
           actualGuard.assertClaimMatchesIntent(input.claim, input.intent);
-          return { claim: 'claimed' };
+          return { claim: 'claimed', intent: { intentId: 'intent', rollout: 'execute' } };
         },
       ),
     };
@@ -421,13 +439,16 @@ describe('message duplicate delete-only action claims', () => {
       sourceCreatedAt: new Date().toISOString(),
       text: 'a',
     };
-    expect(await enforcement.enqueue(params)).toBe(true);
+    expect(await enforcement.enqueue(params)).toMatchObject({
+      kind: 'intent_accepted',
+      intentId: expect.any(String),
+    });
     expect(
       await enforcement.enqueue({
         ...params,
         binding: { ...params.binding, eventTimestampMs: Date.now() },
       }),
-    ).toBe(true);
+    ).toMatchObject({ kind: 'intent_accepted', intentId: expect.any(String) });
     const [first, second] = intents.ensureIntentWithMessageActionClaim.mock.calls.map(
       (call) => call[0],
     );
@@ -445,9 +466,12 @@ describe('message duplicate delete-only action claims', () => {
     ).toThrow('does not match');
     expect(
       await enforcement.enqueue({ ...params, binding: { ...params.binding, hasPhotos: true } }),
-    ).toBe(false);
+    ).toEqual({ kind: 'rejected', reason: 'policy_changed' });
     policy.resolve.mockResolvedValue({ mode: 'off' });
-    expect(await enforcement.enqueue(params)).toBe(false);
+    expect(await enforcement.enqueue(params)).toEqual({
+      kind: 'rejected',
+      reason: 'policy_changed',
+    });
     expect(intents.ensureIntentWithMessageActionClaim).toHaveBeenCalledTimes(2);
   });
 });

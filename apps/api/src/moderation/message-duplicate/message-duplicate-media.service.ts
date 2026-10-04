@@ -8,6 +8,7 @@ import type { DuplicateObservationOutcome } from '@maxim/contracts/settings';
 import { z } from 'zod';
 import { UnrecoverableError } from 'bullmq';
 import { extractHttpStatusCode } from '../../common/http-error.util';
+import { raceWithTimeout } from '../../common/promise-timeout.util';
 import { MaxBotContextService } from '../../max/max-bot-context.service';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MaxClientService } from '../../max/max-client.service';
@@ -21,17 +22,28 @@ import { RedisCounterService } from '../redis-counter.service';
 import { PhotoDuplicateAnalysisService } from '../photo-duplicate/photo-duplicate-analysis.service';
 import {
   PhotoDownloadHttpError,
+  PhotoDownloadByteLimitExceededError,
+  PhotoDownloadFormatRejectedError,
+  PhotoDownloadTimeoutError,
   PhotoDownloadSourceRejectedError,
   SecurePhotoDownloader,
   type PhotoDownloadSourceRejectionReason,
 } from '../photo-duplicate/secure-photo-downloader';
+import {
+  PhotoNativeUnavailableError,
+  PhotoFingerprintRejectedError,
+  type PhotoFingerprintRejectionReason,
+} from '../photo-duplicate/photo-fingerprint';
 import type { PhotoDuplicateOrderingLease } from '../photo-duplicate/photo-duplicate-ordering.store';
 import { DUPLICATE_JOB_MAX_LIFETIME_MS } from '../photo-duplicate/photo-duplicate-ordering.store';
 import { PhotoDuplicateSourceNotReadyError } from '../photo-duplicate/photo-duplicate.queue';
 import { isPendingWebhookTimeoutQuarantineMessage } from '../../webhook/webhook-timeout-quarantine';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
-import { MessageDuplicateEnforcementService } from './message-duplicate-enforcement.service';
+import {
+  MessageDuplicateEnforcementService,
+  duplicateEnforcementObservation,
+} from './message-duplicate-enforcement.service';
 import {
   digestDuplicateContent,
   canRefreshDuplicatePhotoSources,
@@ -49,12 +61,28 @@ import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.a
 import {
   MessageDuplicateMetricsService,
   measureDuplicatePhase,
+  recordDuplicatePhase,
   type MessageDuplicateMetricCounter,
 } from './message-duplicate-metrics.service';
 import { isDuplicateScheduleOpen, resolveDuplicateDailyWindow } from './message-duplicate-schedule';
 
 const requireFromHere = createRequire(__filename);
 const MAX_UNCACHED_MEDIA_PER_ATTEMPT = 20;
+const DIAGNOSTIC_WAIT_LIMIT_MS = 250;
+
+// FLAG: Observational Redis calls may finish later, but never hold moderation through
+// client retries. Their markers have no execution authority or source content.
+async function boundedDiagnostic<T>(operation: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await raceWithTimeout<T | undefined>({
+      operation,
+      timeoutMs: DIAGNOSTIC_WAIT_LIMIT_MS,
+      onTimeout: () => undefined,
+    });
+  } catch {
+    return undefined;
+  }
+}
 // FLAG: Fixed counters describe rejected download attempts, including refresh/retry;
 // they are not exact totals of rejected messages and must never contain source data.
 const PHOTO_SOURCE_REJECTION_METRICS = {
@@ -102,11 +130,26 @@ export class MessageDuplicateMediaDeferredError extends Error {
   }
 }
 
+export class MessageDuplicateMediaRejectedError extends UnrecoverableError {
+  constructor(
+    readonly reason:
+      | PhotoFingerprintRejectionReason
+      | 'format'
+      | 'missing_download_url'
+      | 'source_unavailable'
+      | 'source_changed',
+  ) {
+    super(`Message media content unverified: ${reason}`);
+    this.name = 'MessageDuplicateMediaRejectedError';
+  }
+}
+
 @Injectable()
 export class MessageDuplicateMediaService {
   private readonly logger = new Logger(MessageDuplicateMediaService.name);
   private readonly binary: SecurePhotoDownloader;
   private readonly resourceKey: string;
+  private readonly sharedAdmissionEnabled: boolean;
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisCounterService,
@@ -121,6 +164,8 @@ export class MessageDuplicateMediaService {
     private readonly botContext: MaxBotContextService,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {
+    this.sharedAdmissionEnabled =
+      config.get('MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED') === true;
     const maxBytes = config.get<number>('MESSAGE_DUPLICATE_MAX_BYTES') ?? 8_388_608;
     this.binary = new SecurePhotoDownloader(
       new ConfigService({
@@ -154,6 +199,23 @@ export class MessageDuplicateMediaService {
       return outcome;
     };
     try {
+      // FLAG: This optional marker measures the first owned head, excluding later retries.
+      // It has no action authority; a diagnostic write failure must preserve moderation.
+      try {
+        const firstHeadWaitMs = Math.max(0, Date.now() - Date.parse(job.createdAt));
+        if (
+          await boundedDiagnostic(() =>
+            this.redis.setStringIfAbsentWithTtl(
+              `message-duplicate:first-head:v1:${job.idempotencyKey}`,
+              'observed',
+              1200,
+            ),
+          )
+        )
+          recordDuplicatePhase(this.metrics, 'prehead_wait', firstHeadWaitMs);
+      } catch {
+        /* FLAG: Diagnostics cannot block the comparison or create a permit. */
+      }
       const imageOnly = job.comparison === 'IMAGE';
       const policy = await measureDuplicatePhase(this.metrics, 'policy', () =>
         this.policy.resolve(job.chatId, true),
@@ -294,34 +356,6 @@ export class MessageDuplicateMediaService {
         this.metrics?.record('media.first_candidate');
         return finish('MEDIA_CANDIDATE');
       }
-      if (predecessors.size > 0 || missingCurrentProof) {
-        const decision = await this.governor.decide({
-          component: 'message-duplicate-media',
-          sourceTag: 'message-duplicate',
-          allowRecoveryWindowRun: true,
-        });
-        if (decision.action === 'pause')
-          throw new MessageDuplicateMediaDeferredError('governor_pause', decision.retryAfterMs);
-        if (decision.action === 'slow') {
-          const slowKey = `message-duplicate:governor-slow:v2:${job.idempotencyKey}`;
-          const stored = await this.redis.getString(slowKey);
-          const nextAllowedAtMs =
-            stored === null
-              ? Date.now() +
-                new MessageDuplicateMediaDeferredError('governor_slow', decision.retryAfterMs)
-                  .retryAfterMs
-              : Number(stored);
-          if (!Number.isSafeInteger(nextAllowedAtMs))
-            throw new Error('Invalid message duplicate governor pacing state');
-          if (stored === null)
-            await this.redis.setStringIfAbsentWithTtl(slowKey, String(nextAllowedAtMs), 600);
-          if (Date.now() < nextAllowedAtMs)
-            throw new MessageDuplicateMediaDeferredError(
-              'governor_slow',
-              nextAllowedAtMs - Date.now(),
-            );
-        }
-      }
       const deadlineAtMs = Math.min(
         Date.now() + 30_000,
         job.deadlineAtMs,
@@ -332,6 +366,25 @@ export class MessageDuplicateMediaService {
         this.metrics?.record('media.deadline_expired');
         return finish('DEADLINE_EXPIRED');
       }
+      const baselineSources = new Map<string, Awaited<ReturnType<typeof this.loadSource>>>();
+      const baselineHashes = new Map<string, Array<string | null>>();
+      let heavyWorkRequired = missingCurrentProof;
+      for (const previous of predecessors.values()) {
+        const baseline = await measureDuplicatePhase(this.metrics, 'source', () =>
+          this.loadSource(previous.webhookEventId),
+        );
+        baselineSources.set(previous.webhookEventId, baseline);
+        if (baseline) {
+          const baselineContent = extractDuplicateMessageContent(baseline.update.raw);
+          const hashes = await this.readHashes(baselineContent, baseline.update);
+          baselineHashes.set(previous.webhookEventId, hashes);
+          if (hashes.some((hash) => hash === null)) heavyWorkRequired = true;
+        }
+      }
+      // FLAG: Bypass pressure only after every current/baseline proof is fresh and bound
+      // to its exact message/revision/source. The execution still rechecks access/authority.
+      if (heavyWorkRequired) await this.admitHeavyWork(job, deadlineAtMs);
+      else this.metrics?.record('media.cache_only');
       const budget = { remaining: MAX_UNCACHED_MEDIA_PER_ATTEMPT };
       let baselineUnverified = false;
       // FLAG: Materialize every distinct predecessor before freezing the current replay count.
@@ -350,9 +403,7 @@ export class MessageDuplicateMediaService {
             this.metrics?.record('media.budget_deferred');
             throw new MessageDuplicateMediaDeferredError('proof_budget');
           }
-          const baseline = await measureDuplicatePhase(this.metrics, 'source', () =>
-            this.loadSource(previous.webhookEventId),
-          );
+          const baseline = baselineSources.get(previous.webhookEventId) ?? null;
           if (!baseline) this.metrics?.record('media.baseline_missing');
           const baselineMessage = baseline?.update.message;
           if (
@@ -380,7 +431,7 @@ export class MessageDuplicateMediaService {
                   windowSec,
                   deadlineAtMs,
                   baseline.botId,
-                  undefined,
+                  baselineHashes.get(previous.webhookEventId),
                   budget,
                   previous.webhookEventId,
                 ),
@@ -412,6 +463,7 @@ export class MessageDuplicateMediaService {
             !(error instanceof PhotoDownloadHttpError && [403, 404, 410].includes(error.statusCode))
           )
             throw error;
+          this.recordMediaFailure(error);
           // FLAG: Negative cache entries cannot prove equality. They only prevent a terminal,
           // receipt-scoped baseline from spending every resumed attempt's verification budget.
           lease.assertOwned();
@@ -479,7 +531,7 @@ export class MessageDuplicateMediaService {
             dailyWindow?.endMs ?? Number.MAX_SAFE_INTEGER,
           ),
         };
-        await measureDuplicatePhase(this.metrics, 'enforcement', () =>
+        const enforcement = await measureDuplicatePhase(this.metrics, 'enforcement', () =>
           this.enforcement.enqueue({
             ...result,
             chatId: job.chatId,
@@ -501,7 +553,7 @@ export class MessageDuplicateMediaService {
             assertLease: lease.assertOwned,
           }),
         );
-        return finish('ENFORCEMENT_REQUESTED');
+        return finish(duplicateEnforcementObservation(enforcement));
       }
       return finish(
         baselineUnverified || observation.outcome === 'MATCHED'
@@ -509,6 +561,7 @@ export class MessageDuplicateMediaService {
           : observation.outcome,
       );
     } catch (error) {
+      this.recordMediaFailure(error);
       finish(
         comparedOutcome ??
           (error instanceof MessageDuplicateMediaDeferredError ||
@@ -520,6 +573,153 @@ export class MessageDuplicateMediaService {
       );
       throw error;
     }
+  }
+
+  private async admitHeavyWork(job: MessageDuplicateJob, deadlineAtMs: number): Promise<void> {
+    const decision = await measureDuplicatePhase(this.metrics, 'governor_gate', () =>
+      this.governor.decide({
+        component: 'message-duplicate-media',
+        sourceTag: 'message-duplicate',
+        allowRecoveryWindowRun: true,
+      }),
+    );
+    // FLAG: Every heavy attempt consults fresh pressure. Prior wait, cache markers and a
+    // previously granted budget never override pause or the absolute job/policy deadline.
+    if (decision.action === 'pause')
+      throw new MessageDuplicateMediaDeferredError('governor_pause', decision.retryAfterMs);
+    if (decision.action !== 'slow') return;
+    const intervalMs = new MessageDuplicateMediaDeferredError(
+      'governor_slow',
+      decision.retryAfterMs,
+    ).retryAfterMs;
+    if (this.sharedAdmissionEnabled) {
+      const createdAtMs = Date.parse(job.createdAt);
+      if (!Number.isSafeInteger(createdAtMs) || createdAtMs > Date.now() + 60_000)
+        throw new Error('Invalid duplicate heavy admission creation time');
+      const eligibleAtMs = createdAtMs + intervalMs;
+      this.metrics?.record(
+        Date.now() >= eligibleAtMs ? 'media.governor_credit_reused' : 'media.governor_credit_new',
+      );
+      let admission;
+      try {
+        admission = await this.redis.admitDuplicateHeavyStart({
+          eligibleAtMs,
+          intervalMs,
+          deadlineAtMs,
+        });
+      } catch {
+        this.metrics?.record('media.shared_admission_unavailable');
+        throw new MessageDuplicateMediaDeferredError('governor_slow', intervalMs);
+      }
+      // FLAG: Queue-age credit overlaps pre-head wait. Measure only elapsed time after
+      // this job's first shared-gate deferral; the marker is observational, never a permit.
+      const waitKey = `message-duplicate:governor-shared-wait:v1:${job.idempotencyKey}`;
+      try {
+        const waitedSince = await boundedDiagnostic(async () => {
+          const value = await this.redis.getString(waitKey);
+          if (admission.kind !== 'granted')
+            await this.redis.setStringIfAbsentWithTtl(waitKey, String(Date.now()), 600);
+          return value;
+        });
+        if (waitedSince != null && Number.isSafeInteger(Number(waitedSince)))
+          recordDuplicatePhase(
+            this.metrics,
+            'governor_wait',
+            Math.max(0, Date.now() - Number(waitedSince)),
+          );
+      } catch {
+        /* FLAG: Diagnostic persistence cannot alter admission or replace its result. */
+      }
+      if (admission.kind === 'granted') {
+        this.metrics?.record('media.shared_admission_granted');
+        return;
+      }
+      this.metrics?.record('media.shared_admission_deferred');
+      throw new MessageDuplicateMediaDeferredError(
+        'governor_slow',
+        admission.kind === 'deferred' ? admission.retryAtMs - Date.now() : intervalMs,
+      );
+    }
+    const slowKey = `message-duplicate:governor-slow:v2:${job.idempotencyKey}`;
+    const stored = await this.redis.getString(slowKey);
+    const nextAllowedAtMs = stored === null ? Date.now() + intervalMs : Number(stored);
+    if (!Number.isSafeInteger(nextAllowedAtMs) || nextAllowedAtMs <= 0)
+      throw new Error('Invalid message duplicate governor pacing state');
+    this.metrics?.record(
+      stored === null ? 'media.governor_credit_new' : 'media.governor_credit_reused',
+    );
+    if (stored === null) {
+      await this.redis.setStringIfAbsentWithTtl(slowKey, String(nextAllowedAtMs), 600);
+      await boundedDiagnostic(() =>
+        this.redis.setStringIfAbsentWithTtl(`${slowKey}:started`, String(Date.now()), 600),
+      );
+    } else {
+      const started = await boundedDiagnostic(() => this.redis.getString(`${slowKey}:started`));
+      if (started != null && Number.isSafeInteger(Number(started)))
+        recordDuplicatePhase(
+          this.metrics,
+          'governor_wait',
+          Math.max(0, Date.now() - Number(started)),
+        );
+    }
+    if (Date.now() < nextAllowedAtMs)
+      throw new MessageDuplicateMediaDeferredError('governor_slow', nextAllowedAtMs - Date.now());
+  }
+
+  private recordMediaFailure(error: unknown): void {
+    if (
+      error instanceof MessageDuplicateMediaDeferredError ||
+      error instanceof PhotoDownloadSourceRejectedError
+    )
+      return;
+    let reason:
+      | 'format'
+      | 'multiframe'
+      | 'bytes'
+      | 'pixels'
+      | 'album_budget'
+      | 'http_4xx'
+      | 'http_5xx'
+      | 'http_other'
+      | 'source_missing'
+      | 'source_unavailable'
+      | 'source_changed'
+      | 'source_timeout'
+      | 'native_unavailable'
+      | 'decode_deadline'
+      | 'decode_capacity'
+      | 'other';
+    if (
+      error instanceof MessageDuplicateMediaRejectedError ||
+      error instanceof PhotoFingerprintRejectedError
+    ) {
+      const reasons = {
+        format: 'format',
+        missing_download_url: 'source_missing',
+        source_unavailable: 'source_unavailable',
+        source_changed: 'source_changed',
+        unsupported_image: 'format',
+        unsupported_multi_frame: 'multiframe',
+        image_byte_limit_exceeded: 'bytes',
+        image_pixel_limit_exceeded: 'pixels',
+        album_decode_budget_exceeded: 'album_budget',
+        decode_deadline_exceeded: 'decode_deadline',
+        decode_capacity_exceeded: 'decode_capacity',
+      } as const;
+      reason = reasons[error.reason];
+    } else if (error instanceof PhotoDownloadByteLimitExceededError) reason = 'bytes';
+    else if (error instanceof PhotoDownloadFormatRejectedError) reason = 'format';
+    else if (error instanceof PhotoDownloadTimeoutError) reason = 'source_timeout';
+    else if (error instanceof PhotoNativeUnavailableError) reason = 'native_unavailable';
+    else if (error instanceof PhotoDownloadHttpError)
+      reason =
+        error.statusCode >= 500 && error.statusCode <= 599
+          ? 'http_5xx'
+          : error.statusCode >= 400 && error.statusCode <= 499
+            ? 'http_4xx'
+            : 'http_other';
+    else reason = 'other';
+    this.metrics?.record(`media.failure_${reason}`);
   }
 
   private async loadSource(webhookEventId: string) {
@@ -585,11 +785,17 @@ export class MessageDuplicateMediaService {
     content: DuplicateMessageContent,
     update: MaxUpdate,
   ): Promise<Array<string | null>> {
-    const values = await this.redis.getStrings(
-      content.media.map((media) => this.cacheKey(media.identity, update)),
+    const values = await measureDuplicatePhase(this.metrics, 'proof_read', () =>
+      this.redis.getStrings(content.media.map((media) => this.cacheKey(media.identity, update))),
     );
-    return values.map((raw) => {
+    return values.map((raw, index) => {
       const parsed = raw && raw.length < 512 ? hashSchema.safeParse(safeJson(raw)) : null;
+      if (parsed?.success)
+        this.metrics?.record(
+          content.media[index]!.kind === 'photo'
+            ? 'media.proof_reused_image'
+            : 'media.proof_reused_binary',
+        );
       return parsed?.success ? parsed.data.hash : null;
     });
   }
@@ -659,11 +865,15 @@ export class MessageDuplicateMediaService {
         }
       }
       if (result.kind !== 'complete') {
-        if (result.reason === 'decode_capacity_exceeded')
+        if (result.reason === 'decode_capacity_exceeded') {
+          this.recordMediaFailure(new MessageDuplicateMediaRejectedError(result.reason));
           throw new MessageDuplicateMediaDeferredError('decode_capacity');
-        if (result.reason === 'decode_deadline_exceeded')
+        }
+        if (result.reason === 'decode_deadline_exceeded') {
+          this.recordMediaFailure(new MessageDuplicateMediaRejectedError(result.reason));
           throw new MessageDuplicateMediaDeferredError('proof_budget');
-        throw new UnrecoverableError(`Photo message content unverified: ${result.reason}`);
+        }
+        throw new MessageDuplicateMediaRejectedError(result.reason);
       }
       photoIndexes.forEach((index, position) => {
         hashes[index] = result.fingerprint.images[position]!.canonicalHash;
@@ -674,9 +884,11 @@ export class MessageDuplicateMediaService {
         throw new Error('Message media verification deadline exceeded');
       const media = content.media[index]!;
       if (!hashes[index]) {
-        if (!media.url) throw new Error('Message media download URL unavailable');
+        if (!media.url) throw new MessageDuplicateMediaRejectedError('missing_download_url');
         const downloaded = await measureDuplicatePhase(this.metrics, 'download', () =>
-          this.binary.downloadBinary(media.url!, { deadlineAtMs }),
+          measureDuplicatePhase(this.metrics, 'binary_download', () =>
+            this.binary.downloadBinary(media.url!, { deadlineAtMs }),
+          ),
         ).catch((error: unknown) => {
           this.recordSourceRejection(error);
           throw error;
@@ -729,7 +941,7 @@ export class MessageDuplicateMediaService {
       if (status !== 403 && status !== 404) throw error;
       // FLAG: An inaccessible source proves neither absence nor equality. Reject this receipt's
       // evidence so an old baseline cannot block later verified media; never authorize an action.
-      throw new UnrecoverableError('Photo message source could not be verified');
+      throw new MessageDuplicateMediaRejectedError('source_unavailable');
     }
     const current = raw
       ? new WebhookParser().parse({
@@ -739,15 +951,15 @@ export class MessageDuplicateMediaService {
         }).message
       : null;
     const fresh = extractDuplicateMessageContent(raw, false);
+    if (!current) throw new MessageDuplicateMediaRejectedError('source_unavailable');
     if (
-      !current ||
       current.chatId !== message.chatId ||
       current.messageId !== message.messageId ||
       current.senderId !== message.senderId ||
       current.entityType === 'channel' ||
       !canRefreshDuplicatePhotoSources(content, fresh, true)
     ) {
-      throw new UnrecoverableError('Photo message source changed or unavailable');
+      throw new MessageDuplicateMediaRejectedError('source_changed');
     }
     return fresh;
   }
@@ -764,7 +976,7 @@ export class MessageDuplicateMediaService {
     ) {
       // FLAG: Retrying these same bytes cannot prove their format. A rejected baseline must not
       // prevent the current verifiable message from becoming the next candidate.
-      throw new UnrecoverableError('Message media format could not be verified');
+      throw new MessageDuplicateMediaRejectedError('format');
     }
   }
 }

@@ -195,11 +195,15 @@ maxim_topology_require_message_duplicate_delete_guard() {
     apps/api/src/moderation/message-duplicate/message-duplicate-admission.service.ts
     apps/api/src/moderation/message-duplicate/message-duplicate.queue.ts
     apps/api/src/moderation/rule-engine-duplicate-detector.ts
+    apps/api/src/moderation/duplicate-phone-evidence.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-content.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-history.service.ts
   )
 
   # FLAG: Pending v3 decisions outlive environment downgrades. Both rollback paths
   # must retain lifecycle revisions, durable first admission/revocation and the last permit fence.
-  # The Unicode near matcher and its settings fence remain mandatory after a control downgrade.
+  # Conservative phone evidence, positioned punctuation and mode-aware TEXT lifecycle
+  # remain mandatory with the safe-text fence after a control downgrade.
   for source_path in "${source_paths[@]}"; do
     if ! source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)"; then
       echo "Rollback target predates the message duplicate v3 action guard." >&2
@@ -211,8 +215,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const input = require("node:fs").readFileSync(0);
     if (input.length > 4 * 1024 * 1024) process.exit(1);
     const parts = input.toString("utf8").split("\0");
-    if (parts.length !== 12 || parts.pop() !== "") process.exit(1);
-    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector] = parts;
+    if (parts.length !== 15 || parts.pop() !== "") process.exit(1);
+    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector, phones, content, history] = parts;
     const method = (source, marker) => {
       const start = source.indexOf(marker);
       const end = source.indexOf("\n  private ", start + 1);
@@ -251,14 +255,33 @@ maxim_topology_require_message_duplicate_delete_guard() {
       state.includes("lifecycleRevision:") &&
       state.includes("authorization:") &&
       state.includes("messageDuplicateEnforcementScope") &&
-      state.includes("text-fixed-window-unicode-near-v6") &&
-      /version:\s*nearEnabled\s*\?/u.test(state) &&
+      state.includes("text-fixed-window-safe-text-v7") &&
+      state.includes("const safeTextMatchingEnabled = nearEnabled || phoneValueMatchingEnabled;") &&
+      /const phoneValueMatchingEnabled\s*=\s*settings.duplicateDetectionPreset === .CUSTOM. && settings.duplicateIgnorePhonesEnabled/u.test(state) &&
+      /version:\s*safeTextMatchingEnabled\s*\?/u.test(state) &&
       near.includes("/[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N}]*/gu") &&
       near.includes("const gap = normalized.slice(end, until);") &&
-      near.includes("/[^\\p{P}\\p{Z}\\s]|[%‰‱*/\\\\^|&#@]/u.test(gap)") &&
-      near.includes("protectedGaps.push([beforeToken, gap])") &&
-      near.includes("numericBoundary && /\\S/u.test(gap)") &&
-      near.includes("JSON.stringify({ version: 2, tokens, numericTokens, protectedGaps })") &&
+      near.includes("if (!/\\S/u.test(gap)) return;") &&
+      near.includes("/[^\\p{P}\\p{Z}\\s]/u.test(gap) ? gap : gap.replace(/\\s+/gu, ") &&
+      near.includes("protectedGaps.push([beforeToken, protectedGap])") &&
+      near.includes("JSON.stringify({ version: 3, tokens, numericTokens, protectedGaps })") &&
+      detector.includes("from \u0027./duplicate-phone-evidence\u0027") &&
+      detector.includes("extractDuplicatePhoneNumbers(rawText)") &&
+      detector.includes("stripDuplicatePhoneNumbers(value)") &&
+      detector.includes("stripDuplicatePhoneNumbers(source)") &&
+      detector.includes("value = replaceUrlsInText(value, \u0027 \u0027);") &&
+      detector.includes("source = replaceUrlsInText(source, \u0027 \u0027);") &&
+      /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*1/u.test(phones) &&
+      phones.includes("hasProtectedValueContext(before, after)") &&
+      phones.includes("const international = candidate.startsWith(\u0027+\u0027) && /^[1-9]\\d{9,14}$/u.test(digits);") &&
+      phones.includes("const labelled = PHONE_CONTEXT.test(before);") &&
+      phones.includes("if (!international && !labelled) return null;") &&
+      phones.includes("\\.(?![ \\t])") &&
+      content.includes("export function isDuplicateContentComparable(") &&
+      content.includes("if (!isDuplicateContentComparable(content, mode)) return null;") &&
+      content.includes("content.complete || (mode === \u0027TEXT\u0027 && content.reason === \u0027unsupported_attachment\u0027)") &&
+      history.includes("pendingSafe: isDuplicateContentComparable(input.content, mode)") &&
+      history.includes("return isDuplicateContentComparable(content, mode)") &&
       /messageDuplicateSettingsDigest\(settings\)\)\s*!==\s*binding.settingsDigest/u.test(guard) &&
       authorization.includes("binding.version !== 3") &&
       authorization.includes("Date.now() >= authority.deadlineAtMs") &&

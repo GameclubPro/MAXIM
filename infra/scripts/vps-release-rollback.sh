@@ -628,6 +628,8 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     recreate_service api-publisher
   fi
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service api-message-retention
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service api-admin
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service api-ingress

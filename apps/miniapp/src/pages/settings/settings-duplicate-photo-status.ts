@@ -15,9 +15,17 @@ export type DuplicatePhotoPresentationPolicy = DuplicatePhotoEffectivePolicy;
 export function formatDuplicateSettingsSummary(
   settings: ChatSettings | null,
   windowHours: number,
+  photoPolicy?: DuplicatePhotoEffectivePolicy,
 ): string {
   if (!settings?.antiDuplicateEnabled) return 'Выключено';
-  return `${formatDuplicateAllowanceLabel(resolveDuplicateAllowedCount(settings))} • ${formatDuplicateWindowLabel(settings, windowHours)}${settings.duplicateCompareMode !== 'TEXT' ? ' • картинки' : ''}`;
+  const photo =
+    settings.duplicateCompareMode !== 'TEXT'
+      ? photoPolicy &&
+        resolveDuplicatePhotoPresentationPolicy(photoPolicy).moderationMode === 'FULL'
+        ? ' • картинки включены'
+        : ' • картинки недоступны'
+      : '';
+  return `${formatDuplicateAllowanceLabel(resolveDuplicateAllowedCount(settings))} • ${formatDuplicateWindowLabel(settings, windowHours)}${photo}`;
 }
 
 export function resolveDuplicatePhotoPresentationPolicy(

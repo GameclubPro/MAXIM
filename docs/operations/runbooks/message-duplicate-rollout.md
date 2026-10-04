@@ -20,6 +20,8 @@ non-photo media. Complete photo messages use the explicit IMAGE path: exact cano
 sets, independent of captions, with administrator-selected SAME_AUTHOR or CHAT scope and the
 same configured reaction ladder. CHAT counts escalation per author, never across participants.
 `TEXT` compares text/captions and navigation/actions without media. Known media
+without a usable URL/photo identity remain comparable in TEXT, including through edits;
+unknown attachments, invalid buttons and split albums remain unverified in every mode. Known media
 without a retrievable original remain unverified in MESSAGE mode; filenames, sizes, previews,
 platform IDs and download URLs are not equality evidence. Unsupported attachments and split
 albums are skipped when the whole message cannot be verified. Complete attachment arrays are
@@ -341,14 +343,43 @@ Neither endpoint sends messages, deletes content or changes chat policy. A stale
 snapshot cannot confirm a requested live recheck. Saved enablement, runtime mode and permission
 proof are separate fields. OFF stops duplicate actions; OBSERVE records matches without acting.
 
-History samples at most 20 recent intents per status from the existing chat/status/created-time
-index, inspecting at most 9 reason rows per candidate. It returns at most five duplicate entries
-created in the last 24 hours, without text, user/bot identities or free-form errors. Saturated
-samples are explicitly incomplete; a query timeout is unavailable history, not zero attempts.
-Only a persisted remote deletion receipt is labelled deleted; verified absence remains a separate
-outcome. New entries also expose the original message ID, publication time and fixed repeat-allowed
-time, selected only from these bounded reason rows. Historical entries can lack this evidence.
-The read query has a two-second statement deadline and a three-second transaction limit.
+History reads the dedicated `duplicate_diagnostics_history` projection for this exact chat,
+ordered by intent creation time and ID within a fixed 24-hour snapshot. `limit` accepts 1–20
+entries (default 5); `nextCursor` continues the same snapshot and authorized chat for up to
+15 minutes. The query selects at most `limit + 1` projection rows before looking up each
+intent's latest duplicate reason and at most five exact-chat/message sanction events.
+Unrelated rules and retained history cannot evict duplicate entries. The read query has a
+two-second statement deadline and a three-second transaction limit; timeout means unavailable
+history, not zero attempts. The mini app shows at most 50 entries and discards delayed page/link
+responses after chat/account changes or leaving the screen. Successful duplicate settings saves
+invalidate diagnostics for the saved request's chat and account.
+
+The additive migration creates an empty projection and a best-effort server-owned trigger for
+new or updated `DUPLICATE_DELETE` reasons; it does not scan old reason tables. Ordinary projection
+write errors are isolated, and the function-scoped lock timeout is 25 ms. A whole-operation
+cancellation still cancels moderation rather than being hidden by the observer.
+`coverage: PROJECTED_ONLY` and `limited: true` explicitly retain the
+historical gap, including an empty page. Each entry exposes `registeredAt` to distinguish later
+registration from the original intent creation time. Responses omit content, user/bot identities,
+hashes and free-form errors. Only a persisted remote deletion receipt is labelled deleted;
+verified absence remains a separate outcome. Valid bound evidence exposes target/original message
+IDs, publication/repeat-allowed times, comparison type, window and first deleted message number.
+Sanctions remain requested until an exact binding and sanction tuple match durable event evidence;
+WARN uses its terminal persisted decision, while MUTE/BAN require `sanctionApplied: true`.
+
+`GET /v1/chats/:chatId/duplicate-diagnostics/:intentId/message-link/:role` (`target` or `original`)
+rechecks exact-chat admin access, resolves the selected projected intent and then performs a
+bounded read of that exact MAX message. It returns an official validated credential-free HTTPS
+`max.ru` link or `UNAVAILABLE`; it never fabricates a link or sends a public test message.
+
+Historical projection repair is explicit and bounded. Preview with
+`npm run moderation:recover-duplicate-diagnostics --workspace @maxim/api -- --chat-id <chat-id> --until <recent-UTC-ISO> --limit <1..100>`.
+Review `previewSha256`, then repeat the same arguments with
+`--apply --expected-preview-sha <reviewed-sha>`. A returned cursor continues one recent
+chat/status-indexed slice; no whole-history scan or automatic backfill runs. Each transaction
+has two-second statement, 500 ms lock and three-second transaction deadlines. Repair rechecks
+exact intents/reasons and only inserts missing projection rows; it never updates intent authority,
+queues, claims, counters or MAX state. Replays preserve the original registration timestamp.
 
 ## Stop And Rollback
 
@@ -361,9 +392,15 @@ and its matching content/revision binding. `MESSAGE_DUPLICATE_ENABLED=false` is 
 environment ceiling.
 
 Both API rollback paths require v3 binding, lifecycle and durable/permit authorization source
-capabilities and the Unicode near matcher with the `text-fixed-window-unicode-near-v6`
-settings fence. The fence invalidates old STRICT and CUSTOM-with-near history, queued
-jobs and grants; exact-only and IMAGE settings retain their prior evidence versions.
+capabilities, conservative duplicate-only phone evidence, mode-aware TEXT lifecycle eligibility,
+and near punctuation/symbol positions with the `text-fixed-window-safe-text-v7` settings fence.
+The fence invalidates old STRICT, CUSTOM-with-near and CUSTOM-phone-value history, queued
+jobs and grants; other exact-only, CUSTOM-link-only and IMAGE settings retain their prior evidence
+versions. Ambiguous numeric identifiers, prices and measurements are never stripped as phones or
+used as phone-only duplicate evidence. Phone evidence requires an international prefix or an
+explicit phone label; unlabelled grouping alone remains content. The separate phone-blocking
+policy is unchanged. Near may
+normalize case and punctuation spacing, but cannot erase or move internal punctuation.
 Use the shared API queue fence to stop old producers/workers and recreate every API role
 before resuming processing. A mixed old/new fleet is not a supported activation state.
 Never roll back to the old Latin/Cyrillic-only near matcher, even with control currently off:
@@ -371,6 +408,9 @@ the stored enabled settings and old grants must not regain authority on a later 
 Pending intents
 can survive a control downgrade, so an older unguarded API is not a valid rollback target.
 Use a retained compatible immutable release and the normal queue-fenced rollback workflow.
+At the first safe-text-v7 transition no earlier API image satisfies this source floor. Recovery
+uses the reviewed control OFF path above and a forward compatible release; static-only rollback
+is independent. Do not weaken source or applied-migration compatibility checks to reuse an old API.
 Older images do not understand the new protocol and are rejected as targets; rollback does not downgrade
 full sanctions into unguarded deletes. Inspect runtime status after rollback before re-enabling.
 Never remove the shared message action claims or reset counters to replay moderation.

@@ -4984,7 +4984,7 @@ describe('RuleEngineService', () => {
     await service.detect({
       chatId: 'chat-1',
       userId: 'user-1',
-      text: 'Другой текст и та же связь 8 999 123 45 67',
+      text: 'Другой текст и тот же телефон 8 999 123 45 67',
       settings,
       domainAllowlist: [],
     });
@@ -5023,7 +5023,7 @@ describe('RuleEngineService', () => {
     await service.detect({
       chatId: 'chat-1',
       userId: 'user-1',
-      text: 'Другой текст и та же связь 8 999 123 45 67',
+      text: 'Другой текст и тот же телефон 8 999 123 45 67',
       settings,
       domainAllowlist: [],
     });
@@ -5122,7 +5122,7 @@ describe('RuleEngineService', () => {
     expect(third.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
-  it('detects strict near duplicates when punctuation changes without reordering words', async () => {
+  it('keeps different semantic punctuation distinct in strict comparisons', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const settings = buildSettings({
       duplicateDetectionPreset: 'STRICT',
@@ -5143,7 +5143,7 @@ describe('RuleEngineService', () => {
       settings,
       domainAllowlist: [],
     });
-    await service.detect({
+    const secondResult = await service.detect({
       chatId: 'chat-1',
       userId: 'user-1',
       text: second,
@@ -5158,6 +5158,45 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
+    expect(secondResult.duplicateHit).toBeUndefined();
+    expect(secondResult.duplicateDecision).toBeUndefined();
+    expect(result.duplicateHit).toBeUndefined();
+    expect(result.duplicateDecision).toBeUndefined();
+  });
+
+  it('detects strict near duplicates when punctuation positions stay the same', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      duplicateDetectionPreset: 'STRICT',
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+    });
+    const texts = [
+      'Пожалуйста, проверьте расписание встречи завтра утром! Команда собирается возле главного входа.',
+      'ПОЖАЛУЙСТА , ПРОВЕРЬТЕ РАСПИСАНИЕ ВСТРЕЧИ ЗАВТРА УТРОМ ! КОМАНДА СОБИРАЕТСЯ ВОЗЛЕ ГЛАВНОГО ВХОДА .',
+      'Пожалуйста , проверьте расписание встречи завтра утром! Команда собирается возле главного входа .',
+    ];
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: texts[0],
+      settings,
+      domainAllowlist: [],
+    });
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: texts[1],
+      settings,
+      domainAllowlist: [],
+    });
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: texts[2],
+      settings,
+      domainAllowlist: [],
+    });
     expect(result.duplicateDecision).toEqual(
       expect.objectContaining({
         action: 'WARN',

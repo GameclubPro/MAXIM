@@ -1,4 +1,7 @@
-import { resolveDuplicateFlowAllowedCount } from '@maxim/contracts/settings';
+import {
+  resolveDuplicateFlowAllowedCount,
+  resolveDuplicateIntervalWindowSec,
+} from '@maxim/contracts/settings';
 import type { ChatSettings } from '../prisma/prisma-client';
 import type {
   DuplicateAction,
@@ -18,13 +21,7 @@ export type DuplicateFlowConfig = {
 };
 
 export function resolveDuplicateFlowConfig(settings: ChatSettings): DuplicateFlowConfig {
-  const intervalSec = settings.duplicateWarnEnabled
-    ? settings.duplicateWarnWindowSec
-    : settings.duplicateMuteEnabled
-      ? settings.duplicateMuteWindowSec
-      : settings.duplicateBanEnabled
-        ? settings.duplicateBanWindowSec
-        : settings.duplicateWarnWindowSec;
+  const intervalSec = resolveDuplicateIntervalWindowSec(settings);
   const windowSec =
     settings.duplicateWindowMode === 'DAILY'
       ? ((settings.duplicateEndTimeMinutes - settings.duplicateStartTimeMinutes + 1440) % 1440) * 60

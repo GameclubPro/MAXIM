@@ -13,6 +13,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { z } from 'zod';
+import { duplicateDiagnosticsQuerySchema } from '@maxim/contracts/settings';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { AdminSettingsService } from './admin-settings.service';
@@ -40,13 +41,41 @@ export class AdminSettingsController {
   }
 
   @Get('chats/:chatId/duplicate-diagnostics')
-  getDuplicateDiagnostics(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.settingsService.getDuplicateDiagnostics(chatId, user);
+  getDuplicateDiagnostics(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query?: unknown,
+  ) {
+    const page = duplicateDiagnosticsQuerySchema.safeParse(query ?? {});
+    if (!page.success) throw new BadRequestException('Invalid duplicate diagnostics page');
+    return query === undefined
+      ? this.settingsService.getDuplicateDiagnostics(chatId, user)
+      : this.settingsService.getDuplicateDiagnostics(chatId, user, false, page.data);
   }
 
   @Post('chats/:chatId/duplicate-diagnostics/recheck')
   recheckDuplicateDiagnostics(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.settingsService.getDuplicateDiagnostics(chatId, user, true);
+  }
+
+  @Get('chats/:chatId/duplicate-diagnostics/:intentId/message-link/:role')
+  getDuplicateMessageLink(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Param('intentId') intentId: string,
+    @Param('role') role: string,
+  ) {
+    if (
+      !z.string().min(1).max(512).safeParse(intentId).success ||
+      !['target', 'original'].includes(role)
+    )
+      throw new BadRequestException('Invalid duplicate message link target');
+    return this.settingsService.getDuplicateMessageLink(
+      chatId,
+      user,
+      intentId,
+      role as 'target' | 'original',
+    );
   }
 
   @Post('chats/:chatId/required-subscription/channels/resolve')

@@ -167,6 +167,16 @@ describe('RuleEngineDuplicateDetector', () => {
     });
 
     it.each([
+      ...['. ', '\n'].map((separator) => [
+        `numeric phrase after phone ${JSON.stringify(separator)}`,
+        `Запись на встречу открыта для всех желающих телефон: +7 (999) 123-45-67${separator}100 участников`,
+        `Запись на встречу открыта для всех желающих телефон: +7 (999) 123-45-67${separator}200 участников`,
+      ]),
+      ...['Серия', 'Модель', 'Версия', ''].map((label) => [
+        label ? `grouped ${label}` : 'unlabelled grouped number',
+        `${label} (999-123-45-67) доступна для заказа в нашем интернет магазине с доставкой по стране`,
+        `${label} (999-123-45-68) доступна для заказа в нашем интернет магазине с доставкой по стране`,
+      ]),
       [
         'calendar date',
         'Family swimming registration remains available until 22.09.2026 for every participant',
@@ -176,6 +186,51 @@ describe('RuleEngineDuplicateDetector', () => {
         'long price',
         'The advertised equipment purchase price totals 123456789 rubles including delivery',
         'The advertised equipment purchase price totals 223456789 rubles including delivery',
+      ],
+      [
+        'phone-shaped order ID',
+        'Номер заказа 1234567890 для получения оплаченного оборудования отправлен представителю организации',
+        'Номер заказа 2234567890 для получения оплаченного оборудования отправлен представителю организации',
+      ],
+      [
+        'wrapped part identifier',
+        'Артикул (999-123-45-67) доступен для заказа в нашем интернет магазине с доставкой по стране',
+        'Артикул (999-123-45-68) доступен для заказа в нашем интернет магазине с доставкой по стране',
+      ],
+      [
+        'long modified part identifier',
+        'Артикул нового оборудования для нашего каталога (999-123-45-67) доступен для заказа с доставкой по стране',
+        'Артикул нового оборудования для нашего каталога (999-123-45-68) доступен для заказа с доставкой по стране',
+      ],
+      [
+        'wrapped order identifier',
+        'Номер заказа №(123-456-78-90) доступен для получения оплаченного оборудования сегодня',
+        'Номер заказа №(123-456-78-91) доступен для получения оплаченного оборудования сегодня',
+      ],
+      [
+        'phone label word suffix',
+        'Recall 1234567890 подтвержден для оборудования с доставкой по стране после регистрации',
+        'Recall 1234567891 подтвержден для оборудования с доставкой по стране после регистрации',
+      ],
+      [
+        'phone-shaped price',
+        'Продается промышленное предприятие стоимостью 9000000000 рублей документы готовы подробности по запросу',
+        'Продается промышленное предприятие стоимостью 9100000000 рублей документы готовы подробности по запросу',
+      ],
+      [
+        'phone-shaped measurement',
+        'Согласно технической документации суммарная масса оборудования составляет 9000000000 кг включая упаковку',
+        'Согласно технической документации суммарная масса оборудования составляет 9100000000 кг включая упаковку',
+      ],
+      [
+        'comma placement',
+        'Казнить, нельзя помиловать виновного сегодня согласно решению комиссии',
+        'Казнить нельзя, помиловать виновного сегодня согласно решению комиссии',
+      ],
+      [
+        'internal punctuation',
+        'Подробная инструкция, для участников встречи доступна после завершения регистрации',
+        'Подробная инструкция! для участников встречи доступна после завершения регистрации',
       ],
       [
         'numeric range',
@@ -285,7 +340,7 @@ describe('RuleEngineDuplicateDetector', () => {
       ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
     });
 
-    it('keeps ordinary punctuation matching with unchanged Unicode words and protected symbols', () => {
+    it('allows cosmetic punctuation spacing without losing its position or protected symbols', () => {
       const detector = new RuleEngineDuplicateDetector(
         new InMemoryRevisionedRedisCounter() as never,
       );
@@ -296,7 +351,7 @@ describe('RuleEngineDuplicateDetector', () => {
       const first =
         'Подробная инструкция, для участников встречи доступна после завершения регистрации 同意 ✅';
       const second =
-        'Подробная инструкция! для участников встречи доступна после завершения регистрации 同意 ✅';
+        'ПОДРОБНАЯ инструкция ,  для участников встречи доступна после завершения регистрации 同意 ✅';
       const fingerprints = [first, second].map((text) =>
         detector.buildFingerprints(text, settings),
       );
@@ -313,6 +368,111 @@ describe('RuleEngineDuplicateDetector', () => {
       );
     });
   });
+
+  it('still matches true rotated phones in STRICT while preserving surrounding labels', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const settings = buildSettings({ duplicateDetectionPreset: 'STRICT' });
+    const text = (phone: string) =>
+      `Подробная инструкция для участников встречи доступна после завершения регистрации телефон: ${phone}`;
+    await detectRevision({
+      detector,
+      messageId: 'phone-1',
+      revision: 100,
+      text: text('+7 (999) 123-45-67'),
+      settings,
+    });
+    await expect(
+      detectRevision({
+        detector,
+        messageId: 'phone-2',
+        revision: 200,
+        text: text('+7 (999) 123-45-68'),
+        settings,
+      }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'content' } });
+  });
+
+  it('uses only true phones for explicit CUSTOM value matching without near', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const settings = buildSettings({
+      duplicateDetectionPreset: 'CUSTOM',
+      duplicateIgnorePhonesEnabled: true,
+      duplicateNearMatchEnabled: false,
+    });
+    await detectRevision({
+      detector,
+      messageId: 'order-1',
+      revision: 100,
+      text: 'Номер заказа 1234567890 готов',
+      settings,
+    });
+    await expect(
+      detectRevision({
+        detector,
+        messageId: 'order-2',
+        revision: 200,
+        text: 'Документ номер 1234567890 проверен',
+        settings,
+      }),
+    ).resolves.toEqual({});
+    await detectRevision({
+      detector,
+      messageId: 'phone-1',
+      revision: 300,
+      text: 'Телефон +7 (999) 123-45-67: доставка',
+      settings,
+    });
+    await expect(
+      detectRevision({
+        detector,
+        messageId: 'phone-2',
+        revision: 400,
+        text: 'Связаться +7 (999) 123-45-67: консультация',
+        settings,
+      }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'phone' } });
+  });
+
+  it.each([
+    ...['Серия', 'Модель', 'Версия', ''].map((label) => [
+      `${label} (999-123-45-67) доступна для заказа в нашем интернет магазине`,
+      `${label} (999-123-45-67) опубликована после завершения регистрации участников`,
+    ]),
+    ['Артикул (999-123-45-67) доступен', 'Код заказа №(999-123-45-67) подтвержден'],
+    [
+      'Артикул нового оборудования для нашего каталога [(999-123-45-67)] доступен',
+      'Номер заказа нового оборудования для нашего склада №[(999-123-45-67)] подтвержден',
+    ],
+    ['Recall 1234567890 подтвержден', 'Расширенный recall 1234567890 опубликован'],
+  ])(
+    'does not join unrelated protected values through CUSTOM phone matching: %s',
+    async (first, second) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnorePhonesEnabled: true,
+        duplicateNearMatchEnabled: false,
+      });
+      await detectRevision({
+        detector,
+        messageId: 'protected-original',
+        revision: 100,
+        text: first,
+        settings,
+      });
+      await expect(
+        detectRevision({
+          detector,
+          messageId: 'unrelated-protected',
+          revision: 200,
+          text: second,
+          settings,
+        }),
+      ).resolves.toEqual({});
+    },
+  );
 
   it.each(['STRICT', 'CUSTOM'] as const)(
     'does not merge long text with different hidden destinations in %s',
