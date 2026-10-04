@@ -16,6 +16,7 @@ import {
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
+import { profileStatisticsSummary } from './marketplace-profile-statistics';
 import { MarketplaceAccessService } from './marketplace-access.service';
 import {
   MarketplaceStateService,
@@ -71,7 +72,7 @@ export class MarketplaceProfileService {
   }
   async get(userId: string, kind: unknown, entityId: unknown, profile: unknown) {
     const binding = await this.access.attest(this.input(userId, kind, entityId, profile));
-    return this.present(binding, await this.relay(binding));
+    return this.present(binding, await this.relay(binding), await this.statistics(binding));
   }
   async mutate(userId: string, kind: unknown, entityId: unknown, profile: unknown, raw: unknown) {
     const input = marketplaceProfileMutationSchema.parse(raw);
@@ -144,15 +145,18 @@ export class MarketplaceProfileService {
               >`UPDATE marketplace_bindings SET append_enabled=${input.appendEnabled!},button_diagnostic=NULL,
             append_revision=append_revision+1,revision=revision+1,updated_at=now() WHERE id=${binding.id}::uuid RETURNING *`;
         const presented = this.present(changed[0]!, result);
+        // FLAG: Durable replies remain readable by the previous strict contract on rollback.
+        delete presented.capabilities;
+        delete presented.statistics;
         await tx.$executeRaw`INSERT INTO marketplace_policy_requests(request_id,binding_id,payload_hash,result)
           VALUES(${input.requestId}::uuid,${binding.id}::uuid,${hash},${JSON.stringify(presented)}::jsonb)`;
         return presented;
       });
     }
-    if (!binding.statistics_consent && input.statisticsConsent !== true)
+    if (input.action !== 'pause' && !binding.statistics_consent && input.statisticsConsent !== true)
       throw new ConflictException('Подтвердите использование статистики');
     const result = await this.relay(binding, input);
-    if (!binding.statistics_consent) {
+    if (input.action !== 'pause' && !binding.statistics_consent) {
       const now = new Date();
       const from = new Date(now);
       from.setUTCHours(0, 0, 0, 0);
@@ -165,7 +169,7 @@ export class MarketplaceProfileService {
       if (!changed) throw new ConflictException('Согласие изменилось. Обновите экран');
       binding = (await this.state.read(binding.id))!;
     }
-    return this.present(binding, result);
+    return this.present(binding, result, await this.statistics(binding));
   }
   private cachedProfile(binding: MarketplaceBindingRow): MarketplaceProfileRelayResponse {
     const snapshot = marketplaceProfileRelayResponseSchema.safeParse(binding.profile_snapshot);
@@ -185,7 +189,18 @@ export class MarketplaceProfileService {
       choices: { topics: [], regions: [] },
     };
   }
-  private present(binding: MarketplaceBindingRow, result: MarketplaceProfileRelayResponse) {
+  private async statistics(binding: MarketplaceBindingRow) {
+    if (!binding.statistics_consent || !binding.generation_id)
+      return profileStatisticsSummary(binding.statistics_consent);
+    const generations = await this.prisma.$queryRaw<Array<{ manifest: unknown; rows: unknown }>>`
+      SELECT manifest,rows FROM marketplace_statistics_generations WHERE id=${binding.generation_id}::uuid AND binding_id=${binding.id}::uuid`;
+    return profileStatisticsSummary(binding.statistics_consent, generations[0]);
+  }
+  private present(
+    binding: MarketplaceBindingRow,
+    result: MarketplaceProfileRelayResponse,
+    statistics = profileStatisticsSummary(binding.statistics_consent),
+  ) {
     return marketplaceProfileStateSchema.parse({
       ...result,
       binding: this.state.present(binding),
@@ -193,6 +208,7 @@ export class MarketplaceProfileService {
       appendRevision: binding.append_revision,
       available: true,
       buttonDiagnostic: binding.button_diagnostic,
+      statistics,
     });
   }
   async relay(
@@ -216,6 +232,7 @@ export class MarketplaceProfileService {
         method: mutation ? 'POST' : 'GET',
         headers: {
           authorization: `Bearer ${token}`,
+          'x-marketplace-profile-view': '2',
           ...(mutation ? { 'content-type': 'application/json' } : {}),
         },
         ...(mutation ? { body: JSON.stringify({ ...identity, ...mutation }) } : {}),
@@ -239,10 +256,23 @@ export class MarketplaceProfileService {
           `${PUBLIC_BOT}?startapp=listing_${binding.kind === 'CHANNEL' ? 'channel' : 'chat'}_${result.listing!.id}`
       )
         throw new Error('Link mismatch');
+      if (result.capabilities) {
+        const kind = binding.kind === 'CHANNEL' ? 'channel' : 'chat';
+        if (
+          result.capabilities.connectUrl !==
+            `${PUBLIC_BOT}?startapp=connect_${kind}_${binding.entity_id}` ||
+          (result.capabilities.manageUrl !== null &&
+            result.capabilities.manageUrl !==
+              `${PUBLIC_BOT}?startapp=manage_${kind}_${result.listing?.id}`)
+        )
+          throw new Error('Handoff link mismatch');
+      }
+      const snapshot = { ...result };
+      delete snapshot.capabilities;
       // FLAG: A response started before a revoke must not renew the usable public link.
       await this.prisma
         .$executeRaw`UPDATE marketplace_bindings SET public_url=${publicUrl},public_verified_until=${publicUrl ? new Date(Date.now() + 5 * 60_000) : null},
-        profile_revision=${result.revision},profile_snapshot=${JSON.stringify(result)}::jsonb WHERE id=${binding.id}::uuid AND revision=${binding.revision} AND state='ACTIVE' AND valid_until>now()`;
+        profile_revision=${result.revision},profile_snapshot=${JSON.stringify(snapshot)}::jsonb WHERE id=${binding.id}::uuid AND revision=${binding.revision} AND state='ACTIVE' AND valid_until>now()`;
       return result;
     } catch (error) {
       if (error instanceof ConflictException) throw error;

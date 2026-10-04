@@ -125,6 +125,11 @@ postgres('marketplace durable owner policy changes', () => {
     const [first, second] = await Promise.all([mutate(request), mutate(request)]);
     expect(first).toEqual(second);
     expect(first.appendEnabled).toBe(true);
+    const durable = await db.$queryRaw<
+      Array<{ result: Record<string, unknown> }>
+    >`SELECT result FROM marketplace_policy_requests WHERE request_id=${request.requestId}::uuid`;
+    expect(durable[0]!.result).not.toHaveProperty('capabilities');
+    expect(durable[0]!.result).not.toHaveProperty('statistics');
     expect((await state.read(id))!.append_revision).toBe(1);
     await expect(mutate({ ...request, appendEnabled: false })).rejects.toThrow(
       'Идентификатор запроса уже использован',
@@ -154,6 +159,40 @@ postgres('marketplace durable owner policy changes', () => {
       statistics_consent: true,
       append_enabled: true,
     });
+  });
+  it('hides a profile after a fresh rights check without restoring revoked statistics consent', async () => {
+    await db.$executeRaw`UPDATE marketplace_bindings SET statistics_consent=false,append_enabled=false WHERE id=${id}::uuid`;
+    const proof = { attest: jest.fn().mockImplementation(() => state.read(id)) };
+    const service = new MarketplaceProfileService(
+      db as PrismaService,
+      new ConfigService(),
+      state,
+      proof as unknown as MarketplaceAccessService,
+    );
+    const relay = jest.spyOn(service, 'relay').mockResolvedValue({
+      ...remote,
+      listing: { ...remote.listing!, status: 'PAUSED', publicUrl: null },
+    });
+    const response = await service.mutate('323459159', 'CHANNEL', entityId, 'publisher', {
+      action: 'pause',
+      requestId: randomUUID(),
+      expectedRevision: 1,
+    });
+    expect(proof.attest).toHaveBeenCalled();
+    expect(relay).toHaveBeenCalled();
+    expect(response.listing?.status).toBe('PAUSED');
+    expect(response.binding.statisticsConsent).toBe(false);
+    expect((await state.read(id))!.statistics_consent).toBe(false);
+    expect((await state.read(id))!.append_enabled).toBe(false);
+    proof.attest.mockRejectedValueOnce(new Error('Access lost'));
+    await expect(
+      service.mutate('323459159', 'CHANNEL', entityId, 'publisher', {
+        action: 'pause',
+        requestId: randomUUID(),
+        expectedRevision: 1,
+      }),
+    ).rejects.toThrow('Access lost');
+    expect(relay).toHaveBeenCalledTimes(1);
   });
   it('does not restore consent when a save finishes after local revoke', async () => {
     await db.$executeRaw`UPDATE marketplace_bindings SET statistics_consent=false WHERE id=${id}::uuid`;

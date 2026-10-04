@@ -1,5 +1,7 @@
-import { lazy, Suspense, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { lazy, Suspense, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
+import { notifyManager, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { MarketplaceProfileState } from '@maxim/contracts/marketplace-integration';
+import { marketplaceProfileTitle, marketplaceQueryKey } from '../lib/marketplace-profile-summary';
 import type { ApiTransport } from '../lib/api/transport';
 import { SkeletonCard } from './ui/skeleton';
 import './marketplace-profile-card.css';
@@ -15,6 +17,30 @@ export type MarketplaceProfileCardProps = {
 
 export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
   const [open, setOpen] = useState(false);
+  const cache = useQueryClient();
+  const profileKey = useMemo(
+    () => marketplaceQueryKey(props.profile, props.entityType, props.entityId),
+    [props.profile, props.entityType, props.entityId],
+  );
+  const known = useSyncExternalStore(
+    useCallback(
+      (changed: () => void) =>
+        cache.getQueryCache().subscribe(
+          notifyManager.batchCalls((event) => {
+            if (
+              event.type === 'updated' &&
+              JSON.stringify(event.query.queryKey) === JSON.stringify(profileKey)
+            )
+              changed();
+          }),
+        ),
+      [cache, profileKey],
+    ),
+    useCallback(
+      () => cache.getQueryState<MarketplaceProfileState>(profileKey),
+      [cache, profileKey],
+    ),
+  );
   const capability = useQuery({
     queryKey: ['marketplace-profile-capability', props.profile],
     queryFn: async () => {
@@ -39,9 +65,13 @@ export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
       >
         <span>
           <strong>Профиль на бирже</strong>
-          <small>Статистика и ссылка в публикациях</small>
+          <small>
+            {known?.data
+              ? marketplaceProfileTitle(known.data, known.status !== 'error')
+              : 'Создайте профиль со статистикой'}
+          </small>
         </span>
-        <span aria-hidden>↗</span>
+        <span aria-hidden>›</span>
       </button>
       {open && (
         <Suspense fallback={<SkeletonCard lines={5} />}>

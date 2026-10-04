@@ -51,9 +51,10 @@ export class MarketplacePublisherAccessQueueService implements OnModuleDestroy {
       'paused',
     );
     if (Object.values(pending).reduce((sum, value) => sum + value, 0) >= 100)
-      throw new ServiceUnavailableException(
-        'Проверяем подключение Публика. Повторите через несколько секунд.',
-      );
+      throw new ServiceUnavailableException({
+        code: 'MARKETPLACE_ACCESS_PENDING',
+        message: 'Проверяем подключение Публика. Повторите через несколько секунд.',
+      });
     this.events ??= new QueueEvents(this.queue.name, {
       connection: this.queue.opts.connection,
       prefix: this.queue.opts.prefix,
@@ -71,16 +72,18 @@ export class MarketplacePublisherAccessQueueService implements OnModuleDestroy {
         await job.waitUntilFinished(this.events, 8000),
       );
     } catch {
-      throw new ServiceUnavailableException(
-        'Проверяем права в Публике. Обновите состояние через несколько секунд.',
-      );
+      throw new ServiceUnavailableException({
+        code: 'MARKETPLACE_ACCESS_PENDING',
+        message: 'Проверяем права в Публике. Обновите состояние через несколько секунд.',
+      });
     }
     if (result.state === 'DENIED')
       throw new ForbiddenException('Нужны действующие права администратора пользователя и Публика');
     if (result.state !== 'ACTIVE')
-      throw new ServiceUnavailableException(
-        'Проверка прав Публика ещё не завершена. Повторите через несколько секунд.',
-      );
+      throw new ServiceUnavailableException({
+        code: 'MARKETPLACE_ACCESS_PENDING',
+        message: 'Проверка прав Публика ещё не завершена. Повторите через несколько секунд.',
+      });
     return result.bindingId;
   }
 }

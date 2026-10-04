@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import {
   marketplaceBindingsPageSchema,
   marketplaceProfileSchema,
+  type MarketplaceProfileState,
   marketplaceStatisticsManifestSchema,
 } from '@maxim/contracts/marketplace-integration';
 import { InitDataGuard } from '../../auth/init-data.guard';
@@ -205,24 +206,40 @@ export class MarketplaceProfileController {
   @Get('capability') capability(@CurrentUser() user: AuthUser) {
     return this.profiles.capability(user.userId);
   }
-  @Get('entities/:kind/:entityId/profile') get(
+  @Get('entities/:kind/:entityId/profile') async get(
     @CurrentUser() user: AuthUser,
     @Param('kind') kind: string,
     @Param('entityId') id: string,
     @Query('profile') profile: unknown,
     @Req() request: { miniappProfile?: string },
+    @Query('view') view?: unknown,
   ) {
-    return this.profiles.get(user.userId, kind, id, this.profile(profile, request));
+    return this.presentation(
+      await this.profiles.get(user.userId, kind, id, this.profile(profile, request)),
+      view,
+    );
   }
-  @Post('entities/:kind/:entityId/profile') mutate(
+  @Post('entities/:kind/:entityId/profile') async mutate(
     @CurrentUser() user: AuthUser,
     @Param('kind') kind: string,
     @Param('entityId') id: string,
     @Query('profile') profile: unknown,
     @Body() body: unknown,
     @Req() request: { miniappProfile?: string },
+    @Query('view') view?: unknown,
   ) {
-    return this.profiles.mutate(user.userId, kind, id, this.profile(profile, request), body);
+    return this.presentation(
+      await this.profiles.mutate(user.userId, kind, id, this.profile(profile, request), body),
+      view,
+    );
+  }
+  private presentation(state: MarketplaceProfileState, view: unknown): MarketplaceProfileState {
+    if (view === '2') return state;
+    // FLAG: Old mini-app schemas reject unknown response keys during a rolling release.
+    const legacy = { ...state };
+    delete legacy.capabilities;
+    delete legacy.statistics;
+    return legacy;
   }
   private profile(input: unknown, request: { miniappProfile?: string }) {
     const profile = marketplaceProfileSchema.parse(input ?? request.miniappProfile);

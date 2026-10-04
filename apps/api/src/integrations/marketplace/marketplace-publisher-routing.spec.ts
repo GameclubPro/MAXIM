@@ -203,6 +203,17 @@ describe('marketplace Publisher queue replies', () => {
       await f.service.onModuleDestroy();
     },
   );
+  it.each(['timeout', 'retry'])(
+    'reports a typed pending state on %s without guessing from error text',
+    async (mode) => {
+      const f = fixture({ state: 'RETRY' });
+      if (mode === 'timeout') f.job.waitUntilFinished.mockRejectedValue(new Error('Queue timeout'));
+      await expect(f.service.attest(input)).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'MARKETPLACE_ACCESS_PENDING' }),
+      });
+      await f.service.onModuleDestroy();
+    },
+  );
   it('rejects capacity exhaustion without accepting a connection', async () => {
     const f = fixture({ state: 'ACTIVE', bindingId: randomUUID() });
     f.queue.getJobCounts.mockResolvedValue({ wait: 100 });

@@ -145,6 +145,27 @@ export const marketplaceProfileRelayResponseSchema = z
       topics: z.array(z.string().max(100)).max(200),
       regions: z.array(z.string().max(100)).max(500),
     }),
+    capabilities: z
+      .object({
+        canEdit: z.boolean(),
+        canPublish: z.boolean(),
+        canPause: z.boolean(),
+        publicState: z.enum(['DRAFT', 'HIDDEN', 'PUBLIC', 'ACCESS_REQUIRED', 'REVIEW']),
+        placementState: z.enum(['BOT_REQUIRED', 'SETUP_REQUIRED', 'READY', 'UNAVAILABLE']),
+        manageUrl: z.string().url().nullable(),
+        connectUrl: z.string().url(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export const marketplaceProfileStatisticsSchema = z
+  .object({
+    state: z.enum(['PENDING', 'AVAILABLE', 'EMPTY', 'DISABLED']),
+    observedDays: count.max(90),
+    lastObservedAt: timestamp.nullable(),
+    from: timestamp.nullable(),
+    to: timestamp.nullable(),
   })
   .strict();
 export const marketplaceProfileStateSchema = marketplaceProfileRelayResponseSchema.extend({
@@ -153,6 +174,7 @@ export const marketplaceProfileStateSchema = marketplaceProfileRelayResponseSche
   appendRevision: count,
   available: z.literal(true),
   buttonDiagnostic: z.literal('KEYBOARD_FULL').nullable(),
+  statistics: marketplaceProfileStatisticsSchema.optional(),
 });
 export type MarketplaceBindingInput = z.infer<typeof marketplaceBindingInputSchema>;
 export type MarketplaceBinding = z.infer<typeof marketplaceBindingSchema>;

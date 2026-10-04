@@ -77,7 +77,44 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
     };
     store.set(key, current);
   }
-  if (method === 'GET') return structuredClone(current);
+  const present = () => {
+    const linked = !!current.listing;
+    const publicNow = current.listing?.status === 'PUBLISHED' && current.binding.statisticsConsent;
+    current.capabilities = {
+      canEdit: true,
+      canPublish: linked && current.binding.statisticsConsent,
+      canPause: current.listing?.status === 'PUBLISHED',
+      publicState: publicNow
+        ? 'PUBLIC'
+        : current.listing?.status === 'PUBLISHED'
+          ? 'ACCESS_REQUIRED'
+          : current.listing?.status === 'PAUSED'
+            ? 'HIDDEN'
+            : 'DRAFT',
+      placementState: 'BOT_REQUIRED',
+      connectUrl: `https://max.ru/id613000037577_3_bot?startapp=connect_${kind.toLowerCase()}_${current.entityId}`,
+      manageUrl: current.listing
+        ? `https://max.ru/id613000037577_3_bot?startapp=manage_${kind.toLowerCase()}_${current.listing.id}`
+        : null,
+    };
+    if (current.listing)
+      current.listing.publicUrl = publicNow
+        ? `https://max.ru/id613000037577_3_bot?startapp=listing_${kind.toLowerCase()}_${current.listing.id}`
+        : null;
+    current.statistics = {
+      state: current.binding.statisticsConsent ? 'AVAILABLE' : 'DISABLED',
+      observedDays: current.binding.statisticsConsent ? 10 : 0,
+      lastObservedAt: current.binding.statisticsConsent ? state.clock.now().toISOString() : null,
+      from: null,
+      to: null,
+    };
+    return structuredClone(current);
+  };
+  if (method === 'GET') {
+    // Preview models successful re-attestation, never consent restoration.
+    current.binding.state = 'ACTIVE';
+    return present();
+  }
   if (method !== 'POST') return PREVIEW_NOT_HANDLED;
   const input = marketplaceProfileMutationSchema.parse(JSON.parse(String(init.body)));
   const byRequest = requests.get(state) ?? new Map<string, MarketplaceProfileState>();
@@ -95,6 +132,7 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
     if (!input.details || (!current.binding.statisticsConsent && !input.statisticsConsent))
       throw new Error('Подтвердите передачу статистики');
     current.binding.statisticsConsent = true;
+    current.binding.state = 'ACTIVE';
     current.listing = {
       id: current.binding.id,
       status: current.listing?.status ?? 'DRAFT',
@@ -129,7 +167,11 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
     }
     current.revision++;
   }
-  const result = structuredClone(current);
+  const result = present();
+  if (input.action === 'toggle' || input.action === 'revoke') {
+    delete result.capabilities;
+    delete result.statistics;
+  }
   byRequest.set(`${key}:${input.requestId}`, result);
   return result;
 };
