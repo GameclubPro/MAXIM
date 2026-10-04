@@ -53,6 +53,10 @@ import {
 } from '@maxim/contracts/karavan-storefront';
 import { ApiRequestError } from '../api-request-error';
 import {
+  updateBotSpeechStyleRequestSchema,
+  updateBotSpeechStyleResponseSchema,
+} from '@maxim/contracts/bot-speech';
+import {
   createManagedPollRequestSchema,
   decodeManagedPollListCursor,
   encodeManagedPollListCursor,
@@ -584,6 +588,20 @@ export async function handleChatRequest(
       ).toISOString(),
     });
     return cloneJson(state.chatSettings);
+  }
+
+  if (
+    tail[0] === 'settings' &&
+    tail[1] === 'speech-style' &&
+    tail.length === 2 &&
+    method === 'PATCH'
+  ) {
+    const payload = updateBotSpeechStyleRequestSchema.parse(parseJsonBody(init));
+    const settingsRevision = new Date(
+      Math.max(Date.now(), Date.parse(state.chatSettings.settingsRevision ?? '') + 1 || 0),
+    ).toISOString();
+    state.chatSettings = { ...state.chatSettings, ...payload, settingsRevision };
+    return updateBotSpeechStyleResponseSchema.parse({ ...payload, settingsRevision });
   }
 
   if (tail[0] === 'settings' && tail.length === 1) {
