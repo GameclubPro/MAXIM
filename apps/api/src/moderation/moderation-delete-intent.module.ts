@@ -27,9 +27,14 @@ import { TrafficProtectionDeleteGuardService } from './traffic-protection-delete
 import { RuleEngineModule } from './rule-engine.module';
 import { MessageDuplicateStateModule } from './message-duplicate/message-duplicate-state.module';
 import { MessageDuplicateDeleteGuardService } from './message-duplicate/message-duplicate-delete-guard.service';
+import { MessageDuplicateCleanupReconcilerService } from './message-duplicate/message-duplicate-cleanup-reconciler.service';
 
 const actionRoleProviders = roleRunsAction(getAppRole())
-  ? [ModerationDeleteIntentProcessor, ModerationDeleteIntentReconcilerService]
+  ? [
+      ModerationDeleteIntentProcessor,
+      ModerationDeleteIntentReconcilerService,
+      MessageDuplicateCleanupReconcilerService,
+    ]
   : [];
 
 @Module({
