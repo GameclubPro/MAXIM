@@ -94,6 +94,54 @@ describe('MiniappMutationTunnelController', () => {
     }
   });
 
+  it('allows only the exact PATCH chat speech-style route through the tunnel', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const path = '/chats/chat-1/settings/speech-style';
+    const payload = { botSpeechStyle: 'IRONIC' };
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    try {
+      await controller.tunnel(
+        {
+          method: 'PATCH',
+          path,
+          body: Buffer.from(JSON.stringify(payload)).toString('base64url'),
+          contentType: 'application/json',
+        },
+        'InitData auth_date=1&hash=test',
+        TEST_USER,
+        createReply() as never,
+      );
+      expect(global.fetch).toHaveBeenCalledWith(
+        `http://127.0.0.1:3001/api/v1${path}`,
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify(payload) }),
+      );
+
+      for (const invalid of [
+        { method: 'PUT', path },
+        { method: 'PATCH', path: '/channels/chat-1/settings/speech-style' },
+        { method: 'PATCH', path: `${path}/extra` },
+      ]) {
+        await expect(
+          controller.tunnel(
+            invalid,
+            'InitData auth_date=1&hash=test',
+            TEST_USER,
+            createReply() as never,
+          ),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      }
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.onModuleDestroy();
+    }
+  });
+
   it('forwards session credentials and request-origin signals to the local API', async () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();

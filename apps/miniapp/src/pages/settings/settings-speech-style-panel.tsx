@@ -1,6 +1,7 @@
 import {
   BOT_SPEECH_STYLE_METADATA,
   BOT_SPEECH_STYLE_OPTIONS,
+  resolveBotSpeechStyle,
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
 import { useRef } from 'react';
@@ -11,32 +12,19 @@ import botSpeechPoliceImage from '../../../../../police.webp';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
 import { cn } from '../../lib/cn';
 import { resolveRadioGroupNavigationIndex } from '../../lib/radio-group-navigation';
-
-type SpeechStylePreviewSamples = {
-  greeting: string;
-  explanation: string;
-  warning: string;
-  mute: string;
-  ban: string;
-};
+import { buildSpeechStylePreviewSamples } from '../../lib/bot-speech-style-preview';
+import type { BotSpeechPreviewContext } from '../../lib/bot-speech-preview-context';
 
 type SettingsSpeechStylePanelProps = {
   activeStyle: BotSpeechStyle | null;
   selectedStyle: BotSpeechStyle;
-  samples: SpeechStylePreviewSamples;
+  previewContext?: BotSpeechPreviewContext;
   isSaving: boolean;
   onSelect: (style: BotSpeechStyle) => void;
   onClose: () => void;
   onCancel: () => void;
   onDiscard: () => void;
   onSave: (style: BotSpeechStyle) => void;
-};
-
-const STYLE_LABELS: Record<BotSpeechStyle, string> = {
-  ROBOT: 'Робот',
-  FRIENDLY: 'Друг',
-  POLICE: 'Коп',
-  IRONIC: 'Шут',
 };
 
 const STYLE_ICONS = {
@@ -63,7 +51,7 @@ function SelectedIcon() {
 export default function SettingsSpeechStylePanel({
   activeStyle,
   selectedStyle,
-  samples,
+  previewContext,
   isSaving,
   onSelect,
   onClose,
@@ -71,7 +59,8 @@ export default function SettingsSpeechStylePanel({
   onDiscard,
   onSave,
 }: SettingsSpeechStylePanelProps) {
-  const isDirty = selectedStyle !== activeStyle;
+  const isDirty = selectedStyle !== resolveBotSpeechStyle(activeStyle);
+  const samples = buildSpeechStylePreviewSamples(selectedStyle, previewContext);
   const selectedOptionRef = useRef<HTMLButtonElement | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -85,6 +74,7 @@ export default function SettingsSpeechStylePanel({
       className="settings-drilldown__panel--notice settings-drilldown__panel--speech"
       onClose={onClose}
       confirmCloseWhen={isDirty}
+      closeDisabled={isSaving}
       onDiscardChanges={onDiscard}
       initialFocusRef={selectedOptionRef}
       footer={
@@ -158,12 +148,17 @@ export default function SettingsSpeechStylePanel({
               <span className="settings-speech-style-option__icon" aria-hidden>
                 <img src={STYLE_ICONS[option.iconKey]} alt="" />
               </span>
-              <span className="settings-speech-style-option__label">
-                {STYLE_LABELS[option.value]}
-              </span>
+              <span className="settings-speech-style-option__label">{option.shortLabel}</span>
             </button>
           ))}
         </div>
+
+        <p className="settings-native-toggle__hint" aria-live="polite">
+          {BOT_SPEECH_STYLE_METADATA[selectedStyle].description}
+        </p>
+        <p className="settings-native-toggle__hint">
+          Примеры стандартных сообщений. Ваши собственные тексты и изображения сохранятся.
+        </p>
 
         <div className="settings-subsection-divider" role="separator" aria-label="Приветствие">
           <span>Приветствие</span>
@@ -189,6 +184,8 @@ export default function SettingsSpeechStylePanel({
           ['2. Предупреждение', samples.warning],
           ['3. Ограничение', samples.mute],
           ['4. Блокировка', samples.ban],
+          ['Повтор сообщения', samples.duplicate],
+          ['Ночной режим', samples.night],
         ].map(([title, text], index) => (
           <div
             key={title}

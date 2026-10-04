@@ -1858,6 +1858,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             hotPathProfile,
             suppressEscalation: true,
             knownAppliedSanctionAction: SanctionAction.MUTE,
+            knownAppliedMuteDurationHours: activeMute.durationHours,
             mediaNoticeScope: requiredSubscriptionMediaNoticeScope,
           });
           if (requiredSubscriptionHandled) {
@@ -4487,6 +4488,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string,
     channelTitles: readonly string[],
     botSpeechStyle: BotSpeechStyle | null,
+    muteDurationHours: number,
   ): string {
     return this.renderSystemBotSpeechTemplate({
       style: botSpeechStyle,
@@ -4494,6 +4496,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       replacements: {
         user: userLabel,
         channels: this.formatRequiredSubscriptionChannels(channelTitles),
+        mute_duration: this.formatMuteDurationLabel(muteDurationHours),
       },
     });
   }
@@ -4610,10 +4613,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         })
       : this.buildDuplicateSanctionLabel(botSpeechStyle, decision.action, banDurationLabel);
     if (!hasTemplateOverride && this.isPhotoDuplicateFingerprintType(fingerprintType)) {
-      return `${userLabel}, ${this.buildPhotoDuplicateSubjectText(
-        fingerprintType,
-        botSpeechStyle,
-      )}. ${sanction}`;
+      return this.renderSystemBotSpeechTemplate({
+        style: botSpeechStyle,
+        templateKey: fingerprintType === 'image_set' ? 'duplicateAlbum' : 'duplicatePhoto',
+        replacements: { user: userLabel, sanction },
+      });
     }
 
     return this.renderEditableBotSpeechTemplate({
@@ -4650,10 +4654,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         })
       : this.buildDuplicatePassiveSanctionLabel(botSpeechStyle, messageDeleted);
     if (!hasTemplateOverride && this.isPhotoDuplicateFingerprintType(fingerprintType)) {
-      return `${userLabel}, ${this.buildPhotoDuplicateSubjectText(
-        fingerprintType,
-        botSpeechStyle,
-      )}. ${sanction}`;
+      return this.renderSystemBotSpeechTemplate({
+        style: botSpeechStyle,
+        templateKey: fingerprintType === 'image_set' ? 'duplicateAlbum' : 'duplicatePhoto',
+        replacements: { user: userLabel, sanction },
+      });
     }
 
     return this.renderEditableBotSpeechTemplate({
@@ -4674,23 +4679,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     fingerprintType: DuplicateHit['fingerprintType'],
   ): fingerprintType is 'image' | 'image_set' {
     return fingerprintType === 'image' || fingerprintType === 'image_set';
-  }
-
-  private buildPhotoDuplicateSubjectText(
-    fingerprintType: 'image' | 'image_set',
-    style: BotSpeechStyle | null,
-  ): string {
-    const album = fingerprintType === 'image_set';
-    if (style === 'FRIENDLY') {
-      return album ? 'альбом повторился' : 'фото повторилось';
-    }
-    if (style === 'POLICE') {
-      return album ? 'повтор альбома зафиксирован' : 'повтор фото зафиксирован';
-    }
-    if (style === 'IRONIC') {
-      return album ? 'альбом вышел на бис' : 'фото вышло на бис';
-    }
-    return album ? 'альбом распознан как повтор' : 'фото распознано как повтор';
   }
 
   private resolveDuplicateExplanationReason(
@@ -10376,6 +10364,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     hotPathProfile?: WebhookHotPathProfile | null;
     suppressEscalation?: boolean;
     knownAppliedSanctionAction?: typeof SanctionAction.MUTE;
+    knownAppliedMuteDurationHours?: number | null;
     mediaNoticeScope?: RequiredSubscriptionMediaNoticeScope | null;
   }): Promise<boolean> {
     if (!isRequiredSubscriptionCurrentlyActive(params.settings)) {
@@ -10560,9 +10549,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 action: SanctionAction.MUTE,
                 eventId: null,
                 violationCount24h: null,
+                muteDurationHours: params.knownAppliedMuteDurationHours ?? null,
               } satisfies RequiredSubscriptionPersistedDecision)
             : null;
         const recoveredDecision = persistedDecision ?? recoveredAppliedMuteDecision;
+        const noticeMuteDurationHours = this.readMuteDurationHoursFromMetadata(
+          {
+            muteDurationHours:
+              recoveredDecision?.muteDurationHours ?? params.knownAppliedMuteDurationHours,
+          },
+          params.settings.requiredSubscriptionMuteDurationHours,
+        );
         const requiredSubscriptionViolationCount24h =
           recoveredDecision?.violationCount24h ??
           (await this.countRecentRequiredSubscriptionViolations(params.chatId, params.userId, {
@@ -10716,6 +10713,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 sanctionUserLabel,
                 followUpMissingChannelTitles,
                 params.settings.botSpeechStyle,
+                noticeMuteDurationHours,
               ),
             ban: () =>
               this.buildRequiredSubscriptionBanExplanation(

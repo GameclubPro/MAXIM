@@ -8,6 +8,7 @@ import {
   getBotSpeechSystemTemplate,
   hasBotSpeechEditableOverrides,
   type BotSpeechSettingsSubset,
+  type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
 import { ModerationService } from './moderation.service';
 
@@ -48,13 +49,29 @@ const EXPECTED_EDITABLE_PLACEHOLDERS = {
   nightModeOpenMessageText: ['opening_status'],
 } satisfies Record<(typeof BOT_SPEECH_EDITABLE_FIELD_KEYS)[number], string[]>;
 
+const INVITATION_PLACEHOLDER_OMISSIONS: Record<
+  BotSpeechStyle,
+  { explanation: string[]; warning: string[] }
+> = {
+  ROBOT: { explanation: ['required_invites'], warning: ['required_invites'] },
+  FRIENDLY: { explanation: ['required_invites'], warning: ['required_invites'] },
+  POLICE: {
+    explanation: ['invited_count', 'required_invites', 'required_invites_count'],
+    warning: ['invited_count', 'required_invites_count'],
+  },
+  IRONIC: {
+    explanation: ['invited_count', 'required_invites', 'required_invites_count'],
+    warning: ['invited_count', 'required_invites_count'],
+  },
+};
+
 const EXPECTED_SYSTEM_PLACEHOLDERS = {
   linkEdited: ['message_status', 'reason', 'user'],
   linkEditedWarn: ['reason', 'user'],
   linkMute: ['user'],
-  requiredSubscriptionMute: ['channels', 'user'],
+  requiredSubscriptionMute: ['channels', 'mute_duration', 'user'],
   requiredSubscriptionBan: ['channels', 'user'],
-  invitationAccessMute: ['remaining_invites', 'required_invites', 'user'],
+  invitationAccessMute: ['remaining_invites', 'user'],
   invitationAccessBan: ['user'],
   textFiltersMuteCommercial: ['user'],
   textFiltersMuteProfanity: ['user'],
@@ -64,6 +81,8 @@ const EXPECTED_SYSTEM_PLACEHOLDERS = {
   messageLimitsWarn: ['reason', 'user'],
   messageLimitsMute: ['reason', 'user'],
   messageLimitsBan: ['reason', 'user'],
+  duplicatePhoto: ['sanction', 'user'],
+  duplicateAlbum: ['sanction', 'user'],
   duplicateWarn: [],
   duplicateMute: ['mute_duration'],
   duplicateBan: [],
@@ -122,10 +141,10 @@ describe('bot speech styles', () => {
     );
 
     expect(legacyLinkText).toBe(
-      '**Алексей**, сообщение удалено: эта ссылка запрещена настройками чата. Без самодеятельности.',
+      '**Алексей**, сообщение удалено. Причина: эта ссылка запрещена настройками чата. Отправьте текст без этой ссылки.',
     );
     expect(legacyWarnText).toBe(
-      '**Алексей**, предупреждение зафиксировано. Основание: сообщение превышает допустимую длину.',
+      '**Алексей**, предупреждение по правилам чата: сообщение превышает допустимую длину.',
     );
     expect(policeLinkText).toBe(legacyLinkText);
     expect(policeWarnText).toBe(legacyWarnText);
@@ -136,14 +155,14 @@ describe('bot speech styles', () => {
     const userLabel = '**Алексей**';
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'ROBOT')).toBe(
-      'Привет, **Алексей**. Я Майор Максимов. Подскажу правила и помогу освоиться в чате.',
+      'Здравствуйте, **Алексей**. Я Майор Максимов. Перед общением ознакомьтесь с правилами чата.',
     );
     expect(
       (service as any).buildNightModeOpenedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', 'ROBOT'),
-    ).toBe('Чат снова открыт. Можно отправлять сообщения.');
+    ).toBe('Чат снова открыт.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'ROBOT')).toBe(
-      '**Алексей**, сообщение удалено: эта ссылка запрещена настройками чата.',
+      '**Алексей**, сообщение удалено. Причина: эта ссылка запрещена настройками чата.',
     );
     expect(
       (service as any).buildRequiredSubscriptionWarnExplanation(
@@ -171,23 +190,23 @@ describe('bot speech styles', () => {
         '',
         'ROBOT',
       ),
-    ).toBe('**Алексей**, сообщение удалено: длина сообщения 187 символов при лимите 100.');
+    ).toBe('**Алексей**, сообщение удалено. Причина: длина сообщения 187 символов при лимите 100.');
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'ROBOT')).toBe(
-      '**Алексей**, сообщение распознано как повтор. Повтор удалён.',
+      '**Алексей**, обнаружен повтор сообщения. Повтор удалён.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, false, '', 'ROBOT')).toBe(
-      '**Алексей**, сообщение распознано как повтор. Повтор обнаружен.',
+      '**Алексей**, обнаружен повтор сообщения. Сообщение не удалено.',
     );
 
     expect(
       (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'ROBOT', 'image'),
-    ).toBe('**Алексей**, фото распознано как повтор. Повтор удалён.');
+    ).toBe('**Алексей**, обнаружен повтор фотографии. Повтор удалён.');
 
     expect(
       (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'FRIENDLY', 'image_set'),
-    ).toBe('**Алексей**, альбом повторился. Повтор удалён.');
+    ).toBe('**Алексей**, такой альбом уже отправляли. Повтор удалён.');
 
     expect(
       (service as any).buildDuplicateExplanation(
@@ -205,7 +224,7 @@ describe('bot speech styles', () => {
         '',
         'ROBOT',
       ),
-    ).toBe('**Алексей**, сообщение распознано как повтор. Предупреждение за повтор зафиксировано.');
+    ).toBe('**Алексей**, обнаружен повтор сообщения. Вынесено предупреждение.');
 
     expect(
       (service as any).buildMessageLimitsWarnExplanation(
@@ -217,22 +236,22 @@ describe('bot speech styles', () => {
     ).toBe('**Алексей**, предупреждение: сообщение превышает допустимую длину.');
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'POLICE')).toBe(
-      'Приветствую, **Алексей**. На связи Майор Максимов. Здесь всё просто: соблюдаем правила, остальное разберём по факту.',
+      'Приветствую, **Алексей**! На связи Майор Максимов. Располагайтесь — паспорт и прописка не понадобятся.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'POLICE')).toBe(
-      '**Алексей**, повтор зафиксирован. Повтор удалён.',
+      '**Алексей**, зафиксирован повтор сообщения. Копия удалена. Для протокола достаточно одного экземпляра.',
     );
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'FRIENDLY')).toBe(
-      'Привет, **Алексей** 👋 На связи Майор Максимов. Помогу освоиться и не запутаться в правилах.',
+      'Добро пожаловать, **Алексей**! 👋 Я Майор Максимов. Загляните в правила и присоединяйтесь к общению.',
     );
     expect(
       (service as any).buildNightModeOpenedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', 'FRIENDLY'),
-    ).toBe('Чат снова открыт. Можно снова писать.');
+    ).toBe('Чат снова открыт. Хорошего общения!');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'FRIENDLY')).toBe(
-      '**Алексей**, сообщение удалено: эта ссылка запрещена настройками чата. В следующих сообщениях учитывайте правила для ссылок.',
+      '**Алексей**, сообщение удалено. Причина: эта ссылка запрещена настройками чата. Пожалуйста, отправьте текст без этой ссылки.',
     );
 
     expect(
@@ -250,9 +269,7 @@ describe('bot speech styles', () => {
         '',
         'FRIENDLY',
       ),
-    ).toBe(
-      '**Алексей**, сообщение удалено: длина сообщения 187 символов при лимите 100. Учтите это перед следующей отправкой.',
-    );
+    ).toBe('**Алексей**, сообщение удалено. Причина: длина сообщения 187 символов при лимите 100.');
 
     expect(
       (service as any).buildMessageLimitsExplanation(
@@ -270,15 +287,15 @@ describe('bot speech styles', () => {
         'FRIENDLY',
       ),
     ).toBe(
-      '**Алексей**, сообщение удалено: между отправками фото должно пройти не менее 2 ч. Учтите это перед следующей отправкой.',
+      '**Алексей**, сообщение удалено. Причина: между отправками фото должно пройти не менее 2 ч.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'FRIENDLY')).toBe(
-      '**Алексей**, сообщение повторилось. Повтор удалён.',
+      '**Алексей**, такое сообщение уже отправляли. Повтор удалён.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, false, '', 'FRIENDLY')).toBe(
-      '**Алексей**, сообщение повторилось. Повтор обнаружен.',
+      '**Алексей**, такое сообщение уже отправляли. Сообщение не удалено.',
     );
 
     expect(
@@ -297,7 +314,7 @@ describe('bot speech styles', () => {
         '',
         'FRIENDLY',
       ),
-    ).toBe('**Алексей**, сообщение повторилось. Это предупреждение за повтор.');
+    ).toBe('**Алексей**, такое сообщение уже отправляли. Это предупреждение.');
 
     expect(
       (service as any).buildMessageLimitsWarnExplanation(
@@ -306,30 +323,31 @@ describe('bot speech styles', () => {
         null,
         'FRIENDLY',
       ),
-    ).toBe('**Алексей**, это предупреждение: сообщение превышает допустимую длину.');
+    ).toBe('**Алексей**, предупреждение: сообщение превышает допустимую длину.');
     expect(
       (service as any).buildRequiredSubscriptionMuteExplanation(
         userLabel,
         ['Новости MAX'],
         'FRIENDLY',
+        6,
       ),
     ).toBe(
-      '**Алексей**, за сообщения без подписки включён мут. Чтобы писать после его окончания, подпишитесь на Новости MAX.',
+      '**Алексей**, за сообщения без подписки действует мут на 6ч. Пока он действует, новые сообщения будут удаляться. Подпишитесь на Новости MAX, чтобы продолжить общение после окончания мута.',
     );
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'IRONIC')).toBe(
-      'Привет, **Алексей**. На связи Майор Максимов. У правил здесь хорошая память, а у меня короткие комментарии.',
+      'Привет, **Алексей**! На связи Майор Максимов. Располагайтесь — знакомиться можно без презентации на сорок слайдов.',
     );
     expect(
       (service as any).buildNightModeOpenedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', 'IRONIC'),
-    ).toBe('Чат снова открыт. Лента снова принимает реплики.');
+    ).toBe('Чат снова открыт. Совещание по итогам тишины отменяется.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'IRONIC')).toBe(
-      '**Алексей**, ссылка решила пройти без пропуска. Сообщение удалено: эта ссылка запрещена настройками чата.',
+      '**Алексей**, сообщение удалено. Причина: эта ссылка запрещена настройками чата. Отправьте текст без этой ссылки.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'IRONIC')).toBe(
-      '**Алексей**, сообщение вышло на бис. Повтор удалён.',
+      '**Алексей**, это сообщение уже отправляли. Копия удалена. Повторный показ отменяется.',
     );
 
     expect(
@@ -348,7 +366,7 @@ describe('bot speech styles', () => {
         '',
         'IRONIC',
       ),
-    ).toBe('**Алексей**, сообщение вышло на бис. Предупреждение за повтор.');
+    ).toBe('**Алексей**, это сообщение уже отправляли. Вынесено предупреждение.');
   });
 
   it('keeps inherited invitation counters grammatical without rewriting custom copy', () => {
@@ -358,10 +376,10 @@ describe('bot speech styles', () => {
     expect(
       (service as any).buildInvitationAccessExplanation(userLabel, true, 3, 2, '', 'ROBOT'),
     ).toBe(
-      '**Алексей**, сообщение удалено. Чтобы писать в чат, нужно пригласить 3 друзей. Прогресс: 2/3; осталось пригласить 1 друга.',
+      '**Алексей**, сообщение удалено. Чтобы писать в чат, осталось пригласить 1 друга. Засчитано 2 из 3.',
     );
     expect((service as any).buildInvitationAccessMuteExplanation(userLabel, 3, 1, 'POLICE')).toBe(
-      '**Алексей**, условие по приглашениям не выполнено. Включён мут. Нужно пригласить 3 друзей; осталось пригласить 2 друзей.',
+      '**Алексей**, действует мут: не выполнено условие по приглашениям. Для участия осталось пригласить 2 друзей.',
     );
     expect(
       (service as any).buildInvitationAccessExplanation(
@@ -375,6 +393,237 @@ describe('bot speech styles', () => {
     ).toBe('Осталось: 1 друга.');
   });
 
+  it.each(BOT_SPEECH_STYLE_VALUES)(
+    'keeps actual deletion status explicit in %s notices',
+    (style) => {
+      const service = createService() as any;
+      const user = '**Алексей**';
+      const notices = (deleted: boolean): string[] => [
+        service.buildLinkExplanation(user, deleted, '', style),
+        service.buildLinkExplanation(user, deleted, '', style, true),
+        service.buildRequiredSubscriptionExplanation(user, deleted, ['Новости MAX'], '', style),
+        service.buildInvitationAccessExplanation(user, deleted, 3, 2, '', style),
+        service.buildTextFilterExplanation(user, 'COMMERCIAL_AD', deleted, '', style),
+        service.buildTextFilterExplanation(user, 'PROFANITY', deleted, '', style),
+        service.buildMessageLimitsExplanation(
+          user,
+          'MESSAGE_TOO_LONG',
+          deleted,
+          5,
+          1,
+          1,
+          5,
+          187,
+          100,
+          null,
+          '',
+          style,
+        ),
+        service.buildPhoneNumbersExplanation(user, deleted, '', style),
+      ];
+
+      for (const message of notices(true)) {
+        expect(message).toContain('удалено.');
+        expect(message).not.toContain('не удалено');
+      }
+      for (const message of notices(false)) {
+        expect(message).toContain('не удалено.');
+        expect(message).not.toContain('не удалено:');
+      }
+      expect(
+        service.buildRequiredSubscriptionExplanation(user, null, ['Новости MAX'], '', style),
+      ).toContain('сообщение ожидает удаления.');
+      for (const fingerprint of ['exact', 'image', 'image_set']) {
+        const removed = service.buildDuplicateHitExplanation(user, true, '', style, fingerprint);
+        const kept = service.buildDuplicateHitExplanation(user, false, '', style, fingerprint);
+        expect(removed).toMatch(/(?:удален[ао]|удалён)/u);
+        expect(kept).toContain(
+          style === 'ROBOT' || style === 'FRIENDLY'
+            ? 'Сообщение не удалено.'
+            : 'Сообщение осталось в чате.',
+        );
+      }
+    },
+  );
+
+  it.each([
+    [
+      'image',
+      '**Алексей**, зафиксирован повтор фото. Копия удалена. Для протокола достаточно одного экземпляра.',
+    ],
+    [
+      'image_set',
+      '**Алексей**, зафиксирован повтор альбома. Копия удалена. Для протокола достаточно одного экземпляра.',
+    ],
+  ])('uses POLICE copy for the unset style and %s duplicates', (fingerprint, expected) => {
+    const service = createService() as any;
+    expect(service.buildDuplicateHitExplanation('**Алексей**', true, '', null, fingerprint)).toBe(
+      expected,
+    );
+    expect(
+      service.buildDuplicateHitExplanation('**Алексей**', true, '', 'POLICE', fingerprint),
+    ).toBe(expected);
+    const decision = { action: 'WARN', count: 2, threshold: 2, windowSec: 30, hash: 'photo-hash' };
+    expect(
+      service.buildDuplicateExplanation('**Алексей**', decision, 6, true, '', null, fingerprint),
+    ).toBe(
+      service.buildDuplicateExplanation(
+        '**Алексей**',
+        decision,
+        6,
+        true,
+        '',
+        'POLICE',
+        fingerprint,
+      ),
+    );
+  });
+
+  it.each(BOT_SPEECH_STYLE_VALUES)(
+    'renders every inherited %s scenario without missing context',
+    (style) => {
+      const service = createService() as any;
+      const user = '**Алексей**';
+      const channels = ['Новости MAX'];
+      const messages: string[] = [
+        service.buildGreetingMessage(user, '', style),
+        service.buildLinkExplanation(user, true, '', style),
+        service.buildLinkExplanation(user, false, '', style, true),
+        service.buildLinkWarnExplanation(user, '', style),
+        service.buildLinkWarnExplanation(user, '', style, true),
+        service.buildLinkMuteExplanation(user, style),
+        service.buildRequiredSubscriptionExplanation(user, null, channels, '', style),
+        service.buildRequiredSubscriptionWarnExplanation(user, channels, '', style),
+        service.buildRequiredSubscriptionMuteExplanation(user, channels, style, 6),
+        service.buildRequiredSubscriptionBanExplanation(user, channels, 6, style),
+        service.buildInvitationAccessExplanation(user, true, 3, 2, '', style),
+        service.buildInvitationAccessWarnExplanation(user, 3, 2, '', style),
+        service.buildInvitationAccessMuteExplanation(user, 3, 2, style),
+        service.buildInvitationAccessBanExplanation(user, 3, 2, 6, style),
+        service.buildTextFilterMuteExplanation(user, 'OTHER', style),
+        service.buildPhoneNumbersExplanation(user, false, '', style),
+        service.buildMuteNotice(user, 6, style),
+        service.buildPermanentBanNotice(user, style),
+        service.buildNightModeClosedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', style),
+        service.buildNightModeOpenedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', style),
+      ];
+      for (const rule of ['COMMERCIAL_AD', 'PROFANITY']) {
+        messages.push(
+          service.buildTextFilterExplanation(user, rule, true, '', style),
+          service.buildTextFilterWarnExplanation(user, rule, '', style),
+          service.buildTextFilterMuteExplanation(user, rule, style),
+        );
+      }
+      for (const rule of [
+        'MESSAGE_COUNT_LIMIT',
+        'MESSAGE_RATE_LIMIT',
+        'MESSAGE_TOO_LONG',
+        'PHOTO_RATE_LIMIT',
+        'STICKER_RATE_LIMIT',
+        'PHOTO_BLOCKED',
+        'VIDEO_BLOCKED',
+        'FILE_BLOCKED',
+        'VOICE_BLOCKED',
+        'FORWARDED_MESSAGE_BLOCKED',
+        'PHONE_NUMBER_BLOCKED',
+        'MESSAGE_BLOCKED_WORD',
+        'MESSAGE_BLOCKED_DOMAIN',
+      ]) {
+        messages.push(
+          service.buildMessageLimitsExplanation(
+            user,
+            rule,
+            true,
+            2,
+            1,
+            1,
+            5,
+            187,
+            100,
+            'тест',
+            '',
+            style,
+          ),
+          service.buildMessageLimitsWarnExplanation(user, rule, 'тест', style),
+          service.buildMessageLimitsMuteExplanation(user, rule, 'тест', style),
+          service.buildMessageLimitsBanExplanation(user, rule, 6, 'тест', style),
+        );
+      }
+      for (const fingerprint of ['exact', 'image', 'image_set']) {
+        messages.push(
+          service.buildDuplicateHitExplanation(user, true, '', style, fingerprint),
+          service.buildDuplicateHitExplanation(user, false, '', style, fingerprint),
+        );
+        for (const action of ['WARN', 'MUTE', 'BAN']) {
+          messages.push(
+            service.buildDuplicateExplanation(
+              user,
+              { action, count: 4, threshold: 2, windowSec: 30, hash: 'duplicate-hash' },
+              6,
+              true,
+              '',
+              style,
+              fingerprint,
+            ),
+          );
+        }
+      }
+
+      for (const message of messages) {
+        expect(message.trim()).not.toBe('');
+        expect(message).not.toMatch(/\{[a-z_]+\}|undefined|NaN/u);
+      }
+      const subscriptionMute = service.buildRequiredSubscriptionMuteExplanation(
+        user,
+        channels,
+        style,
+        6,
+      );
+      expect(subscriptionMute).toContain('мут на 6ч');
+      expect(subscriptionMute).toContain('Новости MAX');
+      expect(subscriptionMute).toContain('новые сообщения будут удаляться');
+    },
+  );
+
+  it.each([1, 2, 5, 10])(
+    'keeps a %s-message quota grammatical without changing custom placeholders',
+    (count) => {
+      const service = createService() as any;
+      const inherited = service.buildMessageLimitsExplanation(
+        '**Алексей**',
+        'MESSAGE_COUNT_LIMIT',
+        true,
+        count,
+        1,
+        1,
+        5,
+        undefined,
+        undefined,
+        null,
+        '',
+        'ROBOT',
+      );
+      expect(inherited).toBe(
+        `**Алексей**, сообщение удалено. Причина: превышен лимит сообщений: ${count} за 1 ч.`,
+      );
+      const custom = service.buildMessageLimitsExplanation(
+        '**Алексей**',
+        'MESSAGE_COUNT_LIMIT',
+        true,
+        count,
+        1,
+        1,
+        5,
+        undefined,
+        undefined,
+        null,
+        'Причина: {reason}.',
+        'ROBOT',
+      );
+      expect(custom).toBe(`Причина: слишком частая отправка сообщений: не более ${count} за 1ч.`);
+    },
+  );
+
   it('keeps current sanction defaults gender-neutral for every bot persona', () => {
     expect(getBotSpeechEditableTemplate('POLICE', 'linkBotMessageText', 'female')).toBe(
       getBotSpeechEditableTemplate('POLICE', 'linkBotMessageText', 'male'),
@@ -386,7 +635,7 @@ describe('bot speech styles', () => {
       getBotSpeechSystemTemplate('POLICE', 'messageLimitsWarn', 'neutral'),
     );
     expect(getBotSpeechSystemTemplate('POLICE', 'messageLimitsWarn', 'neutral')).not.toMatch(
-      /\b(?:взял|взяла|прикрыл|прикрыла)\b/u,
+      /(?:^|[^\p{L}])(?:взял|взяла|прикрыл|прикрыла)(?=$|[^\p{L}])/u,
     );
   });
 
@@ -410,15 +659,13 @@ describe('bot speech styles', () => {
         null,
         'IRONIC',
       ),
-    ).toBe(
-      '**Алексей**, предупреждение: сообщение превышает допустимую длину. У ограничений чата всё довольно буквально.',
-    );
+    ).toBe('**Алексей**, предупреждение по правилам чата: сообщение превышает допустимую длину.');
 
     expect((service as any).buildLinkMuteExplanation(userLabel, 'IRONIC')).toBe(
-      '**Алексей**, за запрещённую ссылку включён мут. Переход временно закрыт.',
+      '**Алексей**, действует мут за запрещённую ссылку.',
     );
     expect((service as any).buildMuteNotice(userLabel, 6, 'IRONIC')).toBe(
-      '**Алексей**, мут включён на 6ч. До конца срока новые сообщения будут удаляться.',
+      '**Алексей**, действует мут на 6ч. До его окончания новые сообщения будут удаляться.',
     );
   });
 
@@ -427,10 +674,10 @@ describe('bot speech styles', () => {
     const userLabel = '**Алексей**';
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'POLICE', true)).toBe(
-      '**Алексей**, сообщение удалено: добавленная при редактировании ссылка запрещена настройками чата. Правка правила не отменяет.',
+      '**Алексей**, после редактирования сообщение удалено. Причина: добавленная при редактировании ссылка запрещена настройками чата. Отправьте текст без этой ссылки.',
     );
     expect((service as any).buildLinkWarnExplanation(userLabel, '', 'POLICE', true)).toBe(
-      '**Алексей**, предупреждение зафиксировано: добавленная при редактировании ссылка запрещена настройками чата. Правка правила не отменяет.',
+      '**Алексей**, предупреждение: добавленная при редактировании ссылка запрещена настройками чата. Уберите эту ссылку.',
     );
 
     expect(
@@ -451,7 +698,7 @@ describe('bot speech styles', () => {
     const formerRobotDefault = '🔗 {user}, сообщение {message_status}. Причина: {reason}.';
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'ROBOT')).toBe(
-      '**Алексей**, сообщение удалено: эта ссылка запрещена настройками чата.',
+      '**Алексей**, сообщение удалено. Причина: эта ссылка запрещена настройками чата.',
     );
     expect(
       (service as any).buildLinkExplanation(userLabel, true, formerRobotDefault, 'ROBOT'),
@@ -478,7 +725,7 @@ describe('bot speech styles', () => {
     ).toBe('Статус: не по форме. Контекст: идёт повтором. ⚠️ Предупреждение записано.');
 
     expect((service as any).buildPhoneNumbersExplanation(userLabel, true, '', 'POLICE')).toBe(
-      '**Алексей**, сообщение удалено: номера телефонов в сообщениях запрещены. Дальше без номера в тексте.',
+      '**Алексей**, сообщение удалено. Причина: номера телефонов в сообщениях запрещены. Уберите номер телефона перед повторной отправкой.',
     );
     expect(
       (service as any).buildPhoneNumbersExplanation(
@@ -525,7 +772,7 @@ describe('bot speech styles', () => {
     expect(
       (service as any).buildTextFilterExplanation(userLabel, 'COMMERCIAL_AD', true, '', 'FRIENDLY'),
     ).toBe(
-      '**Алексей**, сообщение удалено: коммерческая реклама запрещена правилами чата. Давайте дальше без этого.',
+      '**Алексей**, сообщение удалено. Причина: коммерческая реклама запрещена правилами чата.',
     );
     expect(
       (service as any).buildMessageLimitsExplanation(
@@ -543,7 +790,7 @@ describe('bot speech styles', () => {
         'IRONIC',
       ),
     ).toBe(
-      '**Алексей**, сообщение удалено: сообщение совпало со стоп-листом чата. Настройки не считают себя рекомендациями.',
+      '**Алексей**, сообщение удалено. Ограничение чата: сообщение совпало со стоп-листом чата.',
     );
     expect(
       (service as any).buildMessageLimitsMuteExplanation(
@@ -553,17 +800,25 @@ describe('bot speech styles', () => {
         'POLICE',
       ),
     ).toBe(
-      '**Алексей**, включён мут. Основание: отправка голосовых сообщений в этом чате отключена.',
+      '**Алексей**, действует мут. Причина: отправка голосовых сообщений в этом чате отключена.',
     );
   });
 
   it('keeps placeholder sets aligned and all current presets persona-neutral', () => {
     const genderedOrForeignPersonaCopy =
-      /\b(?:Майор|Максимов|Максимова|Капитан|взял|взяла|прикрыл|прикрыла|включил|включила|убрал|убрала)\b/iu;
+      /(?:^|[^\p{L}])(?:Майор|Максимов|Максимова|Капитан|взял|взяла|прикрыл|прикрыла|включил|включила|убрал|убрала)(?=$|[^\p{L}])/iu;
 
     for (const fieldKey of BOT_SPEECH_EDITABLE_FIELD_KEYS) {
-      const expectedPlaceholders = EXPECTED_EDITABLE_PLACEHOLDERS[fieldKey];
       for (const style of BOT_SPEECH_STYLE_VALUES) {
+        const omitted =
+          fieldKey === 'invitationAccessBotMessageText'
+            ? INVITATION_PLACEHOLDER_OMISSIONS[style].explanation
+            : fieldKey === 'invitationAccessWarnMessageText'
+              ? INVITATION_PLACEHOLDER_OMISSIONS[style].warning
+              : [];
+        const expectedPlaceholders = EXPECTED_EDITABLE_PLACEHOLDERS[fieldKey].filter(
+          (placeholder) => !omitted.includes(placeholder),
+        );
         const neutralTemplate = getBotSpeechEditableTemplate(style, fieldKey, 'neutral');
         expect(extractTemplatePlaceholders(neutralTemplate)).toEqual(expectedPlaceholders);
         expect(neutralTemplate).not.toMatch(genderedOrForeignPersonaCopy);
@@ -610,7 +865,7 @@ describe('bot speech styles', () => {
     expect(
       getBotSpeechEditableTemplate(nextSettings.botSpeechStyle, 'greetingBotMessageText'),
     ).toBe(
-      'Привет, {user} 👋 На связи {bot_character_name}. Помогу освоиться и не запутаться в правилах.',
+      'Добро пожаловать, {user}! 👋 Я {bot_character_name}. Загляните в правила и присоединяйтесь к общению.',
     );
   });
 

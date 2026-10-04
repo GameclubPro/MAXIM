@@ -3390,6 +3390,65 @@ describe('ModerationService', () => {
     });
 
     it.each([
+      { storedDurationHours: 6, expectedDuration: '6ч' },
+      { storedDurationHours: 0, expectedDuration: '24ч' },
+      { storedDurationHours: 337, expectedDuration: '24ч' },
+      { storedDurationHours: 1.5, expectedDuration: '24ч' },
+      { storedDurationHours: '6', expectedDuration: '24ч' },
+      { storedDurationHours: undefined, expectedDuration: '24ч' },
+    ])(
+      'recovers the recorded mute duration $storedDurationHours before a notice plan was persisted',
+      async ({ storedDurationHours, expectedDuration }) => {
+        const prisma = {
+          ...createPrismaForRequiredSubscription({
+            requiredSubscriptionEnabled: true,
+            requiredSubscriptionChannelIds: ['channel-1'],
+            requiredSubscriptionMuteEnabled: true,
+            requiredSubscriptionMuteDurationHours: 24,
+          }),
+          moderationViolationMessageClaim: {
+            createMany: jest.fn().mockResolvedValue({ count: 0 }),
+          },
+        };
+        prisma.moderationEvent.findFirst.mockImplementation(async (args) =>
+          args.where.ruleCode === 'REQUIRED_SUBSCRIPTION'
+            ? {
+                id: 'required-subscription-applied-mute',
+                action: SanctionAction.MUTE,
+                metadata: {
+                  requiredSubscriptionViolationCount24h: 3,
+                  muteDurationHours: storedDurationHours,
+                  sanctionApplied: true,
+                },
+              }
+            : null,
+        );
+        const maxClient = createRequiredSubscriptionMaxClient();
+        const service = new ModerationService(
+          prisma as never,
+          { detect: jest.fn().mockResolvedValue({ violations: [] }) } as never,
+          { resolveAction: jest.fn() } as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          createRequiredSubscriptionRedisCounter() as never,
+        );
+        const applySanctionAction = jest.spyOn(service as any, 'applySanctionAction');
+
+        await service.handleUpdate(createUpdate());
+
+        expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(1);
+        expect(prisma.violation.create).not.toHaveBeenCalled();
+        expect(applySanctionAction).not.toHaveBeenCalled();
+        expect(prisma.moderationEvent.upsert).toHaveBeenCalledTimes(1);
+        expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+        expect(maxClient.sendMessage.mock.calls[0]?.[1]).toContain(`мут на ${expectedDuration}`);
+        expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([
       {
         label: 'WARN',
         action: SanctionAction.WARN,
@@ -3889,11 +3948,12 @@ describe('ModerationService', () => {
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     });
 
-    it('rechecks required subscription during an active required-subscription MUTE without escalating again', async () => {
+    it('keeps the actual duration when rechecking an active required-subscription MUTE after settings change', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
         requiredSubscriptionMuteEnabled: true,
+        requiredSubscriptionMuteDurationHours: 6,
       });
       prisma.violation.count.mockResolvedValue(3);
       const ruleEngine = {
@@ -3935,6 +3995,8 @@ describe('ModerationService', () => {
       }
 
       await service.handleUpdate(createUpdate());
+      const storedChat = await prisma.chat.upsert.mock.results[0]?.value;
+      storedChat.settings.requiredSubscriptionMuteDurationHours = 24;
       await service.handleUpdate(secondUpdate);
 
       expect(applySanctionAction).toHaveBeenCalledTimes(1);
@@ -3947,6 +4009,8 @@ describe('ModerationService', () => {
       expect(handleActiveMuteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
       expect(maxClient.sendMessage.mock.calls[1]?.[1]).toContain('Новости MAX');
+      expect(maxClient.sendMessage.mock.calls[1]?.[1]).toContain('мут на 6ч');
+      expect(maxClient.sendMessage.mock.calls[1]?.[1]).not.toContain('24ч');
       expect(maxClient.sendMessage.mock.calls[1]?.[3]).toEqual(
         expect.objectContaining({
           idempotencyKey:
@@ -4141,7 +4205,7 @@ describe('ModerationService', () => {
 
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
-      expect(noticeText).toContain('бан');
+      expect(noticeText).toMatch(/бан/i);
       expect(noticeText).toContain('Новости MAX');
       expect(prisma.moderationEvent.create.mock.calls).toEqual(
         expect.arrayContaining([
