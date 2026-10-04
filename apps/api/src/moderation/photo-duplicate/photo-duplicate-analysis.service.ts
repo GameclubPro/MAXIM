@@ -202,6 +202,7 @@ export class PhotoDuplicateAnalysisService {
       .update(
         JSON.stringify([
           'photo-proof-v2',
+          album.receiptId ?? null,
           album.chatId,
           album.senderId,
           album.messageId,

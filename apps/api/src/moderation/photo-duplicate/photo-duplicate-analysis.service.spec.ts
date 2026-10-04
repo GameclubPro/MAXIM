@@ -103,7 +103,7 @@ function createService(cache: Array<PhotoFingerprint | null>) {
 }
 
 describe('PhotoDuplicateAnalysisService', () => {
-  it.each(['message', 'chat', 'revision', 'source'] as const)(
+  it.each(['message', 'chat', 'revision', 'source', 'receipt'] as const)(
     'never reuses a photo-ID proof across a different %s',
     async (change) => {
       const s = createService([]);
@@ -124,6 +124,7 @@ describe('PhotoDuplicateAnalysisService', () => {
       await s.service.fingerprintAlbum(first, 3600);
       const next = {
         ...first,
+        ...(change === 'receipt' ? { receiptId: 'different-receipt' } : {}),
         ...(change === 'message' ? { messageId: 'message-2' } : {}),
         ...(change === 'chat' ? { chatId: 'chat-2' } : {}),
         ...(change === 'revision' ? { createdAtMs: first.createdAtMs + 1 } : {}),
