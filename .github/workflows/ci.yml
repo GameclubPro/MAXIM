@@ -348,6 +348,11 @@ jobs:
         env:
           IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
         run: bash infra/scripts/smoke-photo-native-ci.sh "$IMAGE_REF"
+      - name: Measure isolated photo and OCR together
+        if: matrix.component == 'api'
+        env:
+          IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
+        run: bash infra/scripts/benchmark-antiduplicate-mixed-native-ci.sh "$IMAGE_REF"
       - name: Package immutable production image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
