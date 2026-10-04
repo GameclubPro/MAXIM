@@ -3498,7 +3498,7 @@
     line-height: 1.08;
   }
 
-  .settings-drilldown__footer-note {
+  .settings-drilldown__footer-note:not(.settings-drilldown__footer-conflict) {
     display: none;
   }
 

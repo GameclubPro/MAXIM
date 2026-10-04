@@ -1,3 +1,4 @@
+import duplicateRulesCases from '../../../packages/contracts/test/fixtures/duplicate-rules.json';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -5,6 +6,7 @@ import {
   chatRulesSchema,
   chatSettingsScreenResponseSchema,
   chatSettingsSchema,
+  duplicatePhotoModerationModeSchema,
   type ChatRules,
   type ChatSettingsScreenResponse,
 } from '@maxim/contracts';
@@ -398,3 +400,21 @@ test('buildRulesTextFromSettingsScreen does not inspect retired code-word settin
     }),
   );
 });
+
+for (const fixture of duplicateRulesCases) {
+  test(`shared anti-duplicate rules parity: ${fixture.name}`, () => {
+    const text = buildRulesTextFromSettingsScreen(
+      createScreen({
+        settings: chatSettingsSchema.parse(fixture.settings),
+        duplicatePhotoModerationMode: duplicatePhotoModerationModeSchema.parse(fixture.photoMode),
+      }),
+    );
+    assert.deepEqual(
+      text
+        .split('\n')
+        .map((line) => line.replace(/^\d+\. /u, ''))
+        .filter((line) => /^(Антидубль |Не отправляйте |Одинаковые картинки)/u.test(line)),
+      fixture.expected,
+    );
+  });
+}
