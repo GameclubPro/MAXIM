@@ -332,7 +332,14 @@ and its matching content/revision binding. `MESSAGE_DUPLICATE_ENABLED=false` is 
 environment ceiling.
 
 Both API rollback paths require v3 binding, lifecycle and durable/permit authorization source
-capabilities. Pending intents
+capabilities and the Unicode near matcher with the `text-fixed-window-unicode-near-v6`
+settings fence. The fence invalidates old STRICT and CUSTOM-with-near history, queued
+jobs and grants; exact-only and IMAGE settings retain their prior evidence versions.
+Use the shared API queue fence to stop old producers/workers and recreate every API role
+before resuming processing. A mixed old/new fleet is not a supported activation state.
+Never roll back to the old Latin/Cyrillic-only near matcher, even with control currently off:
+the stored enabled settings and old grants must not regain authority on a later activation.
+Pending intents
 can survive a control downgrade, so an older unguarded API is not a valid rollback target.
 Use a retained compatible immutable release and the normal queue-fenced rollback workflow.
 Older images do not understand the new protocol and are rejected as targets; rollback does not downgrade

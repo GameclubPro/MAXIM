@@ -194,10 +194,12 @@ maxim_topology_require_message_duplicate_delete_guard() {
     apps/api/prisma/migrations/20260930180000_add_duplicate_policy_revisions/migration.sql
     apps/api/src/moderation/message-duplicate/message-duplicate-admission.service.ts
     apps/api/src/moderation/message-duplicate/message-duplicate.queue.ts
+    apps/api/src/moderation/rule-engine-duplicate-detector.ts
   )
 
   # FLAG: Pending v3 decisions outlive environment downgrades. Both rollback paths
   # must retain lifecycle revisions, durable first admission/revocation and the last permit fence.
+  # The Unicode near matcher and its settings fence remain mandatory after a control downgrade.
   for source_path in "${source_paths[@]}"; do
     if ! source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)"; then
       echo "Rollback target predates the message duplicate v3 action guard." >&2
@@ -209,8 +211,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const input = require("node:fs").readFileSync(0);
     if (input.length > 4 * 1024 * 1024) process.exit(1);
     const parts = input.toString("utf8").split("\0");
-    if (parts.length !== 11 || parts.pop() !== "") process.exit(1);
-    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue] = parts;
+    if (parts.length !== 12 || parts.pop() !== "") process.exit(1);
+    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector] = parts;
     const method = (source, marker) => {
       const start = source.indexOf(marker);
       const end = source.indexOf("\n  private ", start + 1);
@@ -223,6 +225,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const check = method(guard, "private async checkMessage(");
     const permit = method(guard, "private async assertAuthorization(");
     const qualification = method(guard, "async assertQualificationAuthority(");
+    const near = method(detector, "private buildNearDuplicateFingerprint(");
     const authorityStart = guard.indexOf("if (params.authorityOnly)");
     const authorityEnd = guard.indexOf("return this.assertMessageStillActionable", authorityStart);
     const authority = guard.slice(authorityStart, authorityEnd);
@@ -248,6 +251,15 @@ maxim_topology_require_message_duplicate_delete_guard() {
       state.includes("lifecycleRevision:") &&
       state.includes("authorization:") &&
       state.includes("messageDuplicateEnforcementScope") &&
+      state.includes("text-fixed-window-unicode-near-v6") &&
+      /version:\s*nearEnabled\s*\?/u.test(state) &&
+      near.includes("/[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N}]*/gu") &&
+      near.includes("const gap = normalized.slice(end, until);") &&
+      near.includes("/[^\\p{P}\\p{Z}\\s]|[%‰‱*/\\\\^|&#@]/u.test(gap)") &&
+      near.includes("protectedGaps.push([beforeToken, gap])") &&
+      near.includes("numericBoundary && /\\S/u.test(gap)") &&
+      near.includes("JSON.stringify({ version: 2, tokens, numericTokens, protectedGaps })") &&
+      /messageDuplicateSettingsDigest\(settings\)\)\s*!==\s*binding.settingsDigest/u.test(guard) &&
       authorization.includes("binding.version !== 3") &&
       authorization.includes("Date.now() >= authority.deadlineAtMs") &&
       authorization.includes("moderationViolationMessageClaim.findUnique(") &&
@@ -293,7 +305,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
       executor.includes("AS \"messageDuplicateOwned\"");
     process.exit(valid ? 0 : 1);
   ' >/dev/null 2>&1; then
-    echo "Rollback target lacks the message duplicate v3 lifecycle/revocation/pre-dispatch capability." >&2
+    echo "Rollback target lacks the message duplicate v3 lifecycle/revocation/pre-dispatch or Unicode-near capability." >&2
     return 1
   fi
 }

@@ -9,7 +9,11 @@ import {
   messageDuplicateSettingsDigest,
   exactImageSettingsDigest,
 } from './message-duplicate-state';
-import { duplicateSettings, duplicateUpdate } from './message-duplicate-test-fixtures';
+import {
+  duplicateSettings,
+  duplicateUpdate,
+  preUnicodeNearSettingsDigests,
+} from './message-duplicate-test-fixtures';
 import type { MessageDuplicateJob } from './message-duplicate.queue';
 import {
   PhotoDownloadHttpError,
@@ -153,6 +157,22 @@ function setup() {
 }
 
 describe('bounded message duplicate media analysis', () => {
+  it.each(['STRICT', 'CUSTOM'] as const)(
+    'rejects queued pre-Unicode %s evidence before media work',
+    async (preset) => {
+      const s = setup();
+      s.settings.duplicateDetectionPreset = preset;
+      s.settings.duplicateNearMatchEnabled = true;
+      const job = s.job('old-policy', 0);
+      job.settingsDigest = preUnicodeNearSettingsDigests[preset];
+      await s.service.process(job, s.lease);
+      expect(s.downloads).not.toHaveBeenCalled();
+      expect(s.history.observe).not.toHaveBeenCalled();
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+      expect(s.metrics.record).toHaveBeenCalledWith('media.settings_rejected');
+    },
+  );
+
   it('expires scheduled media work before downloading or using history', async () => {
     const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-29T14:59Z'));
     try {
