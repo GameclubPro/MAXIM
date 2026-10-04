@@ -80,6 +80,12 @@ import type {
   UpdateChatRulesPayload,
 } from './shared-types';
 import type { ApiTransport } from './transport';
+import {
+  updateBotSpeechStyleRequestSchema,
+  updateBotSpeechStyleResponseSchema,
+  type UpdateBotSpeechStyleRequest,
+  type UpdateBotSpeechStyleResponse,
+} from '@maxim/contracts/bot-speech';
 
 export type BroadcastComposerClientResetState = {
   resetAt: string | null;
@@ -207,6 +213,19 @@ export async function resolveRequiredSubscriptionChannel(
     body: JSON.stringify(requestBody),
   });
   return resolveRequiredSubscriptionChannelResponseSchema.parse(response);
+}
+
+export async function updateBotSpeechStyle(
+  api: ApiTransport,
+  chatId: string,
+  botSpeechStyle: UpdateBotSpeechStyleRequest['botSpeechStyle'],
+): Promise<UpdateBotSpeechStyleResponse> {
+  const requestBody = updateBotSpeechStyleRequestSchema.parse({ botSpeechStyle });
+  const response = await api.request(`/chats/${chatId}/settings/speech-style`, {
+    method: 'PATCH',
+    body: JSON.stringify(requestBody),
+  });
+  return updateBotSpeechStyleResponseSchema.parse(response);
 }
 
 export async function updateSettings(

@@ -2797,7 +2797,7 @@ describe('ModerationService', () => {
 
       expectImmediateBanMember(harness.maxClient.banMember, 'chat-1', numericUserId);
       const noticeCall = harness.maxClient.sendMessage.mock.calls.find((call) =>
-        String(call[1]).includes('бан включён'),
+        String(call[1]).includes('Снять бан может администратор'),
       );
       expect(noticeCall).toBeDefined();
       expect((noticeCall?.[2] as { buttons?: unknown } | undefined)?.buttons).toBeUndefined();
@@ -3522,7 +3522,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'удалено', 'лимит 2 сообщений за 6 ч превышен'),
+      majorExplanation('Алексей', 'удалено', 'превышен лимит сообщений: 2 за 6 ч'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
@@ -3606,7 +3606,7 @@ describe('ModerationService', () => {
     );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      majorExplanation('Алексей', 'удалено', 'лимит 2 сообщений за 6 ч превышен'),
+      majorExplanation('Алексей', 'удалено', 'превышен лимит сообщений: 2 за 6 ч'),
       expect.objectContaining({
         imagePayload: { token: 'bot-speech-image-1' },
         textFormat: 'html',
@@ -4782,7 +4782,7 @@ describe('ModerationService', () => {
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      '<a href="max://user/user-1">Алексей</a>, сообщение удалено: номера телефонов в сообщениях запрещены. Дальше без номера в тексте.',
+      '<a href="max://user/user-1">Алексей</a>, сообщение удалено. Причина: номера телефонов в сообщениях запрещены. Уберите номер телефона перед повторной отправкой.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {

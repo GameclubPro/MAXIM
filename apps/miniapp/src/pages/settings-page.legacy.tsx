@@ -32,7 +32,7 @@ import {
 import { type ChatSummary, type ManagedEntityHeader } from '@maxim/contracts/managed-entities';
 import {
   BOT_SPEECH_STYLE_METADATA,
-  applyBotSpeechStylePreset,
+  resolveBotSpeechStyle,
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -117,6 +117,7 @@ import {
   updateManagedAutopostRule,
   updateManagedBroadcast,
   updateSettings,
+  updateBotSpeechStyle,
 } from '../lib/api/chat-settings-client';
 import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
 import { getGlobalSpammerReviewMetrics } from '../lib/api/spammer-review-client';
@@ -293,7 +294,6 @@ import {
   LINK_POLICY_OPTIONS,
   RUSSIAN_TIMEZONE_OPTIONS,
   resolveBotSpeechPreviewContext,
-  buildSpeechStylePreviewSamples,
   formatApiError,
   minutesToTimeInput,
   toLocalDateInputValue,
@@ -1323,16 +1323,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   const saveSpeechStyleMutation = useMutation({
     onMutate: () => ({ isCurrentSettingsScope, syncSavedBotSpeechStyle }),
-    mutationFn: ({ payload }: { style: BotSpeechStyle; payload: ChatSettings }) =>
-      updateSettings(api, chatId ?? '', payload),
-    onSuccess: (saved, variables, scope) => {
-      scope?.syncSavedBotSpeechStyle(saved);
+    mutationFn: (style: BotSpeechStyle) => updateBotSpeechStyle(api, chatId ?? '', style),
+    onSuccess: async (saved, variables, scope) => {
+      await scope?.syncSavedBotSpeechStyle(saved);
       if (!scope?.isCurrentSettingsScope()) return;
       setSpeechStylePanelOpen(false);
       setPendingSpeechStyle(null);
       pushToast({
         tone: 'success',
-        title: `Стиль «${BOT_SPEECH_STYLE_METADATA[variables.style].label}» применен`,
+        title: `Стиль «${BOT_SPEECH_STYLE_METADATA[variables].label}» применен`,
       });
       maxNotify('success');
     },
@@ -1354,10 +1353,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isPreparingRulesPublish ||
     isSavingSpeechStyle ||
     updateRulesAttachMutation.isPending;
-  const activeSpeechStyle = draft?.botSpeechStyle ?? null;
-  const pendingSpeechStyleSamples = pendingSpeechStyle
-    ? buildSpeechStylePreviewSamples(pendingSpeechStyle, botSpeechPreviewContext)
-    : null;
+  const activeSpeechStyle = resolveBotSpeechStyle(draft?.botSpeechStyle);
   const botSpeechEditorProps = draft
     ? {
         settings: draft,
@@ -4261,14 +4257,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return validateDraft(mergeSectionSettings(baseSettings, draftSettings, section));
   }
 
-  function buildBotSpeechStylePayload(style: BotSpeechStyle) {
-    if (!settingsQuery.data) {
-      return null;
-    }
-
-    return validateDraft(applyBotSpeechStylePreset(settingsQuery.data, style));
-  }
-
   async function handleSaveSection(section: ApplySectionKey) {
     if (!chatId) {
       return;
@@ -4355,22 +4343,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   async function handleApplyBotSpeechStyle(style: BotSpeechStyle) {
-    if (!chatId) {
-      return;
-    }
-
-    const payload = buildBotSpeechStylePayload(style);
-    if (!payload) {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось применить стиль речи',
-        description: 'Проверьте настройки и повторите попытку.',
-      });
+    if (!chatId || isSavingSpeechStyle || style === activeSpeechStyle) {
       return;
     }
 
     try {
-      await saveSpeechStyleMutation.mutateAsync({ style, payload });
+      await saveSpeechStyleMutation.mutateAsync(style);
     } catch {
       // Errors are handled by the mutation.
     }
@@ -4585,12 +4563,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </Suspense>
           ) : null}
 
-          {speechStylePanelOpen && pendingSpeechStyle && pendingSpeechStyleSamples ? (
+          {speechStylePanelOpen && pendingSpeechStyle ? (
             <Suspense fallback={null}>
               <LazySettingsSpeechStylePanel
                 activeStyle={activeSpeechStyle}
                 selectedStyle={pendingSpeechStyle}
-                samples={pendingSpeechStyleSamples}
+                previewContext={botSpeechPreviewContext}
                 isSaving={isSavingSpeechStyle}
                 onSelect={setPendingSpeechStyle}
                 onClose={() => {
@@ -4603,7 +4581,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   setSpeechStylePanelOpen(false);
                   setPendingSpeechStyle(null);
                 }}
-                onDiscard={() => setPendingSpeechStyle(activeSpeechStyle ?? 'ROBOT')}
+                onDiscard={() => setPendingSpeechStyle(activeSpeechStyle)}
                 onSave={(style) => void handleApplyBotSpeechStyle(style)}
               />
             </Suspense>
@@ -7174,13 +7152,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 <SettingsSectionToggle
                   title="Стиль речи"
                   summary="Тон ответов и сообщений бота"
-                  status={BOT_SPEECH_STYLE_METADATA[activeSpeechStyle ?? 'ROBOT'].label}
+                  status={BOT_SPEECH_STYLE_METADATA[activeSpeechStyle].label}
                   icon="comments"
                   tone="mint"
                   open={speechStylePanelOpen}
                   controls="settings-bot-speech-style"
                   onClick={() => {
-                    setPendingSpeechStyle(activeSpeechStyle ?? 'ROBOT');
+                    setPendingSpeechStyle(activeSpeechStyle);
                     setSpeechStylePanelOpen(true);
                   }}
                 />

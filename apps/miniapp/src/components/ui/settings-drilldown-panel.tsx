@@ -204,10 +204,10 @@ export function SettingsDrilldownPanel({
   }, [open, requestClose]);
 
   useEffect(() => {
-    if (!open || !confirmCloseWhen) {
+    if (!open || !confirmCloseWhen || closeDisabled) {
       setDiscardConfirmationOpen(false);
     }
-  }, [confirmCloseWhen, open]);
+  }, [closeDisabled, confirmCloseWhen, open]);
 
   const portalTarget = open ? resolveDrilldownPortalTarget() : null;
   if (!open || !portalTarget) {
@@ -289,7 +289,7 @@ export function SettingsDrilldownPanel({
         </div>,
         portalTarget,
       )}
-      {discardConfirmationOpen ? (
+      {discardConfirmationOpen && !closeDisabled ? (
         <Suspense fallback={null}>
           <LazyActionConfirmSheet
             id={`${id}-discard-confirmation`}

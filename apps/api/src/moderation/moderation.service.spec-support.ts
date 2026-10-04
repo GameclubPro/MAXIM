@@ -140,7 +140,7 @@ function majorExplanation(
   subject = 'Сообщение',
 ): string {
   if (reason === 'эта ссылка запрещена настройками чата') {
-    return `${userMentionHtml(name)}, сообщение ${messageStatus}: ${reason}. Без самодеятельности.`;
+    return `${userMentionHtml(name)}, сообщение ${messageStatus}. Причина: ${reason}. Отправьте текст без этой ссылки.`;
   }
 
   if (subject === 'Объявление') {
@@ -157,42 +157,44 @@ function majorExplanation(
     reason.includes('номера телефонов') ||
     reason.includes('лимит')
   ) {
-    return `${userMentionHtml(name)}, сообщение ${messageStatus}: ${reason}. При следующей отправке учтите ограничение.`;
+    return `${userMentionHtml(name)}, сообщение ${messageStatus}. Ограничение чата: ${reason}.`;
   }
 
-  return `${userMentionHtml(name)}, сообщение ${messageStatus}: ${reason}. Дальше держимся правил.`;
+  return `${userMentionHtml(name)}, сообщение ${messageStatus}. Причина: ${reason}. Рекламу здесь не размещаем.`;
 }
 
 function duplicateExplanation(name: string, sanction: string): string {
-  return `${userMentionHtml(name)}, повтор зафиксирован. ${sanction}`;
+  return `${userMentionHtml(name)}, зафиксирован повтор сообщения. ${sanction}`;
 }
 
 function muteNotice(name: string, duration: string): string {
-  return `${userMentionHtml(name)}, мут включён на ${duration}. До конца срока новые сообщения будут удаляться.`;
+  return `${userMentionHtml(name)}, действует мут на ${duration}. До его окончания новые сообщения будут удаляться.`;
 }
 
 function permanentBanNotice(name: string, userId = 'user-1'): string {
-  return `${userMentionHtml(name, userId)}, бан включён до ручного снятия.`;
+  return `${userMentionHtml(name, userId)}, доступ к чату закрыт. Снять бан может администратор.`;
 }
 
 function textFilterWarnNotice(name: string, reason: string): string {
-  return `${userMentionHtml(name)}, предупреждение зафиксировано: ${reason}. Повторять не стоит.`;
+  return reason === 'грубая лексика запрещена правилами чата'
+    ? `${userMentionHtml(name)}, предупреждение: ${reason}. Дальше — без грубых слов.`
+    : `${userMentionHtml(name)}, предупреждение: ${reason}. Следующие сообщения — без рекламы.`;
 }
 
 function linkWarnNotice(name: string): string {
-  return `${userMentionHtml(name)}, предупреждение зафиксировано: эта ссылка запрещена настройками чата. Дальше без запрещённых ссылок.`;
+  return `${userMentionHtml(name)}, предупреждение: эта ссылка запрещена настройками чата. Следующее сообщение — без этой ссылки.`;
 }
 
 function editedLinkWarnNotice(name: string): string {
-  return `${userMentionHtml(name)}, предупреждение зафиксировано: добавленная при редактировании ссылка запрещена настройками чата. Правка правила не отменяет.`;
+  return `${userMentionHtml(name)}, предупреждение: добавленная при редактировании ссылка запрещена настройками чата. Уберите эту ссылку.`;
 }
 
 function messageLimitsWarnNotice(name: string, reason: string): string {
-  return `${userMentionHtml(name)}, предупреждение зафиксировано. Основание: ${reason}.`;
+  return `${userMentionHtml(name)}, предупреждение по правилам чата: ${reason}.`;
 }
 
 function messageLimitsBanNotice(name: string, reason: string): string {
-  return `${userMentionHtml(name)}, бан включён до ручного снятия. Основание: ${reason}.`;
+  return `${userMentionHtml(name)}, доступ к чату закрыт. Причина: ${reason}. Снять бан может администратор.`;
 }
 
 function expectImmediateDeleteMessage(mockFn: jest.Mock, chatId: string, messageId: string) {
@@ -239,11 +241,11 @@ function expectImmediateBanMember(mockFn: jest.Mock, chatId: string, userId: str
 }
 
 function nightModeNotice(window: string, timezone: string): string {
-  return `🌙 Ночной режим: ${window} (${timezone}). До открытия новые сообщения будут удаляться. Всё по графику.`;
+  return `🌙 Перерыв: ${window} (${timezone}). До открытия новые сообщения будут удаляться. Дежурство продолжается, переклички не будет.`;
 }
 
 function nightModeOpenNotice(): string {
-  return 'Чат снова открыт. Возвращаемся к обычному режиму.';
+  return 'Чат снова открыт. Можно общаться — строиться не обязательно.';
 }
 
 function createMaxApiError(status: number, message: string, code?: string): Error {

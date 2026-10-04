@@ -22,7 +22,7 @@ describe('night mode transition notice util', () => {
         activeBotSpeechProfile,
       }),
     ).toBe(
-      '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+      '🌙 Перерыв в общении: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
     );
 
     expect(
@@ -34,7 +34,7 @@ describe('night mode transition notice util', () => {
         botSpeechStyle: 'FRIENDLY',
         activeBotSpeechProfile,
       }),
-    ).toBe('Чат снова открыт. Можно снова писать.');
+    ).toBe('Чат снова открыт. Хорошего общения!');
   });
 
   it('renders override placeholders with profile, window, timezone, and status values', () => {
@@ -100,14 +100,14 @@ describe('night mode transition notice util', () => {
 
       expect(
         isNightModeNoticeMessage({
-          text: '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+          text: '🌙 Перерыв в общении: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
           settings,
           activeBotSpeechProfile,
         }),
       ).toBe(true);
       expect(
         isNightModeNoticeMessage({
-          text: 'Чат снова открыт. Можно отправлять сообщения.',
+          text: 'Чат снова открыт.',
           settings,
           activeBotSpeechProfile,
         }),
@@ -130,14 +130,14 @@ describe('night mode transition notice util', () => {
 
     expect(
       isNightModeNoticeMessage({
-        text: '🌙 Чат закрыт по расписанию:\n23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+        text: '🌙 Перерыв в общении:\n23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
         settings,
         activeBotSpeechProfile,
       }),
     ).toBe(true);
     expect(
       isNightModeNoticeMessage({
-        text: 'Чат снова открыт.   Можно отправлять сообщения.',
+        text: 'Чат   снова открыт.  ',
         settings,
         activeBotSpeechProfile,
       }),
@@ -159,14 +159,14 @@ describe('night mode transition notice util', () => {
 
     expect(
       isNightModeNoticeMessage({
-        text: '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+        text: '🌙 Перерыв в общении: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
         settings,
         activeBotSpeechProfile,
       }),
     ).toBe(false);
     expect(
       isNightModeNoticeMessage({
-        text: 'Чат снова открыт. Можно отправлять сообщения.',
+        text: 'Чат снова открыт.',
         settings: {
           ...settings,
           nightModeEnabled: false,
