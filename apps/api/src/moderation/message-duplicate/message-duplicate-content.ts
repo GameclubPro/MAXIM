@@ -84,7 +84,17 @@ export function duplicateNavigationAnchorIdentityKeys(
   const keys = new Set<string>();
   for (const target of targets) {
     for (const origin of target.origins) {
-      if (origin.carrier !== 'link_markup' && origin.carrier !== 'user_mention_markup') continue;
+      // FLAG: Lowercased prose already preserves ordinary visible URL positions. Add binding
+      // only when it would lose a case-sensitive destination, keeping plain history compatible.
+      const lossyVisibleTarget =
+        origin.carrier === 'plain_text' &&
+        target.normalizedTarget !== target.normalizedTarget.toLowerCase();
+      if (
+        origin.carrier !== 'link_markup' &&
+        origin.carrier !== 'user_mention_markup' &&
+        !lossyVisibleTarget
+      )
+        continue;
       const { from, end, visibleText, status } = origin.range;
       if (status !== 'valid' || from === null || end === null || visibleText === null) continue;
       // FLAG: A destination set loses which repeated anchor opens which target. Bind the
@@ -92,7 +102,7 @@ export function duplicateNavigationAnchorIdentityKeys(
       const hasLocalRange = rawText.slice(from, end) === visibleText;
       keys.add(
         `anchor:${digestDuplicateContent([
-          'markup-anchor-v1',
+          lossyVisibleTarget ? 'visible-target-anchor-v1' : 'markup-anchor-v1',
           origin.carrier,
           target.kind,
           target.normalizedTarget,

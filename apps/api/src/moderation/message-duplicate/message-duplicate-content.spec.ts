@@ -151,6 +151,46 @@ describe('message duplicate canonical contents', () => {
       );
     },
   );
+  it.each(['TEXT', 'MESSAGE'] as const)(
+    'preserves the order of case-sensitive visible URL destinations in %s',
+    (mode) => {
+      const first = content({ text: 'https://example.com/One https://example.com/one' });
+      const swapped = content({ text: 'https://example.com/one https://example.com/One' });
+      const repeat = content({ text: '  https://example.com/one\nhttps://example.com/One  ' });
+      expect(first.complete).toBe(true);
+      expect(swapped.complete).toBe(true);
+      expect(first.sourceDigest).not.toBe(swapped.sourceDigest);
+      expect(buildMessageDuplicateIdentity(first, mode)).not.toBe(
+        buildMessageDuplicateIdentity(swapped, mode),
+      );
+      expect(repeat.sourceDigest).toBe(swapped.sourceDigest);
+      expect(buildMessageDuplicateIdentity(repeat, mode)).toBe(
+        buildMessageDuplicateIdentity(swapped, mode),
+      );
+    },
+  );
+  it('keeps deployed lower-case visible URL identities and source digests', () => {
+    const parsed = content({ text: 'Visit https://example.com/one' });
+    const navigation = ['external_url:https://example.com/one'];
+    expect(parsed.sourceDigest).toBe(
+      digestDuplicateContent({
+        text: 'visit https://example.com/one',
+        navigation,
+        actions: [],
+        media: [],
+      }),
+    );
+    expect(buildMessageDuplicateIdentity(parsed, 'TEXT')).toBe(
+      digestDuplicateContent({
+        version: 1,
+        mode: 'TEXT',
+        text: 'visit https://example.com/one',
+        navigation,
+        actions: [],
+        media: [],
+      }),
+    );
+  });
   it('maps forward-local hidden anchor ranges into the joined comparison text', () => {
     const markup = [{ type: 'link', from: 0, length: 3, url: 'https://example.com/item' }];
     const forwarded = content(

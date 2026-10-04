@@ -779,6 +779,17 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       },
     );
 
+    it('keeps swapped case-sensitive visible URLs and deletes their actual repeat in STANDARD', async () => {
+      flow = await createFlow({ duplicateDetectionPreset: 'STANDARD' });
+      await flow.ingest(flow.prepare({ text: 'https://example.com/One https://example.com/one' }));
+      await flow.ingest(flow.prepare({ text: 'https://example.com/one https://example.com/One' }));
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+      const repeat = flow.prepare({ text: '  https://example.com/one\nhttps://example.com/One  ' });
+      await flow.ingest(repeat);
+      expect(flow.deleted).toEqual([repeat.id]);
+    });
+
     it.each(['current', 'original'] as const)(
       'rejects a hidden-link swap in the fresh %s message without an edit webhook',
       async (changed) => {

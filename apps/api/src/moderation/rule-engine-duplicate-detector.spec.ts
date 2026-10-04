@@ -2,6 +2,7 @@ import type { ChatSettings } from '../prisma/prisma-client';
 import { normalizeForDetection } from './rule-engine-normalization';
 import { adaptMaxMessageNavigationView } from './navigation/max-navigation-view.adapter';
 import { extractNavigationEvidence } from './navigation/navigation-evidence.extractor';
+import { extractClientClickableTextEvidence } from './navigation/client-clickable-text.extractor';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import {
   DUPLICATE_STATE_BUDGET_MS,
@@ -647,6 +648,41 @@ describe('RuleEngineDuplicateDetector', () => {
       await expect(detect('first', 100, false)).resolves.toEqual({});
       await expect(detect('swapped', 200, true)).resolves.toEqual({});
       await expect(detect('repeated', 300, true)).resolves.toMatchObject({ hit: { count: 1 } });
+    },
+  );
+
+  it.each([true, false])(
+    'preserves visible case-sensitive URL order with navigation evidence supplied=%s',
+    (provided) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings();
+      const fingerprint = (text: string) => {
+        const view = adaptMaxMessageNavigationView({ body: { text } });
+        return detector.buildFingerprints(
+          text,
+          settings,
+          provided
+            ? extractNavigationEvidence(view, {
+                plainTextCandidates: extractClientClickableTextEvidence(view),
+              }).targets
+            : undefined,
+        )[0]!.value;
+      };
+      expect(fingerprint('https://example.com/One https://example.com/one')).not.toBe(
+        fingerprint('https://example.com/one https://example.com/One'),
+      );
+      expect(fingerprint('  https://example.com/one\nhttps://example.com/One  ')).toBe(
+        fingerprint('https://example.com/one https://example.com/One'),
+      );
+      if (!provided)
+        expect(fingerprint('VISIT https://example.com/one')).toBe(
+          JSON.stringify({
+            text: 'visit https://example.com/one',
+            navigationIdentity: ['link:https://example.com/one'],
+          }),
+        );
     },
   );
 
