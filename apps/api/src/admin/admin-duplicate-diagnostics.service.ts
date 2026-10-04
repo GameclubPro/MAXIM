@@ -1,5 +1,5 @@
 import { messageDuplicateOriginalSchema } from '../moderation/message-duplicate/message-duplicate-state';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import {
   duplicateDiagnosticsResponseSchema,
   type DuplicateDeletionAttempt,
@@ -11,6 +11,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import { MessageDuplicatePolicyService } from '../moderation/message-duplicate/message-duplicate-policy.service';
+import { MessageDuplicateMetricsService } from '../moderation/message-duplicate/message-duplicate-metrics.service';
+import { emptyDuplicateObservationDiagnostics } from '../moderation/message-duplicate/message-duplicate-telemetry';
 
 const STATUSES: ModerationDeleteIntentStatus[] = [
   'OBSERVED',
@@ -108,6 +110,7 @@ export class AdminDuplicateDiagnosticsService {
     private readonly bots: MaxBotLinkService,
     private readonly planner: MaxBotExecutionPlannerService,
     private readonly policy: MessageDuplicatePolicyService,
+    @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {}
 
   async read(chatId: string, recheck = false): Promise<DuplicateDiagnosticsResponse> {
@@ -198,6 +201,9 @@ export class AdminDuplicateDiagnosticsService {
       enabled: settings?.antiDuplicateEnabled ?? false,
       mode,
       capability,
+      observation: this.metrics
+        ? await this.metrics.readObservations(chatId)
+        : emptyDuplicateObservationDiagnostics('UNAVAILABLE'),
       history,
     });
   }

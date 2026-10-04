@@ -10,6 +10,36 @@ const payload = {
   history: { available: true, since: time, sampledIntents: 0, limited: false, attempts: [] },
 };
 describe('duplicate diagnostics contract', () => {
+  it('keeps absent telemetry compatible and rejects invented coverage or arbitrary outcome labels', () => {
+    expect(duplicateDiagnosticsResponseSchema.parse(payload).observation).toBeUndefined();
+    const observation = {
+      state: 'AVAILABLE',
+      since: time,
+      until: time,
+      basis: 'ATTEMPTS',
+      completeness: 'BEST_EFFORT',
+      supportedAttempts: 2,
+      verifiedAttempts: 0,
+      coverage: 0,
+      outcomes: [{ outcome: 'COMPARISON_FAILED', count: 2 }],
+    };
+    expect(
+      duplicateDiagnosticsResponseSchema.parse({ ...payload, observation }).observation?.coverage,
+    ).toBe(0);
+    for (const patch of [
+      { state: 'NO_DATA' },
+      { verifiedAttempts: 3 },
+      { coverage: 1 },
+      { outcomes: [{ outcome: 'private-id', count: 1 }] },
+    ]) {
+      expect(
+        duplicateDiagnosticsResponseSchema.safeParse({
+          ...payload,
+          observation: { ...observation, ...patch },
+        }).success,
+      ).toBe(false);
+    }
+  });
   it('preserves unknown capability and unavailable history without inventing defaults', () => {
     const parsed = duplicateDiagnosticsResponseSchema.parse({
       ...payload,

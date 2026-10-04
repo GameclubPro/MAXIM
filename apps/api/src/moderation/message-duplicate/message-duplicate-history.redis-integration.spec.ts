@@ -12,6 +12,11 @@ import {
   MESSAGE_DUPLICATE_CONTROL_KEY,
 } from './message-duplicate-policy.service';
 import { duplicateSettings } from './message-duplicate-test-fixtures';
+import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
+import {
+  duplicateTelemetryKey,
+  DUPLICATE_TELEMETRY_BUCKET_MS,
+} from './message-duplicate-telemetry';
 
 const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
 const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
@@ -56,6 +61,73 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       content: extractDuplicateMessageContent({ message: { body: { text } } }),
       ...override,
     });
+
+  it('merges concurrent diagnostic attempts atomically with TTL and isolates chats', async () => {
+    const bucket = Math.floor(Date.now() / DUPLICATE_TELEMETRY_BUCKET_MS);
+    const key = duplicateTelemetryKey(chatId, bucket);
+    keys.add(key);
+    await Promise.all(
+      Array.from({ length: 24 }, (_, index) =>
+        redis.mergeDuplicateTelemetry(
+          key,
+          index % 2
+            ? { supported: 1, verified: 1, COMPARED_NO_MATCH: 1 }
+            : { supported: 1, DEFERRED: 1 },
+        ),
+      ),
+    );
+    const metrics = new MessageDuplicateMetricsService(redis);
+    try {
+      expect(await metrics.readObservations(chatId)).toMatchObject({
+        state: 'AVAILABLE',
+        supportedAttempts: 24,
+        verifiedAttempts: 12,
+        coverage: 0.5,
+        completeness: 'BEST_EFFORT',
+        basis: 'ATTEMPTS',
+      });
+      expect(await metrics.readObservations(`${chatId}-other`)).toMatchObject({
+        state: 'NO_DATA',
+        coverage: null,
+      });
+      expect(await inspector.ttl(key)).toBeGreaterThan(7100);
+      await inspector.set(key, JSON.stringify({ unexpected: 'private-data' }));
+      expect(await metrics.readObservations(chatId)).toMatchObject({
+        state: 'UNAVAILABLE',
+        coverage: null,
+        outcomes: [],
+      });
+    } finally {
+      metrics.onModuleDestroy();
+    }
+  });
+
+  it('returns a typed non-match separately from unverifiable history and stale revisions', async () => {
+    const input = {
+      chatId,
+      userId: '123',
+      messageId: 'typed',
+      eventTimestampMs: start,
+      controlRevision: 1,
+      settings,
+      content: extractDuplicateMessageContent({ message: { body: { text: 'hello' } } }),
+    };
+    expect(await history.observeWithOutcome(input)).toEqual({
+      outcome: 'COMPARED_NO_MATCH',
+      match: null,
+    });
+    expect(await history.observeWithOutcome({ ...input, eventTimestampMs: start - 100 })).toEqual({
+      outcome: 'STALE',
+      match: null,
+    });
+    expect(
+      await history.observeWithOutcome({
+        ...input,
+        messageId: 'unverified',
+        content: { ...input.content, complete: false, reason: 'invalid_content' },
+      }),
+    ).toEqual({ outcome: 'CONTENT_UNVERIFIED', match: null });
+  });
 
   it('counts exact short repeats, not retries, and invalidates edits without retroactive hits', async () => {
     expect(await observe('a', 0)).toBeNull();

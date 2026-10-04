@@ -183,10 +183,13 @@ without treating incomplete proof as a match or successful action. Media retains
 
 ## Operational Diagnostics
 
-API processes emit `message_duplicate_diagnostics` structured summaries with `schemaVersion: 1`,
-`windowStartedAt`, `windowEndedAt` and fixed numeric `counters`. Emission is at most once per
+API processes emit `message_duplicate_diagnostics` structured summaries with `schemaVersion: 2`,
+`windowStartedAt`, `windowEndedAt`, fixed numeric `counters` and `phases`. Each phase has a count,
+total/max duration and a histogram aligned with `phaseBucketUpperBoundsMs`. Policy, source,
+media proof, history and enforcement timings use a monotonic clock and include failed attempts.
+Emission is at most once per
 30 seconds while active, plus a final shutdown flush. Summaries have no message contents,
-identifiers, URLs or free-form errors and introduce no Redis/DB writes. They are best-effort
+identifiers, URLs or free-form errors. They are best-effort
 process-local attempt counts; retries and baseline verification are included, and a crash can
 lose the unflushed interval. Absence of a log record is not proof of zero activity.
 
@@ -199,6 +202,20 @@ since original enqueue including retries, not individual request latency. Guard 
 changed content/history/settings, immunity, manual release, policy rejection and unavailable
 verification. `media.budget_deferred` distinguishes bounded resource deferral from a non-match.
 Continue using persisted delete receipts and authenticated per-chat diagnostics for actual outcomes.
+Per-chat observation outcomes are separately aggregated in four 15-minute Redis buckets under
+`message-duplicate:diagnostics:v1:<chat-digest>:<bucket>`, with a two-hour TTL and fixed fields.
+Each process buffers at most 256 buckets plus one bounded flush, and has at most four writes in
+flight. Blocked writes retain their slots; moderation never waits for a telemetry write. Every
+write has a Redis-time deadline. Overflow, failed writes and a restart may lose observations,
+so the API explicitly reports `BEST_EFFORT` and `ATTEMPTS`, never unique-message totals.
+`telemetry.buffer_limited` and `telemetry.unavailable` identify observed losses.
+The reader performs exactly four point reads with a 250 ms deadline. Missing data produces
+`NO_DATA` with null counts/coverage; failure or malformed data produces `UNAVAILABLE`. A real
+zero percent requires recorded supported attempts with no completed comparison. Media enqueue
+is not a completed comparison and is excluded from the coverage denominator; verified media
+attempts and retries are counted at the worker boundary. First candidates, stale revisions,
+deferrals and failed comparisons cannot inflate verified coverage. Comparison success does not
+prove that an action was handed off or a message deleted. No telemetry is used as action authority.
 `worker.cleanup_retry`, `worker.cleanup_completed` and `worker.cleanup_exhausted` describe the
 separate ownership recovery, including no-op cleanup, and never count new moderation actions.
 

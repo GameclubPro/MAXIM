@@ -1,4 +1,7 @@
-import type { DuplicateDeletionAttempt } from '@maxim/contracts/settings';
+import type {
+  DuplicateDeletionAttempt,
+  DuplicateObservationDiagnostics,
+} from '@maxim/contracts/settings';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
@@ -30,6 +33,7 @@ function render(
   state: 'CONFIRMED' | 'MISSING' | 'UNKNOWN',
   options = { available: true, limited: false, failed: false },
   attempts: DuplicateDeletionAttempt[] = [],
+  observation?: DuplicateObservationDiagnostics,
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const key = ['duplicate-diagnostics', 'user', 'chat'];
@@ -40,6 +44,7 @@ function render(
       enabled: true,
       mode: 'FULL',
       capability: { state, checkedAt: time },
+      observation,
       history: {
         available: options.available,
         since: time,
@@ -97,6 +102,35 @@ test('unknown and capped history do not claim there were no attempts', () => {
   const partial = render('CONFIRMED', { available: true, limited: true, failed: false });
   assert.match(partial, /Неполная выборка/);
   assert.doesNotMatch(partial, /Попыток удаления не было/);
+});
+
+test('keeps missing and zero coverage distinct and never presents a comparison as deletion', () => {
+  const missing = {
+    state: 'NO_DATA' as const,
+    since: time,
+    until: time,
+    basis: 'ATTEMPTS' as const,
+    completeness: 'BEST_EFFORT' as const,
+    supportedAttempts: null,
+    verifiedAttempts: null,
+    coverage: null,
+    outcomes: [],
+  };
+  assert.match(render('CONFIRMED', undefined, [], missing), /Данные о проверках ещё не поступили/);
+  assert.doesNotMatch(render('CONFIRMED', undefined, [], missing), /\(0%\)/);
+  const zero = render('CONFIRMED', undefined, [], {
+    ...missing,
+    state: 'AVAILABLE',
+    supportedAttempts: 2,
+    verifiedAttempts: 0,
+    coverage: 0,
+    outcomes: [{ outcome: 'COMPARISON_FAILED', count: 2 }],
+  });
+  assert.match(zero, /0 из 2 поддерживаемых попыток \(0%\)/);
+  assert.match(zero, /Сравнение не завершилось/);
+  assert.match(zero, /Повторные попытки учитываются отдельно/);
+  assert.match(zero, /Результат сравнения не подтверждает удаление/);
+  assert.doesNotMatch(zero, />Удалено</);
 });
 
 test('shows the fixed original window without confusing it with delivery retries', () => {

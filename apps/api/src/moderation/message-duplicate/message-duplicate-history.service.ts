@@ -39,6 +39,11 @@ export type MessageDuplicateObservation = {
   imageScope?: 'SAME_AUTHOR' | 'CHAT';
 };
 
+export type MessageDuplicateHistoryObservation = {
+  outcome: 'SCHEDULE_CLOSED' | 'CONTENT_UNVERIFIED' | 'STALE' | 'COMPARED_NO_MATCH' | 'MATCHED';
+  match: { hit: DuplicateHit; binding: MessageDuplicateBinding } | null;
+};
+
 export const MESSAGE_DUPLICATE_FINGERPRINT_LIMIT = 16;
 
 export function selectMessageDuplicateFingerprints(
@@ -98,6 +103,12 @@ export class MessageDuplicateHistoryService {
   async observe(
     input: MessageDuplicateObservation,
   ): Promise<{ hit: DuplicateHit; binding: MessageDuplicateBinding } | null> {
+    return (await this.observeWithOutcome(input)).match;
+  }
+
+  async observeWithOutcome(
+    input: MessageDuplicateObservation,
+  ): Promise<MessageDuplicateHistoryObservation> {
     const mode = input.imageScope
       ? 'IMAGE'
       : input.settings.duplicateCompareMode === 'TEXT'
@@ -112,7 +123,7 @@ export class MessageDuplicateHistoryService {
         publishedAt: input.publishedAtMs ?? input.eventTimestampMs,
         sources: { [mode]: lifecycleSourceDigest(input.content, mode) },
       });
-      return null;
+      return { outcome: 'SCHEDULE_CLOSED', match: null };
     }
     const mediaHashes = [...(input.mediaHashes ?? [])];
     const identity = buildMessageDuplicateIdentity(input.content, mode, mediaHashes);
@@ -179,14 +190,14 @@ export class MessageDuplicateHistoryService {
     if (mutation.kind === 'replayed') this.metrics?.record('history.replayed');
     if (!identity || mutation.kind === 'stale' || !mutation.revision) {
       this.metrics?.record(identity ? 'history.stale' : 'history.unverified');
-      return null;
+      return { outcome: identity ? 'STALE' : 'CONTENT_UNVERIFIED', match: null };
     }
     const matches = Array.isArray(mutation.matches) ? mutation.matches : [];
     const selected = matches.sort((a, b) => (b.qualified ?? b.count) - (a.qualified ?? a.count))[0];
     const pattern = selected && patterns.find((part) => part.hash === selected.fingerprint);
     if (!selected || !pattern) {
       this.metrics?.record('history.no_match_or_allowed');
-      return null;
+      return { outcome: 'COMPARED_NO_MATCH', match: null };
     }
     this.metrics?.record('history.matched');
     const match = { ...pattern, count: selected.qualified ?? selected.count };
@@ -219,13 +230,16 @@ export class MessageDuplicateHistoryService {
       requiredCount: flow.allowedCount + 2,
     };
     return {
-      binding,
-      hit: {
-        count: match.count,
-        windowSec,
-        hash: match.hash,
-        fingerprintType: match.part.type,
-        metadata: { duplicateSource: 'message_v1', messageDuplicate: binding },
+      outcome: 'MATCHED',
+      match: {
+        binding,
+        hit: {
+          count: match.count,
+          windowSec,
+          hash: match.hash,
+          fingerprintType: match.part.type,
+          metadata: { duplicateSource: 'message_v1', messageDuplicate: binding },
+        },
       },
     };
   }

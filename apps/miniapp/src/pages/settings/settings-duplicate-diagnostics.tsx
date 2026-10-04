@@ -3,6 +3,7 @@ import { Refresh } from 'iconoir-react';
 import {
   duplicateDiagnosticsResponseSchema,
   type DuplicateDeletionAttempt,
+  type DuplicateObservationOutcome,
 } from '@maxim/contracts/settings';
 import type { ApiTransport } from '../../lib/api/transport';
 
@@ -23,6 +24,29 @@ const REASON_LABELS: Record<NonNullable<DuplicateDeletionAttempt['reason']>, str
   CONTENT_CHANGED: 'Совпадение больше не подтверждается',
   POLICY_CHANGED: 'Условия проверки изменились',
   UNKNOWN: 'Причина не подтверждена',
+};
+const OBSERVATION_LABELS: Record<DuplicateObservationOutcome, string> = {
+  OFF: 'Проверка остановлена',
+  SCHEDULE_CLOSED: 'Вне расписания',
+  EVENT_TIME_REJECTED: 'Время сообщения не подтверждено',
+  UNTRACKED: 'Сообщение исключено из проверки',
+  CONTENT_UNVERIFIED: 'Содержимое не подтверждено',
+  UNSUPPORTED_CONTENT: 'Неподдерживаемое содержимое',
+  MEDIA_QUEUED: 'Медиа передано на проверку',
+  MEDIA_CANDIDATE: 'Первое медиа ожидает сравнения',
+  SOURCE_UNAVAILABLE: 'Исходное сообщение недоступно',
+  POLICY_CHANGED: 'Режим проверки изменился',
+  SETTINGS_CHANGED: 'Настройки или доступ изменились',
+  STALE: 'Версия сообщения устарела',
+  DEADLINE_EXPIRED: 'Срок проверки истёк',
+  DEFERRED: 'Проверка отложена',
+  COMPARISON_FAILED: 'Сравнение не завершилось',
+  UNAVAILABLE: 'Проверку не удалось начать',
+  COMPARED_NO_MATCH: 'Сравнено: повтора сверх допуска нет',
+  MATCHED_INELIGIBLE: 'Совпадение без права действия',
+  MATCHED_OBSERVE: 'Совпадение в режиме наблюдения',
+  MATCHED_ACTION_FAILED: 'Совпадение: передача действия не завершилась',
+  ENFORCEMENT_REQUESTED: 'Совпадение передано на проверку действия',
 };
 function formatTime(value: string) {
   return new Date(value).toLocaleString('ru-RU', {
@@ -134,6 +158,33 @@ export default function SettingsDuplicateDiagnostics({
               </dd>
             </div>
           </dl>
+          <h4 className="duplicate-stage__title">Проверка сообщений</h4>
+          {!data.observation || data.observation.state === 'UNAVAILABLE' ? (
+            <p role="status">Статистика проверок временно недоступна</p>
+          ) : data.observation.state === 'NO_DATA' ? (
+            <p role="status">Данные о проверках ещё не поступили</p>
+          ) : (
+            <>
+              <p className="field__hint">
+                Неполная статистика попыток с {formatTime(data.observation.since)}. Повторные
+                попытки учитываются отдельно; обновление может запаздывать.
+              </p>
+              <p>
+                {data.observation.coverage === null
+                  ? 'Нет данных для оценки полноты сравнения'
+                  : `Сравнение завершено: ${data.observation.verifiedAttempts} из ${data.observation.supportedAttempts} поддерживаемых попыток (${Math.round(data.observation.coverage * 100)}%)`}
+              </p>
+              <dl className="duplicate-diagnostics__facts">
+                {data.observation.outcomes.map(({ outcome, count }) => (
+                  <div key={outcome}>
+                    <dt>{OBSERVATION_LABELS[outcome]}</dt>
+                    <dd>{count}</dd>
+                  </div>
+                ))}
+              </dl>
+              <p className="field__hint">Результат сравнения не подтверждает удаление сообщения.</p>
+            </>
+          )}
           <h4 className="duplicate-stage__title">Последние попытки удаления</h4>
           <div className="duplicate-diagnostics__history-meta">
             <span>За 24 часа</span>

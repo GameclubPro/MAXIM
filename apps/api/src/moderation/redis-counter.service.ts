@@ -3,6 +3,12 @@ import {
   type DuplicateWindowResult,
 } from './message-duplicate/message-duplicate-window.script';
 import { digestDuplicateContent } from './message-duplicate/message-duplicate-content';
+import {
+  DUPLICATE_TELEMETRY_FIELDS,
+  DUPLICATE_TELEMETRY_TTL_SECONDS,
+  MERGE_DUPLICATE_TELEMETRY_SCRIPT,
+  type DuplicateTelemetryCounters,
+} from './message-duplicate/message-duplicate-telemetry';
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
@@ -326,6 +332,18 @@ export class RedisCounterService implements OnModuleDestroy {
 
   async resetDuplicateWindow(chatId: string, userId: string): Promise<void> {
     await this.duplicateWindow(chatId, { op: 'reset', author: digestDuplicateContent(userId) });
+  }
+
+  async mergeDuplicateTelemetry(key: string, counters: DuplicateTelemetryCounters): Promise<void> {
+    await this.redis.eval(
+      MERGE_DUPLICATE_TELEMETRY_SCRIPT,
+      1,
+      key,
+      JSON.stringify(counters),
+      DUPLICATE_TELEMETRY_TTL_SECONDS,
+      Date.now() + 250,
+      JSON.stringify(DUPLICATE_TELEMETRY_FIELDS),
+    );
   }
 
   async incrementWithTtl(key: string, ttlSeconds: number): Promise<number> {

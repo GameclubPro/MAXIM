@@ -1,6 +1,7 @@
 import { duplicatePublicationTime } from './message-duplicate-publication-time';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
+import type { DuplicateObservationOutcome } from '@maxim/contracts/settings';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { classifyDuplicateEventTime } from '../duplicate-enforcement-safety';
 import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
@@ -15,7 +16,10 @@ import {
   messageDuplicateSettingsDigest,
   exactImageSettingsDigest,
 } from './message-duplicate-state';
-import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
+import {
+  MessageDuplicateMetricsService,
+  measureDuplicatePhase,
+} from './message-duplicate-metrics.service';
 import { isDuplicateScheduleOpen } from './message-duplicate-schedule';
 import { MessageDuplicateAuthorizationService } from './message-duplicate-authorization.service';
 import { resolveTrustedDuplicateStateRevision } from '../duplicate-message-revision';
@@ -88,7 +92,7 @@ export class MessageDuplicateService {
     actionEligible: boolean;
     track: boolean;
     executeFullAction?: ExecuteDuplicateModerationAction;
-  }): Promise<void> {
+  }): Promise<DuplicateObservationOutcome | undefined> {
     const message = params.update.message;
     if (
       !message ||
@@ -96,134 +100,170 @@ export class MessageDuplicateService {
       !['message_created', 'message_edited'].includes(params.update.type)
     )
       return;
-    if (!params.actionEligible || !params.track) await this.revokeActions(params.update);
-    const policy = await this.policy.resolve(message.chatId);
-    if (policy.mode === 'off') {
-      this.metrics?.record('admission.off');
-      return;
-    }
-    const eventTimestampMs = params.eventTimestampMs;
-    if (eventTimestampMs && !isDuplicateScheduleOpen(params.settings, eventTimestampMs)) {
-      this.metrics?.record('admission.schedule_closed');
-      return;
-    }
-    if (
-      !Number.isSafeInteger(eventTimestampMs) ||
-      !eventTimestampMs ||
-      eventTimestampMs < policy.effectiveAtMs ||
-      classifyDuplicateEventTime({
-        eventTimestampMs,
-        windowSec:
-          params.settings.duplicateWindowMode === 'DAILY'
-            ? 172800
-            : resolveDuplicateFlowConfig(params.settings).windowSec,
-      })
-    ) {
-      this.metrics?.record('admission.event_time_rejected');
-      this.logger.debug(
-        { chatId: message.chatId },
-        'Message duplicate skipped: untrusted event time',
+    let supported = false;
+    let comparedOutcome: DuplicateObservationOutcome | null = null;
+    const finish = (outcome: DuplicateObservationOutcome) => {
+      try {
+        this.metrics?.recordObservation?.(message.chatId, outcome, supported);
+      } catch {
+        /* FLAG: Telemetry cannot replace the moderation outcome. */
+      }
+      return outcome;
+    };
+    try {
+      if (!params.actionEligible || !params.track) await this.revokeActions(params.update);
+      const policy = await measureDuplicatePhase(this.metrics, 'policy', () =>
+        this.policy.resolve(message.chatId),
       );
-      return;
-    }
-    const publishedAtMs = duplicatePublicationTime(params.update);
-    if (!publishedAtMs || publishedAtMs > eventTimestampMs + 60_000) return;
-    const content = extractDuplicateMessageContent(params.update.raw);
-    if (!content.complete) this.metrics?.recordContentRejection(content.reason);
-    const hasPhotos = content.media.some((media) => media.kind === 'photo');
-    const invalidContent = { ...content, complete: false, reason: 'invalid_content' as const };
-    const imageMode = params.settings.duplicateCompareMode !== 'TEXT' && hasPhotos;
-    const imageOnly = imageMode && isExactImageContent(content);
-    const observedContent = params.track && !imageMode ? content : invalidContent;
-    const result = await this.history.observe({
-      content: observedContent,
-      chatId: message.chatId,
-      userId: message.senderId,
-      messageId: message.messageId,
-      eventTimestampMs,
-      publishedAtMs,
-      controlRevision: policy.revision,
-      settings: params.settings,
-    });
-    // FLAG: One revision invalidates both histories when an edit changes the attachment kind.
-    // Old message/photo jobs are never promoted into the new explicit IMAGE job authority.
-    if (hasPhotos || params.update.type === 'message_edited') {
-      await this.history.observe({
-        content: params.track && imageOnly ? content : invalidContent,
-        imageScope: params.settings.duplicatePhotoScope,
-        chatId: message.chatId,
-        userId: message.senderId,
-        messageId: message.messageId,
-        eventTimestampMs,
-        publishedAtMs,
-        controlRevision: policy.revision,
-        settings: params.settings,
-      });
-    }
-    if (!params.track) {
-      this.metrics?.record('admission.untracked');
-      return;
-    }
-    if (imageMode && !imageOnly) return;
-    if (
-      (imageOnly || params.settings.duplicateCompareMode !== 'TEXT') &&
-      content.complete &&
-      content.media.length > 0
-    ) {
-      if (!params.webhookEventId) {
-        this.metrics?.record('admission.missing_receipt');
+      if (policy.mode === 'off') {
+        this.metrics?.record('admission.off');
+        return finish('OFF');
+      }
+      const eventTimestampMs = params.eventTimestampMs;
+      if (eventTimestampMs && !isDuplicateScheduleOpen(params.settings, eventTimestampMs)) {
+        this.metrics?.record('admission.schedule_closed');
+        return finish('SCHEDULE_CLOSED');
+      }
+      if (
+        !Number.isSafeInteger(eventTimestampMs) ||
+        !eventTimestampMs ||
+        eventTimestampMs < policy.effectiveAtMs ||
+        classifyDuplicateEventTime({
+          eventTimestampMs,
+          windowSec:
+            params.settings.duplicateWindowMode === 'DAILY'
+              ? 172800
+              : resolveDuplicateFlowConfig(params.settings).windowSec,
+        })
+      ) {
+        this.metrics?.record('admission.event_time_rejected');
         this.logger.debug(
           { chatId: message.chatId },
-          'Message duplicate media skipped: missing durable receipt',
+          'Message duplicate skipped: untrusted event time',
         );
-        return;
+        return finish('EVENT_TIME_REJECTED');
       }
-      await this.queue.enqueue({
-        webhookEventId: params.webhookEventId,
-        chatId: message.chatId,
-        messageId: message.messageId,
-        eventTimestampMs,
-        sourceCreatedAt: new Date(eventTimestampMs).toISOString(),
-        controlRevision: policy.revision,
-        policyRevision: params.settings.duplicatePolicyRevision,
-        settingsDigest: imageOnly
-          ? exactImageSettingsDigest(params.settings)
-          : messageDuplicateSettingsDigest(params.settings),
-        ...(imageOnly ? { comparison: 'IMAGE' as const } : {}),
-        actionEligible:
-          params.actionEligible &&
-          (imageOnly ? policy.mode === 'full' : messageDuplicateActionsEnabled(policy.mode)),
-        deadlineAtMs: eventTimestampMs + DUPLICATE_JOB_MAX_LIFETIME_MS,
-      });
-      this.metrics?.record('admission.media_queued');
-      return;
-    }
-    if (!content.complete && !result)
-      this.logger.debug(
-        { chatId: message.chatId, reason: content.reason },
-        'Message duplicate content could not be verified',
+      const publishedAtMs = duplicatePublicationTime(params.update);
+      if (!publishedAtMs || publishedAtMs > eventTimestampMs + 60_000)
+        return finish('EVENT_TIME_REJECTED');
+      const content = extractDuplicateMessageContent(params.update.raw);
+      if (!content.complete) this.metrics?.recordContentRejection(content.reason);
+      const hasPhotos = content.media.some((media) => media.kind === 'photo');
+      const invalidContent = { ...content, complete: false, reason: 'invalid_content' as const };
+      const imageMode = params.settings.duplicateCompareMode !== 'TEXT' && hasPhotos;
+      const imageOnly = imageMode && isExactImageContent(content);
+      supported =
+        params.track &&
+        content.complete &&
+        !imageMode &&
+        (params.settings.duplicateCompareMode === 'TEXT' || content.media.length === 0);
+      const observedContent = params.track && !imageMode ? content : invalidContent;
+      const observation = await measureDuplicatePhase(this.metrics, 'history', () =>
+        this.history.observeWithOutcome({
+          content: observedContent,
+          chatId: message.chatId,
+          userId: message.senderId,
+          messageId: message.messageId,
+          eventTimestampMs,
+          publishedAtMs,
+          controlRevision: policy.revision,
+          settings: params.settings,
+        }),
       );
-    if (result && params.actionEligible && messageDuplicateActionsEnabled(policy.mode)) {
-      result.binding.authorization = {
-        eventTimestampMs,
-        deadlineAtMs:
-          Math.min(eventTimestampMs, result.binding.eventTimestampMs) +
-          DUPLICATE_JOB_MAX_LIFETIME_MS,
-      };
-      await this.enforcement.enqueue({
-        ...result,
-        chatId: message.chatId,
-        botId: params.botId,
-        sourceCreatedAt: message.createdAt,
-        text: content.text,
-        settings: params.settings,
-        update: params.update,
-        executeFullAction: params.executeFullAction,
-      });
-    } else if (result) {
-      this.metrics?.record(
-        params.actionEligible ? 'admission.shadow' : 'admission.action_ineligible',
-      );
+      const result = observation.match;
+      if (supported && observation.outcome === 'MATCHED') comparedOutcome = 'MATCHED_ACTION_FAILED';
+      if (supported && observation.outcome === 'COMPARED_NO_MATCH')
+        comparedOutcome = 'COMPARED_NO_MATCH';
+      // FLAG: One revision invalidates both histories when an edit changes the attachment kind.
+      // Old message/photo jobs are never promoted into the new explicit IMAGE job authority.
+      if (hasPhotos || params.update.type === 'message_edited') {
+        await measureDuplicatePhase(this.metrics, 'history', () =>
+          this.history.observe({
+            content: params.track && imageOnly ? content : invalidContent,
+            imageScope: params.settings.duplicatePhotoScope,
+            chatId: message.chatId,
+            userId: message.senderId,
+            messageId: message.messageId,
+            eventTimestampMs,
+            publishedAtMs,
+            controlRevision: policy.revision,
+            settings: params.settings,
+          }),
+        );
+      }
+      if (!params.track) {
+        this.metrics?.record('admission.untracked');
+        return finish('UNTRACKED');
+      }
+      if (imageMode && !imageOnly) return finish('UNSUPPORTED_CONTENT');
+      if (
+        (imageOnly || params.settings.duplicateCompareMode !== 'TEXT') &&
+        content.complete &&
+        content.media.length > 0
+      ) {
+        if (!params.webhookEventId) {
+          this.metrics?.record('admission.missing_receipt');
+          this.logger.debug(
+            { chatId: message.chatId },
+            'Message duplicate media skipped: missing durable receipt',
+          );
+          return finish('SOURCE_UNAVAILABLE');
+        }
+        await this.queue.enqueue({
+          webhookEventId: params.webhookEventId,
+          chatId: message.chatId,
+          messageId: message.messageId,
+          eventTimestampMs,
+          sourceCreatedAt: new Date(eventTimestampMs).toISOString(),
+          controlRevision: policy.revision,
+          policyRevision: params.settings.duplicatePolicyRevision,
+          settingsDigest: imageOnly
+            ? exactImageSettingsDigest(params.settings)
+            : messageDuplicateSettingsDigest(params.settings),
+          ...(imageOnly ? { comparison: 'IMAGE' as const } : {}),
+          actionEligible:
+            params.actionEligible &&
+            (imageOnly ? policy.mode === 'full' : messageDuplicateActionsEnabled(policy.mode)),
+          deadlineAtMs: eventTimestampMs + DUPLICATE_JOB_MAX_LIFETIME_MS,
+        });
+        this.metrics?.record('admission.media_queued');
+        return finish('MEDIA_QUEUED');
+      }
+      if (!content.complete && !result)
+        this.logger.debug(
+          { chatId: message.chatId, reason: content.reason },
+          'Message duplicate content could not be verified',
+        );
+      if (result && params.actionEligible && messageDuplicateActionsEnabled(policy.mode)) {
+        result.binding.authorization = {
+          eventTimestampMs,
+          deadlineAtMs:
+            Math.min(eventTimestampMs, result.binding.eventTimestampMs) +
+            DUPLICATE_JOB_MAX_LIFETIME_MS,
+        };
+        await measureDuplicatePhase(this.metrics, 'enforcement', () =>
+          this.enforcement.enqueue({
+            ...result,
+            chatId: message.chatId,
+            botId: params.botId,
+            sourceCreatedAt: message.createdAt,
+            text: content.text,
+            settings: params.settings,
+            update: params.update,
+            executeFullAction: params.executeFullAction,
+          }),
+        );
+        return finish('ENFORCEMENT_REQUESTED');
+      } else if (result) {
+        this.metrics?.record(
+          params.actionEligible ? 'admission.shadow' : 'admission.action_ineligible',
+        );
+        return finish(params.actionEligible ? 'MATCHED_OBSERVE' : 'MATCHED_INELIGIBLE');
+      }
+      return finish(observation.outcome === 'MATCHED' ? 'CONTENT_UNVERIFIED' : observation.outcome);
+    } catch (error) {
+      finish(comparedOutcome ?? (supported ? 'COMPARISON_FAILED' : 'UNAVAILABLE'));
+      throw error;
     }
   }
 }

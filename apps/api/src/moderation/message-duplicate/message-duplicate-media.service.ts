@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { MaxUpdate } from '@maxim/contracts';
+import type { DuplicateObservationOutcome } from '@maxim/contracts/settings';
 import { z } from 'zod';
 import { UnrecoverableError } from 'bullmq';
 import { extractHttpStatusCode } from '../../common/http-error.util';
@@ -47,6 +48,7 @@ import type { MessageDuplicateJob } from './message-duplicate.queue';
 import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
 import {
   MessageDuplicateMetricsService,
+  measureDuplicatePhase,
   type MessageDuplicateMetricCounter,
 } from './message-duplicate-metrics.service';
 import { isDuplicateScheduleOpen, resolveDuplicateDailyWindow } from './message-duplicate-schedule';
@@ -140,324 +142,383 @@ export class MessageDuplicateMediaService {
     job: MessageDuplicateJob,
     lease: PhotoDuplicateOrderingLease,
     executeFullAction?: ExecuteDuplicateModerationAction,
-  ): Promise<void> {
-    const imageOnly = job.comparison === 'IMAGE';
-    const policy = await this.policy.resolve(job.chatId, true);
-    if (
-      policy.mode === 'off' ||
-      policy.revision !== job.controlRevision ||
-      job.eventTimestampMs < policy.effectiveAtMs
-    ) {
-      this.metrics?.record('media.policy_changed');
-      return;
-    }
-    lease.assertOwned();
-    const source = await this.loadSource(job.webhookEventId);
-    if (!source) {
-      this.metrics?.record('media.source_missing');
-      return;
-    }
-    const message = source.update.message!;
-    if (
-      message.chatId !== job.chatId ||
-      message.messageId !== job.messageId ||
-      source.eventTimestampMs !== job.eventTimestampMs ||
-      this.bots.isKnownBotUserId(message.senderId)
-    ) {
-      this.metrics?.record('media.identity_rejected');
-      return;
-    }
-    const settings = await this.prisma.chatSettings.findUnique({
-      where: { chatId: job.chatId },
-      include: {
-        chat: {
-          select: {
-            entityType: true,
-            admins: { select: { userId: true } },
-            rules: { select: { publishedUrl: true, publishedMessageId: true } },
+  ): Promise<DuplicateObservationOutcome> {
+    let supported = false;
+    let comparedOutcome: DuplicateObservationOutcome | null = null;
+    const finish = (outcome: DuplicateObservationOutcome) => {
+      try {
+        this.metrics?.recordObservation?.(job.chatId, outcome, supported);
+      } catch {
+        /* FLAG: Telemetry cannot replace the moderation outcome. */
+      }
+      return outcome;
+    };
+    try {
+      const imageOnly = job.comparison === 'IMAGE';
+      const policy = await measureDuplicatePhase(this.metrics, 'policy', () =>
+        this.policy.resolve(job.chatId, true),
+      );
+      if (
+        policy.mode === 'off' ||
+        policy.revision !== job.controlRevision ||
+        job.eventTimestampMs < policy.effectiveAtMs
+      ) {
+        this.metrics?.record('media.policy_changed');
+        return finish('POLICY_CHANGED');
+      }
+      lease.assertOwned();
+      const source = await measureDuplicatePhase(this.metrics, 'source', () =>
+        this.loadSource(job.webhookEventId),
+      );
+      if (!source) {
+        this.metrics?.record('media.source_missing');
+        return finish('SOURCE_UNAVAILABLE');
+      }
+      const message = source.update.message!;
+      if (
+        message.chatId !== job.chatId ||
+        message.messageId !== job.messageId ||
+        source.eventTimestampMs !== job.eventTimestampMs ||
+        this.bots.isKnownBotUserId(message.senderId)
+      ) {
+        this.metrics?.record('media.identity_rejected');
+        return finish('SOURCE_UNAVAILABLE');
+      }
+      const settings = await this.prisma.chatSettings.findUnique({
+        where: { chatId: job.chatId },
+        include: {
+          chat: {
+            select: {
+              entityType: true,
+              admins: { select: { userId: true } },
+              rules: { select: { publishedUrl: true, publishedMessageId: true } },
+            },
           },
         },
-      },
-    });
-    if (
-      !settings?.antiDuplicateEnabled ||
-      settings.duplicateCompareMode === 'TEXT' ||
-      settings.chat.entityType !== 'CHAT' ||
-      settings.chat.admins.some((admin) => admin.userId === message.senderId) ||
-      settings.duplicatePolicyRevision !== job.policyRevision ||
-      (imageOnly
-        ? exactImageSettingsDigest(settings)
-        : messageDuplicateSettingsDigest(settings)) !== job.settingsDigest
-    ) {
-      this.metrics?.record('media.settings_rejected');
-      return;
-    }
-    const flow = resolveDuplicateFlowConfig(settings);
-    if (!isDuplicateScheduleOpen(settings, job.eventTimestampMs)) {
-      this.metrics?.record('media.schedule_closed');
-      return;
-    }
-    const dailyWindow = resolveDuplicateDailyWindow(settings, job.eventTimestampMs);
-    const windowSec = dailyWindow
-      ? Math.ceil((dailyWindow.endMs - dailyWindow.startMs) / 1000)
-      : flow.windowSec;
-    if (
-      classifyDuplicateEventTime({
+      });
+      if (
+        !settings?.antiDuplicateEnabled ||
+        settings.duplicateCompareMode === 'TEXT' ||
+        settings.chat.entityType !== 'CHAT' ||
+        settings.chat.admins.some((admin) => admin.userId === message.senderId) ||
+        settings.duplicatePolicyRevision !== job.policyRevision ||
+        (imageOnly
+          ? exactImageSettingsDigest(settings)
+          : messageDuplicateSettingsDigest(settings)) !== job.settingsDigest
+      ) {
+        this.metrics?.record('media.settings_rejected');
+        return finish('SETTINGS_CHANGED');
+      }
+      const flow = resolveDuplicateFlowConfig(settings);
+      if (!isDuplicateScheduleOpen(settings, job.eventTimestampMs)) {
+        this.metrics?.record('media.schedule_closed');
+        return finish('SCHEDULE_CLOSED');
+      }
+      const dailyWindow = resolveDuplicateDailyWindow(settings, job.eventTimestampMs);
+      const windowSec = dailyWindow
+        ? Math.ceil((dailyWindow.endMs - dailyWindow.startMs) / 1000)
+        : flow.windowSec;
+      if (
+        classifyDuplicateEventTime({
+          eventTimestampMs: job.eventTimestampMs,
+          windowSec,
+        })
+      ) {
+        this.metrics?.record('media.event_time_rejected');
+        return finish('EVENT_TIME_REJECTED');
+      }
+      const content = extractDuplicateMessageContent(source.update.raw);
+      if (
+        !content.complete ||
+        content.media.length === 0 ||
+        (imageOnly
+          ? !isExactImageContent(content)
+          : content.media.some((media) => media.kind === 'photo'))
+      ) {
+        this.metrics?.record('media.content_unverified');
+        return finish('CONTENT_UNVERIFIED');
+      }
+      supported = true;
+      const scope = digestDuplicateContent([
+        job.chatId,
+        imageOnly && settings.duplicatePhotoScope === 'CHAT' ? null : message.senderId,
+        job.controlRevision,
+        job.settingsDigest,
+        dailyWindow?.startMs,
+      ]);
+      const candidateKeys = this.history
+        .candidateKeys(content, settings, imageOnly)
+        .map((key) => `message-duplicate:candidate:v1:${scope}:${key}`);
+      const ownPointer = {
+        webhookEventId: job.webhookEventId,
+        messageId: job.messageId,
         eventTimestampMs: job.eventTimestampMs,
-        windowSec,
-      })
-    ) {
-      this.metrics?.record('media.event_time_rejected');
-      return;
-    }
-    const content = extractDuplicateMessageContent(source.update.raw);
-    if (
-      !content.complete ||
-      content.media.length === 0 ||
-      (imageOnly
-        ? !isExactImageContent(content)
-        : content.media.some((media) => media.kind === 'photo'))
-    ) {
-      this.metrics?.record('media.content_unverified');
-      return;
-    }
-    const scope = digestDuplicateContent([
-      job.chatId,
-      imageOnly && settings.duplicatePhotoScope === 'CHAT' ? null : message.senderId,
-      job.controlRevision,
-      job.settingsDigest,
-      dailyWindow?.startMs,
-    ]);
-    const candidateKeys = this.history
-      .candidateKeys(content, settings, imageOnly)
-      .map((key) => `message-duplicate:candidate:v1:${scope}:${key}`);
-    const ownPointer = {
-      webhookEventId: job.webhookEventId,
-      messageId: job.messageId,
-      eventTimestampMs: job.eventTimestampMs,
-    };
-    const predecessors = new Map<string, z.infer<typeof pointerSchema>>();
-    let retryingCurrent = false;
-    for (const key of candidateKeys) {
-      const raw = await this.redis.getString(key);
-      const parsed = raw && raw.length < 2048 ? pointerSchema.safeParse(safeJson(raw)) : null;
-      if (parsed?.success) {
-        const ageMs = job.eventTimestampMs - parsed.data.eventTimestampMs;
-        // FLAG: A late older job must not overwrite a newer candidate or create retroactive actions.
-        if (ageMs < 0) {
-          this.metrics?.record('media.late_event');
-          return;
-        }
-        if (ageMs < windowSec * 1000) {
-          if (ageMs === 0 && parsed.data.messageId === job.messageId) retryingCurrent = true;
-          else {
-            const previous = predecessors.get(parsed.data.messageId);
-            if (!previous || previous.eventTimestampMs < parsed.data.eventTimestampMs)
-              predecessors.set(parsed.data.messageId, parsed.data);
+      };
+      const predecessors = new Map<string, z.infer<typeof pointerSchema>>();
+      let retryingCurrent = false;
+      for (const key of candidateKeys) {
+        const raw = await this.redis.getString(key);
+        const parsed = raw && raw.length < 2048 ? pointerSchema.safeParse(safeJson(raw)) : null;
+        if (parsed?.success) {
+          const ageMs = job.eventTimestampMs - parsed.data.eventTimestampMs;
+          // FLAG: A late older job must not overwrite a newer candidate or create retroactive actions.
+          if (ageMs < 0) {
+            this.metrics?.record('media.late_event');
+            return finish('STALE');
           }
+          if (ageMs < windowSec * 1000) {
+            if (ageMs === 0 && parsed.data.messageId === job.messageId) retryingCurrent = true;
+            else {
+              const previous = predecessors.get(parsed.data.messageId);
+              if (!previous || previous.eventTimestampMs < parsed.data.eventTimestampMs)
+                predecessors.set(parsed.data.messageId, parsed.data);
+            }
+            lease.assertOwned();
+            continue;
+          }
+        }
+        lease.assertOwned();
+        if (raw !== null) {
+          await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), windowSec);
+        }
+      }
+      const currentCached = await this.readHashes(content, source.update);
+      const missingCurrentProof = currentCached.some((hash) => hash === null);
+      // FLAG: A candidate pointing at this job may be an unfinished action, not a first occurrence.
+      // Rebuild evicted proofs on retry; durable intent/ordering claims still fence repeated actions.
+      if (predecessors.size === 0 && !retryingCurrent && missingCurrentProof) {
+        for (const key of candidateKeys) {
           lease.assertOwned();
+          await this.redis.setStringIfAbsentWithTtl(key, JSON.stringify(ownPointer), windowSec);
+        }
+        this.metrics?.record('media.first_candidate');
+        return finish('MEDIA_CANDIDATE');
+      }
+      if (predecessors.size > 0 || missingCurrentProof) {
+        const decision = await this.governor.decide({
+          component: 'message-duplicate-media',
+          sourceTag: 'message-duplicate',
+          allowRecoveryWindowRun: true,
+        });
+        if (decision.action === 'pause')
+          throw new MessageDuplicateMediaDeferredError('governor_pause', decision.retryAfterMs);
+        if (decision.action === 'slow') {
+          const slowKey = `message-duplicate:governor-slow:v2:${job.idempotencyKey}`;
+          const stored = await this.redis.getString(slowKey);
+          const nextAllowedAtMs =
+            stored === null
+              ? Date.now() +
+                new MessageDuplicateMediaDeferredError('governor_slow', decision.retryAfterMs)
+                  .retryAfterMs
+              : Number(stored);
+          if (!Number.isSafeInteger(nextAllowedAtMs))
+            throw new Error('Invalid message duplicate governor pacing state');
+          if (stored === null)
+            await this.redis.setStringIfAbsentWithTtl(slowKey, String(nextAllowedAtMs), 600);
+          if (Date.now() < nextAllowedAtMs)
+            throw new MessageDuplicateMediaDeferredError(
+              'governor_slow',
+              nextAllowedAtMs - Date.now(),
+            );
+        }
+      }
+      const deadlineAtMs = Math.min(
+        Date.now() + 30_000,
+        job.deadlineAtMs,
+        dailyWindow?.endMs ?? Number.MAX_SAFE_INTEGER,
+        policy.expiresAtMs,
+      );
+      if (Date.now() >= deadlineAtMs) {
+        this.metrics?.record('media.deadline_expired');
+        return finish('DEADLINE_EXPIRED');
+      }
+      const budget = { remaining: MAX_UNCACHED_MEDIA_PER_ATTEMPT };
+      let baselineUnverified = false;
+      // FLAG: Materialize every distinct predecessor before freezing the current replay count.
+      // Proof caches retain progress across bounded deferrals; baseline hits never authorize actions.
+      for (const previous of predecessors.values()) {
+        lease.assertOwned();
+        const rejectedKey = `message-duplicate:baseline-rejected:v1:${this.resourceKey}:${digestDuplicateContent(previous.webhookEventId)}`;
+        if ((await this.redis.getString(rejectedKey)) === 'rejected') {
+          this.metrics?.record('media.baseline_rejected_cached');
+          baselineUnverified = true;
           continue;
         }
+        let baselineVerified = false;
+        try {
+          if (Date.now() >= deadlineAtMs) {
+            this.metrics?.record('media.budget_deferred');
+            throw new MessageDuplicateMediaDeferredError('proof_budget');
+          }
+          const baseline = await measureDuplicatePhase(this.metrics, 'source', () =>
+            this.loadSource(previous.webhookEventId),
+          );
+          if (!baseline) this.metrics?.record('media.baseline_missing');
+          const baselineMessage = baseline?.update.message;
+          if (
+            baseline &&
+            baselineMessage &&
+            baselineMessage.chatId === job.chatId &&
+            (baselineMessage.senderId === message.senderId ||
+              (imageOnly && settings.duplicatePhotoScope === 'CHAT')) &&
+            baselineMessage.messageId === previous.messageId &&
+            baseline.eventTimestampMs === previous.eventTimestampMs
+          ) {
+            const baselineContent = extractDuplicateMessageContent(baseline.update.raw);
+            if (
+              (imageOnly ? isExactImageContent(baselineContent) : baselineContent.complete) &&
+              this.history
+                .candidateKeys(baselineContent, settings, imageOnly)
+                .some((key) =>
+                  candidateKeys.includes(`message-duplicate:candidate:v1:${scope}:${key}`),
+                )
+            ) {
+              const verified = await measureDuplicatePhase(this.metrics, 'media', () =>
+                this.hashMedia(
+                  baselineContent,
+                  baseline.update,
+                  windowSec,
+                  deadlineAtMs,
+                  baseline.botId,
+                  undefined,
+                  budget,
+                  previous.webhookEventId,
+                ),
+              );
+              lease.assertOwned();
+              await measureDuplicatePhase(this.metrics, 'history', () =>
+                this.history.observe({
+                  content: verified.content,
+                  chatId: job.chatId,
+                  userId: baselineMessage.senderId,
+                  messageId: baselineMessage.messageId,
+                  eventTimestampMs: baseline.eventTimestampMs,
+                  publishedAtMs: duplicatePublicationTime(baseline.update) ?? 0,
+                  controlRevision: policy.revision,
+                  settings,
+                  mediaHashes: verified.hashes,
+                  ...(imageOnly ? { imageScope: settings.duplicatePhotoScope } : {}),
+                }),
+              );
+              this.metrics?.record('media.baseline_verified');
+              baselineVerified = true;
+            }
+          }
+        } catch (error) {
+          // FLAG: A transient baseline failure must retry the pair; acknowledging it would lose
+          // the first occurrence and let the first duplicate through without its configured action.
+          if (
+            !(error instanceof UnrecoverableError) &&
+            !(error instanceof PhotoDownloadHttpError && [403, 404, 410].includes(error.statusCode))
+          )
+            throw error;
+          // FLAG: Negative cache entries cannot prove equality. They only prevent a terminal,
+          // receipt-scoped baseline from spending every resumed attempt's verification budget.
+          lease.assertOwned();
+          await this.redis.setStringWithTtl(rejectedKey, 'rejected', windowSec);
+          this.metrics?.record('media.baseline_rejected');
+          this.logger.debug(
+            { chatId: job.chatId },
+            'Message duplicate baseline media could not be verified',
+          );
+        } finally {
+          // FLAG: A missing/rejected predecessor is a gap in comparison coverage, never
+          // evidence that the current media is unique. It does not change action authority.
+          if (!baselineVerified) baselineUnverified = true;
+        }
       }
       lease.assertOwned();
-      if (raw !== null) {
-        await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), windowSec);
-      }
-    }
-    const currentCached = await this.readHashes(content, source.update);
-    const missingCurrentProof = currentCached.some((hash) => hash === null);
-    // FLAG: A candidate pointing at this job may be an unfinished action, not a first occurrence.
-    // Rebuild evicted proofs on retry; durable intent/ordering claims still fence repeated actions.
-    if (predecessors.size === 0 && !retryingCurrent && missingCurrentProof) {
+      const verified = await measureDuplicatePhase(this.metrics, 'media', () =>
+        this.hashMedia(
+          content,
+          source.update,
+          windowSec,
+          deadlineAtMs,
+          source.botId,
+          currentCached,
+          budget,
+          job.webhookEventId,
+        ),
+      );
+      if (Date.now() >= deadlineAtMs)
+        throw new Error('Message media verification deadline exceeded');
+      lease.assertOwned();
+      const observation = await measureDuplicatePhase(this.metrics, 'history', () =>
+        this.history.observeWithOutcome({
+          content: verified.content,
+          chatId: job.chatId,
+          userId: message.senderId,
+          messageId: job.messageId,
+          eventTimestampMs: job.eventTimestampMs,
+          publishedAtMs: duplicatePublicationTime(source.update) ?? 0,
+          controlRevision: policy.revision,
+          settings,
+          mediaHashes: verified.hashes,
+          ...(imageOnly ? { imageScope: settings.duplicatePhotoScope } : {}),
+        }),
+      );
+      const result = observation.match;
+      if (observation.outcome === 'MATCHED') comparedOutcome = 'MATCHED_ACTION_FAILED';
+      if (observation.outcome === 'COMPARED_NO_MATCH' && !baselineUnverified)
+        comparedOutcome = 'COMPARED_NO_MATCH';
       for (const key of candidateKeys) {
         lease.assertOwned();
-        await this.redis.setStringIfAbsentWithTtl(key, JSON.stringify(ownPointer), windowSec);
+        await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), windowSec);
       }
-      this.metrics?.record('media.first_candidate');
-      return;
-    }
-    if (predecessors.size > 0 || missingCurrentProof) {
-      const decision = await this.governor.decide({
-        component: 'message-duplicate-media',
-        sourceTag: 'message-duplicate',
-        allowRecoveryWindowRun: true,
-      });
-      if (decision.action === 'pause')
-        throw new MessageDuplicateMediaDeferredError('governor_pause', decision.retryAfterMs);
-      if (decision.action === 'slow') {
-        const slowKey = `message-duplicate:governor-slow:v2:${job.idempotencyKey}`;
-        const stored = await this.redis.getString(slowKey);
-        const nextAllowedAtMs =
-          stored === null
-            ? Date.now() +
-              new MessageDuplicateMediaDeferredError('governor_slow', decision.retryAfterMs)
-                .retryAfterMs
-            : Number(stored);
-        if (!Number.isSafeInteger(nextAllowedAtMs))
-          throw new Error('Invalid message duplicate governor pacing state');
-        if (stored === null)
-          await this.redis.setStringIfAbsentWithTtl(slowKey, String(nextAllowedAtMs), 600);
-        if (Date.now() < nextAllowedAtMs)
-          throw new MessageDuplicateMediaDeferredError(
-            'governor_slow',
-            nextAllowedAtMs - Date.now(),
-          );
-      }
-    }
-    const deadlineAtMs = Math.min(
-      Date.now() + 30_000,
-      job.deadlineAtMs,
-      dailyWindow?.endMs ?? Number.MAX_SAFE_INTEGER,
-      policy.expiresAtMs,
-    );
-    if (Date.now() >= deadlineAtMs) {
-      this.metrics?.record('media.deadline_expired');
-      return;
-    }
-    const budget = { remaining: MAX_UNCACHED_MEDIA_PER_ATTEMPT };
-    // FLAG: Materialize every distinct predecessor before freezing the current replay count.
-    // Proof caches retain progress across bounded deferrals; baseline hits never authorize actions.
-    for (const previous of predecessors.values()) {
-      lease.assertOwned();
-      const rejectedKey = `message-duplicate:baseline-rejected:v1:${this.resourceKey}:${digestDuplicateContent(previous.webhookEventId)}`;
-      if ((await this.redis.getString(rejectedKey)) === 'rejected') {
-        this.metrics?.record('media.baseline_rejected_cached');
-        continue;
-      }
-      try {
-        if (Date.now() >= deadlineAtMs) {
-          this.metrics?.record('media.budget_deferred');
-          throw new MessageDuplicateMediaDeferredError('proof_budget');
+      if (result) {
+        if (job.actionEligible !== true || !(await lease.resolveActionEligibility())) {
+          this.metrics?.record('media.action_ineligible');
+          return finish('MATCHED_INELIGIBLE');
         }
-        const baseline = await this.loadSource(previous.webhookEventId);
-        if (!baseline) this.metrics?.record('media.baseline_missing');
-        const baselineMessage = baseline?.update.message;
-        if (
-          baseline &&
-          baselineMessage &&
-          baselineMessage.chatId === job.chatId &&
-          (baselineMessage.senderId === message.senderId ||
-            (imageOnly && settings.duplicatePhotoScope === 'CHAT')) &&
-          baselineMessage.messageId === previous.messageId &&
-          baseline.eventTimestampMs === previous.eventTimestampMs
-        ) {
-          const baselineContent = extractDuplicateMessageContent(baseline.update.raw);
-          if (
-            (imageOnly ? isExactImageContent(baselineContent) : baselineContent.complete) &&
-            this.history
-              .candidateKeys(baselineContent, settings, imageOnly)
-              .some((key) =>
-                candidateKeys.includes(`message-duplicate:candidate:v1:${scope}:${key}`),
-              )
-          ) {
-            const verified = await this.hashMedia(
-              baselineContent,
-              baseline.update,
-              windowSec,
-              deadlineAtMs,
-              baseline.botId,
-              undefined,
-              budget,
-              previous.webhookEventId,
-            );
-            lease.assertOwned();
-            await this.history.observe({
-              content: verified.content,
-              chatId: job.chatId,
-              userId: baselineMessage.senderId,
-              messageId: baselineMessage.messageId,
-              eventTimestampMs: baseline.eventTimestampMs,
-              publishedAtMs: duplicatePublicationTime(baseline.update) ?? 0,
-              controlRevision: policy.revision,
-              settings,
-              mediaHashes: verified.hashes,
-              ...(imageOnly ? { imageScope: settings.duplicatePhotoScope } : {}),
-            });
-            this.metrics?.record('media.baseline_verified');
-          }
-        }
-      } catch (error) {
-        // FLAG: A transient baseline failure must retry the pair; acknowledging it would lose
-        // the first occurrence and let the first duplicate through without its configured action.
-        if (
-          !(error instanceof UnrecoverableError) &&
-          !(error instanceof PhotoDownloadHttpError && [403, 404, 410].includes(error.statusCode))
-        )
-          throw error;
-        // FLAG: Negative cache entries cannot prove equality. They only prevent a terminal,
-        // receipt-scoped baseline from spending every resumed attempt's verification budget.
-        lease.assertOwned();
-        await this.redis.setStringWithTtl(rejectedKey, 'rejected', windowSec);
-        this.metrics?.record('media.baseline_rejected');
-        this.logger.debug(
-          { chatId: job.chatId },
-          'Message duplicate baseline media could not be verified',
+        result.binding.authorization = {
+          jobId: job.idempotencyKey,
+          eventTimestampMs: job.eventTimestampMs,
+          deadlineAtMs: Math.min(
+            job.deadlineAtMs,
+            result.binding.eventTimestampMs + DUPLICATE_JOB_MAX_LIFETIME_MS,
+            dailyWindow?.endMs ?? Number.MAX_SAFE_INTEGER,
+          ),
+        };
+        await measureDuplicatePhase(this.metrics, 'enforcement', () =>
+          this.enforcement.enqueue({
+            ...result,
+            chatId: job.chatId,
+            botId: source.botId,
+            sourceCreatedAt: message.createdAt,
+            text: content.text,
+            settings,
+            update: source.update,
+            executeFullAction: executeFullAction
+              ? async (request) =>
+                  this.botContext.runWithBot(source.botId, () =>
+                    executeFullAction({
+                      ...request,
+                      rulesPublishedUrl: settings.chat.rules?.publishedUrl ?? null,
+                      rulesPublishedMessageId: settings.chat.rules?.publishedMessageId ?? null,
+                    }),
+                  )
+              : undefined,
+            assertLease: lease.assertOwned,
+          }),
         );
+        return finish('ENFORCEMENT_REQUESTED');
       }
-    }
-    lease.assertOwned();
-    const verified = await this.hashMedia(
-      content,
-      source.update,
-      windowSec,
-      deadlineAtMs,
-      source.botId,
-      currentCached,
-      budget,
-      job.webhookEventId,
-    );
-    if (Date.now() >= deadlineAtMs) throw new Error('Message media verification deadline exceeded');
-    lease.assertOwned();
-    const result = await this.history.observe({
-      content: verified.content,
-      chatId: job.chatId,
-      userId: message.senderId,
-      messageId: job.messageId,
-      eventTimestampMs: job.eventTimestampMs,
-      publishedAtMs: duplicatePublicationTime(source.update) ?? 0,
-      controlRevision: policy.revision,
-      settings,
-      mediaHashes: verified.hashes,
-      ...(imageOnly ? { imageScope: settings.duplicatePhotoScope } : {}),
-    });
-    for (const key of candidateKeys) {
-      lease.assertOwned();
-      await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), windowSec);
-    }
-    if (result) {
-      if (job.actionEligible !== true || !(await lease.resolveActionEligibility())) {
-        this.metrics?.record('media.action_ineligible');
-        return;
-      }
-      result.binding.authorization = {
-        jobId: job.idempotencyKey,
-        eventTimestampMs: job.eventTimestampMs,
-        deadlineAtMs: Math.min(
-          job.deadlineAtMs,
-          result.binding.eventTimestampMs + DUPLICATE_JOB_MAX_LIFETIME_MS,
-          dailyWindow?.endMs ?? Number.MAX_SAFE_INTEGER,
-        ),
-      };
-      await this.enforcement.enqueue({
-        ...result,
-        chatId: job.chatId,
-        botId: source.botId,
-        sourceCreatedAt: message.createdAt,
-        text: content.text,
-        settings,
-        update: source.update,
-        executeFullAction: executeFullAction
-          ? async (request) =>
-              this.botContext.runWithBot(source.botId, () =>
-                executeFullAction({
-                  ...request,
-                  rulesPublishedUrl: settings.chat.rules?.publishedUrl ?? null,
-                  rulesPublishedMessageId: settings.chat.rules?.publishedMessageId ?? null,
-                }),
-              )
-          : undefined,
-        assertLease: lease.assertOwned,
-      });
+      return finish(
+        baselineUnverified || observation.outcome === 'MATCHED'
+          ? 'CONTENT_UNVERIFIED'
+          : observation.outcome,
+      );
+    } catch (error) {
+      finish(
+        comparedOutcome ??
+          (error instanceof MessageDuplicateMediaDeferredError ||
+          error instanceof PhotoDuplicateSourceNotReadyError
+            ? 'DEFERRED'
+            : supported
+              ? 'COMPARISON_FAILED'
+              : 'UNAVAILABLE'),
+      );
+      throw error;
     }
   }
 

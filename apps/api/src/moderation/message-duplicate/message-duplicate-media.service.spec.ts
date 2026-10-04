@@ -45,9 +45,14 @@ function setup() {
       expiresAtMs: Number.MAX_SAFE_INTEGER,
     }),
   };
+  const observe = jest.fn().mockResolvedValue(null);
   const history = {
     candidateKeys: jest.fn().mockReturnValue(['caption']),
-    observe: jest.fn().mockResolvedValue(null),
+    observe,
+    observeWithOutcome: jest.fn(async (input) => {
+      const match = await observe(input);
+      return { match, outcome: match ? 'MATCHED' : 'COMPARED_NO_MATCH' };
+    }),
   };
   const enforcement = { enqueue: jest.fn() };
   const bots = {
@@ -58,7 +63,7 @@ function setup() {
   const botContext = new MaxBotContextService();
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'allow' }) };
   const max = { getExactMessageRow: jest.fn() };
-  const metrics = { record: jest.fn() };
+  const metrics = { record: jest.fn(), recordObservation: jest.fn(), recordPhase: jest.fn() };
   const service = new MessageDuplicateMediaService(
     prisma as never,
     redis as never,
@@ -851,11 +856,16 @@ describe('bounded message duplicate media analysis', () => {
   });
   it('continues current evidence collection when the baseline download fails', async () => {
     const s = setup();
-    await s.service.process(s.job('a', 0), s.lease);
+    expect(await s.service.process(s.job('a', 0), s.lease)).toBe('MEDIA_CANDIDATE');
     s.downloads.mockRejectedValueOnce(new PhotoDownloadHttpError(410));
-    await s.service.process(s.job('b', 100), s.lease);
+    expect(await s.service.process(s.job('b', 100), s.lease)).toBe('CONTENT_UNVERIFIED');
     expect(s.history.observe).toHaveBeenCalledTimes(1);
     expect(s.history.observe).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'b' }));
+    expect(s.metrics.recordObservation).toHaveBeenLastCalledWith(
+      '-123',
+      'CONTENT_UNVERIFIED',
+      true,
+    );
   });
   it('retries transient baseline downloads before committing current history', async () => {
     const s = setup();
@@ -864,7 +874,8 @@ describe('bounded message duplicate media analysis', () => {
     s.downloads.mockRejectedValueOnce(new Error('temporary download timeout'));
     await expect(s.service.process(next, s.lease)).rejects.toThrow('temporary download timeout');
     expect(s.history.observe).not.toHaveBeenCalled();
-    await s.service.process(next, s.lease);
+    expect(s.metrics.recordObservation).toHaveBeenLastCalledWith('-123', 'COMPARISON_FAILED', true);
+    expect(await s.service.process(next, s.lease)).toBe('COMPARED_NO_MATCH');
     expect(s.history.observe).toHaveBeenCalledTimes(2);
   });
   it('defers pressure without downloading, and requires the durable receipt to be processed', async () => {

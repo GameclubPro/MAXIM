@@ -17,10 +17,22 @@ describe('message duplicate main-path admission', () => {
   });
   function setup() {
     const policy = { resolve: jest.fn().mockResolvedValue({ mode: 'delete_only', revision: 1 }) };
-    const history = { observe: jest.fn().mockResolvedValue({ hit: {}, binding: {} }) };
+    const observe = jest.fn().mockResolvedValue({ hit: {}, binding: {} });
+    const history = {
+      observe,
+      observeWithOutcome: jest.fn(async (input) => {
+        const match = await observe(input);
+        return { match, outcome: match ? 'MATCHED' : 'COMPARED_NO_MATCH' };
+      }),
+    };
     const enforcement = { enqueue: jest.fn() };
     const queue = { enqueue: jest.fn() };
-    const metrics = { record: jest.fn(), recordContentRejection: jest.fn() };
+    const metrics = {
+      record: jest.fn(),
+      recordContentRejection: jest.fn(),
+      recordObservation: jest.fn(),
+      recordPhase: jest.fn(),
+    };
     const authorization = { revoke: jest.fn() };
     const service = new MessageDuplicateService(
       policy as never,
@@ -65,6 +77,47 @@ describe('message duplicate main-path admission', () => {
     expect(s.queue.enqueue).not.toHaveBeenCalled();
     s.history.observe.mockRejectedValue(new Error('state deadline'));
     await expect(s.service.observe(s.params)).rejects.toThrow('state deadline');
+    expect(s.metrics.recordObservation).toHaveBeenLastCalledWith(
+      s.params.update.message!.chatId,
+      'COMPARISON_FAILED',
+      true,
+    );
+  });
+  it('distinguishes stale/unverified history from a verified non-match and keeps action failures separate', async () => {
+    const s = setup();
+    s.history.observeWithOutcome.mockResolvedValue({ outcome: 'STALE', match: null });
+    expect(await s.service.observe(s.params)).toBe('STALE');
+    expect(s.metrics.recordObservation).toHaveBeenLastCalledWith(
+      s.params.update.message!.chatId,
+      'STALE',
+      true,
+    );
+    s.history.observeWithOutcome.mockResolvedValue({ outcome: 'COMPARED_NO_MATCH', match: null });
+    expect(await s.service.observe(s.params)).toBe('COMPARED_NO_MATCH');
+    expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+    s.history.observeWithOutcome.mockResolvedValue({
+      outcome: 'MATCHED',
+      match: { hit: {}, binding: {} },
+    });
+    const original = new Error('intent unavailable');
+    s.enforcement.enqueue.mockRejectedValue(original);
+    await expect(s.service.observe(s.params)).rejects.toBe(original);
+    expect(s.metrics.recordObservation).toHaveBeenLastCalledWith(
+      s.params.update.message!.chatId,
+      'MATCHED_ACTION_FAILED',
+      true,
+    );
+  });
+  it('keeps diagnostic faults out of the moderation result', async () => {
+    const s = setup();
+    s.metrics.recordObservation.mockImplementation(() => {
+      throw new Error('diagnostics unavailable');
+    });
+    s.metrics.recordPhase.mockImplementation(() => {
+      throw new Error('diagnostics unavailable');
+    });
+    await expect(s.service.observe(s.params)).resolves.toBe('ENFORCEMENT_REQUESTED');
+    expect(s.enforcement.enqueue).toHaveBeenCalledTimes(1);
   });
   it('uses durable media jobs only for MESSAGE and compares captions inline in TEXT mode', async () => {
     const s = setup();
