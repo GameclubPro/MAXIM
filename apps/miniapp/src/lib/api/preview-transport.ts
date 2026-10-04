@@ -22,6 +22,11 @@ import { handlePreviewMessageRetention } from './preview-message-retention';
 export type { PreviewApiTransportOptions, PreviewClock } from './preview-transport-runtime';
 
 export const PREVIEW_REQUEST_HANDLERS: readonly PreviewRequestHandler[] = [
+  async (context) => {
+    if (context.segments[0] !== 'marketplace') return PREVIEW_NOT_HANDLED;
+    const { handleMarketplacePreviewRequest } = await import('./preview-transport-marketplace');
+    return handleMarketplacePreviewRequest(context);
+  },
   handlePreviewMessageRetention,
   async (context) => {
     if (context.segments[2] !== 'advertising-placement') return PREVIEW_NOT_HANDLED;

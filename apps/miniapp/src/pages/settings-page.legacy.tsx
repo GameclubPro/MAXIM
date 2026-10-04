@@ -92,6 +92,7 @@ import { ResetIcon } from '../components/ui/reset-icon';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
 import { SettingsAdvertisingSection } from './settings/settings-advertising-section';
+import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -7118,6 +7119,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               onAdminsOnlyChange={(enabled) =>
                 setFieldValue('karavanStorefrontAdminsOnly', enabled)
               }
+            />
+
+            <MarketplaceProfileCard
+              api={api}
+              entityId={chatId ?? ''}
+              entityType="chat"
+              profile="moderation"
             />
 
             <SettingsAdvertisingSection

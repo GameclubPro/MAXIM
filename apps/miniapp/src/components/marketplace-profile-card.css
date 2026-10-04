@@ -1,0 +1,260 @@
+@layer workspace {
+  .marketplace-profile-card {
+    min-width: 0;
+  }
+  .marketplace-profile-card__open {
+    width: 100%;
+    min-height: 76px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 16px;
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+  }
+  .marketplace-profile-card__open > span:first-child {
+    display: grid;
+    gap: 5px;
+  }
+  .marketplace-profile-card__open small {
+    color: var(--color-ink-muted);
+  }
+  .marketplace-profile-card__open > span:last-child {
+    color: var(--color-accent);
+    font-size: 24px;
+  }
+  .marketplace-profile-card__intro {
+    margin: 0 0 12px;
+    color: var(--text-secondary);
+    font-size: 13px;
+  }
+  .marketplace-profile {
+    display: grid;
+    gap: 20px;
+    padding: 8px 0 28px;
+    min-width: 0;
+  }
+  .marketplace-profile__hero {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+  .marketplace-profile__hero > div {
+    min-width: 0;
+  }
+  .marketplace-profile__hero strong {
+    display: block;
+    overflow-wrap: anywhere;
+  }
+  .marketplace-profile__hero small {
+    display: block;
+    margin-top: 6px;
+    color: var(--text-secondary);
+  }
+  .marketplace-profile__form {
+    display: grid;
+    gap: 16px;
+  }
+  .marketplace-profile__form .field {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+  }
+  .marketplace-profile__form input,
+  .marketplace-profile__form textarea,
+  .marketplace-profile__form select {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    font: inherit;
+  }
+  .marketplace-profile__form textarea {
+    min-height: 120px;
+    resize: vertical;
+  }
+  .marketplace-profile__consent {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .marketplace-profile__consent input {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    margin: 2px 0 0;
+  }
+  .marketplace-profile__notice {
+    margin: 0;
+    padding: 14px;
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    line-height: 1.5;
+  }
+  .marketplace-profile__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .marketplace-profile__actions .button {
+    min-height: 44px;
+    white-space: normal;
+  }
+  .marketplace-profile__toggle {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .marketplace-profile__toggle > span:first-child {
+    min-width: 0;
+  }
+  .marketplace-profile__toggle small {
+    display: block;
+    margin-top: 6px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+  .marketplace-profile__switch {
+    flex: 0 0 48px;
+    position: relative;
+    width: 48px;
+    height: 30px;
+  }
+  .marketplace-profile__switch input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    z-index: 1;
+    margin: 0;
+    cursor: pointer;
+  }
+  .marketplace-profile__track {
+    display: block;
+    height: 30px;
+    border-radius: 30px;
+    background: var(--text-muted);
+  }
+  .marketplace-profile__track::after {
+    content: '';
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--color-on-accent);
+    transition: transform 0.15s;
+  }
+  .marketplace-profile__switch input:checked + .marketplace-profile__track {
+    background: var(--color-accent);
+  }
+  .marketplace-profile__switch input:checked + .marketplace-profile__track::after {
+    transform: translateX(18px);
+  }
+  .marketplace-profile__switch input:focus-visible + .marketplace-profile__track {
+    outline: 2px solid currentColor;
+    outline-offset: 3px;
+  }
+  .marketplace-profile__switch input:disabled + .marketplace-profile__track {
+    opacity: 0.5;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .marketplace-profile__track::after {
+      transition: none;
+    }
+  }
+  .marketplace-profile-overlay.settings-drilldown {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: flex;
+    justify-content: center;
+    align-items: stretch;
+    padding: 0;
+    isolation: isolate;
+  }
+  .marketplace-profile-overlay .settings-drilldown__backdrop {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: var(--color-scrim);
+  }
+  .marketplace-profile-overlay .settings-drilldown__panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    width: 100%;
+    max-width: 640px;
+    height: 100%;
+    max-height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    color: var(--color-ink);
+    background: var(--color-surface);
+    overflow: hidden;
+  }
+  .marketplace-profile-overlay .settings-drilldown__header {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: calc(12px + var(--app-safe-top, 0px)) 16px 12px;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .marketplace-profile-overlay .settings-drilldown__title {
+    margin: 0;
+    font-size: 20px;
+  }
+  .marketplace-profile-overlay .settings-drilldown__close {
+    display: grid;
+    place-items: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    padding: 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    color: var(--color-ink);
+    background: var(--color-surface-muted);
+  }
+  .marketplace-profile-overlay .settings-drilldown__close svg {
+    width: 20px;
+    height: 20px;
+  }
+  .marketplace-profile-overlay .settings-drilldown__content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding: 16px 16px calc(16px + var(--app-safe-bottom, 0px));
+  }
+  .marketplace-profile-overlay .settings-drilldown__body {
+    padding: 0;
+  }
+  .marketplace-profile-overlay .marketplace-profile__hero .entity-avatar {
+    flex: 0 0 52px;
+    width: 52px;
+    height: 52px;
+  }
+  .marketplace-profile-overlay .button--accent {
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    box-shadow: none;
+  }
+}
