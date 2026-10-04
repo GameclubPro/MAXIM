@@ -174,6 +174,7 @@ describe('PhotoFingerprintService', () => {
         canonicalHash: expect.stringMatching(/^[0-9a-f]{64}$/),
         pdqHash: expect.stringMatching(/^[0-9a-f]{64}$/),
         pdqQuality: expect.any(Number),
+        decodeCost: { encodedBytes: expect.any(Number), pixels: expect.any(Number) },
       });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
