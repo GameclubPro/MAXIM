@@ -1,3 +1,4 @@
+import { useSettingsRequiredSubscription } from './settings/use-settings-required-subscription';
 import { InfoCircle } from 'iconoir-react';
 import { ApiRequestError } from '../lib/api-request-error';
 import { getStopWords, updateStopWords } from '../lib/api/stop-words-client';
@@ -112,7 +113,6 @@ import {
   publishRules,
   removeDomain,
   recheckManagedEntityAccess,
-  resolveRequiredSubscriptionChannel,
   resetPublishedRules,
   retryManagedBroadcast,
   scheduleDomainRemoval,
@@ -229,7 +229,6 @@ import {
   BOT_SPEECH_SYNC_SETTING_KEYS,
   SECTION_SETTING_KEYS,
   type ApplySectionKey,
-  applyRequiredSubscriptionChannelAddition,
   enableDefaultSanctionStages,
   hasSectionBotSpeechMediaChanges,
   hasSectionSettingChanges,
@@ -258,7 +257,6 @@ import {
   shouldHydrateRulesDraftFromServer,
 } from './settings-rules-state';
 import { createManagedEntityHeader } from '../lib/managed-entity-header';
-import { buildRequiredSubscriptionChannelCollections } from './settings-required-subscription-state';
 import {
   FieldErrors,
   ManagedBroadcastListItem,
@@ -489,10 +487,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageError, setMailingImageError] = useState('');
   const [mailingScheduleError, setMailingScheduleError] = useState('');
   const [mailingCycleError, setMailingCycleError] = useState('');
-  const [requiredSubscriptionExternalChannelValue, setRequiredSubscriptionExternalChannelValue] =
-    useState('');
-  const [requiredSubscriptionExternalChannelError, setRequiredSubscriptionExternalChannelError] =
-    useState('');
   useEffect(() => {
     const { body } = document;
     body.classList.add('settings-home-page-open');
@@ -502,9 +496,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     };
   }, []);
 
-  const [resolvedRequiredSubscriptionChannels, setResolvedRequiredSubscriptionChannels] = useState<
-    ManagedEntityHeader[]
-  >([]);
   const [mailingPlannerResetKey, setMailingPlannerResetKey] = useState(0);
   const [mailingPlannerState, setMailingPlannerState] =
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
@@ -594,16 +585,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
   const [expandedSections, setExpandedSections] =
     useState<Record<SettingsSectionKey, boolean>>(INITIAL_EXPANDED_SECTIONS);
-  const [
-    requiredSubscriptionChannelsRefreshRequest,
-    setRequiredSubscriptionChannelsRefreshRequest,
-  ] = useState<{
-    nonce: number;
-    behavior: 'default' | 'manual' | 'recovery';
-  }>({
-    nonce: 0,
-    behavior: 'default',
-  });
   const isLinksKeyboardOpen = useKeyboardOpen(120, expandedSections.links);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
   const appliedLegacyEditorTargetRef = useRef<string | null>(null);
@@ -715,9 +696,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageError('');
     setMailingScheduleError('');
     setMailingCycleError('');
-    setRequiredSubscriptionExternalChannelValue('');
-    setRequiredSubscriptionExternalChannelError('');
-    setResolvedRequiredSubscriptionChannels([]);
     resetMailingPlanner();
     setEditingManagedBroadcast(null);
     setEditingManagedAutopostRule(null);
@@ -726,10 +704,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastDraftRestoreReady(false);
     setDuplicateWindowInputValue(null);
     setPendingSpeechStyle(null);
-    setRequiredSubscriptionChannelsRefreshRequest({
-      nonce: 0,
-      behavior: 'default',
-    });
 
     if (!chatId || !broadcastComposerClientResetQuery.isSuccess) {
       return;
@@ -943,24 +917,50 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     persistLocalCache: true,
     localCacheScope: 'home',
   });
-  const channelsList = useManagedEntitiesSync({
+  const {
+    requiredSubscriptionExternalChannelValue,
+    requiredSubscriptionExternalChannelError,
+    requiredSubscriptionEntitiesLoading,
+    requiredSubscriptionEntitiesSyncing,
+    requiredSubscriptionEntitiesError,
+    requiredSubscriptionEntitiesBackoffActive,
+    selectedRequiredSubscriptionChannels,
+    selectedRequiredSubscriptionChannelHeaders,
+    selectedUnavailableRequiredSubscriptionChannels,
+    unavailableManagedRequiredSubscriptionChannels,
+    availableRequiredSubscriptionChannelChoices,
+    isResolvingRequiredSubscriptionChannel,
+    setRequiredSubscriptionExternalChannelValue,
+    setRequiredSubscriptionExternalChannelError,
+    addRequiredSubscriptionChannel,
+    removeRequiredSubscriptionChannel,
+    refreshRequiredSubscriptionChannels,
+    handleResolveRequiredSubscriptionExternalChannel,
+  } = useSettingsRequiredSubscription({
     api,
-    entityType: 'channel',
+    chatId,
+    draft,
+    setDraft,
+    chatsList,
     enabled: shouldLoadRequiredSubscriptionChannels,
-    reloadNonce: requiredSubscriptionChannelsRefreshRequest.nonce,
-    reloadBehavior: requiredSubscriptionChannelsRefreshRequest.behavior,
-    resumeOnVisibilityReturn: true,
-    backgroundRefreshOnFirstLoad: true,
-    persistLocalCache: true,
-    localCacheScope: 'home',
+    serverChannels: settingsScreenQuery.data?.requiredSubscriptionChannels,
+    refreshChats: () =>
+      setChatsListRefreshRequest((current) => ({ nonce: current.nonce + 1, behavior: 'manual' })),
+    clearSelectionError: () => clearFieldError('requiredSubscriptionChannelIds'),
+    formatError: formatApiError,
+    onResolved: (channel, alreadySelected) => {
+      const entityLabel = formatRequiredSubscriptionEntityLabel(channel.entityType);
+      pushToast({
+        tone: 'success',
+        title: alreadySelected
+          ? `${entityLabel} уже в списке`
+          : `${entityLabel} «${channel.title}» добавлен`,
+      });
+      maxNotify('success');
+    },
+    onResolveError: () => maxNotify('error'),
   });
-  const requiredSubscriptionEntitiesLoading =
-    shouldLoadRequiredSubscriptionChannels && (channelsList.isLoading || chatsList.isLoading);
-  const requiredSubscriptionEntitiesSyncing =
-    shouldLoadRequiredSubscriptionChannels && (channelsList.isRefreshing || chatsList.isRefreshing);
-  const requiredSubscriptionEntitiesError = channelsList.error ?? chatsList.error;
-  const requiredSubscriptionEntitiesBackoffActive =
-    channelsList.isBackoffActive || chatsList.isBackoffActive;
+
   const settledChatsListMarker = useMemo(
     () =>
       buildManagedEntitiesSettledMarker({
@@ -1036,44 +1036,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isLoading: settingsScreenQuery.isLoading,
     error: settingsScreenQuery.error,
   };
-  const resolvedRequiredSubscriptionChannelCandidates = useMemo(() => {
-    const channelById = new Map<string, ManagedEntityHeader>();
-    for (const channel of settingsScreenQuery.data?.requiredSubscriptionChannels ?? []) {
-      channelById.set(channel.id, channel);
-    }
-    for (const channel of resolvedRequiredSubscriptionChannels) {
-      channelById.set(channel.id, channel);
-    }
-    return [...channelById.values()];
-  }, [
-    resolvedRequiredSubscriptionChannels,
-    settingsScreenQuery.data?.requiredSubscriptionChannels,
-  ]);
-  const requiredSubscriptionChannelCollections = useMemo(
-    () =>
-      buildRequiredSubscriptionChannelCollections({
-        managedChats: chatsList.data,
-        managedChannels: channelsList.data,
-        resolvedChannels: resolvedRequiredSubscriptionChannelCandidates,
-        selectedChannelIds: draft?.requiredSubscriptionChannelIds ?? [],
-      }),
-    [
-      chatsList.data,
-      channelsList.data,
-      draft?.requiredSubscriptionChannelIds,
-      resolvedRequiredSubscriptionChannelCandidates,
-    ],
-  );
-  const selectedRequiredSubscriptionChannels =
-    requiredSubscriptionChannelCollections.selectedChannels;
-  const selectedRequiredSubscriptionChannelHeaders =
-    requiredSubscriptionChannelCollections.selectedHeaders;
-  const selectedUnavailableRequiredSubscriptionChannels =
-    requiredSubscriptionChannelCollections.selectedUnavailableChannels;
-  const unavailableManagedRequiredSubscriptionChannels =
-    requiredSubscriptionChannelCollections.unavailableManagedChannels;
-  const availableRequiredSubscriptionChannelChoices =
-    requiredSubscriptionChannelCollections.availableChoices;
   const duplicatePhotoModerationPolicy = resolveDuplicatePhotoPolicyForDraft(
     settingsScreenQuery.data?.duplicatePhotoPolicyMatrix,
     settingsScreenQuery.data?.duplicatePhotoModerationMode ?? 'OBSERVE',
@@ -1174,12 +1136,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setFieldErrors({});
     setDuplicateWindowInputValue(null);
   }, [settingsQuery.data]);
-
-  useEffect(() => {
-    setResolvedRequiredSubscriptionChannels(
-      settingsScreenQuery.data?.requiredSubscriptionChannels ?? [],
-    );
-  }, [settingsScreenQuery.data?.requiredSubscriptionChannels]);
 
   useEffect(() => {
     if (!broadcastHandoffStateQuery.data || !handoffRequested) {
@@ -1466,37 +1422,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       maxNotify('error');
     },
   });
-
-  const resolveRequiredSubscriptionChannelMutation = useMutation({
-    mutationFn: (value: string) => resolveRequiredSubscriptionChannel(api, chatId ?? '', value),
-    onSuccess: ({ channel }) => {
-      const alreadySelected = draft?.requiredSubscriptionChannelIds.includes(channel.id) ?? false;
-      setResolvedRequiredSubscriptionChannels((current) => {
-        const next = current.filter((item) => item.id !== channel.id);
-        next.push(channel);
-        return next;
-      });
-      if (!alreadySelected) {
-        addRequiredSubscriptionChannel(channel.id);
-      }
-      setRequiredSubscriptionExternalChannelValue('');
-      setRequiredSubscriptionExternalChannelError('');
-      const entityLabel = formatRequiredSubscriptionEntityLabel(channel.entityType);
-      pushToast({
-        tone: 'success',
-        title: alreadySelected
-          ? `${entityLabel} уже в списке`
-          : `${entityLabel} «${channel.title}» добавлен`,
-      });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      setRequiredSubscriptionExternalChannelError(formatApiError(error));
-      maxNotify('error');
-    },
-  });
-  const isResolvingRequiredSubscriptionChannel =
-    resolveRequiredSubscriptionChannelMutation.isPending;
 
   const saveSpeechStyleMutation = useMutation({
     mutationFn: ({ payload }: { style: BotSpeechStyle; payload: ChatSettings }) =>
@@ -2279,73 +2204,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         nested
       />
     );
-  }
-
-  function addRequiredSubscriptionChannel(channelId: string) {
-    setDraft((current) =>
-      current
-        ? applyRequiredSubscriptionChannelAddition(
-            current,
-            channelId,
-            REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
-          )
-        : current,
-    );
-    clearFieldError('requiredSubscriptionChannelIds');
-  }
-
-  function removeRequiredSubscriptionChannel(channelId: string) {
-    setDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      const requiredSubscriptionChannelIds = current.requiredSubscriptionChannelIds.filter(
-        (item) => item !== channelId,
-      );
-      return {
-        ...current,
-        requiredSubscriptionEnabled: requiredSubscriptionChannelIds.length > 0,
-        requiredSubscriptionChannelIds,
-        requiredSubscriptionExpiresAt: '',
-      };
-    });
-    clearFieldError('requiredSubscriptionChannelIds');
-  }
-
-  function refreshRequiredSubscriptionChannels() {
-    setChatsListRefreshRequest((current) => ({
-      nonce: current.nonce + 1,
-      behavior: 'manual',
-    }));
-    setRequiredSubscriptionChannelsRefreshRequest((current) => ({
-      nonce: current.nonce + 1,
-      behavior: 'manual',
-    }));
-  }
-
-  function handleResolveRequiredSubscriptionExternalChannel() {
-    const normalizedValue = requiredSubscriptionExternalChannelValue.trim();
-    if (!chatId) {
-      return;
-    }
-
-    if (!normalizedValue) {
-      setRequiredSubscriptionExternalChannelError(
-        'Укажите публичную ссылку на чат, канал или пост MAX.',
-      );
-      return;
-    }
-
-    if ((draft?.requiredSubscriptionChannelIds.length ?? 0) >= REQUIRED_SUBSCRIPTION_MAX_CHANNELS) {
-      setRequiredSubscriptionExternalChannelError(
-        `Можно выбрать максимум ${REQUIRED_SUBSCRIPTION_MAX_CHANNELS} чатов и каналов.`,
-      );
-      return;
-    }
-
-    setRequiredSubscriptionExternalChannelError('');
-    resolveRequiredSubscriptionChannelMutation.mutate(normalizedValue);
   }
 
   function clearSectionErrors(section: ApplySectionKey) {
