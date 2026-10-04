@@ -1,7 +1,7 @@
 export async function clickSettingsOverviewEntry(page, title) {
-  // FLAG: The lazy search mounts above the tiles with no placeholder. A tile can
-  // already be clickable while that insertion is still able to move it between
-  // pointerdown and pointerup; wait for the real overview before a single click.
+  // FLAG: Wait for the real lazy search, not its inert geometry placeholder,
+  // before interacting with the overview. Post-scroll layout must stay stable
+  // between pointerdown and pointerup; perform one ordinary click.
   await page.getByRole('searchbox', { name: 'Найти настройку', exact: true }).waitFor();
   const entry = page.getByRole('button', { name: title, exact: true });
   await entry.scrollIntoViewIfNeeded();

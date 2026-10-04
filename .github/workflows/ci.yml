@@ -189,6 +189,8 @@ jobs:
         run: node apps/miniapp/test/settings-required-subscription.browser.mjs
       - name: Settings draft saves and response races
         run: node apps/miniapp/test/settings-draft.browser.mjs
+      - name: Cold settings search layout and focus
+        run: node apps/miniapp/test/settings-search-layout.browser.mjs
       - name: Anti-duplicate controls, schedule and save conflicts
         run: node apps/miniapp/test/settings-antiduplicate.browser.mjs
       - name: Rules drafts, publication races and image preparation
