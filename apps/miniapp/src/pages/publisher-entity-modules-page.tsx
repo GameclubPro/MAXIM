@@ -43,6 +43,7 @@ import {
 } from './publisher-entity-modules-page-model';
 import './publisher-entity-modules-page.css';
 import { PublisherPolicyCard } from '../components/publisher-policy-card';
+import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
 import { PublisherCommentsModule } from '../components/publisher-comments-module';
 
 const PUBLISHER_ENTITY_QUERY_ROOT = ['publisher-entity'] as const;
@@ -345,6 +346,12 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       </header>
 
       <PublisherPolicyCard api={api} entityType={entity.entityType} entityId={entity.id} />
+      <MarketplaceProfileCard
+        api={api}
+        entityType={entity.entityType}
+        entityId={entity.id}
+        profile="publisher"
+      />
 
       {!entity.readiness.canPublish || entityRecheckPhase ? (
         <div

@@ -90,6 +90,11 @@ function expectChatSettingsWrite(
   expect(updated ?? created).toEqual(expect.objectContaining(expected));
 }
 
+const channelPublicationTextOptions = {
+  textFormat: 'html',
+  marketplacePublication: { purpose: 'PUBLICATION', entityId: 'channel-1' },
+};
+
 describe('AdminService rules publication confirmations', () => {
   it('describes an existing-post edit accurately in the private confirmation', async () => {
     const maxClient = { sendMessage: jest.fn().mockResolvedValue(undefined) };
@@ -22528,7 +22533,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-1',
       'Локальное объявление',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-1' } },
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -22620,7 +22625,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
       'Пост в канал',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'channel-1' } },
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -23552,7 +23557,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-1',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-1' } },
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -23959,14 +23964,14 @@ describe('AdminService.sendBroadcast', () => {
       1,
       'chat-1',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-1' } },
       expect.objectContaining({ botId: 'bot-1' }),
     );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
       2,
       'chat-1',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-1' } },
       expect.objectContaining({ botId: 'bot-2' }),
     );
     expect(accessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
@@ -24321,7 +24326,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-1',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-1' } },
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -24444,7 +24449,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-2',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-2' } },
       expect.objectContaining({
         trafficClass: 'background',
         actionHealthLane: 'background',
@@ -24549,7 +24554,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-1',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-1' } },
       expect.objectContaining({
         trafficClass: 'background',
         actionHealthLane: 'background',
@@ -24660,7 +24665,7 @@ describe('AdminService.sendBroadcast', () => {
       1,
       'chat-1',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-1' } },
       expect.objectContaining({
         trafficClass: 'background',
         actionHealthLane: 'background',
@@ -24671,7 +24676,7 @@ describe('AdminService.sendBroadcast', () => {
       2,
       'chat-3',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-3' } },
       expect.objectContaining({
         trafficClass: 'background',
         actionHealthLane: 'background',
@@ -26324,7 +26329,7 @@ describe('AdminService.sendBroadcast', () => {
       1,
       'chat-1',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-1' } },
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -26335,7 +26340,7 @@ describe('AdminService.sendBroadcast', () => {
       2,
       'chat-2',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-2' } },
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -26445,21 +26450,21 @@ describe('AdminService.sendBroadcast', () => {
       1,
       'chat-1',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-1' } },
       expect.objectContaining({ botId: 'bot-1' }),
     );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
       2,
       'chat-2',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-2' } },
       expect.objectContaining({ botId: 'bot-3' }),
     );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
       3,
       'chat-3',
       'Напоминание',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-3' } },
       expect.objectContaining({ botId: 'bot-6' }),
     );
   });
@@ -26543,7 +26548,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-1',
       'Маршрут через активного бота',
-      undefined,
+      { marketplacePublication: { purpose: 'PUBLICATION', entityId: 'chat-1' } },
       expect.objectContaining({
         botId: 'active-alternate-bot',
         sourceTag: 'managed_broadcast',
@@ -29048,6 +29053,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       'channel-1',
       'Префикс <strong>Новый выпуск</strong>\n\n<strong>Вторая строка</strong>',
       {
+        marketplacePublication: { purpose: 'PUBLICATION', entityId: 'channel-1' },
         textFormat: 'html',
         buttons: [[{ text: 'Открыть выпуск', type: 'link', url: 'https://max.ru/channel/maxim' }]],
         imagePayload: { token: 'upload-token-channel-1' },
@@ -29264,6 +29270,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       'channel-1',
       'Галерея недели',
       {
+        marketplacePublication: { purpose: 'PUBLICATION', entityId: 'channel-1' },
         attachments: [
           {
             type: 'image',
@@ -29359,6 +29366,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       'channel-1',
       ' ',
       {
+        marketplacePublication: { purpose: 'PUBLICATION', entityId: 'channel-1' },
         attachments: [{ type: 'video', payload: { token: 'video-token-1' } }],
       },
       expect.objectContaining({
@@ -29445,9 +29453,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
       '<strong>Новый выпуск</strong> уже в <a href="https://max.ru/channel/maxim">канале</a>.\n\n&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;отступом',
-      {
-        textFormat: 'html',
-      },
+      channelPublicationTextOptions,
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -29530,9 +29536,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
       '<strong>Анонс</strong> C++ [beta] (v2) _raw_',
-      {
-        textFormat: 'html',
-      },
+      channelPublicationTextOptions,
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -29672,9 +29676,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
       '<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a>',
-      {
-        textFormat: 'html',
-      },
+      channelPublicationTextOptions,
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -30010,9 +30012,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
     const [, , options] = maxClient.sendMessageImmediateWithId.mock.calls[0];
-    expect(options).toEqual({
-      textFormat: 'html',
-    });
+    expect(options).toEqual(channelPublicationTextOptions);
     expect(prisma.auditLog.create).not.toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
