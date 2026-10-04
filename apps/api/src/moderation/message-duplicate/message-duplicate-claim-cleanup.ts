@@ -117,6 +117,9 @@ export async function releaseUnusedDuplicateClaim(
     ),
     skipDuplicates: true,
   });
+  await tx.messageDuplicateClaimCleanup.deleteMany({
+    where: { claim: { dedupeKey: claim.dedupeKey, messageActionKey: null } },
+  });
   return true;
 }
 
@@ -159,6 +162,6 @@ export async function reconcileDuplicateClaimCleanup(
   }
   // A materialized owner is now owned by intent/receipt recovery. Removing only
   // the obligation keeps its claim intact and prevents a retained-history scan.
-  await tx.messageDuplicateClaimCleanup.delete({ where: { claimId } });
+  await tx.messageDuplicateClaimCleanup.deleteMany({ where: { claimId } });
   return released;
 }
