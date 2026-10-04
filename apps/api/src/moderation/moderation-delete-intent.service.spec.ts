@@ -2172,58 +2172,117 @@ describe('ModerationDeleteIntentService', () => {
     expect(queue.add).not.toHaveBeenCalled();
   });
 
-  it('retries the entire OCR ownership transaction after a Prisma serialization conflict', async () => {
-    const persisted = {
-      ...baseIntent,
-      status: 'PENDING' as const,
-      leaseToken: null,
-      leaseExpiresAt: null,
-      leasedFromStatus: null,
-    };
-    const claimCreateMany = jest.fn().mockResolvedValue({ count: 1 });
-    const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
-    const txExecuteRaw = jest.fn().mockResolvedValue(1);
-    const serializationFailure = Object.assign(new Error('Transaction write conflict'), {
-      code: 'P2034',
-    });
-    const transaction = jest
-      .fn()
-      .mockImplementationOnce(async (callback: (tx: unknown) => Promise<unknown>) => {
-        await callback({
-          moderationViolationMessageClaim: { createMany: claimCreateMany },
-          $queryRaw: txQueryRaw,
-          $executeRaw: txExecuteRaw,
-        });
-        throw serializationFailure;
-      })
-      .mockImplementationOnce(async (callback: (tx: unknown) => Promise<unknown>) =>
-        callback({
-          moderationViolationMessageClaim: { createMany: claimCreateMany },
-          $queryRaw: txQueryRaw,
-          $executeRaw: txExecuteRaw,
-        }),
+  it.each([
+    [
+      'Prisma serialization',
+      Object.assign(new Error('Transaction write conflict'), { code: 'P2034' }),
+    ],
+    [
+      'driver COMMIT',
+      Object.assign(new Error('TransactionWriteConflict'), {
+        name: 'DriverAdapterError',
+        cause: { kind: 'TransactionWriteConflict' },
+      }),
+    ],
+  ])(
+    'retries the entire OCR ownership transaction after a %s conflict',
+    async (_kind, serializationFailure) => {
+      const persisted = {
+        ...baseIntent,
+        status: 'PENDING' as const,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        leasedFromStatus: null,
+      };
+      const claimCreateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
+      const txExecuteRaw = jest.fn().mockResolvedValue(1);
+      const transaction = jest
+        .fn()
+        .mockImplementationOnce(async (callback: (tx: unknown) => Promise<unknown>) => {
+          await callback({
+            moderationViolationMessageClaim: { createMany: claimCreateMany },
+            $queryRaw: txQueryRaw,
+            $executeRaw: txExecuteRaw,
+          });
+          throw serializationFailure;
+        })
+        .mockImplementationOnce(async (callback: (tx: unknown) => Promise<unknown>) =>
+          callback({
+            moderationViolationMessageClaim: { createMany: claimCreateMany },
+            $queryRaw: txQueryRaw,
+            $executeRaw: txExecuteRaw,
+          }),
+        );
+      const { service, queue } = createService(
+        {},
+        { $transaction: transaction, $queryRaw: jest.fn().mockResolvedValue([persisted]) },
       );
-    const { service, queue } = createService(
-      {},
-      { $transaction: transaction, $queryRaw: jest.fn().mockResolvedValue([persisted]) },
-    );
 
-    await expect(
-      service.ensureIntentWithMessageActionClaim(commercialOcrClaimedIntentInput()),
-    ).resolves.toMatchObject({ claim: 'claimed', intent: { intentId: 'intent-1' } });
+      await expect(
+        service.ensureIntentWithMessageActionClaim(commercialOcrClaimedIntentInput()),
+      ).resolves.toMatchObject({ claim: 'claimed', intent: { intentId: 'intent-1' } });
 
-    expect(transaction).toHaveBeenCalledTimes(2);
-    expect(transaction).toHaveBeenNthCalledWith(1, expect.any(Function), {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-    });
-    expect(transaction).toHaveBeenNthCalledWith(2, expect.any(Function), {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-    });
-    expect(claimCreateMany).toHaveBeenCalledTimes(2);
-    expect(txQueryRaw).toHaveBeenCalledTimes(4);
-    expect(txExecuteRaw).toHaveBeenCalledTimes(2);
-    expect(queue.add).toHaveBeenCalledTimes(1);
-  });
+      expect(transaction).toHaveBeenCalledTimes(2);
+      expect(transaction).toHaveBeenNthCalledWith(1, expect.any(Function), {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+      expect(transaction).toHaveBeenNthCalledWith(2, expect.any(Function), {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+      expect(claimCreateMany).toHaveBeenCalledTimes(2);
+      expect(txQueryRaw).toHaveBeenCalledTimes(4);
+      expect(txExecuteRaw).toHaveBeenCalledTimes(2);
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [
+      'typed write conflict',
+      Object.assign(new Error('TransactionWriteConflict'), {
+        name: 'DriverAdapterError',
+        cause: { kind: 'TransactionWriteConflict' },
+      }),
+      3,
+    ],
+    [
+      'constraint failure',
+      Object.assign(new Error('UniqueConstraintViolation'), {
+        name: 'DriverAdapterError',
+        cause: { kind: 'UniqueConstraintViolation' },
+      }),
+      1,
+    ],
+    [
+      'permission failure',
+      Object.assign(new Error('DatabaseAccessDenied'), {
+        name: 'DriverAdapterError',
+        cause: { kind: 'DatabaseAccessDenied' },
+      }),
+      1,
+    ],
+    [
+      'ambiguous connection loss',
+      Object.assign(new Error('ConnectionClosed'), {
+        name: 'DriverAdapterError',
+        cause: { kind: 'ConnectionClosed' },
+      }),
+      1,
+    ],
+    ['message without typed cause', new Error('TransactionWriteConflict'), 1],
+  ])(
+    'bounds retries and preserves %s without queue side effects',
+    async (_kind, failure, attempts) => {
+      const transaction = jest.fn().mockRejectedValue(failure);
+      const { service, queue } = createService({}, { $transaction: transaction });
+      await expect(
+        service.ensureIntentWithMessageActionClaim(commercialOcrClaimedIntentInput()),
+      ).rejects.toBe(failure);
+      expect(transaction).toHaveBeenCalledTimes(attempts);
+      expect(queue.add).not.toHaveBeenCalled();
+    },
+  );
 
   it('classifies a bare 404 as waiting for verification, never as already absent', () => {
     const { service } = createService();

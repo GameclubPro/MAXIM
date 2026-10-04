@@ -7703,6 +7703,18 @@ export class ModerationDeleteIntentService {
     if (code === 'P2034') {
       return true;
     }
+    // FLAG: Prisma's pg adapter can expose a typed conflict directly at COMMIT,
+    // after the callback completed. Retry the whole transaction, never a partial write
+    // or an ambiguous connection failure, under the existing three-attempt bound.
+    if (
+      error instanceof Error &&
+      error.name === 'DriverAdapterError' &&
+      error.cause !== null &&
+      typeof error.cause === 'object' &&
+      'kind' in error.cause &&
+      error.cause.kind === 'TransactionWriteConflict'
+    )
+      return true;
     return this.errorMessage(error).toLowerCase().includes('could not serialize access');
   }
 
