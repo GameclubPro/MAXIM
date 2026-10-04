@@ -982,9 +982,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
     });
 
     it('reports only the selected due lower bound and processes at most 25 per sweep', async () => {
-      await Promise.all(
-        Array.from({ length: 27 }, (_, index) => abandonedClaim(`sample-${index}`)),
-      );
+      for (let index = 0; index < 27; index += 1) await abandonedClaim(`sample-${index}`);
       const report = jest.fn();
       expect(await serviceFor().reconcileExpiredMessageDuplicateActions(report)).toBe(25);
       expect(report).toHaveBeenLastCalledWith({
