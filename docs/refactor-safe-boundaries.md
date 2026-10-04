@@ -200,3 +200,13 @@ Browser scenarios assert server cursors, explicit load-more, filter-specific pag
 late-query isolation, query suspension while editing, calendar target/exclusion payloads
 and filters after editor return. Existing profile-separation and video-upload scenarios
 remain required; the new list suite is included in CI.
+
+## Publication action boundaries
+
+The action controller owns cancel/pause/resume, retry-version selection, ambiguous delivery
+confirmation and their pending targets. It receives the existing page request-identity owner;
+identities survive errors and are cleared only after success, independently per action slot.
+Revision conflicts retain the original refresh and feedback behavior. Confirmation sheets
+preserve their ordering around publication details, pending guards and native Back handling.
+Browser checks exercise actual payloads, duplicate-click prevention, retries after a lost
+response, revision conflicts and original/latest content selection through the real API client.
