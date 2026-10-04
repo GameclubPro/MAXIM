@@ -16,6 +16,7 @@ function fingerprint(seed: string): PhotoFingerprint {
     canonicalHash: seed.repeat(64).slice(0, 64),
     pdqHash: seed.repeat(64).slice(0, 64),
     pdqQuality: 80,
+    decodeCost: { encodedBytes: 100, pixels: 100 },
   };
 }
 
@@ -42,7 +43,15 @@ function createService(cache: Array<PhotoFingerprint | null>) {
     createAlbumDecodeBudget: jest.fn(
       () => new PhotoDecodeBudget({ maxEncodedBytes: 1_024, maxPixels: 1_024 }),
     ),
-    fingerprint: jest.fn().mockResolvedValue(generated),
+    reserveCachedFingerprint: jest.fn((proof: PhotoFingerprint, budget: PhotoDecodeBudget) =>
+      budget.tryReserve(proof.decodeCost!),
+    ),
+    fingerprint: jest.fn().mockImplementation(async (_bytes, options) => {
+      if (!options.albumBudget.tryReserve(generated.decodeCost!)) {
+        throw new PhotoFingerprintRejectedError('album_decode_budget_exceeded');
+      }
+      return generated;
+    }),
   };
   const historyStore = {
     getCachedPhotoFingerprints: jest.fn().mockResolvedValue({
@@ -134,9 +143,110 @@ describe('PhotoDuplicateAnalysisService', () => {
     },
   );
 
+  it.each([true, false])(
+    'resumes a verified prefix after a late failure (photo ID: %s)',
+    async (withId) => {
+      const s = createService([]);
+      const proofs = new Map<string, PhotoFingerprint>();
+      s.historyStore.getCachedPhotoFingerprints.mockImplementation(async (ids: string[]) => ({
+        kind: 'available',
+        fingerprints: ids.map((id) => proofs.get(id) ?? null),
+      }));
+      s.historyStore.cachePhotoFingerprints.mockImplementation(async (entries) => {
+        entries.forEach((entry: { photoId: string; fingerprint: PhotoFingerprint }) =>
+          proofs.set(entry.photoId, entry.fingerprint),
+        );
+        return true;
+      });
+      const images = album(
+        ['first', 'second'].map((name) => ({
+          source: 'direct' as const,
+          photoId: withId ? name : null,
+          downloadUrl: `https://i.oneme.ru/${name}`,
+        })),
+      );
+      s.downloader.download
+        .mockImplementationOnce(async () => ({ bytes: Buffer.from('first'), format: 'jpeg' }))
+        .mockRejectedValueOnce(new Error('transient'));
+      await expect(s.service.fingerprintAlbum(images, 3600)).rejects.toThrow('transient');
+      expect(s.historyStore.observeAlbum).not.toHaveBeenCalled();
+      expect(proofs.size).toBe(1);
+      await expect(s.service.fingerprintAlbum(images, 3600)).resolves.toMatchObject({
+        kind: 'complete',
+      });
+      expect(s.downloader.download.mock.calls.map(([url]) => url)).toEqual([
+        'https://i.oneme.ru/first',
+        'https://i.oneme.ru/second',
+        'https://i.oneme.ru/second',
+      ]);
+      expect(s.fingerprintService.fingerprint).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('keeps successful verification usable when checkpoint writes are unavailable', async () => {
+    const s = createService([null]);
+    s.historyStore.cachePhotoFingerprints.mockResolvedValue(false);
+    await expect(
+      s.service.fingerprintAlbum(
+        album([{ source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' }]),
+        3600,
+      ),
+    ).resolves.toMatchObject({ kind: 'complete' });
+    expect(s.downloader.download).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists the first proof before the next-image deadline, without partial observation', async () => {
+    const s = createService([null, null]);
+    const now = jest.spyOn(Date, 'now').mockReturnValueOnce(100).mockReturnValue(201);
+    try {
+      await expect(
+        s.service.fingerprintAlbum(
+          album([
+            { source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' },
+            { source: 'direct', photoId: 'second', downloadUrl: 'https://i.oneme.ru/second' },
+          ]),
+          3600,
+          200,
+        ),
+      ).rejects.toThrow('deadline exceeded');
+      expect(s.historyStore.cachePhotoFingerprints).toHaveBeenCalledTimes(1);
+      expect(s.downloader.download).toHaveBeenCalledTimes(1);
+      expect(s.historyStore.observeAlbum).not.toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('charges cached images to the album budget on resume', async () => {
+    const expensive = { ...fingerprint('a'), decodeCost: { encodedBytes: 950, pixels: 950 } };
+    const s = createService([expensive, null]);
+    await expect(
+      s.service.fingerprintAlbum(
+        album([
+          { source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' },
+          { source: 'direct', photoId: 'second', downloadUrl: 'https://i.oneme.ru/second' },
+        ]),
+        3600,
+      ),
+    ).resolves.toEqual({ kind: 'incomplete', reason: 'album_decode_budget_exceeded' });
+    expect(s.historyStore.observeAlbum).not.toHaveBeenCalled();
+    expect(s.historyStore.cachePhotoFingerprints).not.toHaveBeenCalled();
+  });
+
+  it('recomputes old proofs without resource costs', async () => {
+    const old = fingerprint('a');
+    delete old.decodeCost;
+    const s = createService([old]);
+    await s.service.fingerprintAlbum(
+      album([{ source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' }]),
+      3600,
+    );
+    expect(s.downloader.download).toHaveBeenCalledTimes(1);
+  });
+
   it('retains cached positions when another album member has no photo ID', async () => {
     const cached = fingerprint('a');
-    const s = createService([cached]);
+    const s = createService([null, cached]);
     const result = await s.service.fingerprintAlbum(
       album([
         { source: 'direct', photoId: null, downloadUrl: 'https://i.oneme.ru/new' },
@@ -149,6 +259,7 @@ describe('PhotoDuplicateAnalysisService', () => {
       fingerprint: { images: [s.generated, cached] },
     });
     expect(s.historyStore.getCachedPhotoFingerprints).toHaveBeenCalledWith([
+      expect.stringMatching(/^[a-f0-9]{64}$/),
       expect.stringMatching(/^[a-f0-9]{64}$/),
     ]);
     expect(s.downloader.download).toHaveBeenCalledTimes(1);

@@ -115,6 +115,9 @@ export class PhotoDuplicateAnalysisService {
       if (Date.now() >= deadlineAtMs) throw new Error('Photo album verification deadline exceeded');
       const cached = cachedFingerprints[index];
       if (cached) {
+        if (!this.fingerprintService.reserveCachedFingerprint(cached, albumBudget)) {
+          return { kind: 'incomplete' as const, reason: 'album_decode_budget_exceeded' as const };
+        }
         completeFingerprints.push(cached);
         continue;
       }
@@ -125,11 +128,16 @@ export class PhotoDuplicateAnalysisService {
           ? await this.downloader.download(image.downloadUrl!)
           : await this.downloader.download(image.downloadUrl!, { deadlineAtMs });
       try {
-        completeFingerprints.push(
-          await this.fingerprintService.fingerprint(downloaded.bytes, {
-            albumBudget,
-            expectedFormat: downloaded.format,
-          }),
+        const fingerprint = await this.fingerprintService.fingerprint(downloaded.bytes, {
+          albumBudget,
+          expectedFormat: downloaded.format,
+        });
+        completeFingerprints.push(fingerprint);
+        // FLAG: A proof checkpoints one verified image, never an actionable partial album.
+        // Cache identity includes the message revision/source; cost is charged again on resume.
+        await this.historyStore.cachePhotoFingerprints(
+          [{ photoId: this.cacheIdentity(params.album, image), fingerprint }],
+          params.ttlSeconds,
         );
       } catch (error: unknown) {
         if (error instanceof PhotoFingerprintRejectedError) {
@@ -138,13 +146,6 @@ export class PhotoDuplicateAnalysisService {
         throw error;
       }
     }
-
-    await this.cacheDownloadedFingerprints(
-      params.album,
-      cachedFingerprints,
-      completeFingerprints,
-      params.ttlSeconds,
-    );
 
     const albumFingerprint = createPhotoAlbumFingerprint(completeFingerprints);
     return { kind: 'complete' as const, fingerprint: albumFingerprint };
@@ -184,42 +185,14 @@ export class PhotoDuplicateAnalysisService {
   private async readCachedFingerprints(
     album: LogicalPhotoAlbum,
   ): Promise<Array<PhotoFingerprint | null>> {
-    const photoIds = album.images.flatMap((image) =>
-      image.photoId ? [this.cacheIdentity(album, image)] : [],
-    );
-    if (photoIds.length === 0) {
-      return album.images.map(() => null);
-    }
-
+    const photoIds = album.images.map((image) => this.cacheIdentity(album, image));
+    if (photoIds.length === 0) return [];
     const lookup = await this.historyStore.getCachedPhotoFingerprints(photoIds);
-    let position = 0;
-    return album.images.map((image) =>
-      image.photoId && lookup.kind === 'available'
-        ? (lookup.fingerprints[position++] ?? null)
-        : null,
-    );
-  }
-
-  private async cacheDownloadedFingerprints(
-    album: LogicalPhotoAlbum,
-    cached: readonly (PhotoFingerprint | null)[],
-    fingerprints: readonly PhotoFingerprint[],
-    ttlSeconds: number,
-  ): Promise<void> {
-    const entries = new Map<string, PhotoFingerprint>();
-    album.images.forEach((image, index) => {
-      if (image.photoId && !cached[index] && fingerprints[index]) {
-        entries.set(this.cacheIdentity(album, image), fingerprints[index]);
-      }
+    return album.images.map((_, index) => {
+      const fingerprint = lookup.kind === 'available' ? lookup.fingerprints[index] : null;
+      // Legacy proofs do not contain resource costs and cannot bypass the resumed budget.
+      return fingerprint?.decodeCost ? fingerprint : null;
     });
-    if (entries.size === 0) {
-      return;
-    }
-
-    await this.historyStore.cachePhotoFingerprints(
-      Array.from(entries, ([photoId, fingerprint]) => ({ photoId, fingerprint })),
-      ttlSeconds,
-    );
   }
 
   private cacheIdentity(album: LogicalPhotoAlbum, image: LogicalPhotoAlbum['images'][number]) {
@@ -228,7 +201,7 @@ export class PhotoDuplicateAnalysisService {
     return createHash('sha256')
       .update(
         JSON.stringify([
-          'photo-proof-v1',
+          'photo-proof-v2',
           album.chatId,
           album.senderId,
           album.messageId,
