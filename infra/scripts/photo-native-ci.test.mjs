@@ -168,8 +168,8 @@ esac
     if (Number.isSafeInteger(childPid) && childPid > 1) {
       try {
         process.kill(childPid, 'SIGKILL');
-      } catch (error) {
-        if (error.code !== 'ESRCH') throw error;
+      } catch {
+        // Best-effort fallback must preserve the original test failure.
       }
     }
     rmSync(directory, { recursive: true, force: true });
