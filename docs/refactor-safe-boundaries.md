@@ -28,27 +28,59 @@ Queue-lag samples are not HTTP latency measurements.
 ## Implemented boundaries
 
 - `check:refactor-guards` also checks runtime context factories and legacy compatibility
-  ports. The initial 16 exceptions pin existing definitions. Changed unsafe bridges fail;
-  removed bridges require their exception to disappear. Never regenerate a growing baseline.
+  ports. All 16 initial unsafe-context exceptions have been removed. New unsafe bridges,
+  direct legacy imports and unapproved import cycles fail the existing checks. Never
+  regenerate a growing exception baseline.
 - Private settings search, summaries and buttons are pure functions. Their rendering corpus
   was captured from the baseline before extraction and passed against that implementation.
   Formatting is separate from Nest-dependent input parsing. The private facade retains
   callback/session orchestration and uses the same pure callback payload builder.
 
-## Remaining release slices
-
-1. Replace administrative runtime contexts domain by domain with explicit capabilities and
-   preserve live getter identity, method receivers and initialization order.
-2. Extract required-subscription state, settings draft/save ownership and rules editor state.
-3. Separate publication browsing/calendar from editor lifecycle without changing request identity.
-4. Extract night/manual-close message handling while retaining durable intent and claim ordering.
-5. Measure independent optimization candidates after their structural release is stable.
+## Release discipline
 
 For each slice, add missing behavior/race tests before moving the boundary; shrink the legacy
 guard and relevant context exceptions afterwards. Real-store cases run through the public
 validation wrappers. Browser scenarios exercise user actions and request results in addition
 to architectural source checks. Retain current release source floors and observe strict
 smokes plus at least 30 minutes of runtime health before the next production slice.
+
+## Implementation footprint and validation
+
+The listed responsibilities now have independent dependencies and behavioral coverage.
+The remaining legacy shells still coordinate other domains; their size alone is not a
+completion criterion and does not justify a broader rewrite.
+
+| Existing coordinator | Baseline lines | After extraction |
+| -------------------- | -------------: | ---------------: |
+| Admin service | 23,817 | 22,773 |
+| Moderation service | 18,819 | 18,668 |
+| Private control service | 9,841 | 9,555 |
+| Chat settings page | 8,235 | 7,411 |
+| Publications page | 3,019 | 2,007 |
+
+Full local validation with disposable PostgreSQL/Redis after the structural changes passed
+705 API suites / 15,133 tests, all 50 retention/storage checks, 1,451 mini app tests and 21
+Safety Desk tests. The existing API skip and tooling's two opt-in skips remain exclusions
+from coverage. The isolated search optimization also passed the full API verification.
+New closed-chat competition/restart cases are explicitly included in the CI PostgreSQL lane.
+
+Browser scenarios cover delayed replies, failed/conflicting saves, draft restoration,
+publication request identities, upload cancellation, keyboard visibility and native Back.
+Actual page scenarios use the MAX Bridge shim and iPhone/Android viewport emulation in both
+themes, plus desktop and compact iPhone layouts. These are browser checks, not physical-device
+certification. MAX sends in regression scenarios use isolated fixtures.
+
+With the same production API origin and unchanged budget configuration, the final structural
+build measured these route budgets (gzip KiB, rounded):
+
+| Route | JavaScript | CSS |
+| ----- | ---------: | --: |
+| Startup | 123.7 | 33.5 |
+| Chat settings, incremental | 145.4 | 71.5 |
+| Publications, incremental | 141.1 | 17.2 |
+
+The existing budget checks, including their existing tolerance, passed. No bundle limit,
+schema, saved-job format, contract export or dependency lockfile was changed by this program.
 
 ## Allowlist and rules dependency boundary
 
