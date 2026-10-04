@@ -186,3 +186,17 @@ clicks and missing publication links. The real settings route also exercises nat
 selection, decoder failure/cancellation, editor closing, save/publish gating, keyboard focus
 and native Back across iPhone/Android light/dark and a desktop viewport. These browser suites
 run in the existing CI lane; no production chat is used for test publication.
+
+## Publication feed and calendar boundaries
+
+The publication list controller owns URL filters, search debounce, cursor queries, legacy
+list presentation and list navigation. Calendar availability has its own target scope,
+publication exclusion and daily range refresh. Query keys, limits, polling intervals,
+cursor merging and enablement conditions are unchanged; the editor still uses the existing
+composer and request identities. A page-size guard prevents the extracted responsibilities
+from returning to the page.
+
+Browser scenarios assert server cursors, explicit load-more, filter-specific pagination,
+late-query isolation, query suspension while editing, calendar target/exclusion payloads
+and filters after editor return. Existing profile-separation and video-upload scenarios
+remain required; the new list suite is included in CI.

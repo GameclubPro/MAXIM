@@ -7,6 +7,13 @@ const root = resolve(import.meta.dirname, '..');
 
 const guardedFiles = [
   {
+    path: 'apps/miniapp/src/pages/publications-page.tsx',
+    maxLines: 2631,
+    targetLines: 2200,
+    reason:
+      'Publication list filters, cursor queries and calendar range now have dedicated controllers; the page should continue separating editor lifecycle and action confirmations.',
+  },
+  {
     path: 'apps/api/src/admin/admin.service.legacy.ts',
     maxLines: 22774,
     targetLines: 22500,
