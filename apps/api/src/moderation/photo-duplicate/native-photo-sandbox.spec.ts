@@ -218,23 +218,130 @@ describe('native photo sandbox admission', () => {
   it('poisons and recycles the sandbox when containment cannot be verified', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'maxim-photo-ipc-'));
     const fatalExit = jest.fn();
+    const recordLifecycleEvent = jest.fn();
     const { PhotoNativeContainmentError } = await import('./native-photo-runner');
     const runWorker = jest.fn(async (): Promise<NativePhotoResult> => {
       throw new PhotoNativeContainmentError('unreaped');
     });
     const server = await startNativePhotoSandbox(
       { PHOTO_NATIVE_SANDBOX_SOCKET_PATH: join(directory, 'photo.sock') },
-      { networkInterfaces: () => ({}), allowTestSocketPath: true, runWorker, fatalExit },
+      {
+        networkInterfaces: () => ({}),
+        allowTestSocketPath: true,
+        runWorker,
+        fatalExit,
+        recordLifecycleEvent,
+      },
     );
     try {
       const client = new NativePhotoSandboxClient(server.socketPath);
       await expect(client.fingerprint(Buffer.from('first'), request())).rejects.toThrow(
         'transport',
       );
+      await waitFor(() => fatalExit.mock.calls.length > 0);
       expect(fatalExit).toHaveBeenCalledTimes(1);
+      expect(recordLifecycleEvent).toHaveBeenCalledTimes(1);
+      expect(recordLifecycleEvent).toHaveBeenCalledWith({
+        event: 'native_photo_sandbox_recycle',
+        reason: 'process_group_teardown_failed',
+        operation: 'fingerprint',
+      });
       await expect(client.fingerprint(Buffer.from('second'), request())).rejects.toThrow(
         'transport',
       );
+      expect(runWorker).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['decode_deadline_exceeded', 'native_unavailable'] as const)(
+    'records only the bounded %s reason and still recycles if the sink fails',
+    async (reason) => {
+      const directory = await mkdtemp(join(tmpdir(), 'maxim-photo-ipc-'));
+      const fatalExit = jest.fn();
+      const recordLifecycleEvent = jest.fn(() => {
+        throw new Error('diagnostic unavailable');
+      });
+      const runWorker = jest.fn(
+        async (): Promise<NativePhotoResult> => ({ kind: 'rejected', reason }),
+      );
+      const server = await startNativePhotoSandbox(
+        { PHOTO_NATIVE_SANDBOX_SOCKET_PATH: join(directory, 'photo.sock') },
+        {
+          networkInterfaces: () => ({}),
+          allowTestSocketPath: true,
+          runWorker,
+          fatalExit,
+          recordLifecycleEvent,
+        },
+      );
+      try {
+        const client = new NativePhotoSandboxClient(server.socketPath);
+        await expect(client.fingerprint(Buffer.from('private-image'), request())).resolves.toEqual({
+          kind: 'rejected',
+          reason,
+        });
+        await waitFor(() => fatalExit.mock.calls.length > 0);
+        expect(recordLifecycleEvent).toHaveBeenCalledTimes(1);
+        expect(recordLifecycleEvent).toHaveBeenCalledWith({
+          event: 'native_photo_sandbox_recycle',
+          reason,
+          operation: 'fingerprint',
+        });
+        expect(fatalExit).toHaveBeenCalledTimes(1);
+        await expect(client.fingerprint(Buffer.from('second'), request())).rejects.toThrow(
+          'transport',
+        );
+        expect(runWorker).toHaveBeenCalledTimes(1);
+      } finally {
+        await server.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('recycles on a stalled diagnostic and never releases poisoned native capacity', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maxim-photo-stalled-diagnostic-'));
+    const fatalExit = jest.fn();
+    const recordLifecycleEvent = jest.fn(() => new Promise<void>(() => {}));
+    const runWorker = jest.fn(
+      async (): Promise<NativePhotoResult> => ({
+        kind: 'rejected',
+        reason: 'native_unavailable',
+      }),
+    );
+    const server = await startNativePhotoSandbox(
+      { PHOTO_NATIVE_SANDBOX_SOCKET_PATH: join(directory, 'photo.sock') },
+      {
+        networkInterfaces: () => ({}),
+        allowTestSocketPath: true,
+        runWorker,
+        fatalExit,
+        recordLifecycleEvent,
+      },
+    );
+    try {
+      const client = new NativePhotoSandboxClient(server.socketPath);
+      await expect(client.fingerprint(Buffer.from('private-image'), request())).resolves.toEqual({
+        kind: 'rejected',
+        reason: 'native_unavailable',
+      });
+      await expect(client.fingerprint(Buffer.from('second'), request())).rejects.toThrow(
+        'transport',
+      );
+      // Real socket scheduling varies; the exact 25ms bound is asserted with a fake clock
+      // in the shared helper test. This checks that a pending diagnostic cannot cancel exit.
+      await server.close();
+      await waitFor(() => fatalExit.mock.calls.length > 0);
+      expect(recordLifecycleEvent).toHaveBeenCalledTimes(1);
+      expect(recordLifecycleEvent).toHaveBeenCalledWith({
+        event: 'native_photo_sandbox_recycle',
+        reason: 'native_unavailable',
+        operation: 'fingerprint',
+      });
+      expect(fatalExit).toHaveBeenCalledTimes(1);
       expect(runWorker).toHaveBeenCalledTimes(1);
     } finally {
       await server.close();
@@ -263,3 +370,11 @@ describe('native photo sandbox admission', () => {
     }
   });
 });
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadlineAt = Date.now() + 1_000;
+  while (!predicate()) {
+    if (Date.now() >= deadlineAt) throw new Error('Timed out waiting for sandbox test condition');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}

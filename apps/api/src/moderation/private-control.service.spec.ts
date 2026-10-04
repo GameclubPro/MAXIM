@@ -14,7 +14,11 @@ import {
   USER_AGREEMENT_SHORT_NOTICE,
   USER_AGREEMENT_START_NOTICE,
 } from '../common/user-agreement-notice';
-import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
+import {
+  buildCompactProfileMentionStartPayload,
+  parseCompactGiveawayHandoffStartPayload,
+  parseCompactProfileMentionStartPayload,
+} from '../max/max-deep-link.util';
 import {
   MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
   MaxMediaUploadValidationError,
@@ -2348,6 +2352,119 @@ describe('PrivateControlService', () => {
       'private_bot',
     );
   });
+
+  it.each(
+    (['rules', 'giveaway', 'profile'] as const).flatMap((flow) =>
+      (['fresh', 'migrated', 'known'] as const).map((route) => ({ flow, route })),
+    ),
+  )(
+    'keeps a $flow handoff in the launch bot for a $route private route',
+    async ({ flow, route }) => {
+      const botId = '888000_bot';
+      const tokenA = 'token-a';
+      const tokenB = 'token-b';
+      const maxBotLinkService = {
+        getBotTokenSync: jest.fn((id?: string | null) => (id === botId ? tokenB : tokenA)),
+        getValidationTokens: jest.fn(() => [tokenA, tokenB]),
+        isKnownBotUserId: jest.fn().mockReturnValue(false),
+        getContextOrDefaultBotId: jest.fn().mockReturnValue(botId),
+        getResolvedBotSync: jest.fn().mockReturnValue({
+          id: botId,
+          characterName: 'Майор Максимов',
+          speechPersona: 'male',
+        }),
+        resolveContactIdSync: jest.fn().mockReturnValue(null),
+        buildBotStartUrlSync: jest.fn(
+          (payload: string, id?: string | null) =>
+            `https://max.ru/${id || '777000_bot'}?start=${encodeURIComponent(payload)}`,
+        ),
+      };
+      const { service, maxClient, redisCounter, adminSettingsService, chats } = createHarness({
+        maxBotLinkService,
+      });
+      const actor = {
+        userId: 'user-1',
+        launchBotId: botId,
+        username: null,
+        displayName: 'Тестовый пользователь',
+      };
+      if (route === 'migrated') {
+        const legacy = createDefaultPrivateControlSession();
+        legacy.lastPrivateChatId = '252517912';
+        legacy.lastPrivateBotId = '777000_bot';
+        legacy.lastRulesHandoffDeliveredChatId = '252517912';
+        legacy.lastRulesHandoffDeliveredAt = Date.now();
+        await redisCounter.setStringWithTtl('private-ui:v2:user-1', JSON.stringify(legacy));
+      } else if (route === 'known') {
+        await service.handleBotStarted(createBotStartedPrivateUpdate('', { botId }));
+        maxClient.sendMessage.mockClear();
+      }
+
+      const result =
+        flow === 'rules'
+          ? await service.handoffRulesFromMiniapp(chats[0].id, actor)
+          : flow === 'giveaway'
+            ? await service.handoffGiveawayFromMiniapp(
+                chats[0].id,
+                actor,
+                { giveawayId: 'giveaway-1' },
+                'chat',
+              )
+            : await service.handoffProfileMentionFromMiniapp(
+                chats[0].id,
+                actor,
+                '42',
+                { displayName: 'Юлия' },
+                'chat',
+              );
+      const payload = extractStartPayload(result.botUrl);
+      expect(new URL(result.botUrl).pathname).toBe(`/${botId}`);
+      if (flow === 'giveaway') {
+        expect(parseCompactGiveawayHandoffStartPayload(payload, [tokenB])).toEqual({
+          chatId: chats[0].id,
+          entityType: 'chat',
+          giveawayId: 'giveaway-1',
+        });
+        expect(parseCompactGiveawayHandoffStartPayload(payload, [tokenA])).toBeNull();
+      } else if (flow === 'profile') {
+        expect(parseCompactProfileMentionStartPayload(payload, [tokenB])).toEqual({
+          chatId: chats[0].id,
+          entityType: 'chat',
+          userId: '42',
+        });
+        expect(parseCompactProfileMentionStartPayload(payload, [tokenA])).toBeNull();
+      } else {
+        expect(payload).toBe('rules_handoff');
+      }
+      if (route !== 'known') expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      const persisted = JSON.parse(
+        (await redisCounter.getString('private-ui:v2:888000_bot:user-1'))!,
+      );
+      if (flow === 'rules') expect(persisted.pendingInput).toEqual({ kind: 'rules_text' });
+      if (flow === 'giveaway') expect(persisted.managedGiveawayId).toBe('giveaway-1');
+      if (flow === 'profile') expect(persisted.pendingProfileMentionUserId).toBe('42');
+      if (route === 'migrated') {
+        expect(persisted.lastPrivateChatId).toBeNull();
+        expect(persisted.lastRulesHandoffDeliveredChatId).toBeNull();
+      }
+
+      await service.handleBotStarted(createBotStartedPrivateUpdate(payload, { botId }));
+      expect(maxClient.sendMessage.mock.calls).not.toHaveLength(0);
+      expect(maxClient.sendMessage.mock.calls.every(([chatId]) => chatId === '152517912')).toBe(
+        true,
+      );
+      expect(maxClient.sendMessage.mock.calls.every((call) => call[3]?.botId === botId)).toBe(true);
+      if (flow === 'rules') {
+        await service.handleUpdate(createPrivateTextUpdate('Правила через бота B', { botId }));
+        expect(adminSettingsService.updateRules).toHaveBeenCalledWith(
+          chats[0].id,
+          expect.objectContaining({ userId: actor.userId }),
+          expect.objectContaining({ text: 'Правила через бота B' }),
+          'private_bot',
+        );
+      }
+    },
+  );
 
   it('uses a forwarded formatted post for an active rules editor before entity recovery', async () => {
     const managedEntityHandshakeService = {

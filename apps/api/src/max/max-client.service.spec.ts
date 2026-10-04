@@ -1473,6 +1473,97 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it.each([
+    'bot_access',
+    'members',
+    'snapshot',
+    'admins',
+    'identity',
+    'subscriptions',
+    'exact_message',
+  ] as const)('refuses an unknown explicit bot before a %s read uses another token', async (lookup) => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    const { botRegistry, botContext, limiterRedis } = service as any;
+    const defaultBot = botRegistry.getDefaultBot();
+    const contextBot = { ...defaultBot, id: 'context-bot', token: 'context-token' };
+    botRegistry.getBotById.mockImplementation((botId?: string | null) =>
+      botId === contextBot.id ? contextBot : botId === defaultBot.id ? defaultBot : null,
+    );
+    const options = { botId: 'removed-bot' };
+    const reads = {
+      bot_access: () => service.getCurrentChatMemberAccess('chat-1', options),
+      members: () => service.getChatMembersAccess('chat-1', ['user-1'], options),
+      snapshot: () => service.getChatSnapshot('chat-1', options),
+      admins: () => service.getChatAdminMembers('chat-1', options),
+      identity: () => service.getOwnProfileIdentity(options),
+      subscriptions: () => service.listWebhookSubscriptions(options),
+      exact_message: () => service.getExactMessagePresence('chat-1', 'mid-1', options),
+    };
+
+    try {
+      await expect(reads[lookup]()).rejects.toBeInstanceOf(UnrecoverableError);
+      await expect(botContext.runWithBot(contextBot.id, reads[lookup])).rejects.toBeInstanceOf(
+        UnrecoverableError,
+      );
+      expect(httpService.request).not.toHaveBeenCalled();
+      expect(limiterRedis.get).not.toHaveBeenCalled();
+      expect(limiterRedis.set).not.toHaveBeenCalled();
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it.each(['default', 'context', 'explicit_draining'] as const)(
+    'preserves the %s token for readable bot access',
+    async (route) => {
+      const httpService = {
+        request: jest.fn().mockImplementation((request: { headers: { Authorization: string } }) =>
+          of({
+            status: 200,
+            data: {
+              user_id: request.headers.Authorization === 'test-token' ? '777000' : '888111',
+              is_admin: true,
+              permissions: ['write'],
+            },
+          }),
+        ),
+      };
+      const service = createService(httpService);
+      const { botRegistry, botContext } = service as any;
+      const defaultBot = botRegistry.getDefaultBot();
+      const drainingBot = {
+        ...defaultBot,
+        id: 'draining-bot',
+        token: 'draining-token',
+        state: 'draining',
+      };
+      botRegistry.getBotById.mockImplementation((botId?: string | null) =>
+        botId === drainingBot.id ? drainingBot : botId === defaultBot.id ? defaultBot : null,
+      );
+      try {
+        const read = () =>
+          service.getCurrentChatMemberAccess('chat-1', {
+            bypassCache: true,
+            ...(route === 'explicit_draining' ? { botId: drainingBot.id } : {}),
+          });
+        const access = await (route === 'context'
+          ? botContext.runWithBot(drainingBot.id, read)
+          : read());
+        expect(access.userId).toBe(route === 'default' ? '777000' : '888111');
+        expect(access.isAdmin).toBe(true);
+        expect(httpService.request).toHaveBeenCalledTimes(1);
+        expect(httpService.request).toHaveBeenCalledWith(
+          expect.objectContaining({
+            headers: { Authorization: route === 'default' ? 'test-token' : 'draining-token' },
+          }),
+        );
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
   it('passes timeout override to queued delete message jobs', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
@@ -10973,6 +11064,58 @@ describe('MaxClientService inline keyboard guardrails', () => {
       await service.onModuleDestroy();
     },
   );
+
+  it.each([
+    { data: null },
+    { data: {} },
+    { data: { success: false } },
+    { data: { members: null } },
+    { data: { members: [{}] } },
+    { data: { users: [null] } },
+    { data: { members: [{ user_id: 'user-1' }, {}] } },
+  ])('keeps malformed successful membership checks unknown: $data', async ({ data }) => {
+    const request = jest
+      .fn()
+      .mockReturnValueOnce(of({ status: 200, data }))
+      .mockReturnValueOnce(of({ status: 200, data: { members: [{ user_id: 'user-1' }] } }));
+    const service = createService({ request });
+    try {
+      await expect(service.hasChatMember('chat-1', 'user-1')).rejects.toThrow(
+        'Invalid MAX chat members response',
+      );
+      await expect(service.hasChatMember('chat-1', 'user-1')).resolves.toBe(true);
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it.each([
+    { data: { members: [] }, expected: false },
+    { data: { users: [] }, expected: false },
+    { data: { members: [{ user_id: 'another-user' }] }, expected: false },
+    { data: { members: [{ user_id: 'user-1' }] }, expected: true },
+    { data: { users: [{ user: { user_id: 'user-1' } }] }, expected: true },
+  ])('preserves a valid exact membership answer: $data', async ({ data, expected }) => {
+    const request = jest.fn().mockReturnValue(of({ status: 200, data }));
+    const service = createService({ request });
+    try {
+      await expect(
+        service.hasChatMember('chat-1', ' user-1 ', { timeoutMs: 1_234, botId: '777000_bot' }),
+      ).resolves.toBe(expected);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'get',
+          params: { user_ids: 'user-1' },
+          timeout: 1_234,
+          headers: { Authorization: 'test-token' },
+        }),
+      );
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
 
   it('preserves explicit bot markers for the narrow admin roster lookup', async () => {
     const httpService = {

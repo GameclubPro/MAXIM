@@ -1045,6 +1045,54 @@ describe('WebhookParser', () => {
     expect(parsed.message?.createdAt).toBe('2026-02-28T03:25:18.000Z');
   });
 
+  it.each([1e20, 8_640_000_000_000_001, Number.POSITIVE_INFINITY, new Date('invalid')])(
+    'uses ingress time for an invalid lifecycle timestamp %s without throwing',
+    (timestamp) => {
+      const before = Date.now();
+      const parsed = parser.parse(
+        {
+          update_type: 'bot_removed',
+          chat_id: '-123456789',
+          timestamp,
+        },
+        { botId: 'managed-bot-1' },
+      );
+
+      expect(parsed.eventTimestampSource).toBe('ingress');
+      const eventAtMs = Date.parse(parsed.message!.createdAt);
+      expect(eventAtMs).toBeGreaterThanOrEqual(before);
+      expect(eventAtMs).toBeLessThanOrEqual(Date.now());
+    },
+  );
+
+  it('uses the next valid event timestamp when an earlier candidate is outside the date range', () => {
+    const parsed = parser.parse({
+      update_type: 'user_removed',
+      chat_id: '-123456789',
+      user_id: '888',
+      timestamp: 1e20,
+      data: { timestamp: '2026-02-28T03:25:18.580Z' },
+    });
+
+    expect(parsed.eventTimestampSource).toBe('payload');
+    expect(parsed.message?.createdAt).toBe('2026-02-28T03:25:18.580Z');
+  });
+
+  it.each(['1970-01-02T00:00:00.123Z', new Date('1970-01-02T00:00:00.123Z')])(
+    'keeps a parsed date in milliseconds even below the Unix seconds threshold: %s',
+    (timestamp) => {
+      const parsed = parser.parse({
+        update_type: 'user_removed',
+        chat_id: '-123456789',
+        user_id: '888',
+        timestamp,
+      });
+
+      expect(parsed.eventTimestampSource).toBe('payload');
+      expect(parsed.message?.createdAt).toBe('1970-01-02T00:00:00.123Z');
+    },
+  );
+
   it('keeps inviter id for user_added updates', () => {
     const parsed = parser.parse({
       update_id: 'upd-user-added-inviter-1',

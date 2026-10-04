@@ -7,6 +7,24 @@ import {
 
 export type PrivateScreenHandoffKind = Exclude<PrivateHandoffKind, 'profileMention'>;
 
+export function preparePrivateHandoffBot(
+  session: PrivateSession,
+  scopedBotId: string | null | undefined,
+): string | null {
+  const currentBotId = scopedBotId?.trim() || null;
+  const rememberedBotId = session.lastPrivateBotId?.trim() || null;
+  // FLAG: A migrated legacy session can remember another bot's private dialog.
+  // Keep the draft, but discard that route before a handoff in the current bot scope.
+  if (currentBotId && currentBotId !== rememberedBotId) {
+    session.lastPrivateChatId = null;
+    session.lastPrivateBotId = null;
+    for (const kind of ['broadcast', 'giveaway', 'rules', 'profileMention'] as const) {
+      clearPrivateHandoffDelivery(session, kind);
+    }
+  }
+  return currentBotId ?? rememberedBotId;
+}
+
 export type PrivateScreenHandoffDeliveryAdapters = {
   createContext(privateChatId: string): PrivateContext;
   render(context: PrivateContext, session: PrivateSession): Promise<PrivateView>;

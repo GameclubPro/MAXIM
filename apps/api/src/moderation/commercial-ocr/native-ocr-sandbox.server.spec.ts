@@ -368,6 +368,46 @@ describe('native OCR sandbox server containment', () => {
     }
   });
 
+  it('cannot cancel mandatory OCR recycle with a stalled diagnostic or server close', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maxim-ocr-stalled-diagnostic-'));
+    const environment = sandboxEnvironment(join(directory, 'ocr.sock'));
+    const fatalExit = jest.fn();
+    const recordLifecycleEvent = jest.fn(() => new Promise<void>(() => {}));
+    const runNativeTesseract = jest.fn(async () => ({ ok: false, reason: 'timeout' }) as const);
+    const previousExitCode = process.exitCode;
+    const server = await startNativeOcrSandboxServer(environment, {
+      ...successfulServerDependencies(),
+      runNativeTesseract,
+      fatalExit,
+      recordLifecycleEvent,
+    });
+    const client = new NativeOcrSandboxClient(testClientConfig(environment));
+
+    try {
+      await client
+        .recognize(Buffer.from('private-prepared-image'), 6, 1_000)
+        .catch(() => undefined);
+      await server.close();
+      await waitFor(() => fatalExit.mock.calls.length > 0);
+      expect(recordLifecycleEvent).toHaveBeenCalledTimes(1);
+      expect(recordLifecycleEvent).toHaveBeenCalledWith({
+        event: 'native_ocr_sandbox_recycle',
+        reason: 'native_timeout',
+        operation: 'recognize',
+        queueDepth: 0,
+        pendingBytes: 0,
+      });
+      expect(runNativeTesseract).toHaveBeenCalledTimes(1);
+      expect(fatalExit).toHaveBeenCalledTimes(1);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = previousExitCode;
+      client.close();
+      await server.close().catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('rejects any non-loopback interface before binding the socket', () => {
     expect(() =>
       assertNativeOcrSandboxNetworkIsolated({

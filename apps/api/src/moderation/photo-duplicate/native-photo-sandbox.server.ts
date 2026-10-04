@@ -16,6 +16,10 @@ import {
   parsePhotoRequest,
 } from './native-photo-sandbox.protocol';
 import { readPhotoFrame } from './native-photo-sandbox.transport';
+import {
+  createNativeSandboxRecycle,
+  writeNativeSandboxLifecycleEvent,
+} from '../native-sandbox-recycle';
 
 export const PHOTO_NATIVE_ENV_ALLOWLIST = [
   'PATH',
@@ -28,12 +32,24 @@ export const PHOTO_NATIVE_ENV_ALLOWLIST = [
   'PHOTO_DUPLICATE_MAX_PIXELS',
 ] as const;
 
+type PhotoNativeRecycleReason =
+  | 'decode_deadline_exceeded'
+  | 'active_client_cancel'
+  | 'native_unavailable'
+  | 'process_group_teardown_failed';
+type PhotoNativeLifecycleEvent = Readonly<{
+  event: 'native_photo_sandbox_recycle';
+  reason: PhotoNativeRecycleReason;
+  operation: 'fingerprint';
+}>;
+
 export async function startNativePhotoSandbox(
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: {
     networkInterfaces?: typeof networkInterfaces;
     runWorker?: typeof runNativePhotoWorker;
     fatalExit?: () => void;
+    recordLifecycleEvent?: (event: PhotoNativeLifecycleEvent) => void | Promise<void>;
     allowTestSocketPath?: boolean;
   } = {},
 ) {
@@ -79,12 +95,23 @@ export async function startNativePhotoSandbox(
   }
   const runWorker = dependencies.runWorker ?? runNativePhotoWorker;
   const fatalExit = dependencies.fatalExit ?? (() => process.exit(70));
+  // FLAG: One bounded event precedes cgroup recycle when stderr drains promptly.
+  // Images, request identities and arbitrary worker errors never enter the diagnostic.
+  const recycle = createNativeSandboxRecycle<PhotoNativeLifecycleEvent>({
+    fatalExit,
+    recordLifecycleEvent: dependencies.recordLifecycleEvent ?? writeNativeSandboxLifecycleEvent,
+  });
   const instanceId = randomUUID();
   const sockets = new Set<Socket>();
   let active: AbortController | null = null;
   let activeWork: Promise<void> | null = null;
   let poisoned = false;
   let closing = false;
+  const poison = (reason: PhotoNativeRecycleReason) => {
+    if (poisoned) return;
+    poisoned = true;
+    recycle({ event: 'native_photo_sandbox_recycle', reason, operation: 'fingerprint' });
+  };
   const server = createServer((socket) => {
     if (sockets.size >= 3 || poisoned || closing) {
       socket.destroy();
@@ -144,13 +171,11 @@ export async function startNativePhotoSandbox(
             result.kind === 'rejected' &&
             (result.reason === 'decode_deadline_exceeded' || result.reason === 'native_unavailable')
           ) {
-            poisoned = true;
-            setImmediate(fatalExit);
+            poison(controller.signal.aborted ? 'active_client_cancel' : result.reason);
           }
         } catch (error) {
           if (error instanceof PhotoNativeContainmentError) {
-            poisoned = true;
-            fatalExit();
+            poison('process_group_teardown_failed');
           }
           socket.destroy();
         } finally {

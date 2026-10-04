@@ -239,6 +239,7 @@ import {
 } from './private-control-karavan-allowlist-title';
 import {
   deliverPrivateScreenHandoffToKnownPrivateChat,
+  preparePrivateHandoffBot,
   type PrivateScreenHandoffKind,
 } from './private-control-handoff-delivery';
 import {
@@ -1271,10 +1272,13 @@ export class PrivateControlService {
     session.pendingInput = { kind: 'rules_text' };
     session.lastScreenStack = [];
 
+    const handoffBotId = preparePrivateHandoffBot(
+      session,
+      this.sessionBotContext.currentBotId() ?? user.launchBotId,
+    );
     await this.saveSession(user.userId, session);
     await this.deliverRulesHandoffToKnownPrivateChat(user, session);
 
-    const handoffBotId = session.lastPrivateBotId?.trim() || null;
     const botUrl = this.buildBotStartUrl(RULES_HANDOFF_START_PAYLOAD, handoffBotId);
     if (!botUrl) {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
@@ -1381,10 +1385,13 @@ export class PrivateControlService {
     session.pendingInput = { kind: 'giveaway_content' };
     session.lastScreenStack = [];
 
+    const handoffBotId = preparePrivateHandoffBot(
+      session,
+      this.sessionBotContext.currentBotId() ?? user.launchBotId,
+    );
     await this.saveSession(user.userId, session);
     await this.deliverGiveawayHandoffToKnownPrivateChat(user, session);
 
-    const handoffBotId = session.lastPrivateBotId?.trim() || null;
     const botUrl = this.buildBotStartUrl(
       this.buildGiveawayHandoffStartPayload(
         {
@@ -1456,7 +1463,10 @@ export class PrivateControlService {
     }
 
     const session = await this.loadSession(user.userId);
-    const handoffBotId = session.lastPrivateBotId?.trim() || null;
+    const handoffBotId = preparePrivateHandoffBot(
+      session,
+      this.sessionBotContext.currentBotId() ?? user.launchBotId,
+    );
     const botUrl = this.buildBotStartUrl(
       this.buildProfileMentionStartPayload(
         {
@@ -9382,25 +9392,7 @@ export class PrivateControlService {
   }
 
   private isPrivateDirectChat(chatId: string): boolean {
-    const numericChatId = this.parseChatIdAsBigInt(chatId);
-    return numericChatId !== null && numericChatId > 0n;
-  }
-
-  private parseChatIdAsBigInt(chatId: string): bigint | null {
-    if (typeof chatId !== 'string') {
-      return null;
-    }
-
-    const normalized = chatId.trim();
-    if (!/^-?\d+$/.test(normalized)) {
-      return null;
-    }
-
-    try {
-      return BigInt(normalized);
-    } catch {
-      return null;
-    }
+    return isPrivateDirectChatId(chatId);
   }
 
   private normalizeOwnBotUserId(value: string | undefined): string | null {

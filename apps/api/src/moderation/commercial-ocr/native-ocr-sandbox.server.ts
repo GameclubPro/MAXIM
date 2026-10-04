@@ -1,10 +1,13 @@
 import { chmod, lstat, unlink } from 'node:fs/promises';
-import { writeSync } from 'node:fs';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer, type Socket } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { dirname } from 'node:path';
+import {
+  createNativeSandboxRecycle,
+  writeNativeSandboxLifecycleEvent,
+} from '../native-sandbox-recycle';
 
 import {
   resolveCommercialOcrNativeEngineConfig,
@@ -113,7 +116,7 @@ export type NativeOcrSandboxServerDependencies = Readonly<{
   signalNativeProcessGroup: typeof signalNativeProcessGroup;
   verifyNativeProcessGroupTeardown: typeof verifyNativeProcessGroupTeardown;
   fatalExit: () => void;
-  recordLifecycleEvent: (event: NativeOcrSandboxLifecycleEvent) => void;
+  recordLifecycleEvent: (event: NativeOcrSandboxLifecycleEvent) => void | Promise<void>;
   allowTestSocketPath: boolean;
 }>;
 
@@ -180,7 +183,10 @@ export async function startNativeOcrSandboxServer(
   let activeRequest: Promise<void> | null = null;
   let activeNativeProcess: ChildProcessWithoutNullStreams | null = null;
   let shuttingDown = false;
-  let fatalTimer: NodeJS.Timeout | null = null;
+  const recycle = createNativeSandboxRecycle<NativeOcrSandboxLifecycleEvent>({
+    fatalExit: dependencies.fatalExit,
+    recordLifecycleEvent: dependencies.recordLifecycleEvent,
+  });
   const maximumPendingBytes = Math.min(
     NATIVE_OCR_SANDBOX_MAX_FRAME_BYTES * controls.maxQueue,
     Math.max(controls.maxSourceImageBytes, controls.maxImageBytes) * controls.maxQueue,
@@ -344,17 +350,13 @@ export async function startNativeOcrSandboxServer(
 
   const fatalContainmentFailure = (reason: NativeOcrSandboxRecycleReason): void => {
     if (shuttingDown) return;
-    try {
-      dependencies.recordLifecycleEvent({
-        event: 'native_ocr_sandbox_recycle',
-        reason,
-        operation: activeRequestKind ?? 'idle',
-        queueDepth: pending.length,
-        pendingBytes,
-      });
-    } catch {
-      /* Containment must proceed even when the bounded diagnostic sink fails. */
-    }
+    const event: NativeOcrSandboxLifecycleEvent = {
+      event: 'native_ocr_sandbox_recycle',
+      reason,
+      operation: activeRequestKind ?? 'idle',
+      queueDepth: pending.length,
+      pendingBytes,
+    };
     shuttingDown = true;
     process.exitCode = 1;
     server.close();
@@ -365,7 +367,7 @@ export async function startNativeOcrSandboxServer(
     }
     pendingBytes = 0;
     for (const socket of openSockets) socket.destroy();
-    fatalTimer = setTimeout(dependencies.fatalExit, 0);
+    recycle(event);
   };
 
   const processRequest = async (request: PendingRequest): Promise<void> => {
@@ -572,7 +574,6 @@ export async function startNativeOcrSandboxServer(
     close: async () => {
       if (shuttingDown) return;
       shuttingDown = true;
-      if (fatalTimer) clearTimeout(fatalTimer);
       for (const request of pending.splice(0)) {
         if (request.expiryTimer) clearTimeout(request.expiryTimer);
         request.frame.payload.fill(0);
@@ -852,11 +853,9 @@ function resolveServerDependencies(
     fatalExit: overrides.fatalExit ?? (() => process.exit(1)),
     recordLifecycleEvent:
       overrides.recordLifecycleEvent ??
-      ((event) => {
-        // FLAG: One bounded identifier-free event is written synchronously before the
-        // mandatory cgroup recycle; arbitrary errors, OCR text and images never enter it.
-        writeSync(2, `${JSON.stringify(event)}\n`);
-      }),
+      // FLAG: One bounded identifier-free event is flushed before mandatory cgroup
+      // recycle only within its hard budget; arbitrary errors, OCR text and images never enter it.
+      writeNativeSandboxLifecycleEvent,
     allowTestSocketPath: overrides.allowTestSocketPath ?? false,
   });
 }

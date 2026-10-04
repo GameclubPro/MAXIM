@@ -841,6 +841,64 @@ describe('DefaultWebhookLeaseManagerService', () => {
     await service.onModuleDestroy();
   });
 
+  it('preserves a replacement worker cooldown when an older timed-out close settles late', async () => {
+    jest.useFakeTimers();
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock({
+        WEBHOOK_DYNAMIC_LEASES_CLOSE_TIMEOUT_MS: 10,
+        WEBHOOK_DYNAMIC_LEASES_REBALANCE_COOLDOWN_MS: 50,
+      }) as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+    const queueName = 'moderation-default-0';
+    let resolveOldClose!: () => void;
+    let resolveReplacementClose!: () => void;
+    const oldWorker = {
+      close: jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveOldClose = resolve;
+          }),
+      ),
+    };
+    const replacementWorker = {
+      close: jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveReplacementClose = resolve;
+          }),
+      ),
+    };
+    (service as any).workers.set(queueName, oldWorker);
+
+    const oldClose = (service as any).closeWorker(queueName);
+    await jest.advanceTimersByTimeAsync(10);
+    await expect(oldClose).resolves.toBe('timed_out');
+    await jest.advanceTimersByTimeAsync(50);
+    (service as any).workers.set(queueName, replacementWorker);
+    const replacementClose = (service as any).closeWorker(queueName);
+    await jest.advanceTimersByTimeAsync(10);
+    await expect(replacementClose).resolves.toBe('timed_out');
+    const replacementCooldown = (service as any).closeRetryNotBeforeMs.get(queueName);
+
+    resolveOldClose();
+    await Promise.resolve();
+    expect((service as any).workers.get(queueName)).toBe(replacementWorker);
+    expect((service as any).closeRetryNotBeforeMs.get(queueName)).toBe(replacementCooldown);
+    expect((service as any).isCloseRetryCoolingDown(queueName)).toBe(true);
+    await jest.advanceTimersByTimeAsync(49);
+    expect((service as any).isCloseRetryCoolingDown(queueName)).toBe(true);
+    await jest.advanceTimersByTimeAsync(1);
+    expect((service as any).isCloseRetryCoolingDown(queueName)).toBe(false);
+
+    resolveReplacementClose();
+    await Promise.resolve();
+    expect((service as any).workers.has(queueName)).toBe(false);
+    await service.onModuleDestroy();
+  });
+
   it('does not hand off a shard when worker close times out', async () => {
     const service = new DefaultWebhookLeaseManagerService(
       createConfigMock() as never,
