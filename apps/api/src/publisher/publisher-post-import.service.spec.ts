@@ -1,8 +1,40 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import { PublisherPostImportStatus } from '../prisma/prisma-client';
 import { PublisherPostImportService } from './publisher-post-import.service';
+import { WebhookParser } from '../webhook/webhook.parser';
 
 const NOW = new Date('2026-08-28T12:00:00.000Z');
+
+function wrapFlowEvent(path: string, node: Record<string, unknown>): Record<string, unknown> {
+  return path
+    ? path
+        .split('.')
+        .reverse()
+        .reduce((nested, key) => ({ [key]: nested }), node)
+    : node;
+}
+
+function privateFlowUpdate(
+  type: 'bot_started' | 'message_callback',
+  path: string,
+  payload: string,
+  botId = 'publik_bot',
+  actorUserId = '42',
+): MaxUpdate {
+  const node =
+    type === 'bot_started'
+      ? { chat_id: 42, user: { user_id: actorUserId }, payload }
+      : { callback_id: 'wrapped-callback', user: { user_id: actorUserId }, payload };
+  return new WebhookParser().parse(
+    {
+      update_type: type,
+      update_id: 'wrapped-private-flow',
+      timestamp: NOW.toISOString(),
+      ...wrapFlowEvent(path, node),
+    },
+    { botId },
+  );
+}
 
 function session(overrides: Record<string, unknown> = {}) {
   return {
@@ -95,6 +127,139 @@ describe('PublisherPostImportService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it.each(['', 'data', 'event', 'bot_started', 'data.bot_started', 'event.bot_started'])(
+    'starts an actor-owned import from the declared %s envelope',
+    async (path) => {
+      const { service, publisherPostImportSession, queue } = createFixture();
+      publisherPostImportSession.findFirst.mockResolvedValue(session());
+      publisherPostImportSession.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(
+        service.observeWebhook(privateFlowUpdate('bot_started', path, 'pi_start-token-1')),
+      ).resolves.toBe(true);
+      expect(publisherPostImportSession.findFirst).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          startToken: 'start-token-1',
+          publisherBotId: 'publik_bot',
+          actorUserId: '42',
+          status: PublisherPostImportStatus.WAITING,
+          expiresAt: { gt: NOW },
+        }),
+      });
+      expect(publisherPostImportSession.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ notificationKind: 'prompt', privateChatId: '42' }),
+        }),
+      );
+      expect(queue.enqueueNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ notification: 'prompt', privateChatId: '42' }),
+      );
+      expect(queue.enqueueProcess).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    'callback',
+    'message_callback.callback',
+    'data.callback',
+    'data.message_callback.callback',
+    'event.callback',
+    'event.message_callback.callback',
+  ])('cancels the actor-owned import from the declared %s envelope', async (path) => {
+    const { service, publisherPostImportSession, queue } = createFixture();
+    publisherPostImportSession.findFirst.mockResolvedValue(session());
+    publisherPostImportSession.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(
+      service.observeWebhook(
+        privateFlowUpdate('message_callback', path, 'pi_cancel_start-token-1'),
+      ),
+    ).resolves.toBe(true);
+    expect(publisherPostImportSession.findFirst).toHaveBeenCalledWith({
+      where: { startToken: 'start-token-1', publisherBotId: 'publik_bot', actorUserId: '42' },
+    });
+    expect(publisherPostImportSession.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'session-1', actorUserId: '42' }),
+        data: expect.objectContaining({
+          status: PublisherPostImportStatus.CANCELED,
+          callbackId: 'wrapped-callback',
+        }),
+      }),
+    );
+    expect(queue.enqueueNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notification: 'canceled',
+        callbackId: 'wrapped-callback',
+        privateChatId: '42',
+      }),
+    );
+  });
+
+  it.each(
+    (['bot_started', 'message_callback'] as const).flatMap((type) =>
+      (['wrong_bot', 'wrong_token', 'wrong_actor'] as const).map((rejection) => ({
+        type,
+        rejection,
+      })),
+    ),
+  )(
+    'rejects $rejection in a wrapped $type without changing a session',
+    async ({ type, rejection }) => {
+      const { service, publisherPostImportSession, queue } = createFixture();
+      publisherPostImportSession.findFirst.mockImplementation(async ({ where }) =>
+        where.startToken === 'start-token-1' &&
+        where.actorUserId === '42' &&
+        where.publisherBotId === 'publik_bot'
+          ? session()
+          : null,
+      );
+      const prefix = type === 'bot_started' ? 'pi_' : 'pi_cancel_';
+      const update = privateFlowUpdate(
+        type,
+        type === 'bot_started' ? 'event.bot_started' : 'event.message_callback.callback',
+        `${prefix}${rejection === 'wrong_token' ? 'invalid-token' : 'start-token-1'}`,
+        rejection === 'wrong_bot' ? 'major_bot' : 'publik_bot',
+        rejection === 'wrong_actor' ? '99' : '42',
+      );
+
+      await expect(service.observeWebhook(update)).resolves.toBe(rejection !== 'wrong_bot');
+      if (rejection === 'wrong_bot')
+        expect(publisherPostImportSession.findFirst).not.toHaveBeenCalled();
+      expect(publisherPostImportSession.updateMany).not.toHaveBeenCalled();
+      expect(queue.enqueueNotification).not.toHaveBeenCalled();
+      expect(queue.enqueueProcess).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a cancel callback without its actor even when the source message names the owner', async () => {
+    const { service, publisherPostImportSession, queue } = createFixture();
+    publisherPostImportSession.findFirst.mockResolvedValue(session());
+    const update = new WebhookParser().parse(
+      {
+        update_type: 'message_callback',
+        update_id: 'callback-without-actor',
+        timestamp: NOW.toISOString(),
+        callback: { callback_id: 'callback-without-actor', payload: 'pi_cancel_start-token-1' },
+        message: {
+          sender: { user_id: 42 },
+          recipient: { chat_id: 42, chat_type: 'dialog' },
+          body: { mid: 'source-message', text: 'Подтверждение импорта' },
+          timestamp: NOW.toISOString(),
+        },
+      },
+      { botId: 'publik_bot' },
+    );
+    expect(update.message?.senderId).toBe('42');
+
+    await expect(service.observeWebhook(update)).resolves.toBe(true);
+
+    expect(publisherPostImportSession.findFirst).not.toHaveBeenCalled();
+    expect(publisherPostImportSession.updateMany).not.toHaveBeenCalled();
+    expect(queue.enqueueProcess).not.toHaveBeenCalled();
+    expect(queue.enqueueNotification).not.toHaveBeenCalled();
   });
 
   it('atomically captures the first private forward and enqueues only identifiers', async () => {

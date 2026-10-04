@@ -923,8 +923,9 @@ export class DefaultWebhookLeaseManagerService
         .then(() => {
           if (this.workers.get(queueName) === worker) {
             this.workers.delete(queueName);
+            // FLAG: A replaced worker owns its own close cooldown; late teardown must not clear it.
+            this.closeRetryNotBeforeMs.delete(queueName);
           }
-          this.closeRetryNotBeforeMs.delete(queueName);
         })
         .catch(() => undefined);
       this.logger.warn(

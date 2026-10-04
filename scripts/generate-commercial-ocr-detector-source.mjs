@@ -74,6 +74,7 @@ export function resolveCommercialOcrRuntimeSourceFiles(repositoryRoot = root) {
     .map((entry) => relative(repositoryRoot, resolve(sourceDirectory, entry.name)));
   return [
     ...commercialOcrFiles,
+    'apps/api/src/moderation/native-sandbox-recycle.ts',
     'apps/api/src/common/url-text.util.ts',
     'apps/api/src/moderation/rule-engine-blocked-domains.detector.ts',
     'apps/api/src/moderation/rule-engine-blocked-words.detector.ts',

@@ -28,6 +28,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { buildPublisherBotDescriptor } from './publisher-bot-descriptor';
 import { PublisherPostImportQueueService } from './publisher-post-import.queue';
 import { PublisherPrivateFlowLeaseService } from './publisher-private-flow-lease.service';
+import {
+  readPublisherPrivateCallback,
+  readPublisherPrivateStartPayload,
+} from './publisher-private-flow-update-reader';
 
 const POST_IMPORT_WAITING_TTL_MS = 10 * 60_000;
 const POST_IMPORT_PROCESSING_TTL_MS = 15 * 60_000;
@@ -284,7 +288,7 @@ export class PublisherPostImportService {
       return false;
     }
 
-    const callback = this.extractCallback(update);
+    const callback = readPublisherPrivateCallback(update);
     if (callback?.payload.startsWith(POST_IMPORT_CANCEL_PREFIX)) {
       await this.handleCancelCallback(update, callback);
       return true;
@@ -475,7 +479,8 @@ export class PublisherPostImportService {
     callback: { payload: string; callbackId: string | null; actorUserId: string | null },
   ): Promise<void> {
     const startToken = callback.payload.slice(POST_IMPORT_CANCEL_PREFIX.length).trim();
-    const actorUserId = callback.actorUserId ?? update.message?.senderId?.trim() ?? '';
+    // FLAG: The source message author is not proof of who pressed its callback button.
+    const actorUserId = callback.actorUserId;
     if (!startToken || !actorUserId) {
       return;
     }
@@ -517,40 +522,11 @@ export class PublisherPostImportService {
   }
 
   private extractImportStartToken(update: MaxUpdate): string | null {
-    if (update.type.trim().toLowerCase() !== 'bot_started') {
-      return null;
-    }
-    const raw = this.asRecord(update.raw);
-    const data = this.asRecord(raw?.data);
-    const payload = this.readString(
-      raw?.payload ?? raw?.start_payload ?? raw?.startPayload ?? data?.payload,
-    );
+    const payload = readPublisherPrivateStartPayload(update);
     if (!payload?.startsWith(POST_IMPORT_START_PREFIX)) {
       return null;
     }
     return payload.slice(POST_IMPORT_START_PREFIX.length).trim();
-  }
-
-  private extractCallback(update: MaxUpdate): {
-    payload: string;
-    callbackId: string | null;
-    actorUserId: string | null;
-  } | null {
-    if (update.type.trim().toLowerCase() !== 'message_callback') {
-      return null;
-    }
-    const raw = this.asRecord(update.raw);
-    const callback = this.asRecord(raw?.callback);
-    const user = this.asRecord(callback?.user);
-    const payload = this.readString(callback?.payload ?? callback?.data);
-    if (!payload) {
-      return null;
-    }
-    return {
-      payload,
-      callbackId: this.readString(callback?.callback_id ?? callback?.callbackId ?? callback?.id),
-      actorUserId: this.readString(user?.user_id ?? user?.userId ?? user?.id),
-    };
   }
 
   private extractPrivateMessageIdentity(update: MaxUpdate): {

@@ -1,6 +1,7 @@
 import { createDefaultPrivateControlSession } from './private-control-session-normalizer';
 import {
   deliverPrivateScreenHandoffToKnownPrivateChat,
+  preparePrivateHandoffBot,
   type PrivateScreenHandoffDeliveryAdapters,
 } from './private-control-handoff-delivery';
 import { markPrivateHandoffDelivered } from './private-control-handoff-state';
@@ -56,6 +57,51 @@ function createAdapters(
 }
 
 describe('private control handoff delivery', () => {
+  it('chooses a fresh bot scope without changing the pending draft', () => {
+    const session = createSession();
+    session.selectedChatId = 'source-chat';
+    session.pendingInput = { kind: 'rules_text' };
+
+    expect(preparePrivateHandoffBot(session, ' bot-b ')).toBe('bot-b');
+    expect(session.selectedChatId).toBe('source-chat');
+    expect(session.pendingInput).toEqual({ kind: 'rules_text' });
+    expect(session.lastPrivateChatId).toBeNull();
+  });
+
+  it('discards a migrated foreign dialog and its delivery receipts while preserving drafts', () => {
+    const session = createSession();
+    session.lastPrivateBotId = 'bot-a';
+    session.lastPrivateChatId = 'private-a';
+    session.managedGiveawayId = 'giveaway-1';
+    session.pendingInput = { kind: 'giveaway_content' };
+    session.pendingProfileMentionDisplayName = 'Имя пользователя';
+    for (const kind of ['broadcast', 'giveaway', 'rules', 'profileMention'] as const) {
+      markPrivateHandoffDelivered(session, kind, 'private-a');
+    }
+
+    expect(preparePrivateHandoffBot(session, 'bot-b')).toBe('bot-b');
+    expect(session.lastPrivateChatId).toBeNull();
+    expect(session.lastPrivateBotId).toBeNull();
+    expect(session.lastGiveawayHandoffDeliveredAt).toBeNull();
+    expect(session.lastRulesHandoffDeliveredAt).toBeNull();
+    expect(session.lastProfileMentionHandoffDeliveredAt).toBeNull();
+    expect(session.lastBroadcastHandoffDeliveredAt).toBeNull();
+    expect(session.managedGiveawayId).toBe('giveaway-1');
+    expect(session.pendingInput).toEqual({ kind: 'giveaway_content' });
+    expect(session.pendingProfileMentionDisplayName).toBe('Имя пользователя');
+  });
+
+  it.each(['bot-a', null, undefined])('keeps a known dialog when scope is %s', (scope) => {
+    const session = createSession();
+    session.lastPrivateBotId = 'bot-a';
+    session.lastPrivateChatId = 'private-a';
+    markPrivateHandoffDelivered(session, 'rules', 'private-a', 1_000);
+
+    expect(preparePrivateHandoffBot(session, scope)).toBe('bot-a');
+    expect(session.lastPrivateChatId).toBe('private-a');
+    expect(session.lastRulesHandoffDeliveredAt).toBe(1_000);
+  });
+
   it('clears delivered state and skips delivery when no private chat is known', async () => {
     const session = createSession();
     markPrivateHandoffDelivered(session, 'broadcast', 'old-private-chat', 1_000);

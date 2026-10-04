@@ -29,6 +29,10 @@ import {
   type PublisherAutoReplyAuthoringNotification,
 } from './publisher-auto-reply-authoring.queue';
 import { PublisherPrivateFlowLeaseService } from './publisher-private-flow-lease.service';
+import {
+  readPublisherPrivateCallback,
+  readPublisherPrivateStartPayload,
+} from './publisher-private-flow-update-reader';
 
 const AUTHORING_WAITING_TTL_MS = 15 * 60_000;
 const AUTHORING_PROCESSING_TTL_MS = 20 * 60_000;
@@ -228,7 +232,7 @@ export class PublisherAutoReplyAuthoringService {
   ): Promise<boolean> {
     if (update.botId?.trim() !== this.publisherBotId) return false;
 
-    const callback = extractCallback(update);
+    const callback = readPublisherPrivateCallback(update);
     if (callback) {
       const parsed = parseCallbackPayload(callback.payload);
       if (!parsed) return false;
@@ -1099,12 +1103,7 @@ function parseAutoReplyNotification(
 }
 
 function extractStartToken(update: MaxUpdate): string | null {
-  if (update.type.trim().toLowerCase() !== 'bot_started') return null;
-  const raw = asRecord(update.raw);
-  const data = asRecord(raw?.data);
-  const payload = readString(
-    raw?.payload ?? raw?.start_payload ?? raw?.startPayload ?? data?.payload,
-  );
+  const payload = readPublisherPrivateStartPayload(update);
   return payload?.startsWith(AUTHORING_START_PREFIX)
     ? payload.slice(AUTHORING_START_PREFIX.length).trim()
     : null;
@@ -1127,25 +1126,6 @@ function parseCallbackPayload(
     return null;
   }
   return { action, token };
-}
-
-function extractCallback(update: MaxUpdate): {
-  payload: string;
-  callbackId: string | null;
-  actorUserId: string | null;
-} | null {
-  if (update.type.trim().toLowerCase() !== 'message_callback') return null;
-  const raw = asRecord(update.raw);
-  const callback = asRecord(raw?.callback);
-  const user = asRecord(callback?.user);
-  const payload = readString(callback?.payload ?? callback?.data);
-  return payload
-    ? {
-        payload,
-        callbackId: readString(callback?.callback_id ?? callback?.callbackId ?? callback?.id),
-        actorUserId: readString(user?.user_id ?? user?.userId ?? user?.id),
-      }
-    : null;
 }
 
 function extractPrivateIdentity(update: MaxUpdate): {

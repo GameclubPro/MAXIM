@@ -4,8 +4,40 @@ import {
   PublisherPrivateFlowType,
 } from '../prisma/prisma-client';
 import { PublisherAutoReplyAuthoringService } from './publisher-auto-reply-authoring.service';
+import { WebhookParser } from '../webhook/webhook.parser';
 
 const NOW = new Date('2026-08-29T12:00:00.000Z');
+
+function wrapFlowEvent(path: string, node: Record<string, unknown>): Record<string, unknown> {
+  return path
+    ? path
+        .split('.')
+        .reverse()
+        .reduce((nested, key) => ({ [key]: nested }), node)
+    : node;
+}
+
+function privateFlowUpdate(
+  type: 'bot_started' | 'message_callback',
+  path: string,
+  payload: string,
+  botId = 'publik_bot',
+  actorUserId = '42',
+): MaxUpdate {
+  const node =
+    type === 'bot_started'
+      ? { chat_id: 42, user: { user_id: actorUserId }, payload }
+      : { callback_id: 'wrapped-callback', user: { user_id: actorUserId }, payload };
+  return new WebhookParser().parse(
+    {
+      update_type: type,
+      update_id: 'wrapped-private-flow',
+      timestamp: NOW.toISOString(),
+      ...wrapFlowEvent(path, node),
+    },
+    { botId },
+  );
+}
 
 function authoringSession(overrides: Record<string, unknown> = {}) {
   return {
@@ -172,6 +204,143 @@ describe('PublisherAutoReplyAuthoringService callback and message fences', () =>
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it.each(['', 'data', 'event', 'bot_started', 'data.bot_started', 'event.bot_started'])(
+    'starts actor-owned authoring from the declared %s envelope',
+    async (path) => {
+      const {
+        service,
+        publisherAutoReplyAuthoringSession,
+        transactionClient,
+        queue,
+        privateFlows,
+      } = createFixture();
+      publisherAutoReplyAuthoringSession.findFirst.mockResolvedValue(
+        authoringSession({ state: PublisherAutoReplyAuthoringState.AWAITING_START }),
+      );
+
+      await expect(
+        service.observeWebhook(privateFlowUpdate('bot_started', path, 'ar_token-1'), null),
+      ).resolves.toBe(true);
+      expect(publisherAutoReplyAuthoringSession.findFirst).toHaveBeenCalledWith({
+        where: {
+          startToken: 'token-1',
+          publisherBotId: 'publik_bot',
+          actorUserId: '42',
+          expiresAt: { gt: NOW },
+        },
+      });
+      expect(transactionClient.publisherAutoReplyAuthoringSession.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: 'session-1',
+            state: PublisherAutoReplyAuthoringState.AWAITING_START,
+            stageRevision: 2,
+          }),
+          data: expect.objectContaining({
+            state: PublisherAutoReplyAuthoringState.AWAITING_PHRASE,
+            privateChatId: '42',
+          }),
+        }),
+      );
+      expect(privateFlows.renew).toHaveBeenCalledWith(
+        expect.objectContaining({
+          publisherBotId: 'publik_bot',
+          actorUserId: '42',
+          flowId: 'session-1',
+        }),
+        transactionClient,
+      );
+      expect(queue.enqueueNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ notification: 'prompt_phrase', sessionId: 'session-1' }),
+      );
+    },
+  );
+
+  it.each([
+    'callback',
+    'message_callback.callback',
+    'data.callback',
+    'data.message_callback.callback',
+    'event.callback',
+    'event.message_callback.callback',
+  ])('cancels actor-owned authoring from the declared %s envelope', async (path) => {
+    const { service, publisherAutoReplyAuthoringSession, queue, privateFlows } = createFixture();
+    publisherAutoReplyAuthoringSession.findFirst.mockResolvedValue(
+      authoringSession({ state: PublisherAutoReplyAuthoringState.REVIEW }),
+    );
+
+    await expect(
+      service.observeWebhook(
+        privateFlowUpdate('message_callback', path, 'ar:cancel:token-1'),
+        null,
+      ),
+    ).resolves.toBe(true);
+    expect(publisherAutoReplyAuthoringSession.findFirst).toHaveBeenCalledWith({
+      where: {
+        startToken: 'token-1',
+        publisherBotId: 'publik_bot',
+        actorUserId: '42',
+        expiresAt: { gt: NOW },
+      },
+    });
+    expect(publisherAutoReplyAuthoringSession.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'session-1', stageRevision: 2 }),
+        data: expect.objectContaining({
+          state: PublisherAutoReplyAuthoringState.CANCELED,
+          callbackId: 'wrapped-callback',
+        }),
+      }),
+    );
+    expect(privateFlows.release).toHaveBeenCalledWith(
+      expect.objectContaining({
+        publisherBotId: 'publik_bot',
+        actorUserId: '42',
+        flowId: 'session-1',
+        leaseToken: 'session-1',
+      }),
+    );
+    expect(queue.enqueueNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ notification: 'canceled', callbackId: 'wrapped-callback' }),
+    );
+  });
+
+  it.each(
+    (['bot_started', 'message_callback'] as const).flatMap((type) =>
+      (['wrong_bot', 'wrong_token', 'wrong_actor'] as const).map((rejection) => ({
+        type,
+        rejection,
+      })),
+    ),
+  )('rejects $rejection in wrapped $type before any mutation', async ({ type, rejection }) => {
+    const { service, publisherAutoReplyAuthoringSession, transactionClient, queue, privateFlows } =
+      createFixture();
+    publisherAutoReplyAuthoringSession.findFirst.mockImplementation(async ({ where }) =>
+      where.startToken === 'token-1' &&
+      where.actorUserId === '42' &&
+      where.publisherBotId === 'publik_bot'
+        ? authoringSession({ state: PublisherAutoReplyAuthoringState.AWAITING_START })
+        : null,
+    );
+    const prefix = type === 'bot_started' ? 'ar_' : 'ar:cancel:';
+    const update = privateFlowUpdate(
+      type,
+      type === 'bot_started' ? 'event.bot_started' : 'event.message_callback.callback',
+      `${prefix}${rejection === 'wrong_token' ? 'invalid-token' : 'token-1'}`,
+      rejection === 'wrong_bot' ? 'major_bot' : 'publik_bot',
+      rejection === 'wrong_actor' ? '99' : '42',
+    );
+
+    await expect(service.observeWebhook(update, null)).resolves.toBe(rejection !== 'wrong_bot');
+    if (rejection === 'wrong_bot')
+      expect(publisherAutoReplyAuthoringSession.findFirst).not.toHaveBeenCalled();
+    expect(transactionClient.publisherAutoReplyAuthoringSession.updateMany).not.toHaveBeenCalled();
+    expect(publisherAutoReplyAuthoringSession.updateMany).not.toHaveBeenCalled();
+    expect(privateFlows.renew).not.toHaveBeenCalled();
+    expect(privateFlows.release).not.toHaveBeenCalled();
+    expect(queue.enqueueNotification).not.toHaveBeenCalled();
   });
 
   it('requires the callback actor, token, and live expiry to identify one session', async () => {

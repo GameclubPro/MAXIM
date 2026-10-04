@@ -1,6 +1,41 @@
-import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import {
+  buildWebhookSemanticEventKey,
+  readWebhookEventTimestamp,
+} from './webhook-semantic-event-key';
 
 describe('buildWebhookSemanticEventKey', () => {
+  it.each([1e20, 8_640_000_000_000_001, Number.POSITIVE_INFINITY, new Date('invalid')])(
+    'does not canonicalize invalid lifecycle timestamp %s or throw while reading it',
+    (timestamp) => {
+      const payload = {
+        type: 'bot_removed',
+        timestamp,
+        message: { chatId: '-100123', senderId: 'bot-2' },
+        membership: { memberUserIds: ['bot-2'] },
+      };
+
+      expect(readWebhookEventTimestamp(payload)).toBeNull();
+      expect(buildWebhookSemanticEventKey(payload)).toBeNull();
+    },
+  );
+
+  it.each(['1970-01-02T00:00:00.123Z', new Date('1970-01-02T00:00:00.123Z')])(
+    'preserves date milliseconds in lifecycle identity: %s',
+    (timestamp) => {
+      const payload = {
+        type: 'bot_removed',
+        timestamp,
+        message: { chatId: '-100123', senderId: 'bot-2' },
+        membership: { memberUserIds: ['bot-2'] },
+      };
+
+      expect(readWebhookEventTimestamp(payload)?.toISOString()).toBe('1970-01-02T00:00:00.123Z');
+      expect(buildWebhookSemanticEventKey(payload)).toBe(
+        'membership:bot_removed:-100123:bot-2:1970-01-02T00:00:00.123Z',
+      );
+    },
+  );
+
   it('keeps exact millisecond timestamps for membership event identity', () => {
     const base = {
       type: 'bot_removed',

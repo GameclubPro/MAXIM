@@ -7,6 +7,7 @@ import {
   resolveMaxUserDisplayName,
 } from '../common/max-user-display-name.util';
 import { selectMaxMessageCandidate } from '../max/max-message-candidate.util';
+import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
 
 @Injectable()
 export class WebhookParser {
@@ -751,29 +752,13 @@ export class WebhookParser {
         : eventCandidates;
 
     for (const value of candidates) {
-      const timestampMs = this.parseWebhookTimestampMs(value);
+      const timestampMs = parseWebhookEventTimestampMs(value);
       if (timestampMs !== null) {
         return { value: new Date(timestampMs).toISOString(), source: 'payload' };
       }
     }
 
     return { value: new Date().toISOString(), source: 'ingress' };
-  }
-
-  private parseWebhookTimestampMs(value: unknown): number | null {
-    const parsed =
-      value instanceof Date
-        ? value.getTime()
-        : typeof value === 'number'
-          ? value
-          : typeof value === 'string' && value.trim().length > 0
-            ? Date.parse(value)
-            : Number.NaN;
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      return null;
-    }
-
-    return Math.trunc(parsed < 10_000_000_000 ? parsed * 1_000 : parsed);
   }
 
   private extractChatTitle(

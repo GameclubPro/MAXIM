@@ -3623,11 +3623,15 @@ export class MaxClientService implements OnModuleDestroy {
         }),
       options,
     );
-    const members = Array.isArray(data.members)
+    const members = Array.isArray(data?.members)
       ? data.members
-      : Array.isArray(data.users)
+      : Array.isArray(data?.users)
         ? data.users
-        : [];
+        : null;
+    // FLAG: An invalid successful lookup is unknown, never proof of missing membership.
+    if (!members || members.some((member) => !this.readMemberUserId(member))) {
+      throw new Error('Invalid MAX chat members response');
+    }
 
     return members.some((member) => this.readMemberUserId(member) === normalizedUserId);
   }
@@ -8040,8 +8044,15 @@ export class MaxClientService implements OnModuleDestroy {
 
   private resolveBot(botId?: string | null): MaxBotDefinition {
     const explicitBotId = this.readTrimmedString(botId);
+    if (explicitBotId) {
+      const explicitBot = this.botRegistry.getBotById(explicitBotId);
+      // FLAG: Exact access evidence and bot-scoped caches must use the requested token.
+      if (!explicitBot) {
+        throw new UnrecoverableError(`MAX bot ${explicitBotId} is not configured`);
+      }
+      return explicitBot;
+    }
     return (
-      (explicitBotId ? this.botRegistry.getBotById(explicitBotId) : null) ??
       this.botRegistry.getBotById(this.botContext.getActiveBotId()) ??
       this.botRegistry.getDefaultBot()
     );

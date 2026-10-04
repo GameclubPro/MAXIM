@@ -1,4 +1,5 @@
 import { extractDuplicateMessageContent } from '../moderation/message-duplicate/message-duplicate-content';
+import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
 type RecordLike = Record<string, unknown>;
 
 function asRecord(value: unknown): RecordLike | null {
@@ -18,22 +19,6 @@ function readString(value: unknown): string | null {
 
 function readLowerString(value: unknown): string | null {
   return readString(value)?.toLowerCase() ?? null;
-}
-
-function parseTimestampMs(value: unknown): number | null {
-  const parsed =
-    value instanceof Date
-      ? value.getTime()
-      : typeof value === 'number'
-        ? value
-        : typeof value === 'string' && value.trim().length > 0
-          ? Date.parse(value)
-          : Number.NaN;
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return null;
-  }
-
-  return Math.trunc(parsed < 10_000_000_000 ? parsed * 1_000 : parsed);
 }
 
 function normalizeTimestampIso(timestampMs: number): string {
@@ -252,7 +237,7 @@ function readEventTimestampIso(payload: RecordLike): string | null {
     message?.timestamp,
   ];
   for (const candidate of candidates) {
-    const timestampMs = parseTimestampMs(candidate);
+    const timestampMs = parseWebhookEventTimestampMs(candidate);
     if (timestampMs !== null) {
       return normalizeTimestampIso(timestampMs);
     }
