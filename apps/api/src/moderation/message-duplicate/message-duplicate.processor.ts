@@ -6,7 +6,10 @@ import { ModerationExecutionService } from '../moderation-execution.service';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import { PhotoDuplicateSourceNotReadyError } from '../photo-duplicate/photo-duplicate.queue';
 import { MessageDuplicateMediaDeferredError } from './message-duplicate-media.service';
-import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
+import {
+  MessageDuplicateMetricsService,
+  recordDuplicatePhase,
+} from './message-duplicate-metrics.service';
 import type {
   PhotoDuplicateOrderingNextTurn,
   PhotoDuplicateOrderingRunResult,
@@ -100,12 +103,34 @@ export class MessageDuplicateProcessor extends WorkerHost {
     let postponeKind: 'head' | 'ordering' = 'head';
     let result: PhotoDuplicateOrderingRunResult<unknown> | undefined;
     try {
-      result = await this.ordering.runInOrder(identity, data.actionEligible, (lease, eligible) =>
-        this.execution.processMessageDuplicateJob(
-          { ...data, actionEligible: data.actionEligible && eligible === true },
-          lease,
-        ),
-      );
+      const orderingStarted = performance.now();
+      let entered = false;
+      try {
+        result = await this.ordering.runInOrder(
+          identity,
+          data.actionEligible,
+          (lease, eligible) => {
+            entered = true;
+            // FLAG: One acquisition attempt, excluding execution and prior durable queue delays.
+            recordDuplicatePhase(
+              this.metrics,
+              'ordering_acquire',
+              performance.now() - orderingStarted,
+            );
+            return this.execution.processMessageDuplicateJob(
+              { ...data, actionEligible: data.actionEligible && eligible === true },
+              lease,
+            );
+          },
+        );
+      } finally {
+        if (!entered)
+          recordDuplicatePhase(
+            this.metrics,
+            'ordering_acquire',
+            performance.now() - orderingStarted,
+          );
+      }
     } catch (error) {
       if (
         !(error instanceof PhotoDuplicateSourceNotReadyError) &&
@@ -181,6 +206,7 @@ export class MessageDuplicateProcessor extends WorkerHost {
     nextTurn?: PhotoDuplicateOrderingNextTurn,
   ): Promise<void> {
     let next = nextTurn;
+    const cleanupStarted = performance.now();
     try {
       // FLAG: Persist the terminal phase before releasing ordering or SQL ownership. A retry
       // may reconcile only the unused claim; it must never restore analysis or positive authority.
@@ -208,7 +234,11 @@ export class MessageDuplicateProcessor extends WorkerHost {
       this.metrics?.record('worker.cleanup_retry');
       throw new DelayedError();
     } finally {
-      await this.promoteNext(next);
+      try {
+        await this.promoteNext(next);
+      } finally {
+        recordDuplicatePhase(this.metrics, 'cleanup', performance.now() - cleanupStarted);
+      }
     }
   }
 

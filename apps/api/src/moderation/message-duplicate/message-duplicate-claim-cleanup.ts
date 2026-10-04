@@ -3,6 +3,15 @@ import type { ModerationMessageActionClaimData } from '../moderation-message-act
 import { duplicateRevocationKey } from './message-duplicate-authorization.service';
 import type { MessageDuplicateBinding } from './message-duplicate-state';
 
+export const DUPLICATE_CLEANUP_BATCH_SIZE = 25;
+export type DuplicateCleanupSample = {
+  sampledDue: number;
+  sampleLimit: typeof DUPLICATE_CLEANUP_BATCH_SIZE;
+  sampleLimitReached: boolean;
+  oldestDueAgeMs: number | null;
+  released: number;
+};
+
 export type DuplicateCleanupBinding = Pick<
   MessageDuplicateBinding,
   'messageId' | 'senderId' | 'eventTimestampMs' | 'authorization'

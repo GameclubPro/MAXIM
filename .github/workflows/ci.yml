@@ -119,6 +119,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Install owned Redis process for crash and RDB restore acceptance
+        run: |
+          if ! command -v redis-server >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends redis-server
+          fi
       - run: npm ci
       - name: Validate Prisma schema and migration policy
         run: npm run check:prisma
@@ -183,6 +189,8 @@ jobs:
         run: node apps/miniapp/test/settings-required-subscription.browser.mjs
       - name: Settings draft saves and response races
         run: node apps/miniapp/test/settings-draft.browser.mjs
+      - name: Cold settings search layout and focus
+        run: node apps/miniapp/test/settings-search-layout.browser.mjs
       - name: Anti-duplicate controls, schedule and save conflicts
         run: node apps/miniapp/test/settings-antiduplicate.browser.mjs
       - name: Rules drafts, publication races and image preparation
@@ -348,6 +356,11 @@ jobs:
         env:
           IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
         run: bash infra/scripts/smoke-photo-native-ci.sh "$IMAGE_REF"
+      - name: Measure isolated photo and OCR together
+        if: matrix.component == 'api'
+        env:
+          IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
+        run: bash infra/scripts/benchmark-antiduplicate-mixed-native-ci.sh "$IMAGE_REF"
       - name: Package immutable production image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:

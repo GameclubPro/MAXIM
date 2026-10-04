@@ -7,11 +7,17 @@ import {
   extractDuplicateMessageContent,
 } from './message-duplicate-content';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
+import type { MessageDuplicateBinding } from './message-duplicate-state';
 import {
   MessageDuplicatePolicyService,
   MESSAGE_DUPLICATE_CONTROL_KEY,
 } from './message-duplicate-policy.service';
 import { duplicateSettings } from './message-duplicate-test-fixtures';
+import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
+import {
+  duplicateTelemetryKey,
+  DUPLICATE_TELEMETRY_BUCKET_MS,
+} from './message-duplicate-telemetry';
 
 const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
 const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
@@ -57,6 +63,73 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       ...override,
     });
 
+  it('merges concurrent diagnostic attempts atomically with TTL and isolates chats', async () => {
+    const bucket = Math.floor(Date.now() / DUPLICATE_TELEMETRY_BUCKET_MS);
+    const key = duplicateTelemetryKey(chatId, bucket);
+    keys.add(key);
+    await Promise.all(
+      Array.from({ length: 24 }, (_, index) =>
+        redis.mergeDuplicateTelemetry(
+          key,
+          index % 2
+            ? { supported: 1, verified: 1, COMPARED_NO_MATCH: 1 }
+            : { supported: 1, DEFERRED: 1 },
+        ),
+      ),
+    );
+    const metrics = new MessageDuplicateMetricsService(redis);
+    try {
+      expect(await metrics.readObservations(chatId)).toMatchObject({
+        state: 'AVAILABLE',
+        supportedAttempts: 24,
+        verifiedAttempts: 12,
+        coverage: 0.5,
+        completeness: 'BEST_EFFORT',
+        basis: 'ATTEMPTS',
+      });
+      expect(await metrics.readObservations(`${chatId}-other`)).toMatchObject({
+        state: 'NO_DATA',
+        coverage: null,
+      });
+      expect(await inspector.ttl(key)).toBeGreaterThan(7100);
+      await inspector.set(key, JSON.stringify({ unexpected: 'private-data' }));
+      expect(await metrics.readObservations(chatId)).toMatchObject({
+        state: 'UNAVAILABLE',
+        coverage: null,
+        outcomes: [],
+      });
+    } finally {
+      metrics.onModuleDestroy();
+    }
+  });
+
+  it('returns a typed non-match separately from unverifiable history and stale revisions', async () => {
+    const input = {
+      chatId,
+      userId: '123',
+      messageId: 'typed',
+      eventTimestampMs: start,
+      controlRevision: 1,
+      settings,
+      content: extractDuplicateMessageContent({ message: { body: { text: 'hello' } } }),
+    };
+    expect(await history.observeWithOutcome(input)).toEqual({
+      outcome: 'COMPARED_NO_MATCH',
+      match: null,
+    });
+    expect(await history.observeWithOutcome({ ...input, eventTimestampMs: start - 100 })).toEqual({
+      outcome: 'STALE',
+      match: null,
+    });
+    expect(
+      await history.observeWithOutcome({
+        ...input,
+        messageId: 'unverified',
+        content: { ...input.content, complete: false, reason: 'invalid_content' },
+      }),
+    ).toEqual({ outcome: 'CONTENT_UNVERIFIED', match: null });
+  });
+
   it('counts exact short repeats, not retries, and invalidates edits without retroactive hits', async () => {
     expect(await observe('a', 0)).toBeNull();
     expect(await observe('a', 0)).toBeNull();
@@ -69,6 +142,178 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await observe('a', 0)).toBeNull();
     expect(await observe('c', 50)).toBeNull();
   });
+
+  it.each([0x12345678, 0xdeadbeef, 0x5eedc0de])(
+    'keeps invalidated proof revoked through seeded history transitions (seed %i)',
+    async (seed) => {
+      type Message = {
+        id: string;
+        text: string;
+        at: number;
+        version: number;
+        generation: number;
+        removed: boolean;
+      };
+      type Evidence = {
+        binding: MessageDuplicateBinding;
+        generation: number;
+        targetVersion: number;
+        originalVersion: number;
+        invalidWhenCaptured: boolean;
+      };
+      const messages = new Map<string, Message>();
+      const evidence = new Map<string, Evidence>();
+      const exercised = new Set<string>();
+      let generation = 0;
+      let sequence = 0;
+      let eventTime = Date.now();
+      let randomState = seed;
+      const pick = <T>(values: T[]): T => {
+        randomState ^= randomState << 13;
+        randomState ^= randomState >>> 17;
+        randomState ^= randomState << 5;
+        return values[(randomState >>> 0) % values.length]!;
+      };
+      const nextTime = () => (eventTime = Math.max(Date.now(), eventTime + 1));
+      const current = () =>
+        [...messages.values()].filter(
+          (message) => message.generation === generation && !message.removed,
+        );
+      const content = (text: string) =>
+        extractDuplicateMessageContent({ message: { body: { text } } });
+      const runObservation = async (message: Message) => {
+        const input = {
+          chatId,
+          userId: '123',
+          messageId: message.id,
+          eventTimestampMs: message.at,
+          controlRevision: 1,
+          settings,
+          content: content(message.text),
+        };
+        const result = await history.observe(input);
+        // Exact transport replay neither creates another occurrence nor changes its proof.
+        expect(await history.observe(input)).toEqual(result);
+        if (result) {
+          const original = messages.get(result.binding.original!.messageId)!;
+          const key = `${message.id}:${result.binding.lifecycleRevision}:${result.binding.original!.revision}`;
+          if (!evidence.has(key)) {
+            // Replay may return an old comparison snapshot. Only the proof check is authority.
+            const live = await history.stillMatches(chatId, result.binding);
+            if (live) {
+              expect(original).toMatchObject({
+                text: message.text,
+                generation,
+                removed: false,
+              });
+              expect(original.at).toBeLessThan(message.at);
+            }
+            evidence.set(key, {
+              binding: result.binding,
+              generation,
+              targetVersion: message.version,
+              originalVersion: original.version,
+              invalidWhenCaptured: !live,
+            });
+          }
+        }
+        return result;
+      };
+      const append = async (text: string) => {
+        const message: Message = {
+          id: `model-${sequence++}`,
+          text,
+          at: nextTime(),
+          version: 0,
+          generation,
+          removed: false,
+        };
+        messages.set(message.id, message);
+        return runObservation(message);
+      };
+      // The oracle owns only business facts: material versions, deletion and history loss.
+      // It deliberately does not reproduce Redis keys, fingerprints or window algorithms.
+      const assertProofs = async () => {
+        for (const saved of evidence.values()) {
+          const target = messages.get(saved.binding.messageId)!;
+          const original = messages.get(saved.binding.original!.messageId)!;
+          const valid =
+            !saved.invalidWhenCaptured &&
+            saved.generation === generation &&
+            !target.removed &&
+            !original.removed &&
+            target.version === saved.targetVersion &&
+            original.version === saved.originalVersion;
+          const matches = await history.stillMatches(chatId, saved.binding);
+          if (matches) expect(valid).toBe(true);
+          if (!valid) {
+            expect(matches).toBe(false);
+            expect(await history.qualify(chatId, saved.binding)).toBeNull();
+          }
+        }
+      };
+      const establishLivePair = async () => {
+        const text = `live pair ${generation} ${sequence}`;
+        expect(await append(text)).toBeNull();
+        const repeat = await append(text);
+        expect(repeat?.hit.count).toBe(1);
+        expect(await history.stillMatches(chatId, repeat!.binding)).toBe(true);
+        expect(await history.qualify(chatId, repeat!.binding)).toBe(1);
+        expect(await history.qualify(chatId, repeat!.binding)).toBe(1);
+      };
+      await establishLivePair();
+      const operations = ['observe', 'edit', 'remove', 'reset', 'qualify', 'retry', 'loss'];
+      const prefix = ['retry', 'edit', 'remove', 'reset', 'loss', 'qualify', 'observe'];
+      for (let step = 0; step < 90; step += 1) {
+        const operation = prefix[step] ?? pick(operations);
+        exercised.add(operation);
+        if (operation === 'observe') {
+          await append(pick(current()).text);
+        } else if (operation === 'edit') {
+          const message = pick(current());
+          message.text = `${message.text} changed ${step}`;
+          message.at = nextTime();
+          message.version += 1;
+          await history.observeLifecycle({
+            chatId,
+            messageId: message.id,
+            eventTimestampMs: message.at,
+            content: content(message.text),
+          });
+        } else if (operation === 'remove') {
+          const message = pick(current());
+          message.removed = true;
+          await history.remove(chatId, message.id);
+        } else if (operation === 'retry') {
+          await runObservation(pick(current()));
+        } else if (operation === 'qualify') {
+          const saved = pick([...evidence.values()]);
+          const first = await history.qualify(chatId, saved.binding);
+          expect(await history.qualify(chatId, saved.binding)).toBe(first);
+        } else {
+          if (operation === 'reset') {
+            await redis.resetDuplicateWindow(chatId, '123');
+          } else {
+            await redis.deleteKeysByPattern(`dup:window:v1:${digestDuplicateContent(chatId)}:*`);
+          }
+          generation += 1;
+          await assertProofs();
+          const [seconds, microseconds] = await inspector.time();
+          eventTime = Math.max(
+            eventTime,
+            Number(seconds) * 1000 + Math.floor(Number(microseconds) / 1000),
+          );
+          // Real Redis TIME owns reset cutoffs. Fresh IDs and later events prove recovery.
+          await establishLivePair();
+        }
+        await assertProofs();
+        if (!current().length) await establishLivePair();
+      }
+      expect([...exercised].sort()).toEqual([...operations].sort());
+      expect(evidence.size).toBeGreaterThan(10);
+    },
+    30_000,
+  );
 
   it('does not let many links starve an enabled phone fingerprint', async () => {
     const override = {

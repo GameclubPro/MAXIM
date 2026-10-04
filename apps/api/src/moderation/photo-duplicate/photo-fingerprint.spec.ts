@@ -64,6 +64,66 @@ async function patternedPhoto(): Promise<Buffer> {
 }
 
 describe('PhotoFingerprintService', () => {
+  it('separates local slot wait from native roundtrip and survives observer failure', async () => {
+    let now = 0;
+    const clock = jest.spyOn(performance, 'now').mockImplementation(() => now);
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const proof = {
+      ...fingerprintFixture({ canonicalHash: 'a'.repeat(64), pdqHash: '0'.repeat(64) }),
+      decodeCost: { encodedBytes: 1, pixels: 1 },
+    };
+    const nativeDecoder = {
+      fingerprint: jest
+        .fn()
+        .mockImplementationOnce(async () => {
+          entered();
+          await blocked;
+          return { kind: 'complete', fingerprint: proof };
+        })
+        .mockResolvedValue({ kind: 'complete', fingerprint: proof }),
+    };
+    const timings = {
+      recordPhase: jest.fn(() => {
+        throw new Error('observer unavailable');
+      }),
+    };
+    const service = new PhotoFingerprintService({
+      canonicalOnly: true,
+      nativeDecoder: nativeDecoder as never,
+    });
+    try {
+      const first = service.fingerprint(Buffer.from('a'), { timings });
+      await started;
+      now = 10;
+      const second = service.fingerprint(Buffer.from('b'), { timings });
+      expect(nativeDecoder.fingerprint).toHaveBeenCalledTimes(1);
+      now = 60;
+      release();
+      await expect(first).resolves.toEqual(proof);
+      await expect(second).resolves.toEqual(proof);
+      expect(timings.recordPhase.mock.calls).toEqual([
+        ['decode_wait', 0],
+        ['native_roundtrip', 60],
+        ['decode_wait', 50],
+        ['native_roundtrip', 0],
+      ]);
+      expect(nativeDecoder.fingerprint.mock.calls[0]![1]).not.toHaveProperty('timings');
+      const original = new Error('native transport unavailable');
+      nativeDecoder.fingerprint.mockRejectedValueOnce(original);
+      await expect(service.fingerprint(Buffer.from('c'), { timings })).rejects.toBe(original);
+    } finally {
+      release();
+      clock.mockRestore();
+    }
+  });
+
   it('does not erase a changed native pixel through thumbnail downsampling', async () => {
     const width = 2048;
     const input = Buffer.alloc(width * width * 3, 255);

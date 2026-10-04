@@ -165,17 +165,30 @@ the resumable owner. Cleanup never blindly decrements a reserved reaction stage.
 `cleanupOnly` jobs reconcile ownership without analysis or actions. SQL failures retry every
 30 seconds even after the final analysis attempt, until the original deadline plus 24 hours.
 Completed cleanup preserves the positive permit of a materialized intent; terminated cleanup
-revokes it. Simultaneous Redis/SQL failure or a SQL outage exceeding this recovery bound can
-leave the unused claim blocking other rules until reviewed operator recovery or normal retention.
-Never clear claims in bulk or replay moderation to repair cleanup.
+revokes it. New preclaims also commit an immutable SQL cleanup obligation in the same transaction;
+`api-action` reconciles its due index independently of BullMQ, Redis and feature switches. Intent
+handoff removes the obligation atomically. A SQL outage delays this recovery until SQL is available.
 
-Repeated worker stalls can terminalize a `cleanupOnly` job before its processor runs.
-The unused claim then remains fail-closed and needs exact reviewed operator recovery;
-`worker.cleanup_exhausted` is not emitted for this path. Inspect failed duplicate jobs
-and worker stalled diagnostics. Do not use `job.retry()` as cleanup recovery: BullMQ
-retains its deferred-failure and stalled counters. Guaranteed recovery across queue
-loss requires a SQL cleanup lease persisted atomically at preclaim and a bounded
-reconciler, rather than a best-effort failed-event listener.
+Repeated worker stalls can terminalize a `cleanupOnly` job before its processor runs, without a
+`worker.cleanup_exhausted` event. The SQL obligation covers this queue-loss case for preclaims made
+by the new writer. Do not use `job.retry()` as cleanup recovery: BullMQ retains its deferred-failure
+and stalled counters.
+
+Historical preclaims without an obligation are outside this guarantee. The migration creates an
+empty table and performs no backfill; the reconciler never scans legacy claims. A surviving worker
+can still release an exact unused owner, and an unexpired matching resume through the new writer
+can register its obligation. Otherwise the claim remains fail-closed until exact reviewed recovery
+or normal retention. An empty cleanup sample does not prove there are no historical orphan claims.
+
+The legacy SQL claim has identity and creation time, but no original absolute action deadline or
+exact binding/authorization event timestamps; its hashed keys cannot recover them. Retained webhook
+payloads may supply an event timestamp, but do not prove the immutable deadline clipped by runtime
+control or the daily period. There is no dedicated bounded orphan-preclaim audit/repair CLI.
+`moderation:repair-missed-deletes` requires moderation-event evidence and creates delete intents;
+it is not an unused-claim cleanup tool. Historical repair needs a separate bounded read-only preview
+with exact owner generation and surviving job/binding evidence, followed by reviewed transactional
+checks for intents, events and DELETE receipts plus exact-event revocation. Missing proof must remain
+unresolved: never infer a deadline from `createdAt`, clear claims in bulk, or replay moderation.
 
 Governor pause honors its bounded recommended delay; slow pacing permits progress after one delay
 per job. Followers wait for the head's next eligible time or bounded crash recovery. Expiry ends work
@@ -183,10 +196,41 @@ without treating incomplete proof as a match or successful action. Media retains
 
 ## Operational Diagnostics
 
-API processes emit `message_duplicate_diagnostics` structured summaries with `schemaVersion: 1`,
-`windowStartedAt`, `windowEndedAt` and fixed numeric `counters`. Emission is at most once per
+The SQL cleanup reconciler retains its limit of 25 due obligations per 10-second tick. Its
+`message_duplicate_cleanup_sample` log reuses that indexed selection: `sampledDue` is a lower
+bound at selection time, `sampleLimitReached` means the sample reached 25, and `oldestDueAgeMs`
+is the age of the oldest selected deadline. It never performs a total-depth count or another
+scan. Logs appear while a due sample exists and once when it becomes empty; a failed read is
+reported as unavailable, never zero. `released` counts released owners, while materialized or
+locked duties can remain unreleased. Logs contain no owner/chat/message identifiers, and a
+diagnostic failure cannot change cleanup or action authority.
+
+API processes emit `message_duplicate_diagnostics` structured summaries with `schemaVersion: 2`,
+`windowStartedAt`, `windowEndedAt`, fixed numeric `counters` and `phases`. Each phase has a count,
+total/max duration and a histogram aligned with `phaseBucketUpperBoundsMs`. Policy, source,
+media proof, history and enforcement timings use a monotonic clock and include failed attempts.
+The following fixed phases narrow those aggregate timings; overlapping phases must not be summed:
+
+- `download`: a photo or binary download attempt, including source rejection and failure.
+- `decode_wait`: local fingerprint-slot acquisition, including capacity/deadline rejection.
+- `native_roundtrip`: sandbox IPC, process startup, decoding and reply; it is not CPU decode time.
+  `local_fingerprint` measures the local development fallback, including hashing.
+- `ordering_acquire`: one ordering acquisition attempt up to entry into the execution callback,
+  or its deferral/error. It excludes execution and durable waits between retries; `worker.age_*`
+  remains the total age since enqueue, including all earlier deferrals.
+- `qualification`: fresh duplicate qualification; `intent_handoff`: durable intent handoff.
+- `delete_dispatch`: duplicate-owned DELETE transport call, including admission and final guards.
+  `delete_receipt`: persistence/finalization after a successful response. Neither count proves a
+  successful receipt; failures are timed too. These labels exclude unrelated moderation rules.
+- `cleanup`: worker terminal-cleanup attempt, including wakeup/retry handling; `cleanup_sweep`:
+  an active or failed bounded SQL cleanup sweep. Empty idle sweeps do not emit phase samples.
+
+The native protocol carries no per-stage CPU timing; separating native CPU work from IPC/startup
+requires a separately reviewed measurement change. Durable ordering wait across retries likewise
+has no exact standalone timer without changing persisted state. Timings remain best-effort attempts.
+Emission is at most once per
 30 seconds while active, plus a final shutdown flush. Summaries have no message contents,
-identifiers, URLs or free-form errors and introduce no Redis/DB writes. They are best-effort
+identifiers, URLs or free-form errors. They are best-effort
 process-local attempt counts; retries and baseline verification are included, and a crash can
 lose the unflushed interval. Absence of a log record is not proof of zero activity.
 
@@ -199,6 +243,20 @@ since original enqueue including retries, not individual request latency. Guard 
 changed content/history/settings, immunity, manual release, policy rejection and unavailable
 verification. `media.budget_deferred` distinguishes bounded resource deferral from a non-match.
 Continue using persisted delete receipts and authenticated per-chat diagnostics for actual outcomes.
+Per-chat observation outcomes are separately aggregated in four 15-minute Redis buckets under
+`message-duplicate:diagnostics:v1:<chat-digest>:<bucket>`, with a two-hour TTL and fixed fields.
+Each process buffers at most 256 buckets plus one bounded flush, and has at most four writes in
+flight. Blocked writes retain their slots; moderation never waits for a telemetry write. Every
+write has a Redis-time deadline. Overflow, failed writes and a restart may lose observations,
+so the API explicitly reports `BEST_EFFORT` and `ATTEMPTS`, never unique-message totals.
+`telemetry.buffer_limited` and `telemetry.unavailable` identify observed losses.
+The reader performs exactly four point reads with a 250 ms deadline. Missing data produces
+`NO_DATA` with null counts/coverage; failure or malformed data produces `UNAVAILABLE`. A real
+zero percent requires recorded supported attempts with no completed comparison. Media enqueue
+is not a completed comparison and is excluded from the coverage denominator; verified media
+attempts and retries are counted at the worker boundary. First candidates, stale revisions,
+deferrals and failed comparisons cannot inflate verified coverage. Comparison success does not
+prove that an action was handed off or a message deleted. No telemetry is used as action authority.
 `worker.cleanup_retry`, `worker.cleanup_completed` and `worker.cleanup_exhausted` describe the
 separate ownership recovery, including no-op cleanup, and never count new moderation actions.
 

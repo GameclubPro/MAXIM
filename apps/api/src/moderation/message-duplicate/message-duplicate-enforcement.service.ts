@@ -6,7 +6,10 @@ import { ModerationDeleteIntentService } from '../moderation-delete-intent.servi
 import { maskText } from '../text-mask.util';
 import type { DuplicateHit } from '../rule-engine.contract';
 import { digestDuplicateContent } from './message-duplicate-content';
-import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
+import {
+  MessageDuplicateMetricsService,
+  measureDuplicatePhase,
+} from './message-duplicate-metrics.service';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
 import { messageDuplicateActionsEnabled } from './message-duplicate-policy.service';
 import {
@@ -93,13 +96,15 @@ export class MessageDuplicateEnforcementService {
     }
     let repeatCount: number | null;
     try {
-      repeatCount = await this.guard.qualify({
-        chatId: params.chatId,
-        messageId: binding.messageId,
-        subjectUserId: binding.senderId,
-        botId: params.botId,
-        binding,
-      });
+      repeatCount = await measureDuplicatePhase(this.metrics, 'qualification', () =>
+        this.guard.qualify({
+          chatId: params.chatId,
+          messageId: binding.messageId,
+          subjectUserId: binding.senderId,
+          botId: params.botId,
+          binding,
+        }),
+      );
     } catch (error) {
       if (error instanceof MessageDuplicateGuardRejectedError) {
         await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
@@ -173,7 +178,9 @@ export class MessageDuplicateEnforcementService {
       throw error;
     }
     params.assertLease?.();
-    const result = await this.intents.ensureIntentWithMessageActionClaim({ claim, intent });
+    const result = await measureDuplicatePhase(this.metrics, 'intent_handoff', () =>
+      this.intents.ensureIntentWithMessageActionClaim({ claim, intent }),
+    );
     if (result.claim === 'blocked')
       await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
     this.metrics?.record(

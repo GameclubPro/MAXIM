@@ -1,11 +1,20 @@
 import { registerDuplicateClaimCleanup } from './message-duplicate-claim-cleanup';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
+import { RedisCounterService } from '../redis-counter.service';
+import { MessageDuplicateDeleteGuardService } from './message-duplicate-delete-guard.service';
+import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
+import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
 import { createPrismaClient, Prisma, type PrismaClient } from '../../prisma/prisma-client';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from '../moderation-delete-intent.types';
 import { MessageDuplicateAdmissionService } from './message-duplicate-admission.service';
 import { digestDuplicateContent } from './message-duplicate-content';
-import { buildMessageDuplicateJobId } from './message-duplicate.queue';
+import {
+  buildMessageDuplicateJobId,
+  MessageDuplicateOrderingStore,
+} from './message-duplicate.queue';
 import {
   buildMessageScopedModerationActionClaimKey,
   claimPersistedModerationMessageViolation,
@@ -20,9 +29,11 @@ import {
   MESSAGE_DUPLICATE_CLAIM_PREFIX,
   MESSAGE_DUPLICATE_MEDIA_VERSION,
   MESSAGE_DUPLICATE_SOURCE,
+  parseMessageDuplicateBinding,
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
 
+const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 (databaseUrl ? describe : describe.skip)(
   'duplicate authorization and message claim PostgreSQL races',
@@ -162,6 +173,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
               chatId,
               messageId: input.messageId,
               subjectUserId: input.subjectUserId,
+              ...(input.executeAt ? { executeAt: new Date(input.executeAt) } : {}),
               retryUntilAt: new Date(input.retryUntilAt!),
             },
           });
@@ -719,7 +731,19 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
     it('recovers a lost queue job once from SQL and keeps an old worker revoked', async () => {
       const { own, binding, owner } = await abandonedClaim('lost-queue');
       const recovered = serviceFor();
-      expect(await recovered.reconcileExpiredMessageDuplicateActions()).toBe(1);
+      const report = jest.fn(() => {
+        throw new Error('diagnostics unavailable');
+      });
+      expect(await recovered.reconcileExpiredMessageDuplicateActions(report)).toBe(1);
+      expect(report).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sampledDue: 1,
+          sampleLimit: 25,
+          sampleLimitReached: false,
+          oldestDueAgeMs: expect.any(Number),
+          released: 1,
+        }),
+      );
       expect(await recovered.reconcileExpiredMessageDuplicateActions()).toBe(0);
       expect(await preclaim(intents, own)).toBe('blocked');
       expect(
@@ -829,6 +853,112 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       expect(counts.reduce((sum, count) => sum + count, 0)).toBe(1);
     });
 
+    it('serializes a real locked cleanup duty against the atomic intent handoff', async () => {
+      const { own, binding, owner } = await abandonedClaim('duty-lock-handoff');
+      let locked!: () => void;
+      let proceed!: () => void;
+      let deleting!: () => void;
+      const lockReached = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const continued = new Promise<void>((resolve) => {
+        proceed = resolve;
+      });
+      const deleteReached = new Promise<void>((resolve) => {
+        deleting = resolve;
+      });
+      let paused = false;
+      let cleanupAttempts = 0;
+      let handoffAttempts = 0;
+      const database = (side: 'cleanup' | 'handoff') => ({
+        messageDuplicateClaimCleanup: prisma.messageDuplicateClaimCleanup,
+        $transaction: (
+          operation: (tx: Prisma.TransactionClient) => Promise<unknown>,
+          options: object,
+        ) => {
+          if (side === 'cleanup') cleanupAttempts += 1;
+          else handoffAttempts += 1;
+          return prisma.$transaction(
+            (tx) =>
+              operation(
+                new Proxy(tx, {
+                  get(target, key) {
+                    if (side === 'cleanup' && key === '$queryRaw')
+                      return async (...args: unknown[]) => {
+                        const result = await Reflect.apply(Reflect.get(target, key), target, args);
+                        if (!paused) {
+                          paused = true;
+                          locked();
+                          await continued;
+                        }
+                        return result;
+                      };
+                    if (side === 'handoff' && key === 'messageDuplicateClaimCleanup')
+                      return new Proxy(tx.messageDuplicateClaimCleanup, {
+                        get(model, method) {
+                          if (method !== 'deleteMany') return Reflect.get(model, method);
+                          return async (...args: unknown[]) => {
+                            deleting();
+                            return Reflect.apply(Reflect.get(model, method), model, args);
+                          };
+                        },
+                      });
+                    return Reflect.get(target, key);
+                  },
+                }),
+              ),
+            options,
+          );
+        },
+      });
+      const cleanup = serviceFor(database('cleanup')).reconcileExpiredMessageDuplicateActions();
+      await lockReached;
+      const input = handoffFor(own, binding);
+      const handoff = serviceFor(database('handoff')).ensureIntentWithMessageActionClaim({
+        ...input,
+        // Model a handoff scheduled before its deadline but completing after expiry.
+        intent: { ...input.intent, executeAt: new Date(binding.eventTimestampMs) },
+      });
+      try {
+        await Promise.race([
+          deleteReached,
+          handoff.then(() => {
+            throw new Error('Handoff finished before the duty lock boundary');
+          }),
+        ]);
+      } finally {
+        proceed();
+      }
+      const [released, result] = await Promise.all([cleanup, handoff]);
+      expect(cleanupAttempts + handoffAttempts).toBeGreaterThanOrEqual(3);
+      const retained = await prisma.moderationViolationMessageClaim.findUniqueOrThrow({
+        where: { id: owner.id },
+      });
+      const materialized = await prisma.moderationDeleteIntent.findUnique({
+        where: { chatId_messageId: { chatId, messageId: own.messageId } },
+      });
+      const revoked = await prisma.moderationViolationMessageClaim.findUnique({
+        where: {
+          dedupeKey: duplicateRevocationKey(chatId, own.messageId, binding.eventTimestampMs),
+        },
+      });
+      expect(
+        await prisma.messageDuplicateClaimCleanup.findUnique({ where: { claimId: owner.id } }),
+      ).toBeNull();
+      if (released === 1) {
+        expect(result).toEqual({ claim: 'blocked', intent: null });
+        expect(retained.messageActionKey).toBeNull();
+        expect(materialized).toBeNull();
+        expect(revoked).not.toBeNull();
+      } else {
+        expect(released).toBe(0);
+        expect(result).toMatchObject({ claim: 'resumed', intent: { intentId: materialized?.id } });
+        expect(retained.messageActionKey).toBe(own.messageActionKey);
+        expect(materialized).not.toBeNull();
+        expect(revoked).toBeNull();
+      }
+    });
+
     it('selects only due obligations through the due index under skewed retained history', async () => {
       const future = new Date(Date.now() + 3_600_000);
       const claims = Array.from({ length: 2048 }, (_, i) => ({
@@ -850,7 +980,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       await prisma.$executeRawUnsafe('ANALYZE message_duplicate_claim_cleanup');
       const explain = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
         EXPLAIN (ANALYZE, FORMAT JSON)
-        SELECT "claim_id" FROM "message_duplicate_claim_cleanup"
+        SELECT "claim_id", "deadline_at" FROM "message_duplicate_claim_cleanup"
         WHERE "deadline_at" <= ${new Date()}
         ORDER BY "deadline_at", "claim_id" LIMIT 25
       `);
@@ -860,6 +990,32 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         .Plan;
       expect(plan['Actual Rows']).toBe(2);
       expect(await serviceFor().reconcileExpiredMessageDuplicateActions()).toBe(2);
+    });
+
+    it('reports only the selected due lower bound and processes at most 25 per sweep', async () => {
+      for (let index = 0; index < 27; index += 1) await abandonedClaim(`sample-${index}`);
+      const report = jest.fn();
+      expect(await serviceFor().reconcileExpiredMessageDuplicateActions(report)).toBe(25);
+      expect(report).toHaveBeenLastCalledWith({
+        sampledDue: 25,
+        sampleLimit: 25,
+        sampleLimitReached: true,
+        oldestDueAgeMs: expect.any(Number),
+        released: 25,
+      });
+      expect(report.mock.calls[0]![0].oldestDueAgeMs).toBeGreaterThanOrEqual(1000);
+      expect(await serviceFor().reconcileExpiredMessageDuplicateActions(report)).toBe(2);
+      expect(report).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sampledDue: 2, sampleLimitReached: false, released: 2 }),
+      );
+      expect(await serviceFor().reconcileExpiredMessageDuplicateActions(report)).toBe(0);
+      expect(report).toHaveBeenLastCalledWith({
+        sampledDue: 0,
+        sampleLimit: 25,
+        sampleLimitReached: false,
+        oldestDueAgeMs: null,
+        released: 0,
+      });
     });
 
     it('records one initial admission across concurrent processes and total queue loss', async () => {
@@ -916,5 +1072,218 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         } as never),
       ).toBe(false);
     });
+
+    (redisUrl ? describe : describe.skip)(
+      'stale Redis permit restoration with durable SQL denial',
+      () => {
+        beforeAll(() => {
+          if (!/^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/u.test(redisUrl))
+            throw new Error('Duplicate restore checks require disposable local Redis');
+        });
+
+        it.each(['pending intent', 'persisted DELETE receipt'] as const)(
+          'rejects a restored positive permit before MAX for a %s',
+          async (state) => {
+            const own = canonicalClaim(`stale-restore-${state}`);
+            const eventTimestampMs = Date.now() - 1000;
+            const jobId = buildMessageDuplicateJobId(
+              chatId,
+              own.messageId,
+              eventTimestampMs,
+              'IMAGE',
+            );
+            const binding: MessageDuplicateBinding = {
+              ...bindingFor(own, eventTimestampMs),
+              enforcementScope: 'full',
+              compareMode: 'IMAGE',
+              imageScope: 'SAME_AUTHOR',
+              hasPhotos: true,
+              mediaHashes: ['a'.repeat(64)],
+              authorization: { jobId, eventTimestampMs, deadlineAtMs: eventTimestampMs + 600_000 },
+            };
+            const identity = {
+              chatId,
+              jobId,
+              sourceCreatedAt: new Date(eventTimestampMs).toISOString(),
+              deadlineAtMs: binding.authorization!.deadlineAtMs,
+            };
+            const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+            const prefix = `message-duplicate:ordering:v2:${digest(chatId).slice(0, 32)}`;
+            const permitKey = `${prefix}:permit:${digest(jobId)}`;
+            const otherPermitKey = `${prefix}:permit:${digest(buildMessageDuplicateJobId(chatId, own.messageId, eventTimestampMs))}`;
+            const config = new ConfigService({ REDIS_URL: redisUrl });
+            const inspector = new Redis(redisUrl);
+            const initialOrdering = new MessageDuplicateOrderingStore(config);
+            let recoveredOrdering: MessageDuplicateOrderingStore | undefined;
+            let recoveredPrisma: PrismaClient | undefined;
+            let counters: RedisCounterService | undefined;
+            let initialClosed = false;
+            try {
+              const initial = new MessageDuplicateAuthorizationService(
+                prisma as never,
+                initialOrdering,
+              );
+              await expect(initialOrdering.announce(identity, true)).resolves.toMatchObject({
+                kind: 'registered',
+                actionEligible: true,
+              });
+              expect(await initial.isAllowed(chatId, binding)).toBe(true);
+              expect(await intents.claimMessageActionBeforeQualification(own, binding)).toBe(
+                'claimed',
+              );
+              const metadata = {
+                duplicateSource: MESSAGE_DUPLICATE_SOURCE,
+                enforcementScope: binding.enforcementScope,
+                messageDuplicate: binding,
+              };
+              expect(parseMessageDuplicateBinding(metadata)).toEqual(binding);
+              const intentId = `${chatId}:${own.messageId}`;
+              const remoteDeleteSucceededAt =
+                state === 'persisted DELETE receipt' ? new Date(eventTimestampMs + 1) : null;
+              await prisma.moderationDeleteIntent.create({
+                data: {
+                  id: intentId,
+                  chatId,
+                  messageId: own.messageId,
+                  subjectUserId: own.userId,
+                  retryUntilAt: new Date(identity.deadlineAtMs),
+                  remoteDeleteSucceededAt,
+                  remoteDeleteSucceededBotId: remoteDeleteSucceededAt ? 'test-bot' : null,
+                  reasons: {
+                    create: {
+                      id: `${intentId}:reason`,
+                      reasonKey: `MESSAGE_DUPLICATE:v1:${eventTimestampMs}`,
+                      ruleCode: 'DUPLICATE_DELETE',
+                      userId: own.userId,
+                      eventType: 'MESSAGE',
+                      createdAt: new Date(eventTimestampMs),
+                      metadata,
+                    },
+                  },
+                },
+              });
+              const snapshot = await inspector.dumpBuffer(permitKey);
+              const expiresAtMs = await inspector.pexpiretime(permitKey);
+              expect(Buffer.isBuffer(snapshot)).toBe(true);
+              expect(expiresAtMs).toBeGreaterThan(Date.now());
+              await initial.revoke({
+                chatId,
+                messageId: own.messageId,
+                senderId: own.userId,
+                eventTimestampMs,
+              });
+              expect(await inspector.hget(permitKey, 'eligible')).toBe('0');
+              expect(await initial.isAllowed(chatId, binding)).toBe(false);
+              await initialOrdering.onModuleDestroy();
+              initialClosed = true;
+
+              // FLAG: Replay only this fixture's older serialized permit, preserving its original
+              // absolute expiry. This tests cross-store restore, not an OS/RDB crash simulation.
+              await inspector.restore(permitKey, expiresAtMs, snapshot, 'REPLACE', 'ABSTTL');
+              expect(await inspector.pexpiretime(permitKey)).toBe(expiresAtMs);
+              expect(await inspector.hget(permitKey, 'eligible')).toBe('1');
+              recoveredPrisma = createPrismaClient(databaseUrl, { max: 2 });
+              await recoveredPrisma.$connect();
+              recoveredOrdering = new MessageDuplicateOrderingStore(config);
+              const recovered = new MessageDuplicateAuthorizationService(
+                recoveredPrisma as never,
+                recoveredOrdering,
+              );
+              // FLAG: The stale Redis reader allows the live permit; only durable SQL denial
+              // prevents the public guard from turning that restored state into action authority.
+              expect(await recoveredOrdering.readActionEligibility(identity)).toBe(true);
+              expect(await recovered.isAllowed(chatId, binding)).toBe(false);
+              const denied =
+                await recoveredPrisma.moderationViolationMessageClaim.findUniqueOrThrow({
+                  where: {
+                    dedupeKey: duplicateRevocationKey(chatId, own.messageId, eventTimestampMs),
+                  },
+                });
+              expect(denied.messageActionKey).toBeNull();
+              expect(
+                await intents.releaseUnmaterializedMessageAction({ claim: own, binding }),
+              ).toBe(false);
+              const owner = await recoveredPrisma.moderationViolationMessageClaim.findUniqueOrThrow(
+                {
+                  where: { dedupeKey: own.dedupeKey },
+                },
+              );
+              expect(owner.messageActionKey).toBe(own.messageActionKey);
+              const stored = await recoveredPrisma.moderationDeleteIntent.findUniqueOrThrow({
+                where: { id: intentId },
+              });
+              expect(stored.remoteDeleteSucceededAt).toEqual(remoteDeleteSucceededAt);
+              const max = {
+                getChatMemberAccess: jest.fn(async () => {
+                  throw new Error('Unexpected MAX access');
+                }),
+                getExactMessageRow: jest.fn(async () => {
+                  throw new Error('Unexpected MAX read');
+                }),
+              };
+              counters = new RedisCounterService(config);
+              const guard = new MessageDuplicateDeleteGuardService(
+                recoveredPrisma as never,
+                max as never,
+                {} as never,
+                {} as never,
+                new MessageDuplicatePolicyService(counters, config),
+                new MessageDuplicateHistoryService(counters),
+                config,
+                recovered,
+              );
+              const target = {
+                chatId,
+                messageId: own.messageId,
+                subjectUserId: own.userId,
+                botId: 'test-bot',
+              };
+              await expect(
+                guard.assertIntentStillActionable({ ...target, intentId }),
+              ).rejects.toMatchObject({
+                code: 'message_duplicate_action_revoked',
+              });
+              await expect(
+                guard.assertMessageStillActionable({
+                  ...target,
+                  binding,
+                  sanctionIntentId: intentId,
+                }),
+              ).rejects.toMatchObject({
+                code: 'message_duplicate_action_revoked',
+              });
+              expect(max.getChatMemberAccess).not.toHaveBeenCalled();
+              expect(max.getExactMessageRow).not.toHaveBeenCalled();
+              expect(await inspector.hget(permitKey, 'eligible')).toBe('1');
+              expect(await inspector.pexpiretime(permitKey)).toBe(expiresAtMs);
+            } finally {
+              try {
+                await inspector.del(
+                  permitKey,
+                  otherPermitKey,
+                  ...[
+                    'pending',
+                    'expiry',
+                    'members',
+                    'sequence',
+                    'completed',
+                    'lock',
+                    'next-eligible',
+                  ].map((part) => `${prefix}:${part}`),
+                );
+              } finally {
+                await Promise.all([
+                  initialClosed ? Promise.resolve() : initialOrdering.onModuleDestroy(),
+                  recoveredOrdering?.onModuleDestroy(),
+                  recoveredPrisma?.$disconnect(),
+                  counters?.onModuleDestroy(),
+                  inspector.quit(),
+                ]);
+              }
+            }
+          },
+        );
+      },
+    );
   },
 );

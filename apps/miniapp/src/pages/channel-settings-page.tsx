@@ -1,3 +1,4 @@
+import { SettingsOverviewSearchPlaceholder } from '../components/ui/settings-overview-search-placeholder';
 import {
   CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH,
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
@@ -3314,7 +3315,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </Suspense>
       ) : null}
 
-      <Suspense fallback={null}>
+      <Suspense fallback={<SettingsOverviewSearchPlaceholder />}>
         <LazySettingsOverviewSearch
           key={chatId}
           containerId="channel-settings-overview"
