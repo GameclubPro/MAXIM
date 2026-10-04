@@ -97,6 +97,15 @@ export class AdminSettingsController {
     });
   }
 
+  @Patch('chats/:chatId/settings/speech-style')
+  updateBotSpeechStyle(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.settingsService.updateBotSpeechStyle(chatId, user, body);
+  }
+
   @Get('chats/:chatId/rules')
   getRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.settingsService.getRules(chatId, user);

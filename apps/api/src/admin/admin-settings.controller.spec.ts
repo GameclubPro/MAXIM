@@ -10,6 +10,20 @@ const user = {
 const settingsRevision = '2026-10-01T09:00:00.000Z';
 
 describe('AdminSettingsController capability recheck query', () => {
+  it('routes speech style updates to the narrow mutation', async () => {
+    const body = { botSpeechStyle: 'IRONIC' };
+    const saved = { ...body, settingsRevision };
+    const settingsService = {
+      updateBotSpeechStyle: jest.fn().mockResolvedValue(saved),
+      updateSettings: jest.fn(),
+    };
+    const controller = new AdminSettingsController(settingsService as never);
+
+    await expect(controller.updateBotSpeechStyle('chat-1', user, body)).resolves.toEqual(saved);
+    expect(settingsService.updateBotSpeechStyle).toHaveBeenCalledWith('chat-1', user, body);
+    expect(settingsService.updateSettings).not.toHaveBeenCalled();
+  });
+
   it('separates cached diagnostics from an explicit permission recheck', async () => {
     const settingsService = { getDuplicateDiagnostics: jest.fn() };
     const controller = new AdminSettingsController(settingsService as never);
