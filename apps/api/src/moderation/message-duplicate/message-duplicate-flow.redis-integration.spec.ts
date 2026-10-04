@@ -1,3 +1,4 @@
+import { MaxBotContextService } from '../../max/max-bot-context.service';
 import {
   parseMessageDuplicateBinding,
   type MessageDuplicateBinding,
@@ -224,6 +225,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
   const bots = {
     isKnownBotUserId: (userId: string) => userId === '999',
     getDefaultBotId: () => 'bot',
+    resolveExecutableBotId: (botId: string) => (botId === 'bot' ? botId : null),
   };
   const immunity = { consumeForMessage: jest.fn(async () => 'not_granted') };
   const governor = { decide: jest.fn(async () => ({ action: 'allow' })) };
@@ -266,6 +268,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     governor as never,
     config,
     max as never,
+    new MaxBotContextService(),
   );
   const execute = jest.fn(async (request: DuplicateModerationActionRequest) => {
     const id = `intent:${request.messageId}`;
