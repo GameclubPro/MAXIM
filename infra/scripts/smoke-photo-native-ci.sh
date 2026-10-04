@@ -2,7 +2,9 @@
 set -euo pipefail
 
 if [[ "${1:-}" != --bounded ]]; then
-  exec timeout --foreground --kill-after=8s 110s bash "$0" --bounded "$@"
+  # FLAG: Signal the owned process group so a blocked foreground Docker CLI exits
+  # before Bash runs cleanup; --foreground would leave that child outside the timeout.
+  exec timeout --kill-after=8s 110s bash "$0" --bounded "$@"
 fi
 shift
 [[ "$#" -eq 1 && "$1" =~ ^maxim-api:[a-f0-9]{40}$ ]] || exit 2
