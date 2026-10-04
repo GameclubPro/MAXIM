@@ -1,0 +1,66 @@
+import { createRoot } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, Route, Routes } from 'react-router';
+import { chatSettingsSchema, type ChatSettingsScreenResponse } from '@maxim/contracts/settings';
+import { SettingsPage } from '../../src/pages/settings-page';
+import { ToastProvider } from '../../src/components/ui/toast';
+import { createPreviewApiTransport } from '../../src/lib/api/preview-transport';
+import type { ApiTransport } from '../../src/lib/api/transport';
+import { ApiRequestError } from '../../src/lib/api-request-error';
+import { runNativeBackHandlers } from '../../src/lib/native-back';
+import { ManagedEntityNavigationProvider } from '../../src/lib/managed-entity-navigation';
+import '../../src/styles.css';
+
+const preview = createPreviewApiTransport();
+const screen = (await preview.request(
+  '/chats/chat-a/settings-screen',
+)) as ChatSettingsScreenResponse;
+screen.settings = chatSettingsSchema.parse({
+  settingsRevision: '2026-10-04T00:00:00.000Z',
+  antiDuplicateEnabled: true,
+  duplicateCompareMode: 'MESSAGE',
+  duplicateWindowMode: 'INTERVAL',
+  duplicateStartTimeMinutes: 540,
+  duplicateEndTimeMinutes: 1080,
+  duplicateTimezone: 'Europe/Moscow',
+});
+screen.rules = {
+  ...screen.rules,
+  text: 'Авторские правила — сохранить дословно.',
+  autoTextEnabled: false,
+};
+// Read-only response data: browser tests supply network responses, never mutate page state.
+Object.defineProperty(window, '__ANTIDUPLICATE_SCREEN__', { value: screen });
+document.body.dataset.miniappProfile = 'moderation';
+window.WebApp?.BackButton?.onClick(() => runNativeBackHandlers());
+const api: ApiTransport = {
+  async request(path, init) {
+    if (/\/settings-screen(?:\?|$)/u.test(path) || (init?.method && init.method !== 'GET')) {
+      const response = await fetch(`/api${path}`, init);
+      const body = await response.text();
+      if (!response.ok) throw new ApiRequestError(response.status, body, 'Не удалось сохранить');
+      return JSON.parse(body);
+    }
+    return preview.request(path, init);
+  },
+  requestKeepalive() {},
+};
+createRoot(document.getElementById('root')!).render(
+  <QueryClientProvider
+    client={
+      new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      })
+    }
+  >
+    <ToastProvider>
+      <MemoryRouter initialEntries={['/chat/chat-a/settings']}>
+        <ManagedEntityNavigationProvider>
+          <Routes>
+            <Route path="/chat/:chatId/settings" element={<SettingsPage api={api} />} />
+          </Routes>
+        </ManagedEntityNavigationProvider>
+      </MemoryRouter>
+    </ToastProvider>
+  </QueryClientProvider>,
+);

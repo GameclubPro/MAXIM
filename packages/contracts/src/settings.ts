@@ -142,6 +142,7 @@ export {
   type ParsedStoredAllowlistEntry,
 } from './settings-utils.js';
 export * from './duplicate-diagnostics.js';
+export * from './duplicate-rules.js';
 export * from './commercial-settings.js';
 export * from './stop-words.js';
 export * from './message-retention.js';

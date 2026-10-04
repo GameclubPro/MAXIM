@@ -76,6 +76,7 @@ function createPublishFixture(editor?: jest.Mock) {
     return 'accepted' as const;
   });
   const sendPrivateConfirmation = jest.fn().mockResolvedValue(undefined);
+  const buildAutofilledText = jest.fn().mockResolvedValue('Autofilled');
   const publish = (mode?: 'new_message' | 'update') =>
     publishChatRules({
       prisma: prisma as never,
@@ -87,12 +88,13 @@ function createPublishFixture(editor?: jest.Mock) {
       source: 'miniapp',
       mode,
       resolveBotId: () => 'bot-new',
-      buildAutofilledText: async () => 'Autofilled',
+      buildAutofilledText,
       buildFormattedText: async (text) => ({ text, textFormat: 'markdown' }),
       sendPrivateConfirmation,
       deletePreviousPublishedMessage,
     });
   return {
+    buildAutofilledText,
     deletePreviousPublishedMessage,
     maxClient,
     order,
@@ -103,6 +105,40 @@ function createPublishFixture(editor?: jest.Mock) {
 }
 
 describe('admin chat rules MAX errors', () => {
+  it.each([false, true])(
+    'preserves saved text when publishing, autoTextEnabled=%s',
+    async (autoTextEnabled) => {
+      const { prisma, publish, maxClient, buildAutofilledText } = createPublishFixture();
+      const text = 'Авторские правила. Антидубль настроен отдельно.';
+      prisma.chatRules.upsert.mockResolvedValue({ ...createRules(), text, autoTextEnabled });
+      await publish('new_message');
+      expect(buildAutofilledText).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+        'chat-1',
+        text,
+        expect.any(Object),
+        expect.any(Object),
+      );
+    },
+  );
+
+  it('autofills only an empty automatic draft', async () => {
+    const { prisma, publish, maxClient, buildAutofilledText } = createPublishFixture();
+    prisma.chatRules.upsert.mockResolvedValue({
+      ...createRules(),
+      text: '  ',
+      autoTextEnabled: true,
+    });
+    await publish('new_message');
+    expect(buildAutofilledText).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      'Autofilled',
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
   it.each([false, true])(
     'explicitly publishes a new message without deleting prior posts, pending cleanup=%s',
     async (pending) => {
