@@ -8,27 +8,129 @@ import { VK_PARSING_MAX_VIDEOS } from './vk-parsing-common.js';
 
 export const commercialReviewLabelSchema = z.enum(['COMMERCIAL', 'NOT_COMMERCIAL', 'UNSURE']);
 export type CommercialReviewLabel = z.infer<typeof commercialReviewLabelSchema>;
-export const commercialReviewItemSchema = z.object({
-  id: z.string(),
-  chatId: z.string().nullable(),
-  chatTitle: z.string(),
-  source: z.enum(['TEXT', 'OCR']),
-  excerpt: z.string().max(2500),
+export const commercialReviewDispositionSchema = z.enum(['KEEP', 'DELETE']);
+export const commercialReviewDecisionSnapshotSchema = z.object({
+  hasDetection: z.boolean().nullable().default(null),
+  actionable: z.boolean().nullable().default(null),
+  deleteEligible: z.boolean().nullable().default(null),
   score: z.number().min(0).max(100),
-  actionBand: z.string(),
-  messageDisposition: z.enum(['KEEP', 'DELETE']),
-  requiredPolicyCohorts: z.array(z.string()).max(32),
-  detectorVersion: z.string(),
-  decisionFingerprint: z.string(),
-  reviewPriority: z.number().int().min(0).max(100),
-  reasons: z.array(z.string()).max(32),
-  label: commercialReviewLabelSchema.nullable(),
-  reviewReason: z.string().max(500),
-  reviewedAt: z.string().datetime().nullable(),
-  observedAt: z.string().datetime(),
-  expiresAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
+  actionBand: z.string().max(120),
+  messageDisposition: commercialReviewDispositionSchema,
+  detectorVersion: z.string().max(120),
+  decisionFingerprint: z.string().max(120),
+  reasons: z.array(z.string().max(120)).max(32),
+  requiredPolicyCohorts: z.array(z.string().max(120)).max(32),
 });
+export const commercialReviewEvidenceMetadataSchema = z.object({
+  schemaVersion: z.literal(2),
+  samplingProbability: z.number().min(0).max(1).nullable(),
+  randomEvaluationIncluded: z.boolean().nullable().default(null),
+  evaluationSamplingProbability: z.number().min(0).max(1).nullable().default(null),
+  samplingStratum: z.enum(['HIT', 'REVIEW', 'NO_HIT', 'TECHNICAL', 'UNKNOWN']),
+  logicalMessageKey: z.string().max(120).nullable(),
+  authorGroupId: z.string().max(120).nullable(),
+  campaignGroupId: z.string().max(120).nullable(),
+  campaignGroupIds: z.array(z.string().max(120)).max(32).default([]),
+  campaignGroupingComplete: z.boolean().nullable().default(null),
+  sourceSnapshotSha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .nullable(),
+  pseudonymizationKeyId: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .nullable()
+    .default(null),
+  imageReviewRequired: z.boolean(),
+  sourceExcerptComplete: z.boolean().nullable(),
+  messageCreatedAt: z.string().datetime().nullable(),
+  settingsProfileDigest: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .nullable(),
+  detectorSourceSha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .nullable(),
+  hasDetection: z.boolean().nullable(),
+  decisionOutcome: commercialReviewDispositionSchema.nullable(),
+  deleteEligible: z.boolean().nullable(),
+  executionOutcome: z.enum([
+    'UNKNOWN',
+    'PENDING',
+    'CONFIRMED_DELETE',
+    'ALREADY_ABSENT',
+    'NOT_REQUESTED',
+  ]),
+  analysisOutcome: z.enum(['COMPLETE', 'TECHNICAL_INCOMPLETE', 'NOT_APPLICABLE', 'UNKNOWN']),
+  candidateDecision: commercialReviewDecisionSnapshotSchema.nullable(),
+});
+export type CommercialReviewEvidenceMetadata = z.infer<
+  typeof commercialReviewEvidenceMetadataSchema
+>;
+export const commercialReviewOwnReviewSchema = z.object({
+  label: commercialReviewLabelSchema,
+  expectedDisposition: commercialReviewDispositionSchema.nullable(),
+  reason: z.string().max(500),
+  reviewedAt: z.string().datetime(),
+  kind: z.enum(['INDEPENDENT', 'ADJUDICATION']),
+  evidenceKind: z.enum(['TEXT', 'CAPTION_ONLY', 'PRIVATE_SOURCE_IMAGE']),
+});
+export const commercialReviewItemSchema = z
+  .object({
+    id: z.string(),
+    chatId: z.string().nullable(),
+    chatTitle: z.string(),
+    source: z.enum(['TEXT', 'OCR']),
+    excerpt: z.string().max(2500),
+    score: z.number().min(0).max(100).nullable(),
+    actionBand: z.string().nullable(),
+    messageDisposition: commercialReviewDispositionSchema.nullable(),
+    requiredPolicyCohorts: z.array(z.string()).max(32),
+    detectorVersion: z.string(),
+    decisionFingerprint: z.string(),
+    reviewPriority: z.number().int().min(0).max(100).nullable(),
+    reasons: z.array(z.string()).max(32),
+    label: commercialReviewLabelSchema.nullable(),
+    reviewReason: z.string().max(500),
+    reviewedAt: z.string().datetime().nullable(),
+    ownReview: commercialReviewOwnReviewSchema.nullable(),
+    historicalLabel: commercialReviewLabelSchema.nullable(),
+    reviewState: z.enum(['UNREVIEWED', 'AWAITING_SECOND', 'DISAGREEMENT', 'RESOLVED']),
+    independentReviewCount: z.number().int().min(0).max(2),
+    decisionVisible: z.boolean(),
+    canReview: z.boolean(),
+    canAdjudicate: z.boolean(),
+    imageEvidenceAvailable: z.boolean(),
+    sourceExcerptComplete: z.boolean().nullable(),
+    evidenceMetadata: commercialReviewEvidenceMetadataSchema.nullable(),
+    observedAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .superRefine((item, context) => {
+    if (
+      !item.decisionVisible &&
+      (item.score !== null ||
+        item.actionBand !== null ||
+        item.messageDisposition !== null ||
+        item.reviewPriority !== null ||
+        item.reasons.length ||
+        item.requiredPolicyCohorts.length ||
+        item.detectorVersion !== 'unknown' ||
+        item.decisionFingerprint !== 'unknown' ||
+        item.evidenceMetadata !== null ||
+        item.label !== null ||
+        item.historicalLabel !== null ||
+        item.reviewReason !== '' ||
+        item.reviewedAt !== null ||
+        item.ownReview !== null)
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Blind review must not expose decision evidence.',
+      });
+  });
 export type CommercialReviewItem = z.infer<typeof commercialReviewItemSchema>;
 export const commercialReviewQueueQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -45,10 +147,116 @@ export const commercialReviewDecisionRequestSchema = z
   .object({
     expectedUpdatedAt: z.string().datetime(),
     label: commercialReviewLabelSchema,
+    expectedDisposition: commercialReviewDispositionSchema.nullable().optional(),
     reason: z.string().trim().max(500).default(''),
   })
-  .strict();
+  .strict()
+  .superRefine((review, context) => {
+    if (review.label === 'NOT_COMMERCIAL' && review.expectedDisposition === 'DELETE')
+      context.addIssue({
+        code: 'custom',
+        path: ['expectedDisposition'],
+        message: 'Protected messages must be kept.',
+      });
+    if (review.label === 'UNSURE' && review.expectedDisposition != null)
+      context.addIssue({
+        code: 'custom',
+        path: ['expectedDisposition'],
+        message: 'An uncertain review cannot authorize a disposition.',
+      });
+  });
 export type CommercialReviewDecisionRequest = z.infer<typeof commercialReviewDecisionRequestSchema>;
+export const commercialReviewAdjudicationRequestSchema = commercialReviewDecisionRequestSchema;
+export const commercialReviewExportQuerySchema = z
+  .object({
+    since: z.string().datetime(),
+    until: z.string().datetime(),
+    limit: z.coerce.number().int().min(1).max(500).default(100),
+    cursor: z.string().max(500).optional(),
+  })
+  .strict()
+  .refine(
+    (query) => Date.parse(query.since) < Date.parse(query.until),
+    'The export window must be ordered.',
+  )
+  .refine(
+    (query) => Date.parse(query.until) - Date.parse(query.since) <= 14 * 86_400_000,
+    'The export window cannot exceed the fourteen-day retention period.',
+  );
+export const commercialReviewExportResponseSchema = z.object({
+  generatedAt: z.string().datetime(),
+  scope: z.literal('OWN_REVIEWED'),
+  populationCoverageAvailable: z.literal(false),
+  since: z.string().datetime(),
+  until: z.string().datetime(),
+  items: z
+    .array(
+      z.object({
+        sample: commercialReviewItemSchema,
+        ratings: z
+          .array(
+            commercialReviewOwnReviewSchema.extend({
+              reviewerKey: z.string().regex(/^[a-f0-9]{64}$/u),
+              sourceEvidenceDigest: z
+                .string()
+                .regex(/^[a-f0-9]{64}$/u)
+                .nullable(),
+            }),
+          )
+          .max(3),
+        eligibleForIndependentCorpus: z.boolean(),
+      }),
+    )
+    .max(500),
+  nextCursor: z.string().nullable(),
+  complete: z.boolean(),
+});
+export type CommercialReviewExportResponse = z.infer<typeof commercialReviewExportResponseSchema>;
+export const commercialReviewSamplingFrameQuerySchema = commercialReviewExportQuerySchema;
+export const commercialReviewSamplingFrameItemSchema = z
+  .object({
+    source: z.enum(['TEXT', 'OCR']),
+    observedAt: z.string().datetime(),
+    sourceSnapshotSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .nullable(),
+    logicalMessageKey: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .nullable(),
+    pseudonymizationKeyId: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .nullable(),
+    settingsProfileDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .nullable(),
+    campaignGroupingComplete: z.boolean().nullable(),
+    messageCreatedAt: z.string().datetime().nullable(),
+    evaluationSamplingProbability: z.number().min(0).max(1).nullable(),
+  })
+  .strict();
+export const commercialReviewSamplingFrameResponseSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    generatedAt: z.string().datetime(),
+    scope: z.literal('RANDOM_EVALUATION_FRAME'),
+    // The frame covers retained capture rows; ingress capture is best-effort.
+    populationCoverageAvailable: z.literal(false),
+    since: z.string().datetime(),
+    until: z.string().datetime(),
+    scannedCaptureRows: z.number().int().min(0).max(500),
+    samplingUnavailableRows: z.number().int().min(0).max(500),
+    items: z.array(commercialReviewSamplingFrameItemSchema).max(500),
+    nextCursor: z.string().nullable(),
+    complete: z.boolean(),
+  })
+  .strict();
+export type CommercialReviewSamplingFrameResponse = z.infer<
+  typeof commercialReviewSamplingFrameResponseSchema
+>;
 
 export const safetyDeskReviewStatusSchema = z.enum(['REVIEW', 'APPROVED', 'REJECTED', 'BLOCKED']);
 export type SafetyDeskReviewStatus = z.infer<typeof safetyDeskReviewStatusSchema>;

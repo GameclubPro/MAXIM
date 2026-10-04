@@ -130,6 +130,10 @@ import {
   fingerprintCommercialDeleteReasons,
   readCommercialTextDeleteBinding,
 } from './commercial/commercial-delete-binding';
+import {
+  CommercialReviewService,
+  readCommercialReviewExecutionBinding,
+} from './commercial/commercial-review.service';
 import { ReportDeleteGuardService } from './reports/report-delete-guard.service';
 import {
   MessageRetentionDeleteGuard,
@@ -697,6 +701,7 @@ export class ModerationDeleteIntentService {
     @Optional() private readonly suggestionSubscriptions?: SuggestionSubscriptionService,
     @Optional() private readonly storageRuntimeMetrics?: StorageRuntimeMetricsService,
     @Optional() private readonly duplicateMetrics?: MessageDuplicateMetricsService,
+    @Optional() private readonly commercialReview?: CommercialReviewService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -4295,7 +4300,16 @@ export class ModerationDeleteIntentService {
           : 'PENDING';
     const intentId = randomUUID();
     const reasonId = randomUUID();
-    const metadataJson = this.serializeMetadata(normalized.event.metadata);
+    // FLAG: Receipt attribution is written only after this executor's guarded MAX success.
+    // Supplied reason metadata cannot manufacture a confirmed commercial execution.
+    const initialMetadata = this.asRecord(normalized.event.metadata);
+    const reasonMetadata =
+      initialMetadata && 'commercialReviewReceipt' in initialMetadata
+        ? { ...initialMetadata }
+        : normalized.event.metadata;
+    if (reasonMetadata && typeof reasonMetadata === 'object' && !Array.isArray(reasonMetadata))
+      delete (reasonMetadata as Record<string, unknown>).commercialReviewReceipt;
+    const metadataJson = this.serializeMetadata(reasonMetadata);
     const shouldAdoptReplacementRouting =
       this.isReplacementCleanupRuleCode(normalized.ruleCode) &&
       normalized.entityType === 'CHAT' &&
@@ -5483,9 +5497,20 @@ export class ModerationDeleteIntentService {
 
     let marked: boolean;
     try {
-      marked = await this.recordRemoteDeleteSucceeded(intent.id, leaseToken, botId);
+      marked = await this.recordRemoteDeleteSucceeded(
+        intent.id,
+        leaseToken,
+        botId,
+        commercialVerifiedReasonKeys,
+      );
     } catch (error: unknown) {
-      return this.persistRemoteSuccessFallback(intent, leaseToken, botId, error);
+      return this.persistRemoteSuccessFallback(
+        intent,
+        leaseToken,
+        botId,
+        error,
+        commercialVerifiedReasonKeys,
+      );
     }
     if (!marked) {
       return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
@@ -5577,12 +5602,119 @@ export class ModerationDeleteIntentService {
     }
   }
 
+  private async persistCommercialReviewReceipt(
+    tx: Pick<Prisma.TransactionClient, '$executeRaw'>,
+    intentId: string,
+    verifiedReasonKeys: readonly string[],
+  ): Promise<void> {
+    if (!verifiedReasonKeys.length) return;
+    // FLAG: These keys are proof from this dispatch's fresh guard, not candidate metadata.
+    // Commit attribution with the remote success marker so receipt-first recovery retains it.
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE "moderation_delete_intent_reasons" reason
+      SET "metadata" = jsonb_set(COALESCE(reason."metadata", '{}'::jsonb), '{commercialReviewReceipt}',
+        jsonb_build_object('schemaVersion', 1, 'outcome', 'CONFIRMED_DELETE',
+          'evidenceHash', reason."metadata"->'commercialReviewBinding'->>'evidenceHash',
+          'botId', intent."remote_delete_succeeded_bot_id")),
+        "updated_at" = CURRENT_TIMESTAMP
+      FROM "moderation_delete_intents" intent
+      WHERE reason."intent_id" = ${intentId}
+        AND intent."id" = reason."intent_id"
+        AND intent."remote_delete_succeeded_at" IS NOT NULL
+        AND intent."remote_delete_succeeded_bot_id" IS NOT NULL
+        AND reason."rule_code" = ${COMMERCIAL_TEXT_DELETE_RULE_CODE}
+        AND reason."reason_key" IN (${Prisma.join(verifiedReasonKeys)})
+        AND reason."metadata"->'commercialReviewBinding'->>'schemaVersion' = '1'
+        AND reason."metadata"->'commercialReviewBinding'->>'source' = 'TEXT'
+        AND reason."metadata"->'commercialReviewBinding'->>'evidenceHash' ~ '^[a-f0-9]{64}$'
+    `);
+  }
+
+  private async enrichCommercialReviewReceipts(
+    tx: Prisma.TransactionClient,
+    intentId: string,
+  ): Promise<void> {
+    if (!this.commercialReview) return;
+    const receipts = await tx.$queryRaw<
+      Array<{
+        ruleCode: string;
+        metadata: unknown;
+        chatId: string;
+        messageId: string;
+        botId: string;
+      }>
+    >(Prisma.sql`
+      WITH bounded_reasons AS MATERIALIZED (
+        SELECT "rule_code", "metadata", "reason_key"
+        FROM "moderation_delete_intent_reasons"
+        WHERE "intent_id" = ${intentId}
+        ORDER BY "reason_key" ASC
+        LIMIT ${COMMERCIAL_TEXT_MAX_INTENT_REASONS + 1}
+      )
+      SELECT reason."rule_code" AS "ruleCode", reason."metadata", intent."chat_id" AS "chatId", intent."message_id" AS "messageId",
+        intent."remote_delete_succeeded_bot_id" AS "botId"
+      FROM bounded_reasons reason
+      JOIN "moderation_delete_intents" intent ON intent."id" = ${intentId}
+      WHERE
+        intent."status" = CAST('SUCCEEDED' AS "ModerationDeleteIntentStatus")
+        AND intent."remote_delete_succeeded_at" IS NOT NULL
+        AND intent."remote_delete_succeeded_bot_id" IS NOT NULL
+      ORDER BY reason."reason_key" ASC
+    `);
+    if (receipts.length > COMMERCIAL_TEXT_MAX_INTENT_REASONS) {
+      this.logger.warn(
+        { stage: 'commercial-review-receipt', outcome: 'reason_cap_exceeded' },
+        'Commercial receipt observation omitted: reason cap exceeded',
+      );
+      return;
+    }
+    for (const row of receipts) {
+      if (
+        row.ruleCode !== COMMERCIAL_TEXT_DELETE_RULE_CODE ||
+        !this.asRecord(row.metadata)?.commercialReviewReceipt
+      )
+        continue;
+      const binding = readCommercialReviewExecutionBinding(row.metadata);
+      const policyBinding = readCommercialTextDeleteBinding(
+        this.asRecord(row.metadata)?.commercialTextBinding,
+      );
+      const receipt = this.asRecord(this.asRecord(row.metadata)?.commercialReviewReceipt);
+      if (
+        !binding ||
+        !policyBinding ||
+        policyBinding.decisionVersion !== binding.detectorVersion ||
+        policyBinding.detectorSourceSha256 !== binding.detectorSourceSha256 ||
+        receipt?.schemaVersion !== 1 ||
+        receipt.outcome !== 'CONFIRMED_DELETE' ||
+        receipt.evidenceHash !== binding.evidenceHash ||
+        receipt.botId !== row.botId
+      ) {
+        this.logger.warn(
+          { stage: 'commercial-review-receipt', outcome: 'binding_unavailable' },
+          'Commercial receipt observation binding unavailable',
+        );
+        continue;
+      }
+      await this.commercialReview.recordExecution(
+        {
+          chatId: row.chatId,
+          messageId: row.messageId,
+          binding,
+          executionOutcome: 'CONFIRMED_DELETE',
+        },
+        tx,
+      );
+    }
+  }
+
   private async recordRemoteDeleteSucceeded(
     intentId: string,
     leaseToken: string,
     botId: string,
+    commercialVerifiedReasonKeys: string[] = [],
   ): Promise<boolean> {
-    const changed = await this.prisma.$executeRaw(Prisma.sql`
+    const write = async (tx: Pick<Prisma.TransactionClient, '$executeRaw'>) => {
+      const changed = await tx.$executeRaw(Prisma.sql`
       UPDATE "moderation_delete_intents"
       SET
         "last_bot_id" = ${botId},
@@ -5601,7 +5733,13 @@ export class ModerationDeleteIntentService {
         AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
         AND "lease_token" = ${leaseToken}
     `);
-    return changed > 0;
+      if (changed > 0)
+        await this.persistCommercialReviewReceipt(tx, intentId, commercialVerifiedReasonKeys);
+      return changed > 0;
+    };
+    return commercialVerifiedReasonKeys.length
+      ? this.prisma.$transaction(write)
+      : write(this.prisma);
   }
 
   private async persistRemoteSuccessFallback(
@@ -5609,10 +5747,12 @@ export class ModerationDeleteIntentService {
     leaseToken: string,
     botId: string,
     error: unknown,
+    commercialVerifiedReasonKeys: string[] = [],
   ): Promise<ModerationDeleteAttemptResult> {
     const nextAttemptAt = new Date(Date.now() + this.retryDelayMs(intent.attemptCount));
     const details = this.describeError(error, 'remote_success_marker_persist_failed');
-    const changed = await this.prisma.$executeRaw(Prisma.sql`
+    const write = async (tx: Pick<Prisma.TransactionClient, '$executeRaw'>) => {
+      const changed = await tx.$executeRaw(Prisma.sql`
       UPDATE "moderation_delete_intents"
       SET
         "status" = CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus"),
@@ -5639,6 +5779,13 @@ export class ModerationDeleteIntentService {
         AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
         AND "lease_token" = ${leaseToken}
     `);
+      if (changed > 0)
+        await this.persistCommercialReviewReceipt(tx, intent.id, commercialVerifiedReasonKeys);
+      return changed;
+    };
+    const changed = commercialVerifiedReasonKeys.length
+      ? await this.prisma.$transaction(write)
+      : await write(this.prisma);
     if (changed === 0) {
       return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
     }
@@ -5698,6 +5845,8 @@ export class ModerationDeleteIntentService {
       if (changed === 0) {
         return;
       }
+
+      await this.enrichCommercialReviewReceipts(tx, intentId);
 
       await this.materializeModerationEventsForIntent(
         tx,

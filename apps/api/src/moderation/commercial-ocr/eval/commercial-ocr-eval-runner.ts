@@ -6,6 +6,9 @@ import {
 } from '../../../scripts/commercial-run-provenance.util';
 import type { ChatSettings } from '../../../prisma/prisma-client';
 import { CommercialAdDetector } from '../../commercial/commercial-ad.detector';
+import { COMMERCIAL_INTENT_QUALITY_DECISION_VERSION } from '../../commercial/commercial-policy-cohorts';
+import { COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256 } from '../commercial-ocr-detector-source.generated';
+import { calculateCommercialOcrEvalCanonicalSha256 } from './commercial-ocr-eval-canonical';
 import {
   resolveCommercialOcrNativeEngineConfig,
   resolveCommercialOcrNativeRuntimeControls,
@@ -139,6 +142,13 @@ export type CommercialOcrEvalReport = {
   categories: Record<string, CommercialOcrEvalSlice>;
   clusters: CommercialOcrEvalClusterResult[];
   cases: CommercialOcrEvalCaseResult[];
+  // FLAG: Candidate evidence is readonly and cannot be signed as baseline certification.
+  readonlyCandidatePolicy?: {
+    kind: 'commercial-ocr-private-candidate-v1';
+    decisionVersion: typeof COMMERCIAL_INTENT_QUALITY_DECISION_VERSION;
+    detectorSourceSha256: string;
+    evaluationIdentitySha256: string;
+  };
 };
 
 export type CommercialOcrEvalRunnerDependencies = {
@@ -181,7 +191,7 @@ type PerformanceSample = Readonly<{
   durationMs: number;
 }>;
 
-export async function runCommercialOcrEval(params: {
+export type CommercialOcrEvalRunParameters = {
   manifestPath: string;
   config?: ConfigService;
   concurrency?: number;
@@ -189,7 +199,43 @@ export async function runCommercialOcrEval(params: {
   sourceSha?: string;
   expectedBenchmarkEnvironmentSha256?: string;
   dependencies?: Partial<CommercialOcrEvalRunnerDependencies>;
-}): Promise<CommercialOcrEvalReport> {
+};
+
+export async function runCommercialOcrEval(
+  params: CommercialOcrEvalRunParameters,
+): Promise<CommercialOcrEvalReport> {
+  return (await runCommercialOcrEvalReports(params)).baseline;
+}
+
+// FLAG: Private paired evaluation shares the exact verified originals and native passes.
+// It does not change production OCR, write a native cache, or issue a certification.
+export async function runCommercialOcrPairedEval(
+  params: CommercialOcrEvalRunParameters & { createCandidateDetector: () => CommercialOcrDetector },
+): Promise<{ baseline: CommercialOcrEvalReport; candidate: CommercialOcrEvalReport }> {
+  const reports = await runCommercialOcrEvalReports(params);
+  if (!reports.candidate) throw new Error('Paired candidate report is unavailable');
+  const candidateIdentity = {
+    kind: 'commercial-ocr-private-candidate-v1' as const,
+    decisionVersion: COMMERCIAL_INTENT_QUALITY_DECISION_VERSION,
+    detectorSourceSha256: COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256,
+  };
+  reports.candidate.readonlyCandidatePolicy = {
+    ...candidateIdentity,
+    evaluationIdentitySha256: calculateCommercialOcrEvalCanonicalSha256({
+      ...candidateIdentity,
+      nativeBehaviorIdentitySha256:
+        reports.candidate.provenance.behaviorIdentity?.nativeFingerprintSha256 ?? null,
+      policyVersion: reports.candidate.provenance.fingerprints?.policy?.version ?? null,
+    }),
+  };
+  return { baseline: reports.baseline, candidate: reports.candidate };
+}
+
+async function runCommercialOcrEvalReports(
+  params: CommercialOcrEvalRunParameters & {
+    createCandidateDetector?: () => CommercialOcrDetector;
+  },
+): Promise<{ baseline: CommercialOcrEvalReport; candidate: CommercialOcrEvalReport | null }> {
   const startedAt = performance.now();
   const runStartedAt = new Date().toISOString();
   const config = params.config ?? new ConfigService(process.env);
@@ -212,6 +258,8 @@ export async function runCommercialOcrEval(params: {
   });
   const preprocessor = new CommercialOcrPreprocessor(config);
   const detector = dependencies.createDetector();
+  const candidateDetector = params.createCandidateDetector?.();
+  const candidateCases: CommercialOcrEvalCaseResult[] = [];
   const profiles = resolveSettingsProfiles(manifest);
   const fixtures: CommercialOcrEvalCase[] = [...manifest.cases];
   const ocrPassPerformanceSamples: PerformanceSample[] = [];
@@ -231,6 +279,9 @@ export async function runCommercialOcrEval(params: {
         execution,
         dependencies,
         detector,
+        ...(candidateDetector
+          ? { companion: { detector: candidateDetector, cases: candidateCases } }
+          : {}),
         ocrPassPerformanceSamples,
       });
     } finally {
@@ -241,6 +292,36 @@ export async function runCommercialOcrEval(params: {
     }
   });
   const cases = nestedCases.flat();
+  const performanceReport = buildCommercialOcrEvalPerformance({
+    fixtures,
+    execution,
+    provenance,
+    ocrPassPerformanceSamples,
+    sourceCasePerformanceSamples,
+  });
+  const durationMs = roundMs(performance.now() - startedAt);
+  const summarize = (rows: CommercialOcrEvalCaseResult[]) =>
+    summarizeEvalReport({
+      cases: rows,
+      manifest,
+      provenance,
+      performanceReport,
+      durationMs,
+    });
+  return {
+    baseline: summarize(cases),
+    candidate: candidateDetector ? summarize(candidateCases) : null,
+  };
+}
+
+function summarizeEvalReport(params: {
+  cases: CommercialOcrEvalCaseResult[];
+  manifest: CommercialOcrEvalManifest;
+  provenance: CommercialOcrEvalRunProvenance;
+  performanceReport: CommercialOcrEvalPerformance;
+  durationMs: number;
+}): CommercialOcrEvalReport {
+  const { cases, manifest, provenance, performanceReport, durationMs } = params;
   const uniqueQualityCases = [
     ...new Map(cases.map((item) => [item.sourceCaseId, item])).values(),
   ].flatMap((item) => (item.ocrQuality ? [item.ocrQuality] : []));
@@ -277,14 +358,6 @@ export async function runCommercialOcrEval(params: {
         ...summary,
       };
     });
-  const durationMs = roundMs(performance.now() - startedAt);
-  const performanceReport = buildCommercialOcrEvalPerformance({
-    fixtures,
-    execution,
-    provenance,
-    ocrPassPerformanceSamples,
-    sourceCasePerformanceSamples,
-  });
   return {
     schemaVersion: 3,
     corpusSchemaVersion: manifest.schemaVersion,
@@ -320,6 +393,7 @@ async function evaluateCase(params: {
   execution: CommercialOcrEvalExecutionConfig;
   dependencies: CommercialOcrEvalRunnerDependencies;
   detector: CommercialOcrDetector;
+  companion?: { detector: CommercialOcrDetector; cases: CommercialOcrEvalCaseResult[] };
   ocrPassPerformanceSamples: PerformanceSample[];
 }): Promise<CommercialOcrEvalCaseResult[]> {
   const startedAt = performance.now();
@@ -333,7 +407,7 @@ async function evaluateCase(params: {
       });
     } catch {
       const ocrQuality = qualityForUnattemptedCase(params.fixture, params.corpusSchemaVersion);
-      return selectedProfiles(params.fixture, params.profiles).map((profile) =>
+      const unavailable = selectedProfiles(params.fixture, params.profiles).map((profile) =>
         result(params.fixture, params.corpusSchemaVersion, profile, {
           commercialAction: 'INCOMPLETE',
           enforcementAction: 'INCOMPLETE',
@@ -342,6 +416,8 @@ async function evaluateCase(params: {
           ocrQuality,
         }),
       );
+      params.companion?.cases.push(...unavailable.map((item) => ({ ...item })));
+      return unavailable;
     }
   }
 
@@ -388,53 +464,61 @@ async function evaluateCase(params: {
       : null;
 
   const results: CommercialOcrEvalCaseResult[] = [];
+  const companionResults: CommercialOcrEvalCaseResult[] = [];
   for (const profile of selectedProfiles(params.fixture, params.profiles)) {
-    const profileStartedAt = performance.now();
-    const scheduled = await runCommercialOcrAlbumSchedule<EvalImageContext, null>({
-      caption: params.fixture.caption,
-      settings: profile.settings,
-      imageSources: params.fixture.images.map((image) =>
-        'source' in image ? image.source : 'direct',
-      ),
-      detector: params.detector,
-      createImageContext: () => ({ raw: null }),
-      resolvePass: async ({ context, imageIndex, pass }) => {
-        const recognized = await resolveCachedPass(context, imageIndex, pass);
-        return recognized ? { kind: 'ready', value: recognized } : { kind: 'stop', result: null };
-      },
-      finishImage: (context) => {
-        context.raw = null;
-      },
-    });
-    if (scheduled.kind === 'stopped') {
-      results.push(
+    for (const policy of [
+      { detector: params.detector, results },
+      ...(params.companion
+        ? [{ detector: params.companion.detector, results: companionResults }]
+        : []),
+    ]) {
+      const profileStartedAt = performance.now();
+      const scheduled = await runCommercialOcrAlbumSchedule<EvalImageContext, null>({
+        caption: params.fixture.caption,
+        settings: profile.settings,
+        imageSources: params.fixture.images.map((image) =>
+          'source' in image ? image.source : 'direct',
+        ),
+        detector: policy.detector,
+        createImageContext: () => ({ raw: null }),
+        resolvePass: async ({ context, imageIndex, pass }) => {
+          const recognized = await resolveCachedPass(context, imageIndex, pass);
+          return recognized ? { kind: 'ready', value: recognized } : { kind: 'stop', result: null };
+        },
+        finishImage: (context) => {
+          context.raw = null;
+        },
+      });
+      if (scheduled.kind === 'stopped') {
+        policy.results.push(
+          result(params.fixture, params.corpusSchemaVersion, profile, {
+            commercialAction: 'INCOMPLETE',
+            enforcementAction: 'INCOMPLETE',
+            reasonCodes: [],
+            startedAt: profileStartedAt,
+            ocrQuality: null,
+          }),
+        );
+        continue;
+      }
+      const decision = scheduled.decision;
+      const enforcementAction = isCommercialOcrCyrillicOnlyDeleteDecision(decision)
+        ? 'DELETE'
+        : 'NO_ACTION';
+      policy.results.push(
         result(params.fixture, params.corpusSchemaVersion, profile, {
-          commercialAction: 'INCOMPLETE',
-          enforcementAction: 'INCOMPLETE',
-          reasonCodes: [],
+          commercialAction: decision.action,
+          enforcementAction,
+          reasonCodes:
+            decision.action === 'DELETE' && enforcementAction === 'NO_ACTION'
+              ? [...decision.reasonCodes, 'runtime-report-only-language']
+              : decision.reasonCodes,
           startedAt: profileStartedAt,
+          decision,
           ocrQuality: null,
         }),
       );
-      continue;
     }
-    const decision = scheduled.decision;
-    const enforcementAction = isCommercialOcrCyrillicOnlyDeleteDecision(decision)
-      ? 'DELETE'
-      : 'NO_ACTION';
-    results.push(
-      result(params.fixture, params.corpusSchemaVersion, profile, {
-        commercialAction: decision.action,
-        enforcementAction,
-        reasonCodes:
-          decision.action === 'DELETE' && enforcementAction === 'NO_ACTION'
-            ? [...decision.reasonCodes, 'runtime-report-only-language']
-            : decision.reasonCodes,
-        startedAt: profileStartedAt,
-        decision,
-        ocrQuality: null,
-      }),
-    );
   }
   void startedAt;
   const ocrQuality = qualityPasses
@@ -443,6 +527,7 @@ async function evaluateCase(params: {
         passes: qualityPasses,
       })
     : null;
+  params.companion?.cases.push(...companionResults.map((item) => ({ ...item, ocrQuality })));
   return results.map((item) => ({ ...item, ocrQuality }));
 }
 
@@ -673,21 +758,15 @@ function buildCommercialOcrEvalPerformance(params: {
     .filter((sample) => sample.split === 'holdout' || sample.split === 'adversarial')
     .map((sample) => sample.durationMs)
     .sort((left, right) => left - right);
-  const images = certificationFixtures.reduce(
-    (total, fixture) => total + fixture.images.length,
-    0,
-  );
+  const images = certificationFixtures.reduce((total, fixture) => total + fixture.images.length, 0);
   const expectedOcrPasses = images * 2;
-  const durationMs = roundMs(
-    certificationCaseSamples.reduce((total, sample) => total + sample, 0),
-  );
+  const durationMs = roundMs(certificationCaseSamples.reduce((total, sample) => total + sample, 0));
   const deadlineBudgetMs =
     expectedOcrPasses *
     (params.execution.timeoutMs + params.execution.sharpProcessingTimeoutSeconds * 1_000);
   return Object.freeze({
     measurementVersion: COMMERCIAL_OCR_EVAL_PERFORMANCE_MEASUREMENT_VERSION,
-    benchmarkEnvironmentSha256:
-      params.provenance.benchmarkEnvironment?.descriptorSha256 ?? null,
+    benchmarkEnvironmentSha256: params.provenance.benchmarkEnvironment?.descriptorSha256 ?? null,
     evalConcurrency: params.execution.evalConcurrency,
     certification: Object.freeze({
       sourceCases: certificationFixtures.length,
@@ -714,9 +793,7 @@ export function summarizeCommercialOcrEvalDurationSamples(
   if (
     samples.some(
       (sample, index) =>
-        !Number.isFinite(sample) ||
-        sample < 0 ||
-        (index > 0 && samples[index - 1]! > sample),
+        !Number.isFinite(sample) || sample < 0 || (index > 0 && samples[index - 1]! > sample),
     )
   ) {
     throw new Error('Commercial OCR performance samples must be finite, nonnegative, and sorted');

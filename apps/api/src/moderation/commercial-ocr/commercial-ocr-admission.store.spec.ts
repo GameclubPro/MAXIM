@@ -43,6 +43,29 @@ function createStore(evalResults: unknown[]) {
 }
 
 describe('CommercialOcrAdmissionStore', () => {
+  it('finalizes capacity and logical outcome together and keeps uncertain/repeated claims explicit', async () => {
+    const { store, redis } = createStore([1, 0, -1, -2]);
+    const context = {
+      identitySha256: 'a'.repeat(64),
+      releaseKey: `commercial-ocr:metrics:v2:release:tesseract-test:${'b'.repeat(24)}`,
+      bucketKey: `commercial-ocr:metrics:v2:window:tesseract-test:${'b'.repeat(24)}:1`,
+      startedAtMs: Date.now(),
+    };
+    const input = {
+      jobId,
+      chatId: 'chat-secret',
+      context,
+      terminal: { outcome: 'COMPLETE_KEEP' as const, reason: 'complete' as const },
+    };
+    await expect(store.finalize(input)).resolves.toBe('recorded');
+    await expect(store.finalize(input)).resolves.toBe('duplicate');
+    await expect(store.finalize(input)).resolves.toBe('missing');
+    await expect(store.finalize(input)).resolves.toBe('unavailable');
+    expect(redis.eval.mock.calls[0]![1]).toBe(9);
+    expect(redis.eval.mock.calls[0]).toContain('logical.outcome.COMPLETE_KEEP');
+    expect(redis.eval.mock.calls[0]).toContain('logical.reason.complete');
+    expect(redis.eval.mock.calls[0].slice(2, 11).join('|')).not.toContain('chat-secret');
+  });
   it('uses bounded fail-fast Redis connection and command options', () => {
     expect(COMMERCIAL_OCR_REDIS_OPTIONS).toEqual({
       commandTimeout: 1_000,
@@ -156,9 +179,7 @@ describe('CommercialOcrAdmissionStore', () => {
     ).resolves.toEqual({ kind: 'duplicate', state: 'observation' });
 
     const script = String(redis.eval.mock.calls[0]![0]);
-    expect(script).toContain(
-      "ARGV[8] == 'O' and (stored_state ~= 'O' or capacity_held == '1')",
-    );
+    expect(script).toContain("ARGV[8] == 'O' and (stored_state ~= 'O' or capacity_held == '1')");
     expect(script).toContain(
       'release_capacity(ARGV[1], stored_chat_hash, tonumber(stored_units), ARGV[12])',
     );
@@ -245,7 +266,7 @@ describe('CommercialOcrAdmissionStore', () => {
       'release_capacity(expired_job_id, expired_chat_hash, tonumber(expired_units), ARGV[6])',
     );
     expect(script).toContain("stored_chat_hash .. '|' .. stored_units .. '|O|0'");
-    expect(script).toContain("stored_chat_hash ~= ARGV[2]");
+    expect(script).toContain('stored_chat_hash ~= ARGV[2]');
     expect(script).not.toContain('tonumber(stored_units) ~= tonumber(ARGV[3])');
     expect(script).toContain("redis.call('HDEL', KEYS[5], ARGV[1])");
     expect(script).toContain("redis.call('ZREM', KEYS[4], ARGV[1])");

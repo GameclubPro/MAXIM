@@ -36,6 +36,15 @@ Holdout records also require `labelAuthorId`, two to eight distinct `reviewerIds
 
 The checker rejects shared dataset, source sample, source snapshot, author, or campaign identities between development and holdout, and duplicate holdout samples. Use the real grouping consistently: assigning a new group to each repeated message would invalidate the declared independence. Keep original private sources and identity mappings outside Git. These checks validate declared provenance and boundaries; the operator must verify the underlying source and human review.
 
+The experimental `commercial-intent-quality-v1` cohort additionally requires all
+`campaignGroupIds`, complete grouping and source text in both splits, and one
+unchanged `pseudonymizationKeyId`. Its stable uniform evaluation frame is separate
+from enriched capture: every hit may be captured, while only the preselected 10%
+cohort is appropriate for the unweighted paired evaluation. Provenance
+`samplingProbability` uses `evaluationSamplingProbability` for this cohort;
+`randomEvaluationIncluded` must be true. Unknown grouping or rotated pseudonyms
+cannot establish author/campaign separation.
+
 The checked-in automatic fixture remains a structural and behavioural regression dataset. Canonical cleanup currently exposes seven legacy campaign-only predictions in its frozen snapshots. Its test preserves and reports `campaign_only_delete_count=7`; this dataset cannot be presented as independent release evidence.
 
 ## Frozen text promotion artifact
@@ -58,6 +67,21 @@ The validator recomputes quality from explicit manual KEEP/DELETE labels and act
 Promotion requires the Wilson 95% upper confidence bound for protected-negative cleanup errors to be at most 0.1%, and the Wilson 95% lower confidence bound for independent-offer cleanup recall to be at least 95%. A missing denominator is unevaluated and rejects promotion. Approximately 3,838 independent protected units with zero errors are required just to meet the false-positive bound; larger representative samples are preferable.
 
 Any unknown, malformed, mismatched, expired, overlapping, incomplete, or insufficient evidence returns `approvedCohorts=[]`. Promotion also requires the operator's independently reviewed artifact SHA-256 in the runtime-control command. Computing a digest inline from a newly created artifact is not independent authorization. The tooling and synthetic tests do not constitute a real reviewed holdout artifact. Experimental text expansion remains a separate promotion decision from the shipped deterministic baseline.
+
+The new intent cohort requires at least 4,000 protected and 500 offer units,
+seven-day development and holdout periods, a minimum 24-hour gap, and explicit
+`releasedBaseline` snapshots beside candidate `current`/`sanitizedBaseline`
+snapshots. Both false deletion permission and missed cleanup must improve in
+paired independent units; each exact one-sided test uses 0.025. A complete
+predeclared `commercial-quality-holdout-sampling/v1` design binds the frame and
+its expected sample count. Evaluate BALANCED 45/65 and STRICT 38/55 separately.
+Intent-cohort promotion requires independently reviewed artifacts for both
+prescribed profiles with matching frozen sources and human evidence. The selected
+settings binding remains exact; a passing companion cannot authorize its settings.
+The observation report cannot authorize promotion, and a paginated OWN_REVIEWED
+export alone does not prove review of the full random frame. Reconcile it with
+the closed sampling-frame export and show missing/uncertain evidence explicitly.
+See [the collection and rollout runbook](operations/runbooks/commercial-quality-rollout.md).
 
 ## OCR clocks and coverage
 

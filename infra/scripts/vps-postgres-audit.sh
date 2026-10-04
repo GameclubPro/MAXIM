@@ -33,6 +33,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-access-census [--explain]
   ./infra/scripts/vps-postgres-audit.sh storage [--explain]
+  ./infra/scripts/vps-postgres-audit.sh commercial-quality [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
   ./infra/scripts/vps-postgres-audit.sh monitor-signals <window-minutes>
@@ -83,7 +84,7 @@ case "$AUDIT_MODE" in
     fi
     DUPLICATE_EXPLAIN="${2:-}"
     ;;
-  publisher-publications|publisher-access-census|storage)
+  publisher-publications|publisher-access-census|commercial-quality|storage)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -379,7 +380,7 @@ SELECT CASE
               'chat_rules',
               'publications', 'publication_schedules', 'publication_occurrences',
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-              'managed_broadcast_deliveries', 'chats',
+              'managed_broadcast_deliveries', 'chats', 'commercial_review_samples',
                 'chat_settings',
                 'moderation_delete_intents',
                 'moderation_delete_intent_reasons'
@@ -1452,6 +1453,11 @@ emit_sql() {
     publication_privilege_args+=(--require-all)
   fi
   node "$ROOT_DIR/infra/scripts/publisher-publications-audit.mjs" "${publication_privilege_args[@]}"
+  local commercial_privilege_args=(--privileges)
+  if [[ "$AUDIT_MODE" == 'commercial-quality' ]]; then
+    commercial_privilege_args+=(--require-all)
+  fi
+  node "$ROOT_DIR/infra/scripts/commercial-quality-audit.mjs" "${commercial_privilege_args[@]}"
   case "$AUDIT_MODE" in
     queue)
       emit_queue_audit
@@ -1492,6 +1498,13 @@ emit_sql() {
         publication_args+=("$RULES_CLEANUP_EXPLAIN")
       fi
       node "$ROOT_DIR/infra/scripts/publisher-publications-audit.mjs" "${publication_args[@]}"
+      ;;
+    commercial-quality)
+      local quality_args=()
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+        quality_args+=("$RULES_CLEANUP_EXPLAIN")
+      fi
+      node "$ROOT_DIR/infra/scripts/commercial-quality-audit.mjs" "${quality_args[@]}"
       ;;
     publisher-access-census)
       local census_args=()

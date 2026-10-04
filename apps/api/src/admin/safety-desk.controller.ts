@@ -23,10 +23,13 @@ export class SafetyDeskController {
   ) {}
 
   @Get('commercial/review')
-  getCommercialReview(@Query() query: unknown) {
+  getCommercialReview(
+    @Query() query: unknown,
+    @Headers('x-remote-user') remoteUser: string | undefined,
+  ) {
     if (!this.commercialReview)
       throw new ServiceUnavailableException('Очередь временно недоступна.');
-    return this.commercialReview.getQueue(query);
+    return this.commercialReview.getQueue(query, remoteUser ?? null);
   }
 
   @Post('commercial/review/:itemId/label')
@@ -38,6 +41,37 @@ export class SafetyDeskController {
     if (!this.commercialReview)
       throw new ServiceUnavailableException('Очередь временно недоступна.');
     return this.commercialReview.labelItem(itemId, remoteUser ?? null, body);
+  }
+
+  @Post('commercial/review/:itemId/adjudicate')
+  adjudicateCommercialReview(
+    @Param('itemId') itemId: string,
+    @Headers('x-remote-user') remoteUser: string | undefined,
+    @Body() body: unknown,
+  ) {
+    if (!this.commercialReview)
+      throw new ServiceUnavailableException('Очередь временно недоступна.');
+    return this.commercialReview.adjudicateItem(itemId, remoteUser ?? null, body);
+  }
+
+  @Get('commercial/review/export')
+  exportCommercialReview(
+    @Query() query: unknown,
+    @Headers('x-remote-user') remoteUser: string | undefined,
+  ) {
+    if (!this.commercialReview)
+      throw new ServiceUnavailableException('Очередь временно недоступна.');
+    return this.commercialReview.exportIndependentEvidence(query, remoteUser ?? null);
+  }
+
+  @Get('commercial/review/frame')
+  exportCommercialSamplingFrame(
+    @Query() query: unknown,
+    @Headers('x-remote-user') remoteUser: string | undefined,
+  ) {
+    if (!this.commercialReview)
+      throw new ServiceUnavailableException('Случайная выборка временно недоступна.');
+    return this.commercialReview.exportSamplingFrame(query, remoteUser ?? null);
   }
 
   @Get('queue')

@@ -177,6 +177,18 @@ async function fixture(viewport = { width: 1440, height: 900 }) {
         label: body.label,
         reviewReason: body.reason,
         reviewedAt: date,
+        decisionVisible: true,
+        canReview: false,
+        independentReviewCount: 1,
+        reviewState: 'AWAITING_SECOND',
+        ownReview: {
+          label: body.label,
+          expectedDisposition: body.expectedDisposition,
+          reason: body.reason,
+          reviewedAt: date,
+          kind: 'INDEPENDENT',
+          evidenceKind: state.commercialItem.source === 'OCR' ? 'CAPTION_ONLY' : 'TEXT',
+        },
       };
       return respond(state.commercialItem);
     }
@@ -286,9 +298,12 @@ try {
     );
     await page.getByRole('button', { name: 'Коммерческий фильтр', exact: true }).click();
     await page
-      .getByText('Образцов пока нет. Здесь появятся спорные сообщения и подтверждённые удаления.', {
-        exact: true,
-      })
+      .getByText(
+        'Образцов пока нет. Очередь включает срабатывания, спорные сообщения и выборку пропусков.',
+        {
+          exact: true,
+        },
+      )
       .waitFor();
     await page.getByRole('button', { name: 'Очистка', exact: true }).click();
     await page.getByRole('heading', { name: 'Не удалось открыть очистку', exact: true }).waitFor();
@@ -560,18 +575,28 @@ try {
   {
     const { context, page, state, errors } = await fixture();
     state.commercialItem = {
+      ownReview: null,
+      historicalLabel: null,
+      reviewState: 'UNREVIEWED',
+      independentReviewCount: 0,
+      decisionVisible: false,
+      canReview: true,
+      canAdjudicate: false,
+      imageEvidenceAvailable: false,
+      sourceExcerptComplete: true,
+      evidenceMetadata: null,
       id: 'commercial-1',
       chatId: 'chat-3',
       chatTitle: 'Образец коммерческого фильтра',
       source: 'TEXT',
       excerpt: 'Спорное сообщение',
-      score: 65,
-      actionBand: 'review',
-      messageDisposition: 'KEEP',
+      score: null,
+      actionBand: null,
+      messageDisposition: null,
       requiredPolicyCohorts: [],
-      detectorVersion: 'test',
-      decisionFingerprint: 'sample-fingerprint',
-      reviewPriority: 50,
+      detectorVersion: 'unknown',
+      decisionFingerprint: 'unknown',
+      reviewPriority: null,
       reasons: [],
       label: null,
       reviewReason: '',
@@ -585,11 +610,22 @@ try {
     await page.getByRole('button', { name: 'Коммерческий фильтр', exact: true }).click();
     await page.getByRole('article', { name: 'Оценка образца' }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'Экспорт', exact: true }).count(), 0);
+    assert.equal(await page.getByText('Оценка фильтра', { exact: true }).count(), 0);
+    await page
+      .getByText('Результат фильтра и предыдущие оценки скрыты до сохранения вашей оценки.', {
+        exact: true,
+      })
+      .waitFor();
     await page.getByLabel('Комментарий к оценке').fill('Проверено после объединения');
     await page.getByRole('button', { name: 'Не реклама', exact: true }).click();
     await page.getByText('Сохранено: Не реклама', { exact: true }).waitFor();
     assert.deepEqual(state.commercialPosts, [
-      { expectedUpdatedAt: date, label: 'NOT_COMMERCIAL', reason: 'Проверено после объединения' },
+      {
+        expectedUpdatedAt: date,
+        label: 'NOT_COMMERCIAL',
+        expectedDisposition: 'KEEP',
+        reason: 'Проверено после объединения',
+      },
     ]);
     assert.equal(state.posts.length, 0);
     await openRetention(page);
@@ -603,6 +639,60 @@ try {
     process.stdout.write(
       'PASS Commercial Review and retention survive tab switching and independent actions\n',
     );
+  }
+  {
+    const { context, page, state, errors } = await fixture();
+    state.commercialItem = {
+      id: 'commercial-photo',
+      chatId: 'chat-3',
+      chatTitle: 'Фото без независимого источника',
+      source: 'OCR',
+      excerpt: '',
+      score: null,
+      actionBand: null,
+      messageDisposition: null,
+      requiredPolicyCohorts: [],
+      detectorVersion: 'unknown',
+      decisionFingerprint: 'unknown',
+      reviewPriority: null,
+      reasons: [],
+      label: null,
+      historicalLabel: null,
+      ownReview: null,
+      reviewReason: '',
+      reviewedAt: null,
+      reviewState: 'UNREVIEWED',
+      independentReviewCount: 0,
+      decisionVisible: false,
+      canReview: true,
+      canAdjudicate: false,
+      imageEvidenceAvailable: false,
+      sourceExcerptComplete: null,
+      evidenceMetadata: null,
+      observedAt: date,
+      expiresAt: date,
+      updatedAt: date,
+    };
+    await openRetention(page);
+    await page.getByRole('button', { name: 'Коммерческий фильтр', exact: true }).click();
+    await page.getByRole('article', { name: 'Оценка образца' }).waitFor();
+    await page.getByText('Исходная фотография здесь недоступна.', { exact: false }).waitFor();
+    assert.equal(
+      await page.getByRole('button', { name: 'Реклама', exact: true }).isDisabled(),
+      true,
+    );
+    assert.equal(
+      await page.getByRole('button', { name: 'Не реклама', exact: true }).isDisabled(),
+      true,
+    );
+    assert.equal(await page.getByText('Оценка фильтра', { exact: true }).count(), 0);
+    await page.getByRole('button', { name: 'Недостаточно данных', exact: true }).click();
+    await page.getByText('Сохранено: Недостаточно данных', { exact: true }).waitFor();
+    assert.equal(state.commercialPosts[0].label, 'UNSURE');
+    assert.equal(state.commercialPosts[0].expectedDisposition, null);
+    assert.deepEqual(errors, []);
+    await context.close();
+    process.stdout.write('PASS caption-only OCR card cannot collect a false image label\n');
   }
   {
     const { context, page, state, errors } = await fixture();

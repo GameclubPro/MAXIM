@@ -2,6 +2,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { ConfigService } from '@nestjs/config';
 
 import { ChatEntityType, WebhookStatus, type ChatSettings } from '../../prisma/prisma-client';
+import { buildCommercialQualitySample } from '../commercial/commercial-quality-sampling';
 import { buildWebhookSemanticEventKey } from '../../webhook/webhook-semantic-event-key';
 import type {
   CommercialOcrAdmissionActivationResult,
@@ -96,12 +97,154 @@ type HarnessOptions = {
   webhookError?: Error;
   exactError?: Error;
   reviewError?: Error;
+  samplingSecret?: string;
   activationResult?: CommercialOcrAdmissionActivationResult;
   suppressionResult?: CommercialOcrAdmissionSuppressionResult;
   reservationTtlMs?: number;
 };
 
 describe('CommercialOcrModerationService', () => {
+  it.each([
+    Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }),
+    Object.assign(new Error('limited'), {
+      response: { status: 429, headers: { 'retry-after': '30' } },
+    }),
+    Object.assign(new Error('unavailable'), { response: { status: 503 } }),
+  ])(
+    'retries only a temporary exact-source read and leaves pending admission reserved: %o',
+    async (exactError) => {
+      const harness = buildHarness({ exactError, admissionStates: ['pending'] });
+      await expect(
+        harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+      ).resolves.toMatchObject({ kind: 'retry', reason: 'source_unavailable' });
+      expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+      expect(harness.admissionStore.suppress).not.toHaveBeenCalled();
+      expect(
+        harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([403, 404])('keeps exact-source access/missing HTTP %s terminal', async (status) => {
+    const harness = buildHarness({
+      exactError: Object.assign(new Error('denied'), { response: { status } }),
+      admissionStates: ['pending'],
+    });
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toMatchObject({
+      kind: 'completed',
+      terminal: { outcome: 'LEGITIMATE_SKIP', reason: 'source_unavailable' },
+    });
+    expect(harness.admissionStore.suppress).toHaveBeenCalledTimes(1);
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+  });
+
+  it('rechecks changed settings and fresh administrator access on a recovered source read', async () => {
+    const harness = buildHarness();
+    harness.maxClient.getExactMessageRow.mockRejectedValueOnce(
+      Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }),
+    );
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toMatchObject({ kind: 'retry' });
+    harness.maxClient.getChatMemberAccess.mockResolvedValueOnce({
+      userId: 'user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: [],
+    });
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toMatchObject({ kind: 'completed' });
+    expect(harness.prisma.chat.findUnique).toHaveBeenCalled();
+    expect(harness.maxClient.getChatMemberAccess).toHaveBeenCalled();
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.participantImmunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('captures technical analysis with the original caption and no recognition output', async () => {
+    const harness = buildHarness({ analysis: { kind: 'incomplete', reason: 'ocr_timeout' } });
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toMatchObject({
+      terminal: { outcome: 'TECHNICAL_INCOMPLETE', reason: 'ocr_timeout' },
+    });
+    expect(harness.commercialReview.recordCandidate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: 'OCR',
+        samplingStratum: 'TECHNICAL',
+        samplingProbability: 1,
+        hasDetection: false,
+        decisionOutcome: null,
+        deleteEligible: null,
+        imageReviewRequired: true,
+      }),
+    );
+  });
+
+  it('includes a selected captionless no-detection photo in the independent sampling stream', async () => {
+    const samplingSecret = Array.from(
+      { length: 100 },
+      (_, index) => `fixture-commercial-secret-${index}`,
+    ).find((secret) =>
+      buildCommercialQualitySample({
+        secret,
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        text: '',
+        messageCreatedAt: sourceCreatedAt,
+        source: 'OCR',
+        hasDetection: false,
+      }),
+    );
+    expect(samplingSecret).toBeDefined();
+    const normalizedUpdate = update();
+    normalizedUpdate.message!.text = '';
+    (normalizedUpdate.raw as { message: { body: { text: string } } }).message.body.text = '';
+    const harness = buildHarness({
+      samplingSecret,
+      normalizedUpdate,
+      exactRows: [exactMessage({ caption: '' })],
+      analysis: {
+        kind: 'complete',
+        decision: { ...noActionDecision(['no_detection']), images: [] },
+      },
+    });
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toMatchObject({ terminal: { outcome: 'COMPLETE_KEEP' } });
+    expect(harness.commercialReview.recordCandidate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '',
+        source: 'OCR',
+        hasDetection: false,
+        samplingStratum: 'NO_HIT',
+        samplingProbability: expect.closeTo(0.1, 8),
+        imageReviewRequired: true,
+        decisionOutcome: 'KEEP',
+      }),
+    );
+  });
+
+  it('rechecks immunity after a recovered source read before creating any delete intent', async () => {
+    const harness = buildHarness({ immunityResult: 'granted' });
+    harness.maxClient.getExactMessageRow.mockRejectedValueOnce(
+      Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }),
+    );
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toMatchObject({ kind: 'retry' });
+    await harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs);
+    expect(harness.participantImmunity.consumeForMessage).toHaveBeenCalledTimes(1);
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+  });
   it('enforces the strict opt-in baseline with live native attestation and no fictional certificate', async () => {
     const harness = buildHarness({ mode: 'baseline', sandboxBoundaryVerified: true });
     await harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs);
@@ -181,7 +324,7 @@ describe('CommercialOcrModerationService', () => {
     const harness = buildHarness({ reviewError: new Error('review unavailable') });
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
     expect(
       harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
     ).toHaveBeenCalledTimes(1);
@@ -274,7 +417,7 @@ describe('CommercialOcrModerationService', () => {
         jobId,
         activeDeadlineAtMs,
       ),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     const persisted =
       harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim.mock.calls[0]![0];
@@ -433,7 +576,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, Date.now() - 1),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.prisma.webhookEvent.findUnique).not.toHaveBeenCalled();
     expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
@@ -490,7 +633,7 @@ describe('CommercialOcrModerationService', () => {
 
       await expect(
         harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-      ).resolves.toEqual({
+      ).resolves.toMatchObject({
         kind: 'completed',
       });
       expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
@@ -508,7 +651,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.participantImmunity.consumeForMessage).toHaveBeenCalledTimes(1);
     expect(harness.runtimePolicy.resolveEffectivePolicy).toHaveBeenCalledTimes(2);
@@ -540,7 +683,7 @@ describe('CommercialOcrModerationService', () => {
 
       await expect(
         harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-      ).resolves.toEqual({
+      ).resolves.toMatchObject({
         kind: 'completed',
       });
       expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
@@ -568,7 +711,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       kind: 'completed',
     });
     expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
@@ -605,7 +748,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       kind: 'completed',
     });
     expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
@@ -621,7 +764,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -653,7 +796,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -705,7 +848,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       kind: 'completed',
     });
 
@@ -738,7 +881,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       kind: 'completed',
     });
 
@@ -770,7 +913,7 @@ describe('CommercialOcrModerationService', () => {
         jobId,
         activeDeadlineAtMs,
       ),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.prisma.webhookEvent.findUnique).toHaveBeenCalledTimes(1);
     expect(harness.maxClient.getExactMessageRow).toHaveBeenCalledTimes(2);
@@ -826,7 +969,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.prisma.webhookExecutionClaim.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -928,7 +1071,7 @@ describe('CommercialOcrModerationService', () => {
 
       await expect(
         harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-      ).resolves.toEqual({ kind: 'completed' });
+      ).resolves.toMatchObject({ kind: 'completed' });
 
       expect(harness.admissionStore.activate).not.toHaveBeenCalled();
       expect(harness.admissionStore.suppress).toHaveBeenCalledWith({
@@ -951,7 +1094,7 @@ describe('CommercialOcrModerationService', () => {
 
       await expect(
         harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-      ).resolves.toEqual({ kind: 'completed' });
+      ).resolves.toMatchObject({ kind: 'completed' });
 
       expect(harness.admissionStore.activate).toHaveBeenCalledTimes(1);
       expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
@@ -969,7 +1112,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.admissionStore.activate).toHaveBeenCalledTimes(1);
     expect(harness.admissionStore.suppress).toHaveBeenCalledTimes(1);
@@ -991,7 +1134,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.admissionStore.suppress).toHaveBeenCalledTimes(1);
     expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
@@ -1009,7 +1152,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.admissionStore.activate).toHaveBeenCalledTimes(1);
     expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
@@ -1028,7 +1171,7 @@ describe('CommercialOcrModerationService', () => {
 
       await expect(
         harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-      ).resolves.toEqual({ kind: 'completed' });
+      ).resolves.toMatchObject({ kind: 'completed' });
 
       expect(harness.admissionStore.activate).not.toHaveBeenCalled();
       expect(harness.metrics.recordCounter).not.toHaveBeenCalledWith(
@@ -1051,7 +1194,7 @@ describe('CommercialOcrModerationService', () => {
     try {
       await expect(
         harness.service.processCommercialOcrJob(job(), jobId, deadlineAtMs),
-      ).resolves.toEqual({ kind: 'completed' });
+      ).resolves.toMatchObject({ kind: 'completed' });
     } finally {
       now.mockRestore();
     }
@@ -1078,7 +1221,7 @@ describe('CommercialOcrModerationService', () => {
     try {
       await expect(
         harness.service.processCommercialOcrJob(job(), jobId, deadlineAtMs),
-      ).resolves.toEqual({ kind: 'completed' });
+      ).resolves.toMatchObject({ kind: 'completed' });
     } finally {
       now.mockRestore();
     }
@@ -1201,7 +1344,7 @@ describe('CommercialOcrModerationService', () => {
 
       await expect(
         harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-      ).resolves.toEqual({
+      ).resolves.toMatchObject({
         kind: 'completed',
       });
       expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
@@ -1224,7 +1367,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       kind: 'completed',
     });
 
@@ -1250,7 +1393,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
     expect(harness.runtimePolicy.resolveEffectivePolicy).not.toHaveBeenCalled();
@@ -1287,7 +1430,7 @@ describe('CommercialOcrModerationService', () => {
 
       await expect(
         harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-      ).resolves.toEqual({ kind: 'completed' });
+      ).resolves.toMatchObject({ kind: 'completed' });
 
       expect(harness.runtimePolicy.resolveEffectivePolicy).toHaveBeenCalledTimes(
         expectedPolicyReads,
@@ -1313,7 +1456,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.metrics.recordCounter).toHaveBeenCalledWith(
       'enforcement.suppressed.runtime_control_expired',
@@ -1334,7 +1477,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, deadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     expect(harness.maxClient.getExactMessageRow).toHaveBeenCalledTimes(2);
     expect(harness.maxClient.getChatMemberAccess).toHaveBeenCalledTimes(2);
@@ -1351,7 +1494,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       kind: 'completed',
     });
 
@@ -1414,7 +1557,7 @@ describe('CommercialOcrModerationService', () => {
 
     await expect(
       harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toEqual({ kind: 'completed' });
+    ).resolves.toMatchObject({ kind: 'completed' });
 
     const persisted =
       harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim.mock.calls[0]![0];
@@ -1579,11 +1722,12 @@ function buildHarness(options: HarnessOptions = {}) {
     }),
   };
   const configService = new ConfigService({
+    MAX_WEBHOOK_SECRET_PATH: options.samplingSecret ?? 'fixture-secret-commercial-quality',
     COMMERCIAL_OCR_ROLLOUT_MODE: options.mode ?? 'on',
     IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: options.imageTextRolloutMode ?? 'shadow',
     COMMERCIAL_OCR_RESERVATION_TTL_MS: options.reservationTtlMs,
   });
-  const metrics = { recordCounter: jest.fn() };
+  const metrics = { recordCounter: jest.fn(), recordStageDuration: jest.fn() };
   const nativeOcr = {
     isSandboxBoundaryVerified: jest.fn().mockReturnValue(options.sandboxBoundaryVerified ?? false),
     getRuntimeStatus: jest.fn().mockReturnValue({

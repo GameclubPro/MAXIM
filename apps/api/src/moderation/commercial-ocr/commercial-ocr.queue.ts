@@ -39,6 +39,8 @@ export type CommercialOcrJob = QueueJobEnvelope<
     actionEligible: boolean;
     commercialScanRequested?: boolean;
     imageTextScanRequested?: boolean;
+    /** FLAG: Internal retry scheduling only; never changes source identity or the original deadline. */
+    sourceRetryNotBeforeAt?: number;
   },
   {
     idempotencyKey: string;

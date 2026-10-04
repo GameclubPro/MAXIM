@@ -3,8 +3,11 @@ import { z } from 'zod';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import type { CommercialCampaignContext } from '../commercial-campaign.util';
 import type { EnsureModerationDeleteIntentInput } from '../moderation-delete-intent.types';
-import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import { COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256 } from '../commercial-ocr/commercial-ocr-detector-source.generated';
+import {
+  COMMERCIAL_TEXT_POLICY_COHORTS,
+  commercialTextDecisionVersionForCohorts,
+} from './commercial-policy-cohorts';
 
 export const COMMERCIAL_TEXT_DELETE_RULE_CODE = 'COMMERCIAL_AD_DELETE';
 export const COMMERCIAL_TEXT_DELETE_BINDING_VERSION = 2 as const;
@@ -55,10 +58,7 @@ const bindingSchema = z
     deadlineAtMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     campaignContext: campaignSchema.nullable(),
     textRuntimeRevision: z.number().int().nonnegative().default(0),
-    requiredPolicyCohorts: z
-      .array(z.enum(['owned-service-contrast-v1', 'sliding-campaign-v1']))
-      .max(2)
-      .default([]),
+    requiredPolicyCohorts: z.array(z.enum(COMMERCIAL_TEXT_POLICY_COHORTS)).max(3).default([]),
   })
   .strict();
 export type CommercialTextDeleteBinding = z.infer<typeof bindingSchema>;
@@ -96,7 +96,7 @@ export function buildCommercialTextDeleteBinding(params: {
 }): CommercialTextDeleteBinding {
   return bindingSchema.parse({
     version: COMMERCIAL_TEXT_DELETE_BINDING_VERSION,
-    decisionVersion: COMMERCIAL_ENGINE_CONFIG.decisionVersion,
+    decisionVersion: commercialTextDecisionVersionForCohorts(params.requiredPolicyCohorts ?? []),
     detectorSourceSha256: COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256,
     sourceSha256: fingerprintCommercialDeleteText(params.text),
     settingsSha256: fingerprintCommercialDeleteSettings(params.settings),
@@ -121,7 +121,8 @@ export function isCommercialTextDeleteBindingCurrent(
   now = Date.now(),
 ): boolean {
   return (
-    binding.decisionVersion === COMMERCIAL_ENGINE_CONFIG.decisionVersion &&
+    binding.decisionVersion ===
+      commercialTextDecisionVersionForCohorts(binding.requiredPolicyCohorts) &&
     binding.detectorSourceSha256 === COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256 &&
     binding.settingsSha256 === fingerprintCommercialDeleteSettings(settings) &&
     binding.eventTimestampMs <= now + MAX_FUTURE_SKEW_MS &&

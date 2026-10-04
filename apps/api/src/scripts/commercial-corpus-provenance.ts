@@ -11,6 +11,12 @@ export type CommercialCorpusReviewProvenance = Readonly<{
   sourceSnapshotSha256: string;
   authorGroupId: string;
   campaignGroupId: string;
+  campaignGroupIds?: readonly string[];
+  pseudonymizationKeyId?: string;
+  samplingProbability?: number;
+  randomEvaluationIncluded?: boolean;
+  sourceExcerptComplete?: boolean;
+  campaignGroupingComplete?: boolean;
   messageCreatedAt: string;
   labelAuthorId?: string;
   reviewerIds?: readonly string[];
@@ -27,6 +33,7 @@ export function validateCommercialHoldoutProvenance(params: {
   developmentRecords?: readonly ProvenanceRecord[];
   holdoutCutoffAt?: string;
   minHoldoutGapHours?: number;
+  requireDevelopmentReviews?: boolean;
 }): { errors: string[]; diagnostics: string[] } {
   const errors: string[] = [];
   const diagnostics: string[] = [];
@@ -59,13 +66,22 @@ export function validateCommercialHoldoutProvenance(params: {
     const provenance = readProvenance(record.reviewProvenance, 'DEVELOPMENT', label, errors);
     if (!provenance) continue;
     developmentAuthors.add(provenance.authorGroupId);
-    developmentCampaigns.add(provenance.campaignGroupId);
+    for (const group of commercialProvenanceCampaignGroups(provenance))
+      developmentCampaigns.add(group);
     developmentSamples.add(provenance.sampleId);
     developmentSnapshots.add(provenance.sourceSnapshotSha256);
     developmentDatasets.add(provenance.datasetId);
     if (cutoffAtMs !== null && Date.parse(provenance.messageCreatedAt) > cutoffAtMs) {
       errors.push(`${label}: development sample is newer than the holdout cutoff`);
     }
+    if (params.requireDevelopmentReviews)
+      validateIndependentReview(record, provenance, label, labelAuthors, errors);
+    if (
+      params.requireDevelopmentReviews &&
+      cutoffAtMs !== null &&
+      (parseIso(provenance.reviewedAt) ?? Number.POSITIVE_INFINITY) > cutoffAtMs
+    )
+      errors.push(`${label}: independent development review must precede the rule freeze cutoff`);
   }
 
   const holdoutSamples = new Set<string>();
@@ -88,7 +104,11 @@ export function validateCommercialHoldoutProvenance(params: {
     if (developmentAuthors.has(provenance.authorGroupId)) {
       errors.push(`${label}: author group overlaps the development corpus`);
     }
-    if (developmentCampaigns.has(provenance.campaignGroupId)) {
+    if (
+      commercialProvenanceCampaignGroups(provenance).some((group) =>
+        developmentCampaigns.has(group),
+      )
+    ) {
       errors.push(`${label}: campaign group overlaps the development corpus`);
     }
     if (
@@ -109,31 +129,7 @@ export function validateCommercialHoldoutProvenance(params: {
     ) {
       errors.push(`${label}: sample violates the temporal holdout gap`);
     }
-    const labelAuthorId = readId(provenance.labelAuthorId);
-    const reviewerIds = Array.isArray(provenance.reviewerIds)
-      ? provenance.reviewerIds.map(readId)
-      : [];
-    if (
-      !labelAuthorId ||
-      reviewerIds.length < 2 ||
-      reviewerIds.length > 8 ||
-      reviewerIds.some((reviewerId) => reviewerId === null || labelAuthors.has(reviewerId)) ||
-      new Set(reviewerIds).size !== reviewerIds.length
-    ) {
-      errors.push(`${label}: two distinct reviewers separate from the label author are required`);
-    }
-    const reviewedAtMs = parseIso(provenance.reviewedAt);
-    if (reviewedAtMs === null || reviewedAtMs < messageCreatedAtMs) {
-      errors.push(`${label}: reviewedAt must be an ISO timestamp after source creation`);
-    }
-    if (
-      typeof record.text !== 'string' ||
-      provenance.reviewedTextSha256 !== createHash('sha256').update(record.text).digest('hex')
-    ) {
-      errors.push(
-        `${label}: reviewedTextSha256 must bind the exact independently reviewed sanitized text`,
-      );
-    }
+    validateIndependentReview(record, provenance, label, labelAuthors, errors);
   }
 
   if (errors.length === 0) {
@@ -147,6 +143,43 @@ export function validateCommercialHoldoutProvenance(params: {
     }
   }
   return { errors, diagnostics };
+}
+
+export function commercialProvenanceCampaignGroups(
+  provenance: CommercialCorpusReviewProvenance,
+): readonly string[] {
+  return [...new Set([provenance.campaignGroupId, ...(provenance.campaignGroupIds ?? [])])];
+}
+
+function validateIndependentReview(
+  record: ProvenanceRecord,
+  provenance: CommercialCorpusReviewProvenance,
+  label: string,
+  labelAuthors: ReadonlySet<string>,
+  errors: string[],
+): void {
+  const labelAuthorId = readId(provenance.labelAuthorId);
+  const reviewerIds = Array.isArray(provenance.reviewerIds)
+    ? provenance.reviewerIds.map(readId)
+    : [];
+  if (
+    !labelAuthorId ||
+    reviewerIds.length < 2 ||
+    reviewerIds.length > 8 ||
+    reviewerIds.some((id) => id === null || labelAuthors.has(id)) ||
+    new Set(reviewerIds).size !== reviewerIds.length
+  )
+    errors.push(`${label}: two distinct reviewers separate from the label author are required`);
+  const reviewedAtMs = parseIso(provenance.reviewedAt);
+  if (reviewedAtMs === null || reviewedAtMs < Date.parse(provenance.messageCreatedAt))
+    errors.push(`${label}: reviewedAt must be an ISO timestamp after source creation`);
+  if (
+    typeof record.text !== 'string' ||
+    provenance.reviewedTextSha256 !== createHash('sha256').update(record.text).digest('hex')
+  )
+    errors.push(
+      `${label}: reviewedTextSha256 must bind the exact independently reviewed sanitized text`,
+    );
 }
 
 function readProvenance(
@@ -164,6 +197,12 @@ function readProvenance(
     !readId(provenance.sampleId) ||
     !readId(provenance.authorGroupId) ||
     !readId(provenance.campaignGroupId) ||
+    (provenance.campaignGroupIds !== undefined &&
+      (!Array.isArray(provenance.campaignGroupIds) ||
+        provenance.campaignGroupIds.length < 1 ||
+        provenance.campaignGroupIds.length > 32 ||
+        provenance.campaignGroupIds.some((group) => !readId(group)) ||
+        new Set(provenance.campaignGroupIds).size !== provenance.campaignGroupIds.length)) ||
     typeof provenance.sourceSnapshotSha256 !== 'string' ||
     !/^[a-f0-9]{64}$/u.test(provenance.sourceSnapshotSha256) ||
     parseIso(provenance.messageCreatedAt) === null

@@ -1,4 +1,6 @@
 import { COMMERCIAL_ENGINE_CONFIG } from '../../commercial/commercial-config';
+import { COMMERCIAL_INTENT_QUALITY_DECISION_VERSION } from '../../commercial/commercial-policy-cohorts';
+import { COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256 } from '../commercial-ocr-detector-source.generated';
 import { isDeepStrictEqual } from 'node:util';
 import { COMMERCIAL_OCR_BENCHMARK_ENVIRONMENT_PROFILE_ID } from '../../../scripts/commercial-run-provenance.util';
 import { COMMERCIAL_SECOND_STAGE_VERSION } from '../../rule-engine-commercial-second-stage-cache';
@@ -226,6 +228,9 @@ export function evaluateCommercialOcrEvalGates(
   profile: CommercialOcrEvalGateProfile = COMMERCIAL_OCR_CYRILLIC_ENFORCEMENT_GATES,
 ): CommercialOcrEvalGateResult {
   const failures: string[] = [];
+  if (report.readonlyCandidatePolicy) {
+    failures.push('Readonly paired candidate evidence cannot certify the production OCR baseline');
+  }
   validateCertificationProvenance(report.provenance, failures);
   validateCertificationCorpusProvenance(report, failures);
   if (report.corpusSchemaVersion !== 2) {
@@ -577,6 +582,35 @@ export function evaluateCommercialOcrEvalGates(
   };
 }
 
+// FLAG: These gates measure a private candidate using the shared verified native run.
+// They retain all strict numeric, corpus and native gates but never authorize certification.
+export function evaluateCommercialOcrPairedCandidateQualityGates(
+  report: CommercialOcrEvalReport,
+): CommercialOcrEvalGateResult {
+  const policy = report.readonlyCandidatePolicy;
+  const expectedIdentity = calculateCommercialOcrEvalCanonicalSha256({
+    kind: 'commercial-ocr-private-candidate-v1',
+    decisionVersion: COMMERCIAL_INTENT_QUALITY_DECISION_VERSION,
+    detectorSourceSha256: COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256,
+    nativeBehaviorIdentitySha256:
+      report.provenance.behaviorIdentity?.nativeFingerprintSha256 ?? null,
+    policyVersion: report.provenance.fingerprints?.policy?.version ?? null,
+  });
+  const valid =
+    policy?.kind === 'commercial-ocr-private-candidate-v1' &&
+    policy.decisionVersion === COMMERCIAL_INTENT_QUALITY_DECISION_VERSION &&
+    policy.detectorSourceSha256 === COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256 &&
+    policy.evaluationIdentitySha256 === expectedIdentity;
+  const result = evaluateCommercialOcrEvalGates({ ...report, readonlyCandidatePolicy: undefined });
+  if (!valid)
+    return {
+      ...result,
+      passed: false,
+      failures: ['Readonly paired candidate identity is unavailable or stale', ...result.failures],
+    };
+  return result;
+}
+
 function validateCertificationPerformance(
   report: CommercialOcrEvalReport,
   profile: CommercialOcrEvalGateProfile,
@@ -729,11 +763,7 @@ function validateCertificationPerformance(
   const passDeadlineMs =
     Number(valueAt(report.provenance, ['tesseract', 'resourceLimits', 'timeoutMs'])) +
     Number(
-      valueAt(report.provenance, [
-        'tesseract',
-        'resourceLimits',
-        'sharpProcessingTimeoutSeconds',
-      ]),
+      valueAt(report.provenance, ['tesseract', 'resourceLimits', 'sharpProcessingTimeoutSeconds']),
     ) *
       1_000;
   const deadlineBudgetMs = expectedOcrPasses * passDeadlineMs;
@@ -958,10 +988,7 @@ function validateCertificationProvenance(provenance: unknown, failures: string[]
   }
 
   const behaviorFingerprint = valueAt(provenance, ['behaviorIdentity', 'fingerprintSha256']);
-  const nativeFingerprint = valueAt(provenance, [
-    'behaviorIdentity',
-    'nativeFingerprintSha256',
-  ]);
+  const nativeFingerprint = valueAt(provenance, ['behaviorIdentity', 'nativeFingerprintSha256']);
   requirePattern(
     failures,
     'Certification behavior identity SHA-256 must be canonical lowercase hex',
@@ -988,9 +1015,8 @@ function validateCertificationProvenance(provenance: unknown, failures: string[]
   const nativeManifest = valueAt(behaviorDescriptor, ['native']);
   try {
     if (
-      resolveCommercialOcrBehaviorIdentity(
-        behaviorDescriptor as CommercialOcrBehaviorDescriptor,
-      ).fingerprintSha256 !== behaviorFingerprint
+      resolveCommercialOcrBehaviorIdentity(behaviorDescriptor as CommercialOcrBehaviorDescriptor)
+        .fingerprintSha256 !== behaviorFingerprint
     ) {
       failures.push('Certification behavior identity fingerprint is internally inconsistent');
     }
@@ -1115,16 +1141,34 @@ function validateCertificationProvenance(provenance: unknown, failures: string[]
     }
   }
   for (const [legacyPath, nativePath] of [
-    [['runtime', 'nodeVersion'], ['artifacts', 'runtime', 'nodeVersion']],
-    [['runtime', 'sharpVersion'], ['artifacts', 'runtime', 'sharpVersion']],
-    [['runtime', 'libvipsVersion'], ['artifacts', 'runtime', 'libvipsVersion']],
-    [['runtime', 'tesseractVersion'], ['artifacts', 'tesseract', 'version']],
-    [['tesseract', 'binarySha256'], ['artifacts', 'tesseract', 'binarySha256']],
+    [
+      ['runtime', 'nodeVersion'],
+      ['artifacts', 'runtime', 'nodeVersion'],
+    ],
+    [
+      ['runtime', 'sharpVersion'],
+      ['artifacts', 'runtime', 'sharpVersion'],
+    ],
+    [
+      ['runtime', 'libvipsVersion'],
+      ['artifacts', 'runtime', 'libvipsVersion'],
+    ],
+    [
+      ['runtime', 'tesseractVersion'],
+      ['artifacts', 'tesseract', 'version'],
+    ],
+    [
+      ['tesseract', 'binarySha256'],
+      ['artifacts', 'tesseract', 'binarySha256'],
+    ],
     [
       ['tesseract', 'traineddataSha256'],
       ['artifacts', 'tesseract', 'traineddataSha256'],
     ],
-    [['tesseract', 'availableLanguages'], ['artifacts', 'tesseract', 'availableLanguages']],
+    [
+      ['tesseract', 'availableLanguages'],
+      ['artifacts', 'tesseract', 'availableLanguages'],
+    ],
     [['sourceImages'], ['sourceImages']],
   ] as const) {
     if (!isDeepStrictEqual(valueAt(provenance, legacyPath), valueAt(nativeManifest, nativePath))) {

@@ -241,6 +241,29 @@ function extractProvisionVerificationSql() {
   return source.slice(start, end + endMarker.length);
 }
 
+test('commercial quality mode is opt-in, fixed, indexed and preserves the bounded audit envelope', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['commercial-quality']).status, 0);
+  const emitted = readFileSync(data.sql, 'utf8');
+  assert.match(emitted, /commercial_quality_privileges_ready/u);
+  assert.match(emitted, /commercial_review_samples_blind_queue_idx/u);
+  assert.match(emitted, /ORDER BY observed_at DESC, id DESC LIMIT 5001/u);
+  assert.match(emitted, /'population_basis', 'captured_review_samples_not_all_messages'/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /statement_timeout=2500ms/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'commercial-quality', '--explain']).status, 0);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /commercial-quality/u);
+  assert.equal(runAudit(data, ['commercial-quality', '--explain']).status, 0);
+  assert.match(readFileSync(data.sql, 'utf8'), /EXPLAIN \(FORMAT JSON\) WITH candidates/u);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /EXPLAIN\s+ANALYZE/iu);
+  for (const arg of ['SELECT 1', '--file', '/tmp/private', 'private-chat']) {
+    assert.equal(runAudit(data, ['commercial-quality', arg]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'commercial-quality', arg]).status, 2);
+  }
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit', 'commercial_quality'/u);
+});
+
 test('rules cleanup audit accepts only an exact chat ID and never operator SQL', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
