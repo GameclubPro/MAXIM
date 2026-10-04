@@ -187,6 +187,8 @@ jobs:
         run: |
           node apps/miniapp/test/settings-rules.browser.mjs
           node apps/miniapp/test/rules-image-picker.browser.mjs
+      - name: Speech styles and custom message preservation
+        run: node apps/miniapp/test/bot-speech-style.browser.mjs
 
   admin:
     name: Safety Desk

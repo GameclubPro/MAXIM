@@ -20,6 +20,7 @@ import {
   revokeKaravanStorefrontAllowlistEntry,
   getSettingsScreen,
   updateSettings,
+  updateBotSpeechStyle,
   patchSettingsSection,
 } from '../src/lib/api/chat-settings-client';
 import type { ApiTransport } from '../src/lib/api/transport';
@@ -40,6 +41,23 @@ function createApiMock(response: unknown, calls: ApiCall[]): ApiTransport {
     },
   };
 }
+
+test('speech-style save sends only the selected style and accepts an exact revision receipt', async () => {
+  const calls: ApiCall[] = [];
+  const receipt = {
+    botSpeechStyle: 'IRONIC' as const,
+    settingsRevision: '2026-10-04T10:00:00.000Z',
+  };
+  const api = createApiMock(receipt, calls);
+  const staleDraft = chatSettingsSchema.parse({
+    greetingBotMessageText: 'Старый текст',
+    botSpeechStyle: 'IRONIC',
+  });
+  assert.deepEqual(await updateBotSpeechStyle(api, 'chat-1', staleDraft.botSpeechStyle!), receipt);
+  assert.equal(calls[0]?.path, '/chats/chat-1/settings/speech-style');
+  assert.equal(calls[0]?.init?.method, 'PATCH');
+  assert.deepEqual(JSON.parse(calls[0]?.init?.body as string), { botSpeechStyle: 'IRONIC' });
+});
 
 function createChatSettingsScreenResponse(): ChatSettingsScreenResponse {
   return {

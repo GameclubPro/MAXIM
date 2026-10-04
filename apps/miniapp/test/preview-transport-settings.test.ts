@@ -5,7 +5,33 @@ import type { VkParsingFeed } from '@maxim/contracts/vk-parsing';
 import type { DomainAllowlistEntry } from '@maxim/contracts/settings';
 import { ApiRequestError } from '../src/lib/api-request-error';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
-import { publishRules } from '../src/lib/api/chat-settings-client';
+import { publishRules, updateBotSpeechStyle } from '../src/lib/api/chat-settings-client';
+import type { ChatSettings } from '@maxim/contracts/settings';
+
+test('preview style writes preserve current custom text and media without accepting unrelated data', async () => {
+  const api = createPreviewApiTransport();
+  const path = '/chats/preview-chat/settings';
+  const initial = (await api.request(path)) as ChatSettings;
+  const current = (await api.request(path, {
+    method: 'PUT',
+    body: JSON.stringify({
+      ...initial,
+      greetingBotMessageText: '  **Свой текст** {user}\r\n ',
+      linkWarnMessageText: '   ',
+      botSpeechMedia: { greetingBotMessageText: { base64: 'aGVsbG8=', mimeType: 'image/png' } },
+    }),
+  })) as ChatSettings;
+  const saved = await updateBotSpeechStyle(api, 'preview-chat', 'IRONIC');
+  assert.deepEqual(await api.request(path), { ...current, ...saved });
+  assert.ok(Date.parse(saved.settingsRevision) > Date.parse(current.settingsRevision!));
+  await assert.rejects(
+    api.request(`${path}/speech-style`, {
+      method: 'PATCH',
+      body: JSON.stringify({ botSpeechStyle: 'ROBOT', greetingBotMessageText: '' }),
+    }),
+  );
+  assert.deepEqual(await api.request(path), { ...current, ...saved });
+});
 
 test('preview allowlist preserves active timers, hides expired rules and supports re-adding', async () => {
   let now = new Date('2026-09-17T10:00:00.000Z');
