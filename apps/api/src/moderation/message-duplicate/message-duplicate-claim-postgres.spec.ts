@@ -1,3 +1,4 @@
+import { registerDuplicateClaimCleanup } from './message-duplicate-claim-cleanup';
 import { randomUUID } from 'node:crypto';
 import { createPrismaClient, Prisma, type PrismaClient } from '../../prisma/prisma-client';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
@@ -529,6 +530,136 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
           where: { dedupeKey: duplicateRevocationKey(chatId, own.messageId, job.eventTimestampMs) },
         }),
       ).toBeNull();
+    });
+
+    const abandonedClaim = async (messageId: string, deadlineOffsetMs = -1000) => {
+      const own = canonicalClaim(messageId);
+      const eventTimestampMs = Date.now() - 600_000 + deadlineOffsetMs;
+      const binding = bindingFor(own, eventTimestampMs);
+      const owner = await prisma.$transaction(
+        async (tx) => {
+          const row = await tx.moderationViolationMessageClaim.create({
+            data: { ...own, createdAt: new Date(eventTimestampMs + 1) },
+          });
+          expect(await registerDuplicateClaimCleanup(tx, own, binding)).toBe(true);
+          return row;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+      return { own, binding, owner };
+    };
+
+    it('recovers a lost queue job once from SQL and keeps an old worker revoked', async () => {
+      const { own, binding } = await abandonedClaim('lost-queue');
+      const recovered = serviceFor();
+      expect(await recovered.reconcileExpiredMessageDuplicateActions()).toBe(1);
+      expect(await recovered.reconcileExpiredMessageDuplicateActions()).toBe(0);
+      expect(await intents.claimMessageActionBeforeQualification(own)).toBe('blocked');
+      expect(
+        await prisma.moderationViolationMessageClaim.findUnique({
+          where: {
+            dedupeKey: duplicateRevocationKey(chatId, own.messageId, binding.eventTimestampMs),
+          },
+        }),
+      ).not.toBeNull();
+      expect(
+        await prisma.messageDuplicateClaimCleanup.count({ where: { claim: { chatId } } }),
+      ).toBe(0);
+    });
+
+    it('does not release an unexpired owner or renew its persisted deadline', async () => {
+      const { own, binding, owner } = await abandonedClaim('still-active', 600_000);
+      expect(await serviceFor().reconcileExpiredMessageDuplicateActions()).toBe(0);
+      const changed = {
+        ...binding,
+        authorization: {
+          eventTimestampMs: binding.authorization!.eventTimestampMs + 1000,
+          deadlineAtMs: binding.authorization!.deadlineAtMs + 1000,
+        },
+      };
+      expect(
+        await prisma.$transaction((tx) => registerDuplicateClaimCleanup(tx, own, changed)),
+      ).toBe(false);
+      const stored = await prisma.messageDuplicateClaimCleanup.findUniqueOrThrow({
+        where: { claimId: owner.id },
+      });
+      expect(stored.deadlineAt.getTime()).toBe(binding.authorization!.deadlineAtMs);
+    });
+
+    it.each(['intent', 'event', 'receipt'] as const)(
+      'retains a materialized %s while settling its expired obligation',
+      async (kind) => {
+        const { own, owner } = await abandonedClaim(`lost-queue-${kind}`);
+        if (kind === 'intent')
+          await prisma.moderationDeleteIntent.create({
+            data: {
+              id: randomUUID(),
+              chatId,
+              messageId: own.messageId,
+              retryUntilAt: new Date(Date.now() + 600_000),
+            },
+          });
+        if (kind === 'event')
+          await prisma.moderationEvent.create({
+            data: {
+              chatId,
+              userId: own.userId,
+              messageId: own.messageId,
+              eventType: 'MESSAGE',
+              ruleCode: 'DUPLICATE_WARN',
+              action: 'WARN',
+            },
+          });
+        if (kind === 'receipt')
+          await prisma.maxActionLedgerEntry.create({
+            data: {
+              jobId: `${chatId}:receipt`,
+              chatId,
+              messageId: own.messageId,
+              actionType: 'DELETE_MESSAGE',
+              status: 'SUCCEEDED',
+              terminal: true,
+            },
+          });
+        try {
+          expect(await serviceFor().reconcileExpiredMessageDuplicateActions()).toBe(0);
+          expect(
+            (
+              await prisma.moderationViolationMessageClaim.findUniqueOrThrow({
+                where: { id: owner.id },
+              })
+            ).messageActionKey,
+          ).toBe(own.messageActionKey);
+          expect(
+            await prisma.messageDuplicateClaimCleanup.findUnique({ where: { claimId: owner.id } }),
+          ).toBeNull();
+        } finally {
+          if (kind === 'receipt')
+            await prisma.maxActionLedgerEntry.deleteMany({ where: { chatId } });
+        }
+      },
+    );
+
+    it('rolls back an obligation with its claim and serializes two independent sweepers', async () => {
+      const failed = canonicalClaim('atomic-rollback');
+      await expect(
+        prisma.$transaction(async (tx) => {
+          await tx.moderationViolationMessageClaim.create({ data: failed });
+          await registerDuplicateClaimCleanup(tx, failed, bindingFor(failed, Date.now()));
+          throw new Error('simulated process failure');
+        }),
+      ).rejects.toThrow('simulated process failure');
+      expect(
+        await prisma.moderationViolationMessageClaim.findUnique({
+          where: { dedupeKey: failed.dedupeKey },
+        }),
+      ).toBeNull();
+      await abandonedClaim('two-sweepers');
+      const counts = await Promise.all([
+        serviceFor().reconcileExpiredMessageDuplicateActions(),
+        serviceFor().reconcileExpiredMessageDuplicateActions(),
+      ]);
+      expect(counts.reduce((sum, count) => sum + count, 0)).toBe(1);
     });
 
     it('records one initial admission across concurrent processes and total queue loss', async () => {

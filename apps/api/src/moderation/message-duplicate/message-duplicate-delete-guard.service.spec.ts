@@ -16,7 +16,11 @@ import {
   messageDuplicateSanctionSettingsDigest,
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
-import { duplicateSettings, duplicateUpdate } from './message-duplicate-test-fixtures';
+import {
+  duplicateSettings,
+  duplicateUpdate,
+  preUnicodeNearSettingsDigests,
+} from './message-duplicate-test-fixtures';
 
 function setup() {
   const update = duplicateUpdate();
@@ -196,6 +200,26 @@ describe('scheduled duplicate final action guard', () => {
 });
 
 describe('message duplicate final delete guard', () => {
+  it.each(['STRICT', 'CUSTOM'] as const)(
+    'rejects stored pre-Unicode %s grants at both dispatch boundaries',
+    async (preset) => {
+      const s = setup();
+      s.settings.duplicateDetectionPreset = preset;
+      s.settings.duplicateNearMatchEnabled = true;
+      s.binding.settingsDigest = preUnicodeNearSettingsDigests[preset];
+      for (const authorityOnly of [false, true]) {
+        await expect(
+          s.service.assertIntentStillActionable({ ...s.params, authorityOnly }),
+        ).rejects.toMatchObject({
+          code: 'message_duplicate_settings_changed',
+        });
+      }
+      expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+      expect(s.history.qualify).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([1, 2] as const)('rejects legacy binding v%i before any MAX lookup', async (version) => {
     const s = setup();
     s.binding.version = version;

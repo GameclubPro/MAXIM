@@ -221,6 +221,29 @@ describe('RuleEngineDuplicateDetector', () => {
         'Температура хранения оборудования составляет -10 градусов согласно инструкции производителя',
         'Температура хранения оборудования составляет +10 градусов согласно инструкции производителя',
       ],
+      ...[
+        ['status emoji', '✅', '❌'],
+        ['CJK words', '同意', '拒绝'],
+        ['Arabic words', 'قبول', 'رفض'],
+        ['extended Latin letters', 'départ', 'dúpart'],
+        ['combining marks', 'का', 'की'],
+        ['comparison operator', 'условие 5 < 9', 'условие 5 > 9'],
+        ['arithmetic operator', 'условие 5 * 9', 'условие 5 / 9'],
+        ['currency', 'стоимость 100 €', 'стоимость 100 $'],
+        ['percentage', 'изменение 10%', 'изменение 10'],
+        ['emoji joiner', '👩‍💻', '👩💻'],
+        ['emoji joiner spacing', '👩‍💻', '👩 ‍ 💻'],
+        ['variation selector', '❤', '❤️'],
+        ['variation selector spacing', '❤️‍🔥', '❤ ️‍🔥'],
+        ['numeric separator', 'значение ١٫٥', 'значение ١٬٥'],
+        ['numeric dash', 'изменение －10', 'изменение 10'],
+        ['symbol position', '✅ разрешено ❌ запрещено', 'разрешено ✅ запрещено ❌'],
+        ['format control', 'порядок\u200fслов', 'порядокслов'],
+      ].map(([label, first, second]) => [
+        label,
+        `Подробная инструкция для участников встречи доступна после завершения регистрации ${first}`,
+        `Подробная инструкция для участников встречи доступна после завершения регистрации ${second}`,
+      ]),
     ])('does not merge different %s', async (_name, first, second) => {
       const detector = new RuleEngineDuplicateDetector(
         new InMemoryRevisionedRedisCounter() as never,
@@ -259,6 +282,34 @@ describe('RuleEngineDuplicateDetector', () => {
           settings,
         }),
       ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+    });
+
+    it('keeps ordinary punctuation matching with unchanged Unicode words and protected symbols', () => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({
+        duplicateDetectionPreset: preset,
+        duplicateNearMatchEnabled: true,
+      });
+      const first =
+        'Подробная инструкция, для участников встречи доступна после завершения регистрации 同意 ✅';
+      const second =
+        'Подробная инструкция! для участников встречи доступна после завершения регистрации 同意 ✅';
+      const fingerprints = [first, second].map((text) =>
+        detector.buildFingerprints(text, settings),
+      );
+      if (preset === 'STANDARD') {
+        expect(fingerprints.flat().some((part) => part.type === 'near')).toBe(false);
+        return;
+      }
+      expect(fingerprints[0]!.find((part) => part.type === 'near')?.value).toBeDefined();
+      expect(fingerprints[0]!.find((part) => part.type === 'near')?.value).toBe(
+        fingerprints[1]!.find((part) => part.type === 'near')?.value,
+      );
+      expect(fingerprints[0]!.find((part) => part.type === 'exact')?.value).not.toBe(
+        fingerprints[1]!.find((part) => part.type === 'exact')?.value,
+      );
     });
   });
 

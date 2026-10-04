@@ -2264,12 +2264,26 @@ model ModerationViolationMessageClaim {
   updateType       String   @map("update_type")
   createdAt        DateTime @default(now()) @map("created_at")
 
-  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chat             Chat                          @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  duplicateCleanup MessageDuplicateClaimCleanup?
 
   @@index([chatId, userId, createdAt], map: "moderation_violation_message_claims_chat_user_created_idx")
   @@index([chatId, messageId, updateType], map: "moderation_violation_claims_chat_message_type_idx")
   @@index([createdAt], map: "moderation_violation_message_claims_created_at_idx")
   @@map("moderation_violation_message_claims")
+}
+
+model MessageDuplicateClaimCleanup {
+  claimId                  String   @id @map("claim_id")
+  claimCreatedAt           DateTime @map("claim_created_at")
+  eventTimestampMs         BigInt   @map("event_timestamp_ms")
+  authorizationTimestampMs BigInt   @map("authorization_timestamp_ms")
+  deadlineAt               DateTime @map("deadline_at")
+
+  claim ModerationViolationMessageClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@index([deadlineAt, claimId], map: "message_duplicate_claim_cleanup_due_idx")
+  @@map("message_duplicate_claim_cleanup")
 }
 
 model ModerationDeleteIntent {
