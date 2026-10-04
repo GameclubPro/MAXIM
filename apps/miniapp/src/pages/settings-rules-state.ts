@@ -1,7 +1,6 @@
 import {
   MAX_CHAT_RULES_TEXT_LENGTH,
-  resolveDuplicateFlowAllowedCount,
-  resolveDuplicateTextRuleSubjects,
+  buildDuplicateRulesTextItems,
   type ChatRules,
   type ChatSettings,
   type ChatSettingsScreenResponse,
@@ -203,25 +202,7 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
     items.push('Коммерческую рекламу публикуйте только по согласованию с администраторами.');
   }
 
-  if (settings.antiDuplicateEnabled) {
-    const allowedCount = resolveDuplicateAllowedCount(settings);
-    const photoModerationEnforced =
-      settings.duplicateCompareMode !== 'TEXT' && screen.duplicatePhotoModerationMode === 'FULL';
-    const subjects = resolveDuplicateTextRuleSubjects(settings);
-    const subject = formatConjunctionList(subjects);
-    items.push(
-      allowedCount === 0
-        ? `Не отправляйте ${subject}.`
-        : `Не отправляйте ${subject}: бот среагирует ${formatDuplicateAllowanceLabel(allowedCount)}.`,
-    );
-    if (photoModerationEnforced) {
-      items.push(
-        settings.duplicatePhotoScope === 'CHAT'
-          ? 'Одинаковые картинки считаются повтором независимо от автора и подписи. Действует общая цепочка антидубля; счётчик отдельный для каждого участника.'
-          : 'Одинаковые картинки одного участника считаются повтором независимо от подписи. Действует общая цепочка антидубля.',
-      );
-    }
-  }
+  items.push(...buildDuplicateRulesTextItems(settings, screen.duplicatePhotoModerationMode));
 
   if (settings.antiSpamEnabled) {
     items.push('Пожалуйста, не флудите и не спамьте.');
@@ -362,33 +343,6 @@ function buildRulesSanctionsSummary(
   }
 
   return `За повторные нарушения бот может ${formatConjunctionList([...sanctions])}.`;
-}
-
-function resolveDuplicateAllowedCount(
-  settings: Pick<
-    ChatSettings,
-    | 'duplicateBotMessageEnabled'
-    | 'duplicateWarnEnabled'
-    | 'duplicateMuteEnabled'
-    | 'duplicateBanEnabled'
-    | 'duplicateWarnMaxCount'
-    | 'duplicateMuteMaxCount'
-    | 'duplicateBanMaxCount'
-  >,
-): number {
-  return resolveDuplicateFlowAllowedCount(settings);
-}
-
-function formatDuplicateAllowanceLabel(count: number): string {
-  if (count === 0) {
-    return 'с первого дубля';
-  }
-
-  if (count === 1) {
-    return 'после 1 дубля';
-  }
-
-  return `после ${count} дублей`;
 }
 
 function formatPreviewList(values: readonly string[], limit: number): string {

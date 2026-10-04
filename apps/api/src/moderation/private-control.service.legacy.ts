@@ -13,7 +13,7 @@ import {
   managedGiveawayHandoffRequestSchema,
   MAX_CHAT_RULES_TEXT_LENGTH,
   profileMentionHandoffRequestSchema,
-  resolveDuplicateTextRuleSubjects,
+  buildDuplicateRulesTextItems,
   stepDeleteBotMessagesDelayMinutes,
   type BroadcastHandoffState,
   type BroadcastHandoffResponse,
@@ -256,7 +256,6 @@ import {
 import {
   isPrivateDuplicateFlowSettingKey,
   normalizePrivateDuplicateFlowSettings,
-  resolvePrivateDuplicateAllowedCount,
 } from './private-control-duplicate-flow';
 import {
   CHANNEL_SECTION_FIELDS,
@@ -5988,23 +5987,7 @@ export class PrivateControlService {
       items.push('Коммерческую рекламу публикуйте только по согласованию с администраторами.');
     }
 
-    if (settings.antiDuplicateEnabled) {
-      const allowedCount = resolvePrivateDuplicateAllowedCount(settings);
-      const subjects = resolveDuplicateTextRuleSubjects(settings);
-      const photoModerationEnforced =
-        settings.duplicatePhotoEnabled &&
-        (screen.duplicatePhotoModerationMode === 'DELETE_ONLY' ||
-          screen.duplicatePhotoModerationMode === 'FULL');
-      if (photoModerationEnforced) {
-        subjects.push('одинаковые фото');
-      }
-      const subject = this.formatRulesConjunctionList(subjects);
-      items.push(
-        allowedCount === 0
-          ? `Не отправляйте ${subject}.`
-          : `Не отправляйте ${subject}: бот среагирует ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
-      );
-    }
+    items.push(...buildDuplicateRulesTextItems(settings, screen.duplicatePhotoModerationMode));
 
     if (settings.antiSpamEnabled) {
       items.push('Пожалуйста, не флудите и не спамьте.');
@@ -6155,18 +6138,6 @@ export class PrivateControlService {
     }
 
     return `За повторные нарушения бот может ${this.formatRulesConjunctionList([...sanctions])}.`;
-  }
-
-  private formatDuplicateAllowanceLabel(count: number): string {
-    if (count === 0) {
-      return 'с первого дубля';
-    }
-
-    if (count === 1) {
-      return 'после 1 дубля';
-    }
-
-    return `после ${count} дублей`;
   }
 
   private formatRulesPreviewList(values: readonly string[], limit: number): string {

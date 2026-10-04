@@ -1,3 +1,4 @@
+import duplicateRulesCases from '../../../../packages/contracts/test/fixtures/duplicate-rules.json';
 import { BadRequestException } from '@nestjs/common';
 import {
   channelSettingsSchema,
@@ -2187,7 +2188,7 @@ describe('PrivateControlService', () => {
 
   it.each([
     ['OBSERVE', false],
-    ['DELETE_ONLY', true],
+    ['DELETE_ONLY', false],
     ['FULL', true],
   ] as const)(
     'keeps private rules duplicate wording aligned with %s photo policy',
@@ -2223,9 +2224,41 @@ describe('PrivateControlService', () => {
       const text = String(adminSettingsService.updateRules.mock.calls.at(-1)?.[2]?.text ?? '');
       expect(text).toContain('одинаковые сообщения');
       expect(text).toContain('одни и те же ссылки');
-      expect(text.includes('одинаковые фото')).toBe(expectPhoto);
+      expect(text.includes('Одинаковые картинки')).toBe(expectPhoto);
     },
   );
+
+  it.each(duplicateRulesCases)('private rules parity: $name', async (fixture) => {
+    const settings = chatSettingsSchema.parse(fixture.settings);
+    const rules = createRules({ text: 'Правила администратора', autoTextEnabled: false });
+    const { service, adminSettingsService, chats } = createHarness({
+      settings,
+      rules,
+      adminService: {
+        getChatSettingsScreen: jest.fn().mockResolvedValue({
+          settings,
+          rules,
+          duplicatePhotoModerationMode: fixture.photoMode,
+          header: { id: '-70000000000001', title: 'Тестовый чат' },
+          requiredSubscriptionChannels: [],
+          domains: [],
+          managedBroadcasts: [],
+        }),
+      },
+    });
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    expect(adminSettingsService.updateRules).not.toHaveBeenCalled();
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_autofill'));
+    const payload = adminSettingsService.updateRules.mock.calls.at(-1)?.[2];
+    expect(payload.autoTextEnabled).toBe(true);
+    expect(
+      String(payload.text)
+        .split('\n')
+        .map((line) => line.replace(/^\d+\. /u, ''))
+        .filter((line) => /^(Антидубль |Не отправляйте |Одинаковые картинки)/u.test(line)),
+    ).toEqual(fixture.expected);
+  });
 
   it('builds rules text for alert-only links and anti-spam defaults in the private bot', async () => {
     const generatedSettings = chatSettingsSchema.parse({
