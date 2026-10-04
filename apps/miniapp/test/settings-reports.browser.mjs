@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
+import { clickSettingsOverviewEntry } from './settings-overview-browser-helpers.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
 import {
   applyNativeVisualMode,
@@ -280,7 +281,7 @@ try {
         ['Антидубль', 'duplicates', 'Включить антидубль'],
         ['Сообщения и боты', 'extra', 'Включить удаление собственных сообщений бота'],
       ]) {
-        await page.getByRole('button', { name: title, exact: true }).click();
+        await clickSettingsOverviewEntry(page, title);
         const lazyPanel = page.locator(`.settings-drilldown__panel--${suffix}`);
         const toggle = lazyPanel.locator(`label[aria-label="${label}"] input`);
         await toggle.waitFor();
@@ -288,7 +289,7 @@ try {
         await toggle.setChecked(!initial);
         await lazyPanel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
         await page.getByRole('button', { name: 'Не сохранять', exact: true }).click();
-        await page.getByRole('button', { name: title, exact: true }).click();
+        await clickSettingsOverviewEntry(page, title);
         await toggle.waitFor();
         assert.equal(await toggle.isChecked(), initial);
         await lazyPanel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
