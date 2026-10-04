@@ -7,6 +7,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { z } from 'zod';
 import { UnrecoverableError } from 'bullmq';
 import { extractHttpStatusCode } from '../../common/http-error.util';
+import { MaxBotContextService } from '../../max/max-bot-context.service';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MaxClientService } from '../../max/max-client.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -115,6 +116,7 @@ export class MessageDuplicateMediaService {
     private readonly governor: BackgroundRuntimeGovernorService,
     config: ConfigService,
     private readonly max: MaxClientService,
+    private readonly botContext: MaxBotContextService,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {
     const maxBytes = config.get<number>('MESSAGE_DUPLICATE_MAX_BYTES') ?? 8_388_608;
@@ -443,12 +445,14 @@ export class MessageDuplicateMediaService {
         settings,
         update: source.update,
         executeFullAction: executeFullAction
-          ? (request) =>
-              executeFullAction({
-                ...request,
-                rulesPublishedUrl: settings.chat.rules?.publishedUrl ?? null,
-                rulesPublishedMessageId: settings.chat.rules?.publishedMessageId ?? null,
-              })
+          ? async (request) =>
+              this.botContext.runWithBot(source.botId, () =>
+                executeFullAction({
+                  ...request,
+                  rulesPublishedUrl: settings.chat.rules?.publishedUrl ?? null,
+                  rulesPublishedMessageId: settings.chat.rules?.publishedMessageId ?? null,
+                }),
+              )
           : undefined,
         assertLease: lease.assertOwned,
       });
@@ -462,6 +466,12 @@ export class MessageDuplicateMediaService {
         status: true,
         botId: true,
         normalizedPayload: true,
+        executionClaims: {
+          where: { kind: 'EXECUTION' },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { executionBotId: true },
+        },
         nextEnqueueAt: true,
         errorMessage: true,
       },
@@ -483,7 +493,15 @@ export class MessageDuplicateMediaService {
       update.eventTimestampSource,
     );
     if (!revision.duplicateStateEventTimestampMs) return null;
-    const botId = row.botId ?? update.botId ?? this.bots.getDefaultBotId();
+    // FLAG: The persisted executor owns fresh source/access checks. Receiving bot
+    // provenance is retained in the receipt; it must not override the selected owner.
+    const selectedBotId =
+      row.executionClaims?.[0]?.executionBotId ??
+      row.botId ??
+      update.botId ??
+      this.bots.getDefaultBotId();
+    const botId = this.bots.resolveExecutableBotId(selectedBotId);
+    // Never fall back to the default token for an unavailable or Publisher-only owner.
     if (!botId) return null;
     return { update, botId, eventTimestampMs: revision.duplicateStateEventTimestampMs };
   }
