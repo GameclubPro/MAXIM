@@ -1075,6 +1075,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       recordAmbiguousSendDispatch?: jest.Mock;
       clearTerminalBanStateAfterUnban?: jest.Mock;
     },
+    marketplaceState?: { resolvePublicationButton: jest.Mock; recordButtonDiagnostic: jest.Mock },
   ) {
     const configService = {
       getOrThrow: jest.fn((key: string) => {
@@ -1161,8 +1162,161 @@ describe('MaxClientService inline keyboard guardrails', () => {
       actionQueue as never,
       undefined,
       actionLedgerService as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      marketplaceState as never,
     );
   }
+
+  describe('marketplace public-post delivery boundary', () => {
+    const marketplaceUrl =
+      'https://max.ru/svyazka_bot?startapp=listing_channel_10000000-0000-4000-8000-000000000001';
+    const intent = { purpose: 'PUBLICATION' as const, entityId: '-100' };
+    function fixture() {
+      const http = {
+        request: jest.fn().mockReturnValue(of({ status: 200, data: { mid: 'marketplace-send' } })),
+      };
+      const marketplace = {
+        resolvePublicationButton: jest.fn().mockResolvedValue({ url: marketplaceUrl, revision: 3 }),
+        recordButtonDiagnostic: jest.fn(),
+      };
+      return { http, marketplace };
+    }
+
+    it('keeps the platform description in a verified snapshot for profile prefill', async () => {
+      const http = {
+        request: jest.fn().mockReturnValue(
+          of({
+            status: 200,
+            data: {
+              chat_id: '-100',
+              type: 'channel',
+              title: 'Канал',
+              description: ' Проверенное описание ',
+            },
+          }),
+        ),
+      };
+      const service = createService(http);
+      expect((await service.getChatSnapshot('-100', { bypassCache: true })).description).toBe(
+        'Проверенное описание',
+      );
+      await service.onModuleDestroy();
+    });
+
+    it('resolves against the actual sending bot after the send guard and keeps private messages untouched', async () => {
+      const f = fixture();
+      const service = createService(f.http, {}, undefined, undefined, f.marketplace);
+      const order: string[] = [];
+      f.marketplace.resolvePublicationButton.mockImplementation(async () => {
+        order.push('resolve');
+        return { url: marketplaceUrl, revision: 3 };
+      });
+      await service.sendMessageImmediateWithId('-100', 'Пост', {
+        marketplacePublication: intent,
+        beforeSend: async () => {
+          order.push('guard');
+        },
+      });
+      expect(order).toEqual(['guard', 'resolve']);
+      expect(f.marketplace.resolvePublicationButton).toHaveBeenCalledWith({
+        chatId: '-100',
+        botId: '777000_bot',
+      });
+      expect(f.http.request.mock.calls[0][0].data.attachments[0].payload.buttons).toEqual([
+        [{ type: 'link', text: 'Профиль на бирже', url: marketplaceUrl }],
+      ]);
+      expect(f.http.request.mock.calls[0][0].data).not.toHaveProperty('marketplacePublication');
+      await service.sendMessageImmediateToUser('100', 'Превью', { marketplacePublication: intent });
+      await service.sendMessageImmediateWithId('100', 'Превью', { marketplacePublication: intent });
+      await service.sendMessageImmediateWithId('-101', 'Другая площадка', {
+        marketplacePublication: intent,
+      });
+      await service.sendMessageImmediateWithId('-100', 'Служебное уведомление');
+      expect(f.marketplace.resolvePublicationButton).toHaveBeenCalledTimes(1);
+      await service.onModuleDestroy();
+    });
+
+    it('honors policy disabled or expired after enqueue and survives integration failures', async () => {
+      const f = fixture();
+      const service = createService(f.http, {}, undefined, undefined, f.marketplace);
+      const job: MaxActionJob = {
+        actionType: 'SEND_MESSAGE',
+        chatId: '-100',
+        text: 'Пост',
+        options: { marketplacePublication: intent },
+        attempt: 1,
+        idempotencyKey: 'marketplace-expired',
+        createdAt: new Date().toISOString(),
+      };
+      f.marketplace.resolvePublicationButton
+        .mockResolvedValueOnce(null)
+        .mockRejectedValueOnce(new Error('local unavailable'));
+      await service.executeActionJob(job);
+      await service.executeActionJob({ ...job, idempotencyKey: 'marketplace-outage' });
+      for (const call of f.http.request.mock.calls)
+        expect(call[0].data).not.toHaveProperty('attachments');
+      expect(job.options).not.toHaveProperty('buttons');
+      await service.onModuleDestroy();
+    });
+
+    it('resolves the keyboard before the durable fence and never resends recovered messages', async () => {
+      const f = fixture();
+      const ledger = {
+        claimSendDispatch: jest.fn().mockResolvedValue({ kind: 'claimed', dispatchToken: 'token' }),
+        completeSendDispatch: jest.fn(),
+        releaseSendDispatch: jest.fn(),
+      };
+      const service = createService(f.http, {}, undefined, ledger, f.marketplace);
+      const job: MaxActionJob = {
+        actionType: 'SEND_MESSAGE',
+        chatId: '-100',
+        text: 'Пост',
+        options: { marketplacePublication: intent },
+        attempt: 1,
+        idempotencyKey: 'marketplace-ledger',
+        createdAt: new Date().toISOString(),
+      };
+      await service.executeActionJob(job);
+      expect(f.marketplace.resolvePublicationButton.mock.invocationCallOrder[0]).toBeLessThan(
+        ledger.claimSendDispatch.mock.invocationCallOrder[0],
+      );
+      expect(ledger.claimSendDispatch.mock.calls[0][0].options.buttons).toEqual([
+        [{ type: 'link', text: 'Профиль на бирже', url: marketplaceUrl }],
+      ]);
+      ledger.claimSendDispatch.mockResolvedValueOnce({
+        kind: 'recovered',
+        remoteMessageId: 'marketplace-send',
+        dispatchBotId: '777000_bot',
+      });
+      f.marketplace.resolvePublicationButton.mockResolvedValueOnce(null);
+      await service.executeActionJob(job);
+      expect(f.http.request).toHaveBeenCalledTimes(1);
+      await service.onModuleDestroy();
+    });
+
+    it('records capacity omission without changing authored buttons', async () => {
+      const f = fixture();
+      const service = createService(f.http, {}, undefined, undefined, f.marketplace);
+      const buttons = Array.from({ length: 30 }, (_, i) => [
+        { type: 'link' as const, text: `Ссылка ${i}`, url: `https://example.com/${i}` },
+      ]);
+      await service.sendMessageImmediateWithId('-100', 'Пост', {
+        buttons,
+        marketplacePublication: intent,
+      });
+      expect(f.marketplace.recordButtonDiagnostic).toHaveBeenCalledWith({
+        chatId: '-100',
+        botId: '777000_bot',
+        revision: 3,
+        code: 'KEYBOARD_FULL',
+      });
+      expect(f.http.request.mock.calls[0][0].data.attachments[0].payload.buttons).toEqual(buttons);
+      await service.onModuleDestroy();
+    });
+  });
 
   it('refuses to kick or ban configured bot users', async () => {
     const httpService = { request: jest.fn() };

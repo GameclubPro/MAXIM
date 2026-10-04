@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
+import { withMarketplacePost } from '../max/marketplace-publication-button';
 import {
   addDomainRequestSchema,
   chatParticipantImmunitySchema,
@@ -3625,7 +3626,7 @@ export class AdminManagedBroadcastRuntime {
           const sentMessage = await this.sendManagedBroadcastMessageImmediateWithId(
             targetChatId,
             message.messageText,
-            message.messageOptions,
+            withMarketplacePost(message.messageOptions, targetChatId),
             botId,
             maxApiOptions,
             () =>
@@ -3743,7 +3744,7 @@ export class AdminManagedBroadcastRuntime {
                 }
                 return {
                   text: message.messageText,
-                  options: message.messageOptions,
+                  options: withMarketplacePost(message.messageOptions, delivery.targetChatId),
                   ledgerContext: buildManagedBroadcastLedgerContext(message.commentDialogReference),
                 };
               },
@@ -6336,7 +6337,12 @@ export class AdminManagedBroadcastRuntime {
     options:
       | Pick<
           MaxSendMessageOptions,
-          'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
+          | 'button'
+          | 'buttons'
+          | 'imagePayload'
+          | 'attachments'
+          | 'textFormat'
+          | 'marketplacePublication'
         >
       | undefined,
     botId?: string,

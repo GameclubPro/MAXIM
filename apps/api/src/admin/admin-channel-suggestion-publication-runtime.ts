@@ -1256,7 +1256,10 @@ export class AdminChannelSuggestionPublicationRuntime {
             lastPrepared = prepared;
             return {
               text: prepared.text,
-              options: prepared.options,
+              options: {
+                ...prepared.options,
+                marketplacePublication: { purpose: 'APPROVED_SUGGESTION', entityId: params.chatId },
+              },
               ledgerContext: {
                 suggestionId: params.suggestionId,
                 publicationProtocol: CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
