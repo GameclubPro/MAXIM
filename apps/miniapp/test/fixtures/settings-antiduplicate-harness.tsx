@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { Link, MemoryRouter, Route, Routes } from 'react-router';
 import { chatSettingsSchema, type ChatSettingsScreenResponse } from '@maxim/contracts/settings';
 import { SettingsPage } from '../../src/pages/settings-page';
 import { ToastProvider } from '../../src/components/ui/toast';
@@ -28,6 +28,9 @@ screen.rules = {
   ...screen.rules,
   text: 'Авторские правила — сохранить дословно.',
   autoTextEnabled: false,
+  publishedMessageId: null,
+  publishedUrl: null,
+  publishedAt: null,
 };
 // Read-only response data: browser tests supply network responses, never mutate page state.
 Object.defineProperty(window, '__ANTIDUPLICATE_SCREEN__', { value: screen });
@@ -58,6 +61,14 @@ createRoot(document.getElementById('root')!).render(
   >
     <ToastProvider>
       <MemoryRouter initialEntries={['/chat/chat-a/settings']}>
+        {/* Host route changes may arrive while the workspace's own navigation is guarded. */}
+        <nav
+          aria-label="Тестовая навигация между чатами"
+          style={{ position: 'fixed', top: 0, right: 0, zIndex: 10000, background: 'white' }}
+        >
+          <Link to="/chat/chat-a/settings">Чат A</Link>{' '}
+          <Link to="/chat/chat-b/settings">Чат B</Link>
+        </nav>
         <ManagedEntityNavigationProvider>
           <Routes>
             <Route path="/chat/:chatId/settings" element={<SettingsPage api={api} />} />
