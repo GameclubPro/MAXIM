@@ -584,6 +584,22 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       ],
     });
 
+    // FLAG: This plan owns its settled-history skew and statistics. Prior cases delete their
+    // fixtures after ANALYZE; inherited statistics or autoanalyze timing cannot model this case.
+    for (let offset = 0; offset < 10_000; offset += 1_000) {
+      const history = Array.from({ length: 1_000 }, (_, index) => ({
+        ...poisonRows[0]!,
+        id: `outbox-settled-${offset + index}-${suffix}`,
+        dedupKey: `outbox-settled-${offset + index}-${suffix}`,
+        status: WebhookStatus.PROCESSED,
+        createdAt: new Date(baseCreatedAt.getTime() - 60_000),
+        processedAt: baseCreatedAt,
+      }));
+      createdEventIds.push(...history.map(({ id }) => id));
+      await prisma.webhookEvent.createMany({ data: history });
+    }
+    await prisma.$executeRaw`ANALYZE webhook_events`;
+
     const candidates = await reader.selectEnqueueCandidates(now);
     const selectedTestIds = candidates
       .map((candidate) => candidate.id)
@@ -668,17 +684,39 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       16, 300,
     ]);
     const expansionPlan = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
-      Prisma.sql`EXPLAIN (FORMAT JSON) ${capturedExpansionQuery!}`,
+      Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${capturedExpansionQuery!}`,
     );
     const expansionNodes = collectExplainNodes(expansionPlan);
-    expect(
-      expansionNodes.some((node) => node['Index Name'] === 'webhook_events_ordered_chat_head_idx'),
-    ).toBe(true);
-    expect(
-      expansionNodes.some(
-        (node) => node['Node Type'] === 'Seq Scan' && node['Relation Name'] === 'webhook_events',
-      ),
-    ).toBe(false);
+    try {
+      expect(expansionNodes.map((node) => node['Index Name'])).toContain(
+        'webhook_events_ordered_chat_head_idx',
+      );
+      expect(
+        expansionNodes.some(
+          (node) => node['Node Type'] === 'Seq Scan' && node['Relation Name'] === 'webhook_events',
+        ),
+      ).toBe(false);
+      const scans = expansionNodes.filter(
+        (node) => node['Relation Name'] === 'webhook_events' && Number(node['Actual Loops']) > 0,
+      );
+      expect(scans).toHaveLength(1);
+      expect(scans[0]).toMatchObject({
+        'Index Name': 'webhook_events_ordered_chat_head_idx',
+        'Actual Loops': 2,
+      });
+      // FLAG: LIMIT output alone is not a work bound: include rows discarded by the scan.
+      const scannedRows =
+        Number(scans[0]!['Actual Loops']) *
+        (Number(scans[0]!['Actual Rows']) +
+          Number(scans[0]!['Rows Removed by Filter'] ?? 0) +
+          Number(scans[0]!['Rows Removed by Index Recheck'] ?? 0));
+      expect(scannedRows).toBeGreaterThan(0);
+      expect(scannedRows).toBeLessThanOrEqual(2 * 16);
+    } catch (error) {
+      throw new Error(`Selected-chat expansion plan: ${JSON.stringify(expansionPlan)}`, {
+        cause: error,
+      });
+    }
 
     // Ineligible heads must consume the window, not trigger an unbounded search for due rows.
     await prisma.webhookEvent.updateMany({
