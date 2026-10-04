@@ -398,7 +398,9 @@ try {
       await page.getByRole('button', { name: 'Антидубль', exact: true }).click();
       await compare.selectOption('MESSAGE');
       await panel.getByRole('button', { name: 'Применить к другим чатам', exact: true }).click();
-      const targetSheet = page.getByRole('dialog', { name: 'Антидубль', exact: true });
+      const targetSheet = page
+        .getByRole('dialog', { name: 'Антидубль', exact: true })
+        .and(page.locator('.settings-apply-target__panel'));
       assert.equal(
         await targetSheet
           .getByRole('button', { name: 'Этот чат', exact: true })
