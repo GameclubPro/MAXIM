@@ -18,6 +18,7 @@ import type {
   ChannelSuggestionEntryMode,
 } from '@maxim/contracts/settings';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
 import {
   Link as IconoirLink,
   RefreshDouble as IconoirRefreshDouble,
@@ -3294,6 +3295,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       onClickCapture={handleDesktopToggleRowClick}
     >
       {workspaceHeader}
+
+      <MarketplaceProfileCard
+        api={api}
+        entityId={chatId ?? ''}
+        entityType="channel"
+        profile="moderation"
+      />
 
       {channelHeader?.accessDiagnostics?.state === 'bot_access_lost' ? (
         <Suspense fallback={null}>

@@ -17,6 +17,7 @@ import {
 import { resolveRequiredWebhookUpdateTypes } from '../max/max-webhook-subscription.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
+import { MarketplaceStateService } from '../integrations/marketplace/marketplace-state.service';
 import {
   SystemModeService,
   isSystemModeRecoveryWindow,
@@ -139,6 +140,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional()
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
+    @Optional() private readonly marketplaceState?: MarketplaceStateService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.startupSyncEnabled = configService.get<boolean>(
@@ -710,6 +712,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         `channel-stats:chat:${chatId}`,
         CHANNEL_STATS_CHAT_LOCK_TTL_MS,
         async () => {
+          if (await this.sharedCollectionOwns(chatId, ['REACH'])) return;
           let statsBotId: string | undefined;
           try {
             statsBotId = await this.resolveCapabilityRouteBotId(chatId, 'channel_stats');
@@ -731,6 +734,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
           const attemptedPostIds: string[] = [];
           for (const post of posts) {
+            if (await this.sharedCollectionOwns(chatId, ['REACH'])) break;
             try {
               const snapshot = await this.maxClient.getMessageSnapshot(chatId, post.messageId, {
                 trafficClass: 'background',
@@ -1097,6 +1101,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         const viewsMode = options?.viewsMode ?? 'full';
         let audienceUnavailable = false;
         let viewsAttempted = false;
+        let sharedHistory = false;
 
         if (!options?.skipAudience) {
           const audienceResult = await this.syncOfficialAudienceSnapshot(chatId, {
@@ -1110,6 +1115,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         }
 
         if (!result.throttled && !audienceUnavailable) {
+          sharedHistory = await this.sharedCollectionOwns(chatId, ['REACH']);
+        }
+        if (!result.throttled && !audienceUnavailable && !sharedHistory) {
           viewsAttempted = true;
           try {
             const messages = await this.maxClient.listMessageSnapshots(chatId, {
@@ -1144,7 +1152,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
             ? (options?.audienceSyncedAt ?? now)
             : (state?.lastAudienceSyncAt ?? null);
         const nextViewsCoverageFrom =
-          viewsMode === 'full'
+          viewsMode === 'full' && !sharedHistory
             ? (state?.viewsCoverageFrom ?? lookbackFrom)
             : (state?.viewsCoverageFrom ?? null);
         const nextStateCreate = {
@@ -1165,7 +1173,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           where: { chatId },
           create: nextStateCreate,
           update: {
-            ...(viewsMode === 'full' ? { viewsCoverageFrom: nextViewsCoverageFrom } : {}),
+            ...(viewsMode === 'full' && !sharedHistory
+              ? { viewsCoverageFrom: nextViewsCoverageFrom }
+              : {}),
             membershipCoverageFrom: nextMembershipCoverageFrom,
             ...(result.audienceSynced || options?.audienceSyncedAt
               ? { lastAudienceSyncAt: nextLastAudienceSyncAt }
@@ -1298,6 +1308,8 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       statsBotId?: string;
     },
   ): Promise<ChannelStatsAudienceSyncResult> {
+    if (await this.sharedCollectionOwns(chatId, ['AUDIENCE']))
+      return { audienceSynced: false, throttled: false, syncedAt: null, unavailable: false };
     try {
       const snapshot = await this.maxClient.getChatSnapshot(chatId, {
         trafficClass: 'background',
@@ -1361,6 +1373,18 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         unavailable: false,
       };
     }
+  }
+
+  private async sharedCollectionOwns(
+    entityId: string,
+    metrics: Array<'AUDIENCE' | 'REACH' | 'PUBLICATION_HOUR'>,
+  ): Promise<boolean> {
+    // FLAG: Only a fresh verified owner suppresses legacy collection; missing evidence keeps it running.
+    return (
+      (await this.marketplaceState
+        ?.hasHealthyCollectionOwner({ entityId, metrics })
+        .catch(() => false)) ?? false
+    );
   }
 
   private async recordUnavailableAudienceSnapshot(

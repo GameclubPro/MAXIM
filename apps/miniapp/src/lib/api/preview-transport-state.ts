@@ -84,6 +84,7 @@ export type PreviewState = {
   retentionScenario: string;
   stopWordsWriteError: 'network' | 'conflict' | null;
   advertisingPilot: boolean;
+  marketplacePilot: boolean;
   clock: PreviewClock;
   me: Me;
   systemModeSelection: 'auto' | 'normal' | 'degrade';
@@ -844,6 +845,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
           ? 'conflict'
           : null,
     advertisingPilot: !publisherProfile && searchParams.get('advertisingPilot') === '1',
+    marketplacePilot: searchParams.get('marketplacePilot') === '1',
     clock,
     me: {
       userId: 'preview-admin',
