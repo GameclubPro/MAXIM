@@ -143,6 +143,74 @@ describe('bot speech custom override compatibility', () => {
     });
   });
 
+  it.each([
+    [101, '101 символ'],
+    [102, '102 символа'],
+    [105, '105 символов'],
+    [111, '111 символов'],
+    [114, '114 символов'],
+    [121, '121 символ'],
+    [124, '124 символа'],
+  ] as const)(
+    'declines an inherited %i-character explanation while preserving custom wording',
+    (messageLength, characterCount) => {
+      const context = {
+        ruleCode: 'MESSAGE_TOO_LONG',
+        messageDeleted: true,
+        messageCountLimitMessages: 5,
+        messageCountLimitWindowHours: 1,
+        photoCooldownHours: 2,
+        stickerCooldownMinutes: 5,
+        messageLength,
+        maxMessageLength: 100,
+      };
+      expect(buildMessageLimitsExplanationReplacements({ ...context, templateText: '' })).toEqual({
+        reason: `длина сообщения ${characterCount} при лимите 100`,
+        message_status: 'удалено',
+        actual_length: String(messageLength),
+        max_length: '100',
+      });
+      for (const templateText of ['Своя причина: {reason}', '   ']) {
+        expect(buildMessageLimitsExplanationReplacements({ ...context, templateText })).toEqual({
+          reason: `слишком длинное сообщение: ${messageLength} символов при лимите 100`,
+          message_status: 'снято с линии',
+          actual_length: String(messageLength),
+          max_length: '100',
+        });
+      }
+    },
+  );
+
+  it.each([1, 2, 5, 10])(
+    'keeps count limits grammatical for %i without changing custom reasons',
+    (count) => {
+      const context = {
+        ruleCode: 'MESSAGE_COUNT_LIMIT',
+        messageDeleted: false,
+        messageCountLimitMessages: count,
+        messageCountLimitWindowHours: 6,
+        photoCooldownHours: 2,
+        stickerCooldownMinutes: 5,
+      };
+      expect(
+        buildMessageLimitsExplanationReplacements({ ...context, templateText: '' }),
+      ).toMatchObject({
+        reason: `превышен лимит сообщений: ${count} за 6 ч`,
+        message_status: 'не удалено',
+        message_limit_count: String(count),
+        message_limit_window_hours: '6',
+      });
+      for (const templateText of ['Свой текст: {reason}', '   ']) {
+        expect(
+          buildMessageLimitsExplanationReplacements({ ...context, templateText }),
+        ).toMatchObject({
+          reason: `слишком частая отправка сообщений: не более ${count} за 6ч`,
+          message_status: 'не по форме',
+        });
+      }
+    },
+  );
+
   it('does not expose blocked tokens and preserves custom blocked-list wording', () => {
     expect(
       buildMessageLimitsExplanationReplacements({

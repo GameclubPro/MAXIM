@@ -121,7 +121,7 @@ export function BotSpeechMessageEditorSheet({
   const overlayStyle = useVisualViewportOverlayStyle(true);
   const hasImage = Boolean(image?.base64 && image.mimeType);
   const imagePreviewUrl = hasImage ? `data:${image?.mimeType};base64,${image?.base64}` : '';
-  const canReset = editorValue !== defaultValue || hasImage;
+  const canReset = hasCustomBotSpeechText(value) || editorValue !== defaultValue || hasImage;
   const remainingLength = BOT_MESSAGE_EDITOR_MAX_LENGTH - editorValue.length;
   const isNearLimit =
     remainingLength >= 0 && remainingLength <= Math.min(100, BOT_MESSAGE_EDITOR_MAX_LENGTH * 0.08);
