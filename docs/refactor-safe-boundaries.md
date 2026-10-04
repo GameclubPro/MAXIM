@@ -235,3 +235,25 @@ Independent tests cover night/timed/permanent close, storage failures, duplicate
 already-absent/unconfirmed outcomes and intent-owned events. The explicit PostgreSQL race
 lane also runs the closed-chat suite with real intent persistence, semantic claims and Redis
 wakeups, including restarts before/after the claim and execution disabled after persistence.
+
+## Measured static search optimization
+
+Private settings search now precomputes frozen descriptors and aliases for the 113 static
+catalog fields. Queries still receive independent mutable result objects, the original
+ordering and the same result limit. No user settings, query results or request state are
+cached; runtime catalog mutation is not used by this application.
+
+Reproduce the comparison with
+`node --import tsx apps/api/src/scripts/benchmark-private-settings-search.ts`.
+The benchmark compares the previous algorithm with the current renderer on 352 identical
+queries, verifies deep equality and caller-mutation isolation, warms both implementations
+for five passes, then alternates nine samples of 7,040 calls. With Node v24.16.0,
+after other local builds had finished, the median changed from 1324.182 ms to
+113.569 ms per sample (11.66 times faster pure search computation). This is not an API
+latency claim. The cost is one process-local static descriptor index, initialized once;
+SQL/MAX calls, freshness rules and shared service caches are unchanged. Existing renderer
+compatibility and isolation tests remain required. Keep this optimization in its own release
+so its rollback does not undo the structural extraction.
+
+The heavy publication editor, review, details, drafts and schedule modules already load lazily.
+No further frontend split or API read cache is included without a measured benefit.
