@@ -1,3 +1,7 @@
+import {
+  releaseUnusedDuplicateClaim,
+  reconcileDuplicateClaimCleanup,
+} from './message-duplicate/message-duplicate-claim-cleanup';
 import { isValidDeleteBotMessagesDelayMinutes } from '@maxim/contracts/settings';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
@@ -1631,46 +1635,29 @@ export class ModerationDeleteIntentService {
       !binding.authorization
     )
       throw new Error('Invalid unmaterialized duplicate action claim');
-    return this.runSerializableTransaction(async (tx) => {
-      const intent = await tx.moderationDeleteIntent.findUnique({
-        where: { chatId_messageId: { chatId: claim.chatId, messageId: claim.messageId } },
-        select: { id: true },
-      });
-      const event = await tx.moderationEvent.findFirst({
-        where: { chatId: claim.chatId, messageId: claim.messageId },
-        select: { id: true },
-      });
-      if (intent || event) return false;
-      const released = await tx.moderationViolationMessageClaim.updateMany({
-        where: {
-          ...claim,
-          ...(params.owner ? { id: params.owner.id } : {}),
-          createdAt: {
-            lte: new Date(binding.authorization!.deadlineAtMs),
-            ...(params.owner ? { equals: params.owner.createdAt } : {}),
-          },
-        },
-        data: { messageActionKey: null },
-      });
-      if (!released.count) return false;
-      // FLAG: Release only our unused action key. Keep the unique owner tombstone and
-      // revoke its exact events atomically so an interrupted old owner cannot reclaim it.
-      await tx.moderationViolationMessageClaim.createMany({
-        data: [...new Set([binding.eventTimestampMs, binding.authorization!.eventTimestampMs])].map(
-          (eventTimestampMs) => ({
-            dedupeKey: duplicateRevocationKey(claim.chatId, claim.messageId, eventTimestampMs),
-            messageActionKey: null,
-            chatId: claim.chatId,
-            userId: claim.userId,
-            messageId: claim.messageId,
-            ruleCode: 'MESSAGE_DUPLICATE_AUTHORIZATION_REVOKED',
-            updateType: 'message_duplicate_authorization',
-          }),
-        ),
-        skipDuplicates: true,
-      });
-      return true;
+    return this.runSerializableTransaction((tx) => releaseUnusedDuplicateClaim(tx, params));
+  }
+
+  async reconcileExpiredMessageDuplicateActions(): Promise<number> {
+    const dueAt = new Date();
+    // FLAG: A dedicated due index bounds candidate selection independently of
+    // retained claims and BullMQ. Each exact obligation is settled separately.
+    const candidates = await this.prisma.messageDuplicateClaimCleanup.findMany({
+      where: { deadlineAt: { lte: dueAt } },
+      orderBy: [{ deadlineAt: 'asc' }, { claimId: 'asc' }],
+      take: 25,
+      select: { claimId: true },
     });
+    let released = 0;
+    for (const candidate of candidates) {
+      if (
+        await this.runSerializableTransaction((tx) =>
+          reconcileDuplicateClaimCleanup(tx, candidate.claimId, dueAt),
+        )
+      )
+        released += 1;
+    }
+    return released;
   }
 
   async releaseTerminatedMessageDuplicateAction(input: {
