@@ -742,6 +742,24 @@ export class RedisCounterService implements OnModuleDestroy {
     return this.redis.get(key);
   }
 
+  async getStrings(keys: readonly string[]): Promise<Array<string | null>> {
+    if (keys.length > 10) throw new Error('String read batch exceeds ten keys');
+    if (keys.length === 0) return [];
+    if (keys.length === 1) return [await this.redis.get(keys[0]!)];
+    // FLAG: Pipeline GET preserves GET's WRONGTYPE failure; MGET would silently
+    // turn a wrong-type proof into a cache miss. No reads extend TTL or cross a request.
+    const pipeline = this.redis.pipeline();
+    for (const key of keys) pipeline.get(key);
+    const results = await pipeline.exec();
+    if (!results || results.length !== keys.length) throw new Error('Incomplete string read batch');
+    return results.map(([error, value]) => {
+      if (error) throw error;
+      if (value !== null && typeof value !== 'string')
+        throw new Error('Invalid string read result');
+      return value;
+    });
+  }
+
   async setStringIfAbsentWithTtl(key: string, value: string, ttlSeconds: number): Promise<boolean> {
     if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) throw new Error('Invalid TTL');
     return (await this.redis.set(key, value, 'EX', ttlSeconds, 'NX')) === 'OK';
