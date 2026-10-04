@@ -17,6 +17,25 @@ import {
 const base = await allocateMiniappBaseUrl('http://127.0.0.1/app/');
 const server = await ensureMiniappDevServer(base);
 const screenshots = await mkdtemp(path.join(tmpdir(), 'maxim-antiduplicate-'));
+
+async function assertReachable(locator) {
+  const actual = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    return {
+      withinViewport:
+        rect.left >= -1 &&
+        rect.right <= innerWidth + 1 &&
+        rect.top >= (viewport?.offsetTop ?? 0) - 1 &&
+        rect.bottom <= (viewport?.offsetTop ?? 0) + (viewport?.height ?? innerHeight) + 1,
+      unobscured: element.contains(
+        document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2),
+      ),
+    };
+  });
+  assert.deepEqual(actual, { withinViewport: true, unobscured: true });
+}
+
 let browser;
 try {
   browser = await chromium.launch({ headless: true });
@@ -226,10 +245,11 @@ try {
         document.documentElement.dataset.maxTheme = theme;
       }, colorScheme);
       await page.getByRole('button', { name: 'Антидубль', exact: true }).click();
-      await applyNativeVisualMode(page, {
+      const safeAreas = {
         safeTop: platform === 'ios' ? 44 : 24,
         safeBottom: platform === 'ios' ? 34 : 0,
-      });
+      };
+      await applyNativeVisualMode(page, safeAreas);
       const panel = page.locator('.settings-drilldown__panel--duplicates');
       const diagnostics = panel.locator('.duplicate-diagnostics');
       await diagnostics.getByText('Проверка и история', { exact: true }).click();
@@ -309,8 +329,58 @@ try {
         'true',
       );
       const interval = panel.getByRole('spinbutton', { name: 'Период проверки дублей, часы' });
-      await interval.fill('12');
-      await interval.press('Tab');
+      // Emulate keyboard viewport shrink; this is a browser check, not a physical device run.
+      const fullViewport = page.viewportSize();
+      await interval.focus();
+      await page.setViewportSize({
+        width: fullViewport.width,
+        height: Math.max(320, fullViewport.height - 300),
+      });
+      await applyNativeVisualMode(page, safeAreas);
+      await interval.fill('');
+      await interval.pressSequentially('13');
+      await interval.scrollIntoViewIfNeeded();
+      assert.equal(await interval.inputValue(), '13');
+      assert.equal(await interval.evaluate((element) => element === document.activeElement), true);
+      await assertReachable(interval);
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      await page.screenshot({ path: path.join(screenshots, `${name}-keyboard-emulated.png`) });
+      await page.setViewportSize(fullViewport);
+      await applyNativeVisualMode(page, safeAreas);
+      await interval.blur();
+      await panel.getByRole('button', { name: 'Сохранить', exact: true }).waitFor();
+      assert.equal(await interval.inputValue(), '13');
+
+      // Bridge Back asks before abandoning edits; Back on that prompt keeps the draft.
+      const beforeNativeBackWrites = writes.length;
+      await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      const discardPrompt = page.getByRole('dialog', {
+        name: 'Не сохранять изменения?',
+        exact: true,
+      });
+      await discardPrompt.waitFor();
+      await assertReachable(
+        discardPrompt.getByRole('button', { name: 'Продолжить настройку', exact: true }),
+      );
+      assert.equal(await panel.isVisible(), true);
+      assert.equal(await interval.inputValue(), '13');
+      assert.equal(writes.length, beforeNativeBackWrites);
+      await page.screenshot({ path: path.join(screenshots, `${name}-native-back-draft.png`) });
+      await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      await discardPrompt.waitFor({ state: 'hidden' });
+      assert.equal(await panel.isVisible(), true);
+      assert.equal(await interval.inputValue(), '13');
+      assert.equal(await compare.inputValue(), 'MESSAGE');
+      assert.equal(
+        await scope
+          .getByRole('radio', { name: 'Всех участников', exact: true })
+          .getAttribute('aria-checked'),
+        'true',
+      );
+      assert.equal(writes.length, beforeNativeBackWrites);
       await panel.getByRole('radio', { name: 'По времени', exact: true }).click();
       const start = panel.getByRole('button', { name: 'С: 09:00', exact: true });
       await start.click();
@@ -389,7 +459,7 @@ try {
       assert.equal(final.changes.duplicateStartTimeMinutes, 1380);
       assert.equal(final.changes.duplicateEndTimeMinutes, 1080);
       assert.equal(final.changes.duplicateTimezone, 'Asia/Vladivostok');
-      assert.equal(final.changes.duplicateWarnWindowSec, 43200);
+      assert.equal(final.changes.duplicateWarnWindowSec, 46800);
       assert.equal('rules' in final.changes, false);
       await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
       await panel.waitFor({ state: 'hidden' });
@@ -537,7 +607,7 @@ try {
       );
       assert.deepEqual(errors, []);
       console.log(
-        `PASS ${name}: real anti-duplicate controls, native Back, 500/409 drafts, current default, explicit all-chat PATCH→POST, overnight generated rules PUT→publish, late-chat draft isolation and truthful coverage`,
+        `PASS ${name}: real anti-duplicate controls, emulated keyboard input visibility, native Back draft protection, 500/409 drafts, current default, explicit all-chat PATCH→POST, overnight generated rules PUT→publish, late-chat draft isolation and truthful coverage`,
       );
     } finally {
       await context.close();
