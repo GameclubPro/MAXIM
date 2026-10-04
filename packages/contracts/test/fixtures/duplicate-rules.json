@@ -1,0 +1,160 @@
+[
+  {
+    "name": "disabled master preserves dormant settings",
+    "settings": {
+      "antiDuplicateEnabled": false,
+      "duplicateDetectionPreset": "STANDARD",
+      "duplicateBotMessageEnabled": false,
+      "duplicateWarnEnabled": true,
+      "duplicateWarnMaxCount": 1,
+      "duplicateMuteEnabled": false,
+      "duplicateBanEnabled": false,
+      "duplicateWindowMode": "DAILY"
+    },
+    "photoMode": "FULL",
+    "expected": []
+  },
+  {
+    "name": "interval MESSAGE ignores retired false photo toggle",
+    "settings": {
+      "antiDuplicateEnabled": true,
+      "duplicateDetectionPreset": "STANDARD",
+      "duplicateBotMessageEnabled": false,
+      "duplicateWarnEnabled": true,
+      "duplicateWarnMaxCount": 1,
+      "duplicateMuteEnabled": false,
+      "duplicateBanEnabled": false,
+      "duplicatePhotoEnabled": false
+    },
+    "photoMode": "FULL",
+    "expected": [
+      "Не отправляйте одинаковые сообщения.",
+      "Одинаковые картинки одного участника считаются повтором независимо от подписи. Действует общая цепочка антидубля."
+    ]
+  },
+  {
+    "name": "TEXT ignores retired true photo toggle",
+    "settings": {
+      "antiDuplicateEnabled": true,
+      "duplicateDetectionPreset": "STANDARD",
+      "duplicateBotMessageEnabled": false,
+      "duplicateWarnEnabled": true,
+      "duplicateWarnMaxCount": 1,
+      "duplicateMuteEnabled": false,
+      "duplicateBanEnabled": false,
+      "duplicateCompareMode": "TEXT",
+      "duplicatePhotoEnabled": true
+    },
+    "photoMode": "FULL",
+    "expected": ["Не отправляйте одинаковые сообщения."]
+  },
+  {
+    "name": "MESSAGE without full photo authority: OFF",
+    "settings": {
+      "antiDuplicateEnabled": true,
+      "duplicateDetectionPreset": "STANDARD",
+      "duplicateBotMessageEnabled": false,
+      "duplicateWarnEnabled": true,
+      "duplicateWarnMaxCount": 1,
+      "duplicateMuteEnabled": false,
+      "duplicateBanEnabled": false,
+      "duplicatePhotoEnabled": true
+    },
+    "photoMode": "OFF",
+    "expected": ["Не отправляйте одинаковые сообщения."]
+  },
+  {
+    "name": "MESSAGE without full photo authority: OBSERVE",
+    "settings": {
+      "antiDuplicateEnabled": true,
+      "duplicateDetectionPreset": "STANDARD",
+      "duplicateBotMessageEnabled": false,
+      "duplicateWarnEnabled": true,
+      "duplicateWarnMaxCount": 1,
+      "duplicateMuteEnabled": false,
+      "duplicateBanEnabled": false,
+      "duplicatePhotoEnabled": true
+    },
+    "photoMode": "OBSERVE",
+    "expected": ["Не отправляйте одинаковые сообщения."]
+  },
+  {
+    "name": "MESSAGE without full photo authority: DELETE_ONLY",
+    "settings": {
+      "antiDuplicateEnabled": true,
+      "duplicateDetectionPreset": "STANDARD",
+      "duplicateBotMessageEnabled": false,
+      "duplicateWarnEnabled": true,
+      "duplicateWarnMaxCount": 1,
+      "duplicateMuteEnabled": false,
+      "duplicateBanEnabled": false,
+      "duplicatePhotoEnabled": true
+    },
+    "photoMode": "DELETE_ONLY",
+    "expected": ["Не отправляйте одинаковые сообщения."]
+  },
+  {
+    "name": "daily with explicit timezone",
+    "settings": {
+      "antiDuplicateEnabled": true,
+      "duplicateDetectionPreset": "STANDARD",
+      "duplicateBotMessageEnabled": false,
+      "duplicateWarnEnabled": true,
+      "duplicateWarnMaxCount": 1,
+      "duplicateMuteEnabled": false,
+      "duplicateBanEnabled": false,
+      "duplicateWindowMode": "DAILY",
+      "duplicateStartTimeMinutes": 540,
+      "duplicateEndTimeMinutes": 1080,
+      "duplicateTimezone": "Asia/Vladivostok"
+    },
+    "photoMode": "FULL",
+    "expected": [
+      "Антидубль действует ежедневно с 09:00 до 18:00 (Asia/Vladivostok). Вне этого периода повторы разрешены.",
+      "Не отправляйте одинаковые сообщения.",
+      "Одинаковые картинки одного участника считаются повтором независимо от подписи. Действует общая цепочка антидубля."
+    ]
+  },
+  {
+    "name": "overnight chat scope with allowance",
+    "settings": {
+      "antiDuplicateEnabled": true,
+      "duplicateDetectionPreset": "STANDARD",
+      "duplicateBotMessageEnabled": false,
+      "duplicateWarnEnabled": true,
+      "duplicateWarnMaxCount": 3,
+      "duplicateMuteEnabled": false,
+      "duplicateBanEnabled": false,
+      "duplicateWindowMode": "DAILY",
+      "duplicateStartTimeMinutes": 1380,
+      "duplicateEndTimeMinutes": 420,
+      "duplicateTimezone": "Europe/Moscow",
+      "duplicatePhotoScope": "CHAT"
+    },
+    "photoMode": "FULL",
+    "expected": [
+      "Антидубль действует ежедневно с 23:00 до 07:00 следующего дня (Europe/Moscow). Вне этого периода повторы разрешены.",
+      "Не отправляйте одинаковые сообщения: бот среагирует после 2 дублей.",
+      "Одинаковые картинки считаются повтором независимо от автора и подписи. Действует общая цепочка антидубля; счётчик отдельный для каждого участника."
+    ]
+  },
+  {
+    "name": "custom matching with one allowed repeat",
+    "settings": {
+      "antiDuplicateEnabled": true,
+      "duplicateDetectionPreset": "CUSTOM",
+      "duplicateBotMessageEnabled": false,
+      "duplicateWarnEnabled": true,
+      "duplicateWarnMaxCount": 2,
+      "duplicateMuteEnabled": false,
+      "duplicateBanEnabled": false,
+      "duplicateCompareMode": "TEXT",
+      "duplicateIgnoreLinksEnabled": true,
+      "duplicateIgnorePhonesEnabled": true
+    },
+    "photoMode": "FULL",
+    "expected": [
+      "Не отправляйте одинаковые сообщения, одни и те же ссылки и одни и те же номера телефонов: бот среагирует после 1 дубля."
+    ]
+  }
+]

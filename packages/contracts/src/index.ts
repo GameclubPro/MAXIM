@@ -3,6 +3,7 @@ export * from './core.js';
 export * from './duplicate-settings.js';
 export * from './commercial-settings.js';
 export * from './duplicate-diagnostics.js';
+export * from './duplicate-rules.js';
 export * from './button-url.js';
 export * from './chat-participants.js';
 export type { ChatParticipantDetails } from './participant-details.js';

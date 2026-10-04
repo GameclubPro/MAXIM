@@ -1,7 +1,7 @@
 import {
   MAX_CHAT_RULES_TEXT_LENGTH,
   resolveDuplicateFlowAllowedCount,
-  resolveDuplicateTextRuleSubjects,
+  buildDuplicateRulesTextItems,
   type ChatSettings,
   type DomainAllowlistEntry,
   type DuplicatePhotoModerationMode,
@@ -82,29 +82,7 @@ export function buildRulesTextItemsFromSettings(input: {
     items.push('Коммерческую рекламу публикуйте только по согласованию с администраторами.');
   }
 
-  if (settings.antiDuplicateEnabled) {
-    if (settings.duplicateWindowMode === 'DAILY') {
-      items.push(
-        `Антидубль действует ежедневно с ${formatRulesTime(settings.duplicateStartTimeMinutes)} до ${formatRulesTime(settings.duplicateEndTimeMinutes)}${settings.duplicateStartTimeMinutes > settings.duplicateEndTimeMinutes ? ' следующего дня' : ''} (${settings.duplicateTimezone}). Вне этого периода повторы разрешены.`,
-      );
-    }
-    const allowedCount = resolveRulesDuplicateAllowedCount(settings);
-    const photoModerationEnforced = input.duplicatePhotoModerationMode === 'FULL';
-    const subjects = resolveDuplicateTextRuleSubjects(settings);
-    const subject = formatRulesConjunctionList(subjects);
-    items.push(
-      allowedCount === 0
-        ? `Не отправляйте ${subject}.`
-        : `Не отправляйте ${subject}: бот среагирует ${formatRulesDuplicateAllowanceLabel(allowedCount)}.`,
-    );
-    if (settings.duplicateCompareMode !== 'TEXT' && photoModerationEnforced) {
-      items.push(
-        settings.duplicatePhotoScope === 'CHAT'
-          ? 'Одинаковые картинки считаются повтором независимо от автора и подписи. Действует общая цепочка антидубля; счётчик отдельный для каждого участника.'
-          : 'Одинаковые картинки одного участника считаются повтором независимо от подписи. Действует общая цепочка антидубля.',
-      );
-    }
-  }
+  items.push(...buildDuplicateRulesTextItems(settings, input.duplicatePhotoModerationMode));
 
   if (settings.antiSpamEnabled) {
     items.push('Пожалуйста, не флудите и не спамьте.');

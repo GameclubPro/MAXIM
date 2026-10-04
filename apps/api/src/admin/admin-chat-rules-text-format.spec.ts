@@ -1,6 +1,8 @@
+import duplicateRulesCases from '../../../../packages/contracts/test/fixtures/duplicate-rules.json';
 import {
   MAX_CHAT_RULES_TEXT_LENGTH,
   chatSettingsSchema,
+  duplicatePhotoModerationModeSchema,
   managedEntityHeaderSchema,
 } from '@maxim/contracts';
 import {
@@ -421,5 +423,19 @@ describe('admin chat rules text format helpers', () => {
         duplicateBanEnabled: true,
       }),
     ).toBeNull();
+  });
+});
+
+describe('shared anti-duplicate rules parity', () => {
+  it.each(duplicateRulesCases)('$name', (fixture) => {
+    const items = buildRulesTextItemsFromSettings({
+      settings: chatSettingsSchema.parse(fixture.settings),
+      domains: [],
+      requiredSubscriptionChannels: [],
+      duplicatePhotoModerationMode: duplicatePhotoModerationModeSchema.parse(fixture.photoMode),
+    });
+    expect(
+      items.filter((line) => /^(Антидубль |Не отправляйте |Одинаковые картинки)/u.test(line)),
+    ).toEqual(fixture.expected);
   });
 });
