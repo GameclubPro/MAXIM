@@ -7,6 +7,7 @@ import {
   ensureMiniappDevServer,
   stopChildProcess,
 } from '../../../scripts/miniapp-local-server.mjs';
+import { setPhoneKeyboard } from '../../../scripts/miniapp-smartphone.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
 import {
   applyNativeVisualMode,
@@ -28,6 +29,8 @@ try {
     ['desktop-light', { viewport: { width: 1280, height: 900 } }, 'light'],
     ['desktop-dark', { viewport: { width: 1280, height: 900 } }, 'dark'],
     ['iphone-light', devices['iPhone 15'], 'light'],
+    ['iphone-dark', devices['iPhone 15'], 'dark'],
+    ['android-light', devices['Pixel 7'], 'light'],
     ['android-dark', devices['Pixel 7'], 'dark'],
     ['iphone-se-light', devices['iPhone SE'], 'light'],
   ]) {
@@ -68,6 +71,26 @@ try {
       });
       const editor = page.getByRole('textbox', { name: 'Текст публикации', exact: true });
       await editor.fill('Video attachment regression');
+      if (name.startsWith('iphone') || name.startsWith('android')) {
+        await editor.focus();
+        const mode = name.startsWith('iphone') ? 'visual' : 'resize';
+        await setPhoneKeyboard(page, { mode, height: 260 });
+        await page.waitForTimeout(900);
+        assert.equal(await editor.evaluate((node) => node === document.activeElement), true);
+        await editor.scrollIntoViewIfNeeded();
+        assert.equal(
+          await editor.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            return (
+              rect.top < visualViewport.height + visualViewport.offsetTop &&
+              rect.bottom > visualViewport.offsetTop
+            );
+          }),
+          true,
+        );
+        await page.screenshot({ path: path.join(screenshots, name + '-keyboard.png') });
+        await setPhoneKeyboard(page, { mode, open: false });
+      }
       const error = page.locator('.publication-video-error');
       const tooLarge = oversizedPath;
       await input.setInputFiles(tooLarge);
@@ -143,6 +166,13 @@ try {
       assert.match(await selected.textContent(), /small.mp4/u);
       binaryMode = 'slow';
       await input.setInputFiles(smallVideo);
+      await page.getByRole('button', { name: 'Отменить загрузку видео', exact: true }).waitFor();
+      await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      assert.equal(
+        await page.locator('.publications-page.is-editor').count(),
+        1,
+        'Native Back must respect the pending upload',
+      );
       await page.getByRole('button', { name: 'Отменить загрузку видео', exact: true }).click();
       await page.waitForFunction(() =>
         document.querySelector('.publication-video-error')?.textContent.includes('отменена'),
@@ -163,9 +193,18 @@ try {
         1,
       );
       await page.screenshot({ path: path.join(screenshots, `${name}-attached.png`) });
+      await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      await page.locator('.publications-page.is-editor').waitFor({ state: 'detached' });
+      assert.equal(new URL(page.url()).searchParams.has('compose'), false);
+      await page.goto(baseUrl + 'publications?preview=1&profile=publisher&compose=1');
+      await editor.waitFor();
+      await page.waitForFunction(() =>
+        document.querySelector('.publication-retained-media')?.textContent.includes('36mb.mp4'),
+      );
+      assert.match(await editor.textContent(), /regression edited/u);
       assert.deepEqual(errors, []);
       console.log(
-        `PASS ${name}: 36 MB direct upload, 100 MB limit, persistent error, cancel, retry, generic MIME, empty, preserved draft`,
+        `PASS ${name}: 36 MB direct upload, 100 MB limit, persistent error, cancel, retry, generic MIME, empty, keyboard, native Back and restored draft`,
       );
     } finally {
       await context.close();

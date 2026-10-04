@@ -192,7 +192,9 @@ jobs:
       - name: Publication action confirmations and request identity
         run: node apps/miniapp/test/publication-actions.browser.mjs
       - name: Publication editor drafts and session lifecycle
-        run: node apps/miniapp/test/publication-session.browser.mjs
+        run: |
+          node apps/miniapp/test/publication-session.browser.mjs
+          node apps/miniapp/test/publication-video-picker.browser.mjs
       - name: Speech styles and custom message preservation
         run: node apps/miniapp/test/bot-speech-style.browser.mjs
 
