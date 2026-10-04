@@ -87,7 +87,7 @@ export class MessageDuplicateEnforcementService {
     }
     // FLAG: A competing rule must win the durable action claim before qualification
     // can reserve an escalation stage. Our own interrupted claim is resumable.
-    if ((await this.intents.claimMessageActionBeforeQualification(claim)) === 'blocked') {
+    if ((await this.intents.claimMessageActionBeforeQualification(claim, binding)) === 'blocked') {
       this.metrics?.record('enforcement.claim_blocked');
       return false;
     }
