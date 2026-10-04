@@ -196,6 +196,75 @@ describe('PhotoDuplicateAnalysisService', () => {
     expect(s.downloader.download).toHaveBeenCalledTimes(1);
   });
 
+  it.each(Array.from({ length: 10 }, (_, index) => index + 1))(
+    'resumes in a fresh service after interruption following photo %i of 10',
+    async (completedBeforeInterruption) => {
+      const proofs = new Map<string, string>();
+      const first = createService([]);
+      const resumed = createService([]);
+      let checkpointCount = 0;
+      for (const fixture of [first, resumed]) {
+        fixture.historyStore.getCachedPhotoFingerprints.mockImplementation(
+          async (ids: string[]) => ({
+            kind: 'available',
+            fingerprints: ids.map((id) => {
+              const serialized = proofs.get(id);
+              return serialized ? (JSON.parse(serialized) as PhotoFingerprint) : null;
+            }),
+          }),
+        );
+        fixture.historyStore.cachePhotoFingerprints.mockImplementation(async (entries) => {
+          for (const entry of entries) proofs.set(entry.photoId, JSON.stringify(entry.fingerprint));
+          if (fixture === first && ++checkpointCount === completedBeforeInterruption) {
+            // FLAG: Interrupt after persistence, before the next photo or complete-album
+            // handoff. The replacement service shares only serialized external proofs.
+            throw new Error('simulated service interruption');
+          }
+          return true;
+        });
+      }
+      const images = Array.from({ length: 10 }, (_, index) => ({
+        source: 'direct' as const,
+        photoId: `photo-${index}`,
+        downloadUrl: `https://i.oneme.ru/photo-${index}`,
+      }));
+      const resolveActionEligibility = jest.fn().mockResolvedValue(true);
+      const input = {
+        album: { ...album(images), receiptId: 'exact-receipt' },
+        ttlSeconds: 3600,
+        scope: 'SAME_AUTHOR' as const,
+        preset: 'SAME_IMAGE' as const,
+        actionEligible: true,
+        authorizationConfigDigest,
+        allowedViolationMatchKinds: ['canonical_sha256'] as const,
+        resolveActionEligibility,
+      };
+      await expect(first.service.analyzeAlbum(input)).rejects.toThrow(
+        'simulated service interruption',
+      );
+      expect(proofs.size).toBe(completedBeforeInterruption);
+      expect(first.historyStore.observeAlbum).not.toHaveBeenCalled();
+      expect(resolveActionEligibility).not.toHaveBeenCalled();
+
+      await expect(resumed.service.analyzeAlbum(input)).resolves.toMatchObject({
+        kind: 'observed',
+        imageCount: 10,
+        actionEligible: true,
+      });
+      expect(resumed.downloader.download.mock.calls.map(([url]) => url)).toEqual(
+        images.slice(completedBeforeInterruption).map((image) => image.downloadUrl),
+      );
+      expect(first.fingerprintService.fingerprint.mock.calls.length).toBe(
+        completedBeforeInterruption,
+      );
+      expect(resumed.fingerprintService.fingerprint).toHaveBeenCalledTimes(
+        10 - completedBeforeInterruption,
+      );
+      expect(resumed.historyStore.observeAlbum).toHaveBeenCalledTimes(1);
+      expect(resolveActionEligibility).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('persists the first proof before the next-image deadline, without partial observation', async () => {
     const s = createService([null, null]);
     const now = jest.spyOn(Date, 'now').mockReturnValueOnce(100).mockReturnValue(201);
