@@ -135,9 +135,18 @@ describe('PhotoDuplicateOrderingStore', () => {
   });
 
   it('abandon and postpone address the same independent authority', async () => {
-    const { redis, store } = createStore([1, 1]);
-    await store.postpone(identity, Date.now() + 180_000);
+    const nextEligibleAtMs = Date.now() + 180_000;
+    const { redis, store } = createStore([String(nextEligibleAtMs), 1]);
+    await expect(store.postpone(identity, nextEligibleAtMs)).resolves.toBe(nextEligibleAtMs);
     await store.abandon(identity);
+    expect(redis.eval.mock.calls[0]![1]).toBe(5);
     expect(redis.eval.mock.calls[0]![4]).toBe(redis.eval.mock.calls[1]![5]);
+  });
+
+  it.each([0, 'invalid', Infinity])('rejects an invalid effective wakeup (%p)', async (value) => {
+    const { store } = createStore([value]);
+    await expect(store.postpone(identity, Date.now() + 180_000)).rejects.toBeInstanceOf(
+      PhotoDuplicateOrderingUnavailableError,
+    );
   });
 });

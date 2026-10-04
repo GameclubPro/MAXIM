@@ -2,6 +2,8 @@ import {
   buildMessageDuplicateIdentity,
   extractDuplicateMessageContent,
   canRefreshDuplicatePhotoSources,
+  digestDuplicateContent,
+  exactImageSourceDigest,
 } from './message-duplicate-content';
 
 const content = (body: Record<string, unknown>, extra = {}) =>
@@ -114,6 +116,165 @@ describe('message duplicate canonical contents', () => {
       ],
     });
     expect(identity(buttons('a'))).not.toBe(identity(buttons('b')));
+  });
+  it.each(['TEXT', 'MESSAGE'] as const)(
+    'binds hidden destinations to their anchors and repeated anchor positions in %s',
+    (mode) => {
+      const linked = (swapped: boolean, text = 'Buy iPhone Buy Samsung') =>
+        content({
+          text,
+          markup: ['iPhone', 'Samsung'].map((anchor, index) => ({
+            type: 'link',
+            from: text.indexOf(anchor),
+            length: anchor.length,
+            url: `https://example.com/${swapped ? 1 - index : index}`,
+          })),
+        });
+      const original = linked(false);
+      const swapped = linked(true);
+      const cosmetic = linked(false, '  Buy   iPhone\nBuy Samsung  ');
+      expect(buildMessageDuplicateIdentity(original, mode)).not.toBe(
+        buildMessageDuplicateIdentity(swapped, mode),
+      );
+      expect(swapped.sourceDigest).not.toBe(original.sourceDigest);
+      expect(buildMessageDuplicateIdentity(cosmetic, mode)).toBe(
+        buildMessageDuplicateIdentity(original, mode),
+      );
+      expect(cosmetic.sourceDigest).toBe(original.sourceDigest);
+      const repeated = (from: number) =>
+        content({
+          text: 'Buy Buy',
+          markup: [{ type: 'link', from, length: 3, url: 'https://example.com/item' }],
+        });
+      expect(buildMessageDuplicateIdentity(repeated(0), mode)).not.toBe(
+        buildMessageDuplicateIdentity(repeated(4), mode),
+      );
+    },
+  );
+  it('maps forward-local hidden anchor ranges into the joined comparison text', () => {
+    const markup = [{ type: 'link', from: 0, length: 3, url: 'https://example.com/item' }];
+    const forwarded = content(
+      { text: 'Buy' },
+      { forwarded_message: { body: { text: 'Buy', markup } } },
+    );
+    const direct = content({
+      text: 'Buy\nBuy',
+      markup: [{ ...markup[0], from: 4 }],
+    });
+    const moved = content({ text: 'Buy\nBuy', markup });
+    expect(buildMessageDuplicateIdentity(forwarded, 'TEXT')).toBe(
+      buildMessageDuplicateIdentity(direct, 'TEXT'),
+    );
+    expect(forwarded.sourceDigest).toBe(direct.sourceDigest);
+    expect(buildMessageDuplicateIdentity(forwarded, 'TEXT')).not.toBe(
+      buildMessageDuplicateIdentity(moved, 'TEXT'),
+    );
+  });
+  it('binds user mentions to their visible anchors', () => {
+    const mentioned = (swapped: boolean) =>
+      content({
+        text: 'Alice Bob',
+        markup: [
+          { type: 'user_mention', from: 0, length: 5, user_id: swapped ? 202 : 101 },
+          { type: 'user_mention', from: 6, length: 3, user_id: swapped ? 101 : 202 },
+        ],
+      });
+    const first = mentioned(false);
+    const swapped = mentioned(true);
+    expect(first.complete).toBe(true);
+    expect(swapped.complete).toBe(true);
+    expect(buildMessageDuplicateIdentity(first, 'TEXT')).not.toBe(
+      buildMessageDuplicateIdentity(swapped, 'TEXT'),
+    );
+    expect(first.sourceDigest).not.toBe(swapped.sourceDigest);
+  });
+  it('preserves old plain-text identities and rejects old unbound markup source digests', () => {
+    const plain = content({ text: 'Buy' });
+    const linked = content({
+      text: 'Buy',
+      markup: [{ type: 'link', from: 0, length: 3, url: 'https://example.com/item' }],
+    });
+    expect(buildMessageDuplicateIdentity(plain, 'TEXT')).toBe(
+      digestDuplicateContent({
+        version: 1,
+        mode: 'TEXT',
+        text: 'buy',
+        navigation: [],
+        actions: [],
+        media: [],
+      }),
+    );
+    expect(linked.sourceDigest).not.toBe(
+      digestDuplicateContent({
+        text: 'buy',
+        navigation: ['external_url:https://example.com/item'],
+        actions: [],
+        media: [],
+      }),
+    );
+  });
+  it.each(['callback', 'link'] as const)(
+    'preserves image captions policy but binds %s keyboard actions in equality and sources',
+    (type) => {
+      const withButton = (value: string, text = 'caption') =>
+        content({
+          text,
+          attachments: [
+            photo('a'),
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type,
+                      text: 'Open',
+                      ...(type === 'callback' ? { payload: value } : { url: value }),
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+        });
+      const first = withButton('https://example.com/a');
+      const different = withButton('https://example.com/b');
+      const same = withButton('https://example.com/a', 'Different caption');
+      const plain = content({ attachments: [photo('a')] });
+      const hashes = ['a'.repeat(64)];
+      expect(buildMessageDuplicateIdentity(first, 'IMAGE', hashes)).not.toBe(
+        buildMessageDuplicateIdentity(different, 'IMAGE', hashes),
+      );
+      expect(buildMessageDuplicateIdentity(first, 'IMAGE', hashes)).toBe(
+        buildMessageDuplicateIdentity(same, 'IMAGE', hashes),
+      );
+      expect(buildMessageDuplicateIdentity(first, 'IMAGE', hashes)).not.toBe(
+        buildMessageDuplicateIdentity(plain, 'IMAGE', hashes),
+      );
+      expect(exactImageSourceDigest(first)).not.toBe(exactImageSourceDigest(different));
+      expect(exactImageSourceDigest(first)).not.toBe(exactImageSourceDigest(plain));
+      expect(exactImageSourceDigest(first)).toBe(exactImageSourceDigest(same));
+      expect(canRefreshDuplicatePhotoSources(first, different, true)).toBe(false);
+      expect(canRefreshDuplicatePhotoSources(first, same, true)).toBe(true);
+    },
+  );
+  it('keeps deployed photo-only digests and rejects legacy keyboard bindings', () => {
+    const plain = content({ attachments: [photo('a')] });
+    const hashes = ['a'.repeat(64)];
+    expect(buildMessageDuplicateIdentity(plain, 'IMAGE', hashes)).toBe(
+      digestDuplicateContent({ version: 1, mode: 'IMAGE', images: hashes }),
+    );
+    expect(exactImageSourceDigest(plain)).toBe(
+      digestDuplicateContent([digestDuplicateContent(['photo', 'a'])]),
+    );
+    const legacyKeyboard = {
+      ...plain,
+      actions: [digestDuplicateContent([[{ type: 'callback', text: 'Open', payload: 'a' }]])],
+    };
+    expect(exactImageSourceDigest(legacyKeyboard)).not.toBe(exactImageSourceDigest(plain));
+    expect(buildMessageDuplicateIdentity(legacyKeyboard, 'IMAGE', hashes)).not.toBe(
+      buildMessageDuplicateIdentity(plain, 'IMAGE', hashes),
+    );
   });
   it('requires independently verified media hashes, not ids, names, sizes or URLs', () => {
     const a = content({ text: 'caption', attachments: [photo('a')] });

@@ -180,19 +180,50 @@ export class MessageDuplicateProcessor extends WorkerHost {
       nextEligibleAtMs = result.nextEligibleAtMs;
       postponeKind = 'ordering';
     }
-    if (nextEligibleAtMs >= data.deadlineAtMs || Date.now() >= data.deadlineAtMs) {
+    if (
+      (postponeKind === 'head' && nextEligibleAtMs >= data.deadlineAtMs) ||
+      Date.now() >= data.deadlineAtMs
+    ) {
       await this.reconcileCleanup(job, data, identity, 'terminated', token);
       this.metrics?.record('worker.expired');
       return;
     }
     try {
       if (!token) throw new Error('Missing message duplicate worker lock');
-      await this.ordering.postpone(identity, nextEligibleAtMs, postponeKind);
+      nextEligibleAtMs = await this.ordering.postpone(identity, nextEligibleAtMs, postponeKind);
+    } catch (error) {
+      if (job.attemptsMade + 1 >= (job.opts.attempts ?? 1))
+        await this.reconcileCleanup(job, data, identity, 'terminated', token);
+      throw error;
+    }
+    if (nextEligibleAtMs >= data.deadlineAtMs || Date.now() >= data.deadlineAtMs) {
+      await this.reconcileCleanup(job, data, identity, 'terminated', token);
+      this.metrics?.record('worker.expired');
+      return;
+    }
+    try {
       await job.moveToDelayed(nextEligibleAtMs, token);
     } catch (error) {
       if (job.attemptsMade + 1 >= (job.opts.attempts ?? 1))
         await this.reconcileCleanup(job, data, identity, 'terminated', token);
       throw error;
+    }
+    if (postponeKind === 'ordering') {
+      try {
+        // FLAG: Recheck after the job becomes delayed. A preceding completion before this point
+        // cannot changeDelay an active follower; after this point its normal promotion can succeed.
+        const effectiveNextEligibleAtMs = await this.ordering.postpone(
+          identity,
+          nextEligibleAtMs,
+          'ordering',
+        );
+        if (effectiveNextEligibleAtMs < nextEligibleAtMs)
+          await job.changeDelay(Math.max(0, effectiveNextEligibleAtMs - Date.now()));
+      } catch {
+        // FLAG: Scheduling already committed. Preserve its bounded retry if promotion races
+        // activation or Redis is unavailable; never retry an already delayed job as a failure.
+        this.metrics?.record('worker.wakeup_unavailable');
+      }
     }
     throw new DelayedError();
   }

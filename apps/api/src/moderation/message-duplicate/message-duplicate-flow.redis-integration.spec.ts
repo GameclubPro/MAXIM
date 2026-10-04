@@ -335,6 +335,8 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     options: {
       id?: string;
       text?: string;
+      markup?: Record<string, unknown>[];
+      buttons?: Record<string, unknown>[][];
       photo?: 'png' | 'webp' | 'different';
       photoId?: string;
       photoCount?: number;
@@ -359,6 +361,9 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
           },
         }))
       : [];
+    const keyboard = options.buttons
+      ? [{ type: 'inline_keyboard', payload: { buttons: options.buttons } }]
+      : [];
     const raw = {
       update_type: options.editedFrom === undefined ? 'message_created' : 'message_edited',
       timestamp: time,
@@ -366,7 +371,12 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
         sender: { user_id: options.userId ?? 123, name: 'Test' },
         recipient: { chat_id: Number(chatId), chat_type: 'chat' },
         timestamp: options.editedFrom ?? time,
-        body: { mid: id, text: options.text ?? '', attachments },
+        body: {
+          mid: id,
+          text: options.text ?? '',
+          ...(options.markup ? { markup: options.markup } : {}),
+          attachments: [...attachments, ...keyboard],
+        },
       },
     };
     const update = new WebhookParser().parse(raw);
@@ -376,12 +386,15 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       ...raw.message,
       body: {
         ...raw.message.body,
-        attachments: options.photo
-          ? Array.from({ length: options.photoCount ?? 1 }, (_, index) => ({
-              type: 'image',
-              payload: { photo_id: `${photoId}:${index}`, url: `${url}?item=${index}` },
-            }))
-          : [],
+        attachments: [
+          ...(options.photo
+            ? Array.from({ length: options.photoCount ?? 1 }, (_, index) => ({
+                type: 'image',
+                payload: { photo_id: `${photoId}:${index}`, url: `${url}?item=${index}` },
+              }))
+            : []),
+          ...keyboard,
+        ],
       },
     });
     if (options.photo) {
@@ -532,6 +545,90 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(flow.deleted).toEqual([]);
     });
 
+    it.each(['text', 'image'] as const)(
+      'recovers %s comparisons after structured original absence without a removal webhook',
+      async (kind) => {
+        flow = await createFlow();
+        flow.max.getExactMessageRow.mockImplementation(async (_chatId, messageId) => {
+          const row = flow.remote.get(messageId);
+          if (!row) throw { response: { status: 404, data: { code: 'message.not.found' } } };
+          return row;
+        });
+        const remove = jest.spyOn(flow.history, 'remove');
+        const prepare = () => flow.prepare(kind === 'image' ? { photo: 'png' } : { text: 'offer' });
+        const observe = async (item: ReturnType<typeof prepare>) => {
+          const job = await flow.ingest(item);
+          if (job) await flow.processor.process(job);
+        };
+        const original = prepare();
+        await observe(original);
+        flow.remote.delete(original.id);
+        const unverifiedRepeat = prepare();
+        await observe(unverifiedRepeat);
+        expect(remove).toHaveBeenCalledWith(flow.chatId, original.id);
+        expect(flow.deleted).toEqual([]);
+        expect(flow.sanctions).toEqual([]);
+        expect(flow.records.size).toBe(0);
+
+        const freshOriginal = prepare();
+        await observe(freshOriginal);
+        const confirmedRepeat = prepare();
+        await observe(confirmedRepeat);
+        expect(flow.deleted).toEqual([confirmedRepeat.id]);
+        const binding = parseMessageDuplicateBinding(
+          flow.records.get(`intent:${confirmedRepeat.id}`)!.input.event!.metadata,
+        )!;
+        expect(binding.original!.messageId).toBe(freshOriginal.id);
+        expect(binding.original!.publishedAtMs).toBe(freshOriginal.time);
+      },
+    );
+
+    it.each(['text', 'image'] as const)(
+      'resumes %s sanctions after our confirmed DELETE and a transient lookup failure',
+      async (kind) => {
+        flow = await createFlow({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 1 });
+        let interruptSanction = true;
+        flow.max.getExactMessageRow.mockImplementation(async (_chatId, messageId) => {
+          const row = flow.remote.get(messageId);
+          if (row) return row;
+          if (interruptSanction) {
+            interruptSanction = false;
+            throw new Error('Temporary post-delete lookup failure');
+          }
+          throw { response: { status: 404, data: { code: 'message.not.found' } } };
+        });
+        const prepare = () => flow.prepare(kind === 'image' ? { photo: 'png' } : { text: 'offer' });
+        const firstJob = await flow.ingest(prepare());
+        if (firstJob) await flow.processor.process(firstJob);
+        const repeat = prepare();
+        let job: Awaited<ReturnType<typeof flow.ingest>> = undefined;
+        if (kind === 'image') {
+          job = await flow.ingest(repeat);
+          await expect(flow.processor.process(job!)).rejects.toThrow(
+            'Temporary post-delete lookup failure',
+          );
+        } else {
+          await expect(flow.ingest(repeat)).rejects.toThrow('Temporary post-delete lookup failure');
+        }
+        expect(flow.deleted).toEqual([repeat.id]);
+        expect(flow.sanctions).toEqual([]);
+        const binding = parseMessageDuplicateBinding(
+          flow.records.get(`intent:${repeat.id}`)!.input.event!.metadata,
+        )!;
+        expect(binding.sanction!.repeatCount).toBe(1);
+
+        if (kind === 'image') await flow.processor.process(job!);
+        else await flow.ingest(repeat);
+        expect(flow.deleted).toEqual([repeat.id]);
+        expect(flow.sanctions).toEqual([{ messageId: repeat.id, action: 'WARN' }]);
+        expect(
+          parseMessageDuplicateBinding(
+            flow.records.get(`intent:${repeat.id}`)!.input.event!.metadata,
+          )!.sanction!.repeatCount,
+        ).toBe(1);
+      },
+    );
+
     it('never deletes the original after a cosmetic edit following a rejected duplicate', async () => {
       flow = await createFlow();
       const first = flow.prepare({ text: 'offer' });
@@ -646,6 +743,100 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(await flow.ingest(second)).toBeUndefined();
       expect(flow.deleted).toEqual([second.id]);
     });
+
+    it.each(['STANDARD', 'STRICT', 'CUSTOM'] as const)(
+      'keeps changed hidden-link associations and deletes their actual repeat in %s',
+      async (preset) => {
+        flow = await createFlow({
+          duplicateDetectionPreset: preset,
+          duplicateNearMatchEnabled: true,
+          duplicateIgnoreLinksEnabled: false,
+          duplicateIgnorePhonesEnabled: false,
+        });
+        const linked = (
+          swapped: boolean,
+          text = 'Participants can purchase comfortable iPhone equipment or practical Samsung devices today',
+        ) =>
+          flow.prepare({
+            text,
+            markup: ['iPhone', 'Samsung'].map((anchor, index) => ({
+              type: 'link',
+              from: text.indexOf(anchor),
+              length: anchor.length,
+              url: `https://example.com/${swapped ? 1 - index : index}`,
+            })),
+          });
+        await flow.ingest(linked(false));
+        await flow.ingest(linked(true));
+        expect(flow.deleted).toEqual([]);
+        expect(flow.sanctions).toEqual([]);
+        const repeat = linked(
+          true,
+          '  PARTICIPANTS can purchase comfortable iPhone equipment\nor practical Samsung devices today ',
+        );
+        await flow.ingest(repeat);
+        expect(flow.deleted).toEqual([repeat.id]);
+      },
+    );
+
+    it.each(['current', 'original'] as const)(
+      'rejects a hidden-link swap in the fresh %s message without an edit webhook',
+      async (changed) => {
+        flow = await createFlow();
+        const text = 'Buy iPhone Buy Samsung';
+        const markup = ['iPhone', 'Samsung'].map((anchor, index) => ({
+          type: 'link',
+          from: text.indexOf(anchor),
+          length: anchor.length,
+          url: `https://example.com/${index}`,
+        }));
+        const original = flow.prepare({ text, markup });
+        await flow.ingest(original);
+        const current = flow.prepare({ text, markup });
+        const message = flow.remote.get(changed === 'current' ? current.id : original.id)!;
+        flow.remote.set(changed === 'current' ? current.id : original.id, {
+          ...message,
+          body: {
+            ...(message.body as Record<string, unknown>),
+            markup: markup.map((item, index) => ({
+              ...item,
+              url: `https://example.com/${1 - index}`,
+            })),
+          },
+        });
+        await flow.ingest(current);
+        expect(flow.deleted).toEqual([]);
+        expect(flow.sanctions).toEqual([]);
+        expect(flow.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['callback', 'link'] as const)(
+      'keeps identical photos with different %s buttons and deletes an actual repeat',
+      async (type) => {
+        flow = await createFlow();
+        const prepare = (value: string) =>
+          flow.prepare({
+            photo: 'png',
+            buttons: [
+              [
+                {
+                  type,
+                  text: 'Open',
+                  ...(type === 'callback' ? { payload: value } : { url: value }),
+                },
+              ],
+            ],
+          });
+        await flow.processor.process((await flow.ingest(prepare('https://example.com/a')))!);
+        await flow.processor.process((await flow.ingest(prepare('https://example.com/b')))!);
+        expect(flow.deleted).toEqual([]);
+        expect(flow.sanctions).toEqual([]);
+        const repeat = prepare('https://example.com/b');
+        await flow.processor.process((await flow.ingest(repeat))!);
+        expect(flow.deleted).toEqual([repeat.id]);
+      },
+    );
 
     it('keeps distinct images with a reused platform ID and independently verifies a later repeat', async () => {
       flow = await createFlow();

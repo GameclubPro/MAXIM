@@ -11,6 +11,7 @@ import {
 } from './duplicate-state';
 import { isEnforceableLinkPolicyTarget } from './navigation/link-policy-target.util';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
+import { duplicateNavigationAnchorIdentityKeys } from './message-duplicate/message-duplicate-content';
 import { extractUrlsFromText } from './rule-engine-link-detector';
 import {
   extractDetectedPhoneNumbers,
@@ -344,7 +345,7 @@ export class RuleEngineDuplicateDetector {
       fingerprints.push({ type, value: normalized });
     };
 
-    const navigationIdentityKeys = this.resolveNavigationIdentityKeys(navigationTargets);
+    const navigationIdentityKeys = this.resolveNavigationIdentityKeys(navigationTargets, rawText);
     if (navigationTargets === undefined) {
       navigationIdentityKeys.push(
         ...this.extractNormalizedLinks(rawText)
@@ -379,6 +380,7 @@ export class RuleEngineDuplicateDetector {
           target.origins.length === 0 ||
           target.origins.some((origin) => origin.carrier !== 'plain_text'),
       ),
+      rawText,
     );
     const approximateIdentityKeys = config.ignoreLinks
       ? structuredIdentityKeys
@@ -492,8 +494,9 @@ export class RuleEngineDuplicateDetector {
 
   private resolveNavigationIdentityKeys(
     navigationTargets?: readonly NavigationTargetEvidence[],
+    rawText = '',
   ): string[] {
-    const keys = new Set<string>();
+    const keys = new Set(duplicateNavigationAnchorIdentityKeys(rawText, navigationTargets));
     for (const target of navigationTargets ?? []) {
       for (const candidate of [target, ...(target.allowlistAliases ?? [])]) {
         const normalizedTarget = candidate.normalizedTarget.trim();

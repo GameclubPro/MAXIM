@@ -39,6 +39,9 @@ function admission() {
     register: jest.fn().mockResolvedValue({ registration: 'initial', admittedAtMs: Date.now() }),
   };
 }
+function postponeMock() {
+  return jest.fn(async (_identity: unknown, nextEligibleAtMs: number) => nextEligibleAtMs);
+}
 function workerJob(data: MessageDuplicateJob, attemptsMade = 0) {
   const job = {
     id: data.idempotencyKey,
@@ -149,7 +152,7 @@ describe('message duplicate queue', () => {
     const ordering = {
       runInOrder: jest.fn().mockRejectedValue(new MessageDuplicateMediaDeferredError()),
       abandon: jest.fn(),
-      postpone: jest.fn(),
+      postpone: postponeMock(),
     };
     const metrics = { record: jest.fn() };
     const intents = { releaseTerminatedMessageDuplicateAction: jest.fn().mockResolvedValue(true) };
@@ -193,7 +196,7 @@ describe('message duplicate queue', () => {
           .fn()
           .mockRejectedValue(new MessageDuplicateMediaDeferredError('governor_pause', 180_000)),
         abandon: jest.fn(),
-        postpone: jest.fn(),
+        postpone: postponeMock(),
       };
       const intents = {
         releaseTerminatedMessageDuplicateAction: jest.fn().mockResolvedValue(true),
@@ -232,7 +235,7 @@ describe('message duplicate queue', () => {
         .fn()
         .mockRejectedValue(new MessageDuplicateMediaDeferredError('governor_pause', 180_000)),
       abandon: jest.fn(),
-      postpone: jest.fn(),
+      postpone: postponeMock(),
     };
     const metrics = { record: jest.fn() };
     const intents = { releaseTerminatedMessageDuplicateAction: jest.fn().mockResolvedValue(true) };
@@ -260,7 +263,7 @@ describe('message duplicate queue', () => {
         .fn()
         .mockResolvedValue({ kind: 'defer', reason: 'not_head', nextEligibleAtMs }),
       abandon: jest.fn(),
-      postpone: jest.fn(),
+      postpone: postponeMock(),
     };
     const processor = new MessageDuplicateProcessor({} as never, ordering as never);
     const data = jobData();
@@ -278,6 +281,85 @@ describe('message duplicate queue', () => {
       processor.process({ ...job, data: { ...data, version: 1 } } as never, 'token'),
     ).rejects.toBeInstanceOf(UnrecoverableError);
   });
+
+  it('uses the promoted head wakeup before expiring an inherited wait', async () => {
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const ordering = {
+        runInOrder: jest.fn().mockResolvedValue({
+          kind: 'defer',
+          reason: 'not_head',
+          nextEligibleAtMs: now + 30_000,
+        }),
+        postpone: postponeMock().mockResolvedValue(now),
+        abandon: jest.fn(),
+      };
+      const data = jobData();
+      data.deadlineAtMs = now + 10_000;
+      const job = workerJob(data);
+      const processor = new MessageDuplicateProcessor({} as never, ordering as never);
+      await expect(processor.process(job as never, 'token')).rejects.toBeInstanceOf(DelayedError);
+      expect(job.moveToDelayed).toHaveBeenCalledWith(now, 'token');
+      expect(ordering.abandon).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('repairs promotion lost between inherited postponement and moving to delayed', async () => {
+    const now = Date.now();
+    const nextEligibleAtMs = now + 30_000;
+    const ordering = {
+      runInOrder: jest.fn().mockResolvedValue({
+        kind: 'defer',
+        reason: 'not_head',
+        nextEligibleAtMs,
+      }),
+      postpone: postponeMock()
+        .mockResolvedValueOnce(nextEligibleAtMs)
+        .mockResolvedValueOnce(now),
+      abandon: jest.fn(),
+    };
+    const job = { ...workerJob(jobData()), changeDelay: jest.fn() };
+    const processor = new MessageDuplicateProcessor({} as never, ordering as never);
+    await expect(processor.process(job as never, 'token')).rejects.toBeInstanceOf(DelayedError);
+    expect(job.moveToDelayed).toHaveBeenCalledWith(nextEligibleAtMs, 'token');
+    expect(job.changeDelay).toHaveBeenCalledWith(0);
+    expect(ordering.abandon).not.toHaveBeenCalled();
+  });
+
+  it('preserves committed scheduling when the post-delay wakeup check is unavailable', async () => {
+    const nextEligibleAtMs = Date.now() + 30_000;
+    const ordering = {
+      runInOrder: jest.fn().mockResolvedValue({
+        kind: 'defer',
+        reason: 'not_head',
+        nextEligibleAtMs,
+      }),
+      postpone: postponeMock()
+        .mockResolvedValueOnce(nextEligibleAtMs)
+        .mockRejectedValueOnce(new Error('Redis unavailable')),
+      abandon: jest.fn(),
+    };
+    const metrics = { record: jest.fn() };
+    const intents = { releaseTerminatedMessageDuplicateAction: jest.fn() };
+    const job = { ...workerJob(jobData(), 4), changeDelay: jest.fn() };
+    const processor = new MessageDuplicateProcessor(
+      {} as never,
+      ordering as never,
+      metrics as never,
+      undefined,
+      intents as never,
+    );
+    await expect(processor.process(job as never, 'token')).rejects.toBeInstanceOf(DelayedError);
+    expect(job.moveToDelayed).toHaveBeenCalledWith(nextEligibleAtMs, 'token');
+    expect(job.changeDelay).not.toHaveBeenCalled();
+    expect(ordering.abandon).not.toHaveBeenCalled();
+    expect(intents.releaseTerminatedMessageDuplicateAction).not.toHaveBeenCalled();
+    expect(metrics.record).toHaveBeenCalledWith('worker.wakeup_unavailable');
+  });
+
   it('promotes only the next head while preserving its explicit future wakeup', async () => {
     const nextEligibleAtMs = Date.now() + 180_000;
     const ordering = {
@@ -730,7 +812,7 @@ describe('message duplicate queue', () => {
           nextEligibleAtMs: Date.now() + 180_000,
         }),
         abandon: jest.fn(),
-        postpone: jest.fn(),
+        postpone: postponeMock(),
       };
       const intents = {
         releaseTerminatedMessageDuplicateAction: jest.fn().mockResolvedValue(true),

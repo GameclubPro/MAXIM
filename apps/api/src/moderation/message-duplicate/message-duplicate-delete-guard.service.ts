@@ -203,7 +203,7 @@ export class MessageDuplicateDeleteGuardService {
       throw new Error('Message duplicate author access unavailable');
     if (access.isAdmin || access.isOwner)
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
-    const raw = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
+    const raw = await this.lookupMessage('current', params.chatId, params.messageId, options);
     if (!raw && !params.sanctionIntentId) return 'absent';
     if (!raw) {
       // FLAG: Absence alone cannot authorize a sanction. Require our exact successful DELETE
@@ -277,7 +277,8 @@ export class MessageDuplicateDeleteGuardService {
         throw new MessageDuplicateGuardRejectedError('message_duplicate_content_changed');
       }
     }
-    const originalRaw = await this.max.getExactMessageRow(
+    const originalRaw = await this.lookupMessage(
+      'original',
       params.chatId,
       binding.original.messageId,
       options,
@@ -334,6 +335,37 @@ export class MessageDuplicateDeleteGuardService {
     await this.assertPolicy(params.chatId, binding, Boolean(params.sanctionIntentId));
     await this.assertAuthorization(params.chatId, binding);
     return 'allowed';
+  }
+
+  private async lookupMessage(
+    stage: 'current' | 'original',
+    chatId: string,
+    messageId: string,
+    options: Parameters<MaxClientService['getExactMessageRow']>[2],
+  ): Promise<Record<string, unknown> | null> {
+    let row: Record<string, unknown> | null;
+    try {
+      row = await this.max.getExactMessageRow(chatId, messageId, options);
+    } catch (error) {
+      // FLAG: Only a structured message-specific 404 proves absence. A bare 404,
+      // access denial, proxy text or failed transport must preserve evidence and retry.
+      if (!isConfirmedMessageAbsence(error)) {
+        this.metrics?.record(
+          stage === 'current'
+            ? 'guard.current_lookup_unavailable'
+            : 'guard.original_lookup_unavailable',
+        );
+        throw error;
+      }
+      row = null;
+    }
+    if (!row)
+      this.metrics?.record(
+        stage === 'current'
+          ? 'guard.current_lookup_confirmed_absent'
+          : 'guard.original_lookup_confirmed_absent',
+      );
+    return row;
   }
 
   private async assertPolicy(
@@ -431,4 +463,24 @@ export class MessageDuplicateDeleteGuardService {
     if (release) throw new MessageDuplicateGuardRejectedError('message_duplicate_manual_release');
     return settings;
   }
+}
+
+function isConfirmedMessageAbsence(error: unknown): boolean {
+  const response = (error as { response?: { status?: unknown; data?: unknown } } | null | undefined)
+    ?.response;
+  if (response?.status !== 404) return false;
+  const body = response.data;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const row = body as Record<string, unknown>;
+  const nestedError =
+    row.error && typeof row.error === 'object' && !Array.isArray(row.error)
+      ? (row.error as Record<string, unknown>)
+      : null;
+  const code = nestedError?.code ?? row.code;
+  return (
+    typeof code === 'string' &&
+    ['message.not.found', 'message_not_found', 'message.not_found'].includes(
+      code.trim().toLowerCase(),
+    )
+  );
 }
