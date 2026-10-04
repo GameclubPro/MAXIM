@@ -414,6 +414,7 @@ const envSchema = z.object({
   PROFANITY_V2_ROLLOUT_MODE: z.enum(['on', 'legacy']).default('on'),
   PHOTO_DUPLICATE_ROLLOUT_MODE: z.enum(PHOTO_DUPLICATE_ROLLOUT_MODES).default('shadow'),
   MESSAGE_DUPLICATE_ENABLED: envBoolean(true),
+  MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED: envBoolean(false),
   MESSAGE_DUPLICATE_ALLOWED_HOSTS: z.string().default('i.oneme.ru,fd.oneme.ru,*.okcdn.ru'),
   MESSAGE_DUPLICATE_MAX_BYTES: z.coerce
     .number()

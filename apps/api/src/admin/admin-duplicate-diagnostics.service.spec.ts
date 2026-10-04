@@ -2,6 +2,11 @@ import {
   AdminDuplicateDiagnosticsService,
   presentDuplicateDeletionAttempt,
 } from './admin-duplicate-diagnostics.service';
+import { MESSAGE_DUPLICATE_MEDIA_VERSION } from '../moderation/message-duplicate/message-duplicate-state';
+import {
+  readDuplicateHistoryPage,
+  encodeDuplicateHistoryCursor,
+} from './admin-duplicate-diagnostics-history';
 
 const now = Date.now();
 function row(overrides: Partial<Parameters<typeof presentDuplicateDeletionAttempt>[0]> = {}) {
@@ -15,8 +20,7 @@ function row(overrides: Partial<Parameters<typeof presentDuplicateDeletionAttemp
     remoteDeleteSucceededAt: null,
     absenceVerifiedAt: null,
     lastErrorCode: null,
-    duplicate: true,
-    reasonsLimited: false,
+    messageId: 'repeat-id',
     ...overrides,
   };
 }
@@ -53,7 +57,7 @@ function setup(rows = [row()]) {
 describe('duplicate diagnostics', () => {
   beforeEach(() => jest.spyOn(Date, 'now').mockReturnValue(now));
   afterEach(() => jest.restoreAllMocks());
-  it('uses bounded indexed chat/status and reason walks without message content', async () => {
+  it('limits the dedicated per-chat duplicate projection before reading reasons or events', async () => {
     const s = setup();
     const result = await s.service.read('chat-private');
     expect(result.capability).toEqual({
@@ -62,12 +66,13 @@ describe('duplicate diagnostics', () => {
     });
     expect(s.planner.refreshChatBotCapabilitySnapshots).not.toHaveBeenCalled();
     const sql = s.tx.$queryRaw.mock.calls[0][0];
-    expect(sql.sql).toContain('WHERE chat_id = ? AND status = statuses.status AND created_at >= ?');
+    expect(sql.sql).toContain('FROM duplicate_diagnostics_history history');
+    expect(sql.sql).toContain('WHERE history.chat_id = ?');
     expect(sql.values).toContain('chat-private');
-    expect(sql.values).toContain(21);
-    expect(sql.sql).toContain('ORDER BY created_at DESC');
-    expect(sql.sql).toContain('ORDER BY reason_key ASC LIMIT 9');
-    expect(sql.sql).toContain("metadata->'messageDuplicate'->'original' AS original");
+    expect(sql.values).toContain(6);
+    expect(sql.sql).toContain('ORDER BY history.intent_created_at DESC, history.intent_id DESC');
+    expect(sql.sql).toContain("rule_code = 'DUPLICATE_DELETE'");
+    expect(sql.sql).toContain("metadata->'messageDuplicate' AS binding");
     expect(sql.sql).not.toMatch(/webhook_events|masked_excerpt|candidate_failures/);
     expect(s.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       timeout: 3000,
@@ -110,16 +115,164 @@ describe('duplicate diagnostics', () => {
     });
   });
 
-  it('caps every status and marks incomplete source/reason samples', async () => {
-    const rows = Array.from({ length: 21 }, (_, i) =>
-      row({ id: `i${i}`, createdAt: new Date(now - i * 1000), duplicate: i !== 0 }),
+  it('caps a page and binds the next cursor to its chat and snapshot', async () => {
+    const rows = Array.from({ length: 6 }, (_, i) =>
+      row({ id: `i${i}`, createdAt: new Date(now - i * 1000) }),
     );
-    const s = setup(rows.reverse());
+    const s = setup(rows);
     const result = await s.service.read('chat');
-    expect(result.history).toMatchObject({ sampledIntents: 20, limited: true });
-    expect(result.history.attempts.map((item) => item.id)).toEqual(['i1', 'i2', 'i3', 'i4', 'i5']);
-    s.tx.$queryRaw.mockResolvedValue([row({ reasonsLimited: true })]);
-    expect((await s.service.read('chat')).history.limited).toBe(true);
+    expect(result.history).toMatchObject({
+      sampledIntents: 5,
+      limited: true,
+      coverage: 'PROJECTED_ONLY',
+    });
+    expect(result.history.attempts.map((item) => item.id)).toEqual(['i0', 'i1', 'i2', 'i3', 'i4']);
+    expect(
+      readDuplicateHistoryPage('chat', { cursor: result.history.nextCursor }, now).cursor?.id,
+    ).toBe('i4');
+    expect(() =>
+      readDuplicateHistoryPage('other-chat', { cursor: result.history.nextCursor }, now),
+    ).toThrow();
+    expect(() =>
+      readDuplicateHistoryPage('chat', { cursor: result.history.nextCursor }, now + 16 * 60000),
+    ).toThrow();
+    expect(() => readDuplicateHistoryPage('chat', { limit: 21 }, now)).toThrow();
+  });
+
+  it('keeps missing projection coverage incomplete, and rejects malformed cursor scopes', async () => {
+    expect((await setup([]).service.read('chat')).history).toMatchObject({
+      available: true,
+      limited: true,
+      attempts: [],
+    });
+    const cursor = encodeDuplicateHistoryCursor({
+      version: 1,
+      chatId: 'chat',
+      until: new Date(now).toISOString(),
+      at: new Date(now - 86400001).toISOString(),
+      id: 'id',
+    });
+    expect(() => readDuplicateHistoryPage('chat', { cursor }, now)).toThrow();
+    expect(() => readDuplicateHistoryPage('chat', { cursor: 'arbitrary' }, now)).toThrow();
+  });
+
+  it('presents verified comparison and requested sanction without inventing a sanction receipt', () => {
+    const binding = {
+      version: 2,
+      senderId: 'private-author',
+      messageId: 'repeat-id',
+      eventTimestampMs: now,
+      controlRevision: 1,
+      settingsDigest: 'a'.repeat(64),
+      sourceDigest: 'b'.repeat(64),
+      contentDigest: 'c'.repeat(64),
+      fingerprint: 'd'.repeat(64),
+      compareMode: 'TEXT',
+      mediaHashes: [],
+      mediaVersion: MESSAGE_DUPLICATE_MEDIA_VERSION,
+      hasPhotos: false,
+      photoControlRevision: null,
+      windowSeconds: 43200,
+      requiredCount: 3,
+      sanction: { action: 'MUTE', repeatCount: 3, threshold: 3, settingsDigest: 'e'.repeat(64) },
+    };
+    const presented = presentDuplicateDeletionAttempt(row({ binding, kind: 'near' }), now);
+    expect(presented.comparison).toEqual({
+      mode: 'TEXT',
+      kind: 'near',
+      windowSeconds: 43200,
+      firstDeletedMessageNumber: 3,
+    });
+    expect(presented.sanction).toEqual({ action: 'MUTE', state: 'REQUESTED' });
+    expect(JSON.stringify(presented)).not.toMatch(/private-author|contentDigest|fingerprint/);
+    const confirmed = presentDuplicateDeletionAttempt(
+      row({ binding, sanctionEvidence: [{ action: 'MUTE', applied: true, binding }] }),
+      now,
+    );
+    expect(confirmed.sanction?.state).toBe('CONFIRMED');
+    const different = presentDuplicateDeletionAttempt(
+      row({
+        binding,
+        sanctionEvidence: [
+          { action: 'MUTE', applied: true, binding: { ...binding, eventTimestampMs: now - 1 } },
+        ],
+      }),
+      now,
+    );
+    expect(different.sanction?.state).toBe('REQUESTED');
+    for (const otherBinding of [
+      { ...binding, policyRevision: 2 },
+      { ...binding, sourceDigest: 'f'.repeat(64) },
+      { ...binding, sanction: { ...binding.sanction, settingsDigest: 'f'.repeat(64) } },
+      { ...binding, sanction: { ...binding.sanction, repeatCount: 4 } },
+      { ...binding, sanction: { ...binding.sanction, threshold: 4 } },
+      { ...binding, sanction: undefined },
+    ])
+      expect(
+        presentDuplicateDeletionAttempt(
+          row({
+            binding,
+            sanctionEvidence: [{ action: 'MUTE', applied: true, binding: otherBinding }],
+          }),
+          now,
+        ).sanction?.state,
+      ).toBe('REQUESTED');
+    const warnBinding = { ...binding, sanction: { ...binding.sanction, action: 'WARN' } };
+    expect(
+      presentDuplicateDeletionAttempt(
+        row({ binding: warnBinding, sanctionEvidence: [{ action: 'WARN', binding: warnBinding }] }),
+        now,
+      ).sanction?.state,
+    ).toBe('CONFIRMED');
+    expect(
+      presentDuplicateDeletionAttempt(
+        row({
+          binding: warnBinding,
+          sanctionEvidence: [{ action: 'WARN', applied: false, binding: warnBinding }],
+        }),
+        now,
+      ).sanction?.state,
+    ).toBe('REQUESTED');
+    expect(
+      presentDuplicateDeletionAttempt(
+        row({ binding: { ...binding, messageId: 'another-message' } }),
+        now,
+      ).comparison,
+    ).toBeUndefined();
+  });
+
+  it('resolves links only from an exact-chat MAX lookup and rejects guessed or external links', async () => {
+    const s = setup();
+    s.tx.$queryRaw.mockResolvedValue([{ messageId: 'repeat-id' }]);
+    const maxClient = {
+      getExactMessageRow: jest.fn().mockResolvedValue({}),
+      parseChannelMessageSnapshot: jest
+        .fn()
+        .mockReturnValue({ messageId: 'repeat-id', url: 'https://max.ru/c/123/456' }),
+    };
+    Object.defineProperty(s.service, 'maxClient', { value: maxClient });
+    expect(await s.service.readMessageLink('chat', 'intent', 'target')).toEqual({
+      state: 'AVAILABLE',
+      url: 'https://max.ru/c/123/456',
+    });
+    expect(maxClient.getExactMessageRow).toHaveBeenCalledWith(
+      'chat',
+      'repeat-id',
+      expect.objectContaining({ trafficClass: 'background', timeoutMs: 2000 }),
+    );
+    maxClient.parseChannelMessageSnapshot.mockReturnValue({
+      messageId: 'repeat-id',
+      url: 'https://evil.example/link',
+    });
+    expect(await s.service.readMessageLink('chat', 'intent', 'target')).toEqual({
+      state: 'UNAVAILABLE',
+      url: null,
+    });
+    maxClient.getExactMessageRow.mockRejectedValue(new Error('different chat'));
+    expect(await s.service.readMessageLink('chat', 'intent', 'target')).toEqual({
+      state: 'UNAVAILABLE',
+      url: null,
+    });
   });
 
   it.each(['confirmed_capable', 'explicitly_incapable', 'stale_or_unknown'])(

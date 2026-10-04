@@ -32,6 +32,31 @@ describe('AdminSettingsController capability recheck query', () => {
     await controller.recheckDuplicateDiagnostics('chat', user);
     expect(settingsService.getDuplicateDiagnostics).toHaveBeenLastCalledWith('chat', user, true);
   });
+  it('validates bounded pagination and exact message-link roles', async () => {
+    const settingsService = {
+      getDuplicateDiagnostics: jest.fn(),
+      getDuplicateMessageLink: jest.fn(),
+    };
+    const controller = new AdminSettingsController(settingsService as never);
+    await controller.getDuplicateDiagnostics('chat', user, { limit: '20', cursor: 'page' });
+    expect(settingsService.getDuplicateDiagnostics).toHaveBeenCalledWith('chat', user, false, {
+      limit: 20,
+      cursor: 'page',
+    });
+    expect(() => controller.getDuplicateDiagnostics('chat', user, { limit: '21' })).toThrow(
+      BadRequestException,
+    );
+    await controller.getDuplicateMessageLink('chat', user, 'intent', 'original');
+    expect(settingsService.getDuplicateMessageLink).toHaveBeenCalledWith(
+      'chat',
+      user,
+      'intent',
+      'original',
+    );
+    expect(() => controller.getDuplicateMessageLink('chat', user, 'intent', 'arbitrary')).toThrow(
+      BadRequestException,
+    );
+  });
   it('passes the exact recheck flag into a chat settings mutation', async () => {
     const settingsService = { updateSettings: jest.fn().mockResolvedValue({}) };
     const controller = new AdminSettingsController(settingsService as never);

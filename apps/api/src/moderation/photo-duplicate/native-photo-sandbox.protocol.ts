@@ -27,6 +27,8 @@ export type NativePhotoResult =
       reason:
         | 'unsupported_image'
         | 'unsupported_multi_frame'
+        | 'image_byte_limit_exceeded'
+        | 'image_pixel_limit_exceeded'
         | 'album_decode_budget_exceeded'
         | 'decode_deadline_exceeded'
         | 'decode_capacity_exceeded'
@@ -116,6 +118,8 @@ export function parsePhotoResult(value: unknown): NativePhotoResult {
     [
       'unsupported_image',
       'unsupported_multi_frame',
+      'image_byte_limit_exceeded',
+      'image_pixel_limit_exceeded',
       'album_decode_budget_exceeded',
       'decode_deadline_exceeded',
       'decode_capacity_exceeded',

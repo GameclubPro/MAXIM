@@ -553,6 +553,26 @@ describe('AdminSettingsService chat rules', () => {
     );
     expect(diagnostics.read).not.toHaveBeenCalled();
   });
+  it('authorizes the exact chat before requesting a duplicate message link', async () => {
+    const { service, legacyAdminService } = createService();
+    const diagnostics = {
+      readMessageLink: jest.fn().mockResolvedValue({ state: 'UNAVAILABLE', url: null }),
+    };
+    Object.defineProperty(service, 'duplicateDiagnostics', { value: diagnostics });
+    await service.getDuplicateMessageLink('chat-1', user as never, 'intent-1', 'original');
+    expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
+      'chat-1',
+      user.userId,
+      'chat',
+    );
+    expect(diagnostics.readMessageLink).toHaveBeenCalledWith('chat-1', 'intent-1', 'original');
+    diagnostics.readMessageLink.mockClear();
+    legacyAdminService.assertManagedEntityAdminAccess.mockRejectedValue(new Error('access denied'));
+    await expect(
+      service.getDuplicateMessageLink('other-chat', user as never, 'intent-1', 'target'),
+    ).rejects.toThrow('access denied');
+    expect(diagnostics.readMessageLink).not.toHaveBeenCalled();
+  });
   it.each([
     {
       description: 'user access denial',

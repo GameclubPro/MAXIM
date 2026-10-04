@@ -25,9 +25,17 @@ test('settings summary uses the same message numbering as the controls and keeps
   });
   assert.equal(
     formatDuplicateSettingsSummary(settings, 12),
-    'удаление с сообщения №3 • 12 ч • картинки',
+    'удаление с сообщения №3 • 12 ч • картинки недоступны',
   );
   assert.equal(formatDuplicateSettingsSummary(null, 12), 'Выключено');
+  assert.equal(
+    formatDuplicateSettingsSummary(settings, 12, {
+      moderationMode: 'FULL',
+      actionCeiling: 'BAN',
+      allowedMatchKinds: ['canonical_sha256'],
+    }),
+    'удаление с сообщения №3 • 12 ч • картинки включены',
+  );
 });
 function render(
   state: 'CONFIRMED' | 'MISSING' | 'UNKNOWN',

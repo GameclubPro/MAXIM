@@ -19,6 +19,18 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('keeps prior-wait shared media admission opt-in until capacity acceptance', () => {
+    expect(validateEnv(createValidEnv()).MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED).toBe(
+      false,
+    );
+    expect(
+      validateEnv(createValidEnv({ MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED: 'true' }))
+        .MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED,
+    ).toBe(true);
+    expect(() =>
+      validateEnv(createValidEnv({ MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED: 'invalid' })),
+    ).toThrow(/MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED/u);
+  });
   it('defaults validated MAX diagnostics to minute layout and preserves explicit legacy downgrade', () => {
     expect(validateEnv(createValidEnv()).MAX_API_METRICS_STORAGE_LAYOUT).toBe('minute');
     expect(

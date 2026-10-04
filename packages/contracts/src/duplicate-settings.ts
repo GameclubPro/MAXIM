@@ -74,6 +74,26 @@ export type DuplicateFlowThresholdSettings = {
   duplicateBanMaxCount: number;
 };
 
+export type DuplicateFlowWindowSettings = {
+  duplicateWarnEnabled: boolean;
+  duplicateMuteEnabled: boolean;
+  duplicateBanEnabled: boolean;
+  duplicateWarnWindowSec: number;
+  duplicateMuteWindowSec: number;
+  duplicateBanWindowSec: number;
+};
+
+/** The first enabled reaction owns the shared interval, including delete-only flows. */
+export function resolveDuplicateIntervalWindowSec(settings: DuplicateFlowWindowSettings): number {
+  return settings.duplicateWarnEnabled
+    ? settings.duplicateWarnWindowSec
+    : settings.duplicateMuteEnabled
+      ? settings.duplicateMuteWindowSec
+      : settings.duplicateBanEnabled
+        ? settings.duplicateBanWindowSec
+        : settings.duplicateWarnWindowSec;
+}
+
 function resolveDuplicateFlowBaseOffset(settings: DuplicateFlowStageSettings): number {
   return settings.duplicateBotMessageEnabled ? 2 : 1;
 }

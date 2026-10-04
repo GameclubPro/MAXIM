@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Refresh } from 'iconoir-react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   duplicateDiagnosticsResponseSchema,
+  duplicateMessageLinkResponseSchema,
   type DuplicateDeletionAttempt,
   type DuplicateObservationOutcome,
 } from '@maxim/contracts/settings';
 import type { ApiTransport } from '../../lib/api/transport';
+import { openLink } from '../../lib/max-bridge';
 
 export const DUPLICATE_ATTEMPT_LABELS: Record<DuplicateDeletionAttempt['outcome'], string> = {
   DELETED: 'Удалено',
@@ -44,10 +47,71 @@ const OBSERVATION_LABELS: Record<DuplicateObservationOutcome, string> = {
   UNAVAILABLE: 'Проверку не удалось начать',
   COMPARED_NO_MATCH: 'Сравнено: повтора сверх допуска нет',
   MATCHED_INELIGIBLE: 'Совпадение без права действия',
+  MATCHED_QUALIFICATION_REJECTED: 'Совпадение: действие отклонено свежей проверкой',
+  MATCHED_CLAIM_BLOCKED: 'Совпадение: сообщение обрабатывает другое правило',
   MATCHED_OBSERVE: 'Совпадение в режиме наблюдения',
   MATCHED_ACTION_FAILED: 'Совпадение: передача действия не завершилась',
   ENFORCEMENT_REQUESTED: 'Совпадение передано на проверку действия',
 };
+const MATCH_LABELS = {
+  exact: 'Одинаковый текст',
+  content: 'Одинаковое содержимое',
+  near: 'Близкое совпадение текста',
+  link: 'Одинаковая ссылка',
+  phone: 'Одинаковый номер телефона',
+  image: 'Одинаковая картинка',
+  image_set: 'Одинаковый альбом',
+  unknown: 'Тип совпадения не подтверждён',
+};
+const SANCTION_LABELS = { WARN: 'Предупреждение', MUTE: 'Ограничение', BAN: 'Блокировка' };
+
+function MessageLinkButton({
+  api,
+  path,
+  role,
+  userId,
+}: {
+  api: ApiTransport;
+  path: string;
+  role: 'original' | 'target';
+  userId: string | null;
+}) {
+  const scope = useMemo(() => ({ api, path, role, userId }), [api, path, role, userId]);
+  const activeScope = useRef<typeof scope | null>(scope);
+  activeScope.current = scope;
+  const link = useMutation({
+    mutationFn: async (request: typeof scope) =>
+      duplicateMessageLinkResponseSchema.parse(
+        await request.api.request(`${request.path}/message-link/${request.role}`),
+      ),
+    // FLAG: A delayed link reply must never open a message after leaving its chat/account.
+    onSuccess: (value, request) => {
+      if (activeScope.current === request && value.url) openLink(value.url);
+    },
+  });
+  useLayoutEffect(() => {
+    activeScope.current = scope;
+    link.reset();
+    return () => {
+      if (activeScope.current === scope) activeScope.current = null;
+    };
+  }, [scope]);
+  return (
+    <>
+      <button
+        type="button"
+        className="button button--ghost"
+        disabled={link.isPending}
+        onClick={() => link.mutate(scope)}
+      >
+        {role === 'original' ? 'Открыть оригинал' : 'Открыть повтор'}
+      </button>
+      {(link.isError || link.data?.state === 'UNAVAILABLE') && (
+        <span role="status">Ссылка недоступна</span>
+      )}
+    </>
+  );
+}
 function formatTime(value: string) {
   return new Date(value).toLocaleString('ru-RU', {
     day: '2-digit',
@@ -69,6 +133,7 @@ export default function SettingsDuplicateDiagnostics({
   const queryClient = useQueryClient();
   const queryKey = ['duplicate-diagnostics', userId, chatId];
   const path = `/chats/${encodeURIComponent(chatId)}/duplicate-diagnostics`;
+  const scope = useMemo(() => ({ api, path, userId, chatId }), [api, path, userId, chatId]);
   const query = useQuery({
     queryKey,
     queryFn: async ({ signal }) =>
@@ -81,15 +146,65 @@ export default function SettingsDuplicateDiagnostics({
     refetchOnWindowFocus: false,
   });
   const recheck = useMutation({
-    mutationFn: async () =>
+    mutationFn: async (request: typeof scope) =>
       duplicateDiagnosticsResponseSchema.parse(
-        await api.request(`${path}/recheck`, { method: 'POST' }),
+        await request.api.request(`${request.path}/recheck`, { method: 'POST' }),
       ),
-    onSuccess: (data) => queryClient.setQueryData(queryKey, data),
+    onSuccess: (data, request) =>
+      queryClient.setQueryData(['duplicate-diagnostics', request.userId, request.chatId], data),
   });
   const busy = query.isFetching || recheck.isPending;
   const failed = query.isError || recheck.isError;
   const data = query.data;
+  const epoch = useMemo(
+    () => ({
+      scope,
+      updatedAt: query.dataUpdatedAt,
+      firstPageCount: data?.history.attempts.length ?? 0,
+    }),
+    [scope, query.dataUpdatedAt, data],
+  );
+  const historyEpoch = useRef<typeof epoch | null>(epoch);
+  historyEpoch.current = epoch;
+  const [olderPage, setOlderPage] = useState<{
+    epoch: typeof epoch;
+    attempts: DuplicateDeletionAttempt[];
+    cursor: string | null;
+  }>();
+  const older = olderPage?.epoch === epoch ? olderPage.attempts : [];
+  const nextCursor = olderPage?.epoch === epoch ? olderPage.cursor : data?.history.nextCursor;
+  const loadMore = useMutation({
+    mutationFn: async (request: { cursor: string; epoch: typeof epoch }) => {
+      const value = duplicateDiagnosticsResponseSchema.parse(
+        await request.epoch.scope.api.request(
+          `${request.epoch.scope.path}?cursor=${encodeURIComponent(request.cursor)}`,
+        ),
+      );
+      if (!value.history.available) throw new Error('История временно недоступна');
+      return value;
+    },
+    onSuccess: (value, request) => {
+      if (request.epoch !== historyEpoch.current) return;
+      setOlderPage((current) => ({
+        epoch: request.epoch,
+        attempts: [
+          ...(current?.epoch === request.epoch ? current.attempts : []),
+          ...value.history.attempts,
+        ].slice(0, Math.max(0, 50 - request.epoch.firstPageCount)),
+        cursor: value.history.nextCursor ?? null,
+      }));
+    },
+  });
+  useLayoutEffect(() => {
+    historyEpoch.current = epoch;
+    setOlderPage(undefined);
+    loadMore.reset();
+    recheck.reset();
+    return () => {
+      if (historyEpoch.current === epoch) historyEpoch.current = null;
+    };
+  }, [epoch]);
+  const attempts = [...(data?.history.attempts ?? []), ...older];
   const capability = failed ? 'UNKNOWN' : data?.capability.state;
   const capabilityLabel = busy
     ? 'Проверяем права'
@@ -117,7 +232,7 @@ export default function SettingsDuplicateDiagnostics({
           aria-label="Проверить права"
           title="Проверить права"
           disabled={busy || !userId}
-          onClick={() => recheck.mutate()}
+          onClick={() => recheck.mutate(scope)}
         >
           <Refresh aria-hidden />
         </button>
@@ -195,7 +310,13 @@ export default function SettingsDuplicateDiagnostics({
           ) : (
             <>
               {data.history.limited && <p className="field__hint">Неполная выборка</p>}
-              {data.history.attempts.length === 0 ? (
+              {data.history.coverage === 'PROJECTED_ONLY' && (
+                <p className="field__hint">
+                  Показаны зарегистрированные решения антидубля. Более ранняя история может быть
+                  неполной.
+                </p>
+              )}
+              {attempts.length === 0 ? (
                 <p>
                   {data.history.limited
                     ? 'В выборке нет попыток антидубля'
@@ -203,11 +324,39 @@ export default function SettingsDuplicateDiagnostics({
                 </p>
               ) : (
                 <ol className="duplicate-diagnostics__attempts">
-                  {data.history.attempts.map((attempt) => (
+                  {attempts.map((attempt) => (
                     <li key={attempt.id}>
                       <time dateTime={attempt.createdAt}>{formatTime(attempt.createdAt)}</time>
                       <div>
                         <strong>{DUPLICATE_ATTEMPT_LABELS[attempt.outcome]}</strong>
+                        {attempt.target && (
+                          <>
+                            <span>Номер повтора: {attempt.target.messageId}</span>
+                            <MessageLinkButton
+                              api={api}
+                              path={`${path}/${encodeURIComponent(attempt.id)}`}
+                              role="target"
+                              userId={userId}
+                            />
+                          </>
+                        )}
+                        {attempt.comparison && (
+                          <>
+                            <span>{MATCH_LABELS[attempt.comparison.kind]}</span>
+                            <span>
+                              Период: {attempt.comparison.windowSeconds / 3600} ч; удаление с №
+                              {attempt.comparison.firstDeletedMessageNumber}
+                            </span>
+                          </>
+                        )}
+                        {attempt.sanction && (
+                          <span>
+                            {SANCTION_LABELS[attempt.sanction.action]}:{' '}
+                            {attempt.sanction.state === 'CONFIRMED'
+                              ? 'выполнение подтверждено'
+                              : 'запланировано, выполнение не подтверждено'}
+                          </span>
+                        )}
                         {attempt.reason && <span>{REASON_LABELS[attempt.reason]}</span>}
                         {attempt.original && (
                           <>
@@ -216,16 +365,36 @@ export default function SettingsDuplicateDiagnostics({
                               Повтор разрешён с {formatTime(attempt.original.repeatAllowedAt)}
                             </span>
                             <span>Номер оригинала: {attempt.original.messageId}</span>
+                            <MessageLinkButton
+                              api={api}
+                              path={`${path}/${encodeURIComponent(attempt.id)}`}
+                              role="original"
+                              userId={userId}
+                            />
                           </>
                         )}
                         {attempt.nextAttemptAt && (
                           <span>Следующая попытка: {formatTime(attempt.nextAttemptAt)}</span>
+                        )}
+                        {attempt.registeredAt && (
+                          <span>В истории с {formatTime(attempt.registeredAt)}</span>
                         )}
                       </div>
                     </li>
                   ))}
                 </ol>
               )}
+              {nextCursor && attempts.length < 50 && (
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  disabled={loadMore.isPending}
+                  onClick={() => loadMore.mutate({ cursor: nextCursor, epoch })}
+                >
+                  Показать ещё
+                </button>
+              )}
+              {loadMore.isError && <p role="alert">Не удалось загрузить следующую страницу</p>}
             </>
           )}
         </details>

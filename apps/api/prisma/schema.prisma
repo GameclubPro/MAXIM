@@ -2332,6 +2332,7 @@ model ModerationDeleteIntent {
   channelCleanupMarkers ChannelAutoPostAttachMarker[]  @relation("ChannelAutoPostCleanupIntent")
   chatCleanupMarkers    ChatAutoCommentAttachMarker[]  @relation("ChatAutoCommentCleanupIntent")
   pendingChatRules      ChatRules[]                    @relation("ChatRulesPendingCleanupIntent")
+  duplicateDiagnostics DuplicateDiagnosticsHistory?
 
   @@unique([chatId, messageId], map: "moderation_delete_intents_chat_message_key")
   @@index([status, nextAttemptAt, executeAt], map: "moderation_delete_intents_due_idx")
@@ -2340,6 +2341,19 @@ model ModerationDeleteIntent {
   @@index([completedAt(sort: Desc), id(sort: Desc)], map: "moderation_delete_intents_completed_id_idx")
   @@index([chatId, status, createdAt], map: "moderation_delete_intents_chat_status_created_idx")
   @@map("moderation_delete_intents")
+}
+
+// FLAG: An observer-only index of duplicate intents; this projection never authorizes actions.
+model DuplicateDiagnosticsHistory {
+  intentId     String   @id @map("intent_id")
+  chatId       String   @map("chat_id")
+  createdAt    DateTime @map("intent_created_at")
+  registeredAt DateTime @default(now()) @map("registered_at")
+
+  intent ModerationDeleteIntent @relation(fields: [intentId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt(sort: Desc), intentId(sort: Desc)], map: "duplicate_diagnostics_history_chat_created_id_idx")
+  @@map("duplicate_diagnostics_history")
 }
 
 model ModerationDeleteIntentReason {

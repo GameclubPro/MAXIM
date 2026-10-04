@@ -25,7 +25,9 @@ describe('message duplicate main-path admission', () => {
         return { match, outcome: match ? 'MATCHED' : 'COMPARED_NO_MATCH' };
       }),
     };
-    const enforcement = { enqueue: jest.fn() };
+    const enforcement = {
+      enqueue: jest.fn().mockResolvedValue({ kind: 'intent_accepted', intentId: 'intent' }),
+    };
     const queue = { enqueue: jest.fn() };
     const metrics = {
       record: jest.fn(),
@@ -82,6 +84,33 @@ describe('message duplicate main-path admission', () => {
       'COMPARISON_FAILED',
       true,
     );
+  });
+
+  it.each([
+    ['qualification_rejected', 'MATCHED_QUALIFICATION_REJECTED'],
+    ['claim_blocked', 'MATCHED_CLAIM_BLOCKED'],
+    ['policy_changed', 'POLICY_CHANGED'],
+    ['binding_invalid', 'MATCHED_INELIGIBLE'],
+  ] as const)('reports actual %s refusal after a text match', async (reason, outcome) => {
+    const s = setup();
+    s.enforcement.enqueue.mockResolvedValue({ kind: 'rejected', reason });
+    expect(await s.service.observe(s.params)).toBe(outcome);
+    expect(s.metrics.recordObservation).toHaveBeenLastCalledWith('-123', outcome, true);
+  });
+
+  it('counts TEXT captions with known unsupported media as supported comparisons', async () => {
+    const s = setup();
+    s.params.settings.duplicateCompareMode = 'TEXT';
+    s.params.update = duplicateUpdate('caption', s.params.eventTimestampMs, 'caption', [
+      { type: 'location', payload: { latitude: 55.7, longitude: 37.6 } },
+    ]);
+    expect(await s.service.observe(s.params)).toBe('ENFORCEMENT_REQUESTED');
+    expect(s.metrics.recordObservation).toHaveBeenLastCalledWith(
+      '-123',
+      'ENFORCEMENT_REQUESTED',
+      true,
+    );
+    expect(s.queue.enqueue).not.toHaveBeenCalled();
   });
   it('distinguishes stale/unverified history from a verified non-match and keeps action failures separate', async () => {
     const s = setup();

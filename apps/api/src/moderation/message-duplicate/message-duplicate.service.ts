@@ -5,8 +5,15 @@ import type { DuplicateObservationOutcome } from '@maxim/contracts/settings';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { classifyDuplicateEventTime } from '../duplicate-enforcement-safety';
 import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
-import { extractDuplicateMessageContent, isExactImageContent } from './message-duplicate-content';
-import { MessageDuplicateEnforcementService } from './message-duplicate-enforcement.service';
+import {
+  extractDuplicateMessageContent,
+  isExactImageContent,
+  isDuplicateContentComparable,
+} from './message-duplicate-content';
+import {
+  MessageDuplicateEnforcementService,
+  duplicateEnforcementObservation,
+} from './message-duplicate-enforcement.service';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
 import { messageDuplicateActionsEnabled } from './message-duplicate-policy.service';
@@ -154,7 +161,10 @@ export class MessageDuplicateService {
       const imageOnly = imageMode && isExactImageContent(content);
       supported =
         params.track &&
-        content.complete &&
+        isDuplicateContentComparable(
+          content,
+          params.settings.duplicateCompareMode === 'TEXT' ? 'TEXT' : 'MESSAGE',
+        ) &&
         !imageMode &&
         (params.settings.duplicateCompareMode === 'TEXT' || content.media.length === 0);
       const observedContent = params.track && !imageMode ? content : invalidContent;
@@ -241,7 +251,7 @@ export class MessageDuplicateService {
             Math.min(eventTimestampMs, result.binding.eventTimestampMs) +
             DUPLICATE_JOB_MAX_LIFETIME_MS,
         };
-        await measureDuplicatePhase(this.metrics, 'enforcement', () =>
+        const enforcement = await measureDuplicatePhase(this.metrics, 'enforcement', () =>
           this.enforcement.enqueue({
             ...result,
             chatId: message.chatId,
@@ -253,7 +263,7 @@ export class MessageDuplicateService {
             executeFullAction: params.executeFullAction,
           }),
         );
-        return finish('ENFORCEMENT_REQUESTED');
+        return finish(duplicateEnforcementObservation(enforcement));
       } else if (result) {
         this.metrics?.record(
           params.actionEligible ? 'admission.shadow' : 'admission.action_ineligible',

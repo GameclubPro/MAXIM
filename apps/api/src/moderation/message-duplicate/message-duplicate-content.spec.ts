@@ -4,6 +4,7 @@ import {
   canRefreshDuplicatePhotoSources,
   digestDuplicateContent,
   exactImageSourceDigest,
+  isDuplicateContentComparable,
 } from './message-duplicate-content';
 
 const content = (body: Record<string, unknown>, extra = {}) =>
@@ -364,5 +365,32 @@ describe('message duplicate canonical contents', () => {
     ).not.toBeNull();
     expect(identity({ text: 'x'.repeat(8001) })).toBeNull();
     expect(identity({ attachments: Array.from({ length: 11 }, () => photo('a')) })).toBeNull();
+  });
+
+  it.each(['photo', 'video', 'audio', 'file', 'sticker', 'contact', 'location'])(
+    'allows known unavailable %s only in TEXT, consistently with identity eligibility',
+    (type) => {
+      const parsed = content({ text: 'caption', attachments: [{ type, payload: {} }] });
+      expect(parsed.reason).toBe('unsupported_attachment');
+      expect(isDuplicateContentComparable(parsed, 'TEXT')).toBe(true);
+      expect(buildMessageDuplicateIdentity(parsed, 'TEXT')).not.toBeNull();
+      for (const mode of ['MESSAGE', 'IMAGE'] as const) {
+        expect(isDuplicateContentComparable(parsed, mode)).toBe(false);
+        expect(buildMessageDuplicateIdentity(parsed, mode, ['a'.repeat(64)])).toBeNull();
+      }
+    },
+  );
+
+  it.each([
+    { text: 'caption', attachments: [{ type: 'unknown', payload: {} }] },
+    { text: 'caption', attachments: [{ type: 'inline_keyboard', payload: { buttons: 'bad' } }] },
+    { text: 'caption', media_group_id: 'split' },
+    { text: 'caption'.repeat(2000) },
+  ])('rejects incomplete or invalid content in every comparison mode', (body) => {
+    const parsed = content(body);
+    for (const mode of ['TEXT', 'MESSAGE', 'IMAGE'] as const) {
+      expect(isDuplicateContentComparable(parsed, mode)).toBe(false);
+      expect(buildMessageDuplicateIdentity(parsed, mode)).toBeNull();
+    }
   });
 });

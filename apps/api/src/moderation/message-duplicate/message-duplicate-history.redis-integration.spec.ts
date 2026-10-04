@@ -410,7 +410,190 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
       expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
     });
+
+    it.each([
+      ...['Серия', 'Модель', 'Версия', ''].map((label) => [
+        label ? `grouped ${label}` : 'unlabelled grouped number',
+        `${label} (999-123-45-67) доступна для заказа в нашем интернет магазине с доставкой по стране`,
+        `${label} (999-123-45-68) доступна для заказа в нашем интернет магазине с доставкой по стране`,
+      ]),
+      [
+        'order identifier',
+        'Номер заказа 1234567890 для получения оплаченного оборудования отправлен представителю организации',
+        'Номер заказа 2234567890 для получения оплаченного оборудования отправлен представителю организации',
+      ],
+      [
+        'wrapped part identifier',
+        'Артикул (999-123-45-67) доступен для заказа в нашем интернет магазине с доставкой по стране',
+        'Артикул (999-123-45-68) доступен для заказа в нашем интернет магазине с доставкой по стране',
+      ],
+      [
+        'long modified part identifier',
+        'Артикул нового оборудования для нашего каталога (999-123-45-67) доступен для заказа с доставкой по стране',
+        'Артикул нового оборудования для нашего каталога (999-123-45-68) доступен для заказа с доставкой по стране',
+      ],
+      [
+        'wrapped order identifier',
+        'Номер заказа №(123-456-78-90) доступен для получения оплаченного оборудования сегодня',
+        'Номер заказа №(123-456-78-91) доступен для получения оплаченного оборудования сегодня',
+      ],
+      [
+        'phone label word suffix',
+        'Recall 1234567890 подтвержден для оборудования с доставкой по стране после регистрации',
+        'Recall 1234567891 подтвержден для оборудования с доставкой по стране после регистрации',
+      ],
+      [
+        'phone-shaped price',
+        'Продается промышленное предприятие стоимостью 9000000000 рублей документы готовы подробности по запросу',
+        'Продается промышленное предприятие стоимостью 9100000000 рублей документы готовы подробности по запросу',
+      ],
+      [
+        'phone-shaped measurement',
+        'Согласно технической документации масса оборудования составляет 9000000000 кг включая упаковку',
+        'Согласно технической документации масса оборудования составляет 9100000000 кг включая упаковку',
+      ],
+      [
+        'comma placement',
+        'Казнить, нельзя помиловать виновного сегодня согласно решению комиссии',
+        'Казнить нельзя, помиловать виновного сегодня согласно решению комиссии',
+      ],
+    ])('does not match or qualify changed %s', async (_label, first, second) => {
+      const override = {
+        settings: duplicateSettings({
+          duplicateDetectionPreset: preset,
+          duplicateNearMatchEnabled: true,
+          duplicateIgnorePhonesEnabled: true,
+        }),
+      };
+      await observe('original', 0, first, override);
+      expect(await observe('changed', 100, second, override)).toBeNull();
+      const repeated = await observe('repeat', 200, second, override);
+      expect(repeated?.hit.fingerprintType).toBe('exact');
+      expect(repeated?.binding.original?.messageId).toBe('changed');
+      expect(await history.stillMatches(chatId, repeated!.binding)).toBe(true);
+      expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
+    });
   });
+
+  it('keeps rotated true phones and punctuation spacing comparable under STRICT', async () => {
+    const override = { settings: duplicateSettings({ duplicateDetectionPreset: 'STRICT' }) };
+    const prefix =
+      'Подробная инструкция, для участников встречи доступна после завершения регистрации телефон:';
+    await observe('original', 0, `${prefix} +7 (999) 123-45-67`, override);
+    const rotated = await observe('rotated', 100, `${prefix} +7 (999) 123-45-68`, override);
+    expect(rotated?.hit.fingerprintType).toBe('content');
+    expect(await history.qualify(chatId, rotated!.binding)).toBe(1);
+    const spaced = await observe(
+      'spaced',
+      200,
+      `${prefix.toUpperCase().replace(',', ' , ')} +7 (999) 123-45-69`,
+      override,
+    );
+    expect(spaced?.hit.fingerprintType).toBe('near');
+    expect(await history.stillMatches(chatId, spaced!.binding)).toBe(true);
+    expect(await history.qualify(chatId, spaced!.binding)).toBe(1);
+  });
+
+  it.each(['. ', '\n'])(
+    'keeps the numeric phrase after a true phone in STRICT across %j',
+    async (separator) => {
+      const override = { settings: duplicateSettings({ duplicateDetectionPreset: 'STRICT' }) };
+      const text = (count: number) =>
+        `Запись на встречу открыта для всех желающих телефон: +7 (999) 123-45-67${separator}${count} участников`;
+      await observe('original', 0, text(100), override);
+      expect(await observe('changed', 100, text(200), override)).toBeNull();
+      const repeated = await observe('repeat', 200, text(200), override);
+      expect(repeated?.hit.fingerprintType).toBe('exact');
+      expect(repeated?.binding.original?.messageId).toBe('changed');
+      expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
+    },
+  );
+
+  it('does not treat order IDs as CUSTOM phone values even without near matching', async () => {
+    const override = {
+      settings: duplicateSettings({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnorePhonesEnabled: true,
+      }),
+    };
+    await observe('order', 0, 'Номер заказа 1234567890 готов', override);
+    expect(
+      await observe('invoice', 100, 'Документ номер 1234567890 проверен', override),
+    ).toBeNull();
+    await observe('phone', 200, 'Телефон +7 (999) 123-45-67 для доставки', override);
+    const repeated = await observe(
+      'same-phone',
+      300,
+      'Связаться +7 (999) 123-45-67 для консультации',
+      override,
+    );
+    expect(repeated?.hit.fingerprintType).toBe('phone');
+    expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
+  });
+
+  it.each([
+    ...['Серия', 'Модель', 'Версия', ''].map((label) => [
+      `${label} (999-123-45-67) доступна для заказа в нашем интернет магазине`,
+      `${label} (999-123-45-67) опубликована после завершения регистрации участников`,
+    ]),
+    ['Артикул (999-123-45-67) доступен', 'Код заказа №(999-123-45-67) подтвержден'],
+    [
+      'Артикул нового оборудования для нашего каталога [(999-123-45-67)] доступен',
+      'Номер заказа нового оборудования для нашего склада №[(999-123-45-67)] подтвержден',
+    ],
+    ['Recall 1234567890 подтвержден', 'Расширенный recall 1234567890 опубликован'],
+  ])('does not join protected values through CUSTOM phone matching: %s', async (first, second) => {
+    const override = {
+      settings: duplicateSettings({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnorePhonesEnabled: true,
+        duplicateNearMatchEnabled: false,
+      }),
+    };
+    await observe('protected-original', 0, first, override);
+    expect(await observe('unrelated-protected', 100, second, override)).toBeNull();
+  });
+
+  it.each(['photo', 'video', 'audio', 'file', 'sticker', 'contact', 'location'])(
+    'verifies TEXT with known unavailable %s and revokes material caption edits',
+    async (type) => {
+      const textSettings = duplicateSettings({ duplicateCompareMode: 'TEXT' });
+      const content = (text: string) =>
+        extractDuplicateMessageContent({
+          message: { body: { text, attachments: [{ type, payload: {} }] } },
+        });
+      const input = { settings: textSettings, content: content('Повторяемая подпись') };
+      expect(await observe('original', 0, '', input)).toBeNull();
+      const repeated = await observe('repeat', 100, '', input);
+      expect(repeated?.hit.fingerprintType).toBe('exact');
+      expect(await history.stillMatches(chatId, repeated!.binding)).toBe(true);
+      await history.observeLifecycle({
+        chatId,
+        messageId: 'original',
+        eventTimestampMs: start + 200,
+        content: content(' ПОВТОРЯЕМАЯ  подпись '),
+      });
+      expect(await history.stillMatches(chatId, repeated!.binding)).toBe(true);
+      await history.observeLifecycle({
+        chatId,
+        messageId: 'original',
+        eventTimestampMs: start + 300,
+        content: content('Совершенно другая подпись'),
+      });
+      expect(await history.stillMatches(chatId, repeated!.binding)).toBe(false);
+      expect(await history.qualify(chatId, repeated!.binding)).toBeNull();
+      for (const mode of ['MESSAGE', 'IMAGE'] as const) {
+        const unsupported = {
+          ...input,
+          settings: duplicateSettings(),
+          ...(mode === 'IMAGE' ? { imageScope: 'SAME_AUTHOR' as const } : {}),
+          mediaHashes: ['a'.repeat(64)],
+        };
+        expect(await observe(`${mode}-original`, 400, '', unsupported)).toBeNull();
+        expect(await observe(`${mode}-repeat`, 500, '', unsupported)).toBeNull();
+      }
+    },
+  );
 
   const imageInput = () => ({
     imageScope: 'CHAT' as const,

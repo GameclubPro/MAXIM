@@ -372,8 +372,7 @@ export function buildMessageDuplicateIdentity(
       ...(content.actions.length > 0 ? { actions: content.actions } : {}),
     });
   }
-  if (!content.complete && !(mode === 'TEXT' && content.reason === 'unsupported_attachment'))
-    return null;
+  if (!isDuplicateContentComparable(content, mode)) return null;
   if (
     !content.text &&
     content.navigation.length === 0 &&
@@ -396,6 +395,17 @@ export function buildMessageDuplicateIdentity(
     media:
       mode === 'MESSAGE' ? content.media.map((item, index) => [item.kind, mediaHashes[index]]) : [],
   });
+}
+
+export function isDuplicateContentComparable(
+  content: DuplicateMessageContent,
+  mode: MessageDuplicateCompareMode,
+): boolean {
+  // FLAG: Known unavailable media may be omitted only in TEXT. Unknown attachments,
+  // malformed actions and partial albums never become comparison or lifecycle authority.
+  return mode === 'IMAGE'
+    ? isExactImageContent(content)
+    : content.complete || (mode === 'TEXT' && content.reason === 'unsupported_attachment');
 }
 
 export function isExactImageContent(content: DuplicateMessageContent): boolean {

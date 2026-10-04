@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -44,7 +44,7 @@ function completeManifest() {
   });
 }
 
-test('default plan selects every active component, thirteen API roles, and its sandbox', () => {
+test('default plan selects every active component, fourteen API roles, and its sandboxes', () => {
   const plan = buildRollbackPlan({
     manifest: completeManifest(),
     now: new Date('2026-07-19T12:34:56.789Z'),
@@ -293,6 +293,176 @@ test('legacy ref rollback is API-only and builds a SHA-scoped temporary image ta
   );
   assert.doesNotMatch(script, /maxim_topology_build_shared_api_image infra/u);
 });
+
+for (const rollbackKind of ['immutable', 'runtime-ref']) {
+  for (const hasPublisher of [true, false]) {
+    test(`${rollbackKind} recreation converges every API role with Publisher ${hasPublisher ? 'present' : 'absent'}`, () => {
+      const result = runApiRecreationFixture(rollbackKind, { hasPublisher });
+      assert.equal(result.status, 0, result.stderr);
+      const events = fixtureEvents(result.stdout);
+      const expectedServices = PRODUCTION_API_SERVICES.filter(
+        (service) => hasPublisher || service !== 'api-publisher',
+      );
+      const recreated = events.filter(([event]) => event === 'recreate').map(([, role]) => role);
+      const verified = events.filter(([event]) => event === 'verify').map(([, role]) => role);
+      assert.deepEqual([...recreated].sort(), [...expectedServices].sort());
+      assert.deepEqual(verified, expectedServices);
+      const retentionIndex = recreated.indexOf('api-message-retention');
+      const firstConsumerIndex = recreated.findIndex((role) => role.startsWith('api-moderation'));
+      assert.ok(retentionIndex < firstConsumerIndex);
+      assert.equal(recreated.at(-1), 'api-enqueue');
+      assert.ok(eventIndex(events, 'media-stop') < eventIndex(events, 'ocr-recreate'));
+      assert.ok(
+        eventIndex(events, 'ocr-smoke') < eventIndex(events, 'recreate', 'api-media-analysis'),
+      );
+      assert.ok(
+        eventIndex(events, 'photo-reconcile') <
+          eventIndex(events, 'recreate', 'api-moderation-background'),
+      );
+      assert.ok(
+        eventIndex(events, 'verify', 'api-message-retention') < eventIndex(events, 'resume'),
+      );
+      assert.ok(eventIndex(events, 'live-smoke') < eventIndex(events, 'resume'));
+      assert.equal(events.at(-1)?.[0], 'resume');
+    });
+  }
+
+  test(`${rollbackKind} recreation failure at retention preserves the paused queue fence`, () => {
+    const result = runApiRecreationFixture(rollbackKind, { failService: 'api-message-retention' });
+    assert.equal(result.status, 17, result.stderr);
+    const events = fixtureEvents(result.stdout);
+    assert.ok(eventIndex(events, 'quiesce') >= 0);
+    assert.equal(eventIndex(events, 'resume'), -1);
+    assert.equal(eventIndex(events, 'recreate', 'api-enqueue'), -1);
+    assert.equal(eventIndex(events, 'verify', 'api-message-retention'), -1);
+  });
+}
+
+function fixtureEvents(output) {
+  return output
+    .split('\n')
+    .filter((line) => line.startsWith('fixture-event\t'))
+    .map((line) => line.split('\t').slice(1));
+}
+
+function eventIndex(events, name, value) {
+  return events.findIndex(
+    ([event, detail]) => event === name && (value === undefined || detail === value),
+  );
+}
+
+function scriptSection(script, start, end, includeEnd = false) {
+  const startIndex = script.indexOf(start);
+  const endIndex = script.indexOf(end, startIndex + start.length);
+  assert.ok(startIndex >= 0 && endIndex > startIndex, `Missing Bash fixture section: ${start}`);
+  return script.slice(startIndex, endIndex + (includeEnd ? end.length : 0));
+}
+
+function shellFunction(script, name) {
+  return scriptSection(script, `${name}() {\n`, '\n}\n', true);
+}
+
+function runApiRecreationFixture(rollbackKind, { hasPublisher = true, failService = '' } = {}) {
+  const script = readRepoFile(
+    rollbackKind === 'immutable'
+      ? 'infra/scripts/vps-release-rollback.sh'
+      : 'infra/scripts/vps-runtime-rollback.sh',
+  );
+  const recreation =
+    rollbackKind === 'immutable'
+      ? shellFunction(script, 'recreate_service') +
+        '\n' +
+        scriptSection(script, 'SMOKE_RESULTS=()', '\nif [[ "$SELECT_MINIAPP" -eq 1 ]]')
+      : scriptSection(
+          script,
+          'recreate_runtime_api_wave() {\n',
+          '\nwait_for_url "http://127.0.0.1:3001/api/health/ready"',
+        );
+  const verifyFunction = shellFunction(script, 'verify_service_image_id').replace(
+    'verify_service_image_id()',
+    'verify_service_image_id_impl()',
+  );
+  const services = PRODUCTION_API_SERVICES.filter(
+    (service) => hasPublisher || service !== 'api-publisher',
+  );
+  const fixture = `
+COMPOSE_FILES=(-f fixture-compose.yml)
+SERVICES=(${services.join(' ')})
+MAXIM_WEBHOOK_MODERATION_SERVICES=(${PRODUCTION_API_SERVICES.filter((service) => service.startsWith('api-moderation')).join(' ')})
+SELECT_API=1
+TARGET_HAS_PUBLISHER=${hasPublisher ? 1 : 0}
+TARGET_HAS_MEDIA_ANALYSIS=1
+TARGET_HAS_OCR_NATIVE_SANDBOX=1
+MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX=1
+MAXIM_MEDIA_ANALYSIS_SERVICE=api-media-analysis
+TARGET_COMMERCIAL_OCR_VERSION=fixture-ocr-version
+ROLLBACK_API_IMAGE_ID=sha256:fixture-target
+declare -A COMPONENT_IMAGE_ID=([api-shared]="$ROLLBACK_API_IMAGE_ID")
+declare -A running_images=()
+for service in "\${SERVICES[@]}"; do running_images["$service"]=sha256:fixture-old; done
+paused=0
+quiescence_permit=0
+event() { printf 'fixture-event\t%s\t%s\n' "$1" "\${2:-}"; }
+maxim_webhook_quiesce_for_api_rollout() { paused=1; event quiesce; }
+maxim_webhook_assert_api_rollout_quiescence() { [[ "$paused" -eq 1 ]]; quiescence_permit=1; }
+maxim_topology_is_api_service() { [[ -v "running_images[$1]" ]]; }
+maxim_topology_require_publisher_secret_files() { :; }
+remove_incompatible_publisher_container() { event publisher-remove; }
+maxim_topology_stop_media_analysis_before_api_transition() { event media-stop; }
+maxim_topology_recreate_ocr_native_sandbox() { event ocr-recreate; }
+maxim_topology_smoke_ocr_native_sandbox_uds() { event ocr-smoke; }
+maxim_topology_verify_ocr_native_sandbox_runtime() { :; }
+maxim_topology_reconcile_photo_native_sandbox() { event photo-reconcile; }
+maxim_topology_verify_api_commercial_ocr_version() { :; }
+maxim_topology_verify_photo_native_sandbox_for_image() { :; }
+maxim_topology_smoke_photo_native_sandbox_uds() { :; }
+wait_for_strict_smoke() { event live-smoke; }
+wait_for_url() { event live-smoke; }
+wait_for_service_running() { [[ "\${running_images[$1]}" == "$ROLLBACK_API_IMAGE_ID" ]]; }
+contains_service() {
+  local expected="$1" service
+  shift
+  for service in "$@"; do [[ "$service" != "$expected" ]] || return 0; done
+  return 1
+}
+docker() {
+  if [[ "$1" == compose && "\${4:-}" == up ]]; then
+    [[ "$paused" -eq 1 && "$quiescence_permit" -eq 1 ]]
+    quiescence_permit=0
+    shift 8
+    local service
+    for service in "$@"; do
+      [[ -v "running_images[$service]" ]]
+      [[ "$service" != '${failService}' ]] || return 17
+      running_images["$service"]="$ROLLBACK_API_IMAGE_ID"
+      event recreate "$service"
+    done
+  elif [[ "$1" == compose && "\${4:-}" == ps ]]; then
+    printf '%s\n' "\${@: -1}"
+  elif [[ "$1" == inspect ]]; then
+    printf '%s\n' "\${running_images[\${@: -1}]}"
+  else
+    printf 'Unexpected Docker fixture invocation\n' >&2
+    return 99
+  fi
+}
+${verifyFunction}
+verify_service_image_id() { verify_service_image_id_impl "$@"; event verify "$1"; }
+maxim_webhook_resume_after_api_fence() {
+  local service
+  for service in "\${SERVICES[@]}"; do [[ "\${running_images[$service]}" == "$ROLLBACK_API_IMAGE_ID" ]]; done
+  paused=0
+  event resume
+}
+${rollbackKind === 'runtime-ref' ? 'maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES\nmaxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES' : ''}
+${recreation}
+`;
+  return spawnSync('bash', ['--noprofile', '--norc', '-euo', 'pipefail', '-s'], {
+    input: fixture,
+    encoding: 'utf8',
+    timeout: 5_000,
+  });
+}
 
 function resolveRepoFile(path) {
   return resolve(import.meta.dirname, '..', '..', path);

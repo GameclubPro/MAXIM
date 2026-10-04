@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261004120000_add_marketplace_shared_analytics",
-  "baselineNamesSha256": "eeec57f1be965599a3894c5df35dc3010c2561493382dba2d03854ffc60a8721",
-  "baselineContentsSha256": "1925d5674f9214adc6200ad2fc167bfd57fb7151de22ae7c18013a4c5847c0cb",
+  "baselineThrough": "20261004190000_add_duplicate_diagnostics_history",
+  "baselineNamesSha256": "ac2f20cbf752eac07d770f23ceb6903f2e3b8dd72d175122c3190736e2009d33",
+  "baselineContentsSha256": "f505f3d77d1dde86d66176f566d3d9588f400e20ad76d8904ab2853249b8b4f5",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -96,6 +96,11 @@
       "reason": "Manual review approved two static trigger functions that validate Publisher auto-reply trigger ownership and mirror the legacy primary phrase plus archive state, plus an atomic widening of the authoring-message kind check for durable callback deduplication. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION, PL/pgSQL bodies, UPDATE OF, and the check-constraint replacement as dynamic or destructive, but this migration contains no dynamic EXECUTE and drops no schema object, column, or accepted value.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Every existing-table column is nullable or has an exact-match-compatible constant default, all legacy phrase columns and indexes remain present, existing authoring PHRASE and CONTENT rows remain accepted, and existing deliveries retain EXACT_FULL distance-zero snapshots. The explicit PostgreSQL transaction holds the parent-rule write lock from the additive ALTER through the backfill and trigger installation, so the one position-zero trigger per legacy rule and the database mirror remain aligned with mixed-version writers throughout a rolling deployment."
+    },
+    "20261004190000_add_duplicate_diagnostics_history": {
+      "reason": "Reviewed additive observer-only projection and one static reason-insert/update trigger. The function uses an exact primary-key intent lookup and never grants authority, scans retained history, or mutates existing intents. Projection insertion failure does not abort moderation.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Old and new reason writers register duplicate intents through the same database trigger. Old readers ignore the new empty table; new diagnostics report PROJECTED_ONLY. Legacy recovery is a separate exact-chat preview-first bounded operation that writes only this projection."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -149,6 +154,9 @@
     },
     "20261004120000_add_marketplace_shared_analytics": {
       "reason": "Indexes are created only on new empty marketplace integration tables; no existing source table or historical data is rewritten."
+    },
+    "20261004190000_add_duplicate_diagnostics_history": {
+      "reason": "The ordered per-chat index belongs only to the new empty diagnostic projection. No index is built on existing intent/reason history and no historical backfill occurs during migration."
     }
   }
 }

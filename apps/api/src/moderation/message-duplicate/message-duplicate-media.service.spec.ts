@@ -13,15 +13,20 @@ import {
   duplicateSettings,
   duplicateUpdate,
   preUnicodeNearSettingsDigests,
+  preSafeTextSettingsDigests,
 } from './message-duplicate-test-fixtures';
 import type { MessageDuplicateJob } from './message-duplicate.queue';
 import {
   PhotoDownloadHttpError,
   PhotoDownloadSourceRejectedError,
+  PhotoDownloadByteLimitExceededError,
+  PhotoDownloadFormatRejectedError,
+  PhotoDownloadTimeoutError,
 } from '../photo-duplicate/secure-photo-downloader';
+import { PhotoNativeUnavailableError } from '../photo-duplicate/photo-fingerprint';
 import { UnrecoverableError } from 'bullmq';
 
-function setup() {
+function setup(config: Record<string, unknown> = {}) {
   const settings = { ...duplicateSettings(), chat: { entityType: 'CHAT', admins: [] } };
   const now = Date.now() - 10000;
   const rows = new Map<string, unknown>();
@@ -33,8 +38,13 @@ function setup() {
       cache.set(key, value);
     }),
     setStringIfAbsentWithTtl: jest.fn(async (key: string, value: string) => {
-      if (!cache.has(key)) cache.set(key, value);
+      if (cache.has(key)) return false;
+      cache.set(key, value);
+      return true;
     }),
+    admitDuplicateHeavyStart: jest
+      .fn()
+      .mockResolvedValue({ kind: 'granted', startedAtMs: Date.now() }),
   };
   const prisma = {
     webhookEvent: {
@@ -59,7 +69,9 @@ function setup() {
       return { match, outcome: match ? 'MATCHED' : 'COMPARED_NO_MATCH' };
     }),
   };
-  const enforcement = { enqueue: jest.fn() };
+  const enforcement = {
+    enqueue: jest.fn().mockResolvedValue({ kind: 'intent_accepted', intentId: 'intent' }),
+  };
   const bots = {
     isKnownBotUserId: jest.fn().mockReturnValue(false),
     getDefaultBotId: () => 'bot',
@@ -78,7 +90,7 @@ function setup() {
     enforcement as never,
     bots as never,
     governor as never,
-    new ConfigService(),
+    new ConfigService(config),
     max as never,
     botContext,
     metrics as never,
@@ -142,6 +154,7 @@ function setup() {
     settings,
     rows,
     cache,
+    redis,
     history,
     downloads,
     lease,
@@ -158,6 +171,155 @@ function setup() {
 }
 
 describe('bounded message duplicate media analysis', () => {
+  it.each(['STRICT', 'CUSTOM_NEAR', 'CUSTOM_PHONE'] as const)(
+    'rejects pre-safe-text %s settings before any download or native work',
+    async (preset) => {
+      const s = setup();
+      s.settings.duplicateDetectionPreset = preset === 'STRICT' ? 'STRICT' : 'CUSTOM';
+      s.settings.duplicateNearMatchEnabled = preset === 'CUSTOM_NEAR';
+      s.settings.duplicateIgnorePhonesEnabled = preset === 'CUSTOM_PHONE';
+      const job = s.job('old-safe-text', 0);
+      job.settingsDigest = preSafeTextSettingsDigests[preset];
+      expect(await s.service.process(job, s.lease)).toBe('SETTINGS_CHANGED');
+      expect(s.downloads).not.toHaveBeenCalled();
+      expect(s.photos.fingerprintAlbum).not.toHaveBeenCalled();
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['qualification_rejected', 'MATCHED_QUALIFICATION_REJECTED'],
+    ['claim_blocked', 'MATCHED_CLAIM_BLOCKED'],
+    ['policy_changed', 'POLICY_CHANGED'],
+    ['binding_invalid', 'MATCHED_INELIGIBLE'],
+  ] as const)(
+    'reports an actual %s action refusal instead of accepted intent',
+    async (reason, outcome) => {
+      const s = setup();
+      await s.service.process(s.job('first', 0), s.lease);
+      s.history.observe.mockResolvedValue({
+        hit: {},
+        binding: { eventTimestampMs: Date.now() - 1000 },
+      });
+      s.enforcement.enqueue.mockResolvedValue({ kind: 'rejected', reason });
+      expect(await s.service.process(s.job('repeat', 100), s.lease)).toBe(outcome);
+      expect(s.metrics.recordObservation).toHaveBeenLastCalledWith('-123', outcome, true);
+    },
+  );
+
+  it('measures pre-head wait once and keeps pure cached comparisons outside heavy pressure', async () => {
+    const s = setup();
+    const first = s.job('first', 0);
+    first.idempotencyKey = `message-duplicate__${'1'.repeat(64)}`;
+    const repeat = s.job('repeat', 100);
+    repeat.idempotencyKey = `message-duplicate__${'2'.repeat(64)}`;
+    await s.service.process(first, s.lease);
+    await s.service.process(repeat, s.lease);
+    expect(s.downloads).toHaveBeenCalledTimes(2);
+    const firstHeadSamples = s.metrics.recordPhase.mock.calls.filter(
+      ([phase]) => phase === 'prehead_wait',
+    );
+    expect(firstHeadSamples).toHaveLength(2);
+    s.governor.decide.mockClear().mockResolvedValue({ action: 'pause', retryAfterMs: 180_000 });
+    await s.service.process(repeat, s.lease);
+    expect(s.governor.decide).not.toHaveBeenCalled();
+    expect(s.downloads).toHaveBeenCalledTimes(2);
+    expect(s.metrics.record).toHaveBeenCalledWith('media.cache_only');
+    expect(
+      s.metrics.recordPhase.mock.calls.filter(([phase]) => phase === 'prehead_wait'),
+    ).toHaveLength(2);
+  });
+
+  it('timeboxes a stuck first-head diagnostic without blocking a policy decision', async () => {
+    jest.useFakeTimers();
+    try {
+      const s = setup();
+      s.policy.resolve.mockResolvedValue({ mode: 'off', revision: 1 });
+      s.redis.setStringIfAbsentWithTtl.mockImplementation(() => new Promise(() => {}));
+      const result = s.service.process(s.job('diagnostic-outage', 0), s.lease);
+      await jest.advanceTimersByTimeAsync(251);
+      expect(await result).toBe('POLICY_CHANGED');
+      expect(s.metrics.recordPhase).not.toHaveBeenCalledWith('prehead_wait', expect.any(Number));
+      expect(s.downloads).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('measures only additional shared-gate wait after prior queue-age credit', async () => {
+    const s = setup({ MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED: true });
+    await s.service.process(s.job('first', 0), s.lease);
+    const repeat = s.job('repeat', 100);
+    repeat.createdAt = new Date(Date.now() - 100_000).toISOString();
+    const gateStartedAt = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(gateStartedAt);
+    try {
+      s.governor.decide.mockResolvedValue({ action: 'slow', retryAfterMs: 90_000 });
+      s.redis.admitDuplicateHeavyStart.mockResolvedValueOnce({
+        kind: 'deferred',
+        retryAtMs: gateStartedAt + 5000,
+      });
+      await expect(s.service.process(repeat, s.lease)).rejects.toMatchObject({
+        reason: 'governor_slow',
+      });
+      expect(s.metrics.recordPhase).not.toHaveBeenCalledWith('governor_wait', expect.any(Number));
+      clock.mockReturnValue(gateStartedAt + 1500);
+      await s.service.process(repeat, s.lease);
+      expect(s.metrics.recordPhase).toHaveBeenCalledWith('governor_wait', 1500);
+      expect(s.metrics.record).toHaveBeenCalledWith('media.governor_credit_reused');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('requires fresh pause before prior wait or shared budget and fails closed on unavailable budget', async () => {
+    const s = setup({ MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED: true });
+    await s.service.process(s.job('first', 0), s.lease);
+    const repeat = s.job('repeat', 100);
+    repeat.createdAt = new Date(Date.now() - 100_000).toISOString();
+    s.governor.decide.mockResolvedValue({ action: 'pause', retryAfterMs: 180_000 });
+    await expect(s.service.process(repeat, s.lease)).rejects.toMatchObject({
+      reason: 'governor_pause',
+    });
+    expect(s.redis.admitDuplicateHeavyStart).not.toHaveBeenCalled();
+    s.governor.decide.mockResolvedValue({ action: 'slow', retryAfterMs: 90_000 });
+    s.redis.admitDuplicateHeavyStart.mockRejectedValueOnce(new Error('redis unavailable'));
+    await expect(s.service.process(repeat, s.lease)).rejects.toMatchObject({
+      reason: 'governor_slow',
+      retryAfterMs: 90_000,
+    });
+    expect(s.downloads).not.toHaveBeenCalled();
+    expect(s.redis.admitDuplicateHeavyStart).toHaveBeenCalledWith({
+      eligibleAtMs: Date.parse(repeat.createdAt) + 90_000,
+      intervalMs: 90_000,
+      deadlineAtMs: expect.any(Number),
+    });
+    await s.service.process(repeat, s.lease);
+    expect(s.downloads).toHaveBeenCalledTimes(2);
+    expect(s.metrics.record).toHaveBeenCalledWith('media.governor_credit_reused');
+  });
+
+  it.each([
+    [new PhotoDownloadByteLimitExceededError(), 'bytes'],
+    [new PhotoDownloadFormatRejectedError('private-format-error'), 'format'],
+    [new PhotoDownloadTimeoutError(), 'source_timeout'],
+    [new PhotoNativeUnavailableError(), 'native_unavailable'],
+    [new PhotoDownloadHttpError(403), 'http_4xx'],
+    [new PhotoDownloadHttpError(503), 'http_5xx'],
+  ] as const)('records only bounded failure code %s', async (error, reason) => {
+    const s = setup();
+    await s.service.process(s.job('first', 0), s.lease);
+    s.downloads.mockRejectedValueOnce(error);
+    const operation = s.service.process(s.job('repeat', 100), s.lease);
+    if (
+      error instanceof UnrecoverableError ||
+      (error instanceof PhotoDownloadHttpError && error.statusCode === 403)
+    )
+      await operation;
+    else await expect(operation).rejects.toBe(error);
+    expect(s.metrics.record).toHaveBeenCalledWith(`media.failure_${reason}`);
+    expect(JSON.stringify(s.metrics.record.mock.calls)).not.toContain('private-format-error');
+  });
   it.each(['STRICT', 'CUSTOM'] as const)(
     'rejects queued pre-Unicode %s evidence before media work',
     async (preset) => {
@@ -311,6 +473,52 @@ describe('bounded message duplicate media analysis', () => {
     s.photos.fingerprintAlbum.mockResolvedValue(complete);
     return { ...s, photoJob, complete };
   }
+
+  it.each([
+    ['unsupported_multi_frame', 'multiframe'],
+    ['image_byte_limit_exceeded', 'bytes'],
+    ['image_pixel_limit_exceeded', 'pixels'],
+    ['album_decode_budget_exceeded', 'album_budget'],
+  ] as const)(
+    'keeps IMAGE %s rejection terminal and outside action authority',
+    async (reason, counter) => {
+      const s = photoSetup();
+      await s.service.process(s.photoJob('first', 0, 'https://i.oneme.ru/a'), s.lease);
+      s.photos.fingerprintAlbum.mockResolvedValueOnce(s.complete).mockResolvedValueOnce({
+        kind: 'incomplete',
+        reason,
+      });
+      await expect(
+        s.service.process(s.photoJob('repeat', 100, 'https://i.oneme.ru/a'), s.lease),
+      ).rejects.toMatchObject({ reason });
+      expect(
+        s.metrics.record.mock.calls.filter(([value]) => value === `media.failure_${counter}`),
+      ).toHaveLength(1);
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reports a missing photo URL distinctly after an unchanged source refresh', async () => {
+    const s = photoSetup();
+    await s.service.process(s.photoJob('first', 0, 'https://i.oneme.ru/a'), s.lease);
+    const current = s.photoJob('repeat', 100);
+    s.photos.fingerprintAlbum.mockResolvedValueOnce(s.complete).mockResolvedValue({
+      kind: 'incomplete',
+      reason: 'missing_download_url',
+    });
+    const row = s.rows.get(current.webhookEventId) as {
+      normalizedPayload: ReturnType<typeof duplicateUpdate>;
+    };
+    s.max.getExactMessageRow.mockResolvedValue(
+      (row.normalizedPayload.raw as { message: unknown }).message,
+    );
+    await expect(s.service.process(current, s.lease)).rejects.toMatchObject({
+      reason: 'missing_download_url',
+    });
+    expect(s.metrics.record).toHaveBeenCalledWith('media.failure_source_missing');
+    expect(s.metrics.record).not.toHaveBeenCalledWith('media.failure_other');
+    expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+  });
 
   it('charges every album member when an outer hash checkpoint contains only a prefix', async () => {
     const s = photoSetup();
@@ -688,7 +896,12 @@ describe('bounded message duplicate media analysis', () => {
     if (change === 'author') raw.sender.user_id = 999;
     if (change === 'chat') raw.recipient.chat_id = -999;
     s.max.getExactMessageRow.mockResolvedValue(change === 'deleted' ? null : raw);
-    await expect(s.service.process(current, s.lease)).rejects.toThrow('source changed');
+    const rejectionReason = change === 'deleted' ? 'source_unavailable' : 'source_changed';
+    await expect(s.service.process(current, s.lease)).rejects.toMatchObject({
+      reason: rejectionReason,
+    });
+    expect(s.metrics.record).toHaveBeenCalledWith(`media.failure_${rejectionReason}`);
+    expect(s.metrics.record).not.toHaveBeenCalledWith('media.failure_other');
     expect(s.photos.fingerprintAlbum).toHaveBeenCalledTimes(2);
     expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(1);
     expect(

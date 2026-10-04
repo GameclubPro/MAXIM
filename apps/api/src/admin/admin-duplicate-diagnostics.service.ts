@@ -1,10 +1,15 @@
-import { messageDuplicateOriginalSchema } from '../moderation/message-duplicate/message-duplicate-state';
+import {
+  messageDuplicateBindingSchema,
+  messageDuplicateOriginalSchema,
+} from '../moderation/message-duplicate/message-duplicate-state';
 import { Injectable, Optional } from '@nestjs/common';
 import {
   duplicateDiagnosticsResponseSchema,
+  duplicateMessageLinkResponseSchema,
   type DuplicateDeletionAttempt,
   type DuplicateDeletionCapability,
   type DuplicateDiagnosticsResponse,
+  type DuplicateMessageLinkResponse,
 } from '@maxim/contracts/settings';
 import { Prisma, type ModerationDeleteIntentStatus } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,20 +18,13 @@ import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.
 import { MessageDuplicatePolicyService } from '../moderation/message-duplicate/message-duplicate-policy.service';
 import { MessageDuplicateMetricsService } from '../moderation/message-duplicate/message-duplicate-metrics.service';
 import { emptyDuplicateObservationDiagnostics } from '../moderation/message-duplicate/message-duplicate-telemetry';
+import { MaxClientService, MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import {
+  duplicateHistoryQuery,
+  encodeDuplicateHistoryCursor,
+  readDuplicateHistoryPage,
+} from './admin-duplicate-diagnostics-history';
 
-const STATUSES: ModerationDeleteIntentStatus[] = [
-  'OBSERVED',
-  'PENDING',
-  'IN_PROGRESS',
-  'RETRYABLE',
-  'WAITING_CAPABILITY',
-  'AMBIGUOUS',
-  'SUCCEEDED',
-  'ALREADY_ABSENT',
-  'EXPIRED',
-  'FAILED_TERMINAL',
-];
-const SAMPLE_PER_STATUS = 20;
 type AttemptRow = {
   id: string;
   status: ModerationDeleteIntentStatus;
@@ -37,8 +35,13 @@ type AttemptRow = {
   remoteDeleteSucceededAt: Date | null;
   absenceVerifiedAt: Date | null;
   lastErrorCode: string | null;
-  duplicate: boolean;
-  reasonsLimited: boolean;
+  messageId?: string;
+  sourceMessageAt?: Date | null;
+  registeredAt?: Date;
+  cursorAt?: string;
+  binding?: unknown;
+  kind?: unknown;
+  sanctionEvidence?: unknown;
   original?: unknown;
 };
 
@@ -75,13 +78,69 @@ export function presentDuplicateDeletionAttempt(
     message_duplicate_manual_release: 'IMMUNITY',
   };
   const original = messageDuplicateOriginalSchema.safeParse(row.original);
+  const binding = messageDuplicateBindingSchema.safeParse(row.binding);
+  const verifiedBinding =
+    binding.success && binding.data.messageId === row.messageId ? binding.data : null;
+  const boundOriginal = verifiedBinding?.original ?? (original.success ? original.data : undefined);
+  const kinds = new Set(['exact', 'content', 'near', 'link', 'phone', 'image', 'image_set']);
+  const sanction = verifiedBinding?.sanction;
+  const confirmedSanction =
+    sanction &&
+    Array.isArray(row.sanctionEvidence) &&
+    row.sanctionEvidence.some((entry) => {
+      // FLAG: A durable WARN decision is terminal without the BAN/MUTE remote receipt flag.
+      // An explicit failure marker still cannot confirm any sanction.
+      if (
+        !entry ||
+        typeof entry !== 'object' ||
+        entry.action !== sanction.action ||
+        (sanction.action === 'WARN' ? entry.applied === false : entry.applied !== true)
+      )
+        return false;
+      const candidate = messageDuplicateBindingSchema.safeParse(entry.binding);
+    // FLAG: The strict schema supplies canonical field order, including every authority fence
+      // and the full sanction tuple. A previous revision's receipt never confirms this one.
+      return (
+        candidate.success && JSON.stringify(candidate.data) === JSON.stringify(verifiedBinding)
+      );
+    });
   return {
-    ...(original.success
+    ...(row.messageId
+      ? {
+          target: {
+            messageId: row.messageId,
+            publishedAt: row.sourceMessageAt?.toISOString() ?? null,
+          },
+        }
+      : {}),
+    ...(row.registeredAt ? { registeredAt: row.registeredAt.toISOString() } : {}),
+    ...(verifiedBinding
+      ? {
+          comparison: {
+            mode: verifiedBinding.compareMode,
+            kind:
+              typeof row.kind === 'string' && kinds.has(row.kind)
+                ? (row.kind as NonNullable<DuplicateDeletionAttempt['comparison']>['kind'])
+                : 'unknown',
+            windowSeconds: verifiedBinding.windowSeconds,
+            firstDeletedMessageNumber: verifiedBinding.requiredCount,
+          },
+        }
+      : {}),
+    ...(sanction
+      ? {
+          sanction: {
+            action: sanction.action,
+            state: confirmedSanction ? ('CONFIRMED' as const) : ('REQUESTED' as const),
+          },
+        }
+      : {}),
+    ...(boundOriginal
       ? {
           original: {
-            messageId: original.data.messageId,
-            publishedAt: new Date(original.data.publishedAtMs).toISOString(),
-            repeatAllowedAt: new Date(original.data.expiresAtMs).toISOString(),
+            messageId: boundOriginal.messageId,
+            publishedAt: new Date(boundOriginal.publishedAtMs).toISOString(),
+            repeatAllowedAt: new Date(boundOriginal.expiresAtMs).toISOString(),
           },
         }
       : {}),
@@ -111,9 +170,15 @@ export class AdminDuplicateDiagnosticsService {
     private readonly planner: MaxBotExecutionPlannerService,
     private readonly policy: MessageDuplicatePolicyService,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
+    @Optional() private readonly maxClient?: MaxClientService,
   ) {}
 
-  async read(chatId: string, recheck = false): Promise<DuplicateDiagnosticsResponse> {
+  async read(
+    chatId: string,
+    recheck = false,
+    query: unknown = {},
+  ): Promise<DuplicateDiagnosticsResponse> {
+    const page = readDuplicateHistoryPage(chatId, query);
     const settings = await this.prisma.chatSettings.findUnique({
       where: { chatId },
       select: { antiDuplicateEnabled: true },
@@ -133,66 +198,38 @@ export class AdminDuplicateDiagnosticsService {
       /* FLAG: Unknown runtime state must not promise enforcement. */
     }
     const capability = await this.readCapability(chatId, recheck);
-    const since = new Date(Date.now() - 24 * 60 * 60_000);
     const history: DuplicateDiagnosticsResponse['history'] = {
       available: false,
-      since: since.toISOString(),
+      since: page.since,
       sampledIntents: 0,
-      limited: false,
+      // FLAG: Legacy reasons may not have been projected. Even an empty page is not proof
+      // of no historical attempts; bounded diagnostic recovery is an explicit operation.
+      limited: true,
+      coverage: 'PROJECTED_ONLY',
+      nextCursor: null,
       attempts: [],
     };
     try {
-      // FLAG: Bound each indexed chat/status walk before inspecting reasons. No raw messages,
-      // excerpts, bot identities or free-form errors may enter this admin-facing response.
       const rows = await this.prisma.$transaction(
         async (tx) => {
           await tx.$executeRaw`SET LOCAL statement_timeout = '2000ms'`;
-          return tx.$queryRaw<AttemptRow[]>(Prisma.sql`
-          WITH statuses(status) AS (VALUES ${Prisma.join(STATUSES.map((status) => Prisma.sql`(CAST(${status} AS "ModerationDeleteIntentStatus"))`))})
-          SELECT recent.*, reason."duplicate", reason."reasonsLimited", reason."original"
-          FROM statuses
-          CROSS JOIN LATERAL (
-            SELECT id, status, created_at AS "createdAt", updated_at AS "updatedAt",
-              next_attempt_at AS "nextAttemptAt", retry_until_at AS "retryUntilAt",
-              remote_delete_succeeded_at AS "remoteDeleteSucceededAt",
-              absence_verified_at AS "absenceVerifiedAt", last_error_code AS "lastErrorCode"
-            FROM moderation_delete_intents
-            WHERE chat_id = ${chatId} AND status = statuses.status AND created_at >= ${since}
-            ORDER BY created_at DESC
-            LIMIT ${SAMPLE_PER_STATUS + 1}
-          ) recent
-          CROSS JOIN LATERAL (
-            SELECT COALESCE(bool_or(rule_code = 'DUPLICATE_DELETE'), false) AS "duplicate",
-              count(*) > 8 AS "reasonsLimited",
-              (array_agg(original) FILTER (WHERE rule_code = 'DUPLICATE_DELETE' AND original IS NOT NULL))[1] AS "original"
-            FROM (
-              SELECT rule_code, metadata->'messageDuplicate'->'original' AS original
-              FROM moderation_delete_intent_reasons
-              WHERE intent_id = recent.id ORDER BY reason_key ASC LIMIT 9
-            ) bounded_reasons
-          ) reason
-        `);
+          return tx.$queryRaw<AttemptRow[]>(duplicateHistoryQuery(chatId, page));
         },
         { timeout: 3000, maxWait: 1000 },
       );
-      const counts = new Map<string, number>();
-      const sample = rows
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
-        .filter((row) => {
-          const count = (counts.get(row.status) ?? 0) + 1;
-          counts.set(row.status, count);
-          return count <= SAMPLE_PER_STATUS;
-        });
+      const sample = rows.slice(0, page.limit);
       history.available = true;
       history.sampledIntents = sample.length;
-      history.limited =
-        rows.some((row) => row.reasonsLimited) ||
-        [...counts.values()].some((count) => count > SAMPLE_PER_STATUS);
-      history.attempts = sample
-        .filter((row) => row.duplicate)
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
-        .slice(0, 5)
-        .map((row) => presentDuplicateDeletionAttempt(row, Date.now()));
+      history.attempts = sample.map((row) => presentDuplicateDeletionAttempt(row, Date.now()));
+      const last = sample.at(-1);
+      if (rows.length > page.limit && last)
+        history.nextCursor = encodeDuplicateHistoryCursor({
+          version: 1,
+          chatId,
+          until: page.until,
+          at: last.cursorAt ?? last.createdAt.toISOString(),
+          id: last.id,
+        });
     } catch {
       /* FLAG: A bounded audit failure is unavailable history, never an empty successful audit. */
     }
@@ -206,6 +243,64 @@ export class AdminDuplicateDiagnosticsService {
         : emptyDuplicateObservationDiagnostics('UNAVAILABLE'),
       history,
     });
+  }
+
+  async readMessageLink(
+    chatId: string,
+    intentId: string,
+    role: 'target' | 'original',
+  ): Promise<DuplicateMessageLinkResponse> {
+    const unavailable: DuplicateMessageLinkResponse = { state: 'UNAVAILABLE', url: null };
+    if (!this.maxClient) return unavailable;
+    const row = await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET LOCAL statement_timeout = '2000ms'`;
+        const rows = await tx.$queryRaw<Array<{ messageId: string; binding: unknown }>>(Prisma.sql`
+        SELECT intent.message_id AS "messageId", reason.metadata->'messageDuplicate' AS binding
+        FROM duplicate_diagnostics_history history
+        JOIN moderation_delete_intents intent ON intent.id = history.intent_id AND intent.chat_id = ${chatId}
+        LEFT JOIN LATERAL (
+          SELECT metadata FROM moderation_delete_intent_reasons
+          WHERE intent_id = intent.id AND rule_code = 'DUPLICATE_DELETE'
+          ORDER BY updated_at DESC, id DESC LIMIT 1
+        ) reason ON TRUE
+        WHERE history.chat_id = ${chatId} AND history.intent_id = ${intentId}
+        LIMIT 1
+      `);
+        return rows[0];
+      },
+      { timeout: 3000, maxWait: 1000 },
+    );
+    if (!row) return unavailable;
+    const binding = messageDuplicateBindingSchema.safeParse(row.binding);
+    const messageId =
+      role === 'target'
+        ? row.messageId
+        : binding.success && binding.data.messageId === row.messageId
+          ? binding.data.original?.messageId
+          : null;
+    if (!messageId) return unavailable;
+    try {
+      const route = await this.bots.resolveStrictWriteModerationBotRoute({ chatId });
+      if (!route.botId) return unavailable;
+      // FLAG: Links come only from an exact-chat MAX lookup and the existing deep-link
+      // parser. Missing/deleted messages never acquire a guessed URL from their IDs.
+      const message = await this.maxClient.getExactMessageRow(chatId, messageId, {
+        botId: route.botId,
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.PHOTO_DUPLICATE_ADMIN_CHECK,
+        timeoutMs: 2000,
+      });
+      const snapshot = message ? this.maxClient.parseChannelMessageSnapshot(chatId, message) : null;
+      if (snapshot?.messageId !== messageId || !snapshot.url) return unavailable;
+      const result = duplicateMessageLinkResponseSchema.safeParse({
+        state: 'AVAILABLE',
+        url: snapshot.url,
+      });
+      return result.success ? result.data : unavailable;
+    } catch {
+      return unavailable;
+    }
   }
 
   private async readCapability(

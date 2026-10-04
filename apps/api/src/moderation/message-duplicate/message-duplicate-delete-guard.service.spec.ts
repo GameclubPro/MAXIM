@@ -21,6 +21,7 @@ import {
   duplicateSettings,
   duplicateUpdate,
   preUnicodeNearSettingsDigests,
+  preSafeTextSettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 function setup() {
@@ -203,6 +204,34 @@ describe('scheduled duplicate final action guard', () => {
 });
 
 describe('message duplicate final delete guard', () => {
+  it.each([
+    ['STRICT', { duplicateDetectionPreset: 'STRICT' }],
+    ['CUSTOM_NEAR', { duplicateDetectionPreset: 'CUSTOM', duplicateNearMatchEnabled: true }],
+    ['CUSTOM_PHONE', { duplicateDetectionPreset: 'CUSTOM', duplicateIgnorePhonesEnabled: true }],
+  ] as const)(
+    'rejects previous %s grants before qualification and MAX dispatch',
+    async (key, overrides) => {
+      const s = setup();
+      Object.assign(s.settings, overrides);
+      s.binding.settingsDigest = preSafeTextSettingsDigests[key];
+      await expect(
+        s.service.assertQualificationAuthority(s.params.chatId, s.binding),
+      ).rejects.toMatchObject({
+        code: 'message_duplicate_settings_changed',
+      });
+      for (const authorityOnly of [false, true]) {
+        await expect(
+          s.service.assertIntentStillActionable({ ...s.params, authorityOnly }),
+        ).rejects.toMatchObject({
+          code: 'message_duplicate_settings_changed',
+        });
+      }
+      expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+      expect(s.history.qualify).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(['STRICT', 'CUSTOM'] as const)(
     'rejects stored pre-Unicode %s grants at both dispatch boundaries',
     async (preset) => {
