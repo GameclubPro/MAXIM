@@ -55,9 +55,15 @@ export class PhotoDecodePipelineCapacityError extends Error {
   }
 }
 
+export class PhotoDecodeDeadlineError extends Error {
+  constructor() {
+    super('Photo decode deadline exceeded');
+  }
+}
+
 export class PhotoDecodePipelineGate {
   private active = 0;
-  private readonly waiters: Array<() => void> = [];
+  private readonly waiters: Array<{ resolve: () => void; timer: NodeJS.Timeout | null }> = [];
 
   constructor(
     private readonly maxConcurrent: number,
@@ -67,17 +73,20 @@ export class PhotoDecodePipelineGate {
     validatePositiveInteger(maxQueued, 'maxQueued');
   }
 
-  async run<T>(operation: () => Promise<T>): Promise<T> {
-    await this.acquire();
+  async run<T>(operation: () => Promise<T>, deadlineAtMs = Number.MAX_SAFE_INTEGER): Promise<T> {
+    await this.acquire(deadlineAtMs);
     try {
-      // Keep the slot until sharp actually settles. AbortSignal/Promise.race cannot stop native work.
+      // FLAG: A deadline may cancel waiting, never free running native capacity.
+      // Native execution owns physical teardown before this operation settles.
+      if (Date.now() >= deadlineAtMs) throw new PhotoDecodeDeadlineError();
       return await operation();
     } finally {
       this.release();
     }
   }
 
-  private async acquire(): Promise<void> {
+  private async acquire(deadlineAtMs: number): Promise<void> {
+    if (Date.now() >= deadlineAtMs) throw new PhotoDecodeDeadlineError();
     if (this.active < this.maxConcurrent) {
       this.active += 1;
       return;
@@ -86,13 +95,27 @@ export class PhotoDecodePipelineGate {
       throw new PhotoDecodePipelineCapacityError();
     }
 
-    await new Promise<void>((resolve) => this.waiters.push(resolve));
+    await new Promise<void>((resolve, reject) => {
+      const waiter = { resolve, timer: null as NodeJS.Timeout | null };
+      if (deadlineAtMs !== Number.MAX_SAFE_INTEGER) {
+        waiter.timer = setTimeout(
+          () => {
+            const position = this.waiters.indexOf(waiter);
+            if (position >= 0) this.waiters.splice(position, 1);
+            reject(new PhotoDecodeDeadlineError());
+          },
+          Math.max(1, Math.min(2_147_483_647, deadlineAtMs - Date.now())),
+        );
+      }
+      this.waiters.push(waiter);
+    });
   }
 
   private release(): void {
     const next = this.waiters.shift();
     if (next) {
-      next();
+      if (next.timer) clearTimeout(next.timer);
+      next.resolve();
       return;
     }
     this.active -= 1;

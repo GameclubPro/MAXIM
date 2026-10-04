@@ -347,6 +347,10 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     TARGET_HAS_MEDIA_ANALYSIS \
     TARGET_COMMERCIAL_OCR_VERSION \
     TARGET_HAS_OCR_NATIVE_SANDBOX
+  maxim_topology_prepare_photo_native_target "${API_SOURCE_SHA}" COMPOSE_FILES
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 0 ]]; then
+    maxim_topology_remove_service SERVICES "$MAXIM_PHOTO_NATIVE_SANDBOX_SERVICE"
+  fi
 fi
 
 for component in "${SELECTED_COMPONENTS[@]}"; do
@@ -366,6 +370,7 @@ done
 if [[ "$SELECT_API" -eq 1 ]]; then
   maxim_topology_require_ocr_native_sandbox_image_capability \
     "${COMPONENT_IMAGE_ID[api-shared]}" "$TARGET_HAS_OCR_NATIVE_SANDBOX"
+  maxim_topology_require_photo_native_image_capability "${COMPONENT_IMAGE_ID[api-shared]}"
 fi
 
 if [[ "$SELECT_API" -eq 1 ]]; then
@@ -642,6 +647,8 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     fi
   fi
 
+  maxim_topology_reconcile_photo_native_sandbox COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}"
+
   # FLAG: Keep every webhook consumer and producer stopped until non-webhook API roles are fenced.
   for service in \
     api-moderation \
@@ -682,6 +689,10 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   wait_for_strict_smoke json-ok http://127.0.0.1:3001/api/health/live
   wait_for_strict_smoke json-ok http://127.0.0.1:3002/api/health/live
   SMOKE_RESULTS+=(api-local-live api-admin-live)
+  maxim_topology_verify_photo_native_sandbox_for_image COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}"
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_smoke_photo_native_sandbox_uds COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}"
+  fi
   maxim_webhook_resume_after_api_fence COMPOSE_FILES
 fi
 if [[ "$SELECT_MINIAPP" -eq 1 ]]; then
@@ -698,6 +709,9 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   wait_for_strict_smoke json-ok http://127.0.0.1:3002/api/health/ready
   wait_for_strict_smoke json-ok "$PUBLIC_HEALTH_URL/api/health/live"
   SMOKE_RESULTS+=(api-local-ready api-admin-ready api-public-live)
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    SMOKE_RESULTS+=(api-photo-native-sandbox-isolation api-photo-native-sandbox-uds)
+  fi
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     if [[ "$TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE" -eq 1 ]]; then
       if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then

@@ -544,6 +544,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     TARGET_HAS_MEDIA_ANALYSIS \
     TARGET_COMMERCIAL_OCR_VERSION \
     TARGET_HAS_OCR_NATIVE_SANDBOX
+  maxim_topology_prepare_photo_native_target "${TARGET_SHA}" COMPOSE_FILES
 fi
 
 BUILD_STATIC_IMAGE=0
@@ -571,6 +572,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   SCALE_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${SCALE_PROJECT_NAME}-api-ingress:latest")"
   maxim_topology_require_ocr_native_sandbox_image_capability \
     "$SCALE_API_IMAGE_ID" "$TARGET_HAS_OCR_NATIVE_SANDBOX"
+  maxim_topology_require_photo_native_image_capability "${SCALE_API_IMAGE_ID}"
 fi
 
 if ! run_migrations; then
@@ -621,6 +623,9 @@ if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
   fi
 fi
 
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_topology_reconcile_photo_native_sandbox COMPOSE_FILES "$SCALE_API_IMAGE_ID"
+fi
 recreate_service_wave "worker" \
   "api-enqueue" \
   "api-action" \
@@ -633,6 +638,12 @@ recreate_service_wave "worker" \
   "api-moderation-realtime-d" \
   "api-moderation-background"
 ensure_requested_services_running "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_topology_verify_photo_native_sandbox_for_image COMPOSE_FILES "$SCALE_API_IMAGE_ID"
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_smoke_photo_native_sandbox_uds COMPOSE_FILES "$SCALE_API_IMAGE_ID"
+  fi
+fi
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
 wait_for_url "http://127.0.0.1:3001/api/health/ready" 180

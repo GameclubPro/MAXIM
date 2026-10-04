@@ -26,6 +26,7 @@ export const PRODUCTION_API_SERVICES = Object.freeze([
 export const API_SHARED_SERVICES = Object.freeze([
   ...PRODUCTION_API_SERVICES,
   'ocr-native-sandbox',
+  'photo-native-sandbox',
 ]);
 
 export const ROLLBACK_COMPONENT_SERVICES = Object.freeze({

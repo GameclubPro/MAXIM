@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# shellcheck source=infra/scripts/lib/photo-native-lifecycle.sh
+source "$(dirname "${BASH_SOURCE[0]}")/photo-native-lifecycle.sh"
+
 MAXIM_PRODUCTION_API_SERVICES=(
   "api-ingress"
   "api-admin"
@@ -1244,6 +1247,7 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
 }
 
 maxim_topology_verify_ocr_native_sandbox_for_image() {
+  maxim_topology_verify_photo_native_sandbox_for_image "$1" "$2" || return 1
   local compose_args_var="$1"
   local image="$2"
   local capability_status

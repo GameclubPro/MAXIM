@@ -82,6 +82,7 @@ describe('runtime role dependency graphs', () => {
         REDIS_URL: 'redis://localhost:6379',
         COMMERCIAL_OCR_ROLLOUT_MODE: 'off',
         COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-ocr/graph-ocr.sock',
+        PHOTO_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-photo/native-photo.sock',
         MODERATION_ENABLED_QUEUES: service.moderationQueues.join(','),
       });
       for (const key of [

@@ -3,6 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, devices } from 'playwright';
+import { clickSettingsOverviewEntry } from './settings-overview-browser-helpers.mjs';
 import {
   allocateMiniappBaseUrl,
   ensureMiniappDevServer,
@@ -268,7 +269,7 @@ try {
       safeTop: name.startsWith('iphone') ? 59 : 24,
       safeBottom: name.startsWith('iphone') ? 34 : 0,
     });
-    await page.getByRole('button', { name: 'Стиль речи', exact: true }).click();
+    await clickSettingsOverviewEntry(page, 'Стиль речи');
     const panel = page.locator('.settings-drilldown__panel--speech');
     await panel.waitFor();
     for (const style of ['Робот', 'Друг', 'Коп', 'Шут']) {

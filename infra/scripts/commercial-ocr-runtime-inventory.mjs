@@ -2,9 +2,11 @@
 
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { isReviewedPhotoNativeSandboxRuntime } from './photo-native-runtime-boundary.cjs';
 
 const MAX_INSPECT_BYTES = 16 * 1024 * 1024;
 const OCR_NATIVE_SANDBOX_SERVICE = 'ocr-native-sandbox';
+const PHOTO_NATIVE_SANDBOX_SERVICE = 'photo-native-sandbox';
 const OCR_NATIVE_SANDBOX_COMMAND = Object.freeze([
   'node',
   'apps/api/dist/apps/api/src/moderation/commercial-ocr/native-ocr-sandbox.entrypoint.js',
@@ -77,9 +79,12 @@ export function classifyCommercialOcrApiContainerInventory(
   if (expectedImageId !== null && !imageIdPattern.test(expectedImageId)) {
     throw new Error('Commercial OCR inventory expected image id is invalid.');
   }
+  const expectedAuxiliaries = new Set(expectedAuxiliaryService?.split(',') ?? []);
   if (
-    expectedAuxiliaryService !== null &&
-    expectedAuxiliaryService !== OCR_NATIVE_SANDBOX_SERVICE
+    expectedAuxiliaries.size !== (expectedAuxiliaryService?.split(',').length ?? 0) ||
+    [...expectedAuxiliaries].some(
+      (service) => ![OCR_NATIVE_SANDBOX_SERVICE, PHOTO_NATIVE_SANDBOX_SERVICE].includes(service),
+    )
   ) {
     throw new Error('Commercial OCR inventory expected auxiliary service is invalid.');
   }
@@ -109,6 +114,17 @@ export function classifyCommercialOcrApiContainerInventory(
         composeService === OCR_NATIVE_SANDBOX_SERVICE ||
         isExpectedComposeServiceContainerName(name, expectedProject, OCR_NATIVE_SANDBOX_SERVICE) ||
         hasExactStringArray(container?.Config?.Cmd, OCR_NATIVE_SANDBOX_COMMAND);
+      const photoNativeSandboxSignal =
+        labels['com.maxim.photo-native-sandbox'] === 'true' ||
+        composeService === PHOTO_NATIVE_SANDBOX_SERVICE ||
+        isExpectedComposeServiceContainerName(
+          name,
+          expectedProject,
+          PHOTO_NATIVE_SANDBOX_SERVICE,
+        ) ||
+        container?.Config?.Cmd?.includes(
+          'apps/api/dist/apps/api/src/moderation/photo-duplicate/native-photo-sandbox.entrypoint.js',
+        );
       const protectedApiSignal =
         releaseProtected &&
         (apiRoleSignal ||
@@ -125,7 +141,8 @@ export function classifyCommercialOcrApiContainerInventory(
         protectedApiSignal ||
         imageMatches ||
         ownedName ||
-        ocrNativeSandboxSignal;
+        ocrNativeSandboxSignal ||
+        photoNativeSandboxSignal;
       const candidate =
         (project === expectedProject && (apiLikeService || apiRoleSignal || maximSpecificSignal)) ||
         maximSpecificSignal ||
@@ -139,25 +156,41 @@ export function classifyCommercialOcrApiContainerInventory(
         imageIsReviewed,
         candidate,
         owned: project === expectedProject || (project === null && ownedName),
-        auxiliaryCandidate: ocrNativeSandboxSignal,
+        auxiliaryCandidate: ocrNativeSandboxSignal || photoNativeSandboxSignal,
+        auxiliaryService: photoNativeSandboxSignal
+          ? PHOTO_NATIVE_SANDBOX_SERVICE
+          : OCR_NATIVE_SANDBOX_SERVICE,
         reviewedAuxiliary:
-          expectedAuxiliaryService === OCR_NATIVE_SANDBOX_SERVICE &&
-          project === expectedProject &&
-          composeService === OCR_NATIVE_SANDBOX_SERVICE &&
-          name !== null &&
-          isExpectedComposeServiceContainerName(
-            name,
-            expectedProject,
-            OCR_NATIVE_SANDBOX_SERVICE,
-          ) &&
-          imageIsReviewed &&
-          releaseProtected &&
-          ocrNativeSandbox &&
-          ocrNativeSandboxCapable &&
-          appService === null &&
-          appRole === null &&
-          ocrVersion === null &&
-          isReviewedOcrNativeSandboxRuntime(container, expectedProject),
+          (expectedAuxiliaries.has(PHOTO_NATIVE_SANDBOX_SERVICE) &&
+            photoNativeSandboxSignal &&
+            !ocrNativeSandboxSignal &&
+            project === expectedProject &&
+            composeService === PHOTO_NATIVE_SANDBOX_SERVICE &&
+            imageIsReviewed &&
+            isExpectedComposeServiceContainerName(
+              name,
+              expectedProject,
+              PHOTO_NATIVE_SANDBOX_SERVICE,
+            ) &&
+            isReviewedPhotoNativeSandboxRuntime(container, expectedProject, expectedImageId)) ||
+          (expectedAuxiliaries.has(OCR_NATIVE_SANDBOX_SERVICE) &&
+            !photoNativeSandboxSignal &&
+            project === expectedProject &&
+            composeService === OCR_NATIVE_SANDBOX_SERVICE &&
+            name !== null &&
+            isExpectedComposeServiceContainerName(
+              name,
+              expectedProject,
+              OCR_NATIVE_SANDBOX_SERVICE,
+            ) &&
+            imageIsReviewed &&
+            releaseProtected &&
+            ocrNativeSandbox &&
+            ocrNativeSandboxCapable &&
+            appService === null &&
+            appRole === null &&
+            ocrVersion === null &&
+            isReviewedOcrNativeSandboxRuntime(container, expectedProject)),
       };
     })
     .filter((container) => container.candidate);
@@ -181,9 +214,13 @@ export function classifyCommercialOcrApiContainerInventory(
   const reviewedAuxiliaryCount = candidates.filter(
     (container) => container.reviewedAuxiliary,
   ).length;
-  const auxiliaryCandidateCount = candidates.filter(
-    (container) => container.auxiliaryCandidate,
-  ).length;
+  const auxiliaryCounts = new Map();
+  for (const container of candidates.filter((container) => container.auxiliaryCandidate)) {
+    auxiliaryCounts.set(
+      container.auxiliaryService,
+      (auxiliaryCounts.get(container.auxiliaryService) ?? 0) + 1,
+    );
+  }
 
   const ownedUnreviewedIds = [];
   const ambiguousIds = [];
@@ -197,7 +234,7 @@ export function classifyCommercialOcrApiContainerInventory(
       container.imageIsReviewed &&
       reviewedCounts.get(container.composeService) === 1;
     const reviewedAuxiliary =
-      container.reviewedAuxiliary && reviewedAuxiliaryCount === 1 && auxiliaryCandidateCount === 1;
+      container.reviewedAuxiliary && auxiliaryCounts.get(container.auxiliaryService) === 1;
     const reviewed = reviewedRole || reviewedAuxiliary;
     if (reviewed) continue;
     (container.owned ? ownedUnreviewedIds : ambiguousIds).push(container.id);
@@ -207,7 +244,7 @@ export function classifyCommercialOcrApiContainerInventory(
   return Object.freeze({
     ownedUnreviewedIds: Object.freeze(ownedUnreviewedIds),
     ambiguousIds: Object.freeze(ambiguousIds),
-    expectedAuxiliaryCount: expectedAuxiliaryService === null ? 0 : 1,
+    expectedAuxiliaryCount: expectedAuxiliaries.size,
     reviewedAuxiliaryCount,
   });
 }
@@ -333,7 +370,12 @@ function isApiLikeContainerName(value) {
 
 function isExpectedProjectApiContainerName(value, expectedProject, expectedServices) {
   if (typeof value !== 'string') return false;
-  const candidates = ['api', OCR_NATIVE_SANDBOX_SERVICE, ...expectedServices];
+  const candidates = [
+    'api',
+    OCR_NATIVE_SANDBOX_SERVICE,
+    PHOTO_NATIVE_SANDBOX_SERVICE,
+    ...expectedServices,
+  ];
   return candidates.some(
     (service) =>
       value === `/${expectedProject}-${service}-1` ||
@@ -373,12 +415,12 @@ function readContainerId(value) {
 function main(argv) {
   const [expectedImageIdRaw, expectedAuxiliaryRaw, ...expectedServices] = argv;
   if (
-    !['none', OCR_NATIVE_SANDBOX_SERVICE].includes(expectedAuxiliaryRaw) ||
+    typeof expectedAuxiliaryRaw !== 'string' ||
     ![13, 14].includes(expectedServices.length) ||
     new Set(expectedServices).size !== expectedServices.length
   ) {
     throw new Error(
-      'Usage: commercial-ocr-runtime-inventory.mjs <none|expected-image-id> <none|ocr-native-sandbox> <13 or 14 expected services>',
+      'Usage: commercial-ocr-runtime-inventory.mjs <none|expected-image-id> <none|comma-separated-sandbox-services> <13 or 14 expected services>',
     );
   }
   const expectedImageId = expectedImageIdRaw === 'none' ? null : expectedImageIdRaw;
