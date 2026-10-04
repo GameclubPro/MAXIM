@@ -4,6 +4,8 @@ import {
   type DuplicateCleanupBinding,
   releaseUnusedDuplicateClaim,
   reconcileDuplicateClaimCleanup,
+  DUPLICATE_CLEANUP_BATCH_SIZE,
+  type DuplicateCleanupSample,
 } from './message-duplicate/message-duplicate-claim-cleanup';
 import { isValidDeleteBotMessagesDelayMinutes } from '@maxim/contracts/settings';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -1658,15 +1660,17 @@ export class ModerationDeleteIntentService {
     return this.runSerializableTransaction((tx) => releaseUnusedDuplicateClaim(tx, params));
   }
 
-  async reconcileExpiredMessageDuplicateActions(): Promise<number> {
+  async reconcileExpiredMessageDuplicateActions(
+    report?: (sample: DuplicateCleanupSample) => void,
+  ): Promise<number> {
     const dueAt = new Date();
     // FLAG: A dedicated due index bounds candidate selection independently of
     // retained claims and BullMQ. Each exact obligation is settled separately.
     const candidates = await this.prisma.messageDuplicateClaimCleanup.findMany({
       where: { deadlineAt: { lte: dueAt } },
       orderBy: [{ deadlineAt: 'asc' }, { claimId: 'asc' }],
-      take: 25,
-      select: { claimId: true },
+      take: DUPLICATE_CLEANUP_BATCH_SIZE,
+      select: { claimId: true, deadlineAt: true },
     });
     let released = 0;
     for (const candidate of candidates) {
@@ -1676,6 +1680,21 @@ export class ModerationDeleteIntentService {
         )
       )
         released += 1;
+    }
+    // FLAG: Reuse only the bounded due selection. This is a lower bound at selection
+    // time, never total queue depth or authority; observer faults cannot undo cleanup.
+    try {
+      report?.({
+        sampledDue: candidates.length,
+        sampleLimit: DUPLICATE_CLEANUP_BATCH_SIZE,
+        sampleLimitReached: candidates.length === DUPLICATE_CLEANUP_BATCH_SIZE,
+        oldestDueAgeMs: candidates[0]
+          ? Math.max(0, dueAt.getTime() - candidates[0].deadlineAt.getTime())
+          : null,
+        released,
+      });
+    } catch {
+      // FLAG: Diagnostics cannot replace an already committed cleanup outcome.
     }
     return released;
   }

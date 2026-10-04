@@ -183,6 +183,15 @@ without treating incomplete proof as a match or successful action. Media retains
 
 ## Operational Diagnostics
 
+The SQL cleanup reconciler retains its limit of 25 due obligations per 10-second tick. Its
+`message_duplicate_cleanup_sample` log reuses that indexed selection: `sampledDue` is a lower
+bound at selection time, `sampleLimitReached` means the sample reached 25, and `oldestDueAgeMs`
+is the age of the oldest selected deadline. It never performs a total-depth count or another
+scan. Logs appear while a due sample exists and once when it becomes empty; a failed read is
+reported as unavailable, never zero. `released` counts released owners, while materialized or
+locked duties can remain unreleased. Logs contain no owner/chat/message identifiers, and a
+diagnostic failure cannot change cleanup or action authority.
+
 API processes emit `message_duplicate_diagnostics` structured summaries with `schemaVersion: 2`,
 `windowStartedAt`, `windowEndedAt`, fixed numeric `counters` and `phases`. Each phase has a count,
 total/max duration and a histogram aligned with `phaseBucketUpperBoundsMs`. Policy, source,

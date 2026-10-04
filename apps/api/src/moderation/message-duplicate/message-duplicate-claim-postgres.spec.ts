@@ -103,17 +103,30 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       own: ModerationMessageActionClaimData,
     ) => {
       if (own.ruleCode !== 'DUPLICATE_MESSAGE_ACTION') {
-        return prisma.$transaction(
-          (tx) =>
-            claimDurableModerationMessageAction({
-              model:
-                tx.moderationViolationMessageClaim as unknown as ModerationMessageActionClaimModel,
-              data: own,
-              resumeKnownOwner: true,
-              inTransaction: true,
-            }),
-          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-        );
+        // A foreign-rule fixture must retry the same SERIALIZABLE conflict as the
+        // real action owner; the winning transaction is intentionally nondeterministic.
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            return await prisma.$transaction(
+              (tx) =>
+                claimDurableModerationMessageAction({
+                  model:
+                    tx.moderationViolationMessageClaim as unknown as ModerationMessageActionClaimModel,
+                  data: own,
+                  resumeKnownOwner: true,
+                  inTransaction: true,
+                }),
+              { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+            );
+          } catch (error) {
+            if (
+              attempt >= 2 ||
+              !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+              error.code !== 'P2034'
+            )
+              throw error;
+          }
+        }
       }
       const binding = cleanupBindings.get(own.dedupeKey) ?? bindingFor(own, Date.now());
       cleanupBindings.set(own.dedupeKey, binding);
@@ -165,6 +178,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
               chatId,
               messageId: input.messageId,
               subjectUserId: input.subjectUserId,
+              ...(input.executeAt ? { executeAt: new Date(input.executeAt) } : {}),
               retryUntilAt: new Date(input.retryUntilAt!),
             },
           });
@@ -628,7 +642,19 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
     it('recovers a lost queue job once from SQL and keeps an old worker revoked', async () => {
       const { own, binding, owner } = await abandonedClaim('lost-queue');
       const recovered = serviceFor();
-      expect(await recovered.reconcileExpiredMessageDuplicateActions()).toBe(1);
+      const report = jest.fn(() => {
+        throw new Error('diagnostics unavailable');
+      });
+      expect(await recovered.reconcileExpiredMessageDuplicateActions(report)).toBe(1);
+      expect(report).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sampledDue: 1,
+          sampleLimit: 25,
+          sampleLimitReached: false,
+          oldestDueAgeMs: expect.any(Number),
+          released: 1,
+        }),
+      );
       expect(await recovered.reconcileExpiredMessageDuplicateActions()).toBe(0);
       expect(await preclaim(intents, own)).toBe('blocked');
       expect(
@@ -738,6 +764,112 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       expect(counts.reduce((sum, count) => sum + count, 0)).toBe(1);
     });
 
+    it('serializes a real locked cleanup duty against the atomic intent handoff', async () => {
+      const { own, binding, owner } = await abandonedClaim('duty-lock-handoff');
+      let locked!: () => void;
+      let proceed!: () => void;
+      let deleting!: () => void;
+      const lockReached = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const continued = new Promise<void>((resolve) => {
+        proceed = resolve;
+      });
+      const deleteReached = new Promise<void>((resolve) => {
+        deleting = resolve;
+      });
+      let paused = false;
+      let cleanupAttempts = 0;
+      let handoffAttempts = 0;
+      const database = (side: 'cleanup' | 'handoff') => ({
+        messageDuplicateClaimCleanup: prisma.messageDuplicateClaimCleanup,
+        $transaction: (
+          operation: (tx: Prisma.TransactionClient) => Promise<unknown>,
+          options: object,
+        ) => {
+          if (side === 'cleanup') cleanupAttempts += 1;
+          else handoffAttempts += 1;
+          return prisma.$transaction(
+            (tx) =>
+              operation(
+                new Proxy(tx, {
+                  get(target, key) {
+                    if (side === 'cleanup' && key === '$queryRaw')
+                      return async (...args: unknown[]) => {
+                        const result = await Reflect.apply(Reflect.get(target, key), target, args);
+                        if (!paused) {
+                          paused = true;
+                          locked();
+                          await continued;
+                        }
+                        return result;
+                      };
+                    if (side === 'handoff' && key === 'messageDuplicateClaimCleanup')
+                      return new Proxy(tx.messageDuplicateClaimCleanup, {
+                        get(model, method) {
+                          if (method !== 'deleteMany') return Reflect.get(model, method);
+                          return async (...args: unknown[]) => {
+                            deleting();
+                            return Reflect.apply(Reflect.get(model, method), model, args);
+                          };
+                        },
+                      });
+                    return Reflect.get(target, key);
+                  },
+                }),
+              ),
+            options,
+          );
+        },
+      });
+      const cleanup = serviceFor(database('cleanup')).reconcileExpiredMessageDuplicateActions();
+      await lockReached;
+      const input = handoffFor(own, binding);
+      const handoff = serviceFor(database('handoff')).ensureIntentWithMessageActionClaim({
+        ...input,
+        // Model a handoff scheduled before its deadline but completing after expiry.
+        intent: { ...input.intent, executeAt: new Date(binding.eventTimestampMs) },
+      });
+      try {
+        await Promise.race([
+          deleteReached,
+          handoff.then(() => {
+            throw new Error('Handoff finished before the duty lock boundary');
+          }),
+        ]);
+      } finally {
+        proceed();
+      }
+      const [released, result] = await Promise.all([cleanup, handoff]);
+      expect(cleanupAttempts + handoffAttempts).toBeGreaterThanOrEqual(3);
+      const retained = await prisma.moderationViolationMessageClaim.findUniqueOrThrow({
+        where: { id: owner.id },
+      });
+      const materialized = await prisma.moderationDeleteIntent.findUnique({
+        where: { chatId_messageId: { chatId, messageId: own.messageId } },
+      });
+      const revoked = await prisma.moderationViolationMessageClaim.findUnique({
+        where: {
+          dedupeKey: duplicateRevocationKey(chatId, own.messageId, binding.eventTimestampMs),
+        },
+      });
+      expect(
+        await prisma.messageDuplicateClaimCleanup.findUnique({ where: { claimId: owner.id } }),
+      ).toBeNull();
+      if (released === 1) {
+        expect(result).toEqual({ claim: 'blocked', intent: null });
+        expect(retained.messageActionKey).toBeNull();
+        expect(materialized).toBeNull();
+        expect(revoked).not.toBeNull();
+      } else {
+        expect(released).toBe(0);
+        expect(result).toMatchObject({ claim: 'resumed', intent: { intentId: materialized?.id } });
+        expect(retained.messageActionKey).toBe(own.messageActionKey);
+        expect(materialized).not.toBeNull();
+        expect(revoked).toBeNull();
+      }
+    });
+
     it('selects only due obligations through the due index under skewed retained history', async () => {
       const future = new Date(Date.now() + 3_600_000);
       const claims = Array.from({ length: 2048 }, (_, i) => ({
@@ -759,7 +891,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       await prisma.$executeRawUnsafe('ANALYZE message_duplicate_claim_cleanup');
       const explain = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
         EXPLAIN (ANALYZE, FORMAT JSON)
-        SELECT "claim_id" FROM "message_duplicate_claim_cleanup"
+        SELECT "claim_id", "deadline_at" FROM "message_duplicate_claim_cleanup"
         WHERE "deadline_at" <= ${new Date()}
         ORDER BY "deadline_at", "claim_id" LIMIT 25
       `);
@@ -769,6 +901,34 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         .Plan;
       expect(plan['Actual Rows']).toBe(2);
       expect(await serviceFor().reconcileExpiredMessageDuplicateActions()).toBe(2);
+    });
+
+    it('reports only the selected due lower bound and processes at most 25 per sweep', async () => {
+      await Promise.all(
+        Array.from({ length: 27 }, (_, index) => abandonedClaim(`sample-${index}`)),
+      );
+      const report = jest.fn();
+      expect(await serviceFor().reconcileExpiredMessageDuplicateActions(report)).toBe(25);
+      expect(report).toHaveBeenLastCalledWith({
+        sampledDue: 25,
+        sampleLimit: 25,
+        sampleLimitReached: true,
+        oldestDueAgeMs: expect.any(Number),
+        released: 25,
+      });
+      expect(report.mock.calls[0]![0].oldestDueAgeMs).toBeGreaterThanOrEqual(1000);
+      expect(await serviceFor().reconcileExpiredMessageDuplicateActions(report)).toBe(2);
+      expect(report).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sampledDue: 2, sampleLimitReached: false, released: 2 }),
+      );
+      expect(await serviceFor().reconcileExpiredMessageDuplicateActions(report)).toBe(0);
+      expect(report).toHaveBeenLastCalledWith({
+        sampledDue: 0,
+        sampleLimit: 25,
+        sampleLimitReached: false,
+        oldestDueAgeMs: null,
+        released: 0,
+      });
     });
 
     it('records one initial admission across concurrent processes and total queue loss', async () => {

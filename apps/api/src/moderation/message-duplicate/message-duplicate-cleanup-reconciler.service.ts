@@ -6,6 +6,7 @@ export class MessageDuplicateCleanupReconcilerService implements OnModuleInit, O
   private readonly logger = new Logger(MessageDuplicateCleanupReconcilerService.name);
   private timer?: NodeJS.Timeout;
   private inFlight = false;
+  private hadDueSample = false;
 
   constructor(private readonly intents: ModerationDeleteIntentService) {}
 
@@ -25,8 +26,16 @@ export class MessageDuplicateCleanupReconcilerService implements OnModuleInit, O
     if (this.inFlight) return;
     this.inFlight = true;
     try {
-      const released = await this.intents.reconcileExpiredMessageDuplicateActions();
-      if (released) this.logger.log({ released }, 'Duplicate unused claims reconciled');
+      await this.intents.reconcileExpiredMessageDuplicateActions((sample) => {
+        const shouldLog = sample.sampledDue > 0 || this.hadDueSample;
+        this.hadDueSample = sample.sampledDue > 0;
+        if (shouldLog)
+          this.logger.log({
+            event: 'message_duplicate_cleanup_sample',
+            schemaVersion: 1,
+            ...sample,
+          });
+      });
     } catch {
       this.logger.warn('Duplicate unused claim reconciliation unavailable');
     } finally {
