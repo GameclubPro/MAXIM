@@ -1,6 +1,12 @@
 export const MESSAGE_DUPLICATE_PHASES = [
   'policy',
   'source',
+  'prehead_wait',
+  'governor_gate',
+  'governor_wait',
+  'proof_read',
+  'photo_download',
+  'binary_download',
   'media',
   'history',
   'enforcement',

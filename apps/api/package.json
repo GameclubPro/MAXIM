@@ -94,7 +94,10 @@
     "moderation:commercial-text-control": "tsx src/scripts/commercial-text-runtime-control.ts",
     "reports:retention-preview": "tsx src/scripts/preview-report-detail-retention.ts",
     "moderation:report-commercial-quality": "tsx src/scripts/report-commercial-quality.ts",
-    "moderation:export-commercial-private-images": "tsx src/scripts/export-commercial-private-images.ts"
+    "moderation:export-commercial-private-images": "tsx src/scripts/export-commercial-private-images.ts",
+    "moderation:recover-duplicate-diagnostics": "sh -c 'if [ -f dist/apps/api/src/scripts/recover-duplicate-diagnostics.js ]; then exec node dist/apps/api/src/scripts/recover-duplicate-diagnostics.js \"$@\"; else exec tsx src/scripts/recover-duplicate-diagnostics.ts \"$@\"; fi' --",
+    "moderation:export-antiduplicate-corpus": "sh -c 'if [ -f dist/apps/api/src/scripts/export-antiduplicate-corpus.js ]; then exec node dist/apps/api/src/scripts/export-antiduplicate-corpus.js \"$@\"; else exec tsx src/scripts/export-antiduplicate-corpus.ts \"$@\"; fi' --",
+    "moderation:replay-antiduplicate-corpus": "sh -c 'if [ -f dist/apps/api/src/scripts/replay-antiduplicate-corpus.js ]; then exec node dist/apps/api/src/scripts/replay-antiduplicate-corpus.js \"$@\"; else exec tsx src/scripts/replay-antiduplicate-corpus.ts \"$@\"; fi' --"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

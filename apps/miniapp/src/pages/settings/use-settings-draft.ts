@@ -47,6 +47,7 @@ type SettingsConflict = {
 type Dependencies = {
   api: ApiTransport;
   chatId: string | undefined;
+  userId?: string | null;
   serverSettings: ChatSettings | undefined;
   refetchSettings(): Promise<{ data?: ChatSettingsScreenResponse }>;
   onHydrated(): void;
@@ -66,7 +67,10 @@ export function useSettingsDraft(dependencies: Dependencies) {
   const queryClient = useQueryClient();
   const latest = useRef(dependencies);
   latest.current = dependencies;
-  const identity = useMemo(() => ({ chatId }), [chatId]);
+  const identity = useMemo(
+    () => ({ chatId, userId: dependencies.userId }),
+    [chatId, dependencies.userId],
+  );
   const active = useRef<typeof identity | null>(identity);
   active.current = identity;
   const [draft, setOwnedDraft] = useState<ChatSettings | null>(null);
@@ -315,6 +319,15 @@ export function useSettingsDraft(dependencies: Dependencies) {
       );
     },
     onSuccess: (saved, request) => {
+      if (request.section === 'duplicates') {
+        // FLAG: Refresh only the saved request's chat, including a late receipt after navigation.
+        void queryClient.invalidateQueries({
+          predicate: ({ queryKey }) =>
+            queryKey[0] === 'duplicate-diagnostics' &&
+            queryKey[2] === request.identity.chatId &&
+            (request.identity.userId === undefined || queryKey[1] === request.identity.userId),
+        });
+      }
       // FLAG: Cache the original chat result; stale replies never mutate the current draft or dialogs.
       if (active.current !== request.identity) {
         queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(

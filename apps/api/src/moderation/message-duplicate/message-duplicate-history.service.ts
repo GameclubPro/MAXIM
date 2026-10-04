@@ -15,7 +15,7 @@ import {
   buildMessageDuplicateIdentity,
   digestDuplicateContent,
   exactImageSourceDigest,
-  isExactImageContent,
+  isDuplicateContentComparable,
   type DuplicateMessageContent,
 } from './message-duplicate-content';
 import {
@@ -174,8 +174,7 @@ export class MessageDuplicateHistoryService {
       source: sourceDigest,
       lifecycleSource: lifecycleSourceDigest(input.content, mode),
       identity: identity ?? '',
-      pendingSafe:
-        input.content.complete && (mode !== 'IMAGE' || isExactImageContent(input.content)),
+      pendingSafe: isDuplicateContentComparable(input.content, mode),
       mediaHashes,
       fingerprints: patterns.map((pattern) => pattern.hash),
       allowed: flow.allowedCount,
@@ -390,7 +389,7 @@ function lifecycleSourceDigest(
   mode: 'TEXT' | 'MESSAGE' | 'IMAGE',
 ): string {
   const source = duplicateSourceDigest(content, mode);
-  return content.complete && (mode !== 'IMAGE' || isExactImageContent(content))
+  return isDuplicateContentComparable(content, mode)
     ? source
     : digestDuplicateContent(['invalid-comparison-content-v2', source]);
 }

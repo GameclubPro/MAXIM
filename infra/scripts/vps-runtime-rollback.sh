@@ -578,9 +578,8 @@ recreate_runtime_api_wave() {
 non_webhook_services=(api-action)
 if [[ "$TARGET_HAS_PUBLISHER" -eq 1 ]]; then
   non_webhook_services+=(api-publisher)
-  non_webhook_services+=(api-message-retention)
 fi
-non_webhook_services+=(api-admin api-ingress)
+non_webhook_services+=(api-message-retention api-admin api-ingress)
 recreate_runtime_api_wave non-webhook "${non_webhook_services[@]}"
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
   if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then

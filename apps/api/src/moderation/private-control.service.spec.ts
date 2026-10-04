@@ -2260,7 +2260,9 @@ describe('PrivateControlService', () => {
       String(payload.text)
         .split('\n')
         .map((line) => line.replace(/^\d+\. /u, ''))
-        .filter((line) => /^(Антидубль |Не отправляйте |Одинаковые картинки)/u.test(line)),
+        .filter((line) =>
+          /^(Повторы учитываются |Антидубль |Не отправляйте |Одинаковые картинки)/u.test(line),
+        ),
     ).toEqual(fixture.expected);
   });
 

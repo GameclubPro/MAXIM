@@ -1,6 +1,7 @@
 import type { ChatSettings } from './core.js';
 import {
   resolveDuplicateFlowAllowedCount,
+  resolveDuplicateIntervalWindowSec,
   resolveDuplicateTextRuleSubjects,
   type DuplicatePhotoModerationMode,
 } from './duplicate-settings.js';
@@ -25,6 +26,9 @@ export type DuplicateRulesSettings = Pick<
   | 'duplicateWarnMaxCount'
   | 'duplicateMuteMaxCount'
   | 'duplicateBanMaxCount'
+  | 'duplicateWarnWindowSec'
+  | 'duplicateMuteWindowSec'
+  | 'duplicateBanWindowSec'
 >;
 
 /** Describes validated settings for newly generated rules; never modifies saved manual text. */
@@ -38,6 +42,12 @@ export function buildDuplicateRulesTextItems(
   if (settings.duplicateWindowMode === 'DAILY') {
     items.push(
       `Антидубль действует ежедневно с ${formatTime(settings.duplicateStartTimeMinutes)} до ${formatTime(settings.duplicateEndTimeMinutes)}${settings.duplicateStartTimeMinutes > settings.duplicateEndTimeMinutes ? ' следующего дня' : ''} (${settings.duplicateTimezone}). Вне этого периода повторы разрешены.`,
+    );
+  } else {
+    const seconds = resolveDuplicateIntervalWindowSec(settings);
+    const duration = seconds % 3_600 === 0 ? `${seconds / 3_600} ч` : `${seconds} сек`;
+    items.push(
+      `Повторы учитываются в течение ${duration} с принятого оригинала. Удалённые повторы не продлевают этот срок.`,
     );
   }
   const subjects = resolveDuplicateTextRuleSubjects(settings);

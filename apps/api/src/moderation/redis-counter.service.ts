@@ -4,6 +4,13 @@ import {
 } from './message-duplicate/message-duplicate-window.script';
 import { digestDuplicateContent } from './message-duplicate/message-duplicate-content';
 import {
+  DUPLICATE_HEAVY_ADMISSION_SCRIPT,
+  MESSAGE_DUPLICATE_HEAVY_ADMISSION_KEY,
+  parseDuplicateHeavyAdmission,
+  validateDuplicateHeavyAdmission,
+  type DuplicateHeavyAdmissionResult,
+} from './message-duplicate/message-duplicate-heavy-admission';
+import {
   DUPLICATE_TELEMETRY_FIELDS,
   DUPLICATE_TELEMETRY_TTL_SECONDS,
   MERGE_DUPLICATE_TELEMETRY_SCRIPT,
@@ -740,6 +747,24 @@ export class RedisCounterService implements OnModuleDestroy {
 
   async getString(key: string): Promise<string | null> {
     return this.redis.get(key);
+  }
+
+  async admitDuplicateHeavyStart(input: {
+    eligibleAtMs: number;
+    intervalMs: number;
+    deadlineAtMs: number;
+  }): Promise<DuplicateHeavyAdmissionResult> {
+    validateDuplicateHeavyAdmission(input);
+    return parseDuplicateHeavyAdmission(
+      await this.redis.eval(
+        DUPLICATE_HEAVY_ADMISSION_SCRIPT,
+        1,
+        MESSAGE_DUPLICATE_HEAVY_ADMISSION_KEY,
+        String(input.eligibleAtMs),
+        String(input.intervalMs),
+        String(input.deadlineAtMs),
+      ),
+    );
   }
 
   async getStrings(keys: readonly string[]): Promise<Array<string | null>> {

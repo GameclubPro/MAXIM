@@ -2,7 +2,7 @@ import { DUPLICATE_THRESHOLD_MAX, normalizeAllowlistLink } from '@maxim/contract
 import { createHash } from 'node:crypto';
 import type { ChatSettings } from '../prisma/prisma-client';
 import { raceWithTimeout } from '../common/promise-timeout.util';
-import { stripUrlsFromText } from '../common/url-text.util';
+import { replaceUrlsInText } from '../common/url-text.util';
 import {
   buildDuplicateFingerprintMembershipKey,
   buildDuplicateMessageStateKey,
@@ -17,9 +17,9 @@ import { extractClientClickableTextEvidence } from './navigation/client-clickabl
 import { extractNavigationEvidence } from './navigation/navigation-evidence.extractor';
 import { extractUrlsFromText } from './rule-engine-link-detector';
 import {
-  extractDetectedPhoneNumbers,
-  stripDetectedPhoneNumbers,
-} from './rule-engine-message-limits.detector';
+  extractDuplicatePhoneNumbers,
+  stripDuplicatePhoneNumbers,
+} from './duplicate-phone-evidence';
 import { RedisCounterService } from './redis-counter.service';
 import { resolveDuplicateFlowConfig, type DuplicateReactionStage } from './duplicate-flow-policy';
 import type {
@@ -375,7 +375,7 @@ export class RuleEngineDuplicateDetector {
     }
 
     if (config.matchPhoneValues) {
-      for (const phone of extractDetectedPhoneNumbers(rawText)) {
+      for (const phone of extractDuplicatePhoneNumbers(rawText)) {
         push('phone', phone);
       }
     }
@@ -419,10 +419,12 @@ export class RuleEngineDuplicateDetector {
     settings: ChatSettings,
     navigationTargets?: readonly NavigationTargetEvidence[],
   ): ResolvedDuplicateFingerprint[] {
+    const config = this.resolveFingerprintConfig(settings);
+    const safeTextMatching = config.ignorePhones || config.matchPhoneValues || config.nearMatch;
     return this.buildFingerprints(rawText, settings, navigationTargets).map((fingerprint) => {
       // FLAG: Never count old lossy fingerprints under the corrected comparison policy.
       const hash = createHash('sha256')
-        .update('text-v4\0')
+        .update(safeTextMatching ? 'text-v5\0' : 'text-v4\0')
         .update(fingerprint.value)
         .digest('hex')
         .slice(0, 20);
@@ -540,10 +542,11 @@ export class RuleEngineDuplicateDetector {
   ): string {
     let value = compactText;
     if (config.ignoreLinks) {
-      value = stripUrlsFromText(value);
+      // FLAG: Preserve physical phrase boundaries until phone evidence is extracted.
+      value = replaceUrlsInText(value, ' ');
     }
     if (config.ignorePhones) {
-      value = stripDetectedPhoneNumbers(value);
+      value = stripDuplicatePhoneNumbers(value);
     }
     return normalizeDuplicateText(value);
   }
@@ -568,23 +571,22 @@ export class RuleEngineDuplicateDetector {
     }
 
     // FLAG: All scripts/marks and their order are evidence. Symbols, emoji joiners and
-    // operator punctuation also carry meaning; preserve their position between words.
-    // Retain the whole protected gap so spacing cannot join previously separate emoji.
+    // punctuation also carries meaning; preserve its position between words. Spacing around
+    // punctuation is cosmetic, but the whole symbol/mark gap keeps separate emoji separate.
     const protectedGaps: Array<[number, string]> = [];
     let end = 0;
     const protectGap = (until: number, beforeToken: number) => {
       const gap = normalized.slice(end, until);
-      const numericBoundary =
-        /\p{N}/u.test(tokens[beforeToken - 1] ?? '') || /\p{N}/u.test(tokens[beforeToken] ?? '');
-      if (/[^\p{P}\p{Z}\s]|[%‰‱*/\\^|&#@]/u.test(gap) || (numericBoundary && /\S/u.test(gap)))
-        protectedGaps.push([beforeToken, gap]);
+      if (!/\S/u.test(gap)) return;
+      const protectedGap = /[^\p{P}\p{Z}\s]/u.test(gap) ? gap : gap.replace(/\s+/gu, '');
+      protectedGaps.push([beforeToken, protectedGap]);
     };
     matches.forEach((match, index) => {
       protectGap(match.index, index);
       end = match.index + match[0].length;
     });
     protectGap(normalized.length, tokens.length);
-    return JSON.stringify({ version: 2, tokens, numericTokens, protectedGaps });
+    return JSON.stringify({ version: 3, tokens, numericTokens, protectedGaps });
   }
 
   private extractNearNumericTokens(
@@ -593,10 +595,10 @@ export class RuleEngineDuplicateDetector {
   ): string[] {
     let source = value;
     if (config.ignoreLinks) {
-      source = stripUrlsFromText(source);
+      source = replaceUrlsInText(source, ' ');
     }
     if (config.ignorePhones) {
-      source = stripDetectedPhoneNumbers(source);
+      source = stripDuplicatePhoneNumbers(source);
     }
     return source.match(/[+-]?\d+(?:[.,:]\d+)*/gu) ?? [];
   }

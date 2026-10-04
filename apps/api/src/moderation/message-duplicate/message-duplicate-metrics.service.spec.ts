@@ -176,14 +176,18 @@ describe('privacy-safe message duplicate diagnostics', () => {
     service.recordObservation('chat', 'MEDIA_QUEUED', false);
     service.recordObservation('chat', 'DEFERRED', true);
     service.recordObservation('chat', 'COMPARED_NO_MATCH', true);
+    service.recordObservation('chat', 'MATCHED_QUALIFICATION_REJECTED', true);
+    service.recordObservation('chat', 'MATCHED_CLAIM_BLOCKED', true);
     await jest.advanceTimersByTimeAsync(30_000);
     expect(merge).toHaveBeenCalledTimes(1);
     expect(merge.mock.calls[0]?.[1]).toEqual({
       MEDIA_QUEUED: 1,
       DEFERRED: 1,
       COMPARED_NO_MATCH: 1,
-      supported: 2,
-      verified: 1,
+      MATCHED_QUALIFICATION_REJECTED: 1,
+      MATCHED_CLAIM_BLOCKED: 1,
+      supported: 4,
+      verified: 3,
     });
   });
 });

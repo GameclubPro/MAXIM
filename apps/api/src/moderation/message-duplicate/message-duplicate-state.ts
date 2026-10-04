@@ -151,10 +151,13 @@ export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   const nearEnabled =
     settings.duplicateDetectionPreset === 'STRICT' ||
     (settings.duplicateDetectionPreset === 'CUSTOM' && settings.duplicateNearMatchEnabled);
+  const phoneValueMatchingEnabled =
+    settings.duplicateDetectionPreset === 'CUSTOM' && settings.duplicateIgnorePhonesEnabled;
+  const safeTextMatchingEnabled = nearEnabled || phoneValueMatchingEnabled;
   return digestDuplicateContent({
-    // FLAG: Old near grants/jobs must fail the fresh guard, not merely miss new history.
+    // FLAG: Old near and phone-value grants/jobs must fail the fresh guard, not merely miss history.
     // Exact-only and IMAGE authority keep their existing versions and comparison semantics.
-    version: nearEnabled ? 'text-fixed-window-unicode-near-v6' : 'text-fixed-window-v5',
+    version: safeTextMatchingEnabled ? 'text-fixed-window-safe-text-v7' : 'text-fixed-window-v5',
     historyRevision: settings.duplicateHistoryRevision ?? 0,
     schedule: duplicateScheduleDigestInput(settings),
     enabled: settings.antiDuplicateEnabled,

@@ -117,7 +117,10 @@ describe('PhotoFingerprintService', () => {
       expect(nativeDecoder.fingerprint.mock.calls[0]![1]).not.toHaveProperty('timings');
       const original = new Error('native transport unavailable');
       nativeDecoder.fingerprint.mockRejectedValueOnce(original);
-      await expect(service.fingerprint(Buffer.from('c'), { timings })).rejects.toBe(original);
+      await expect(service.fingerprint(Buffer.from('c'), { timings })).rejects.toMatchObject({
+        name: 'PhotoNativeUnavailableError',
+        cause: original,
+      });
     } finally {
       release();
       clock.mockRestore();
@@ -286,7 +289,21 @@ describe('PhotoFingerprintService', () => {
   it('rejects oversized encoded input before decoding', async () => {
     await expect(
       new PhotoFingerprintService({ maxInputBytes: 4 }).fingerprint(Buffer.alloc(5)),
-    ).rejects.toThrow('byte length');
+    ).rejects.toMatchObject({ reason: 'image_byte_limit_exceeded' });
+  });
+
+  it('reports a decoder pixel limit distinctly without reserving album budget', async () => {
+    const encoded = await sharp({
+      create: { width: 10, height: 10, channels: 3, background: '#447799' },
+    })
+      .png()
+      .toBuffer();
+    const service = new PhotoFingerprintService({ canonicalOnly: true, maxInputPixels: 99 });
+    const budget = service.createAlbumDecodeBudget();
+    await expect(service.fingerprint(encoded, { albumBudget: budget })).rejects.toMatchObject({
+      reason: 'image_pixel_limit_exceeded',
+    });
+    expect(budget.usage()).toMatchObject({ encodedBytes: 0, pixels: 0 });
   });
 
   it('rejects when decoder output does not match the format detected from magic bytes', async () => {

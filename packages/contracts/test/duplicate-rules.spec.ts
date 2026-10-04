@@ -26,4 +26,24 @@ describe('duplicate rules presentation', () => {
       expect.stringContaining('картинки'),
     );
   });
+  it.each([
+    [{ duplicateWarnEnabled: true, duplicateMuteEnabled: true, duplicateBanEnabled: true }, 1],
+    [{ duplicateWarnEnabled: false, duplicateMuteEnabled: true, duplicateBanEnabled: true }, 24],
+    [{ duplicateWarnEnabled: false, duplicateMuteEnabled: false, duplicateBanEnabled: true }, 168],
+    [{ duplicateWarnEnabled: false, duplicateMuteEnabled: false, duplicateBanEnabled: false }, 1],
+  ])(
+    'describes the first enabled reaction interval without changing the stored ladder',
+    (stages, hours) => {
+      const settings = chatSettingsSchema.parse({
+        antiDuplicateEnabled: true,
+        duplicateWarnWindowSec: 3600,
+        duplicateMuteWindowSec: 86400,
+        duplicateBanWindowSec: 604800,
+        ...stages,
+      });
+      expect(buildDuplicateRulesTextItems(settings)[0]).toContain(
+        `в течение ${hours} ч с принятого оригинала`,
+      );
+    },
+  );
 });

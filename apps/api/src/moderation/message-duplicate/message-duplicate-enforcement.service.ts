@@ -1,5 +1,6 @@
 import { Injectable, Optional } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
+import type { DuplicateObservationOutcome } from '@maxim/contracts/settings';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { buildMessageScopedModerationActionClaimKey } from '../moderation-message-action-claim';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
@@ -26,6 +27,29 @@ import {
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
 
+export type DuplicateEnforcementResult =
+  | {
+      kind: 'rejected';
+      reason: 'binding_invalid' | 'policy_changed' | 'qualification_rejected' | 'claim_blocked';
+    }
+  | { kind: 'intent_accepted'; intentId: string };
+
+export function duplicateEnforcementObservation(
+  result: DuplicateEnforcementResult,
+): DuplicateObservationOutcome {
+  if (result.kind === 'intent_accepted') return 'ENFORCEMENT_REQUESTED';
+  switch (result.reason) {
+    case 'policy_changed':
+      return 'POLICY_CHANGED';
+    case 'qualification_rejected':
+      return 'MATCHED_QUALIFICATION_REJECTED';
+    case 'claim_blocked':
+      return 'MATCHED_CLAIM_BLOCKED';
+    case 'binding_invalid':
+      return 'MATCHED_INELIGIBLE';
+  }
+}
+
 @Injectable()
 export class MessageDuplicateEnforcementService {
   constructor(
@@ -46,7 +70,8 @@ export class MessageDuplicateEnforcementService {
     assertLease?: () => void;
     update?: MaxUpdate;
     executeFullAction?: ExecuteDuplicateModerationAction;
-  }): Promise<boolean> {
+  }): Promise<DuplicateEnforcementResult> {
+    this.metrics?.record('enforcement.match_found');
     const policy = await this.policy.resolve(params.chatId, true);
     const imageOnly = params.binding.compareMode === 'IMAGE';
     const full = policy.mode === 'full';
@@ -54,7 +79,8 @@ export class MessageDuplicateEnforcementService {
       ...params.binding,
       enforcementScope: full ? 'full' : 'delete_only',
     };
-    if (binding.version !== 3 || !binding.authorization) return false;
+    if (binding.version !== 3 || !binding.authorization)
+      return { kind: 'rejected', reason: 'binding_invalid' };
     const claim = {
       dedupeKey: `${MESSAGE_DUPLICATE_CLAIM_PREFIX}${digestDuplicateContent([params.chatId, binding.senderId, binding.messageId])}`,
       messageActionKey: buildMessageScopedModerationActionClaimKey(
@@ -77,14 +103,15 @@ export class MessageDuplicateEnforcementService {
     ) {
       this.metrics?.record('enforcement.policy_changed');
       await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
-      return false;
+      return { kind: 'rejected', reason: 'policy_changed' };
     }
     try {
       await this.guard.assertQualificationAuthority(params.chatId, binding);
     } catch (error) {
       if (error instanceof MessageDuplicateGuardRejectedError) {
         await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
-        return false;
+        this.metrics?.record('enforcement.qualification_rejected');
+        return { kind: 'rejected', reason: 'qualification_rejected' };
       }
       throw error;
     }
@@ -92,7 +119,7 @@ export class MessageDuplicateEnforcementService {
     // can reserve an escalation stage. Our own interrupted claim is resumable.
     if ((await this.intents.claimMessageActionBeforeQualification(claim, binding)) === 'blocked') {
       this.metrics?.record('enforcement.claim_blocked');
-      return false;
+      return { kind: 'rejected', reason: 'claim_blocked' };
     }
     let repeatCount: number | null;
     try {
@@ -108,13 +135,15 @@ export class MessageDuplicateEnforcementService {
     } catch (error) {
       if (error instanceof MessageDuplicateGuardRejectedError) {
         await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
-        return false;
+        this.metrics?.record('enforcement.qualification_rejected');
+        return { kind: 'rejected', reason: 'qualification_rejected' };
       }
       throw error;
     }
     if (repeatCount === null) {
       await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
-      return false;
+      this.metrics?.record('enforcement.qualification_rejected');
+      return { kind: 'rejected', reason: 'qualification_rejected' };
     }
     const decision = full
       ? resolveDuplicateFlowOutcome({
@@ -173,7 +202,8 @@ export class MessageDuplicateEnforcementService {
     } catch (error) {
       if (error instanceof MessageDuplicateGuardRejectedError) {
         await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
-        return false;
+        this.metrics?.record('enforcement.qualification_rejected');
+        return { kind: 'rejected', reason: 'qualification_rejected' };
       }
       throw error;
     }
@@ -186,13 +216,12 @@ export class MessageDuplicateEnforcementService {
     this.metrics?.record(
       result.claim === 'blocked' ? 'enforcement.claim_blocked' : 'enforcement.intent_handoff',
     );
+    if (result.claim === 'blocked') return { kind: 'rejected', reason: 'claim_blocked' };
+    // FLAG: Persisted intent acceptance is not a DELETE receipt or a completed sanction.
+    if (!result.intent.intentId) throw new Error('Message duplicate intent was not materialized');
+    this.metrics?.record('enforcement.intent_accepted');
     params.assertLease?.();
-    if (
-      full &&
-      result.claim !== 'blocked' &&
-      result.intent?.intentId &&
-      result.intent.rollout === 'execute'
-    ) {
+    if (full && result.intent?.intentId && result.intent.rollout === 'execute') {
       const check = async (sanction = false): Promise<boolean> => {
         params.assertLease?.();
         try {
@@ -250,6 +279,6 @@ export class MessageDuplicateEnforcementService {
             },
       );
     }
-    return result.claim !== 'blocked';
+    return { kind: 'intent_accepted', intentId: result.intent.intentId };
   }
 }

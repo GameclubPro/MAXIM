@@ -413,7 +413,9 @@ for (const fixture of duplicateRulesCases) {
       text
         .split('\n')
         .map((line) => line.replace(/^\d+\. /u, ''))
-        .filter((line) => /^(Антидубль |Не отправляйте |Одинаковые картинки)/u.test(line)),
+        .filter((line) =>
+          /^(Антидубль |Повторы учитываются |Не отправляйте |Одинаковые картинки)/u.test(line),
+        ),
       fixture.expected,
     );
   });

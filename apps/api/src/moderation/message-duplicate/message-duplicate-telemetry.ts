@@ -51,6 +51,8 @@ export function duplicateObservationIsVerified(outcome: DuplicateObservationOutc
     'MATCHED_INELIGIBLE',
     'MATCHED_OBSERVE',
     'MATCHED_ACTION_FAILED',
+    'MATCHED_QUALIFICATION_REJECTED',
+    'MATCHED_CLAIM_BLOCKED',
     'ENFORCEMENT_REQUESTED',
   ].includes(outcome);
 }

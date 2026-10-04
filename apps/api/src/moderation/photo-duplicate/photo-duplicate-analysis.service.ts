@@ -129,9 +129,11 @@ export class PhotoDuplicateAnalysisService {
 
       const image = params.album.images[index];
       const downloaded = await measureDuplicatePhase(this.metrics, 'download', () =>
-        deadlineAtMs === Number.MAX_SAFE_INTEGER
-          ? this.downloader.download(image.downloadUrl!)
-          : this.downloader.download(image.downloadUrl!, { deadlineAtMs }),
+        measureDuplicatePhase(this.metrics, 'photo_download', () =>
+          deadlineAtMs === Number.MAX_SAFE_INTEGER
+            ? this.downloader.download(image.downloadUrl!)
+            : this.downloader.download(image.downloadUrl!, { deadlineAtMs }),
+        ),
       );
       try {
         const fingerprint = await this.fingerprintService.fingerprint(downloaded.bytes, {

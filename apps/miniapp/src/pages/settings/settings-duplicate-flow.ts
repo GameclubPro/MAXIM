@@ -3,6 +3,7 @@ import {
   buildDuplicateFlowThresholds,
   resolveDuplicateFlowAllowedCount,
   resolveDuplicateFlowAllowedCountMax,
+  resolveDuplicateIntervalWindowSec,
   type ChatSettings,
   type DuplicateFlowStageSettings,
   type DuplicateFlowThresholdSettings,
@@ -23,19 +24,7 @@ type DuplicateFlowWindowSettings = Pick<
 >;
 
 export function resolveDuplicateSharedWindowSec(settings: DuplicateFlowWindowSettings): number {
-  if (settings.duplicateWarnEnabled) {
-    return settings.duplicateWarnWindowSec;
-  }
-
-  if (settings.duplicateMuteEnabled) {
-    return settings.duplicateMuteWindowSec;
-  }
-
-  if (settings.duplicateBanEnabled) {
-    return settings.duplicateBanWindowSec;
-  }
-
-  return settings.duplicateWarnWindowSec;
+  return resolveDuplicateIntervalWindowSec(settings);
 }
 
 export function resolveDuplicateAllowedCountMax(settings: DuplicateFlowStageSettings): number {
