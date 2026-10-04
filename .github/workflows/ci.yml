@@ -119,6 +119,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Install owned Redis process for crash and RDB restore acceptance
+        run: |
+          if ! command -v redis-server >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends redis-server
+          fi
       - run: npm ci
       - name: Validate Prisma schema and migration policy
         run: npm run check:prisma
