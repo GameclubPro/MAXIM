@@ -103,6 +103,32 @@ function createService(cache: Array<PhotoFingerprint | null>) {
 }
 
 describe('PhotoDuplicateAnalysisService', () => {
+  it('measures failed downloads without changing the original error or persisting partial proof', async () => {
+    const s = createService([]);
+    const original = new Error('download unavailable');
+    s.downloader.download.mockRejectedValueOnce(original);
+    const metrics = {
+      recordPhase: jest.fn(() => {
+        throw new Error('observer unavailable');
+      }),
+    };
+    const service = new PhotoDuplicateAnalysisService(
+      s.downloader as never,
+      s.fingerprintService as never,
+      s.historyStore as never,
+      metrics as never,
+    );
+    await expect(
+      service.fingerprintAlbum(
+        album([{ source: 'direct', photoId: 'photo', downloadUrl: 'https://i.oneme.ru/a' }]),
+        60,
+      ),
+    ).rejects.toBe(original);
+    expect(metrics.recordPhase).toHaveBeenCalledWith('download', expect.any(Number));
+    expect(s.fingerprintService.fingerprint).not.toHaveBeenCalled();
+    expect(s.historyStore.cachePhotoFingerprints).not.toHaveBeenCalled();
+  });
+
   it.each(['message', 'chat', 'revision', 'source', 'receipt'] as const)(
     'never reuses a photo-ID proof across a different %s',
     async (change) => {

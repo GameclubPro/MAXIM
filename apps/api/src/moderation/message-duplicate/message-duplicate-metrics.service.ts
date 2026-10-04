@@ -1,3 +1,13 @@
+import {
+  MESSAGE_DUPLICATE_PHASES,
+  type MessageDuplicatePhase,
+} from './message-duplicate-phase-timing';
+export {
+  MESSAGE_DUPLICATE_PHASES,
+  measureDuplicatePhase,
+  recordDuplicatePhase,
+  type MessageDuplicatePhase,
+} from './message-duplicate-phase-timing';
 import { Injectable, Logger, Optional, type OnModuleDestroy } from '@nestjs/common';
 import {
   duplicateObservationOutcomeSchema,
@@ -114,14 +124,6 @@ export const MESSAGE_DUPLICATE_METRIC_COUNTERS = [
 export type MessageDuplicateMetricCounter = (typeof MESSAGE_DUPLICATE_METRIC_COUNTERS)[number];
 const ALLOWED_COUNTERS: ReadonlySet<string> = new Set(MESSAGE_DUPLICATE_METRIC_COUNTERS);
 const ALLOWED_OUTCOMES: ReadonlySet<string> = new Set(duplicateObservationOutcomeSchema.options);
-export const MESSAGE_DUPLICATE_PHASES = [
-  'policy',
-  'source',
-  'media',
-  'history',
-  'enforcement',
-] as const;
-export type MessageDuplicatePhase = (typeof MESSAGE_DUPLICATE_PHASES)[number];
 const ALLOWED_PHASES: ReadonlySet<string> = new Set(MESSAGE_DUPLICATE_PHASES);
 const PHASE_BOUNDS_MS = [5, 10, 25, 50, 100, 250, 500, 1000, 5000, 30000, 600000];
 const MAX_PENDING_BUCKETS = 256;
@@ -323,24 +325,6 @@ export class MessageDuplicateMetricsService implements OnModuleDestroy {
     } finally {
       this.telemetryInFlight = false;
       if (!this.stopped && this.observations.size > 0) this.schedule();
-    }
-  }
-}
-
-export async function measureDuplicatePhase<T>(
-  metrics: MessageDuplicateMetricsService | undefined,
-  phase: MessageDuplicatePhase,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const startedAt = performance.now();
-  try {
-    return await operation();
-  } finally {
-    // FLAG: Optional diagnostics cannot replace the original result/error.
-    try {
-      metrics?.recordPhase?.(phase, performance.now() - startedAt);
-    } catch {
-      /* FLAG: Telemetry cannot replace the moderation outcome. */
     }
   }
 }

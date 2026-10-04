@@ -1,4 +1,8 @@
 import {
+  MessageDuplicateMetricsService,
+  measureDuplicatePhase,
+} from './message-duplicate/message-duplicate-metrics.service';
+import {
   registerDuplicateClaimCleanup,
   assertDuplicateCleanupBinding,
   type DuplicateCleanupBinding,
@@ -692,6 +696,7 @@ export class ModerationDeleteIntentService {
     @Optional() private readonly messageRetentionGuard?: MessageRetentionDeleteGuard,
     @Optional() private readonly suggestionSubscriptions?: SuggestionSubscriptionService,
     @Optional() private readonly storageRuntimeMetrics?: StorageRuntimeMetricsService,
+    @Optional() private readonly duplicateMetrics?: MessageDuplicateMetricsService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -2478,27 +2483,39 @@ export class ModerationDeleteIntentService {
           // transport slot. Final guards may only revalidate cached evidence and DB authority.
           if (intent.retentionOwned)
             await this.runDeletePreDispatchGuards(intent, botId, options, undefined, 'prepare');
-          await this.maxClient.deleteMessage(intent.chatId, intent.messageId, {
-            immediate: true,
-            beforeImmediateDeleteMutation,
-            botId,
-            timeoutMs: this.deleteTimeoutMs,
-            trafficClass:
-              intent.retentionOwned || intent.suggestionSubscriptionId || intent.reportHistoryOnly
-                ? 'background'
-                : 'critical',
-            actionHealthLane:
-              intent.retentionOwned || intent.suggestionSubscriptionId || intent.reportHistoryOnly
-                ? 'background'
-                : 'critical',
-            sourceTag: intent.retentionOwned
-              ? MAX_API_SOURCE_TAGS.MESSAGE_RETENTION
-              : intent.suggestionSubscriptionId
-                ? MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY
-                : MAX_API_SOURCE_TAGS.MODERATION_DELETE,
-            ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
-            idempotencyKey: `moderation-delete-intent-${intent.id}-attempt-${intent.attemptCount}`,
-          });
+          // FLAG: Observe only typed duplicate-owned intents; transport admission and final
+          // authority guards remain inside deleteMessage in their original order.
+          await measureDuplicatePhase(
+            intent.messageDuplicateOwned ? this.duplicateMetrics : undefined,
+            'delete_dispatch',
+            () =>
+              this.maxClient.deleteMessage(intent.chatId, intent.messageId, {
+                immediate: true,
+                beforeImmediateDeleteMutation,
+                botId,
+                timeoutMs: this.deleteTimeoutMs,
+                trafficClass:
+                  intent.retentionOwned ||
+                  intent.suggestionSubscriptionId ||
+                  intent.reportHistoryOnly
+                    ? 'background'
+                    : 'critical',
+                actionHealthLane:
+                  intent.retentionOwned ||
+                  intent.suggestionSubscriptionId ||
+                  intent.reportHistoryOnly
+                    ? 'background'
+                    : 'critical',
+                sourceTag: intent.retentionOwned
+                  ? MAX_API_SOURCE_TAGS.MESSAGE_RETENTION
+                  : intent.suggestionSubscriptionId
+                    ? MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY
+                    : MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+                ignoreFailureMetricStatuses:
+                  MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
+                idempotencyKey: `moderation-delete-intent-${intent.id}-attempt-${intent.attemptCount}`,
+              }),
+          );
         } catch (error: unknown) {
           if (error instanceof ModerationDeleteProtectedMessageError) {
             return this.toAttemptResult(error.protectedIntent);
@@ -2641,12 +2658,17 @@ export class ModerationDeleteIntentService {
           continue;
         }
 
-        const outcome = await this.recordRemoteSuccessAndFinalize(
-          intent,
-          leaseToken,
-          botId,
-          profanityVerified,
-          commercialVerifiedReasonKeys,
+        const outcome = await measureDuplicatePhase(
+          intent.messageDuplicateOwned ? this.duplicateMetrics : undefined,
+          'delete_receipt',
+          () =>
+            this.recordRemoteSuccessAndFinalize(
+              intent,
+              leaseToken,
+              botId,
+              profanityVerified,
+              commercialVerifiedReasonKeys,
+            ),
         );
         return outcome.kind === 'confirmed'
           ? {

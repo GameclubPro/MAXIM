@@ -1,3 +1,8 @@
+import {
+  measureDuplicatePhase,
+  recordDuplicatePhase,
+  type DuplicatePhaseRecorder,
+} from '../message-duplicate/message-duplicate-phase-timing';
 import type { NativePhotoSandboxClient } from './native-photo-sandbox.client';
 import { createHash } from 'node:crypto';
 import type { OnModuleInit } from '@nestjs/common';
@@ -172,15 +177,23 @@ export class PhotoFingerprintService implements OnModuleInit {
       albumBudget?: PhotoDecodeBudget;
       expectedFormat?: SupportedPhotoFormat;
       deadlineAtMs?: number;
+      timings?: DuplicatePhaseRecorder;
     } = {},
   ): Promise<PhotoFingerprint> {
     if (encodedImage.byteLength === 0 || encodedImage.byteLength > this.maxInputBytes) {
       throw new Error('Photo input byte length is outside the configured bounds');
     }
 
+    const waitingSince = performance.now();
+    let enteredSlot = false;
     try {
       return await this.decodeGate.run(async () => {
-        if (!this.nativeDecoder) return this.fingerprintWithinSlot(encodedImage, options);
+        enteredSlot = true;
+        recordDuplicatePhase(options.timings, 'decode_wait', performance.now() - waitingSince);
+        if (!this.nativeDecoder)
+          return measureDuplicatePhase(options.timings, 'local_fingerprint', () =>
+            this.fingerprintWithinSlot(encodedImage, options),
+          );
         const usage = options.albumBudget?.usage();
         const remainingEncodedBytes = usage
           ? usage.maxEncodedBytes - usage.encodedBytes
@@ -188,14 +201,17 @@ export class PhotoFingerprintService implements OnModuleInit {
         const remainingPixels = usage ? usage.maxPixels - usage.pixels : this.maxInputPixels;
         if (remainingEncodedBytes < encodedImage.byteLength || remainingPixels <= 0)
           throw new PhotoFingerprintRejectedError('album_decode_budget_exceeded');
-        const result = await this.nativeDecoder.fingerprint(encodedImage, {
-          deadlineAtMs: options.deadlineAtMs ?? Date.now() + 30_000,
-          maxInputBytes: this.maxInputBytes,
-          maxInputPixels: this.maxInputPixels,
-          remainingEncodedBytes,
-          remainingPixels,
-          expectedFormat: options.expectedFormat,
-        });
+        // FLAG: This measures IPC, process startup, decoding and reply together, not CPU decode.
+        const result = await measureDuplicatePhase(options.timings, 'native_roundtrip', () =>
+          this.nativeDecoder!.fingerprint(encodedImage, {
+            deadlineAtMs: options.deadlineAtMs ?? Date.now() + 30_000,
+            maxInputBytes: this.maxInputBytes,
+            maxInputPixels: this.maxInputPixels,
+            remainingEncodedBytes,
+            remainingPixels,
+            expectedFormat: options.expectedFormat,
+          }),
+        );
         if (result.kind === 'rejected') {
           if (result.reason === 'native_unavailable')
             throw new Error('Photo native decoder unavailable');
@@ -219,6 +235,9 @@ export class PhotoFingerprintService implements OnModuleInit {
         throw new PhotoFingerprintRejectedError('decode_capacity_exceeded', { cause: error });
       }
       throw error;
+    } finally {
+      if (!enteredSlot)
+        recordDuplicatePhase(options.timings, 'decode_wait', performance.now() - waitingSince);
     }
   }
 

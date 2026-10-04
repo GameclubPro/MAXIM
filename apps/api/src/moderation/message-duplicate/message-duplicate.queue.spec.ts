@@ -587,10 +587,16 @@ describe('message duplicate queue', () => {
       abandon: jest.fn(),
     };
     const intents = { releaseTerminatedMessageDuplicateAction: jest.fn().mockResolvedValue(true) };
+    const metrics = {
+      record: jest.fn(),
+      recordPhase: jest.fn(() => {
+        throw new Error('observer unavailable');
+      }),
+    };
     const processor = new MessageDuplicateProcessor(
       {} as never,
       ordering as never,
-      undefined,
+      metrics as never,
       undefined,
       intents as never,
     );
@@ -598,6 +604,8 @@ describe('message duplicate queue', () => {
     const job = workerJob(data);
     await processor.process(job as never, 'token');
     expect(intents.releaseTerminatedMessageDuplicateAction).toHaveBeenCalledWith(data);
+    expect(metrics.recordPhase).toHaveBeenCalledWith('ordering_acquire', expect.any(Number));
+    expect(metrics.recordPhase).toHaveBeenCalledWith('cleanup', expect.any(Number));
     expect(ordering.abandon).not.toHaveBeenCalled();
     expect(job.updateData).not.toHaveBeenCalled();
     expect(job.moveToDelayed).not.toHaveBeenCalled();

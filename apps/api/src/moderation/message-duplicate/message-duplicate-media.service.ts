@@ -675,12 +675,12 @@ export class MessageDuplicateMediaService {
       const media = content.media[index]!;
       if (!hashes[index]) {
         if (!media.url) throw new Error('Message media download URL unavailable');
-        const downloaded = await this.binary
-          .downloadBinary(media.url, { deadlineAtMs })
-          .catch((error: unknown) => {
-            this.recordSourceRejection(error);
-            throw error;
-          });
+        const downloaded = await measureDuplicatePhase(this.metrics, 'download', () =>
+          this.binary.downloadBinary(media.url!, { deadlineAtMs }),
+        ).catch((error: unknown) => {
+          this.recordSourceRejection(error);
+          throw error;
+        });
         await this.verifyBinary(downloaded.bytes, media.kind);
         hashes[index] = createHash('sha256').update(downloaded.bytes).digest('hex');
       }

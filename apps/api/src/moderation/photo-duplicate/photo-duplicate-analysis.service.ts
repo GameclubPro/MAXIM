@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import {
+  MessageDuplicateMetricsService,
+  measureDuplicatePhase,
+} from '../message-duplicate/message-duplicate-metrics.service';
 import { createHash } from 'node:crypto';
 import type { LogicalPhotoAlbum } from './photo-attachment-extractor';
 import {
@@ -39,6 +43,7 @@ export class PhotoDuplicateAnalysisService {
     private readonly downloader: SecurePhotoDownloader,
     private readonly fingerprintService: PhotoFingerprintService,
     private readonly historyStore: PhotoDuplicateHistoryStore,
+    @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {}
 
   async analyzeAlbum(params: {
@@ -123,15 +128,17 @@ export class PhotoDuplicateAnalysisService {
       }
 
       const image = params.album.images[index];
-      const downloaded =
+      const downloaded = await measureDuplicatePhase(this.metrics, 'download', () =>
         deadlineAtMs === Number.MAX_SAFE_INTEGER
-          ? await this.downloader.download(image.downloadUrl!)
-          : await this.downloader.download(image.downloadUrl!, { deadlineAtMs });
+          ? this.downloader.download(image.downloadUrl!)
+          : this.downloader.download(image.downloadUrl!, { deadlineAtMs }),
+      );
       try {
         const fingerprint = await this.fingerprintService.fingerprint(downloaded.bytes, {
           albumBudget,
           expectedFormat: downloaded.format,
           deadlineAtMs,
+          ...(this.metrics ? { timings: this.metrics } : {}),
         });
         completeFingerprints.push(fingerprint);
         // FLAG: A proof checkpoints one verified image, never an actionable partial album.

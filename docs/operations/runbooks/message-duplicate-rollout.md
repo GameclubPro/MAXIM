@@ -209,6 +209,25 @@ API processes emit `message_duplicate_diagnostics` structured summaries with `sc
 `windowStartedAt`, `windowEndedAt`, fixed numeric `counters` and `phases`. Each phase has a count,
 total/max duration and a histogram aligned with `phaseBucketUpperBoundsMs`. Policy, source,
 media proof, history and enforcement timings use a monotonic clock and include failed attempts.
+The following fixed phases narrow those aggregate timings; overlapping phases must not be summed:
+
+- `download`: a photo or binary download attempt, including source rejection and failure.
+- `decode_wait`: local fingerprint-slot acquisition, including capacity/deadline rejection.
+- `native_roundtrip`: sandbox IPC, process startup, decoding and reply; it is not CPU decode time.
+  `local_fingerprint` measures the local development fallback, including hashing.
+- `ordering_acquire`: one ordering acquisition attempt up to entry into the execution callback,
+  or its deferral/error. It excludes execution and durable waits between retries; `worker.age_*`
+  remains the total age since enqueue, including all earlier deferrals.
+- `qualification`: fresh duplicate qualification; `intent_handoff`: durable intent handoff.
+- `delete_dispatch`: duplicate-owned DELETE transport call, including admission and final guards.
+  `delete_receipt`: persistence/finalization after a successful response. Neither count proves a
+  successful receipt; failures are timed too. These labels exclude unrelated moderation rules.
+- `cleanup`: worker terminal-cleanup attempt, including wakeup/retry handling; `cleanup_sweep`:
+  an active or failed bounded SQL cleanup sweep. Empty idle sweeps do not emit phase samples.
+
+The native protocol carries no per-stage CPU timing; separating native CPU work from IPC/startup
+requires a separately reviewed measurement change. Durable ordering wait across retries likewise
+has no exact standalone timer without changing persisted state. Timings remain best-effort attempts.
 Emission is at most once per
 30 seconds while active, plus a final shutdown flush. Summaries have no message contents,
 identifiers, URLs or free-form errors. They are best-effort

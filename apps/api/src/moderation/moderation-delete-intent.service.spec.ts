@@ -700,6 +700,74 @@ function accessAmbiguousSourceSendRow() {
 }
 
 describe('ModerationDeleteIntentService', () => {
+  it.each([true, false])(
+    'keeps DELETE and receipt order when metrics fail (duplicate owner: %s)',
+    async (messageDuplicateOwned) => {
+      const events: string[] = [];
+      const leased = {
+        ...baseIntent,
+        messageDuplicateOwned,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      };
+      const { service, maxClient } = createService();
+      const expected = {
+        kind: 'confirmed',
+        status: 'SUCCEEDED',
+        confirmed: true,
+        intentId: leased.id,
+      };
+      const recordPhase = jest.fn(() => {
+        throw new Error('observer unavailable');
+      });
+      maxClient.deleteMessage.mockImplementation(async (_chatId, _messageId, options) => {
+        events.push('admission');
+        await options?.beforeImmediateDeleteMutation?.();
+        events.push('delete');
+      });
+      Object.assign(service, {
+        duplicateMetrics: { recordPhase },
+        loadIntent: jest.fn().mockResolvedValue(leased),
+        startLeaseHeartbeat: () => ({ ...ownedHeartbeat, hasRemainingBudget: () => true }),
+        assertLeaseForExternalCall: jest.fn(),
+        finishProtectedManagedBotMessageAutoDelete: jest.fn().mockResolvedValue(null),
+        resolveDeleteRouteWithRefresh: jest.fn().mockResolvedValue(confirmedRoute),
+        filterAndOrderRouteCandidates: () => ['bot-1'],
+        recordAttemptBot: jest.fn().mockResolvedValue(true),
+        markDeleteDispatchStarted: async () => {
+          events.push('marker');
+          return true;
+        },
+        runDeletePreDispatchGuards: async () => {
+          events.push('guard');
+          return { profanityVerified: false, commercialVerifiedReasonKeys: [] };
+        },
+        messageDuplicateDeleteGuard: {
+          assertIntentStillActionable: async () => {
+            events.push('authority');
+          },
+        },
+        recordRemoteSuccessAndFinalize: async () => {
+          events.push('receipt');
+          return expected;
+        },
+      });
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toEqual(expected);
+      expect(events).toEqual([
+        'admission',
+        'guard',
+        'marker',
+        'guard',
+        ...(messageDuplicateOwned ? ['authority'] : []),
+        'delete',
+        'receipt',
+      ]);
+      if (messageDuplicateOwned) {
+        expect(recordPhase).toHaveBeenNthCalledWith(1, 'delete_dispatch', expect.any(Number));
+        expect(recordPhase).toHaveBeenNthCalledWith(2, 'delete_receipt', expect.any(Number));
+      } else expect(recordPhase).not.toHaveBeenCalled();
+    },
+  );
+
   it('binds suggestion cleanup to fresh subscription proof before and after the DELETE budget', async () => {
     const events: string[] = [];
     const leased = {

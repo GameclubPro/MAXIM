@@ -1,4 +1,14 @@
-import { Injectable, Logger, type OnModuleInit, type OnModuleDestroy } from '@nestjs/common';
+import {
+  MessageDuplicateMetricsService,
+  recordDuplicatePhase,
+} from './message-duplicate-metrics.service';
+import {
+  Injectable,
+  Logger,
+  Optional,
+  type OnModuleInit,
+  type OnModuleDestroy,
+} from '@nestjs/common';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 
 @Injectable()
@@ -8,7 +18,10 @@ export class MessageDuplicateCleanupReconcilerService implements OnModuleInit, O
   private inFlight = false;
   private hadDueSample = false;
 
-  constructor(private readonly intents: ModerationDeleteIntentService) {}
+  constructor(
+    private readonly intents: ModerationDeleteIntentService,
+    @Optional() private readonly metrics?: MessageDuplicateMetricsService,
+  ) {}
 
   onModuleInit(): void {
     // FLAG: Registered only in the action role; independent of Redis/BullMQ and
@@ -25,8 +38,11 @@ export class MessageDuplicateCleanupReconcilerService implements OnModuleInit, O
   async reconcile(): Promise<void> {
     if (this.inFlight) return;
     this.inFlight = true;
+    const startedAt = performance.now();
+    let activeOrFailed = false;
     try {
       await this.intents.reconcileExpiredMessageDuplicateActions((sample) => {
+        activeOrFailed = sample.sampledDue > 0;
         const shouldLog = sample.sampledDue > 0 || this.hadDueSample;
         this.hadDueSample = sample.sampledDue > 0;
         if (shouldLog)
@@ -37,8 +53,11 @@ export class MessageDuplicateCleanupReconcilerService implements OnModuleInit, O
           });
       });
     } catch {
+      activeOrFailed = true;
       this.logger.warn('Duplicate unused claim reconciliation unavailable');
     } finally {
+      if (activeOrFailed)
+        recordDuplicatePhase(this.metrics, 'cleanup_sweep', performance.now() - startedAt);
       this.inFlight = false;
     }
   }
