@@ -143,6 +143,30 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     ).toBeNull();
   });
 
+  describe.each(['STRICT', 'CUSTOM'] as const)('%s Unicode comparison', (preset) => {
+    it.each([
+      ['✅', '❌'],
+      ['同意', '拒绝'],
+      ['условие 5 < 9', 'условие 5 > 9'],
+    ])('does not qualify changed protected content (%s / %s)', async (first, second) => {
+      const override = {
+        settings: duplicateSettings({
+          duplicateDetectionPreset: preset,
+          duplicateNearMatchEnabled: true,
+        }),
+      };
+      const text = (suffix: string) =>
+        `Подробная инструкция для участников встречи доступна после завершения регистрации ${suffix}`;
+      expect(await observe('original', 0, text(first), override)).toBeNull();
+      expect(await observe('changed', 100, text(second), override)).toBeNull();
+      const repeated = await observe('repeat', 200, text(second), override);
+      expect(repeated?.hit).toMatchObject({ count: 1, fingerprintType: 'exact' });
+      expect(repeated?.binding.original?.messageId).toBe('changed');
+      expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
+      expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
+    });
+  });
+
   const imageInput = () => ({
     imageScope: 'CHAT' as const,
     content: extractDuplicateMessageContent({
