@@ -359,6 +359,9 @@ export function createCommercialOcrEvalCertificationRequest(params: {
   gates: CommercialOcrEvalGateResult;
   approvalKeyIdSha256: string;
 }): CommercialOcrEvalCertificationRequest {
+  if (params.report.readonlyCandidatePolicy) {
+    throw new Error('Readonly paired candidate evidence cannot issue a production certification');
+  }
   if (
     !LOWER_SHA_256_PATTERN.test(params.approvalKeyIdSha256) ||
     params.approvalKeyIdSha256 === UNSIGNED_APPROVAL_KEY_ID_SHA256

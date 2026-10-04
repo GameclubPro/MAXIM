@@ -8,6 +8,10 @@ import {
   validateCommercialOcrImageCount,
 } from './commercial-ocr.queue';
 import { COMMERCIAL_OCR_REDIS_OPTIONS } from './commercial-ocr-redis.options';
+import {
+  isCommercialOcrTerminalResult,
+  type CommercialOcrTerminalResult,
+} from './commercial-ocr-terminal';
 
 const ADMISSION_NAMESPACE = 'commercial-ocr:admission:v2';
 const REDIS_OPERATION_TIMEOUT_MS = 1_000;
@@ -355,6 +359,53 @@ redis.call('HSET', KEYS[2], ARGV[1], stored_chat_hash .. '|' .. stored_units .. 
 return 1
 `;
 
+// FLAG: Logical accounting cannot authorize actions. Finalization atomically releases capacity,
+// retains the absorbing admission tombstone, and records one outcome with its counters. Claims
+// require an existing admission and expire within the bounded admission lifetime.
+const LOGICAL_RECORD_SCRIPT = `
+local metadata = redis.call('HGET', KEYS[2], ARGV[1])
+if not metadata then return -1 end
+local chat_hash, units, _, held = string.match(metadata, '^([^|]+)|(%d+)|([PAO])|([01])$')
+if not chat_hash or chat_hash ~= ARGV[2] then return -2 end
+if ARGV[3] == 'terminal' then
+  if held == '1' then
+    local global_units = redis.call('DECRBY', KEYS[3], tonumber(units))
+    if global_units <= 0 then redis.call('DEL', KEYS[3]) end
+    local chat_units = tonumber(redis.call('HGET', KEYS[5], ARGV[1]) or '0')
+    if chat_units > 0 then
+      local remaining = redis.call('DECRBY', KEYS[6], chat_units)
+      if remaining <= 0 then redis.call('DEL', KEYS[6]) end
+    end
+    redis.call('HDEL', KEYS[5], ARGV[1])
+    redis.call('ZREM', KEYS[4], ARGV[1])
+  end
+  redis.call('HSET', KEYS[2], ARGV[1], chat_hash .. '|' .. units .. '|O|0')
+end
+if redis.call('HEXISTS', KEYS[7], ARGV[3]) == 1 then return 0 end
+redis.call('HSET', KEYS[7], ARGV[3], ARGV[4])
+redis.call('PEXPIRE', KEYS[7], tonumber(ARGV[5]))
+redis.call('HSETNX', KEYS[8], 'started_at_ms', ARGV[6])
+for index = 7, #ARGV do
+  redis.call('HINCRBY', KEYS[8], 'counter:' .. ARGV[index], 1)
+  redis.call('HINCRBY', KEYS[9], 'counter:' .. ARGV[index], 1)
+end
+redis.call('EXPIRE', KEYS[8], 7776000)
+redis.call('EXPIRE', KEYS[9], 259200)
+return 1
+`;
+
+export type CommercialOcrLogicalRecordingContext = Readonly<{
+  identitySha256: string;
+  releaseKey: string;
+  bucketKey: string;
+  startedAtMs: number;
+}>;
+export type CommercialOcrLogicalRecordingResult =
+  | 'recorded'
+  | 'duplicate'
+  | 'missing'
+  | 'unavailable';
+
 export type CommercialOcrAdmissionState = 'pending' | 'actionable' | 'observation';
 
 export type CommercialOcrAdmissionLimits = Readonly<{
@@ -583,6 +634,87 @@ export class CommercialOcrAdmissionStore implements OnModuleDestroy {
     } catch {
       this.logger.warn('Commercial OCR admission release unavailable');
       return false;
+    }
+  }
+
+  async recordStarted(params: {
+    jobId: string;
+    chatId: string;
+    context: CommercialOcrLogicalRecordingContext;
+  }): Promise<CommercialOcrLogicalRecordingResult> {
+    return this.recordLogical(params, 'started');
+  }
+
+  async finalize(params: {
+    jobId: string;
+    chatId: string;
+    context: CommercialOcrLogicalRecordingContext;
+    terminal: CommercialOcrTerminalResult;
+  }): Promise<CommercialOcrLogicalRecordingResult> {
+    if (!isCommercialOcrTerminalResult(params.terminal)) throw new Error('terminal is invalid');
+    return this.recordLogical(params, 'terminal', params.terminal);
+  }
+
+  private async recordLogical(
+    params: { jobId: string; chatId: string; context: CommercialOcrLogicalRecordingContext },
+    phase: 'started' | 'terminal',
+    terminal?: CommercialOcrTerminalResult,
+  ): Promise<CommercialOcrLogicalRecordingResult> {
+    const jobId = validateJobId(params.jobId);
+    const keys = buildAdmissionKeys(validateIdentifier(params.chatId, 'chatId'));
+    const context = params.context;
+    if (
+      !/^[a-f0-9]{64}$/u.test(context.identitySha256) ||
+      !/^commercial-ocr:metrics:v2:release:[a-z0-9-]{1,80}:[a-f0-9]{24}$/u.test(
+        context.releaseKey,
+      ) ||
+      !/^commercial-ocr:metrics:v2:window:[a-z0-9-]{1,80}:[a-f0-9]{24}:\d+$/u.test(
+        context.bucketKey,
+      ) ||
+      !Number.isSafeInteger(context.startedAtMs) ||
+      context.startedAtMs <= 0
+    ) {
+      throw new Error('logical recording context is invalid');
+    }
+    const counters = terminal
+      ? [
+          'logical.terminal',
+          `logical.outcome.${terminal.outcome}`,
+          `logical.reason.${terminal.reason}`,
+        ]
+      : ['logical.started'];
+    try {
+      const response = Number(
+        await this.runRedisOperation(
+          this.redis.eval(
+            LOGICAL_RECORD_SCRIPT,
+            9,
+            keys.globalExpiry,
+            keys.globalMetadata,
+            keys.globalUnits,
+            keys.chatExpiry,
+            keys.chatWeights,
+            keys.chatUnits,
+            `${ADMISSION_NAMESPACE}:logical:${context.identitySha256}`,
+            context.releaseKey,
+            context.bucketKey,
+            jobId,
+            keys.chatHash,
+            phase,
+            terminal ? `${terminal.outcome}:${terminal.reason}` : '1',
+            String(MAX_RESERVATION_TTL_MS * 2),
+            String(context.startedAtMs),
+            ...counters,
+          ),
+        ),
+      );
+      if (response === 1) return 'recorded';
+      if (response === 0) return 'duplicate';
+      if (response === -1) return 'missing';
+      return 'unavailable';
+    } catch {
+      this.logger.warn('Commercial OCR logical accounting unavailable; actions are unaffected');
+      return 'unavailable';
     }
   }
 

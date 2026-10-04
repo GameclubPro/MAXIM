@@ -27,10 +27,7 @@ import {
 import { collectFirstPatternLabels, createCommercialTextMatcher } from './commercial-match-utils';
 import { CommercialSecondStageScorer } from './commercial-scorer';
 import { CommercialDetectorDecisionCache } from './commercial-detector-cache';
-import {
-  COMMERCIAL_SLIDING_CAMPAIGN_COHORT,
-  resolveCommercialSlidingCampaignPolicyContext,
-} from './commercial-campaign-sliding';
+import { resolveCommercialSlidingCampaignPolicyContext } from './commercial-campaign-sliding';
 import {
   normalizeCommercialRawText,
   normalizeCommercialText,
@@ -51,6 +48,14 @@ import type {
   CommercialLegacyEvidenceStrength,
   CommercialMessageDisposition,
 } from './commercial.types';
+import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
+import { COMMERCIAL_TEXT_BASELINE_POLICY_COHORTS } from './commercial-policy-cohorts';
+import { resolveCommercialReleasedPatternEvidence } from './commercial-release-pattern-policy';
+import {
+  COMMERCIAL_INTENT_QUALITY_COHORT,
+  COMMERCIAL_INTENT_QUALITY_DECISION_VERSION,
+  resolveCommercialIntentQualityContext,
+} from './commercial-intent-quality-policy';
 
 const COMMERCIAL_WARMUP_SETTINGS = {
   commercialAdsSensitivity: 'BALANCED',
@@ -58,10 +63,15 @@ const COMMERCIAL_WARMUP_SETTINGS = {
   commercialAdsDeleteThreshold: 77,
 } as unknown as ChatSettings;
 
-export const COMMERCIAL_RELEASE_POLICY_COHORTS = [
-  COMMERCIAL_OWNED_SERVICE_CONTRAST_COHORT,
-  COMMERCIAL_SLIDING_CAMPAIGN_COHORT,
-] as const;
+export const COMMERCIAL_RELEASE_POLICY_COHORTS = COMMERCIAL_TEXT_BASELINE_POLICY_COHORTS;
+
+export type CommercialDetectorInput = {
+  normalizedText: string;
+  rawLoweredText: string;
+  settings: ChatSettings;
+  commercialCampaignContext?: CommercialCampaignContext | null;
+  promotedPolicyCohorts?: readonly string[];
+};
 
 const COMMERCIAL_WARMUP_TEXTS = [
   'ГРУЗОПЕРЕВОЗКИ +7 900 000 10 42',
@@ -377,6 +387,7 @@ export type CommercialDetection = {
   reasonCodes?: string[];
   featureVector?: Record<string, number>;
   requiredPolicyCohorts?: string[];
+  patternEvidence?: string[];
 };
 
 export class CommercialAdDetector {
@@ -387,21 +398,121 @@ export class CommercialAdDetector {
     this.warmUpProcessPatterns();
   }
 
-  detect(params: {
-    normalizedText: string;
-    rawLoweredText: string;
-    settings: ChatSettings;
-    commercialCampaignContext?: CommercialCampaignContext | null;
-    promotedPolicyCohorts?: readonly string[];
-  }): CommercialDetection | null {
+  detect(params: CommercialDetectorInput): CommercialDetection | null {
+    if (params.promotedPolicyCohorts?.includes(COMMERCIAL_INTENT_QUALITY_COHORT))
+      return this.detectExperimental(params);
+    return this.detectUnderPolicy(params);
+  }
+
+  // FLAG: This readonly candidate API is for paired shadow evaluation. Runtime detect opts in
+  // only with independently certified authority; the released baseline never expands by default.
+  detectExperimental(params: CommercialDetectorInput): CommercialDetection | null {
+    const promotedPolicyCohorts = params.promotedPolicyCohorts ?? [
+      ...COMMERCIAL_RELEASE_POLICY_COHORTS,
+      COMMERCIAL_INTENT_QUALITY_COHORT,
+    ];
+    const rawLoweredText = normalizeCommercialRawText(
+      params.rawLoweredText || params.normalizedText,
+    );
+    const quality = resolveCommercialIntentQualityContext(rawLoweredText);
+    if (
+      quality.hasProtectedAssertions &&
+      quality.fullyInspected &&
+      quality.independentOfferTexts.length === 0
+    )
+      return null;
+    const analysisTexts =
+      quality.hasProtectedAssertions && quality.fullyInspected
+        ? quality.independentOfferTexts
+        : [rawLoweredText];
+    let result: CommercialDetection | null = null;
+    for (const analysisText of analysisTexts) {
+      const ownedOrderOffer =
+        quality.fullyInspected &&
+        (quality.ownedOrderOfferTexts.includes(analysisText) ||
+          (!quality.hasProtectedAssertions && quality.ownedOrderOfferTexts.length > 0));
+      const detection = this.detectUnderPolicy(
+        {
+          ...params,
+          rawLoweredText: analysisText,
+          normalizedText: normalizePreparedCommercialText(analysisText),
+          // FLAG: Full-message/contact campaign evidence cannot be borrowed by an isolated offer.
+          commercialCampaignContext: quality.hasProtectedAssertions
+            ? retainSenderCommercialCampaignContext(params.commercialCampaignContext)
+            : params.commercialCampaignContext,
+          promotedPolicyCohorts,
+        },
+        ownedOrderOffer,
+        true,
+      );
+      if (!detection) continue;
+      detection.rawText = params.rawLoweredText;
+      if (analysisText !== rawLoweredText) detection.analysisText = analysisText;
+      detection.decisionVersion = COMMERCIAL_INTENT_QUALITY_DECISION_VERSION;
+      detection.requiredPolicyCohorts = [
+        ...new Set([...(detection.requiredPolicyCohorts ?? []), COMMERCIAL_INTENT_QUALITY_COHORT]),
+      ];
+      detection.reasonCodes = [
+        ...(detection.reasonCodes ?? []),
+        `policy:${COMMERCIAL_INTENT_QUALITY_COHORT}`,
+      ];
+      if (
+        !quality.fullyInspected ||
+        !promotedPolicyCohorts.includes(COMMERCIAL_INTENT_QUALITY_COHORT)
+      ) {
+        detection.actionBand = 'REVIEW_ONLY';
+        detection.messageDisposition = 'KEEP';
+        detection.actionable = false;
+        detection.recordable = false;
+        detection.deleteSuppressed = true;
+        detection.reviewPriority = detection.reviewPriority === 'URGENT' ? 'URGENT' : 'MEDIUM';
+        detection.suppressionReasons = [
+          ...(detection.suppressionReasons ?? []),
+          quality.fullyInspected
+            ? `unpromoted-policy:${COMMERCIAL_INTENT_QUALITY_COHORT}`
+            : 'quality-context-incomplete',
+        ];
+        detection.reasonCodes = [
+          ...(detection.reasonCodes ?? []).filter(
+            (reason) => !reason.startsWith('action:') && !reason.startsWith('review-priority:'),
+          ),
+          'action:REVIEW_ONLY',
+          `review-priority:${detection.reviewPriority}`,
+          ...detection.suppressionReasons.map((reason) => `suppressed:${reason}`),
+        ];
+      }
+      if (
+        !result ||
+        (detection.actionable && !result.actionable) ||
+        (detection.actionable === result.actionable &&
+          detection.confidenceScore > result.confidenceScore)
+      )
+        result = detection;
+    }
+    return result;
+  }
+
+  private detectUnderPolicy(
+    params: CommercialDetectorInput,
+    ownedOrderOffer = false,
+    intentQualityPolicy = false,
+  ): CommercialDetection | null {
     // FLAG: The complete typed input includes raw layout, campaign counters and promoted cohorts.
     const promotedPolicyCohorts = params.promotedPolicyCohorts ?? COMMERCIAL_RELEASE_POLICY_COHORTS;
-    const cacheKey = this.decisionCache.buildKey({ ...params, promotedPolicyCohorts });
+    const cacheKey = this.decisionCache.buildKey({
+      ...params,
+      promotedPolicyCohorts,
+      ownedOrderOffer,
+      intentQualityPolicy,
+    });
     const cached = this.decisionCache.read(cacheKey);
     if (cached.hit) {
       return cached.detection === null
         ? null
-        : { ...cached.detection, rawText: params.rawLoweredText };
+        : this.applyReleasedPatternAuthority(
+            { ...cached.detection, rawText: params.rawLoweredText },
+            intentQualityPolicy,
+          );
     }
     const campaignPolicy = resolveCommercialSlidingCampaignPolicyContext(
       params.commercialCampaignContext,
@@ -410,6 +521,8 @@ export class CommercialAdDetector {
     const detection = this.detectCommercialAd({
       ...params,
       commercialCampaignContext: campaignPolicy.context,
+      ownedOrderOffer,
+      intentQualityPolicy,
     });
     if (detection && campaignPolicy.requiredPolicyCohorts.length > 0) {
       detection.requiredPolicyCohorts = [
@@ -430,8 +543,9 @@ export class CommercialAdDetector {
         buildAmbiguousTransportReviewDetection(params, reviewSignals),
         promotedPolicyCohorts,
       );
-      this.decisionCache.remember(cacheKey, review);
-      return review;
+      const result = this.applyReleasedPatternAuthority(review, intentQualityPolicy);
+      this.decisionCache.remember(cacheKey, result);
+      return result;
     }
 
     for (const signal of reviewSignals) {
@@ -439,9 +553,46 @@ export class CommercialAdDetector {
         detection.matchedSignals.push(signal);
       }
     }
-    const result = enrichCommercialDetection(detection, promotedPolicyCohorts);
+    const result = this.applyReleasedPatternAuthority(
+      enrichCommercialDetection(detection, promotedPolicyCohorts),
+      intentQualityPolicy,
+    );
     this.decisionCache.remember(cacheKey, result);
     return result;
+  }
+
+  private applyReleasedPatternAuthority(
+    detection: CommercialDetection,
+    intentQualityPolicy: boolean,
+  ): CommercialDetection {
+    const evidence = resolveCommercialReleasedPatternEvidence(
+      detection.analysisText ?? detection.rawText,
+    );
+    detection.patternEvidence = evidence.matchedRuleIds;
+    if (intentQualityPolicy || evidence.unreleasedRuleIds.length === 0) return detection;
+    detection.actionBand = 'REVIEW_ONLY';
+    detection.messageDisposition = 'KEEP';
+    detection.actionable = false;
+    detection.recordable = false;
+    detection.deleteSuppressed = true;
+    detection.reviewPriority = 'MEDIUM';
+    detection.suppressionReasons = [
+      ...new Set([
+        ...(detection.suppressionReasons ?? []),
+        ...evidence.unreleasedRuleIds.map((id) => `unreleased-pattern:${id}`),
+      ]),
+    ];
+    detection.reasonCodes = [
+      ...new Set([
+        ...(detection.reasonCodes ?? []).filter(
+          (reason) => !reason.startsWith('action:') && !reason.startsWith('review-priority:'),
+        ),
+        'action:REVIEW_ONLY',
+        'review-priority:MEDIUM',
+        ...evidence.unreleasedRuleIds.map((id) => `suppressed:unreleased-pattern:${id}`),
+      ]),
+    ];
+    return detection;
   }
 
   get cacheStats(): { entries: number; hits: number; misses: number; evictions: number } {
@@ -478,6 +629,8 @@ export class CommercialAdDetector {
     rawLoweredText: string;
     settings: ChatSettings;
     commercialCampaignContext?: CommercialCampaignContext | null;
+    ownedOrderOffer?: boolean;
+    intentQualityPolicy?: boolean;
   }): CommercialDetection | null {
     const { settings, commercialCampaignContext } = params;
     let analysisCampaignContext = commercialCampaignContext;
@@ -497,6 +650,44 @@ export class CommercialAdDetector {
       profile: appliedThresholds,
       commercialCampaignContext,
     });
+    if (
+      params.intentQualityPolicy &&
+      /\[url\]/iu.test(rawLoweredText) &&
+      !state.hasDealChannel &&
+      (state.hasBusinessContext || state.hasGoodsRetailContext || params.ownedOrderOffer)
+    ) {
+      // FLAG: A reviewed [url] preserves link presence, never its domain or risk identity.
+      // Require owned commercial structure; a bare community link cannot establish a purpose.
+      state.hasDealChannel = true;
+      state.hasDealSignal = true;
+      state.score += COMMERCIAL_ENGINE_CONFIG.scoring.weights.link;
+      state.matchedSignals.push('deal-channel:link');
+      if (state.hasBusinessContext) {
+        state.score += COMMERCIAL_ENGINE_CONFIG.scoring.weights.comboBusinessDeal;
+        state.matchedSignals.push('combo:business+deal');
+      }
+    }
+    if (params.ownedOrderOffer) {
+      // FLAG: This score uses existing weights after assertion-owned current order + response
+      // proof; generic manufacture/hobby mentions and buyer budgets cannot enter this branch.
+      state.score +=
+        COMMERCIAL_ENGINE_CONFIG.scoring.weights.business +
+        COMMERCIAL_ENGINE_CONFIG.scoring.weights.transactionalKeyword;
+      state.hasBusinessContext = true;
+      state.hasIntent = true;
+      state.hasServiceOfferContext = true;
+      state.hasServiceContext = true;
+      state.hasTransactional = true;
+      state.hasDealSignal = true;
+      state.hasCommercialContext = true;
+      state.matchedSignals.push(
+        'intent:quality-current-order',
+        'business:quality-owned-manufacturing',
+        'service-specialty:quality-order-taking',
+        'transaction:quality-current-order',
+        'locality:independent-commercial-offer',
+      );
+    }
     const hasExplicitAttributedSafeContext =
       state.negativeSignals.includes('context:quoted-ad-example') ||
       state.negativeSignals.includes('context:attributed-commercial-report');
@@ -898,8 +1089,10 @@ export class CommercialAdDetector {
         ...(secondStage?.classifierReasons ?? []),
         ...(isolatedIndependentOffer ? ['locality:isolated-independent-commercial-offer'] : []),
       ],
-      hasActionDirectDealEvidence: evidence.hasActionDirectDealEvidence,
-      hasNonCampaignDirectDealEvidence: evidence.hasNonCampaignDirectDealEvidence,
+      hasActionDirectDealEvidence:
+        evidence.hasActionDirectDealEvidence || params.ownedOrderOffer === true,
+      hasNonCampaignDirectDealEvidence:
+        evidence.hasNonCampaignDirectDealEvidence || params.ownedOrderOffer === true,
       hasEscalationRiskEvidence: evidence.hasEscalationRiskEvidence,
       ...(requiredPolicyCohorts.length > 0 ? { requiredPolicyCohorts } : {}),
     };

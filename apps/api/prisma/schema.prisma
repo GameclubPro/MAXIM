@@ -1951,6 +1951,10 @@ model CommercialReviewSample {
   score          Float
   evidence       Json
   label          String?
+  independentLabel String? @map("independent_label")
+  qualityMetadata Json? @map("quality_metadata")
+  independentReviewCount Int @default(0) @map("independent_review_count")
+  reviewState    String @default("UNREVIEWED") @map("review_state")
   reviewPriority Int      @default(50) @map("review_priority")
   observedAt     DateTime @default(now()) @map("observed_at")
   expiresAt      DateTime @map("expires_at")
@@ -1958,11 +1962,43 @@ model CommercialReviewSample {
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  ratings CommercialReviewRating[]
 
   @@index([label, reviewPriority(sort: Desc), observedAt(sort: Desc), id(sort: Desc)], map: "commercial_review_samples_queue_idx")
   @@index([reviewPriority(sort: Desc), observedAt(sort: Desc), id(sort: Desc)], map: "commercial_review_samples_all_queue_idx")
   @@index([expiresAt, id], map: "commercial_review_samples_expiry_idx")
+  @@index([observedAt(sort: Desc), id(sort: Desc)], map: "commercial_review_samples_blind_queue_idx")
   @@map("commercial_review_samples")
+}
+
+model CommercialReviewRating {
+  id String @id @default(cuid())
+  sampleId String @map("sample_id")
+  reviewerKey String @map("reviewer_key")
+  kind String
+  label String
+  expectedDisposition String? @map("expected_disposition")
+  evidenceKind String @map("evidence_kind")
+  sourceEvidenceDigest String? @map("source_evidence_digest")
+  reason String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sample CommercialReviewSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+
+  @@unique([sampleId, reviewerKey], map: "commercial_review_ratings_sample_reviewer_key")
+  @@index([sampleId, kind, createdAt], map: "commercial_review_ratings_sample_kind_idx")
+  @@map("commercial_review_ratings")
+}
+
+// FLAG: A confirmed independent false deletion permanently revokes this exact experimental policy.
+// The stop survives review-sample expiry, chat removal, Redis restarts and control renewals.
+model CommercialQualityPolicyStop {
+  detectorSourceSha256 String   @map("detector_source_sha256")
+  decisionVersion      String   @map("decision_version")
+  stoppedAt            DateTime @default(now()) @map("stopped_at")
+
+  @@id([detectorSourceSha256, decisionVersion], map: "commercial_quality_policy_stops_pkey")
+  @@map("commercial_quality_policy_stops")
 }
 
 model SpammerObservation {

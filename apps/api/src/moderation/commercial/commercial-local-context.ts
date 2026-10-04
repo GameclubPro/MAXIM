@@ -332,6 +332,7 @@ export function resolveCommercialLocalContext(params: {
   rawLoweredText: string;
   escalationRiskLabels: readonly string[];
   includeOrdinaryProtectedContext?: boolean;
+  forceInspection?: boolean;
 }): CommercialLocalContext {
   const includeOrdinaryProtectedContext = params.includeOrdinaryProtectedContext === true;
   const requireQualifiedRiskProtection = params.escalationRiskLabels.length > 0;
@@ -355,6 +356,7 @@ export function resolveCommercialLocalContext(params: {
     : new Set<number>();
   const hasStandaloneEditorialQuote = standaloneEditorialQuoteAssertionIndexes.size > 0;
   if (
+    !params.forceInspection &&
     params.escalationRiskLabels.length === 0 &&
     !hasAttributedCommercialReport &&
     !hasQualifiedEditorialQuoteDisclaimer &&

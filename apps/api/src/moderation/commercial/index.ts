@@ -1,4 +1,13 @@
-export { CommercialAdDetector, type CommercialDetection } from './commercial-ad.detector';
+export {
+  CommercialAdDetector,
+  COMMERCIAL_RELEASE_POLICY_COHORTS,
+  type CommercialDetection,
+  type CommercialDetectorInput,
+} from './commercial-ad.detector';
+export {
+  COMMERCIAL_INTENT_QUALITY_COHORT,
+  COMMERCIAL_INTENT_QUALITY_DECISION_VERSION,
+} from './commercial-intent-quality-policy';
 export { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 export {
   isCommercialMessageDeleteEligible,

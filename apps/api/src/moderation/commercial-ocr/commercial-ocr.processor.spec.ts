@@ -47,12 +47,15 @@ function createHarness(
   } = {},
 ) {
   const moderationService = {
+    recordTechnicalIncomplete: jest.fn().mockResolvedValue(undefined),
     processCommercialOcrJob: options.error
       ? jest.fn().mockRejectedValue(options.error)
       : jest.fn().mockResolvedValue(options.result ?? { kind: 'completed' }),
   };
   const admissionStore = {
     release: jest.fn().mockResolvedValue(options.releaseResult ?? true),
+    recordStarted: jest.fn().mockResolvedValue('recorded'),
+    finalize: jest.fn().mockResolvedValue('recorded'),
   };
   const configService = {
     get: jest.fn((key: string) => {
@@ -66,6 +69,8 @@ function createHarness(
     recordQueueWait: jest.fn(),
     recordCounter: jest.fn(),
     recordStageDuration: jest.fn(),
+    getLogicalRecordingContext: jest.fn().mockReturnValue({ identitySha256: 'a'.repeat(64) }),
+    observeLogicalRecording: jest.fn(),
   };
   const effectiveData = { ...jobData, ...options.dataOverrides };
   const job = {
@@ -76,6 +81,9 @@ function createHarness(
     attemptsMade: options.attemptsMade ?? 0,
     timestamp: Date.parse(data.createdAt),
     moveToDelayed: jest.fn().mockResolvedValue(undefined),
+    updateData: jest.fn().mockImplementation(async (next: CommercialOcrJob) => {
+      job.data = next;
+    }),
     ...options.jobOverrides,
   } as unknown as Job<CommercialOcrJob>;
   const processor = new CommercialOcrProcessor(
@@ -94,6 +102,88 @@ describe('CommercialOcrProcessor', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  it('consumes the normal source retry attempt and persists Retry-After without changing identity/deadline', async () => {
+    const harness = createHarness({
+      result: { kind: 'retry', reason: 'source_unavailable', retryAfterMs: 30_000 },
+    });
+    await expect(harness.processor.process(harness.job, 'lock-1')).rejects.toThrow(
+      'transient failure: source_unavailable',
+    );
+    expect(harness.job.updateData).toHaveBeenCalledWith({
+      ...jobData,
+      sourceRetryNotBeforeAt: activeNowMs + 30_000,
+    });
+    expect(harness.admissionStore.finalize).not.toHaveBeenCalled();
+    harness.job.attemptsMade = 1;
+    await expect(harness.processor.process(harness.job, 'lock-1')).rejects.toBeInstanceOf(
+      DelayedError,
+    );
+    expect(harness.job.moveToDelayed).toHaveBeenCalledWith(activeNowMs + 30_000, 'lock-1');
+    expect(harness.moderationService.processCommercialOcrJob).toHaveBeenCalledTimes(1);
+    expect(harness.job.attemptsMade).toBe(1);
+  });
+
+  it('terminates the third source failure as incomplete with one terminal claim', async () => {
+    const harness = createHarness({
+      attemptsMade: 2,
+      attempts: 3,
+      result: { kind: 'retry', reason: 'source_unavailable', retryAfterMs: 30_000 },
+    });
+    await expect(harness.processor.process(harness.job, 'lock-1')).rejects.toThrow(
+      'transient failure: source_unavailable',
+    );
+    expect(harness.admissionStore.finalize).toHaveBeenCalledTimes(1);
+    expect(harness.admissionStore.finalize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminal: { outcome: 'TECHNICAL_INCOMPLETE', reason: 'source_unavailable' },
+      }),
+    );
+    expect(harness.job.updateData).not.toHaveBeenCalled();
+    expect(harness.moderationService.recordTechnicalIncomplete).toHaveBeenCalledWith(
+      jobData,
+      jobId,
+      'source_unavailable',
+    );
+  });
+
+  it('never schedules Retry-After beyond the original deadline', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(deadlineAtMs - 20_000);
+    const harness = createHarness({
+      result: { kind: 'retry', reason: 'source_unavailable', retryAfterMs: 30_000 },
+    });
+    await expect(harness.processor.process(harness.job, 'lock-1')).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+    expect(harness.job.updateData).not.toHaveBeenCalled();
+    expect(harness.job.moveToDelayed).not.toHaveBeenCalled();
+    expect(harness.admissionStore.finalize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminal: { outcome: 'EXPIRED', reason: 'source_unavailable' },
+      }),
+    );
+  });
+
+  it('does not record a second terminal duration or sample on a mirror/restart claim', async () => {
+    const harness = createHarness({
+      result: {
+        kind: 'completed',
+        terminal: {
+          outcome: 'COMPLETE_KEEP',
+          reason: 'complete',
+        },
+      },
+    });
+    harness.admissionStore.finalize.mockResolvedValue('duplicate');
+    await expect(harness.processor.process(harness.job, 'lock-1')).resolves.toBeUndefined();
+    expect(
+      harness.metrics.recordStageDuration.mock.calls.some(
+        ([stage]) => stage === 'event_to_terminal',
+      ),
+    ).toBe(false);
+    expect(harness.moderationService.recordTechnicalIncomplete).not.toHaveBeenCalled();
+    expect(harness.admissionStore.release).toHaveBeenCalledTimes(1);
   });
 
   it('validates the exact job identity and releases admission after terminal completion', async () => {
@@ -217,6 +307,8 @@ describe('CommercialOcrProcessor', () => {
     const admissionStore = {
       resolveState: jest.fn().mockResolvedValue({ kind: 'available', state: 'observation' }),
       release: jest.fn().mockResolvedValue(true),
+      recordStarted: jest.fn().mockResolvedValue('recorded'),
+      finalize: jest.fn().mockResolvedValue('recorded'),
     };
     const analysisService = {
       analyzeAlbum: jest.fn().mockResolvedValue({
@@ -312,7 +404,7 @@ describe('CommercialOcrProcessor', () => {
       { ensureIntentWithMessageActionClaim: jest.fn(), getRolloutForRule: jest.fn() } as never,
       { resolveEffectivePolicy: jest.fn() } as never,
       configService as never,
-      { recordCounter: jest.fn() } as never,
+      { recordCounter: jest.fn(), recordStageDuration: jest.fn() } as never,
     );
     const processor = new CommercialOcrProcessor(
       moderationService,
@@ -322,6 +414,8 @@ describe('CommercialOcrProcessor', () => {
         recordQueueWait: jest.fn(),
         recordCounter: jest.fn(),
         recordStageDuration: jest.fn(),
+        getLogicalRecordingContext: jest.fn().mockReturnValue({ identitySha256: 'a'.repeat(64) }),
+        observeLogicalRecording: jest.fn(),
       } as never,
     );
     const job = {

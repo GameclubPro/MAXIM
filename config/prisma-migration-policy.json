@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261004120000_add_marketplace_shared_analytics",
-  "baselineNamesSha256": "eeec57f1be965599a3894c5df35dc3010c2561493382dba2d03854ffc60a8721",
-  "baselineContentsSha256": "1925d5674f9214adc6200ad2fc167bfd57fb7151de22ae7c18013a4c5847c0cb",
+  "baselineThrough": "20261005003200_add_commercial_quality_policy_stops",
+  "baselineNamesSha256": "e703fd20c7860ce64dc553d1a25526953e3a23ad719379a6374ce41cb061cccc",
+  "baselineContentsSha256": "3fb5f6b2f87d16b298498bc7c1579319da92cbfec3202ac0b7b7be2e0a03c9e5",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -149,6 +149,9 @@
     },
     "20261004120000_add_marketplace_shared_analytics": {
       "reason": "Indexes are created only on new empty marketplace integration tables; no existing source table or historical data is rewritten."
+    },
+    "20261005003000_add_commercial_independent_ratings": {
+      "reason": "All atomic indexes belong to the new empty independent-rating table. Existing samples receive only additive nullable/constant-default columns and NOT VALID checks. The neutral queue index on existing sample history is isolated in a following concurrent migration."
     }
   }
 }

@@ -2714,9 +2714,12 @@ export function findCommercialPatternRules(params: {
   text: string;
   taxonomyClass?: CommercialPatternRule['taxonomyClass'];
 }): CommercialPatternRule[] {
-  return COMMERCIAL_PATTERN_RULES.filter(
-    (rule) =>
-      (!params.taxonomyClass || rule.taxonomyClass === params.taxonomyClass) &&
-      rule.pattern.test(params.text),
-  );
+  return COMMERCIAL_PATTERN_RULES.filter((rule) => {
+    if (params.taxonomyClass && rule.taxonomyClass !== params.taxonomyClass) return false;
+    // FLAG: Repeated policy evaluation must not alternate authority through a global regex cursor.
+    rule.pattern.lastIndex = 0;
+    const matches = rule.pattern.test(params.text);
+    rule.pattern.lastIndex = 0;
+    return matches;
+  });
 }
