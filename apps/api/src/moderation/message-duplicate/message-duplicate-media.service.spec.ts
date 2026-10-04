@@ -1,3 +1,4 @@
+import { MaxBotContextService } from '../../max/max-bot-context.service';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import {
@@ -53,7 +54,12 @@ function setup() {
     observe: jest.fn().mockResolvedValue(null),
   };
   const enforcement = { enqueue: jest.fn() };
-  const bots = { isKnownBotUserId: jest.fn().mockReturnValue(false), getDefaultBotId: () => 'bot' };
+  const bots = {
+    isKnownBotUserId: jest.fn().mockReturnValue(false),
+    getDefaultBotId: () => 'bot',
+    resolveExecutableBotId: jest.fn((botId: string) => (botId === 'publisher' ? null : botId)),
+  };
+  const botContext = new MaxBotContextService();
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'allow' }) };
   const max = { getExactMessageRow: jest.fn() };
   const metrics = { record: jest.fn() };
@@ -68,6 +74,7 @@ function setup() {
     governor as never,
     new ConfigService(),
     max as never,
+    botContext,
     metrics as never,
   );
   const downloads = jest.fn(async (url: string) => ({
@@ -124,6 +131,8 @@ function setup() {
   };
   return {
     service,
+    botContext,
+    bots,
     settings,
     rows,
     cache,
@@ -384,6 +393,64 @@ describe('bounded message duplicate media analysis', () => {
     await request.executeFullAction({});
     expect(execute).toHaveBeenCalledTimes(1);
     expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it('uses the persisted execution owner when the receiving bot has lost source access', async () => {
+    const s = photoSetup();
+    await s.service.process(s.photoJob('owner-a', 0, 'https://i.oneme.ru/a'), s.lease);
+    const next = s.photoJob('owner-b', 100);
+    const received = s.rows.get('owner-b') as Record<string, unknown>;
+    s.rows.set('owner-b', {
+      ...received,
+      botId: 'receiver',
+      executionClaims: [{ executionBotId: 'executor' }],
+    });
+    s.photos.fingerprintAlbum.mockResolvedValueOnce(s.complete).mockResolvedValueOnce({
+      kind: 'incomplete',
+      reason: 'missing_download_url',
+    });
+    const fresh = duplicateUpdate('owner-b', next.eventTimestampMs, '', [
+      { type: 'image', payload: { photo_id: 'owner-b', url: 'https://i.oneme.ru/fresh' } },
+    ]);
+    s.max.getExactMessageRow.mockImplementation(async (_chat, _message, options) => {
+      if (options.botId !== 'executor')
+        throw Object.assign(new Error('forbidden'), { response: { status: 403 } });
+      return (fresh.raw as { message: unknown }).message;
+    });
+    s.history.observe.mockResolvedValue({
+      hit: {},
+      binding: { eventTimestampMs: Date.now() - 1000 },
+    });
+    const execute = jest.fn(async () => {
+      expect(s.botContext.getActiveBotId()).toBe('executor');
+    });
+    await s.service.process(next, s.lease, execute);
+    await s.enforcement.enqueue.mock.calls[0]![0].executeFullAction({});
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(s.botContext.getActiveBotId()).toBeNull();
+    expect(s.max.getExactMessageRow).toHaveBeenCalledWith(
+      next.chatId,
+      next.messageId,
+      expect.objectContaining({ botId: 'executor', bypassCache: true }),
+    );
+    expect(s.enforcement.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'executor' }),
+    );
+  });
+
+  it('rejects an executor outside the Major action registry without token fallback', async () => {
+    const s = photoSetup();
+    const job = s.photoJob('foreign-owner', 0, 'https://i.oneme.ru/a');
+    const received = s.rows.get('foreign-owner') as Record<string, unknown>;
+    s.rows.set('foreign-owner', {
+      ...received,
+      executionClaims: [{ executionBotId: 'publisher' }],
+    });
+    await s.service.process(job, s.lease);
+    expect(s.history.observe).not.toHaveBeenCalled();
+    expect(s.photos.fingerprintAlbum).not.toHaveBeenCalled();
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    expect(s.enforcement.enqueue).not.toHaveBeenCalled();
   });
 
   it('retries enforcement after refreshing a missing URL even when the candidate points to itself', async () => {
