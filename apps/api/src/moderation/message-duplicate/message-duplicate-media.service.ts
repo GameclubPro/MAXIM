@@ -358,6 +358,7 @@ export class MessageDuplicateMediaService {
               baseline.botId,
               undefined,
               budget,
+              previous.webhookEventId,
             );
             lease.assertOwned();
             await this.history.observe({
@@ -403,6 +404,7 @@ export class MessageDuplicateMediaService {
       source.botId,
       currentCached,
       budget,
+      job.webhookEventId,
     );
     if (Date.now() >= deadlineAtMs) throw new Error('Message media verification deadline exceeded');
     lease.assertOwned();
@@ -539,6 +541,7 @@ export class MessageDuplicateMediaService {
     botId: string,
     cachedHashes?: readonly (string | null)[],
     budget = { remaining: MAX_UNCACHED_MEDIA_PER_ATTEMPT },
+    receiptId = update.updateId,
   ): Promise<{ content: DuplicateMessageContent; hashes: string[] }> {
     const originalMedia = content.media;
     const hashes = cachedHashes ? [...cachedHashes] : await this.readHashes(content, update);
@@ -548,14 +551,17 @@ export class MessageDuplicateMediaService {
       throw new MessageDuplicateMediaDeferredError('proof_budget');
     }
     budget.remaining -= missing;
+    // FLAG: A partial outer hash cache cannot exempt album members from byte/pixel
+    // accounting. Revalidate the whole album through its resumable, cost-bearing proofs.
     const photoIndexes = content.media
-      .map((media, index) => (media.kind === 'photo' && !hashes[index] ? index : -1))
+      .map((media, index) => (media.kind === 'photo' ? index : -1))
       .filter((index) => index >= 0);
     if (photoIndexes.some((index) => !hashes[index])) {
       const message = update.message!;
       const fingerprint = () =>
         this.photos.fingerprintAlbum(
           {
+            receiptId,
             chatId: message.chatId,
             messageId: message.messageId,
             senderId: message.senderId,

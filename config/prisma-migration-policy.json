@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261002190000_add_publication_preflight_progress",
-  "baselineNamesSha256": "56970ee934f8732d0c09feb4db2f093d5a8e5c69bf378925324a969be18142cf",
-  "baselineContentsSha256": "f564d88e3a7e95112bde7929f12a97232cad4cfef23740a5091de5f2d35dbb23",
+  "baselineThrough": "20261004120000_add_marketplace_shared_analytics",
+  "baselineNamesSha256": "eeec57f1be965599a3894c5df35dc3010c2561493382dba2d03854ffc60a8721",
+  "baselineContentsSha256": "1925d5674f9214adc6200ad2fc167bfd57fb7151de22ae7c18013a4c5847c0cb",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -143,6 +143,12 @@
     },
     "20261002180000_add_publisher_refresh_obligations": {
       "reason": "Both indexes belong to the new empty diagnostic obligation table; no existing table, data or index is rewritten. They are created before runtime can write observations."
+    },
+    "20261004080000_add_duplicate_claim_cleanup": {
+      "reason": "The due index is created on a new empty obligation table. Existing claims and their indexes are unchanged; no history scan or backfill occurs."
+    },
+    "20261004120000_add_marketplace_shared_analytics": {
+      "reason": "Indexes are created only on new empty marketplace integration tables; no existing source table or historical data is rewritten."
     }
   }
 }

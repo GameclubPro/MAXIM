@@ -2663,7 +2663,10 @@ export class VkPublishService {
               );
             }
           }
-          return options;
+          return {
+            ...options,
+            marketplacePublication: { purpose: 'VK_IMPORT', entityId: post.chatId },
+          };
         },
       });
       const publisherDialogContext = this.readPublisherDialogContext(

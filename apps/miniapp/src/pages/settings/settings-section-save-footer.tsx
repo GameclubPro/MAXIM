@@ -33,12 +33,15 @@ export function SettingsSectionSaveFooter({
   return (
     <>
       {conflict ? (
-        <div role="status" className="settings-drilldown__footer-note">
+        <div
+          role="status"
+          className="settings-drilldown__footer-note settings-drilldown__footer-conflict"
+        >
           <p>
             Настройки изменились. Ваш черновик сохранён. Сейчас показан{' '}
             {conflict.viewingSaved ? 'сохранённый вариант' : 'ваш черновик'}.
           </p>
-          <button type="button" className="button button--secondary" onClick={conflict.onToggle}>
+          <button type="button" className="button button--ghost" onClick={conflict.onToggle}>
             {conflict.viewingSaved ? 'Показать мой черновик' : 'Сравнить с сохранённым'}
           </button>
         </div>

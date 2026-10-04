@@ -30,6 +30,22 @@ const schema = readFileSync(resolve(root, 'apps/api/prisma/schema.prisma'), 'utf
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-postgres-audit-'));
+  const auditScript = join(directory, 'audit.sh');
+  const auditLock = join(directory, 'audit.lock');
+  const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
+  // FLAG: Keep the production flock semantics, but isolate each test fixture from
+  // other suites/worktrees that exercise the same fixed production lock path.
+  const source = readFileSync(audit, 'utf8');
+  assert.ok(source.includes('AUDIT_LOCK_FILE=/tmp/maxim-postgres-audit.lock'));
+  writeFileSync(
+    auditScript,
+    source
+      .replace(/^ROOT_DIR=.*$/mu, `ROOT_DIR=${quote(root)}`)
+      .replace(
+        'AUDIT_LOCK_FILE=/tmp/maxim-postgres-audit.lock',
+        `AUDIT_LOCK_FILE=${quote(auditLock)}`,
+      ),
+  );
   const bin = join(directory, 'bin');
   const dockerArgs = join(directory, 'docker.args');
   const allDockerCalls = join(directory, 'docker-calls.log');
@@ -89,6 +105,8 @@ printf '%s\n' "$@" >"$MOCK_YC_ARGS"
   return {
     directory,
     bin,
+    auditScript,
+    auditLock,
     dockerArgs,
     allDockerCalls,
     cleanupArgs,
@@ -162,7 +180,7 @@ function writeLegacyDefaultWebhookSnapshot(data) {
 }
 
 function runAudit(data, args, extraEnv = {}) {
-  return spawnSync('bash', [audit, ...args], {
+  return spawnSync('bash', [data.auditScript, ...args], {
     cwd: root,
     encoding: 'utf8',
     env: { ...baseEnv(data), ...extraEnv },
@@ -1645,15 +1663,7 @@ test('global audit flock rejects an overlapping diagnostic before Docker', async
   const holderReady = join(data.directory, 'holder-ready');
   const holder = spawn(
     'flock',
-    [
-      '-n',
-      '/tmp/maxim-postgres-audit.lock',
-      'bash',
-      '-c',
-      ': >"$1"; sleep 5',
-      'audit-lock-holder',
-      holderReady,
-    ],
+    ['-n', data.auditLock, 'bash', '-c', ': >"$1"; sleep 5', 'audit-lock-holder', holderReady],
     { detached: true, stdio: 'ignore' },
   );
   t.after(() => {
@@ -1709,7 +1719,7 @@ test('wall timeout terminates the audit and cleans only its exact backend identi
 test('SIGTERM preserves signal status and cleans the exact audit backend', async (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
-  const child = spawn('bash', [audit, 'queue'], {
+  const child = spawn('bash', [data.auditScript, 'queue'], {
     cwd: root,
     env: { ...baseEnv(data), MOCK_AUDIT_SLEEP_SEC: '5' },
     stdio: 'ignore',
