@@ -202,8 +202,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
 
   # FLAG: Pending v3 decisions outlive environment downgrades. Both rollback paths
   # must retain lifecycle revisions, durable first admission/revocation and the last permit fence.
-  # Conservative phone evidence, positioned punctuation and mode-aware TEXT lifecycle
-  # remain mandatory with the safe-text fence after a control downgrade.
+  # Bounded phone labels, positioned punctuation and mode-aware TEXT lifecycle
+  # remain mandatory with the v8 safe-text fence after a control downgrade.
   for source_path in "${source_paths[@]}"; do
     if ! source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)"; then
       echo "Rollback target predates the message duplicate v3 action guard." >&2
@@ -238,6 +238,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const mutation = executor.slice(mutationStart, mutationEnd);
     const suggestionProof = mutation.lastIndexOf("await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof)");
     const finalPermit = mutation.lastIndexOf("await this.messageDuplicateDeleteGuard.assertIntentStillActionable(");
+    const phoneContext = phones.match(/const PHONE_CONTEXT\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1];
     const valid = start >= 0 && end > start &&
       guard.includes("class MessageDuplicateDeleteGuardService") &&
       check.includes("await this.history.stillMatches(") &&
@@ -255,7 +256,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
       state.includes("lifecycleRevision:") &&
       state.includes("authorization:") &&
       state.includes("messageDuplicateEnforcementScope") &&
-      state.includes("text-fixed-window-safe-text-v7") &&
+      state.includes("text-fixed-window-safe-text-v8") &&
       state.includes("const safeTextMatchingEnabled = nearEnabled || phoneValueMatchingEnabled;") &&
       /const phoneValueMatchingEnabled\s*=\s*settings.duplicateDetectionPreset === .CUSTOM. && settings.duplicateIgnorePhonesEnabled/u.test(state) &&
       /version:\s*safeTextMatchingEnabled\s*\?/u.test(state) &&
@@ -269,9 +270,11 @@ maxim_topology_require_message_duplicate_delete_guard() {
       detector.includes("extractDuplicatePhoneNumbers(rawText)") &&
       detector.includes("stripDuplicatePhoneNumbers(value)") &&
       detector.includes("stripDuplicatePhoneNumbers(source)") &&
+      detector.includes("safeTextMatching ? \u0027text-v6\\0\u0027 : \u0027text-v4\\0\u0027") &&
       detector.includes("value = replaceUrlsInText(value, \u0027 \u0027);") &&
       detector.includes("source = replaceUrlsInText(source, \u0027 \u0027);") &&
-      /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*1/u.test(phones) &&
+      /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*2\b/u.test(phones) &&
+      phoneContext === "/(?:^|[^\\p{L}\\p{N}_])(?:тел|телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?|звоните|позвоните|звони|позвони|звонить|позвонить|whatsapp|ватсап|viber|вайбер|phone|telephone|call)\\s*(?:для\\s+связи\\s*)?[:=№#.-]?\\s*$/iu" &&
       phones.includes("hasProtectedValueContext(before, after)") &&
       phones.includes("const international = candidate.startsWith(\u0027+\u0027) && /^[1-9]\\d{9,14}$/u.test(digits);") &&
       phones.includes("const labelled = PHONE_CONTEXT.test(before);") &&

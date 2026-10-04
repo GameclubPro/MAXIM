@@ -6,6 +6,7 @@ import {
   duplicateSettings,
   preUnicodeNearSettingsDigests,
   preSafeTextSettingsDigests,
+  preBoundedPhoneSettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 describe('safe text evidence compatibility', () => {
@@ -16,6 +17,9 @@ describe('safe text evidence compatibility', () => {
   ] as const)('invalidates previous %s evidence, including phone-only CUSTOM', (key, overrides) => {
     expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
       preSafeTextSettingsDigests[key],
+    );
+    expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
+      preBoundedPhoneSettingsDigests[key],
     );
   });
   it.each(['STRICT', 'CUSTOM'] as const)('invalidates pre-Unicode %s evidence', (preset) => {

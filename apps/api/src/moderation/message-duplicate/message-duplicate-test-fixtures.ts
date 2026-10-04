@@ -15,6 +15,13 @@ export const preSafeTextSettingsDigests = {
   CUSTOM_PHONE: '98a9f5799b58c3d38147b6228ab73583621b394074a5942fd6e231905d61b284',
 } as const;
 
+// Recorded at the v7 settings fence before bounded phone labels (helper v2).
+export const preBoundedPhoneSettingsDigests = {
+  STRICT: '47521512f757fbe1943c24e302afe81e09d3632b945c86bae5f9da78afdc7dbf',
+  CUSTOM_NEAR: '41464350d04a50407a8dbd26808c08e6cb435b88be1a7fc95cd25199791f2922',
+  CUSTOM_PHONE: '0aa2f1282c4e0692fac91d2ff455fecd2d8c19414d562809b8c5047d3730e23d',
+} as const;
+
 export function duplicateSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
     ...chatSettingsSchema.parse({}),

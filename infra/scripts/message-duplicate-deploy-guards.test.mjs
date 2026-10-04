@@ -70,7 +70,7 @@ test('requires the message-v3 reader, durable admission and last action permit o
 
 const mutations = [
   ['state', 'z.literal(3)', 'z.literal(4)'],
-  ['state', 'text-fixed-window-safe-text-v7', 'text-fixed-window-unicode-near-v6'],
+  ['state', 'text-fixed-window-safe-text-v8', 'text-fixed-window-safe-text-v7'],
   ['state', 'version: safeTextMatchingEnabled ?', 'version: false ?'],
   ['state', 'nearEnabled || phoneValueMatchingEnabled', 'nearEnabled'],
   [
@@ -103,9 +103,10 @@ const mutations = [
   ['detector', 'extractDuplicatePhoneNumbers(rawText)', 'extractDetectedPhoneNumbers(rawText)'],
   ['detector', 'stripDuplicatePhoneNumbers(value)', 'stripDetectedPhoneNumbers(value)'],
   ['detector', 'stripDuplicatePhoneNumbers(source)', 'stripDetectedPhoneNumbers(source)'],
+  ['detector', 'text-v6\\0', 'text-v5\\0'],
   ['detector', "value = replaceUrlsInText(value, ' ');", 'value = stripUrlsFromText(value);'],
   ['detector', "source = replaceUrlsInText(source, ' ');", 'source = stripUrlsFromText(source);'],
-  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 1', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 0'],
+  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 2', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 1'],
   ['phones', 'hasProtectedValueContext(before, after)', 'false'],
   [
     'phones',
@@ -195,6 +196,25 @@ for (const [key, before, after] of mutations) {
     );
   });
 }
+
+test('rejects broad phone roots even with phone evidence v2 and the v8 settings fence', (t) => {
+  const source = readFileSync(resolve(root, paths.phones), 'utf8');
+  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*2\b/u);
+  const declaration = /const PHONE_CONTEXT\s*=\s*\/[^\r\n]+\/iu;/u;
+  assert.match(source, declaration);
+  const phones = source.replace(
+    declaration,
+    'const PHONE_CONTEXT =\n' +
+      '  /(?:^|[^\\p{L}\\p{N}_])(?:тел(?:ефон)?\\p{L}*|мобильн\\p{L}*|звон\\p{L}*|whatsapp|ватсап|viber|вайбер|phone|mobile|call)\\s*(?:для\\s+связи\\s*)?[:=№#.-]?\\s*$/iu;',
+  );
+  assert.notEqual(phones, source);
+  const result = probe(t, { phones });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+  );
+});
 
 test('rejects a guard that drops only the final authorization check after external reads', (t) => {
   const source = readFileSync(resolve(root, paths.guard), 'utf8');

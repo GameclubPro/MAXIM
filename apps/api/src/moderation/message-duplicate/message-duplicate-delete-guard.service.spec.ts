@@ -22,6 +22,7 @@ import {
   duplicateUpdate,
   preUnicodeNearSettingsDigests,
   preSafeTextSettingsDigests,
+  preBoundedPhoneSettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 function setup() {
@@ -213,18 +214,20 @@ describe('message duplicate final delete guard', () => {
     async (key, overrides) => {
       const s = setup();
       Object.assign(s.settings, overrides);
-      s.binding.settingsDigest = preSafeTextSettingsDigests[key];
-      await expect(
-        s.service.assertQualificationAuthority(s.params.chatId, s.binding),
-      ).rejects.toMatchObject({
-        code: 'message_duplicate_settings_changed',
-      });
-      for (const authorityOnly of [false, true]) {
+      for (const digests of [preSafeTextSettingsDigests, preBoundedPhoneSettingsDigests]) {
+        s.binding.settingsDigest = digests[key];
         await expect(
-          s.service.assertIntentStillActionable({ ...s.params, authorityOnly }),
+          s.service.assertQualificationAuthority(s.params.chatId, s.binding),
         ).rejects.toMatchObject({
           code: 'message_duplicate_settings_changed',
         });
+        for (const authorityOnly of [false, true]) {
+          await expect(
+            s.service.assertIntentStillActionable({ ...s.params, authorityOnly }),
+          ).rejects.toMatchObject({
+            code: 'message_duplicate_settings_changed',
+          });
+        }
       }
       expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
       expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
@@ -533,81 +536,86 @@ describe('message duplicate final delete guard', () => {
     (['current', 'original'] as const).flatMap((stage) =>
       (['link', 'callback'] as const).map((type) => ({ stage, type })),
     ),
-  )('revokes IMAGE evidence after the $stage keyboard $type action changes', async ({ stage, type }) => {
-    const s = setup();
-    s.settings.duplicatePhotoScope = 'SAME_AUTHOR';
-    Object.assign(s.binding, {
-      enforcementScope: 'full',
-      hasPhotos: true,
-      compareMode: 'IMAGE',
-      imageScope: 'SAME_AUTHOR',
-      settingsDigest: exactImageSettingsDigest(s.settings),
-      mediaHashes: ['c'.repeat(64)],
-    });
-    s.policy.resolve.mockResolvedValue({
-      mode: 'full',
-      revision: 1,
-      effectiveAtMs: Date.now() - 10000,
-      expiresAtMs: Number.MAX_SAFE_INTEGER,
-    });
-    const image = (messageId: string, action: string) =>
-      duplicateUpdate(messageId, s.binding.eventTimestampMs, 'caption', [
-        { type: 'image', payload: { photo_id: 'photo', url: 'https://i.oneme.ru/photo' } },
-        {
-          type: 'inline_keyboard',
-          payload: {
-            buttons: [
-              [
-                {
-                  type,
-                  text: 'Open',
-                  ...(type === 'link'
-                    ? { url: `https://example.org/${action}` }
-                    : { payload: action }),
-                },
+  )(
+    'revokes IMAGE evidence after the $stage keyboard $type action changes',
+    async ({ stage, type }) => {
+      const s = setup();
+      s.settings.duplicatePhotoScope = 'SAME_AUTHOR';
+      Object.assign(s.binding, {
+        enforcementScope: 'full',
+        hasPhotos: true,
+        compareMode: 'IMAGE',
+        imageScope: 'SAME_AUTHOR',
+        settingsDigest: exactImageSettingsDigest(s.settings),
+        mediaHashes: ['c'.repeat(64)],
+      });
+      s.policy.resolve.mockResolvedValue({
+        mode: 'full',
+        revision: 1,
+        effectiveAtMs: Date.now() - 10000,
+        expiresAtMs: Number.MAX_SAFE_INTEGER,
+      });
+      const image = (messageId: string, action: string) =>
+        duplicateUpdate(messageId, s.binding.eventTimestampMs, 'caption', [
+          { type: 'image', payload: { photo_id: 'photo', url: 'https://i.oneme.ru/photo' } },
+          {
+            type: 'inline_keyboard',
+            payload: {
+              buttons: [
+                [
+                  {
+                    type,
+                    text: 'Open',
+                    ...(type === 'link'
+                      ? { url: `https://example.org/${action}` }
+                      : { payload: action }),
+                  },
+                ],
               ],
-            ],
+            },
           },
-        },
-      ]);
-    const recorded = image('m2', 'recorded-action');
-    const content = extractDuplicateMessageContent(recorded.raw);
-    s.binding.sourceDigest = exactImageSourceDigest(content);
-    s.binding.contentDigest = buildMessageDuplicateIdentity(
-      content,
-      'IMAGE',
-      s.binding.mediaHashes,
-    )!;
-    Object.assign(s.binding.original!, {
-      sourceDigest: s.binding.sourceDigest,
-      contentDigest: s.binding.contentDigest,
-      mediaHashes: s.binding.mediaHashes,
-    });
-    s.max.getExactMessageRow.mockResolvedValue((recorded.raw as { message: unknown }).message);
-    s.originalLookup.mockResolvedValue(
-      (image('m1', 'recorded-action').raw as { message: typeof s.originalRaw }).message,
-    );
-    await expect(s.service.assertIntentStillActionable(s.params)).resolves.toBe('allowed');
+        ]);
+      const recorded = image('m2', 'recorded-action');
+      const content = extractDuplicateMessageContent(recorded.raw);
+      s.binding.sourceDigest = exactImageSourceDigest(content);
+      s.binding.contentDigest = buildMessageDuplicateIdentity(
+        content,
+        'IMAGE',
+        s.binding.mediaHashes,
+      )!;
+      Object.assign(s.binding.original!, {
+        sourceDigest: s.binding.sourceDigest,
+        contentDigest: s.binding.contentDigest,
+        mediaHashes: s.binding.mediaHashes,
+      });
+      s.max.getExactMessageRow.mockResolvedValue((recorded.raw as { message: unknown }).message);
+      s.originalLookup.mockResolvedValue(
+        (image('m1', 'recorded-action').raw as { message: typeof s.originalRaw }).message,
+      );
+      await expect(s.service.assertIntentStillActionable(s.params)).resolves.toBe('allowed');
 
-    const changed = (image(stage === 'current' ? 'm2' : 'm1', 'new-action').raw as {
-      message: typeof s.originalRaw;
-    }).message;
-    if (stage === 'current') s.max.getExactMessageRow.mockResolvedValue(changed);
-    else s.originalLookup.mockResolvedValue(changed);
-    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toMatchObject({
-      code:
-        stage === 'current'
-          ? 'message_duplicate_content_changed'
-          : 'message_duplicate_original_changed',
-    });
-    expect(s.history.invalidateLifecycle).toHaveBeenCalledWith({
-      chatId: s.params.chatId,
-      messageId: stage === 'current' ? 'm2' : 'm1',
-      content: expect.objectContaining({ complete: true, actions: expect.any(Array) }),
-    });
-    expect(s.history.remove).not.toHaveBeenCalled();
-    expect(s.history.observeLifecycle).not.toHaveBeenCalled();
-  });
+      const changed = (
+        image(stage === 'current' ? 'm2' : 'm1', 'new-action').raw as {
+          message: typeof s.originalRaw;
+        }
+      ).message;
+      if (stage === 'current') s.max.getExactMessageRow.mockResolvedValue(changed);
+      else s.originalLookup.mockResolvedValue(changed);
+      await expect(s.service.assertIntentStillActionable(s.params)).rejects.toMatchObject({
+        code:
+          stage === 'current'
+            ? 'message_duplicate_content_changed'
+            : 'message_duplicate_original_changed',
+      });
+      expect(s.history.invalidateLifecycle).toHaveBeenCalledWith({
+        chatId: s.params.chatId,
+        messageId: stage === 'current' ? 'm2' : 'm1',
+        content: expect.objectContaining({ complete: true, actions: expect.any(Array) }),
+      });
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(s.history.observeLifecycle).not.toHaveBeenCalled();
+    },
+  );
 
   function full() {
     const s = setup();

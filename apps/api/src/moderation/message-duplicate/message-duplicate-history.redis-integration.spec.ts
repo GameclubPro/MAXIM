@@ -412,6 +412,11 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     });
 
     it.each([
+      ...['Телевизор', 'Тележка', 'Телескоп', 'Мобильность', 'Звонок', 'Звонки'].map((label) => [
+        `product phone-prefix ${label}`,
+        `${label} 999-123-45-67 продаётся с подробным описанием гарантии и доставкой по стране`,
+        `${label} 999-123-45-68 продаётся с подробным описанием гарантии и доставкой по стране`,
+      ]),
       ...['Серия', 'Модель', 'Версия', ''].map((label) => [
         label ? `grouped ${label}` : 'unlabelled grouped number',
         `${label} (999-123-45-67) доступна для заказа в нашем интернет магазине с доставкой по стране`,
@@ -532,6 +537,10 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
   });
 
   it.each([
+    ...['Телевизор', 'Тележка', 'Телескоп', 'Мобильность', 'Звонок', 'Звонки'].map((label) => [
+      `${label} 999-123-45-67 продаётся с подробным описанием`,
+      `${label} 999-123-45-67 требуется для нового оборудования`,
+    ]),
     ...['Серия', 'Модель', 'Версия', ''].map((label) => [
       `${label} (999-123-45-67) доступна для заказа в нашем интернет магазине`,
       `${label} (999-123-45-67) опубликована после завершения регистрации участников`,
@@ -552,6 +561,47 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     };
     await observe('protected-original', 0, first, override);
     expect(await observe('unrelated-protected', 100, second, override)).toBeNull();
+  });
+
+  describe.each(['STRICT', 'CUSTOM_PHONE'] as const)('%s bounded phone labels', (mode) => {
+    it.each([
+      'Телефон',
+      'Телефоном',
+      'Телефоны',
+      'Тел.',
+      'Позвоните',
+      'Звоните',
+      'WhatsApp',
+      'Ватсап',
+      'Viber',
+      'Вайбер',
+    ])(
+      'matches and qualifies explicit %s evidence without an international prefix',
+      async (label) => {
+        const strict = mode === 'STRICT';
+        const override = {
+          settings: duplicateSettings({
+            duplicateDetectionPreset: strict ? 'STRICT' : 'CUSTOM',
+            duplicateIgnorePhonesEnabled: !strict,
+            duplicateNearMatchEnabled: false,
+          }),
+        };
+        const description =
+          'Подробная инструкция для участников встречи доступна после завершения регистрации';
+        const first = `${description} ${label}: 999-123-45-67`;
+        const second = strict
+          ? `${description} ${label}: 999-123-45-68`
+          : `Связаться для консультации ${label}: 999-123-45-67`;
+        expect(await observe('original', 0, first, override)).toBeNull();
+        const matched = await observe('matched', 100, second, override);
+        expect(matched?.hit).toMatchObject({
+          count: 1,
+          fingerprintType: strict ? 'content' : 'phone',
+        });
+        expect(await history.stillMatches(chatId, matched!.binding)).toBe(true);
+        expect(await history.qualify(chatId, matched!.binding)).toBe(1);
+      },
+    );
   });
 
   it.each(['photo', 'video', 'audio', 'file', 'sticker', 'contact', 'location'])(

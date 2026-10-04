@@ -157,7 +157,7 @@ export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   return digestDuplicateContent({
     // FLAG: Old near and phone-value grants/jobs must fail the fresh guard, not merely miss history.
     // Exact-only and IMAGE authority keep their existing versions and comparison semantics.
-    version: safeTextMatchingEnabled ? 'text-fixed-window-safe-text-v7' : 'text-fixed-window-v5',
+    version: safeTextMatchingEnabled ? 'text-fixed-window-safe-text-v8' : 'text-fixed-window-v5',
     historyRevision: settings.duplicateHistoryRevision ?? 0,
     schedule: duplicateScheduleDigestInput(settings),
     enabled: settings.antiDuplicateEnabled,

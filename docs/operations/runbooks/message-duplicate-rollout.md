@@ -392,14 +392,18 @@ and its matching content/revision binding. `MESSAGE_DUPLICATE_ENABLED=false` is 
 environment ceiling.
 
 Both API rollback paths require v3 binding, lifecycle and durable/permit authorization source
-capabilities, conservative duplicate-only phone evidence, mode-aware TEXT lifecycle eligibility,
-and near punctuation/symbol positions with the `text-fixed-window-safe-text-v7` settings fence.
+capabilities, duplicate-only phone evidence v2, mode-aware TEXT lifecycle eligibility,
+and near punctuation/symbol positions with the `text-fixed-window-safe-text-v8` settings fence
+and `text-v6` matching namespace.
 The fence invalidates old STRICT, CUSTOM-with-near and CUSTOM-phone-value history, queued
 jobs and grants; other exact-only, CUSTOM-link-only and IMAGE settings retain their prior evidence
 versions. Ambiguous numeric identifiers, prices and measurements are never stripped as phones or
 used as phone-only duplicate evidence. Phone evidence requires an international prefix or an
-explicit phone label; unlabelled grouping alone remains content. The separate phone-blocking
-policy is unchanged. Near may
+explicit phone label from a finite list with word boundaries; unlabelled grouping alone remains
+content. Phone labels cannot match product names or words about bells and mobility through broad
+`тел`, `звон` or `мобильн` roots. Both rollback paths require the actual bounded label expression,
+so changing only the phone-evidence version cannot admit the old broad classifier. The separate
+phone-blocking policy is unchanged. Near may
 normalize case and punctuation spacing, but cannot erase or move internal punctuation.
 Use the shared API queue fence to stop old producers/workers and recreate every API role
 before resuming processing. A mixed old/new fleet is not a supported activation state.
@@ -408,7 +412,8 @@ the stored enabled settings and old grants must not regain authority on a later 
 Pending intents
 can survive a control downgrade, so an older unguarded API is not a valid rollback target.
 Use a retained compatible immutable release and the normal queue-fenced rollback workflow.
-At the first safe-text-v7 transition no earlier API image satisfies this source floor. Recovery
+Safe-text-v7 was an unreleased intermediate and is not a production rollback target.
+At the first safe-text-v8 transition no earlier API image satisfies this source floor. Recovery
 uses the reviewed control OFF path above and a forward compatible release; static-only rollback
 is independent. Do not weaken source or applied-migration compatibility checks to reuse an old API.
 Older images do not understand the new protocol and are rejected as targets; rollback does not downgrade

@@ -1,12 +1,13 @@
 // FLAG: This is deliberately stricter than phone blocking. Erasing an ambiguous number or
 // using it as a phone-only duplicate match can authorize deletion of a different message.
-export const DUPLICATE_PHONE_EVIDENCE_VERSION = 1;
+export const DUPLICATE_PHONE_EVIDENCE_VERSION = 2;
 
 // FLAG: A period followed by spacing starts another phrase. Never erase its numeric content
 // as part of the phone; dots without spacing remain conventional phone separators.
 const CANDIDATE = /(?:^|[^\d+])(\+?\d(?:[\d \t()-]|\.(?![ \t])){7,}\d)(?=$|[^\d])/gu;
+// FLAG: Bounded phone labels must never classify product names or bell/mobility words.
 const PHONE_CONTEXT =
-  /(?:^|[^\p{L}\p{N}_])(?:тел(?:ефон)?\p{L}*|мобильн\p{L}*|звон\p{L}*|whatsapp|ватсап|viber|вайбер|phone|mobile|call)\s*(?:для\s+связи\s*)?[:=№#.-]?\s*$/iu;
+  /(?:^|[^\p{L}\p{N}_])(?:тел|телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?|звоните|позвоните|звони|позвони|звонить|позвонить|whatsapp|ватсап|viber|вайбер|phone|telephone|call)\s*(?:для\s+связи\s*)?[:=№#.-]?\s*$/iu;
 const IDENTIFIER_CONTEXT =
   /(?:номер|код|идентификатор|артикул|инн|кпп|огрн|сч[её]т|заказ\p{L}*|накладн\p{L}*|договор\p{L}*|документ\p{L}*|кадастр\p{L}*|серийн\p{L}*|order|invoice|account|sku|part|identifier|number|id)(?:\s+[\p{L}]+){0,2}\s*[:=№#.-]?\s*$/iu;
 const QUANTITY_PREFIX =
