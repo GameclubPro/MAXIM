@@ -1,9 +1,11 @@
+import type { NativePhotoSandboxClient } from './native-photo-sandbox.client';
 import { createHash } from 'node:crypto';
 import type { OnModuleInit } from '@nestjs/common';
 import { PDQ } from 'pdq-wasm';
 import sharp from 'sharp';
 import {
   PhotoDecodeBudget,
+  PhotoDecodeDeadlineError,
   type PhotoDecodeCost,
   PhotoDecodePipelineCapacityError,
   PhotoDecodePipelineGate,
@@ -31,7 +33,8 @@ export type PhotoFingerprintRejectionReason =
   | 'unsupported_image'
   | 'unsupported_multi_frame'
   | 'album_decode_budget_exceeded'
-  | 'decode_capacity_exceeded';
+  | 'decode_capacity_exceeded'
+  | 'decode_deadline_exceeded';
 
 export class PhotoFingerprintRejectedError extends Error {
   constructor(
@@ -89,6 +92,7 @@ export class PhotoFingerprintService implements OnModuleInit {
   private readonly maxAlbumInputPixels: number;
   private readonly decodeGate: PhotoDecodePipelineGate;
   private readonly canonicalOnly: boolean;
+  private readonly nativeDecoder?: NativePhotoSandboxClient;
 
   constructor(
     limits: {
@@ -99,9 +103,13 @@ export class PhotoFingerprintService implements OnModuleInit {
       maxConcurrentPipelines?: number;
       maxQueuedPipelines?: number;
       canonicalOnly?: boolean;
+      nativeDecoder?: NativePhotoSandboxClient;
     } = {},
   ) {
     this.canonicalOnly = limits.canonicalOnly ?? false;
+    this.nativeDecoder = limits.nativeDecoder;
+    if (this.nativeDecoder && !this.canonicalOnly)
+      throw new Error('Native photo sandbox only supports exact fingerprints');
     this.maxInputBytes = normalizePositiveInteger(
       limits.maxInputBytes,
       MAX_INPUT_BYTES,
@@ -139,6 +147,7 @@ export class PhotoFingerprintService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
+    if (this.nativeDecoder) await this.nativeDecoder.probe();
     if (!this.canonicalOnly) await initializePhotoFingerprintRuntime();
   }
 
@@ -162,6 +171,7 @@ export class PhotoFingerprintService implements OnModuleInit {
     options: {
       albumBudget?: PhotoDecodeBudget;
       expectedFormat?: SupportedPhotoFormat;
+      deadlineAtMs?: number;
     } = {},
   ): Promise<PhotoFingerprint> {
     if (encodedImage.byteLength === 0 || encodedImage.byteLength > this.maxInputBytes) {
@@ -169,8 +179,42 @@ export class PhotoFingerprintService implements OnModuleInit {
     }
 
     try {
-      return await this.decodeGate.run(() => this.fingerprintWithinSlot(encodedImage, options));
+      return await this.decodeGate.run(async () => {
+        if (!this.nativeDecoder) return this.fingerprintWithinSlot(encodedImage, options);
+        const usage = options.albumBudget?.usage();
+        const remainingEncodedBytes = usage
+          ? usage.maxEncodedBytes - usage.encodedBytes
+          : this.maxInputBytes;
+        const remainingPixels = usage ? usage.maxPixels - usage.pixels : this.maxInputPixels;
+        if (remainingEncodedBytes < encodedImage.byteLength || remainingPixels <= 0)
+          throw new PhotoFingerprintRejectedError('album_decode_budget_exceeded');
+        const result = await this.nativeDecoder.fingerprint(encodedImage, {
+          deadlineAtMs: options.deadlineAtMs ?? Date.now() + 30_000,
+          maxInputBytes: this.maxInputBytes,
+          maxInputPixels: this.maxInputPixels,
+          remainingEncodedBytes,
+          remainingPixels,
+          expectedFormat: options.expectedFormat,
+        });
+        if (result.kind === 'rejected') {
+          if (result.reason === 'native_unavailable')
+            throw new Error('Photo native decoder unavailable');
+          throw new PhotoFingerprintRejectedError(result.reason);
+        }
+        const cost = result.fingerprint.decodeCost!;
+        if (cost.encodedBytes !== encodedImage.byteLength || cost.pixels > this.maxInputPixels)
+          throw new Error('Photo sandbox resource proof mismatch');
+        if (
+          options.albumBudget &&
+          !this.reserveCachedFingerprint(result.fingerprint, options.albumBudget)
+        )
+          throw new PhotoFingerprintRejectedError('album_decode_budget_exceeded');
+        return result.fingerprint;
+      }, options.deadlineAtMs);
     } catch (error: unknown) {
+      if (error instanceof PhotoDecodeDeadlineError) {
+        throw new PhotoFingerprintRejectedError('decode_deadline_exceeded', { cause: error });
+      }
       if (error instanceof PhotoDecodePipelineCapacityError) {
         throw new PhotoFingerprintRejectedError('decode_capacity_exceeded', { cause: error });
       }

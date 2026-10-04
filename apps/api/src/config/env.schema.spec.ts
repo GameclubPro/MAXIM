@@ -66,6 +66,30 @@ describe('validateEnv boolean parsing', () => {
     });
   });
 
+  it('requires the isolated photo boundary for the background runtime', () => {
+    const config = createValidEnv({
+      APP_ROLE: 'moderation',
+      APP_SERVICE_NAME: 'api-moderation-background',
+    });
+    expect(() => validateEnv(config)).toThrow(/PHOTO_NATIVE_SANDBOX_SOCKET_PATH is required/u);
+    expect(
+      validateEnv({
+        ...config,
+        PHOTO_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-photo/native-photo.sock',
+      }),
+    ).toMatchObject({ PHOTO_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-photo/native-photo.sock' });
+    expect(() =>
+      validateEnv({ ...config, PHOTO_NATIVE_SANDBOX_SOCKET_PATH: '/tmp/photo.sock' }),
+    ).toThrow(/PHOTO_NATIVE_SANDBOX_SOCKET_PATH/u);
+    expect(() =>
+      validateEnv({
+        ...config,
+        PHOTO_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-photo/native-photo.sock',
+        PHOTO_DUPLICATE_MAX_PIXELS: 80_000_000,
+      }),
+    ).toThrow(/native sandbox boundary/u);
+  });
+
   it('hydrates only the publisher ConfigService view from isolated secret files', () => {
     const directory = mkdtempSync(join(tmpdir(), 'maxim-publisher-env-'));
     const tokenFile = join(directory, 'token');

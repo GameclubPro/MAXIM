@@ -410,6 +410,7 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-background
       APP_ROLE: moderation
+      PHOTO_NATIVE_SANDBOX_SOCKET_PATH: /run/maxim-photo/native-photo.sock
       PRISMA_PG_POOL_MAX: 2
       PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
       PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
@@ -446,9 +447,61 @@ services:
       MAX_API_LIST_BOT_CHATS_CACHE_SEC: 120
       MAX_API_CHAT_SNAPSHOT_CACHE_SEC: 300
       MANAGED_ENTITY_HEADER_CACHE_SEC: 3600
+    volumes:
+      - photo_native_ipc:/run/maxim-photo:ro
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      photo-native-sandbox:
+        condition: service_healthy
+
+  photo-native-sandbox:
+    image: infra-scale-api-ingress:latest
+    labels:
+      com.maxim.photo-native-sandbox: 'true'
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    command:
+      - node
+      - apps/api/dist/apps/api/src/moderation/photo-duplicate/native-photo-sandbox.entrypoint.js
+    restart: unless-stopped
+    init: true
+    user: '1000:1000'
+    network_mode: none
+    deploy:
+      replicas: 1
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 64
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt: !override
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,uid=1000,gid=1000
+    logging: *default-logging
+    environment:
+      NODE_ENV: production
+      PHOTO_NATIVE_SANDBOX_SOCKET_PATH: /run/maxim-photo/native-photo.sock
+      PHOTO_DUPLICATE_MAX_BYTES: 16777216
+      PHOTO_DUPLICATE_MAX_PIXELS: 40000000
+      VIPS_CONCURRENCY: 1
+    volumes:
+      - photo_native_ipc:/run/maxim-photo
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - apps/api/dist/apps/api/src/moderation/photo-duplicate/native-photo-sandbox.entrypoint.js
+        - --probe
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 20s
 
   ocr-native-sandbox:
     image: infra-scale-api-ingress:latest
@@ -748,6 +801,7 @@ secrets:
     file: /var/lib/maxim-secrets/publik-dialog-signing-keys.json
 
 volumes:
+  photo_native_ipc:
   ocr_native_ipc:
   postgres_data:
   redis_data:

@@ -131,6 +131,7 @@ export class PhotoDuplicateAnalysisService {
         const fingerprint = await this.fingerprintService.fingerprint(downloaded.bytes, {
           albumBudget,
           expectedFormat: downloaded.format,
+          deadlineAtMs,
         });
         completeFingerprints.push(fingerprint);
         // FLAG: A proof checkpoints one verified image, never an actionable partial album.

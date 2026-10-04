@@ -1,3 +1,4 @@
+import { NativePhotoSandboxClient } from './photo-duplicate/native-photo-sandbox.client';
 import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -183,6 +184,16 @@ const moderationProviders = [
                 useFactory: (configService: ConfigService) =>
                   new PhotoFingerprintService({
                     canonicalOnly: true,
+                    nativeDecoder: (() => {
+                      const socketPath = configService.get<string>(
+                        'PHOTO_NATIVE_SANDBOX_SOCKET_PATH',
+                      );
+                      if (!socketPath && process.env.NODE_ENV === 'production')
+                        throw new Error(
+                          'Production photo decoding requires the native photo sandbox',
+                        );
+                      return socketPath ? new NativePhotoSandboxClient(socketPath) : undefined;
+                    })(),
                     maxInputBytes:
                       configService.get<number>('PHOTO_DUPLICATE_MAX_BYTES') ?? 16_777_216,
                     maxInputPixels:

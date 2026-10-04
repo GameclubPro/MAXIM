@@ -1,5 +1,6 @@
 import {
   PhotoDecodeBudget,
+  PhotoDecodeDeadlineError,
   PhotoDecodePipelineCapacityError,
   PhotoDecodePipelineGate,
 } from './photo-decode-resource';
@@ -29,6 +30,24 @@ describe('PhotoDecodeBudget', () => {
 });
 
 describe('PhotoDecodePipelineGate', () => {
+  it('expires queued work without freeing a running native slot', async () => {
+    const gate = new PhotoDecodePipelineGate(1, 1);
+    const first = deferred();
+    const active = gate.run(() => first.promise);
+    const expiredOperation = jest.fn(async () => undefined);
+    await expect(gate.run(expiredOperation, Date.now() + 20)).rejects.toBeInstanceOf(
+      PhotoDecodeDeadlineError,
+    );
+    expect(expiredOperation).not.toHaveBeenCalled();
+    const next = jest.fn(async () => 'next');
+    const pending = gate.run(next, Date.now() + 1_000);
+    await Promise.resolve();
+    expect(next).not.toHaveBeenCalled();
+    first.resolve();
+    await active;
+    await expect(pending).resolves.toBe('next');
+  });
+
   it('holds a bounded number of native pipelines and rejects excess queued work', async () => {
     const gate = new PhotoDecodePipelineGate(2, 1);
     const first = deferred();

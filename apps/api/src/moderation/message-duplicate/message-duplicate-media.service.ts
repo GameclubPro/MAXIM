@@ -600,6 +600,8 @@ export class MessageDuplicateMediaService {
       if (result.kind !== 'complete') {
         if (result.reason === 'decode_capacity_exceeded')
           throw new MessageDuplicateMediaDeferredError('decode_capacity');
+        if (result.reason === 'decode_deadline_exceeded')
+          throw new MessageDuplicateMediaDeferredError('proof_budget');
         throw new UnrecoverableError(`Photo message content unverified: ${result.reason}`);
       }
       photoIndexes.forEach((index, position) => {

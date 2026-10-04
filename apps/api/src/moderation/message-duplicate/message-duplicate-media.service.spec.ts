@@ -347,6 +347,18 @@ describe('bounded message duplicate media analysis', () => {
     );
     expect(s.enforcement.enqueue).not.toHaveBeenCalled();
   });
+  it.each(['decode_deadline_exceeded', 'decode_capacity_exceeded'])(
+    'defers %s without enforcing an incomplete album',
+    async (reason) => {
+      const s = photoSetup();
+      await s.service.process(s.photoJob('a', 0, 'https://i.oneme.ru/a'), s.lease);
+      s.photos.fingerprintAlbum.mockResolvedValue({ kind: 'incomplete', reason });
+      await expect(
+        s.service.process(s.photoJob('b', 100, 'https://i.oneme.ru/b'), s.lease),
+      ).rejects.toBeInstanceOf(MessageDuplicateMediaDeferredError);
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+    },
+  );
 
   it('verifies exact photo copies with different IDs and forwards full action execution', async () => {
     const s = photoSetup();

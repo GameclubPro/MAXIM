@@ -440,6 +440,7 @@ const envSchema = z.object({
     .min(1_000_000)
     .max(100_000_000)
     .default(40_000_000),
+  PHOTO_NATIVE_SANDBOX_SOCKET_PATH: z.literal('/run/maxim-photo/native-photo.sock').optional(),
   PHOTO_DUPLICATE_HISTORY_MAX_ITEMS: z.coerce.number().int().min(10).max(2_000).default(250),
   COMMERCIAL_OCR_ROLLOUT_MODE: z.enum(COMMERCIAL_OCR_ROLLOUT_MODES).default('off'),
   IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: z
@@ -796,6 +797,23 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
   ) {
     throw new Error(
       'Environment validation failed: COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS must not exceed COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS',
+    );
+  }
+  if (
+    parsed.data.APP_SERVICE_NAME === 'api-moderation-background' &&
+    !parsed.data.PHOTO_NATIVE_SANDBOX_SOCKET_PATH
+  ) {
+    throw new Error(
+      'Environment validation failed: PHOTO_NATIVE_SANDBOX_SOCKET_PATH is required for api-moderation-background',
+    );
+  }
+  if (
+    parsed.data.PHOTO_NATIVE_SANDBOX_SOCKET_PATH &&
+    (parsed.data.PHOTO_DUPLICATE_MAX_BYTES > 16_777_216 ||
+      parsed.data.PHOTO_DUPLICATE_MAX_PIXELS > 40_000_000)
+  ) {
+    throw new Error(
+      'Environment validation failed: photo input limits exceed the native sandbox boundary',
     );
   }
   if (
