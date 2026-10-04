@@ -91,6 +91,7 @@ validate_finalizer_environment() {
   for path in \
     "$WEBHOOK_QUEUE_CONTROL_HELPER" \
     "$RUNTIME_INVENTORY_HELPER" \
+    "$MAXIM_PHOTO_NATIVE_BOUNDARY_HELPER" \
     "$ROOT_DIR/infra/scripts/release-manifest.mjs" \
     "$ROOT_DIR/scripts/smoke-http.mjs"; do
     [[ -s "$path" ]] || fail "Required recovery finalizer helper is missing: $path"
@@ -266,6 +267,13 @@ verify_no_unreviewed_running_api_containers() {
   if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
     expected_auxiliary="$MAXIM_OCR_NATIVE_SANDBOX_SERVICE"
   fi
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    if [[ "$expected_auxiliary" == none ]]; then
+      expected_auxiliary="$MAXIM_PHOTO_NATIVE_SANDBOX_SERVICE"
+    else
+      expected_auxiliary+=",$MAXIM_PHOTO_NATIVE_SANDBOX_SERVICE"
+    fi
+  fi
 
   running_ids_raw="$(
     timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
@@ -313,6 +321,11 @@ verify_runtime_snapshot() {
       COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}" with-media
   else
     maxim_topology_require_ocr_native_sandbox_absent COMPOSE_FILES
+  fi
+  maxim_topology_verify_photo_native_sandbox_for_image COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}"
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    inspect_service_runtime "$MAXIM_PHOTO_NATIVE_SANDBOX_SERVICE" \
+      "${COMPONENT_IMAGE_REF[api-shared]}" "${COMPONENT_IMAGE_ID[api-shared]}"
   fi
   inspect_service_runtime \
     miniapp-major-static \
@@ -437,12 +450,14 @@ prepare_target_ocr_runtime() {
     TARGET_HAS_MEDIA_ANALYSIS \
     TARGET_COMMERCIAL_OCR_VERSION \
     TARGET_HAS_OCR_NATIVE_SANDBOX
+  maxim_topology_prepare_photo_native_target "${EXPECTED_DEPLOY_SHA}" COMPOSE_FILES
   [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]] ||
     fail "Recovery finalization requires the reviewed media-analysis topology."
   [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]] ||
     fail "Recovery finalization requires the reviewed native OCR sandbox topology."
   maxim_topology_require_ocr_native_sandbox_image_capability \
     "${COMPONENT_IMAGE_ID[api-shared]}" "$TARGET_HAS_OCR_NATIVE_SANDBOX"
+  maxim_topology_require_photo_native_image_capability "${COMPONENT_IMAGE_ID[api-shared]}"
 }
 
 run_strict_finalizer_smokes() {
@@ -460,6 +475,9 @@ run_strict_finalizer_smokes() {
   run_http_smoke static "$PUBLIC_HEALTH_URL/app/"
   run_http_smoke static http://127.0.0.1:3004/
   maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_smoke_photo_native_sandbox_uds COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}"
+  fi
 
   SMOKE_RESULTS=(
     "api-local-live"
@@ -481,6 +499,9 @@ run_strict_finalizer_smokes() {
     "webhook-queues-released"
     "recovery-finalizer-runtime-stable"
   )
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    SMOKE_RESULTS+=(api-photo-native-sandbox-isolation api-photo-native-sandbox-uds)
+  fi
 }
 
 wait_for_runtime_stability() {

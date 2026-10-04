@@ -10,6 +10,16 @@ const readyMonitorPath =
     ? resolve(process.cwd(), 'infra/scripts/monitor-ready-status.cjs')
     : resolve(__dirname, 'monitor-ready-status.cjs');
 const { ADMIN_READY_URL, INGRESS_READY_URL, probeReadyEndpoint } = require(readyMonitorPath);
+const photoBoundaryPath =
+  __filename === '[stdin]'
+    ? resolve(process.cwd(), 'infra/scripts/photo-native-runtime-boundary.cjs')
+    : resolve(__dirname, 'photo-native-runtime-boundary.cjs');
+let photoBoundary;
+try {
+  photoBoundary = require(photoBoundaryPath);
+} catch {
+  photoBoundary = null;
+}
 
 const DEFAULT_BLOCK_DEVICE = 'vda';
 const DEFAULT_DISK_PATH = '/var/lib/docker';
@@ -46,6 +56,7 @@ const HISTORICALLY_OPTIONAL_API_SERVICES = new Set([
   'api-message-retention',
 ]);
 const OCR_NATIVE_SANDBOX_SERVICE = 'ocr-native-sandbox';
+const PHOTO_NATIVE_SANDBOX_SERVICE = 'photo-native-sandbox';
 const OCR_NATIVE_SANDBOX_COMMAND = Object.freeze([
   'node',
   'apps/api/dist/apps/api/src/moderation/commercial-ocr/native-ocr-sandbox.entrypoint.js',
@@ -515,9 +526,21 @@ function resolveExpectedApiTopologyFromCompose(expectedServices, composeSource) 
   if (auxiliaryCount === 1 && !present.includes('api-media-analysis')) {
     throw new Error('API source Compose auxiliary topology is missing its media role.');
   }
+  const photoCount = serviceCounts.get(PHOTO_NATIVE_SANDBOX_SERVICE) ?? 0;
+  if (photoCount > 1 || (photoCount === 1 && !present.includes('api-moderation-background'))) {
+    throw new Error(
+      'API source Compose photo auxiliary topology is ambiguous or missing its consumer.',
+    );
+  }
   return {
     services: normalizeExpectedApiServices(present),
-    expectedAuxiliaryService: auxiliaryCount === 1 ? OCR_NATIVE_SANDBOX_SERVICE : null,
+    expectedAuxiliaryService:
+      [
+        auxiliaryCount === 1 ? OCR_NATIVE_SANDBOX_SERVICE : null,
+        photoCount === 1 ? PHOTO_NATIVE_SANDBOX_SERVICE : null,
+      ]
+        .filter(Boolean)
+        .join(',') || null,
   };
 }
 
@@ -703,6 +726,15 @@ function parseApiFleetInspection(raw) {
       restartCount,
       releaseProtected: labels['com.maxim.release-protected'] === 'true',
       ocrNativeSandbox: labels['com.maxim.ocr-native-sandbox'] === 'true',
+      photoNativeSandbox: labels['com.maxim.photo-native-sandbox'] === 'true',
+      photoSandboxCommandExact: hasExactStringArray(config.Cmd, [
+        'node',
+        'apps/api/dist/apps/api/src/moderation/photo-duplicate/native-photo-sandbox.entrypoint.js',
+      ]),
+      photoSandboxRuntimeReviewed: Boolean(
+        photoBoundary?.isReviewedPhotoNativeSandboxRuntime(container, 'infra'),
+      ),
+
       ocrNativeSandboxCapable: labels['com.maxim.ocr-native-sandbox-capable'] === 'true',
       healthStatus,
       sandboxCommandExact: hasExactStringArray(config.Cmd, OCR_NATIVE_SANDBOX_COMMAND),
@@ -757,6 +789,15 @@ function isOcrNativeSandboxCandidate(container) {
   );
 }
 
+function isPhotoNativeSandboxCandidate(container) {
+  return (
+    container.photoNativeSandbox === true ||
+    container.service === PHOTO_NATIVE_SANDBOX_SERVICE ||
+    /^\/infra(?:-scale)?(?:-|_)photo-native-sandbox(?:-|_)[1-9]\d*$/u.test(container.name) ||
+    container.photoSandboxCommandExact === true
+  );
+}
+
 function isReviewedOcrNativeSandbox(container, expectedImage, expectedProject) {
   return (
     container.project === expectedProject &&
@@ -769,6 +810,7 @@ function isReviewedOcrNativeSandbox(container, expectedImage, expectedProject) {
     container.imageRef === expectedImage.imageRef &&
     container.releaseProtected === true &&
     container.ocrNativeSandbox === true &&
+    container.photoNativeSandbox !== true &&
     container.ocrNativeSandboxCapable === true &&
     container.identityInvalid === false &&
     container.appRole === null &&
@@ -841,15 +883,19 @@ function summarizeApiFleet(
   ) {
     throw new Error('Expected API image is invalid.');
   }
+  const expectedAuxiliaries = new Set(expectedAuxiliaryService?.split(',') ?? []);
   if (
-    expectedAuxiliaryService !== null &&
-    expectedAuxiliaryService !== OCR_NATIVE_SANDBOX_SERVICE
+    expectedAuxiliaries.size !== (expectedAuxiliaryService?.split(',').length ?? 0) ||
+    [...expectedAuxiliaries].some(
+      (service) => ![OCR_NATIVE_SANDBOX_SERVICE, PHOTO_NATIVE_SANDBOX_SERVICE].includes(service),
+    )
   ) {
     throw new Error('Expected API auxiliary topology is invalid.');
   }
   const expectedSet = new Set(expected);
   const byService = new Map(expected.map((service) => [service, []]));
   const auxiliaryContainers = [];
+  const photoAuxiliaryContainers = [];
   let unexpectedApiContainerCount = 0;
   let unexpectedMainContainerCount = 0;
   let unexpectedScaleContainerCount = 0;
@@ -864,6 +910,8 @@ function summarizeApiFleet(
     }
     if (isOcrNativeSandboxCandidate(container)) {
       auxiliaryContainers.push(container);
+    } else if (isPhotoNativeSandboxCandidate(container)) {
+      photoAuxiliaryContainers.push(container);
     } else if (container.project === 'infra' && expectedSet.has(container.service)) {
       byService.get(container.service).push(container);
     } else if (isApiFleetCandidate(container, expectedImage)) {
@@ -880,12 +928,15 @@ function summarizeApiFleet(
 
   let acceptedAuxiliaryRestartCount = 0;
   if (
-    expectedAuxiliaryService === OCR_NATIVE_SANDBOX_SERVICE &&
+    expectedAuxiliaries.has(OCR_NATIVE_SANDBOX_SERVICE) &&
     auxiliaryContainers.length === 1 &&
     isReviewedOcrNativeSandbox(auxiliaryContainers[0], expectedImage, 'infra')
   ) {
     acceptedAuxiliaryRestartCount = auxiliaryContainers[0].restartCount;
-  } else if (auxiliaryContainers.length === 0 && expectedAuxiliaryService !== null) {
+  } else if (
+    auxiliaryContainers.length === 0 &&
+    expectedAuxiliaries.has(OCR_NATIVE_SANDBOX_SERVICE)
+  ) {
     unexpectedApiContainerCount += 1;
     unexpectedMainContainerCount += 1;
   } else {
@@ -898,6 +949,33 @@ function summarizeApiFleet(
       } else {
         unexpectedManualContainerCount += 1;
       }
+    }
+  }
+
+  if (
+    expectedAuxiliaries.has(PHOTO_NATIVE_SANDBOX_SERVICE) &&
+    photoAuxiliaryContainers.length === 1 &&
+    photoAuxiliaryContainers[0].photoSandboxRuntimeReviewed === true &&
+    photoAuxiliaryContainers[0].imageId === expectedImage.imageId &&
+    photoAuxiliaryContainers[0].imageRef === expectedImage.imageRef &&
+    isExpectedComposeServiceContainerName(
+      photoAuxiliaryContainers[0].name,
+      PHOTO_NATIVE_SANDBOX_SERVICE,
+    )
+  ) {
+    acceptedAuxiliaryRestartCount += photoAuxiliaryContainers[0].restartCount;
+  } else if (
+    photoAuxiliaryContainers.length === 0 &&
+    expectedAuxiliaries.has(PHOTO_NATIVE_SANDBOX_SERVICE)
+  ) {
+    unexpectedApiContainerCount += 1;
+    unexpectedMainContainerCount += 1;
+  } else {
+    for (const container of photoAuxiliaryContainers) {
+      unexpectedApiContainerCount += 1;
+      if (container.project === 'infra') unexpectedMainContainerCount += 1;
+      else if (container.project === 'infra-scale') unexpectedScaleContainerCount += 1;
+      else unexpectedManualContainerCount += 1;
     }
   }
 

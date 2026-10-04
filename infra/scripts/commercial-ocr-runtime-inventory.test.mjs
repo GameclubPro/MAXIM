@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { runtime as photoRuntime } from './test-fixtures/photo-native-fixtures.mjs';
 
 import { classifyCommercialOcrApiContainerInventory } from './commercial-ocr-runtime-inventory.mjs';
 
@@ -505,5 +506,42 @@ test('ignores stopped orphan containers and rejects malformed topology or inspec
   assert.throws(
     () => classifyCommercialOcrApiContainerInventory([], services, null, 'infra', 'sandbox'),
     /expected auxiliary service is invalid/u,
+  );
+});
+
+test('two source-expected auxiliaries require independent singleton boundaries', () => {
+  const photo = { ...photoRuntime(), Id: 'd'.repeat(64), Image: expectedImageId };
+  const ocr = sandboxContainer('e');
+  const classify = (values) =>
+    classifyCommercialOcrApiContainerInventory(
+      values,
+      services,
+      expectedImageId,
+      'infra',
+      'ocr-native-sandbox,photo-native-sandbox',
+    );
+  assert.deepEqual(classify([ocr, photo]), {
+    ownedUnreviewedIds: [],
+    ambiguousIds: [],
+    expectedAuxiliaryCount: 2,
+    reviewedAuxiliaryCount: 2,
+  });
+  assert.equal(classify([ocr]).reviewedAuxiliaryCount, 1);
+  assert.equal(classify([photo]).reviewedAuxiliaryCount, 1);
+  assert.deepEqual(classify([ocr, photo, { ...photo, Id: 'c'.repeat(64) }]).ownedUnreviewedIds, [
+    'c'.repeat(64),
+    photo.Id,
+  ]);
+  const malformed = structuredClone(photo);
+  malformed.Config.Env.push('APP_ROLE=moderation');
+  assert.deepEqual(classify([ocr, malformed]).ownedUnreviewedIds, [photo.Id]);
+  assert.throws(() =>
+    classifyCommercialOcrApiContainerInventory(
+      [],
+      services,
+      expectedImageId,
+      'infra',
+      'photo-native-sandbox,photo-native-sandbox',
+    ),
   );
 });

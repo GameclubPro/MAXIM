@@ -1292,6 +1292,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     TARGET_HAS_MEDIA_ANALYSIS \
     TARGET_COMMERCIAL_OCR_VERSION \
     TARGET_HAS_OCR_NATIVE_SANDBOX
+  maxim_topology_prepare_photo_native_target "${TARGET_SHA}" COMPOSE_FILES
 fi
 DEPLOYED_COMPONENTS=()
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
@@ -1329,6 +1330,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   fi
   maxim_topology_require_ocr_native_sandbox_image_capability \
     "$MAXIM_API_IMAGE" "$TARGET_HAS_OCR_NATIVE_SANDBOX"
+  maxim_topology_require_photo_native_image_capability "${MAXIM_API_IMAGE}"
   begin_release_runtime_transition
   DEPLOY_RUNTIME_STARTED=1
   verify_inherited_release_components
@@ -1411,6 +1413,8 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
       COMPOSE_FILES "$expected_api_image_id" with-media
   fi
 
+  maxim_topology_reconcile_photo_native_sandbox COMPOSE_FILES "$expected_api_image_id"
+
   # FLAG: Webhook consumers and the enqueue producer start only after every non-webhook API role
   # is already on the target image and the owned global pause has been re-proven.
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
@@ -1444,6 +1448,10 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   fi
   wait_for_url "http://127.0.0.1:3001/api/health/live" 180
   wait_for_url "http://127.0.0.1:3002/api/health/live" 180
+  maxim_topology_verify_photo_native_sandbox_for_image COMPOSE_FILES "$expected_api_image_id"
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_smoke_photo_native_sandbox_uds COMPOSE_FILES "$expected_api_image_id"
+  fi
   maxim_webhook_resume_after_api_fence COMPOSE_FILES
 fi
 recreate_service_wave "support static" "miniapp-static"
@@ -1464,6 +1472,9 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   node scripts/smoke-http.mjs json-ok http://127.0.0.1:3002/api/health/ready
   node scripts/smoke-http.mjs json-ok "$PUBLIC_HEALTH_URL/api/health/live"
   SMOKE_RESULTS+=("api-local-live" "api-local-ready" "api-admin-live" "api-admin-ready" "api-public-live")
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    SMOKE_RESULTS+=(api-photo-native-sandbox-isolation api-photo-native-sandbox-uds)
+  fi
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
       maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox

@@ -260,6 +260,8 @@ verify_checkout_compatibility() {
   git diff --quiet "$MANIFEST_SOURCE_SHA" "$checkout_sha" -- \
     infra/docker-compose.yml \
     infra/scripts/lib/deploy-topology.sh \
+    infra/scripts/lib/photo-native-lifecycle.sh \
+    infra/scripts/photo-native-runtime-boundary.cjs \
     infra/scripts/lib/deploy-lock.sh \
     infra/scripts/lib/webhook-rollout-quiescence.sh \
     infra/scripts/publisher-dispatch-rollout-state.mjs \
@@ -297,6 +299,7 @@ resolve_release_fence() {
     fail "Active API image does not match its manifest and protected revision labels."
   EXPECTED_OCR_VERSION="$(maxim_topology_git_commercial_ocr_version "$MANIFEST_SOURCE_SHA")" ||
     fail "Could not derive the exact Commercial OCR version from the active source."
+  maxim_topology_prepare_photo_native_target "$MANIFEST_SOURCE_SHA" COMPOSE_FILES
   if maxim_topology_git_has_ocr_native_sandbox "$MANIFEST_SOURCE_SHA"; then
     EXPECTED_HAS_OCR_NATIVE_SANDBOX=1
     maxim_topology_require_ocr_native_sandbox_config COMPOSE_FILES
@@ -307,6 +310,7 @@ resolve_release_fence() {
   fi
   maxim_topology_require_ocr_native_sandbox_image_capability \
     "$MANIFEST_IMAGE_ID" "$EXPECTED_HAS_OCR_NATIVE_SANDBOX"
+  maxim_topology_require_photo_native_image_capability "$MANIFEST_IMAGE_ID"
   export MAXIM_API_IMAGE="$MANIFEST_IMAGE_REF"
   export COMMERCIAL_OCR_VERSION="$EXPECTED_OCR_VERSION"
 }
@@ -374,6 +378,13 @@ verify_no_unreviewed_running_api_containers() {
   local running=()
   if [[ "${EXPECTED_HAS_OCR_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
     expected_auxiliary="$MAXIM_OCR_NATIVE_SANDBOX_SERVICE"
+  fi
+  if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
+    if [[ "$expected_auxiliary" == none ]]; then
+      expected_auxiliary="$MAXIM_PHOTO_NATIVE_SANDBOX_SERVICE"
+    else
+      expected_auxiliary+=",$MAXIM_PHOTO_NATIVE_SANDBOX_SERVICE"
+    fi
   fi
   running_raw="$(timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" docker ps --no-trunc -q)" || {
     fail "Could not inspect running Docker containers."
@@ -469,6 +480,7 @@ verify_runtime() {
   else
     maxim_topology_require_ocr_native_sandbox_absent COMPOSE_FILES || return 1
   fi
+  maxim_topology_verify_photo_native_sandbox_for_image COMPOSE_FILES "$MANIFEST_IMAGE_ID" || return 1
   verify_no_unreviewed_running_api_containers || return 1
 }
 

@@ -17,6 +17,7 @@ import test from 'node:test';
 
 import archiveModule from './monitor-capacity-archive.cjs';
 import probeModule from './monitor-capacity-probe.cjs';
+import { runtime as photoRuntime } from './test-fixtures/photo-native-fixtures.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const archivePath = resolve(root, 'infra/scripts/monitor-capacity-archive.cjs');
@@ -624,6 +625,7 @@ test('API fleet census checks runtime identity and exact-image roles without exp
   const inspection = [
     ...DEFAULT_EXPECTED_API_SERVICES.map((_, index) => inspectedContainer(index)),
     inspectedSandbox(80),
+    inspectedPhotoSandbox(),
   ];
   const ids = inspection.map((container) => container.Id);
   const calls = [];
@@ -669,7 +671,7 @@ test('API fleet census checks runtime identity and exact-image roles without exp
     JSON.stringify([
       inspection[0],
       inspectedContainer(1, { appRole: 'moderation' }),
-      ...inspection.slice(2, -2),
+      ...inspection.slice(2, -3),
       inspectedContainer(13, { running: false, restartCount: 2 }),
       inspectedContainer(20, { service: DEFAULT_EXPECTED_API_SERVICES[0] }),
       inspectedContainer(21, {
@@ -970,7 +972,7 @@ test('API fleet fallback topology and release manifest identity stay exact', () 
     resolveExpectedApiTopologyFromCompose(DEFAULT_EXPECTED_API_SERVICES, productionComposeSource),
     {
       services: DEFAULT_EXPECTED_API_SERVICES,
-      expectedAuxiliaryService: 'ocr-native-sandbox',
+      expectedAuxiliaryService: 'ocr-native-sandbox,photo-native-sandbox',
     },
   );
   assert.deepEqual(
@@ -1742,4 +1744,57 @@ test('readonly monitor archives only the allowlisted capacity probe outside raw 
   assert.doesNotMatch(monitor, /\bjq\b/u);
   assert.match(probe, /__filename === '\[stdin\]'/u);
   assert.match(probe, /resolve\(process\.cwd\(\), 'infra\/scripts\/monitor-ready-status\.cjs'\)/u);
+});
+
+function inspectedPhotoSandbox() {
+  const value = photoRuntime();
+  value.Id = 'f'.repeat(64);
+  value.Image = expectedApiImage.imageId;
+  value.Config.Image = expectedApiImage.imageRef;
+  value.RestartCount = 0;
+  return value;
+}
+
+test('photo and OCR auxiliaries are independently attested without changing the API role census', () => {
+  const roles = DEFAULT_EXPECTED_API_SERVICES.map((_, index) => inspectedContainer(index));
+  const photo = inspectedPhotoSandbox();
+  photo.RestartCount = 3;
+  const summarize = (values) =>
+    summarizeApiFleet(
+      DEFAULT_EXPECTED_API_SERVICES,
+      expectedApiImage,
+      parseApiFleetInspection(JSON.stringify([...roles, inspectedSandbox(80), ...values])),
+      'ocr-native-sandbox,photo-native-sandbox',
+    );
+  assert.equal(summarize([photo]).unexpectedApiContainerCount, 0);
+  assert.equal(summarize([photo]).expectedRoleCount, 14);
+  assert.equal(summarize([photo]).totalRestartCount, 3);
+  assert.equal(summarize([]).unexpectedApiContainerCount, 1);
+  for (const mutate of [
+    (v) => v.Config.Env.push('PRIVATE_TOKEN=must-not-survive'),
+    (v) => {
+      v.HostConfig.NetworkMode = 'bridge';
+    },
+    (v) => {
+      v.Mounts[0].RW = false;
+    },
+    (v) => {
+      v.Image = `sha256:${'d'.repeat(64)}`;
+    },
+    (v) => {
+      v.State.Health.Status = 'unhealthy';
+    },
+    (v) => {
+      v.Config.Labels['com.maxim.ocr-native-sandbox'] = 'true';
+    },
+  ]) {
+    const invalid = structuredClone(photo);
+    mutate(invalid);
+    assert.ok(summarize([invalid]).unexpectedApiContainerCount > 0);
+    assert.doesNotMatch(
+      JSON.stringify(parseApiFleetInspection(JSON.stringify([invalid]))),
+      /must-not-survive/u,
+    );
+  }
+  assert.ok(summarize([photo, { ...photo, Id: 'e'.repeat(64) }]).unexpectedApiContainerCount >= 2);
 });
