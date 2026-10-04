@@ -16,7 +16,7 @@ import { CommercialAdDetector } from './commercial';
 import {
   CommercialTextRuntimePolicyService,
   fingerprintCommercialTextSettingsProfile,
-  COMMERCIAL_TEXT_POLICY_COHORTS,
+  COMMERCIAL_TEXT_BASELINE_POLICY_COHORTS,
 } from './commercial/commercial-text-runtime-policy.service';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
 import {
@@ -1137,7 +1137,8 @@ export class RuleEngineService {
         rawLoweredText: detectionContext.rawLoweredText,
         settings,
         commercialCampaignContext,
-        promotedPolicyCohorts: authority?.promotedPolicyCohorts ?? COMMERCIAL_TEXT_POLICY_COHORTS,
+        promotedPolicyCohorts:
+          authority?.promotedPolicyCohorts ?? COMMERCIAL_TEXT_BASELINE_POLICY_COHORTS,
       });
       if (commercial) {
         violations.push({

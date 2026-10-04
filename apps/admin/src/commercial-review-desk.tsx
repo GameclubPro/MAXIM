@@ -18,6 +18,25 @@ const labelNames: Record<CommercialReviewLabel, string> = {
   UNSURE: 'Недостаточно данных',
 };
 
+const stateNames: Record<CommercialReviewItem['reviewState'], string> = {
+  UNREVIEWED: 'Нужны две независимые оценки',
+  AWAITING_SECOND: 'Ожидает второго проверяющего',
+  DISAGREEMENT: 'Ожидает третьего проверяющего',
+  RESOLVED: 'Независимая проверка завершена',
+};
+function executionName(item: CommercialReviewItem): string {
+  const outcome = item.evidenceMetadata?.executionOutcome;
+  return outcome === 'CONFIRMED_DELETE'
+    ? 'Удаление подтверждено'
+    : outcome === 'ALREADY_ABSENT'
+      ? 'Сообщение уже отсутствует'
+      : outcome === 'PENDING'
+        ? 'Удаление ожидает исполнения'
+        : outcome === 'NOT_REQUESTED'
+          ? 'Удаление не запрашивалось'
+          : 'Исполнение неизвестно';
+}
+
 export function CommercialReviewDesk({ accessCode }: { accessCode: string }) {
   const [queue, setQueue] = useState<CommercialReviewQueueResponse | null>(null);
   const [selectedId, setSelectedId] = useState('');
@@ -26,6 +45,7 @@ export function CommercialReviewDesk({ accessCode }: { accessCode: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState('');
+  const [expectedDisposition, setExpectedDisposition] = useState<'KEEP' | 'DELETE'>('DELETE');
   const [notice, setNotice] = useState('');
   const mutationBusy = useRef(false);
   const selected = queue?.items.find((item) => item.id === selectedId) ?? queue?.items[0];
@@ -81,11 +101,15 @@ export function CommercialReviewDesk({ accessCode }: { accessCode: string }) {
     mutationBusy.current = true;
     setBusy(true);
     try {
-      const saved = await safetyDeskApiClient.labelCommercialReview(
+      const save = selected.canAdjudicate
+        ? safetyDeskApiClient.adjudicateCommercialReview.bind(safetyDeskApiClient)
+        : safetyDeskApiClient.labelCommercialReview.bind(safetyDeskApiClient);
+      const saved = await save(
         selected,
         value,
         reason,
         accessCode,
+        value === 'UNSURE' ? null : value === 'NOT_COMMERCIAL' ? 'KEEP' : expectedDisposition,
       );
       setQueue((current) =>
         current
@@ -99,7 +123,7 @@ export function CommercialReviewDesk({ accessCode }: { accessCode: string }) {
           : current,
       );
       setReason('');
-      setNotice(`Сохранено: ${labelNames[saved.label!]}`);
+      setNotice(`Сохранено: ${labelNames[saved.ownReview!.label]}`);
     } catch (error) {
       setNotice(readErrorMessage(error));
     } finally {
@@ -113,7 +137,7 @@ export function CommercialReviewDesk({ accessCode }: { accessCode: string }) {
       <header className="commercial-review__header">
         <div>
           <h2>Коммерческий фильтр</h2>
-          <p>Оценки для проверки качества. Срок хранения образцов — 14 дней.</p>
+          <p>Две независимые оценки без подсказок фильтра. Срок хранения — 14 дней.</p>
         </div>
         <button
           className="ghost-action"
@@ -136,8 +160,8 @@ export function CommercialReviewDesk({ accessCode }: { accessCode: string }) {
       <div className="commercial-review__filters" aria-label="Статус оценки">
         {(
           [
-            ['PENDING', 'Ожидают оценки'],
-            ['REVIEWED', 'Оценены'],
+            ['PENDING', 'Ожидают моей оценки'],
+            ['REVIEWED', 'Мои оценки'],
             ['ALL', 'Все'],
           ] as const
         ).map(([value, label]) => (
@@ -154,7 +178,9 @@ export function CommercialReviewDesk({ accessCode }: { accessCode: string }) {
         ))}
       </div>
       {queue?.items.length === 0 && (
-        <p>Образцов пока нет. Здесь появятся спорные сообщения и подтверждённые удаления.</p>
+        <p>
+          Образцов пока нет. Очередь включает срабатывания, спорные сообщения и выборку пропусков.
+        </p>
       )}
       <div className="commercial-review__layout">
         <div className="commercial-review__list" aria-label="Образцы сообщений">
@@ -168,15 +194,19 @@ export function CommercialReviewDesk({ accessCode }: { accessCode: string }) {
               onClick={() => {
                 setSelectedId(item.id);
                 setReason('');
+                setExpectedDisposition('DELETE');
               }}
             >
               <strong>{item.chatTitle}</strong>
               <span>
-                {item.source === 'OCR' ? 'Фото' : 'Текст'} ·{' '}
-                {item.messageDisposition === 'DELETE' ? 'Удалено' : 'Удаление не подтверждено'} ·{' '}
-                {Math.round(item.score)}/100
+                {item.source === 'OCR' ? 'Фото: только подпись' : 'Текст'}
+                {item.decisionVisible && <> · {executionName(item)}</>}
               </span>
-              <span>{item.label ? labelNames[item.label] : 'Ожидает оценки'}</span>
+              <span>
+                {item.ownReview
+                  ? `Моя оценка: ${labelNames[item.ownReview.label]}`
+                  : stateNames[item.reviewState]}
+              </span>
             </button>
           ))}
         </div>
@@ -187,6 +217,8 @@ export function CommercialReviewDesk({ accessCode }: { accessCode: string }) {
             busy={busy || loading}
             onReasonChange={setReason}
             onLabel={label}
+            expectedDisposition={expectedDisposition}
+            onExpectedDispositionChange={setExpectedDisposition}
           />
         )}
       </div>
@@ -218,76 +250,151 @@ function CommercialReviewDetail({
   busy,
   onReasonChange,
   onLabel,
+  expectedDisposition,
+  onExpectedDispositionChange,
 }: {
   item: CommercialReviewItem;
   reason: string;
   busy: boolean;
   onReasonChange: (value: string) => void;
   onLabel: (label: CommercialReviewLabel) => Promise<void>;
+  expectedDisposition: 'KEEP' | 'DELETE';
+  onExpectedDispositionChange: (value: 'KEEP' | 'DELETE') => void;
 }) {
+  const canAct = item.canReview || item.canAdjudicate;
   return (
     <article className="review-card commercial-review__detail" aria-label="Оценка образца">
       <header className="review-card__header">
         <div className="review-card__title">
           <h2>{item.chatTitle}</h2>
           <p>
-            {new Date(item.observedAt).toLocaleString('ru-RU')} ·{' '}
-            {item.messageDisposition === 'DELETE'
-              ? 'Удаление подтверждено'
-              : 'Удаление не подтверждено'}
+            {new Date(item.observedAt).toLocaleString('ru-RU')} · {stateNames[item.reviewState]}
           </p>
         </div>
       </header>
       <section className="message-preview">
         <p>{item.excerpt || 'У фотографии нет подписи. Распознанный текст не хранится.'}</p>
       </section>
-      <dl className="commercial-review__facts">
-        <dt>Оценка фильтра</dt>
-        <dd>
-          {Math.round(item.score)}/100 · {commercialReviewActionName(item.actionBand)}
-        </dd>
-        <dt>Основания</dt>
-        <dd>
-          {[...new Set(item.reasons.map(commercialReviewReasonName))].join(', ') || 'Не указаны'}
-        </dd>
-        <dt>Что учитывал фильтр</dt>
-        <dd>
-          {[...new Set(item.requiredPolicyCohorts.map(commercialReviewCohortName))].join(', ') ||
-            'Обычные признаки рекламы'}
-        </dd>
-        <dt>Текущая оценка</dt>
-        <dd>{item.label ? labelNames[item.label] : 'Ещё не оценён'}</dd>
-      </dl>
-      <details>
-        <summary>Подробности проверки</summary>
+      {item.source === 'OCR' && (
         <p>
-          Версия фильтра: {item.detectorVersion === 'unknown' ? 'Не указана' : item.detectorVersion}
+          Исходная фотография здесь недоступна. Подпись не позволяет оценить рекламу на изображении.
+          Полную оценку проводят по исходному снимку в частном наборе проверки.
         </p>
-      </details>
+      )}
+      {item.sourceExcerptComplete === false && (
+        <p>
+          Текст представлен не полностью. Полную оценку проводят по исходному материалу в частном
+          наборе проверки.
+        </p>
+      )}
+      {!item.decisionVisible && (
+        <p>Результат фильтра и предыдущие оценки скрыты до сохранения вашей оценки.</p>
+      )}
+      <dl className="commercial-review__facts">
+        <dt>Независимые оценки</dt>
+        <dd>
+          {item.independentReviewCount}/2 · {stateNames[item.reviewState]}
+        </dd>
+        <dt>Моя оценка</dt>
+        <dd>{item.ownReview ? labelNames[item.ownReview.label] : 'Ещё не сохранена'}</dd>
+        {item.decisionVisible && (
+          <>
+            <dt>Оценка фильтра</dt>
+            <dd>
+              {item.score === null ? 'Неизвестно' : `${Math.round(item.score)}/100`} ·{' '}
+              {item.actionBand ? commercialReviewActionName(item.actionBand) : 'Неизвестно'}
+            </dd>
+            <dt>Исполнение</dt>
+            <dd>{executionName(item)}</dd>
+            <dt>Разрешение удаления</dt>
+            <dd>
+              {item.evidenceMetadata?.deleteEligible === true
+                ? 'Разрешено'
+                : item.evidenceMetadata?.deleteEligible === false
+                  ? 'Не разрешено'
+                  : 'Неизвестно'}
+            </dd>
+            <dt>Основания</dt>
+            <dd>
+              {[...new Set(item.reasons.map(commercialReviewReasonName))].join(', ') ||
+                'Не указаны'}
+            </dd>
+            <dt>Что учитывал фильтр</dt>
+            <dd>
+              {[...new Set(item.requiredPolicyCohorts.map(commercialReviewCohortName))].join(
+                ', ',
+              ) || 'Обычные признаки рекламы'}
+            </dd>
+            <dt>Итог независимой проверки</dt>
+            <dd>{item.label ? labelNames[item.label] : 'Ещё не определён'}</dd>
+            {item.historicalLabel && (
+              <>
+                <dt>Историческая одиночная оценка</dt>
+                <dd>{labelNames[item.historicalLabel]}</dd>
+              </>
+            )}
+          </>
+        )}
+      </dl>
+      {item.decisionVisible && (
+        <details>
+          <summary>Подробности проверки</summary>
+          <p>
+            Версия фильтра:{' '}
+            {item.detectorVersion === 'unknown' ? 'Не указана' : item.detectorVersion}
+          </p>
+        </details>
+      )}
       {item.reviewReason && <p>Комментарий: {item.reviewReason}</p>}
       <label>
         Комментарий к оценке
         <textarea
           maxLength={500}
           value={reason}
-          disabled={busy}
+          disabled={busy || !canAct}
           onChange={(event) => onReasonChange(event.target.value)}
         />
       </label>
+      {item.source === 'TEXT' && canAct && (
+        <label>
+          Ожидаемое решение при оценке «Реклама»
+          <select
+            value={expectedDisposition}
+            disabled={busy}
+            onChange={(event) =>
+              onExpectedDispositionChange(event.target.value as 'KEEP' | 'DELETE')
+            }
+          >
+            <option value="DELETE">Удалить коммерческое предложение</option>
+            <option value="KEEP">Сохранить коммерческое упоминание</option>
+          </select>
+        </label>
+      )}
+      {item.canAdjudicate && (
+        <p>Третья независимая оценка разрешит разногласие. Предыдущие оценки скрыты.</p>
+      )}
       <footer className="review-actions">
         {(Object.keys(labelNames) as CommercialReviewLabel[]).map((value) => (
           <button
             key={value}
             className="ghost-action"
             type="button"
-            disabled={busy}
+            disabled={
+              busy ||
+              !canAct ||
+              ((item.source === 'OCR' || item.sourceExcerptComplete === false) &&
+                value !== 'UNSURE')
+            }
             onClick={() => void onLabel(value)}
           >
             {busy ? 'Сохранение…' : labelNames[value]}
           </button>
         ))}
       </footer>
-      <p>Контакты скрыты. Оценка записывается в аудит и не запускает действия в MAX.</p>
+      <p>
+        Контакты скрыты. Сохранённая оценка неизменна и не запускает действия в MAX. Для второй
+        оценки нужна другая учётная запись проверяющего.
+      </p>
     </article>
   );
 }

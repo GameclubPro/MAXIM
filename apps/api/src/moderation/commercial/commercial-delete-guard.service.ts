@@ -10,7 +10,7 @@ import { CommercialAdDetector } from './commercial-ad.detector';
 import { normalizeCommercialRawText } from './commercial-normalization';
 import {
   CommercialTextRuntimePolicyService,
-  COMMERCIAL_TEXT_POLICY_COHORTS,
+  COMMERCIAL_TEXT_BASELINE_POLICY_COHORTS,
   fingerprintCommercialTextSettingsProfile,
   type CommercialTextAuthority,
 } from './commercial-text-runtime-policy.service';
@@ -188,7 +188,7 @@ export class CommercialDeleteGuardService {
     )) ?? {
       revision: 0,
       baselineAllowed: true,
-      promotedPolicyCohorts: COMMERCIAL_TEXT_POLICY_COHORTS,
+      promotedPolicyCohorts: COMMERCIAL_TEXT_BASELINE_POLICY_COHORTS,
       mode: 'baseline' as const,
     };
     if (

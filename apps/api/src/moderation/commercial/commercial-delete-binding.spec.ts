@@ -6,6 +6,11 @@ import {
   fingerprintCommercialDeleteText,
   isCommercialTextDeleteBindingCurrent,
 } from './commercial-delete-binding';
+import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
+import {
+  COMMERCIAL_INTENT_QUALITY_COHORT,
+  COMMERCIAL_INTENT_QUALITY_DECISION_VERSION,
+} from './commercial-policy-cohorts';
 
 const settings = {
   commercialAdsFilterEnabled: true,
@@ -96,5 +101,22 @@ describe('commercial text decision binding', () => {
     expect(isCommercialTextDeleteBindingCurrent(binding, settings, binding.deadlineAtMs)).toBe(
       false,
     );
+  });
+  it('binds quality decisions to their distinct version and rejects baseline-version authority reuse', () => {
+    const binding = buildCommercialTextDeleteBinding({
+      text: 'Принимаю заказы на пряники.',
+      settings,
+      eventTimestampMs: Date.now(),
+      campaignContext: null,
+      requiredPolicyCohorts: [COMMERCIAL_INTENT_QUALITY_COHORT],
+    });
+    expect(binding.decisionVersion).toBe(COMMERCIAL_INTENT_QUALITY_DECISION_VERSION);
+    expect(isCommercialTextDeleteBindingCurrent(binding, settings)).toBe(true);
+    expect(
+      isCommercialTextDeleteBindingCurrent(
+        { ...binding, decisionVersion: COMMERCIAL_ENGINE_CONFIG.decisionVersion },
+        settings,
+      ),
+    ).toBe(false);
   });
 });

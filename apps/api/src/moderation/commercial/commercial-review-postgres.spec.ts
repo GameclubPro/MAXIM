@@ -1,0 +1,340 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { createPrismaClient, type PrismaClient } from '../../prisma/prisma-client';
+import { CommercialReviewService, type Candidate } from './commercial-review.service';
+import { COMMERCIAL_INTENT_QUALITY_DECISION_VERSION } from './commercial-policy-cohorts';
+
+const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
+(databaseUrl ? describe : describe.skip)('independent commercial review PostgreSQL races', () => {
+  let prisma: PrismaClient;
+  let service: CommercialReviewService;
+  const chatId = `commercial-review-${randomUUID()}`;
+  const stopSource = createHash('sha256').update(chatId).digest('hex');
+  const candidate: Candidate = {
+    chatId,
+    userId: 'test-user',
+    messageId: 'review-message',
+    text: 'Продам свой холодильник после переезда',
+    score: 50,
+    actionBand: 'REVIEW_ONLY',
+    source: 'TEXT',
+    decisionFingerprint: 'test-fingerprint',
+    detectorVersion: 'test-version',
+    messageDisposition: 'KEEP',
+    requiredPolicyCohorts: [],
+    samplingProbability: 0.1,
+    samplingStratum: 'NO_HIT',
+    logicalMessageKey: 'a'.repeat(64),
+    authorGroupId: 'b'.repeat(64),
+    sourceSnapshotSha256: 'c'.repeat(64),
+    sourceExcerptComplete: true,
+    messageCreatedAt: new Date(),
+    settingsProfileDigest: 'd'.repeat(64),
+    detectorSourceSha256: 'e'.repeat(64),
+    hasDetection: false,
+    decisionOutcome: 'KEEP',
+    deleteEligible: false,
+    executionOutcome: 'NOT_REQUESTED',
+    analysisOutcome: 'COMPLETE',
+  };
+  beforeAll(async () => {
+    const url = new URL(databaseUrl);
+    if (
+      !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) ||
+      !url.pathname.includes('race_test')
+    )
+      throw new Error('Review races require a disposable local race_test database');
+    prisma = createPrismaClient(databaseUrl, { max: 8 });
+    await prisma.$connect();
+    await prisma.chat.create({
+      data: { id: chatId, title: 'Independent commercial review races' },
+    });
+    service = new CommercialReviewService(prisma as never);
+  });
+  beforeEach(async () => {
+    await prisma.commercialQualityPolicyStop.deleteMany({
+      where: { detectorSourceSha256: stopSource },
+    });
+    await prisma.commercialReviewSample.deleteMany({ where: { chatId } });
+    await prisma.auditLog.deleteMany({ where: { chatId } });
+    await service.recordCandidate(candidate);
+  });
+  afterAll(async () => {
+    if (!prisma) return;
+    await prisma.chat.deleteMany({ where: { id: chatId } });
+    await prisma.commercialQualityPolicyStop.deleteMany({
+      where: { detectorSourceSha256: stopSource },
+    });
+    await prisma.$disconnect();
+  });
+  async function current() {
+    return prisma.commercialReviewSample.findFirstOrThrow({
+      where: { chatId },
+      include: { ratings: true },
+    });
+  }
+  const keep = (row: { updatedAt: Date }) => ({
+    expectedUpdatedAt: row.updatedAt.toISOString(),
+    label: 'NOT_COMMERCIAL',
+    expectedDisposition: 'KEEP',
+  });
+  const experimental: Candidate = {
+    ...candidate,
+    detectorVersion: COMMERCIAL_INTENT_QUALITY_DECISION_VERSION,
+    detectorSourceSha256: stopSource,
+    executionOutcome: 'PENDING',
+    decisionOutcome: 'DELETE',
+    messageDisposition: 'DELETE',
+    deleteEligible: true,
+  };
+  async function qualityFirstVote() {
+    await prisma.commercialReviewSample.deleteMany({ where: { chatId } });
+    await service.recordCandidate(experimental);
+    const row = await current();
+    await service.labelItem(row.id, 'one', keep(row));
+    return current();
+  }
+  it('serializes simultaneous first votes, and a fresh second vote resolves without overwriting historical evidence', async () => {
+    const row = await current();
+    await prisma.commercialReviewSample.update({
+      where: { id: row.id },
+      data: { label: 'COMMERCIAL' },
+    });
+    const before = await current();
+    const request = {
+      expectedUpdatedAt: before.updatedAt.toISOString(),
+      label: 'NOT_COMMERCIAL',
+      expectedDisposition: 'KEEP',
+    };
+    const results = await Promise.allSettled(
+      ['one', 'two'].map((actor) => service.labelItem(before.id, actor, request)),
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const won = await current();
+    expect(won.ratings).toHaveLength(1);
+    expect(won.label).toBe('COMMERCIAL');
+    expect(won.independentLabel).toBeNull();
+    const loser = results[0]?.status === 'rejected' ? 'one' : 'two';
+    const blind = await service.getQueue({ status: 'ALL' }, loser);
+    expect(blind.items[0]?.decisionVisible).toBe(false);
+    await service.labelItem(won.id, loser, {
+      ...request,
+      expectedUpdatedAt: won.updatedAt.toISOString(),
+    });
+    const final = await current();
+    expect(final.ratings).toHaveLength(2);
+    expect(final.reviewState).toBe('RESOLVED');
+    expect(final.independentLabel).toBe('NOT_COMMERCIAL');
+    expect(final.label).toBe('COMMERCIAL');
+  });
+  it('allows one append-only vote per trusted reviewer even during a duplicate request race', async () => {
+    const before = await current();
+    const request = {
+      expectedUpdatedAt: before.updatedAt.toISOString(),
+      label: 'NOT_COMMERCIAL',
+      expectedDisposition: 'KEEP',
+    };
+    const results = await Promise.allSettled([
+      service.labelItem(before.id, 'one', request),
+      service.labelItem(before.id, 'one', request),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const after = await current();
+    await expect(
+      service.labelItem(after.id, 'one', {
+        ...request,
+        expectedUpdatedAt: after.updatedAt.toISOString(),
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(after.ratings).toHaveLength(1);
+    expect(
+      await prisma.auditLog.count({
+        where: { chatId, action: 'SAFETY_DESK_COMMERCIAL_INDEPENDENT_LABEL' },
+      }),
+    ).toBe(1);
+  });
+  it('fences expiry changed after reading and keeps both ratings and audit untouched', async () => {
+    const before = await current();
+    const expiring = new CommercialReviewService({
+      commercialReviewSample: prisma.commercialReviewSample,
+      $transaction: async (callback: Parameters<PrismaClient['$transaction']>[0]) => {
+        await prisma.commercialReviewSample.update({
+          where: { id: before.id },
+          data: { expiresAt: new Date(0) },
+        });
+        return prisma.$transaction(callback as never);
+      },
+    } as never);
+    await expect(
+      expiring.labelItem(before.id, 'one', {
+        expectedUpdatedAt: before.updatedAt.toISOString(),
+        label: 'NOT_COMMERCIAL',
+        expectedDisposition: 'KEEP',
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await current()).ratings).toHaveLength(0);
+    expect(await prisma.auditLog.count({ where: { chatId } })).toBe(0);
+  });
+  it('deduplicates mirrored delivery and execution enrichment without conflating edited source snapshots', async () => {
+    await Promise.all(Array.from({ length: 6 }, () => service.recordCandidate(candidate)));
+    const first = await current();
+    await service.labelItem(first.id, 'one', {
+      expectedUpdatedAt: first.updatedAt.toISOString(),
+      label: 'NOT_COMMERCIAL',
+      expectedDisposition: 'KEEP',
+    });
+    await service.recordCandidate({
+      ...candidate,
+      executionOutcome: 'CONFIRMED_DELETE',
+      messageDisposition: 'DELETE',
+    });
+    await service.recordCandidate({ ...candidate, executionOutcome: 'UNKNOWN' });
+    const enriched = await current();
+    expect(enriched.ratings).toHaveLength(1);
+    expect(enriched.qualityMetadata).toMatchObject({ executionOutcome: 'CONFIRMED_DELETE' });
+    await service.recordCandidate({
+      ...candidate,
+      sourceSnapshotSha256: 'f'.repeat(64),
+      text: 'Новое коммерческое предложение',
+    });
+    expect(await prisma.commercialReviewSample.count({ where: { chatId } })).toBe(2);
+    expect(
+      (
+        await prisma.commercialReviewSample.findUniqueOrThrow({
+          where: { id: first.id },
+          include: { ratings: true },
+        })
+      ).ratings,
+    ).toHaveLength(1);
+  });
+  it('serializes third-reviewer adjudication and rejects either original reviewer adjudicating their own disagreement', async () => {
+    let row = await current();
+    await service.labelItem(row.id, 'one', {
+      expectedUpdatedAt: row.updatedAt.toISOString(),
+      label: 'COMMERCIAL',
+      expectedDisposition: 'DELETE',
+    });
+    row = await current();
+    await service.labelItem(row.id, 'two', {
+      expectedUpdatedAt: row.updatedAt.toISOString(),
+      label: 'NOT_COMMERCIAL',
+      expectedDisposition: 'KEEP',
+    });
+    row = await current();
+    const request = {
+      expectedUpdatedAt: row.updatedAt.toISOString(),
+      label: 'NOT_COMMERCIAL',
+      expectedDisposition: 'KEEP',
+    };
+    await expect(service.adjudicateItem(row.id, 'one', request)).rejects.toMatchObject({
+      status: 409,
+    });
+    const results = await Promise.allSettled(
+      ['three', 'four'].map((actor) => service.adjudicateItem(row.id, actor, request)),
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const after = await current();
+    expect(after.ratings).toHaveLength(3);
+    expect(after.independentReviewCount).toBe(2);
+    expect(after.reviewState).toBe('RESOLVED');
+  });
+  it.each(['REVIEW_FIRST', 'RECEIPT_FIRST'] as const)(
+    'durably stops a confirmed false deletion regardless of arrival order: %s',
+    async (order) => {
+      let row = await qualityFirstVote();
+      if (order === 'REVIEW_FIRST') {
+        await service.labelItem(row.id, 'two', keep(row));
+        expect(
+          await prisma.commercialQualityPolicyStop.count({
+            where: { detectorSourceSha256: stopSource },
+          }),
+        ).toBe(0);
+        await service.recordCandidate({ ...experimental, executionOutcome: 'CONFIRMED_DELETE' });
+      } else {
+        await service.recordCandidate({ ...experimental, executionOutcome: 'CONFIRMED_DELETE' });
+        row = await current();
+        await service.labelItem(row.id, 'two', keep(row));
+      }
+      expect((await current()).reviewState).toBe('RESOLVED');
+      const stop = await prisma.commercialQualityPolicyStop.findUnique({
+        where: {
+          detectorSourceSha256_decisionVersion: {
+            detectorSourceSha256: stopSource,
+            decisionVersion: COMMERCIAL_INTENT_QUALITY_DECISION_VERSION,
+          },
+        },
+      });
+      expect(stop).not.toBeNull();
+      await service.recordCandidate({ ...experimental, executionOutcome: 'CONFIRMED_DELETE' });
+      const repeated = await prisma.commercialQualityPolicyStop.findUnique({
+        where: {
+          detectorSourceSha256_decisionVersion: {
+            detectorSourceSha256: stopSource,
+            decisionVersion: COMMERCIAL_INTENT_QUALITY_DECISION_VERSION,
+          },
+        },
+      });
+      expect(repeated?.stoppedAt).toEqual(stop?.stoppedAt);
+      await prisma.commercialReviewSample.deleteMany({ where: { chatId } });
+      expect(
+        await prisma.commercialQualityPolicyStop.count({
+          where: { detectorSourceSha256: stopSource },
+        }),
+      ).toBe(1);
+    },
+  );
+  it('serializes a late confirmed receipt racing with the final independent vote without losing the durable stop', async () => {
+    const row = await qualityFirstVote();
+    const [vote, receipt] = await Promise.allSettled([
+      service.labelItem(row.id, 'two', keep(row)),
+      service.recordCandidate({ ...experimental, executionOutcome: 'CONFIRMED_DELETE' }),
+    ]);
+    expect(receipt.status).toBe('fulfilled');
+    if (vote.status === 'rejected') {
+      expect(vote.reason).toMatchObject({ status: 409 });
+      const latest = await current();
+      await service.labelItem(latest.id, 'two', keep(latest));
+    }
+    const final = await current();
+    expect(final.ratings).toHaveLength(2);
+    expect(final.reviewState).toBe('RESOLVED');
+    expect(final.qualityMetadata).toMatchObject({ executionOutcome: 'CONFIRMED_DELETE' });
+    expect(
+      await prisma.commercialQualityPolicyStop.count({
+        where: { detectorSourceSha256: stopSource },
+      }),
+    ).toBe(1);
+  });
+  it('does not stop from a historical KEEP label or experimental shadow candidate on a baseline deletion', async () => {
+    const row = await current();
+    await prisma.commercialReviewSample.update({
+      where: { id: row.id },
+      data: { label: 'NOT_COMMERCIAL' },
+    });
+    await service.recordCandidate({
+      ...candidate,
+      executionOutcome: 'CONFIRMED_DELETE',
+      candidateDecision: {
+        hasDetection: true,
+        actionable: true,
+        deleteEligible: true,
+        score: 90,
+        actionBand: 'DELETE_ONLY',
+        messageDisposition: 'DELETE',
+        detectorVersion: COMMERCIAL_INTENT_QUALITY_DECISION_VERSION,
+        decisionFingerprint: 'shadow',
+        reasons: [],
+        requiredPolicyCohorts: [],
+      },
+    });
+    let latest = await current();
+    await service.labelItem(latest.id, 'one', keep(latest));
+    latest = await current();
+    await service.labelItem(latest.id, 'two', keep(latest));
+    expect(
+      await prisma.commercialQualityPolicyStop.count({
+        where: { detectorSourceSha256: candidate.detectorSourceSha256 },
+      }),
+    ).toBe(0);
+  });
+});

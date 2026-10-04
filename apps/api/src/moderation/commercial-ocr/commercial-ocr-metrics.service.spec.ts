@@ -46,6 +46,28 @@ describe('CommercialOcrMetricsService', () => {
     mockRedisDisconnect.mockClear();
   });
 
+  it('keeps committed logical counters separate from remote batching and exposes unknown coverage', async () => {
+    const service = new TestCommercialOcrMetricsService();
+    service.observeLogicalRecording('recorded');
+    service.observeLogicalRecording('recorded', {
+      outcome: 'TECHNICAL_INCOMPLETE',
+      reason: 'source_unavailable',
+    });
+    service.observeLogicalRecording('duplicate', {
+      outcome: 'TECHNICAL_INCOMPLETE',
+      reason: 'source_unavailable',
+    });
+    service.observeLogicalRecording('unavailable');
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.processCounters.counters['logical.started']).toBe(1);
+    expect(snapshot.processCounters.counters['logical.terminal']).toBe(1);
+    expect(snapshot.processCounters.counters['logical.outcome.TECHNICAL_INCOMPLETE']).toBe(1);
+    expect(snapshot.processCounters.counters['logical.accounting.unavailable']).toBe(1);
+    expect(snapshot.logicalTerminalCoverage.complete).toBe(false);
+    expect(mockRedisEval).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
   it('reports nearest-rank percentiles from a bounded rolling BullMQ window', async () => {
     const service = new TestCommercialOcrMetricsService();
     const startedAtMs = Date.parse('2026-08-13T10:00:00.000Z');

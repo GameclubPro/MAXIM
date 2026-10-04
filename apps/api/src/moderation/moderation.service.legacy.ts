@@ -5,6 +5,12 @@ import {
 } from './closed-chat-message-moderation.service';
 import { resolveModerationSanctionExpiry } from './moderation-sanction-expiry.util';
 import { CommercialReviewService } from './commercial/commercial-review.service';
+import { buildCommercialTextQualityObservation } from './commercial/commercial-quality-observation';
+import {
+  prepareCommercialQualityDelete,
+  recordCommercialQualityExecution,
+} from './commercial/commercial-quality-capture';
+import { extractCommercialOcrSourceCreatedAt } from './commercial-ocr/commercial-ocr-source-time';
 import { collectCommercialCampaignContextFromRedis } from './commercial/commercial-campaign-context';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import {
@@ -2128,6 +2134,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           violations: detection.violations,
         })
       ).filter((violation) => violation.ruleCode !== 'TOPIC_FILTER_MISMATCH');
+      // FLAG: Quality capture observes the actual decision before duplicate/other-rule
+      // exits. It never chooses a sanction; callbacks retain this immutable source revision.
+      let commercialQualityObservation: ReturnType<typeof buildCommercialTextQualityObservation> =
+        null;
+      if (
+        this.commercialReview &&
+        settings.commercialAdsFilterEnabled &&
+        !reportCommand &&
+        !latestSenderChatAdminCheck.isAdmin &&
+        !this.isKnownRuntimeBotUserId(senderId)
+      ) {
+        try {
+          commercialQualityObservation = buildCommercialTextQualityObservation({
+            secret: this.configService?.get<string>('MAX_WEBHOOK_SECRET_PATH'),
+            chatId,
+            userId: senderId,
+            messageId,
+            text,
+            settings,
+            messageCreatedAt: extractCommercialOcrSourceCreatedAt(update.raw),
+            violation: violations.find((violation) => violation.ruleCode === 'COMMERCIAL_AD'),
+            commercialCampaignContext,
+          });
+          if (commercialQualityObservation) {
+            const observation = commercialQualityObservation;
+            this.runGlobalSpammerSideEffect({ stage: 'commercial-quality-observation' }, () =>
+              this.commercialReview!.recordCandidate(observation),
+            );
+          }
+        } catch {
+          this.logger.warn(
+            { stage: 'commercial-quality-observation' },
+            'Commercial quality observation unavailable',
+          );
+        }
+      }
       const hasCompetingViolation = violations.length > 0;
       const latestManualReleaseAt =
         detection.duplicateDecision || detection.duplicateHit
@@ -2416,60 +2458,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const captureCommercialReview = (
-        violation: RuleViolation,
-        disposition: 'KEEP' | 'DELETE',
-      ) => {
-        if (!this.commercialReview) return;
-        const metadata = this.asRecord(violation.metadata) ?? {};
-        this.runGlobalSpammerSideEffect(
-          { chatId, userId: senderId, messageId, action: 'record-commercial-review' },
-          () =>
-            this.commercialReview!.recordCandidate({
-              chatId,
-              userId: senderId,
-              messageId,
-              text,
-              score: violation.score * 100,
-              actionBand: this.readString(metadata.actionBand) ?? 'REVIEW_ONLY',
-              source: 'TEXT',
-              decisionFingerprint: createHash('sha256')
-                .update(
-                  JSON.stringify([
-                    text,
-                    metadata.decisionVersion,
-                    metadata.commercialTextRuntimeRevision,
-                    metadata.actionBand,
-                    disposition,
-                  ]),
-                )
-                .digest('hex'),
-              detectorVersion: this.readString(metadata.decisionVersion) ?? 'unknown',
-              messageDisposition: disposition,
-              requiredPolicyCohorts: Array.isArray(metadata.requiredPolicyCohorts)
-                ? metadata.requiredPolicyCohorts.filter(
-                    (cohort): cohort is string => typeof cohort === 'string',
-                  )
-                : [],
-              reasons: Array.isArray(metadata.reasonCodes)
-                ? metadata.reasonCodes.filter(
-                    (reason): reason is string => typeof reason === 'string',
-                  )
-                : [],
-            }),
-        );
-      };
-      for (const candidate of violations) {
-        if (
-          candidate.ruleCode === 'COMMERCIAL_AD' &&
-          !isCommercialMessageDeleteEligible(
-            this.readString(candidate.metadata?.actionBand),
-            candidate.metadata?.actionable === true,
-            candidate.metadata?.messageDisposition,
-          )
-        )
-          captureCommercialReview(candidate, 'KEEP');
-      }
       const topViolation = selectTopModerationViolation(violations);
       if (!topViolation) return;
       const selectedMetadata = this.asRecord(topViolation.metadata);
@@ -2588,6 +2576,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           settings,
           campaignContext: commercialCampaignContext ?? null,
         });
+        violationDeleteIntent = await prepareCommercialQualityDelete(
+          this.commercialReview,
+          commercialQualityObservation,
+          violationDeleteIntent,
+        );
         await this.ensureModerationDeleteIntent(violationDeleteIntent);
       }
       // FLAG: Traffic policies are delete-only. They must never add strikes, feed
@@ -2664,6 +2657,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (violationDeleteIntent) {
         this.markWebhookHotPathStage(hotPathProfile, 'violation-delete');
         const deleteResult = await this.executeModerationDelete(violationDeleteIntent);
+        if (topViolation.ruleCode === 'COMMERCIAL_AD') {
+          this.runGlobalSpammerSideEffect({ stage: 'commercial-quality-execution' }, () =>
+            recordCommercialQualityExecution(
+              this.commercialReview,
+              commercialQualityObservation,
+              deleteResult,
+            ),
+          );
+        }
         messageDeleted = deleteResult.gone;
         // FLAG: Only a fresh text-policy check followed by this attempt's confirmed DELETE may
         // create a violation or escalate. Absence, independent reasons and background retries do not.
@@ -2677,7 +2679,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             return;
           }
           if (topViolation.ruleCode === 'COMMERCIAL_AD') {
-            captureCommercialReview(topViolation, 'DELETE');
             commercialSanctionPermit =
               this.commercialDeleteGuard?.createSanctionPermit({
                 chatId,

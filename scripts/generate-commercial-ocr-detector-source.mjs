@@ -109,7 +109,7 @@ export function resolveCommercialOcrAuditToolSourceFiles(repositoryRoot = root) 
           name === 'run-commercial-ocr-eval.ts' ||
           name === 'sign-commercial-ocr-certification.ts' ||
           name === 'verify-commercial-ocr-certification.ts' ||
-          /^(?:audit|build|evaluate|remap|replay|validate)-commercial-/u.test(name)),
+          /^(?:audit|build|evaluate|export|remap|replay|report|validate)-commercial-/u.test(name)),
     )
     .map((name) => relative(repositoryRoot, resolve(scriptsDirectory, name)));
   const evalFiles = readdirSync(evalDirectory)

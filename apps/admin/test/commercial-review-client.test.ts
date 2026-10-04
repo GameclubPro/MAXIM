@@ -10,15 +10,25 @@ const item = commercialReviewItemSchema.parse({
   chatTitle: 'Чат',
   source: 'TEXT',
   excerpt: 'Ремонт',
-  score: 85,
-  actionBand: 'DELETE_ONLY',
-  messageDisposition: 'DELETE',
-  requiredPolicyCohorts: ['commercial-text'],
-  detectorVersion: 'v1',
-  decisionFingerprint: 'fingerprint',
-  reviewPriority: 90,
-  reasons: ['SERVICE_OFFER'],
+  score: null,
+  actionBand: null,
+  messageDisposition: null,
+  requiredPolicyCohorts: [],
+  detectorVersion: 'unknown',
+  decisionFingerprint: 'unknown',
+  reviewPriority: null,
+  reasons: [],
   label: null,
+  historicalLabel: null,
+  ownReview: null,
+  reviewState: 'UNREVIEWED',
+  independentReviewCount: 0,
+  decisionVisible: false,
+  canReview: true,
+  canAdjudicate: false,
+  imageEvidenceAvailable: false,
+  sourceExcerptComplete: true,
+  evidenceMetadata: null,
   reviewReason: '',
   reviewedAt: null,
   observedAt: '2026-10-01T10:00:00.000Z',
@@ -33,8 +43,20 @@ test('commercial owner feedback sends the server revision through the closed tra
       calls.push({ url: String(url), init });
       return new Response(
         JSON.stringify(
-          String(url).endsWith('/label')
-            ? { ...item, label: 'NOT_COMMERCIAL' }
+          String(url).endsWith('/label') || String(url).endsWith('/adjudicate')
+            ? {
+                ...item,
+                decisionVisible: true,
+                label: 'NOT_COMMERCIAL',
+                ownReview: {
+                  label: 'NOT_COMMERCIAL',
+                  expectedDisposition: 'KEEP',
+                  reason: 'Частное объявление',
+                  reviewedAt: item.updatedAt,
+                  kind: String(url).endsWith('/adjudicate') ? 'ADJUDICATION' : 'INDEPENDENT',
+                  evidenceKind: 'TEXT',
+                },
+              }
             : { generatedAt: item.updatedAt, items: [item], nextCursor: null },
         ),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -52,8 +74,27 @@ test('commercial owner feedback sends the server revision through the closed tra
   assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), {
     expectedUpdatedAt: item.updatedAt,
     label: 'NOT_COMMERCIAL',
+    expectedDisposition: 'KEEP',
     reason: 'Частное объявление',
   });
+  await client.adjudicateCommercialReview(
+    item,
+    'NOT_COMMERCIAL',
+    'Частное объявление',
+    'private-code',
+    'KEEP',
+  );
+  assert.equal(calls[2]?.url, '/api/v1/safety-desk/commercial/review/sample%2F1/adjudicate');
+  assert.deepEqual(
+    JSON.parse(String(calls[2]?.init?.body)),
+    JSON.parse(String(calls[1]?.init?.body)),
+  );
+  assert.equal(
+    Object.keys(JSON.parse(String(calls[2]?.init?.body))).some((name) =>
+      /reviewer|actor/u.test(name),
+    ),
+    false,
+  );
   assert.equal(
     (calls[1]?.init?.headers as Record<string, string>)['X-Admin-Access-Code'],
     'private-code',

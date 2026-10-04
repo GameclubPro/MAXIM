@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import Redis from 'ioredis';
 
@@ -16,7 +16,20 @@ import { COMMERCIAL_OCR_DECISION_POLICY_VERSION } from './commercial-ocr-decisio
 import { COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256 } from './commercial-ocr-detector-source.generated';
 import type { CommercialOcrPreprocessLimits } from './commercial-ocr-preprocessor';
 import { COMMERCIAL_OCR_REDIS_OPTIONS } from './commercial-ocr-redis.options';
-import { COMMERCIAL_OCR_DEFAULT_VERSION } from './commercial-ocr.queue';
+import {
+  COMMERCIAL_OCR_DEFAULT_VERSION,
+  resolveCommercialOcrJobPurposes,
+  type CommercialOcrJob,
+} from './commercial-ocr.queue';
+import type {
+  CommercialOcrLogicalRecordingContext,
+  CommercialOcrLogicalRecordingResult,
+} from './commercial-ocr-admission.store';
+import {
+  COMMERCIAL_OCR_TERMINAL_OUTCOMES,
+  COMMERCIAL_OCR_TERMINAL_REASONS,
+  type CommercialOcrTerminalResult,
+} from './commercial-ocr-terminal';
 
 const ROLLING_SAMPLE_CAPACITY = 512;
 const CGROUP_V2_CPU_STAT_PATH = '/sys/fs/cgroup/cpu.stat';
@@ -99,6 +112,14 @@ export const COMMERCIAL_OCR_METRIC_COUNTERS = [
   'bullmq.job.failed',
   'bullmq.job.retry.download_failed',
   'bullmq.job.retry.ocr_failed',
+  'bullmq.job.retry.source_unavailable',
+  'source.exact.retry',
+  'logical.started',
+  'logical.terminal',
+  'logical.accounting.unavailable',
+  'logical.accounting.missing',
+  ...COMMERCIAL_OCR_TERMINAL_OUTCOMES.map((outcome) => `logical.outcome.${outcome}` as const),
+  ...COMMERCIAL_OCR_TERMINAL_REASONS.map((reason) => `logical.reason.${reason}` as const),
   'bullmq.job.defer.source_not_ready',
   'bullmq.job.defer.governor_pressure',
   'bullmq.job.defer.admission_pending',
@@ -183,6 +204,10 @@ export type CommercialOcrTerminalDeadlineExhaustedCounters = Readonly<{
   native_backpressure: number;
 }>;
 export type CommercialOcrStage =
+  | 'source'
+  | 'source_wait'
+  | 'governor_wait'
+  | 'native_wait'
   | 'download'
   | 'preprocess'
   | 'native'
@@ -244,6 +269,14 @@ export type CommercialOcrRolloutMetricsSnapshot = Readonly<{
     decisionPolicyVersion: typeof COMMERCIAL_OCR_DECISION_POLICY_VERSION;
     detectorSourceSha256: typeof COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256;
     preprocessLimits: CommercialOcrPreprocessLimits;
+  }>;
+  logicalTerminalCoverage: Readonly<{
+    started: number;
+    terminal: number;
+    inflightOrUnknown: number;
+    accountingUnavailable: number;
+    accountingMissing: number;
+    complete: boolean;
   }>;
   processStartedAt: string;
   processCounters: CommercialOcrCounterSnapshot;
@@ -349,6 +382,10 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
   private nextRemoteBatchSequence = 1;
   private readonly bullMqQueueWaitMs = new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY);
   private readonly stageDurationMs: Record<CommercialOcrStage, BoundedRollingMetric> = {
+    source: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
+    source_wait: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
+    governor_wait: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
+    native_wait: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
     download: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
     preprocess: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
     native: new BoundedRollingMetric(ROLLING_SAMPLE_CAPACITY),
@@ -440,6 +477,51 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
     };
   }
 
+  getLogicalRecordingContext(
+    job: CommercialOcrJob,
+    jobId: string,
+    nowMs = Date.now(),
+  ): CommercialOcrLogicalRecordingContext {
+    return {
+      identitySha256: createHash('sha256')
+        .update(
+          JSON.stringify([
+            jobId,
+            this.behaviorIdentity.fingerprintSha256,
+            resolveCommercialOcrJobPurposes(job),
+          ]),
+        )
+        .digest('hex'),
+      releaseKey: this.releaseKey,
+      bucketKey: this.buildBucketKey(nowMs),
+      startedAtMs: this.processStartedAtMs,
+    };
+  }
+
+  // FLAG: The admission store has already persisted these counters atomically with the claim. Do not
+  // enqueue another remote batch; a worker restart or an uncertain reply cannot double-count it.
+  observeLogicalRecording(
+    result: CommercialOcrLogicalRecordingResult,
+    terminal?: CommercialOcrTerminalResult,
+  ): void {
+    if (result === 'unavailable' || result === 'missing') {
+      this.recordCounter(`logical.accounting.${result}`);
+      return;
+    }
+    if (result !== 'recorded') return;
+    const counters: CommercialOcrMetricCounter[] = terminal
+      ? [
+          'logical.terminal',
+          `logical.outcome.${terminal.outcome}`,
+          `logical.reason.${terminal.reason}`,
+        ]
+      : ['logical.started'];
+    for (const counter of counters)
+      this.processCounters.set(counter, (this.processCounters.get(counter) ?? 0) + 1);
+    this.aggregateCache = null;
+    this.aggregateCacheAtMs = 0;
+  }
+
   recordQueueWait(waitMs: number, recordedAtMs = Date.now()): void {
     this.bullMqQueueWaitMs.record(waitMs, recordedAtMs);
   }
@@ -518,6 +600,23 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
         decisionPolicyVersion: COMMERCIAL_OCR_DECISION_POLICY_VERSION,
         detectorSourceSha256: COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256,
         preprocessLimits: this.behaviorIdentity.descriptor.preprocessLimits,
+      },
+      logicalTerminalCoverage: {
+        started: aggregate.release.counters['logical.started'],
+        terminal: aggregate.release.counters['logical.terminal'],
+        inflightOrUnknown: Math.max(
+          0,
+          aggregate.release.counters['logical.started'] -
+            aggregate.release.counters['logical.terminal'],
+        ),
+        accountingUnavailable: aggregate.release.counters['logical.accounting.unavailable'],
+        accountingMissing: aggregate.release.counters['logical.accounting.missing'],
+        complete:
+          aggregate.release.available &&
+          aggregate.release.counters['logical.accounting.unavailable'] === 0 &&
+          aggregate.release.counters['logical.accounting.missing'] === 0 &&
+          aggregate.release.counters['logical.started'] ===
+            aggregate.release.counters['logical.terminal'],
       },
       processStartedAt: this.processStartedAt,
       processCounters: {
@@ -776,6 +875,10 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
 }
 
 const COMMERCIAL_OCR_STAGES: readonly CommercialOcrStage[] = [
+  'source',
+  'source_wait',
+  'governor_wait',
+  'native_wait',
   'download',
   'preprocess',
   'native',

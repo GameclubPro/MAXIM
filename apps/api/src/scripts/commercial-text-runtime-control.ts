@@ -3,13 +3,18 @@ import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { RedisCounterService } from '../moderation/redis-counter.service';
-import { COMMERCIAL_ENGINE_CONFIG } from '../moderation/commercial/commercial-config';
+import { PrismaService } from '../prisma/prisma.service';
+import { COMMERCIAL_INTENT_QUALITY_COHORT } from '../moderation/commercial/commercial-policy-cohorts';
 import { COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256 } from '../moderation/commercial-ocr/commercial-ocr-detector-source.generated';
 import {
   CommercialTextRuntimePolicyService,
   commercialTextControlSchema,
+  commercialTextDecisionVersionForCohorts,
 } from '../moderation/commercial/commercial-text-runtime-policy.service';
-import { validateCommercialTextHoldoutArtifact } from './commercial-text-holdout-artifact';
+import {
+  validateCommercialTextHoldoutArtifact,
+  validateCommercialTextQualityCompanionArtifacts,
+} from './commercial-text-holdout-artifact';
 
 export function parseCommercialTextControlOptions(argv: string[], now = Date.now()) {
   const { values, positionals } = parseArgs({
@@ -25,13 +30,15 @@ export function parseCommercialTextControlOptions(argv: string[], now = Date.now
       'ttl-hours': { type: 'string' },
       artifact: { type: 'string' },
       'reviewed-artifact-sha256': { type: 'string' },
+      'companion-artifact': { type: 'string', multiple: true },
+      'reviewed-companion-artifact-sha256': { type: 'string', multiple: true },
       'settings-profile-digest': { type: 'string' },
     },
   });
   const command = positionals[0];
   if (positionals.length !== 1 || !['get', 'set', 'off', 'baseline'].includes(command ?? ''))
     throw new Error(
-      'Usage: get | off/baseline --expected-revision N [--apply] | set --mode shadow/canary/on --expected-revision N --ttl-hours 1..24 [--chat-id ID] [--cohort NAME --artifact FILE --reviewed-artifact-sha256 SHA --settings-profile-digest SHA] [--apply]',
+      'Usage: get | off/baseline --expected-revision N [--apply] | set --mode shadow/canary/on --expected-revision N --ttl-hours 1..24 [--chat-id ID] [--cohort NAME --artifact FILE --reviewed-artifact-sha256 SHA --settings-profile-digest SHA [--companion-artifact FILE --reviewed-companion-artifact-sha256 SHA]...] [--apply]',
     );
   if (command === 'get') {
     if (Object.keys(values).length) throw new Error('get accepts no options');
@@ -67,9 +74,32 @@ export function parseCommercialTextControlOptions(argv: string[], now = Date.now
     );
   if (
     !promotion &&
-    (values.artifact || values['reviewed-artifact-sha256'] || values['settings-profile-digest'])
+    (values.artifact ||
+      values['reviewed-artifact-sha256'] ||
+      values['settings-profile-digest'] ||
+      values['companion-artifact'] ||
+      values['reviewed-companion-artifact-sha256'])
   )
     throw new Error('Evidence accepts only a promotion command');
+  const companionPaths = values['companion-artifact'] ?? [];
+  const companionDigests = values['reviewed-companion-artifact-sha256'] ?? [];
+  const qualityPromotion = promotion && values.cohort!.includes(COMMERCIAL_INTENT_QUALITY_COHORT);
+  if (
+    qualityPromotion &&
+    (companionPaths.length < 1 ||
+      companionPaths.length > 2 ||
+      companionPaths.length !== companionDigests.length ||
+      companionPaths.some((path) => !path.trim()) ||
+      companionDigests.some((digest) => !/^[a-f0-9]{64}$/u.test(digest)) ||
+      new Set([values.artifact, ...companionPaths]).size !== companionPaths.length + 1 ||
+      new Set([values['reviewed-artifact-sha256'], ...companionDigests]).size !==
+        companionDigests.length + 1)
+  )
+    throw new Error(
+      'Intent quality promotion requires separately reviewed companion artifacts for BALANCED 45/65 and STRICT 38/55',
+    );
+  if (!qualityPromotion && (companionPaths.length || companionDigests.length))
+    throw new Error('Companion evidence accepts only an intent quality promotion command');
   const control = commercialTextControlSchema.parse({
     version: 2,
     revision: expectedRevision + 1,
@@ -79,7 +109,9 @@ export function parseCommercialTextControlOptions(argv: string[], now = Date.now
     effectiveAt: new Date(now).toISOString(),
     expiresAt: lifetime === null ? null : new Date(now + lifetime * 3600000).toISOString(),
     detectorSourceSha256: promotion ? COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256 : null,
-    decisionVersion: promotion ? COMMERCIAL_ENGINE_CONFIG.decisionVersion : null,
+    decisionVersion: promotion
+      ? commercialTextDecisionVersionForCohorts(values.cohort ?? [])
+      : null,
     holdoutArtifactSha256: values['reviewed-artifact-sha256'] ?? null,
     settingsProfileDigests: values['settings-profile-digest']
       ? [values['settings-profile-digest']]
@@ -98,6 +130,10 @@ export function parseCommercialTextControlOptions(argv: string[], now = Date.now
     control,
     apply: values.apply === true,
     artifactPath: values.artifact,
+    companionArtifacts: companionPaths.map((path, index) => ({
+      path,
+      reviewedSha256: companionDigests[index]!,
+    })),
   };
 }
 
@@ -118,20 +154,34 @@ export async function runCommercialTextControlCommand(
   if (before.revision !== options.expectedRevision)
     throw new Error('Revision conflict; inspect get again');
   if (options.artifactPath) {
-    if ((await stat(options.artifactPath)).size > 64 * 1024 * 1024)
-      throw new Error('Holdout artifact exceeds limit');
-    const bytes = await readFile(options.artifactPath);
-    if (
-      bytes.length > 64 * 1024 * 1024 ||
-      createHash('sha256').update(bytes).digest('hex') !== options.control.holdoutArtifactSha256
-    )
-      throw new Error('Frozen artifact digest mismatch');
-    const value: unknown = JSON.parse(bytes.toString('utf8'));
-    const validation = validateCommercialTextHoldoutArtifact(value, {
+    const artifacts = [
+      { path: options.artifactPath, reviewedSha256: options.control.holdoutArtifactSha256! },
+      ...options.companionArtifacts,
+    ];
+    const values: unknown[] = [];
+    for (const artifact of artifacts) {
+      if ((await stat(artifact.path)).size > 64 * 1024 * 1024)
+        throw new Error('Holdout artifact exceeds limit');
+      const bytes = await readFile(artifact.path);
+      if (
+        bytes.length > 64 * 1024 * 1024 ||
+        createHash('sha256').update(bytes).digest('hex') !== artifact.reviewedSha256
+      )
+        throw new Error('Frozen artifact digest mismatch');
+      values.push(JSON.parse(bytes.toString('utf8')) as unknown);
+    }
+    const expected = {
       detectorSourceSha256: COMMERCIAL_OCR_DETECTOR_SOURCE_SHA256,
-      decisionVersion: COMMERCIAL_ENGINE_CONFIG.decisionVersion,
+      decisionVersion: commercialTextDecisionVersionForCohorts(
+        options.control.promotedPolicyCohorts,
+      ),
       settingsProfileDigest: options.control.settingsProfileDigests[0]!,
-    });
+    };
+    const validation = options.control.promotedPolicyCohorts.includes(
+      COMMERCIAL_INTENT_QUALITY_COHORT,
+    )
+      ? validateCommercialTextQualityCompanionArtifacts(values, expected)
+      : validateCommercialTextHoldoutArtifact(values[0], expected);
     if (
       !validation.valid ||
       options.control.promotedPolicyCohorts.some(
@@ -139,9 +189,11 @@ export async function runCommercialTextControlCommand(
       )
     )
       throw new Error('Independent holdout quality/provenance gate failed');
-    const expiry = (value as { expiresAt: string }).expiresAt;
     options.control.expiresAt = new Date(
-      Math.min(Date.parse(options.control.expiresAt!), Date.parse(expiry)),
+      Math.min(
+        Date.parse(options.control.expiresAt!),
+        ...values.map((value) => Date.parse((value as { expiresAt: string }).expiresAt)),
+      ),
     ).toISOString();
   }
   const proposed = {
@@ -158,13 +210,22 @@ export async function runCommercialTextControlCommand(
 }
 
 async function main() {
+  const argv = process.argv.slice(2);
+  const options = parseCommercialTextControlOptions(argv);
+  const prisma =
+    options.command !== 'get' &&
+    options.control.promotedPolicyCohorts.includes(COMMERCIAL_INTENT_QUALITY_COHORT)
+      ? new PrismaService()
+      : undefined;
   const redis = new RedisCounterService(new ConfigService(process.env));
   try {
+    await prisma?.onModuleInit();
     process.stdout.write(
-      `${JSON.stringify(await runCommercialTextControlCommand(new CommercialTextRuntimePolicyService(redis), process.argv.slice(2)))}\n`,
+      `${JSON.stringify(await runCommercialTextControlCommand(new CommercialTextRuntimePolicyService(redis, prisma), argv))}\n`,
     );
   } finally {
     await redis.onModuleDestroy();
+    await prisma?.onModuleDestroy();
   }
 }
 if (require.main === module)

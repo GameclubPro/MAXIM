@@ -30,6 +30,172 @@ const limits = {
 };
 
 describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
+  it('keeps exactly one terminal after Redis committed but the first reply was lost', async () => {
+    const context = await createContext('terminal-lost-reply');
+    const digest = createHash('sha256').update(context.jobA).digest('hex');
+    const scope = `tesseract-test:${digest.slice(0, 24)}`;
+    const recording = {
+      identitySha256: digest,
+      releaseKey: `commercial-ocr:metrics:v2:release:${scope}`,
+      bucketKey: `commercial-ocr:metrics:v2:window:${scope}:1`,
+      startedAtMs: Date.now(),
+    };
+    const params = {
+      jobId: context.jobA,
+      chatId: context.chatA,
+      context: recording,
+      terminal: { outcome: 'EXPIRED' as const, reason: 'governor_pressure' as const },
+    };
+    try {
+      await context.store.reserve(reservation(context.jobA, context.chatA, 2));
+      Object.defineProperty(context.store, 'runRedisOperation', {
+        configurable: true,
+        value: async (operation: Promise<unknown>) => {
+          await operation;
+          throw new Error('reply lost');
+        },
+      });
+      await expect(context.store.finalize(params)).resolves.toBe('unavailable');
+      Reflect.deleteProperty(context.store, 'runRedisOperation');
+      await expect(context.store.finalize(params)).resolves.toBe('duplicate');
+      expect(await context.redis.hget(recording.releaseKey, 'counter:logical.terminal')).toBe('1');
+      expect(
+        await context.redis.hget(recording.releaseKey, 'counter:logical.outcome.EXPIRED'),
+      ).toBe('1');
+      expect(await context.redis.get(globalKeys.units)).toBeNull();
+      await expect(context.store.activate(activation(context.jobA))).resolves.toBe('suppressed');
+    } finally {
+      Reflect.deleteProperty(context.store, 'runRedisOperation');
+      await context.redis.del(
+        `${namespace}:logical:${digest}`,
+        recording.releaseKey,
+        recording.bucketKey,
+      );
+      await context.cleanup();
+    }
+  });
+
+  it('counts one logical start and terminal across concurrent mirrors and a worker restart', async () => {
+    const context = await createContext('terminal-dedup');
+    const digest = createHash('sha256').update(context.jobA).digest('hex');
+    const scope = `tesseract-test:${digest.slice(0, 24)}`;
+    const recording = {
+      identitySha256: digest,
+      releaseKey: `commercial-ocr:metrics:v2:release:${scope}`,
+      bucketKey: `commercial-ocr:metrics:v2:window:${scope}:1`,
+      startedAtMs: Date.now(),
+    };
+    const logicalKey = `${namespace}:logical:${digest}`;
+    const params = { jobId: context.jobA, chatId: context.chatA, context: recording };
+    const restarted = new CommercialOcrAdmissionStore({
+      getOrThrow: () => redisIntegrationUrl,
+    } as never);
+    try {
+      const restartedRedis = (restarted as unknown as { redis: Redis }).redis;
+      if (restartedRedis.status !== 'ready') await once(restartedRedis, 'ready');
+      await context.store.reserve(reservation(context.jobA, context.chatA, 2));
+      await context.store.activate(activation(context.jobA));
+      expect(
+        (
+          await Promise.all([context.store.recordStarted(params), restarted.recordStarted(params)])
+        ).sort(),
+      ).toEqual(['duplicate', 'recorded']);
+      const terminal = {
+        outcome: 'TECHNICAL_INCOMPLETE' as const,
+        reason: 'source_unavailable' as const,
+      };
+      expect(
+        (
+          await Promise.all([
+            context.store.finalize({ ...params, terminal }),
+            restarted.finalize({ ...params, terminal }),
+          ])
+        ).sort(),
+      ).toEqual(['duplicate', 'recorded']);
+      expect(await context.redis.hget(recording.releaseKey, 'counter:logical.started')).toBe('1');
+      expect(await context.redis.hget(recording.releaseKey, 'counter:logical.terminal')).toBe('1');
+      expect(
+        await context.redis.hget(
+          recording.bucketKey,
+          'counter:logical.outcome.TECHNICAL_INCOMPLETE',
+        ),
+      ).toBe('1');
+      await expect(
+        restarted.finalize({
+          ...params,
+          terminal: { outcome: 'COMPLETE_DELETE_CANDIDATE', reason: 'complete' },
+        }),
+      ).resolves.toBe('duplicate');
+      expect(
+        await context.redis.hget(
+          recording.releaseKey,
+          'counter:logical.outcome.COMPLETE_DELETE_CANDIDATE',
+        ),
+      ).toBeNull();
+      expect(await context.redis.hget(globalKeys.metadata, context.jobA)).toBe(
+        `${chatKeys(context.chatA).hash}|2|O|0`,
+      );
+      expect(await context.redis.get(globalKeys.units)).toBeNull();
+      await expect(restarted.activate(activation(context.jobA))).resolves.toBe('suppressed');
+      expect(await context.redis.pttl(logicalKey)).toBeGreaterThan(0);
+      expect(await context.redis.pttl(logicalKey)).toBeLessThanOrEqual(22 * 60_000);
+      // After retained admission disappears, even losing the claim never invents a new denominator.
+      await context.redis.hdel(globalKeys.metadata, context.jobA);
+      await context.redis.del(logicalKey);
+      await expect(restarted.finalize({ ...params, terminal })).resolves.toBe('missing');
+      expect(await context.redis.hget(recording.releaseKey, 'counter:logical.terminal')).toBe('1');
+    } finally {
+      await context.redis.del(logicalKey, recording.releaseKey, recording.bucketKey);
+      await restarted.onModuleDestroy();
+      await context.cleanup();
+    }
+  });
+
+  it('separates terminal claims for changed behavior/purposes without releasing capacity twice', async () => {
+    const context = await createContext('terminal-behavior');
+    const scope = `tesseract-test:${createHash('sha256').update(context.jobA).digest('hex').slice(0, 24)}`;
+    const recording = {
+      identitySha256: createHash('sha256').update(`${context.jobA}:v1`).digest('hex'),
+      releaseKey: `commercial-ocr:metrics:v2:release:${scope}`,
+      bucketKey: `commercial-ocr:metrics:v2:window:${scope}:1`,
+      startedAtMs: Date.now(),
+    };
+    const second = {
+      ...recording,
+      identitySha256: createHash('sha256').update(`${context.jobA}:v2`).digest('hex'),
+    };
+    const terminal = { outcome: 'COMPLETE_KEEP' as const, reason: 'complete' as const };
+    try {
+      await context.store.reserve(reservation(context.jobA, context.chatA, 2));
+      await expect(
+        context.store.finalize({
+          jobId: context.jobA,
+          chatId: context.chatA,
+          context: recording,
+          terminal,
+        }),
+      ).resolves.toBe('recorded');
+      await expect(
+        context.store.finalize({
+          jobId: context.jobA,
+          chatId: context.chatA,
+          context: second,
+          terminal,
+        }),
+      ).resolves.toBe('recorded');
+      expect(await context.redis.hget(recording.releaseKey, 'counter:logical.terminal')).toBe('2');
+      expect(await context.redis.get(globalKeys.units)).toBeNull();
+      expect(await context.redis.get(chatKeys(context.chatA).units)).toBeNull();
+    } finally {
+      await context.redis.del(
+        `${namespace}:logical:${recording.identitySha256}`,
+        `${namespace}:logical:${second.identitySha256}`,
+        recording.releaseKey,
+        recording.bucketKey,
+      );
+      await context.cleanup();
+    }
+  });
   it('recovers the durable-webhook crash window through the pending activation CAS', async () => {
     const context = await createContext('worker-crash-window-recovery');
     try {

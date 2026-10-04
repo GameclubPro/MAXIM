@@ -45,6 +45,11 @@ export class SafetyDeskApiClient {
     label: CommercialReviewLabel,
     reason: string,
     accessCode: string,
+    expectedDisposition: 'KEEP' | 'DELETE' | null = label === 'COMMERCIAL'
+      ? 'DELETE'
+      : label === 'NOT_COMMERCIAL'
+        ? 'KEEP'
+        : null,
   ): Promise<CommercialReviewItem> {
     return this.transport.request(
       `${SAFETY_DESK_API_BASE}/commercial/review/${encodeURIComponent(item.id)}/label`,
@@ -52,7 +57,25 @@ export class SafetyDeskApiClient {
       commercialReviewItemSchema,
       {
         method: 'POST',
-        body: { expectedUpdatedAt: item.updatedAt, label, reason },
+        body: { expectedUpdatedAt: item.updatedAt, label, expectedDisposition, reason },
+      },
+    );
+  }
+
+  adjudicateCommercialReview(
+    item: CommercialReviewItem,
+    label: CommercialReviewLabel,
+    reason: string,
+    accessCode: string,
+    expectedDisposition: 'KEEP' | 'DELETE' | null,
+  ): Promise<CommercialReviewItem> {
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/commercial/review/${encodeURIComponent(item.id)}/adjudicate`,
+      accessCode,
+      commercialReviewItemSchema,
+      {
+        method: 'POST',
+        body: { expectedUpdatedAt: item.updatedAt, label, expectedDisposition, reason },
       },
     );
   }

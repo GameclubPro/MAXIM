@@ -24,6 +24,7 @@ local Docker-socket access under the production pg_hba rules, with:
   - ten rules-publication metadata columns; no rules text, media, links, or settings
   - sixteen Publisher binding/comment metadata columns
   - forty-three publication/access metadata columns; IDs are join-only and never report output
+  - eight commercial-review metadata columns only; no evidence, captions or user/message IDs
   - no publication content, media, tokens or raw permission payloads
   - INHERIT only so the pg_read_all_stats membership takes effect
   - read-only/time/parallel/memory/temp defaults used as a server-side backstop
@@ -123,7 +124,7 @@ BEGIN
         'moderation_delete_intent_reasons',
         'publications', 'publication_schedules', 'publication_occurrences',
         'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-        'managed_broadcast_deliveries', 'chats'
+        'managed_broadcast_deliveries', 'chats', 'commercial_review_samples'
       )
     GROUP BY table_name
   LOOP
@@ -191,6 +192,23 @@ GRANT SELECT (bot_id, chat_id, status, entity_type) ON TABLE public.managed_bot_
 GRANT SELECT (publication_occurrence_id, created_at, status, attempt_count, remote_message_id)
   ON TABLE public.managed_broadcast_deliveries TO maxim_audit;
 GRANT SELECT (id, entity_type) ON TABLE public.chats TO maxim_audit;
+-- FLAG: Existing catalogs remain compatible before the additive review migration. The new
+-- mode requires all eight columns; no partial grant or evidence/text access is permitted.
+DO $commercial_quality_grants$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM (VALUES ('id'), ('observed_at'), ('expires_at'), ('source'),
+      ('independent_label'), ('independent_review_count'), ('review_state'), ('quality_metadata')) required(column_name)
+    LEFT JOIN pg_attribute attribute ON attribute.attrelid = to_regclass('public.commercial_review_samples')
+      AND attribute.attname = required.column_name AND NOT attribute.attisdropped
+    WHERE attribute.attnum IS NULL
+  ) THEN
+    GRANT SELECT (id, observed_at, expires_at, source, independent_label,
+      independent_review_count, review_state, quality_metadata)
+      ON TABLE public.commercial_review_samples TO maxim_audit;
+  END IF;
+END
+$commercial_quality_grants$;
 GRANT pg_read_all_stats TO maxim_audit;
 
 ALTER ROLE maxim_audit RESET ALL;
@@ -445,6 +463,20 @@ BEGIN
   END IF;
 
   IF EXISTS (
+    SELECT 1 FROM pg_attribute attribute
+    WHERE attribute.attrelid = to_regclass('public.commercial_review_samples')
+      AND attribute.attnum > 0 AND NOT attribute.attisdropped
+      AND has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
+      AND attribute.attname NOT IN ('id', 'observed_at', 'expires_at', 'source',
+        'independent_label', 'independent_review_count', 'review_state', 'quality_metadata')
+  ) OR (SELECT count(*) FROM information_schema.role_column_grants
+    WHERE grantee = 'maxim_audit' AND table_schema = 'public'
+      AND table_name = 'commercial_review_samples' AND privilege_type = 'SELECT') NOT IN (0, 8)
+  THEN
+    RAISE EXCEPTION 'maxim_audit commercial-review metadata privileges are not exact';
+  END IF;
+
+  IF EXISTS (
     SELECT 1
     FROM pg_class relation
     JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -464,7 +496,7 @@ BEGIN
               'chat_rules',
               'publications', 'publication_schedules', 'publication_occurrences',
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-              'managed_broadcast_deliveries', 'chats',
+              'managed_broadcast_deliveries', 'chats', 'commercial_review_samples',
               'chat_settings',
               'moderation_delete_intents',
               'moderation_delete_intent_reasons'
