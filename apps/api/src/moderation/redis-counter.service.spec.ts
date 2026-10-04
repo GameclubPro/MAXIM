@@ -550,3 +550,52 @@ describe('RedisCounterService deadline lock', () => {
     ).rejects.toThrow('invalid deadline lock acquisition result');
   });
 });
+
+describe('RedisCounterService bounded proof reads', () => {
+  function setup() {
+    const results = [
+      [null, 'proof'],
+      [null, null],
+      [null, 'proof'],
+    ];
+    const pipeline = { get: jest.fn(), exec: jest.fn().mockResolvedValue(results) };
+    const redis = { get: jest.fn().mockResolvedValue('single'), pipeline: jest.fn(() => pipeline) };
+    const service = Object.create(RedisCounterService.prototype) as RedisCounterService;
+    Object.defineProperty(service, 'redis', { value: redis });
+    return { service, redis, pipeline };
+  }
+
+  it('preserves order, misses and duplicate keys in one bounded pipeline', async () => {
+    const s = setup();
+    await expect(s.service.getStrings(['a', 'missing', 'a'])).resolves.toEqual([
+      'proof',
+      null,
+      'proof',
+    ]);
+    expect(s.pipeline.get.mock.calls).toEqual([['a'], ['missing'], ['a']]);
+    expect(s.pipeline.exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains the existing one-key path and skips empty batches', async () => {
+    const s = setup();
+    await expect(s.service.getStrings([])).resolves.toEqual([]);
+    await expect(s.service.getStrings(['a'])).resolves.toEqual(['single']);
+    expect(s.redis.get).toHaveBeenCalledWith('a');
+    expect(s.redis.pipeline).not.toHaveBeenCalled();
+    await expect(s.service.getStrings(Array(11).fill('a'))).rejects.toThrow('ten keys');
+  });
+
+  it('propagates WRONGTYPE and connection errors instead of converting them into cache misses', async () => {
+    const s = setup();
+    const error = new Error('WRONGTYPE fixture');
+    s.pipeline.exec.mockResolvedValueOnce([
+      [null, 'first'],
+      [error, null],
+    ]);
+    await expect(s.service.getStrings(['a', 'b'])).rejects.toBe(error);
+    s.pipeline.exec.mockRejectedValueOnce(new Error('connection lost'));
+    await expect(s.service.getStrings(['a', 'b'])).rejects.toThrow('connection lost');
+    s.pipeline.exec.mockResolvedValueOnce(null);
+    await expect(s.service.getStrings(['a', 'b'])).rejects.toThrow('Incomplete');
+  });
+});

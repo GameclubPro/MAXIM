@@ -28,6 +28,7 @@ function setup() {
   const cache = new Map<string, string>();
   const redis = {
     getString: jest.fn(async (key: string) => cache.get(key) ?? null),
+    getStrings: jest.fn(async (keys: string[]) => keys.map((key) => cache.get(key) ?? null)),
     setStringWithTtl: jest.fn(async (key: string, value: string) => {
       cache.set(key, value);
     }),

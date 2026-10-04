@@ -585,13 +585,13 @@ export class MessageDuplicateMediaService {
     content: DuplicateMessageContent,
     update: MaxUpdate,
   ): Promise<Array<string | null>> {
-    const results: Array<string | null> = [];
-    for (const media of content.media) {
-      const raw = await this.redis.getString(this.cacheKey(media.identity, update));
+    const values = await this.redis.getStrings(
+      content.media.map((media) => this.cacheKey(media.identity, update)),
+    );
+    return values.map((raw) => {
       const parsed = raw && raw.length < 512 ? hashSchema.safeParse(safeJson(raw)) : null;
-      results.push(parsed?.success ? parsed.data.hash : null);
-    }
-    return results;
+      return parsed?.success ? parsed.data.hash : null;
+    });
   }
 
   private async hashMedia(
