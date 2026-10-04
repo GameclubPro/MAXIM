@@ -165,17 +165,30 @@ the resumable owner. Cleanup never blindly decrements a reserved reaction stage.
 `cleanupOnly` jobs reconcile ownership without analysis or actions. SQL failures retry every
 30 seconds even after the final analysis attempt, until the original deadline plus 24 hours.
 Completed cleanup preserves the positive permit of a materialized intent; terminated cleanup
-revokes it. Simultaneous Redis/SQL failure or a SQL outage exceeding this recovery bound can
-leave the unused claim blocking other rules until reviewed operator recovery or normal retention.
-Never clear claims in bulk or replay moderation to repair cleanup.
+revokes it. New preclaims also commit an immutable SQL cleanup obligation in the same transaction;
+`api-action` reconciles its due index independently of BullMQ, Redis and feature switches. Intent
+handoff removes the obligation atomically. A SQL outage delays this recovery until SQL is available.
 
-Repeated worker stalls can terminalize a `cleanupOnly` job before its processor runs.
-The unused claim then remains fail-closed and needs exact reviewed operator recovery;
-`worker.cleanup_exhausted` is not emitted for this path. Inspect failed duplicate jobs
-and worker stalled diagnostics. Do not use `job.retry()` as cleanup recovery: BullMQ
-retains its deferred-failure and stalled counters. Guaranteed recovery across queue
-loss requires a SQL cleanup lease persisted atomically at preclaim and a bounded
-reconciler, rather than a best-effort failed-event listener.
+Repeated worker stalls can terminalize a `cleanupOnly` job before its processor runs, without a
+`worker.cleanup_exhausted` event. The SQL obligation covers this queue-loss case for preclaims made
+by the new writer. Do not use `job.retry()` as cleanup recovery: BullMQ retains its deferred-failure
+and stalled counters.
+
+Historical preclaims without an obligation are outside this guarantee. The migration creates an
+empty table and performs no backfill; the reconciler never scans legacy claims. A surviving worker
+can still release an exact unused owner, and an unexpired matching resume through the new writer
+can register its obligation. Otherwise the claim remains fail-closed until exact reviewed recovery
+or normal retention. An empty cleanup sample does not prove there are no historical orphan claims.
+
+The legacy SQL claim has identity and creation time, but no original absolute action deadline or
+exact binding/authorization event timestamps; its hashed keys cannot recover them. Retained webhook
+payloads may supply an event timestamp, but do not prove the immutable deadline clipped by runtime
+control or the daily period. There is no dedicated bounded orphan-preclaim audit/repair CLI.
+`moderation:repair-missed-deletes` requires moderation-event evidence and creates delete intents;
+it is not an unused-claim cleanup tool. Historical repair needs a separate bounded read-only preview
+with exact owner generation and surviving job/binding evidence, followed by reviewed transactional
+checks for intents, events and DELETE receipts plus exact-event revocation. Missing proof must remain
+unresolved: never infer a deadline from `createdAt`, clear claims in bulk, or replay moderation.
 
 Governor pause honors its bounded recommended delay; slow pacing permits progress after one delay
 per job. Followers wait for the head's next eligible time or bounded crash recovery. Expiry ends work
