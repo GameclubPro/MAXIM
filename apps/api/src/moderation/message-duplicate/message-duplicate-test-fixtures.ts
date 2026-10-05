@@ -2,6 +2,15 @@ import { chatSettingsSchema } from '@maxim/contracts';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { WebhookParser } from '../../webhook/webhook.parser';
 
+// Recorded from main 356a3d5a before case-sensitive numeric quantity-unit protection.
+export const preSemanticUnitSettingsDigests = {
+  STANDARD: '5ca1fb72c354a099340722db667672f96c03533096f16ee68b88fd7e0742a7ba',
+  STRICT: '9d116043810b95777d9bbc6f12e36dff93972f86b15fb3ec1cc57964ffb87875',
+  CUSTOM_NEAR: '74d3f8593a16761dcc1cfc092d0a704b51bc5801e4322374711b1b083415cb18',
+  CUSTOM_PHONE: '04cb3129576bd4163fa70e6916a24e5007842a9652402e5932eb7e5fd0cc5eb9',
+  IMAGE: 'fcd5021c58ff1a6917c53f0465e6b7a3108f16c84f891df77e1be3a4b5da07b5',
+} as const;
+
 // Recorded from main 377936b2 before the v3 history incarnation and padded-context guard.
 export const preV3HistorySettingsDigests = {
   STANDARD: 'abacbcc44c2a0dd8f0177b92124fe503b37960065ca14a7bfba61c5663006780',
