@@ -2,6 +2,7 @@ import {
   readPendingRulesUpdateOptions,
   repairPendingRulesUpdate,
 } from './repair-pending-rules-update';
+import { extractSqlText } from '../admin/admin-service-test-support';
 
 const args = [
   '--chat-id=-123',
@@ -41,7 +42,14 @@ function fixture() {
     createdAt: new Date(revision),
     updatedAt: new Date(revision),
   };
-  const prisma = {
+  const transactionClient = {
+    $queryRaw: jest.fn().mockImplementation(async (...args: unknown[]) => {
+      const sql = extractSqlText(args);
+      if (/SELECT id FROM chats WHERE id =/u.test(sql)) return [{ id: '-123' }];
+      if (/clock_timestamp\(\) AT TIME ZONE 'UTC'/u.test(sql)) return [{ at: new Date() }];
+      throw new Error('Unexpected rules repair transaction fixture query');
+    }),
+    $executeRaw: jest.fn().mockResolvedValue(1),
     chatRules: {
       findUnique: jest.fn(async () => ({ ...row })),
       upsert: jest.fn(async () => ({ ...row })),
@@ -51,6 +59,12 @@ function fixture() {
       }),
     },
     auditLog: { create: jest.fn() },
+  };
+  const prisma = {
+    ...transactionClient,
+    $transaction: jest.fn(async (callback: (tx: typeof transactionClient) => unknown) =>
+      callback(transactionClient),
+    ),
   };
   const maxClient = {
     uploadImage: jest.fn(),

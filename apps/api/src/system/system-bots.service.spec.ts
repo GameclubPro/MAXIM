@@ -551,8 +551,8 @@ describe('SystemBotsService', () => {
         ]),
       },
     };
-    const resolveBotRoutes = jest.fn(
-      async (request: { chatId: string; action: 'delete_message' | 'moderate_member' }) => {
+    const resolveModerationActionBotRouteFromSnapshot = jest.fn(
+      (request: { chatId: string }, action: 'delete_message' | 'moderate_member') => {
         if (request.chatId === 'chat-covered') {
           return {
             purpose: 'moderation_action',
@@ -561,7 +561,7 @@ describe('SystemBotsService', () => {
             botId: 'bot-2',
             candidateBotIds: ['bot-2'],
             reason: 'alternate_confirmed',
-            action: request.action,
+            action: action,
           };
         }
 
@@ -572,14 +572,14 @@ describe('SystemBotsService', () => {
           botId: null,
           candidateBotIds: [],
           reason: null,
-          action: request.action,
+          action: action,
         };
       },
     );
     const service = new SystemBotsService(
       prisma as never,
       botRegistry as never,
-      { resolveBotRoutes } as never,
+      { resolveModerationActionBotRouteFromSnapshot } as never,
       {} as never,
       {} as never,
       {} as never,

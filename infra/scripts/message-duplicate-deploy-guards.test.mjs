@@ -651,18 +651,67 @@ test('rejects removal of only the last duplicate permit fence after suggestion p
   assert.ok(start >= 0 && end > start);
   const mutation = source.slice(start, end);
   const updated = mutation.replace(
-    /if \(this\.messageDuplicateDeleteGuard && intent\.messageDuplicateOwned\) \{[\s\S]*?\n {12}\}/u,
+    /if \(this\.messageDuplicateDeleteGuard && (?:intent\.messageDuplicateOwned|textProof\.messageDuplicateVerified)\) \{[\s\S]*?\n {12}\}/u,
     '',
   );
   assert.notEqual(updated, mutation);
   const executor = source.slice(0, start) + updated + source.slice(end);
   assert.ok(
-    executor.includes('await this.messageDuplicateDeleteGuard.assertIntentStillActionable('),
+    /this\.messageDuplicateDeleteGuard!?\.assertIntentStillActionable\(/u.test(executor),
     'The earlier full duplicate guard must survive this mutation',
   );
   const result = probe(t, { executor });
   assert.notEqual(result.status, 0);
 });
+
+for (const [name, method, before, after] of [
+  [
+    'qualification result',
+    'private async authorizeGuardedUserDeleteReasons(',
+    /\)\) === 'allowed';/u,
+    ")) === 'denied';",
+  ],
+  [
+    'returned qualification',
+    'private async authorizeGuardedUserDeleteReasons(',
+    /messageDuplicateVerified,/u,
+    'messageDuplicateVerified: false,',
+  ],
+  [
+    'forwarded qualification',
+    'private async runDeletePreDispatchGuards(',
+    /messageDuplicateVerified = proof\.messageDuplicateVerified;/u,
+    'messageDuplicateVerified = false;',
+  ],
+  [
+    'returned forwarded qualification',
+    'private async runDeletePreDispatchGuards(',
+    /messageDuplicateVerified,/u,
+    'messageDuplicateVerified: false,',
+  ],
+]) {
+  test('rejects a disconnected delegated duplicate ' + name, (t) => {
+    const source = readFileSync(resolve(root, paths.executor), 'utf8');
+    const start = source.indexOf(method);
+    const end = source.indexOf('\n  private ', start + 1);
+    assert.ok(start >= 0 && end > start);
+    const body = source.slice(start, end);
+    const updated = body.replace(before, after);
+    assert.notEqual(updated, body);
+    const executor = source.slice(0, start) + updated + source.slice(end);
+    assert.ok(
+      executor.includes('this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params)'),
+    );
+    assert.ok(
+      executor.includes(
+        'if (this.messageDuplicateDeleteGuard && textProof.messageDuplicateVerified)',
+      ),
+    );
+    assert.ok(executor.includes('authorityOnly: true'));
+    const result = probe(t, { executor });
+    assert.notEqual(result.status, 0);
+  });
+}
 
 test('rejects a last duplicate fence that still uses remote content guards', (t) => {
   const source = readFileSync(resolve(root, paths.executor), 'utf8');

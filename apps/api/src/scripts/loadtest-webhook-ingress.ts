@@ -6,7 +6,7 @@ export const WEBHOOK_LOAD_EXECUTE_CONFIRMATION = 'I_UNDERSTAND_THIS_SENDS_WEBHOO
 export const WEBHOOK_LOAD_PUBLIC_CONFIRMATION = 'I_UNDERSTAND_THIS_SENDS_NETWORK_TRAFFIC';
 export const WEBHOOK_LOAD_PRODUCTION_CONFIRMATION = 'I_UNDERSTAND_THIS_TARGETS_PRODUCTION';
 
-const ALLOWED_MIRROR_COUNTS = [1, 2, 3, 6] as const;
+const DEFAULT_MIRROR_COUNTS = [1, 3, 4, 6, 9, 12] as const;
 const DEFAULT_DURATION_SEC = 600;
 const DEFAULT_RPS = 100;
 const DEFAULT_MAX_IN_FLIGHT = 256;
@@ -21,7 +21,6 @@ const DEFAULT_DRAIN_HEALTHY_SAMPLES = 3;
 const DEFAULT_DRAIN_TIMEOUT_SEC = 120;
 const DEFAULT_DRAIN_INTERVAL_MS = 5_000;
 const DEFAULT_BURST_DURATION_SEC = 60;
-const MAX_BOTS = 6;
 const MAX_RPS = 1_000;
 const OPERATIONAL_QUEUE_METRICS_PATHS = new Set([
   '/v1/system/metrics/queues/operational',
@@ -396,7 +395,15 @@ function isPublicTarget(hostname: string): boolean {
 
 function parseBots(env: Environment): WebhookLoadBot[] {
   const bots: WebhookLoadBot[] = [];
-  for (let index = 1; index <= MAX_BOTS; index += 1) {
+  const indexes = Array.from(
+    new Set(
+      Object.keys(env).flatMap((key) => {
+        const match = /^WEBHOOK_LOAD_BOT_([1-9][0-9]*)_(ID|SECRET_PATH|HEADER_SECRET)$/.exec(key);
+        return match ? [Number(match[1])] : [];
+      }),
+    ),
+  ).sort((a, b) => a - b);
+  for (const index of indexes) {
     const botId = env[`WEBHOOK_LOAD_BOT_${index}_ID`]?.trim() ?? '';
     const secretPath = env[`WEBHOOK_LOAD_BOT_${index}_SECRET_PATH`]?.trim() ?? '';
     const headerSecret = env[`WEBHOOK_LOAD_BOT_${index}_HEADER_SECRET`]?.trim() ?? '';
@@ -449,14 +456,9 @@ function parseMirrorCounts(raw: string | undefined, botCount: number): number[] 
         .split(',')
         .map((value) => Number(value.trim()))
         .filter((value) => Number.isFinite(value))
-    : ALLOWED_MIRROR_COUNTS.filter((value) => value <= botCount);
-  if (
-    values.length === 0 ||
-    values.some(
-      (value) => !Number.isInteger(value) || !ALLOWED_MIRROR_COUNTS.includes(value as never),
-    )
-  ) {
-    throw new Error('WEBHOOK_LOAD_MIRROR_COUNTS must contain only 1,2,3,6');
+    : DEFAULT_MIRROR_COUNTS.filter((value) => value <= botCount);
+  if (values.length === 0 || values.some((value) => !Number.isInteger(value) || value < 1)) {
+    throw new Error('WEBHOOK_LOAD_MIRROR_COUNTS must contain positive integer counts');
   }
   if (new Set(values).size !== values.length) {
     throw new Error('WEBHOOK_LOAD_MIRROR_COUNTS cannot contain duplicates');

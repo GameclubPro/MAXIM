@@ -189,6 +189,10 @@ export function buildDefaultWebhookLeasePlan(
       queue.desiredOwner = desiredOwner;
       queue.handoffPending = desiredOwner !== currentOwner;
       queue.reason = 'owner-unavailable';
+      if (desiredOwner !== currentOwner) {
+        workerLoads[currentOwner] = Math.max(0, workerLoads[currentOwner] - queue.pressure);
+        workerLoads[desiredOwner] += queue.pressure;
+      }
       continue;
     }
 

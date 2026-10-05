@@ -795,7 +795,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     },
   );
 
-  it('refreshes every assigned bot self-access snapshot but fetches the admin roster once', async () => {
+  it('refreshes only the requested bot self-access snapshot but fetches the admin roster once', async () => {
     const { service, prisma, maxClient, maxBotLinkService } = createService();
     prisma.chat.findUnique.mockResolvedValue({
       id: '-100-shared-access',
@@ -825,18 +825,16 @@ describe('MaxChatAdminRosterSyncService', () => {
       }),
     ).resolves.toBe(true);
 
-    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(3);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
     expect(maxClient.getCurrentChatMemberAccess.mock.calls.map((call) => call[1]?.botId)).toEqual([
       'bot-1',
-      'bot-2',
-      'bot-3',
     ]);
     expect(
       maxClient.getCurrentChatMemberAccess.mock.calls.every(
         (call) => call[1]?.bypassCache === true,
       ),
     ).toBe(true);
-    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(3);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
     expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: '-100-shared-access',

@@ -52,6 +52,7 @@ import {
   type ChatSettingsBotCapabilityRequirement,
 } from './chat-settings-bot-capability';
 import { assertReportsActivationAvailable } from './report-settings-availability';
+import { advanceChatMutationOrder } from '../common/group-command-authority.service';
 
 function readLegacyPrimaryAdminCommandName(value: unknown, fallback: string): string {
   if (typeof value !== 'string') {
@@ -1102,6 +1103,20 @@ export async function saveChatSettings(params: {
         },
         update: { catalogKind: ChatCatalogKind.MANAGED },
       });
+      if (
+        [
+          'nightModeForceCloseEnabled',
+          'nightModeForceCloseForever',
+          'nightModeForceCloseHours',
+          'nightModeForceCloseDays',
+          'nightModeForceCloseUntil',
+        ].some((key) => hasOwnSetting(params.body, key as keyof ChatSettings))
+      ) {
+        await advanceChatMutationOrder(tx, params.chatId, 'CHAT_CONTROL');
+      }
+      if (hasOwnSetting(params.body, 'rulesAttachViolationsEnabled')) {
+        await advanceChatMutationOrder(tx, params.chatId, 'RULES');
+      }
       if (currentSettings) {
         const changed = await tx.chatSettings.updateMany({
           where: { chatId: params.chatId, updatedAt: currentSettings.updatedAt },

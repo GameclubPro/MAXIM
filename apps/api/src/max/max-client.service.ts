@@ -1,3 +1,4 @@
+import { markMaxMessageSendAttempted } from './max-mutation-outcome.util';
 import { HttpService } from '@nestjs/axios';
 import { InjectQueue } from '@nestjs/bullmq';
 import { BadRequestException, Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
@@ -5,6 +6,8 @@ import { ConfigService } from '@nestjs/config';
 import { UnrecoverableError, type Job, type Queue } from 'bullmq';
 import FormData from 'form-data';
 import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type { MaxExecutionPurpose, MaxExecutionRouteProof } from './max-execution-route-proof';
 import { isDeepStrictEqual } from 'node:util';
 import { readMaxMemberActivity } from './max-member-activity.util';
 import { MarketplaceStateService } from '../integrations/marketplace/marketplace-state.service';
@@ -271,30 +274,7 @@ const MAX_RESUMABLE_VIDEO_UPLOAD_CHUNK_BYTES = 4 * 1_024 * 1_024;
 const MAX_RESUMABLE_VIDEO_UPLOAD_SESSION_ATTEMPTS = 2;
 const MAX_LIST_BOT_CHATS_UNSUPPORTED_IN_PRODUCTION =
   'MAX API GET /chats is not supported in production; use webhook/subscription managed chat catalog instead. See https://dev.max.ru/docs-api/methods/GET/chats';
-const MAX_MESSAGE_SEND_ATTEMPTED = Symbol('max-message-send-attempted');
-
-export function wasMaxMessageSendAttempted(error: unknown): boolean {
-  return Boolean(
-    error &&
-    typeof error === 'object' &&
-    (error as { [MAX_MESSAGE_SEND_ATTEMPTED]?: unknown })[MAX_MESSAGE_SEND_ATTEMPTED] === true,
-  );
-}
-
-function markMaxMessageSendAttempted(error: unknown): unknown {
-  if (error && typeof error === 'object') {
-    Object.defineProperty(error, MAX_MESSAGE_SEND_ATTEMPTED, {
-      configurable: false,
-      enumerable: false,
-      value: true,
-      writable: false,
-    });
-    return error;
-  }
-  const wrapped = new Error(String(error));
-  Object.defineProperty(wrapped, MAX_MESSAGE_SEND_ATTEMPTED, { value: true });
-  return wrapped;
-}
+export { wasMaxMessageSendAttempted } from './max-mutation-outcome.util';
 
 export {
   markMaxMemberMutationAttempted,
@@ -342,7 +322,7 @@ export function isMaxApiCircuitOpenError(error: unknown): error is MaxApiCircuit
   );
 }
 
-class MaxApiInternalRateLimitError extends Error {
+export class MaxApiInternalRateLimitError extends Error {
   readonly code = 'MAX_API_INTERNAL_RATE_LIMIT';
   readonly preDispatch = true;
 
@@ -924,6 +904,18 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly chatAdminIdsInFlight = new Map<string, Promise<string[]>>();
   private readonly chatAdminMembersInFlight = new Map<string, Promise<MaxChatAdminMember[]>>();
   private readonly mediaUploadValidationCache = new MaxMediaUploadValidationCache();
+  private readonly mutationExecutionScope = new AsyncLocalStorage<{
+    chatId: string;
+    purpose: MaxExecutionPurpose;
+    guardCode: string;
+    method: 'post' | 'put' | 'delete';
+    path: string;
+    requestOptions: MaxApiRequestOptions;
+    quotaState: { error?: unknown };
+    messageMutation?: MaxMessageMutationRateLimitScope;
+    finalGuard?: () => Promise<void>;
+    onDispatchAttempt?: () => void;
+  }>();
 
   constructor(
     private readonly httpService: HttpService,
@@ -1172,7 +1164,6 @@ export class MaxClientService implements OnModuleDestroy {
       'send',
       chatId,
       async () => {
-        await options?.beforeSend?.();
         const publicationOptions = await this.prepareMarketplacePublicationOptions(
           chatId,
           options,
@@ -1196,6 +1187,7 @@ export class MaxClientService implements OnModuleDestroy {
         });
       },
       requestOptions,
+      options?.beforeSend,
     );
 
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
@@ -1231,7 +1223,6 @@ export class MaxClientService implements OnModuleDestroy {
       'send',
       `user:${userId}`,
       async () => {
-        await options?.beforeSend?.();
         return this.request<Record<string, unknown>>('post', '/messages', {
           params: {
             user_id: userId,
@@ -1246,6 +1237,7 @@ export class MaxClientService implements OnModuleDestroy {
         });
       },
       requestOptions,
+      options?.beforeSend,
     );
 
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
@@ -1316,7 +1308,6 @@ export class MaxClientService implements OnModuleDestroy {
       'send',
       chatId,
       async () => {
-        await beforeSend?.();
         return this.request<Record<string, unknown>>('post', '/messages', {
           params: {
             chat_id: chatId,
@@ -1331,6 +1322,7 @@ export class MaxClientService implements OnModuleDestroy {
         });
       },
       normalizedRequestOptions,
+      beforeSend,
     );
   }
 
@@ -1516,46 +1508,48 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<void> {
     const bot = this.resolveExecutableBot(requestOptions.botId, { explicit: true });
     const exactOptions = { ...requestOptions, botId: bot.id, bypassCache: true };
-    await this.runWithMessageKeyboardEditLock(messageId, async (assertOwnership) => {
-      const access = await this.getCurrentChatMemberAccess(chatId, exactOptions);
-      if (!access.isAdmin && !access.isOwner) {
-        throw new BadRequestException('Бот больше не является администратором группы.');
-      }
-      const message = await this.getExactMessageRow(chatId, messageId, exactOptions);
-      const sender = this.asRecord(message?.sender);
-      const senderId = this.readMemberUserId(sender);
-      // FLAG: A stored bot ID is not authorship proof; never replace another author's post.
-      if (!access.userId || senderId !== access.userId || sender?.is_bot !== true) {
-        throw new BadRequestException('Не удалось подтвердить автора опубликованных правил.');
-      }
-      const attachments = this.buildMessageAttachments(options);
-      await this.executeMessageMutation(
-        'edit',
-        chatId,
-        async () => {
-          await assertOwnership();
-          await this.runPreDispatchMutationGuard(
-            beforeMutation,
-            MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
-          );
-          await assertOwnership();
-          const response = await this.request<{ success?: boolean }>('put', '/messages', {
-            params: { message_id: messageId },
-            data: {
-              text,
-              ...(options?.textFormat ? { format: options.textFormat } : {}),
-              attachments,
-              notify: false,
-            },
-            ...(requestOptions.timeoutMs ? { timeout: requestOptions.timeoutMs } : {}),
-          });
-          if (response?.success !== true) {
-            throw new BadRequestException('MAX не подтвердил обновление правил.');
-          }
-        },
-        exactOptions,
-      );
-    });
+    await this.runWithMessageKeyboardEditLock(
+      messageId,
+      async (assertOwnership, assertCurrentOwnership) => {
+        const access = await this.getCurrentChatMemberAccess(chatId, exactOptions);
+        if (!access.isAdmin && !access.isOwner) {
+          throw new BadRequestException('Бот больше не является администратором группы.');
+        }
+        const message = await this.getExactMessageRow(chatId, messageId, exactOptions);
+        const sender = this.asRecord(message?.sender);
+        const senderId = this.readMemberUserId(sender);
+        // FLAG: A stored bot ID is not authorship proof; never replace another author's post.
+        if (!access.userId || senderId !== access.userId || sender?.is_bot !== true) {
+          throw new BadRequestException('Не удалось подтвердить автора опубликованных правил.');
+        }
+        const attachments = this.buildMessageAttachments(options);
+        await this.executeMessageMutation(
+          'edit',
+          chatId,
+          async () => {
+            const response = await this.request<{ success?: boolean }>('put', '/messages', {
+              params: { message_id: messageId },
+              data: {
+                text,
+                ...(options?.textFormat ? { format: options.textFormat } : {}),
+                attachments,
+                notify: false,
+              },
+              ...(requestOptions.timeoutMs ? { timeout: requestOptions.timeoutMs } : {}),
+            });
+            if (response?.success !== true) {
+              throw new BadRequestException('MAX не подтвердил обновление правил.');
+            }
+          },
+          exactOptions,
+          async () => {
+            await assertOwnership();
+            await beforeMutation();
+            assertCurrentOwnership();
+          },
+        );
+      },
+    );
   }
 
   async editMessageInlineKeyboard(
@@ -1565,87 +1559,89 @@ export class MaxClientService implements OnModuleDestroy {
     options?: MaxEditableMessageOptions,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ) {
-    return this.runWithMessageKeyboardEditLock(messageId, async (assertOwnership) => {
-      let message = await this.getMessageById(messageId, requestOptions);
-      if (options?.refreshButtonText) {
-        message = await refreshExistingInlineKeyboardText(message, options.refreshButtonText);
-        if (!message) return;
-        options = {
-          ...options,
-          button: undefined,
-          buttons: undefined,
-          mergeExistingInlineKeyboard: false,
-          preserveExistingInlineKeyboard: true,
-          requireAllAttachmentsPreserved: true,
-        };
-      }
-      if (options?.prepareInlineKeyboard) {
-        const buttons = await options.prepareInlineKeyboard(message);
-        if (buttons === null) return;
-        options = { ...options, buttons };
-      }
-      this.assertExpectedEditableMessageText(message, options);
-      // FLAG: PUT keeps the forward link. Its nested media and keyboard belong to the
-      // linked message, not to this post; only a copy may flatten those attachments.
-      const attachments = this.buildEditableMessageAttachments(message, options, false);
-      const sourceBody = this.asRecord(message?.body);
-      const sourceText = typeof sourceBody?.text === 'string' ? sourceBody.text : null;
-      const shouldForceReplacementText =
-        typeof text === 'string' &&
-        text !== sourceText &&
-        !this.shouldSkipTextUpdateForInlineKeyboardEdit(message);
-      // FLAG: Derived text must use this locked snapshot, never an older webhook payload.
-      const preparedText = options?.prepareMessageText
-        ? await options.prepareMessageText(message)
-        : undefined;
-      const messageTextPayload = options?.prepareMessageText
-        ? this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
-          ? null
-          : preparedText
-        : typeof text === 'string' && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
-          ? shouldForceReplacementText
-            ? {
-                text,
-                textFormat: options?.textFormat ?? null,
-              }
-            : this.buildOutgoingMessageTextPayload(message, text, options?.textFormat ?? null)
-          : null;
+    return this.runWithMessageKeyboardEditLock(
+      messageId,
+      async (assertOwnership, assertCurrentOwnership) => {
+        let message = await this.getMessageById(messageId, requestOptions);
+        if (options?.refreshButtonText) {
+          message = await refreshExistingInlineKeyboardText(message, options.refreshButtonText);
+          if (!message) return;
+          options = {
+            ...options,
+            button: undefined,
+            buttons: undefined,
+            mergeExistingInlineKeyboard: false,
+            preserveExistingInlineKeyboard: true,
+            requireAllAttachmentsPreserved: true,
+          };
+        }
+        if (options?.prepareInlineKeyboard) {
+          const buttons = await options.prepareInlineKeyboard(message);
+          if (buttons === null) return;
+          options = { ...options, buttons };
+        }
+        this.assertExpectedEditableMessageText(message, options);
+        // FLAG: PUT keeps the forward link. Its nested media and keyboard belong to the
+        // linked message, not to this post; only a copy may flatten those attachments.
+        const attachments = this.buildEditableMessageAttachments(message, options, false);
+        const sourceBody = this.asRecord(message?.body);
+        const sourceText = typeof sourceBody?.text === 'string' ? sourceBody.text : null;
+        const shouldForceReplacementText =
+          typeof text === 'string' &&
+          text !== sourceText &&
+          !this.shouldSkipTextUpdateForInlineKeyboardEdit(message);
+        // FLAG: Derived text must use this locked snapshot, never an older webhook payload.
+        const preparedText = options?.prepareMessageText
+          ? await options.prepareMessageText(message)
+          : undefined;
+        const messageTextPayload = options?.prepareMessageText
+          ? this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
+            ? null
+            : preparedText
+          : typeof text === 'string' && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
+            ? shouldForceReplacementText
+              ? {
+                  text,
+                  textFormat: options?.textFormat ?? null,
+                }
+              : this.buildOutgoingMessageTextPayload(message, text, options?.textFormat ?? null)
+            : null;
 
-      await assertOwnership();
+        await assertOwnership();
 
-      await this.executeMessageMutation(
-        'edit',
-        chatId,
-        async () => {
-          await assertOwnership();
-          await this.runPreDispatchMutationGuard(
-            options?.beforeEditMutation,
-            MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
-          );
-          await assertOwnership();
-          const response = await this.request<{ success?: boolean }>('put', '/messages', {
-            params: {
-              message_id: messageId,
-            },
-            data: {
-              ...(messageTextPayload && typeof messageTextPayload.text === 'string'
-                ? {
-                    text: messageTextPayload.text,
-                    ...(messageTextPayload.textFormat
-                      ? { format: messageTextPayload.textFormat }
-                      : {}),
-                  }
-                : {}),
-              attachments,
-            },
-          });
-          if (options?.requireAllAttachmentsPreserved && response.success !== true) {
-            throw new BadRequestException('MAX did not confirm the post update.');
-          }
-        },
-        requestOptions,
-      );
-    });
+        await this.executeMessageMutation(
+          'edit',
+          chatId,
+          async () => {
+            const response = await this.request<{ success?: boolean }>('put', '/messages', {
+              params: {
+                message_id: messageId,
+              },
+              data: {
+                ...(messageTextPayload && typeof messageTextPayload.text === 'string'
+                  ? {
+                      text: messageTextPayload.text,
+                      ...(messageTextPayload.textFormat
+                        ? { format: messageTextPayload.textFormat }
+                        : {}),
+                    }
+                  : {}),
+                attachments,
+              },
+            });
+            if (options?.requireAllAttachmentsPreserved && response.success !== true) {
+              throw new BadRequestException('MAX did not confirm the post update.');
+            }
+          },
+          requestOptions,
+          async () => {
+            await assertOwnership();
+            await options?.beforeEditMutation?.();
+            assertCurrentOwnership();
+          },
+        );
+      },
+    );
   }
 
   async sendMessageReplyWithInlineKeyboard(
@@ -2917,7 +2913,14 @@ export class MaxClientService implements OnModuleDestroy {
     const bot = this.resolveExecutableBot(action.botId, {
       explicit: Boolean(action.botId?.trim()),
     });
+    const requiredBotId = action.routing?.requiredBotId?.trim();
+    if (requiredBotId && bot.id !== requiredBotId) {
+      throw new Error('MAX action executor does not match its required bot');
+    }
     const mutationOptions = this.buildQueuedActionMutationOptions(action, bot.id);
+    const beforeDelete = executionOptions.beforeDeleteMutation;
+    const beforeMember = executionOptions.beforeMemberMutation;
+    const beforeSend = executionOptions.beforeSendMutation;
 
     return this.botContext.runWithBot(bot.id, async () => {
       switch (action.actionType) {
@@ -2946,10 +2949,6 @@ export class MaxClientService implements OnModuleDestroy {
             'delete',
             action.chatId,
             async () => {
-              await this.runPreDispatchMutationGuard(
-                executionOptions.beforeDeleteMutation,
-                MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
-              );
               const response = await this.request<Record<string, unknown>>('delete', '/messages', {
                 params: {
                   message_id: deleteMessageId,
@@ -2959,6 +2958,7 @@ export class MaxClientService implements OnModuleDestroy {
               this.assertSuccessfulDeleteMessageResponse(response);
             },
             mutationOptions,
+            beforeDelete,
           );
           if (sendAutoDeleteMarker) {
             this.markSendAutoDeleteConfirmed(
@@ -2978,7 +2978,7 @@ export class MaxClientService implements OnModuleDestroy {
             action,
             attachments,
             mutationOptions,
-            executionOptions.beforeSendMutation,
+            beforeSend,
           );
           const sentMessageId = this.extractMessageIdFromSendResponse(sendResponse);
           if (!sentMessageId) {
@@ -3021,7 +3021,7 @@ export class MaxClientService implements OnModuleDestroy {
           }
           await this.executeQueuedMemberModerationAction(action, mutationOptions, {
             block: false,
-            beforeMutation: executionOptions.beforeMemberMutation,
+            beforeMutation: beforeMember,
           });
           return;
 
@@ -3040,7 +3040,7 @@ export class MaxClientService implements OnModuleDestroy {
           }
           await this.executeQueuedMemberModerationAction(action, mutationOptions, {
             block: true,
-            beforeMutation: executionOptions.beforeMemberMutation,
+            beforeMutation: beforeMember,
           });
           return;
 
@@ -3051,15 +3051,10 @@ export class MaxClientService implements OnModuleDestroy {
           assertMaxMemberRestoreAvailable();
           let memberMutationAttempted = false;
           try {
-            await this.executeMutation(
+            await this.executeMemberMutation(
               action.chatId,
+              'post',
               async () => {
-                await this.runPreDispatchMutationGuard(
-                  executionOptions.beforeMemberMutation,
-                  MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
-                );
-                assertMaxMemberRestoreAvailable();
-                memberMutationAttempted = true;
                 const response = await this.request('post', `/chats/${action.chatId}/members`, {
                   data: {
                     user_ids: [action.userId],
@@ -3069,6 +3064,13 @@ export class MaxClientService implements OnModuleDestroy {
                 this.assertSuccessfulMemberMutationResponse(response);
               },
               mutationOptions,
+              async () => {
+                await beforeMember?.();
+                assertMaxMemberRestoreAvailable();
+              },
+              () => {
+                memberMutationAttempted = true;
+              },
             );
           } catch (error: unknown) {
             if (!this.isAlreadyPresentChatMemberError(error)) {
@@ -5187,6 +5189,7 @@ export class MaxClientService implements OnModuleDestroy {
     ]);
     const selectedBotId =
       this.readTrimmedString(explicitBotId) ??
+      this.readTrimmedString(resolvedRoute?.botId) ??
       explicitCandidateBotIds.find((botId) => {
         const candidate = this.botRegistry.getBotById(botId);
         return Boolean(candidate && this.canExecuteActionsForBot(candidate));
@@ -6574,6 +6577,8 @@ export class MaxClientService implements OnModuleDestroy {
       timeoutMs?: number;
       botId?: string;
       messageMutation?: MaxMessageMutationRateLimitScope;
+      deferRateLimitReservation?: boolean;
+      deferredQuotaState?: { error?: unknown };
     } = {},
   ): Promise<T> {
     const bot = this.resolveBot(options.botId);
@@ -6582,14 +6587,15 @@ export class MaxClientService implements OnModuleDestroy {
     const sourceTag = this.normalizeMetricSourceTag(options.sourceTag);
     const circuitPermit = await this.acquireCircuitPermit(bot.id);
     try {
-      await this.reserveRateLimitSlot(
-        bot.id,
-        options.chatId ?? null,
-        trafficClass,
-        sourceTag,
-        options.timeoutMs,
-        options.messageMutation,
-      );
+      if (!options.deferRateLimitReservation)
+        await this.reserveRateLimitSlot(
+          bot.id,
+          options.chatId ?? null,
+          trafficClass,
+          sourceTag,
+          options.timeoutMs,
+          options.messageMutation,
+        );
     } catch (error: unknown) {
       await this.releaseUnusedHalfOpenProbe(bot.id, circuitPermit);
       if (trafficClass === 'critical' && error instanceof MaxApiInternalRateLimitError) {
@@ -6610,6 +6616,22 @@ export class MaxClientService implements OnModuleDestroy {
       this.actionHealthService.recordSuccessForLane(actionHealthLane, bot.id);
       return result;
     } catch (error: unknown) {
+      if (
+        options.deferredQuotaState?.error === error &&
+        error instanceof MaxApiInternalRateLimitError
+      ) {
+        await this.releaseUnusedHalfOpenProbe(bot.id, circuitPermit);
+        if (trafficClass === 'critical') {
+          this.actionHealthService.recordFailureForLane(actionHealthLane, true, bot.id);
+          this.logUserFacingActionFailure(error, {
+            botId: bot.id,
+            trafficClass,
+            lane: actionHealthLane,
+            sourceTag,
+          });
+        }
+        throw error;
+      }
       if (this.shouldIgnoreActionHealthFailure(error, options)) {
         await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
         throw error;
@@ -6678,6 +6700,8 @@ export class MaxClientService implements OnModuleDestroy {
     executionOptions: {
       requireExecutableBot?: boolean;
       messageMutation?: MaxMessageMutationRateLimitScope;
+      deferRateLimitReservation?: boolean;
+      deferredQuotaState?: { error?: unknown };
     } = {},
   ): Promise<T> {
     const normalizedOptions = this.normalizeReadRequestOptions(options);
@@ -6696,6 +6720,8 @@ export class MaxClientService implements OnModuleDestroy {
       timeoutMs: normalizedOptions.timeoutMs,
       botId: executableBot?.id ?? normalizedOptions.botId,
       messageMutation: executionOptions.messageMutation,
+      deferRateLimitReservation: executionOptions.deferRateLimitReservation,
+      deferredQuotaState: executionOptions.deferredQuotaState,
     });
   }
 
@@ -6704,13 +6730,77 @@ export class MaxClientService implements OnModuleDestroy {
     entityId: string | null,
     operation: () => Promise<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
+    finalGuard?: () => Promise<void>,
   ): Promise<T> {
-    return this.executeMutation(entityId, operation, options, {
+    const quotaState: { error?: unknown } = {};
+    const scopedOperation =
+      entityId && operationType !== 'answer'
+        ? () =>
+            this.mutationExecutionScope.run(
+              {
+                chatId: entityId,
+                purpose:
+                  operationType === 'send'
+                    ? 'send_message'
+                    : operationType === 'edit'
+                      ? 'edit_message'
+                      : 'delete_message',
+                guardCode:
+                  operationType === 'send'
+                    ? MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE
+                    : operationType === 'edit'
+                      ? MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE
+                      : MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+                method:
+                  operationType === 'send' ? 'post' : operationType === 'edit' ? 'put' : 'delete',
+                path: '/messages',
+                requestOptions: this.normalizeReadRequestOptions(options),
+                quotaState,
+                messageMutation: { operation: operationType, entityId },
+                finalGuard,
+              },
+              operation,
+            )
+        : operation;
+    return this.executeMutation(entityId, scopedOperation, options, {
+      deferRateLimitReservation: Boolean(entityId && operationType !== 'answer'),
+      deferredQuotaState: quotaState,
       messageMutation: {
         operation: operationType,
         entityId,
       },
     });
+  }
+
+  private async executeMemberMutation<T>(
+    chatId: string,
+    method: 'post' | 'delete',
+    operation: () => Promise<T>,
+    options: MaxApiRequestOptions,
+    finalGuard: (() => Promise<void>) | undefined,
+    onDispatchAttempt: () => void,
+  ): Promise<T> {
+    const quotaState: { error?: unknown } = {};
+    return this.executeMutation(
+      chatId,
+      () =>
+        this.mutationExecutionScope.run(
+          {
+            chatId,
+            purpose: 'moderate_member',
+            guardCode: MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+            method,
+            path: `/chats/${chatId}/members`,
+            requestOptions: this.normalizeReadRequestOptions(options),
+            quotaState,
+            finalGuard,
+            onDispatchAttempt,
+          },
+          operation,
+        ),
+      options,
+      { deferRateLimitReservation: true, deferredQuotaState: quotaState },
+    );
   }
 
   private normalizeReadRequestOptions(options: MaxApiRequestOptions | MaxApiTrafficClass): {
@@ -6825,6 +6915,63 @@ export class MaxClientService implements OnModuleDestroy {
         action.ignoreFailureMetricStatuses,
       ),
     };
+  }
+
+  private async assertChatMutationExecutionProof(
+    chatId: string,
+    botId: string,
+    purpose: MaxExecutionPurpose,
+    requestOptions: MaxApiRequestOptions = {},
+  ): Promise<MaxExecutionRouteProof | null> {
+    const link = this.maxBotLinkService;
+    if (
+      chatId.startsWith('user:') ||
+      isPrivateDirectChatId(chatId) ||
+      this.botRegistry.getPublisherBotDescriptor?.().id === botId
+    )
+      return null;
+    if (!link || typeof link.getFreshChatBotExecutionProof !== 'function') return null;
+    const maxAgeMs = purpose === 'send_message' ? 15 * 60_000 : 5 * 60_000;
+    let proof = await link.getFreshChatBotExecutionProof({ chatId, botId, purpose, maxAgeMs });
+    if (!proof) {
+      const checkedAt = new Date();
+      let access: MaxChatMemberAccess;
+      try {
+        access = await this.getCurrentChatMemberAccess(chatId, {
+          botId,
+          bypassCache: true,
+          trafficClass: requestOptions.trafficClass ?? 'critical',
+          sourceTag: 'action_executor_preflight',
+          timeoutMs: requestOptions.timeoutMs,
+        });
+      } catch (error: unknown) {
+        const status = this.extractStatusCode(error);
+        if (status !== 403 && status !== 404) throw error;
+        // FLAG: A rejected own-member lookup precedes the mutation. Its definite access
+        // denial can refresh survivor routing; timeout/500 must not enter this branch.
+        throw Object.assign(
+          new Error('MAX action executor access proof rejected', { cause: error }),
+          {
+            code: 'max_action_executor_proof_rejected',
+            response: (error as { response?: unknown }).response,
+          },
+        );
+      }
+      await link.recordBotAccessProbe({
+        chatId,
+        botId,
+        access,
+        checkedAt,
+        source: 'action_executor_preflight',
+      });
+      proof = await link.getFreshChatBotExecutionProof({ chatId, botId, purpose, maxAgeMs });
+    }
+    if (!proof) {
+      throw Object.assign(new Error('MAX action executor has no current capability proof'), {
+        code: 'max_action_executor_proof_rejected',
+      });
+    }
+    return proof;
   }
 
   private buildAutoDeleteDispatchOptions(
@@ -6967,14 +7114,11 @@ export class MaxClientService implements OnModuleDestroy {
           'send',
           action.chatId,
           async () => {
-            await this.runPreDispatchMutationGuard(
-              beforeMutation,
-              MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
-            );
             await preparePublication();
             return sendRequest();
           },
           mutationOptions,
+          beforeMutation,
         );
       } catch (error: unknown) {
         if (isAmbiguousMaxSendError(error)) {
@@ -7016,10 +7160,6 @@ export class MaxClientService implements OnModuleDestroy {
           }
 
           dispatchToken = claim.dispatchToken;
-          await this.runPreDispatchMutationGuard(
-            beforeMutation,
-            MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
-          );
           const response = await sendRequest();
           const remoteMessageId = this.extractMessageIdFromSendResponse(response);
           if (!remoteMessageId) {
@@ -7040,6 +7180,7 @@ export class MaxClientService implements OnModuleDestroy {
           };
         },
         mutationOptions,
+        beforeMutation,
       );
     } catch (error: unknown) {
       if (!dispatchToken) {
@@ -7191,14 +7332,10 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<void> {
     let memberMutationAttempted = false;
     try {
-      await this.executeMutation(
+      await this.executeMemberMutation(
         action.chatId,
+        'delete',
         async () => {
-          await this.runPreDispatchMutationGuard(
-            options.beforeMutation,
-            MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
-          );
-          memberMutationAttempted = true;
           const response = await this.request('delete', `/chats/${action.chatId}/members`, {
             params: {
               user_id: action.userId,
@@ -7209,12 +7346,19 @@ export class MaxClientService implements OnModuleDestroy {
           this.assertSuccessfulMemberMutationResponse(response);
         },
         mutationOptions,
+        options.beforeMutation,
+        () => {
+          memberMutationAttempted = true;
+        },
       );
     } catch (error: unknown) {
       const dispatchedError = memberMutationAttempted
         ? markMaxMemberMutationAttempted(error)
         : error;
-      if (this.isAmbiguousQueuedMutationTransportError(dispatchedError)) {
+      if (
+        memberMutationAttempted &&
+        this.isAmbiguousQueuedMutationTransportError(dispatchedError)
+      ) {
         throw this.createAmbiguousQueuedMutationError(
           `Ambiguous MAX ${action.actionType} transport failure for chat ${action.chatId} user ${action.userId}: ${this.extractErrorMessage(dispatchedError) || 'no HTTP status'}`,
           dispatchedError,
@@ -7790,7 +7934,10 @@ export class MaxClientService implements OnModuleDestroy {
 
   private async runWithMessageKeyboardEditLock<T>(
     messageId: string,
-    operation: (assertOwnership: () => Promise<void>) => Promise<T>,
+    operation: (
+      assertOwnership: () => Promise<void>,
+      assertCurrentOwnership: () => void,
+    ) => Promise<T>,
   ): Promise<T> {
     const normalizedMessageId = messageId.trim();
     if (!normalizedMessageId) {
@@ -7802,8 +7949,10 @@ export class MaxClientService implements OnModuleDestroy {
     const lockToken = randomUUID();
     const deadlineMs = Date.now() + MAX_MESSAGE_EDIT_LOCK_WAIT_MS;
     let acquired = false;
+    let ownershipDeadlineAtMs = 0;
 
     while (!acquired) {
+      const checkedAtMs = Date.now();
       const result = await this.limiterRedis.eval(
         MAX_MESSAGE_EDIT_LOCK_ACQUIRE_SCRIPT,
         1,
@@ -7813,6 +7962,7 @@ export class MaxClientService implements OnModuleDestroy {
       );
       acquired = Array.isArray(result) && Number(result[0]) === 1;
       if (acquired) {
+        ownershipDeadlineAtMs = checkedAtMs + MAX_MESSAGE_EDIT_LOCK_TTL_MS;
         break;
       }
       const remainingMs = deadlineMs - Date.now();
@@ -7827,12 +7977,21 @@ export class MaxClientService implements OnModuleDestroy {
     let renewalChain = Promise.resolve();
     const lostOwnershipError = () =>
       new Error('Lost ownership of the MAX message keyboard edit lock');
+    const assertCurrentOwnership = () => {
+      // FLAG: The feature permit is the last awaited guard. Local renewal loss or
+      // the conservative Redis lease deadline must still veto PUT synchronously.
+      if (!lockActive || ownershipLost || Date.now() >= ownershipDeadlineAtMs) {
+        ownershipLost = true;
+        throw lostOwnershipError();
+      }
+    };
     const renewOwnership = (): Promise<void> => {
       const attempt = renewalChain.then(async () => {
         if (!lockActive || ownershipLost) {
           throw lostOwnershipError();
         }
         try {
+          const checkedAtMs = Date.now();
           const result = await this.limiterRedis.eval(
             MAX_MESSAGE_EDIT_LOCK_RENEW_SCRIPT,
             1,
@@ -7844,6 +8003,7 @@ export class MaxClientService implements OnModuleDestroy {
             ownershipLost = true;
             throw lostOwnershipError();
           }
+          ownershipDeadlineAtMs = checkedAtMs + MAX_MESSAGE_EDIT_LOCK_TTL_MS;
         } catch (error: unknown) {
           ownershipLost = true;
           throw error;
@@ -7887,7 +8047,7 @@ export class MaxClientService implements OnModuleDestroy {
     this.pendingTimeouts.add(renewal);
 
     try {
-      return await operation(assertOwnership);
+      return await operation(assertOwnership, assertCurrentOwnership);
     } finally {
       lockActive = false;
       clearInterval(renewal);
@@ -8178,21 +8338,69 @@ export class MaxClientService implements OnModuleDestroy {
     config: Record<string, unknown> = {},
   ): Promise<T> {
     const bot = this.getCurrentBot();
+    const scope = this.mutationExecutionScope.getStore();
+    if (scope && method === scope.method && path === scope.path) {
+      // FLAG: Reserve the unchanged quota once at this exact HTTP mutation, after remote
+      // preparation. Recheck the SQL route epoch after waits, then grant the feature permit last.
+      await this.runPreDispatchMutationGuard(async () => {
+        const proof = await this.assertChatMutationExecutionProof(
+          scope.chatId,
+          bot.id,
+          scope.purpose,
+          scope.requestOptions,
+        );
+        try {
+          await this.reserveRateLimitSlot(
+            bot.id,
+            scope.chatId,
+            scope.requestOptions.trafficClass ?? 'critical',
+            scope.requestOptions.sourceTag,
+            scope.requestOptions.timeoutMs,
+            scope.messageMutation,
+          );
+        } catch (error: unknown) {
+          scope.quotaState.error = error;
+          throw error;
+        }
+        if (
+          proof &&
+          !(await this.maxBotLinkService!.verifyChatExecutionProof({
+            chatId: scope.chatId,
+            ...proof,
+            purpose: scope.purpose,
+            maxAgeMs: scope.purpose === 'send_message' ? 15 * 60_000 : 5 * 60_000,
+          }))
+        ) {
+          throw Object.assign(new Error('MAX action executor proof changed during quota wait'), {
+            code: 'max_action_executor_proof_rejected',
+          });
+        }
+        await scope.finalGuard?.();
+      }, scope.guardCode);
+      scope.onDispatchAttempt?.();
+    }
     const url = `${this.baseUrl}${path}`;
-    const response = await firstValueFrom(
-      this.httpService.request<T>({
-        method,
-        url,
-        ...config,
-        headers: {
-          Authorization: bot.token,
-          ...(config.headers as Record<string, string> | undefined),
-        },
-      }),
-    );
-    this.assertSuccessfulMutationResponse(method, response.status, response.data);
-
-    return response.data;
+    try {
+      const response = await firstValueFrom(
+        this.httpService.request<T>({
+          method,
+          url,
+          ...config,
+          headers: {
+            Authorization: bot.token,
+            ...(config.headers as Record<string, string> | undefined),
+          },
+        }),
+      );
+      this.assertSuccessfulMutationResponse(method, response.status, response.data);
+      return response.data;
+    } catch (error: unknown) {
+      // FLAG: Only this exact POST passed every guard and reached HTTP. Unknown send
+      // outcomes must retain that fact through raw helpers and queued dispatch alike.
+      throw scope?.purpose === 'send_message' && method === scope.method && path === scope.path
+        ? markMaxMessageSendAttempted(error)
+        : error;
+    }
   }
 
   private async requestAbsolute<T = unknown>(

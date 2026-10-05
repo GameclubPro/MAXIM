@@ -646,6 +646,7 @@ describe('ChatContextCacheService', () => {
     resolveBotId: jest.fn().mockResolvedValue('777000_bot'),
     getContextOrDefaultBotId: jest.fn().mockReturnValue('777000_bot'),
     rememberChatBotBinding: jest.fn(),
+    forgetChatBotBinding: jest.fn(),
   };
 
   beforeEach(() => {
@@ -1234,10 +1235,14 @@ describe('ChatContextCacheService', () => {
       config as never,
       maxBotLinkService as never,
     );
+    const readerBotLinks = {
+      ...maxBotLinkService,
+      forgetChatBotBinding: jest.fn(),
+    };
     const reader = new ChatContextCacheService(
       prismaReader as never,
       config as never,
-      maxBotLinkService as never,
+      readerBotLinks as never,
     );
 
     await invalidator.onModuleInit();
@@ -1250,6 +1255,8 @@ describe('ChatContextCacheService', () => {
       }),
     });
     await invalidator.invalidate(chatId);
+    expect(readerBotLinks.forgetChatBotBinding).toHaveBeenCalledTimes(1);
+    expect(readerBotLinks.forgetChatBotBinding).toHaveBeenCalledWith(chatId);
     await expect(reader.getChatContext(chatId, 'Chat title')).resolves.toMatchObject({
       chatId,
       settings: expect.objectContaining({

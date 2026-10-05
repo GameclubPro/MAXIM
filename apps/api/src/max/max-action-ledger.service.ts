@@ -1,3 +1,7 @@
+import {
+  isMaxMutationOutcomeAmbiguous,
+  wasMaxMessageSendAttempted,
+} from './max-mutation-outcome.util';
 import { Injectable } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +14,11 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { buildMaxActionNoExecutableRouteMessage } from './max-action-dispatch-error';
 import { buildNightModeNoticeIdempotencyKey } from './max-action-idempotency.util';
-import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from './max-action-pre-dispatch-guard';
+import {
+  MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  wasMaxPreDispatchGuardRejected,
+} from './max-action-pre-dispatch-guard';
 import type { MaxActionJob, MaxActionType } from './max-client.service';
 import { parseMaxFutureNightStickyRouteProbe } from './max-send-route-sticky-probe';
 import {
@@ -1065,8 +1073,13 @@ export class MaxActionLedgerService {
       return;
     }
     const autoDeleteVerification = this.readAutoDeleteVerificationDiagnostic(job, error);
+    const sendPreDispatchFailure = this.isProvenSendPreDispatchFailure(job, error);
     const ambiguous = this.isAmbiguousFailure(job, error);
-    const intrinsicallyTerminal = !ambiguous && this.isIntrinsicallyTerminalFailure(job, error);
+    const intrinsicallyTerminal =
+      !ambiguous &&
+      !sendPreDispatchFailure &&
+      !this.isProvenMemberPreDispatchFailure(job, error) &&
+      this.isIntrinsicallyTerminalFailure(job, error);
     const terminal =
       ambiguous ||
       intrinsicallyTerminal ||
@@ -1087,7 +1100,8 @@ export class MaxActionLedgerService {
       completedAt: terminal ? new Date() : null,
       // FLAG: The nested presence-check status is not the DELETE result. Persisting its 404 would
       // make the ledger watchdog terminalize an otherwise retryable verification failure.
-      lastStatusCode: autoDeleteVerification ? null : this.extractStatusCode(error),
+      lastStatusCode:
+        autoDeleteVerification || sendPreDispatchFailure ? null : this.extractStatusCode(error),
       lastErrorCode: autoDeleteVerification
         ? buildMaxSendAutoDeleteVerificationLedgerErrorCode(autoDeleteVerification)
         : this.extractPersistedFailureErrorCode(job, error),
@@ -1621,7 +1635,7 @@ export class MaxActionLedgerService {
   private isAmbiguousFailure(job: MaxActionJob, error: unknown): boolean {
     const statusCode = this.extractStatusCode(error);
     return (
-      this.extractErrorMessage(error).includes('ambiguous max') ||
+      isMaxMutationOutcomeAmbiguous(error, true) ||
       (this.isCrashFencedMemberAction(job.actionType) &&
         wasMaxMemberMutationAttempted(error) &&
         statusCode !== null &&
@@ -1794,6 +1808,16 @@ export class MaxActionLedgerService {
   }
 
   private extractPersistedFailureErrorCode(job: MaxActionJob, error: unknown): string | null {
+    // FLAG: A certified SEND guard failure precedes POST /messages. Preserve nested MAX
+    // lookup errors for routing, but store only the stable, unattempted retry evidence.
+    if (this.isProvenSendPreDispatchFailure(job, error)) {
+      return MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE;
+    }
+    // FLAG: A final route/feature guard has proved this member mutation was not attempted.
+    // Persist that fact instead of a nested lookup code so crash-fenced retries stay safe.
+    if (this.isProvenMemberPreDispatchFailure(job, error)) {
+      return MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE;
+    }
     if (this.isCrashFencedMemberAction(job.actionType) && this.extractStatusCode(error) === 429) {
       return 'max_api_external_rate_limit';
     }
@@ -1825,6 +1849,23 @@ export class MaxActionLedgerService {
     return job.actionType === 'KICK_MEMBER'
       ? MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.KICK_FAILED
       : MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.BAN_FAILED;
+  }
+
+  private isProvenMemberPreDispatchFailure(job: MaxActionJob, error: unknown): boolean {
+    return (
+      this.isCrashFencedMemberAction(job.actionType) &&
+      wasMaxPreDispatchGuardRejected(error) &&
+      !wasMaxMemberMutationAttempted(error)
+    );
+  }
+
+  private isProvenSendPreDispatchFailure(job: MaxActionJob, error: unknown): boolean {
+    return (
+      job.actionType === 'SEND_MESSAGE' &&
+      wasMaxPreDispatchGuardRejected(error) &&
+      !wasMaxMessageSendAttempted(error) &&
+      !isMaxMutationOutcomeAmbiguous(error, true)
+    );
   }
 
   private readAutoDeleteVerificationDiagnostic(

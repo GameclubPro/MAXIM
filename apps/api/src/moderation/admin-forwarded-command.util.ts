@@ -59,6 +59,24 @@ export type ForwardedExtractionOptions = {
   skipPrivateDirectChats?: boolean;
 };
 
+export function recognizesAdminForwardedModerationCommand(
+  update: MaxUpdate,
+  settings: AdminForwardedCommandSettings,
+  superBanOnly = false,
+): boolean {
+  if (update.type !== 'message_created') return false;
+  try {
+    const parsed = parseAdminForwardedModerationCommand(
+      extractDirectIncomingMessageText(update),
+      settings,
+    );
+    return parsed !== null && (!superBanOnly || parsed.action === 'SUPER_BAN');
+  } catch {
+    // Recognized invalid commands still require one durable error notice.
+    return true;
+  }
+}
+
 export function parseAdminForwardedModerationCommand(
   text: string,
   settings?: AdminForwardedCommandSettings,

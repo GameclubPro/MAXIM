@@ -26,6 +26,7 @@ import {
 } from '../photo-duplicate/secure-photo-downloader';
 import { PhotoNativeUnavailableError } from '../photo-duplicate/photo-fingerprint';
 import { UnrecoverableError } from 'bullmq';
+import { WebhookPreparationDeferredError } from '../../common/webhook-preparation-deferred.error';
 
 function setup(config: Record<string, unknown> = {}) {
   const settings = { ...duplicateSettings(), chat: { entityType: 'CHAT', admins: [] } };
@@ -1278,4 +1279,142 @@ describe('bounded message duplicate media analysis', () => {
     await s.service.process(s.job('c', 200), s.lease);
     expect(s.enforcement.enqueue).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('media executor stage handoff', () => {
+  it.each([1, 4, 9, 13])(
+    'keeps canonical attribution and job identity with %s configured bots',
+    async (count) => {
+      const s = setup();
+      await s.service.process(s.job('handoff-baseline', -100), s.lease);
+      const job = s.job('handoff', 0);
+      const before = { ...job };
+      const row = s.rows.get('handoff') as { executionClaims?: { executionBotId: string }[] };
+      row.executionClaims = [{ executionBotId: 'executor-b' }];
+      let selected = 'executor-b';
+      const denied = Object.assign(new Error('qualification denied'), {
+        response: { status: 403 },
+      });
+      const readiness = {
+        ensureReady: jest.fn(async ({ force }: { force?: boolean }) => {
+          if (force) selected = count === 1 ? '' : 'executor-c';
+          return selected ? { botId: selected } : null;
+        }),
+      };
+      Object.assign(s.service, { executionReadiness: readiness });
+      s.history.observe.mockResolvedValue({
+        binding: { eventTimestampMs: job.eventTimestampMs },
+        hit: {},
+      } as never);
+      s.enforcement.enqueue
+        .mockRejectedValueOnce(denied)
+        .mockResolvedValue({ kind: 'intent_accepted', intentId: 'handoff-intent' });
+      await expect(s.service.process(job, s.lease)).rejects.toBeInstanceOf(
+        MessageDuplicateMediaDeferredError,
+      );
+      expect(readiness.ensureReady).toHaveBeenCalledWith(
+        expect.objectContaining({
+          force: true,
+          preferredBotId: 'executor-b',
+          purpose: 'delete_message',
+        }),
+      );
+      if (count === 1) {
+        await expect(s.service.process(job, s.lease)).rejects.toBeInstanceOf(
+          MessageDuplicateMediaDeferredError,
+        );
+        expect(s.enforcement.enqueue).toHaveBeenCalledTimes(1);
+      } else {
+        await expect(s.service.process(job, s.lease)).resolves.toBe('ENFORCEMENT_REQUESTED');
+        expect(s.enforcement.enqueue).toHaveBeenLastCalledWith(
+          expect.objectContaining({ botId: 'executor-c' }),
+        );
+      }
+      expect(job).toEqual(before);
+      expect(row.executionClaims).toEqual([{ executionBotId: 'executor-b' }]);
+    },
+  );
+
+  it.each([false, true])(
+    'preserves owned deferral and original deadline when readiness is unknown (forced: %s)',
+    async (force) => {
+      const s = setup();
+      if (force) await s.service.process(s.job('readiness-baseline', -100), s.lease);
+      const job = s.job('unknown-readiness', 0);
+      const originalDeadline = job.deadlineAtMs;
+      const readiness = {
+        ensureReady: jest.fn(async (params: { force?: boolean }) => {
+          if (Boolean(params.force) === force)
+            throw new WebhookPreparationDeferredError('access unknown', 30_000);
+          return { botId: 'executor-b' };
+        }),
+      };
+      Object.assign(s.service, { executionReadiness: readiness });
+      if (force) {
+        s.history.observe.mockResolvedValue({
+          binding: { eventTimestampMs: job.eventTimestampMs },
+          hit: {},
+        } as never);
+        s.enforcement.enqueue.mockRejectedValue(
+          Object.assign(new Error('qualification denied'), { response: { status: 403 } }),
+        );
+      }
+      await expect(s.service.process(job, s.lease)).rejects.toMatchObject({
+        name: 'MessageDuplicateMediaDeferredError',
+        reason: 'proof_budget',
+        retryAfterMs: 30_000,
+      });
+      expect(job.deadlineAtMs).toBe(originalDeadline);
+      expect(s.metrics.record.mock.calls.some(([key]) => key.startsWith('media.failure_'))).toBe(
+        false,
+      );
+    },
+  );
+
+  it('never hands off after a full business action begins', async () => {
+    const s = setup();
+    await s.service.process(s.job('action-baseline', -100), s.lease);
+    const job = s.job('action-denied', 0);
+    const readiness = { ensureReady: jest.fn(async () => ({ botId: 'executor-b' })) };
+    Object.assign(s.service, { executionReadiness: readiness });
+    s.history.observe.mockResolvedValue({
+      binding: { eventTimestampMs: job.eventTimestampMs },
+      hit: {},
+    } as never);
+    const denied = Object.assign(new Error('mutation denied after dispatch'), {
+      response: { status: 403 },
+    });
+    s.enforcement.enqueue.mockImplementation(async (params) => params.executeFullAction({}));
+    const execute = jest.fn(async () => {
+      throw denied;
+    });
+    await expect(s.service.process(job, s.lease, execute)).rejects.toBe(denied);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(readiness.ensureReady.mock.calls).toHaveLength(2);
+    expect(readiness.ensureReady).not.toHaveBeenCalledWith(
+      expect.objectContaining({ force: true }),
+    );
+  });
+
+  it.each([408, 500, 503])(
+    'does not convert a %s unknown read into peer failover',
+    async (status) => {
+      const s = setup();
+      await s.service.process(s.job('unknown-baseline', -100), s.lease);
+      const job = s.job('unknown', 0);
+      const readiness = { ensureReady: jest.fn(async () => ({ botId: 'executor-b' })) };
+      Object.assign(s.service, { executionReadiness: readiness });
+      s.history.observe.mockResolvedValue({
+        binding: { eventTimestampMs: job.eventTimestampMs },
+        hit: {},
+      } as never);
+      const error = Object.assign(new Error('not accessible'), { response: { status } });
+      s.enforcement.enqueue.mockRejectedValue(error);
+      await expect(s.service.process(job, s.lease)).rejects.toBe(error);
+      expect(readiness.ensureReady.mock.calls).toHaveLength(2);
+      expect(readiness.ensureReady).not.toHaveBeenCalledWith(
+        expect.objectContaining({ force: true }),
+      );
+    },
+  );
 });

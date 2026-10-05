@@ -31,6 +31,7 @@ import {
 export const MESSAGE_DUPLICATE_METRIC_COUNTERS = [
   'telemetry.buffer_limited',
   'telemetry.unavailable',
+  'telemetry.observations_lost',
   'policy.unavailable',
   'admission.off',
   'admission.schedule_closed',
@@ -176,13 +177,14 @@ export class MessageDuplicateMetricsService implements OnModuleDestroy {
 
   constructor(@Optional() private readonly redis?: RedisCounterService) {}
 
-  record(counter: MessageDuplicateMetricCounter): void {
+  record(counter: MessageDuplicateMetricCounter, count = 1): void {
     // FLAG: Only fixed labels and bounded numeric counts may reach diagnostics. Never accept
     // identifiers, content, hashes, URLs or free-form error messages as metric dimensions.
-    if (this.stopped || !ALLOWED_COUNTERS.has(counter)) return;
+    if (this.stopped || !ALLOWED_COUNTERS.has(counter) || !Number.isSafeInteger(count) || count < 1)
+      return;
     this.counters.set(
       counter,
-      Math.min(Number.MAX_SAFE_INTEGER, (this.counters.get(counter) ?? 0) + 1),
+      Math.min(Number.MAX_SAFE_INTEGER, (this.counters.get(counter) ?? 0) + count),
     );
     this.schedule();
   }
@@ -223,7 +225,11 @@ export class MessageDuplicateMetricsService implements OnModuleDestroy {
     const key = duplicateTelemetryKey(chatId, bucket);
     const entry = this.observations.get(key);
     if (!entry && this.observations.size >= MAX_PENDING_BUCKETS) {
+      void this.flushObservations();
+    }
+    if (!entry && this.observations.size >= MAX_PENDING_BUCKETS) {
       this.record('telemetry.buffer_limited');
+      this.record('telemetry.observations_lost');
       return;
     }
     const counters = entry ?? {};
@@ -236,6 +242,7 @@ export class MessageDuplicateMetricsService implements OnModuleDestroy {
       if (duplicateObservationIsVerified(outcome)) increment('verified');
     }
     this.observations.set(key, counters);
+    if (this.observations.size >= MAX_PENDING_BUCKETS) void this.flushObservations();
     this.schedule();
   }
 
@@ -341,21 +348,40 @@ export class MessageDuplicateMetricsService implements OnModuleDestroy {
     // create an unbounded offline queue; telemetry must never await on a moderation path.
     const batch = [...this.observations];
     for (const [key] of batch) this.observations.delete(key);
+    let lost = 0;
     try {
       let next = 0;
       const results = await Promise.allSettled(
         Array.from({ length: Math.min(MAX_TELEMETRY_WRITES, batch.length) }, async () => {
           while (!this.stopped && next < batch.length) {
             const [key, counters] = batch[next++]!;
-            await this.redis!.mergeDuplicateTelemetry(key, counters);
+            try {
+              const merged = await this.redis!.mergeDuplicateTelemetry(key, counters);
+              if (merged === false) lost += this.observationAttemptCount(counters);
+            } catch {
+              lost += this.observationAttemptCount(counters);
+            }
           }
         }),
       );
       if (results.some((result) => result.status === 'rejected'))
         this.record('telemetry.unavailable');
+      if (lost > 0) {
+        this.record('telemetry.unavailable');
+        this.record('telemetry.observations_lost', lost);
+      }
     } finally {
       this.telemetryInFlight = false;
-      if (!this.stopped && this.observations.size > 0) this.schedule();
+      if (!this.stopped && this.observations.size >= MAX_PENDING_BUCKETS) {
+        void this.flushObservations();
+      } else if (!this.stopped && this.observations.size > 0) this.schedule();
     }
+  }
+
+  private observationAttemptCount(counters: DuplicateTelemetryCounters): number {
+    return duplicateObservationOutcomeSchema.options.reduce(
+      (sum, outcome) => sum + (counters[outcome] ?? 0),
+      0,
+    );
   }
 }

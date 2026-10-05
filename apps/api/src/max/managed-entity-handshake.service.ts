@@ -2,7 +2,11 @@ import {
   buildManagedHandshakeConfirmationText,
   MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS,
 } from './managed-handshake-confirmation';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  GroupCommandAuthorityService,
+  type GroupCommandPermit,
+} from '../common/group-command-authority.service';
 import type { ManagedEntityType, MaxUpdate } from '@maxim/contracts';
 import { ChatEntityType, ManagedEntityHandshakeOutcomeStatus } from '../prisma/prisma-client';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
@@ -86,6 +90,7 @@ export class ManagedEntityHandshakeService {
     private readonly maxBotRegistry: MaxBotRegistryService,
     private readonly maxChatAdminRosterSyncService: MaxChatAdminRosterSyncService,
     private readonly handshakeOutcomes: ManagedEntityHandshakeOutcomeService,
+    @Optional() private readonly groupCommandAuthority?: GroupCommandAuthorityService,
   ) {}
 
   async handleWebhookUpdate(update: MaxUpdate): Promise<ManagedEntityHandshakeResult> {
@@ -259,7 +264,16 @@ export class ManagedEntityHandshakeService {
     rateLimitReserved = false,
     verifiedProbe?: HandshakeBotProbe,
   ): Promise<ManagedEntityHandshakeResult> {
-    if (!rateLimitReserved && !this.reserveRateLimitSlot(context)) {
+    const groupStart =
+      context.interaction === 'in_chat' && isManagedEntityHandshakeStartCommand(context.update);
+    const rateLimitAllowed =
+      rateLimitReserved ||
+      (groupStart
+        ? this.reserveRateLimitKey(
+            `group-start:${context.botId}:${this.buildRateLimitKey(context)}`,
+          )
+        : this.reserveRateLimitSlot(context));
+    if (!rateLimitAllowed) {
       await this.recordOutcome(
         context,
         ManagedEntityHandshakeOutcomeStatus.RATE_LIMITED,
@@ -270,9 +284,15 @@ export class ManagedEntityHandshakeService {
     }
 
     let checkingBotAccess = !verifiedProbe;
+    let commandPermit: GroupCommandPermit | null = null;
+    let legacyStart: 'fresh' | 'recovered' | 'hold' = 'fresh';
     try {
-      const probeStartedAt = verifiedProbe?.startedAt ?? new Date();
-      const botAccess =
+      if (groupStart) {
+        if (!this.groupCommandAuthority) throw new Error('Group Start authority is unavailable');
+        await this.groupCommandAuthority.observeStart(context.update);
+      }
+      let probeStartedAt = verifiedProbe?.startedAt ?? new Date();
+      let botAccess =
         verifiedProbe?.access ??
         (await this.maxClient.getCurrentChatMemberAccess(context.chatId, {
           botId: context.botId,
@@ -309,6 +329,7 @@ export class ManagedEntityHandshakeService {
       }
 
       if (!context.senderId) {
+        if (groupStart) return 'denied';
         const bootstrapped = await this.accessWriter.bootstrapChat(
           this.toWriteContext(context),
           botAccess,
@@ -339,7 +360,7 @@ export class ManagedEntityHandshakeService {
           ignoreFailureMetricStatuses: [403, 404],
         },
       );
-      const userAccess = accessByUser.get(context.senderId) ?? null;
+      let userAccess = accessByUser.get(context.senderId) ?? null;
       if (!userAccess || !this.isAdminOrOwner(userAccess)) {
         await this.recordOutcome(
           context,
@@ -352,6 +373,64 @@ export class ManagedEntityHandshakeService {
         return 'denied';
       }
 
+      if (groupStart) {
+        if (!this.groupCommandAuthority) throw new Error('Group Start authority is unavailable');
+        commandPermit = await this.groupCommandAuthority.claim(context.update, context.botId);
+        if (!commandPermit) return 'rate_limited';
+        if (!commandPermit.result)
+          legacyStart = await this.groupCommandAuthority.inspectLegacyStart(
+            commandPermit,
+            this.maxBotRegistry.getAllBots().map((bot) => bot.id),
+          );
+        if (commandPermit.executionBotId !== context.botId) {
+          context = {
+            ...context,
+            botId: commandPermit.executionBotId,
+            replyBotId: commandPermit.executionBotId,
+          };
+          probeStartedAt = new Date();
+          botAccess = await this.maxClient.getCurrentChatMemberAccess(context.chatId, {
+            botId: context.botId,
+            bypassCache: true,
+            timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
+            trafficClass: 'interactive',
+            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
+          });
+          userAccess =
+            (
+              await this.maxClient.getChatMembersAccess(context.chatId, [context.senderId!], {
+                botId: context.botId,
+                bypassCache: true,
+                timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
+                trafficClass: 'interactive',
+                sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
+              })
+            ).get(context.senderId!) ?? null;
+          if (
+            !this.isAdminOrOwner(botAccess) ||
+            !this.hasRequiredBotReadAccess(context, botAccess) ||
+            !userAccess ||
+            !this.isAdminOrOwner(userAccess)
+          ) {
+            await this.groupCommandAuthority.release(commandPermit);
+            return 'denied';
+          }
+        }
+        await this.groupCommandAuthority.assertOwned(commandPermit);
+        if (commandPermit.result) {
+          await this.groupCommandAuthority.complete(commandPermit);
+          return 'rate_limited';
+        }
+        if (legacyStart === 'hold') {
+          await this.groupCommandAuthority.prepareResult(commandPermit, {
+            action: 'START_HOLD',
+            noticeText: null,
+            applied: false,
+          });
+          await this.groupCommandAuthority.complete(commandPermit);
+          return 'rate_limited';
+        }
+      }
       const writeContext = this.toWriteContextWithSender(context);
       const wasConnected = await this.accessWriter.persistGrantedAccess(
         writeContext,
@@ -360,6 +439,7 @@ export class ManagedEntityHandshakeService {
         probeStartedAt,
       );
       if (wasConnected === null) {
+        if (commandPermit) await this.groupCommandAuthority!.release(commandPermit);
         return this.handleSupersededProbe(context);
       }
       await this.refreshRosterSync(context);
@@ -370,8 +450,17 @@ export class ManagedEntityHandshakeService {
           this.buildSuccessReply(context, wasConnected),
           this.buildSettingsButton(context),
         );
-      } else if (isManagedEntityHandshakeStartCommand(context.update)) {
-        await this.replyToStartCommandSafely(context, wasConnected);
+      } else if (isManagedEntityHandshakeStartCommand(context.update) && legacyStart === 'fresh') {
+        await this.replyToStartCommandSafely(context, wasConnected, commandPermit!);
+      }
+      if (commandPermit) {
+        if (!commandPermit.result)
+          await this.groupCommandAuthority!.prepareResult(commandPermit, {
+            action: legacyStart === 'fresh' ? 'START' : 'START_RECOVERED',
+            noticeText: null,
+            applied: true,
+          });
+        await this.groupCommandAuthority!.complete(commandPermit);
       }
       await this.recordSuccessfulOutcomeSafely(
         context,
@@ -382,6 +471,7 @@ export class ManagedEntityHandshakeService {
       this.logOutcome(context, wasConnected ? 'already_connected' : 'connected');
       return wasConnected ? 'already_connected' : 'connected';
     } catch (error: unknown) {
+      if (commandPermit) await this.groupCommandAuthority!.release(commandPermit);
       if (checkingBotAccess && this.isBotAccessDeniedError(error)) {
         await this.recordOutcome(
           context,
@@ -574,7 +664,9 @@ export class ManagedEntityHandshakeService {
   }
 
   private releaseRateLimitSlot(context: ManagedEntityHandshakeContext): void {
-    this.releaseRateLimitKey(this.buildRateLimitKey(context));
+    const key = this.buildRateLimitKey(context);
+    this.releaseRateLimitKey(key);
+    this.releaseRateLimitKey(`group-start:${context.botId}:${key}`);
   }
 
   private releaseForwardedRateLimitSlot(context: ManagedEntityHandshakeContext): void {
@@ -820,10 +912,12 @@ export class ManagedEntityHandshakeService {
   private async replyToStartCommandSafely(
     context: ManagedEntityHandshakeContext,
     wasConnected: boolean,
+    permit: GroupCommandPermit,
   ): Promise<void> {
     // FLAG: Only an explicit Start command with confirmed bot AND actor admin access
     // may publish a connection confirmation. Failures and passive onboarding stay silent.
     try {
+      await this.groupCommandAuthority!.assertOwned(permit);
       await this.maxClient.sendMessage(
         context.chatId,
         this.buildSuccessReply(context, wasConnected),
@@ -831,7 +925,10 @@ export class ManagedEntityHandshakeService {
         {
           immediate: true,
           botId: context.botId,
-          idempotencyKey: `managed-handshake-start:${context.chatId}:${context.update.updateId}`,
+          candidateBotIds: [permit.executionBotId],
+          routing: { purpose: 'send_message', requiredBotId: permit.executionBotId },
+          beforeImmediateSendMutation: () => this.groupCommandAuthority!.assertOwned(permit),
+          idempotencyKey: `managed-handshake-start:${permit.semanticKey}`,
           autoDeleteDelayMs: MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS,
           trafficClass: 'interactive',
           actionHealthLane: 'background',

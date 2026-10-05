@@ -475,6 +475,10 @@ model Chat {
   catalogKind    ChatCatalogKind  @default(UNKNOWN) @map("catalog_kind")
   routingState   ChatRoutingState @default(NO_ELIGIBLE_BOT) @map("routing_state")
   routingVersion Int              @default(0) @map("routing_version")
+  chatControlOrderAt DateTime?     @map("chat_control_order_at")
+  chatControlOrderKey String?      @map("chat_control_order_key")
+  rulesOrderAt DateTime?           @map("rules_order_at")
+  rulesOrderKey String?            @map("rules_order_key")
   createdAt      DateTime         @default(now()) @map("created_at")
   updatedAt      DateTime         @updatedAt @map("updated_at")
 
@@ -2416,6 +2420,8 @@ model ModerationDeleteIntentReason {
 model WebhookEvent {
   id                         String        @id @default(cuid())
   dedupKey                   String        @unique @map("dedup_key")
+  semanticKey                String?       @map("semantic_key")
+  executionDeadlineAt        DateTime?     @map("execution_deadline_at")
   botId                      String?       @map("bot_id")
   queueName                  String?       @map("queue_name")
   status                     WebhookStatus @default(RECEIVED)
@@ -2433,6 +2439,7 @@ model WebhookEvent {
   executionClaims WebhookExecutionClaim[]
 
   @@index([status, createdAt])
+  @@index([status, createdAt, id], map: "webhook_events_status_created_at_id_idx")
   @@index([botId, status, createdAt], map: "webhook_events_bot_id_status_created_at_idx")
   @@index([status, nextEnqueueAt, createdAt])
   @@map("webhook_events")
@@ -2442,7 +2449,9 @@ model WebhookExecutionClaim {
   id             String                      @id @default(cuid())
   kind           String                      @default("EXECUTION")
   semanticKey    String                      @map("semantic_key")
-  webhookEventId String                      @map("webhook_event_id")
+  commandResult  Json?                       @map("command_result")
+  businessStartedAt DateTime?                @map("business_started_at")
+  webhookEventId String?                     @map("webhook_event_id")
   executionBotId String?                     @map("execution_bot_id")
   enforced       Boolean                     @default(false)
   status         WebhookExecutionClaimStatus @default(PENDING)
@@ -2453,7 +2462,7 @@ model WebhookExecutionClaim {
   createdAt      DateTime                    @default(now()) @map("created_at")
   updatedAt      DateTime                    @updatedAt @map("updated_at")
 
-  webhookEvent WebhookEvent @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
+  webhookEvent WebhookEvent? @relation(fields: [webhookEventId], references: [id], onDelete: SetNull)
 
   @@unique([kind, semanticKey], map: "webhook_execution_claims_kind_semantic_key")
   @@index([webhookEventId, kind], map: "webhook_execution_claims_event_kind_idx")

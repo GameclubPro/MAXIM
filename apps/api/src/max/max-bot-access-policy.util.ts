@@ -5,6 +5,7 @@ export type MembershipAccessSnapshot = {
   isAdmin: boolean;
   isOwner: boolean;
   permissions: string[];
+  permissionsKnown?: boolean;
 };
 
 export type PrimaryBotMembershipCandidate = {
@@ -12,12 +13,13 @@ export type PrimaryBotMembershipCandidate = {
   role: ChatBotMembershipRole;
   status: ChatBotMembershipStatus;
   permissionsSnapshot?: unknown;
+  botAccessExpiresAt?: Date | null;
 };
 
 const PRIMARY_UNKNOWN_ACCESS_SCORE = 50_000;
 const PRIMARY_ADMIN_BASE_SCORE = 100_000;
 const PRIMARY_OWNER_BASE_SCORE = 1_000_000;
-export const DEFAULT_PRIMARY_ACCESS_SNAPSHOT_FRESH_MS = 24 * 60 * 60 * 1_000;
+export const DEFAULT_PRIMARY_ACCESS_SNAPSHOT_FRESH_MS = 15 * 60 * 1_000;
 const PRIMARY_PERMISSION_WEIGHTS = new Map<string, number>([
   ['add_remove_members', 20_000],
   ['can_add_remove_members', 20_000],
@@ -91,6 +93,7 @@ export function normalizeMembershipAccessSnapshot(value: unknown): MembershipAcc
     isAdmin: row.isAdmin === true,
     isOwner: row.isOwner === true,
     permissions,
+    permissionsKnown: row.permissionsKnown === true,
   };
 }
 
@@ -189,7 +192,10 @@ export function resolvePreferredPrimaryBotId(
       membership,
       index,
       hasSnapshot: snapshot !== null,
-      hasFreshSnapshot: isFreshMembershipAccessSnapshot(snapshot, options),
+      hasFreshSnapshot:
+        isFreshMembershipAccessSnapshot(snapshot, options) &&
+        (membership.botAccessExpiresAt == null ||
+          membership.botAccessExpiresAt.getTime() > (options.nowMs ?? Date.now())),
       score: calculatePrimaryAccessScore(snapshot),
     };
   });
@@ -197,6 +203,16 @@ export function resolvePreferredPrimaryBotId(
   if (!scored.some((candidate) => candidate.hasSnapshot)) {
     return fallback;
   }
+
+  // FLAG: Keep a healthy owner stable. A stronger standby's score is a replacement preference,
+  // not a reason to move ownership on every probe/webhook arrival.
+  const healthyCurrent = scored.find(
+    (candidate) =>
+      candidate.membership.botId === currentPrimaryBotId &&
+      candidate.hasFreshSnapshot &&
+      candidate.score >= PRIMARY_ADMIN_BASE_SCORE,
+  );
+  if (healthyCurrent) return healthyCurrent.membership.botId;
 
   const selectable =
     options.requireFreshSnapshotForPromotion === true
@@ -233,7 +249,7 @@ export function resolvePreferredPrimaryBotId(
       return leftIsPrimary ? -1 : 1;
     }
 
-    return left.index - right.index;
+    return left.membership.botId.localeCompare(right.membership.botId);
   });
 
   return selectable[0]?.membership.botId ?? fallback;

@@ -18,6 +18,7 @@ import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { AdminService } from './admin.service';
+import { createGroupCommandPermitFixture } from '../common/group-command-authority.spec-support';
 import { resolveAdminManagedEntitiesRefreshJitterMs } from './admin-managed-entities-refresh.queue';
 import {
   selectLogsDashboardMembershipSummary,
@@ -30523,8 +30524,8 @@ describe('AdminService chat rules', () => {
         text: '1. Без спама.\n2. Без ссылок.',
       },
       'group_command',
+      createGroupCommandPermitFixture({ executionBotId: 'rules-author-bot' }),
     );
-
     expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('mid-rules-source-1');
     expect(maxClient.getMessageTextAsMarkdown).toHaveBeenCalledWith('mid-rules-source-1');
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
@@ -30663,8 +30664,8 @@ describe('AdminService chat rules', () => {
         text: 'MAX Docs',
       },
       'group_command',
+      createGroupCommandPermitFixture(),
     );
-
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
       data: expect.objectContaining({

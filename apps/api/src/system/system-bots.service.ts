@@ -59,6 +59,7 @@ import {
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
   ChatCatalogKind,
+  ChatRoutingState,
   ChatEntityType,
   Prisma,
 } from '../prisma/prisma-client';
@@ -143,6 +144,8 @@ type RoutePreviewChatRow = {
   catalogKind: ChatCatalogKind;
   primaryBotId: string | null;
   botId: string | null;
+  routingVersion?: number;
+  routingState?: ChatRoutingState;
   botMemberships: RoutePreviewMembershipRow[];
 };
 
@@ -207,6 +210,7 @@ type SystemBotRouteAuditSummaryBuilder = {
 
 @Injectable()
 export class SystemBotsService {
+  private readonly routeAuditsInFlight = new Map<string, Promise<SystemBotRouteAudit>>();
   constructor(
     private readonly prisma: PrismaService,
     private readonly botRegistry: MaxBotRegistryService,
@@ -662,11 +666,18 @@ export class SystemBotsService {
       }
 
       const suggestedPrimaryBotId =
-        resolvePreferredPrimaryBotId(null, alternateMemberships, {
-          requireFreshSnapshotForPromotion: true,
-          nowMs,
-          freshMs: snapshotFreshMs,
-        }) ??
+        resolvePreferredPrimaryBotId(
+          null,
+          alternateMemberships.map((membership) => ({
+            ...membership,
+            botAccessExpiresAt: this.normalizeRouteDate(membership.botAccessExpiresAt),
+          })),
+          {
+            requireFreshSnapshotForPromotion: true,
+            nowMs,
+            freshMs: snapshotFreshMs,
+          },
+        ) ??
         alternateMemberships[0]?.botId ??
         null;
       addIssue({
@@ -703,6 +714,19 @@ export class SystemBotsService {
   }
 
   async getRouteAudit(options: SystemBotRouteAuditOptions = {}): Promise<SystemBotRouteAudit> {
+    const key = JSON.stringify([options.sampleLimit ?? null, options.includeCovered !== false]);
+    const existing = this.routeAuditsInFlight.get(key);
+    if (existing) return existing;
+    const pending = this.computeRouteAudit(options).finally(() => {
+      if (this.routeAuditsInFlight.get(key) === pending) this.routeAuditsInFlight.delete(key);
+    });
+    this.routeAuditsInFlight.set(key, pending);
+    return pending;
+  }
+
+  private async computeRouteAudit(
+    options: SystemBotRouteAuditOptions,
+  ): Promise<SystemBotRouteAudit> {
     const generatedAt = new Date().toISOString();
     const nowMs = Date.parse(generatedAt);
     const sampleLimit =
@@ -710,8 +734,7 @@ export class SystemBotsService {
         ? Math.max(1, Math.trunc(options.sampleLimit))
         : BOT_ROUTE_AUDIT_DEFAULT_SAMPLE_LIMIT;
     const includeCovered = options.includeCovered !== false;
-    const chats = await this.readAuditChats();
-    const summary = this.createRouteAuditSummary(chats.length);
+    const summary = this.createRouteAuditSummary(0);
     const problemSamples: SystemBotRouteAuditSample[] = [];
     const coveredSamples: SystemBotRouteAuditSample[] = [];
     const pushSample = (sample: SystemBotRouteAuditSample) => {
@@ -727,45 +750,59 @@ export class SystemBotsService {
       }
     };
 
-    for (const chat of chats) {
-      const routes = await Promise.all(
-        BOT_ROUTE_PREVIEW_MODERATION_ACTIONS.map((action) =>
-          this.botLinkService.resolveBotRoutes({
-            purpose: 'moderation_action',
-            chatId: chat.id,
+    for await (const page of this.readAuditChatPages()) {
+      summary.auditedEntities += page.length;
+      for (const chat of page) {
+        const routes = BOT_ROUTE_PREVIEW_MODERATION_ACTIONS.map((action) =>
+          this.botLinkService.resolveModerationActionBotRouteFromSnapshot(
+            {
+              chatId: chat.id,
+              entityType: chat.entityType,
+              primaryBotId: chat.primaryBotId,
+              botId: chat.botId,
+              routingVersion: chat.routingVersion ?? 0,
+              routingState: chat.routingState ?? ChatRoutingState.READY,
+              botMemberships: chat.botMemberships.map((membership) => ({
+                ...membership,
+                permissionsSnapshot: membership.permissionsSnapshot as Prisma.JsonValue,
+                capabilities: membership.capabilities as Prisma.JsonValue,
+                botAccessCheckedAt: this.normalizeRouteDate(membership.botAccessCheckedAt),
+                botAccessExpiresAt: this.normalizeRouteDate(membership.botAccessExpiresAt),
+              })),
+            },
             action,
-            fallbackToPrimary: true,
-          }),
-        ),
-      );
-
-      for (const [index, route] of routes.entries()) {
-        const action = BOT_ROUTE_PREVIEW_MODERATION_ACTIONS[index] ?? 'delete_message';
-        const actionSummary = summary.byAction.find((entry) => entry.action === action);
-        if (!actionSummary) {
-          continue;
-        }
-
-        const activeExecutableBotIds = this.readActiveExecutableBotIds(chat);
-        const classification = this.classifyRouteAudit(route, activeExecutableBotIds);
-        const severity = this.resolveRouteAuditSeverity(classification);
-        this.incrementRouteAuditSummary(summary, actionSummary, classification, severity);
-
-        if (classification === 'selected-primary') {
-          continue;
-        }
-
-        pushSample(
-          this.mapRouteAuditSample({
-            chat,
-            route,
-            action,
-            activeExecutableBotIds,
-            classification,
-            severity,
-            nowMs,
-          }),
+            true,
+          ),
         );
+
+        for (const [index, route] of routes.entries()) {
+          const action = BOT_ROUTE_PREVIEW_MODERATION_ACTIONS[index] ?? 'delete_message';
+          const actionSummary = summary.byAction.find((entry) => entry.action === action);
+          if (!actionSummary) {
+            continue;
+          }
+
+          const activeExecutableBotIds = this.readActiveExecutableBotIds(chat);
+          const classification = this.classifyRouteAudit(route, activeExecutableBotIds);
+          const severity = this.resolveRouteAuditSeverity(classification);
+          this.incrementRouteAuditSummary(summary, actionSummary, classification, severity);
+
+          if (classification === 'selected-primary') {
+            continue;
+          }
+
+          pushSample(
+            this.mapRouteAuditSample({
+              chat,
+              route,
+              action,
+              activeExecutableBotIds,
+              classification,
+              severity,
+              nowMs,
+            }),
+          );
+        }
       }
     }
 
@@ -1008,9 +1045,28 @@ export class SystemBotsService {
     };
   }
 
-  private async readAuditChats(): Promise<AuditChatRow[]> {
+  private normalizeRouteDate(value: Date | string | null): Date | null {
+    if (!value) return null;
+    const parsed = value instanceof Date ? value : new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+  }
+
+  private async *readAuditChatPages(): AsyncGenerator<AuditChatRow[]> {
+    let after: string | undefined;
+    for (;;) {
+      const page = await this.readAuditChats({ after, take: 500 });
+      if (!page.length) return;
+      yield page;
+      if (page.length < 500) return;
+      after = page.at(-1)!.id;
+    }
+  }
+
+  private async readAuditChats(page?: { after?: string; take: number }): Promise<AuditChatRow[]> {
     return this.prisma.chat.findMany({
+      ...(page ? { take: page.take, orderBy: { id: 'asc' as const } } : {}),
       where: {
+        ...(page?.after ? { id: { gt: page.after } } : {}),
         OR: [
           { catalogKind: ChatCatalogKind.MANAGED },
           {
@@ -1026,6 +1082,8 @@ export class SystemBotsService {
         catalogKind: true,
         primaryBotId: true,
         botId: true,
+        routingState: true,
+        routingVersion: true,
         botMemberships: {
           select: {
             botId: true,

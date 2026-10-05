@@ -153,70 +153,43 @@ describe('WebhookRoutingService', () => {
     jest.clearAllMocks();
   });
 
-  it('counts a 10k-chat assignment pool once per shard selection instead of once per shard', () => {
-    const { service } = createService();
-    const now = Date.now();
-    const internals = service as unknown as {
-      chatAssignments: Map<
-        string,
-        {
-          queueName: (typeof DEFAULT_WEBHOOK_QUEUE_NAMES)[number];
-          assignedAtMs: number;
-          expiresAtMs: number;
-        }
-      >;
-      selectLeastPressuredQueue: (
-        chatId: string,
-        snapshot: unknown,
-        currentQueue: string,
-        now: number,
-      ) => string;
-    };
-    for (let index = 0; index < 10_000; index++) {
-      internals.chatAssignments.set(`chat-${index}`, {
-        queueName: DEFAULT_WEBHOOK_QUEUE_NAMES[index % DEFAULT_WEBHOOK_QUEUE_NAMES.length]!,
-        assignedAtMs: now - 1_000,
-        expiresAtMs: index % 3 === 0 ? now : now + 30_000,
-      });
-    }
-    const scans = jest.spyOn(internals.chatAssignments, 'values');
-    const chosen = internals.selectLeastPressuredQueue(
-      'cost-budget-chat',
-      {
-        webhookDefaultShards: buildDefaultShardSnapshot(),
-        webhookDefaultWorkerGroups: buildWorkerGroupSnapshot(),
-      },
-      'moderation-default-7',
-      now,
-    );
-    expect(DEFAULT_WEBHOOK_QUEUE_NAMES).toContain(chosen);
-    expect(scans).toHaveBeenCalledTimes(1);
-  });
+  it.each([10_000, 12_000, 30_000])(
+    'keeps %i chat routes without full-cache scans',
+    (catalogSize) => {
+      const { service } = createService();
+      const now = Date.now();
+      const state = service as any;
+      for (let index = 0; index < catalogSize; index++)
+        state.storeAssignment(`chat-${index}`, DEFAULT_WEBHOOK_QUEUE_NAMES[index % 16], now);
+      const scans = jest.spyOn(state.chatAssignments, 'values');
+      const counts = state.countActiveAssignments(now);
+      expect([...counts.byQueue.values()].reduce((sum: number, n: any) => sum + n, 0)).toBe(
+        catalogSize,
+      );
+      expect(scans).not.toHaveBeenCalled();
+      expect(state.expiryIndex.size).toBe(catalogSize);
+      state.countActiveAssignments(now + 120_000);
+      expect(state.chatAssignments.size).toBe(catalogSize - 256);
+      while (state.chatAssignments.size) state.countActiveAssignments(now + 120_000);
+      expect([...counts.byQueue.values()].every((n) => n === 0)).toBe(true);
+      expect(state.expiryIndex.size).toBe(0);
+    },
+  );
 
-  it('caps cached assignments and restores persisted outstanding work after eviction', async () => {
-    const { service, prisma, queueMetricsService } = createService();
-    const now = Date.now();
-    const assignments = (
-      service as unknown as {
-        chatAssignments: Map<
-          string,
-          { queueName: string; assignedAtMs: number; expiresAtMs: number }
-        >;
-      }
-    ).chatAssignments;
-    for (let index = 0; index < 10_000; index++)
-      assignments.set(`chat:cached-${index}`, {
-        queueName: 'moderation-default-7',
-        assignedAtMs: now,
-        expiresAtMs: now + 30_000,
-      });
+  it('caps cached assignments and restores outstanding SQL work after eviction', async () => {
+    const { service, prisma, queueMetricsService } = createService({
+      config: { WEBHOOK_ROUTING_CHAT_ASSIGNMENT_CAPACITY: 1000 },
+    });
+    const state = service as any;
+    for (let index = 0; index < 1000; index++)
+      state.storeAssignment(`chat:cached-${index}`, 'moderation-default-7', Date.now());
     prisma.$queryRaw.mockResolvedValue([{ has_pending: true, queue_name: 'moderation-default-2' }]);
     await service.resolveQueueName('new-event', {
       type: 'message_created',
       message: { chatId: 'new-chat' },
     });
-    expect(assignments.size).toBe(10_000);
-    expect(assignments.has('chat:cached-0')).toBe(false);
+    expect(state.chatAssignments.size).toBe(1000);
+    expect(state.chatAssignments.has('chat:cached-0')).toBe(false);
     await expect(
       service.resolveQueueName('evicted-event', {
         type: 'message_created',
@@ -227,46 +200,20 @@ describe('WebhookRoutingService', () => {
     expect(queueMetricsService.getWebhookDefaultShardSnapshot).not.toHaveBeenCalled();
   });
 
-  it('preserves queue and worker occupancy while excluding expired assignments', () => {
+  it('accounts for refresh, reassignment and expiry without retaining stale heap entries', () => {
     const { service } = createService();
+    const state = service as any;
     const now = Date.now();
-    const internals = service as unknown as {
-      chatAssignments: Map<
-        string,
-        { queueName: string; assignedAtMs: number; expiresAtMs: number }
-      >;
-      countActiveAssignments: (now: number) => {
-        byQueue: Map<string, number>;
-        byWorker: Map<string, number>;
-      };
-    };
-    for (const [index, queueName] of [
-      'moderation-default-0',
-      'moderation-default-0',
-      'moderation-default-4',
-      'moderation-default-2',
-    ].entries()) {
-      internals.chatAssignments.set(`active-${index}`, {
-        queueName,
-        assignedAtMs: now,
-        expiresAtMs: now + 1,
-      });
-    }
-    internals.chatAssignments.set('expired', {
-      queueName: 'moderation-default-2',
-      assignedAtMs: now - 1_000,
-      expiresAtMs: now,
-    });
-    const counts = internals.countActiveAssignments(now);
-    expect(Object.fromEntries(counts.byQueue)).toEqual({
-      'moderation-default-0': 2,
-      'moderation-default-4': 1,
-      'moderation-default-2': 1,
-    });
-    expect(Object.fromEntries(counts.byWorker)).toEqual({
-      'api-moderation': 3,
-      'api-moderation-realtime-c': 1,
-    });
+    state.storeAssignment('a', 'moderation-default-0', now);
+    state.storeAssignment('b', 'moderation-default-4', now);
+    for (let index = 0; index < 10_000; index++)
+      state.storeAssignment('a', 'moderation-default-2', now + index);
+    expect(state.expiryIndex.size).toBe(2);
+    expect(state.countActiveAssignments(now).byWorker.get('api-moderation')).toBe(1);
+    expect(state.countActiveAssignments(now).byWorker.get('api-moderation-realtime-c')).toBe(1);
+    state.countActiveAssignments(now + 200_000);
+    expect(state.chatAssignments.size).toBe(0);
+    expect([...state.assignmentCounts.byWorker.values()].every((n) => n === 0)).toBe(true);
   });
 
   it('routes critical and background update types without touching adaptive chat routing', async () => {

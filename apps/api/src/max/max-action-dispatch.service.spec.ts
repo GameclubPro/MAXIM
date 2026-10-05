@@ -60,6 +60,117 @@ function createSendAutoDeleteJob(): MaxActionJob {
 }
 
 describe('MaxActionDispatchService', () => {
+  it.each([1, 4, 9, 3, 6, 12])(
+    'rechecks a definite capability rejection across %i bots and chooses the last eligible reserve',
+    async (count) => {
+      const botIds = Array.from({ length: count }, (_, i) => `bot-${i + 1}`);
+      let denied = false;
+      const rejection = createMaxApiError(403, 'insufficient rights');
+      const maxClient = {
+        executeActionJob: jest.fn(async (job: MaxActionJob) => {
+          if (job.botId === botIds[0]) throw rejection;
+        }),
+        getCurrentChatMemberAccess: jest
+          .fn()
+          .mockResolvedValue({ isAdmin: false, isOwner: false, permissions: [] }),
+      };
+      const link = {
+        getExecutableBotById: jest.fn((id: string) => ({ id })),
+        isBotAccessSnapshotStale: jest.fn().mockResolvedValue(false),
+        recordBotAccessProbe: jest.fn(async () => {
+          denied = true;
+          return true;
+        }),
+        resolveBotRoute: jest.fn(async () => ({
+          purpose: 'moderation_action',
+          action: 'moderate_member',
+          chatId: 'chat-1',
+          primaryBotId: botIds[0],
+          botId: denied ? botIds.at(-1) : botIds[0],
+          candidateBotIds: denied ? (count > 1 ? [botIds.at(-1)] : []) : botIds,
+          reason: 'primary_confirmed',
+          routingVersion: 1,
+        })),
+      };
+      const service = new MaxActionDispatchService(
+        maxClient as never,
+        undefined,
+        undefined,
+        link as never,
+        { get: (key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined) } as never,
+      );
+      const task: MaxActionJob = {
+        actionType: 'BAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        botId: botIds[0],
+        candidateBotIds: botIds,
+        routing: { purpose: 'moderation_action', action: 'moderate_member', routingVersion: 1 },
+        attempt: 1,
+        createdAt: new Date().toISOString(),
+        idempotencyKey: 'one-logical-ban',
+      };
+      if (count === 1) await expect(service.execute(task)).rejects.toBe(rejection);
+      else await expect(service.execute(task)).resolves.toBeUndefined();
+      expect(maxClient.executeActionJob).toHaveBeenCalledTimes(count === 1 ? 1 : 2);
+      if (count > 1)
+        expect(maxClient.executeActionJob).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            botId: botIds.at(-1),
+            idempotencyKey: 'one-logical-ban',
+          }),
+        );
+      expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['SEND_MESSAGE', 'BAN_MEMBER', 'KICK_MEMBER'] as const)(
+    'never dispatches a second %s after ambiguous access text',
+    async (actionType) => {
+      const error = createMaxApiError(500, 'not accessible: insufficient rights', 'chat.denied');
+      const client = { executeActionJob: jest.fn().mockRejectedValue(error) };
+      const accessLoss = {
+        recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({ reason: 'bot_denied' }),
+      };
+      const link = {
+        resolveBotRoute: jest.fn().mockResolvedValue({
+          purpose: actionType === 'SEND_MESSAGE' ? 'send_message' : 'moderation_action',
+          primaryBotId: 'bot-1',
+          botId: 'bot-1',
+          candidateBotIds: ['bot-1', 'bot-2'],
+          routingVersion: 1,
+        }),
+        getExecutableBotById: (id: string) => ({ id }),
+      };
+      const service = new MaxActionDispatchService(
+        client as never,
+        accessLoss as never,
+        undefined,
+        link as never,
+        { get: (key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined) } as never,
+      );
+      await expect(
+        service.execute({
+          actionType,
+          chatId: 'chat-1',
+          botId: 'bot-1',
+          userId: 'u',
+          text: 'notice',
+          candidateBotIds: ['bot-1', 'bot-2'],
+          routing:
+            actionType === 'SEND_MESSAGE'
+              ? { purpose: 'send_message' }
+              : { purpose: 'moderation_action', action: 'moderate_member' },
+          attempt: 1,
+          idempotencyKey: 'unknown-operation',
+          createdAt: new Date().toISOString(),
+        }),
+      ).rejects.toBe(error);
+      expect(client.executeActionJob).toHaveBeenCalledTimes(1);
+      expect(accessLoss.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
+    },
+  );
+
   afterEach(() => {
     jest.useRealTimers();
   });
@@ -1233,7 +1344,7 @@ describe('MaxActionDispatchService', () => {
     expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
   });
 
-  it('refreshes a routed send snapshot after 30 minutes and skips a bot that lost capability', async () => {
+  it('refreshes a routed send snapshot after 15 minutes and skips a bot that lost capability', async () => {
     const accessProbeStartedAt = new Date('2026-08-20T10:10:00.000Z');
     jest.useFakeTimers().setSystemTime(accessProbeStartedAt);
     const maxClient = {
@@ -1296,7 +1407,7 @@ describe('MaxActionDispatchService', () => {
     expect(maxBotLinkService.isBotAccessSnapshotStale).toHaveBeenNthCalledWith(1, {
       chatId: 'chat-1',
       botId: 'bot-1',
-      maxAgeMs: 30 * 60_000,
+      maxAgeMs: 15 * 60_000,
     });
     expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
       expect.objectContaining({

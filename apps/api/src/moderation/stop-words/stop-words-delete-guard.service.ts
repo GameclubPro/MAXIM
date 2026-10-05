@@ -50,11 +50,15 @@ export class StopWordsDeleteGuardService {
     messageId: string;
     subjectUserId: string | null;
     botId?: string;
+    ownedReasonsOnly?: boolean;
   }): Promise<'allowed' | 'absent' | 'not_applicable'> {
-    const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+    const allReasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: params.intentId },
       select: { ruleCode: true, metadata: true },
     });
+    const reasons = params.ownedReasonsOnly
+      ? allReasons.filter((reason) => STOP_WORDS_DELETE_RULE_CODES.has(reason.ruleCode))
+      : allReasons;
     // FLAG: This guard owns stop-list-only intents. Independently owned durable reasons keep
     // their existing dispatch guards and must not be cancelled by disabling the stop-list.
     if (

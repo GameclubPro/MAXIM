@@ -12,6 +12,7 @@ artifacts/vps-review/
 artifacts/commercial-audit/
 artifacts/commercial-ocr-private/
 apps/api/src/generated/prisma/
+apps/api/.migration-prepare/
 packages/contracts/src/**/*.js
 
 # Env

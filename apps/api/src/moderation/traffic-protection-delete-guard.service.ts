@@ -40,11 +40,16 @@ export class TrafficProtectionDeleteGuardService {
     messageId: string;
     subjectUserId: string | null;
     botId?: string;
-  }): Promise<'allowed' | 'absent' | 'not_applicable'> {
-    const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+    ownedReasonsOnly?: boolean;
+    includeDeadlinePermit?: boolean;
+  }): Promise<'allowed' | 'absent' | 'not_applicable' | { deadlineAtMs: number }> {
+    const allReasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: params.intentId },
       select: { ruleCode: true, metadata: true },
     });
+    const reasons = params.ownedReasonsOnly
+      ? allReasons.filter((reason) => TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(reason.ruleCode))
+      : allReasons;
     // FLAG: Independently authorized reasons retain their own guards. Turning off
     // slow mode must not suppress a separate stop-word or other durable deletion.
     if (
@@ -108,7 +113,15 @@ export class TrafficProtectionDeleteGuardService {
     )
       this.reject();
     const finalSettings = await this.load(params.chatId, userId);
-    if (!matching.some((reason) => this.matchesPolicy(reason, finalSettings))) this.reject();
+    const stillMatching = matching.filter((reason) => this.matchesPolicy(reason, finalSettings));
+    if (!stillMatching.length) this.reject();
+    if (params.includeDeadlinePermit) {
+      return {
+        deadlineAtMs: Math.max(
+          ...stillMatching.map((reason) => record(reason.metadata).trafficDeadlineAtMs as number),
+        ),
+      };
+    }
     return 'allowed';
   }
 

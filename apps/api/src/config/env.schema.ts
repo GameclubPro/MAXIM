@@ -293,6 +293,12 @@ const envSchema = z.object({
   ENQUEUE_CONCURRENCY: z.coerce.number().int().positive().default(32),
   ENQUEUE_MAX_ATTEMPTS: z.coerce.number().int().positive().default(120),
   WEBHOOK_ROUTING_CHAT_ASSIGNMENT_TTL_SEC: z.coerce.number().int().positive().default(90),
+  WEBHOOK_ROUTING_CHAT_ASSIGNMENT_CAPACITY: z.coerce
+    .number()
+    .int()
+    .min(1000)
+    .max(1000000)
+    .default(50000),
   WEBHOOK_ROUTING_QUEUE_SNAPSHOT_MAX_AGE_MS: z.coerce.number().int().positive().default(1_000),
   WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_MIN_AGE_MS: z.coerce
     .number()

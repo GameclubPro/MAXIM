@@ -8,6 +8,7 @@ import {
   Prisma,
 } from '../prisma/prisma-client';
 import { MaxBotLinkService } from './max-bot-link.service';
+import { ModerationDeleteIntentAccessWakeService } from './moderation-delete-intent-access-wake.service';
 import { MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE } from './max-send-route-health';
 
 type MutableChat = {
@@ -979,6 +980,54 @@ describe('MaxBotLinkService', () => {
       }),
     );
     expect(fixture.nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
+  });
+
+  it('wakes pending deletion after identical expired capability renews, then skips a fresh renewal', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-expired-identical-delete-proof';
+    const botId = fixture.bots[0]!.id;
+    const checkedAt = new Date('2026-05-09T10:05:00.000Z');
+    const membership = createActiveMembership(chatId, botId, 0, {
+      botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+      botAccessCheckedAt: new Date('2026-05-09T09:40:00.000Z'),
+      botAccessExpiresAt: new Date('2026-05-09T10:00:00.000Z'),
+      permissionsSnapshot: {
+        checkedAt: '2026-05-09T09:40:00.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
+      },
+    });
+    fixture.memberships.push(membership);
+    const executeRaw = jest.fn(async () => {
+      expect(membership.botAccessCheckedAt).toEqual(checkedAt);
+      return 1;
+    });
+    const wake = new ModerationDeleteIntentAccessWakeService({ $executeRaw: executeRaw } as never);
+    fixture.moderationDeleteIntentAccessWake.wakeAfterCommittedProbe.mockImplementation((params) =>
+      wake.wakeAfterCommittedProbe(params),
+    );
+    const probe = {
+      chatId,
+      botId,
+      access: { isAdmin: true, isOwner: false, permissions: ['write'], permissionsKnown: true },
+      source: 'moderation_executor_readiness',
+      checkedAt,
+    };
+    await expect(fixture.service.recordBotAccessProbe(probe)).resolves.toBe(true);
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    jest.setSystemTime(new Date('2026-05-09T10:05:01.000Z'));
+    await expect(
+      fixture.service.recordBotAccessProbe({
+        ...probe,
+        checkedAt: new Date('2026-05-09T10:05:01.000Z'),
+      }),
+    ).resolves.toBe(true);
+    expect(fixture.moderationDeleteIntentAccessWake.wakeAfterCommittedProbe).toHaveBeenCalledTimes(
+      2,
+    );
+    expect(executeRaw).toHaveBeenCalledTimes(1);
   });
 
   it('reconciles night mode only after a fresh actionable access transition commits', async () => {
@@ -3123,7 +3172,7 @@ describe('MaxBotLinkService', () => {
     );
   });
 
-  it('treats the active bot with stronger permissions as primary in shared chats', async () => {
+  it('keeps the healthy shared owner despite a stronger receiving bot', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-rights', {
       id: 'chat-rights',
@@ -3142,6 +3191,7 @@ describe('MaxBotLinkService', () => {
           isAdmin: true,
           isOwner: false,
           permissions: ['read_all_messages'],
+          permissionsKnown: true,
         },
         createdAt: new Date('2026-05-09T10:00:00.000Z'),
         updatedAt: new Date('2026-05-09T10:00:00.000Z'),
@@ -3158,6 +3208,7 @@ describe('MaxBotLinkService', () => {
           isAdmin: true,
           isOwner: false,
           permissions: ['read_all_messages', 'delete_messages', 'add_remove_members'],
+          permissionsKnown: true,
         },
         createdAt: new Date('2026-05-09T10:00:01.000Z'),
         updatedAt: new Date('2026-05-09T10:00:01.000Z'),
@@ -3177,14 +3228,14 @@ describe('MaxBotLinkService', () => {
 
     expect(strongerBinding).toEqual(
       expect.objectContaining({
-        primaryBotId: 'id613002203036_4_bot',
-        shouldHandleGroupUpdate: true,
+        primaryBotId: 'id613002203036_bot',
+        shouldHandleGroupUpdate: false,
       }),
     );
     expect(weakerBinding).toEqual(
       expect.objectContaining({
-        primaryBotId: 'id613002203036_4_bot',
-        shouldHandleGroupUpdate: false,
+        primaryBotId: 'id613002203036_bot',
+        shouldHandleGroupUpdate: true,
       }),
     );
   });
@@ -3255,7 +3306,7 @@ describe('MaxBotLinkService', () => {
     );
   });
 
-  it('persists stronger bot permissions as the chat primary during reconciliation', async () => {
+  it('preserves a healthy primary when reconciliation sees a stronger standby', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-reconcile-rights', {
       id: 'chat-reconcile-rights',
@@ -3274,6 +3325,7 @@ describe('MaxBotLinkService', () => {
           isAdmin: true,
           isOwner: false,
           permissions: ['read_all_messages'],
+          permissionsKnown: true,
         },
         createdAt: new Date('2026-05-09T10:00:00.000Z'),
         updatedAt: new Date('2026-05-09T10:00:00.000Z'),
@@ -3290,6 +3342,7 @@ describe('MaxBotLinkService', () => {
           isAdmin: true,
           isOwner: false,
           permissions: ['read_all_messages', 'delete_messages', 'add_remove_members'],
+          permissionsKnown: true,
         },
         createdAt: new Date('2026-05-09T10:00:01.000Z'),
         updatedAt: new Date('2026-05-09T10:00:01.000Z'),
@@ -3300,26 +3353,26 @@ describe('MaxBotLinkService', () => {
 
     await expect(
       fixture.service.reconcileChatPrimaryByAccess({ chatId: 'chat-reconcile-rights' }),
-    ).resolves.toBe('id613002203036_4_bot');
+    ).resolves.toBe('id613002203036_bot');
 
     expect(fixture.chats.get('chat-reconcile-rights')).toEqual(
       expect.objectContaining({
-        botId: 'id613002203036_4_bot',
-        primaryBotId: 'id613002203036_4_bot',
+        botId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_bot',
       }),
     );
     expect(
       fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot'),
     ).toEqual(
       expect.objectContaining({
-        role: ChatBotMembershipRole.PRIMARY,
+        role: ChatBotMembershipRole.STANDBY,
       }),
     );
     expect(
       fixture.memberships.find((membership) => membership.botId === 'id613002203036_bot'),
     ).toEqual(
       expect.objectContaining({
-        role: ChatBotMembershipRole.STANDBY,
+        role: ChatBotMembershipRole.PRIMARY,
       }),
     );
   });

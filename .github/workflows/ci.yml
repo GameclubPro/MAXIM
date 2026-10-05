@@ -93,6 +93,7 @@ jobs:
           POSTGRES_DB: race_test
           POSTGRES_USER: maxim_ci
           POSTGRES_PASSWORD: maxim_ci
+          TZ: UTC
         ports:
           - 5432:5432
         options: >-
@@ -110,6 +111,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      TZ: UTC
       MAXIM_TEST_REDIS_URL: redis://127.0.0.1:6379
       DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
       CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
