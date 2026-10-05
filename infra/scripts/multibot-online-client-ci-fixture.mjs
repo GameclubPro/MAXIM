@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+import assert, { AssertionError } from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -37,7 +37,63 @@ export const MULTIBOT_PSQL_CLIENT_METADATA_SQL = `SELECT json_build_object(
   'parallel_maintenance_workers', current_setting('max_parallel_maintenance_workers')::integer,
   'parallel_query_workers', current_setting('max_parallel_workers_per_gather')::integer
 );`;
+const diagnosticStages = new Set([
+  'ADMISSION',
+  'IMMUTABLE_PREFIX',
+  'CANCEL_BEFORE_CONNECT',
+  'DEFAULT_SUPERVISOR',
+  'PSQL_CLIENT',
+  'OFFICIAL_RESOLVE',
+]);
+const immutablePrefixPhases = new Set([
+  'OBSERVER_WAIT',
+  'CLIENT_PREPARE',
+  'CLIENT_ATTEST',
+  'PRISMA_BACKEND_WAIT',
+  'PERMISSIONS',
+  'CLIENT_EXIT',
+  'PREFIX_VERIFICATION',
+]);
 let stage = 'ADMISSION';
+let phase = 'NONE';
+
+export class MultibotClientCiObservationTimeoutError extends Error {
+  constructor() {
+    super('MULTIBOT_CLIENT_CI_OBSERVATION_TIMEOUT');
+  }
+}
+
+function diagnosticErrorFamily(error) {
+  // FLAG: Read only own scalar error metadata; never invoke getters or serialize
+  // messages, stacks, command output, environment, SQL, source paths or client tags.
+  try {
+    if (error instanceof MultibotClientCiObservationTimeoutError) return 'OBSERVATION_TIMEOUT';
+    if (error instanceof AssertionError) return 'ASSERTION';
+    if (error instanceof SyntaxError) return 'FORMAT';
+    if (error === null || typeof error !== 'object') return 'UNKNOWN';
+    const code = Object.getOwnPropertyDescriptor(error, 'code')?.value;
+    const signal = Object.getOwnPropertyDescriptor(error, 'signal')?.value;
+    const killed = Object.getOwnPropertyDescriptor(error, 'killed')?.value;
+    if (code === 'ETIMEDOUT' || (killed === true && signal === 'SIGKILL')) return 'COMMAND_TIMEOUT';
+    if (['ENOENT', 'EACCES', 'EPERM'].includes(code)) return 'COMMAND_UNAVAILABLE';
+    if (Number.isInteger(code) && code > 0 && code <= 255) return 'COMMAND_FAILED';
+    return 'UNKNOWN';
+  } catch {
+    return 'UNKNOWN';
+  }
+}
+
+export function formatMultibotClientCiFailure(failureStage, failurePhase, error) {
+  const safeStage = diagnosticStages.has(failureStage) ? failureStage : 'UNKNOWN';
+  const safePhase =
+    safeStage === 'IMMUTABLE_PREFIX'
+      ? immutablePrefixPhases.has(failurePhase)
+        ? failurePhase
+        : 'UNKNOWN'
+      : 'NONE';
+  return `MULTIBOT_CLIENT_CI_FIXTURE_FAILED stage=${safeStage} phase=${safePhase} family=${diagnosticErrorFamily(error)}`;
+}
+
 const childResult = (child) =>
   new Promise((done) => {
     child.once('error', () => done({ error: true }));
@@ -165,7 +221,7 @@ async function drive(
       if (await condition()) return;
       await delay(100);
     }
-    throw new Error('MULTIBOT_CLIENT_CI_OBSERVATION_TIMEOUT');
+    throw new MultibotClientCiObservationTimeoutError();
   };
   const absent = async (tag) => {
     await until(
@@ -295,6 +351,7 @@ async function drive(
   const observerTag = `${goodTag}-observer`;
   try {
     stage = 'IMMUTABLE_PREFIX';
+    phase = 'OBSERVER_WAIT';
     barrier = spawn(
       'docker',
       [
@@ -326,9 +383,12 @@ async function drive(
           `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='${observerTag}' AND wait_event='PgSleep');`,
         )) === 't',
     );
+    phase = 'CLIENT_PREPARE';
     const launcher = await createMultibotOnlineClientLauncher(compose, { start: captureStart });
     await launcher.prepare(goodTag);
+    phase = 'CLIENT_ATTEST';
     await attest(goodTag, `${project}_default`);
+    phase = 'PRISMA_BACKEND_WAIT';
     mainChild = launcher.start(goodTag);
     mainResult = childResult(mainChild);
     await until(
@@ -337,11 +397,13 @@ async function drive(
           `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='${goodTag}' AND backend_type='client backend');`,
         )) === 't',
     );
+    phase = 'PERMISSIONS';
     const permissionsProbe = `const fs=require('node:fs'),assert=require('node:assert/strict');
 const p='/app/apps/api/.migration-prepare';const s=fs.statSync(p);assert.equal(process.getuid(),1000);assert.equal(process.getgid(),1000);assert.equal(s.uid,1000);assert.equal(s.gid,1000);assert.equal(s.mode&511,448);
 const mounts=fs.readFileSync('/proc/mounts','utf8').split('\\n');assert(mounts.some(l=>l.split(' ')[1]===p&&l.split(' ')[2]==='tmpfs'));assert(mounts.some(l=>l.split(' ')[1]==='/'&&l.split(' ')[3].split(',').includes('ro')));
 fs.writeFileSync(p+'/ci-write-probe','ok',{mode:384});assert.equal(fs.readFileSync(p+'/ci-write-probe','utf8'),'ok');fs.unlinkSync(p+'/ci-write-probe');`;
     await docker(['exec', goodTag, 'node', '-e', permissionsProbe]);
+    phase = 'CLIENT_EXIT';
     await pg(
       `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() AND application_name='${observerTag}';`,
     );
@@ -350,6 +412,7 @@ fs.writeFileSync(p+'/ci-write-probe','ok',{mode:384});assert.equal(fs.readFileSy
     assert.deepEqual(await mainResult, { code: 0, signal: null });
     mainChild = undefined;
     await absent(goodTag);
+    phase = 'PREFIX_VERIFICATION';
     const indexesBefore = await attestPrefix();
     console.log(
       'PASS immutable full source prefix, real tagged Prisma session, readonly root and writable bounded tmpfs, three valid indexes, cutoff absent',
@@ -551,8 +614,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     else if (mode === 'run' && rest.length === 4)
       await drive(directory, project, imageOrRoot, ownerOrImage, ...rest);
     else throw new Error('MULTIBOT_CLIENT_CI_ARGUMENTS_INVALID');
-  } catch {
-    console.error(`MULTIBOT_CLIENT_CI_FIXTURE_FAILED stage=${stage}`);
+  } catch (error) {
+    console.error(formatMultibotClientCiFailure(stage, phase, error));
     process.exitCode = 1;
   }
 }

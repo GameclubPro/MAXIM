@@ -158,3 +158,75 @@ test('API image CI runs bounded migration client verification before image publi
   assert(smokePosition < dockerLane.indexOf('name: Package immutable production image'));
   assert.match(readFileSync(smoke, 'utf8'), /timeout --kill-after=8s 180s/u);
 });
+
+test('CI readiness rejects Unix-only bootstrap, missing SQL proof and failed authenticated probes', () => {
+  const source = readFileSync(smoke, 'utf8');
+  const start = source.indexOf('ready=0\n');
+  const finish = source.indexOf('[[ "$ready" -eq 1 ]] || exit 1', start);
+  assert(start >= 0 && finish > start);
+  const readiness = source.slice(start, finish + '[[ "$ready" -eq 1 ]] || exit 1'.length);
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-online-client-readiness-'));
+  try {
+    const binary = resolve(directory, 'docker');
+    const counter = resolve(directory, 'attempts');
+    const argumentsPath = resolve(directory, 'arguments');
+    writeFileSync(
+      binary,
+      `#!/usr/bin/env bash
+set -euo pipefail
+attempt=0
+[[ ! -f "$MAXIM_CI_READINESS_COUNTER" ]] || read -r attempt < "$MAXIM_CI_READINESS_COUNTER"
+attempt=$((attempt + 1))
+printf '%s\\n' "$attempt" > "$MAXIM_CI_READINESS_COUNTER"
+printf '%s\\n' "$@" > "$MAXIM_CI_READINESS_ARGUMENTS"
+if [[ "$MAXIM_CI_READINESS_MODE" == failed ]]; then
+  printf '1\\n'
+  exit 1
+fi
+if [[ "$attempt" -eq 1 ]]; then
+  # The bootstrap server accepts Unix readiness while TCP is still unavailable.
+  if [[ "$MAXIM_CI_READINESS_MODE" == bootstrap && "$*" == *'-h postgres'* ]]; then
+    exit 1
+  fi
+  # Exit zero without SQL output does not prove authenticated target readiness.
+  exit 0
+fi
+printf '1\\n'
+`,
+    );
+    chmodSync(binary, 0o755);
+    const sleep = resolve(directory, 'sleep');
+    writeFileSync(sleep, '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(sleep, 0o755);
+    for (const mode of ['bootstrap', 'empty', 'failed']) {
+      rmSync(counter, { force: true });
+      const result = spawnSync(
+        'bash',
+        [
+          '-c',
+          `set -euo pipefail\ncompose=(--env-file /private/ci.env -p multibot_ci_fixture)\n${readiness}`,
+        ],
+        {
+          encoding: 'utf8',
+          timeout: 5000,
+          env: {
+            ...process.env,
+            PATH: `${directory}:${process.env.PATH}`,
+            MAXIM_CI_READINESS_COUNTER: counter,
+            MAXIM_CI_READINESS_ARGUMENTS: argumentsPath,
+            MAXIM_CI_READINESS_MODE: mode,
+          },
+        },
+      );
+      assert.equal(result.status, mode === 'failed' ? 1 : 0);
+      assert.equal(Number(readFileSync(counter, 'utf8').trim()), mode === 'failed' ? 30 : 2);
+      const argumentsSeen = readFileSync(argumentsPath, 'utf8');
+      assert.match(argumentsSeen, /PGPASSWORD="\$POSTGRES_PASSWORD" psql -h postgres/u);
+      assert.match(argumentsSeen, /-X -v ON_ERROR_STOP=1 -U maxim -d maxim -Atq -c "SELECT 1"/u);
+      assert.doesNotMatch(argumentsSeen, /pg_isready/u);
+      assert.equal(result.stdout, '');
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

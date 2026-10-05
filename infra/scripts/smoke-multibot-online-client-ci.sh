@@ -82,7 +82,11 @@ attempt_owned=1
 docker compose "${compose[@]}" up -d --no-deps --no-build postgres >/dev/null
 ready=0
 for ((attempt=0; attempt<30; attempt++)); do
-  if docker compose "${compose[@]}" exec -T postgres pg_isready -U maxim -d maxim >/dev/null 2>&1; then
+  # FLAG: The official image initializes through a temporary Unix-only server.
+  # Prove SQL on the same authenticated service TCP route as the migration client.
+  if readiness_result="$(docker compose "${compose[@]}" exec -T postgres sh -c \
+    'PGPASSWORD="$POSTGRES_PASSWORD" psql -h postgres -X -v ON_ERROR_STOP=1 -U maxim -d maxim -Atq -c "SELECT 1"' \
+    2>/dev/null)" && [[ "$readiness_result" == 1 ]]; then
     ready=1
     break
   fi
