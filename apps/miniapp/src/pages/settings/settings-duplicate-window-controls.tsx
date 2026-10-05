@@ -1,4 +1,5 @@
 import type { ChatSettings } from '@maxim/contracts/settings';
+import { DUPLICATE_WINDOW_MAX_SEC } from '@maxim/contracts/settings';
 import { SegmentedControl } from '../../components/ui/segmented-control';
 import { TimeField } from '../../components/ui/time-field';
 import type { FieldErrors } from './settings-page-helpers';
@@ -107,7 +108,7 @@ export default function SettingsDuplicateWindowControls({
               <input
                 type="number"
                 min={1}
-                max={168}
+                max={DUPLICATE_WINDOW_MAX_SEC / 3_600}
                 step={1}
                 inputMode="numeric"
                 value={inputValue ?? String(windowHours)}
@@ -131,12 +132,14 @@ export default function SettingsDuplicateWindowControls({
               { value: '1', label: '1 ч' },
               { value: '12', label: '12 ч' },
               { value: '24', label: '1 день' },
-              { value: '72', label: '3 дня' },
-              { value: '168', label: '7 дней' },
+              { value: '48', label: '2 дня' },
             ]}
             onChange={onHoursChange}
             ariaLabel="Быстрый выбор периода проверки"
           />
+          <p className="field__hint duplicate-window__caption">
+            Максимум 48 часов. После выбранного периода повторная публикация разрешена.
+          </p>
           {fieldErrors.duplicateWarnWindowSec ? (
             <small id="duplicate-window-hours-error" className="field__hint">
               {fieldErrors.duplicateWarnWindowSec}

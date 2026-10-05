@@ -9,6 +9,7 @@ import {
   preBoundedPhoneSettingsDigests,
   prePhoneBoundarySettingsDigests,
   preSourceBoundPhoneSettingsDigests,
+  preV3HistorySettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 describe('safe text evidence compatibility', () => {
@@ -29,6 +30,9 @@ describe('safe text evidence compatibility', () => {
     expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
       preSourceBoundPhoneSettingsDigests[key],
     );
+    expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
+      preV3HistorySettingsDigests[key],
+    );
   });
   it.each(['STRICT', 'CUSTOM'] as const)('invalidates pre-Unicode %s evidence', (preset) => {
     const settings = duplicateSettings({
@@ -45,13 +49,19 @@ describe('safe text evidence compatibility', () => {
     }
   });
 
-  it.each(['STANDARD', 'CUSTOM'] as const)('preserves existing exact %s evidence', (preset) => {
-    expect(
-      messageDuplicateSettingsDigest(duplicateSettings({ duplicateDetectionPreset: preset })),
-    ).toBe('abacbcc44c2a0dd8f0177b92124fe503b37960065ca14a7bfba61c5663006780');
-  });
+  it.each(['STANDARD', 'CUSTOM'] as const)(
+    'revokes old exact %s grants while keeping preset-independent semantics',
+    (preset) => {
+      expect(
+        messageDuplicateSettingsDigest(duplicateSettings({ duplicateDetectionPreset: preset })),
+      ).toBe(messageDuplicateSettingsDigest(duplicateSettings()));
+      expect(messageDuplicateSettingsDigest(duplicateSettings())).not.toBe(
+        preV3HistorySettingsDigests.STANDARD,
+      );
+    },
+  );
 
-  it('preserves CUSTOM link-only evidence without near or phone value matching', () => {
+  it('revokes old CUSTOM link-only evidence after the storage incarnation changes', () => {
     expect(
       messageDuplicateSettingsDigest(
         duplicateSettings({
@@ -59,11 +69,11 @@ describe('safe text evidence compatibility', () => {
           duplicateIgnoreLinksEnabled: true,
         }),
       ),
-    ).toBe('1cef59a480ea7d36decb8631c350c3ed9b176309604377c98f481dac824c2a93');
+    ).not.toBe('1cef59a480ea7d36decb8631c350c3ed9b176309604377c98f481dac824c2a93');
   });
 
   it.each(['STANDARD', 'STRICT', 'CUSTOM'] as const)(
-    'preserves IMAGE evidence with %s text settings',
+    'revokes old IMAGE grants while keeping independence of %s text settings',
     (preset) => {
       expect(
         exactImageSettingsDigest(
@@ -73,7 +83,10 @@ describe('safe text evidence compatibility', () => {
             duplicateIgnorePhonesEnabled: true,
           }),
         ),
-      ).toBe('8b9112c31be1ae76f2304014f60b97d49c0d20063b37db7ac43fd3e7a72eaaa4');
+      ).toBe(exactImageSettingsDigest(duplicateSettings()));
+      expect(exactImageSettingsDigest(duplicateSettings())).not.toBe(
+        preV3HistorySettingsDigests.IMAGE,
+      );
     },
   );
 });

@@ -4,14 +4,14 @@ import {
   resolveDuplicateFlowAllowedCount,
   resolveDuplicateFlowAllowedCountMax,
   resolveDuplicateIntervalWindowSec,
+  DUPLICATE_WINDOW_MIN_SEC,
+  DUPLICATE_WINDOW_MAX_SEC,
   type ChatSettings,
   type DuplicateFlowStageSettings,
   type DuplicateFlowThresholdSettings,
 } from '@maxim/contracts/settings';
 
 export const DUPLICATE_ALLOWED_COUNT_MIN = CONTRACT_DUPLICATE_ALLOWED_COUNT_MIN;
-const DUPLICATE_WINDOW_MIN_SEC = 3_600;
-const DUPLICATE_WINDOW_MAX_SEC = 604_800;
 
 type DuplicateFlowWindowSettings = Pick<
   ChatSettings,

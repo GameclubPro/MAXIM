@@ -25,6 +25,7 @@ import {
   preBoundedPhoneSettingsDigests,
   prePhoneBoundarySettingsDigests,
   preSourceBoundPhoneSettingsDigests,
+  preV3HistorySettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 function setup() {
@@ -207,6 +208,48 @@ describe('scheduled duplicate final action guard', () => {
 });
 
 describe('message duplicate final delete guard', () => {
+  it.each(['STANDARD', 'STRICT', 'CUSTOM_NEAR', 'CUSTOM_PHONE', 'IMAGE'] as const)(
+    'revokes a pre-v3 %s grant at qualification and both delete boundaries',
+    async (preset) => {
+      const s = setup();
+      Object.assign(s.settings, {
+        duplicateDetectionPreset: preset.startsWith('CUSTOM')
+          ? 'CUSTOM'
+          : preset === 'IMAGE'
+            ? 'STANDARD'
+            : preset,
+        duplicateNearMatchEnabled: preset === 'CUSTOM_NEAR',
+        duplicateIgnorePhonesEnabled: preset === 'CUSTOM_PHONE',
+      });
+      if (preset === 'IMAGE') {
+        Object.assign(s.binding, {
+          compareMode: 'IMAGE',
+          enforcementScope: 'full',
+          imageScope: 'SAME_AUTHOR',
+          hasPhotos: true,
+          mediaHashes: ['a'.repeat(64)],
+        });
+        s.policy.resolve.mockResolvedValue({
+          mode: 'full',
+          revision: 1,
+          effectiveAtMs: Date.now() - 10000,
+          expiresAtMs: Date.now() + 3600000,
+        });
+      }
+      s.binding.settingsDigest = preV3HistorySettingsDigests[preset];
+      await expect(
+        s.service.assertQualificationAuthority(s.params.chatId, s.binding),
+      ).rejects.toMatchObject({ code: 'message_duplicate_settings_changed' });
+      for (const authorityOnly of [false, true]) {
+        await expect(
+          s.service.assertIntentStillActionable({ ...s.params, authorityOnly }),
+        ).rejects.toMatchObject({ code: 'message_duplicate_settings_changed' });
+      }
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+      expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+      expect(s.history.qualify).not.toHaveBeenCalled();
+    },
+  );
   it.each([
     ['STRICT', { duplicateDetectionPreset: 'STRICT' }],
     ['CUSTOM_NEAR', { duplicateDetectionPreset: 'CUSTOM', duplicateNearMatchEnabled: true }],
@@ -221,6 +264,7 @@ describe('message duplicate final delete guard', () => {
         preBoundedPhoneSettingsDigests,
         prePhoneBoundarySettingsDigests,
         preSourceBoundPhoneSettingsDigests,
+        preV3HistorySettingsDigests,
       ]) {
         s.binding.settingsDigest = digests[key];
         await expect(

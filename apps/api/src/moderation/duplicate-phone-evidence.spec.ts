@@ -1,10 +1,73 @@
 import {
+  analyzeDuplicatePhoneNumbers,
   extractDuplicatePhoneNumbers,
+  stripAnalyzedDuplicatePhoneNumbers,
   stripDuplicatePhoneNumbers,
 } from './duplicate-phone-evidence';
 import { extractDetectedPhoneNumbers } from './rule-engine-message-limits.detector';
 
 describe('conservative phone evidence for duplicates', () => {
+  it.each([
+    `+79991234567${' '.repeat(65)}рублей`,
+    `+79991234567${'\u200b'.repeat(65)}@example.test`,
+    `+79991234567${')'.repeat(65)}рублей`,
+    `+79991234567${' '.repeat(40)}×${' '.repeat(40)}2`,
+    `$${'('.repeat(129)}+79991234567`,
+    `tel:${'\u200b'.repeat(129)}+79991234567`,
+    `@${'\u200b'.repeat(129)}+79991234567`,
+    `Модель ${'А'.repeat(140)} телефон: +79991234567`,
+    `Телефон: +79991234567 +44${' '.repeat(48)}2079460958000`,
+    'Выражение x – +79991234567',
+    'Телефон: +79991234567 – x',
+    '+79991234567: 1000',
+    'Телефон: +79991234567 : x',
+    `+79991234567:${' '.repeat(65)}рублей`,
+  ])('preserves evidence hidden beyond a bounded context in %s', (text) => {
+    expect(extractDuplicatePhoneNumbers(text)).toEqual([]);
+    expect(stripDuplicatePhoneNumbers(text)).toBe(text);
+  });
+
+  it.each(['\u00a0', '\u202f', '\u2010', '\u2011', '\u2012', '\u2013'])(
+    'accepts a finite labelled known-length phone with separator %j',
+    (separator) => {
+      const phone = `+7${separator}999${separator}123${separator}45${separator}67`;
+      expect(extractDuplicatePhoneNumbers(`Телефон: ${phone}`)).toEqual(['79991234567']);
+      expect(stripDuplicatePhoneNumbers(`Телефон: ${phone}`)).toBe('Телефон:  ');
+      expect(extractDuplicatePhoneNumbers(phone)).toEqual([]);
+      expect(extractDuplicatePhoneNumbers(`Модель телефона: ${phone}`)).toEqual([]);
+      expect(extractDuplicatePhoneNumbers(`Телефон: ${phone} рублей`)).toEqual([]);
+    },
+  );
+
+  it('reuses original URL and phone spans without joining unrelated numeric fragments', () => {
+    const text =
+      'Телефон: +79991234567. Значения +7999 https://example.test/\u200bOffer?id=1234567 1234567 пользователей';
+    const analysis = analyzeDuplicatePhoneNumbers(text);
+    expect(analysis.phoneNumbers).toEqual(['79991234567']);
+    expect(analysis.urlValues).toEqual(['https://example.test/Offer?id=1234567']);
+    expect(stripAnalyzedDuplicatePhoneNumbers(text, analysis)).toBe(
+      'Телефон:  . Значения +7999 https://example.test/\u200bOffer?id=1234567 1234567 пользователей',
+    );
+    expect(
+      stripAnalyzedDuplicatePhoneNumbers(text, analysis, { ignorePhones: true, ignoreLinks: true }),
+    ).toBe('Телефон:  . Значения +7999   1234567 пользователей');
+  });
+
+  it.each([
+    [false, false, 'Телефон:+79991234567 https://example.test/Offer'],
+    [true, false, 'Телефон:  https://example.test/Offer'],
+    [false, true, 'Телефон:+79991234567  '],
+    [true, true, 'Телефон:   '],
+  ])('independently ignores phones=%s and links=%s', (ignorePhones, ignoreLinks, expected) => {
+    const text = 'Телефон:+79991234567 https://example.test/Offer';
+    expect(
+      stripAnalyzedDuplicatePhoneNumbers(text, analyzeDuplicatePhoneNumbers(text), {
+        ignorePhones: ignorePhones as boolean,
+        ignoreLinks: ignoreLinks as boolean,
+      }),
+    ).toBe(expected);
+  });
+
   it.each([
     'Номер заказа 1234567890 для получения оборудования',
     'Артикул 9123456789 доступен для покупки',

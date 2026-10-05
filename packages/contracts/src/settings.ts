@@ -84,6 +84,9 @@ export {
 export {
   DUPLICATE_ALLOWED_COUNT_MIN,
   DUPLICATE_THRESHOLD_MAX,
+  DUPLICATE_WINDOW_MIN_SEC,
+  DUPLICATE_WINDOW_MAX_SEC,
+  DUPLICATE_WINDOW_SETTING_KEYS,
   buildDuplicateFlowThresholds,
   duplicateDetectionPresetSchema,
   duplicateCompareModeSchema,

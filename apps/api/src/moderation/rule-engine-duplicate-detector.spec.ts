@@ -1,5 +1,6 @@
 import type { ChatSettings } from '../prisma/prisma-client';
 import { normalizeForDetection } from './rule-engine-normalization';
+import * as urlText from '../common/url-text.util';
 import { adaptMaxMessageNavigationView } from './navigation/max-navigation-view.adapter';
 import { extractNavigationEvidence } from './navigation/navigation-evidence.extractor';
 import { extractClientClickableTextEvidence } from './navigation/client-clickable-text.extractor';
@@ -137,6 +138,122 @@ describe('RuleEngineDuplicateDetector', () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+  });
+
+  it('shares one original URL/phone analysis between STRICT content and near evidence', () => {
+    const ranges = jest.spyOn(urlText, 'getUrlTextRanges');
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const fingerprints = detector.buildFingerprints(
+      'Подробная инструкция для участников встречи доступна после регистрации. Телефон: +79991234567 https://example.test/offer',
+      buildSettings({ duplicateDetectionPreset: 'STRICT' }),
+      [],
+    );
+    expect(fingerprints.map((part) => part.type)).toEqual(['exact', 'content', 'near']);
+    expect(ranges).toHaveBeenCalledTimes(1);
+    expect(fingerprints.find((part) => part.type === 'content')?.value).not.toContain('7999');
+    expect(fingerprints.find((part) => part.type === 'near')?.value).not.toContain('7999');
+  });
+
+  it('reuses supplied STANDARD navigation evidence without parsing URL or phone values', () => {
+    const ranges = jest.spyOn(urlText, 'getUrlTextRanges');
+    const values = jest.spyOn(urlText, 'extractUrlsFromText');
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const fingerprints = detector.buildFingerprints(
+      'Подробная инструкция доступна по ссылке https://example.test/Offer',
+      buildSettings(),
+      [],
+    );
+    expect(fingerprints.map((part) => part.type)).toEqual(['exact']);
+    expect(ranges).not.toHaveBeenCalled();
+    expect(values).not.toHaveBeenCalled();
+  });
+
+  it.each(['STANDARD', 'STRICT', 'CUSTOM'] as const)(
+    'retains quantities and identifiers beyond context budgets in %s',
+    (preset) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({
+        duplicateDetectionPreset: preset,
+        duplicateIgnorePhonesEnabled: true,
+        duplicateNearMatchEnabled: true,
+      });
+      const prefix =
+        'Подробная информация об оборудовании доступна всем участникам после регистрации. ';
+      for (const shape of [
+        (phone: string) => `${phone}${' '.repeat(65)}рублей`,
+        (phone: string) => `${phone}${'\u200b'.repeat(65)}@example.test`,
+        (phone: string) => `$${'('.repeat(129)}${phone}`,
+        (phone: string) => `Модель ${'А'.repeat(140)} телефон: ${phone}`,
+        (phone: string) => `${phone}: 1000`,
+        (phone: string) => `${phone}:${' '.repeat(65)}рублей`,
+      ]) {
+        const first = detector.buildFingerprints(`${prefix}${shape('+79991234567')}`, settings, []);
+        const second = detector.buildFingerprints(
+          `${prefix}${shape('+79991234568')}`,
+          settings,
+          [],
+        );
+        expect(first.filter((part) => second.some((other) => part.value === other.value))).toEqual(
+          [],
+        );
+      }
+    },
+  );
+
+  it.each(['\u00a0', '\u202f', '\u2010', '\u2011', '\u2012', '\u2013'])(
+    'matches true rotated STRICT labelled phones with separator %j',
+    (separator) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({ duplicateDetectionPreset: 'STRICT' });
+      const text = (last: string) =>
+        `Подробная инструкция для участников встречи доступна после регистрации. Телефон: +7${separator}999${separator}123${separator}45${separator}${last}`;
+      const first = detector.buildFingerprints(text('67'), settings, []);
+      const second = detector.buildFingerprints(text('68'), settings, []);
+      expect(first.find((part) => part.type === 'content')?.value).toBe(
+        second.find((part) => part.type === 'content')?.value,
+      );
+      expect(first.find((part) => part.type === 'near')?.value).toBe(
+        second.find((part) => part.type === 'near')?.value,
+      );
+    },
+  );
+
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ])('preserves CUSTOM near values with links=%s and phones=%s', (links, phones) => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const settings = buildSettings({
+      duplicateDetectionPreset: 'CUSTOM',
+      duplicateIgnoreLinksEnabled: links,
+      duplicateIgnorePhonesEnabled: phones,
+      duplicateNearMatchEnabled: true,
+    });
+    const text = (phone: string, url: string) =>
+      `Подробная инструкция для участников встречи доступна после регистрации. Телефон:${phone} ${url}`;
+    const first = detector.buildFingerprints(
+      text('+79991234567', 'https://example.test/one'),
+      settings,
+      [],
+    );
+    const second = detector.buildFingerprints(
+      text('+79991234568', 'https://example.test/two'),
+      settings,
+      [],
+    );
+    expect(first.find((part) => part.type === 'near')?.value).toBeDefined();
+    expect(first.find((part) => part.type === 'near')?.value).not.toBe(
+      second.find((part) => part.type === 'near')?.value,
+    );
+    expect(first.some((part) => part.type === 'link')).toBe(links);
+    expect(first.some((part) => part.type === 'phone')).toBe(phones);
+    expect(first.some((part) => part.type === 'content')).toBe(false);
   });
 
   describe.each(['STANDARD', 'STRICT', 'CUSTOM'] as const)('%s text identity', (preset) => {

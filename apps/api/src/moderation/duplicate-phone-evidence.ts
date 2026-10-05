@@ -2,11 +2,14 @@ import { getUrlTextRanges } from '../common/url-text.util';
 
 // FLAG: This is deliberately stricter than phone blocking. Erasing an ambiguous number or
 // using it as a phone-only duplicate match can authorize deletion of a different message.
-export const DUPLICATE_PHONE_EVIDENCE_VERSION = 4;
+export const DUPLICATE_PHONE_EVIDENCE_VERSION = 5;
 
 // FLAG: A period followed by spacing starts another phrase. Never erase its numeric content
 // as part of the phone; dots without spacing remain conventional phone separators.
-const CANDIDATE = /(?:^|[^\d+])(\+?\d(?:[\d \t()-]|\.(?![ \t])){7,}\d)(?=$|[^\d])/gu;
+const CANDIDATE =
+  /(?:^|[^\d+])(\+?\d(?:[\d \t()\u00a0\u202f\u2010-\u2013-]|\.(?![ \t\u00a0\u202f])){7,}\d)(?=$|[^\d])/gu;
+const CONTEXT_CLAUSE_BOUNDARY = /[.!?;,\n\r\u2028\u2029]/u;
+const UNFINISHED_RIGHT_CONTEXT = /^[\s\p{Cf})\]}»"'”’\p{Sm}*/%^·:\u2010-\u2013-]*$/u;
 // FLAG: Bounded phone labels must never classify product names or bell/mobility words.
 const PHONE_CONTEXT =
   /(?:^|[^\p{L}\p{N}_])(?:тел|телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?|звоните|позвоните|звони|позвони|звонить|позвонить|whatsapp|ватсап|viber|вайбер|phone|telephone|call)\s*(?:для\s+связи\s*)?[:=№#.-]?\s*$/iu;
@@ -35,7 +38,11 @@ function hasProtectedValueContext(before: string, after: string): boolean {
   );
 }
 
-function hasLabelledPhoneListContinuation(before: string, after: string): boolean {
+function hasLabelledPhoneListContinuation(
+  before: string,
+  after: string,
+  afterTruncated: boolean,
+): boolean {
   if (!PHONE_CONTEXT.test(before)) return false;
   const next = after.matchAll(CANDIDATE).next().value;
   if (!next) return false;
@@ -46,7 +53,7 @@ function hasLabelledPhoneListContinuation(before: string, after: string): boolea
   return (
     candidate.startsWith('+') &&
     /^[\s\p{Cf})\]}»"'”’]*$/u.test(after.slice(0, start)) &&
-    phoneEvidence(candidate, '', after.slice(start + candidate.length)) !== null
+    phoneEvidence(candidate, '', after.slice(start + candidate.length), afterTruncated) !== null
   );
 }
 
@@ -65,7 +72,11 @@ function hasLabelledPhoneListPredecessor(before: string): boolean {
   );
 }
 
-function hasEmbeddedIdentifierAdjacency(before: string, after: string): boolean {
+function hasEmbeddedIdentifierAdjacency(
+  before: string,
+  after: string,
+  afterTruncated: boolean,
+): boolean {
   // FLAG: Preserve whitespace boundaries before examining compact identifier affixes.
   // A true phone label may adjoin the left side; no label excuses a right identifier suffix.
   const protocolBefore = before.replace(/[\p{Cf}()[\]{}«»"'“‘”’]+$/u, '');
@@ -76,14 +87,26 @@ function hasEmbeddedIdentifierAdjacency(before: string, after: string): boolean 
   const arithmeticContext = before.replace(/\p{Cf}/gu, '');
   const arithmeticBefore = arithmeticContext.replace(/[\s([{«"'“‘]+$/u, '');
   if (/\p{Sc}$/u.test(arithmeticBefore)) return true;
+  // FLAG: A colon can bind a ratio/code/quantity, but a complete prose note after a
+  // real phone remains admissible. Never guess a word cut by the right context budget.
+  const colon = /^[\s\p{Cf})\]}»"'”’]*:[\s\p{Cf}]*/u.exec(after);
+  if (colon) {
+    const value = after.slice(colon[0].length).replace(/\p{Cf}/gu, '');
+    if (
+      QUANTITY_SUFFIX.test(value) ||
+      /^[\p{N}_]|^\p{L}\p{M}*(?=$|[^\p{L}\p{M}\p{N}_])/u.test(value) ||
+      (afterTruncated && !/[\s.!?;,\n\r\u2028\u2029]/u.test(value))
+    )
+      return true;
+  }
   if (
-    /^[\s\p{Cf})\]}»"'”’]*[\p{Sm}*/%^·-]+[\s\p{Cf}]*[\p{L}\p{M}\p{N}_]/u.test(after) &&
-    !hasLabelledPhoneListContinuation(arithmeticBefore, after)
+    /^[\s\p{Cf})\]}»"'”’]*[\p{Sm}*/%^·\u2010-\u2013-]+[\s\p{Cf}]*[\p{L}\p{M}\p{N}_]/u.test(after) &&
+    !hasLabelledPhoneListContinuation(arithmeticBefore, after, afterTruncated)
   )
     return true;
   if (
     !PHONE_CONTEXT.test(arithmeticBefore) &&
-    (/[\p{Sm}*/%^·-]$/u.test(arithmeticBefore) ||
+    (/[\p{Sm}*/%^·\u2010-\u2013-]$/u.test(arithmeticBefore) ||
       /(?:^|\s)(?:\p{L}\p{M}*|\p{N}{1,6}|_)\s+$/u.test(arithmeticContext))
   )
     return true;
@@ -101,17 +124,16 @@ function hasEmbeddedIdentifierAdjacency(before: string, after: string): boolean 
   return (/[\p{L}\p{M}\p{N}_]$/u.test(left) && !labelled) || /^[\p{L}\p{M}\p{N}_]/u.test(right);
 }
 
-function isDuplicatePhoneCandidateInUrl(
-  ranges: readonly { start: number; end: number }[],
-  start: number,
-  end: number,
-): boolean {
-  // FLAG: Shared URL ranges refer to original text offsets; never erase URL bytes as phones.
-  return ranges.some((range) => start < range.end && end > range.start);
-}
-
-function phoneEvidence(candidate: string, before: string, after: string): string | null {
-  if (hasEmbeddedIdentifierAdjacency(before, after)) return null;
+function phoneEvidence(
+  candidate: string,
+  before: string,
+  after: string,
+  afterTruncated = false,
+): string | null {
+  // FLAG: Padding, wrappers or an unfinished operand must not hide a unit/email/expression
+  // beyond the bounded view. A recursive list proof also needs a complete right boundary.
+  if (afterTruncated && UNFINISHED_RIGHT_CONTEXT.test(after)) return null;
+  if (hasEmbeddedIdentifierAdjacency(before, after, afterTruncated)) return null;
   // FLAG: Wrappers must not hide an explicit order/part/quantity label. Only bounded
   // adjacent context is inspected; numeric payloads and surrounding prose remain intact.
   // FLAG: Format controls affect only bounded context detection, never the original text.
@@ -138,6 +160,10 @@ function phoneEvidence(candidate: string, before: string, after: string): string
   // an international + prefix only the known 1/7 and national 8/9 forms are admissible.
   if (!international && !knownLength) return null;
   if (!knownLength && /[^\d+]/u.test(candidate)) return null;
+  const labelled = PHONE_CONTEXT.test(before);
+  // FLAG: Additional typographic separators are phones only with a finite source label
+  // and a known complete length; they must not broaden signed identifiers or arithmetic.
+  if (/[\u00a0\u202f\u2010-\u2013]/u.test(candidate) && (!knownLength || !labelled)) return null;
   // FLAG: A signed decimal is not phone evidence. Dotted phones require known, finite
   // group lengths; preserving every other dotted span costs only an approximate match.
   if (candidate.includes('.')) {
@@ -150,7 +176,6 @@ function phoneEvidence(candidate: string, before: string, after: string): string
       (digits.length === 10 && groups === '3/3/2/2');
     if (!knownLength || !conventionalGroups) return null;
   }
-  const labelled = PHONE_CONTEXT.test(before);
   if (!international && !labelled) return null;
   if (!international && digits.length === 11 && digits.startsWith('8'))
     return `7${digits.slice(1)}`;
@@ -158,34 +183,97 @@ function phoneEvidence(candidate: string, before: string, after: string): string
   return digits;
 }
 
-export function extractDuplicatePhoneNumbers(text: string): string[] {
+type TextRange = { start: number; end: number };
+
+export type DuplicatePhoneAnalysis = {
+  phoneNumbers: string[];
+  phoneRanges: TextRange[];
+  urlRanges: TextRange[];
+  urlValues: string[];
+};
+
+function mergeTextRanges(left: readonly TextRange[], right: readonly TextRange[]): TextRange[] {
+  const merged: TextRange[] = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length || rightIndex < right.length) {
+    const next =
+      rightIndex >= right.length ||
+      (leftIndex < left.length && left[leftIndex]!.start <= right[rightIndex]!.start)
+        ? left[leftIndex++]!
+        : right[rightIndex++]!;
+    const previous = merged.at(-1);
+    if (previous && next.start <= previous.end) previous.end = Math.max(previous.end, next.end);
+    else merged.push({ ...next });
+  }
+  return merged;
+}
+
+export function analyzeDuplicatePhoneNumbers(text: string): DuplicatePhoneAnalysis {
   const phones = new Set<string>();
+  const phoneRanges: TextRange[] = [];
   const urlRanges = getUrlTextRanges(text);
+  const urlValues = [
+    ...new Set(
+      urlRanges.map((range) => text.slice(range.start, range.end).replace(/\p{Cf}+/gu, '')),
+    ),
+  ];
+  let urlIndex = 0;
   for (const match of text.matchAll(CANDIDATE)) {
     const candidate = match[1]!;
     const start = match.index + match[0].length - candidate.length;
-    if (isDuplicatePhoneCandidateInUrl(urlRanges, start, start + candidate.length)) continue;
+    const end = start + candidate.length;
+    // FLAG: Shared URL ranges refer to original offsets. Both streams are ordered, so a
+    // single cursor excludes URL overlap without multiplying phone and URL candidate counts.
+    while (urlIndex < urlRanges.length && urlRanges[urlIndex]!.end <= start) urlIndex += 1;
+    if (urlIndex < urlRanges.length && urlRanges[urlIndex]!.start < end) continue;
+    const beforeStart = Math.max(0, start - 128);
+    const before = text.slice(beforeStart, start);
+    // FLAG: An unfinished long clause may hide an identifier/price label just outside the
+    // view. Preserve the candidate when the bounded context cannot prove its left boundary.
+    if (beforeStart > 0 && !CONTEXT_CLAUSE_BOUNDARY.test(before)) continue;
     const phone = phoneEvidence(
       candidate,
-      text.slice(Math.max(0, start - 128), start),
-      text.slice(start + candidate.length, start + candidate.length + 64),
+      before,
+      text.slice(end, end + 64),
+      end + 64 < text.length,
     );
-    if (phone) phones.add(phone);
+    if (phone) {
+      phones.add(phone);
+      phoneRanges.push({ start, end });
+    }
   }
-  return [...phones];
+  return { phoneNumbers: [...phones], phoneRanges, urlRanges, urlValues };
+}
+
+export function stripAnalyzedDuplicatePhoneNumbers(
+  text: string,
+  analysis: DuplicatePhoneAnalysis,
+  options: { ignorePhones: boolean; ignoreLinks: boolean } = {
+    ignorePhones: true,
+    ignoreLinks: false,
+  },
+): string {
+  const ranges = mergeTextRanges(
+    options.ignorePhones ? analysis.phoneRanges : [],
+    options.ignoreLinks ? analysis.urlRanges : [],
+  );
+  if (ranges.length === 0) return text;
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const range of ranges) {
+    // FLAG: The leading boundary belongs to surrounding prose, never to the phone.
+    parts.push(text.slice(cursor, range.start), ' ');
+    cursor = range.end;
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
+export function extractDuplicatePhoneNumbers(text: string): string[] {
+  return analyzeDuplicatePhoneNumbers(text).phoneNumbers;
 }
 
 export function stripDuplicatePhoneNumbers(text: string): string {
-  const urlRanges = getUrlTextRanges(text);
-  return text.replace(CANDIDATE, (match, candidate: string, index: number) => {
-    const start = index + match.length - candidate.length;
-    if (isDuplicatePhoneCandidateInUrl(urlRanges, start, start + candidate.length)) return match;
-    const phone = phoneEvidence(
-      candidate,
-      text.slice(Math.max(0, start - 128), start),
-      text.slice(start + candidate.length, start + candidate.length + 64),
-    );
-    // FLAG: The leading boundary belongs to surrounding prose, never to the phone.
-    return phone ? `${match.slice(0, match.length - candidate.length)} ` : match;
-  });
+  return stripAnalyzedDuplicatePhoneNumbers(text, analyzeDuplicatePhoneNumbers(text));
 }

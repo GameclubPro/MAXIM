@@ -4,6 +4,7 @@ import {
   measureDuplicatePhase,
 } from '../message-duplicate/message-duplicate-metrics.service';
 import { createHash } from 'node:crypto';
+import { raceWithTimeout } from '../../common/promise-timeout.util';
 import type { LogicalPhotoAlbum } from './photo-attachment-extractor';
 import {
   createPhotoAlbumFingerprint,
@@ -21,8 +22,27 @@ import {
   type PhotoHistoryObservationResult,
   type PhotoHistoryViolationActionBinding,
   type PhotoHistoryViolationCommitResult,
+  type PhotoFingerprintCacheLookupResult,
 } from './photo-duplicate-history.store';
-import { SecurePhotoDownloader } from './secure-photo-downloader';
+import { PhotoDownloadTimeoutError, SecurePhotoDownloader } from './secure-photo-downloader';
+
+const PROOF_CACHE_WAIT_LIMIT_MS = 250;
+
+// FLAG: Optional proof-cache IO may finish late, but cannot hold an attempt through
+// Redis retries. A late lookup is a miss; a failed write never retries verified native work.
+async function boundedProofCache<T>(
+  operation: () => Promise<T>,
+  deadlineAtMs: number,
+  fallback: T,
+): Promise<T> {
+  const timeoutMs = Math.min(PROOF_CACHE_WAIT_LIMIT_MS, deadlineAtMs - Date.now());
+  if (timeoutMs <= 0) return fallback;
+  try {
+    return await raceWithTimeout({ operation, timeoutMs, onTimeout: () => fallback });
+  } catch {
+    return fallback;
+  }
+}
 
 export type PhotoDuplicateAnalysisResult =
   | {
@@ -106,7 +126,13 @@ export class PhotoDuplicateAnalysisService {
     deadlineAtMs = Number.MAX_SAFE_INTEGER,
   ) {
     const params = { album, ttlSeconds };
-    const cachedFingerprints = await this.readCachedFingerprints(params.album);
+    if (Date.now() >= deadlineAtMs) {
+      return { kind: 'incomplete' as const, reason: 'decode_deadline_exceeded' as const };
+    }
+    const cachedFingerprints = await this.readCachedFingerprints(params.album, deadlineAtMs);
+    if (Date.now() >= deadlineAtMs) {
+      return { kind: 'incomplete' as const, reason: 'decode_deadline_exceeded' as const };
+    }
     const missingDownloadUrl = params.album.images.some(
       (image, index) => !cachedFingerprints[index] && !image.downloadUrl,
     );
@@ -117,25 +143,30 @@ export class PhotoDuplicateAnalysisService {
     const albumBudget = this.fingerprintService.createAlbumDecodeBudget();
     const completeFingerprints: PhotoFingerprint[] = [];
     for (let index = 0; index < params.album.images.length; index += 1) {
-      if (Date.now() >= deadlineAtMs) throw new Error('Photo album verification deadline exceeded');
-      const cached = cachedFingerprints[index];
-      if (cached) {
-        if (!this.fingerprintService.reserveCachedFingerprint(cached, albumBudget)) {
-          return { kind: 'incomplete' as const, reason: 'album_decode_budget_exceeded' as const };
-        }
-        completeFingerprints.push(cached);
-        continue;
+      if (Date.now() >= deadlineAtMs) {
+        return { kind: 'incomplete' as const, reason: 'decode_deadline_exceeded' as const };
       }
-
-      const image = params.album.images[index];
-      const downloaded = await measureDuplicatePhase(this.metrics, 'download', () =>
-        measureDuplicatePhase(this.metrics, 'photo_download', () =>
-          deadlineAtMs === Number.MAX_SAFE_INTEGER
-            ? this.downloader.download(image.downloadUrl!)
-            : this.downloader.download(image.downloadUrl!, { deadlineAtMs }),
-        ),
-      );
+      const cached = cachedFingerprints[index];
       try {
+        if (cached) {
+          if (!this.fingerprintService.reserveCachedFingerprint(cached, albumBudget)) {
+            return { kind: 'incomplete' as const, reason: 'album_decode_budget_exceeded' as const };
+          }
+          completeFingerprints.push(cached);
+          continue;
+        }
+
+        const image = params.album.images[index];
+        const downloaded = await measureDuplicatePhase(this.metrics, 'download', () =>
+          measureDuplicatePhase(this.metrics, 'photo_download', () =>
+            deadlineAtMs === Number.MAX_SAFE_INTEGER
+              ? this.downloader.download(image.downloadUrl!)
+              : this.downloader.download(image.downloadUrl!, { deadlineAtMs }),
+          ),
+        );
+        if (Date.now() >= deadlineAtMs) {
+          return { kind: 'incomplete' as const, reason: 'decode_deadline_exceeded' as const };
+        }
         const fingerprint = await this.fingerprintService.fingerprint(downloaded.bytes, {
           albumBudget,
           expectedFormat: downloaded.format,
@@ -145,18 +176,30 @@ export class PhotoDuplicateAnalysisService {
         completeFingerprints.push(fingerprint);
         // FLAG: A proof checkpoints one verified image, never an actionable partial album.
         // Cache identity includes the message revision/source; cost is charged again on resume.
-        await this.historyStore.cachePhotoFingerprints(
-          [{ photoId: this.cacheIdentity(params.album, image), fingerprint }],
-          params.ttlSeconds,
+        await boundedProofCache(
+          () =>
+            this.historyStore.cachePhotoFingerprints(
+              [{ photoId: this.cacheIdentity(params.album, image), fingerprint }],
+              params.ttlSeconds,
+            ),
+          deadlineAtMs,
+          false,
         );
       } catch (error: unknown) {
         if (error instanceof PhotoFingerprintRejectedError) {
           return { kind: 'incomplete' as const, reason: error.reason };
         }
+        if (error instanceof PhotoDownloadTimeoutError && Date.now() >= deadlineAtMs) {
+          return { kind: 'incomplete' as const, reason: 'decode_deadline_exceeded' as const };
+        }
         throw error;
       }
     }
 
+    // FLAG: Checkpoint completion cannot extend the attempt or authorize an expired album.
+    if (Date.now() >= deadlineAtMs) {
+      return { kind: 'incomplete' as const, reason: 'decode_deadline_exceeded' as const };
+    }
     const albumFingerprint = createPhotoAlbumFingerprint(completeFingerprints);
     return { kind: 'complete' as const, fingerprint: albumFingerprint };
   }
@@ -194,10 +237,15 @@ export class PhotoDuplicateAnalysisService {
 
   private async readCachedFingerprints(
     album: LogicalPhotoAlbum,
+    deadlineAtMs: number,
   ): Promise<Array<PhotoFingerprint | null>> {
     const photoIds = album.images.map((image) => this.cacheIdentity(album, image));
     if (photoIds.length === 0) return [];
-    const lookup = await this.historyStore.getCachedPhotoFingerprints(photoIds);
+    const lookup = await boundedProofCache<PhotoFingerprintCacheLookupResult>(
+      () => this.historyStore.getCachedPhotoFingerprints(photoIds),
+      deadlineAtMs,
+      { kind: 'unavailable' },
+    );
     return album.images.map((_, index) => {
       const fingerprint = lookup.kind === 'available' ? lookup.fingerprints[index] : null;
       // Legacy proofs do not contain resource costs and cannot bypass the resumed budget.

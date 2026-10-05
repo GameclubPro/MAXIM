@@ -60,6 +60,18 @@ export const duplicatePhotoPolicyMatrixSchema = z.object({
 
 export const DUPLICATE_ALLOWED_COUNT_MIN = 0;
 export const DUPLICATE_THRESHOLD_MAX = 20;
+export const DUPLICATE_WINDOW_MIN_SEC = 3_600;
+export const DUPLICATE_WINDOW_MAX_SEC = 48 * 3_600;
+export const duplicateWindowSecSchema = z
+  .number()
+  .int()
+  .min(DUPLICATE_WINDOW_MIN_SEC)
+  .max(DUPLICATE_WINDOW_MAX_SEC, 'Период проверки дублей — не более 48 часов.');
+export const DUPLICATE_WINDOW_SETTING_KEYS = [
+  'duplicateWarnWindowSec',
+  'duplicateMuteWindowSec',
+  'duplicateBanWindowSec',
+] as const;
 
 export type DuplicateFlowStageSettings = {
   duplicateBotMessageEnabled: boolean;
@@ -85,13 +97,16 @@ export type DuplicateFlowWindowSettings = {
 
 /** The first enabled reaction owns the shared interval, including delete-only flows. */
 export function resolveDuplicateIntervalWindowSec(settings: DuplicateFlowWindowSettings): number {
-  return settings.duplicateWarnEnabled
+  const configured = settings.duplicateWarnEnabled
     ? settings.duplicateWarnWindowSec
     : settings.duplicateMuteEnabled
       ? settings.duplicateMuteWindowSec
       : settings.duplicateBanEnabled
         ? settings.duplicateBanWindowSec
         : settings.duplicateWarnWindowSec;
+  // FLAG: Runtime reads may still contain a legacy seven-day setting. Use the same ceiling
+  // as new writes and rules, even before the next revision-checked settings repair.
+  return Math.min(DUPLICATE_WINDOW_MAX_SEC, configured);
 }
 
 function resolveDuplicateFlowBaseOffset(settings: DuplicateFlowStageSettings): number {

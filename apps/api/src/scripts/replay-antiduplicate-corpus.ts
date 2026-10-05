@@ -40,8 +40,8 @@ import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from '../moderation/photo-duplica
 import type { RedisCounterService } from '../moderation/redis-counter.service';
 
 const REPLAY_CANDIDATE_BRANCH =
-  'elseif original.member ~= p.member and publishedAt > original.publishedAtMs and p.at < original.expiresAtMs then';
-const REVIEWED_WINDOW_SHA256 = '780d299687d4ec70391aec150972c4e027a6238bc08e528a57a7faf28e72ca08';
+  'elseif original.member ~= p.member and publishedAt >= original.publishedAtMs and p.at < original.expiresAtMs then';
+const REVIEWED_WINDOW_SHA256 = 'a5dd9ee3912bdb90bdf685ccd5ba130ab00443a8489a9a7e14af3fe2d3088397';
 export function buildOfflineDuplicateScript(source = MESSAGE_DUPLICATE_WINDOW_SCRIPT): string {
   if (
     createHash('sha256').update(source).digest('hex') !== REVIEWED_WINDOW_SHA256 ||
@@ -77,15 +77,17 @@ local function replayRedis(command, ...)
   if type(args[1]) ~= 'string' or string.sub(args[1], 1, string.len(KEYS[1])) ~= KEYS[1] then
     return redis.error_reply('Replay key escaped private namespace')
   end
-  if command == 'GET' then
+  if command == 'GET' or command == 'PEXPIRETIME' then
     local expires = tonumber(redis.call('ZSCORE', expiryKey, args[1]))
     if expires and expires <= replayNow then
-      redis.call('DEL', args[1]); redis.call('ZREM', expiryKey, args[1]); return false
+      redis.call('DEL', args[1]); redis.call('ZREM', expiryKey, args[1]); return command == 'PEXPIRETIME' and -2 or false
     end
+    if command == 'PEXPIRETIME' then return expires or -2 end
   end
-  if command == 'SET' and args[3] == 'EX' then
+  if command == 'SET' and (args[3] == 'EX' or args[3] == 'PXAT') then
     local result = redis.call('SET', args[1], args[2])
-    redis.call('ZADD', expiryKey, tostring(replayNow + tonumber(args[4]) * 1000), args[1])
+    local expiresAt = args[3] == 'PXAT' and tonumber(args[4]) or (replayNow + tonumber(args[4]) * 1000)
+    redis.call('ZADD', expiryKey, tostring(expiresAt), args[1])
     return result
   end
   if command ~= 'GET' and command ~= 'RPUSH' then return redis.error_reply('Unsupported replay command') end
