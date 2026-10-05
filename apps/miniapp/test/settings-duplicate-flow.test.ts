@@ -203,9 +203,9 @@ test('duplicate flow clamps the shared window without changing saturated thresho
       windowSec: 900_000,
     }),
     {
-      duplicateWarnWindowSec: 604_800,
-      duplicateMuteWindowSec: 604_800,
-      duplicateBanWindowSec: 604_800,
+      duplicateWarnWindowSec: 172_800,
+      duplicateMuteWindowSec: 172_800,
+      duplicateBanWindowSec: 172_800,
       duplicateWarnMaxCount: 18,
       duplicateMuteMaxCount: 19,
       duplicateBanMaxCount: 20,

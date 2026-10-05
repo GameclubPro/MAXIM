@@ -2258,9 +2258,13 @@ const scenarioBehaviors = [
       await hours.blur();
       if ((await hours.inputValue()) !== '24')
         throw new Error('Duplicate window lost the edited value');
-      await panel.getByRole('radio', { name: '3 дня', exact: true }).click();
-      if ((await hours.inputValue()) !== '72')
+      await panel.getByRole('radio', { name: '2 дня', exact: true }).click();
+      if ((await hours.inputValue()) !== '48')
         throw new Error('Duplicate window preset was not applied');
+      await hours.fill('168');
+      await hours.blur();
+      if ((await hours.inputValue()) !== '48')
+        throw new Error('Duplicate window exceeds the 48-hour ceiling');
       const countControlsOverlap = await panel
         .locator('.duplicate-count-stepper')
         .evaluate((element) => {
@@ -2283,7 +2287,7 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
       const panel = page.locator('.settings-drilldown__panel--duplicates');
-      await panel.getByRole('radio', { name: '3 дня', exact: true }).click();
+      await panel.getByRole('radio', { name: '2 дня', exact: true }).click();
       await panel.getByRole('radio', { name: 'По времени', exact: true }).click();
       const setTime = async (label, hour) => {
         await panel.getByRole('button', { name: new RegExp(`^${label}:`) }).click();
@@ -2317,7 +2321,7 @@ const scenarioBehaviors = [
       if (
         (await panel
           .getByRole('spinbutton', { name: 'Период проверки дублей, часы' })
-          .inputValue()) !== '72'
+          .inputValue()) !== '48'
       )
         throw new Error('Switching duplicate modes lost the interval');
       await panel.getByRole('radio', { name: 'По времени', exact: true }).click();

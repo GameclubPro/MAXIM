@@ -1,12 +1,18 @@
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
+import { OfflineDuplicateWindow } from '../../scripts/replay-antiduplicate-corpus';
 import { RedisCounterService } from '../redis-counter.service';
 import {
   digestDuplicateContent,
   extractDuplicateMessageContent,
 } from './message-duplicate-content';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
+import {
+  MESSAGE_DUPLICATE_HISTORY_GRACE_MS,
+  MESSAGE_DUPLICATE_HISTORY_RETENTION_MS,
+  MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION,
+} from './message-duplicate-window.script';
 import type { MessageDuplicateBinding } from './message-duplicate-state';
 import {
   MessageDuplicatePolicyService,
@@ -62,6 +68,319 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       content: extractDuplicateMessageContent({ message: { body: { text } } }),
       ...override,
     });
+
+  const windowPrefix = () =>
+    `dup:window:v1:${digestDuplicateContent(chatId)}:${MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION}:`;
+  const recordExpiry = async (key: string) => Number(await inspector.call('PEXPIRETIME', key));
+
+  describe.each(['STRICT', 'CUSTOM_PHONE'] as const)(
+    '%s protected padded numeric context',
+    (preset) => {
+      it.each([
+        ['$value' + ' '.repeat(65) + 'рублей'],
+        ['$' + '('.repeat(129) + '$value' + ')'],
+        ['$value' + '\u200b'.repeat(65) + '@example.test'],
+        ['$value: 1000'],
+      ])(
+        'never authorizes different values in %s, but detects an exact repeat',
+        async (expression) => {
+          const override = {
+            settings: duplicateSettings({
+              duplicateDetectionPreset: preset === 'STRICT' ? 'STRICT' : 'CUSTOM',
+              duplicateIgnorePhonesEnabled: preset === 'CUSTOM_PHONE',
+            }),
+          };
+          const text = (value: string) =>
+            `Промышленное оборудование доступно со склада доставка в регионы. ${expression.replace('$value', value)}`;
+          await observe('first', 0, text('+79991234567'), override);
+          expect(await observe('different', 100, text('+79991234568'), override)).toBeNull();
+          const repeat = await observe('repeat', 200, text('+79991234568'), override);
+          expect(repeat?.binding.original?.messageId).toBe('different');
+          expect(await history.stillMatches(chatId, repeat!.binding)).toBe(true);
+          expect(await history.qualify(chatId, repeat!.binding)).toBe(1);
+        },
+      );
+    },
+  );
+
+  it.each([3600, 43_200])(
+    'retains message/qualification proof for its own %is window without extending ordinary history',
+    async (windowSeconds) => {
+      const eventAt = Date.now() - 20_000;
+      const ownRetention = windowSeconds * 1000 + MESSAGE_DUPLICATE_HISTORY_GRACE_MS;
+      const override = { settings: duplicateSettings({ duplicateWarnWindowSec: windowSeconds }) };
+      await observe('short-original', eventAt - start, 'a', override);
+      const repeated = await observe('short-target', eventAt + 100 - start, 'a', override);
+      expect(repeated?.binding.original?.messageId).toBe('short-original');
+      const prefix = windowPrefix();
+      const stateKey = `${prefix}message:${digestDuplicateContent('short-target')}:MESSAGE`;
+      const qualificationKey = `${prefix}qualification:${digestDuplicateContent('short-target')}`;
+      const expectedExpiry = eventAt + 100 + ownRetention;
+      expect(await recordExpiry(stateKey)).toBe(expectedExpiry);
+      expect(await inspector.pttl(stateKey)).toBeLessThan(windowSeconds * 2000 + 61_000);
+      expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
+      expect(await recordExpiry(qualificationKey)).toBe(expectedExpiry);
+      expect(await recordExpiry(stateKey)).toBe(expectedExpiry);
+      const replay = await observe('short-target', eventAt + 100 - start, 'a', override);
+      expect(await history.qualify(chatId, replay!.binding)).toBe(1);
+      expect(await recordExpiry(qualificationKey)).toBe(expectedExpiry);
+      expect(await recordExpiry(stateKey)).toBe(expectedExpiry);
+      expect(await history.stillMatches(chatId, repeated!.binding)).toBe(true);
+      const originalState = `${prefix}message:${digestDuplicateContent('short-original')}:MESSAGE`;
+      expect(await recordExpiry(originalState)).toBe(eventAt + ownRetention);
+      const lifeKey = `${prefix}life:${digestDuplicateContent('short-original')}:MESSAGE`;
+      expect(await recordExpiry(lifeKey)).toBe(eventAt + MESSAGE_DUPLICATE_HISTORY_RETENTION_MS);
+    },
+  );
+
+  it('keeps late-delivered proof expiry anchored through replay and qualification', async () => {
+    const eventAt = Date.now() - 12 * 3600_000;
+    const override = { settings: duplicateSettings({ duplicateWarnWindowSec: 172_800 }) };
+    await observe('retained-original', eventAt - start, 'a', override);
+    const repeated = await observe('retained-target', eventAt + 100 - start, 'a', override);
+    expect(repeated).not.toBeNull();
+    const prefix = windowPrefix();
+    const stateKey = `${prefix}message:${digestDuplicateContent('retained-target')}:MESSAGE`;
+    const lifeKey = `${prefix}life:${digestDuplicateContent('retained-original')}:MESSAGE`;
+    const groupKey = `${prefix}group:${digestDuplicateContent('123')}:${repeated!.binding.fingerprint}`;
+    const counterKey = `${prefix}count:${digestDuplicateContent('123')}:${repeated!.binding.fingerprint}:${repeated!.binding.original!.originalId}:0:0`;
+    const stateExpiry = eventAt + 100 + MESSAGE_DUPLICATE_HISTORY_RETENTION_MS;
+    const originalExpiry = eventAt + MESSAGE_DUPLICATE_HISTORY_RETENTION_MS;
+    expect(await recordExpiry(stateKey)).toBe(stateExpiry);
+    expect(await recordExpiry(lifeKey)).toBe(originalExpiry);
+    expect(await recordExpiry(groupKey)).toBe(
+      repeated!.binding.original!.expiresAtMs + MESSAGE_DUPLICATE_HISTORY_GRACE_MS,
+    );
+    expect(
+      (await observe('retained-target', eventAt + 100 - start, 'a', override))?.binding,
+    ).toEqual(repeated!.binding);
+    expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
+    const countExpiry = await recordExpiry(counterKey);
+    expect(countExpiry).toBe(originalExpiry);
+    expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
+    expect(await history.stillMatches(chatId, repeated!.binding)).toBe(true);
+    expect(await recordExpiry(counterKey)).toBe(countExpiry);
+    expect(await recordExpiry(stateKey)).toBe(stateExpiry);
+    expect(await recordExpiry(lifeKey)).toBe(originalExpiry);
+    expect(
+      await recordExpiry(`${prefix}qualification:${digestDuplicateContent('retained-target')}`),
+    ).toBe(stateExpiry);
+    for (const key of await inspector.keys(`${prefix}*`)) {
+      expect(await inspector.pttl(key)).toBeLessThanOrEqual(MESSAGE_DUPLICATE_HISTORY_RETENTION_MS);
+    }
+  });
+
+  it.each([false, true])(
+    'revokes reset-only future replay with missing message state %s while admitting a fresh post',
+    async (loseState) => {
+      const futureAt = Date.now() + 59_000;
+      await observe('future-original', futureAt - start);
+      const old = await observe('future-target', futureAt + 1 - start);
+      expect(await history.qualify(chatId, old!.binding)).toBe(1);
+      await redis.resetDuplicateWindow(chatId, '123');
+      const resetAt = Number(
+        await inspector.get(`${windowPrefix()}reset:${digestDuplicateContent('123')}`),
+      );
+      const stateKey = `${windowPrefix()}message:${digestDuplicateContent('future-original')}:MESSAGE`;
+      if (loseState) await inspector.del(stateKey);
+      expect(await observe('future-original', futureAt - start)).toBeNull();
+      expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+      expect(await history.qualify(chatId, old!.binding)).toBeNull();
+      expect(await observe('fresh-original', resetAt + 1 - start)).toBeNull();
+      const fresh = await observe('fresh-target', futureAt + 100 - start);
+      expect(fresh?.binding.original?.messageId).toBe('fresh-original');
+      expect(await history.qualify(chatId, fresh!.binding)).toBe(1);
+    },
+  );
+
+  it.each(['retained', 'lost', 'lifecycle', 'invalidate'] as const)(
+    'never freshens equal content after reset through %s lifecycle state',
+    async (state) => {
+      const futureAt = Date.now() + 59_000;
+      await observe('future-original', futureAt - start);
+      await redis.resetDuplicateWindow(chatId, '123');
+      if (state !== 'retained') {
+        await inspector.del(
+          `${windowPrefix()}message:${digestDuplicateContent('future-original')}:MESSAGE`,
+        );
+      }
+      const changed = extractDuplicateMessageContent({
+        message: { body: { text: 'unverified replacement' } },
+      });
+      if (state === 'lifecycle') {
+        await history.observeLifecycle({
+          chatId,
+          messageId: 'future-original',
+          eventTimestampMs: futureAt + 50,
+          content: changed,
+        });
+      } else if (state === 'invalidate') {
+        await history.invalidateLifecycle({
+          chatId,
+          messageId: 'future-original',
+          content: changed,
+        });
+      }
+      expect(await observe('future-original', futureAt + 100 - start)).toBeNull();
+      expect(await observe('fresh-original', futureAt + 200 - start)).toBeNull();
+      const fresh = await observe('fresh-target', futureAt + 300 - start);
+      expect(fresh?.binding.original?.messageId).toBe('fresh-original');
+      expect(await history.qualify(chatId, fresh!.binding)).toBe(1);
+    },
+  );
+
+  it.each([false, true])(
+    'admits a proved text edit after reset with missing message state %s and revokes it on another reset',
+    async (loseState) => {
+      const futureAt = Date.now() + 59_000;
+      await observe('future-original', futureAt - start);
+      const old = await observe('future-target', futureAt + 1 - start);
+      await redis.resetDuplicateWindow(chatId, '123');
+      if (loseState) {
+        await inspector.del(
+          `${windowPrefix()}message:${digestDuplicateContent('future-original')}:MESSAGE`,
+        );
+      }
+      await observe('future-original', futureAt + 100 - start, 'proved replacement');
+      const edited = await observe('edited-target', futureAt + 200 - start, 'proved replacement');
+      expect(edited?.binding.original?.messageId).toBe('future-original');
+      expect(edited?.binding.original?.publishedAtMs).toBe(futureAt + 100);
+      expect(edited?.binding.original?.revision).not.toBe(old!.binding.original!.revision);
+      expect(edited?.binding.original?.originalId).not.toBe(old!.binding.original!.originalId);
+      expect(await history.qualify(chatId, edited!.binding)).toBe(1);
+      expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+      await redis.resetDuplicateWindow(chatId, '123');
+      await observe('future-original', futureAt + 300 - start, 'proved replacement');
+      expect(
+        await observe('fresh-original', futureAt + 400 - start, 'proved replacement'),
+      ).toBeNull();
+      const fresh = await observe('fresh-target', futureAt + 500 - start, 'proved replacement');
+      expect(fresh?.binding.original?.messageId).toBe('fresh-original');
+      expect(await history.stillMatches(chatId, edited!.binding)).toBe(false);
+    },
+  );
+
+  it('keeps an unknown-time replacement out of the new epoch after reset and state loss', async () => {
+    const futureAt = Date.now() + 59_000;
+    await observe('future-original', futureAt - start);
+    await redis.resetDuplicateWindow(chatId, '123');
+    await inspector.del(
+      `${windowPrefix()}message:${digestDuplicateContent('future-original')}:MESSAGE`,
+    );
+    const changed = extractDuplicateMessageContent({
+      message: { body: { text: 'unknown-time replacement' } },
+    });
+    await history.invalidateLifecycle({ chatId, messageId: 'future-original', content: changed });
+    await observe('future-original', futureAt + 100 - start, 'unknown-time replacement');
+    expect(
+      await observe('fresh-original', futureAt + 200 - start, 'unknown-time replacement'),
+    ).toBeNull();
+    const fresh = await observe('fresh-target', futureAt + 300 - start, 'unknown-time replacement');
+    expect(fresh?.binding.original?.messageId).toBe('fresh-original');
+  });
+
+  it('makes reset/removal fences outlive pre-fence proof including accepted future timestamps', async () => {
+    const admittedBefore = Date.now();
+    const futureAt = admittedBefore + 59_000;
+    const override = { settings: duplicateSettings({ duplicateWarnWindowSec: 172_800 }) };
+    await observe('future-original', futureAt - start, 'a', override);
+    const proofKeys = await inspector.keys(`${windowPrefix()}*`);
+    const proofExpiries = await Promise.all(proofKeys.map((key) => recordExpiry(key)));
+    expect(Math.max(...proofExpiries)).toBeLessThanOrEqual(
+      Date.now() + MESSAGE_DUPLICATE_HISTORY_RETENTION_MS,
+    );
+    await redis.resetDuplicateWindow(chatId, '123');
+    const resetExpiry = await recordExpiry(
+      `${windowPrefix()}reset:${digestDuplicateContent('123')}`,
+    );
+    expect(resetExpiry).toBeGreaterThanOrEqual(Math.max(...proofExpiries));
+    await history.remove(chatId, 'future-original');
+    const removalKey = `${windowPrefix()}removed:${digestDuplicateContent('future-original')}`;
+    const removalExpiry = await recordExpiry(removalKey);
+    expect(removalExpiry).toBeGreaterThanOrEqual(Math.max(...proofExpiries));
+    await history.remove(chatId, 'future-original');
+    expect(await recordExpiry(removalKey)).toBe(removalExpiry);
+    expect(await observe('future-original', futureAt + 100 - start, 'a', override)).toBeNull();
+  });
+
+  it('keeps absolute proof expiry fixed while accepted event timestamps are still ahead of Redis TIME', async () => {
+    const futureAt = Date.now() + 59_000;
+    const override = { settings: duplicateSettings({ duplicateWarnWindowSec: 172_800 }) };
+    await observe('future-original', futureAt - start, 'a', override);
+    const first = await observe('future-first', futureAt + 1 - start, 'a', override);
+    const prefix = windowPrefix();
+    const stateKey = `${prefix}message:${digestDuplicateContent('future-first')}:MESSAGE`;
+    const lifeKey = `${prefix}life:${digestDuplicateContent('future-original')}:MESSAGE`;
+    const stateExpiry = await recordExpiry(stateKey);
+    const lifeExpiry = await recordExpiry(lifeKey);
+    expect(await history.qualify(chatId, first!.binding)).toBe(1);
+    const countKey = `${prefix}count:${digestDuplicateContent('123')}:${first!.binding.fingerprint}:${first!.binding.original!.originalId}:0:0`;
+    const countExpiry = await recordExpiry(countKey);
+    await observe('future-original', futureAt - start, 'a', override);
+    await observe('future-first', futureAt + 1 - start, 'a', override);
+    const next = await observe('future-next', futureAt + 2 - start, 'a', override);
+    expect(await history.qualify(chatId, next!.binding)).toBe(2);
+    expect(await recordExpiry(countKey)).toBe(countExpiry);
+    expect(await recordExpiry(stateKey)).toBe(stateExpiry);
+    expect(await recordExpiry(lifeKey)).toBe(lifeExpiry);
+  });
+
+  it('isolates v3 history and reset/removal fences from surviving v2 storage', async () => {
+    const oldPrefix = `dup:window:v1:${digestDuplicateContent(chatId)}:`;
+    const oldReset = `${oldPrefix}reset:${digestDuplicateContent('123')}`;
+    const oldRemoved = `${oldPrefix}v2:removed:${digestDuplicateContent('original')}`;
+    const oldState = `${oldPrefix}v2:message:${digestDuplicateContent('original')}:MESSAGE`;
+    const oldResetValue = String(Date.now() + 60_000);
+    await inspector.set(oldReset, oldResetValue, 'EX', 1_209_661);
+    await inspector.set(oldRemoved, 'true', 'EX', 1_209_661);
+    await inspector.set(oldState, '{"legacy":true}', 'EX', 1_209_661);
+    await observe('original', 0);
+    const match = await observe('target', 100);
+    expect(match?.binding.original?.messageId).toBe('original');
+    expect(await history.qualify(chatId, match!.binding)).toBe(1);
+    await redis.resetDuplicateWindow(chatId, '123');
+    expect(await history.stillMatches(chatId, match!.binding)).toBe(false);
+    expect(await inspector.get(oldReset)).toBe(oldResetValue);
+    expect(await inspector.get(oldRemoved)).toBe('true');
+    expect(await inspector.get(oldState)).toBe('{"legacy":true}');
+  });
+
+  it('replays v3 absolute expiry and equal-timestamp qualification against its private virtual clock', async () => {
+    const offline = new OfflineDuplicateWindow(inspector);
+    const replayHistory = new MessageDuplicateHistoryService(
+      offline as unknown as RedisCounterService,
+    );
+    const eventAt = Date.parse('2025-01-01T12:00:00Z');
+    const input = {
+      chatId,
+      userId: '123',
+      eventTimestampMs: eventAt,
+      controlRevision: 1,
+      settings: duplicateSettings({ duplicateWarnWindowSec: 172_800 }),
+      content: extractDuplicateMessageContent({ message: { body: { text: 'a' } } }),
+    };
+    try {
+      offline.now = eventAt;
+      expect(await replayHistory.observe({ ...input, messageId: 'offline-original' })).toBeNull();
+      const match = await replayHistory.observe({ ...input, messageId: 'offline-target' });
+      expect(match?.binding.original?.messageId).toBe('offline-original');
+      expect(await replayHistory.qualify(chatId, match!.binding)).toBe(1);
+      expect(await replayHistory.qualify(chatId, match!.binding)).toBe(1);
+      offline.now = eventAt + MESSAGE_DUPLICATE_HISTORY_RETENTION_MS;
+      expect(await replayHistory.stillMatches(chatId, match!.binding)).toBe(false);
+      expect(await replayHistory.observe({ ...input, messageId: 'offline-original' })).toBeNull();
+      expect(await replayHistory.stillMatches(chatId, match!.binding)).toBe(false);
+      expect(
+        await replayHistory.observe({
+          ...input,
+          eventTimestampMs: offline.now,
+          messageId: 'offline-new-original',
+        }),
+      ).toBeNull();
+    } finally {
+      await offline.close();
+    }
+  });
 
   it('merges concurrent diagnostic attempts atomically with TTL and isolates chats', async () => {
     const bucket = Math.floor(Date.now() / DUPLICATE_TELEMETRY_BUCKET_MS);
@@ -141,6 +460,33 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await history.stillMatches(chatId, hit!.binding)).toBe(false);
     expect(await observe('a', 0)).toBeNull();
     expect(await observe('c', 50)).toBeNull();
+  });
+
+  it('counts distinct concurrent messages with the same timestamp without counting their replays', async () => {
+    const override = { settings: duplicateSettings({ duplicateWarnWindowSec: 3600 }) };
+    const observations = await Promise.all(
+      ['same-first', 'same-second', 'same-third'].map((id) => observe(id, 0, 'a', override)),
+    );
+    expect(observations.filter((match) => match === null)).toHaveLength(1);
+    const matches = observations.filter((match) => match !== null);
+    const originalId = matches[0]!.binding.original!.messageId;
+    expect(matches.every((match) => match.binding.original!.messageId === originalId)).toBe(true);
+    expect(matches.every((match) => match.binding.messageId !== originalId)).toBe(true);
+    const qualifications = await Promise.all(
+      matches.map((match) => history.qualify(chatId, match.binding)),
+    );
+    expect([...qualifications].sort()).toEqual([1, 2]);
+    for (let index = 0; index < matches.length; index += 1) {
+      const match = matches[index]!;
+      expect(await history.stillMatches(chatId, match.binding)).toBe(true);
+      const replay = await observe(match.binding.messageId, 0, 'a', override);
+      expect(replay?.binding.lifecycleRevision).toBe(match.binding.lifecycleRevision);
+      expect(await history.qualify(chatId, replay!.binding)).toBe(qualifications[index]);
+    }
+    expect(await observe(originalId, 0, 'a', override)).toBeNull();
+    expect(await observe('earlier', -1, 'a', override)).toBeNull();
+    expect((await observe('later', 100, 'a', override))?.hit.count).toBe(3);
+    expect(await observe('after-window', 3600_000, 'a', override)).toBeNull();
   });
 
   it.each([0x12345678, 0xdeadbeef, 0x5eedc0de])(
@@ -808,6 +1154,142 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     mediaHashes: ['a'.repeat(64)],
   });
 
+  it.each(['retained', 'lost', 'lifecycle', 'invalidate'] as const)(
+    'never freshens equal image bytes through a later locator after reset (%s)',
+    async (state) => {
+      const futureAt = Date.now() + 59_000;
+      const input = imageInput();
+      await observe('future-original', futureAt - start, '', input);
+      const old = await observe('future-target', futureAt + 1 - start, '', input);
+      await redis.resetDuplicateWindow(chatId, '123');
+      if (state !== 'retained') {
+        await inspector.del(
+          `${windowPrefix()}message:${digestDuplicateContent('future-original')}:IMAGE`,
+        );
+      }
+      const refreshed = extractDuplicateMessageContent({
+        message: {
+          body: {
+            attachments: [
+              {
+                type: 'image',
+                payload: { photo_id: 'renewed', url: 'https://i.oneme.ru/renewed' },
+              },
+            ],
+          },
+        },
+      });
+      if (state === 'lifecycle') {
+        await history.observeLifecycle({
+          chatId,
+          messageId: 'future-original',
+          eventTimestampMs: futureAt + 100,
+          content: refreshed,
+        });
+      } else if (state === 'invalidate') {
+        await history.invalidateLifecycle({
+          chatId,
+          messageId: 'future-original',
+          content: refreshed,
+        });
+      }
+      const refresh = { ...input, content: refreshed };
+      await observe('future-original', futureAt + 100 - start, '', { ...refresh, mediaHashes: [] });
+      await observe('future-original', futureAt + 100 - start, '', refresh);
+      expect(await observe('fresh-original', futureAt + 200 - start, '', input)).toBeNull();
+      const fresh = await observe('fresh-target', futureAt + 300 - start, '', input);
+      expect(fresh?.binding.original?.messageId).toBe('fresh-original');
+      expect(await history.qualify(chatId, fresh!.binding)).toBe(1);
+      expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+    },
+  );
+
+  describe.each([false, true])('reset with missing image state %s', (loseState) => {
+    it.each([false, true])(
+      'admits proved changed image bytes with a changed locator %s',
+      async (changeLocator) => {
+        const futureAt = Date.now() + 59_000;
+        const input = imageInput();
+        await observe('future-original', futureAt - start, '', input);
+        const old = await observe('future-target', futureAt + 1 - start, '', input);
+        await redis.resetDuplicateWindow(chatId, '123');
+        if (loseState) {
+          await inspector.del(
+            `${windowPrefix()}message:${digestDuplicateContent('future-original')}:IMAGE`,
+          );
+        }
+        const changed = {
+          ...input,
+          mediaHashes: ['b'.repeat(64)],
+          ...(changeLocator
+            ? {
+                content: extractDuplicateMessageContent({
+                  message: {
+                    body: {
+                      attachments: [
+                        {
+                          type: 'image',
+                          payload: {
+                            photo_id: 'new-content',
+                            url: 'https://i.oneme.ru/new-content',
+                          },
+                        },
+                      ],
+                    },
+                  },
+                }),
+              }
+            : {}),
+        };
+        await observe('future-original', futureAt + 100 - start, '', changed);
+        const edited = await observe('edited-target', futureAt + 200 - start, '', changed);
+        expect(edited?.binding.original?.messageId).toBe('future-original');
+        expect(edited?.binding.original?.publishedAtMs).toBe(futureAt + 100);
+        expect(edited?.binding.original?.revision).not.toBe(old!.binding.original!.revision);
+        expect(edited?.binding.original?.originalId).not.toBe(old!.binding.original!.originalId);
+        expect(await history.qualify(chatId, edited!.binding)).toBe(1);
+        expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+      },
+    );
+  });
+
+  it.each([false, true])(
+    'never promotes a pre-reset pending locator as fresh verified content with missing state %s',
+    async (loseState) => {
+      const futureAt = Date.now() + 59_000;
+      const input = imageInput();
+      await observe('future-original', futureAt - start, '', input);
+      const changed = {
+        ...input,
+        content: extractDuplicateMessageContent({
+          message: {
+            body: {
+              attachments: [
+                {
+                  type: 'image',
+                  payload: { photo_id: 'pending', url: 'https://i.oneme.ru/pending' },
+                },
+              ],
+            },
+          },
+        }),
+        mediaHashes: ['b'.repeat(64)],
+      };
+      await observe('future-original', futureAt + 10 - start, '', { ...changed, mediaHashes: [] });
+      await redis.resetDuplicateWindow(chatId, '123');
+      if (loseState) {
+        await inspector.del(
+          `${windowPrefix()}message:${digestDuplicateContent('future-original')}:IMAGE`,
+        );
+      }
+      await observe('future-original', futureAt + 100 - start, '', changed);
+      expect(await observe('fresh-original', futureAt + 200 - start, '', changed)).toBeNull();
+      const fresh = await observe('fresh-target', futureAt + 300 - start, '', changed);
+      expect(fresh?.binding.original?.messageId).toBe('fresh-original');
+      expect(await history.qualify(chatId, fresh!.binding)).toBe(1);
+    },
+  );
+
   it.each(['SAME_AUTHOR', 'CHAT'] as const)(
     'never chains image repeats into another window (%s)',
     async (scope) => {
@@ -880,12 +1362,22 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await observe('a1', 0, '', input)).toBeNull();
   });
 
-  it('does not assign an arbitrary shared original to one author when timestamps tie', async () => {
+  it('matches same-clock photos across authors while keeping qualification per author and replay', async () => {
     const input = imageInput();
     await observe('a1', 0, '', input);
-    expect(await observe('b1', 0, '', { ...input, userId: '456' })).toBeNull();
-    expect((await observe('a2', 100, '', input))?.hit.count).toBe(1);
-    expect((await observe('b2', 200, '', { ...input, userId: '456' }))?.hit.count).toBe(1);
+    const tied = await observe('b1', 0, '', { ...input, userId: '456' });
+    expect(tied?.binding.original?.messageId).toBe('a1');
+    expect(tied?.hit.count).toBe(1);
+    expect(await history.qualify(chatId, tied!.binding)).toBe(1);
+    expect(await observe('a1', 0, '', input)).toBeNull();
+    const replay = await observe('b1', 0, '', { ...input, userId: '456' });
+    expect(await history.qualify(chatId, replay!.binding)).toBe(1);
+    const sameAuthor = await observe('a2', 100, '', input);
+    expect(sameAuthor?.hit.count).toBe(1);
+    expect(await history.qualify(chatId, sameAuthor!.binding)).toBe(1);
+    const otherAuthor = await observe('b2', 200, '', { ...input, userId: '456' });
+    expect(otherAuthor?.hit.count).toBe(2);
+    expect(await history.qualify(chatId, otherAuthor!.binding)).toBe(2);
   });
 
   it.each([59_999, 60_000, 60_001])(
@@ -1033,7 +1525,7 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
   it('does not recreate an old lifecycle incarnation after its Redis record disappears', async () => {
     await observe('original', 0);
     const old = await observe('target', 100);
-    const key = `dup:window:v1:${digestDuplicateContent(chatId)}:v2:life:${digestDuplicateContent('original')}:MESSAGE`;
+    const key = `${windowPrefix()}life:${digestDuplicateContent('original')}:MESSAGE`;
     await inspector.del(key);
     expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
     await observe('original', 0);
@@ -1044,12 +1536,13 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
   });
 
   it.each(['original', 'target'])(
-    'never restores an old binding after only %s message state disappears',
+    'never restores an old binding after only %s message state expires',
     async (messageId) => {
       await observe('original', 0);
       const old = await observe('target', 100);
-      const key = `dup:window:v1:${digestDuplicateContent(chatId)}:v2:message:${digestDuplicateContent(messageId)}:MESSAGE`;
-      await inspector.del(key);
+      const key = `${windowPrefix()}message:${digestDuplicateContent(messageId)}:MESSAGE`;
+      await inspector.pexpireat(key, Date.now() - 1);
+      expect(await inspector.exists(key)).toBe(0);
       expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
       const fresh = await observe(messageId, messageId === 'original' ? 0 : 100);
       expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
@@ -1075,6 +1568,28 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     const next = await observe('replacement-repeat', 400, 'replacement');
     expect(next?.binding.original?.messageId).toBe('replacement-first');
     expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+  });
+
+  it('retains unknown-time invalidation after expired lifecycle proof and another MAX refresh', async () => {
+    await observe('original', 0);
+    const old = await observe('target', 100);
+    const lifeKey = `${windowPrefix()}life:${digestDuplicateContent('original')}:MESSAGE`;
+    await inspector.pexpireat(lifeKey, Date.now() - 1);
+    const content = (text: string) =>
+      extractDuplicateMessageContent({ message: { body: { text } } });
+    await history.invalidateLifecycle({ chatId, messageId: 'original', content: content('first') });
+    await history.invalidateLifecycle({
+      chatId,
+      messageId: 'original',
+      content: content('second'),
+    });
+    expect(await inspector.pttl(lifeKey)).toBeGreaterThan(0);
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+    await observe('original', 200, 'second', { publishedAtMs: start });
+    expect(await observe('new-original', 300, 'second')).toBeNull();
+    expect((await observe('new-repeat', 400, 'second'))?.binding.original?.messageId).toBe(
+      'new-original',
+    );
   });
 
   it('preserves image escalation and the original identity through caption-only pending refresh', async () => {
@@ -1258,7 +1773,7 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
         }),
       ).toBeNull();
     }
-    const key = `dup:window:v1:${digestDuplicateContent(chatId)}:v2:message:${digestDuplicateContent('accepted')}:IMAGE`;
+    const key = `${windowPrefix()}message:${digestDuplicateContent('accepted')}:IMAGE`;
     const state = JSON.parse((await inspector.get(key))!);
     expect(Object.keys(state.accepted).length).toBeLessThanOrEqual(16);
     const next = await observe('next', 3000, '', {
@@ -1296,7 +1811,7 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     };
     await observe('original', 0, '', changed);
     expect(await observe('accepted', 200, '', { ...changed, content: refreshed })).toBeNull();
-    const key = `dup:window:v1:${digestDuplicateContent(chatId)}:v2:message:${digestDuplicateContent('accepted')}:IMAGE`;
+    const key = `${windowPrefix()}message:${digestDuplicateContent('accepted')}:IMAGE`;
     const state = JSON.parse((await inspector.get(key))!);
     expect(Object.keys(state.accepted)).toHaveLength(1);
     expect((await observe('next', 300, '', changed))?.hit.count).toBe(2);
@@ -1326,6 +1841,9 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
   });
 
   it('keeps outside-period material introduction through an inside-period cosmetic edit', async () => {
+    const day = 86400_000;
+    const clockOffset = Math.ceil((Date.now() - Date.parse('2026-10-02T10:00:00Z')) / day) * day;
+    const freshTime = (iso: string) => Date.parse(iso) + clockOffset;
     const dailySettings = duplicateSettings({
       duplicateWindowMode: 'DAILY',
       duplicateStartTimeMinutes: 540,
@@ -1334,8 +1852,8 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       duplicateCompareMode: 'TEXT',
     });
     const at = (messageId: string, iso: string, text: string, publishedAtMs?: number) =>
-      observe(messageId, Date.parse(iso) - start, text, { settings: dailySettings, publishedAtMs });
-    const publication = Date.parse('2026-10-01T12:00:00Z');
+      observe(messageId, freshTime(iso) - start, text, { settings: dailySettings, publishedAtMs });
+    const publication = freshTime('2026-10-01T12:00:00Z');
     await at('old', '2026-10-01T12:00:00Z', 'a');
     await at('old', '2026-10-02T08:00:00Z', 'different', publication);
     await at('old', '2026-10-02T10:00:00Z', ' different ', publication);
@@ -1388,6 +1906,9 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
   it.each(['TEXT', 'IMAGE'] as const)(
     'resets %s evidence and sanctions at each daily period',
     async (mode) => {
+      const day = 86400_000;
+      const clockOffset = Math.ceil((Date.now() - Date.parse('2026-09-29T14:59Z')) / day) * day;
+      const freshTime = (iso: string) => Date.parse(iso) + clockOffset;
       const dailySettings = duplicateSettings({
         duplicateWindowMode: 'DAILY',
         duplicateStartTimeMinutes: 540,
@@ -1409,7 +1930,7 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
             }
           : {};
       const at = (id: string, iso: string, overrides = {}) =>
-        observe(id, Date.parse(iso) - start, 'a', {
+        observe(id, freshTime(iso) - start, 'a', {
           settings: dailySettings,
           ...extra,
           ...overrides,
@@ -1418,15 +1939,15 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       expect(await at('first', '2026-09-29T06:00Z')).toBeNull();
       const repeat = await at('repeat', '2026-09-29T14:59Z');
       expect(repeat?.binding.original?.messageId).toBe('first');
-      expect(repeat?.binding.original?.expiresAtMs).toBe(Date.parse('2026-09-29T15:00Z'));
+      expect(repeat?.binding.original?.expiresAtMs).toBe(freshTime('2026-09-29T15:00Z'));
       expect(await history.qualify(chatId, repeat!.binding)).toBe(1);
       expect(await at('closed', '2026-09-29T15:00Z')).toBeNull();
       // Yesterday's unchanged original and rejected target cannot become today's evidence.
       expect(
-        await at('first', '2026-09-30T06:00Z', { publishedAtMs: Date.parse('2026-09-29T06:00Z') }),
+        await at('first', '2026-09-30T06:00Z', { publishedAtMs: freshTime('2026-09-29T06:00Z') }),
       ).toBeNull();
       expect(
-        await at('repeat', '2026-09-30T06:01Z', { publishedAtMs: Date.parse('2026-09-29T14:59Z') }),
+        await at('repeat', '2026-09-30T06:01Z', { publishedAtMs: freshTime('2026-09-29T14:59Z') }),
       ).toBeNull();
       expect(await at('new-day', '2026-09-30T06:02Z')).toBeNull();
       const next = await at('new-repeat', '2026-09-30T06:03Z');

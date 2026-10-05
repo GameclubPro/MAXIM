@@ -1,44 +1,71 @@
+import { DUPLICATE_WINDOW_MAX_SEC } from '@maxim/contracts/settings';
+
+export const MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = 'v3';
+// FLAG: Ten-minute action authority and one-minute accepted future skew fit inside the
+// retention grace. Stored proof outlives its window without extending action authority.
+export const MESSAGE_DUPLICATE_HISTORY_GRACE_MS = 11 * 60_000;
+export const MESSAGE_DUPLICATE_HISTORY_RETENTION_MS =
+  DUPLICATE_WINDOW_MAX_SEC * 1000 + MESSAGE_DUPLICATE_HISTORY_GRACE_MS;
+
 // FLAG: Duplicate windows are anchored to an accepted original. Rejected attempts never
 // become evidence or extend its lifetime. This script is intentionally separate from burst
 // and quota rolling counters. Work is bounded by 16 fingerprints and constant-size records.
 export const MESSAGE_DUPLICATE_WINDOW_SCRIPT = `
 local p = cjson.decode(ARGV[1])
-local resetPrefix = KEYS[1]
-local prefix = KEYS[1] .. 'v2:'
+local prefix = KEYS[1] .. '${MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION}:'
+local resetPrefix = prefix
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 if now > p.deadline then return cjson.encode({ kind = 'deadline_exceeded' }) end
-local ttl = p.windowMs and math.floor(p.windowMs / 1000) * 2 + 61 or 1209661
+local retentionMs = ${MESSAGE_DUPLICATE_HISTORY_RETENTION_MS}
+local graceMs = ${MESSAGE_DUPLICATE_HISTORY_GRACE_MS}
+if p.windowMs then p.windowMs = math.min(p.windowMs, ${DUPLICATE_WINDOW_MAX_SEC * 1000}) end
 local function read(key)
   local raw = redis.call('GET', prefix .. key)
   if raw then return cjson.decode(raw) end
   return nil
 end
-local function write(key, value)
-  redis.call('SET', prefix .. key, cjson.encode(value), 'EX', ttl)
+local function eventExpiry(at)
+  return math.min(at and at > 0 and at or now, now) + retentionMs
+end
+local function windowExpiry(at)
+  -- FLAG: Message/qualification proof follows its own configured window. Keeping the
+  -- full ceiling here would increase ordinary short-window history instead of bounding it.
+  return math.min(at and at > 0 and at or now, now) + math.min((p.windowMs or 0) + graceMs, retentionMs)
+end
+local function write(key, value, expiresAt, preserveExpiry)
+  -- FLAG: An event/accepted-original anchor owns expiry. Replay and qualification cannot
+  -- turn proof into a sliding lease; accepted future timestamps never exceed the ceiling.
+  local expiry = math.min(expiresAt or (now + retentionMs), now + retentionMs)
+  if preserveExpiry then
+    local previousExpiry = redis.call('PEXPIRETIME', prefix .. key)
+    if previousExpiry > now then expiry = math.min(expiry, previousExpiry) end
+  end
+  redis.call('SET', prefix .. key, cjson.encode(value), 'PXAT', expiry)
 end
 local function epoch(author)
   local raw = redis.call('GET', resetPrefix .. 'reset:' .. author)
   return raw and cjson.decode(raw) or 0
 end
 if p.op == 'reset' then
-  redis.call('SET', resetPrefix .. 'reset:' .. p.author, cjson.encode(math.max(now, epoch(p.author) + 1)), 'EX', ttl)
+  -- FLAG: Reset/removal fences live at least as long as every pre-fence record in v3.
+  -- Never read old v2 proof or its unversioned reset key after shortening retention.
+  redis.call('SET', resetPrefix .. 'reset:' .. p.author, cjson.encode(math.max(now, epoch(p.author) + 1)), 'PXAT', now + retentionMs)
   return cjson.encode({ kind = 'ok' })
 end
 if p.op == 'remove' then
-  write('removed:' .. p.member, true)
+  if not read('removed:' .. p.member) then write('removed:' .. p.member, true) end
   return cjson.encode({ kind = 'ok' })
 end
-local function lifecycle(member, mode, at, source, publishedAt)
+local function lifecycle(member, mode, at, source, publishedAt, previous)
   local key = 'life:' .. member .. ':' .. mode
-  local previous = read(key)
   if previous and at < previous.at then return nil end
   if previous and at == previous.at then
     if previous.source ~= source then
       previous.conflict = true
       previous.predecessorRevision = nil
       previous.revision = p.token
-      write(key, previous)
+      write(key, previous, eventExpiry(previous.at), true)
     end
     return not previous.conflict and previous or nil
   end
@@ -50,16 +77,19 @@ local function lifecycle(member, mode, at, source, publishedAt)
     introducedKnown = changed or (previous and previous.introducedKnown or false),
     predecessorRevision = previous and (changed and not previous.conflict and previous.revision or (not changed and previous.predecessorRevision or nil)) or nil,
     materializedRevision = previous and previous.materializedRevision or nil,
+    materialized = previous and previous.materialized or nil,
   }
   if not previous then
     life.introducedAt = publishedAt or at
     life.introducedKnown = true
   end
-  write(key, life)
+  write(key, life, eventExpiry(life.at))
   return life
 end
 if p.op == 'lifecycle' then
-  for mode, source in pairs(p.sources) do lifecycle(p.member, mode, p.at, source, p.publishedAt) end
+  for mode, source in pairs(p.sources) do
+    lifecycle(p.member, mode, p.at, source, p.publishedAt, read('life:' .. p.member .. ':' .. mode))
+  end
   return cjson.encode({ kind = 'ok' })
 end
 if p.op == 'invalidate' then
@@ -68,7 +98,9 @@ if p.op == 'invalidate' then
     local previous = read(key)
     if not previous or previous.source ~= source then
       write(key, { at = previous and previous.at or 0, source = source, conflict = true,
-        revision = p.token, introducedAt = 0, introducedKnown = false })
+        revision = p.token, introducedAt = 0, introducedKnown = false,
+        materializedRevision = previous and previous.materializedRevision or nil,
+        materialized = previous and previous.materialized or nil }, eventExpiry(previous and previous.at or now), true)
     end
   end
   return cjson.encode({ kind = 'ok' })
@@ -99,9 +131,10 @@ local function matching()
   if not life or life.conflict or life.source ~= p.source or life.revision ~= p.revision then return nil end
   for _, match in ipairs(state.matches or {}) do
     if match.fingerprint == p.fingerprint and match.original.member == p.original.member
+      and match.original.member ~= p.member
       and match.original.originalId == p.original.originalId and match.original.revision == p.original.revision
       and match.original.epoch == p.original.epoch and valid(match.original)
-      and p.at > match.original.publishedAtMs and p.at < match.original.expiresAtMs then
+      and p.at >= match.original.publishedAtMs and p.at < match.original.expiresAtMs then
       return match, state
     end
   end
@@ -118,10 +151,10 @@ if p.op == 'check' or p.op == 'qualify' then
     local key = counterKey(p.fingerprint, match.original)
     local count = read(key) or { accepted = p.allowed, qualified = 0 }
     count.qualified = math.min(20 - p.allowed, count.qualified + 1)
-    write(key, count)
+    write(key, count, match.original.expiresAtMs + graceMs, true)
     match.qualified = math.min(20, p.allowed + count.qualified)
-    write(qualificationKey, { epoch = epoch(p.author) })
-    write(stateKey(p.member), state)
+    write(qualificationKey, { epoch = epoch(p.author) }, windowExpiry(state.at), true)
+    write(stateKey(p.member), state, windowExpiry(state.at), true)
   end
   return cjson.encode({ kind = 'ok', count = match.qualified })
 end
@@ -129,16 +162,41 @@ if p.op ~= 'observe' then return cjson.encode({ kind = 'stale' }) end
 if read('removed:' .. p.member) or p.at <= epoch(p.author) then return cjson.encode({ kind = 'stale' }) end
 local previous = read(stateKey(p.member))
 local currentEpoch = epoch(p.author)
+local previousLife = read('life:' .. p.member .. ':' .. p.mode)
+local materialized = previousLife and previousLife.materialized or nil
+if not materialized and previous then
+  materialized = { epoch = previous.epoch, at = previous.at, source = previous.source, identity = previous.identity }
+end
+local resetIncarnation = materialized and materialized.epoch ~= currentEpoch
+-- FLAG: Reset revokes an incarnation, including accepted future-dated events. A newer
+-- date or locator with unchanged/unverified bytes cannot admit its old content again.
+-- Lifecycle provenance survives loss of the shorter-lived message state.
+if resetIncarnation and (p.at <= materialized.at or p.identity == '' or not materialized.identity
+  or materialized.identity == '' or p.identity == materialized.identity) then
+  return cjson.encode({ kind = 'stale' })
+end
+if not materialized and previousLife and previousLife.materializedRevision and currentEpoch ~= 0 then
+  return cjson.encode({ kind = 'stale' })
+end
 -- FLAG: A synthetic pending replay cannot replace proof for this exact event. Newer
 -- incomplete content still invalidates the old revision before an early return.
 if previous and previous.epoch == currentEpoch and p.at == previous.at and p.source == previous.source and p.identity == '' then
-  local life = read('life:' .. p.member .. ':' .. p.mode)
+  local life = previousLife
   if life and not life.conflict and life.revision == previous.revision and life.source == previous.source then
     return cjson.encode({ kind = 'replayed', matches = previous.matches, observedAt = previous.at, revision = previous.revision })
   end
 end
-local life = lifecycle(p.member, p.mode, p.at, p.lifecycleSource or p.source, p.publishedAt)
+local life = lifecycle(p.member, p.mode, p.at, p.lifecycleSource or p.source, p.publishedAt, previousLife)
 if not life then return cjson.encode({ kind = 'stale' }) end
+if resetIncarnation then
+  -- FLAG: Only a proved later content change may introduce another incarnation after
+  -- reset. Unknown-time replacements retain their fail-closed introduction boundary.
+  if not life.introducedKnown then return cjson.encode({ kind = 'stale' }) end
+  if life.source == materialized.source then life.introducedAt = p.at end
+  if life.introducedAt <= currentEpoch then return cjson.encode({ kind = 'stale' }) end
+  life.revision = p.token
+  life.predecessorRevision = nil
+end
 if not previous and life.materializedRevision then
   -- FLAG: Reconstructing missing evidence is a new incarnation. A surviving lifecycle
   -- record must not give an old binding authority over newly reconstructed message state.
@@ -157,17 +215,17 @@ if previous and previous.epoch == currentEpoch then
     life.predecessorRevision = nil
     life.introducedAt = p.at
     life.introducedKnown = true
-    write('life:' .. p.member .. ':' .. p.mode, life)
+    write('life:' .. p.member .. ':' .. p.mode, life, eventExpiry(life.at), true)
   end
 end
 local publishedAt = life.introducedAt
 local originalId = previous and previous.revision == life.revision and previous.originalId or p.token
 local continuity = nil
-if previous and previous.source ~= p.source and previous.identity ~= '' and previous.revision == life.predecessorRevision then
+if previous and previous.epoch == currentEpoch and previous.source ~= p.source and previous.identity ~= '' and previous.revision == life.predecessorRevision then
   continuity = { revision = previous.revision, identity = previous.identity,
     publishedAt = previous.publishedAt, originalId = previous.originalId, context = previous.context,
     accepted = previous.accepted, matches = previous.matches }
-elseif previous and previous.revision == life.revision and previous.continuity and previous.continuity.revision == life.predecessorRevision then
+elseif previous and previous.epoch == currentEpoch and previous.revision == life.revision and previous.continuity and previous.continuity.revision == life.predecessorRevision then
   continuity = previous.continuity
 end
 local verifiedContinuity = continuity and p.identity ~= '' and p.identity == continuity.identity and life.introducedKnown and life.source == p.source
@@ -178,7 +236,7 @@ if verifiedContinuity then
   publishedAt = continuity.publishedAt
   originalId = continuity.originalId
   life.introducedAt = publishedAt
-  write('life:' .. p.member .. ':' .. p.mode, life)
+  write('life:' .. p.member .. ':' .. p.mode, life, eventExpiry(life.at), true)
 end
 local accepted = {}
 if preserveOccurrences then
@@ -191,8 +249,9 @@ local state = { at = p.at, publishedAt = publishedAt, source = p.source, identit
   accepted = accepted, matches = {} }
 if p.identity == '' and p.pendingSafe and continuity and life.source == p.source then state.continuity = continuity end
 life.materializedRevision = life.revision
-write('life:' .. p.member .. ':' .. p.mode, life)
-write(stateKey(p.member), state)
+life.materialized = { epoch = currentEpoch, at = p.at, source = p.source, identity = p.identity }
+write('life:' .. p.member .. ':' .. p.mode, life, eventExpiry(life.at), true)
+write(stateKey(p.member), state, windowExpiry(state.at))
 if p.identity == '' or not life.introducedKnown then return cjson.encode({ kind = 'ok', matches = {}, revision = life.revision }) end
 -- FLAG: An old post edited without a content change must never become today's original.
 if p.periodStart and (publishedAt < p.periodStart or publishedAt >= p.periodEnd) then
@@ -214,9 +273,11 @@ for _, fingerprint in ipairs(p.fingerprints) do
         expiresAtMs = expiresAt, sourceDigest = p.source,
         contentDigest = p.identity, mediaHashes = p.mediaHashes, epoch = currentEpoch,
         revision = life.revision, originalId = originalId }
-      table.insert(writes, { key = key, value = original })
+      table.insert(writes, { key = key, value = original, expiresAt = original.expiresAtMs + graceMs })
     end
-  elseif original.member ~= p.member and publishedAt > original.publishedAtMs and p.at < original.expiresAtMs then
+  -- FLAG: MAX timestamps may have second precision. Different members published at the
+  -- same timestamp are real occurrences; replay of the accepted original is never one.
+  elseif original.member ~= p.member and publishedAt >= original.publishedAtMs and p.at < original.expiresAtMs then
     local counter = counterKey(fingerprint, original)
     local count = read(counter) or { accepted = 0, qualified = 0 }
     if state.accepted[fingerprint] then
@@ -224,7 +285,7 @@ for _, fingerprint in ipairs(p.fingerprints) do
     elseif count.accepted < p.allowed then
       count.accepted = count.accepted + 1
       newlyAccepted[fingerprint] = true
-      table.insert(writes, { key = counter, value = count })
+      table.insert(writes, { key = counter, value = count, expiresAt = original.expiresAtMs + graceMs, preserveExpiry = true })
     else
       local snapshot = nil
       if preserveOccurrences then
@@ -238,10 +299,10 @@ for _, fingerprint in ipairs(p.fingerprints) do
   end
 end
 if #state.matches == 0 then
-  for _, entry in ipairs(writes) do write(entry.key, entry.value) end
+  for _, entry in ipairs(writes) do write(entry.key, entry.value, entry.expiresAt, entry.preserveExpiry) end
   for fingerprint, _ in pairs(newlyAccepted) do state.accepted[fingerprint] = true end
 end
-write(stateKey(p.member), state)
+write(stateKey(p.member), state, windowExpiry(state.at), true)
 return cjson.encode({ kind = 'ok', matches = state.matches, observedAt = state.at, revision = state.revision })
 `;
 

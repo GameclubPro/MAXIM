@@ -41,13 +41,19 @@ function createService(params: {
     set: jest.fn().mockResolvedValue('OK'),
     quit: jest.fn(),
   };
+  const cacheRedis = {
+    mget: jest.fn(),
+    set: jest.fn().mockResolvedValue('OK'),
+    disconnect: jest.fn(),
+  };
   const service = Object.create(PhotoDuplicateHistoryStore.prototype) as PhotoDuplicateHistoryStore;
   Object.defineProperties(service, {
     redis: { value: redis },
+    cacheRedis: { value: cacheRedis },
     maxItems: { value: 250 },
     logger: { value: { warn: jest.fn() } },
   });
-  return { redis, service };
+  return { redis, cacheRedis, service };
 }
 
 function baseInput() {
@@ -144,6 +150,16 @@ describe('PhotoDuplicateHistoryStore', () => {
         configDigest: authorizationConfigDigest,
       },
     });
+  });
+
+  it('closes the optional cache connection even when authoritative history shutdown fails', async () => {
+    const { service, redis, cacheRedis } = createService({});
+    redis.quit.mockRejectedValue(new Error('history shutdown failed'));
+    await expect(service.onModuleDestroy()).rejects.toThrow('history shutdown failed');
+    expect(cacheRedis.disconnect).toHaveBeenCalledTimes(1);
+    expect(cacheRedis.disconnect.mock.invocationCallOrder[0]).toBeLessThan(
+      redis.quit.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('marks a mirrored delivery as replayed without incrementing again', async () => {
@@ -410,9 +426,9 @@ describe('PhotoDuplicateHistoryStore', () => {
   });
 
   it('reads versioned photo-id fingerprints without putting raw ids in cache keys', async () => {
-    const { redis, service } = createService({});
+    const { redis, cacheRedis, service } = createService({});
     const fingerprint = makeAlbum('0'.repeat(64), 'b'.repeat(64)).images[0];
-    redis.mget.mockResolvedValue([JSON.stringify(fingerprint), null, '{bad-json']);
+    cacheRedis.mget.mockResolvedValue([JSON.stringify(fingerprint), null, '{bad-json']);
 
     await expect(
       service.getCachedPhotoFingerprints(['photo-secret-1', 'photo-secret-2', 'photo-secret-3']),
@@ -420,29 +436,67 @@ describe('PhotoDuplicateHistoryStore', () => {
       kind: 'available',
       fingerprints: [fingerprint, null, null],
     });
-    expect(redis.mget.mock.calls[0].join('|')).not.toContain('photo-secret');
-    expect(redis.mget.mock.calls[0]).toHaveLength(3);
+    expect(cacheRedis.mget.mock.calls[0].join('|')).not.toContain('photo-secret');
+    expect(cacheRedis.mget.mock.calls[0]).toHaveLength(3);
+    expect(redis.mget).not.toHaveBeenCalled();
   });
 
   it('writes only fingerprints to the photo-id cache and fails open on write errors', async () => {
-    const { redis, service } = createService({});
+    const { redis, cacheRedis, service } = createService({});
     const fingerprint = makeAlbum('0'.repeat(64), 'b'.repeat(64)).images[0];
 
     await expect(
       service.cachePhotoFingerprints([{ photoId: 'photo-secret-1', fingerprint }], 3_600),
     ).resolves.toBe(true);
-    expect(redis.set).toHaveBeenCalledWith(
+    expect(cacheRedis.set).toHaveBeenCalledWith(
       expect.not.stringContaining('photo-secret-1'),
       JSON.stringify(fingerprint),
       'EX',
       3_600,
     );
 
-    redis.set.mockRejectedValueOnce(new Error('redis unavailable'));
+    cacheRedis.set.mockRejectedValueOnce(new Error('redis unavailable'));
     await expect(
       service.cachePhotoFingerprints([{ photoId: 'photo-secret-1', fingerprint }], 3_600),
     ).resolves.toBe(false);
+    expect(redis.set).not.toHaveBeenCalled();
   });
+
+  it.each(['read', 'write'] as const)(
+    'retires a timed-out cache %s connection and suppresses sends while it reconnects',
+    async (operation) => {
+      const { service, redis, cacheRedis } = createService({});
+      const fingerprint = makeAlbum('0'.repeat(64), 'b'.repeat(64)).images[0]!;
+      const entries = [{ photoId: 'photo-secret-1', fingerprint }];
+      const timeout = new Error('Command timed out');
+      if (operation === 'read') {
+        cacheRedis.mget.mockRejectedValueOnce(timeout);
+        await expect(service.getCachedPhotoFingerprints(['photo-secret-1'])).resolves.toEqual({
+          kind: 'unavailable',
+        });
+      } else {
+        cacheRedis.set.mockRejectedValueOnce(timeout);
+        await expect(service.cachePhotoFingerprints(entries, 3600)).resolves.toBe(false);
+      }
+      expect(cacheRedis.disconnect).toHaveBeenCalledTimes(1);
+      expect(cacheRedis.disconnect).toHaveBeenCalledWith(true);
+      cacheRedis.mget.mockClear();
+      cacheRedis.set.mockClear();
+      await expect(service.getCachedPhotoFingerprints(['photo-secret-1'])).resolves.toEqual({
+        kind: 'unavailable',
+      });
+      await expect(service.cachePhotoFingerprints(entries, 3600)).resolves.toBe(false);
+      expect(cacheRedis.mget).not.toHaveBeenCalled();
+      expect(cacheRedis.set).not.toHaveBeenCalled();
+      await expect(service.observeExactAlbum(baseInput())).resolves.toMatchObject({
+        kind: 'available',
+      });
+      expect(redis.eval).toHaveBeenCalledTimes(1);
+      expect(redis.quit).not.toHaveBeenCalled();
+      expect(redis.mget).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalled();
+    },
+  );
 
   it('isolates replay, history and counters across scope and preset changes', async () => {
     const { redis, service } = createService({});

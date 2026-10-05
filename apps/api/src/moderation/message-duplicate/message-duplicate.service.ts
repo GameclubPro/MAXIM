@@ -31,6 +31,7 @@ import { isDuplicateScheduleOpen } from './message-duplicate-schedule';
 import { MessageDuplicateAuthorizationService } from './message-duplicate-authorization.service';
 import { resolveTrustedDuplicateStateRevision } from '../duplicate-message-revision';
 import { DUPLICATE_JOB_MAX_LIFETIME_MS } from '../photo-duplicate/photo-duplicate-ordering.store';
+import { MESSAGE_DUPLICATE_HISTORY_RETENTION_MS } from './message-duplicate-window.script';
 
 @Injectable()
 export class MessageDuplicateService {
@@ -61,7 +62,7 @@ export class MessageDuplicateService {
       update.eventTimestampSource === 'ingress' ||
       !Number.isSafeInteger(eventTimestampMs) ||
       eventTimestampMs > Date.now() + 60_000 ||
-      eventTimestampMs < Date.now() - 1209661000
+      eventTimestampMs < Date.now() - MESSAGE_DUPLICATE_HISTORY_RETENTION_MS
     )
       return;
     await this.history.observeLifecycle({

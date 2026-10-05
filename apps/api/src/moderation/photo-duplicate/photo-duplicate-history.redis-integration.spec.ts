@@ -1,5 +1,6 @@
 import Redis from 'ioredis';
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import {
   PhotoDuplicateHistoryStore,
   type PhotoHistoryMatchKind,
@@ -25,6 +26,54 @@ const isLocalRedisUrl = (() => {
 const describeLocalRedis = isLocalRedisUrl ? describe : describe.skip;
 
 describeLocalRedis('PhotoDuplicateHistoryStore Redis integration', () => {
+  it('reuses validated cache proof and keeps disconnected cache commands out of both Redis queues', async () => {
+    const photoId = randomUUID();
+    const cacheKey = `photo-duplicate:history:v2:fingerprint-cache:${shortHash(PHOTO_FINGERPRINT_ALGORITHM_VERSION)}:${shortHash(photoId)}`;
+    const service = new PhotoDuplicateHistoryStore({
+      getOrThrow: () => redisIntegrationUrl,
+      get: () => 250,
+    } as never);
+    const clients = service as unknown as {
+      redis: Redis;
+      cacheRedis: Redis;
+    };
+    const cacheQueues = clients.cacheRedis as unknown as {
+      offlineQueue: { length: number };
+      commandQueue: { length: number };
+    };
+    const inspector = new Redis(redisIntegrationUrl);
+    const fingerprint = {
+      ...album('a'.repeat(64), 'b'.repeat(64), '0'.repeat(64)).images[0]!,
+      decodeCost: { encodedBytes: 100, pixels: 100 },
+    };
+    const entries = [{ photoId, fingerprint }];
+    try {
+      if (clients.cacheRedis.status !== 'ready') await once(clients.cacheRedis, 'ready');
+      await expect(service.cachePhotoFingerprints(entries, 3600)).resolves.toBe(true);
+      await expect(service.getCachedPhotoFingerprints([photoId])).resolves.toEqual({
+        kind: 'available',
+        fingerprints: [fingerprint],
+      });
+      expect(await inspector.ttl(cacheKey)).toBeGreaterThan(0);
+      const closed = once(clients.cacheRedis, 'end');
+      clients.cacheRedis.disconnect();
+      await closed;
+      for (let index = 0; index < 100; index += 1) {
+        await expect(service.getCachedPhotoFingerprints([photoId])).resolves.toEqual({
+          kind: 'unavailable',
+        });
+        await expect(service.cachePhotoFingerprints(entries, 3600)).resolves.toBe(false);
+      }
+      expect(cacheQueues.offlineQueue.length).toBe(0);
+      expect(cacheQueues.commandQueue.length).toBe(0);
+      expect(await clients.redis.ping()).toBe('PONG');
+    } finally {
+      await inspector.del(cacheKey);
+      await inspector.quit();
+      await service.onModuleDestroy();
+    }
+  });
+
   it.each(['canonical', 'perceptual'] as const)(
     'excludes a %s match exactly at the window boundary',
     async (kind) => {

@@ -392,12 +392,15 @@ and its matching content/revision binding. `MESSAGE_DUPLICATE_ENABLED=false` is 
 environment ceiling.
 
 Both API rollback paths require v3 binding, lifecycle and durable/permit authorization source
-capabilities, duplicate-only phone evidence v4, mode-aware TEXT lifecycle eligibility,
-and near punctuation/symbol positions with the `text-fixed-window-safe-text-v10` settings fence
-and `text-v8` matching namespace.
-The fence invalidates old STRICT, CUSTOM-with-near and CUSTOM-phone-value history, queued
-jobs and grants; other exact-only, CUSTOM-link-only and IMAGE settings retain their prior evidence
-versions. Ambiguous numeric identifiers, prices and measurements are never stripped as phones or
+capabilities, duplicate-only phone evidence v5, mode-aware TEXT lifecycle eligibility,
+and near punctuation/symbol positions with the `text-fixed-window-safe-text-v11` settings fence
+and `text-v9` matching namespace. Truncated protective contexts must fail closed, and numeric
+colon operands cannot become phones. Shared analysis preserves independent CUSTOM switches.
+History storage v3 additionally participates in every settings digest, including exact-only,
+CUSTOM-link-only and IMAGE: this transition invalidates all older history, queued jobs and grants.
+The new baseline fills from newly accepted originals; the first repeat without such an original
+can be accepted. Exact IMAGE raster matching semantics remain unchanged.
+Ambiguous numeric identifiers, prices and measurements are never stripped as phones or
 used as phone-only duplicate evidence. Phone evidence requires an international prefix or an
 explicit phone label from a finite list with word boundaries; unlabelled grouping alone remains
 content. Phone labels cannot match product names or words about bells and mobility through broad
@@ -444,7 +447,15 @@ the stored enabled settings and old grants must not regain authority on a later 
 Pending intents
 can survive a control downgrade, so an older unguarded API is not a valid rollback target.
 Use a retained compatible immutable release and the normal queue-fenced rollback workflow.
-API images before safe-text-v10 do not satisfy this source floor. Recovery
+Both rollback paths require the actual v3 history namespace, isolated reset/removal,
+Redis-clock-bounded PXAT expiry, replay expiry preservation and the shared 48-hour window cap.
+History lives at most 48 hours plus 11 minutes for existing processing/clock budgets;
+message/qualification use their own shorter window plus that grace. Replays cannot extend expiry.
+Legacy settings above 48 hours are clamped by the resolver and repaired with the existing settings
+CAS without overwriting unrelated fields or authored text. Old Redis keys expire naturally;
+do not mass-delete history or shorten durable sanction/action fences.
+See [Bounded history review](../../antiduplicate-bounded-history-2026-10-05.md).
+API images before safe-text-v11/history-v3 do not satisfy this source floor. Recovery
 uses the reviewed control OFF path above and a forward compatible release; static-only rollback
 is independent. Do not weaken source or applied-migration compatibility checks to reuse an old API.
 Older images do not understand the new protocol and are rejected as targets; rollback does not downgrade

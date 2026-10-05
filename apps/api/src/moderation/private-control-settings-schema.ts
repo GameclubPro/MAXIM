@@ -1,4 +1,5 @@
 import type { ChannelSettings, ChatSettings } from '@maxim/contracts';
+import { DUPLICATE_WINDOW_MAX_SEC } from '@maxim/contracts/settings';
 import { DUPLICATE_ALLOWED_COUNT_MAX } from './private-control.constants';
 import type {
   ChannelSectionKey,
@@ -207,7 +208,7 @@ export const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       label: 'Окно дублей (сек)',
       type: 'number',
       min: 3600,
-      max: 604800,
+      max: DUPLICATE_WINDOW_MAX_SEC,
       step: 3600,
       presets: [3600, 21600, 86400],
     },

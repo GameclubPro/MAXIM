@@ -4,6 +4,7 @@ import { lstat, open, realpath, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 import { chatSettingsSchema } from '@maxim/contracts';
+import { DUPLICATE_WINDOW_MAX_SEC, DUPLICATE_WINDOW_SETTING_KEYS } from '@maxim/contracts/settings';
 import type { ChatSettings } from '../prisma/prisma-client';
 
 export const ANTIDUPLICATE_CORPUS_VERSION = 'antiduplicate-corpus/v1';
@@ -137,6 +138,17 @@ export function normalizeCorpusSettings(value: Record<string, unknown>): ChatSet
   const projected = Object.fromEntries(
     Object.entries(value).filter(([key]) => isDuplicateKey(key)),
   );
+  // FLAG: Adapt only legacy integer windows in this projection; keep the frozen snapshot intact.
+  for (const key of DUPLICATE_WINDOW_SETTING_KEYS) {
+    const configured = projected[key];
+    if (
+      typeof configured === 'number' &&
+      Number.isSafeInteger(configured) &&
+      configured > DUPLICATE_WINDOW_MAX_SEC
+    ) {
+      projected[key] = DUPLICATE_WINDOW_MAX_SEC;
+    }
+  }
   const parsed = chatSettingsSchema.parse(projected);
   return {
     ...Object.fromEntries(Object.entries(parsed).filter(([key]) => isDuplicateKey(key))),

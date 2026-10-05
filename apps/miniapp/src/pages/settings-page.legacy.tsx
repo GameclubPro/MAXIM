@@ -12,6 +12,7 @@ import {
 } from './settings/settings-required-subscription-ui';
 import {
   MAX_CHAT_RULES_TEXT_LENGTH,
+  DUPLICATE_WINDOW_MAX_SEC,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   type SettingsApplyPartialError,
   updateSettingsRequestSchema,
@@ -2052,7 +2053,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const safeHours = Math.min(168, Math.max(1, Math.round(hours)));
+    const safeHours = Math.min(DUPLICATE_WINDOW_MAX_SEC / 3_600, Math.max(1, Math.round(hours)));
     applyDuplicateFlowConfig({ windowSec: safeHours * 3600 });
   }
 
@@ -2064,7 +2065,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const fallbackHours = draft ? secondsToHours(resolveDuplicateSharedWindowSec(draft)) : 1;
     const safeHours = !Number.isFinite(parsed)
       ? fallbackHours
-      : Math.min(168, Math.max(1, Math.round(parsed)));
+      : Math.min(DUPLICATE_WINDOW_MAX_SEC / 3_600, Math.max(1, Math.round(parsed)));
     applyDuplicateFlowConfig({ windowSec: safeHours * 3600 });
     setDuplicateWindowInputValue(null);
   }

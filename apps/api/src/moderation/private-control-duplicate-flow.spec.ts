@@ -240,9 +240,9 @@ describe('private control duplicate flow', () => {
         windowSec: 999_999,
       }),
     ).toEqual({
-      duplicateWarnWindowSec: 604_800,
-      duplicateMuteWindowSec: 604_800,
-      duplicateBanWindowSec: 604_800,
+      duplicateWarnWindowSec: 172_800,
+      duplicateMuteWindowSec: 172_800,
+      duplicateBanWindowSec: 172_800,
       duplicateWarnMaxCount: 1,
       duplicateMuteMaxCount: 2,
       duplicateBanMaxCount: 2,

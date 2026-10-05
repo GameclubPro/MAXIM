@@ -4,6 +4,7 @@ import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
 import { digestDuplicateContent } from './message-duplicate-content';
 import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from '../photo-duplicate/photo-fingerprint-version';
 import { duplicateScheduleDigestInput } from './message-duplicate-schedule';
+import { MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION } from './message-duplicate-window.script';
 
 export const MESSAGE_DUPLICATE_SOURCE = 'message_v1';
 export const MESSAGE_DUPLICATE_MEDIA_VERSION = `sha256-v1:${PHOTO_FINGERPRINT_ALGORITHM_VERSION}`;
@@ -156,8 +157,10 @@ export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   const safeTextMatchingEnabled = nearEnabled || phoneValueMatchingEnabled;
   return digestDuplicateContent({
     // FLAG: Old near and phone-value grants/jobs must fail the fresh guard, not merely miss history.
-    // Exact-only and IMAGE authority keep their existing versions and comparison semantics.
-    version: safeTextMatchingEnabled ? 'text-fixed-window-safe-text-v10' : 'text-fixed-window-v5',
+    // A storage incarnation change also revokes exact-only and IMAGE authority. Their
+    // comparison semantics remain separate from text normalization changes.
+    version: safeTextMatchingEnabled ? 'text-fixed-window-safe-text-v11' : 'text-fixed-window-v5',
+    historyStorageVersion: MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION,
     historyRevision: settings.duplicateHistoryRevision ?? 0,
     schedule: duplicateScheduleDigestInput(settings),
     enabled: settings.antiDuplicateEnabled,
@@ -195,6 +198,7 @@ export function messageDuplicateSanctionSettingsDigest(
 export function exactImageSettingsDigest(settings: ChatSettings): string {
   return digestDuplicateContent({
     version: 'exact-image-fixed-window-v3',
+    historyStorageVersion: MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION,
     historyRevision: settings.duplicateHistoryRevision ?? 0,
     schedule: duplicateScheduleDigestInput(settings),
     enabled: settings.antiDuplicateEnabled && settings.duplicateCompareMode !== 'TEXT',
