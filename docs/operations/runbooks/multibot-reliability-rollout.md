@@ -42,6 +42,13 @@ estimate, not a PostgreSQL worst-case guarantee. `max_wal_size` controls
 checkpoint pressure and does not cap WAL disk use. A successful build-image
 disk check does not replace this database preparation gate.
 
+The capacity probe receives the same structured Compose arguments as the deploy:
+`--env-file .env -p <project> -f infra/docker-compose.yml`, including any subsequent
+`-f` overlays. Preserve their order and values. Removing the environment or project
+to pass validation can inspect a different PostgreSQL container. Unknown flags,
+missing values, repeated environment/project selectors or missing Compose files
+abort before any catalog/filesystem command; multiple file selectors are supported.
+
 The storage audit at `2026-10-05T03:08:44.392856Z` estimated 46.85 million webhook
 rows, with 87.95 GB of table storage including 17.95 GB of TOAST, and 30.73
 million execution claims with 7.87 GB of table storage. Each concurrent webhook

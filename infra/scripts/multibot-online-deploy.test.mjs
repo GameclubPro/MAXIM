@@ -169,7 +169,25 @@ test('a successful existing cutoff skips all online preparation work', () => {
   assert.match(result.stdout, /status=0 ingress=live workers=live paused=0 cutoff=0/u);
 });
 
-function probeHook(failure = 'none', receipt = '0') {
+test('conditional preparation rejects changed or reordered Compose context in the forwarding stub', () => {
+  for (const override of [
+    'COMPOSE_FILES=(--env-file wrong.env -p infra -f infra/docker-compose.yml)',
+    'COMPOSE_FILES=(--env-file .env -p other -f infra/docker-compose.yml)',
+    'COMPOSE_FILES=(--env-file .env -p infra -f wrong.yml)',
+    'COMPOSE_FILES=(-p infra --env-file .env -f infra/docker-compose.yml)',
+  ]) {
+    const result = probeHook('none', '0', override);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /status=1 ingress=live workers=live paused=0 cutoff=0/u);
+    assert.doesNotMatch(result.stdout, /^(?:capacity|prepare|exact-indexes)$/mu);
+  }
+});
+
+function probeHook(failure = 'none', receipt = '0', override = '') {
+  const deploy = readFileSync(resolve(root, 'infra/scripts/vps-pull-build-up.sh'), 'utf8');
+  const projectDeclaration = deploy.match(/^MAIN_PROJECT_NAME="[^"\r\n]+"$/mu)?.[0];
+  const composeDeclaration = deploy.match(/^COMPOSE_FILES=\([^\r\n]+\)$/mu)?.[0];
+  assert.ok(projectDeclaration && composeDeclaration, 'Use the real main Compose scope');
   return spawnSync(
     'bash',
     [
@@ -179,10 +197,20 @@ ROOT_DIR="$1"
 source "$2"
 failure="$3"
 receipt="$4"
-COMPOSE_FILES=(-f fixture.yml)
+${projectDeclaration}
+${composeDeclaration}
+${override}
 ingress=live workers=live paused=0 cutoff=0
 maxim_webhook_read_multibot_cutover_receipt() { printf '%s\\n' "$receipt"; }
-node() { echo capacity; [[ "$failure" != capacity ]]; }
+node() {
+  [[ "$1" == "$ROOT_DIR/infra/scripts/multibot-prepare-capacity.mjs" ]] || return 1
+  shift
+  expected=(--env-file .env -p infra -f infra/docker-compose.yml)
+  [[ "$#" -eq "\${#expected[@]}" ]] || return 1
+  for value in "\${expected[@]}"; do [[ "$1" == "$value" ]] || return 1; shift; done
+  echo capacity
+  [[ "$failure" != capacity ]]
+}
 run_online_multibot_migrations() { echo prepare; [[ "$failure" != prepare ]]; }
 maxim_webhook_assert_multibot_migration_indexes() { echo exact-indexes; [[ "$failure" != indexes ]]; }
 docker() { echo 'Unexpected container mutation' >&2; return 99; }
