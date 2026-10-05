@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { holdUnverifiedLegacyExecution } from '../webhook/webhook-legacy-authority';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
 import { randomUUID } from 'node:crypto';
 
@@ -13,8 +14,24 @@ import {
   WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_HEARTBEAT_MS,
   WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_LEASE_MS,
   WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
+  WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX,
 } from '../webhook/webhook-timeout-quarantine';
 import { WebhookOrderedPredecessorPendingError } from './webhook-ordered-predecessor-fence';
+import { MaxExecutionOwnerReadinessService } from '../max/max-execution-owner-readiness.service';
+import { executionRouteProof, type MaxExecutionRouteProof } from '../max/max-execution-route-proof';
+import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
+import { WebhookExecutionOwnerUnavailableError } from '../common/webhook-execution-owner-unavailable.error';
+import {
+  buildWebhookExecutionDeadlineAt,
+  hasExpiredWebhookReadinessWait,
+  hasWebhookReplayFence,
+  WEBHOOK_NO_EXECUTABLE_OWNER,
+} from '../webhook/webhook-execution-deadline';
+import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
+import {
+  MULTIBOT_EXECUTION_AUTHORITY_VERSION,
+  isEarlierWebhookReceipt,
+} from '../webhook/webhook-semantic-authority';
 
 export { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from '../webhook/webhook-timeout-quarantine';
 
@@ -27,12 +44,15 @@ const WEBHOOK_TIMEOUT_PERSISTENCE_TRANSACTION_TIMEOUT_MS = 30_000;
 type WebhookExecutionClaimRecord = {
   id?: string;
   semanticKey?: string;
-  webhookEventId?: string;
+  webhookEventId?: string | null;
   executionBotId?: string | null;
   enforced?: boolean;
   status?: string;
   preparedAt?: Date | null;
   completedAt?: Date | null;
+  businessStartedAt?: Date | null;
+  commandResult?: unknown;
+  createdAt?: Date;
   leaseToken?: string | null;
   leaseExpiresAt?: Date | null;
 };
@@ -45,6 +65,7 @@ type WebhookExecutionClaimModel = {
 
 export type WebhookCanonicalPersistenceClient = {
   webhookEvent: {
+    findFirst?: unknown;
     findUnique?: (args: unknown) => Promise<{
       id: string;
       status: WebhookStatus;
@@ -53,6 +74,7 @@ export type WebhookCanonicalPersistenceClient = {
       processedAt: Date | null;
       nextEnqueueAt: Date | null;
       timeoutQuarantineExpiresAt: Date | null;
+      createdAt?: Date;
     } | null>;
     updateMany: (args: unknown) => Promise<{ count: number }>;
   };
@@ -82,6 +104,9 @@ const WEBHOOK_EXECUTION_CLAIM_SELECT = {
   status: true,
   preparedAt: true,
   completedAt: true,
+  businessStartedAt: true,
+  commandResult: true,
+  createdAt: true,
   leaseToken: true,
   leaseExpiresAt: true,
 } as const;
@@ -121,7 +146,11 @@ export type WebhookShadowMirrorSettlementResult = 'settled' | 'retry' | 'invalid
 export class WebhookCanonicalExecutionService {
   private readonly logger = new Logger(WebhookCanonicalExecutionService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly executionOwnerReadiness?: MaxExecutionOwnerReadinessService,
+    @Optional() private readonly runtimeDiagnostics?: RuntimeDiagnosticsService,
+  ) {}
 
   async prepareExecution(
     webhookEventId: string,
@@ -141,6 +170,19 @@ export class WebhookCanonicalExecutionService {
       return null;
     }
     if (this.isHotPathTimeoutQuarantined(webhookEvent)) {
+      const model = this.executionClaimModel;
+      const finished =
+        typeof model?.findFirst === 'function'
+          ? await model.findFirst({
+              where: { webhookEventId: webhookEvent.id, kind: 'EXECUTION' },
+              select: WEBHOOK_EXECUTION_CLAIM_SELECT,
+            })
+          : null;
+      if (
+        finished?.businessStartedAt &&
+        (await this.tryRecoverFinishedExecution(webhookEvent, finished))
+      )
+        return null;
       this.logger.warn(
         { webhookEventId: webhookEvent.id },
         'Skipped webhook execution that is quarantined after a hot-path timeout',
@@ -152,6 +194,23 @@ export class WebhookCanonicalExecutionService {
     const normalizedUpdateType = update.type.trim().toLowerCase();
     const executionClaimModel = this.executionClaimModel;
     const semanticKey = buildWebhookSemanticEventKey(update);
+    if (semanticKey && !webhookEvent.semanticKey) {
+      await this.prisma.webhookEvent.updateMany({
+        where: { id: webhookEvent.id, semanticKey: null },
+        data: { semanticKey },
+      });
+      webhookEvent.semanticKey = semanticKey;
+    }
+    if (!webhookEvent.executionDeadlineAt) {
+      const deadline = buildWebhookExecutionDeadlineAt(update, webhookEvent.createdAt);
+      if (deadline) {
+        await this.prisma.webhookEvent.updateMany({
+          where: { id: webhookEvent.id, executionDeadlineAt: null },
+          data: { executionDeadlineAt: deadline },
+        });
+        webhookEvent.executionDeadlineAt = deadline;
+      }
+    }
     const semanticClaim =
       semanticKey && typeof executionClaimModel?.findUnique === 'function'
         ? await executionClaimModel.findUnique({
@@ -164,7 +223,7 @@ export class WebhookCanonicalExecutionService {
             select: WEBHOOK_EXECUTION_CLAIM_SELECT,
           })
         : null;
-    const executionClaim =
+    let executionClaim =
       semanticClaim ??
       (typeof executionClaimModel?.findFirst === 'function'
         ? await executionClaimModel.findFirst({
@@ -176,11 +235,93 @@ export class WebhookCanonicalExecutionService {
           })
         : null);
 
+    if (semanticKey) {
+      if (!executionClaim?.id || !executionClaimModel?.updateMany)
+        throw new WebhookPreparationDeferredError(
+          'Semantic execution preparation authority missing',
+          1_000,
+        );
+      if (
+        await holdUnverifiedLegacyExecution(
+          this.prisma,
+          executionClaim as Parameters<typeof holdUnverifiedLegacyExecution>[1],
+          webhookEvent,
+        )
+      ) {
+        if (update.message?.chatId)
+          await this.runtimeDiagnostics?.recordProblemChat({
+            chatId: update.message.chatId,
+            botId: executionClaim.executionBotId,
+            category: 'canonical_recovery',
+            severity: 'warning',
+            reason: 'LEGACY_EXECUTION_UNVERIFIED; awaiting exact effects proof',
+          });
+        throw new WebhookPreparationDeferredError(
+          'Legacy semantic execution requires exact proof recovery',
+          5_000,
+        );
+      }
+      if (executionClaim.enforced !== true) {
+        const promoted = await executionClaimModel.updateMany({
+          where: {
+            id: executionClaim.id,
+            webhookEventId: executionClaim.webhookEventId,
+            status: executionClaim.status,
+            enforced: false,
+            leaseToken: executionClaim.leaseToken ?? null,
+            leaseExpiresAt: executionClaim.leaseExpiresAt ?? null,
+          },
+          data: { enforced: true },
+        });
+        if (promoted.count !== 1)
+          throw new WebhookPreparationDeferredError('Semantic execution authority changed', 1_000);
+        executionClaim = { ...executionClaim, enforced: true };
+      }
+    }
+
+    if (executionClaim?.webhookEventId === null) {
+      const settled = await this.prisma.$transaction((tx) =>
+        WebhookCanonicalExecutionService.trySettleCompletedShadowMirrorWithClient(
+          tx as unknown as WebhookCanonicalPersistenceClient,
+          { webhookEvent, update, businessLeaseToken: null },
+          {
+            id: webhookEvent.id,
+            status: webhookEvent.status,
+            errorMessage: webhookEvent.errorMessage,
+            timeoutQuarantineExpiresAt: null,
+          },
+        ),
+      );
+      if (settled !== 'settled')
+        throw new WebhookPreparationDeferredError(
+          'Ownerless semantic authority cannot execute',
+          1_000,
+        );
+      return null;
+    }
+
     if (
       executionClaim?.enforced === true &&
       executionClaim.webhookEventId &&
       executionClaim.webhookEventId !== webhookEvent.id
     ) {
+      const settlement = await this.prisma.$transaction((tx) =>
+        WebhookCanonicalExecutionService.trySettlePreparedMirrorWithClient(
+          tx as unknown as WebhookCanonicalPersistenceClient,
+          { webhookEvent, update, businessLeaseToken: null },
+          {
+            id: webhookEvent.id,
+            status: webhookEvent.status,
+            errorMessage: webhookEvent.errorMessage,
+            timeoutQuarantineExpiresAt: null,
+          },
+        ),
+      );
+      if (settlement !== 'settled')
+        throw new WebhookPreparationDeferredError(
+          `Canonical mirror awaits semantic owner (${MULTIBOT_EXECUTION_AUTHORITY_VERSION})`,
+          1_000,
+        );
       this.logger.warn(
         { webhookEventId: webhookEvent.id },
         'Skipped active non-canonical mirrored webhook job at the worker fence',
@@ -219,20 +360,92 @@ export class WebhookCanonicalExecutionService {
     ) {
       // FLAG: Completion is authoritative in both enforced and shadow modes; a retry may repair
       // the receipt, but it must never reacquire a business lease or repeat side effects.
+      if (
+        executionClaim.semanticKey !== semanticKey ||
+        !(executionClaim.preparedAt instanceof Date) ||
+        !Number.isFinite(executionClaim.preparedAt.getTime()) ||
+        !(executionClaim.completedAt instanceof Date) ||
+        !Number.isFinite(executionClaim.completedAt.getTime()) ||
+        executionClaim.leaseToken !== null ||
+        executionClaim.leaseExpiresAt !== null ||
+        hasWebhookReplayFence(webhookEvent)
+      )
+        throw new WebhookPreparationDeferredError('Completed execution proof incomplete', 1_000);
+      const completedClaim = executionClaim;
+      await this.prisma.$transaction(async (tx) => {
+        const authority = await tx.webhookExecutionClaim.updateMany({
+          where: {
+            id: completedClaim.id,
+            kind: 'EXECUTION',
+            semanticKey: semanticKey!,
+            webhookEventId: webhookEvent.id,
+            enforced: true,
+            status: 'COMPLETED',
+            preparedAt: completedClaim.preparedAt,
+            completedAt: completedClaim.completedAt,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          },
+          data: { enforced: true },
+        });
+        if (authority.count !== 1)
+          throw new WebhookPreparationDeferredError('Completed execution claim changed', 1_000);
+        const receipt = await tx.webhookEvent.updateMany({
+          where: {
+            id: webhookEvent.id,
+            status: webhookEvent.status,
+            normalizedPayload: { equals: webhookEvent.normalizedPayload as Prisma.InputJsonValue },
+            errorMessage: webhookEvent.errorMessage,
+            nextEnqueueAt: webhookEvent.nextEnqueueAt,
+            timeoutQuarantineExpiresAt: null,
+          },
+          data: {
+            status: WebhookStatus.PROCESSED,
+            processedAt: completedClaim.completedAt,
+            queueName: null,
+            errorMessage: null,
+            nextEnqueueAt: null,
+          },
+        });
+        if (receipt.count !== 1)
+          throw new WebhookPreparationDeferredError('Completed execution receipt changed', 1_000);
+      });
+      return null;
+    }
+
+    if (executionClaim?.businessStartedAt) {
+      if (await this.tryRecoverFinishedExecution(webhookEvent, executionClaim)) return null;
+      if (
+        executionClaim.leaseToken &&
+        executionClaim.leaseExpiresAt &&
+        executionClaim.leaseExpiresAt.getTime() > Date.now()
+      )
+        throw new WebhookPreparationDeferredError('Canonical business already running', 1_000);
+      // FLAG: A started whole-engine attempt is never reclaimed, including by the same
+      // bot. Its independent durable action/media/command journals recover existing work;
+      // this receipt retains the ordered replay fence until exact proof recovery settles it.
       await this.prisma.webhookEvent.updateMany({
         where: {
           id: webhookEvent.id,
-          status: { not: WebhookStatus.PROCESSED },
-        },
-        data: {
-          status: WebhookStatus.PROCESSED,
-          processedAt: executionClaim.completedAt ?? new Date(),
-          queueName: null,
-          errorMessage: null,
-          nextEnqueueAt: null,
+          status: webhookEvent.status,
+          errorMessage: webhookEvent.errorMessage,
           timeoutQuarantineExpiresAt: null,
         },
+        data: {
+          status: WebhookStatus.FAILED,
+          errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:CANONICAL_BUSINESS_ALREADY_STARTED; durable-effects recovery required`,
+          nextEnqueueAt: null,
+          queueName: null,
+        },
       });
+      if (update.message?.chatId)
+        await this.runtimeDiagnostics?.recordProblemChat({
+          chatId: update.message.chatId,
+          botId: executionClaim.executionBotId,
+          category: 'canonical_recovery',
+          severity: 'warning',
+          reason: 'CANONICAL_BUSINESS_ALREADY_STARTED; awaiting durable-effects proof',
+        });
       return null;
     }
 
@@ -254,6 +467,102 @@ export class WebhookCanonicalExecutionService {
         this.normalizeBotId(defaultBotId),
       businessLeaseToken,
     };
+    let preparedProof: MaxExecutionRouteProof | null = null;
+
+    if (businessLeaseToken && this.executionOwnerReadiness && update.message?.chatId) {
+      try {
+        if (
+          semanticKey &&
+          hasExpiredWebhookReadinessWait(
+            executionClaim?.commandResult,
+            webhookEvent.id,
+            semanticKey,
+            webhookEvent.executionDeadlineAt,
+          )
+        ) {
+          const expired = await this.prisma.$transaction((tx) =>
+            WebhookCanonicalExecutionService.tryExpireUnstartedOwnerWithClient(tx, {
+              webhookEventId: webhookEvent.id,
+              semanticKey,
+              claimId: executionClaim!.id!,
+              leaseToken: businessLeaseToken,
+            }),
+          );
+          if (!expired)
+            throw new WebhookPreparationDeferredError(
+              'Expired executor waiting authority changed',
+              1_000,
+            );
+          await this.runtimeDiagnostics?.recordProblemChat({
+            chatId: update.message.chatId,
+            botId: context.activeBotId,
+            category: 'executor_readiness',
+            severity: 'warning',
+            reason: `${WEBHOOK_NO_EXECUTABLE_OWNER}; deadline=${webhookEvent.executionDeadlineAt!.toISOString()}`,
+          });
+          return null;
+        }
+        const proof = await this.executionOwnerReadiness.ensureReady({
+          chatId: update.message.chatId,
+          preferredBotId: context.activeBotId,
+        });
+        if (!proof)
+          throw new WebhookExecutionOwnerUnavailableError('No eligible moderation executor', 5_000);
+        preparedProof = proof;
+      } catch (error: unknown) {
+        if (
+          error instanceof WebhookExecutionOwnerUnavailableError &&
+          webhookEvent.executionDeadlineAt &&
+          semanticKey
+        )
+          await this.prisma.webhookExecutionClaim.updateMany({
+            where: {
+              id: executionClaim!.id,
+              webhookEventId: webhookEvent.id,
+              kind: 'EXECUTION',
+              status: 'READY',
+              leaseToken: businessLeaseToken,
+              businessStartedAt: null,
+            },
+            data: {
+              commandResult: {
+                kind: 'EXECUTION_WAITING',
+                authorityVersion: MULTIBOT_EXECUTION_AUTHORITY_VERSION,
+                webhookEventId: webhookEvent.id,
+                semanticKey,
+                deadlineAt: webhookEvent.executionDeadlineAt.toISOString(),
+              },
+            },
+          });
+        if (
+          error instanceof WebhookExecutionOwnerUnavailableError &&
+          webhookEvent.executionDeadlineAt &&
+          webhookEvent.executionDeadlineAt.getTime() <= Date.now() &&
+          semanticKey
+        ) {
+          const expired = await this.prisma.$transaction((tx) =>
+            WebhookCanonicalExecutionService.tryExpireUnstartedOwnerWithClient(tx, {
+              webhookEventId: webhookEvent.id,
+              semanticKey,
+              claimId: executionClaim!.id!,
+              leaseToken: businessLeaseToken,
+            }),
+          );
+          if (expired) {
+            await this.runtimeDiagnostics?.recordProblemChat({
+              chatId: update.message.chatId,
+              botId: context.activeBotId,
+              category: 'executor_readiness',
+              severity: 'warning',
+              reason: `${WEBHOOK_NO_EXECUTABLE_OWNER}; deadline=${webhookEvent.executionDeadlineAt.toISOString()}`,
+            });
+            return null;
+          }
+        }
+        await this.releaseBusinessLease(context);
+        throw error;
+      }
+    }
 
     // Recheck after a fenced claim: another worker can have read this event before a timeout
     // quarantine was persisted, then win the claim after its original owner finishes.
@@ -278,10 +587,384 @@ export class WebhookCanonicalExecutionService {
       }
     }
 
+    if (businessLeaseToken) {
+      let started: 'transitioned' | 'expired' | 'deferred';
+      try {
+        started = preparedProof
+          ? await this.adoptPreparedExecutor(context, executionClaim!, preparedProof)
+          : await this.prisma.$transaction((tx) =>
+              WebhookCanonicalExecutionService.transitionLiveUnstartedOwnerWithClient(tx, {
+                claimId: executionClaim!.id!,
+                webhookEventId: webhookEvent.id,
+                semanticKey: executionClaim!.semanticKey!,
+                leaseToken: businessLeaseToken,
+                executionBotId: executionClaim!.executionBotId ?? null,
+                executionDeadlineAt: webhookEvent.executionDeadlineAt,
+                enforced: true,
+                phase: 'start',
+              }),
+            );
+      } catch (error: unknown) {
+        await this.releaseBusinessLease(context);
+        throw error;
+      }
+      if (started === 'expired') {
+        await this.runtimeDiagnostics?.recordProblemChat({
+          chatId: update.message!.chatId,
+          botId: context.activeBotId,
+          category: 'executor_readiness',
+          severity: 'warning',
+          reason: `${WEBHOOK_NO_EXECUTABLE_OWNER}; deadline=${webhookEvent.executionDeadlineAt!.toISOString()}`,
+        });
+        return null;
+      }
+      if (started !== 'transitioned') {
+        await this.releaseBusinessLease(context);
+        throw new WebhookPreparationDeferredError('Canonical business-start fence changed', 1_000);
+      }
+    }
     return context;
   }
 
+  static async transitionLiveUnstartedOwnerWithClient(
+    client: Prisma.TransactionClient,
+    params: {
+      claimId: string;
+      webhookEventId: string;
+      semanticKey: string;
+      leaseToken: string;
+      executionBotId: string | null;
+      expectedExecutionBotId?: string | null;
+      executionDeadlineAt: Date | null;
+      enforced: boolean;
+      phase: 'ready' | 'start';
+      route?: { chatId: string; proof: MaxExecutionRouteProof };
+    },
+  ): Promise<'transitioned' | 'expired' | 'deferred'> {
+    // FLAG: Acquire both row locks before reading the database clock. A WHERE evaluated before
+    // waiting for an UPDATE lock can otherwise accept a lease/deadline that expires in that wait.
+    await client.$queryRaw(Prisma.sql`
+      SELECT "id" FROM "webhook_execution_claims" WHERE "id" = ${params.claimId} FOR UPDATE
+    `);
+    await client.$queryRaw(Prisma.sql`
+      SELECT "id" FROM "webhook_events" WHERE "id" = ${params.webhookEventId} FOR UPDATE
+    `);
+    const waitingMarker = JSON.stringify({
+      kind: 'EXECUTION_WAITING',
+      authorityVersion: MULTIBOT_EXECUTION_AUTHORITY_VERSION,
+      webhookEventId: params.webhookEventId,
+      semanticKey: params.semanticKey,
+      deadlineAt: params.executionDeadlineAt?.toISOString() ?? null,
+    });
+    const routeFence = params.route
+      ? Prisma.sql`AND EXISTS (
+          SELECT 1 FROM "chats" AS chat
+          JOIN "chat_bot_memberships" AS membership ON membership."chat_id" = chat."id"
+          WHERE chat."id" = ${params.route.chatId}
+            AND chat."primary_bot_id" = ${params.route.proof.botId}
+            AND chat."routing_version" = ${params.route.proof.routingVersion}
+            AND membership."bot_id" = ${params.route.proof.botId}
+            AND membership."status" = 'ACTIVE'
+            AND membership."bot_access_state" IN ('CONFIRMED_ADMIN', 'CONFIRMED_OWNER')
+            AND membership."bot_access_checked_at" = ${params.route.proof.accessEpoch.checkedAt}
+            AND membership."bot_access_source" = ${params.route.proof.accessEpoch.source}
+            AND membership."bot_access_checked_at" <= instant."now"
+            AND membership."bot_access_checked_at" + INTERVAL '5 minutes' > instant."now"
+            AND membership."bot_access_expires_at" > instant."now"
+        )`
+      : Prisma.empty;
+    const executionBotFence =
+      params.expectedExecutionBotId !== undefined
+        ? Prisma.sql`AND claim."execution_bot_id" IS NOT DISTINCT FROM ${params.expectedExecutionBotId}`
+        : Prisma.empty;
+    const ready = params.phase === 'ready';
+    const changed = await client.$executeRaw(Prisma.sql`
+      WITH instant AS MATERIALIZED (SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now")
+      UPDATE "webhook_execution_claims" AS claim
+      SET "execution_bot_id" = ${params.executionBotId},
+          "enforced" = claim."enforced" OR ${params.enforced},
+          "status" = 'READY',
+          "prepared_at" = ${ready ? Prisma.sql`instant."now"` : Prisma.sql`claim."prepared_at"`},
+          "business_started_at" = ${ready ? Prisma.sql`NULL` : Prisma.sql`instant."now"`},
+          "lease_token" = ${ready ? Prisma.sql`NULL` : Prisma.sql`claim."lease_token"`},
+          "lease_expires_at" = ${ready ? Prisma.sql`NULL` : Prisma.sql`claim."lease_expires_at"`},
+          "updated_at" = instant."now"
+      FROM "webhook_events" AS event, instant
+      WHERE claim."id" = ${params.claimId} AND claim."kind" = 'EXECUTION'
+        AND claim."semantic_key" = ${params.semanticKey}
+        AND claim."webhook_event_id" = event."id" AND event."id" = ${params.webhookEventId}
+        AND claim."status"::text = ${ready ? 'PENDING' : 'READY'}
+        AND claim."completed_at" IS NULL AND claim."business_started_at" IS NULL
+        AND claim."lease_token" = ${params.leaseToken}
+        AND claim."lease_expires_at" > instant."now"
+        AND (${ready} OR claim."enforced")
+        AND event."status" NOT IN ('PROCESSED', 'DUPLICATE')
+        AND event."timeout_quarantine_expires_at" IS NULL
+        AND COALESCE(event."error_message", '') NOT LIKE ${`${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}%`}
+        AND COALESCE(event."error_message", '') NOT LIKE ${`${WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX}%`}
+        AND COALESCE(event."error_message", '') NOT ILIKE '%ambiguous%'
+        AND event."execution_deadline_at" IS NOT DISTINCT FROM ${params.executionDeadlineAt}
+        AND (NOT COALESCE(claim."command_result" @> ${waitingMarker}::jsonb, false)
+             OR event."execution_deadline_at" > instant."now")
+        ${executionBotFence} ${routeFence}
+    `);
+    if (changed === 1) return 'transitioned';
+    return (await WebhookCanonicalExecutionService.tryExpireUnstartedOwnerWithClient(
+      client,
+      params,
+    ))
+      ? 'expired'
+      : 'deferred';
+  }
+
+  static async tryExpireUnstartedOwnerWithClient(
+    client: Prisma.TransactionClient,
+    params: { webhookEventId: string; semanticKey: string; claimId: string; leaseToken: string },
+  ): Promise<boolean> {
+    await client.$queryRaw(Prisma.sql`
+      SELECT "id" FROM "webhook_execution_claims" WHERE "id" = ${params.claimId} FOR UPDATE
+    `);
+    await client.$queryRaw(Prisma.sql`
+      SELECT "id" FROM "webhook_events" WHERE "id" = ${params.webhookEventId} FOR UPDATE
+    `);
+    const now = new Date();
+    const event = await client.webhookEvent.findUnique({ where: { id: params.webhookEventId } });
+    const claim = await client.webhookExecutionClaim.findUnique({ where: { id: params.claimId } });
+    if (
+      !event ||
+      !claim ||
+      claim.kind !== 'EXECUTION' ||
+      !claim.enforced ||
+      claim.semanticKey !== params.semanticKey ||
+      claim.webhookEventId !== event.id ||
+      claim.leaseToken !== params.leaseToken ||
+      claim.businessStartedAt !== null ||
+      claim.status === 'COMPLETED' ||
+      !event.executionDeadlineAt ||
+      event.executionDeadlineAt.getTime() > now.getTime() ||
+      hasWebhookReplayFence(event) ||
+      event.status === WebhookStatus.PROCESSED ||
+      event.status === WebhookStatus.DUPLICATE ||
+      buildWebhookSemanticEventKey(event.normalizedPayload) !== params.semanticKey
+    )
+      return false;
+    // FLAG: Expiry is a proven no-business disposition, not an access grant or a success
+    // receipt. Its exact existing claim completes so late mirrors cannot replay the event.
+    const waitingMarker = JSON.stringify({
+      kind: 'EXECUTION_WAITING',
+      authorityVersion: MULTIBOT_EXECUTION_AUTHORITY_VERSION,
+      webhookEventId: event.id,
+      semanticKey: params.semanticKey,
+      deadlineAt: event.executionDeadlineAt.toISOString(),
+    });
+    const fenced = await client.$executeRaw(Prisma.sql`
+      WITH instant AS MATERIALIZED (SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now")
+      UPDATE "webhook_execution_claims" AS claim
+      SET "status" = 'COMPLETED', "prepared_at" = COALESCE(claim."prepared_at", instant."now"),
+          "completed_at" = instant."now", "lease_token" = NULL, "lease_expires_at" = NULL,
+          "updated_at" = instant."now"
+      FROM "webhook_events" AS event, instant
+      WHERE claim."id" = ${claim.id} AND claim."kind" = 'EXECUTION'
+        AND claim."semantic_key" = ${params.semanticKey}
+        AND claim."webhook_event_id" = event."id" AND event."id" = ${event.id}
+        AND claim."status"::text = ${claim.status} AND claim."enforced"
+        AND claim."lease_token" = ${params.leaseToken} AND claim."lease_expires_at" > instant."now"
+        AND claim."business_started_at" IS NULL AND claim."completed_at" IS NULL
+        AND claim."command_result" @> ${waitingMarker}::jsonb
+        AND event."execution_deadline_at" = ${event.executionDeadlineAt}
+        AND event."execution_deadline_at" <= instant."now"
+    `);
+    if (fenced !== 1) return false;
+    const payload = {
+      ...(event.normalizedPayload as unknown as MaxUpdate),
+      executionOutcome: {
+        code: WEBHOOK_NO_EXECUTABLE_OWNER,
+        deadlineAt: event.executionDeadlineAt.toISOString(),
+      },
+    };
+    const settled = await client.webhookEvent.updateMany({
+      where: {
+        id: event.id,
+        status: event.status,
+        normalizedPayload: { equals: event.normalizedPayload as Prisma.InputJsonValue },
+        executionDeadlineAt: event.executionDeadlineAt,
+        errorMessage: event.errorMessage,
+        nextEnqueueAt: event.nextEnqueueAt,
+        timeoutQuarantineExpiresAt: null,
+      },
+      data: {
+        status: WebhookStatus.PROCESSED,
+        normalizedPayload: payload as unknown as Prisma.InputJsonValue,
+        processedAt: now,
+        queueName: null,
+        nextEnqueueAt: null,
+        errorMessage: null,
+      },
+    });
+    if (settled.count !== 1)
+      throw new WebhookPreparationDeferredError('Executor expiry receipt changed', 1_000);
+    return true;
+  }
+
+  private async adoptPreparedExecutor(
+    context: WebhookCanonicalExecutionContext,
+    claim: WebhookExecutionClaimRecord,
+    accepted: MaxExecutionRouteProof,
+  ): Promise<'transitioned' | 'expired' | 'deferred'> {
+    const chatId = context.update.message!.chatId;
+    return this.prisma.$transaction(async (tx) => {
+      // FLAG: Adopt and start together under the live SQL lease and original readiness deadline.
+      // The receipt, order anchor and all downstream action/deadline identities stay unchanged.
+      await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "chats" WHERE "id" = ${chatId} FOR UPDATE`);
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "chat_bot_memberships"
+        WHERE "chat_id" = ${chatId} AND "bot_id" = ${accepted.botId} FOR UPDATE
+      `);
+      const chat = await tx.chat.findUnique({
+        where: { id: chatId },
+        select: {
+          primaryBotId: true,
+          routingVersion: true,
+          entityType: true,
+          botMemberships: {
+            select: {
+              botId: true,
+              status: true,
+              botAccessState: true,
+              botAccessCheckedAt: true,
+              botAccessExpiresAt: true,
+              botAccessSource: true,
+              permissionsSnapshot: true,
+            },
+          },
+        },
+      });
+      const proof = chat
+        ? executionRouteProof(
+            {
+              chatId,
+              entityType: chat.entityType,
+              primaryBotId: chat.primaryBotId,
+              routingVersion: chat.routingVersion,
+              candidates: chat.botMemberships,
+            },
+            accepted.botId,
+          )
+        : null;
+      if (
+        !proof ||
+        chat!.primaryBotId !== accepted.botId ||
+        proof.routingVersion !== accepted.routingVersion ||
+        proof.accessEpoch.checkedAt.getTime() !== accepted.accessEpoch.checkedAt.getTime() ||
+        proof.accessEpoch.source !== accepted.accessEpoch.source
+      )
+        throw new WebhookPreparationDeferredError(
+          'Execution route proof changed before business',
+          1_000,
+        );
+      const changed = await WebhookCanonicalExecutionService.transitionLiveUnstartedOwnerWithClient(
+        tx,
+        {
+          claimId: claim.id!,
+          webhookEventId: context.webhookEvent.id,
+          semanticKey: claim.semanticKey!,
+          leaseToken: context.businessLeaseToken!,
+          executionBotId: accepted.botId,
+          expectedExecutionBotId: claim.executionBotId ?? null,
+          executionDeadlineAt: context.webhookEvent.executionDeadlineAt,
+          enforced: true,
+          phase: 'start',
+          route: { chatId, proof: accepted },
+        },
+      );
+      if (changed !== 'transitioned') return changed;
+      const nextUpdate = { ...context.update, executionOwnerBotId: accepted.botId };
+      const receipt = await tx.webhookEvent.updateMany({
+        where: {
+          id: context.webhookEvent.id,
+          normalizedPayload: {
+            equals: context.webhookEvent.normalizedPayload as Prisma.InputJsonValue,
+          },
+          status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.FAILED] },
+          timeoutQuarantineExpiresAt: null,
+        },
+        data: { normalizedPayload: nextUpdate as unknown as Prisma.InputJsonValue },
+      });
+      if (receipt.count !== 1)
+        throw new WebhookPreparationDeferredError(
+          'Execution receipt changed before business',
+          1_000,
+        );
+      context.update = nextUpdate;
+      context.webhookEvent.normalizedPayload = nextUpdate as unknown as Prisma.JsonValue;
+      context.activeBotId = accepted.botId;
+      return 'transitioned';
+    });
+  }
+
   async completeExecution(context: WebhookCanonicalExecutionContext): Promise<void> {
+    // FLAG: This method is called only after the awaited whole handler succeeds. Persist
+    // that exact fact before receipt settlement, so a crash here never reruns the engine.
+    await this.markExecutionHandlerFinished(context);
+    if (context.businessLeaseToken) {
+      await this.prisma.$transaction(async (tx) => {
+        const claim = await tx.webhookExecutionClaim.findFirst({
+          where: { webhookEventId: context.webhookEvent.id, kind: 'EXECUTION' },
+        });
+        const journal = claim ? this.finishedExecutionJournal(context.webhookEvent, claim) : null;
+        if (!claim || !journal)
+          throw new WebhookPreparationDeferredError('Completed handler journal unavailable', 1_000);
+        if (
+          claim.status === 'COMPLETED' &&
+          claim.leaseToken === null &&
+          claim.leaseExpiresAt === null
+        )
+          return;
+        if (claim.status !== 'READY' || claim.leaseToken !== context.businessLeaseToken)
+          throw new WebhookPreparationDeferredError('Handler completion lease changed', 1_000);
+        const completed = await tx.webhookExecutionClaim.updateMany({
+          where: {
+            id: claim.id,
+            kind: 'EXECUTION',
+            webhookEventId: context.webhookEvent.id,
+            status: 'READY',
+            enforced: true,
+            leaseToken: context.businessLeaseToken,
+            businessStartedAt: claim.businessStartedAt,
+            commandResult: { equals: journal as Prisma.InputJsonValue },
+          },
+          data: {
+            status: 'COMPLETED',
+            completedAt: new Date(journal.finishedAt as string),
+            leaseToken: null,
+            leaseExpiresAt: null,
+          },
+        });
+        if (completed.count !== 1)
+          throw new WebhookPreparationDeferredError('Handler completion claim changed', 1_000);
+        const settled = await tx.webhookEvent.updateMany({
+          where: {
+            id: context.webhookEvent.id,
+            status: context.webhookEvent.status,
+            normalizedPayload: {
+              equals: context.webhookEvent.normalizedPayload as Prisma.InputJsonValue,
+            },
+            errorMessage: context.webhookEvent.errorMessage,
+            timeoutQuarantineExpiresAt: null,
+          },
+          data: {
+            status: WebhookStatus.PROCESSED,
+            processedAt: new Date(journal.finishedAt as string),
+            errorMessage: null,
+            queueName: null,
+            nextEnqueueAt: null,
+          },
+        });
+        if (settled.count !== 1)
+          throw new WebhookPreparationDeferredError('Handler completion receipt changed', 1_000);
+      });
+      return;
+    }
     const executionClaimModel = this.executionClaimModel;
     if (typeof executionClaimModel?.updateMany === 'function') {
       const completion = await executionClaimModel.updateMany({
@@ -316,6 +999,156 @@ export class WebhookCanonicalExecutionService {
     });
   }
 
+  private async markExecutionHandlerFinished(
+    context: WebhookCanonicalExecutionContext,
+  ): Promise<void> {
+    if (!context.businessLeaseToken) return;
+    await this.prisma.$transaction(async (tx) => {
+      const claim = await tx.webhookExecutionClaim.findFirst({
+        where: { webhookEventId: context.webhookEvent.id, kind: 'EXECUTION' },
+      });
+      if (
+        claim &&
+        this.finishedExecutionJournal(context.webhookEvent, claim) &&
+        claim.executionBotId === context.activeBotId
+      )
+        return;
+      if (
+        !claim ||
+        claim.status !== 'READY' ||
+        !claim.enforced ||
+        claim.leaseToken !== context.businessLeaseToken ||
+        !claim.businessStartedAt ||
+        claim.executionBotId !== context.activeBotId
+      )
+        throw new WebhookPreparationDeferredError(
+          'Handler-finished execution lease changed',
+          1_000,
+        );
+      const receipt = await tx.webhookEvent.updateMany({
+        where: {
+          id: context.webhookEvent.id,
+          normalizedPayload: {
+            equals: context.webhookEvent.normalizedPayload as Prisma.InputJsonValue,
+          },
+          status: context.webhookEvent.status,
+          errorMessage: context.webhookEvent.errorMessage,
+          timeoutQuarantineExpiresAt: null,
+        },
+        data: { status: context.webhookEvent.status },
+      });
+      if (receipt.count !== 1)
+        throw new WebhookPreparationDeferredError('Handler-finished source receipt changed', 1_000);
+      const journal = {
+        kind: 'EXECUTION_FINISHED',
+        authorityVersion: MULTIBOT_EXECUTION_AUTHORITY_VERSION,
+        webhookEventId: claim.webhookEventId,
+        semanticKey: claim.semanticKey,
+        executionBotId: claim.executionBotId,
+        businessStartedAt: claim.businessStartedAt.toISOString(),
+        finishedAt: new Date().toISOString(),
+      };
+      const recorded = await tx.webhookExecutionClaim.updateMany({
+        where: {
+          id: claim.id,
+          kind: 'EXECUTION',
+          webhookEventId: context.webhookEvent.id,
+          status: 'READY',
+          enforced: true,
+          leaseToken: context.businessLeaseToken,
+          businessStartedAt: claim.businessStartedAt,
+          executionBotId: claim.executionBotId,
+        },
+        data: { commandResult: journal },
+      });
+      if (recorded.count !== 1)
+        throw new WebhookPreparationDeferredError('Handler-finished journal changed', 1_000);
+    });
+  }
+
+  private async tryRecoverFinishedExecution(
+    event: WebhookEvent,
+    claim: WebhookExecutionClaimRecord,
+  ): Promise<boolean> {
+    const result = this.finishedExecutionJournal(event, claim);
+    const semanticKey = buildWebhookSemanticEventKey(event.normalizedPayload);
+    if (!result) return false;
+    return this.prisma.$transaction(async (tx) => {
+      // The checkpoint certifies only the original finished handler. Recovery performs SQL
+      // settlement and retains its attribution; it cannot run a new rule, send or sanction.
+      const completed = await tx.webhookExecutionClaim.updateMany({
+        where: {
+          id: claim.id,
+          kind: 'EXECUTION',
+          webhookEventId: event.id,
+          semanticKey: semanticKey!,
+          status: 'READY',
+          enforced: true,
+          leaseToken: claim.leaseToken ?? null,
+          leaseExpiresAt: claim.leaseExpiresAt ?? null,
+          businessStartedAt: claim.businessStartedAt,
+          commandResult: { equals: result as Prisma.InputJsonValue },
+        },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(result.finishedAt as string),
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+      if (completed.count !== 1) return false;
+      const settled = await tx.webhookEvent.updateMany({
+        where: {
+          id: event.id,
+          status: event.status,
+          normalizedPayload: { equals: event.normalizedPayload as Prisma.InputJsonValue },
+          errorMessage: event.errorMessage,
+          timeoutQuarantineExpiresAt: event.timeoutQuarantineExpiresAt,
+        },
+        data: {
+          status: WebhookStatus.PROCESSED,
+          processedAt: new Date(result.finishedAt as string),
+          errorMessage: null,
+          queueName: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+        },
+      });
+      if (settled.count !== 1)
+        throw new WebhookPreparationDeferredError(
+          'Finished-handler receipt recovery changed',
+          1_000,
+        );
+      return true;
+    });
+  }
+
+  private finishedExecutionJournal(
+    event: Pick<WebhookEvent, 'id' | 'normalizedPayload'>,
+    claim: WebhookExecutionClaimRecord,
+  ): Record<string, unknown> | null {
+    const result = claim.commandResult as Record<string, unknown> | null;
+    const semanticKey = buildWebhookSemanticEventKey(event.normalizedPayload);
+    if (
+      !semanticKey ||
+      claim.enforced !== true ||
+      claim.webhookEventId !== event.id ||
+      !claim.businessStartedAt ||
+      !result ||
+      result.kind !== 'EXECUTION_FINISHED' ||
+      result.authorityVersion !== MULTIBOT_EXECUTION_AUTHORITY_VERSION ||
+      result.webhookEventId !== event.id ||
+      result.semanticKey !== semanticKey ||
+      result.executionBotId !== claim.executionBotId ||
+      result.businessStartedAt !== claim.businessStartedAt.toISOString() ||
+      typeof result.finishedAt !== 'string' ||
+      !Number.isFinite(Date.parse(result.finishedAt)) ||
+      Date.parse(result.finishedAt) < claim.businessStartedAt.getTime()
+    )
+      return null;
+    return result;
+  }
+
   async failExecution(
     context: WebhookCanonicalExecutionContext,
     params: { errorMessage: string; terminal: boolean; retryAfterMs?: number },
@@ -334,8 +1167,12 @@ export class WebhookCanonicalExecutionService {
       !Array.isArray(context.update.raw)
         ? (context.update.raw as Record<string, unknown>)
         : null;
-    await this.prisma.webhookEvent.update({
-      where: { id: context.webhookEvent.id },
+    await this.prisma.webhookEvent.updateMany({
+      where: {
+        id: context.webhookEvent.id,
+        status: { notIn: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE] },
+        executionClaims: { none: { kind: 'EXECUTION', status: 'COMPLETED' } },
+      },
       data: {
         status: WebhookStatus.FAILED,
         errorMessage: params.errorMessage,
@@ -988,6 +1825,134 @@ export class WebhookCanonicalExecutionService {
     }
   }
 
+  static async trySettlePreparedMirrorWithClient(
+    client: WebhookCanonicalPersistenceClient,
+    context: WebhookShadowMirrorSettlementContext,
+    mirrorWhere: Prisma.WebhookEventWhereInput,
+  ): Promise<WebhookShadowMirrorSettlementResult> {
+    if (context.businessLeaseToken !== null) return 'invalid';
+    const semanticKey = buildWebhookSemanticEventKey(context.update);
+    if (
+      !semanticKey ||
+      !client.webhookExecutionClaim?.findUnique ||
+      !client.webhookExecutionClaim.updateMany ||
+      !client.webhookEvent.findUnique
+    )
+      return 'invalid';
+    const claim = await client.webhookExecutionClaim.findUnique({
+      where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey } },
+      select: WEBHOOK_EXECUTION_CLAIM_SELECT,
+    });
+    if (
+      !claim?.id ||
+      !claim.webhookEventId ||
+      claim.webhookEventId === context.webhookEvent.id ||
+      claim.semanticKey !== semanticKey ||
+      claim.enforced !== true
+    )
+      return 'invalid';
+    if (claim.status === 'COMPLETED')
+      return this.trySettleCompletedShadowMirrorWithClient(client, context, mirrorWhere);
+    if (claim.status !== 'READY' || !(claim.preparedAt instanceof Date)) return 'retry';
+    const select = {
+      id: true,
+      status: true,
+      normalizedPayload: true,
+      createdAt: true,
+      processedAt: true,
+      errorMessage: true,
+      nextEnqueueAt: true,
+      timeoutQuarantineExpiresAt: true,
+    };
+    const mirror = await client.webhookEvent.findUnique({
+      where: { id: context.webhookEvent.id },
+      select,
+    });
+    const owner = await client.webhookEvent.findUnique({
+      where: { id: claim.webhookEventId },
+      select,
+    });
+    if (
+      !mirror ||
+      !owner ||
+      !(mirror.createdAt instanceof Date) ||
+      !(owner.createdAt instanceof Date) ||
+      buildWebhookSemanticEventKey(mirror.normalizedPayload) !== semanticKey ||
+      buildWebhookSemanticEventKey(owner.normalizedPayload) !== semanticKey
+    )
+      return 'invalid';
+    // FLAG: An earlier mirror remains the ordered proxy until the owner completes. Settling
+    // it at READY would allow an interleaved distinct message to overtake the canonical work.
+    if (
+      await isEarlierWebhookReceipt(
+        client,
+        mirror as { id: string; createdAt: Date },
+        owner as { id: string; createdAt: Date },
+      )
+    )
+      return 'retry';
+    if (
+      owner.timeoutQuarantineExpiresAt !== null ||
+      mirror.timeoutQuarantineExpiresAt !== null ||
+      [owner.errorMessage, mirror.errorMessage].some(
+        (message) =>
+          message?.startsWith(WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX) ||
+          message?.toLowerCase().includes('ambiguous'),
+      )
+    )
+      return 'invalid';
+    if (
+      owner.status !== WebhookStatus.RECEIVED &&
+      owner.status !== WebhookStatus.QUEUED &&
+      !(owner.status === WebhookStatus.FAILED && owner.nextEnqueueAt instanceof Date)
+    )
+      return 'retry';
+    const ownerFence = await client.webhookEvent.updateMany({
+      where: {
+        id: owner.id,
+        status: owner.status,
+        nextEnqueueAt: owner.nextEnqueueAt,
+        errorMessage: owner.errorMessage,
+        timeoutQuarantineExpiresAt: null,
+        normalizedPayload: { equals: owner.normalizedPayload as Prisma.InputJsonValue },
+      },
+      data: { status: owner.status },
+    });
+    if (ownerFence.count !== 1) return 'retry';
+    const claimFence = await client.webhookExecutionClaim.updateMany({
+      where: {
+        id: claim.id,
+        webhookEventId: owner.id,
+        kind: 'EXECUTION',
+        semanticKey,
+        enforced: true,
+        status: 'READY',
+        preparedAt: claim.preparedAt,
+        leaseToken: claim.leaseToken,
+        leaseExpiresAt: claim.leaseExpiresAt,
+      },
+      data: { enforced: true },
+    });
+    if (claimFence.count !== 1) return 'retry';
+    const settled = await client.webhookEvent.updateMany({
+      where: {
+        ...mirrorWhere,
+        normalizedPayload: { equals: mirror.normalizedPayload as Prisma.InputJsonValue },
+      },
+      data: {
+        status: WebhookStatus.DUPLICATE,
+        processedAt: new Date(),
+        queueName: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        errorMessage: null,
+      },
+    });
+    if (settled.count !== 1)
+      throw new WebhookTimeoutSettlementCasLostError(`Mirror settlement CAS lost for ${mirror.id}`);
+    return 'settled';
+  }
+
   // FLAG: A shadow mirror can converge only on a fully prepared, completed semantic owner whose
   // persisted payload still derives the same key. Transitional evidence retries under the live hard
   // fence; absent or inconsistent evidence retains a permanent replay fence.
@@ -1043,15 +2008,13 @@ export class WebhookCanonicalExecutionService {
     if (
       !semanticClaim?.id ||
       semanticClaim.semanticKey !== semanticKey ||
-      !semanticClaim.webhookEventId ||
       semanticClaim.webhookEventId === context.webhookEvent.id ||
       typeof semanticClaim.enforced !== 'boolean'
     ) {
       return 'invalid';
     }
-    if (semanticClaim.status === 'PENDING' || semanticClaim.status === 'READY') {
-      return 'retry';
-    }
+
+    if (semanticClaim.status === 'PENDING' || semanticClaim.status === 'READY') return 'retry';
     if (
       semanticClaim.status !== 'COMPLETED' ||
       !(semanticClaim.preparedAt instanceof Date) ||
@@ -1060,10 +2023,50 @@ export class WebhookCanonicalExecutionService {
       !Number.isFinite(semanticClaim.completedAt.getTime()) ||
       semanticClaim.leaseToken !== null ||
       semanticClaim.leaseExpiresAt !== null
-    ) {
+    )
       return 'invalid';
+    if (semanticClaim.webhookEventId === null) {
+      // FLAG: A completed enforced EXECUTION row survives body retention as a semantic
+      // tombstone. It may only settle a validated mirror; absent/leased/nonterminal proof
+      // never becomes a new receipt owner or a fresh business execution.
+      if (semanticClaim.enforced !== true || hasWebhookReplayFence(mirrorEvent)) return 'invalid';
+      const fence = await executionClaimModel.updateMany({
+        where: {
+          id: semanticClaim.id,
+          kind: 'EXECUTION',
+          semanticKey,
+          webhookEventId: null,
+          enforced: true,
+          status: 'COMPLETED',
+          preparedAt: semanticClaim.preparedAt,
+          completedAt: semanticClaim.completedAt,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+        data: { enforced: true },
+      });
+      if (fence.count !== 1) return 'retry';
+      const settled = await client.webhookEvent.updateMany({
+        where: {
+          ...mirrorWhere,
+          normalizedPayload: { equals: mirrorEvent.normalizedPayload as Prisma.InputJsonValue },
+        },
+        data: {
+          status: WebhookStatus.DUPLICATE,
+          processedAt: semanticClaim.completedAt,
+          errorMessage: null,
+          queueName: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+        },
+      });
+      if (settled.count !== 1)
+        throw new WebhookTimeoutSettlementCasLostError(
+          `Tombstone mirror CAS lost for ${mirrorEvent.id}`,
+        );
+      return 'settled';
     }
-
+    if (!semanticClaim.webhookEventId) return 'invalid';
     const ownerEvent = await client.webhookEvent.findUnique({
       where: { id: semanticClaim.webhookEventId },
       select: {
@@ -1194,6 +2197,7 @@ export class WebhookCanonicalExecutionService {
       where: {
         id: executionClaim.id,
         status: 'READY',
+        businessStartedAt: null,
         OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
       },
       data: {
@@ -1273,6 +2277,51 @@ export class WebhookCanonicalExecutionService {
       return;
     }
 
+    let orderAnchor = { id: webhookEvent.id, createdAt: webhookEvent.createdAt };
+    const semanticKey = buildWebhookSemanticEventKey(update);
+    if (semanticKey && typeof this.prisma.webhookEvent.findFirst === 'function') {
+      // FLAG: The earliest receipt is the logical order anchor even when another bot won
+      // preparation. Its pending mirror remains the chat head until this owner completes.
+      const anchor = await this.prisma.webhookEvent.findFirst({
+        where: { semanticKey },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        select: {
+          id: true,
+          createdAt: true,
+          status: true,
+          normalizedPayload: true,
+          errorMessage: true,
+          timeoutQuarantineExpiresAt: true,
+        },
+      });
+      if (
+        !anchor ||
+        buildWebhookSemanticEventKey(anchor.normalizedPayload) !== semanticKey ||
+        hasWebhookReplayFence(anchor)
+      )
+        throw new WebhookPreparationDeferredError('Semantic order anchor proof pending', 1_000);
+      const priorExecution = await this.prisma.webhookEvent.findFirst({
+        where: {
+          semanticKey,
+          id: { not: webhookEvent.id },
+          OR: [
+            { status: WebhookStatus.PROCESSED },
+            { timeoutQuarantineExpiresAt: { not: null } },
+            { errorMessage: { contains: 'AMBIGUOUS', mode: 'insensitive' } },
+            { errorMessage: { startsWith: WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } },
+            { errorMessage: { startsWith: 'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED' } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (priorExecution)
+        throw new WebhookPreparationDeferredError(
+          'Legacy mirror retains business execution proof',
+          1_000,
+        );
+      orderAnchor = anchor;
+    }
+
     const queryRaw = (
       this.prisma as PrismaService & {
         $queryRaw?: (query: Prisma.Sql) => Promise<OrderedWebhookPredecessor[]>;
@@ -1311,8 +2360,8 @@ export class WebhookCanonicalExecutionService {
           NULLIF(BTRIM("normalized_payload"->>'chatId'), '')
         ) = ${chatId}
         AND (
-          "created_at" < ${webhookEvent.createdAt}
-          OR ("created_at" = ${webhookEvent.createdAt} AND "id" < ${webhookEvent.id})
+          "created_at" < ${orderAnchor.createdAt}
+          OR ("created_at" = ${orderAnchor.createdAt} AND "id" < ${orderAnchor.id})
         )
       ORDER BY "created_at" ASC, "id" ASC
       LIMIT 1

@@ -116,6 +116,47 @@ describe('RuntimeDiagnosticsService', () => {
     jest.useRealTimers();
   });
 
+  it('separates nine-bot deliveries, logical creations, edits and executions', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-06-21T12:00:00.000Z'));
+    const service = new RuntimeDiagnosticsService(createConfigMock() as never);
+    try {
+      for (const eventType of ['message_created', 'message_edited']) {
+        for (let bot = 0; bot < 9; bot += 1) {
+          await service.recordHotChatActivity({
+            chatId: '-123',
+            botId: `bot-${bot}`,
+            eventType,
+            stage: 'RECEIPT',
+          });
+          if (bot > 0)
+            await service.recordHotChatActivity({
+              chatId: '-123',
+              botId: `bot-${bot}`,
+              eventType,
+              stage: 'MIRROR',
+            });
+        }
+        await service.recordHotChatMessage({ chatId: '-123', botId: 'bot-8', eventType });
+      }
+      await service.recordHotChatActivity({
+        chatId: '-123',
+        eventType: 'message_callback',
+        stage: 'RECEIPT',
+      });
+      const snapshot = await service.getDashboardSnapshot();
+      expect(snapshot.hotChats.items[0]).toMatchObject({
+        chatId: '-123',
+        messageCreatedCount: 1,
+        messageEditedCount: 1,
+        executionCount: 2,
+        deliveryCount: 18,
+        mirrorCount: 16,
+      });
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
   it('keeps readiness diagnostics on fixed-key Redis reads', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-06-21T12:00:00.000Z'));
     const service = new RuntimeDiagnosticsService(createConfigMock() as never);

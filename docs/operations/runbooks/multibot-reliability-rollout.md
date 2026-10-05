@@ -1,0 +1,269 @@
+# Multibot execution authority rollout
+
+The configured Major fleet has no algorithmic nine-bot limit. One chat keeps one
+healthy read executor; action-specific routes may use a different capable member
+without promoting that member to primary. Private replies and Publisher exact
+bindings have their own authority and must not borrow Major membership.
+
+## Compatibility release
+
+Deploy the shared API image to every API role under the normal queue fence. Use
+the impact planner and green Required/CodeQL checks for the exact release SHA.
+Without the exact successful effects-cutoff receipt, deploy checks multibot
+preparation capacity read-only before image builds and release-transition
+journaling, then checks fresh capacity again after all builds before online
+preparation.
+The deploy builds the immutable images, then prepares the full immutable
+migration prefix through `20261005016100_index_multibot_retention_cursor` while
+old ingress and workers remain live. The prefix helper uses one official Prisma
+deploy against a temporary copy of the original migration bytes. It excludes
+the later command-authority cutoff and tombstone relation migrations; it never
+rewrites SQL, resolves a failed receipt or retries a failed preparation.
+
+The online prefix adds nullable webhook metadata in
+`20261005015900_prepare_multibot_webhook_columns`, builds the semantic order
+index in `20261005016000_add_multibot_semantic_order_index`, then builds the
+retention cursor and replay-fence indexes in
+`20261005016100_index_multibot_retention_cursor`. There is no history backfill.
+Both semantic indexes exclude NULL semantic keys; equality lookups retain their
+existing coverage. The status/created-at/id retention index covers all statuses.
+Online additive DDL has a five-second lock wait and thirty-second statement
+limit. Concurrent index builds are serialized, with a five-second lock wait and
+1,800-second statement limit per index. The complete prefix invocation has a
+5,700-second wall-clock ceiling. These limits bound an attempt; they do not
+promise a completion time. Existing index names fail rather than skip a partial
+build.
+
+Preparation checks fresh storage metadata and data/temp/WAL/Docker filesystem
+capacity, adding budgets on shared devices rather than treating their free
+space independently. Unknown or unsupported storage layouts abort. The capacity
+calculation reserves index, temporary-sort, WAL and runtime headroom; it is an
+estimate, not a PostgreSQL worst-case guarantee. `max_wal_size` controls
+checkpoint pressure and does not cap WAL disk use. A successful build-image
+disk check does not replace this database preparation gate.
+
+The storage audit at `2026-10-05T03:08:44.392856Z` estimated 46.85 million webhook
+rows, with 87.95 GB of table storage including 17.95 GB of TOAST, and 30.73
+million execution claims with 7.87 GB of table storage. Each concurrent webhook
+index can still require multiple passes over roughly 70 GB of heap. Excluding
+historical NULL keys reduces sorting and index storage, not the heap-read cost.
+The recorded 64 MiB `maintenance_work_mem` and 128 MiB `shared_buffers` do not
+establish a build throughput. Observe I/O pressure, queue trends and the old
+runtime during preparation; the short local catalog benchmark below does not
+measure these production index builds. Use the fixed `postgres-audit storage`,
+`activity` and `queue` reports and `monitor-readonly`, not application-table scans.
+
+Before pausing consumers, the deploy attests exact key order, predicates, table,
+access method, default operator classes/collations and valid/ready/live metadata for
+`webhook_events_semantic_order_idx`, `webhook_events_status_created_at_id_idx`, and
+`webhook_events_semantic_replay_fence_idx`. Only then pause and stop webhook
+consumers and stop/verify legacy ingress: legacy Start processing runs inline
+there, so a queue pause alone cannot establish the effects cutoff. The short
+`20261005020000_add_multibot_order_fences` migration adds command/business/order
+fields and records that cutoff after quiescence. Later releases with the exact
+successful cutoff receipt skip the online preparation stage.
+
+The tombstone relation migration uses a three-second lock wait and thirty-second
+statement limit. Under both table locks it requires the exact previously
+validated CASCADE/CASCADE foreign key on the same child/parent columns, then
+atomically makes the relation nullable and replaces it with SET NULL/CASCADE
+`NOT VALID`. The old validated relation supplies historical reference proof;
+the replacement still enforces new and changed references. This avoids a new
+validation scan over tens of millions of claims. A separate future validation
+scan requires its own bounded maintenance review; this release does not run it.
+
+If online preparation fails, old ingress and workers remain live. Preserve the
+failed migration receipt, partial indexes and release transition journal; a
+timeout does not authorize clearing errors or accepting an existing index by
+name. Recovery must verify the exact migration checksum and complete catalog
+state before resolving its receipt. After the effects cutoff begins, preserve
+the queue fence and recover through the exact-image release path; never restart
+a legacy producer against that cutoff. New workers start only after migration
+and index proof, and the new current manifest is recorded only after strict
+runtime smokes.
+
+Semantic business claims and command authority remain mandatory with the
+configured canonical diagnostics mode `off` or `shadow`. A completed EXECUTION
+claim survives webhook-body deletion as a semantic tombstone. Never delete that
+claim simply because the body has reached its retention date. Pending leases,
+quarantines, historical command holds and ambiguous MAX outcomes keep their
+existing proof pins. A started rule engine may not be replayed to switch bots;
+its durable action/delete/media journals own continuation.
+Unfinished enforced claims created before the successful command-authority
+migration also need exact effects proof: the earlier runtime could release its
+lease after partial effects without recording `businessStartedAt`. Quiescing
+workers does not certify those historical attempts as unstarted. Unfinished
+unenforced semantic claims remain held regardless of their creation time. Receipt-only
+diagnostic claims for unsupported/keyless events do not establish semantic authority.
+The old `off` path could execute without an EXECUTION claim. A new claim therefore
+cannot certify an old receipt or a late mirror as new work. Unstarted shared
+semantic authority also requires a post-cutover owner receipt and trusted original
+source time. For `message_created`, an old message creation time still holds the
+event when the enclosing update time is newer; edits use their own update time.
+Missing, invalid, ingress-derived or future source time cannot supply this proof.
+Those shared events remain held for exact effects recovery, which intentionally
+also holds fresh malformed events. Ordinary MAX timestamps remain supported;
+readiness deadline fallback alone never certifies the absence of historical effects.
+
+Rollback through either repository wrapper must retain semantic authority,
+command results/order fences, mutation ambiguity handling, final executor proof
+checks and tombstones. Environment downgrades do not authorize replay. A release
+older than these guards is rejected even if its image still exists.
+The reviewed `main` connection wrapper requires the multibot-authority entrypoint
+marker before the API rollback's offline path; older minute-reader tooling is
+replaced under the shared lock and exact-main checks. Static-only rollback keeps
+its existing offline path.
+
+## Capability and deadline checks
+
+Use exact bot membership checks through the existing MAX governors. A role alone
+does not prove read-all, send, delete, edit or member-management capability.
+Unknown/expired proof triggers bounded targeted refresh with per-chat Redis and
+local coalescing. A definite capability rejection can choose a peer from the
+whole configured active roster. An attempted SEND/BAN/KICK with an unknown
+outcome remains fenced to its original identity; never test a second executor
+to discover whether the first attempt succeeded.
+
+Unstarted readiness waits use the original trusted source time (receipt time
+for invalid/future timestamps), capped at five minutes for text and ten minutes
+for complete IMAGE content. Each rule's shorter deadline still applies. Retries
+and mirrors cannot extend any deadline. When no capable executor exists at the
+deadline, settle only the exact unstarted owned receipt/claim and report
+`NO_EXECUTABLE_OWNER` in closed diagnostics. Keep user groups silent.
+
+## Acceptance and gradual activation
+
+Use real PostgreSQL, Redis and BullMQ locally. The baseline fleet matrix is
+1/4/9 and the extension is 3/6/12. Cover demotion/removal, limited rights, missing
+lifecycle webhook, old local caches in separate roles, concurrent/late mirrors,
+process restart, unknown outcomes, source edits, mixed delete reasons and
+sanction-window boundaries. Only the designated test chat/channel from API
+notes may receive live test mutations; clean up agent-created content only.
+
+Before activation, record the current manifest, canonical mode/cohort, queue
+oldest age, rate, MAX quota waits, SQL preparation/selection timings, authority
+holds, telemetry loss and false/duplicate effect counts. Measure uniform/hot
+traffic, cold routes and media separately on 10,000/12,000/30,000 chat catalogs.
+Cache microbenchmarks cannot establish end-to-end capacity. Record offered rate,
+logical message rate, receipt rate, action rate, duration and hardware with each
+measurement. Stop increasing offered load when queue age keeps growing.
+
+Semantic execution and command safety are mandatory for the entire compatibility
+release. Canonical control modes remain compatible, but their percentage cannot
+disable shared execution authority for supported semantic events. Observe
+representative cohorts separately; do not describe a percentage change as
+gradual activation of the safety implementation.
+Expand observation through cohorts of 1%, 10%, 50%, 100%, observing each for at
+least 24 real hours before advancing. Require zero false/duplicate sanctions,
+preserved rule deadlines and MAX quotas, and no sustained queue growth at the
+measured profile. The target diagnostic mode is `on`. Missing evidence, truncated
+diagnostics or telemetry losses are not a successful acceptance run. Expand
+resources as a separate change only after measuring the limiting stage.
+All four 24-hour cohort observation stages remain pending in this release
+checklist. The local measurements below do not complete a stage or establish
+production acceptance; advancement requires dated production evidence for the
+deployed release identity.
+
+The repeatable local catalog driver is:
+
+```sh
+node scripts/agent/with-test-stores.mjs --migrate -- npm run loadtest:multibot-catalog --workspace @maxim/api -- --chats=10000,12000,30000 --bots=9 --messages=40 --rate=2 --output=artifacts/multibot-load.json
+```
+
+It refuses nonlocal stores, uses simulated MAX transport under the normal token
+quotas, and asserts one logical claim/violation/intent/DELETE per source message.
+Repeat with other fleet counts and rates. The `media` profile covers attachment
+receipt and text/length rules; it does not measure native IMAGE decoding or OCR.
+The driver reports its hardware, offered rate, latency and final backlog. Finite
+local samples cannot certify a production maximum or replace daily observation.
+
+## Local catalog measurements, 2026-10-05
+
+PostgreSQL 16, Redis 7, BullMQ and Node 24.16 ran on Linux with an Intel
+Core i5-14600KF, 20 logical CPUs and 31.3 GiB reported host RAM. MAX HTTP responses
+were simulated; the production governors remained enabled. Each catalog had nine registered
+members per chat and one shared healthy primary token. The fixture used one
+webhook queue and one delete queue, each with concurrency four; it does not
+measure the production sixteen-shard topology or nine-token aggregate capacity.
+
+The final run was recorded at `2026-10-05T04:37:22.964Z`. At two logical
+messages/second (18 physical deliveries/second), each profile submitted 40
+messages over 20 seconds. All twelve profiles passed and completed 480 unique
+EXECUTION claims, violations, violation message claims, successful intents and
+simulated remote deletes from 4,320 receipts. Each profile completed exactly 40
+of each logical identity/effect and left zero pending receipts or actions. The
+observed logical completion rate including drain rounded to 2.00 messages/second
+in every profile.
+
+| Catalog chats | Profile               | Ingress p95 | Receipt completion p95 | Action p95 from intent creation | Drain after input stopped |
+| ------------- | --------------------- | ----------- | ---------------------- | ------------------------------- | ------------------------- |
+| 10,000        | Uniform               | 17 ms       | 93 ms                  | 42 ms                           | 4 ms                      |
+| 10,000        | Hot                   | 12 ms       | 72 ms                  | 34 ms                           | 13 ms                     |
+| 10,000        | Cold                  | 9 ms        | 72 ms                  | 33 ms                           | 14 ms                     |
+| 10,000        | Media receipt/caption | 11 ms       | 76 ms                  | 34 ms                           | 13 ms                     |
+| 12,000        | Uniform               | 13 ms       | 80 ms                  | 34 ms                           | 13 ms                     |
+| 12,000        | Hot                   | 16 ms       | 63 ms                  | 32 ms                           | 9 ms                      |
+| 12,000        | Cold                  | 10 ms       | 72 ms                  | 32 ms                           | 6 ms                      |
+| 12,000        | Media receipt/caption | 12 ms       | 74 ms                  | 33 ms                           | 5 ms                      |
+| 30,000        | Uniform               | 19 ms       | 79 ms                  | 34 ms                           | 10 ms                     |
+| 30,000        | Hot                   | 11 ms       | 74 ms                  | 34 ms                           | 11 ms                     |
+| 30,000        | Cold                  | 46 ms       | 485 ms                 | 175 ms                          | 17 ms                     |
+| 30,000        | Media receipt/caption | 39 ms       | 431 ms                 | 145 ms                          | 14 ms                     |
+
+The configured governor limits were 30 requests/second per token, five per
+bot/chat, two for managed refresh and two mutations per target. Critical,
+interactive and background service lanes were 13/10/7 requests/second. The
+actual simulated MAX request count was 123 for each hot profile and 160 for each
+other profile. These limits and counts do not represent nine independent tokens
+doing concurrent work.
+
+The media values cover attachment ingress and text/length moderation; native
+IMAGE decoding, image duplicate analysis and OCR capacity remain unmeasured.
+Uniform/cold/media profiles touch a spread sample of forty chats per catalog;
+the hot profile touches four chats. The measured catalog cardinality therefore
+does not prove simultaneous sustained activity in all catalog chats. Backlog
+samples were taken every ten logical submissions, excluding drain peaks. The sampled receipt peak was nine in ten profiles, ten in the 30,000-chat cold
+profile and twenty in the 30,000-chat media profile. The largest sampled oldest
+receipt age was 1,001 ms, and sampled pending actions were zero. The final
+30,000-chat cold/media profiles had higher completion p95 (485/431 ms) than the
+other profiles (63–93 ms); these short samples do not identify the cause or
+establish a sustained trend. Unsampled peaks and sustained queue behavior over
+longer windows remain unknown.
+
+The earlier exploratory run, recorded at `2026-10-05T01:58:50.447Z`, used the same
+queue fixture with one primary token on 10,000 chats. It offered five logical
+messages/second (45 physical deliveries/second), 120 messages per profile over
+24 seconds. The SQL due sweeper
+ran every second and drain waited for both BullMQ and SQL work. All four profiles
+ended with 120 unique successful actions each and zero pending work. The higher
+rate grew the queue and therefore does **not** qualify as sustained supported
+load. Its eventual successful drain is separate from the final measurement at
+two logical messages/second above.
+
+| Profile               | Receipt p95 | Action p95 from intent creation | Drain after input stopped | Completed logical messages/s including drain |
+| --------------------- | ----------- | ------------------------------- | ------------------------- | -------------------------------------------- |
+| Uniform               | 3,193 ms    | 2,214 ms                        | 6,764 ms                  | 3.90                                         |
+| Hot                   | 2,752 ms    | 2,890 ms                        | 3,558 ms                  | 4.35                                         |
+| Cold                  | 33,762 ms   | 53 ms                           | 35,417 ms                 | 2.02                                         |
+| Media receipt/caption | 2,895 ms    | 2,272 ms                        | 4,186 ms                  | 4.26                                         |
+
+Cold rights refresh reached the existing two-request/second managed-refresh
+source budget for the shared primary. Its sampled receipt backlog reached 674
+with oldest age 18,407 ms. These measurements identify a quota-bound profile;
+they do not establish the production maximum. Warm throughput includes finite
+bursts and must not be extrapolated to sustained capacity. Neither CPU additions
+nor additional reserve bots alone raise a single primary token's source quota.
+
+## Operations
+
+Use closed runtime diagnostics to distinguish created messages, edits, webhook
+deliveries, mirrors and executions. Antiduplicate telemetry flushes at its
+bounded buffer capacity and exposes `telemetry.observations_lost`; loss counts
+must accompany comparisons. Use the fixed read-only VPS audit catalog and
+strict health smokes, never broad ad hoc queries over retained webhook history.
+
+After a lost executor returns, verify that it joins the reserve, the current
+healthy executor stays assigned, and no completed identity is replayed. A
+readiness expiry is a final outcome; restored rights after the deadline cannot
+revive that original message. Quarantined unknown effects require exact proof
+recovery through their existing journal, not a new webhook processing attempt.

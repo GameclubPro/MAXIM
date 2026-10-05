@@ -1,3 +1,10 @@
+import {
+  advanceChatMutationOrder,
+  applyGroupChatControlCommand,
+  GroupCommandAuthorityService,
+  type GroupCommandPermit,
+  type GroupCommandResult,
+} from '../common/group-command-authority.service';
 import * as channelDialogValues from './admin-channel-dialog-values';
 import { mergeManagedBotChatCatalogRows } from './admin-managed-bot-catalog-values';
 import { createManagedEntityHeader } from './admin-managed-entity-header';
@@ -6871,11 +6878,14 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     input: AdoptChatRulesFromMessageInput,
     source: AdminActionSource = 'group_command',
-  ): Promise<ChatRules> {
+    command?: GroupCommandPermit,
+  ): Promise<ChatRules & { commandSkipped?: boolean }> {
+    if (source === 'group_command' && !command)
+      throw new BadRequestException('Group command identity is required');
     await this.assertChatAdmin(chatId, user.userId, 'chat');
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
-    const currentRules = await this.chatRulesTextRuntime.upsertChatRules(chatId);
+    await this.chatRulesTextRuntime.upsertChatRules(chatId);
     const sourceMessageId = this.readTrimmedString(input.sourceMessageId);
     let sourceMessageUrl = this.chatRulesTextRuntime.normalizePublishedRulesUrl(
       input.sourceMessageUrl,
@@ -6933,74 +6943,107 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    const publishedAt = new Date();
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-    const updatedRules = await this.prisma.chatRules.update({
-      where: { chatId },
-      data: {
-        ...(normalizedSourceText !== null
-          ? {
-              text: normalizedSourceText,
-              textFormat: normalizedSourceTextFormat,
-              autoTextEnabled: false,
-            }
-          : {}),
-        publishedMessageId: sourceMessageId ?? null,
-        publishedUrl: sourceMessageUrl,
-        publishedAt,
-        publishedBotId: resolvedBotId ?? null,
-      },
-    });
-
-    await this.prisma.chat.upsert({
-      where: { id: chatId },
-      create: {
-        id: chatId,
-        title: `Chat ${chatId}`,
-        entityType: ChatEntityType.CHAT,
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        settings: {
-          create: {
-            rulesAttachViolationsEnabled: true,
-          },
+    const resolvedBotId =
+      command?.executionBotId ?? (await this.resolveManualActionBotAssignment(chatId));
+    const authority = new GroupCommandAuthorityService(this.prisma);
+    const saved = await this.prisma.$transaction(async (tx) => {
+      const applies = await advanceChatMutationOrder(tx, chatId, 'RULES', command);
+      if (command) await authority.assertOwned(command, tx);
+      const result: GroupCommandResult = {
+        action: 'RULES',
+        applied: applies,
+        noticeText: applies
+          ? 'Правила привязаны к этому сообщению. Кнопка «Правила» в нарушениях включена.'
+          : null,
+      };
+      if (!applies) {
+        if (command) await authority.prepareResult(command, result, tx);
+        return { rules: await tx.chatRules.findUniqueOrThrow({ where: { chatId } }), result };
+      }
+      const activeRules = await tx.chatRules.findUniqueOrThrow({ where: { chatId } });
+      if (
+        activeRules.publishOperationId ||
+        activeRules.publishSendStartedAt ||
+        activeRules.pendingCleanupMessageId
+      ) {
+        throw new BadRequestException(
+          'Публикация или очистка правил уже выполняется. Повторите позже.',
+        );
+      }
+      const publishedAt = new Date();
+      const updatedRules = await tx.chatRules.update({
+        where: { chatId },
+        data: {
+          ...(normalizedSourceText !== null
+            ? {
+                text: normalizedSourceText,
+                textFormat: normalizedSourceTextFormat,
+                autoTextEnabled: false,
+              }
+            : {}),
+          publishedMessageId: sourceMessageId ?? null,
+          publishedUrl: sourceMessageUrl,
+          publishedAt,
+          publishedBotId: resolvedBotId ?? null,
         },
-      },
-      update: {
-        settings: {
-          upsert: {
-            update: {
-              rulesAttachViolationsEnabled: true,
-            },
+      });
+
+      await tx.chat.upsert({
+        where: { id: chatId },
+        create: {
+          id: chatId,
+          title: `Chat ${chatId}`,
+          entityType: ChatEntityType.CHAT,
+          ...this.buildResolvedBotAssignmentData(resolvedBotId),
+          settings: {
             create: {
               rulesAttachViolationsEnabled: true,
             },
           },
         },
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'ADOPT_CHAT_RULES_MESSAGE',
-        payload: {
-          previousPublishedMessageId: currentRules.publishedMessageId ?? null,
-          previousPublishedUrl: currentRules.publishedUrl ?? null,
-          messageId: sourceMessageId ?? null,
-          url: sourceMessageUrl,
-          copiedText: normalizedSourceText !== null,
-          textFormat: normalizedSourceText !== null ? normalizedSourceTextFormat : null,
-          textLength: normalizedSourceText?.length ?? 0,
-          rulesAttachViolationsEnabled: true,
-          botId: resolvedBotId ?? null,
-          source,
+        update: {
+          settings: {
+            upsert: {
+              update: {
+                rulesAttachViolationsEnabled: true,
+              },
+              create: {
+                rulesAttachViolationsEnabled: true,
+              },
+            },
+          },
         },
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
+      });
 
-    return this.chatRulesTextRuntime.mapChatRules(updatedRules);
+      await tx.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: 'ADOPT_CHAT_RULES_MESSAGE',
+          payload: {
+            previousPublishedMessageId: activeRules.publishedMessageId ?? null,
+            previousPublishedUrl: activeRules.publishedUrl ?? null,
+            messageId: sourceMessageId ?? null,
+            url: sourceMessageUrl,
+            copiedText: normalizedSourceText !== null,
+            textFormat: normalizedSourceText !== null ? normalizedSourceTextFormat : null,
+            textLength: normalizedSourceText?.length ?? 0,
+            rulesAttachViolationsEnabled: true,
+            botId: resolvedBotId ?? null,
+            source,
+            ...(command ? { commandKey: command.semanticKey, result } : {}),
+          },
+        },
+      });
+      if (command) await authority.prepareResult(command, result, tx);
+      return { rules: updatedRules, result };
+    });
+    if (command) command.result = saved.result;
+    if (saved.result.applied) await this.chatContextCache.invalidate(chatId);
+    return {
+      ...this.chatRulesTextRuntime.mapChatRules(saved.rules),
+      ...(!saved.result.applied ? { commandSkipped: true } : {}),
+    };
   }
 
   async publishRules(
@@ -10625,77 +10668,52 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     options: { durationHours?: number | null } = {},
     source: Extract<AdminActionSource, 'group_command'> = 'group_command',
-  ): Promise<{ ok: true; message: string; durationHours: number; until: string }> {
+    command?: GroupCommandPermit,
+  ): Promise<{
+    ok: true;
+    message: string;
+    durationHours: number;
+    until: string;
+    skipped?: boolean;
+  }> {
+    if (!command) throw new BadRequestException('Group command identity is required');
     await this.assertChatAdmin(chatId, user.userId, 'chat');
     await this.ensureEntityType(chatId, user.userId, 'chat');
-
     const durationHours = this.normalizeManualChatSilenceDurationHours(options.durationHours);
-    const until = new Date(Date.now() + durationHours * 60 * 60 * 1_000).toISOString();
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-
-    await this.prisma.chat.upsert({
-      where: { id: chatId },
-      create: {
-        id: chatId,
-        title: `Chat ${chatId}`,
-        entityType: ChatEntityType.CHAT,
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        settings: {
-          create: {
-            nightModeForceCloseEnabled: true,
-            nightModeForceCloseForever: false,
-            nightModeForceCloseHours: durationHours % 24,
-            nightModeForceCloseDays: Math.floor(durationHours / 24),
-            nightModeForceCloseUntil: until,
-          },
-        },
+    // FLAG: Retries use the original command time, never the worker/replay time.
+    const until = new Date(
+      command.sourceAt.getTime() + durationHours * 60 * 60 * 1_000,
+    ).toISOString();
+    const message = `Чат закрыт на ${durationHours} ч. До конца срока сообщения участников без прав администратора будут удаляться.`;
+    const result = await applyGroupChatControlCommand(this.prisma, command, {
+      chatId,
+      actorUserId: user.userId,
+      source,
+      action: 'SILENCE',
+      message,
+      settings: {
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: false,
+        nightModeForceCloseHours: durationHours % 24,
+        nightModeForceCloseDays: Math.floor(durationHours / 24),
+        nightModeForceCloseUntil: until,
       },
-      update: {
-        settings: {
-          upsert: {
-            update: {
-              nightModeForceCloseEnabled: true,
-              nightModeForceCloseForever: false,
-              nightModeForceCloseHours: durationHours % 24,
-              nightModeForceCloseDays: Math.floor(durationHours / 24),
-              nightModeForceCloseUntil: until,
-            },
-            create: {
-              nightModeForceCloseEnabled: true,
-              nightModeForceCloseForever: false,
-              nightModeForceCloseHours: durationHours % 24,
-              nightModeForceCloseDays: Math.floor(durationHours / 24),
-              nightModeForceCloseUntil: until,
-            },
-          },
-        },
-      },
+      auditPayload: { durationHours, until },
     });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'MANUAL_CHAT_SILENCE',
-        payload: {
-          source,
-          durationHours,
-          until,
-        },
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-    await refreshBots(this.maxBotExecutionPlanner, this.logger, chatId, 'chat', 'manual silence');
-    this.scheduleDestructiveModerationAdminRosterWarmup(chatId, {
-      nightModeEnabled: false,
-      nightModeForceCloseEnabled: true,
-    });
-
+    command.result = result;
+    if (result.applied) {
+      await this.chatContextCache.invalidate(chatId);
+      this.scheduleDestructiveModerationAdminRosterWarmup(chatId, {
+        nightModeEnabled: false,
+        nightModeForceCloseEnabled: true,
+      });
+    }
     return {
       ok: true,
-      message: `Чат закрыт на ${durationHours} ч. До конца срока сообщения участников без прав администратора будут удаляться.`,
+      message,
       durationHours,
       until,
+      ...(!result.applied ? { skipped: true } : {}),
     };
   }
 
@@ -10703,61 +10721,27 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     user: AuthUser,
     source: Extract<AdminActionSource, 'group_command'> = 'group_command',
-  ): Promise<{ ok: true; message: string }> {
+    command?: GroupCommandPermit,
+  ): Promise<{ ok: true; message: string; skipped?: boolean }> {
+    if (!command) throw new BadRequestException('Group command identity is required');
     await this.assertChatAdmin(chatId, user.userId, 'chat');
     await this.ensureEntityType(chatId, user.userId, 'chat');
-
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-    await this.prisma.chat.upsert({
-      where: { id: chatId },
-      create: {
-        id: chatId,
-        title: `Chat ${chatId}`,
-        entityType: ChatEntityType.CHAT,
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        settings: {
-          create: {
-            nightModeForceCloseEnabled: false,
-            nightModeForceCloseForever: false,
-            nightModeForceCloseUntil: '',
-          },
-        },
-      },
-      update: {
-        settings: {
-          upsert: {
-            update: {
-              nightModeForceCloseEnabled: false,
-              nightModeForceCloseForever: false,
-              nightModeForceCloseUntil: '',
-            },
-            create: {
-              nightModeForceCloseEnabled: false,
-              nightModeForceCloseForever: false,
-              nightModeForceCloseUntil: '',
-            },
-          },
-        },
+    const message = 'Чат открыт. Для сообщений снова действуют обычные правила.';
+    const result = await applyGroupChatControlCommand(this.prisma, command, {
+      chatId,
+      actorUserId: user.userId,
+      source,
+      action: 'OPEN_CHAT',
+      message,
+      settings: {
+        nightModeForceCloseEnabled: false,
+        nightModeForceCloseForever: false,
+        nightModeForceCloseUntil: '',
       },
     });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'MANUAL_CHAT_OPEN',
-        payload: {
-          source,
-        },
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-    await refreshBots(this.maxBotExecutionPlanner, this.logger, chatId, 'chat', 'manual open');
-
-    return {
-      ok: true,
-      message: 'Чат открыт. Для сообщений снова действуют обычные правила.',
-    };
+    command.result = result;
+    if (result.applied) await this.chatContextCache.invalidate(chatId);
+    return { ok: true, message, ...(!result.applied ? { skipped: true } : {}) };
   }
 
   isSuperBanDeveloperUserId(userId: string | null | undefined): boolean {

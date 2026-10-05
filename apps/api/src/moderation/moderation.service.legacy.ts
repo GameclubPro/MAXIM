@@ -1,3 +1,4 @@
+import { isMaxMutationOutcomeAmbiguous } from '../max/max-mutation-outcome.util';
 import {
   ClosedChatMessageModerationService,
   type NightClosedChatMessage,
@@ -263,7 +264,6 @@ import {
   buildDeveloperForcedGlobalSpammerCacheKey,
   buildDeveloperForcedGlobalSpammerWarmMarkerKey,
 } from './developer-forced-global-spammer-cache';
-import { buildModerationEscalationCounterKey } from './moderation-escalation-state.util';
 import { extractMessageLimitsBlockedToken } from './message-limits-blocked-reason.util';
 import { RedisCounterService } from './redis-counter.service';
 import type {
@@ -318,6 +318,7 @@ import {
   extractForwardedRulesSources,
   getAdminCommandName,
   parseAdminForwardedModerationCommand,
+  recognizesAdminForwardedModerationCommand,
 } from './admin-forwarded-command.util';
 import {
   readExecutionOwnerBotId as readExecutionOwnerBotIdFromUpdate,
@@ -547,6 +548,19 @@ import {
   persistSanctionEventForNotice,
   type PersistModerationEvent,
 } from './moderation-sanction-event.util';
+
+import {
+  GroupCommandAuthorityService,
+  GroupCommandNoticeDeliveryError,
+  runGroupCommandWithAuthority,
+  type GroupCommandPermit,
+} from '../common/group-command-authority.service';
+import { deliverGroupCommandNotice } from '../common/group-command-notice-delivery';
+import {
+  recordGroupCommandNoticeRecovery,
+  recoverGroupCommandNotice,
+} from '../common/group-command-notice-recovery';
+import { MaxExecutionOwnerReadinessService } from '../max/max-execution-owner-readiness.service';
 
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
@@ -813,6 +827,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly reportSubmission?: ReportSubmissionService,
     @Optional() private readonly participantImmunity?: ParticipantModerationImmunityService,
     @Optional() private readonly commercialReview?: CommercialReviewService,
+    @Optional() private readonly injectedGroupCommandAuthority?: GroupCommandAuthorityService,
+    @Optional()
+    private readonly injectedExecutionOwnerReadiness?: MaxExecutionOwnerReadinessService,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -1173,6 +1190,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   async processWebhookEvent(webhookEventId: string) {
+    if (
+      await recoverGroupCommandNotice(
+        this.prisma,
+        this.maxClient,
+        this.injectedGroupCommandAuthority ?? new GroupCommandAuthorityService(this.prisma),
+        webhookEventId,
+        { readiness: this.injectedExecutionOwnerReadiness, links: this.maxBotLinkService },
+      )
+    )
+      return;
     const execution = await this.webhookCanonicalExecutionService.prepareExecution(
       webhookEventId,
       this.maxBotLinkService?.getDefaultBotId?.(),
@@ -1189,7 +1216,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ) {
       void this.runtimeDiagnosticsService?.recordHotChatMessage({
         chatId: update.message.chatId,
-        botId: activeBotId,
+        botId: update.botId,
+        eventType: normalizedUpdateType,
       });
     }
 
@@ -1274,6 +1302,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.webhookCanonicalExecutionService.completeExecution(execution);
       await this.commercialOcrEnqueueService?.activatePendingBatch(commercialOcrPendingActivations);
     } catch (error: unknown) {
+      await recordGroupCommandNoticeRecovery(this.prisma, execution, error);
       await this.commercialOcrEnqueueService?.suppressPendingBatch(commercialOcrPendingActivations);
       if (!this.isWebhookHotPathTimeoutError(error)) {
         await this.webhookCanonicalExecutionService.failExecution(execution, {
@@ -2287,8 +2316,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await suppressDeferredPhotoAnalysisActions();
         return;
       }
+      // FLAG: Receiver provenance must not override the selected execution token.
       const messageDuplicateBotId = this.messageDuplicateService
-        ? (update.botId ?? this.maxBotLinkService?.getDefaultBotId?.())
+        ? (this.maxBotContextService?.getActiveBotId() ??
+          this.readExecutionOwnerBotId(update) ??
+          update.botId ??
+          this.maxBotLinkService?.getDefaultBotId?.())
         : null;
       if (messageDuplicateBotId) {
         await this.messageDuplicateService?.observe({
@@ -6253,77 +6286,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     updateType?: string | null;
     loadCount: () => Promise<number>;
   }): Promise<number> {
-    const windowSec = Math.max(1, Math.ceil(params.windowMs / 1_000));
-    const ttlSec = windowSec + 60;
-    const redisCounter = this.redisCounter as Partial<RedisCounterService> | undefined;
-    const getString = redisCounter?.getString;
-    const incrementWithTtl = redisCounter?.incrementWithTtl;
-    const incrementOncePerMemberWithTtl = redisCounter?.incrementOncePerMemberWithTtl;
-    const setStringWithTtl = redisCounter?.setStringWithTtl;
-    if (!this.redisCounter || !getString || !incrementWithTtl || !setStringWithTtl) {
-      return this.normalizeRecentViolationCount(await params.loadCount());
-    }
-
-    const counterKey = buildModerationEscalationCounterKey({
-      chatId: params.chatId,
-      userId: params.userId,
-      ruleKey: params.ruleKey,
-      windowSec,
-    });
-    const memberKey = this.buildModerationEscalationCounterMemberKey({
-      counterKey,
-      messageId: params.messageId,
-      updateType: params.updateType,
-    });
-
-    try {
-      const cachedValue = await getString.call(this.redisCounter, counterKey);
-      if (cachedValue !== null) {
-        if (memberKey && incrementOncePerMemberWithTtl) {
-          const result = await incrementOncePerMemberWithTtl.call(
-            this.redisCounter,
-            counterKey,
-            memberKey,
-            ttlSec,
-          );
-          return this.normalizeRecentViolationCount(result.count);
-        }
-        return this.normalizeRecentViolationCount(
-          await incrementWithTtl.call(this.redisCounter, counterKey, ttlSec),
-        );
-      }
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId: params.chatId,
-          userId: params.userId,
-          ruleKey: params.ruleKey,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to read moderation escalation counter; falling back to persisted violations',
-      );
-      return this.normalizeRecentViolationCount(await params.loadCount());
-    }
-
-    const persistedCount = this.normalizeRecentViolationCount(await params.loadCount());
-    try {
-      await setStringWithTtl.call(this.redisCounter, counterKey, String(persistedCount), ttlSec);
-      if (memberKey) {
-        await setStringWithTtl.call(this.redisCounter, memberKey, '1', ttlSec);
-      }
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId: params.chatId,
-          userId: params.userId,
-          ruleKey: params.ruleKey,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to warm moderation escalation counter',
-      );
-    }
-
-    return persistedCount;
+    // FLAG: A scalar Redis TTL cannot represent a sliding window or the manual-release
+    // boundary. Durable message claims deduplicate writes; indexed SQL owns sanction counts.
+    return this.normalizeRecentViolationCount(await params.loadCount());
   }
 
   private async claimMessageViolationProcessing(params: {
@@ -6577,24 +6542,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private buildModerationEscalationCounterMemberKey(params: {
-    counterKey: string;
-    messageId?: string | null;
-    updateType?: string | null;
-  }): string | null {
-    const messageId = params.messageId?.trim();
-    if (!messageId) {
-      return null;
-    }
-
-    const updateType = params.updateType?.trim().toLowerCase() || 'message';
-    const hash = createHash('sha256')
-      .update(`${updateType}:${messageId}`)
-      .digest('hex')
-      .slice(0, 24);
-    return `${params.counterKey}:msg:${hash}`;
-  }
-
   private normalizeRecentViolationCount(value: number): number {
     return Number.isInteger(value) && value > 0 ? value : 1;
   }
@@ -6624,7 +6571,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               chatId: string;
               userId: string;
               ruleCode: string;
-              createdAt: { gte: Date };
+              createdAt: { gte: Date; lte: Date };
             };
           }) => Promise<number>;
         };
@@ -6639,7 +6586,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             chatId,
             userId,
             ruleCode: 'LINK_BLOCKED',
-            createdAt: { gte: since },
+            createdAt: { gte: since, lte: new Date(Date.now()) },
           },
         });
 
@@ -6673,7 +6620,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               chatId: string;
               userId: string;
               ruleCode: string;
-              createdAt: { gte: Date };
+              createdAt: { gte: Date; lte: Date };
             };
           }) => Promise<number>;
         };
@@ -6688,7 +6635,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             chatId,
             userId,
             ruleCode: 'PHONE_NUMBER_BLOCKED',
-            createdAt: { gte: since },
+            createdAt: { gte: since, lte: new Date(Date.now()) },
           },
         });
 
@@ -6714,7 +6661,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             chatId: string;
             userId: string;
             ruleCode: string;
-            createdAt: { gte: Date };
+            createdAt: { gte: Date; lte: Date };
           };
         }) => Promise<number>;
       };
@@ -6729,7 +6676,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           chatId,
           userId,
           ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
-          createdAt: { gte: since },
+          createdAt: { gte: since, lte: new Date(Date.now()) },
         },
       });
 
@@ -6765,7 +6712,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               chatId: string;
               userId: string;
               ruleCode: string;
-              createdAt: { gte: Date };
+              createdAt: { gte: Date; lte: Date };
             };
           }) => Promise<number>;
         };
@@ -6780,7 +6727,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             chatId,
             userId,
             ruleCode: INVITATION_ACCESS_RULE_CODE,
-            createdAt: { gte: since },
+            createdAt: { gte: since, lte: new Date(Date.now()) },
           },
         });
 
@@ -6827,7 +6774,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ...(ruleCode === 'PROFANITY'
               ? { score: { gte: PROFANITY_AUTOMATIC_ESCALATION_MIN_SCORE } }
               : {}),
-            createdAt: { gte: since },
+            createdAt: { gte: since, lte: new Date(Date.now()) },
           },
         });
 
@@ -6857,7 +6804,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               chatId: string;
               userId: string;
               ruleCode: string;
-              createdAt: { gte: Date };
+              createdAt: { gte: Date; lte: Date };
             };
           }) => Promise<number>;
         };
@@ -6872,7 +6819,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             chatId,
             userId,
             ruleCode,
-            createdAt: { gte: since },
+            createdAt: { gte: since, lte: new Date(Date.now()) },
           },
         });
 
@@ -6904,6 +6851,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       where: {
         chatId,
         userId,
+        createdAt: { lte: new Date(Date.now()) },
         ruleCode: {
           in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'],
         },
@@ -6940,11 +6888,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
+    const now = new Date(Date.now());
     const [latestSanctionEvent, latestManualLiftEvent] = await Promise.all([
       this.prisma.moderationEvent.findFirst({
         where: {
           chatId,
           userId,
+          createdAt: { lte: now },
           action: {
             in: [SanctionAction.MUTE, SanctionAction.BAN],
           },
@@ -6964,6 +6914,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         where: {
           chatId,
           userId,
+          createdAt: { lte: now },
           ruleCode: {
             in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'],
           },
@@ -7052,20 +7003,76 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     settings: ChatSettings;
     superBanOnly?: boolean;
   }): Promise<boolean> {
+    if (
+      !recognizesAdminForwardedModerationCommand(
+        params.update,
+        params.settings,
+        params.superBanOnly,
+      )
+    )
+      return false;
+    const authority =
+      this.injectedGroupCommandAuthority ?? new GroupCommandAuthorityService(this.prisma);
+    const botId =
+      this.readExecutionOwnerBotId(params.update) ??
+      this.maxBotContextService?.getActiveBotId() ??
+      params.update.botId ??
+      (
+        await this.maxBotLinkService?.resolveBotRoute({
+          purpose: 'send_message',
+          chatId: params.chatId,
+          fallbackToPrimary: true,
+        })
+      )?.botId;
+    if (!botId) throw new Error('Group command has no proven bot route');
+    return runGroupCommandWithAuthority(authority, params.update, botId, {
+      resume: async (permit) => {
+        if (permit.result?.noticeText)
+          await deliverGroupCommandNotice({
+            max: this.maxClient,
+            settings: params.settings,
+            permit,
+            authority,
+          });
+      },
+      execute: (permit) =>
+        this.handleOwnedAdminForwardedModerationCommand({ ...params, permit, authority }),
+    });
+  }
+
+  private async handleOwnedAdminForwardedModerationCommand(params: {
+    update: MaxUpdate;
+    chatId: string;
+    chatTitle?: string;
+    senderId: string;
+    senderName?: string;
+    messageId: string;
+    settings: ChatSettings;
+    superBanOnly?: boolean;
+    permit: GroupCommandPermit;
+    authority: GroupCommandAuthorityService;
+  }): Promise<boolean> {
     const { update, chatId, chatTitle, senderId, senderName, messageId, settings, superBanOnly } =
       params;
     if (update.type !== 'message_created') {
       return false;
     }
-    const commandBotId = this.readExecutionOwnerBotId(update);
+    const commandBotId = params.permit.executionBotId;
+    const sendNotice = (notice: { chatId: string; settings: ChatSettings; text: string }) =>
+      deliverGroupCommandNotice({
+        max: this.maxClient,
+        settings: notice.settings,
+        text: notice.text,
+        permit: params.permit,
+        authority: params.authority,
+      });
     const directText = extractDirectIncomingMessageText(update);
     let command: AdminForwardedModerationCommand | null;
     try {
       command = parseAdminForwardedModerationCommand(directText, settings);
     } catch (error: unknown) {
-      await this.sendGroupAdminCommandNotice({
+      await sendNotice({
         chatId,
-        botId: commandBotId,
         settings,
         text: this.extractGroupAdminCommandErrorMessage(error),
       });
@@ -7099,9 +7106,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (command.action === 'SUPER_BAN' && !manualBridge.isSuperBanDeveloperUserId(senderId)) {
-      await this.sendGroupAdminCommandNotice({
+      await sendNotice({
         chatId,
-        botId: commandBotId,
         settings,
         text: 'Недостаточно прав: команду `супер бан` может запускать только разработчик бота.',
       });
@@ -7120,9 +7126,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const uniqueSources = dedupeForwardedRulesSources(sources);
       if (uniqueSources.length !== 1) {
-        await this.sendGroupAdminCommandNotice({
+        await sendNotice({
           chatId,
-          botId: commandBotId,
           settings,
           text: `Перешлите или ответьте на одно сообщение из этого чата и добавьте команду ${rulesCommandHelpText}.`,
         });
@@ -7131,9 +7136,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const sourceMessage = uniqueSources[0];
       if (sourceMessage.chatId !== chatId) {
-        await this.sendGroupAdminCommandNotice({
+        await sendNotice({
           chatId,
-          botId: commandBotId,
           settings,
           text: `Команда ${rulesCommandHelpText} работает только для сообщений из этого чата.`,
         });
@@ -7141,7 +7145,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       try {
-        await manualBridge.adoptChatRulesFromMessage(
+        const adopted = await manualBridge.adoptChatRulesFromMessage(
           chatId,
           actor,
           {
@@ -7150,16 +7154,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             text: sourceMessage.text,
           },
           'group_command',
+          params.permit,
         );
 
+        if (adopted?.commandSkipped) return true;
         await this.deleteAdminCommandMessage(chatId, messageId, update.message?.createdAt ?? null);
-        await this.sendGroupAdminCommandNotice({
+        await sendNotice({
           chatId,
-          botId: commandBotId,
           settings,
           text: 'Правила привязаны к этому сообщению. Кнопка «Правила» в нарушениях включена.',
         });
       } catch (error: unknown) {
+        if (error instanceof GroupCommandNoticeDeliveryError) throw error;
         this.logger.warn(
           {
             chatId,
@@ -7170,9 +7176,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'Failed to adopt forwarded chat rules message',
         );
 
-        await this.sendGroupAdminCommandNotice({
+        await sendNotice({
           chatId,
-          botId: commandBotId,
           settings,
           text: `Не удалось сохранить правила: ${this.escapeMaxMarkdownText(
             this.extractGroupAdminCommandErrorMessage(error),
@@ -7194,17 +7199,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   durationHours: command.silenceDurationHours,
                 },
                 'group_command',
+                params.permit,
               )
-            : await manualBridge.applyManualOpenChatCommand(chatId, actor, 'group_command');
+            : await manualBridge.applyManualOpenChatCommand(
+                chatId,
+                actor,
+                'group_command',
+                params.permit,
+              );
 
+        if (result.skipped) return true;
         await this.deleteAdminCommandMessage(chatId, messageId, update.message?.createdAt ?? null);
-        await this.sendGroupAdminCommandNotice({
+        await sendNotice({
           chatId,
-          botId: commandBotId,
           settings,
           text: result.message,
         });
       } catch (error: unknown) {
+        if (error instanceof GroupCommandNoticeDeliveryError) throw error;
         this.logger.warn(
           {
             chatId,
@@ -7215,9 +7227,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'Failed to apply manual chat silence command',
         );
 
-        await this.sendGroupAdminCommandNotice({
+        await sendNotice({
           chatId,
-          botId: commandBotId,
           settings,
           text: `Команда не выполнена: ${this.escapeMaxMarkdownText(
             this.extractGroupAdminCommandErrorMessage(error),
@@ -7252,9 +7263,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 : ADMIN_BAN_COMMAND_NAME_DEFAULT,
             )}\``;
     if (targets.length === 0) {
-      await this.sendGroupAdminCommandNotice({
+      await sendNotice({
         chatId,
-        botId: commandBotId,
         settings,
         text: `Нужна цель: ответьте на сообщение из этого чата командой ${commandHelpText} или перешлите одно сообщение и добавьте команду.`,
       });
@@ -7263,9 +7273,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const uniqueTargets = dedupeForwardedModerationTargets(targets);
     if (uniqueTargets.length !== 1) {
-      await this.sendGroupAdminCommandNotice({
+      await sendNotice({
         chatId,
-        botId: commandBotId,
         settings,
         text: `Для команды ${commandHelpText} выберите одно сообщение: ответьте на него или перешлите только его.`,
       });
@@ -7274,17 +7283,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const target = uniqueTargets[0];
     if (target.chatId !== chatId) {
-      await this.sendGroupAdminCommandNotice({
+      await sendNotice({
         chatId,
-        botId: commandBotId,
         settings,
         text: `Команда ${commandHelpText} применима только к участнику этого чата. Выберите сообщение отсюда.`,
       });
       return true;
     }
 
+    let queued = false;
     try {
-      const queued =
+      queued =
         command.action === 'SUPER_BAN'
           ? await manualBridge.enqueueDeveloperSuperBanCommand({
               sourceChatId: chatId,
@@ -7330,9 +7339,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to enqueue forwarded admin moderation command',
         );
-        await this.sendGroupAdminCommandNotice({
+        await sendNotice({
           chatId,
-          botId: commandBotId,
           settings,
           text:
             command.action === 'SUPER_BAN'
@@ -7341,6 +7349,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         });
       }
     } catch (error: unknown) {
+      if (error instanceof GroupCommandNoticeDeliveryError) throw error;
       this.logger.warn(
         {
           chatId,
@@ -7352,9 +7361,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
 
       if (command.action === 'SUPER_BAN') {
-        await this.sendGroupAdminCommandNotice({
+        await sendNotice({
           chatId,
-          botId: commandBotId,
           settings,
           text: `Команда \`супер бан\` не запущена: ${this.escapeMaxMarkdownText(
             this.extractGroupAdminCommandErrorMessage(error),
@@ -7364,7 +7372,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       return true;
     }
-
+    if (queued) await params.authority.prepareQueuedResult(params.permit, command.action);
     return true;
   }
 
@@ -7391,32 +7399,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           error: error instanceof Error ? error.message : 'Unknown error',
         },
         'Failed to delete handled admin command message',
-      );
-    }
-  }
-
-  private async sendGroupAdminCommandNotice(params: {
-    chatId: string;
-    botId?: string | null;
-    settings: ChatSettings;
-    text: string;
-  }): Promise<void> {
-    try {
-      await this.sendBotMessageWithOptionalAutoDelete({
-        chatId: params.chatId,
-        botId: params.botId ?? undefined,
-        text: params.text,
-        deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
-        deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-        immediate: true,
-      });
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId: params.chatId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to send group admin command notice',
       );
     }
   }
@@ -14137,6 +14119,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
    */
 
   private isTerminalModerationActionPermissionError(error: unknown): boolean {
+    if (isMaxMutationOutcomeAmbiguous(error)) return false;
     const status = this.extractStatusCode(error);
     if (status === 403 || status === 404) {
       return true;
@@ -14165,6 +14148,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isTerminalModerationActionAccessError(error: unknown): boolean {
+    if (isMaxMutationOutcomeAmbiguous(error)) return false;
     const status = this.extractStatusCode(error);
     if (status === 403) {
       return true;

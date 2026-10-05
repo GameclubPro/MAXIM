@@ -9,6 +9,7 @@ import { resolvePhotoDuplicateRuntimePolicy } from '../moderation/photo-duplicat
 import { UPDATE_SETTINGS_AUDIT_PAYLOAD_MAX_SERIALIZED_BYTES } from './admin-chat-settings';
 import { AdminSettingsService } from './admin-settings.service';
 import { BotCapabilityRequiredException } from './bot-capability-required.error';
+import { extractSqlText } from './admin-service-test-support';
 
 const user = {
   userId: 'admin-1',
@@ -318,6 +319,13 @@ function createService(
   };
   const transactionClient = {} as Record<string, unknown>;
   const prisma = {
+    $queryRaw: jest.fn().mockImplementation(async (...args: unknown[]) => {
+      const sql = extractSqlText(args);
+      if (/SELECT id FROM chats WHERE id =/u.test(sql)) return [{ id: 'chat-1' }];
+      if (/clock_timestamp\(\) AT TIME ZONE 'UTC'/u.test(sql)) return [{ at: new Date() }];
+      throw new Error('Unexpected settings transaction fixture query');
+    }),
+    $executeRaw: jest.fn().mockResolvedValue(1),
     $transaction: jest
       .fn()
       .mockImplementation((input) =>
@@ -371,7 +379,10 @@ function createService(
   Object.assign(transactionClient, {
     chat: prisma.chat,
     chatSettings: prisma.chatSettings,
+    chatRules: prisma.chatRules,
     auditLog: prisma.auditLog,
+    $queryRaw: prisma.$queryRaw,
+    $executeRaw: prisma.$executeRaw,
   });
   const chatContextCache = {
     invalidate: jest.fn().mockResolvedValue(undefined),
@@ -3176,13 +3187,14 @@ describe('AdminSettingsService chat rules', () => {
 
   it('updates rules draft after concurrent chat rules creation wins the upsert race', async () => {
     const { prisma, service } = createService();
-    prisma.chatRules.upsert.mockRejectedValueOnce(createPrismaUniqueConflictError());
-    prisma.chatRules.update.mockResolvedValueOnce(
-      createPersistedChatRules({
-        text: 'Пишите по теме.',
-        autoTextEnabled: false,
-      }),
-    );
+    prisma.chatRules.upsert
+      .mockRejectedValueOnce(createPrismaUniqueConflictError())
+      .mockResolvedValueOnce(
+        createPersistedChatRules({
+          text: 'Пишите по теме.',
+          autoTextEnabled: false,
+        }),
+      );
 
     const result = await service.updateRules('chat-1', user as never, {
       text: 'Пишите по теме.',
@@ -3196,12 +3208,33 @@ describe('AdminSettingsService chat rules', () => {
     });
 
     expect(result.text).toBe('Пишите по теме.');
-    expect(prisma.chatRules.update).toHaveBeenCalledWith({
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(prisma.chatRules.upsert).toHaveBeenCalledTimes(2);
+    expect(prisma.chatRules.upsert).toHaveBeenLastCalledWith({
       where: { chatId: 'chat-1' },
-      data: expect.objectContaining({
+      create: expect.objectContaining({ chatId: 'chat-1' }),
+      update: expect.objectContaining({
         text: 'Пишите по теме.',
         autoTextEnabled: false,
       }),
     });
+    expect(prisma.chatRules.update).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry the rules transaction when its audit insert has a unique conflict', async () => {
+    const { prisma, service } = createService();
+    const conflict = createPrismaUniqueConflictError();
+    prisma.auditLog.create.mockRejectedValueOnce(conflict);
+    await expect(
+      service.updateRules('chat-1', user as never, {
+        text: 'Пишите по теме.',
+        autoTextEnabled: false,
+      }),
+    ).rejects.toBe(conflict);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.chatRules.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
   });
 });

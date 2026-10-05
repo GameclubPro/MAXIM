@@ -1,6 +1,11 @@
 import { ConfigService } from '@nestjs/config';
 import { WebhookService } from './webhook.service';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
+import { WebhookCanonicalExecutionService } from '../moderation/webhook-canonical-execution.service';
+import { WebhookOrderedPredecessorPendingError } from '../moderation/webhook-ordered-predecessor-fence';
+import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
+import { holdUnverifiedLegacyExecution } from './webhook-legacy-authority';
+import { buildWebhookExecutionDeadlineAt } from './webhook-execution-deadline';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -93,12 +98,26 @@ function assertDisposableDatabaseUrl(value: string): void {
 describePostgres('PostgreSQL webhook outbox queries', () => {
   let prisma: PrismaClient;
   let reader: OrderedWebhookHeadReader;
+  let executionCutoverAt: Date;
   const createdEventIds: string[] = [];
+  const createdClaimIds: string[] = [];
+  const createdChatIds: string[] = [];
 
   beforeAll(async () => {
     assertDisposableDatabaseUrl(databaseUrl);
     prisma = createPrismaClient(databaseUrl, { max: 2 });
     await prisma.$connect();
+    const [cutover] = await prisma.$queryRaw<Array<{ finishedAt: Date }>>`
+      SELECT finished_at AS "finishedAt" FROM _prisma_migrations
+      WHERE migration_name = '20261005020000_add_multibot_order_fences'
+        AND rolled_back_at IS NULL AND finished_at IS NOT NULL
+      ORDER BY finished_at DESC LIMIT 1
+    `;
+    if (!(cutover?.finishedAt instanceof Date) || !Number.isFinite(cutover.finishedAt.getTime()))
+      throw new Error(
+        'Native authority fixtures require the successful multibot cutover migration',
+      );
+    executionCutoverAt = cutover.finishedAt;
     const service = Object.create(WebhookOutboxService.prototype) as object;
     Object.defineProperty(service, 'prisma', { value: prisma });
     Object.defineProperty(service, 'batchSize', { value: 100 });
@@ -110,9 +129,12 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     if (createdEventIds.length === 0) {
       return;
     }
-    await prisma.webhookEvent.deleteMany({
-      where: { id: { in: createdEventIds.splice(0) } },
+    const ids = createdEventIds.splice(0);
+    await prisma.webhookExecutionClaim.deleteMany({
+      where: { OR: [{ webhookEventId: { in: ids } }, { id: { in: createdClaimIds.splice(0) } }] },
     });
+    await prisma.webhookEvent.deleteMany({ where: { id: { in: ids } } });
+    await prisma.chat.deleteMany({ where: { id: { in: createdChatIds.splice(0) } } });
   });
 
   afterAll(async () => {
@@ -135,6 +157,7 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       updateId: id,
       botId: 'preparation-bot',
       type: 'message_created',
+      eventTimestampSource: 'payload' as const,
       message: {
         chatId: `-${randomUUID()}`,
         messageId: `message-${id}`,
@@ -149,6 +172,920 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     });
     return { id, update };
   }
+
+  async function semanticReceipt(params: {
+    chatId: string;
+    messageId: string;
+    createdAt: Date;
+    sourceAt?: Date;
+    botId?: string;
+  }) {
+    const id = `semantic-${randomUUID()}`;
+    const update = {
+      updateId: id,
+      botId: params.botId ?? 'preparation-bot',
+      type: 'message_created',
+      eventTimestampSource: 'payload' as const,
+      message: {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        senderId: '',
+        text: 'same message',
+        createdAt: (params.sourceAt ?? params.createdAt).toISOString(),
+      },
+    };
+    const semanticKey = buildWebhookSemanticEventKey(update)!;
+    createdEventIds.push(id);
+    const event = await prisma.webhookEvent.create({
+      data: {
+        id,
+        dedupKey: id,
+        botId: update.botId,
+        semanticKey,
+        createdAt: params.createdAt,
+        rawPayload: {},
+        normalizedPayload: update,
+      },
+    });
+    return { event, update, semanticKey };
+  }
+
+  async function readyClaim(
+    source: Awaited<ReturnType<typeof semanticReceipt>>,
+    extra: Record<string, unknown> = {},
+  ) {
+    const claim = await prisma.webhookExecutionClaim.create({
+      data: {
+        kind: 'EXECUTION',
+        semanticKey: source.semanticKey,
+        webhookEventId: source.event.id,
+        executionBotId: 'preparation-bot',
+        enforced: true,
+        status: 'READY',
+        createdAt: new Date(),
+        preparedAt: new Date(),
+        ...extra,
+      },
+    });
+    createdClaimIds.push(claim.id);
+    return claim;
+  }
+
+  it('keeps a permanent completed semantic tombstone after owner body retention', async () => {
+    const chatId = `-${randomUUID()}`;
+    const owner = await semanticReceipt({
+      chatId,
+      messageId: 'late-mirror',
+      createdAt: new Date(Date.now() - 30_000),
+    });
+    const claim = await readyClaim(owner, { status: 'COMPLETED', completedAt: new Date() });
+    await prisma.webhookEvent.delete({ where: { id: owner.event.id } });
+    expect(
+      await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }),
+    ).toMatchObject({ id: claim.id, webhookEventId: null, status: 'COMPLETED' });
+    const late = await semanticReceipt({
+      chatId,
+      messageId: 'late-mirror',
+      createdAt: new Date(),
+      botId: 'late-peer',
+    });
+    expect(await preparationService().preparePersistedWebhookEvent(late.event.id)).toMatchObject({
+      canonical: false,
+      prepared: true,
+    });
+    expect((await prisma.webhookEvent.findUnique({ where: { id: late.event.id } }))!.status).toBe(
+      'DUPLICATE',
+    );
+    expect(
+      await new WebhookCanonicalExecutionService(prisma as never).prepareExecution(
+        late.event.id,
+        'late-peer',
+      ),
+    ).toBeNull();
+    expect(
+      (await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }))!.executionBotId,
+    ).toBe('preparation-bot');
+  });
+
+  it('executes a later physical owner through the earlier mirror order anchor', async () => {
+    const chatId = `-${randomUUID()}`;
+    const now = Math.max(Date.now(), executionCutoverAt.getTime() + 3);
+    const mirror = await semanticReceipt({
+      chatId,
+      messageId: 'first',
+      createdAt: new Date(Math.max(now - 3_000, executionCutoverAt.getTime() + 1)),
+      botId: 'observer-bot',
+    });
+    const laterMessage = await semanticReceipt({
+      chatId,
+      messageId: 'second',
+      createdAt: new Date(Math.max(now - 2_000, executionCutoverAt.getTime() + 2)),
+    });
+    const owner = await semanticReceipt({
+      chatId,
+      messageId: 'first',
+      createdAt: new Date(Math.max(now - 1_000, executionCutoverAt.getTime() + 3)),
+    });
+    await readyClaim(owner);
+    await readyClaim(laterMessage);
+    const worker = new WebhookCanonicalExecutionService(prisma as never);
+    await expect(
+      worker.prepareExecution(laterMessage.event.id, 'preparation-bot'),
+    ).rejects.toBeInstanceOf(WebhookOrderedPredecessorPendingError);
+    const execution = await worker.prepareExecution(owner.event.id, 'preparation-bot');
+    expect(execution?.webhookEvent.id).toBe(owner.event.id);
+    await worker.completeExecution(execution!);
+    expect(await preparationService().preparePersistedWebhookEvent(mirror.event.id)).toMatchObject({
+      canonical: false,
+      prepared: true,
+    });
+    const next = await worker.prepareExecution(laterMessage.event.id, 'preparation-bot');
+    expect(next?.webhookEvent.id).toBe(laterMessage.event.id);
+    await worker.completeExecution(next!);
+  });
+
+  it('expires only an exact unstarted readiness lease and keeps narrower source windows', async () => {
+    const source = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'expired',
+      createdAt: new Date(Date.now() - 6 * 60_000),
+    });
+    const deadline = buildWebhookExecutionDeadlineAt(source.update, source.event.createdAt)!;
+    await prisma.webhookEvent.update({
+      where: { id: source.event.id },
+      data: { executionDeadlineAt: deadline },
+    });
+    const claim = await readyClaim(source, {
+      leaseToken: 'expiry-token',
+      leaseExpiresAt: new Date(Date.now() + 30_000),
+    });
+    const params = {
+      webhookEventId: source.event.id,
+      semanticKey: source.semanticKey,
+      claimId: claim.id,
+      leaseToken: 'expiry-token',
+    };
+    expect(
+      await prisma.$transaction((tx) =>
+        WebhookCanonicalExecutionService.tryExpireUnstartedOwnerWithClient(tx, {
+          ...params,
+          leaseToken: 'wrong-token',
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      await prisma.$transaction((tx) =>
+        WebhookCanonicalExecutionService.tryExpireUnstartedOwnerWithClient(tx, params),
+      ),
+    ).toBe(false);
+    await prisma.webhookExecutionClaim.update({
+      where: { id: claim.id },
+      data: {
+        commandResult: {
+          kind: 'EXECUTION_WAITING',
+          authorityVersion: 'semantic-owner-lease-v1',
+          webhookEventId: source.event.id,
+          semanticKey: source.semanticKey,
+          deadlineAt: deadline.toISOString(),
+        },
+      },
+    });
+    expect(
+      await prisma.$transaction((tx) =>
+        WebhookCanonicalExecutionService.tryExpireUnstartedOwnerWithClient(tx, params),
+      ),
+    ).toBe(true);
+    const row = await prisma.webhookEvent.findUnique({ where: { id: source.event.id } });
+    expect(row).toMatchObject({
+      status: 'PROCESSED',
+      executionDeadlineAt: deadline,
+      normalizedPayload: {
+        executionOutcome: { code: 'NO_EXECUTABLE_OWNER', deadlineAt: deadline.toISOString() },
+      },
+    });
+    expect(
+      (await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }))!
+        .businessStartedAt,
+    ).toBeNull();
+  });
+
+  it('never reclaims a started engine after a restart or executor change', async () => {
+    const source = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'started',
+      createdAt: new Date(),
+    });
+    const claim = await readyClaim(source, { businessStartedAt: new Date(Date.now() - 1_000) });
+    expect(
+      await new WebhookCanonicalExecutionService(prisma as never).prepareExecution(
+        source.event.id,
+        'new-executor',
+      ),
+    ).toBeNull();
+    expect(
+      await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }),
+    ).toMatchObject({ status: 'READY', executionBotId: 'preparation-bot' });
+    expect(
+      (await prisma.webhookEvent.findUnique({ where: { id: source.event.id } }))!.errorMessage,
+    ).toContain('CANONICAL_BUSINESS_ALREADY_STARTED');
+  });
+
+  it('recovers a proven finished handler without rerunning business and releases later messages', async () => {
+    const chatId = `-${randomUUID()}`;
+    const source = await semanticReceipt({
+      chatId,
+      messageId: 'finished',
+      createdAt: new Date(Date.now() - 3_000),
+    });
+    const businessStartedAt = new Date(Date.now() - 2_000);
+    const finishedAt = new Date(Date.now() - 1_000).toISOString();
+    const claim = await readyClaim(source, {
+      businessStartedAt,
+      commandResult: {
+        kind: 'EXECUTION_FINISHED',
+        authorityVersion: 'semantic-owner-lease-v1',
+        webhookEventId: source.event.id,
+        semanticKey: source.semanticKey,
+        executionBotId: 'preparation-bot',
+        businessStartedAt: businessStartedAt.toISOString(),
+        finishedAt,
+      },
+    });
+    const next = await semanticReceipt({ chatId, messageId: 'next', createdAt: new Date() });
+    await readyClaim(next);
+    const worker = new WebhookCanonicalExecutionService(prisma as never);
+    expect(await worker.prepareExecution(source.event.id, 'new-executor')).toBeNull();
+    expect(
+      await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }),
+    ).toMatchObject({
+      status: 'COMPLETED',
+      executionBotId: 'preparation-bot',
+      completedAt: new Date(finishedAt),
+    });
+    expect((await prisma.webhookEvent.findUnique({ where: { id: source.event.id } }))!.status).toBe(
+      'PROCESSED',
+    );
+    expect((await worker.prepareExecution(next.event.id, 'preparation-bot'))?.webhookEvent.id).toBe(
+      next.event.id,
+    );
+  });
+
+  it.each([false, true])(
+    'restores fresh waiting ownership only before its saved deadline (expired=%s)',
+    async (expired) => {
+      const chatId = `-${randomUUID()}`;
+      const source = await semanticReceipt({
+        chatId,
+        messageId: 'waiting',
+        createdAt: new Date(),
+      });
+      // A fresh migration must not turn this readiness test into a legacy-source test.
+      // Exercise the immutable saved deadline separately, including an earlier expiry.
+      const deadline = expired
+        ? new Date(Date.now() - 1_000)
+        : buildWebhookExecutionDeadlineAt(source.update, source.event.createdAt)!;
+      await prisma.webhookEvent.update({
+        where: { id: source.event.id },
+        data: { executionDeadlineAt: deadline },
+      });
+      const claim = await readyClaim(source, {
+        commandResult: {
+          kind: 'EXECUTION_WAITING',
+          authorityVersion: 'semantic-owner-lease-v1',
+          webhookEventId: source.event.id,
+          semanticKey: source.semanticKey,
+          deadlineAt: deadline.toISOString(),
+        },
+      });
+      const checkedAt = new Date();
+      createdChatIds.push(chatId);
+      await prisma.chat.create({
+        data: {
+          id: chatId,
+          title: 'Waiting readiness fixture',
+          primaryBotId: 'recovered-bot',
+          routingVersion: 8,
+          botMemberships: {
+            create: {
+              botId: 'recovered-bot',
+              ...buildBotAccessSnapshotPersistence(
+                {
+                  isAdmin: true,
+                  isOwner: false,
+                  permissionsKnown: true,
+                  permissions: ['read_all_messages', 'write'],
+                },
+                { source: 'recovery', now: checkedAt },
+              ),
+            },
+          },
+        },
+      });
+      const readiness = {
+        ensureReady: jest.fn(async () => ({
+          botId: 'recovered-bot',
+          routingVersion: 8,
+          accessEpoch: { checkedAt, source: 'recovery' },
+          changed: true,
+        })),
+      };
+      const worker = new WebhookCanonicalExecutionService(prisma as never, readiness as never);
+      const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
+      const stored = await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } });
+      if (expired) {
+        expect(context).toBeNull();
+        expect(readiness.ensureReady).not.toHaveBeenCalled();
+        expect(stored).toMatchObject({
+          status: 'COMPLETED',
+          businessStartedAt: null,
+          executionBotId: 'preparation-bot',
+        });
+        expect(
+          (await prisma.webhookEvent.findUnique({ where: { id: source.event.id } }))!
+            .normalizedPayload,
+        ).toMatchObject({ executionOutcome: { code: 'NO_EXECUTABLE_OWNER' } });
+      } else {
+        expect(context?.activeBotId).toBe('recovered-bot');
+        expect(stored).toMatchObject({
+          id: claim.id,
+          webhookEventId: source.event.id,
+          semanticKey: source.semanticKey,
+          executionBotId: 'recovered-bot',
+        });
+        expect(stored!.businessStartedAt).not.toBeNull();
+        await worker.completeExecution(context!);
+      }
+      expect(
+        (await prisma.webhookEvent.findUnique({ where: { id: source.event.id } }))!
+          .executionDeadlineAt,
+      ).toEqual(deadline);
+    },
+  );
+
+  it('converges concurrent original completion and finished recovery without regressing on late failure', async () => {
+    const source = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'completion-race',
+      createdAt: new Date(),
+    });
+    const claim = await readyClaim(source);
+    const worker = new WebhookCanonicalExecutionService(prisma as never);
+    const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
+    await (
+      worker as unknown as {
+        markExecutionHandlerFinished: (
+          context: NonNullable<
+            Awaited<ReturnType<WebhookCanonicalExecutionService['prepareExecution']>>
+          >,
+        ) => Promise<void>;
+      }
+    ).markExecutionHandlerFinished(context!);
+    const results = await Promise.allSettled([
+      worker.completeExecution(context!),
+      new WebhookCanonicalExecutionService(prisma as never).prepareExecution(
+        source.event.id,
+        'other-bot',
+      ),
+    ]);
+    expect(results[0]!.status).toBe('fulfilled');
+    const after = await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } });
+    expect(after).toMatchObject({
+      status: 'COMPLETED',
+      executionBotId: 'preparation-bot',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    });
+    await worker.failExecution(context!, { errorMessage: 'late failing worker', terminal: false });
+    expect((await prisma.webhookEvent.findUnique({ where: { id: source.event.id } }))!.status).toBe(
+      'PROCESSED',
+    );
+    expect(
+      (await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }))!.commandResult,
+    ).toMatchObject({ kind: 'EXECUTION_FINISHED' });
+  });
+
+  it.each([
+    ['PENDING', new Date(Date.UTC(2020, 0, 1))],
+    ['READY', new Date(Date.UTC(2020, 0, 1))],
+    ['READY', new Date()],
+  ] as const)(
+    'holds an unenforced %s claim written at %s without inventing no-effects proof',
+    async (status, claimCreatedAt) => {
+      const source = await semanticReceipt({
+        chatId: `-${randomUUID()}`,
+        messageId: 'legacy',
+        createdAt: new Date(Date.UTC(2020, 0, 1)),
+      });
+      const claim = await readyClaim(source, {
+        createdAt: claimCreatedAt,
+        enforced: false,
+        status,
+        ...(status === 'PENDING' ? { preparedAt: null } : {}),
+      });
+      expect(await holdUnverifiedLegacyExecution(prisma as never, claim)).toBe(true);
+      await expect(
+        new WebhookCanonicalExecutionService(prisma as never).prepareExecution(
+          source.event.id,
+          'peer',
+        ),
+      ).resolves.toBeNull();
+      expect(
+        (await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }))!.enforced,
+      ).toBe(false);
+      expect(
+        (await prisma.webhookEvent.findUnique({ where: { id: source.event.id } }))!.errorMessage,
+      ).toContain('LEGACY_EXECUTION_UNVERIFIED');
+    },
+  );
+
+  it.each(
+    (['PENDING', 'READY'] as const).flatMap((status) =>
+      (['preparation', 'worker'] as const).map((path) => ({ status, path })),
+    ),
+  )('holds old enforced $status authority at the $path boundary', async ({ status, path }) => {
+    const source = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'historical-enforced',
+      createdAt: new Date(executionCutoverAt.getTime() - 2_000),
+    });
+    const claim = await readyClaim(source, {
+      createdAt: new Date(executionCutoverAt.getTime() - 1),
+      enforced: true,
+      status,
+      ...(status === 'PENDING' ? { preparedAt: null } : {}),
+    });
+    const worker = new WebhookCanonicalExecutionService(prisma as never);
+    const attempt =
+      path === 'preparation'
+        ? preparationService().preparePersistedWebhookEvent(source.event.id)
+        : worker.prepareExecution(source.event.id, 'preparation-bot');
+    await expect(attempt).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+    expect(
+      await prisma.webhookEvent.findUniqueOrThrow({ where: { id: source.event.id } }),
+    ).toMatchObject({
+      status: 'FAILED',
+      nextEnqueueAt: null,
+      errorMessage: expect.stringContaining('LEGACY_EXECUTION_UNVERIFIED'),
+    });
+    expect(
+      await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+    ).toMatchObject({
+      enforced: true,
+      status,
+      businessStartedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    });
+    await expect(worker.prepareExecution(source.event.id, 'peer')).resolves.toBeNull();
+  });
+
+  it.each([WebhookStatus.FAILED, WebhookStatus.QUEUED])(
+    'holds an old off-mode %s receipt when new preparation creates its first enforced claim',
+    async (status) => {
+      const source = await semanticReceipt({
+        chatId: `-${randomUUID()}`,
+        messageId: 'old-off-attempt',
+        createdAt: new Date(executionCutoverAt.getTime() - 1),
+      });
+      await prisma.webhookEvent.update({
+        where: { id: source.event.id },
+        data: {
+          semanticKey: null,
+          status,
+          nextEnqueueAt: new Date(),
+          queueName: 'moderation-background',
+          errorMessage: 'old off-mode attempt may have partial effects',
+        },
+      });
+      expect(
+        await prisma.webhookExecutionClaim.findUnique({
+          where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey: source.semanticKey } },
+        }),
+      ).toBeNull();
+      await expect(
+        preparationService().preparePersistedWebhookEvent(source.event.id),
+      ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+      const claim = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+        where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey: source.semanticKey } },
+      });
+      expect(claim.createdAt.getTime()).toBeGreaterThan(executionCutoverAt.getTime());
+      expect(claim).toMatchObject({
+        enforced: true,
+        businessStartedAt: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      });
+      expect(
+        await prisma.webhookEvent.findUniqueOrThrow({ where: { id: source.event.id } }),
+      ).toMatchObject({
+        status: 'FAILED',
+        nextEnqueueAt: null,
+        queueName: null,
+        errorMessage: expect.stringContaining('LEGACY_EXECUTION_UNVERIFIED'),
+      });
+      await expect(
+        new WebhookCanonicalExecutionService(prisma as never).prepareExecution(
+          source.event.id,
+          'preparation-bot',
+        ),
+      ).resolves.toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    'holds a late fresh owner of an old off-mode mirror (older semantic index entry=%s)',
+    async (indexed) => {
+      const chatId = `-${randomUUID()}`;
+      const old = await semanticReceipt({
+        chatId,
+        messageId: 'old-off-mirror',
+        createdAt: new Date(executionCutoverAt.getTime() - 1),
+        botId: 'old-bot',
+      });
+      await prisma.webhookEvent.update({
+        where: { id: old.event.id },
+        data: {
+          semanticKey: indexed ? old.semanticKey : null,
+          status: 'FAILED',
+          errorMessage: 'old off-mode partial attempt',
+        },
+      });
+      const lateCreatedAt = new Date();
+      const late = await semanticReceipt({
+        chatId,
+        messageId: 'old-off-mirror',
+        createdAt: lateCreatedAt,
+        // Known older index rows must also fence a conflicting newer source time.
+        sourceAt: indexed ? lateCreatedAt : old.event.createdAt,
+        botId: 'preparation-bot',
+      });
+      await expect(
+        preparationService().preparePersistedWebhookEvent(late.event.id),
+      ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+      const claim = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+        where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey: late.semanticKey } },
+      });
+      expect(claim).toMatchObject({
+        webhookEventId: late.event.id,
+        enforced: true,
+        businessStartedAt: null,
+      });
+      expect(claim.createdAt.getTime()).toBeGreaterThan(executionCutoverAt.getTime());
+      expect(
+        await prisma.webhookEvent.findUniqueOrThrow({ where: { id: old.event.id } }),
+      ).toMatchObject({
+        semanticKey: indexed ? old.semanticKey : null,
+        status: 'FAILED',
+        errorMessage: 'old off-mode partial attempt',
+      });
+      expect(
+        await prisma.webhookEvent.findUniqueOrThrow({ where: { id: late.event.id } }),
+      ).toMatchObject({
+        status: 'FAILED',
+        errorMessage: expect.stringContaining('LEGACY_EXECUTION_UNVERIFIED'),
+      });
+    },
+  );
+
+  it.each(['ingress', 'unknown', 'invalid', 'future', 'old-message-creation'])(
+    'holds a fresh shared receipt with %s source proof without acquiring a business lease',
+    async (variant) => {
+      const source = await semanticReceipt({
+        chatId: `-${randomUUID()}`,
+        messageId: `unverified-source-${variant}`,
+        createdAt: new Date(),
+      });
+      const payload = source.update as Record<string, unknown>;
+      if (variant === 'ingress') payload.eventTimestampSource = 'ingress';
+      if (variant === 'unknown') delete payload.eventTimestampSource;
+      if (variant === 'invalid') payload.raw = { timestamp: 'invalid' };
+      if (variant === 'future') payload.raw = { timestamp: Date.now() + 60_000 };
+      if (variant === 'old-message-creation')
+        payload.raw = {
+          timestamp: source.event.createdAt.getTime(),
+          message: { timestamp: executionCutoverAt.getTime() - 1 },
+        };
+      await prisma.webhookEvent.update({
+        where: { id: source.event.id },
+        data: { normalizedPayload: payload as Prisma.InputJsonValue },
+      });
+      const claim = await readyClaim(source);
+      await expect(
+        new WebhookCanonicalExecutionService(prisma as never).prepareExecution(
+          source.event.id,
+          'preparation-bot',
+        ),
+      ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+      expect(
+        await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+      ).toMatchObject({ businessStartedAt: null, leaseToken: null, leaseExpiresAt: null });
+    },
+  );
+
+  it('permits an enforced claim with fresh owner and source after cutover to execute once', async () => {
+    const source = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'new-enforced',
+      createdAt: new Date(),
+    });
+    const claim = await readyClaim(source);
+    expect(claim.createdAt.getTime()).toBeGreaterThan(executionCutoverAt.getTime());
+    await expect(holdUnverifiedLegacyExecution(prisma as never, claim)).resolves.toBe(false);
+    const worker = new WebhookCanonicalExecutionService(prisma as never);
+    const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
+    expect(context?.businessLeaseToken).toEqual(expect.any(String));
+    await worker.completeExecution(context!);
+    await expect(worker.prepareExecution(source.event.id, 'peer')).resolves.toBeNull();
+    expect(
+      await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+    ).toMatchObject({
+      status: 'COMPLETED',
+      businessStartedAt: expect.any(Date),
+      commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+    });
+  });
+
+  it.each(['PENDING', 'READY', 'COMPLETED'] as const)(
+    'rejects an ownerless incomplete %s claim',
+    async (status) => {
+      const source = await semanticReceipt({
+        chatId: `-${randomUUID()}`,
+        messageId: 'bad-tombstone',
+        createdAt: new Date(),
+      });
+      const claim = await readyClaim(source, {
+        status,
+        ...(status === 'COMPLETED' ? { completedAt: null } : {}),
+      });
+      await prisma.webhookEvent.delete({ where: { id: source.event.id } });
+      const mirror = await semanticReceipt({
+        chatId: source.update.message.chatId,
+        messageId: 'bad-tombstone',
+        createdAt: new Date(),
+      });
+      await expect(
+        preparationService().preparePersistedWebhookEvent(mirror.event.id),
+      ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+      expect(
+        (await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }))!
+          .webhookEventId,
+      ).toBeNull();
+      expect(
+        (await prisma.webhookEvent.findUnique({ where: { id: mirror.event.id } }))!.status,
+      ).toBe('RECEIVED');
+    },
+  );
+
+  it('advances bounded retention scans past a full page of pinned legacy bodies', async () => {
+    const service = Object.create(WebhookOutboxService.prototype) as {
+      deleteCompletedWebhookBatch: (cutoff: Date) => Promise<{ removed: number; scanned: number }>;
+    };
+    Object.defineProperty(service, 'prisma', { value: prisma });
+    Object.defineProperty(service, 'webhookRetentionCursors', { value: new Map() });
+    const prefix = `retention-pinned-${randomUUID()}`;
+    const ids = Array.from(
+      { length: 501 },
+      (_, index) => `${prefix}-${String(index).padStart(3, '0')}`,
+    );
+    createdEventIds.push(...ids);
+    await prisma.webhookEvent.createMany({
+      data: ids.map((id, index) => ({
+        id,
+        dedupKey: id,
+        createdAt: new Date(Date.UTC(2020, 0, 1) + index),
+        status: WebhookStatus.PROCESSED,
+        semanticKey: index === 500 ? `message:message_created:${prefix}:eligible` : null,
+        normalizedPayload: {},
+        rawPayload: {},
+      })),
+    });
+    expect(await service.deleteCompletedWebhookBatch(new Date('2021-01-01T00:00:00Z'))).toEqual({
+      removed: 0,
+      scanned: 500,
+    });
+    expect(await service.deleteCompletedWebhookBatch(new Date('2021-01-01T00:00:00Z'))).toEqual({
+      removed: 1,
+      scanned: 1,
+    });
+    expect(await prisma.webhookEvent.count({ where: { id: { in: ids } } })).toBe(500);
+  });
+
+  it('retains unfinished and ambiguous proof bodies while settled command and execution tombstones survive cleanup', async () => {
+    const cutoff = new Date('2021-01-01T00:00:00Z');
+    const old = new Date('2020-01-01T00:00:00Z');
+    const settled = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'settled-retention',
+      createdAt: old,
+    });
+    const unfinished = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'unfinished-retention',
+      createdAt: old,
+    });
+    const ambiguous = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'ambiguous-retention',
+      createdAt: old,
+    });
+    const mirrored = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'mirrored-retention',
+      createdAt: old,
+    });
+    const pendingMirror = await semanticReceipt({
+      chatId: mirrored.update.message.chatId,
+      messageId: 'mirrored-retention',
+      createdAt: old,
+    });
+    await prisma.webhookEvent.updateMany({
+      where: {
+        id: { in: [settled.event.id, unfinished.event.id, ambiguous.event.id, mirrored.event.id] },
+      },
+      data: { status: 'PROCESSED', processedAt: old },
+    });
+    await prisma.webhookEvent.update({
+      where: { id: ambiguous.event.id },
+      data: { errorMessage: 'ambiguous remote mutation' },
+    });
+    const settledClaim = await readyClaim(settled, { status: 'COMPLETED', completedAt: old });
+    await readyClaim(unfinished);
+    await readyClaim(ambiguous, { status: 'COMPLETED', completedAt: old });
+    await readyClaim(mirrored, { status: 'COMPLETED', completedAt: old });
+    const command = await prisma.webhookExecutionClaim.create({
+      data: {
+        kind: 'COMMAND',
+        semanticKey: `command-${randomUUID()}`,
+        webhookEventId: settled.event.id,
+        executionBotId: 'preparation-bot',
+        enforced: true,
+        status: 'COMPLETED',
+        preparedAt: old,
+        completedAt: old,
+        commandResult: { action: 'NOTICE', applied: true, noticeText: 'Saved completed result' },
+      },
+    });
+    createdClaimIds.push(command.id);
+    const service = Object.create(WebhookOutboxService.prototype) as {
+      deleteCompletedWebhookBatch: (cutoff: Date) => Promise<{ removed: number; scanned: number }>;
+    };
+    Object.defineProperty(service, 'prisma', { value: prisma });
+    Object.defineProperty(service, 'webhookRetentionCursors', { value: new Map() });
+    expect((await service.deleteCompletedWebhookBatch(cutoff)).removed).toBe(1);
+    expect(await prisma.webhookEvent.findUnique({ where: { id: settled.event.id } })).toBeNull();
+    expect(
+      await prisma.webhookExecutionClaim.findUnique({ where: { id: settledClaim.id } }),
+    ).toMatchObject({ webhookEventId: null, status: 'COMPLETED' });
+    expect(
+      await prisma.webhookExecutionClaim.findUnique({ where: { id: command.id } }),
+    ).toMatchObject({
+      webhookEventId: null,
+      status: 'COMPLETED',
+      commandResult: { action: 'NOTICE', applied: true },
+    });
+    expect(
+      await prisma.webhookEvent.count({
+        where: {
+          id: {
+            in: [
+              unfinished.event.id,
+              ambiguous.event.id,
+              mirrored.event.id,
+              pendingMirror.event.id,
+            ],
+          },
+        },
+      }),
+    ).toBe(4);
+  });
+
+  it('keeps retention plans bounded across more than 10000 pinned rows and timestamp ties', async () => {
+    const prefix = `retention-plan-${randomUUID()}`;
+    const ids = Array.from(
+      { length: 36_000 },
+      (_, index) => `${prefix}-${String(index).padStart(5, '0')}`,
+    );
+    createdEventIds.push(...ids);
+    for (let offset = 0; offset < ids.length; offset += 1_000) {
+      await prisma.webhookEvent.createMany({
+        data: ids.slice(offset, offset + 1_000).map((id, local) => {
+          const index = offset + local;
+          return {
+            id,
+            dedupKey: id,
+            createdAt: new Date('2020-01-01T00:00:00Z'),
+            status:
+              index < 12_000
+                ? WebhookStatus.PROCESSED
+                : index < 24_000
+                  ? WebhookStatus.DUPLICATE
+                  : WebhookStatus.FAILED,
+            semanticKey:
+              index < 24_000 ? `${prefix}-terminal-semantic` : `${prefix}-quarantine-semantic`,
+            errorMessage: index >= 24_000 ? 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:retain' : null,
+            normalizedPayload: {},
+            rawPayload: {},
+          };
+        }),
+      });
+    }
+    await prisma.$executeRawUnsafe('ANALYZE webhook_events');
+    for (const semanticKey of [
+      `${prefix}-terminal-semantic`,
+      `${prefix}-quarantine-semantic`,
+      `${prefix}-absent-semantic`,
+    ]) {
+      const plan = await prisma.$queryRaw`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        SELECT id FROM webhook_events
+        WHERE semantic_key = ${semanticKey} AND created_at <= ${executionCutoverAt}
+        ORDER BY created_at ASC, id ASC LIMIT 1
+      `;
+      const nodes = collectExplainNodes(plan);
+      const scans = nodes.filter((node) => node['Relation Name'] === 'webhook_events');
+      expect(scans.some((node) => node['Node Type'] === 'Seq Scan')).toBe(false);
+      expect(scans.some((node) => node['Index Name'] === 'webhook_events_semantic_order_idx')).toBe(
+        true,
+      );
+      expect(nodes.some((node) => node['Node Type'] === 'Sort')).toBe(false);
+      expect(
+        scans.reduce(
+          (visited, node) =>
+            visited +
+            Number(node['Actual Rows'] ?? 0) +
+            Number(node['Rows Removed by Filter'] ?? 0),
+          0,
+        ),
+      ).toBeLessThanOrEqual(1);
+    }
+    for (const phase of ['completed', 'failed'] as const) {
+      let captured!: Prisma.Sql;
+      const service = Object.create(WebhookOutboxService.prototype) as {
+        deleteCompletedWebhookBatch: (cutoff: Date) => Promise<unknown>;
+        deleteTerminalFailedWebhookBatch: (cutoff: Date) => Promise<unknown>;
+      };
+      Object.defineProperty(service, 'prisma', {
+        value: {
+          $queryRaw: async (query: Prisma.Sql) => {
+            captured = query;
+            return [{ removed: 0, scanned: 0, lastId: null, lastCreatedAt: null }];
+          },
+        },
+      });
+      Object.defineProperty(service, 'webhookRetentionCursors', {
+        value: new Map([
+          [
+            phase,
+            {
+              createdAt: new Date('2020-01-01T00:00:00Z'),
+              id: ids[phase === 'completed' ? 8_000 : 28_000]!,
+            },
+          ],
+        ]),
+      });
+      await (phase === 'completed'
+        ? service.deleteCompletedWebhookBatch(new Date('2021-01-01T00:00:00Z'))
+        : service.deleteTerminalFailedWebhookBatch(new Date('2021-01-01T00:00:00Z')));
+      let plan: unknown;
+      const rollback = new Error('rollback explained retention deletion');
+      await expect(
+        prisma.$transaction(
+          async (tx) => {
+            plan = await tx.$queryRaw(
+              Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${captured}`,
+            );
+            throw rollback;
+          },
+          { timeout: 30_000 },
+        ),
+      ).rejects.toBe(rollback);
+      const nodes = collectExplainNodes(plan);
+      const scans = nodes.filter((node) => node['Relation Name'] === 'webhook_events');
+      expect(scans.some((node) => node['Node Type'] === 'Seq Scan')).toBe(false);
+      if (phase === 'completed') {
+        const terminalScan = scans.find(
+          (node) => node['Index Name'] === 'webhook_events_retention_completed_created_id_idx',
+        );
+        expect(terminalScan).toBeDefined();
+        expect(terminalScan!['Rows Removed by Filter'] ?? 0).toBe(0);
+      }
+      const visited = scans.reduce(
+        (sum, node) =>
+          sum +
+          (Number(node['Actual Rows'] ?? 0) + Number(node['Rows Removed by Filter'] ?? 0)) *
+            Number(node['Actual Loops'] ?? 0),
+        0,
+      );
+      if (visited > 2_000)
+        throw new Error(`Retention ${phase} visits=${visited}: ${JSON.stringify(scans)}`);
+      expect(visited).toBeLessThanOrEqual(2_000);
+      expect(
+        nodes
+          .filter((node) => node['Node Type'] === 'Sort')
+          .every((node) => Number(node['Actual Rows'] ?? 0) <= 1_000),
+      ).toBe(true);
+    }
+  }, 60_000);
 
   it.each([
     'persistAdminReadModels',

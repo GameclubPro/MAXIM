@@ -3,6 +3,7 @@ import {
   SanctionAction,
   createSettings,
   createUpdate,
+  withCanonicalWebhookFixture,
 } from '../moderation.service.spec-support';
 import { ProfanityDeleteGuardRejectedError } from './profanity-delete-guard.service';
 
@@ -151,15 +152,23 @@ describe('profanity enforcement dispatch safety', () => {
         'Profanity deletion author is no longer a chat member',
       ),
     );
+    const persisted = withCanonicalWebhookFixture(harness.prisma);
 
     await expect(
       harness.service.processWebhookEvent('event-departed-author'),
     ).resolves.toBeUndefined();
 
     expect(harness.guard.assertMessageStillActionable).toHaveBeenCalledTimes(1);
-    expect(harness.prisma.webhookEvent.update).toHaveBeenCalledWith({
-      where: { id: 'event-departed-author' },
+    expect(persisted.webhookEvent.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: 'event-departed-author' }),
       data: expect.objectContaining({ status: 'PROCESSED', nextEnqueueAt: null }),
+    });
+    expect(persisted.webhookExecutionClaim?.updateMany).toHaveBeenLastCalledWith({
+      where: expect.objectContaining({
+        webhookEventId: 'event-departed-author',
+        commandResult: { equals: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }) },
+      }),
+      data: expect.objectContaining({ status: 'COMPLETED', leaseToken: null }),
     });
     expect(harness.remoteDelete).not.toHaveBeenCalled();
     expect(harness.prisma.violation.create).not.toHaveBeenCalled();

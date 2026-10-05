@@ -1,3 +1,4 @@
+import { isMaxMutationOutcomeAmbiguous } from '../../max/max-mutation-outcome.util';
 import { duplicatePublicationTime } from './message-duplicate-publication-time';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -9,7 +10,9 @@ import { z } from 'zod';
 import { UnrecoverableError } from 'bullmq';
 import { extractHttpStatusCode } from '../../common/http-error.util';
 import { raceWithTimeout } from '../../common/promise-timeout.util';
+import { WebhookPreparationDeferredError } from '../../common/webhook-preparation-deferred.error';
 import { MaxBotContextService } from '../../max/max-bot-context.service';
+import { MaxExecutionOwnerReadinessService } from '../../max/max-execution-owner-readiness.service';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MaxClientService } from '../../max/max-client.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -163,6 +166,7 @@ export class MessageDuplicateMediaService {
     private readonly max: MaxClientService,
     private readonly botContext: MaxBotContextService,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
+    @Optional() private readonly executionReadiness?: MaxExecutionOwnerReadinessService,
   ) {
     this.sharedAdmissionEnabled =
       config.get('MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED') === true;
@@ -188,6 +192,8 @@ export class MessageDuplicateMediaService {
     lease: PhotoDuplicateOrderingLease,
     executeFullAction?: ExecuteDuplicateModerationAction,
   ): Promise<DuplicateObservationOutcome> {
+    let sourceExecutor: { chatId: string; botId: string } | null = null;
+    let businessExecutionStarted = false;
     let supported = false;
     let comparedOutcome: DuplicateObservationOutcome | null = null;
     const finish = (outcome: DuplicateObservationOutcome) => {
@@ -236,6 +242,8 @@ export class MessageDuplicateMediaService {
         this.metrics?.record('media.source_missing');
         return finish('SOURCE_UNAVAILABLE');
       }
+      lease.assertOwned();
+      sourceExecutor = { chatId: job.chatId, botId: source.botId };
       const message = source.update.message!;
       if (
         message.chatId !== job.chatId ||
@@ -541,14 +549,16 @@ export class MessageDuplicateMediaService {
             settings,
             update: source.update,
             executeFullAction: executeFullAction
-              ? async (request) =>
-                  this.botContext.runWithBot(source.botId, () =>
+              ? async (request) => {
+                  businessExecutionStarted = true;
+                  return this.botContext.runWithBot(source.botId, () =>
                     executeFullAction({
                       ...request,
                       rulesPublishedUrl: settings.chat.rules?.publishedUrl ?? null,
                       rulesPublishedMessageId: settings.chat.rules?.publishedMessageId ?? null,
                     }),
-                  )
+                  );
+                }
               : undefined,
             assertLease: lease.assertOwned,
           }),
@@ -561,17 +571,39 @@ export class MessageDuplicateMediaService {
           : observation.outcome,
       );
     } catch (error) {
-      this.recordMediaFailure(error);
+      let finalError = error;
+      // FLAG: Only read/qualification failures before business dispatch can hand off
+      // this stage. Never replay an action after an unknown or already successful mutation.
+      const status = extractHttpStatusCode(error);
+      if (
+        !businessExecutionStarted &&
+        sourceExecutor &&
+        this.executionReadiness &&
+        !(error instanceof PhotoDownloadHttpError) &&
+        !isMaxMutationOutcomeAmbiguous(error) &&
+        (status === 403 || status === 404)
+      ) {
+        lease.assertOwned();
+        try {
+          await this.resolveStageExecutor({
+            chatId: sourceExecutor.chatId,
+            preferredBotId: sourceExecutor.botId,
+            force: true,
+          });
+          lease.assertOwned();
+          finalError = new MessageDuplicateMediaDeferredError('proof_budget', 1000);
+        } catch (readinessError) {
+          finalError = readinessError;
+        }
+      }
+      this.recordMediaFailure(finalError);
       finish(
-        comparedOutcome ??
-          (error instanceof MessageDuplicateMediaDeferredError ||
-          error instanceof PhotoDuplicateSourceNotReadyError
-            ? 'DEFERRED'
-            : supported
-              ? 'COMPARISON_FAILED'
-              : 'UNAVAILABLE'),
+        finalError instanceof MessageDuplicateMediaDeferredError ||
+          finalError instanceof PhotoDuplicateSourceNotReadyError
+          ? 'DEFERRED'
+          : (comparedOutcome ?? (supported ? 'COMPARISON_FAILED' : 'UNAVAILABLE')),
       );
-      throw error;
+      throw finalError;
     }
   }
 
@@ -763,10 +795,38 @@ export class MessageDuplicateMediaService {
       row.botId ??
       update.botId ??
       this.bots.getDefaultBotId();
-    const botId = this.bots.resolveExecutableBotId(selectedBotId);
-    // Never fall back to the default token for an unavailable or Publisher-only owner.
-    if (!botId) return null;
-    return { update, botId, eventTimestampMs: revision.duplicateStateEventTimestampMs };
+    const executableBotId = this.bots.resolveExecutableBotId(selectedBotId);
+    // Never fall back to the default token for a Publisher-only or unknown owner.
+    if (!executableBotId) return null;
+    const readiness = await this.resolveStageExecutor({
+      chatId: update.message.chatId,
+      preferredBotId: executableBotId,
+    });
+    if (this.executionReadiness && !readiness)
+      throw new MessageDuplicateMediaDeferredError('proof_budget', 1000);
+    // FLAG: The stage executor may change; the completed canonical receipt and job identity do not.
+    return {
+      update,
+      botId: readiness?.botId ?? executableBotId,
+      eventTimestampMs: revision.duplicateStateEventTimestampMs,
+    };
+  }
+
+  private async resolveStageExecutor(params: {
+    chatId: string;
+    preferredBotId: string;
+    force?: boolean;
+  }) {
+    if (!this.executionReadiness) return null;
+    try {
+      return await this.executionReadiness.ensureReady({ ...params, purpose: 'delete_message' });
+    } catch (error) {
+      // FLAG: Unknown/fenced access waits consume the original media deadline, never
+      // ordinary failure attempts or a newly created source/revision lifetime.
+      if (error instanceof WebhookPreparationDeferredError)
+        throw new MessageDuplicateMediaDeferredError('proof_budget', error.retryAfterMs);
+      throw error;
+    }
   }
 
   private cacheKey(identity: string, update: MaxUpdate): string {
@@ -938,7 +998,16 @@ export class MessageDuplicateMediaService {
       });
     } catch (error: unknown) {
       const status = extractHttpStatusCode(error);
-      if (status !== 403 && status !== 404) throw error;
+      if (isMaxMutationOutcomeAmbiguous(error) || (status !== 403 && status !== 404)) throw error;
+      if (this.executionReadiness) {
+        await this.resolveStageExecutor({
+          chatId: message.chatId,
+          preferredBotId: botId,
+          force: true,
+        });
+        // Retry the same source/revision under its existing deadline and ordering claim.
+        throw new MessageDuplicateMediaDeferredError('proof_budget', 1000);
+      }
       // FLAG: An inaccessible source proves neither absence nor equality. Reject this receipt's
       // evidence so an old baseline cannot block later verified media; never authorize an action.
       throw new MessageDuplicateMediaRejectedError('source_unavailable');

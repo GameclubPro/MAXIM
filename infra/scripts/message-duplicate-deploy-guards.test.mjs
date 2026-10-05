@@ -592,13 +592,13 @@ test('rejects removal of only the last duplicate permit fence after suggestion p
   assert.ok(start >= 0 && end > start);
   const mutation = source.slice(start, end);
   const updated = mutation.replace(
-    /if \(this\.messageDuplicateDeleteGuard && intent\.messageDuplicateOwned\) \{[\s\S]*?\n {12}\}/u,
+    /if \(this\.messageDuplicateDeleteGuard && (?:intent\.messageDuplicateOwned|textProof\.messageDuplicateVerified)\) \{[\s\S]*?\n {12}\}/u,
     '',
   );
   assert.notEqual(updated, mutation);
   const executor = source.slice(0, start) + updated + source.slice(end);
   assert.ok(
-    executor.includes('await this.messageDuplicateDeleteGuard.assertIntentStillActionable('),
+    /this\.messageDuplicateDeleteGuard!?\.assertIntentStillActionable\(/u.test(executor),
     'The earlier full duplicate guard must survive this mutation',
   );
   const result = probe(t, { executor });

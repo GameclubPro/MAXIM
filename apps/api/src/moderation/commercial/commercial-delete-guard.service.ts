@@ -70,19 +70,24 @@ export class CommercialDeleteGuardService {
   ) {}
 
   async assertIntentStillActionable(
-    params: GuardInput & { intentId: string },
+    params: GuardInput & { intentId: string; ownedReasonsOnly?: boolean },
   ): Promise<CommercialGuardProof | 'not_applicable' | 'missing_reason'> {
-    const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
-      where: { intentId: params.intentId },
+    const allReasons = await this.prisma.moderationDeleteIntentReason.findMany({
+      where: {
+        intentId: params.intentId,
+        ...(params.ownedReasonsOnly ? { ruleCode: COMMERCIAL_TEXT_DELETE_RULE_CODE } : {}),
+      },
       select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
       orderBy: { reasonKey: 'asc' },
       take: COMMERCIAL_TEXT_MAX_INTENT_REASONS + 1,
     });
-    if (!reasons.length) return 'missing_reason';
+    const reasons = allReasons;
+    if (!reasons.length) return params.ownedReasonsOnly ? 'not_applicable' : 'missing_reason';
     // FLAG: Other durable reasons retain their own guards, but never prove commercial sanctions.
     if (reasons.some((reason) => reason.ruleCode !== COMMERCIAL_TEXT_DELETE_RULE_CODE))
       return 'not_applicable';
     if (
+      !params.ownedReasonsOnly &&
       reasons.length > COMMERCIAL_TEXT_MAX_INTENT_REASONS &&
       (await this.prisma.moderationDeleteIntentReason.findFirst({
         where: { intentId: params.intentId, ruleCode: { not: COMMERCIAL_TEXT_DELETE_RULE_CODE } },

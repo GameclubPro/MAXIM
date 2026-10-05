@@ -991,6 +991,7 @@ export function createPrismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
     },
     chatRules: {
+      findUniqueOrThrow: jest.fn(),
       upsert: jest.fn().mockResolvedValue({
         id: 'rules-1',
         chatId: 'chat-1',
@@ -1030,19 +1031,22 @@ export function createPrismaMock() {
       findUnique: jest.fn().mockResolvedValue(null),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    webhookExecutionClaim: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     $queryRaw: jest.fn().mockResolvedValue([]),
     $executeRaw: jest.fn().mockResolvedValue(1),
     $transaction: jest.fn(),
   };
+  prisma.chatRules.findUniqueOrThrow.mockImplementation(async () => prisma.chatRules.upsert());
   const transactionPrisma = new Proxy(prisma, {
     get(target, property, receiver) {
-      if (property !== '$queryRaw') {
-        return Reflect.get(target, property, receiver);
-      }
-      return async (...args: unknown[]) =>
-        /FOR UPDATE OF chat/u.test(extractSqlText(args))
-          ? [{ id: 'chat-1' }]
-          : prisma.$queryRaw(...args);
+      if (property !== '$queryRaw') return Reflect.get(target, property, receiver);
+      return async (...args: unknown[]) => {
+        const sql = extractSqlText(args);
+        if (/FOR UPDATE OF chat|SELECT id FROM chats WHERE id =/u.test(sql))
+          return [{ id: 'chat-1' }];
+        if (/clock_timestamp\(\) AT TIME ZONE 'UTC'/u.test(sql)) return [{ at: new Date() }];
+        return prisma.$queryRaw(...args);
+      };
     },
   });
   prisma.$transaction = jest.fn(

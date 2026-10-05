@@ -27,6 +27,7 @@ import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import type { ChatRules as PersistedChatRules } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import { advanceChatMutationOrder } from '../common/group-command-authority.service';
 import { normalizeLegacyProfileButtonUrl } from './admin-profile-links';
 import { isPrismaKnownError } from './admin-legacy-utils';
 import {
@@ -951,27 +952,32 @@ export async function publishChatRules(params: {
     adminContactButtonUrl: rules.adminContactButtonUrl,
   });
   const publishOperationId = randomUUID();
-  const claimed = await params.prisma.chatRules.updateMany({
-    where: {
-      chatId: params.chatId,
-      updatedAt: rules.updatedAt,
-      publishOperationId: null,
-      publishSendStartedAt: null,
-      pendingCleanupMessageId: preserveCleanup ? rules.pendingCleanupMessageId : null,
-      ...(preserveCleanup
-        ? {
-            publishedMessageId: previousPublishedMessageId,
-            publishedBotId: previousPublishedBotId,
-            pendingCleanupBotId: rules.pendingCleanupBotId,
-            pendingCleanupKind: rules.pendingCleanupKind,
-          }
-        : {}),
-    },
-    data: {
-      publishOperationId,
-      publishOperationBotId: resolvedBotId ?? null,
-      publishSendStartedAt: new Date(),
-    },
+  const claimed = await params.prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM chats WHERE id = ${params.chatId} FOR UPDATE`;
+    const result = await tx.chatRules.updateMany({
+      where: {
+        chatId: params.chatId,
+        updatedAt: rules.updatedAt,
+        publishOperationId: null,
+        publishSendStartedAt: null,
+        pendingCleanupMessageId: preserveCleanup ? rules.pendingCleanupMessageId : null,
+        ...(preserveCleanup
+          ? {
+              publishedMessageId: previousPublishedMessageId,
+              publishedBotId: previousPublishedBotId,
+              pendingCleanupBotId: rules.pendingCleanupBotId,
+              pendingCleanupKind: rules.pendingCleanupKind,
+            }
+          : {}),
+      },
+      data: {
+        publishOperationId,
+        publishOperationBotId: resolvedBotId ?? null,
+        publishSendStartedAt: new Date(),
+      },
+    });
+    if (result.count === 1) await advanceChatMutationOrder(tx, params.chatId, 'RULES');
+    return result;
   });
   if (claimed.count !== 1) {
     const latest = await params.prisma.chatRules
@@ -1358,19 +1364,24 @@ export async function resetPublishedChatRules(params: {
       rules.pendingCleanupKind === 'reset_current' &&
       rules.pendingCleanupMessageId === publishedMessageId;
     if (!alreadyOwned) {
-      const claimed = await params.prisma.chatRules.updateMany({
-        where: {
-          chatId: params.chatId,
-          publishedMessageId,
-          publishSendStartedAt: null,
-          pendingCleanupMessageId: null,
-        },
-        data: {
-          pendingCleanupMessageId: publishedMessageId,
-          pendingCleanupBotId: deleteBotId ?? null,
-          pendingCleanupIntentId: null,
-          pendingCleanupKind: 'reset_current',
-        },
+      const claimed = await params.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM chats WHERE id = ${params.chatId} FOR UPDATE`;
+        const result = await tx.chatRules.updateMany({
+          where: {
+            chatId: params.chatId,
+            publishedMessageId,
+            publishSendStartedAt: null,
+            pendingCleanupMessageId: null,
+          },
+          data: {
+            pendingCleanupMessageId: publishedMessageId,
+            pendingCleanupBotId: deleteBotId ?? null,
+            pendingCleanupIntentId: null,
+            pendingCleanupKind: 'reset_current',
+          },
+        });
+        if (result.count === 1) await advanceChatMutationOrder(tx, params.chatId, 'RULES');
+        return result;
       });
       if (claimed.count !== 1) {
         throw new BadRequestException(
@@ -1517,43 +1528,49 @@ export async function saveChatRulesDraft(params: {
   const rulesUpdate = {
     ...normalizedDraft,
   };
+  let upsertUniqueConflict: unknown;
+  const writeDraft = () =>
+    params.prisma.$transaction(async (tx) => {
+      await advanceChatMutationOrder(tx, params.chatId, 'RULES');
+      let rules: PersistedChatRules;
+      try {
+        rules = await tx.chatRules.upsert({
+          where: { chatId: params.chatId },
+          create: { chatId: params.chatId, ...normalizedDraft },
+          update: rulesUpdate,
+        });
+      } catch (error: unknown) {
+        if (isPrismaKnownError(error, 'P2002')) upsertUniqueConflict = error;
+        throw error;
+      }
+      await tx.auditLog.create({
+        data: {
+          chatId: params.chatId,
+          actorUserId: params.actorUserId,
+          action: 'UPDATE_CHAT_RULES',
+          payload: {
+            autoTextEnabled: normalizedDraft.autoTextEnabled,
+            textFormat: normalizedDraft.textFormat,
+            buttonEnabled: normalizedDraft.buttonEnabled,
+            adminContactButtonEnabled: normalizedDraft.adminContactButtonEnabled,
+            hasImage: Boolean(normalizedDraft.imageBase64),
+            textLength: normalizedDraft.text.length,
+            source: params.source,
+          },
+        },
+      });
+      return rules;
+    });
   let rules: PersistedChatRules;
   try {
-    rules = await params.prisma.chatRules.upsert({
-      where: { chatId: params.chatId },
-      create: {
-        chatId: params.chatId,
-        ...normalizedDraft,
-      },
-      update: rulesUpdate,
-    });
+    rules = await writeDraft();
   } catch (error: unknown) {
-    if (!isPrismaKnownError(error, 'P2002')) {
-      throw error;
-    }
-
-    rules = await params.prisma.chatRules.update({
-      where: { chatId: params.chatId },
-      data: rulesUpdate,
-    });
+    // FLAG: Only this exact upsert conflict may restart the fully rolled-back
+    // transaction once. Audit/order failures cannot retry or continue an aborted tx.
+    if (error !== upsertUniqueConflict || !isPrismaKnownError(error, 'P2002')) throw error;
+    upsertUniqueConflict = undefined;
+    rules = await writeDraft();
   }
-
-  await params.prisma.auditLog.create({
-    data: {
-      chatId: params.chatId,
-      actorUserId: params.actorUserId,
-      action: 'UPDATE_CHAT_RULES',
-      payload: {
-        autoTextEnabled: normalizedDraft.autoTextEnabled,
-        textFormat: normalizedDraft.textFormat,
-        buttonEnabled: normalizedDraft.buttonEnabled,
-        adminContactButtonEnabled: normalizedDraft.adminContactButtonEnabled,
-        hasImage: Boolean(normalizedDraft.imageBase64),
-        textLength: normalizedDraft.text.length,
-        source: params.source,
-      },
-    },
-  });
   await params.chatContextCache.invalidate(params.chatId);
 
   return mapChatRules(rules);

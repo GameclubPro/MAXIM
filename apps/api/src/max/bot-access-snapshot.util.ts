@@ -27,6 +27,7 @@ export function buildBotAccessSnapshotPersistence(
     now?: Date;
     ttlMs?: number;
     lastErrorCode?: string | null;
+    channelReadVerified?: boolean;
   },
 ): BotAccessSnapshotPersistence {
   const now = options.now ?? new Date();
@@ -37,6 +38,15 @@ export function buildBotAccessSnapshotPersistence(
     isOwner: access?.isOwner === true,
     permissions,
     permissionsKnown: access?.permissionsKnown === true,
+    ...(options.channelReadVerified && access && (access.isAdmin || access.isOwner)
+      ? {
+          channelReadProof: {
+            kind: 'MAX_CHANNEL_GET',
+            checkedAt: now.toISOString(),
+            source: options.source,
+          },
+        }
+      : {}),
   } satisfies Prisma.InputJsonObject;
 
   return {

@@ -53,12 +53,16 @@ export class ProfanityDeleteGuardService {
   }
 
   async assertIntentStillActionable(
-    params: ProfanityDeleteGuardInput & { intentId: string },
+    params: ProfanityDeleteGuardInput & { intentId: string; ownedReasonsOnly?: boolean },
   ): Promise<'allowed' | 'absent' | 'not_applicable' | 'missing_reason'> {
-    const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+    const allReasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: params.intentId },
       select: { ruleCode: true, score: true },
     });
+    const reasons = params.ownedReasonsOnly
+      ? allReasons.filter((reason) => reason.ruleCode === PROFANITY_DELETE_RULE_CODE)
+      : allReasons;
+    if (params.ownedReasonsOnly && !reasons.length) return 'not_applicable';
     // FLAG: Only profanity-owned deletion is fenced here. Independent durable reasons retain
     // their existing policy, including when a writer adds one after the intent was claimed.
     if (reasons.length === 0) {

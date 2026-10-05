@@ -58,6 +58,7 @@ COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
 COPY --from=build /app/apps/api/prisma ./apps/api/prisma
+COPY --from=build /app/scripts/agent/multibot-online-prepare.mjs ./scripts/agent/multibot-online-prepare.mjs
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=prod-deps /app/packages/contracts/node_modules ./packages/contracts/node_modules
 COPY --from=build /app/packages/contracts/package.json ./packages/contracts/package.json
@@ -69,9 +70,9 @@ RUN node apps/api/dist/apps/api/src/scripts/commercial-ocr-native-build-manifest
     /app/apps/api/commercial-ocr-native-probe-expectation.json \
   && chmod 0444 /app/apps/api/commercial-ocr-native-build-manifest.json \
     /app/apps/api/commercial-ocr-native-probe-expectation.json \
-  && mkdir -p /run/maxim-ocr /run/maxim-photo \
-  && chown node:node /run/maxim-ocr /run/maxim-photo \
-  && chmod 0700 /run/maxim-ocr /run/maxim-photo
+  && mkdir -p /run/maxim-ocr /run/maxim-photo /app/apps/api/.migration-prepare \
+  && chown node:node /run/maxim-ocr /run/maxim-photo /app/apps/api/.migration-prepare \
+  && chmod 0700 /run/maxim-ocr /run/maxim-photo /app/apps/api/.migration-prepare
 
 EXPOSE 3001
 USER node

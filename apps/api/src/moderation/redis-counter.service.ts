@@ -341,8 +341,11 @@ export class RedisCounterService implements OnModuleDestroy {
     await this.duplicateWindow(chatId, { op: 'reset', author: digestDuplicateContent(userId) });
   }
 
-  async mergeDuplicateTelemetry(key: string, counters: DuplicateTelemetryCounters): Promise<void> {
-    await this.redis.eval(
+  async mergeDuplicateTelemetry(
+    key: string,
+    counters: DuplicateTelemetryCounters,
+  ): Promise<boolean> {
+    const merged = await this.redis.eval(
       MERGE_DUPLICATE_TELEMETRY_SCRIPT,
       1,
       key,
@@ -350,6 +353,39 @@ export class RedisCounterService implements OnModuleDestroy {
       DUPLICATE_TELEMETRY_TTL_SECONDS,
       Date.now() + 250,
       JSON.stringify(DUPLICATE_TELEMETRY_FIELDS),
+    );
+    return Number(merged) === 1;
+  }
+
+  async publishChatRouteEpoch(params: {
+    chatId: string;
+    routingVersion: number;
+    botId: string | null;
+    checkedAt?: Date | null;
+    source?: string | null;
+  }): Promise<void> {
+    const payload = JSON.stringify({
+      chatId: params.chatId,
+      routingVersion: params.routingVersion,
+      botId: params.botId,
+      checkedAt: params.checkedAt?.toISOString() ?? null,
+      source: params.source ?? null,
+    });
+    // FLAG: SQL authorizes mutations. Redis publication only invalidates role-local routing caches.
+    await this.redis.eval(
+      `
+      local version = tonumber(redis.call('GET', KEYS[1]) or '-1')
+      local incoming = tonumber(ARGV[1])
+      if incoming < version then return 0 end
+      redis.call('SET', KEYS[1], ARGV[1], 'EX', 86400)
+      redis.call('PUBLISH', ARGV[2], ARGV[3])
+      return 1
+    `,
+      1,
+      `maxim:route-version:${digestDuplicateContent(params.chatId)}`,
+      params.routingVersion,
+      'chat:context:invalidate:v1',
+      payload,
     );
   }
 

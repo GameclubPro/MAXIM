@@ -1,7 +1,9 @@
 import { ConfigService } from '@nestjs/config';
 import { Queue, UnrecoverableError } from 'bullmq';
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import Redis from 'ioredis';
+import { from } from 'rxjs';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import { MaxClientService, type MaxActionJob } from '../max/max-client.service';
 import { Prisma, PrismaClient, createPrismaAdapter } from '../prisma/prisma-client';
@@ -89,12 +91,22 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
     // unrelated route/rate scheduling are replaced. No network send is available.
     return Object.assign(Object.create(MaxClientService.prototype), {
       actionLedgerService: selectedLedger,
-      request,
-      executeMessageMutation: (
-        _kind: string,
-        _chatId: string,
-        run: () => Promise<Record<string, unknown>>,
-      ) => run(),
+      mutationExecutionScope: new AsyncLocalStorage(),
+      baseUrl: 'https://publication-send-harness.invalid',
+      getCurrentBot: () => ({ id: botId, token: 'synthetic-no-network-token' }),
+      botRegistry: { getPublisherBotDescriptor: () => ({ id: botId }) },
+      reserveRateLimitSlot: jest.fn().mockResolvedValue(undefined),
+      executeMutation: (_chatId: string, run: () => Promise<Record<string, unknown>>) => run(),
+      httpService: {
+        request: (options: { method: string; url: string }) => {
+          if (
+            options.method !== 'post' ||
+            options.url !== 'https://publication-send-harness.invalid/messages'
+          )
+            throw new Error('Publication fixture refuses non-synthetic MAX HTTP');
+          return from(request(options).then((data: unknown) => ({ status: 200, data })));
+        },
+      },
       logger: { warn: jest.fn() },
     }) as SendHarness;
   }
@@ -273,12 +285,21 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
       if (oldService === undefined) delete process.env.APP_SERVICE_NAME;
       else process.env.APP_SERVICE_NAME = oldService;
     }
+    const beforeMutation = jest.fn(async () => boundary.assertDispatchEnabled());
     await expect(
-      client().executeQueuedSendMessage(job, [], { botId }, async () =>
-        boundary.assertDispatchEnabled(),
-      ),
+      client().executeQueuedSendMessage(job, [], { botId }, beforeMutation),
     ).rejects.toBeInstanceOf(PublisherDispatchDisabledError);
+    expect(beforeMutation).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledTimes(1);
+    expect(
+      await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: job.idempotencyKey } }),
+    ).toMatchObject({
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      remoteMessageId: null,
+      ambiguous: false,
+      terminal: false,
+    });
   });
 
   it('rejects a restored receipt under another required bot without another MAX request', async () => {

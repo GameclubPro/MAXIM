@@ -22,6 +22,7 @@ import {
   WEBHOOK_QUEUE_CRITICAL,
 } from './webhook-queues';
 import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
+import { AssignmentExpiryIndex } from './assignment-expiry-index';
 
 type ChatQueueAssignment = {
   queueName: DefaultWebhookQueueName;
@@ -50,7 +51,8 @@ type AssignmentCounts = {
   byWorker: Map<DefaultWebhookWorkerGroupName, number>;
 };
 
-const MAX_CHAT_ASSIGNMENTS = 10_000;
+const DEFAULT_MAX_CHAT_ASSIGNMENTS = 50_000;
+const EXPIRY_MAINTENANCE_BUDGET = 256;
 const DEFAULT_CHAT_ASSIGNMENT_TTL_SEC = 90;
 const DEFAULT_QUEUE_SNAPSHOT_MAX_AGE_MS = 1_000;
 const ACTIVE_QUEUE_PRESSURE_WEIGHT = 4;
@@ -75,6 +77,9 @@ export class WebhookRoutingService {
   private readonly hotWorkerRebalancePressureShare: number;
   private readonly hotWorkerRebalancePressureMin: number;
   private readonly chatAssignments = new Map<string, ChatQueueAssignment>();
+  private readonly maxChatAssignments: number;
+  private readonly expiryIndex = new AssignmentExpiryIndex();
+  private readonly assignmentCounts: AssignmentCounts = { byQueue: new Map(), byWorker: new Map() };
   private readonly assignmentRefreshes = new Map<string, Promise<DefaultWebhookQueueName>>();
   private readonly workerGroupByQueue = this.buildWorkerGroupByQueue();
 
@@ -83,6 +88,10 @@ export class WebhookRoutingService {
     private readonly queueMetricsService: QueueMetricsService,
     configService: ConfigService,
   ) {
+    this.maxChatAssignments = this.readConfigInt(
+      configService.get('WEBHOOK_ROUTING_CHAT_ASSIGNMENT_CAPACITY'),
+      DEFAULT_MAX_CHAT_ASSIGNMENTS,
+    );
     this.chatAssignmentTtlMs =
       this.readConfigInt(
         configService.get('WEBHOOK_ROUTING_CHAT_ASSIGNMENT_TTL_SEC'),
@@ -309,14 +318,25 @@ export class WebhookRoutingService {
   }
 
   private countActiveAssignments(now: number): AssignmentCounts {
-    const counts: AssignmentCounts = { byQueue: new Map(), byWorker: new Map() };
-    for (const assignment of this.chatAssignments.values()) {
-      if (assignment.expiresAtMs <= now) continue;
-      counts.byQueue.set(assignment.queueName, (counts.byQueue.get(assignment.queueName) ?? 0) + 1);
-      const worker = this.workerGroupByQueue[assignment.queueName];
-      if (worker) counts.byWorker.set(worker, (counts.byWorker.get(worker) ?? 0) + 1);
+    for (const key of this.expiryIndex.takeExpired(now, EXPIRY_MAINTENANCE_BUDGET)) {
+      this.removeAssignment(key);
     }
-    return counts;
+    return this.assignmentCounts;
+  }
+
+  private adjustAssignmentCounts(queueName: DefaultWebhookQueueName, delta: number): void {
+    const { byQueue, byWorker } = this.assignmentCounts;
+    byQueue.set(queueName, (byQueue.get(queueName) ?? 0) + delta);
+    const worker = this.workerGroupByQueue[queueName];
+    if (worker) byWorker.set(worker, (byWorker.get(worker) ?? 0) + delta);
+  }
+
+  private removeAssignment(key: string): void {
+    const assignment = this.chatAssignments.get(key);
+    if (!assignment) return;
+    this.adjustAssignmentCounts(assignment.queueName, -1);
+    this.chatAssignments.delete(key);
+    this.expiryIndex.delete(key);
   }
 
   private compareQueuePressure(left: QueuePressure, right: QueuePressure): number {
@@ -378,12 +398,14 @@ export class WebhookRoutingService {
           : this.resolveAdaptiveTtlMs(queueName)),
     };
     // FLAG: Eviction is only a cache miss. A subsequent refresh must still read outstanding work.
-    this.chatAssignments.delete(assignmentKey);
+    this.removeAssignment(assignmentKey);
     this.chatAssignments.set(assignmentKey, assignment);
-    while (this.chatAssignments.size > MAX_CHAT_ASSIGNMENTS) {
+    this.expiryIndex.set(assignmentKey, assignment.expiresAtMs);
+    this.adjustAssignmentCounts(queueName, 1);
+    while (this.chatAssignments.size > this.maxChatAssignments) {
       const oldestKey = this.chatAssignments.keys().next().value;
       if (oldestKey === undefined) break;
-      this.chatAssignments.delete(oldestKey);
+      this.removeAssignment(oldestKey);
     }
     return queueName;
   }
@@ -432,16 +454,8 @@ export class WebhookRoutingService {
       return this.chatAssignmentTtlMs;
     }
 
-    let workerLeasedChats = 0;
-    const now = Date.now();
-    for (const assignment of this.chatAssignments.values()) {
-      if (assignment.expiresAtMs <= now) {
-        continue;
-      }
-      if (this.workerGroupByQueue[assignment.queueName] === workerGroupName) {
-        workerLeasedChats += 1;
-      }
-    }
+    const workerLeasedChats =
+      this.countActiveAssignments(Date.now()).byWorker.get(workerGroupName) ?? 0;
 
     return workerLeasedChats >= Math.max(4, DEFAULT_WEBHOOK_QUEUE_NAMES.length / 2)
       ? Math.min(this.chatAssignmentTtlMs, ADAPTIVE_TTL_HOT_QUEUE_MS)

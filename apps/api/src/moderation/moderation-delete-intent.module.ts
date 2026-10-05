@@ -12,6 +12,7 @@ import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { ModerationDeleteIntentProcessor } from './moderation-delete-intent.processor';
 import { MODERATION_DELETE_INTENT_QUEUE } from './moderation-delete-intent.queue';
 import { ModerationDeleteIntentReconcilerService } from './moderation-delete-intent-reconciler.service';
+import { MessageLimitsDeleteGuardService } from './message-limits-delete-guard.service';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import { LinkHistoryDeleteGuardService } from './link-history-delete-guard.service';
 import { ParticipantModerationImmunityService } from './participant-moderation-immunity.service';
@@ -50,6 +51,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     CommercialTextRuntimePolicyModule,
   ],
   providers: [
+    MessageLimitsDeleteGuardService,
     MessageRetentionDeleteGuard,
     ReportDeleteGuardService,
     LinkHistoryDeleteGuardService,

@@ -1204,6 +1204,13 @@ run_migrations() {
     ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 }
 
+run_online_multibot_migrations() {
+  ensure_compose_env
+  MAXIM_MIGRATION_API_IMAGE="$MAXIM_API_IMAGE" \
+    docker compose "${MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never api-ingress \
+    node scripts/agent/multibot-online-prepare.mjs
+}
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker not found"
   exit 1
@@ -1311,6 +1318,11 @@ if contains_service "miniapp-static" "${SERVICES[@]}"; then
   export MAXIM_MINIAPP_LEGACY_IMAGE="maxim-miniapp-legacy:${TARGET_SHA}"
 fi
 
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  require_stateful_services_ready
+  maxim_webhook_preflight_multibot_prepare_capacity COMPOSE_FILES
+fi
+
 prepare_deploy_disk_capacity
 stop_conflicting_stacks
 warn_legacy_miniapp_static_target
@@ -1334,11 +1346,6 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   begin_release_runtime_transition
   DEPLOY_RUNTIME_STARTED=1
   verify_inherited_release_components
-  if ! run_migrations; then
-    echo "First migration attempt failed. Retrying once in 5 seconds..."
-    sleep 5
-    run_migrations
-  fi
 fi
 
 SERVICES_TO_BUILD=()
@@ -1381,7 +1388,17 @@ fi
 remove_stale_service_containers "${SERVICES[@]}"
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   expected_api_image_id="$(docker image inspect --format '{{.Id}}' "$MAXIM_API_IMAGE")"
+  maxim_webhook_prepare_multibot_before_quiescence COMPOSE_FILES
   maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES
+  maxim_webhook_quiesce_legacy_ingress_for_multibot_cutover COMPOSE_FILES
+  # FLAG: The first command-authority migration is an effects cutoff only after every
+  # legacy webhook producer and detached moderation handler has stopped.
+  if ! run_migrations; then
+    echo "First migration attempt failed. Retrying once in 5 seconds..."
+    sleep 5
+    run_migrations
+  fi
+  maxim_webhook_assert_multibot_migration_indexes COMPOSE_FILES
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
     maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES

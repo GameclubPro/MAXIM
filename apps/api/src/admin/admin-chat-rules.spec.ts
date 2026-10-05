@@ -5,6 +5,26 @@ import {
   readChatRules,
   resetPublishedChatRules,
 } from './admin-chat-rules';
+import { extractSqlText } from './admin-service-test-support';
+
+function withRulesTransactions<T extends object>(models: T) {
+  const transactionClient = {
+    ...models,
+    $queryRaw: jest.fn().mockImplementation(async (...args: unknown[]) => {
+      const sql = extractSqlText(args);
+      if (/SELECT id FROM chats WHERE id =/u.test(sql)) return [{ id: 'chat-1' }];
+      if (/clock_timestamp\(\) AT TIME ZONE 'UTC'/u.test(sql)) return [{ at: new Date() }];
+      throw new Error('Unexpected rules transaction fixture query');
+    }),
+    $executeRaw: jest.fn().mockResolvedValue(1),
+  };
+  return {
+    ...transactionClient,
+    $transaction: jest.fn(async (callback: (tx: typeof transactionClient) => unknown) =>
+      callback(transactionClient),
+    ),
+  };
+}
 
 function createRules() {
   return {
@@ -40,7 +60,7 @@ function createRules() {
 
 function createPublishFixture(editor?: jest.Mock) {
   const order: string[] = [];
-  const prisma = {
+  const prisma = withRulesTransactions({
     chatRules: {
       upsert: jest.fn().mockResolvedValue(createRules()),
       findUnique: jest.fn(),
@@ -57,7 +77,7 @@ function createPublishFixture(editor?: jest.Mock) {
         return { id: 'audit-1' };
       }),
     },
-  };
+  });
   const maxClient = {
     ...(editor ? { replaceOwnMessage: editor } : {}),
     sendMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async () => {
@@ -795,14 +815,14 @@ describe('admin chat rules MAX errors', () => {
 
   it('keeps reset publication state visible while durable deletion is only accepted', async () => {
     const rules = createRules();
-    const prisma = {
+    const prisma = withRulesTransactions({
       chatRules: {
         upsert: jest.fn().mockResolvedValue(rules),
         findUnique: jest.fn(),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       auditLog: { create: jest.fn().mockResolvedValue({ id: 'audit-reset-1' }) },
-    };
+    });
     const deletePublishedMessage = jest.fn().mockResolvedValue('accepted');
 
     const result = await resetPublishedChatRules({
@@ -882,14 +902,14 @@ describe('admin chat rules MAX errors', () => {
       publishOperationBotId: 'bot-new',
       publishSendStartedAt: new Date('2026-07-16T10:00:00.000Z'),
     };
-    const prisma = {
+    const prisma = withRulesTransactions({
       chatRules: {
         upsert: jest.fn().mockResolvedValue(rules),
         findUnique: jest.fn(),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       auditLog: { create: jest.fn() },
-    };
+    });
     const deletePublishedMessage = jest.fn();
 
     await expect(

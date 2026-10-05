@@ -1,3 +1,4 @@
+import { isMaxMutationOutcomeAmbiguous } from './max-mutation-outcome.util';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UnrecoverableError } from 'bullmq';
@@ -75,7 +76,7 @@ export {
   MaxActionRouteQuarantinedError,
 } from './max-action-dispatch-error';
 
-const ROUTED_SEND_ACCESS_MAX_AGE_MS = 30 * 60_000;
+const ROUTED_SEND_ACCESS_MAX_AGE_MS = 15 * 60_000;
 const ROUTED_DESTRUCTIVE_ACCESS_MAX_AGE_MS = 5 * 60_000;
 
 @Injectable()
@@ -363,6 +364,22 @@ export class MaxActionDispatchService {
         }
         if (wasMaxPreDispatchGuardRejected(error)) {
           await releaseHalfOpenClaim();
+          if (
+            (error as { code?: string })?.code === 'max_action_executor_proof_rejected' &&
+            this.isRoutedJob(job) &&
+            routedFailoverEnabled &&
+            candidateBotId
+          ) {
+            await this.refreshStaleRoutedCandidateAccess(
+              attemptJob,
+              candidateBotIds,
+              attemptedBotIds,
+              halfOpenRouteState,
+              allowHalfOpenProbe,
+              true,
+            );
+            if (candidateBotIds.length > 0) continue;
+          }
           await this.recordLedgerFailed(attemptJob, error, {
             exhausted: options.finalAttempt === true,
           });
@@ -452,6 +469,26 @@ export class MaxActionDispatchService {
 
           await this.recordLedgerFailed(attemptJob, terminalManagedEntityOutcome.error);
           throw terminalManagedEntityOutcome.error;
+        }
+        if (
+          !isMaxMutationOutcomeAmbiguous(error) &&
+          this.extractStatusCode(error) === 403 &&
+          this.isRoutedJob(job) &&
+          routedFailoverEnabled &&
+          candidateBotId &&
+          (job.actionType === 'DELETE_MESSAGE' ||
+            job.actionType === 'BAN_MEMBER' ||
+            job.actionType === 'KICK_MEMBER')
+        ) {
+          await this.refreshStaleRoutedCandidateAccess(
+            attemptJob,
+            candidateBotIds,
+            attemptedBotIds,
+            halfOpenRouteState,
+            allowHalfOpenProbe,
+            true,
+          );
+          if (candidateBotIds.length > 0) continue;
         }
         await this.recordLedgerFailed(attemptJob, error, {
           exhausted: options.finalAttempt === true,
@@ -681,6 +718,7 @@ export class MaxActionDispatchService {
     attemptedBotIds: readonly string[],
     halfOpenRouteState: HalfOpenRouteState,
     allowHalfOpenProbe = false,
+    force = false,
   ): Promise<boolean> {
     const botId = job.botId?.trim() ?? '';
     const maxAgeMs = this.resolveAccessSnapshotMaxAgeMs(job.actionType);
@@ -704,7 +742,7 @@ export class MaxActionDispatchService {
       botId,
       maxAgeMs,
     });
-    if (!stale) {
+    if (!stale && !force) {
       return true;
     }
 
@@ -935,6 +973,7 @@ export class MaxActionDispatchService {
     error: unknown,
     dispatchAttemptStartedAt: Date,
   ): Promise<TerminalManagedEntityOutcome | null> {
+    if (isMaxMutationOutcomeAmbiguous(error)) return null;
     // Publisher access failures update PublisherEntityBinding through the publisher health hook.
     // Writing them through the generic path would incorrectly create ChatBotMembership ownership.
     if (job.routing?.purpose === 'publisher_exact_send') {

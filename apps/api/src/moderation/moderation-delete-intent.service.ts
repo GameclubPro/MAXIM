@@ -16,7 +16,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import {
   SuggestionSubscriptionService,
@@ -36,6 +36,7 @@ import { MaxBotLinkService, type MaxDeleteMessageBotRoute } from '../max/max-bot
 import {
   isMaxApiCircuitOpenError,
   MAX_API_SOURCE_TAGS,
+  MaxApiInternalRateLimitError,
   MaxClientService,
 } from '../max/max-client.service';
 import {
@@ -99,7 +100,15 @@ import {
   buildNightModeTransitionSideEffectFingerprint,
 } from './night-mode-transition-generation.util';
 import { resolveNightModeTransitionSnapshot } from './night-mode-transition-time.util';
-import { LinkHistoryDeleteGuardService } from './link-history-delete-guard.service';
+import {
+  MESSAGE_LIMITS_CURRENT_CONTENT_RULES,
+  MessageLimitsDeleteGuardService,
+  MessageLimitsDeleteGuardRejectedError,
+} from './message-limits-delete-guard.service';
+import {
+  LinkHistoryDeleteGuardService,
+  LinkHistoryDeleteGuardRejectedError,
+} from './link-history-delete-guard.service';
 import {
   TrafficProtectionDeleteGuardService,
   TrafficProtectionGuardRejectedError,
@@ -534,6 +543,24 @@ class ModerationDeletePreDispatchGuardError extends Error {
   }
 }
 
+type GuardedDeleteReason = {
+  ruleCode: string;
+  reasonKey: string;
+  score: number;
+  metadata: unknown;
+};
+
+function fingerprintGuardedDeleteReasons(reasons: readonly GuardedDeleteReason[]): string {
+  return createHash('sha256').update(JSON.stringify(reasons)).digest('hex');
+}
+
+class ModerationDeleteReasonsRejectedError extends Error {
+  readonly code = 'moderation_delete_reasons_no_longer_authorized';
+  constructor(readonly reasonFingerprint: string) {
+    super('No current guarded reason authorizes this deletion');
+  }
+}
+
 class ModerationDeleteReasonMissingError extends Error {
   readonly code = 'moderation_delete_reason_missing';
 
@@ -584,6 +611,7 @@ class ModerationDeleteProtectedMessageError extends Error {
 class ModerationDeleteGuardedMessageAbsentError extends Error {
   constructor(
     readonly verificationCode:
+      | 'guarded_current_message_absence'
       | 'guarded_traffic_protection_absence'
       | 'guarded_report_absence'
       | 'guarded_stop_words_absence'
@@ -702,6 +730,7 @@ export class ModerationDeleteIntentService {
     @Optional() private readonly storageRuntimeMetrics?: StorageRuntimeMetricsService,
     @Optional() private readonly duplicateMetrics?: MessageDuplicateMetricsService,
     @Optional() private readonly commercialReview?: CommercialReviewService,
+    @Optional() private readonly messageLimitsDeleteGuard?: MessageLimitsDeleteGuardService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -2457,7 +2486,7 @@ export class ModerationDeleteIntentService {
             // ownership must be checked before the final policy guards; the
             // duplicate authority permit must remain the final awaited check.
             await this.assertLeaseForExternalCall(heartbeat, this.deleteTimeoutMs + 1_000);
-            const textProof = await this.runDeletePreDispatchGuards(
+            let textProof = await this.runDeletePreDispatchGuards(
               intent,
               botId,
               options,
@@ -2467,7 +2496,7 @@ export class ModerationDeleteIntentService {
             commercialVerifiedReasonKeys = textProof.commercialVerifiedReasonKeys;
             if (suggestionProof)
               await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof);
-            if (this.messageDuplicateDeleteGuard && intent.messageDuplicateOwned) {
+            if (this.messageDuplicateDeleteGuard && textProof.messageDuplicateVerified) {
               try {
                 await this.messageDuplicateDeleteGuard.assertIntentStillActionable({
                   intentId: intent.id,
@@ -2478,8 +2507,34 @@ export class ModerationDeleteIntentService {
                   authorityOnly: true,
                 });
               } catch (error) {
-                throw new ModerationDeletePreDispatchGuardError(error);
+                if (!this.isTerminalDeleteGuardRejection(error))
+                  throw new ModerationDeletePreDispatchGuardError(error);
+                // FLAG: An expired duplicate permit cannot veto an independently valid rule.
+                // Re-read every current guard; this fresh pass must supply separate authority.
+                const refreshed = await this.authorizeGuardedUserDeleteReasons(
+                  intent,
+                  botId,
+                  leaseToken,
+                ).catch((refreshError: unknown) => {
+                  throw new ModerationDeletePreDispatchGuardError(refreshError);
+                });
+                if (!refreshed.independentVerified)
+                  throw new ModerationDeletePreDispatchGuardError(error);
+                profanityVerified = refreshed.profanityVerified;
+                commercialVerifiedReasonKeys = refreshed.commercialVerifiedReasonKeys;
+                textProof = { ...refreshed, messageDuplicateVerified: false };
               }
+            }
+            // FLAG: Later asynchronous guards cannot extend a short-lived traffic/OCR
+            // permit. Check its original absolute expiry synchronously at the mutation boundary.
+            if (
+              !textProof.messageDuplicateVerified &&
+              textProof.independentAuthorityDeadlineAtMs != null &&
+              Date.now() >= textProof.independentAuthorityDeadlineAtMs
+            ) {
+              throw new ModerationDeletePreDispatchGuardError(
+                new ModerationDeleteReasonsRejectedError(textProof.guardedReasonFingerprint!),
+              );
             }
             if (!heartbeat.hasRemainingBudget(this.deleteTimeoutMs + 1_000))
               throw new ModerationDeleteIntentLeaseLostError();
@@ -2556,6 +2611,8 @@ export class ModerationDeleteIntentService {
               'delete_pre_dispatch_guard_rejected',
             );
             const terminalGuardRejection = this.isTerminalDeleteGuardRejection(error.guardError);
+            const internalQuotaDeferral =
+              !intent.retentionOwned && error.guardError instanceof MaxApiInternalRateLimitError;
             const outcome = terminalGuardRejection
               ? await this.finishTerminalPreDispatchGuardRejection(
                   intent,
@@ -2572,9 +2629,13 @@ export class ModerationDeleteIntentService {
                   ...details,
                   status: 'RETRYABLE',
                   errorCode: details.errorCode,
-                  retryDelayMs: this.retryDelayMs(intent.attemptCount),
+                  retryDelayMs: internalQuotaDeferral
+                    ? Math.max(details.retryDelayMs ?? 0, this.retryDelayMs(intent.attemptCount))
+                    : this.retryDelayMs(intent.attemptCount),
                 });
-            if (terminalGuardRejection) {
+            // FLAG: Internal quota rejection proves no DELETE happened. Its durable retry
+            // may continue independently while the original engine finishes its other rules.
+            if (terminalGuardRejection || internalQuotaDeferral) {
               return outcome;
             }
             throw error;
@@ -2582,7 +2643,20 @@ export class ModerationDeleteIntentService {
           if (error instanceof ModerationDeleteIntentLeaseLostError) {
             throw error;
           }
-          const details = this.classifyDeleteError(error, intent.attemptCount);
+          const details = this.classifyDeleteError(
+            error,
+            intent.attemptCount,
+            dispatchMarkerPersisted,
+          );
+          // FLAG: An unknown outcome after dispatch retains its fence. Error text cannot
+          // authorize a peer DELETE or an access probe that would clear that evidence.
+          if (details.status === 'AMBIGUOUS') {
+            return this.finishRetryableAttempt(
+              { ...intent, lastBotId: botId },
+              leaseToken,
+              details,
+            );
+          }
           if (details.errorCode === 'unverified_message_not_found') {
             const absence = await this.verifyMessageAbsence(intent, botId, heartbeat);
             if (absence === 'verified_absent') {
@@ -3354,10 +3428,19 @@ export class ModerationDeleteIntentService {
     options?: ModerationDeleteIntentAttemptOptions,
     finalDispatchLeaseToken?: string,
     retentionPhase: 'prepare' | 'dispatch' = 'dispatch',
-  ): Promise<{ profanityVerified: boolean; commercialVerifiedReasonKeys: string[] }> {
+  ): Promise<{
+    profanityVerified: boolean;
+    commercialVerifiedReasonKeys: string[];
+    messageDuplicateVerified?: boolean;
+    independentAuthorityDeadlineAtMs?: number | null;
+    guardedReasonFingerprint?: string;
+  }> {
     try {
       let profanityVerified = false;
       let commercialVerifiedReasonKeys: string[] = [];
+      let messageDuplicateVerified = false;
+      let independentAuthorityDeadlineAtMs: number | null = null;
+      let guardedReasonFingerprint: string | undefined;
       if (intent.retentionOwned) {
         if (!this.messageRetentionGuard) throw new Error('Retention delete guard unavailable');
         await this.messageRetentionGuard.assertAllowed(intent.id, botId, retentionPhase);
@@ -3383,7 +3466,7 @@ export class ModerationDeleteIntentService {
           'guarded_image_text_stop_list_predispatch_exact_absence',
         );
       }
-      if (commercialOcrGuardRequired) {
+      if (commercialOcrGuardRequired && !finalDispatchLeaseToken) {
         // FLAG: OCR is asynchronous. Bind every OCR-only DELETE to the current exact message,
         // author immunity, filter setting, runtime rollout and behavior versions at dispatch time.
         const result = await this.commercialOcrDeleteGuard.assertIntentStillActionable({
@@ -3399,8 +3482,9 @@ export class ModerationDeleteIntentService {
             'guarded_commercial_ocr_predispatch_exact_absence',
           );
         }
+        if (result !== 'allowed') throw new Error('Required OCR guard did not supply authority');
       }
-      if (intent.linkFamilyDeleteOnly === true) {
+      if (intent.linkFamilyDeleteOnly === true && !finalDispatchLeaseToken) {
         const result = await this.linkHistoryDeleteGuard.assertIntentStillActionable({
           intentId: intent.id,
           chatId: intent.chatId,
@@ -3419,105 +3503,18 @@ export class ModerationDeleteIntentService {
       }
       await options?.beforeDeleteMutation?.();
       if (finalDispatchLeaseToken) {
-        if (this.stopWordsDeleteGuard) {
-          const stopWordsGuard = await this.stopWordsDeleteGuard.assertIntentStillActionable({
-            intentId: intent.id,
-            chatId: intent.chatId,
-            messageId: intent.messageId,
-            subjectUserId: intent.subjectUserId,
-            botId,
-          });
-          if (stopWordsGuard === 'absent')
-            throw new ModerationDeleteGuardedMessageAbsentError('guarded_stop_words_absence');
-        } else {
-          const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
-            where: { intentId: intent.id },
-            select: { ruleCode: true },
-          });
-          if (reasons.some((reason) => STOP_WORDS_DELETE_RULE_CODES.has(reason.ruleCode))) {
-            throw new Error('Stop-list delete guard unavailable');
-          }
-        }
-        // FLAG: New message fingerprints cannot authorize a DELETE without their fresh binding guard.
-        if (intent.messageDuplicateOwned) {
-          if (!this.messageDuplicateDeleteGuard)
-            throw new Error('Message duplicate delete guard unavailable');
-          const result = await this.messageDuplicateDeleteGuard.assertIntentStillActionable({
-            intentId: intent.id,
-            chatId: intent.chatId,
-            messageId: intent.messageId,
-            subjectUserId: intent.subjectUserId,
-            botId,
-          });
-          if (result === 'absent')
-            throw new ModerationDeleteGuardedMessageAbsentError(
-              'guarded_message_duplicate_absence',
-            );
-        }
-        // FLAG: Run the current-text guard once, at the final transport boundary. The common
-        // pre-dispatch rejection path clears the dispatch marker before retrying or stopping.
-        const profanityGuard = await this.profanityDeleteGuard.assertIntentStillActionable({
-          intentId: intent.id,
-          chatId: intent.chatId,
-          messageId: intent.messageId,
-          subjectUserId: intent.subjectUserId,
+        // FLAG: Independent user rules share one DELETE, not each other's authorization.
+        // A stale binding may yield only to a freshly verified reason on this exact attempt.
+        const proof = await this.authorizeGuardedUserDeleteReasons(
+          intent,
           botId,
-        });
-        if (profanityGuard === 'missing_reason') {
-          throw new ModerationDeleteReasonMissingError();
-        }
-        if (profanityGuard === 'absent') {
-          throw new ModerationDeleteGuardedMessageAbsentError(
-            'guarded_profanity_predispatch_exact_absence',
-          );
-        }
-        profanityVerified = profanityGuard === 'allowed';
-        // FLAG: Traffic-only policy/source/deadline checks run after the other guards,
-        // so unrelated remote work cannot consume their short authorization window.
-        if (this.trafficProtectionDeleteGuard) {
-          const result = await this.trafficProtectionDeleteGuard.assertIntentStillActionable({
-            intentId: intent.id,
-            chatId: intent.chatId,
-            messageId: intent.messageId,
-            subjectUserId: intent.subjectUserId,
-            botId,
-          });
-          if (result === 'absent')
-            throw new ModerationDeleteGuardedMessageAbsentError(
-              'guarded_traffic_protection_absence',
-            );
-        } else {
-          const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
-            where: { intentId: intent.id },
-            select: { ruleCode: true },
-          });
-          if (reasons.some((reason) => TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(reason.ruleCode)))
-            throw new Error('Traffic protection delete guard unavailable');
-        }
-      }
-      if (finalDispatchLeaseToken) {
-        // FLAG: New commercial bindings require a fresh current-message guard on every dispatch.
-        if (this.commercialDeleteGuard) {
-          const result = await this.commercialDeleteGuard.assertIntentStillActionable({
-            intentId: intent.id,
-            chatId: intent.chatId,
-            messageId: intent.messageId,
-            subjectUserId: intent.subjectUserId,
-            botId,
-          });
-          if (result === 'missing_reason') throw new ModerationDeleteReasonMissingError();
-          if (result === 'absent')
-            throw new ModerationDeleteGuardedMessageAbsentError('guarded_commercial_text_absence');
-          if (typeof result === 'object' && result.kind === 'allowed')
-            commercialVerifiedReasonKeys = result.reasonKeys;
-        } else {
-          const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
-            where: { intentId: intent.id },
-            select: { ruleCode: true },
-          });
-          if (reasons.some((reason) => reason.ruleCode === COMMERCIAL_TEXT_DELETE_RULE_CODE))
-            throw new Error('Commercial delete guard unavailable');
-        }
+          finalDispatchLeaseToken,
+        );
+        profanityVerified = proof.profanityVerified;
+        commercialVerifiedReasonKeys = proof.commercialVerifiedReasonKeys;
+        messageDuplicateVerified = proof.messageDuplicateVerified;
+        independentAuthorityDeadlineAtMs = proof.independentAuthorityDeadlineAtMs;
+        guardedReasonFingerprint = proof.guardedReasonFingerprint;
       }
       // FLAG: Participant votes never authorize an unguarded retry after settings or author access change.
       if (finalDispatchLeaseToken) {
@@ -3550,10 +3547,13 @@ export class ModerationDeleteIntentService {
           botId,
         );
       }
-      if (commercialOcrGuardRequired && finalDispatchLeaseToken) {
-        await this.assertCommercialOcrDispatchDeadline(intent.id, finalDispatchLeaseToken, botId);
-      }
-      return { profanityVerified, commercialVerifiedReasonKeys };
+      return {
+        profanityVerified,
+        commercialVerifiedReasonKeys,
+        messageDuplicateVerified,
+        independentAuthorityDeadlineAtMs,
+        guardedReasonFingerprint,
+      };
     } catch (error: unknown) {
       if (error instanceof ModerationDeleteGuardedMessageAbsentError) {
         throw error;
@@ -3562,13 +3562,179 @@ export class ModerationDeleteIntentService {
     }
   }
 
+  private async authorizeGuardedUserDeleteReasons(
+    intent: IntentRow,
+    botId: string,
+    finalDispatchLeaseToken?: string,
+  ) {
+    const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+      where: { intentId: intent.id },
+      select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
+      orderBy: { reasonKey: 'asc' },
+      take: 65,
+    });
+    if (!reasons.length) throw new ModerationDeleteReasonMissingError();
+    if (reasons.length > 64) throw new Error('Moderation delete reason validation limit exceeded');
+    const params = {
+      intentId: intent.id,
+      chatId: intent.chatId,
+      messageId: intent.messageId,
+      subjectUserId: intent.subjectUserId,
+      botId,
+      ownedReasonsOnly: true,
+    };
+    let recognized = false;
+    let allowed = false;
+    let profanityVerified = false;
+    let messageDuplicateVerified = false;
+    let commercialVerifiedReasonKeys: string[] = [];
+    let independentBoundedDeadlineAtMs = 0;
+    const check = async (run: () => Promise<unknown>): Promise<unknown> => {
+      recognized = true;
+      try {
+        const result = await run();
+        if (result === 'absent')
+          throw new ModerationDeleteGuardedMessageAbsentError('guarded_current_message_absence');
+        if (result === 'allowed' || (typeof result === 'object' && result !== null)) allowed = true;
+        else throw new Error('Required moderation reason guard did not supply authority');
+        return result;
+      } catch (error) {
+        // FLAG: Only definite policy/content rejection can yield to another reason. A
+        // timeout, unknown remote state or storage failure must stop this transport attempt.
+        if (this.isTerminalDeleteGuardRejection(error)) return null;
+        throw error;
+      }
+    };
+    if (reasons.some((reason) => MESSAGE_LIMITS_CURRENT_CONTENT_RULES.has(reason.ruleCode))) {
+      if (!this.messageLimitsDeleteGuard)
+        throw new Error('Message limits delete guard unavailable');
+      await check(() => this.messageLimitsDeleteGuard!.authorize({ ...params, reasons }));
+    }
+    if (reasons.some((reason) => STOP_WORDS_DELETE_RULE_CODES.has(reason.ruleCode))) {
+      if (!this.stopWordsDeleteGuard) throw new Error('Stop-list delete guard unavailable');
+      await check(() => this.stopWordsDeleteGuard!.assertIntentStillActionable(params));
+    }
+    if (reasons.some((reason) => reason.ruleCode === PROFANITY_DELETE_RULE_CODE)) {
+      profanityVerified =
+        (await check(() => this.profanityDeleteGuard.assertIntentStillActionable(params))) ===
+        'allowed';
+    }
+    if (reasons.some((reason) => reason.ruleCode === COMMERCIAL_TEXT_DELETE_RULE_CODE)) {
+      if (!this.commercialDeleteGuard) throw new Error('Commercial delete guard unavailable');
+      const proof = await check(() =>
+        this.commercialDeleteGuard!.assertIntentStillActionable(params),
+      );
+      if (typeof proof === 'object' && proof !== null && 'reasonKeys' in proof)
+        commercialVerifiedReasonKeys = (proof as { reasonKeys: string[] }).reasonKeys;
+    }
+    if (
+      reasons.some(
+        (reason) =>
+          reason.ruleCode === LINK_BLOCKED_DELETE_RULE_CODE ||
+          reason.ruleCode === LINK_HISTORY_RECOVERY_RULE_CODE,
+      )
+    ) {
+      await check(() => this.linkHistoryDeleteGuard.assertIntentStillActionable(params));
+    }
+    if (reasons.some((reason) => REPORT_GUARDED_RULES.has(reason.ruleCode))) {
+      if (!this.reportDeleteGuard) throw new Error('Participant report delete guard unavailable');
+      await check(() =>
+        this.reportDeleteGuard!.assertIntentStillActionable({
+          ...params,
+          trafficClass: intent.reportHistoryOnly ? 'background' : 'critical',
+          isIndependentReasonExecutable: () => false,
+        }),
+      );
+    }
+    const independentWithoutShortDeadline = allowed;
+    if (reasons.some((reason) => TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(reason.ruleCode))) {
+      if (!this.trafficProtectionDeleteGuard)
+        throw new Error('Traffic protection delete guard unavailable');
+      const permit = await check(() =>
+        this.trafficProtectionDeleteGuard!.assertIntentStillActionable({
+          ...params,
+          includeDeadlinePermit: true,
+        }),
+      );
+      if (permit !== null) {
+        if (
+          typeof permit !== 'object' ||
+          !('deadlineAtMs' in permit) ||
+          !Number.isSafeInteger(permit.deadlineAtMs) ||
+          (permit.deadlineAtMs as number) <= 0
+        )
+          throw new Error('Verified traffic reason lost its deadline permit');
+        independentBoundedDeadlineAtMs = permit.deadlineAtMs as number;
+      }
+    }
+    const standardOcrReasons = reasons.filter(
+      (reason) =>
+        reason.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE &&
+        this.asRecord(reason.metadata)?.source !== 'image_text_ocr',
+    );
+    if (standardOcrReasons.length) {
+      const ocrAllowed = await check(async () => {
+        const result = await this.commercialOcrDeleteGuard.assertIntentStillActionable({
+          ...params,
+          sourceMessageAt: intent.sourceMessageAt,
+        });
+        if (result === 'allowed' && finalDispatchLeaseToken)
+          await this.assertCommercialOcrDispatchDeadline(intent.id, finalDispatchLeaseToken, botId);
+        return result;
+      });
+      if (ocrAllowed === 'allowed') {
+        const bindings = standardOcrReasons.map((reason) =>
+          parseCommercialOcrDeleteBinding(reason.metadata),
+        );
+        if (bindings.some((binding) => !binding))
+          throw new Error('Verified OCR reason lost its deadline binding');
+        const deadline = Math.min(
+          ...bindings.flatMap((binding) => [
+            Date.parse(binding!.ocrDeadlineAt),
+            ...(binding!.authority.kind === 'CERTIFIED'
+              ? [Date.parse(binding!.authority.controlExpiresAt)]
+              : []),
+          ]),
+        );
+        independentBoundedDeadlineAtMs = Math.max(independentBoundedDeadlineAtMs, deadline);
+      }
+    }
+    const independentVerified = allowed;
+    if (
+      reasons.some(
+        (reason) =>
+          reason.reasonKey.startsWith('MESSAGE_DUPLICATE:') ||
+          this.asRecord(reason.metadata)?.duplicateSource === MESSAGE_DUPLICATE_SOURCE,
+      )
+    ) {
+      if (!this.messageDuplicateDeleteGuard)
+        throw new Error('Message duplicate delete guard unavailable');
+      messageDuplicateVerified =
+        (await check(() =>
+          this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params),
+        )) === 'allowed';
+    }
+    if (recognized && !allowed)
+      throw new ModerationDeleteReasonsRejectedError(fingerprintGuardedDeleteReasons(reasons));
+    return {
+      profanityVerified,
+      commercialVerifiedReasonKeys,
+      messageDuplicateVerified,
+      independentVerified,
+      independentAuthorityDeadlineAtMs: independentWithoutShortDeadline
+        ? null
+        : independentBoundedDeadlineAtMs || null,
+      guardedReasonFingerprint: fingerprintGuardedDeleteReasons(reasons),
+    };
+  }
+
   private async assertCommercialOcrDispatchDeadline(
     intentId: string,
     leaseToken: string,
     botId: string,
   ): Promise<void> {
-    // FLAG: This database-clock fence is the final await before MAX DELETE. The earlier OCR guard
-    // performs network and immunity checks that may outlive the durable OCR authorization window.
+    // FLAG: This database-clock fence runs after fresh OCR network/immunity checks. Mixed
+    // reasons also retain a synchronous absolute-expiry check after their final awaited guards.
     const changed = await this.prisma.$executeRaw(Prisma.sql`
       UPDATE "moderation_delete_intents" intent
       SET "updated_at" = CURRENT_TIMESTAMP
@@ -3607,7 +3773,10 @@ export class ModerationDeleteIntentService {
       error instanceof StopWordsDeleteGuardRejectedError ||
       error instanceof TrafficProtectionGuardRejectedError ||
       error instanceof ReportRejectedError ||
-      error instanceof MessageDuplicateGuardRejectedError
+      error instanceof MessageDuplicateGuardRejectedError ||
+      error instanceof MessageLimitsDeleteGuardRejectedError ||
+      error instanceof ModerationDeleteReasonsRejectedError ||
+      error instanceof LinkHistoryDeleteGuardRejectedError
     ) {
       return true;
     }
@@ -5375,8 +5544,8 @@ export class ModerationDeleteIntentService {
           details.errorCode === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE;
         const nightModeCleanupGuardRejected =
           details.errorCode === NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE;
-        // FLAG: Every message-owned DELETE must pass its binding guard, even with mixed reasons.
-        // Its own non-OCR classification cannot resurrect a definitively rejected binding.
+        // FLAG: A rejected complete reason set can retry only if a concurrent writer changed
+        // that exact set. The next attempt must freshly authorize it before any DELETE.
         const independentReportReasons =
           guardError instanceof ReportRejectedError
             ? await tx.moderationDeleteIntentReason.findMany({
@@ -5384,43 +5553,65 @@ export class ModerationDeleteIntentService {
                 select: { ruleCode: true, reasonKey: true, metadata: true },
               })
             : null;
+        const guardedReasonSetChanged =
+          guardError instanceof ModerationDeleteReasonsRejectedError
+            ? guardError.reasonFingerprint !==
+              fingerprintGuardedDeleteReasons(
+                await tx.moderationDeleteIntentReason.findMany({
+                  where: { intentId: intent.id },
+                  select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
+                  orderBy: { reasonKey: 'asc' },
+                  take: 65,
+                }),
+              )
+            : null;
         const independentReasonExecutable =
           // FLAG: A sole retention reason is not independent moderation authority.
           // A concurrent normal writer atomically clears retention_owned before adding its reason.
           !(guardError instanceof MessageRetentionGuardError && latest.retentionOwned) &&
-          (independentReportReasons !== null
-            ? this.hasExecutableIndependentReportReason(latest.chatId, independentReportReasons)
-            : !details.errorCode.startsWith('message_duplicate_') &&
-              (details.errorCode.startsWith('commercial_text_')
-                ? (await tx.moderationDeleteIntentReason.findFirst({
-                    where: {
-                      intentId: intent.id,
-                      ruleCode: { not: COMMERCIAL_TEXT_DELETE_RULE_CODE },
-                    },
-                    select: { id: true },
-                  })) !== null ||
-                  (guardError instanceof CommercialDeleteGuardRejectedError &&
-                    typeof guardError.reasonFingerprint === 'string' &&
-                    guardError.reasonFingerprint !==
-                      fingerprintCommercialDeleteReasons(
-                        await tx.moderationDeleteIntentReason.findMany({
-                          where: { intentId: intent.id },
-                          select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
-                          orderBy: { reasonKey: 'asc' },
-                          take: COMMERCIAL_TEXT_MAX_INTENT_REASONS + 1,
-                        }),
-                      ))
-                : details.errorCode.startsWith('profanity_')
+          (guardedReasonSetChanged !== null
+            ? guardedReasonSetChanged
+            : independentReportReasons !== null
+              ? this.hasExecutableIndependentReportReason(latest.chatId, independentReportReasons)
+              : !details.errorCode.startsWith('message_duplicate_') &&
+                (details.errorCode.startsWith('commercial_text_')
                   ? (await tx.moderationDeleteIntentReason.findFirst({
-                      where: { intentId: intent.id, ruleCode: { not: PROFANITY_DELETE_RULE_CODE } },
+                      where: {
+                        intentId: intent.id,
+                        ruleCode: { not: COMMERCIAL_TEXT_DELETE_RULE_CODE },
+                      },
                       select: { id: true },
-                    })) !== null
-                  : channelCleanupGuardRejected
-                    ? this.hasExecutableReasonIgnoringChannelAutoPostCleanup(latest)
-                    : nightModeCleanupGuardRejected
-                      ? latest.nightModeCloseNoticeCleanupReason === true &&
-                        latest.nightModeCloseNoticeCleanupOnly !== true
-                      : this.hasExecutableNonCommercialOcrReason(latest)));
+                    })) !== null ||
+                    (guardError instanceof CommercialDeleteGuardRejectedError &&
+                      typeof guardError.reasonFingerprint === 'string' &&
+                      guardError.reasonFingerprint !==
+                        fingerprintCommercialDeleteReasons(
+                          await tx.moderationDeleteIntentReason.findMany({
+                            where: { intentId: intent.id },
+                            select: {
+                              ruleCode: true,
+                              reasonKey: true,
+                              score: true,
+                              metadata: true,
+                            },
+                            orderBy: { reasonKey: 'asc' },
+                            take: COMMERCIAL_TEXT_MAX_INTENT_REASONS + 1,
+                          }),
+                        ))
+                  : details.errorCode.startsWith('profanity_')
+                    ? (await tx.moderationDeleteIntentReason.findFirst({
+                        where: {
+                          intentId: intent.id,
+                          ruleCode: { not: PROFANITY_DELETE_RULE_CODE },
+                        },
+                        select: { id: true },
+                      })) !== null
+                    : channelCleanupGuardRejected
+                      ? this.hasExecutableReasonIgnoringChannelAutoPostCleanup(latest)
+                      : nightModeCleanupGuardRejected
+                        ? latest.nightModeCloseNoticeCleanupReason === true &&
+                          latest.nightModeCloseNoticeCleanupOnly !== true
+                        : this.hasExecutableNonCommercialOcrReason(latest)));
         const now = Date.now();
         // A fresh independent reason does not inherit the obsolete OCR guard failure or its
         // backoff. Requeue it immediately; the next attempt reloads the mixed durable classifiers.
@@ -6665,6 +6856,7 @@ export class ModerationDeleteIntentService {
     leaseToken: string,
     botId: string,
     verificationCode:
+      | 'guarded_current_message_absence'
       | 'guarded_traffic_protection_absence'
       | 'guarded_report_absence'
       | 'guarded_stop_words_absence'
@@ -7297,8 +7489,27 @@ export class ModerationDeleteIntentService {
     return result;
   }
 
-  private classifyDeleteError(error: unknown, attemptCount: number): DeleteErrorDetails {
+  private classifyDeleteError(
+    error: unknown,
+    attemptCount: number,
+    dispatchMarkerPersisted = false,
+  ): DeleteErrorDetails {
     const details = this.describeError(error, 'delete_failed');
+    // FLAG: A dispatched timeout/server/unknown failure does not prove rejection,
+    // even when the response text resembles access denial or message absence.
+    if (
+      dispatchMarkerPersisted &&
+      (details.statusCode === null ||
+        details.statusCode === 408 ||
+        (details.statusCode !== null && details.statusCode >= 500) ||
+        this.isAmbiguousTransportError(error))
+    ) {
+      return {
+        ...details,
+        status: 'AMBIGUOUS',
+        retryDelayMs: Math.max(details.retryDelayMs ?? 0, this.retryDelayMs(attemptCount)),
+      };
+    }
     if (isMaxApiCircuitOpenError(error)) {
       return {
         ...details,

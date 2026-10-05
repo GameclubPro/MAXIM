@@ -107,7 +107,7 @@ describePostgres('private commercial image export PostgreSQL pages', () => {
       .filter(
         (index) =>
           index.relation === 'webhook_events' &&
-          (/USING btree \(status, created_at\)/u.test(index.definition) ||
+          (/USING btree \(status, created_at(?:, id)?\)/u.test(index.definition) ||
             /USING btree \(created_at, id\).*WHERE.*PROCESSED.*DUPLICATE/u.test(index.definition)),
       )
       .map((index) => index.name);

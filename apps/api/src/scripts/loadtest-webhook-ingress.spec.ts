@@ -39,7 +39,7 @@ function baseEnv(botCount = 6): Record<string, string> {
 }
 
 describe('webhook ingress load-test config', () => {
-  it('builds the planned 1/2/3/6 matrix at 100 aggregate receipt rps', () => {
+  it('builds the configured bot matrix at 100 aggregate receipt rps', () => {
     const config = loadWebhookIngressLoadConfig(baseEnv());
     const plan = buildWebhookLoadPlan(config);
 
@@ -49,7 +49,7 @@ describe('webhook ingress load-test config', () => {
     expect(config.profile).toBe('custom');
     expect(config.baselineRps).toBeNull();
     expect(config.minThroughputRatio).toBe(0.95);
-    expect(config.mirrorCounts).toEqual([1, 2, 3, 6]);
+    expect(config.mirrorCounts).toEqual([1, 3, 4, 6]);
     expect(config.drainVerification).toEqual({
       enabled: false,
       metrics: null,
@@ -58,7 +58,7 @@ describe('webhook ingress load-test config', () => {
       timeoutSec: 120,
       intervalMs: 5_000,
     });
-    expect(plan.map((phase) => phase.mirrorCount)).toEqual([1, 2, 3, 6]);
+    expect(plan.map((phase) => phase.mirrorCount)).toEqual([1, 3, 4, 6]);
     expect(plan.reduce((sum, phase) => sum + phase.requests, 0)).toBeLessThanOrEqual(60_000);
     expect(plan.every((phase) => phase.semanticEvents > 0)).toBe(true);
   });

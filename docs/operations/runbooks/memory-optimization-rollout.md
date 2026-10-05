@@ -79,9 +79,10 @@ downgrade because minute counters can remain for six hours.
 
 Invoke every subsequent API rollback through the current reviewed `main` copy of
 `vps-connect.sh`, including after a ref rollback leaves the VPS checkout detached on
-the compatibility release. The wrapper requires the minute-reader entrypoint marker
-for ref rollback and immutable rollback that selects API; old recovery markers alone
-are insufficient. When necessary, its existing shared-lock bootstrap restores
+the compatibility release. The wrapper requires the newer multibot-authority entrypoint
+marker for ref rollback and immutable rollback that selects API; minute-reader and
+old recovery markers alone are insufficient. Current tooling still enforces the
+minute-reader source floor. When necessary, its existing shared-lock bootstrap restores
 retained reviewed `main` tooling after the clean-tree and exact-main checks. It does
 not fetch or relax recovery guards. Current API tooling and static-only immutable
 rollback retain their existing offline fast paths. Do not invoke the older

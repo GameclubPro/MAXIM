@@ -231,6 +231,12 @@ function parseSystemDashboardHotChats(value: unknown) {
       return {
         chatId: item.chatId,
         messageCreatedCount: item.messageCreatedCount,
+        ...(typeof item.messageEditedCount === 'number'
+          ? { messageEditedCount: item.messageEditedCount }
+          : {}),
+        ...(typeof item.deliveryCount === 'number' ? { deliveryCount: item.deliveryCount } : {}),
+        ...(typeof item.executionCount === 'number' ? { executionCount: item.executionCount } : {}),
+        ...(typeof item.mirrorCount === 'number' ? { mirrorCount: item.mirrorCount } : {}),
         botsSeen: item.botsSeen,
         lastSeenAt: item.lastSeenAt,
       };

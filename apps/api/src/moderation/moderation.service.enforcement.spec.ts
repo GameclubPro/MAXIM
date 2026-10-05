@@ -3216,6 +3216,7 @@ describe('ModerationService', () => {
       }),
       { durationHours: 12 },
       'group_command',
+      expect.objectContaining({ executionBotId: 'bot-1', chatId: 'chat-1' }),
     );
     expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
     expect(adminService.applyManualOpenChatCommand).not.toHaveBeenCalled();
@@ -3438,6 +3439,7 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
       }),
       'group_command',
+      expect.objectContaining({ executionBotId: 'bot-1', chatId: 'chat-1' }),
     );
     expect(adminService.applyManualChatSilenceCommand).not.toHaveBeenCalled();
     expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
@@ -3737,6 +3739,7 @@ describe('ModerationService', () => {
         text: '1. Без спама.\n2. Без ссылок.',
       },
       'group_command',
+      expect.objectContaining({ executionBotId: 'bot-1', chatId: 'chat-1' }),
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith(
       'chat-1',
@@ -3834,6 +3837,7 @@ describe('ModerationService', () => {
         sourceMessageId: 'mid-rules-source-1',
       }),
       'group_command',
+      expect.objectContaining({ executionBotId: 'bot-1', chatId: 'chat-1' }),
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).toHaveBeenCalledWith(

@@ -808,6 +808,10 @@ export type SystemDashboardHotPath = z.infer<typeof systemDashboardHotPathSchema
 export const systemDashboardHotChatSchema = z.object({
   chatId: z.string(),
   messageCreatedCount: z.number().int().min(0),
+  messageEditedCount: z.number().int().min(0).optional(),
+  deliveryCount: z.number().int().min(0).optional(),
+  executionCount: z.number().int().min(0).optional(),
+  mirrorCount: z.number().int().min(0).optional(),
   botsSeen: z.number().int().min(0),
   lastSeenAt: z.string().datetime(),
 });

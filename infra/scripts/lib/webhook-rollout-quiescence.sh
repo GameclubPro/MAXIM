@@ -8,6 +8,7 @@ MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE="${MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTI
 MAXIM_WEBHOOK_ROLLOUT_OWNER_TOKEN="${MAXIM_WEBHOOK_ROLLOUT_OWNER_TOKEN:-}"
 MAXIM_WEBHOOK_QUEUES_MAY_BE_PAUSED=0
 MAXIM_WEBHOOK_STALE_TIMEOUT_QUARANTINES_FENCED=0
+MAXIM_MULTIBOT_LEGACY_INGRESS_STOPPED=0
 
 MAXIM_WEBHOOK_PENDING_TIMEOUT_QUARANTINE_PREFIX='WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'
 
@@ -296,10 +297,164 @@ maxim_webhook_resume_after_api_fence() {
   maxim_webhook_rollout_control \
     "$compose_args_var" resume "$MAXIM_WEBHOOK_ROLLOUT_CONTROL_TIMEOUT_SEC" >/dev/null
   MAXIM_WEBHOOK_QUEUES_MAY_BE_PAUSED=0
+  MAXIM_MULTIBOT_LEGACY_INGRESS_STOPPED=0
   echo "Webhook queues resumed after the exact API image fence."
 }
 
+maxim_webhook_read_multibot_cutover_receipt() {
+  local compose_args_var="$1"
+  local -n compose_args_ref="$compose_args_var"
+  local applied
+  maxim_webhook_rollout_validate_positive_int \
+    MAXIM_WEBHOOK_ROLLOUT_CONTROL_TIMEOUT_SEC \
+    "$MAXIM_WEBHOOK_ROLLOUT_CONTROL_TIMEOUT_SEC" || return 1
+  if ! applied="$(
+    timeout --foreground --kill-after=5s "${MAXIM_WEBHOOK_ROLLOUT_CONTROL_TIMEOUT_SEC}s" \
+      docker compose "${compose_args_ref[@]}" exec -T postgres \
+      psql -X -v ON_ERROR_STOP=1 -U maxim -d maxim -Atq <<'SQL'
+BEGIN READ ONLY;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '10s';
+SELECT CASE WHEN EXISTS (
+  SELECT 1 FROM "_prisma_migrations"
+  WHERE "migration_name" = '20261005020000_add_multibot_order_fences'
+    AND "finished_at" IS NOT NULL AND "rolled_back_at" IS NULL
+) THEN 1 ELSE 0 END;
+COMMIT;
+SQL
+  )"; then
+    echo "Could not verify the multibot command-authority cutover receipt." >&2
+    return 1
+  fi
+  case "$applied" in
+    0|1) printf '%s\n' "$applied" ;;
+    *)
+      echo "Invalid multibot command-authority cutover receipt result." >&2
+      return 1
+      ;;
+  esac
+}
+
+maxim_webhook_quiesce_legacy_ingress_for_multibot_cutover() {
+  local compose_args_var="$1"
+  local -n compose_args_ref="$compose_args_var"
+  local applied
+  applied="$(maxim_webhook_read_multibot_cutover_receipt "$compose_args_var")" || return 1
+  [[ "$applied" == 0 ]] || return 0
+  maxim_webhook_assert_api_rollout_quiescence "$compose_args_var"
+  # FLAG: Old ingress can publish Start inline even while BullMQ is paused. Stop and
+  # verify it before recording the migration timestamp used by the legacy notice bridge.
+  MAXIM_MULTIBOT_LEGACY_INGRESS_STOPPED=1
+  docker compose "${compose_args_ref[@]}" stop \
+    -t "$MAXIM_WEBHOOK_ROLLOUT_STOP_TIMEOUT_SEC" api-ingress >/dev/null
+  maxim_webhook_rollout_verify_services_stopped "$compose_args_var" api-ingress
+  echo "Legacy ingress stopped for the first multibot command-authority cutover."
+}
+
+maxim_webhook_preflight_multibot_prepare_capacity() {
+  local compose_args_var="$1"
+  local -n compose_args_ref="$compose_args_var"
+  local applied
+  applied="$(maxim_webhook_read_multibot_cutover_receipt "$compose_args_var")" || return 1
+  [[ "$applied" == 0 ]] || return 0
+  # FLAG: Reject known migration-capacity shortages before image builds, alternate-stack
+  # shutdown or release-transition journaling. The post-build probe remains authoritative.
+  node "$ROOT_DIR/infra/scripts/multibot-prepare-capacity.mjs" "${compose_args_ref[@]}"
+}
+
+maxim_webhook_prepare_multibot_before_quiescence() {
+  local compose_args_var="$1"
+  local -n compose_args_ref="$compose_args_var"
+  local applied
+  applied="$(maxim_webhook_read_multibot_cutover_receipt "$compose_args_var")" || return 1
+  if [[ "$applied" == 1 ]]; then
+    echo "Multibot effects cutoff is already applied; online preparation is not repeated."
+    return 0
+  fi
+  # FLAG: Long concurrent builds precede every queue pause, service stop and runtime
+  # recreation. A failed preparation preserves old ingress/consumers and migration receipts.
+  node "$ROOT_DIR/infra/scripts/multibot-prepare-capacity.mjs" "${compose_args_ref[@]}" || return 1
+  if ! run_online_multibot_migrations; then
+    echo "Online multibot preparation failed; old ingress and workers remain live." >&2
+    return 1
+  fi
+  maxim_webhook_assert_multibot_migration_indexes "$compose_args_var"
+}
+
+maxim_webhook_assert_multibot_migration_indexes() {
+  local compose_args_var="$1"
+  local -n compose_args_ref="$compose_args_var"
+  local ready_indexes
+  maxim_webhook_rollout_validate_positive_int \
+    MAXIM_WEBHOOK_ROLLOUT_CONTROL_TIMEOUT_SEC \
+    "$MAXIM_WEBHOOK_ROLLOUT_CONTROL_TIMEOUT_SEC" || return 1
+  # FLAG: Interrupted concurrent builds may leave invalid indexes. Keep every
+  # producer/consumer fenced until all three exact webhook indexes are usable.
+  if ! ready_indexes="$(
+    timeout --foreground --kill-after=5s "${MAXIM_WEBHOOK_ROLLOUT_CONTROL_TIMEOUT_SEC}s" \
+      docker compose "${compose_args_ref[@]}" exec -T postgres \
+      psql -X -v ON_ERROR_STOP=1 -U maxim -d maxim -Atq <<'SQL'
+BEGIN READ ONLY;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '10s';
+SET LOCAL max_parallel_workers_per_gather = 0;
+WITH expected (name, keys, predicate) AS (
+  VALUES
+    ('webhook_events_semantic_order_idx', ARRAY['semantic_key', 'created_at', 'id'], '(semantic_key IS NOT NULL)'),
+    ('webhook_events_status_created_at_id_idx', ARRAY['status', 'created_at', 'id'], NULL),
+    ('webhook_events_semantic_replay_fence_idx', ARRAY['semantic_key', 'id'],
+      $predicate$((semantic_key IS NOT NULL) AND ((status = ANY (ARRAY['RECEIVED'::"WebhookStatus", 'QUEUED'::"WebhookStatus"])) OR ((status = 'FAILED'::"WebhookStatus") AND (next_enqueue_at IS NOT NULL)) OR (timeout_quarantine_expires_at IS NOT NULL) OR (COALESCE(error_message, ''::text) ~~* '%ambiguous%'::text) OR (COALESCE(error_message, ''::text) ~~ 'WEBHOOK_HOT_PATH_TIMEOUT%QUARANTINED%'::text)))$predicate$)
+)
+SELECT COUNT(*)
+FROM pg_catalog.pg_class index_relation
+JOIN pg_catalog.pg_index index_state ON index_state.indexrelid = index_relation.oid
+JOIN pg_catalog.pg_am access_method ON access_method.oid = index_relation.relam
+JOIN expected ON expected.name = index_relation.relname
+WHERE index_relation.relnamespace = 'public'::regnamespace
+  AND index_relation.relkind = 'i'
+  AND index_relation.relname IN (
+    'webhook_events_semantic_order_idx',
+    'webhook_events_status_created_at_id_idx',
+    'webhook_events_semantic_replay_fence_idx'
+  )
+  AND index_state.indrelid = 'public.webhook_events'::regclass
+  AND access_method.amname = 'btree'
+  AND NOT index_state.indisunique AND NOT index_state.indisprimary AND NOT index_state.indisexclusion
+  AND index_state.indexprs IS NULL
+  AND index_state.indnkeyatts = cardinality(expected.keys)
+  AND index_state.indnatts = cardinality(expected.keys)
+  AND ARRAY(SELECT pg_get_indexdef(index_relation.oid, key_position, false)
+            FROM generate_series(1, index_state.indnkeyatts) key_position) = expected.keys
+  AND NOT EXISTS (SELECT 1 FROM unnest(index_state.indoption::smallint[]) ordering_option WHERE ordering_option <> 0)
+  AND NOT EXISTS (
+    SELECT 1 FROM unnest(index_state.indclass::oid[]) class_binding
+    JOIN pg_catalog.pg_opclass opclass_definition ON opclass_definition.oid = class_binding
+    WHERE NOT opclass_definition.opcdefault
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM unnest(index_state.indcollation::oid[], expected.keys) collation_binding(actual_oid, name)
+    JOIN pg_catalog.pg_attribute attribute
+      ON attribute.attrelid = index_state.indrelid AND attribute.attname = collation_binding.name
+    WHERE collation_binding.actual_oid <> attribute.attcollation
+  )
+  AND pg_get_expr(index_state.indpred, index_state.indrelid) IS NOT DISTINCT FROM expected.predicate
+  AND index_state.indisvalid AND index_state.indisready AND index_state.indislive;
+COMMIT;
+SQL
+  )"; then
+    echo "Could not inspect multibot webhook migration indexes; release fence remains held." >&2
+    return 1
+  fi
+  if [[ "$ready_indexes" != "3" ]]; then
+    echo "Multibot webhook migration indexes are missing, invalid or not ready; release fence remains held." >&2
+    return 1
+  fi
+}
+
 maxim_webhook_rollout_warn_if_paused() {
+  if [[ "$MAXIM_MULTIBOT_LEGACY_INGRESS_STOPPED" -eq 1 ]]; then
+    echo "CRITICAL: legacy ingress was stopped for the multibot cutover; recover through the exact-image release fence." >&2
+  fi
   if [[ "$MAXIM_WEBHOOK_QUEUES_MAY_BE_PAUSED" -eq 1 ]]; then
     cat >&2 <<'WARNING'
 CRITICAL: webhook queues may still be globally paused after an incomplete API transition.

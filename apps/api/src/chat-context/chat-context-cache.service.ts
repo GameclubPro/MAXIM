@@ -409,6 +409,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       }
 
       this.applyLocalInvalidation(chatId);
+      this.maxBotLinkService.forgetChatBotBinding(chatId);
     });
     await this.subscriber.subscribe(CHAT_CONTEXT_INVALIDATION_CHANNEL);
     if (!this.localChatContextSweepTimer) {

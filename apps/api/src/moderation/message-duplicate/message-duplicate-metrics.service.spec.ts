@@ -161,7 +161,10 @@ describe('privacy-safe message duplicate diagnostics', () => {
       service.recordObservation(`private-chat-${index}`, 'COMPARISON_FAILED', true);
     jest.advanceTimersByTime(30_000);
     expect(merge).toHaveBeenCalledTimes(4);
-    expect(log.mock.calls[0]?.[0].counters).toEqual({ 'telemetry.buffer_limited': 9744 });
+    expect(log.mock.calls[0]?.[0].counters).toEqual({
+      'telemetry.buffer_limited': 9488,
+      'telemetry.observations_lost': 9488,
+    });
     for (let index = 0; index < 1000; index += 1)
       service.recordObservation(`other-${index}`, 'COMPARED_NO_MATCH', true);
     jest.advanceTimersByTime(30_000);

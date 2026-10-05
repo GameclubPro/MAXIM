@@ -28,13 +28,18 @@ import { ManagedEntityAccessWriter } from './managed-entity-access-writer.servic
 import { ManagedEntityHandshakeService } from './managed-entity-handshake.service';
 import { ManagedEntityHandshakeOutcomeService } from './managed-entity-handshake-outcome.service';
 import { MaxBotModule } from './max-bot.module';
+import { GroupCommandAuthorityService } from '../common/group-command-authority.service';
+import { RedisCounterModule } from '../moderation/redis-counter.module';
+import { MaxExecutionOwnerReadinessService } from './max-execution-owner-readiness.service';
 
 const maxProviders = [
+  GroupCommandAuthorityService,
   MaxClientService,
   MaxActionDispatchService,
   MaxActionLedgerService,
   MaxChatAdminRosterSyncService,
   MaxBotExecutionPlannerService,
+  MaxExecutionOwnerReadinessService,
   MaxMembershipLookupService,
   MaxRoutedPublicationService,
   MaxWebhookSubscriptionReconcilerService,
@@ -61,6 +66,7 @@ const maxProviders = [
     }),
     SystemRuntimeModule,
     MaxBotModule,
+    RedisCounterModule,
     MarketplaceStateModule,
     ChatContextModule,
     NightModeTransitionModule,
@@ -69,11 +75,13 @@ const maxProviders = [
   ],
   providers: maxProviders,
   exports: [
+    GroupCommandAuthorityService,
     MaxClientService,
     MaxActionDispatchService,
     MaxActionLedgerService,
     MaxChatAdminRosterSyncService,
     MaxBotExecutionPlannerService,
+    MaxExecutionOwnerReadinessService,
     MaxMembershipLookupService,
     MaxRoutedPublicationService,
     MaxWebhookSubscriptionReconcilerService,

@@ -16,6 +16,7 @@ import {
 import { Prisma, WebhookStatus } from '../prisma/prisma-client';
 import type { Job, Queue } from 'bullmq';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
+import { expireUnclaimedGroupStarts } from '../common/group-command-start-expiry';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
 import { SystemModeService } from '../system/system-mode.service';
@@ -37,6 +38,7 @@ import {
 } from './webhook-queues';
 import { WebhookRoutingService } from './webhook-routing.service';
 import { WebhookService } from './webhook.service';
+import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { describeWebhookPreparationFailure } from './webhook-preparation-diagnostic';
 import {
   isPendingWebhookTimeoutQuarantineMessage,
@@ -221,11 +223,12 @@ const FAIR_WEBHOOK_WORK_UNIT_KEY_SQL = Prisma.sql`
 type RetentionCleanupPhase = {
   name: string;
   maxBatches: number;
-  deleteBatch: () => Promise<number>;
+  deleteBatch: () => Promise<number | { removed: number; scanned: number }>;
 };
 
 type RetentionCleanupPhaseResult = {
   rows: number;
+  scannedRows: number;
   batches: number;
   durationMs: number;
   budgetExhausted: boolean;
@@ -307,7 +310,7 @@ type ManualClosePriorityCacheEntry = {
 type TimeoutExecutionClaim = {
   id?: string;
   semanticKey?: string;
-  webhookEventId?: string;
+  webhookEventId?: string | null;
   executionBotId?: string | null;
   enforced?: boolean;
   status?: string;
@@ -321,6 +324,7 @@ type WebhookOutboxPersistenceClient = {
   webhookEvent: {
     findUnique?: (args: unknown) => Promise<{
       id: string;
+      dedupKey?: string;
       status: WebhookStatus;
       normalizedPayload: unknown;
       errorMessage: string | null;
@@ -434,6 +438,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private retentionMaintenanceDue = false;
   private draining = false;
   private cleaning = false;
+  private readonly webhookRetentionCursors = new Map<string, { id: string; createdAt: Date }>();
   private enqueueAdmissionModeCheckedAtMs = 0;
   private enqueueAdmissionModeKnown = false;
   private enqueueAdmissionDegraded = false;
@@ -562,10 +567,13 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     // FLAG: Keep polls serialized and at least one configured interval apart. A batch
     // that outlives that interval has already waited; do not add another fixed timer slot.
     // Rearm only after all admitted work drains, and never after module shutdown.
-    this.poller = setTimeout(() => {
-      this.poller = null;
-      void this.poll();
-    }, Math.max(0, this.pollIntervalMs - (performance.now() - startedAt)));
+    this.poller = setTimeout(
+      () => {
+        this.poller = null;
+        void this.poll();
+      },
+      Math.max(0, this.pollIntervalMs - (performance.now() - startedAt)),
+    );
     this.poller.unref();
   }
 
@@ -1732,6 +1740,22 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         );
         return deferOutcome === 'terminal' ? 'advance' : 'block';
       }
+      if (prepared.canonicalWebhookEventId && prepared.canonicalWebhookEventId !== event.id) {
+        // FLAG: Preserve the earlier receipt as an order proxy while enqueueing only the
+        // canonical owner. The next distinct message stays behind this same SQL chat head.
+        const owner = await this.prisma.webhookEvent.findUnique({
+          where: { id: prepared.canonicalWebhookEventId },
+        });
+        if (
+          !owner ||
+          owner.status === WebhookStatus.PROCESSED ||
+          owner.status === WebhookStatus.DUPLICATE ||
+          owner.timeoutQuarantineExpiresAt !== null
+        )
+          throw new WebhookPreparationDeferredError('Canonical order proxy owner changed', 1_000);
+        await this.removeNonCanonicalQueuedJob(event);
+        Object.assign(event, owner);
+      }
       event.normalizedPayload = prepared.normalizedPayload;
       return 'ready';
     } catch (error: unknown) {
@@ -2100,7 +2124,6 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private async settlePendingTimeoutQuarantine(
     event: WebhookEnqueueCandidate,
   ): Promise<CandidateEnqueueOutcome> {
-    const now = new Date();
     let transition: CandidateEnqueueOutcome | null;
     try {
       transition = await this.runInTransaction(async (client) => {
@@ -2113,18 +2136,66 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
                 },
                 orderBy: { createdAt: 'desc' },
                 select: {
+                  id: true,
+                  semanticKey: true,
+                  webhookEventId: true,
+                  enforced: true,
                   status: true,
+                  preparedAt: true,
                   completedAt: true,
+                  leaseToken: true,
+                  leaseExpiresAt: true,
                 },
               })
             : null;
 
         if (claim?.status === 'COMPLETED') {
+          const owner = await client.webhookEvent.findUnique?.({ where: { id: event.id } });
+          const semanticKey = owner
+            ? (buildWebhookSemanticEventKey(owner.normalizedPayload) ??
+              `receipt:${owner.dedupKey || owner.id}`)
+            : null;
+          // FLAG: COMPLETED alone is not proof. A timeout head releases only from its exact
+          // prepared, unleased semantic authority; both the claim and body are CAS-fenced.
+          if (
+            !owner ||
+            !claim.id ||
+            claim.webhookEventId !== owner.id ||
+            claim.semanticKey !== semanticKey ||
+            claim.enforced !== true ||
+            !(claim.preparedAt instanceof Date) ||
+            !Number.isFinite(claim.preparedAt.getTime()) ||
+            !(claim.completedAt instanceof Date) ||
+            !Number.isFinite(claim.completedAt.getTime()) ||
+            claim.leaseToken !== null ||
+            claim.leaseExpiresAt !== null ||
+            typeof client.webhookExecutionClaim?.updateMany !== 'function'
+          )
+            return 'outstanding';
+          const authority = await client.webhookExecutionClaim.updateMany({
+            where: {
+              id: claim.id,
+              kind: 'EXECUTION',
+              semanticKey,
+              webhookEventId: owner.id,
+              enforced: true,
+              status: 'COMPLETED',
+              preparedAt: claim.preparedAt,
+              completedAt: claim.completedAt,
+              leaseToken: null,
+              leaseExpiresAt: null,
+            },
+            data: { enforced: true },
+          });
+          if (authority.count !== 1) return 'outstanding';
           const repaired = await client.webhookEvent.updateMany({
-            where: this.buildEnqueueStateWhere(event),
+            where: {
+              ...this.buildEnqueueStateWhere(event),
+              normalizedPayload: { equals: owner.normalizedPayload as Prisma.InputJsonValue },
+            },
             data: {
               status: WebhookStatus.PROCESSED,
-              processedAt: claim.completedAt ?? now,
+              processedAt: claim.completedAt,
               queueName: null,
               nextEnqueueAt: null,
               timeoutQuarantineExpiresAt: null,
@@ -2367,13 +2438,16 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   ): Promise<RetentionCleanupPhaseResult> {
     const startedAtMs = Date.now();
     let rows = 0;
+    let scannedRows = 0;
     let batches = 0;
     let lastBatchRows = 0;
 
     try {
       while (batches < phase.maxBatches) {
-        lastBatchRows = Math.max(0, await phase.deleteBatch());
-        rows += lastBatchRows;
+        const result = await phase.deleteBatch();
+        lastBatchRows = Math.max(0, typeof result === 'number' ? result : result.scanned);
+        rows += Math.max(0, typeof result === 'number' ? result : result.removed);
+        scannedRows += lastBatchRows;
         batches += 1;
         if (lastBatchRows < RETENTION_CLEANUP_BATCH_SIZE) {
           break;
@@ -2385,6 +2459,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
       const result: RetentionCleanupPhaseResult = {
         rows,
+        scannedRows,
         batches,
         durationMs: Date.now() - startedAtMs,
         budgetExhausted:
@@ -2426,40 +2501,139 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async deleteCompletedWebhookBatch(cutoff: Date): Promise<number> {
-    return this.prisma.$executeRaw(Prisma.sql`
-      WITH expired AS (
-        SELECT "id"
-        FROM "webhook_events"
+  private async deleteCompletedWebhookBatch(
+    cutoff: Date,
+  ): Promise<{ removed: number; scanned: number }> {
+    const cursor = this.webhookRetentionCursors.get('completed');
+    await expireUnclaimedGroupStarts(this.prisma, cutoff, cursor, RETENTION_CLEANUP_BATCH_SIZE);
+    // FLAG: Match the exact existing terminal partial index predicate. Splitting status
+    // streams lets PostgreSQL reuse that index with an unbounded opposite-status filter.
+    const result = await this.prisma.$queryRaw<
+      Array<{ removed: number; scanned: number; lastId: string | null; lastCreatedAt: Date | null }>
+    >(Prisma.sql`
+      WITH candidate_ids AS MATERIALIZED (
+        SELECT "id", "created_at" FROM "webhook_events"
         WHERE "status" IN ('PROCESSED'::"WebhookStatus", 'DUPLICATE'::"WebhookStatus")
           AND "created_at" < ${cutoff}
+          ${cursor ? Prisma.sql`AND ("created_at", "id") > (${cursor.createdAt}, ${cursor.id})` : Prisma.empty}
         ORDER BY "created_at" ASC, "id" ASC
         LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
-        FOR UPDATE SKIP LOCKED
+      ), candidates AS MATERIALIZED (
+        SELECT event."id", event."semantic_key", event."created_at", event."error_message", event."timeout_quarantine_expires_at"
+        FROM candidate_ids CROSS JOIN LATERAL (
+          SELECT "id", "semantic_key", "created_at", "error_message", "timeout_quarantine_expires_at" FROM "webhook_events"
+          WHERE "id" = candidate_ids."id"
+          OFFSET 0 FOR UPDATE SKIP LOCKED
+        ) event
+        ORDER BY event."created_at" ASC, event."id" ASC
+      ), expired AS (
+        SELECT candidate."id"
+        FROM candidates candidate
+        WHERE ${this.webhookRetentionProofUnpinnedSql()}
+      ), removed AS (
+        DELETE FROM "webhook_events" target
+        WHERE target."id" = ANY(ARRAY(SELECT "id" FROM expired)) RETURNING target."id"
       )
-      DELETE FROM "webhook_events" target
-      USING expired
-      WHERE target."id" = expired."id"
+      SELECT (SELECT COUNT(*)::int FROM removed) AS "removed",
+        (SELECT COUNT(*)::int FROM candidates) AS "scanned",
+        (SELECT "id" FROM candidates ORDER BY "created_at" DESC, "id" DESC LIMIT 1) AS "lastId",
+        (SELECT "created_at" FROM candidates ORDER BY "created_at" DESC, "id" DESC LIMIT 1) AS "lastCreatedAt"
     `);
+    return this.advanceWebhookRetentionCursor('completed', result[0]);
   }
 
-  private async deleteTerminalFailedWebhookBatch(cutoff: Date): Promise<number> {
-    return this.prisma.$executeRaw(Prisma.sql`
-      WITH expired AS (
-        SELECT "id"
+  private async deleteTerminalFailedWebhookBatch(
+    cutoff: Date,
+  ): Promise<{ removed: number; scanned: number }> {
+    const cursor = this.webhookRetentionCursors.get('failed');
+    const result = await this.prisma.$queryRaw<
+      Array<{ removed: number; scanned: number; lastId: string | null; lastCreatedAt: Date | null }>
+    >(Prisma.sql`
+      WITH candidates AS MATERIALIZED (
+        SELECT "id", "semantic_key", "created_at", "next_enqueue_at", "error_message", "timeout_quarantine_expires_at"
         FROM "webhook_events"
         WHERE "status" = CAST(${WebhookStatus.FAILED} AS "WebhookStatus")
-          AND "next_enqueue_at" IS NULL
-          AND LEFT(COALESCE("error_message", ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}) <> ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
           AND "created_at" < ${cutoff}
+          ${cursor ? Prisma.sql`AND ("created_at", "id") > (${cursor.createdAt}, ${cursor.id})` : Prisma.empty}
         ORDER BY "created_at" ASC, "id" ASC
         LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
         FOR UPDATE SKIP LOCKED
+      ), expired AS (
+        SELECT candidate."id"
+        FROM candidates candidate
+        WHERE candidate."next_enqueue_at" IS NULL
+          AND candidate."timeout_quarantine_expires_at" IS NULL
+          AND LEFT(COALESCE(candidate."error_message", ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}) <> ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
+          AND COALESCE(candidate."error_message", '') NOT ILIKE '%ambiguous%'
+          AND COALESCE(candidate."error_message", '') NOT LIKE 'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED%'
+          AND ${this.webhookRetentionProofUnpinnedSql()}
+      ), removed AS (
+        DELETE FROM "webhook_events" target
+        WHERE target."id" = ANY(ARRAY(SELECT "id" FROM expired)) RETURNING target."id"
       )
-      DELETE FROM "webhook_events" target
-      USING expired
-      WHERE target."id" = expired."id"
+      SELECT (SELECT COUNT(*)::int FROM removed) AS "removed",
+        (SELECT COUNT(*)::int FROM candidates) AS "scanned",
+        (SELECT "id" FROM candidates ORDER BY "created_at" DESC, "id" DESC LIMIT 1) AS "lastId",
+        (SELECT "created_at" FROM candidates ORDER BY "created_at" DESC, "id" DESC LIMIT 1) AS "lastCreatedAt"
     `);
+    return this.advanceWebhookRetentionCursor('failed', result[0]);
+  }
+
+  private advanceWebhookRetentionCursor(
+    phase: string,
+    batch:
+      | { removed: number; scanned: number; lastId: string | null; lastCreatedAt: Date | null }
+      | undefined,
+  ): { removed: number; scanned: number } {
+    if (!batch) throw new Error('Webhook retention scan result missing');
+    if (batch.scanned >= RETENTION_CLEANUP_BATCH_SIZE && batch.lastId && batch.lastCreatedAt)
+      this.webhookRetentionCursors.set(phase, { id: batch.lastId, createdAt: batch.lastCreatedAt });
+    else this.webhookRetentionCursors.delete(phase);
+    return { removed: batch.removed, scanned: batch.scanned };
+  }
+
+  private webhookRetentionProofUnpinnedSql(): Prisma.Sql {
+    // FLAG: Delete only bounded candidate bodies whose authority is settled. Legacy rows
+    // without the indexed semantic identity wait for reviewed bounded backfill; a pending
+    // mirror, action ambiguity, incomplete command result or lease pins the owner proof.
+    return Prisma.sql`
+      candidate."semantic_key" IS NOT NULL
+      AND candidate."timeout_quarantine_expires_at" IS NULL
+      AND COALESCE(candidate."error_message", '') NOT ILIKE '%ambiguous%'
+      AND COALESCE(candidate."error_message", '') NOT LIKE 'WEBHOOK_HOT_PATH_TIMEOUT%QUARANTINED%'
+      AND NOT EXISTS (
+        SELECT 1 FROM "webhook_execution_claims" claim
+        WHERE claim."webhook_event_id" = candidate."id"
+          AND (
+            claim."status" <> 'COMPLETED'::"WebhookExecutionClaimStatus"
+            OR claim."lease_token" IS NOT NULL
+            OR claim."lease_expires_at" IS NOT NULL
+            OR (claim."kind" = 'COMMAND' AND (
+              claim."prepared_at" IS NULL
+              OR claim."completed_at" IS NULL
+              OR claim."command_result" IS NULL
+              OR jsonb_typeof(claim."command_result") <> 'object'
+            ))
+            OR (claim."kind" = 'EXECUTION' AND (
+              claim."enforced" IS NOT TRUE
+              OR claim."prepared_at" IS NULL
+              OR claim."completed_at" IS NULL
+            ))
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "webhook_events" mirror
+        WHERE mirror."semantic_key" = candidate."semantic_key"
+          AND mirror."id" <> candidate."id"
+          AND (
+            mirror."status" IN ('RECEIVED'::"WebhookStatus", 'QUEUED'::"WebhookStatus")
+            OR (mirror."status" = 'FAILED'::"WebhookStatus" AND mirror."next_enqueue_at" IS NOT NULL)
+            OR mirror."timeout_quarantine_expires_at" IS NOT NULL
+            OR COALESCE(mirror."error_message", '') ILIKE '%ambiguous%'
+            OR COALESCE(mirror."error_message", '') LIKE 'WEBHOOK_HOT_PATH_TIMEOUT%QUARANTINED%'
+          )
+      )
+    `;
   }
 
   private async runInTransaction<T>(
