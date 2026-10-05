@@ -96,27 +96,26 @@ export function assessMultibotPrepareCapacity(metadata, filesystems) {
 }
 
 export function checkMultibotPrepareCapacity(composeArgs, run = execFileSync) {
-  // FLAG: Preserve the deploy caller's env/project/files as structured argv. Dropping
-  // --env-file or -p can probe a different PostgreSQL instance from the actual rollout.
-  const allowedFlags = new Set(['-f', '--env-file', '-p']);
   if (!Array.isArray(composeArgs) || !composeArgs.length || composeArgs.length % 2 !== 0)
     throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
+  // FLAG: Validate the complete global-option prefix before any probe. Preserve its
+  // exact env/project scope; commands and mutation flags never belong in this prefix.
   const seen = new Set();
   for (let index = 0; index < composeArgs.length; index += 2) {
-    const flag = composeArgs[index];
+    const option = composeArgs[index];
     const value = composeArgs[index + 1];
+    const canonicalOption = option === '--project-name' ? '-p' : option;
     if (
-      !allowedFlags.has(flag) ||
-      (flag !== '-f' && seen.has(flag)) ||
+      !['-f', '--env-file', '-p'].includes(canonicalOption) ||
       typeof value !== 'string' ||
       !value.trim() ||
       value.startsWith('-') ||
-      value.includes('\0') ||
-      /[\r\n]/u.test(value) ||
-      (flag === '-p' && !/^[a-z0-9][a-z0-9_-]*$/u.test(value))
+      /\p{Cc}/u.test(value) ||
+      (canonicalOption !== '-f' && seen.has(canonicalOption)) ||
+      (canonicalOption === '-p' && !/^[a-z0-9][a-z0-9_-]*$/u.test(value))
     )
       throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
-    seen.add(flag);
+    seen.add(canonicalOption);
   }
   if (!seen.has('-f')) throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
   const options = { encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024 };
