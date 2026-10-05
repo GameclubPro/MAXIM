@@ -1,7 +1,12 @@
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import {
   markMaxMemberMutationAttempted,
   markMaxMemberMutationConfirmed,
+  type MaxActionDispatchOptions,
   wasMaxMemberMutationAttempted,
   wasMaxMemberMutationConfirmed,
 } from '../max/max-client.service';
@@ -116,6 +121,140 @@ function installSanctionStateHarness(service: AdminService) {
   (service as any).injectedModerationSanctionStateFence = sanctionStateFence;
   return { leaseGuard, sanctionStateFence, sanctionStateLock, trace };
 }
+
+describe('existing sanction-button unban attempt', () => {
+  const options = {
+    ...VERIFIED_COMMAND_OPTIONS,
+    expectedSanctionEventId: 'ban-event-1',
+    attemptUnbanWithRemove: true,
+  };
+  function fixture() {
+    const prisma = createPrismaMock();
+    prisma.moderationEvent.findUnique.mockResolvedValue({
+      id: 'ban-event-1',
+      chatId: 'chat-1',
+      userId: 'user-4',
+      action: 'BAN',
+      metadata: {},
+      createdAt: new Date('2026-10-01T00:00:00Z'),
+    });
+    prisma.moderationEvent.findFirst.mockResolvedValue({ id: 'ban-event-1' });
+    const mutation = jest.fn();
+    const maxClient = createBanMaxClient({
+      getChatMemberAccess: jest.fn().mockResolvedValue(null),
+      clearTerminalBanStateAfterConfirmedUnban: jest.fn(),
+      unbanMember: jest.fn(),
+      attemptUnbanMember: jest.fn(
+        async (_chat: string, _user: string, opts: MaxActionDispatchOptions) => {
+          await opts.beforeImmediateMemberMutation!();
+          mutation();
+        },
+      ),
+    });
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    const run = () =>
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-4',
+        ADMIN_ACTOR,
+        { action: 'UNBAN' },
+        'group_command',
+        options,
+      );
+    return { prisma, maxClient, service, harness, run, mutation };
+  }
+
+  it('sends a guarded attempt without releasing the ban or granting exemptions', async () => {
+    const { prisma, maxClient, harness, run, mutation } = fixture();
+    await expect(run()).resolves.toMatchObject({
+      message: 'Запрос выполнен. Проверьте вход в чат.',
+    });
+    expect(mutation).toHaveBeenCalledTimes(1);
+    expect(maxClient.attemptUnbanMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-4',
+      expect.objectContaining({
+        immediate: true,
+        idempotencyKey: 'manual-unban-attempt:ban-event-1',
+        beforeImmediateMemberMutation: expect.any(Function),
+      }),
+    );
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'user-4',
+      expect.objectContaining({ bypassCache: true }),
+    );
+    expect(harness.sanctionStateFence.prepare).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
+    expect(maxClient.clearTerminalBanStateAfterConfirmedUnban).not.toHaveBeenCalled();
+    expect(maxClient.unbanMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(prisma.adminGlobalSpammerExemption.upsert).not.toHaveBeenCalled();
+  });
+
+  it('does not remove a member who returned while the request was prepared', async () => {
+    const { maxClient, run, mutation, harness } = fixture();
+    maxClient.getChatMemberAccess
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ userId: 'user-4' });
+    await expect(run()).rejects.toBeInstanceOf(ModerationSanctionStateChangedError);
+    expect(mutation).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.prepare).not.toHaveBeenCalled();
+  });
+
+  it('rejects an old button when the selected sanction changes before HTTP', async () => {
+    const { prisma, run, mutation } = fixture();
+    prisma.moderationEvent.findFirst
+      .mockResolvedValueOnce({ id: 'ban-event-1' })
+      .mockResolvedValueOnce({ id: 'new-ban' });
+    await expect(run()).rejects.toBeInstanceOf(ModerationSanctionStateChangedError);
+    expect(mutation).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when fresh absence cannot be verified', async () => {
+    const { maxClient, run, mutation } = fixture();
+    maxClient.getChatMemberAccess.mockRejectedValue(new Error('lookup unavailable'));
+    await expect(run()).rejects.toThrow('lookup unavailable');
+    expect(maxClient.attemptUnbanMember).not.toHaveBeenCalled();
+    expect(mutation).not.toHaveBeenCalled();
+  });
+
+  it('requires the bot to have member-management rights', async () => {
+    const { maxClient, run, mutation } = fixture();
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+    });
+    await expect(run()).rejects.toBeInstanceOf(ForbiddenException);
+    expect(maxClient.attemptUnbanMember).not.toHaveBeenCalled();
+    expect(mutation).not.toHaveBeenCalled();
+  });
+
+  it('uses confirmed release when the participant is already present', async () => {
+    const { maxClient, run, harness, prisma } = fixture();
+    maxClient.getChatMemberAccess.mockResolvedValue({
+      userId: 'user-4',
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+    });
+    await run();
+    expect(maxClient.attemptUnbanMember).not.toHaveBeenCalled();
+    expect(maxClient.unbanMember).not.toHaveBeenCalled();
+    expect(maxClient.clearTerminalBanStateAfterConfirmedUnban).toHaveBeenCalledWith(
+      'chat-1',
+      'user-4',
+    );
+    expect(harness.sanctionStateFence.commit).toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ ruleCode: 'MANUAL_UNBAN' }) }),
+    );
+  });
+});
 
 describe('channel member bans', () => {
   const options = { ...VERIFIED_COMMAND_OPTIONS, entityType: ChatEntityType.CHANNEL };

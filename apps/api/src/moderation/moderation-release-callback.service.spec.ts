@@ -180,6 +180,7 @@ describe('ModerationReleaseCallbackService', () => {
         actorAlreadyVerified: true,
         allowTargetDisplayNameRemoteLookup: false,
         expectedSanctionEventId: SANCTION_EVENT_ID,
+        attemptUnbanWithRemove: true,
       },
     );
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
@@ -367,6 +368,9 @@ describe('ModerationReleaseCallbackService', () => {
       { action: 'UNMUTE' },
       'group_command',
       expect.objectContaining({ expectedSanctionEventId: SANCTION_EVENT_ID }),
+    );
+    expect(manualModeration.applyManualModerationAction.mock.calls[0]?.[5]).not.toHaveProperty(
+      'attemptUnbanWithRemove',
     );
   });
 
