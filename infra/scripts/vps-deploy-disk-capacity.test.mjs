@@ -11,7 +11,7 @@ const immutableRollbackScript = read('infra/scripts/vps-release-rollback.sh');
 const scaleDeployScript = read('infra/scripts/vps-pull-build-up-scale.sh');
 const migrationNoBuildCompose = read('infra/docker-compose.runtime-no-build.yml');
 const diskCapacityLibrary = read('infra/scripts/lib/deploy-disk-capacity.sh');
-const apiMinimumFreeBytes = 20 * 1024 ** 3;
+const apiMinimumFreeBytes = 10 * 1024 ** 3;
 const staticMinimumFreeBytes = 6 * 1024 ** 3;
 
 function read(path) {
@@ -51,6 +51,7 @@ function runDiskPreflight(
     emergencyOverride,
     targetPercent,
     criticalPercent,
+    reuseOnly = false,
   } = {},
 ) {
   const env = cleanDiskEnv();
@@ -74,7 +75,7 @@ df() {
   printf 'Filesystem 1-blocks Used Available Capacity Mounted on\\n'
   printf '/dev/fake 107374182400 1 %s %s%% /\\n' "$AVAILABLE_BYTES" "$USED_PERCENT"
 }
-maxim_check_deploy_disk_capacity "$NEEDS_API" "$NEEDS_STATIC"
+${reuseOnly ? 'maxim_check_deploy_reuse_disk_capacity' : 'maxim_check_deploy_disk_capacity'} "$NEEDS_API" "$NEEDS_STATIC"
 `;
 
   return spawnSync('bash', ['-c', probe], {
@@ -101,7 +102,17 @@ function runSelectedImageCapacityPreflight({
   legacyImage = `maxim-miniapp-legacy:${targetSha}`,
   invalidLabelImage = '',
   buildApi = services.some((service) => service.startsWith('api-')) ? 1 : 0,
+  usedPercent = 79,
+  minimumOverride,
+  emergencyOverride,
 }) {
+  const env = cleanDiskEnv();
+  if (minimumOverride !== undefined) {
+    env.MAXIM_DEPLOY_DISK_MIN_FREE_BYTES = String(minimumOverride);
+  }
+  if (emergencyOverride !== undefined) {
+    env.MAXIM_ALLOW_CRITICAL_DISK_DEPLOY = String(emergencyOverride);
+  }
   const probe = `set -euo pipefail
 ${diskCapacityLibrary}
 ${readShellFunction(deployScript, 'contains_service', 'validate_requested_services')}
@@ -143,7 +154,7 @@ docker() {
 df() {
   [[ "$1" == "-P" && "$2" == "-B1" ]]
   printf 'Filesystem 1-blocks Used Available Capacity Mounted on\\n'
-  printf '/dev/fake 107374182400 1 %s 79%% /\\n' "$AVAILABLE_BYTES"
+  printf '/dev/fake 107374182400 1 %s %s%% /\\n' "$AVAILABLE_BYTES" "$USED_PERCENT"
 }
 prepare_deploy_disk_capacity
 printf 'reuse-only=%s\\n' "$REUSE_PRELOADED_TARGET_IMAGES_ONLY"
@@ -152,7 +163,7 @@ printf 'reuse-only=%s\\n' "$REUSE_PRELOADED_TARGET_IMAGES_ONLY"
   return spawnSync('bash', ['-c', probe], {
     encoding: 'utf8',
     env: {
-      ...cleanDiskEnv(),
+      ...env,
       ADMIN_IMAGE: adminImage,
       API_IMAGE: apiImage,
       AVAILABLE_BYTES: String(availableBytes),
@@ -164,28 +175,29 @@ printf 'reuse-only=%s\\n' "$REUSE_PRELOADED_TARGET_IMAGES_ONLY"
       MINIAPP_IMAGE: miniappImage,
       SELECTED_SERVICES: services.join('\n'),
       TARGET_SHA_VALUE: targetSha,
+      USED_PERCENT: String(usedPercent),
     },
   });
 }
 
 test('keeps component build floors in one shared library', () => {
-  assert.match(diskCapacityLibrary, /MAXIM_API_BUILD_HARD_MIN_FREE_BYTES="21474836480"/u);
+  assert.match(diskCapacityLibrary, /MAXIM_API_BUILD_HARD_MIN_FREE_BYTES="10737418240"/u);
   assert.match(diskCapacityLibrary, /MAXIM_STATIC_BUILD_HARD_MIN_FREE_BYTES="6442450944"/u);
   for (const script of [deployScript, runtimeRollbackScript, scaleDeployScript]) {
     assert.match(script, /source "\$ROOT_DIR\/infra\/scripts\/lib\/deploy-disk-capacity\.sh"/u);
   }
 });
 
-test('enforces the 20 GiB API build floor at its exact boundary', () => {
+test('enforces the 10 GiB API build floor at its exact boundary', () => {
   const below = runDiskPreflight(apiMinimumFreeBytes - 1);
   const equal = runDiskPreflight(apiMinimumFreeBytes);
 
   assert.equal(below.status, 1);
-  assert.match(below.stderr, /at least 21474836480 bytes are required/u);
+  assert.match(below.stderr, /at least 10737418240 bytes are required/u);
   assert.match(below.stderr, /not bypassed by MAXIM_ALLOW_CRITICAL_DISK_DEPLOY/u);
   assert.equal(equal.status, 0, equal.stderr);
   assert.match(equal.stdout, /components=api/u);
-  assert.match(equal.stdout, /minimum-free=21474836480B/u);
+  assert.match(equal.stdout, /minimum-free=10737418240B/u);
 });
 
 test('uses the smaller 6 GiB floor for static-only builds', () => {
@@ -206,11 +218,15 @@ test('uses the smaller 6 GiB floor for static-only builds', () => {
 });
 
 test('mixed API and static builds use the higher API floor', () => {
-  const result = runDiskPreflight(apiMinimumFreeBytes - 1, { needsStatic: 1 });
+  const below = runDiskPreflight(apiMinimumFreeBytes - 1, { needsStatic: 1 });
+  const equal = runDiskPreflight(apiMinimumFreeBytes, { needsStatic: 1 });
 
-  assert.equal(result.status, 1);
-  assert.match(result.stdout, /components=api\+static/u);
-  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+  assert.equal(below.status, 1);
+  assert.match(below.stdout, /components=api\+static/u);
+  assert.match(below.stderr, /at least 10737418240 bytes are required/u);
+  assert.equal(equal.status, 0, equal.stderr);
+  assert.match(equal.stdout, /components=api\+static/u);
+  assert.match(equal.stdout, /minimum-free=10737418240B/u);
 });
 
 test('rejects malformed capacity configuration and component flags', () => {
@@ -236,15 +252,15 @@ test('rejects malformed capacity configuration and component flags', () => {
 });
 
 test('compares configured byte thresholds exactly without shell integer overflow', () => {
-  const leadingZeroResult = runDiskPreflight('00021474836480', {
-    minimumOverride: '00021474836480',
+  const leadingZeroResult = runDiskPreflight('00010737418240', {
+    minimumOverride: '00010737418240',
   });
   const hugeThresholdResult = runDiskPreflight('999999999999999999999999999998', {
     minimumOverride: '999999999999999999999999999999',
   });
 
   assert.equal(leadingZeroResult.status, 0, leadingZeroResult.stderr);
-  assert.match(leadingZeroResult.stdout, /available=21474836480B minimum-free=21474836480B/u);
+  assert.match(leadingZeroResult.stdout, /available=10737418240B minimum-free=10737418240B/u);
   assert.equal(hugeThresholdResult.status, 1);
   assert.match(hugeThresholdResult.stderr, /at least 999999999999999999999999999999 bytes/u);
 });
@@ -267,13 +283,13 @@ test('configuration may raise but never lower the selected component floor', () 
   });
 
   assert.equal(weakApi.status, 1);
-  assert.match(weakApi.stderr, /at least 21474836480 for build components: api/u);
+  assert.match(weakApi.stderr, /at least 10737418240 for build components: api/u);
   assert.equal(weakStatic.status, 1);
   assert.match(weakStatic.stderr, /at least 6442450944 for build components: static/u);
   assert.equal(raisedBelow.status, 1);
-  assert.match(raisedBelow.stderr, /at least 21474837504 bytes are required/u);
+  assert.match(raisedBelow.stderr, /at least 10737419264 bytes are required/u);
   assert.equal(raisedEqual.status, 0, raisedEqual.stderr);
-  assert.match(raisedEqual.stdout, /minimum-free=21474837504B/u);
+  assert.match(raisedEqual.stdout, /minimum-free=10737419264B/u);
 });
 
 test('keeps ten percent free as the default percentage gate', () => {
@@ -313,24 +329,126 @@ test('normalizes percentage thresholds before comparing them', () => {
   assert.match(result.stderr, /above the deploy target disk utilization \(80%\)/u);
 });
 
-test('skips build capacity only when every selected exact-SHA image is local', () => {
+test('exact-SHA API image reuse still enforces the 10 GiB reserve without build-only percentage gating', () => {
   const targetSha = 'a'.repeat(40);
   const localImages = [
     `maxim-api:${targetSha}`,
     `maxim-miniapp-major:${targetSha}`,
     `maxim-admin:${targetSha}`,
   ];
-  const result = runSelectedImageCapacityPreflight({
-    availableBytes: staticMinimumFreeBytes - 1,
+  const options = {
     expectedSha: targetSha,
     services: ['api-ingress', 'miniapp-major-static', 'admin-static'],
     localImages,
+    usedPercent: 95,
+  };
+  const below = runSelectedImageCapacityPreflight({
+    ...options,
+    availableBytes: apiMinimumFreeBytes - 1,
+    emergencyOverride: 1,
+  });
+  const equal = runSelectedImageCapacityPreflight({
+    ...options,
+    availableBytes: apiMinimumFreeBytes,
   });
 
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /every selected exact immutable target image is already local/u);
-  assert.match(result.stdout, /reuse-only=1/u);
-  assert.doesNotMatch(result.stdout, /Deploy disk preflight:/u);
+  assert.equal(below.status, 1);
+  assert.match(below.stderr, /at least 10737418240 bytes are required/u);
+  assert.match(below.stderr, /not bypassed by MAXIM_ALLOW_CRITICAL_DISK_DEPLOY/u);
+  assert.doesNotMatch(below.stdout, /reuse-only=1/u);
+  assert.equal(equal.status, 0, equal.stderr);
+  assert.match(equal.stdout, /Reusing every selected exact immutable target image/u);
+  assert.match(equal.stdout, /components=api\+static/u);
+  assert.match(equal.stdout, /minimum-free=10737418240B/u);
+  assert.match(equal.stdout, /mode=reuse/u);
+  assert.match(equal.stdout, /reuse-only=1/u);
+  assert.match(equal.stderr, /CRITICAL: deploy host disk utilization is 95%/u);
+});
+
+test('exact-SHA static image reuse still enforces the smaller 6 GiB reserve', () => {
+  const targetSha = 'f'.repeat(40);
+  const options = {
+    expectedSha: targetSha,
+    services: ['miniapp-major-static', 'admin-static'],
+    localImages: [`maxim-miniapp-major:${targetSha}`, `maxim-admin:${targetSha}`],
+    usedPercent: 95,
+  };
+  const below = runSelectedImageCapacityPreflight({
+    ...options,
+    availableBytes: staticMinimumFreeBytes - 1,
+  });
+  const equal = runSelectedImageCapacityPreflight({
+    ...options,
+    availableBytes: staticMinimumFreeBytes,
+  });
+
+  assert.equal(below.status, 1);
+  assert.match(below.stderr, /at least 6442450944 bytes are required/u);
+  assert.doesNotMatch(below.stdout, /reuse-only=1/u);
+  assert.equal(equal.status, 0, equal.stderr);
+  assert.match(equal.stdout, /components=static/u);
+  assert.match(equal.stdout, /minimum-free=6442450944B/u);
+  assert.match(equal.stdout, /mode=reuse/u);
+  assert.match(equal.stdout, /reuse-only=1/u);
+});
+
+test('reuse reserve configuration may raise but never lower the component floor', () => {
+  const targetSha = '1'.repeat(40);
+  const options = {
+    expectedSha: targetSha,
+    localImages: [`maxim-api:${targetSha}`],
+    usedPercent: 95,
+  };
+  const weak = runSelectedImageCapacityPreflight({
+    ...options,
+    availableBytes: apiMinimumFreeBytes,
+    minimumOverride: staticMinimumFreeBytes,
+  });
+  const strongerMinimum = apiMinimumFreeBytes + 1024;
+  const raisedBelow = runSelectedImageCapacityPreflight({
+    ...options,
+    availableBytes: strongerMinimum - 1,
+    minimumOverride: strongerMinimum,
+  });
+  const raisedEqual = runSelectedImageCapacityPreflight({
+    ...options,
+    availableBytes: strongerMinimum,
+    minimumOverride: strongerMinimum,
+  });
+
+  assert.equal(weak.status, 1);
+  assert.match(weak.stderr, /at least 10737418240 for build components: api/u);
+  assert.equal(raisedBelow.status, 1);
+  assert.match(raisedBelow.stderr, /at least 10737419264 bytes are required/u);
+  assert.equal(raisedEqual.status, 0, raisedEqual.stderr);
+  assert.match(raisedEqual.stdout, /minimum-free=10737419264B/u);
+  assert.match(raisedEqual.stdout, /reuse-only=1/u);
+});
+
+test('reuse capacity helper keeps exact decimal comparisons and rejects malformed thresholds', () => {
+  const exact = runDiskPreflight('00010737418240', {
+    minimumOverride: '00010737418240',
+    reuseOnly: true,
+    usedPercent: 95,
+  });
+  const huge = runDiskPreflight('999999999999999999999999999998', {
+    minimumOverride: '999999999999999999999999999999',
+    reuseOnly: true,
+  });
+  const malformed = runDiskPreflight(apiMinimumFreeBytes, {
+    minimumOverride: '10GiB',
+    reuseOnly: true,
+  });
+
+  assert.equal(exact.status, 0, exact.stderr);
+  assert.match(exact.stdout, /available=10737418240B minimum-free=10737418240B/u);
+  assert.equal(huge.status, 1);
+  assert.match(huge.stderr, /at least 999999999999999999999999999999 bytes/u);
+  assert.equal(malformed.status, 1);
+  assert.match(
+    malformed.stderr,
+    /MAXIM_DEPLOY_DISK_MIN_FREE_BYTES must be a non-negative integer/u,
+  );
 });
 
 test('missing selected images receive the component-aware floor', () => {
@@ -351,7 +469,7 @@ test('missing selected images receive the component-aware floor', () => {
 
   assert.equal(mixedResult.status, 1);
   assert.match(mixedResult.stderr, /requires a build: maxim-miniapp-major:/u);
-  assert.match(mixedResult.stderr, /at least 21474836480 bytes are required/u);
+  assert.match(mixedResult.stderr, /at least 10737418240 bytes are required/u);
   assert.equal(staticResult.status, 0, staticResult.stderr);
   assert.match(staticResult.stdout, /components=static/u);
   assert.match(staticResult.stdout, /reuse-only=0/u);
@@ -378,10 +496,10 @@ test('wrong-SHA and unknown targets cannot bypass the API floor', () => {
 
   assert.equal(wrongShaResult.status, 1);
   assert.match(wrongShaResult.stderr, /non-target image ref/u);
-  assert.match(wrongShaResult.stderr, /at least 21474836480 bytes are required/u);
+  assert.match(wrongShaResult.stderr, /at least 10737418240 bytes are required/u);
   assert.equal(unknownResult.status, 1);
   assert.match(unknownResult.stderr, /unknown target: manual-unknown-static/u);
-  assert.match(unknownResult.stderr, /at least 21474836480 bytes are required/u);
+  assert.match(unknownResult.stderr, /at least 10737418240 bytes are required/u);
 });
 
 test('an exact-SHA tag with unverified release labels cannot bypass the API floor', () => {
@@ -397,7 +515,7 @@ test('an exact-SHA tag with unverified release labels cannot bypass the API floo
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /unverified release labels/u);
-  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+  assert.match(result.stderr, /at least 10737418240 bytes are required/u);
 });
 
 test('runtime and scale builds run capacity checks before destructive work', () => {

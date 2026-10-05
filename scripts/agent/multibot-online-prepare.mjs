@@ -12,6 +12,45 @@ const requiredPrepareMigrations = [
   MULTIBOT_ONLINE_PREFIX_NAME,
 ];
 
+export function createMultibotPrepareEnvironment(env) {
+  const tag = env.MAXIM_MULTIBOT_PREPARE_APPLICATION_NAME;
+  if (tag === undefined) return env;
+  if (
+    typeof tag !== 'string' ||
+    !/^maxim-online-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(tag)
+  )
+    throw new Error('MULTIBOT_PREPARE_APPLICATION_NAME_INVALID');
+  let address;
+  try {
+    address = new URL(env.DATABASE_URL);
+  } catch {
+    throw new Error('MULTIBOT_PREPARE_TAGGED_DATABASE_URL_INVALID');
+  }
+  if (
+    !['postgresql:', 'postgres:'].includes(address.protocol) ||
+    !address.hostname ||
+    address.pathname.length < 2 ||
+    address.hash ||
+    /[\r\n\t]/u.test(env.DATABASE_URL) ||
+    env.DATABASE_URL.includes('\0') ||
+    env.DATABASE_URL !== env.DATABASE_URL.trim()
+  )
+    throw new Error('MULTIBOT_PREPARE_TAGGED_DATABASE_URL_INVALID');
+  const existing = address.searchParams.getAll('application_name');
+  if (
+    existing.length > 1 ||
+    (existing.length === 1 && existing[0] !== tag) ||
+    address.searchParams.getAll('options').some((value) => /application_name/iu.test(value))
+  )
+    throw new Error('MULTIBOT_PREPARE_APPLICATION_NAME_CONFLICT');
+  // FLAG: The disk supervisor may cancel only this invocation's exact DB session tag.
+  // Keep source credentials/options byte-for-byte and never mutate the caller environment.
+  const databaseUrl = existing.length
+    ? env.DATABASE_URL
+    : `${env.DATABASE_URL}${address.search || env.DATABASE_URL.endsWith('?') ? '&' : '?'}application_name=${tag}`;
+  return { ...env, DATABASE_URL: databaseUrl };
+}
+
 export function createMultibotMigrationPrefix(root) {
   const source = resolve(root, 'apps/api/prisma/migrations');
   const migrationNames = readdirSync(source, { withFileTypes: true })
@@ -57,6 +96,7 @@ export function runMultibotOnlinePrepare({
   runPrisma = spawnSync,
 } = {}) {
   if (!env.DATABASE_URL?.trim()) throw new Error('MULTIBOT_PREPARE_DATABASE_URL_REQUIRED');
+  const prepareEnv = createMultibotPrepareEnvironment(env);
   const prefix = createMultibotMigrationPrefix(root);
   try {
     const result = runPrisma(
@@ -68,7 +108,7 @@ export function runMultibotOnlinePrepare({
         '--config',
         prefix.configPath,
       ],
-      { cwd: root, env, stdio: 'inherit', timeout: 5_700_000 },
+      { cwd: root, env: prepareEnv, stdio: 'inherit', timeout: 5_700_000 },
     );
     if (result.error || result.signal || result.status !== 0)
       throw new Error('MULTIBOT_PREPARE_PRISMA_DEPLOY_FAILED');

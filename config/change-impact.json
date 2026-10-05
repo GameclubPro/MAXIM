@@ -377,6 +377,13 @@
         "admin"
       ],
       "deployComponents": ["miniapp-major-static", "admin-static"]
+    },
+    {
+      "id": "multibot-migration-runtime",
+      "include": ["scripts/agent/multibot-online-prepare.mjs"],
+      "checks": ["repo-static", "agent-tools", "infra", "api", "prisma"],
+      "deployComponents": ["api-shared"],
+      "migrationImpact": "tooling"
     }
   ],
   "fallback": {

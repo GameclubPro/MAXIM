@@ -33,6 +33,18 @@ test('classifies deploy components in Bash and fails closed for unknown paths', 
   assert.deepEqual(classify('future/unclassified.file'), [1, 1, 1, 1]);
 });
 
+test('selects the API image only for the exact packaged migration preparer', () => {
+  assert.deepEqual(classify('scripts/agent/multibot-online-prepare.mjs'), [1, 0, 0, 0]);
+  for (const path of [
+    'scripts/agent/plan.mjs',
+    'scripts/agent/test/multibot-online-prepare.test.mjs',
+    'scripts/agent/multibot-online-prepare-retired.mjs',
+    'scripts/agent/multibot-online-prepare.mjs.backup',
+  ]) {
+    assert.deepEqual(classify(path), [0, 0, 0, 0], path);
+  }
+});
+
 function classify(path) {
   const output = execFileSync('bash', [classifierHelperPath, generatedPath, path], {
     encoding: 'utf8',
