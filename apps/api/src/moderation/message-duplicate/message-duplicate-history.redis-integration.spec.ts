@@ -412,6 +412,91 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     });
 
     it.each([
+      ...[
+        'Артикул телефона: $value',
+        'Код телефона: $value',
+        'Модель телефона: $value',
+        'Сертификат телефона: $value',
+        'Штрихкод телефона: $value',
+        'IMEI телефона: $value',
+        'Телефон $value + 2',
+        'Выражение z · $value',
+        'Выражение z ≈ $value',
+        'Выражение x\u200e $value',
+        'Выражение 2\u200e $value',
+        'Итого €\u200b $value',
+        'Итого $value \u200e₽',
+        'Прирост $value тыс. руб.',
+        'Прирост $value GiB',
+        'Прирост $value bps',
+        'Прирост $value участников',
+      ].map((expression) => [
+        `source-bound numeric expression ${expression}`,
+        `Подробное описание оборудования с гарантией и доставкой по стране: ${expression.replace('$value', '+79991234567')}`,
+        `Подробное описание оборудования с гарантией и доставкой по стране: ${expression.replace('$value', '+79991234568')}`,
+      ]),
+      [
+        'unknown grouped international phone and quantity',
+        'Подробная инструкция для участников доступна после регистрации телефон: +44 20 7946 0958 100 участников',
+        'Подробная инструкция для участников доступна после регистрации телефон: +44 20 7946 0958 200 участников',
+      ],
+      ...['Телефон', 'Модель телефона', 'Сертификат телефона'].map((label) => [
+        `unprefixed EAN cannot inherit ${label} evidence`,
+        `Подробное описание оборудования с гарантией и доставкой по стране: ${label}: 4601234567890`,
+        `Подробное описание оборудования с гарантией и доставкой по стране: ${label}: 4601234567891`,
+      ]),
+      [
+        'numeric fragments separated by a URL',
+        'Подробная инструкция для участников доступна после регистрации данные +7999 https://example.test 1234567 пользователей',
+        'Подробная инструкция для участников доступна после регистрации данные +7999 https://example.test 1234568 пользователей',
+      ],
+      [
+        'signed decimal with an unknown dotted group',
+        'Подробная инструкция для участников доступна после регистрации погрешность +7999.1234567 согласована',
+        'Подробная инструкция для участников доступна после регистрации погрешность +7999.1234568 согласована',
+      ],
+      ...[
+        'ABC$value-Z',
+        'ABC-$value',
+        '$value-ABC',
+        'ABC:$value',
+        '$value/ABC',
+        '$value.ABC',
+        '_$value',
+        '$value_',
+        'ABC[($value)]',
+        '[($value)]Z',
+        'x$value',
+        '$value*x',
+        'x = $value',
+        '2 $value',
+        'x $value',
+        'Номера $value',
+        'Коды $value',
+        'Идентификаторы $value',
+        'Артикулы $value',
+      ].map((expression) => [
+        `protected expression ${expression}`,
+        `Подробное описание оборудования с гарантией и доставкой по стране: ${expression.replace('$value', '+79991234567')}`,
+        `Подробное описание оборудования с гарантией и доставкой по стране: ${expression.replace('$value', '+79991234568')}`,
+      ]),
+      ...[
+        '+79991234567',
+        '+12025550123',
+        '79991234567',
+        '19991234567',
+        '89991234567',
+        '999-123-45-67',
+      ].map((phone) => [
+        `bare quantity after ${phone}`,
+        `Подробная инструкция для участников доступна после регистрации телефон: ${phone} 1000`,
+        `Подробная инструкция для участников доступна после регистрации телефон: ${phone} 2000`,
+      ]),
+      ...['Телевизор', 'Тележка', 'Телескоп', 'Мобильность', 'Звонок', 'Звонки'].map((label) => [
+        `product phone-prefix ${label}`,
+        `${label} 999-123-45-67 продаётся с подробным описанием гарантии и доставкой по стране`,
+        `${label} 999-123-45-68 продаётся с подробным описанием гарантии и доставкой по стране`,
+      ]),
       ...['Серия', 'Модель', 'Версия', ''].map((label) => [
         label ? `grouped ${label}` : 'unlabelled grouped number',
         `${label} (999-123-45-67) доступна для заказа в нашем интернет магазине с доставкой по стране`,
@@ -532,6 +617,44 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
   });
 
   it.each([
+    ...[
+      'ABC+79991234567Z',
+      'ABC-+79991234567',
+      '+79991234567-ABC',
+      'ABC:+79991234567',
+      '+79991234567/ABC',
+      '+79991234567.ABC',
+      '_+79991234567',
+      '+79991234567_',
+      'ABC[(+79991234567)]',
+      '[(+79991234567)]Z',
+      'x+12345678901',
+      '+12345678901*x',
+      'x = +79991234567',
+      '2 +79991234567',
+      'x +79991234567',
+      'Номера +79991234567',
+      'Коды +79991234567',
+      'Идентификаторы +79991234567',
+      'Артикулы +79991234567',
+      'https://example.test/+79991234567',
+      'https://example.test/?phone=+79991234567',
+      '+79991234567@example.test',
+      'tel:+79991234567',
+      'Телефон +79991234567 1000',
+      'Телефон +12025550123 1000',
+      'Телефон 79991234567 1000',
+      'Phone 19991234567 1000',
+      'Телефон 89991234567 1000',
+      'Телефон 999-123-45-67 1000',
+    ].map((expression) => [
+      `Продаётся оборудование с гарантией: ${expression}`,
+      `Требуется помощь в новом проекте: ${expression}`,
+    ]),
+    ...['Телевизор', 'Тележка', 'Телескоп', 'Мобильность', 'Звонок', 'Звонки'].map((label) => [
+      `${label} 999-123-45-67 продаётся с подробным описанием`,
+      `${label} 999-123-45-67 требуется для нового оборудования`,
+    ]),
     ...['Серия', 'Модель', 'Версия', ''].map((label) => [
       `${label} (999-123-45-67) доступна для заказа в нашем интернет магазине`,
       `${label} (999-123-45-67) опубликована после завершения регистрации участников`,
@@ -552,6 +675,81 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     };
     await observe('protected-original', 0, first, override);
     expect(await observe('unrelated-protected', 100, second, override)).toBeNull();
+  });
+
+  describe.each(['STRICT', 'CUSTOM_PHONE'] as const)('%s bounded phone labels', (mode) => {
+    it.each([
+      ['Тел+79991234567', 'Тел+79991234568'],
+      ['Телефон=+79991234567', 'Телефон=+79991234568'],
+      ['Телефон79991234567', 'Телефон79991234568'],
+      ['Phone19991234567', 'Phone19991234568'],
+      ['Связаться +12025550123', 'Связаться +12025550124'],
+      ['Связаться +80011122233', 'Связаться +80011122234'],
+      [
+        'Телефон:+79991234567 https://example.test/+79991234569',
+        'Телефон:+79991234568 https://example.test/+79991234569',
+      ],
+    ])('qualifies a real phone with safe boundaries in %s', async (first, rotated) => {
+      const strict = mode === 'STRICT';
+      const override = {
+        settings: duplicateSettings({
+          duplicateDetectionPreset: strict ? 'STRICT' : 'CUSTOM',
+          duplicateIgnorePhonesEnabled: !strict,
+          duplicateNearMatchEnabled: false,
+        }),
+      };
+      const description =
+        'Подробная инструкция для участников встречи доступна после завершения регистрации';
+      await observe('original', 0, `${description} ${first}`, override);
+      const repeated = await observe(
+        'repeat',
+        100,
+        strict ? `${description} ${rotated}` : `Новая консультация сегодня ${first}`,
+        override,
+      );
+      expect(repeated?.hit.fingerprintType).toBe(strict ? 'content' : 'phone');
+      expect(await history.stillMatches(chatId, repeated!.binding)).toBe(true);
+      expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
+    });
+
+    it.each([
+      'Телефон',
+      'Телефоном',
+      'Телефоны',
+      'Тел.',
+      'Позвоните',
+      'Звоните',
+      'WhatsApp',
+      'Ватсап',
+      'Viber',
+      'Вайбер',
+    ])(
+      'matches and qualifies explicit %s evidence without an international prefix',
+      async (label) => {
+        const strict = mode === 'STRICT';
+        const override = {
+          settings: duplicateSettings({
+            duplicateDetectionPreset: strict ? 'STRICT' : 'CUSTOM',
+            duplicateIgnorePhonesEnabled: !strict,
+            duplicateNearMatchEnabled: false,
+          }),
+        };
+        const description =
+          'Подробная инструкция для участников встречи доступна после завершения регистрации';
+        const first = `${description} ${label}: 999-123-45-67`;
+        const second = strict
+          ? `${description} ${label}: 999-123-45-68`
+          : `Связаться для консультации ${label}: 999-123-45-67`;
+        expect(await observe('original', 0, first, override)).toBeNull();
+        const matched = await observe('matched', 100, second, override);
+        expect(matched?.hit).toMatchObject({
+          count: 1,
+          fingerprintType: strict ? 'content' : 'phone',
+        });
+        expect(await history.stillMatches(chatId, matched!.binding)).toBe(true);
+        expect(await history.qualify(chatId, matched!.binding)).toBe(1);
+      },
+    );
   });
 
   it.each(['photo', 'video', 'audio', 'file', 'sticker', 'contact', 'location'])(
@@ -1271,5 +1469,26 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
         new ConfigService({ MESSAGE_DUPLICATE_ENABLED: false }),
       ).resolve('-123'),
     ).toMatchObject({ mode: 'off' });
+  });
+
+  it('requires explicit CUSTOM link matching to join a URL containing a phone-shaped value', async () => {
+    const url = 'https://example.test/?phone=+79991234567';
+    const phoneOnly = duplicateSettings({
+      duplicateDetectionPreset: 'CUSTOM',
+      duplicateIgnorePhonesEnabled: true,
+    });
+    await observe('phone-only-original', 0, `Продажа оборудования ${url}`, { settings: phoneOnly });
+    expect(
+      await observe('phone-only-unrelated', 100, `Консультация для участников ${url}`, {
+        settings: phoneOnly,
+      }),
+    ).toBeNull();
+    const explicitLink = { ...phoneOnly, duplicateIgnoreLinksEnabled: true };
+    await observe('link-original', 200, `Продажа оборудования ${url}`, { settings: explicitLink });
+    const repeated = await observe('link-repeat', 300, `Консультация для участников ${url}`, {
+      settings: explicitLink,
+    });
+    expect(repeated?.hit.fingerprintType).toBe('link');
+    expect(await history.qualify(chatId, repeated!.binding)).toBe(1);
   });
 });

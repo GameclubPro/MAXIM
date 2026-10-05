@@ -15,6 +15,27 @@ export const preSafeTextSettingsDigests = {
   CUSTOM_PHONE: '98a9f5799b58c3d38147b6228ab73583621b394074a5942fd6e231905d61b284',
 } as const;
 
+// Recorded at the v7 settings fence before bounded phone labels (helper v2).
+export const preBoundedPhoneSettingsDigests = {
+  STRICT: '47521512f757fbe1943c24e302afe81e09d3632b945c86bae5f9da78afdc7dbf',
+  CUSTOM_NEAR: '41464350d04a50407a8dbd26808c08e6cb435b88be1a7fc95cd25199791f2922',
+  CUSTOM_PHONE: '0aa2f1282c4e0692fac91d2ff455fecd2d8c19414d562809b8c5047d3730e23d',
+} as const;
+
+// Recorded at the v8 settings fence before raw identifier and URL phone boundaries.
+export const prePhoneBoundarySettingsDigests = {
+  STRICT: '892b514d2a8add26b6b0d7d136a798862c9ebafdc99c3a63b0b01565d4da3f0e',
+  CUSTOM_NEAR: 'd3c0cb77e05c10e5a170ee3504e4958994f952ff14e13c6db9d8461fc5c8f4f3',
+  CUSTOM_PHONE: '4ccdf485d90b61b1aec8f654c23240c384dcd8a3b3cc76462a194acd41d2b318',
+} as const;
+
+// Recorded at the v9 fence before source-bound stripping and numeric/phone-span protection.
+export const preSourceBoundPhoneSettingsDigests = {
+  STRICT: '23c6d8705f96598118048a504f18dee476d8dcf4b5a306a611bbf6eaddb35ef0',
+  CUSTOM_NEAR: 'ae6d5172357c34dc377d43a9d1e3b732beba7814308c1482b53e1a87e54bd81f',
+  CUSTOM_PHONE: '451a6a535e3fe18e7908285ee382c0e5481c838c917c8b9ba5525e2899e0c8b7',
+} as const;
+
 export function duplicateSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
     ...chatSettingsSchema.parse({}),
