@@ -1,137 +1,117 @@
+import type { MaxUpdate } from '@maxim/contracts';
+import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { WebhookStatus } from '../prisma/prisma-client';
+import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 import { WebhookCanonicalExecutionService } from './webhook-canonical-execution.service';
 
+function fixture(type: 'user_removed' | 'message_created', mirrorIsEarlier: boolean) {
+  const update = {
+    updateId: 'mirror-update',
+    type,
+    eventTimestampSource: 'payload',
+    botId: 'bot-mirror',
+    timestamp: 1_788_336_000_000,
+    message: {
+      chatId: '-100-mirror',
+      messageId: 'message-1',
+      senderId: 'user-1',
+      text: 'hello',
+      createdAt: '2026-09-02T08:00:00.000Z',
+    },
+    ...(type === 'user_removed'
+      ? { membership: { action: 'removed', memberUserIds: ['user-1'] } }
+      : {}),
+  } as MaxUpdate;
+  const semanticKey = buildWebhookSemanticEventKey(update)!;
+  const event = {
+    id: 'mirror',
+    botId: 'bot-mirror',
+    status: WebhookStatus.QUEUED,
+    normalizedPayload: update,
+    semanticKey,
+    executionDeadlineAt: new Date('2026-09-02T08:05:00Z'),
+    errorMessage: null,
+    queuedAt: new Date('2026-09-02T08:00:01Z'),
+    enqueueAttempts: 1,
+    nextEnqueueAt: null,
+    timeoutQuarantineExpiresAt: null,
+    createdAt: new Date(mirrorIsEarlier ? '2026-09-02T08:00:00Z' : '2026-09-02T08:00:02Z'),
+    processedAt: null,
+    sourceIp: null,
+    rawPayload: {},
+    dedupKey: 'mirror-dedup',
+    queueName: 'moderation-background',
+  };
+  const owner = {
+    ...event,
+    id: 'owner',
+    botId: 'bot-owner',
+    normalizedPayload: { ...update, botId: 'bot-owner' },
+    createdAt: new Date('2026-09-02T08:00:01Z'),
+  };
+  const claim = {
+    id: 'claim',
+    createdAt: new Date(),
+    kind: 'EXECUTION',
+    semanticKey,
+    webhookEventId: owner.id,
+    executionBotId: 'bot-owner',
+    enforced: true,
+    status: 'PENDING',
+    preparedAt: null as Date | null,
+    completedAt: null,
+    businessStartedAt: null,
+    leaseToken: 'preparation-lease',
+    leaseExpiresAt: new Date(Date.now() + 30_000),
+  };
+  const prisma = {
+    webhookEvent: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      findUnique: jest.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === 'owner' ? owner : event,
+      ),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    webhookExecutionClaim: {
+      findUnique: jest.fn(async () => claim),
+      findFirst: jest.fn(),
+      updateMany: jest.fn(async ({ data }: { data: object }) => {
+        Object.assign(claim, data);
+        return { count: 1 };
+      }),
+    },
+    $queryRaw: jest.fn().mockResolvedValue([{ finishedAt: new Date('2020-01-01T00:00:00Z') }]),
+  };
+  Object.assign(prisma, {
+    $transaction: jest.fn(async (work: (tx: object) => unknown) => work(prisma)),
+  });
+  return { claim, prisma, service: new WebhookCanonicalExecutionService(prisma as never) };
+}
+
 describe('WebhookCanonicalExecutionService preparation fence', () => {
-  it('does not execute a queued shadow mirror while its foreign owner is unprepared', async () => {
-    const webhookEventId = 'event-shadow-mirror-queued';
-    const ownerWebhookEventId = 'event-shadow-owner-pending';
-    const update = {
-      updateId: 'update-shadow-membership',
-      type: 'user_removed',
-      botId: 'bot-mirror',
-      timestamp: 1_788_336_000_000,
-      message: {
-        chatId: '-100-shadow-membership',
-        messageId: 'user_removed:update-shadow-membership',
-        senderId: 'user-1',
-        text: '',
-        createdAt: '2026-09-02T08:00:00.000Z',
-      },
-      membership: {
-        action: 'removed',
-        memberUserIds: ['user-1'],
-      },
-    };
-    const claimUpdateMany = jest.fn();
-    const prisma = {
-      webhookEvent: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: webhookEventId,
-          botId: 'bot-mirror',
-          status: WebhookStatus.QUEUED,
-          normalizedPayload: update,
-          errorMessage: null,
-          queuedAt: new Date('2026-09-02T08:00:01.000Z'),
-          enqueueAttempts: 1,
-          nextEnqueueAt: null,
-          timeoutQuarantineExpiresAt: null,
-          createdAt: new Date('2026-09-02T08:00:00.000Z'),
-          processedAt: null,
-          sourceIp: null,
-          rawPayload: {},
-          dedupKey: 'bot-mirror:update-shadow-membership',
-          queueName: 'moderation-background',
-        }),
-      },
-      webhookExecutionClaim: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'claim-shadow-membership',
-          semanticKey:
-            'membership:user_removed:-100-shadow-membership:user-1:2026-09-02T08:00:00.000Z',
-          webhookEventId: ownerWebhookEventId,
-          executionBotId: 'bot-owner',
-          enforced: false,
-          status: 'PENDING',
-          preparedAt: null,
-          completedAt: null,
-          leaseToken: 'preparation-lease',
-          leaseExpiresAt: new Date('2026-09-02T08:00:30.000Z'),
-        }),
-        findFirst: jest.fn(),
-        updateMany: claimUpdateMany,
-      },
-      $queryRaw: jest.fn(),
-    };
-    const service = new WebhookCanonicalExecutionService(prisma as never);
-
-    await expect(service.prepareExecution(webhookEventId, 'bot-default')).resolves.toBeNull();
-
-    expect(claimUpdateMany).not.toHaveBeenCalled();
-    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  it('defers a queued shadow membership mirror while its owner is unprepared', async () => {
+    const f = fixture('user_removed', false);
+    await expect(f.service.prepareExecution('mirror', 'bot-default')).rejects.toBeInstanceOf(
+      WebhookPreparationDeferredError,
+    );
+    expect(f.claim.enforced).toBe(true);
+    expect(f.prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+    expect(f.prisma.webhookExecutionClaim.updateMany).not.toHaveBeenCalled();
   });
 
-  it('keeps an ordered message mirror executable while its newer foreign owner is pending', async () => {
-    const webhookEventId = 'event-shadow-message-older';
-    const update = {
-      updateId: 'update-shadow-message',
-      type: 'message_created',
-      botId: 'bot-mirror',
-      timestamp: 1_788_336_000_000,
-      message: {
-        chatId: '-100-shadow-message',
-        messageId: 'message-shadow-1',
-        senderId: 'user-1',
-        text: 'hello',
-        createdAt: '2026-09-02T08:00:00.000Z',
-      },
-    };
-    const prisma = {
-      webhookEvent: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: webhookEventId,
-          botId: 'bot-mirror',
-          status: WebhookStatus.QUEUED,
-          normalizedPayload: update,
-          errorMessage: null,
-          queuedAt: new Date('2026-09-02T08:00:01.000Z'),
-          enqueueAttempts: 1,
-          nextEnqueueAt: null,
-          timeoutQuarantineExpiresAt: null,
-          createdAt: new Date('2026-09-02T08:00:00.000Z'),
-          processedAt: null,
-          sourceIp: null,
-          rawPayload: {},
-          dedupKey: 'bot-mirror:update-shadow-message',
-          queueName: 'moderation-default-0',
-        }),
-      },
-      webhookExecutionClaim: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'claim-shadow-message',
-          semanticKey: 'message:message_created:-100-shadow-message:message-shadow-1',
-          webhookEventId: 'event-shadow-message-newer-owner',
-          executionBotId: 'bot-owner',
-          enforced: false,
-          status: 'PENDING',
-          preparedAt: null,
-          completedAt: null,
-          leaseToken: 'preparation-lease',
-          leaseExpiresAt: new Date('2026-09-02T08:00:30.000Z'),
-        }),
-        findFirst: jest.fn(),
-        updateMany: jest.fn(),
-      },
-      $queryRaw: jest.fn().mockResolvedValue([]),
-    };
-    const service = new WebhookCanonicalExecutionService(prisma as never);
-
-    await expect(service.prepareExecution(webhookEventId, 'bot-default')).resolves.toEqual(
-      expect.objectContaining({
-        webhookEvent: expect.objectContaining({ id: webhookEventId }),
-        update,
-        activeBotId: 'bot-owner',
-        businessLeaseToken: null,
-      }),
+  it('keeps an earlier ordered mirror fenced while its later foreign owner is READY', async () => {
+    const f = fixture('message_created', true);
+    Object.assign(f.claim, {
+      status: 'READY',
+      preparedAt: new Date(),
+      leaseToken: null,
+      leaseExpiresAt: null,
+    });
+    await expect(f.service.prepareExecution('mirror', 'bot-default')).rejects.toBeInstanceOf(
+      WebhookPreparationDeferredError,
     );
+    expect(f.claim.enforced).toBe(true);
+    expect(f.prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+    expect(f.prisma.webhookExecutionClaim.updateMany).not.toHaveBeenCalled();
   });
 });

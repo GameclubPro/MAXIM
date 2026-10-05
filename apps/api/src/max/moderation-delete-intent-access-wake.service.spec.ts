@@ -24,6 +24,7 @@ function previousAccess(
       isAdmin: true,
       isOwner: false,
       permissions: ['write'],
+      permissionsKnown: true,
     },
     ...overrides,
   };
@@ -95,7 +96,12 @@ describe('ModerationDeleteIntentAccessWakeService', () => {
     expect(
       service.shouldWake(
         probe({
-          access: { isAdmin: true, isOwner: false, permissions: ['delete_message'] },
+          access: {
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['delete_message'],
+            permissionsKnown: true,
+          },
         }),
       ),
     ).toBe(false);
@@ -111,7 +117,12 @@ describe('ModerationDeleteIntentAccessWakeService', () => {
       service.shouldWake(
         probe({
           entityType: ChatEntityType.CHANNEL,
-          access: { isAdmin: true, isOwner: false, permissions: ['delete_message'] },
+          access: {
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['delete_message'],
+            permissionsKnown: true,
+          },
         }),
       ),
     ).toBe(true);
@@ -125,6 +136,48 @@ describe('ModerationDeleteIntentAccessWakeService', () => {
       false,
     );
     expect(service.shouldWake(probe({ access: null }))).toBe(false);
+    expect(
+      service.shouldWake(
+        probe({
+          access: {
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['write'],
+            permissionsKnown: false,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('wakes after an identical capability renews expired access or confirms unknown permissions', async () => {
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const service = new ModerationDeleteIntentAccessWakeService({
+      $executeRaw: executeRaw,
+    } as never);
+    await expect(
+      service.wakeAfterCommittedProbe(
+        probe({
+          previousAccess: previousAccess({ botAccessExpiresAt: new Date(checkedAt.getTime() - 1) }),
+        }),
+      ),
+    ).resolves.toBe(1);
+    await expect(
+      service.wakeAfterCommittedProbe(
+        probe({
+          previousAccess: previousAccess({
+            permissionsSnapshot: {
+              checkedAt: '2026-08-20T11:59:00.000Z',
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['write'],
+              permissionsKnown: false,
+            },
+          }),
+        }),
+      ),
+    ).resolves.toBe(1);
+    expect(executeRaw).toHaveBeenCalledTimes(2);
   });
 
   it('wakes a bounded origin-aware batch while preserving lifecycle and mutation evidence', async () => {
@@ -139,8 +192,8 @@ describe('ModerationDeleteIntentAccessWakeService', () => {
       | { strings?: readonly string[]; values?: readonly unknown[] }
       | undefined;
     const sql = query?.strings?.join('?') ?? '';
-    expect(sql).toContain("'WAITING_CAPABILITY' AS \"ModerationDeleteIntentStatus\"");
-    expect(sql).toContain("'IN_PROGRESS' AS \"ModerationDeleteIntentStatus\"");
+    expect(sql).toContain('\'WAITING_CAPABILITY\' AS "ModerationDeleteIntentStatus"');
+    expect(sql).toContain('\'IN_PROGRESS\' AS "ModerationDeleteIntentStatus"');
     expect(sql).toContain('intent."lease_token" IS NOT NULL');
     expect(sql).toContain('intent."lease_expires_at" > CURRENT_TIMESTAMP');
     expect(sql).toContain('intent."routing_policy" <> \'origin_only\'');

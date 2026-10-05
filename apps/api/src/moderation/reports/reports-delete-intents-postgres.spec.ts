@@ -5,6 +5,9 @@ import { ModerationDeleteIntentService } from '../moderation-delete-intent.servi
 import { ReportStateService } from './report-state.service';
 import { ReportDeleteGuardService } from './report-delete-guard.service';
 import { REPORT_DAY_MS, REPORT_DELETE_RULE, reportContentHash } from './report.util';
+import { MessageLimitsDeleteGuardService } from '../message-limits-delete-guard.service';
+import { TrafficProtectionDeleteGuardService } from '../traffic-protection-delete-guard.service';
+import { TrafficProtectionDetector } from '../traffic-protection.detector';
 
 const url = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgres = url ? describe : describe.skip;
@@ -58,6 +61,21 @@ describePostgres('PostgreSQL report to shared deletion boundary', () => {
     });
     const state = new ReportStateService(prisma as never, max as never, bot as never, config);
     const guard = new ReportDeleteGuardService(state, prisma as never, max as never);
+    const immunity = { consumeForMessage: async () => 'not_granted' };
+    const trafficGuard = new TrafficProtectionDeleteGuardService(
+      prisma as never,
+      max as never,
+      bot as never,
+      immunity as never,
+      config,
+    );
+    const lengthGuard = new MessageLimitsDeleteGuardService(
+      prisma as never,
+      max as never,
+      bot as never,
+      immunity as never,
+      config,
+    );
     const route = {
       entityType: 'CHAT',
       candidateBotIds: ['bot'],
@@ -65,7 +83,7 @@ describePostgres('PostgreSQL report to shared deletion boundary', () => {
         { botId: 'bot', state: 'confirmed_capable', checkedAt: new Date().toISOString() },
       ],
     };
-    return new ModerationDeleteIntentService(
+    const deletes = new ModerationDeleteIntentService(
       prisma as never,
       max as never,
       { resolveDeleteMessageBotRoute: async () => route } as never,
@@ -78,10 +96,12 @@ describePostgres('PostgreSQL report to shared deletion boundary', () => {
       undefined,
       undefined,
       undefined,
-      guardStub as never,
+      trafficGuard,
       guardStub as never,
       guard,
     );
+    Object.assign(deletes, { messageLimitsDeleteGuard: lengthGuard });
+    return deletes;
   }
   async function target(suffix: string) {
     const messageId = `${suffix}-${randomUUID()}`;
@@ -220,7 +240,7 @@ describePostgres('PostgreSQL report to shared deletion boundary', () => {
     await prisma.chatReportCase.update({ where: { id: report.id }, data: { status: 'CANCELLED' } });
     expect(await deletes.attemptIntent(id)).toMatchObject({ status: 'FAILED_TERMINAL' });
     expect(await prisma.moderationDeleteIntent.findUniqueOrThrow({ where: { id } })).toMatchObject({
-      lastErrorCode: 'participant_report_no_longer_authorized',
+      lastErrorCode: 'moderation_delete_reasons_no_longer_authorized',
       status: 'FAILED_TERMINAL',
     });
     expect(queue.add).not.toHaveBeenCalled();
@@ -278,12 +298,34 @@ describePostgres('PostgreSQL report to shared deletion boundary', () => {
     },
   );
   it.each([
-    { mode: 'on', ruleCode: 'ANTI_SPAM' },
+    { mode: 'on', ruleCode: 'MESSAGE_TOO_LONG_DELETE' },
     { mode: 'off', ruleCode: 'SLOW_MODE_DELETE' },
   ])(
     'retains independently executable authority when a merged report is revoked: %p',
     async ({ mode, ruleCode }) => {
       const report = await target('executable-independent');
+      const settings = await prisma.chatSettings.update({
+        where: { chatId },
+        data: {
+          maxMessageLengthEnabled: true,
+          maxMessageLength: 10,
+          slowModeEnabled: true,
+          slowModeIntervalSeconds: 30,
+          trafficPolicyEffectiveAt: new Date(Date.now() - 1000),
+        },
+      });
+      const hit = await new TrafficProtectionDetector({
+        claimEventCooldown: async () => 'blocked',
+      } as never).detect({
+        chatId,
+        userId: authorId,
+        messageId: report.messageId,
+        eventTimestampMs: Date.now(),
+        eventType: 'message_created',
+        text: 'report fixture',
+        media: {},
+        settings,
+      });
       const deletes = service(mode);
       const id = await prepare(deletes, report);
       await deletes.ensureIntent({
@@ -296,6 +338,7 @@ describePostgres('PostgreSQL report to shared deletion boundary', () => {
         subjectUserId: authorId,
         messageAuthorKind: 'user',
         routingPolicy: 'delete_capable',
+        event: { metadata: ruleCode === 'SLOW_MODE_DELETE' ? hit!.metadata : {} },
       });
       await prisma.chatReportCase.update({
         where: { id: report.id },

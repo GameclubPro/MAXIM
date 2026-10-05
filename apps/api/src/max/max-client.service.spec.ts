@@ -1,4 +1,5 @@
 import { maxApiMinuteCounterAddress } from './max-api-counter-storage';
+import { isMaxMutationOutcomeAmbiguous } from './max-mutation-outcome.util';
 import {
   MAX_API_SOURCE_TAGS,
   MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
@@ -1054,6 +1055,645 @@ describe('MaxClientService inline keyboard guardrails', () => {
     }
   });
 
+  describe('immediate executor capability boundary', () => {
+    it.each(['plain', 'custom', 'private'] as const)(
+      'marks actual %s send failures as attempted without trusting access-denial text',
+      async (kind) => {
+        const failure = Object.assign(new Error('network socket closed: access denied'), {
+          code: 'ECONNRESET',
+        });
+        const request = jest.fn().mockReturnValue(throwError(() => failure));
+        const service = createService({ request });
+        try {
+          const sending =
+            kind === 'plain'
+              ? service.sendMessageImmediateWithId('-123', 'text')
+              : kind === 'custom'
+                ? service.sendCustomMessageImmediate('-123', { text: 'text' })
+                : service.sendMessageImmediateToUser('human', 'text');
+          const error = await sending.catch((caught: unknown) => caught);
+          expect(error).toBe(failure);
+          expect(wasMaxMessageSendAttempted(error)).toBe(true);
+          expect(isMaxMutationOutcomeAmbiguous(error, true)).toBe(true);
+          expect(request).toHaveBeenCalledTimes(1);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('does not mark a raw feature permit rejection as an attempted send', async () => {
+      const failure = new Error('feature permit rejected');
+      const request = jest.fn();
+      const service = createService({ request });
+      try {
+        const error = await service
+          .sendMessageImmediateWithId('-123', 'text', {
+            beforeSend: async () => {
+              throw failure;
+            },
+          })
+          .catch((caught: unknown) => caught);
+        expect(error).toBe(failure);
+        expect(wasMaxMessageSendAttempted(error)).toBe(false);
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each(['SEND_MESSAGE', 'DELETE_MESSAGE', 'BAN_MEMBER', 'KICK_MEMBER'] as const)(
+      'reserves exactly one quota for %s after proof preparation and before the final permit',
+      async (actionType) => {
+        const order: string[] = [];
+        const request = jest.fn(() => {
+          order.push('http');
+          return of({ status: 200, data: { success: true, mid: 'sent' } });
+        });
+        const service = createService({ request });
+        const proof = {
+          botId: '777000_bot',
+          routingVersion: 2,
+          accessEpoch: { checkedAt: new Date(), source: 'test' },
+          changed: false,
+        };
+        const verify = jest.fn(async () => {
+          order.push('epoch');
+          return true;
+        });
+        Object.defineProperty(service, 'maxBotLinkService', {
+          value: {
+            getFreshChatBotExecutionProof: jest.fn(async () => {
+              order.push('proof');
+              return proof;
+            }),
+            verifyChatExecutionProof: verify,
+          },
+        });
+        const reserve = jest
+          .spyOn(service as any, 'reserveRateLimitSlot')
+          .mockImplementation(async () => {
+            order.push('quota');
+          });
+        const permit = async () => {
+          order.push('permit');
+        };
+        try {
+          await service.executeActionJob(
+            {
+              actionType,
+              chatId: '-123',
+              messageId: 'message',
+              userId: 'human',
+              text: 'text',
+              botId: '777000_bot',
+              attempt: 1,
+              idempotencyKey: `quota-${actionType}`,
+              createdAt: new Date().toISOString(),
+            },
+            {
+              beforeSendMutation: permit,
+              beforeDeleteMutation: permit,
+              beforeMemberMutation: permit,
+            },
+          );
+          expect(order).toEqual(['proof', 'quota', 'epoch', 'permit', 'http']);
+          expect(reserve).toHaveBeenCalledTimes(1);
+          expect(verify).toHaveBeenCalledWith(
+            expect.objectContaining({
+              maxAgeMs: actionType === 'SEND_MESSAGE' ? 15 * 60_000 : 5 * 60_000,
+            }),
+          );
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['SEND_MESSAGE', 'BAN_MEMBER', 'KICK_MEMBER'] as const)(
+      'vetoes an expired %s feature permit after quota waiting',
+      async (actionType) => {
+        const request = jest.fn();
+        const service = createService({ request });
+        const deadlineAtMs = Date.now() + 1000;
+        const now = jest.spyOn(Date, 'now').mockReturnValue(deadlineAtMs - 1);
+        jest.spyOn(service as any, 'reserveRateLimitSlot').mockImplementation(async () => {
+          now.mockReturnValue(deadlineAtMs + 1);
+        });
+        const permit = async () => {
+          if (Date.now() >= deadlineAtMs)
+            throw new Error('feature permit expired during quota wait');
+        };
+        try {
+          const error = await service
+            .executeActionJob(
+              {
+                actionType,
+                chatId: '-123',
+                userId: 'human',
+                text: 'text',
+                botId: '777000_bot',
+                attempt: 1,
+                idempotencyKey: `expired-${actionType}`,
+                createdAt: new Date().toISOString(),
+              },
+              {
+                beforeSendMutation: permit,
+                beforeMemberMutation: permit,
+              },
+            )
+            .catch((caught: unknown) => caught);
+          expect(error).toMatchObject({ message: 'feature permit expired during quota wait' });
+          expect(wasMaxMemberMutationAttempted(error)).toBe(false);
+          expect(request).not.toHaveBeenCalled();
+        } finally {
+          now.mockRestore();
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('releases the claimed send fence when its deferred quota rejects and preserves critical health', async () => {
+      const request = jest.fn();
+      const ledger = {
+        claimSendDispatch: jest.fn(async () => ({ kind: 'claimed', dispatchToken: 'quota-fence' })),
+        releaseSendDispatch: jest.fn(),
+        completeSendDispatch: jest.fn(),
+        recordAmbiguousSendDispatch: jest.fn(),
+      };
+      const service = createService(
+        { request },
+        { MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '0' },
+        undefined,
+        ledger,
+      );
+      jest
+        .spyOn(service as any, 'tryReserveRateLimitSlot')
+        .mockResolvedValue({ ok: false, retryAfterMs: 1000, reason: 'quota busy' });
+      const permit = jest.fn();
+      try {
+        const job = {
+          actionType: 'SEND_MESSAGE' as const,
+          chatId: '-123',
+          text: 'text',
+          botId: '777000_bot',
+          attempt: 1,
+          idempotencyKey: 'quota-rejection',
+          createdAt: new Date().toISOString(),
+        };
+        await expect(
+          service.executeActionJob(job, { beforeSendMutation: permit }),
+        ).rejects.toMatchObject({ code: 'MAX_API_INTERNAL_RATE_LIMIT', preDispatch: true });
+        expect(ledger.releaseSendDispatch).toHaveBeenCalledWith(job, 'quota-fence');
+        expect(ledger.recordAmbiguousSendDispatch).not.toHaveBeenCalled();
+        expect(ledger.completeSendDispatch).not.toHaveBeenCalled();
+        expect(permit).not.toHaveBeenCalled();
+        expect(request).not.toHaveBeenCalled();
+        expect((service as any).actionHealthService.recordFailureForLane).toHaveBeenCalledTimes(1);
+        expect((service as any).actionHealthService.recordFailureForLane).toHaveBeenCalledWith(
+          'critical',
+          true,
+          '777000_bot',
+        );
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('counts a nested critical lookup quota rejection once while the final send permit is running', async () => {
+      const request = jest.fn();
+      const service = createService({ request }, { MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '0' });
+      jest
+        .spyOn(service as any, 'tryReserveRateLimitSlot')
+        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValue({ ok: false, retryAfterMs: 1000, reason: 'nested lookup quota busy' });
+      try {
+        await expect(
+          service.sendMessageImmediateWithId('-123', 'text', {
+            beforeSend: async () => {
+              await service.getCurrentChatMemberAccess('-123', {
+                bypassCache: true,
+                trafficClass: 'critical',
+              });
+            },
+          }),
+        ).rejects.toMatchObject({ code: 'MAX_API_INTERNAL_RATE_LIMIT' });
+        expect((service as any).actionHealthService.recordFailureForLane).toHaveBeenCalledTimes(1);
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each([403, 404])(
+      'releases a queued SEND fence after an own-member HTTP %s denial without attempting POST',
+      async (status) => {
+        const denial = Object.assign(new Error('own-member access denied'), {
+          response: { status, data: { code: 'chat.denied' } },
+        });
+        const request = jest.fn().mockReturnValue(throwError(() => denial));
+        const ledger = {
+          claimSendDispatch: jest.fn(async () => ({
+            kind: 'claimed',
+            dispatchToken: 'proof-fence',
+          })),
+          releaseSendDispatch: jest.fn(),
+          completeSendDispatch: jest.fn(),
+          recordAmbiguousSendDispatch: jest.fn(),
+        };
+        const service = createService({ request }, {}, undefined, ledger);
+        Object.defineProperty(service, 'maxBotLinkService', {
+          value: { getFreshChatBotExecutionProof: jest.fn().mockResolvedValue(null) },
+        });
+        const permit = jest.fn();
+        const job = {
+          actionType: 'SEND_MESSAGE' as const,
+          chatId: '-123',
+          text: 'text',
+          botId: '777000_bot',
+          attempt: 1,
+          idempotencyKey: `own-member-rejection-${status}`,
+          createdAt: new Date().toISOString(),
+        };
+        try {
+          const error = await service
+            .executeActionJob(job, { beforeSendMutation: permit })
+            .catch((caught: unknown) => caught);
+          expect(error).toMatchObject({
+            code: 'max_action_executor_proof_rejected',
+            response: denial.response,
+            cause: denial,
+          });
+          expect(wasMaxMessageSendAttempted(error)).toBe(false);
+          expect(ledger.claimSendDispatch).toHaveBeenCalledTimes(1);
+          expect(ledger.releaseSendDispatch).toHaveBeenCalledWith(job, 'proof-fence');
+          expect(ledger.completeSendDispatch).not.toHaveBeenCalled();
+          expect(ledger.recordAmbiguousSendDispatch).not.toHaveBeenCalled();
+          expect(permit).not.toHaveBeenCalled();
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: 'get' }));
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['BAN_MEMBER', 'KICK_MEMBER'] as const)(
+      'preserves a retryable own-member proof 503 before %s was attempted',
+      async (actionType) => {
+        const failure = Object.assign(new Error('own-member proof unavailable'), {
+          response: { status: 503 },
+        });
+        const request = jest.fn().mockReturnValue(throwError(() => failure));
+        const service = createService({ request });
+        Object.defineProperty(service, 'maxBotLinkService', {
+          value: {
+            getFreshChatBotExecutionProof: jest.fn().mockResolvedValue(null),
+          },
+        });
+        try {
+          const error = await service
+            .executeActionJob({
+              actionType,
+              chatId: '-123',
+              userId: 'human',
+              botId: '777000_bot',
+              attempt: 1,
+              idempotencyKey: `proof-unavailable-${actionType}`,
+              createdAt: new Date().toISOString(),
+            })
+            .catch((caught: unknown) => caught);
+          expect(error).toBe(failure);
+          expect(wasMaxMemberMutationAttempted(error)).toBe(false);
+          expect(error).not.toBeInstanceOf(UnrecoverableError);
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: 'get' }));
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['BAN_MEMBER', 'KICK_MEMBER'] as const)(
+      'does not mark %s attempted when its deferred quota rejects',
+      async (actionType) => {
+        const request = jest.fn();
+        const service = createService({ request }, { MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '0' });
+        jest
+          .spyOn(service as any, 'tryReserveRateLimitSlot')
+          .mockResolvedValue({ ok: false, retryAfterMs: 1000, reason: 'quota busy' });
+        try {
+          const error = await service
+            .executeActionJob({
+              actionType,
+              chatId: '-123',
+              userId: 'human',
+              botId: '777000_bot',
+              attempt: 1,
+              idempotencyKey: `quota-rejection-${actionType}`,
+              createdAt: new Date().toISOString(),
+            })
+            .catch((caught: unknown) => caught);
+          expect(error).toMatchObject({ code: 'MAX_API_INTERNAL_RATE_LIMIT', preDispatch: true });
+          expect(wasMaxMemberMutationAttempted(error)).toBe(false);
+          expect(error).not.toBeInstanceOf(UnrecoverableError);
+          expect(request).not.toHaveBeenCalled();
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('checks queued executor proof before the final feature permit', async () => {
+      const order: string[] = [];
+      const request = jest.fn().mockImplementation(() => {
+        order.push('delete');
+        return of({ status: 200, data: { success: true } });
+      });
+      const service = createService({ request });
+      const proof = {
+        botId: '777000_bot',
+        routingVersion: 2,
+        accessEpoch: { checkedAt: new Date(), source: 'test' },
+        changed: false,
+      };
+      Object.defineProperty(service, 'maxBotLinkService', {
+        value: {
+          getFreshChatBotExecutionProof: jest.fn().mockResolvedValue(proof),
+          verifyChatExecutionProof: jest.fn().mockImplementation(async () => {
+            order.push('proof');
+            return true;
+          }),
+        },
+      });
+      try {
+        await service.executeActionJob(
+          {
+            actionType: 'DELETE_MESSAGE',
+            chatId: '-123',
+            messageId: 'original',
+            botId: '777000_bot',
+            attempt: 1,
+            idempotencyKey: 'delete-one',
+            createdAt: new Date().toISOString(),
+            scheduledFor: new Date().toISOString(),
+          },
+          {
+            beforeDeleteMutation: async () => {
+              order.push('feature-permit');
+            },
+          },
+        );
+        expect(order).toEqual(['proof', 'feature-permit', 'delete']);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+    it.each(['plain', 'custom', 'reply'] as const)(
+      'blocks %s send when a limiter wait invalidates the route proof',
+      async (kind) => {
+        const request = jest
+          .fn()
+          .mockReturnValue(of({ status: 200, data: { message: { body: { mid: 'sent' } } } }));
+        const service = createService({ request });
+        const proof = {
+          botId: '777000_bot',
+          routingVersion: 2,
+          accessEpoch: { checkedAt: new Date(), source: 'test' },
+          changed: false,
+        };
+        let valid = true;
+        const link = {
+          getFreshChatBotExecutionProof: jest.fn().mockResolvedValue(proof),
+          verifyChatExecutionProof: jest.fn(async () => valid),
+        };
+        Object.defineProperty(service, 'maxBotLinkService', { value: link });
+        jest.spyOn(service as any, 'reserveRateLimitSlot').mockImplementation(async () => {
+          valid = false;
+        });
+        try {
+          const send =
+            kind === 'plain'
+              ? service.sendMessageImmediateWithId('-123', 'text')
+              : kind === 'custom'
+                ? service.sendCustomMessageImmediate('-123', { text: 'text' })
+                : service.sendMessageReplyWithInlineKeyboard('-123', 'original', 'text', {
+                    button: { text: 'Open', url: 'https://example.com' },
+                  });
+          await expect(send).rejects.toMatchObject({ code: 'max_action_executor_proof_rejected' });
+          expect(request).not.toHaveBeenCalled();
+          expect(link.verifyChatExecutionProof).toHaveBeenCalledWith(
+            expect.objectContaining({
+              chatId: '-123',
+              botId: '777000_bot',
+              purpose: 'send_message',
+            }),
+          );
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('checks proof before the final immediate send callback', async () => {
+      const order: string[] = [];
+      const request = jest.fn().mockImplementation(() => {
+        order.push('send');
+        return of({ status: 200, data: { message: { body: { mid: 'sent' } } } });
+      });
+      const service = createService({ request });
+      const proof = {
+        botId: '777000_bot',
+        routingVersion: 2,
+        accessEpoch: { checkedAt: new Date(), source: 'test' },
+        changed: false,
+      };
+      Object.defineProperty(service, 'maxBotLinkService', {
+        value: {
+          getFreshChatBotExecutionProof: jest.fn().mockResolvedValue(proof),
+          verifyChatExecutionProof: jest.fn().mockImplementation(async () => {
+            order.push('proof');
+            return true;
+          }),
+        },
+      });
+      try {
+        await service.sendMessageImmediateWithId('-123', 'text', {
+          beforeSend: async () => {
+            order.push('callback');
+          },
+        });
+        expect(order).toEqual(['proof', 'callback', 'send']);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each(['plain', 'custom'] as const)(
+      'rejects an expired %s feature permit after an awaited executor proof',
+      async (kind) => {
+        const request = jest.fn().mockReturnValue(of({ status: 200, data: { mid: 'unexpected' } }));
+        const service = createService({ request });
+        const deadlineAtMs = Date.now() + 1000;
+        const now = jest.spyOn(Date, 'now').mockReturnValue(deadlineAtMs - 1);
+        const proof = {
+          botId: '777000_bot',
+          routingVersion: 2,
+          accessEpoch: { checkedAt: new Date(), source: 'test' },
+          changed: false,
+        };
+        Object.defineProperty(service, 'maxBotLinkService', {
+          value: {
+            getFreshChatBotExecutionProof: jest.fn().mockResolvedValue(proof),
+            verifyChatExecutionProof: jest.fn(async () => {
+              now.mockReturnValue(deadlineAtMs + 1);
+              return true;
+            }),
+          },
+        });
+        const finalGuard = jest.fn(async () => {
+          if (Date.now() >= deadlineAtMs) throw new Error('feature permit expired');
+        });
+        try {
+          const sending =
+            kind === 'plain'
+              ? service.sendMessageImmediateWithId('-123', 'text', { beforeSend: finalGuard })
+              : service.sendCustomMessageImmediate('-123', { text: 'text' }, {}, finalGuard);
+          await expect(sending).rejects.toThrow('feature permit expired');
+          expect(finalGuard).toHaveBeenCalledTimes(1);
+          expect(request).not.toHaveBeenCalled();
+        } finally {
+          now.mockRestore();
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('does not pass queued execution proof to a nested raw send in its feature callback', async () => {
+      const request = jest.fn().mockReturnValue(of({ status: 200, data: { success: true } }));
+      const service = createService({ request });
+      const proof = {
+        botId: '777000_bot',
+        routingVersion: 2,
+        accessEpoch: { checkedAt: new Date(), source: 'test' },
+        changed: false,
+      };
+      const verify = jest.fn(
+        async ({ purpose }: { purpose: string }) => purpose === 'delete_message',
+      );
+      Object.defineProperty(service, 'maxBotLinkService', {
+        value: {
+          getFreshChatBotExecutionProof: jest.fn().mockResolvedValue(proof),
+          verifyChatExecutionProof: verify,
+        },
+      });
+      try {
+        await expect(
+          service.executeActionJob(
+            {
+              actionType: 'DELETE_MESSAGE',
+              chatId: '-123',
+              messageId: 'original',
+              botId: '777000_bot',
+              attempt: 1,
+              idempotencyKey: 'delete-nested',
+              createdAt: new Date().toISOString(),
+              scheduledFor: new Date().toISOString(),
+            },
+            {
+              beforeDeleteMutation: async () => {
+                await service.sendMessageImmediateWithId('-123', 'nested notification');
+              },
+            },
+          ),
+        ).rejects.toMatchObject({ code: 'max_action_executor_proof_rejected' });
+        expect(verify.mock.calls.map(([params]) => params.purpose)).toEqual([
+          'delete_message',
+          'send_message',
+        ]);
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each([403, 404])(
+      'normalizes definite live proof HTTP %s to a no-send route rejection',
+      async (status) => {
+        const denial = Object.assign(new Error('chat access denied'), {
+          code: 'ERR_BAD_REQUEST',
+          response: { status, data: { code: 'chat.denied' } },
+        });
+        const request = jest.fn().mockReturnValue(throwError(() => denial));
+        const service = createService({ request });
+        Object.defineProperty(service, 'maxBotLinkService', {
+          value: {
+            getFreshChatBotExecutionProof: jest.fn().mockResolvedValue(null),
+          },
+        });
+        const guard = jest.fn();
+        try {
+          await expect(
+            service.sendMessageImmediateWithId('-123', 'text', { beforeSend: guard }),
+          ).rejects.toMatchObject({
+            code: 'max_action_executor_proof_rejected',
+            response: denial.response,
+            cause: denial,
+          });
+          expect(guard).not.toHaveBeenCalled();
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: 'get' }));
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each([408, 500, 503])(
+      'keeps live proof HTTP %s outside definite route rejection',
+      async (status) => {
+        const failure = Object.assign(new Error('own member lookup unavailable'), {
+          response: { status },
+        });
+        const request = jest.fn().mockReturnValue(throwError(() => failure));
+        const service = createService({ request });
+        Object.defineProperty(service, 'maxBotLinkService', {
+          value: {
+            getFreshChatBotExecutionProof: jest.fn().mockResolvedValue(null),
+          },
+        });
+        try {
+          await expect(service.sendMessageImmediateWithId('-123', 'text')).rejects.toBe(failure);
+          expect((failure as Error & { code?: string }).code).toBe(
+            MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+          );
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: 'get' }));
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('keeps direct private replies independent of group execution membership', async () => {
+      const request = jest
+        .fn()
+        .mockReturnValue(of({ status: 200, data: { message: { body: { mid: 'sent' } } } }));
+      const service = createService({ request });
+      const read = jest.fn();
+      Object.defineProperty(service, 'maxBotLinkService', {
+        value: { getFreshChatBotExecutionProof: read },
+      });
+      try {
+        await service.sendMessageImmediateToUser('42', 'private result');
+        expect(read).not.toHaveBeenCalled();
+        expect(request).toHaveBeenCalledTimes(1);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+  });
+
   function createService(
     httpService: { request?: jest.Mock } = {},
     configOverrides: Partial<Record<string, boolean | string>> = {},
@@ -1206,7 +1846,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       await service.onModuleDestroy();
     });
 
-    it('resolves against the actual sending bot after the send guard and keeps private messages untouched', async () => {
+    it('resolves against the actual sending bot before the final send guard and keeps private messages untouched', async () => {
       const f = fixture();
       const service = createService(f.http, {}, undefined, undefined, f.marketplace);
       const order: string[] = [];
@@ -1220,7 +1860,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
           order.push('guard');
         },
       });
-      expect(order).toEqual(['guard', 'resolve']);
+      expect(order).toEqual(['resolve', 'guard']);
       expect(f.marketplace.resolvePublicationButton).toHaveBeenCalledWith({
         chatId: '-100',
         botId: '777000_bot',
@@ -1481,38 +2121,41 @@ describe('MaxClientService inline keyboard guardrails', () => {
     'identity',
     'subscriptions',
     'exact_message',
-  ] as const)('refuses an unknown explicit bot before a %s read uses another token', async (lookup) => {
-    const httpService = { request: jest.fn() };
-    const service = createService(httpService);
-    const { botRegistry, botContext, limiterRedis } = service as any;
-    const defaultBot = botRegistry.getDefaultBot();
-    const contextBot = { ...defaultBot, id: 'context-bot', token: 'context-token' };
-    botRegistry.getBotById.mockImplementation((botId?: string | null) =>
-      botId === contextBot.id ? contextBot : botId === defaultBot.id ? defaultBot : null,
-    );
-    const options = { botId: 'removed-bot' };
-    const reads = {
-      bot_access: () => service.getCurrentChatMemberAccess('chat-1', options),
-      members: () => service.getChatMembersAccess('chat-1', ['user-1'], options),
-      snapshot: () => service.getChatSnapshot('chat-1', options),
-      admins: () => service.getChatAdminMembers('chat-1', options),
-      identity: () => service.getOwnProfileIdentity(options),
-      subscriptions: () => service.listWebhookSubscriptions(options),
-      exact_message: () => service.getExactMessagePresence('chat-1', 'mid-1', options),
-    };
-
-    try {
-      await expect(reads[lookup]()).rejects.toBeInstanceOf(UnrecoverableError);
-      await expect(botContext.runWithBot(contextBot.id, reads[lookup])).rejects.toBeInstanceOf(
-        UnrecoverableError,
+  ] as const)(
+    'refuses an unknown explicit bot before a %s read uses another token',
+    async (lookup) => {
+      const httpService = { request: jest.fn() };
+      const service = createService(httpService);
+      const { botRegistry, botContext, limiterRedis } = service as any;
+      const defaultBot = botRegistry.getDefaultBot();
+      const contextBot = { ...defaultBot, id: 'context-bot', token: 'context-token' };
+      botRegistry.getBotById.mockImplementation((botId?: string | null) =>
+        botId === contextBot.id ? contextBot : botId === defaultBot.id ? defaultBot : null,
       );
-      expect(httpService.request).not.toHaveBeenCalled();
-      expect(limiterRedis.get).not.toHaveBeenCalled();
-      expect(limiterRedis.set).not.toHaveBeenCalled();
-    } finally {
-      await service.onModuleDestroy();
-    }
-  });
+      const options = { botId: 'removed-bot' };
+      const reads = {
+        bot_access: () => service.getCurrentChatMemberAccess('chat-1', options),
+        members: () => service.getChatMembersAccess('chat-1', ['user-1'], options),
+        snapshot: () => service.getChatSnapshot('chat-1', options),
+        admins: () => service.getChatAdminMembers('chat-1', options),
+        identity: () => service.getOwnProfileIdentity(options),
+        subscriptions: () => service.listWebhookSubscriptions(options),
+        exact_message: () => service.getExactMessagePresence('chat-1', 'mid-1', options),
+      };
+
+      try {
+        await expect(reads[lookup]()).rejects.toBeInstanceOf(UnrecoverableError);
+        await expect(botContext.runWithBot(contextBot.id, reads[lookup])).rejects.toBeInstanceOf(
+          UnrecoverableError,
+        );
+        expect(httpService.request).not.toHaveBeenCalled();
+        expect(limiterRedis.get).not.toHaveBeenCalled();
+        expect(limiterRedis.set).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
 
   it.each(['default', 'context', 'explicit_draining'] as const)(
     'preserves the %s token for readable bot access',
@@ -2016,16 +2659,16 @@ describe('MaxClientService inline keyboard guardrails', () => {
       beforeImmediateSendMutation,
     });
     await limiterEntered;
-    expect(actionLedgerService.claimSendDispatch).not.toHaveBeenCalled();
+    expect(actionLedgerService.claimSendDispatch).toHaveBeenCalledTimes(1);
     expect(beforeImmediateSendMutation).not.toHaveBeenCalled();
     current = false;
     releaseLimiter();
 
     await expect(sending).rejects.toBe(guardError);
     expect(events).toEqual([
+      'send-claim',
       'limiter-enter',
       'limiter-exit',
-      'send-claim',
       'send-guard',
       'send-release',
     ]);
@@ -4681,7 +5324,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('rechecks the keyboard lock after an asynchronous edit guard and before PUT', async () => {
+  it('synchronously rejects an expired keyboard lock after an asynchronous edit guard', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
         of({
@@ -4704,15 +5347,19 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const evalMock = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis
       .eval;
     const originalEval = evalMock.getMockImplementation()!;
+    const checkedAtMs = Date.now();
+    const now = jest.spyOn(Date, 'now').mockReturnValue(checkedAtMs);
     let renewalCount = 0;
     evalMock.mockImplementation(async (script: string, ...args: unknown[]) => {
       if (script.includes('MAX_MESSAGE_EDIT_LOCK_RENEW_V1')) {
         renewalCount += 1;
-        return renewalCount < 3 ? 1 : 0;
+        return 1;
       }
       return originalEval(script, ...args);
     });
-    const beforeEditMutation = jest.fn().mockResolvedValue(undefined);
+    const beforeEditMutation = jest.fn(async () => {
+      now.mockReturnValue(checkedAtMs + 60_000);
+    });
 
     await expect(
       service.editMessageInlineKeyboard(
@@ -4735,12 +5382,13 @@ describe('MaxClientService inline keyboard guardrails', () => {
     ).rejects.toThrow('Lost ownership of the MAX message keyboard edit lock');
 
     expect(beforeEditMutation).toHaveBeenCalledTimes(1);
-    expect(renewalCount).toBe(3);
+    expect(renewalCount).toBe(2);
     expect(httpService.request).toHaveBeenCalledTimes(1);
     expect(httpService.request).not.toHaveBeenCalledWith(
       expect.objectContaining({ method: 'put' }),
     );
 
+    now.mockRestore();
     await service.onModuleDestroy();
   });
 

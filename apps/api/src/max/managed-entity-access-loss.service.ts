@@ -1,3 +1,4 @@
+import { isMaxMutationOutcomeAmbiguous } from './max-mutation-outcome.util';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { ManagedEntityType } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -1359,6 +1360,7 @@ export class ManagedEntityAccessLossService {
 export function classifyMaxTerminalChatActionError(
   error: unknown,
 ): MaxTerminalChatActionErrorClassification | null {
+  if (isMaxMutationOutcomeAmbiguous(error)) return null;
   const statusCode = extractMaxErrorStatus(error);
   const code = extractMaxErrorCode(error);
   const message = extractMaxErrorMessage(error);

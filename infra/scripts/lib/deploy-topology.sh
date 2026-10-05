@@ -178,6 +178,135 @@ maxim_topology_require_image_text_stop_list_delete_guard() {
   fi
 }
 
+maxim_topology_require_multibot_authority() {
+  local commit_sha="$1"
+  local path source
+  local sources=()
+  for path in \
+    apps/api/src/webhook/webhook-semantic-authority.ts \
+    apps/api/src/webhook/webhook.service.ts \
+    apps/api/src/moderation/webhook-canonical-execution.service.ts \
+    apps/api/src/common/group-command-authority.service.ts \
+    apps/api/src/max/max-mutation-outcome.util.ts \
+    apps/api/src/max/max-client.service.ts \
+    apps/api/prisma/schema.prisma \
+    apps/api/src/common/group-command-notice-recovery.ts \
+    apps/api/src/common/group-command-notice-delivery.ts \
+    apps/api/src/moderation/moderation.service.legacy.ts \
+    apps/api/src/webhook/webhook-outbox.service.ts \
+    apps/api/src/webhook/webhook-legacy-authority.ts; do
+    if ! source="$(git show "${commit_sha}:${path}" 2>/dev/null)"; then
+      echo "Rollback target predates durable multibot authority: $path" >&2
+      return 1
+    fi
+    sources+=("$source")
+  done
+  if ! printf '%s\0' "${sources[@]}" | node -e '
+    const [version, ingress, worker, commands, outcome, client, schema,
+      noticeRecovery, noticeDelivery, moderation, outbox, legacy] = require("node:fs").readFileSync(0).toString("utf8").split("\0");
+    const claimModel = schema.match(/^model\s+WebhookExecutionClaim\s*\{([\s\S]*?)^\}/m)?.[1] ?? "";
+    const claimRelation = claimModel.match(/\bwebhookEvent\s+WebhookEvent\?\s+@relation\(([^)]*)\)/u)?.[1] ?? "";
+    const tombstoneSchema = /\bwebhookEventId\s+String\?\s+@map\("webhook_event_id"\)/u.test(claimModel) &&
+      /\bfields:\s*\[webhookEventId\]/u.test(claimRelation) &&
+      /\breferences:\s*\[id\]/u.test(claimRelation) && /\bonDelete:\s*SetNull\b/u.test(claimRelation);
+    const handlerStart = moderation.indexOf("async processWebhookEvent(");
+    const recoverNotice = moderation.indexOf("await recoverGroupCommandNotice(", handlerStart);
+    const prepare = moderation.indexOf("this.webhookCanonicalExecutionService.prepareExecution(", handlerStart);
+    const recordNotice = moderation.indexOf("await recordGroupCommandNoticeRecovery(", handlerStart);
+    const releaseBusiness = moderation.indexOf("this.webhookCanonicalExecutionService.failExecution(", handlerStart);
+    const retentionStart = outbox.indexOf("private webhookRetentionProofUnpinnedSql()");
+    const retentionEnd = outbox.indexOf("\n  private ", retentionStart + 1);
+    const retention = outbox.slice(retentionStart, retentionEnd);
+    const requestStart = client.indexOf("private async request<T");
+    const requestEnd = client.indexOf("private async requestAbsolute<T", requestStart);
+    const request = client.slice(requestStart, requestEnd);
+    const proof = request.indexOf("await this.assertChatMutationExecutionProof(");
+    const quota = request.indexOf("await this.reserveRateLimitSlot(");
+    const epoch = request.indexOf("verifyChatExecutionProof(");
+    const feature = request.indexOf("await scope.finalGuard?.()");
+    const attempt = request.indexOf("scope.onDispatchAttempt?.()");
+    const dispatch = request.indexOf("this.httpService.request<T>(");
+    const sourceStart = legacy.indexOf("function hasNewOriginalSource(");
+    const sourceEnd = legacy.indexOf("\n}", sourceStart + 1);
+    const squash = (source) => source.replace(/^\s*\/\/[^\r\n]*/gmu, "").replace(/\s+/gu, " ").trim();
+    const originalSource = sourceStart >= 0 && sourceEnd > sourceStart ?
+      squash(legacy.slice(sourceStart, sourceEnd + 2)) : "";
+    const legacyAuthority = squash(legacy);
+    // FLAG: A new claim cannot certify an old off-mode receipt. Preserve owner birth,
+    // original MAX source age and the indexed older-mirror exclusion on every rollback.
+    const legacyNoReplay = legacyAuthority.includes(
+      "currentOwner?.createdAt instanceof Date && Number.isFinite(currentOwner.createdAt.getTime()) && " +
+      "currentOwner.createdAt.getTime() > cutoff.getTime() && " +
+      "buildWebhookSemanticEventKey(currentOwner.normalizedPayload) === claim.semanticKey && " +
+      "hasNewOriginalSource(currentOwner, cutoff)"
+    ) && legacyAuthority.includes(
+      "const oldMirror = await prisma.webhookEvent.findFirst({ " +
+      "where: { semanticKey: claim.semanticKey, createdAt: { lte: cutoff } }, " +
+      "orderBy: [{ createdAt: \u0027asc\u0027 }, { id: \u0027asc\u0027 }], select: { id: true }, " +
+      "}); if (!oldMirror) return false;"
+    ) && originalSource.includes("if (sourceMarker === \u0027ingress\u0027) return false;") &&
+      originalSource.includes("if (!raw && sourceMarker !== \u0027payload\u0027) return false;") &&
+      originalSource.includes("const source = raw ?? payload;") &&
+      originalSource.includes("message: !raw || type === \u0027message_created\u0027 ? message : undefined,") &&
+      originalSource.includes("const ownerMs = Math.min(owner.createdAt.getTime(), Date.now());") &&
+      originalSource.includes("value !== null && value > cutoffMs && value <= ownerMs;") &&
+      originalSource.includes("if (!isNewSource(eventAt?.getTime() ?? null)) return false;") &&
+      originalSource.includes("if (type === \u0027message_created\u0027 && message)") &&
+      originalSource.includes("for (const field of [\u0027createdAt\u0027, \u0027created_at\u0027, \u0027timestamp\u0027])") &&
+      originalSource.includes("!isNewSource(parseWebhookEventTimestampMs(message[field]))");
+    const valid = version.includes("semantic-owner-lease-v1") &&
+      ingress.includes("MULTIBOT_EXECUTION_AUTHORITY_VERSION") &&
+      ingress.includes("await holdUnverifiedLegacyExecution(") &&
+      ingress.includes("transitionLiveUnstartedOwnerWithClient(") &&
+      ingress.includes("claim.webhookEventId === null") &&
+      worker.includes("MULTIBOT_EXECUTION_AUTHORITY_VERSION") &&
+      worker.includes("leaseToken") && worker.includes("semanticKey") && worker.includes("businessStartedAt") &&
+      worker.includes("await holdUnverifiedLegacyExecution(") &&
+      worker.includes("executionClaim?.webhookEventId === null") &&
+      worker.includes("EXECUTION_FINISHED") && worker.includes("await this.tryRecoverFinishedExecution(") &&
+      worker.includes("await this.markExecutionHandlerFinished(") &&
+      worker.includes("static async transitionLiveUnstartedOwnerWithClient(") &&
+      worker.includes("claim.\"lease_expires_at\" > instant.\"now\"") &&
+      worker.includes("event.\"execution_deadline_at\" > instant.\"now\"") &&
+      worker.includes("clock_timestamp() AT TIME ZONE") &&
+      legacy.includes("async function holdUnverifiedLegacyExecution(") &&
+      legacy.includes("LEGACY_EXECUTION_UNVERIFIED") &&
+      legacy.includes("20261005020000_add_multibot_order_fences") &&
+      legacy.includes("claim.createdAt.getTime() > cutoff.getTime()") &&
+      legacyNoReplay &&
+      commands.includes("buildGroupCommandKey") && commands.includes("commandResult") &&
+      commands.includes("advanceChatMutationOrder") && commands.includes("leaseToken") &&
+      noticeRecovery.includes("async function recoverGroupCommandNotice(") &&
+      noticeRecovery.includes("async function recordGroupCommandNoticeRecovery(") &&
+      noticeRecovery.includes("COMMAND_NOTICE_PENDING") && noticeRecovery.includes("COMMAND_NOTICE_EXPIRED") &&
+      noticeRecovery.includes("isUnattemptedSend(") && noticeRecovery.includes("isCompletedSend(") &&
+      noticeRecovery.includes("wasMaxPreDispatchGuardRejected(") && noticeRecovery.includes("wasMaxMessageSendAttempted(") &&
+      noticeRecovery.includes("MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE") &&
+      noticeRecovery.includes("commandResultDigest") && noticeRecovery.includes("executionDeadlineAt") &&
+      noticeDelivery.includes("beforeImmediateSendMutation:") && noticeDelivery.includes("permit.executionDeadlineAt") &&
+      noticeDelivery.includes("requiredBotId: permit.executionBotId") &&
+      moderation.includes("../common/group-command-notice-recovery") && moderation.includes("await deliverGroupCommandNotice(") &&
+      handlerStart >= 0 && recoverNotice > handlerStart && prepare > recoverNotice &&
+      recordNotice > prepare && releaseBusiness > recordNotice &&
+      retentionStart >= 0 && retentionEnd > retentionStart &&
+      retention.includes("claim.\"webhook_event_id\" = candidate.\"id\"") &&
+      retention.includes("claim.\"status\" <>") && retention.includes("claim.\"lease_token\" IS NOT NULL") &&
+      retention.includes("claim.\"command_result\" IS NULL") &&
+      retention.includes("mirror.\"semantic_key\" = candidate.\"semantic_key\"") &&
+      outcome.includes("wasMaxMemberMutationConfirmed") && outcome.includes("status >= 500") &&
+      client.includes("requiredBotId && bot.id !== requiredBotId") &&
+      client.includes("mutationExecutionScope") && client.includes("private async executeMemberMutation<T>") &&
+      client.includes("deferRateLimitReservation: true") &&
+      requestStart >= 0 && requestEnd > requestStart && proof >= 0 && quota > proof &&
+      epoch > quota && feature > epoch && attempt > feature && dispatch > attempt &&
+      tombstoneSchema;
+    process.exit(valid ? 0 : 1);
+  ' >/dev/null 2>&1; then
+    echo "Rollback target lacks semantic leases, saved-journal readers, retained tombstones or mutation outcome fences." >&2
+    return 1
+  fi
+}
+
 maxim_topology_require_message_duplicate_delete_guard() {
   local commit_sha="$1"
   local source_path
@@ -237,6 +366,13 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const end = executor.indexOf("\n  private ", start + 1);
     const boundary = executor.slice(start, end);
     const check = method(guard, "private async checkMessage(");
+    const reasons = method(executor, "private async authorizeGuardedUserDeleteReasons(");
+    const returnsDuplicateQualification = (source) => /return\s*\{[^}]*\bmessageDuplicateVerified\s*,/u.test(source);
+    const guardedReasons = boundary.includes("await this.authorizeGuardedUserDeleteReasons(") &&
+      reasons.includes("ownedReasonsOnly: true") && reasons.includes("if (!reasons.length)") &&
+      squash(reasons).includes("messageDuplicateVerified = (await check(() => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params), )) === \u0027allowed\u0027;") &&
+      boundary.includes("messageDuplicateVerified = proof.messageDuplicateVerified;") &&
+      returnsDuplicateQualification(reasons) && returnsDuplicateQualification(boundary);
     const permit = method(guard, "private async assertAuthorization(");
     const qualification = method(guard, "async assertQualificationAuthority(");
     const near = method(detector, "private buildNearDuplicateFingerprint(");
@@ -429,16 +565,20 @@ maxim_topology_require_message_duplicate_delete_guard() {
       migration.includes("OLD.\"duplicate_policy_revision\" +") &&
       migration.includes("OLD.\"duplicate_history_revision\" +") &&
       migration.includes("BEFORE INSERT OR UPDATE ON \"chat_settings\"") &&
-      boundary.includes("intent.messageDuplicateOwned") &&
-      boundary.includes("Message duplicate delete guard unavailable") &&
-      boundary.includes("await this.messageDuplicateDeleteGuard.assertIntentStillActionable(") &&
+      (guardedReasons
+        ? reasons.includes("Message duplicate delete guard unavailable") &&
+          reasons.includes("this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params)")
+        : boundary.includes("intent.messageDuplicateOwned") &&
+          boundary.includes("Message duplicate delete guard unavailable") &&
+          boundary.includes("await this.messageDuplicateDeleteGuard.assertIntentStillActionable(")) &&
       authorityStart >= 0 && authorityEnd > authorityStart &&
       authority.includes("await this.assertQualificationAuthority(params.chatId, binding)") &&
       authority.includes("await this.history.stillMatches(params.chatId, binding)") &&
       /await this\.assertAuthorization\(params\.chatId, binding\);\s*return .allowed./u.test(authority) &&
       mutationStart >= 0 && mutationEnd > mutationStart &&
       suggestionProof >= 0 && finalPermit > suggestionProof &&
-      mutation.slice(suggestionProof, finalPermit).includes("intent.messageDuplicateOwned") &&
+      (mutation.slice(suggestionProof, finalPermit).includes("intent.messageDuplicateOwned") ||
+        (guardedReasons && mutation.slice(suggestionProof, finalPermit).includes("textProof.messageDuplicateVerified"))) &&
       /assertIntentStillActionable\(\{[^}]*authorityOnly:\s*true,[^}]*\}\)/u.test(mutation.slice(finalPermit)) &&
       executor.includes("messageDuplicateEnforcementScope(binding)") &&
       executor.includes("AS \"messageDuplicateOwned\"");
@@ -589,12 +729,16 @@ maxim_topology_require_traffic_protection_guard() {
     const start = executor.indexOf("private async runDeletePreDispatchGuards(");
     const end = executor.indexOf("\n  private ", start + 1);
     const boundary = executor.slice(start, end);
+    const reasonStart = executor.indexOf("private async authorizeGuardedUserDeleteReasons(");
+    const reasonEnd = executor.indexOf("\n  private ", reasonStart + 1);
+    const reasons = executor.slice(reasonStart, reasonEnd);
+    const authority = boundary.includes("await this.authorizeGuardedUserDeleteReasons(") ? reasons : boundary;
     const valid = start >= 0 && end > start &&
       guard.includes("class TrafficProtectionDeleteGuardService") &&
       guard.includes("getExactMessageRow(") && guard.includes("trafficPolicyRevision") &&
       guard.includes("traffic_protection_delete_no_longer_authorized") &&
-      boundary.includes("await this.trafficProtectionDeleteGuard.assertIntentStillActionable(") &&
-      boundary.includes("Traffic protection delete guard unavailable");
+      /this\.trafficProtectionDeleteGuard!?\.assertIntentStillActionable\(/u.test(authority) &&
+      authority.includes("Traffic protection delete guard unavailable");
     process.exit(valid ? 0 : 1);
   ' >/dev/null 2>&1; then
     echo "Rollback target lacks the traffic protection pre-dispatch guard." >&2
@@ -627,13 +771,17 @@ maxim_topology_require_stop_words_policy_guard() {
     const start = executor.indexOf("private async runDeletePreDispatchGuards(");
     const end = executor.indexOf("\n  private ", start + 1);
     const boundary = executor.slice(start, end);
+    const reasonStart = executor.indexOf("private async authorizeGuardedUserDeleteReasons(");
+    const reasonEnd = executor.indexOf("\n  private ", reasonStart + 1);
+    const reasons = executor.slice(reasonStart, reasonEnd);
+    const authority = boundary.includes("await this.authorizeGuardedUserDeleteReasons(") ? reasons : boundary;
     const valid = start >= 0 && end > start &&
       guard.includes("class StopWordsDeleteGuardService") &&
       guard.includes("getExactMessageRow(") &&
       guard.includes("stop_words_delete_no_longer_authorized") &&
       guard.includes("stopWordsRevision") &&
-      boundary.includes("await this.stopWordsDeleteGuard.assertIntentStillActionable(") &&
-      boundary.includes("Stop-list delete guard unavailable") &&
+      /this\.stopWordsDeleteGuard!?\.assertIntentStillActionable\(/u.test(authority) &&
+      authority.includes("Stop-list delete guard unavailable") &&
       detector.includes("detectStopWordsViolations(") && detector.includes("stopWordsPolicy");
     process.exit(valid ? 0 : 1);
   ' >/dev/null 2>&1; then
@@ -664,7 +812,15 @@ maxim_topology_require_commercial_text_delete_guard() {
     const boundary = executor.slice(start, end);
     const dispatch = boundary.indexOf("if (finalDispatchLeaseToken)");
     const call = boundary.indexOf("await this.commercialDeleteGuard.assertIntentStillActionable(");
-    const valid = start >= 0 && end > start && dispatch >= 0 && call > dispatch &&
+    const reasonStart = executor.indexOf("private async authorizeGuardedUserDeleteReasons(");
+    const reasonEnd = executor.indexOf("\n  private ", reasonStart + 1);
+    const reasons = executor.slice(reasonStart, reasonEnd);
+    const reasonCall = boundary.indexOf("await this.authorizeGuardedUserDeleteReasons(");
+    const independent = reasonStart >= 0 && reasonEnd > reasonStart && reasonCall > dispatch &&
+      reasons.includes("ownedReasonsOnly: true") && reasons.includes("if (!reasons.length)") &&
+      /this\.commercialDeleteGuard!?\.assertIntentStillActionable\(/u.test(reasons) &&
+      reasons.includes("Commercial delete guard unavailable");
+    const valid = start >= 0 && end > start && dispatch >= 0 && (call > dispatch || independent) &&
       /COMMERCIAL_TEXT_DELETE_BINDING_VERSION\s*=\s*2\s+as const/u.test(binding) &&
       guard.includes("class CommercialDeleteGuardService") &&
       guard.includes("getExactMessageRow(") && guard.includes("isCommercialTextDeleteBindingCurrent(") &&
@@ -673,7 +829,7 @@ maxim_topology_require_commercial_text_delete_guard() {
       guard.includes("createSanctionPermit(") &&
       guard.includes("async authorizeSanction(") &&
       binding.includes("textRuntimeRevision") &&
-      boundary.includes("Commercial delete guard unavailable") &&
+      (boundary.includes("Commercial delete guard unavailable") || independent) &&
       executor.includes("commercialVerifiedReasonKeys.length > 0") &&
       executor.includes("Prisma.join(commercialVerifiedReasonKeys)");
     process.exit(valid ? 0 : 1);

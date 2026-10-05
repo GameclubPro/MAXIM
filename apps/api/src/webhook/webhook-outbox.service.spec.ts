@@ -557,6 +557,9 @@ function createService(params?: {
     $executeRaw: jest.fn().mockResolvedValue(0),
     $queryRaw: jest.fn().mockImplementation(async (query: SqlQuery) => {
       const values = query.values ?? [];
+      if (extractSql(query).includes('AS "commandId"')) return [];
+      if (extractSql(query).includes('AS "scanned"'))
+        return [{ removed: 0, scanned: 0, lastId: null, lastCreatedAt: null }];
       if (extractSql(query).includes('fair_enqueue_candidates')) {
         return selectFairEnqueueCandidatesForTest(
           webhookRows,
@@ -2765,23 +2768,36 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as RetentionInternals).cleanupRetention();
 
-    const queries = prisma.$executeRaw.mock.calls.map(([query]) => ({
-      sql: extractSql(query),
-      values: (query as SqlQuery).values ?? [],
-    }));
-    expect(queries).toHaveLength(6);
-    for (const query of queries) {
-      expect(query.sql).toContain('WITH expired AS');
+    const queries = [...prisma.$queryRaw.mock.calls, ...prisma.$executeRaw.mock.calls].map(
+      ([query]) => ({
+        sql: extractSql(query),
+        values: (query as SqlQuery).values ?? [],
+      }),
+    );
+    expect(queries).toHaveLength(8);
+    const startExpiryRead = queries[0]!;
+    expect(startExpiryRead.sql).toContain('candidate_ids AS MATERIALIZED');
+    expect(startExpiryRead.sql).toContain('AS "commandId"');
+    expect(startExpiryRead.sql).toContain('ORDER BY');
+    expect(startExpiryRead.sql).toContain('LIMIT ?');
+    expect(startExpiryRead.values).toContain(500);
+    expect(startExpiryRead.sql).not.toContain('UPDATE "webhook_execution_claims"');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    const deleteQueries = queries.slice(1);
+    for (const query of deleteQueries) {
+      expect(query.sql).toMatch(/expired AS(?: MATERIALIZED)? \(/u);
       expect(query.sql).toContain('ORDER BY');
       expect(query.sql).toContain('LIMIT ?');
-      expect(query.sql).toContain('FOR UPDATE SKIP LOCKED');
-      expect(query.values).toContain(500);
+      expect(query.sql).toMatch(/FOR UPDATE(?: OF event)? SKIP LOCKED/u);
+      expect(
+        query.values.some((value) => typeof value === 'number' && value > 0 && value <= 500),
+      ).toBe(true);
     }
-    expect(queries[0]?.sql).toContain(
+    expect(deleteQueries[0]?.sql).toContain(
       `"status" IN ('PROCESSED'::"WebhookStatus", 'DUPLICATE'::"WebhookStatus")`,
     );
-    expect(queries[1]?.values).toContain(WebhookStatus.FAILED);
-    expect(queries[1]?.sql).toContain('"next_enqueue_at" IS NULL');
+    expect(deleteQueries[1]?.values).toContain(WebhookStatus.FAILED);
+    expect(deleteQueries[1]?.sql).toContain('"next_enqueue_at" IS NULL');
     expect(queries.map((query) => query.sql)).toEqual(
       expect.arrayContaining([
         expect.stringContaining('DELETE FROM "moderation_events" target'),
@@ -2825,15 +2841,20 @@ describe('WebhookOutboxService', () => {
       configOverrides: { WEBHOOK_COMPLETED_RETENTION_ENABLED: true },
     });
     (service as unknown as RetentionInternals).retentionMaintenanceDue = true;
-    prisma.$executeRaw.mockImplementationOnce(() => firstBatch).mockResolvedValue(0);
+    prisma.$queryRaw.mockImplementationOnce(async () => {
+      await firstBatch;
+      return [];
+    });
 
     const cleanup = (service as unknown as RetentionInternals).cleanupRetention();
     await Promise.resolve();
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
 
     resolveFirstBatch(0);
     await cleanup;
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(5);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(4);
   });
 
   it('repeats full retention batches and stops after a partial batch', async () => {
@@ -2846,6 +2867,7 @@ describe('WebhookOutboxService', () => {
       internals.runRetentionCleanupPhase({ name: 'test', maxBatches: 10, deleteBatch }),
     ).resolves.toEqual({
       rows: 999,
+      scannedRows: 999,
       batches: 2,
       durationMs: expect.any(Number),
       budgetExhausted: false,
@@ -2859,26 +2881,29 @@ describe('WebhookOutboxService', () => {
     });
     const internals = service as unknown as RetentionInternals;
     internals.retentionBatchDelayMs = 0;
-    prisma.$executeRaw.mockImplementation(async (query: SqlQuery) => {
+    prisma.$queryRaw.mockImplementation(async (query: SqlQuery) => {
       const sql = extractSql(query);
+      if (sql.includes('AS "commandId"')) return [];
       return sql.includes('"webhook_events"') &&
         sql.includes(`'PROCESSED'::"WebhookStatus"`) &&
         sql.includes(`'DUPLICATE'::"WebhookStatus"`)
-        ? 500
-        : 0;
+        ? [{ removed: 500, scanned: 500, lastId: 'last', lastCreatedAt: new Date() }]
+        : [{ removed: 0, scanned: 0, lastId: null, lastCreatedAt: null }];
     });
 
     await internals.cleanupRetention();
 
-    const completedWebhookCalls = prisma.$executeRaw.mock.calls.filter(([query]) => {
+    const completedWebhookCalls = prisma.$queryRaw.mock.calls.filter(([query]) => {
       return (
         extractSql(query).includes('"webhook_events"') &&
+        extractSql(query).includes('DELETE FROM "webhook_events"') &&
         extractSql(query).includes(`'PROCESSED'::"WebhookStatus"`) &&
         extractSql(query).includes(`'DUPLICATE'::"WebhookStatus"`)
       );
     });
     expect(completedWebhookCalls).toHaveLength(1);
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
   });
 
   it('reports the failed retention phase and resets the cleaning guard', async () => {
@@ -2888,7 +2913,7 @@ describe('WebhookOutboxService', () => {
     const internals = service as unknown as RetentionInternals;
     internals.retentionMaintenanceDue = true;
     const logger = jest.spyOn((service as any).logger, 'warn');
-    prisma.$executeRaw.mockRejectedValueOnce(new Error('retention database unavailable'));
+    prisma.$queryRaw.mockRejectedValueOnce(new Error('retention database unavailable'));
 
     await internals.cleanupRetention();
 
@@ -2906,7 +2931,8 @@ describe('WebhookOutboxService', () => {
 
     await internals.cleanupRetention();
 
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(6);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(4);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(4);
     expect(internals.cleaning).toBe(false);
     expect(internals.retentionMaintenanceDue).toBe(false);
   });
@@ -2919,13 +2945,17 @@ describe('WebhookOutboxService', () => {
     const { service, prisma } = createService({
       configOverrides: { WEBHOOK_COMPLETED_RETENTION_ENABLED: true },
     });
-    prisma.$executeRaw.mockImplementationOnce(() => firstBatch).mockResolvedValue(0);
+    prisma.$queryRaw.mockImplementationOnce(async () => {
+      await firstBatch;
+      return [];
+    });
     const internals = service as unknown as RetentionInternals;
 
     const firstCleanup = internals.cleanupRetention();
     await Promise.resolve();
     await internals.cleanupRetention();
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
 
     resolveFirstBatch(0);
     await firstCleanup;
@@ -2939,7 +2969,10 @@ describe('WebhookOutboxService', () => {
     const { service, prisma } = createService({
       configOverrides: { WEBHOOK_COMPLETED_RETENTION_ENABLED: true },
     });
-    prisma.$executeRaw.mockImplementationOnce(() => firstBatch).mockResolvedValue(0);
+    prisma.$queryRaw.mockImplementationOnce(async () => {
+      await firstBatch;
+      return [];
+    });
     const internals = service as unknown as RetentionInternals;
     internals.retentionMaintenanceDue = true;
 
@@ -3680,10 +3713,31 @@ describe('WebhookOutboxService', () => {
         },
       ],
     });
+    prisma.webhookExecutionClaim.findFirst.mockResolvedValue({
+      id: 'completed-timeout-claim',
+      webhookEventId: 'evt-completed-timeout-a',
+      semanticKey: buildWebhookSemanticEventKey(webhookRows[0]!.normalizedPayload),
+      enforced: true,
+      status: 'COMPLETED',
+      preparedAt: new Date('2026-03-24T00:00:01.000Z'),
+      completedAt,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    } as never);
+    Object.assign(prisma.webhookExecutionClaim, {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    });
     prisma.webhookEvent.updateMany.mockImplementation(
       createWebhookEventUpdateManyMock(webhookRows),
     );
 
+    await expect(
+      (
+        service as unknown as {
+          settlePendingTimeoutQuarantine: (event: MockWebhookEventRow) => Promise<string>;
+        }
+      ).settlePendingTimeoutQuarantine(webhookRows[0]!),
+    ).resolves.toBe('terminal');
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
     expect(webhookRows[0]).toEqual(

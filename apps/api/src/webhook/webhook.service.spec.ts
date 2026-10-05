@@ -8,6 +8,474 @@ import {
 } from '../prisma/prisma-client';
 import { WebhookParser } from './webhook.parser';
 import { WebhookService } from './webhook.service';
+import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+
+const claimModels = new WeakMap<object, object>();
+const productionClaimModel = (
+  WebhookService.prototype as unknown as { getWebhookExecutionClaimModel: () => object | null }
+).getWebhookExecutionClaimModel;
+type FixtureRow = Record<string, unknown>;
+type SemanticClaimModel = {
+  createMany: jest.Mock;
+  findUnique: jest.Mock;
+  updateMany: jest.Mock;
+};
+type SemanticFixtureDatabase = {
+  webhookEvent: {
+    create?: jest.Mock;
+    createMany?: jest.Mock;
+    findFirst?: jest.Mock;
+    findUnique?: jest.Mock;
+    updateMany?: jest.Mock;
+  };
+  chat?: { createMany: jest.Mock };
+  chatMembershipActivityEvent?: { createMany: jest.Mock };
+  webhookExecutionClaim?: SemanticClaimModel;
+  $queryRaw?: jest.Mock;
+  $executeRaw?: jest.Mock;
+  $transaction?: jest.Mock;
+  semanticClaimWrite?: jest.Mock;
+};
+
+function coherentSemanticClaims(service: object) {
+  const existing = claimModels.get(service);
+  if (existing) return existing;
+  const prisma = (service as { prisma: SemanticFixtureDatabase }).prisma;
+  const supplied = productionClaimModel.call(service) ? prisma.webhookExecutionClaim : null;
+  const claims = new Map<string, Record<string, unknown>>();
+  const model = (supplied ?? {
+    createMany: jest.fn(
+      async (args: {
+        data: Array<{
+          kind: string;
+          semanticKey: string;
+          webhookEventId: string;
+          enforced: boolean;
+        }>;
+      }) => {
+        let count = 0;
+        for (const input of args.data) {
+          const key = `${input.kind}:${input.semanticKey}`;
+          if (claims.has(key)) continue;
+          claims.set(key, {
+            ...input,
+            id: `claim-${claims.size}`,
+            status: 'PENDING',
+            executionBotId: null,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            preparedAt: null,
+            completedAt: null,
+            businessStartedAt: null,
+            commandResult: null,
+            createdAt: new Date(),
+          });
+          count += 1;
+        }
+        return { count };
+      },
+    ),
+    findUnique: jest.fn(async (args: { where: FixtureRow }) => {
+      const key = args.where.kind_semanticKey as { kind: string; semanticKey: string } | undefined;
+      return key
+        ? (claims.get(`${key.kind}:${key.semanticKey}`) ?? null)
+        : ([...claims.values()].find((claim) => claim.id === args.where.id) ?? null);
+    }),
+    updateMany: jest.fn(
+      async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+        const claim = [...claims.values()].find((candidate) => candidate.id === args.where.id);
+        if (
+          !claim ||
+          Object.entries(args.where).some(
+            ([key, value]) =>
+              key !== 'OR' &&
+              (value instanceof Date
+                ? (claim[key] as Date | null)?.getTime() !== value.getTime()
+                : claim[key] !== value),
+          )
+        )
+          return { count: 0 };
+        const alternatives = args.where.OR as Array<Record<string, unknown>> | undefined;
+        if (
+          alternatives &&
+          !alternatives.some((where) =>
+            Object.entries(where).every(([key, value]) =>
+              value === null
+                ? claim[key] === null
+                : (claim[key] as Date)?.getTime() < (value as { lt: Date }).lt.getTime(),
+            ),
+          )
+        )
+          return { count: 0 };
+        Object.assign(claim, args.data);
+        return { count: 1 };
+      },
+    ),
+  }) as SemanticClaimModel;
+  claimModels.set(service, model);
+  const claimRows = new Map<string, FixtureRow>();
+  const claimFind = model.findUnique;
+  model.findUnique = jest.fn(async (...args: unknown[]) => {
+    const row = (await claimFind(...args)) as FixtureRow | null;
+    if (!row) return row;
+    // FLAG: Fill only fields omitted by shallow positive fixtures. Explicit null/old birth and
+    // missing supplied authority remain unchanged so negative proof tests cannot become grants.
+    for (const [key, value] of Object.entries({
+      kind: 'EXECUTION',
+      createdAt: new Date(),
+      businessStartedAt: null,
+      commandResult: null,
+      completedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    })) {
+      if (!(key in row)) row[key] = value;
+    }
+    claimRows.set(String(row.id), row);
+    if (typeof row.webhookEventId === 'string') await readReceipt(row.webhookEventId);
+    return row;
+  });
+  const claimUpdate = model.updateMany;
+  model.updateMany = jest.fn(async (args: { where: FixtureRow; data: FixtureRow }) => {
+    const result = await claimUpdate(args);
+    if (result?.count === 1) {
+      for (const row of claimRows.values()) {
+        if (
+          (args.where.id === undefined || args.where.id === row.id) &&
+          (args.where.webhookEventId === undefined ||
+            args.where.webhookEventId === row.webhookEventId)
+        )
+          Object.assign(row, args.data);
+      }
+    }
+    return result;
+  });
+  prisma.webhookExecutionClaim = model;
+  const receipts = new Map<string, FixtureRow>();
+  const missingReceipts = new Set<string>();
+  const receiptWrites = new Map<string, FixtureRow>();
+  const receiptFind = prisma.webhookEvent.findUnique;
+  const receiptUpdate = prisma.webhookEvent.updateMany;
+  const normalizeReceipt = (id: string, source: FixtureRow) => {
+    const payload = source.normalizedPayload as MaxUpdate | undefined;
+    // FLAG: These shallow positive domain fixtures represent parser-normalized input.
+    // Keep explicitly untrusted, raw and invalid source fixtures unchanged.
+    if (
+      payload &&
+      payload.eventTimestampSource === undefined &&
+      payload.raw === undefined &&
+      payload.message?.createdAt &&
+      Number.isFinite(Date.parse(payload.message.createdAt))
+    )
+      payload.eventTimestampSource = 'payload';
+    const row = {
+      status: 'RECEIVED',
+      errorMessage: null,
+      nextEnqueueAt: null,
+      timeoutQuarantineExpiresAt: null,
+      executionDeadlineAt: null,
+      createdAt: new Date(),
+      ...source,
+      ...receiptWrites.get(id),
+      id,
+    };
+    receipts.set(id, row);
+    return row;
+  };
+  const readReceipt = async (id: string): Promise<FixtureRow | null> => {
+    if (missingReceipts.has(id)) return null;
+    let row = receipts.get(id);
+    if (!row) {
+      // Receipt loading occurs before claim-model admission. Reuse completed mock reads and
+      // persisted writes without introducing an extra read or resurrecting a deleted receipt.
+      for (let index = 0; index < (receiptFind?.mock.calls.length ?? 0); index += 1) {
+        const args = receiptFind!.mock.calls[index]?.[0] as { where?: { id?: string } } | undefined;
+        if (args?.where?.id !== id) continue;
+        const result = (await Promise.resolve(receiptFind!.mock.results[index]?.value).catch(
+          () => null,
+        )) as FixtureRow | null;
+        if (result?.id === id) row = normalizeReceipt(id, result);
+      }
+      for (const create of [prisma.webhookEvent.create, prisma.webhookEvent.createMany]) {
+        for (let index = 0; index < (create?.mock.calls.length ?? 0); index += 1) {
+          const data = create!.mock.calls[index]?.[0]?.data as
+            | FixtureRow
+            | FixtureRow[]
+            | undefined;
+          const mutation = create!.mock.results[index];
+          if (mutation?.type === 'throw') continue;
+          const result = (await Promise.resolve(mutation?.value).catch(() => null)) as
+            | FixtureRow
+            | null
+            | undefined;
+          if (result === null) continue;
+          for (const source of Array.isArray(data) ? data : data ? [data] : []) {
+            if (source.id === id || result?.id === id) row = normalizeReceipt(id, source);
+          }
+        }
+      }
+    }
+    for (let index = 0; index < (receiptUpdate?.mock.calls.length ?? 0); index += 1) {
+      const call = receiptUpdate!.mock.calls[index]!;
+      const mutation = receiptUpdate!.mock.results[index];
+      if (mutation?.type === 'throw') continue;
+      const result = (await Promise.resolve(mutation?.value).catch(() => null)) as
+        | { count?: number }
+        | null
+        | undefined;
+      if (result === null) continue;
+      if (result?.count === 0) continue;
+      const args = call[0] as { where?: { id?: string }; data?: FixtureRow };
+      if (args.where?.id === id && args.data) {
+        receiptWrites.set(id, { ...receiptWrites.get(id), ...args.data });
+      }
+    }
+    const writes = receiptWrites.get(id);
+    return row || writes?.normalizedPayload ? normalizeReceipt(id, { ...row, ...writes }) : null;
+  };
+  prisma.webhookEvent.findFirst ??= jest.fn(
+    async (args: {
+      where: { semanticKey?: string; createdAt?: { lte: Date }; id?: { in: string[] } };
+    }) => {
+      if (args.where.id) await Promise.all(args.where.id.in.map(readReceipt));
+      const older = [...receipts.values()]
+        .filter((row) =>
+          args.where.id
+            ? args.where.id.in.includes(String(row.id))
+            : row.semanticKey === args.where.semanticKey &&
+              row.createdAt instanceof Date &&
+              Boolean(
+                args.where.createdAt &&
+                row.createdAt.getTime() <= args.where.createdAt.lte.getTime(),
+              ),
+        )
+        .sort(
+          (left, right) =>
+            (left.createdAt as Date).getTime() - (right.createdAt as Date).getTime() ||
+            String(left.id).localeCompare(String(right.id)),
+        );
+      return older.length ? { id: older[0]!.id } : null;
+    },
+  );
+  if (receiptFind) {
+    prisma.webhookEvent.findUnique = jest.fn(async (...args: unknown[]) => {
+      const row = (await receiptFind(...args)) as FixtureRow | null;
+      const id = (args[0] as { where?: { id?: string } } | undefined)?.where?.id;
+      if (id) {
+        if (row) missingReceipts.delete(id);
+        else {
+          missingReceipts.add(id);
+          receipts.delete(id);
+          receiptWrites.delete(id);
+        }
+      }
+      return row ? normalizeReceipt(String(row.id), row) : row;
+    });
+  } else {
+    prisma.webhookEvent.findUnique = jest.fn(async (args: { where: { id: string } }) =>
+      readReceipt(args.where.id),
+    );
+  }
+  prisma.webhookEvent.updateMany = jest.fn(
+    async (args: { where: FixtureRow; data: FixtureRow }) => {
+      const result = (await receiptUpdate?.(args)) ?? { count: 1 };
+      if (result.count === 1 && typeof args.where.id === 'string')
+        receiptWrites.set(args.where.id, { ...receiptWrites.get(args.where.id), ...args.data });
+      return result;
+    },
+  );
+  const adaptQueryRaw = (queryRaw?: jest.Mock) =>
+    jest.fn(async (...args: unknown[]) => {
+      const query = args[0] as {
+        strings?: readonly string[];
+        join?: (separator: string) => string;
+      };
+      const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
+      if (sql.includes("migration_name = '20261005020000_add_multibot_order_fences'"))
+        return [{ finishedAt: new Date(0) }];
+      if (
+        /SELECT "id" FROM "webhook_(?:execution_claims|events)" .* FOR UPDATE/u.test(
+          sql.replace(/\s+/gu, ' '),
+        )
+      )
+        return [];
+      return queryRaw ? queryRaw(...args) : [];
+    });
+  prisma.$queryRaw = adaptQueryRaw(prisma.$queryRaw);
+  const adaptedClients = new WeakMap<object, SemanticFixtureDatabase>();
+  const adaptClient = (source: SemanticFixtureDatabase) => {
+    const existing = adaptedClients.get(source);
+    if (existing) return existing;
+    // Keep transaction-only raw methods off the root client: shallow domain fixtures rely on
+    // their original ORM capabilities and must not switch to unrelated SQL paths.
+    const client = { ...source };
+    adaptedClients.set(source, client);
+    client.webhookEvent ??= prisma.webhookEvent;
+    client.webhookExecutionClaim ??= model;
+    client.chat ??= { createMany: jest.fn().mockResolvedValue({ count: 0 }) };
+    client.$queryRaw = adaptQueryRaw(client.$queryRaw);
+    const executeRaw = client.$executeRaw;
+    client.$executeRaw = jest.fn(
+      async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
+        const sql = query.strings.join('?');
+        const valueAfter = (fragment: string) =>
+          query.values[query.strings.findIndex((part) => part.includes(fragment))];
+        const expiry = sql.includes('SET "status" = \'COMPLETED\', "prepared_at" = COALESCE');
+        const transition =
+          sql.includes('SET "execution_bot_id" = ') && sql.includes('"business_started_at" = ');
+        if (!expiry && !transition) {
+          if (executeRaw) return executeRaw(query);
+          if (sql.includes('INSERT INTO "chat_membership_activity_events"')) {
+            const fields = [
+              'id',
+              'dedupeKey',
+              'botId',
+              'chatId',
+              'eventType',
+              'userId',
+              'senderName',
+              'eventAt',
+              'createdAt',
+            ];
+            const data: FixtureRow[] = [];
+            for (let index = 0; index < query.values.length; index += fields.length)
+              data.push(
+                Object.fromEntries(
+                  fields.map((field, offset) => [field, query.values[index + offset]]),
+                ),
+              );
+            // No Chat lock was granted by this fallback client, so only the original
+            // projection write is simulated; access reset/allowlist mutation cannot run.
+            await prisma.chatMembershipActivityEvent?.createMany({
+              data,
+              skipDuplicates: true,
+            });
+            return 1;
+          }
+          throw new Error('Unknown semantic fixture SQL mutation');
+        }
+        const claim = claimRows.get(String(valueAfter('claim."id" = ')));
+        const eventId = String(valueAfter('event."id" = '));
+        const event = await readReceipt(eventId);
+        const ready = sql.includes('"business_started_at" = NULL');
+        const deadline = valueAfter(
+          expiry
+            ? 'event."execution_deadline_at" = '
+            : 'event."execution_deadline_at" IS NOT DISTINCT FROM ',
+        );
+        const marker = valueAfter('claim."command_result" @> ');
+        const waiting = typeof marker === 'string' ? (JSON.parse(marker) as FixtureRow) : null;
+        const result = claim?.commandResult as FixtureRow | null;
+        const matchesWaiting =
+          waiting &&
+          result &&
+          Object.entries(waiting).every(([key, value]) => result[key] === value);
+        const sameDeadline =
+          event?.executionDeadlineAt instanceof Date && deadline instanceof Date
+            ? event.executionDeadlineAt.getTime() === deadline.getTime()
+            : event?.executionDeadlineAt === deadline;
+        const now = new Date();
+        if (
+          !claim ||
+          !event ||
+          claim.kind !== 'EXECUTION' ||
+          claim.semanticKey !== valueAfter('claim."semantic_key" = ') ||
+          claim.webhookEventId !== eventId ||
+          claim.status !== valueAfter('claim."status"::text = ') ||
+          claim.businessStartedAt !== null ||
+          claim.completedAt !== null ||
+          claim.leaseToken !== valueAfter('claim."lease_token" = ') ||
+          !(claim.leaseExpiresAt instanceof Date) ||
+          claim.leaseExpiresAt.getTime() <= now.getTime() ||
+          (!ready && !claim.enforced) ||
+          ['PROCESSED', 'DUPLICATE'].includes(String(event.status)) ||
+          event.timeoutQuarantineExpiresAt !== null ||
+          String(event.errorMessage ?? '').includes('WEBHOOK_HOT_PATH_TIMEOUT_') ||
+          String(event.errorMessage ?? '')
+            .toLowerCase()
+            .includes('ambiguous') ||
+          !sameDeadline ||
+          (expiry &&
+            (!matchesWaiting ||
+              !(deadline instanceof Date) ||
+              deadline.getTime() > now.getTime())) ||
+          (!expiry &&
+            matchesWaiting &&
+            (!(deadline instanceof Date) || deadline.getTime() <= now.getTime()))
+        )
+          return 0;
+        const changed = (await prisma.semanticClaimWrite?.(query)) ?? 1;
+        if (changed !== 1) return changed;
+        Object.assign(
+          claim,
+          expiry
+            ? {
+                status: 'COMPLETED',
+                preparedAt: claim.preparedAt ?? now,
+                completedAt: now,
+                leaseToken: null,
+                leaseExpiresAt: null,
+              }
+            : {
+                executionBotId: valueAfter('SET "execution_bot_id" = '),
+                enforced: Boolean(
+                  claim.enforced || valueAfter('"enforced" = claim."enforced" OR '),
+                ),
+                status: 'READY',
+                preparedAt: ready ? now : claim.preparedAt,
+                businessStartedAt: ready ? null : now,
+                leaseToken: ready ? null : claim.leaseToken,
+                leaseExpiresAt: ready ? null : claim.leaseExpiresAt,
+              },
+        );
+        return 1;
+      },
+    );
+    return client;
+  };
+  const transaction = prisma.$transaction;
+  prisma.$transaction = jest.fn(async (operation: (client: SemanticFixtureDatabase) => unknown) =>
+    transaction
+      ? transaction((client: SemanticFixtureDatabase) => operation(adaptClient(client)))
+      : operation(adaptClient(prisma)),
+  );
+  return model;
+}
+
+function persistedReceipt(id: string, update: MaxUpdate, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    dedupKey: `${update.botId}:${update.updateId}`,
+    botId: update.botId,
+    status: WebhookStatus.RECEIVED,
+    semanticKey: buildWebhookSemanticEventKey(update),
+    executionDeadlineAt: null,
+    normalizedPayload: update,
+    createdAt: new Date(update.message?.createdAt ?? '2026-09-02T08:00:00.000Z'),
+    errorMessage: null,
+    nextEnqueueAt: null,
+    timeoutQuarantineExpiresAt: null,
+    processedAt: null,
+    queueName: null,
+    ...extra,
+  };
+}
+
+function mockedReceiptStore(rows: ReturnType<typeof persistedReceipt>[]) {
+  const events = new Map(rows.map((event) => [event.id, event]));
+  return {
+    events,
+    findUnique: jest.fn(
+      async ({ where }: { where: { id: string } }) => events.get(where.id) ?? null,
+    ),
+    updateMany: jest.fn(async ({ where, data }: { where: { id: string }; data: object }) => {
+      const event = events.get(where.id);
+      if (!event) return { count: 0 };
+      Object.assign(event, data);
+      return { count: 1 };
+    }),
+  };
+}
 
 describe('WebhookService', () => {
   it('does not execute the outbox admission snapshot after its durable receipt disappears', async () => {
@@ -66,6 +534,7 @@ describe('WebhookService', () => {
     newerAdminUserIds?: string[];
   }) => {
     const operations: string[] = [];
+    let receiptSequence = 0;
     const tx = {
       chat: {
         createMany: jest.fn(async () => {
@@ -110,7 +579,15 @@ describe('WebhookService', () => {
     };
     const prisma = {
       webhookEvent: {
-        create: jest.fn().mockResolvedValue({ id: 'evt-atomic-membership' }),
+        create: jest.fn(async () => {
+          receiptSequence += 1;
+          return {
+            id:
+              receiptSequence === 1
+                ? 'evt-atomic-membership'
+                : `evt-atomic-membership-${receiptSequence}`,
+          };
+        }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       $transaction: jest.fn(async (callback: (client: typeof tx) => Promise<unknown>) => {
@@ -138,6 +615,11 @@ describe('WebhookService', () => {
   };
 
   beforeEach(() => {
+    jest
+      .spyOn(WebhookService.prototype as never, 'getWebhookExecutionClaimModel' as never)
+      .mockImplementation(function (this: object) {
+        return coherentSemanticClaims(this);
+      } as never);
     jest.clearAllMocks();
     maxBotLinkService.bindChatToBot.mockReset();
     maxBotLinkService.bindChatToBot.mockResolvedValue(undefined);
@@ -191,7 +673,6 @@ describe('WebhookService', () => {
   it('stores same logical update id separately for different webhook bots', async () => {
     const prisma = {
       webhookEvent: {
-        findUnique: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue({ id: 'evt-shared' }),
         updateMany: jest.fn(),
       },
@@ -242,6 +723,11 @@ describe('WebhookService', () => {
           dedupKey: `${standbyBotId}:u-standby-first`,
           botId: standbyBotId,
           status: 'RECEIVED',
+          createdAt: new Date('2026-07-10T12:00:00.123Z'),
+          errorMessage: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+          processedAt: null,
           normalizedPayload: {
             updateId: 'u-standby-first',
             type: 'message_created',
@@ -263,6 +749,11 @@ describe('WebhookService', () => {
           dedupKey: `${ownerBotId}:u-owner-late`,
           botId: ownerBotId,
           status: 'RECEIVED',
+          createdAt: new Date('2026-07-10T12:00:01.123Z'),
+          errorMessage: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+          processedAt: null,
           normalizedPayload: {
             updateId: 'u-owner-late',
             type: 'message_created',
@@ -307,6 +798,8 @@ describe('WebhookService', () => {
             leaseToken: null,
             leaseExpiresAt: null,
             preparedAt: null,
+            completedAt: null,
+            businessStartedAt: null,
             ...row,
           });
           return { count: 1 };
@@ -337,6 +830,9 @@ describe('WebhookService', () => {
         }),
       },
     };
+    Object.assign(prisma, {
+      $transaction: jest.fn(async (work: (tx: object) => unknown) => work(prisma)),
+    });
     maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(ownerBotId);
     const service = new WebhookService(
       prisma as never,
@@ -389,17 +885,18 @@ describe('WebhookService', () => {
         createdAt: '2026-07-10T12:00:00.123Z',
       },
     };
+    const receiptStore = mockedReceiptStore([
+      persistedReceipt(
+        'evt-route-gap-canonical',
+        { ...update, botId: 'bot-owner' },
+        { createdAt: new Date('2026-07-10T12:00:00.123Z') },
+      ),
+      persistedReceipt('evt-route-gap-mirror', update, {
+        createdAt: new Date('2026-07-10T12:00:01.123Z'),
+      }),
+    ]);
     const prisma = {
-      webhookEvent: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'evt-route-gap-mirror',
-          dedupKey: 'bot-5:u-route-gap-mirror',
-          botId: 'bot-5',
-          status: 'RECEIVED',
-          normalizedPayload: update,
-        }),
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-      },
+      webhookEvent: receiptStore,
       webhookExecutionClaim: {
         createMany: jest.fn().mockResolvedValue({ count: 0 }),
         findUnique: jest.fn().mockResolvedValue({
@@ -417,6 +914,9 @@ describe('WebhookService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
+    Object.assign(prisma, {
+      $transaction: jest.fn(async (work: (tx: object) => unknown) => work(prisma)),
+    });
     maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(null);
     const service = new WebhookService(
       prisma as never,
@@ -440,249 +940,150 @@ describe('WebhookService', () => {
     expect(maxBotLinkService.getStoredChatPrimaryBotId).not.toHaveBeenCalled();
   });
 
-  it('waits for canonical preparation before reusing it for shadow mirror execution', async () => {
-    const ownerBotId = 'bot-owner';
-    const mirrorBotId = 'bot-mirror';
+  it('waits for canonical preparation and settles a later shadow mirror without business replay', async () => {
     const update = {
-      updateId: 'u-shadow-membership-mirror',
+      updateId: 'membership-mirror',
       type: 'user_removed',
-      botId: mirrorBotId,
+      botId: 'bot-mirror',
       message: {
-        chatId: '-100-shadow-membership',
-        messageId: 'user_removed:u-shadow-membership-mirror',
+        chatId: '-100-membership-mirror',
+        messageId: 'membership-message',
         senderId: 'user-1',
         text: '',
         createdAt: '2026-09-02T08:00:00.000Z',
       },
-      membership: {
-        action: 'removed',
-        memberUserIds: ['user-1'],
-      },
-    };
+      membership: { action: 'removed', memberUserIds: ['user-1'] },
+    } as MaxUpdate;
+    const store = mockedReceiptStore([
+      persistedReceipt('owner', { ...update, botId: 'bot-owner' }),
+      persistedReceipt('mirror', update, { createdAt: new Date('2026-09-02T08:00:01.000Z') }),
+    ]);
     const claim = {
-      id: 'claim-shadow-membership',
+      id: 'claim',
+      createdAt: new Date(),
       kind: 'EXECUTION',
-      semanticKey: 'membership:user_removed:-100-shadow-membership:user-1',
-      webhookEventId: 'evt-shadow-membership-owner',
-      executionBotId: ownerBotId,
-      enforced: false,
-      status: WebhookExecutionClaimStatus.PENDING as WebhookExecutionClaimStatus,
-      leaseToken: 'owner-lease' as string | null,
-      leaseExpiresAt: new Date('2026-09-02T08:00:30.000Z') as Date | null,
+      semanticKey: buildWebhookSemanticEventKey(update),
+      webhookEventId: 'owner',
+      executionBotId: 'bot-owner',
+      enforced: true,
+      status: 'PENDING',
       preparedAt: null as Date | null,
       completedAt: null,
+      leaseToken: 'live-preparation' as string | null,
+      leaseExpiresAt: new Date(Date.now() + 30_000) as Date | null,
     };
     const prisma = {
-      webhookEvent: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'evt-shadow-membership-mirror',
-          dedupKey: `${mirrorBotId}:u-shadow-membership-mirror`,
-          botId: mirrorBotId,
-          status: WebhookStatus.RECEIVED,
-          normalizedPayload: update,
-        }),
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-      },
+      $queryRaw: jest.fn().mockResolvedValue([{ finishedAt: new Date('2020-01-01T00:00:00Z') }]),
+      webhookEvent: store,
       webhookExecutionClaim: {
-        createMany: jest.fn().mockResolvedValue({ count: 0 }),
+        createMany: jest.fn(),
         findUnique: jest.fn(async () => claim),
-        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        updateMany: jest.fn(async ({ data }: { data: object }) => {
+          if ('enforced' in data) {
+            Object.assign(claim, data);
+            return { count: 1 };
+          }
+          return { count: 0 };
+        }),
       },
-      $transaction: jest.fn(() => {
-        throw new Error('mirrored preparation must not open a membership transaction');
-      }),
     };
-    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(ownerBotId);
+    Object.assign(prisma, {
+      $transaction: jest.fn(async (work: (tx: object) => unknown) => work(prisma)),
+    });
     const service = new WebhookService(
       prisma as never,
-      {
-        get: jest.fn((key: string, fallback?: unknown) =>
-          key === 'WEBHOOK_CANONICAL_EXECUTION_MODE' ? 'shadow' : (fallback ?? 1),
-        ),
-      } as never,
+      new ConfigService({ WEBHOOK_CANONICAL_EXECUTION_MODE: 'shadow' }),
       maxBotLinkService as never,
     );
-
-    await expect(
-      service.preparePersistedWebhookEvent('evt-shadow-membership-mirror'),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        canonical: true,
-        prepared: false,
-        executionBotId: ownerBotId,
-        enforced: false,
-      }),
+    const core = jest.spyOn(service as never, 'prepareWebhookEventCore' as never);
+    await expect(service.preparePersistedWebhookEvent('mirror')).rejects.toBeInstanceOf(
+      WebhookPreparationDeferredError,
     );
-    expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
-    expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(maxBotLinkService.observeStoredChatBotWebhook).not.toHaveBeenCalled();
-
-    claim.status = WebhookExecutionClaimStatus.READY;
-    claim.preparedAt = new Date('2026-09-02T08:00:01.000Z');
-    claim.leaseToken = null;
-    claim.leaseExpiresAt = null;
-
-    await expect(
-      service.preparePersistedWebhookEvent('evt-shadow-membership-mirror'),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        canonical: true,
-        prepared: true,
-        normalizedPayload: expect.objectContaining({ executionOwnerBotId: ownerBotId }),
-        executionBotId: null,
-        enforced: false,
-      }),
-    );
-    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: 'evt-shadow-membership-mirror',
-        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
-        normalizedPayload: {
-          not: expect.objectContaining({ executionOwnerBotId: ownerBotId }),
-        },
-      },
-      data: {
-        normalizedPayload: expect.objectContaining({ executionOwnerBotId: ownerBotId }),
-      },
+    expect(core).not.toHaveBeenCalled();
+    Object.assign(claim, {
+      status: 'READY',
+      preparedAt: new Date(),
+      leaseToken: null,
+      leaseExpiresAt: null,
     });
-    expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(maxBotLinkService.observeStoredChatBotWebhook).toHaveBeenCalledWith({
-      chatId: '-100-shadow-membership',
-      botId: mirrorBotId,
-      observedAt: expect.any(Date),
+    await expect(service.preparePersistedWebhookEvent('mirror')).resolves.toMatchObject({
+      canonical: false,
+      prepared: true,
+      executionBotId: 'bot-owner',
+      enforced: true,
     });
-    expect(maxBotLinkService.getStoredChatPrimaryBotId).not.toHaveBeenCalled();
+    expect(store.events.get('mirror')?.status).toBe(WebhookStatus.DUPLICATE);
+    expect(core).not.toHaveBeenCalled();
   });
 
-  it('takes over terminal failed shadow membership preparation with the claim lease fenced', async () => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T08:00:00.000Z'));
-    try {
-      const ownerBotId = 'bot-owner';
-      const mirrorBotId = 'bot-mirror';
-      const update = {
-        updateId: 'u-shadow-membership-terminal-owner',
-        type: 'user_removed',
-        botId: mirrorBotId,
-        message: {
-          chatId: '-100-shadow-membership-takeover',
-          messageId: 'user_removed:u-shadow-membership-terminal-owner',
-          senderId: 'user-1',
-          text: '',
-          createdAt: '2026-09-02T07:59:00.000Z',
-        },
-        membership: {
-          action: 'removed',
-          memberUserIds: ['user-1'],
-        },
-      };
-      const claim = {
-        id: 'claim-shadow-membership-terminal-owner',
-        kind: 'EXECUTION',
-        semanticKey: 'membership:user_removed:-100-shadow-membership-takeover:user-1',
-        webhookEventId: 'evt-shadow-membership-terminal-owner',
-        executionBotId: ownerBotId,
-        enforced: false,
-        status: WebhookExecutionClaimStatus.PENDING,
-        leaseToken: null,
-        leaseExpiresAt: null,
-        preparedAt: null,
-        completedAt: null,
-      };
-      const claimUpdateMany = jest
-        .fn()
-        .mockResolvedValueOnce({ count: 1 })
-        .mockResolvedValueOnce({ count: 1 });
-      const prisma = {
-        webhookEvent: {
-          findUnique: jest.fn().mockResolvedValue({
-            id: 'evt-shadow-membership-mirror-takeover',
-            dedupKey: `${mirrorBotId}:u-shadow-membership-terminal-owner`,
-            botId: mirrorBotId,
-            status: WebhookStatus.RECEIVED,
-            normalizedPayload: update,
-          }),
-          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        },
-        webhookExecutionClaim: {
-          createMany: jest.fn().mockResolvedValue({ count: 0 }),
-          findUnique: jest.fn().mockResolvedValue(claim),
-          updateMany: claimUpdateMany,
-        },
-      };
-      maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(ownerBotId);
-      const service = new WebhookService(
-        prisma as never,
-        {
-          get: jest.fn((key: string, fallback?: unknown) =>
-            key === 'WEBHOOK_CANONICAL_EXECUTION_MODE' ? 'shadow' : (fallback ?? 1),
-          ),
-        } as never,
-        maxBotLinkService as never,
-      );
-      const prepareCore = jest
-        .spyOn(service as never, 'prepareWebhookEventCore' as never)
-        .mockResolvedValue({ update, executionBotId: mirrorBotId } as never);
-
-      await expect(
-        service.preparePersistedWebhookEvent('evt-shadow-membership-mirror-takeover'),
-      ).resolves.toEqual({
-        canonical: true,
-        prepared: true,
-        normalizedPayload: update,
-        executionBotId: mirrorBotId,
-        enforced: false,
-      });
-
-      expect(prepareCore).toHaveBeenCalledTimes(1);
-      expect(claimUpdateMany).toHaveBeenCalledTimes(2);
-      expect(claimUpdateMany.mock.calls[0]?.[0]).toMatchObject({
-        where: {
-          id: claim.id,
-          webhookEventId: claim.webhookEventId,
-          enforced: false,
-          status: WebhookExecutionClaimStatus.PENDING,
-          preparedAt: null,
-          completedAt: null,
-          webhookEvent: {
-            is: {
-              status: WebhookStatus.FAILED,
-              nextEnqueueAt: null,
-              timeoutQuarantineExpiresAt: null,
-            },
-          },
-        },
-        data: {
-          webhookEventId: 'evt-shadow-membership-mirror-takeover',
-          executionBotId: null,
-          leaseToken: expect.any(String),
-          leaseExpiresAt: new Date('2026-09-02T08:00:30.000Z'),
-        },
-      });
-      const takeoverLeaseToken = claimUpdateMany.mock.calls[0]?.[0].data.leaseToken;
-      expect(claimUpdateMany.mock.calls[1]?.[0]).toMatchObject({
-        where: {
-          id: claim.id,
-          webhookEventId: 'evt-shadow-membership-mirror-takeover',
-          leaseToken: takeoverLeaseToken,
-        },
-        data: {
-          status: WebhookExecutionClaimStatus.READY,
-          leaseToken: null,
-          leaseExpiresAt: null,
-        },
-      });
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it('self-prepares an older ordered message mirror while its newer claim owner is pending', async () => {
-    const ownerBotId = 'bot-owner';
-    const mirrorBotId = 'bot-mirror';
+  it('retains a terminal canonical membership owner rather than replaying it through a shadow mirror', async () => {
     const update = {
-      updateId: 'u-older-message-mirror',
+      updateId: 'terminal-owner',
+      type: 'user_removed',
+      botId: 'bot-mirror',
+      message: {
+        chatId: '-100-terminal-owner',
+        messageId: 'membership-message',
+        senderId: 'user-1',
+        text: '',
+        createdAt: '2026-09-02T08:00:00.000Z',
+      },
+      membership: { action: 'removed', memberUserIds: ['user-1'] },
+    } as MaxUpdate;
+    const store = mockedReceiptStore([
+      persistedReceipt(
+        'owner',
+        { ...update, botId: 'bot-owner' },
+        { status: WebhookStatus.FAILED },
+      ),
+      persistedReceipt('mirror', update),
+    ]);
+    const claim = {
+      id: 'claim',
+      createdAt: new Date(),
+      kind: 'EXECUTION',
+      semanticKey: buildWebhookSemanticEventKey(update),
+      webhookEventId: 'owner',
+      executionBotId: 'bot-owner',
+      enforced: true,
+      status: 'PENDING',
+      preparedAt: null,
+      completedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const claimUpdate = jest.fn(async ({ data }: { data: object }) => {
+      Object.assign(claim, data);
+      return { count: 1 };
+    });
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([{ finishedAt: new Date('2020-01-01T00:00:00Z') }]),
+      webhookEvent: store,
+      webhookExecutionClaim: {
+        createMany: jest.fn(),
+        findUnique: jest.fn(async () => claim),
+        updateMany: claimUpdate,
+      },
+    };
+    const service = new WebhookService(
+      prisma as never,
+      new ConfigService({ WEBHOOK_CANONICAL_EXECUTION_MODE: 'shadow' }),
+      maxBotLinkService as never,
+    );
+    const core = jest.spyOn(service as never, 'prepareWebhookEventCore' as never);
+    await expect(service.preparePersistedWebhookEvent('mirror')).rejects.toThrow(
+      'Terminal canonical owner requires proof recovery',
+    );
+    expect(core).not.toHaveBeenCalled();
+    expect(claim.webhookEventId).toBe('owner');
+    expect(claimUpdate).not.toHaveBeenCalled();
+  });
+
+  it('helps the later owner prepare when the older ordered mirror is the chat head', async () => {
+    const update = {
+      updateId: 'older-message-mirror',
       type: 'message_created',
-      botId: mirrorBotId,
+      botId: 'bot-mirror',
       message: {
         chatId: '-100-ordered-mirror',
         messageId: 'message-ordered-mirror',
@@ -690,61 +1091,58 @@ describe('WebhookService', () => {
         text: 'hello',
         createdAt: '2026-09-02T08:00:00.000Z',
       },
+    } as MaxUpdate;
+    const ownerUpdate = { ...update, botId: 'bot-owner' };
+    const store = mockedReceiptStore([
+      persistedReceipt('mirror', update),
+      persistedReceipt('owner', ownerUpdate, { createdAt: new Date('2026-09-02T08:00:01.000Z') }),
+    ]);
+    const claim = {
+      id: 'claim',
+      createdAt: new Date(),
+      kind: 'EXECUTION',
+      semanticKey: buildWebhookSemanticEventKey(update),
+      webhookEventId: 'owner',
+      executionBotId: 'bot-owner',
+      enforced: true,
+      status: 'PENDING',
+      preparedAt: null,
+      completedAt: null,
+      businessStartedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
     };
     const prisma = {
-      webhookEvent: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'evt-older-message-mirror',
-          dedupKey: `${mirrorBotId}:u-older-message-mirror`,
-          botId: mirrorBotId,
-          status: WebhookStatus.RECEIVED,
-          normalizedPayload: update,
-        }),
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-      },
+      $queryRaw: jest.fn().mockResolvedValue([{ finishedAt: new Date('2020-01-01T00:00:00Z') }]),
+      webhookEvent: store,
       webhookExecutionClaim: {
-        createMany: jest.fn().mockResolvedValue({ count: 0 }),
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'claim-newer-message-owner',
-          kind: 'EXECUTION',
-          semanticKey: 'message:message_created:-100-ordered-mirror:message-ordered-mirror',
-          webhookEventId: 'evt-newer-message-owner',
-          executionBotId: ownerBotId,
-          enforced: false,
-          status: WebhookExecutionClaimStatus.PENDING,
-          leaseToken: 'owner-lease',
-          leaseExpiresAt: new Date('2026-09-02T08:00:30.000Z'),
-          preparedAt: null,
-          completedAt: null,
+        createMany: jest.fn(),
+        findUnique: jest.fn(async () => claim),
+        updateMany: jest.fn(async ({ data }: { data: object }) => {
+          Object.assign(claim, data);
+          return { count: 1 };
         }),
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
-    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(ownerBotId);
     const service = new WebhookService(
       prisma as never,
-      {
-        get: jest.fn((key: string, fallback?: unknown) =>
-          key === 'WEBHOOK_CANONICAL_EXECUTION_MODE' ? 'shadow' : (fallback ?? 1),
-        ),
-      } as never,
+      new ConfigService({ WEBHOOK_CANONICAL_EXECUTION_MODE: 'shadow' }),
       maxBotLinkService as never,
     );
-    const prepareCore = jest
+    const core = jest
       .spyOn(service as never, 'prepareWebhookEventCore' as never)
-      .mockResolvedValue({ update, executionBotId: ownerBotId } as never);
-
-    await expect(service.preparePersistedWebhookEvent('evt-older-message-mirror')).resolves.toEqual(
-      {
-        canonical: true,
-        prepared: true,
-        normalizedPayload: update,
-        executionBotId: null,
-        enforced: false,
-      },
-    );
-
-    expect(prepareCore).toHaveBeenCalledWith('evt-older-message-mirror', update);
+      .mockResolvedValue({ update: ownerUpdate, executionBotId: 'bot-owner' } as never);
+    await expect(service.preparePersistedWebhookEvent('mirror')).resolves.toMatchObject({
+      canonical: true,
+      prepared: true,
+      normalizedPayload: ownerUpdate,
+      executionBotId: 'bot-owner',
+      enforced: true,
+      canonicalWebhookEventId: 'owner',
+    });
+    expect(core).toHaveBeenCalledTimes(1);
+    expect(core).toHaveBeenCalledWith('owner', ownerUpdate);
+    expect(store.events.get('mirror')?.status).toBe(WebhookStatus.RECEIVED);
   });
 
   it.each<[mode: 'on' | 'shadow' | 'off', enforced: boolean, eventStatus: WebhookStatus]>([
@@ -776,14 +1174,12 @@ describe('WebhookService', () => {
       };
       const prisma = {
         webhookEvent: {
-          findUnique: jest.fn().mockResolvedValue({
-            id: 'evt-completed-owner',
-            dedupKey: 'bot-1:synthetic:user_added:completed-owner',
-            botId: 'bot-1',
-            status: eventStatus,
-            queueName: 'moderation-default-3',
-            normalizedPayload: update,
-          }),
+          findUnique: jest.fn().mockResolvedValue(
+            persistedReceipt('evt-completed-owner', update as MaxUpdate, {
+              status: eventStatus,
+              queueName: 'moderation-default-3',
+            }),
+          ),
           updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         },
         webhookExecutionClaim: {
@@ -791,7 +1187,7 @@ describe('WebhookService', () => {
           findUnique: jest.fn().mockResolvedValue({
             id: 'claim-completed-owner',
             kind: 'EXECUTION',
-            semanticKey: 'membership:user_added:-100-completed-owner:user-1',
+            semanticKey: buildWebhookSemanticEventKey(update as MaxUpdate),
             webhookEventId: 'evt-completed-owner',
             executionBotId: 'bot-1',
             enforced,
@@ -801,9 +1197,12 @@ describe('WebhookService', () => {
             preparedAt: new Date('2026-08-31T09:39:58.000Z'),
             completedAt,
           }),
-          updateMany: jest.fn(),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         },
       };
+      Object.assign(prisma, {
+        $transaction: jest.fn(async (work: (tx: object) => unknown) => work(prisma)),
+      });
       const service = new WebhookService(
         prisma as never,
         {
@@ -822,28 +1221,85 @@ describe('WebhookService', () => {
         prepared: true,
         normalizedPayload: update,
         executionBotId: 'bot-1',
-        enforced,
+        enforced: true,
       });
-      expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith({
-        where: {
-          id: 'evt-completed-owner',
-          status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
-        },
-        data: {
-          status: WebhookStatus.PROCESSED,
-          processedAt: completedAt,
-          queueName: null,
-          errorMessage: null,
-          nextEnqueueAt: null,
-          timeoutQuarantineExpiresAt: null,
-        },
-      });
-      expect(prisma.webhookExecutionClaim.createMany).toHaveBeenCalledTimes(mode === 'off' ? 0 : 1);
-      expect(prisma.webhookExecutionClaim.updateMany).not.toHaveBeenCalled();
+      expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: 'evt-completed-owner',
+            status: eventStatus,
+            normalizedPayload: { equals: update },
+            timeoutQuarantineExpiresAt: null,
+          }),
+          data: expect.objectContaining({
+            status: WebhookStatus.PROCESSED,
+            processedAt: completedAt,
+          }),
+        }),
+      );
+      expect(prisma.webhookExecutionClaim.createMany).toHaveBeenCalledTimes(1);
+      expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: 'claim-completed-owner',
+            status: 'COMPLETED',
+            preparedAt: expect.any(Date),
+            completedAt,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          }),
+          data: { enforced: true },
+        }),
+      );
       expect(maxBotLinkService.observeStoredChatBotWebhook).not.toHaveBeenCalled();
       expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
     },
   );
+
+  it('prepares a fresh keyless shadow receipt without quarantining its unenforced claim', async () => {
+    const update = {
+      updateId: 'fresh-keyless-shadow',
+      type: 'bot_started',
+      botId: 'bot-1',
+    } as MaxUpdate;
+    expect(buildWebhookSemanticEventKey(update)).toBeNull();
+    const store = mockedReceiptStore([
+      persistedReceipt('evt-keyless-shadow', update, { createdAt: new Date() }),
+    ]);
+    const prisma = { webhookEvent: store };
+    const service = new WebhookService(
+      prisma as never,
+      new ConfigService({ WEBHOOK_CANONICAL_EXECUTION_MODE: 'shadow' }),
+      maxBotLinkService as never,
+    );
+
+    await expect(service.preparePersistedWebhookEvent('evt-keyless-shadow')).resolves.toEqual({
+      canonical: true,
+      prepared: true,
+      normalizedPayload: update,
+      executionBotId: null,
+      enforced: false,
+    });
+    const model = (prisma as SemanticFixtureDatabase).webhookExecutionClaim!;
+    expect(model.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          kind: 'EXECUTION',
+          semanticKey: 'receipt:bot-1:fresh-keyless-shadow',
+          webhookEventId: 'evt-keyless-shadow',
+          enforced: false,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    await expect(model.findUnique.mock.results[0]!.value).resolves.toMatchObject({
+      status: 'READY',
+      enforced: false,
+      businessStartedAt: null,
+      commandResult: null,
+    });
+    expect(store.events.get('evt-keyless-shadow')?.errorMessage).toBeNull();
+  });
 
   it('does not publish READY after losing the webhook preparation lease', async () => {
     const update = {
@@ -878,6 +1334,7 @@ describe('WebhookService', () => {
           botId: 'bot-1',
           status: 'RECEIVED',
           normalizedPayload: update,
+          createdAt: new Date(),
         }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
@@ -887,9 +1344,9 @@ describe('WebhookService', () => {
         updateMany: jest
           .fn()
           .mockResolvedValueOnce({ count: 1 })
-          .mockResolvedValueOnce({ count: 0 })
           .mockResolvedValueOnce({ count: 0 }),
       },
+      semanticClaimWrite: jest.fn().mockResolvedValue(0),
     };
     maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce('bot-1');
     const service = new WebhookService(
@@ -905,7 +1362,8 @@ describe('WebhookService', () => {
     await expect(service.preparePersistedWebhookEvent('evt-preparation-lease')).rejects.toThrow(
       'Webhook preparation lease was lost before READY',
     );
-    expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenCalledTimes(3);
+    expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenCalledTimes(2);
+    expect(prisma.semanticClaimWrite).toHaveBeenCalledTimes(1);
     for (const call of prisma.webhookExecutionClaim.updateMany.mock.calls) {
       expect(call[0].where).toMatchObject({
         id: claim.id,
@@ -1083,6 +1541,7 @@ describe('WebhookService', () => {
       },
       raw: {
         update_type: 'message_created',
+        timestamp: Date.parse('2026-08-01T10:00:00.000Z'),
         message: {
           sender: { user_id: 195714583 },
           recipient: { chat_id: 152517912, chat_type: 'dialog' },
@@ -1276,6 +1735,7 @@ describe('WebhookService', () => {
           createdAt: new Date('2026-03-26T12:00:00.000Z').toISOString(),
         },
         raw: {
+          timestamp: Date.parse('2026-03-26T12:00:00.000Z'),
           callback: {
             callback_id: 'callback-1',
             payload: 'action|sample-1|1|0',
@@ -1336,6 +1796,7 @@ describe('WebhookService', () => {
           createdAt: new Date('2026-03-26T12:00:00.000Z').toISOString(),
         },
         raw: {
+          timestamp: Date.parse('2026-03-26T12:00:00.000Z'),
           message: {
             body: {
               text: 'bad-\ud800-json\u0000',
@@ -1636,7 +2097,7 @@ describe('WebhookService', () => {
   it('best-effort invalidates remote membership lookups for join and leave events', async () => {
     const prisma = {
       webhookEvent: {
-        create: jest.fn().mockResolvedValue({ id: 'evt-3b' }),
+        create: jest.fn(async ({ data }: { data: FixtureRow }) => ({ id: data.id })),
         updateMany: jest.fn(),
       },
     };
@@ -1724,9 +2185,9 @@ describe('WebhookService', () => {
     expect(fixture.operations).toContain('transaction:commit');
     expect(fixture.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalled();
     lookup.invalidateMemberships.mockResolvedValue(undefined);
-    expect((await service.preparePersistedWebhookEvent('cache-recovery', update)).prepared).toBe(
-      true,
-    );
+    expect(
+      (await service.preparePersistedWebhookEvent('evt-atomic-membership', update)).prepared,
+    ).toBe(true);
     await service.onModuleDestroy();
   });
 
@@ -1790,6 +2251,8 @@ describe('WebhookService', () => {
       'cache-local:-100-membership',
       'cache:user-1',
       'cache:iduser-1',
+      'transaction:start',
+      'transaction:commit',
     ]);
     expect(fixture.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith({
       where: {
@@ -2510,6 +2973,8 @@ describe('WebhookService', () => {
       'transaction:commit',
       'cache:user-1',
       'cache:iduser-1',
+      'transaction:start',
+      'transaction:commit',
     ]);
     expect(fixture.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2647,7 +3112,7 @@ describe('WebhookService', () => {
   it('persists admin read models for membership and managed-entities activity when projection tables are available', async () => {
     const prisma = {
       webhookEvent: {
-        create: jest.fn().mockResolvedValue({ id: 'evt-read-models' }),
+        create: jest.fn(async ({ data }: { data: FixtureRow }) => ({ id: data.id })),
         updateMany: jest.fn(),
       },
       chatMembershipActivityEvent: {
@@ -2942,6 +3407,7 @@ describe('WebhookService', () => {
           },
           raw: {
             update_type: 'message_created',
+            timestamp: Date.parse('2026-04-06T02:00:00.000Z'),
             message: {
               new_members: [
                 {
@@ -3042,10 +3508,10 @@ describe('WebhookService', () => {
     });
   });
 
-  it('uses the same membership dedupe key for equivalent join events from different bots', async () => {
+  it('keeps the membership projection dedupe key stable across distinct millisecond updates from different bots', async () => {
     const prisma = {
       webhookEvent: {
-        create: jest.fn().mockResolvedValue({ id: 'evt-membership-dedupe' }),
+        create: jest.fn(async ({ data }: { data: FixtureRow }) => ({ id: data.id })),
         updateMany: jest.fn(),
       },
       chatMembershipActivityEvent: {
@@ -3113,13 +3579,13 @@ describe('WebhookService', () => {
 
     const firstCall = prisma.chatMembershipActivityEvent.createMany.mock.calls[0]?.[0];
     const secondCall = prisma.chatMembershipActivityEvent.createMany.mock.calls[1]?.[0];
-
     expect(firstCall?.data?.[0]?.dedupeKey).toBe(
       'membership:user_added:-100333:user-88:2026-04-06T01:00:00.000Z',
     );
     expect(secondCall?.data?.[0]?.dedupeKey).toBe(
       'membership:user_added:-100333:user-88:2026-04-06T01:00:00.000Z',
     );
+    expect(prisma.chatMembershipActivityEvent.createMany).toHaveBeenCalledTimes(2);
   });
 
   it('marks bot membership removed instead of rebinding it on bot_removed updates', async () => {
@@ -3326,14 +3792,18 @@ describe('WebhookService', () => {
         } as MaxUpdate,
         '127.0.0.1',
       ),
-    ).resolves.toEqual({ accepted: true, duplicate: false });
+    ).rejects.toThrow('Legacy semantic execution requires exact proof recovery');
 
     expect(maxBotLinkService.markChatBotRemoved).not.toHaveBeenCalled();
-    expect(maxBotLinkService.getStoredChatPrimaryBotId).toHaveBeenCalledWith(
-      '-100-untrusted-removal',
-      { bypassCache: true },
+    expect(maxBotLinkService.getStoredChatPrimaryBotId).not.toHaveBeenCalled();
+    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          errorMessage: expect.stringContaining('LEGACY_EXECUTION_UNVERIFIED'),
+        }),
+      }),
     );
-    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalled();
   });
 
   it('parses an official bot_removed actor payload and removes the authenticated ingress bot', async () => {
@@ -3453,6 +3923,7 @@ describe('WebhookService', () => {
           },
           raw: {
             update_type: 'bot_removed',
+            timestamp: Date.parse('2026-05-10T02:12:01.411Z'),
             chat_id: -73729721862152,
             user: {
               id: 'bot-5-contact',
@@ -3520,6 +3991,7 @@ describe('WebhookService', () => {
           },
           raw: {
             update_type: 'bot_removed',
+            timestamp: Date.parse('2026-05-10T02:10:01.411Z'),
             chat_id: -73729721862151,
             user: {
               user_id: 999999,
@@ -3951,7 +4423,7 @@ describe('WebhookService', () => {
     const chatId = '-100-live-probe-removal-race';
     const botId = 'id613002203036_4_bot';
     const probeStartedAt = new Date('2026-07-10T12:00:00.000Z');
-    const probeCompletedAt = new Date('2026-07-10T12:00:30.000Z');
+    const probeCompletedAt = new Date('2026-07-10T12:00:10.000Z');
     let releaseProbe!: (access: {
       userId: string;
       isAdmin: boolean;
@@ -4210,7 +4682,11 @@ describe('WebhookService', () => {
         service.preparePersistedWebhookEvent('owner-retry', update),
       ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
       expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalled();
-      expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+      expect(
+        prisma.webhookEvent.updateMany.mock.calls.every(([args]) =>
+          Object.keys(args.data).every((key) => key === 'executionDeadlineAt'),
+        ),
+      ).toBe(true);
       expect((service as any).executionOwnerRecheckBackoffUntilMs.size).toBe(0);
     },
   );
@@ -4477,6 +4953,7 @@ describe('WebhookService', () => {
             createdAt: new Date('2026-05-10T03:00:26.996Z').toISOString(),
           },
           raw: {
+            timestamp: Date.parse('2026-05-10T03:00:26.996Z'),
             message: {
               link: {
                 type: 'reply',
@@ -5293,7 +5770,7 @@ describe('WebhookService', () => {
     async (entityType) => {
       const prisma = {
         webhookEvent: {
-          create: jest.fn().mockResolvedValue({ id: 'evt-silent-bot-added' }),
+          create: jest.fn(async ({ data }: { data: FixtureRow }) => ({ id: data.id })),
           updateMany: jest.fn(),
         },
       };

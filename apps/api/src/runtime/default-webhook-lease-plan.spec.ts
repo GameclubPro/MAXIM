@@ -14,6 +14,29 @@ function buildCounters() {
 }
 
 describe('buildDefaultWebhookLeasePlan', () => {
+  it('accounts for each recovered shard before assigning the next dead-owner shard', () => {
+    const counters = buildCounters();
+    const recovered = [
+      'moderation-default-0',
+      'moderation-default-1',
+      'moderation-default-2',
+    ] as const;
+    for (const queue of recovered) counters[queue].waiting = 12;
+    const plan = buildDefaultWebhookLeasePlan({
+      mode: 'on',
+      aliveWorkerGroups: new Set([
+        'api-moderation-realtime-b',
+        'api-moderation-realtime-c',
+        'api-moderation-realtime-d',
+      ]),
+      claimedOwners: Object.fromEntries(recovered.map((queue) => [queue, 'api-moderation'])),
+      queueCounters: counters,
+      rebalanceCooldownMs: 30_000,
+    });
+    expect(new Set(recovered.map((queue) => plan.queues[queue].desiredOwner)).size).toBe(3);
+    expect(plan.workerLoads['api-moderation']).toBe(0);
+    for (const queue of recovered) expect(plan.queues[queue].reason).toBe('owner-unavailable');
+  });
   it('keeps static home owners when dynamic mode is off', () => {
     const counters = buildCounters();
     counters['moderation-default-0'] = { waiting: 2, prioritized: 0, active: 0, delayed: 0 };

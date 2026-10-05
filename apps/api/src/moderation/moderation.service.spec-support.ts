@@ -1,8 +1,11 @@
 import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS, type MaxUpdate } from '@maxim/contracts';
 import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
+import { createGroupCommandAuthorityMock } from '../common/group-command-authority.spec-support';
 import { markMaxMemberMutationAttempted } from '../max/max-client.service';
 import { ChatEntityType, EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import { WebhookParser } from '../webhook/webhook.parser';
+import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
+import { buildWebhookExecutionDeadlineAt } from '../webhook/webhook-execution-deadline';
 import { ChatRulesPublishFenceRetryError } from './chat-rules-own-bot-message-classifier';
 import { createDuplicateSanctionAuthorization } from './duplicate-execution-guards';
 import { buildActiveMuteStateKey } from './moderation-state.util';
@@ -80,6 +83,262 @@ expect.extend({
     };
   },
 });
+
+type CanonicalWebhookPrismaFixture = {
+  webhookEvent: {
+    findUnique: jest.Mock;
+    findFirst?: jest.Mock;
+    update?: jest.Mock;
+    updateMany?: jest.Mock;
+  };
+  webhookExecutionClaim?: {
+    findUnique?: jest.Mock;
+    findFirst?: jest.Mock;
+    updateMany?: jest.Mock;
+  };
+  $queryRaw?: jest.Mock;
+  $executeRaw?: jest.Mock;
+  $transaction?: jest.Mock;
+};
+
+// FLAG: These process fixtures model persisted semantic authority, including writes read
+// by later completion transactions. Direct negative/persistence fixtures remain explicit.
+function withCanonicalWebhookFixture(prisma: CanonicalWebhookPrismaFixture) {
+  type Row = Record<string, unknown>;
+  const receipts = new Map<string, Row>();
+  const receiptWrites = new Map<string, Row>();
+  const claims = new Map<string, Row>();
+  const claimWrites = new Map<string, Row>();
+  const receiptFind = prisma.webhookEvent.findUnique;
+  prisma.webhookEvent.findUnique = jest.fn(async (...args: unknown[]) => {
+    const raw = (await receiptFind(...args)) as Row | null;
+    if (!raw) return raw;
+    const id = String(raw.id);
+    const createdAt = (raw.createdAt ?? receipts.get(id)?.createdAt ?? new Date()) as Date;
+    const row = {
+      status: 'QUEUED',
+      errorMessage: null,
+      nextEnqueueAt: null,
+      timeoutQuarantineExpiresAt: null,
+      ...raw,
+      createdAt,
+      semanticKey: raw.semanticKey ?? buildWebhookSemanticEventKey(raw.normalizedPayload),
+      executionDeadlineAt:
+        raw.executionDeadlineAt ??
+        buildWebhookExecutionDeadlineAt(raw.normalizedPayload as MaxUpdate, createdAt),
+      ...receiptWrites.get(id),
+    };
+    receipts.set(id, row);
+    return { ...row };
+  });
+  prisma.webhookEvent.findFirst ??= jest.fn(async (args: { where: Row; select: Row }) => {
+    const semanticKey = args.where.semanticKey;
+    const cutoff = (args.where.createdAt as { lte?: unknown } | undefined)?.lte;
+    const excludedId = (args.where.id as { not?: unknown } | undefined)?.not;
+    if (
+      typeof semanticKey !== 'string' ||
+      (args.where.createdAt !== undefined && !(cutoff instanceof Date)) ||
+      (args.where.OR !== undefined &&
+        (!Array.isArray(args.where.OR) || typeof excludedId !== 'string'))
+    )
+      throw new Error('Unknown canonical fixture receipt probe');
+    const matches = [...receipts.values()]
+      .map((receipt) => ({ ...receipt, ...receiptWrites.get(String(receipt.id)) }))
+      .filter(
+        (receipt) =>
+          receipt.semanticKey === semanticKey &&
+          receipt.createdAt instanceof Date &&
+          (!(cutoff instanceof Date) || receipt.createdAt.getTime() <= cutoff.getTime()) &&
+          (excludedId === undefined || receipt.id !== excludedId) &&
+          (args.where.OR === undefined ||
+            receipt.status === 'PROCESSED' ||
+            receipt.timeoutQuarantineExpiresAt != null ||
+            String(receipt.errorMessage ?? '')
+              .toLowerCase()
+              .includes('ambiguous') ||
+            String(receipt.errorMessage ?? '').startsWith(
+              WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
+            ) ||
+            String(receipt.errorMessage ?? '').startsWith(
+              WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX,
+            )),
+      )
+      .sort((left, right) => {
+        const timeOrder = (left.createdAt as Date).getTime() - (right.createdAt as Date).getTime();
+        if (timeOrder) return timeOrder;
+        const leftId = String(left.id);
+        const rightId = String(right.id);
+        return leftId < rightId ? -1 : leftId === rightId ? 0 : 1;
+      });
+    if (!matches.length) return null;
+    return Object.fromEntries(
+      Object.entries(args.select)
+        .filter(([, selected]) => selected)
+        .map(([key]) => [key, matches[0]![key]]),
+    );
+  });
+  const receiptUpdateMany = prisma.webhookEvent.updateMany;
+  prisma.webhookEvent.updateMany = jest.fn(async (args: { where: Row; data: Row }) => {
+    const result = (await receiptUpdateMany?.(args)) ?? { count: 1 };
+    if (result.count === 1 && typeof args.where.id === 'string')
+      receiptWrites.set(args.where.id, {
+        ...receiptWrites.get(args.where.id),
+        ...args.data,
+      });
+    return result;
+  });
+
+  const claimModel = (prisma.webhookExecutionClaim ??= {});
+  const normalizeClaim = (raw: Row | null): Row | null => {
+    const receipt =
+      [...receipts.values()].find((event) => event.id === raw?.webhookEventId) ??
+      [...receipts.values()][0];
+    if (!receipt || !receipt.semanticKey) return raw;
+    const source: Row = raw ?? {
+      id: `claim:${receipt.id}`,
+      webhookEventId: receipt.id,
+      executionBotId: receipt.botId ?? null,
+    };
+    const id = String(source.id);
+    const row = {
+      kind: 'EXECUTION',
+      semanticKey: receipt.semanticKey,
+      enforced: true,
+      status: 'READY',
+      preparedAt: source.completedAt ?? receipt.createdAt,
+      createdAt: new Date(),
+      businessStartedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      commandResult: null,
+      completedAt: null,
+      ...source,
+      ...claimWrites.get(id),
+    };
+    claims.set(id, row);
+    return { ...row };
+  };
+  const claimFind = claimModel.findUnique;
+  claimModel.findUnique = jest.fn(async (...args: unknown[]) =>
+    normalizeClaim((await claimFind?.(...args)) ?? null),
+  );
+  const claimFindFirst = claimModel.findFirst;
+  claimModel.findFirst = jest.fn(async (args: { where: Row }) => {
+    const raw = claimFindFirst
+      ? await claimFindFirst(args)
+      : [...claims.values()].find((claim) => claim.webhookEventId === args.where.webhookEventId);
+    return normalizeClaim(raw ?? null);
+  });
+  const claimUpdateMany = claimModel.updateMany;
+  claimModel.updateMany = jest.fn(async (args: { where: Row; data: Row }) => {
+    const result = (await claimUpdateMany?.(args)) ?? { count: 1 };
+    if (result.count === 1) {
+      for (const [id, claim] of claims) {
+        if (
+          (args.where.id === undefined || args.where.id === id) &&
+          (args.where.webhookEventId === undefined ||
+            args.where.webhookEventId === claim.webhookEventId)
+        )
+          claimWrites.set(id, { ...claimWrites.get(id), ...args.data });
+      }
+    }
+    return result;
+  });
+  const queryRaw = prisma.$queryRaw;
+  prisma.$queryRaw = jest.fn(async (...args: unknown[]) => {
+    const query = args[0] as { join?: (separator: string) => string; strings?: readonly string[] };
+    const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
+    if (sql.includes("migration_name = '20261005020000_add_multibot_order_fences'"))
+      return [{ finishedAt: new Date(0) }];
+    if (/SELECT "id" FROM .* FOR UPDATE/u.test(sql.replace(/\s+/gu, ' '))) return [];
+    return queryRaw ? queryRaw(...args) : [];
+  });
+  const executeRaw = prisma.$executeRaw;
+  prisma.$executeRaw = jest.fn(
+    async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
+      const sql = query.strings.join('?');
+      const valueAfter = (fragment: string) =>
+        query.values[query.strings.findIndex((part) => part.includes(fragment))];
+      const id = String(valueAfter('claim."id" = '));
+      const eventId = String(valueAfter('event."id" = '));
+      const claim = { ...claims.get(id), ...claimWrites.get(id) };
+      const event = { ...receipts.get(eventId), ...receiptWrites.get(eventId) };
+      const now = new Date();
+      const expiry = sql.includes('SET "status" = \'COMPLETED\', "prepared_at" = COALESCE');
+      const transition =
+        sql.includes('SET "execution_bot_id" = ') && sql.includes('"business_started_at" = ');
+      if (!expiry && !transition) throw new Error('Unknown canonical fixture SQL mutation');
+      const ready = sql.includes('"business_started_at" = NULL');
+      const deadline = valueAfter(
+        expiry
+          ? 'event."execution_deadline_at" = '
+          : 'event."execution_deadline_at" IS NOT DISTINCT FROM ',
+      );
+      const waitingMarker = valueAfter('claim."command_result" @> ');
+      const waiting = typeof waitingMarker === 'string' ? (JSON.parse(waitingMarker) as Row) : null;
+      const result = claim.commandResult as Row | null;
+      const matchesWaiting =
+        waiting !== null &&
+        result !== null &&
+        result !== undefined &&
+        Object.entries(waiting).every(([key, value]) => result[key] === value);
+      const sameDeadline =
+        event.executionDeadlineAt instanceof Date && deadline instanceof Date
+          ? event.executionDeadlineAt.getTime() === deadline.getTime()
+          : event.executionDeadlineAt === deadline;
+      if (
+        claim.kind !== 'EXECUTION' ||
+        claim.semanticKey !== valueAfter('claim."semantic_key" = ') ||
+        claim.webhookEventId !== eventId ||
+        claim.status !== valueAfter('claim."status"::text = ') ||
+        claim.businessStartedAt !== null ||
+        claim.completedAt !== null ||
+        claim.leaseToken !== valueAfter('claim."lease_token" = ') ||
+        !(claim.leaseExpiresAt instanceof Date) ||
+        claim.leaseExpiresAt.getTime() <= now.getTime() ||
+        (!ready && !claim.enforced) ||
+        ['PROCESSED', 'DUPLICATE'].includes(String(event.status)) ||
+        event.timeoutQuarantineExpiresAt !== null ||
+        String(event.errorMessage ?? '').startsWith(WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX) ||
+        String(event.errorMessage ?? '')
+          .toLowerCase()
+          .includes('ambiguous') ||
+        !sameDeadline ||
+        (expiry &&
+          (!matchesWaiting || !(deadline instanceof Date) || deadline.getTime() > now.getTime())) ||
+        (!expiry &&
+          matchesWaiting &&
+          (!(deadline instanceof Date) || deadline.getTime() <= now.getTime()))
+      )
+        return 0;
+      const changed = (await executeRaw?.(query)) ?? 1;
+      if (changed !== 1) return changed;
+      claimWrites.set(id, {
+        ...claimWrites.get(id),
+        ...(expiry
+          ? {
+              status: 'COMPLETED',
+              preparedAt: claim.preparedAt ?? now,
+              completedAt: now,
+              leaseToken: null,
+              leaseExpiresAt: null,
+            }
+          : {
+              executionBotId: valueAfter('SET "execution_bot_id" = '),
+              enforced: Boolean(claim.enforced || valueAfter('"enforced" = claim."enforced" OR ')),
+              status: 'READY',
+              preparedAt: ready ? now : claim.preparedAt,
+              businessStartedAt: ready ? null : now,
+              leaseToken: ready ? null : claim.leaseToken,
+              leaseExpiresAt: ready ? null : claim.leaseExpiresAt,
+            }),
+      });
+      return 1;
+    },
+  );
+  prisma.$transaction ??= jest.fn(async (operation) => operation(prisma));
+  return prisma;
+}
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -354,8 +613,9 @@ function createModerationServiceWithManualBridge(params: {
   chatContextCache?: unknown;
   maxBotLinkService?: unknown;
   sanctionStateFence?: unknown;
+  groupCommandAuthority?: unknown;
 }) {
-  return new ModerationService(
+  const service = new ModerationService(
     params.prisma as never,
     params.ruleEngine as never,
     params.sanctionService as never,
@@ -392,6 +652,12 @@ function createModerationServiceWithManualBridge(params: {
       isSanctionEventInvalidated: jest.fn().mockResolvedValue(false),
     }) as never,
   );
+  Object.assign(service, {
+    injectedGroupCommandAuthority:
+      params.groupCommandAuthority ?? createGroupCommandAuthorityMock(),
+    maxBotContextService: { getActiveBotId: () => 'bot-1' },
+  });
+  return service;
 }
 
 function createModerationServiceWithSanctionStateLock(params: {
@@ -647,7 +913,8 @@ function createSettings(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createUpdate(): MaxUpdate {
+function createUpdate(sourceDate = new Date()): MaxUpdate {
+  const createdAt = sourceDate.toISOString();
   return {
     updateId: 'upd-1',
     type: 'message_created',
@@ -657,9 +924,12 @@ function createUpdate(): MaxUpdate {
       senderId: 'user-1',
       senderName: 'Алексей',
       text: 'same text',
-      createdAt: new Date().toISOString(),
+      createdAt,
     },
-    raw: {},
+    raw: {
+      timestamp: sourceDate.getTime(),
+      message: { timestamp: sourceDate.getTime() },
+    },
   };
 }
 
@@ -2159,6 +2429,7 @@ export {
   REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS,
   SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS,
   createDeferred,
+  withCanonicalWebhookFixture,
   extractSqlText,
   escapeMaxMarkdown,
   userMention,

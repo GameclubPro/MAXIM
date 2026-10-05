@@ -21,6 +21,7 @@ import {
   createUpdate,
   installImmediateTimeoutForDelay,
   createPrivateCallbackUpdate,
+  withCanonicalWebhookFixture,
 } from './moderation.service.spec-support';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 
@@ -113,6 +114,7 @@ describe('ModerationService', () => {
     const privateControlService = {
       handleUpdate: jest.fn().mockResolvedValue(undefined),
     };
+    const persisted = withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -140,8 +142,8 @@ describe('ModerationService', () => {
 
     expect(update.message?.messageId).toBe(`message_created:${update.updateId}`);
     expect(privateControlService.handleUpdate).toHaveBeenCalledWith(update);
-    expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
-      where: { id: 'event-pure-forward-worker-1' },
+    expect(persisted.webhookEvent.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: 'event-pure-forward-worker-1' }),
       data: expect.objectContaining({
         status: 'PROCESSED',
         errorMessage: null,
@@ -217,6 +219,7 @@ describe('ModerationService', () => {
           updateMany: jest.fn(),
         },
       };
+      withCanonicalWebhookFixture(prisma);
       const service = new ModerationService(
         prisma as never,
         { detect: jest.fn() } as never,
@@ -229,11 +232,27 @@ describe('ModerationService', () => {
 
       expect(handleUpdate).not.toHaveBeenCalled();
       expect(prisma.$queryRaw).not.toHaveBeenCalled();
-      expect(prisma.webhookExecutionClaim.updateMany).not.toHaveBeenCalled();
+      expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenCalledTimes(enforced ? 1 : 2);
+      expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenLastCalledWith({
+        where: expect.objectContaining({
+          id: 'claim-completed-owner-1',
+          semanticKey: buildWebhookSemanticEventKey(update),
+          enforced: true,
+          status: 'COMPLETED',
+          completedAt,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        data: { enforced: true },
+      });
       expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith({
         where: {
           id: 'event-completed-owner-1',
-          status: { not: 'PROCESSED' },
+          status: eventStatus,
+          normalizedPayload: { equals: update },
+          errorMessage: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
         },
         data: {
           status: 'PROCESSED',
@@ -241,7 +260,6 @@ describe('ModerationService', () => {
           queueName: null,
           errorMessage: null,
           nextEnqueueAt: null,
-          timeoutQuarantineExpiresAt: null,
         },
       });
       expect(prisma.webhookEvent.update).not.toHaveBeenCalled();
@@ -290,6 +308,7 @@ describe('ModerationService', () => {
         }),
       },
     };
+    withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -303,7 +322,7 @@ describe('ModerationService', () => {
     expect(handleUpdate).toHaveBeenCalledTimes(1);
 
     await expect(service.processWebhookEvent('event-canonical-lease-1')).rejects.toThrow(
-      'Canonical webhook business lease is busy',
+      'Canonical business already running',
     );
     expect(handleUpdate).toHaveBeenCalledTimes(1);
 
@@ -312,50 +331,109 @@ describe('ModerationService', () => {
   });
 
   it('leases an enforced receipt-fallback claim when no semantic event key exists', async () => {
-    let leaseHeld = false;
+    const receipt = {
+      id: 'event-fallback-lease-1',
+      dedupKey: 'bot-1:fallback-without-semantic-subject',
+      semanticKey: null,
+      executionDeadlineAt: null,
+      createdAt: new Date(),
+      status: 'QUEUED',
+      botId: 'bot-1',
+      errorMessage: null,
+      timeoutQuarantineExpiresAt: null,
+      normalizedPayload: {
+        updateId: 'fallback-without-semantic-subject',
+        type: 'unknown_update',
+        botId: 'bot-1',
+      },
+    };
+    const claim = {
+      id: 'claim-fallback-lease-1',
+      kind: 'EXECUTION',
+      semanticKey: `receipt:${receipt.dedupKey}`,
+      webhookEventId: receipt.id,
+      executionBotId: 'bot-1',
+      enforced: true,
+      status: 'READY',
+      createdAt: new Date(),
+      preparedAt: new Date(),
+      businessStartedAt: null as Date | null,
+      completedAt: null,
+      commandResult: null,
+      leaseToken: null as string | null,
+      leaseExpiresAt: null as Date | null,
+    };
     const prisma = {
       webhookEvent: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'event-fallback-lease-1',
-          status: 'QUEUED',
-          botId: 'bot-1',
-          normalizedPayload: {
-            updateId: 'fallback-without-semantic-subject',
-            type: 'unknown_update',
-            botId: 'bot-1',
-          },
-        }),
+        findUnique: jest.fn(async () => ({ ...receipt })),
       },
       webhookExecutionClaim: {
         findUnique: jest.fn(),
-        findFirst: jest.fn().mockResolvedValue({
-          id: 'claim-fallback-lease-1',
-          webhookEventId: 'event-fallback-lease-1',
-          executionBotId: 'bot-1',
-          enforced: true,
-          status: 'READY',
-          leaseToken: null,
-          leaseExpiresAt: null,
-        }),
-        updateMany: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
-          if (typeof data.leaseToken === 'string') {
-            if (leaseHeld) {
+        findFirst: jest.fn(async () => ({ ...claim })),
+        updateMany: jest.fn(
+          async ({
+            where,
+            data,
+          }: {
+            where: Record<string, unknown>;
+            data: Record<string, unknown>;
+          }) => {
+            if (
+              where.id !== claim.id ||
+              where.status !== claim.status ||
+              where.businessStartedAt !== claim.businessStartedAt ||
+              (claim.leaseExpiresAt && claim.leaseExpiresAt.getTime() >= Date.now())
+            )
               return { count: 0 };
-            }
-            leaseHeld = true;
+            Object.assign(claim, data);
             return { count: 1 };
-          }
-          return { count: 1 };
-        }),
+          },
+        ),
       },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn(
+        async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
+          const sql = query.strings.join('?');
+          expect(sql).toContain('"business_started_at" = instant."now"');
+          const valueAfter = (fragment: string) =>
+            query.values[query.strings.findIndex((part) => part.includes(fragment))];
+          if (
+            valueAfter('claim."id" = ') !== claim.id ||
+            valueAfter('claim."semantic_key" = ') !== claim.semanticKey ||
+            valueAfter('event."id" = ') !== receipt.id ||
+            valueAfter('claim."status"::text = ') !== claim.status ||
+            valueAfter('claim."lease_token" = ') !== claim.leaseToken ||
+            !claim.leaseToken ||
+            !claim.leaseExpiresAt ||
+            claim.leaseExpiresAt.getTime() <= Date.now() ||
+            claim.businessStartedAt !== null ||
+            claim.completedAt !== null ||
+            valueAfter('event."execution_deadline_at" IS NOT DISTINCT FROM ') !== null
+          )
+            return 0;
+          claim.businessStartedAt = new Date();
+          return 1;
+        },
+      ),
+      $transaction: jest.fn(),
     };
+    prisma.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) =>
+      run(prisma),
+    );
     const service = new WebhookCanonicalExecutionService(prisma as never);
 
     const first = await service.prepareExecution('event-fallback-lease-1', null);
     expect(first?.businessLeaseToken).toEqual(expect.any(String));
+    expect(claim.leaseToken).toBe(first?.businessLeaseToken);
+    expect(claim.businessStartedAt).toEqual(expect.any(Date));
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(buildWebhookSemanticEventKey(receipt.normalizedPayload)).toBeNull();
+    expect(receipt.semanticKey).toBeNull();
     await expect(service.prepareExecution('event-fallback-lease-1', null)).rejects.toThrow(
-      'Canonical webhook business lease is busy',
+      'Canonical business already running',
     );
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.webhookExecutionClaim.findFirst).toHaveBeenCalledTimes(2);
     expect(prisma.webhookExecutionClaim.findUnique).not.toHaveBeenCalled();
   });
@@ -388,10 +466,12 @@ describe('ModerationService', () => {
   });
 
   it('rejects a prequeued message before business execution when an older chat head exists', async () => {
+    const sourceDate = new Date('2026-08-15T12:00:00.000Z');
+    const sourceUpdate = createUpdate(sourceDate);
     const update = {
-      ...createUpdate(),
+      ...sourceUpdate,
       message: {
-        ...createUpdate().message,
+        ...sourceUpdate.message,
         chatId: '-ordered-chat-1',
       },
     };
@@ -412,13 +492,15 @@ describe('ModerationService', () => {
         updateMany: jest.fn(),
       },
     };
+    withCanonicalWebhookFixture(prisma);
     const service = new WebhookCanonicalExecutionService(prisma as never);
 
     await expect(service.prepareExecution('event-ordered-b', 'bot-1')).rejects.toBeInstanceOf(
       WebhookOrderedPredecessorPendingError,
     );
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
-    const predecessorQuery = prisma.$queryRaw.mock.calls[0]?.[0] as
+    const predecessorCalls = prisma.$queryRaw.mock.calls.filter((call) => call[0]?.strings);
+    expect(predecessorCalls).toHaveLength(1);
+    const predecessorQuery = predecessorCalls[0]?.[0] as
       | { strings?: readonly string[]; values?: readonly unknown[] }
       | undefined;
     const predecessorSql = predecessorQuery?.strings?.join('?').replace(/\s+/gu, ' ') ?? '';
@@ -465,6 +547,7 @@ describe('ModerationService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
+    withCanonicalWebhookFixture(prisma);
     const service = new WebhookCanonicalExecutionService(prisma as never);
 
     await expect(service.prepareExecution(queuedEvent.id, 'bot-1')).resolves.toBeNull();
@@ -1867,7 +1950,7 @@ describe('ModerationService', () => {
 
   it('does not mark a webhook processed after losing its canonical business lease', async () => {
     const update = createUpdate();
-    const webhookUpdate = jest.fn().mockResolvedValue(undefined);
+    const webhookUpdate = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       webhookEvent: {
         findUnique: jest.fn().mockResolvedValue({
@@ -1876,7 +1959,7 @@ describe('ModerationService', () => {
           botId: 'bot-1',
           normalizedPayload: update,
         }),
-        update: webhookUpdate,
+        updateMany: webhookUpdate,
       },
       webhookExecutionClaim: {
         findUnique: jest.fn().mockResolvedValue({
@@ -1888,13 +1971,12 @@ describe('ModerationService', () => {
           leaseToken: null,
           leaseExpiresAt: null,
         }),
-        updateMany: jest
-          .fn()
-          .mockResolvedValueOnce({ count: 1 })
-          .mockResolvedValueOnce({ count: 0 })
-          .mockResolvedValueOnce({ count: 0 }),
+        updateMany: jest.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          count: data.status === 'COMPLETED' ? 0 : 1,
+        })),
       },
     };
+    withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -1904,12 +1986,14 @@ describe('ModerationService', () => {
     jest.spyOn(service, 'handleUpdate').mockResolvedValue(undefined);
 
     await expect(service.processWebhookEvent('event-canonical-lease-lost-1')).rejects.toThrow(
-      'Canonical webhook business lease was lost before completion',
+      'Handler completion claim changed',
     );
 
-    expect(webhookUpdate).toHaveBeenCalledTimes(1);
+    expect(webhookUpdate.mock.calls.filter(([args]) => args.data.status === 'FAILED')).toHaveLength(
+      1,
+    );
     expect(webhookUpdate).toHaveBeenCalledWith({
-      where: { id: 'event-canonical-lease-lost-1' },
+      where: expect.objectContaining({ id: 'event-canonical-lease-lost-1' }),
       data: expect.objectContaining({
         status: 'FAILED',
       }),
@@ -1946,6 +2030,7 @@ describe('ModerationService', () => {
         }),
       },
     };
+    withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -1962,7 +2047,11 @@ describe('ModerationService', () => {
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith({
       where: {
         id: 'event-canonical-completed-1',
-        status: { not: 'PROCESSED' },
+        status: 'QUEUED',
+        normalizedPayload: { equals: expect.any(Object) },
+        errorMessage: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
       },
       data: {
         status: 'PROCESSED',
@@ -1970,7 +2059,6 @@ describe('ModerationService', () => {
         queueName: null,
         errorMessage: null,
         nextEnqueueAt: null,
-        timeoutQuarantineExpiresAt: null,
       },
     });
   });
@@ -1986,6 +2074,7 @@ describe('ModerationService', () => {
         update: jest.fn().mockResolvedValue(undefined),
       },
     };
+    const persisted = withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -2002,8 +2091,8 @@ describe('ModerationService', () => {
       'Request failed with status code 404',
     );
 
-    expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
-      where: { id: 'event-1' },
+    expect(persisted.webhookEvent.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: 'event-1' }),
       data: expect.objectContaining({
         status: 'FAILED',
         errorMessage: 'Request failed with status code 404',
@@ -2023,6 +2112,7 @@ describe('ModerationService', () => {
         update: jest.fn().mockResolvedValue(undefined),
       },
     };
+    const persisted = withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -2037,8 +2127,8 @@ describe('ModerationService', () => {
       'MAX API interactive rate limit exceeded',
     );
 
-    expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
-      where: { id: 'event-2' },
+    expect(persisted.webhookEvent.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: 'event-2' }),
       data: expect.objectContaining({
         status: 'FAILED',
         errorMessage: 'MAX API interactive rate limit exceeded',
@@ -2061,6 +2151,7 @@ describe('ModerationService', () => {
         update: jest.fn().mockResolvedValue(undefined),
       },
     };
+    const persisted = withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -2078,8 +2169,8 @@ describe('ModerationService', () => {
         'shared lock acquisition was ambiguous',
       );
 
-      expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
-        where: { id: 'event-shared-lock-timeout-1' },
+      expect(persisted.webhookEvent.updateMany).toHaveBeenCalledWith({
+        where: expect.objectContaining({ id: 'event-shared-lock-timeout-1' }),
         data: expect.objectContaining({
           status: 'FAILED',
           nextEnqueueAt: new Date(nowMs + SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS),
@@ -2160,6 +2251,7 @@ describe('ModerationService', () => {
         updateMany: executionClaimUpdateMany,
       },
     };
+    withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -2241,179 +2333,101 @@ describe('ModerationService', () => {
     }
   });
 
-  it.each(['completed', 'failed'] as const)(
-    'converges a timed-out shadow mirror whose detached work %s on its completed owner',
-    async (outcome) => {
-      const webhookEventId = `event-timeout-shadow-mirror-${outcome}-1`;
-      const update = {
-        ...createUpdate(),
-        message: {
-          ...createUpdate().message,
-          chatId: '-chat-shadow-mirror',
-        },
-      };
+  it.each(['QUEUED', 'FAILED'] as const)(
+    'settles a shadow mirror in %s state on its completed owner without starting the engine',
+    async (status) => {
+      const webhookEventId = `event-shadow-mirror-${status}-1`;
+      const ownerId = 'event-shadow-owner-1';
+      const update = createUpdate();
       const semanticKey = buildWebhookSemanticEventKey(update);
-      if (!semanticKey) {
-        throw new Error('Expected the shadow mirror test webhook to have a semantic key');
-      }
-      const ownerPreparedAt = new Date('2026-08-15T12:00:00.000Z');
-      const ownerCompletedAt = new Date('2026-08-15T12:00:01.000Z');
-      const detachedTask = createDeferred<void>();
-      const webhookEventUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
-      const executionClaimUpdateMany = jest
-        .fn()
-        .mockResolvedValueOnce({ count: 0 })
-        .mockResolvedValueOnce({ count: 1 });
-      const prisma: {
-        webhookEvent: { findUnique: jest.Mock; updateMany: jest.Mock };
-        webhookExecutionClaim: { findUnique: jest.Mock; updateMany: jest.Mock };
-        $transaction?: jest.Mock;
-      } = {
+      const completedAt = new Date('2026-08-15T12:00:01.000Z');
+      const mirror = {
+        id: webhookEventId,
+        status,
+        botId: 'bot-1',
+        normalizedPayload: update,
+        errorMessage: null,
+        processedAt: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      };
+      const owner = {
+        ...mirror,
+        id: ownerId,
+        status: 'PROCESSED',
+        processedAt: completedAt,
+      };
+      const prisma = {
         webhookEvent: {
-          findUnique: jest
-            .fn()
-            .mockResolvedValueOnce({
-              id: webhookEventId,
-              status: 'QUEUED',
-              botId: 'id613002203036_bot',
-              normalizedPayload: update,
-            })
-            .mockResolvedValueOnce({
-              id: webhookEventId,
-              status: outcome === 'completed' ? 'PROCESSED' : 'FAILED',
-              normalizedPayload: update,
-              errorMessage: null,
-              processedAt: outcome === 'completed' ? ownerCompletedAt : null,
-              nextEnqueueAt: null,
-              timeoutQuarantineExpiresAt: null,
-            })
-            .mockResolvedValue({
-              id: 'event-timeout-shadow-owner-1',
-              status: 'PROCESSED',
-              normalizedPayload: update,
-              errorMessage: null,
-              processedAt: ownerCompletedAt,
-              nextEnqueueAt: null,
-              timeoutQuarantineExpiresAt: null,
-            }),
-          updateMany: webhookEventUpdateMany,
+          findUnique: jest.fn(async ({ where }) => (where.id === ownerId ? owner : mirror)),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         },
         webhookExecutionClaim: {
           findUnique: jest.fn().mockResolvedValue({
-            id: 'claim-timeout-shadow-owner-1',
+            id: 'claim-shadow-owner-1',
             semanticKey,
-            webhookEventId: 'event-timeout-shadow-owner-1',
-            executionBotId: 'id613002203036_bot',
+            webhookEventId: ownerId,
+            executionBotId: 'bot-1',
             enforced: false,
             status: 'COMPLETED',
-            preparedAt: ownerPreparedAt,
-            completedAt: ownerCompletedAt,
+            preparedAt: new Date('2026-08-15T12:00:00.000Z'),
+            completedAt,
             leaseToken: null,
             leaseExpiresAt: null,
           }),
-          updateMany: executionClaimUpdateMany,
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         },
       };
-      prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+      withCanonicalWebhookFixture(prisma);
       const service = new ModerationService(
         prisma as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
         {} as never,
       );
+      const handler = jest.spyOn(service, 'handleUpdate');
+      const watchdog = jest.spyOn(service as any, 'startWebhookTimeoutSettlementWatchdog');
       const commercialOcrEnqueueService = {
-        activatePendingBatch: jest.fn().mockResolvedValue(undefined),
-        suppressPendingBatch: jest.fn().mockResolvedValue(undefined),
+        activatePendingBatch: jest.fn(),
+        suppressPendingBatch: jest.fn(),
       };
-      (service as any).commercialOcrEnqueueService = commercialOcrEnqueueService;
-      (service as any).webhookUserFacingTimeoutMs = 10;
-      jest.spyOn(service, 'handleUpdate').mockReturnValue(detachedTask.promise);
-      const retryWait = jest.spyOn(service as any, 'waitForWebhookTimeoutPersistenceRetry');
-      const settlementWatchdog = {
-        deadlineAtMs: Date.now() + WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MAX_LIFETIME_MS,
-        isExpired: jest.fn().mockReturnValue(false),
-        stop: jest.fn(),
-      };
-      const startSettlementWatchdog = jest
-        .spyOn(service as any, 'startWebhookTimeoutSettlementWatchdog')
-        .mockReturnValue(settlementWatchdog);
-      const convergenceLogged = createDeferred<void>();
-      const warnLog = jest
-        .spyOn((service as any).logger, 'warn')
-        .mockImplementation((...args: unknown[]) => {
-          if (args[1] === 'Converged a timed-out shadow mirror on its completed semantic owner') {
-            convergenceLogged.resolve();
-          }
-        });
-      const setTimeoutSpy = installImmediateTimeoutForDelay(10);
+      Object.assign(service, { commercialOcrEnqueueService });
 
-      try {
-        await expect(service.processWebhookEvent(webhookEventId)).resolves.toBeUndefined();
+      await expect(service.processWebhookEvent(webhookEventId)).resolves.toBeUndefined();
 
-        if (outcome === 'completed') {
-          detachedTask.resolve();
-        } else {
-          detachedTask.reject(new Error('detached shadow mirror failed'));
-        }
-        await convergenceLogged.promise;
-
-        expect(executionClaimUpdateMany).toHaveBeenCalledTimes(2);
-        expect(executionClaimUpdateMany).toHaveBeenNthCalledWith(
-          1,
-          expect.objectContaining({
-            where: expect.objectContaining({
-              webhookEventId,
-              kind: 'EXECUTION',
-            }),
-          }),
-        );
-        expect(executionClaimUpdateMany).toHaveBeenNthCalledWith(2, {
-          where: {
-            id: 'claim-timeout-shadow-owner-1',
-            kind: 'EXECUTION',
-            semanticKey,
-            webhookEventId: 'event-timeout-shadow-owner-1',
-            enforced: false,
-            status: 'COMPLETED',
-            preparedAt: ownerPreparedAt,
-            completedAt: ownerCompletedAt,
-            leaseToken: null,
-            leaseExpiresAt: null,
-          },
-          data: {
-            enforced: true,
-            status: 'COMPLETED',
-            completedAt: ownerCompletedAt,
-            leaseToken: null,
-            leaseExpiresAt: null,
-          },
-        });
-        expect(webhookEventUpdateMany).toHaveBeenLastCalledWith({
-          where: expect.objectContaining({
-            id: webhookEventId,
-            status: outcome === 'completed' ? 'PROCESSED' : 'FAILED',
-            timeoutQuarantineExpiresAt: null,
-            normalizedPayload: { equals: update },
-          }),
-          data: {
-            status: 'DUPLICATE',
-            processedAt: ownerCompletedAt,
-            errorMessage: null,
-            queueName: null,
-            nextEnqueueAt: null,
-            timeoutQuarantineExpiresAt: null,
-          },
-        });
-        expect(retryWait).not.toHaveBeenCalled();
-        expect(settlementWatchdog.stop).toHaveBeenCalledTimes(1);
-        expect(commercialOcrEnqueueService.suppressPendingBatch).not.toHaveBeenCalled();
-        expect(commercialOcrEnqueueService.activatePendingBatch).not.toHaveBeenCalled();
-      } finally {
-        detachedTask.resolve();
-        setTimeoutSpy.mockRestore();
-        warnLog.mockRestore();
-        startSettlementWatchdog.mockRestore();
-      }
+      expect(handler).not.toHaveBeenCalled();
+      expect(watchdog).not.toHaveBeenCalled();
+      expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenCalledTimes(2);
+      expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenLastCalledWith({
+        where: expect.objectContaining({
+          id: 'claim-shadow-owner-1',
+          semanticKey,
+          webhookEventId: ownerId,
+          enforced: true,
+          status: 'COMPLETED',
+          completedAt,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        data: expect.objectContaining({ enforced: true, status: 'COMPLETED' }),
+      });
+      expect(prisma.webhookEvent.updateMany).toHaveBeenLastCalledWith({
+        where: expect.objectContaining({
+          id: webhookEventId,
+          status,
+          normalizedPayload: { equals: update },
+        }),
+        data: {
+          status: 'DUPLICATE',
+          processedAt: completedAt,
+          errorMessage: null,
+          queueName: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+        },
+      });
+      expect(commercialOcrEnqueueService.activatePendingBatch).not.toHaveBeenCalled();
+      expect(commercialOcrEnqueueService.suppressPendingBatch).not.toHaveBeenCalled();
     },
   );
 
@@ -2459,6 +2473,7 @@ describe('ModerationService', () => {
         updateMany: executionClaimUpdateMany,
       },
     };
+    withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -2577,6 +2592,7 @@ describe('ModerationService', () => {
         updateMany: executionClaimUpdateMany,
       },
     };
+    withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -2682,6 +2698,7 @@ describe('ModerationService', () => {
         updateMany: executionClaimUpdateMany,
       },
     };
+    withCanonicalWebhookFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       { detect: jest.fn() } as never,
@@ -2707,19 +2724,36 @@ describe('ModerationService', () => {
       await expect(processing).resolves.toBeUndefined();
 
       expect(processorSettled).toBe(true);
-      expect(executionClaimUpdateMany).toHaveBeenCalledWith({
+      const originalLeaseToken = executionClaimUpdateMany.mock.calls[0][0].data.leaseToken;
+      expect(originalLeaseToken).toEqual(expect.any(String));
+      expect(executionClaimUpdateMany).toHaveBeenNthCalledWith(1, {
+        where: {
+          id: 'claim:event-timeout-unfenced-1',
+          status: 'READY',
+          businessStartedAt: null,
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: expect.any(Date) } }],
+        },
+        data: {
+          leaseToken: originalLeaseToken,
+          leaseExpiresAt: expect.any(Date),
+        },
+      });
+      expect(executionClaimUpdateMany).toHaveBeenNthCalledWith(2, {
         where: {
           webhookEventId: 'event-timeout-unfenced-1',
           kind: 'EXECUTION',
-          enforced: false,
-          status: 'READY',
+          OR: [
+            { leaseToken: originalLeaseToken, status: 'READY' },
+            { leaseToken: null, status: 'COMPLETED' },
+          ],
+        },
+        data: {
+          enforced: true,
+          status: 'COMPLETED',
+          completedAt: expect.any(Date),
           leaseToken: null,
           leaseExpiresAt: null,
         },
-        data: expect.objectContaining({
-          enforced: true,
-          status: 'COMPLETED',
-        }),
       });
       expect(webhookEventUpdateMany).toHaveBeenLastCalledWith({
         where: expect.objectContaining({ id: 'event-timeout-unfenced-1' }),

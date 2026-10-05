@@ -45,6 +45,7 @@ export class ModerationDeleteIntentAccessWakeService {
   shouldWake(params: CommittedBotDeleteAccessProbe): boolean {
     if (
       !params.access ||
+      params.access.permissionsKnown !== true ||
       params.source.startsWith(DELETE_INTENT_PROBE_SOURCE_PREFIX) ||
       params.checkedAt.getTime() > Date.now()
     ) {
@@ -56,6 +57,7 @@ export class ModerationDeleteIntentAccessWakeService {
       isAdmin: params.access.isAdmin,
       isOwner: params.access.isOwner,
       permissions: params.access.permissions ?? [],
+      permissionsKnown: params.access.permissionsKnown,
     });
     if (!hasConfirmedDeleteMessageAccess(incomingSnapshot, params.entityType)) {
       return false;
@@ -163,7 +165,10 @@ export class ModerationDeleteIntentAccessWakeService {
     }
 
     const snapshot = normalizeMembershipAccessSnapshot(previous.permissionsSnapshot);
-    if (!hasConfirmedDeleteMessageAccess(snapshot, entityType)) {
+    if (
+      snapshot?.permissionsKnown !== true ||
+      !hasConfirmedDeleteMessageAccess(snapshot, entityType)
+    ) {
       return false;
     }
 

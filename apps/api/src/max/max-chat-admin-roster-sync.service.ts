@@ -390,8 +390,20 @@ export class MaxChatAdminRosterSyncService {
     let recoverableError: unknown = null;
     let attemptedCandidate = false;
     let skippedDueToTerminalBackoff = false;
+    const requestedBotIds = new Set(
+      (job.botIds ?? []).map((id) => this.resolveDiscoveryBotId(id)).filter(Boolean),
+    );
+    const checkedRequestedBotIds = new Set<string>();
 
     for (const botId of candidateBotIds) {
+      // Targeted checks verify requested bots; peers are only a fallback roster reader.
+      // A background refresh without explicit bots still renews the complete roster.
+      if (
+        rosterAccess &&
+        requestedBotIds.size > 0 &&
+        [...requestedBotIds].every((id) => checkedRequestedBotIds.has(id!))
+      )
+        break;
       const sourceBackoffDelayMs = await this.resolveManagedRefreshSourceBackoffDelayMs(
         normalized,
         botId,
@@ -415,6 +427,7 @@ export class MaxChatAdminRosterSyncService {
       let accessProbeStartedAt: Date | null = null;
       try {
         attemptedCandidate = true;
+        checkedRequestedBotIds.add(botId);
         const requestOptions = this.buildChatAdminRosterReadOptions(normalized, botId);
         accessProbeStartedAt = new Date();
         const access = await this.maxClient.getCurrentChatMemberAccess(

@@ -19,7 +19,12 @@ import {
   MAX_SEND_AUTO_DELETE_MARKER_VERSION,
   type MaxActionJob,
 } from './max-client.service';
-import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from './max-action-pre-dispatch-guard';
+import {
+  MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  markMaxPreDispatchGuardRejected,
+} from './max-action-pre-dispatch-guard';
+import { markMaxMessageSendAttempted } from './max-mutation-outcome.util';
 import {
   MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
   MaxMediaUploadValidationError,
@@ -2170,6 +2175,108 @@ describe('MaxActionLedgerService', () => {
       }),
     );
   });
+
+  it.each([403, 404, 503])(
+    'stores only stable no-send evidence after a certified proof lookup HTTP %s rejection',
+    async (status) => {
+      const job = createJob();
+      const { service, prisma } = createService();
+      const response = { status, data: { code: 'chat.not.found' } };
+      const error = markMaxPreDispatchGuardRejected(
+        Object.assign(new Error('executor proof lookup failed'), {
+          code: 'max_action_executor_proof_rejected',
+          response,
+        }),
+        MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+      );
+      await service.recordFailed(job, error);
+      const mutation = prisma.maxActionLedgerEntry.updateMany.mock.calls[0]![0].data;
+      expect(mutation).toMatchObject({
+        status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+        ambiguous: false,
+        terminal: false,
+        lastStatusCode: null,
+        lastErrorCode: MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+      });
+      expect(error).toMatchObject({ code: 'max_action_executor_proof_rejected', response });
+      const retry = createService({
+        ...mutation,
+        attemptCount: 1,
+        firstAttemptAt: new Date(),
+        lastAttemptAt: new Date(),
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      });
+      await expect(retry.service.assertCanExecute(job)).resolves.toBeUndefined();
+    },
+  );
+
+  it.each([404, 503])(
+    'keeps an attempted nested SEND HTTP %s failure outside no-send normalization',
+    async (status) => {
+      const { service, prisma } = createService();
+      const error = markMaxPreDispatchGuardRejected(
+        markMaxMessageSendAttempted(
+          Object.assign(new Error('nested SEND failed'), {
+            response: { status, data: { code: 'chat.not.found' } },
+          }),
+        ),
+        MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+      );
+      await service.recordFailed(createJob(), error);
+      expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status:
+              status === 503
+                ? MaxActionLedgerStatus.AMBIGUOUS
+                : MaxActionLedgerStatus.FAILED_TERMINAL,
+            ambiguous: status === 503,
+            terminal: true,
+            lastStatusCode: status,
+            lastErrorCode: 'chat.not.found',
+          }),
+        }),
+      );
+    },
+  );
+
+  it.each([403, 404, 503])(
+    'allows a member retry after a final proof lookup rejects with HTTP %s before mutation',
+    async (status) => {
+      const job = createJob({ actionType: 'BAN_MEMBER', userId: 'user-1', text: undefined });
+      const { service, prisma } = createService();
+      const error = markMaxPreDispatchGuardRejected(
+        Object.assign(new Error('executor proof lookup failed'), {
+          code: 'max_action_executor_proof_rejected',
+          response: { status, data: { code: 'chat.denied' } },
+        }),
+        MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+      );
+      await service.recordFailed(job, error);
+      const mutation = prisma.maxActionLedgerEntry.upsert.mock.calls[0]![0].update;
+      expect(mutation).toMatchObject({
+        status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+        ambiguous: false,
+        terminal: false,
+        lastStatusCode: status,
+        lastErrorCode: MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+      });
+      const retry = createService({
+        ...mutation,
+        attemptCount: 1,
+        firstAttemptAt: new Date(),
+        lastAttemptAt: new Date(),
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      });
+      await expect(retry.service.assertCanExecute(job)).resolves.toBeUndefined();
+    },
+  );
 
   it('persists member HTTP 429 as a retryable external rate-limit rejection', async () => {
     const job = createJob({

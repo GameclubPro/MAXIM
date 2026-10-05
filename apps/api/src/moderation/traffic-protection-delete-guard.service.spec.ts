@@ -72,6 +72,41 @@ describe('TrafficProtectionDeleteGuardService', () => {
     expect(h.prisma.chatSettings.findUnique).toHaveBeenCalledTimes(2);
     expect(h.max.getExactMessageRow).toHaveBeenCalledTimes(1);
   });
+  it('carries the original deadline when checking traffic inside a mixed reason set', async () => {
+    const h = await harness();
+    const deadlineAtMs = h.reasons[0].metadata.trafficDeadlineAtMs;
+    h.reasons.push({ ruleCode: 'MESSAGE_TOO_LONG_DELETE', metadata: {} });
+    await expect(
+      h.guard.assertIntentStillActionable({
+        ...h.input,
+        botId: 'healthy-executor',
+        ownedReasonsOnly: true,
+        includeDeadlinePermit: true,
+      }),
+    ).resolves.toEqual({ deadlineAtMs });
+    expect(h.max.getExactMessageRow).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ botId: 'healthy-executor' }),
+    );
+    expect(h.reasons[0].metadata.trafficDeadlineAtMs).toBe(deadlineAtMs);
+  });
+  it('rejects a deadline consumed by remote author/source checks', async () => {
+    const h = await harness();
+    const deadlineAtMs = h.reasons[0].metadata.trafficDeadlineAtMs as number;
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(deadlineAtMs - 1);
+    try {
+      h.immunity.consumeForMessage.mockImplementation(async () => {
+        clock.mockReturnValue(deadlineAtMs);
+        return 'not_granted';
+      });
+      await expect(
+        h.guard.assertIntentStillActionable({ ...h.input, includeDeadlinePermit: true }),
+      ).rejects.toBeInstanceOf(TrafficProtectionGuardRejectedError);
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it.each([
     'disabled',
     'interval',

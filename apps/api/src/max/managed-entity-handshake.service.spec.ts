@@ -10,6 +10,8 @@ import {
 } from './managed-entity-handshake.service';
 import type { MaxChatMemberAccess } from './max-client.service';
 import { WebhookParser } from '../webhook/webhook.parser';
+import { createGroupCommandAuthorityMock } from '../common/group-command-authority.spec-support';
+import { buildGroupCommandKey } from '../common/group-command-authority.service';
 
 function createUpdate(overrides: Record<string, unknown> = {}) {
   const messageOverrides =
@@ -196,6 +198,7 @@ function createFixture() {
     buildMiniappStartUrlSync: jest.fn().mockReturnValue('https://max.ru/bot-1?startapp=mr-x'),
   };
   const maxBotRegistry = {
+    getAllBots: jest.fn(() => [{ id: 'bot-1', label: 'Бот', state: 'active' as const }]),
     getBotById: jest.fn((botId?: string | null) =>
       botId === 'bot-1' ? { id: 'bot-1', label: 'Бот', state: 'active' as const } : null,
     ),
@@ -228,6 +231,7 @@ function createFixture() {
     maxBotLinkService as never,
     chatContextCache as never,
   );
+  const groupCommandAuthority = createGroupCommandAuthorityMock();
   const service = new ManagedEntityHandshakeService(
     accessWriter as never,
     maxClient as never,
@@ -235,6 +239,7 @@ function createFixture() {
     maxBotRegistry as never,
     rosterSync as never,
     handshakeOutcomes as never,
+    groupCommandAuthority as never,
   );
 
   return {
@@ -246,6 +251,7 @@ function createFixture() {
     chatContextCache,
     rosterSync,
     handshakeOutcomes,
+    groupCommandAuthority,
   };
 }
 
@@ -256,6 +262,139 @@ describe('ManagedEntityHandshakeService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it.each([1, 4, 9])(
+    'publishes one fresh admin-verified Start success across %i observer bots',
+    async (botCount) => {
+      const authority = createGroupCommandAuthorityMock();
+      const fixtures = Array.from({ length: botCount }, () => createFixture());
+      const bots = fixtures.map((_, index) => ({
+        id: `bot-${index + 1}`,
+        label: 'Бот',
+        state: 'active' as const,
+      }));
+      for (const fixture of fixtures) {
+        Object.assign(fixture.service, { groupCommandAuthority: authority });
+        fixture.maxBotRegistry.getBotById.mockImplementation(
+          (id) => bots.find((bot) => bot.id === id) ?? null,
+        );
+        fixture.maxBotRegistry.getAllBots.mockReturnValue(bots);
+      }
+      await Promise.all(
+        fixtures.map((fixture, index) =>
+          fixture.service.handleWebhookUpdate(
+            createUpdate({
+              botId: bots[index]!.id,
+              updateId: `mirrored-start-${index}`,
+            }),
+          ),
+        ),
+      );
+      expect(
+        fixtures.reduce(
+          (count, fixture) => count + fixture.maxClient.sendMessage.mock.calls.length,
+          0,
+        ),
+      ).toBe(1);
+      expect(
+        fixtures.reduce(
+          (count, fixture) =>
+            count + fixture.prisma.managedEntityAccessEdge.upsert.mock.calls.length,
+          0,
+        ),
+      ).toBe(1);
+      expect(authority.complete).toHaveBeenCalledTimes(1);
+      for (const fixture of fixtures) {
+        expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+          '-100',
+          expect.objectContaining({ bypassCache: true }),
+        );
+        expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+          '-100',
+          ['admin-1'],
+          expect.objectContaining({ bypassCache: true }),
+        );
+      }
+    },
+  );
+
+  it('lets a healthy peer connect after the first observer bot is denied', async () => {
+    const authority = createGroupCommandAuthorityMock();
+    const weak = createFixture();
+    const healthy = createFixture();
+    for (const fixture of [weak, healthy]) {
+      Object.assign(fixture.service, { groupCommandAuthority: authority });
+      fixture.maxBotRegistry.getBotById.mockImplementation((id) =>
+        id ? { id, label: 'Бот', state: 'active' } : null,
+      );
+    }
+    weak.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      userId: 'bot-1',
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+    });
+    expect(await weak.service.handleWebhookUpdate(createUpdate())).toBe('denied');
+    expect(
+      await healthy.service.handleWebhookUpdate(
+        createUpdate({ botId: 'bot-2', updateId: 'healthy-peer' }),
+      ),
+    ).toBe('connected');
+    expect(weak.maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(healthy.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(authority.claim).toHaveBeenCalledTimes(1);
+    expect(authority.claim).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-2' }),
+      'bot-2',
+    );
+  });
+
+  it.each(['recovered', 'hold'])(
+    'does not publish another Start confirmation for %s historical delivery',
+    async (state) => {
+      const fixture = createFixture();
+      fixture.groupCommandAuthority.inspectLegacyStart.mockResolvedValue(state);
+      await fixture.service.handleWebhookUpdate(createUpdate());
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+      expect(fixture.groupCommandAuthority.complete).toHaveBeenCalledTimes(1);
+      if (state === 'hold') {
+        expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+        expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('keeps an ambiguous Start confirmation silent on mirrored receipts', async () => {
+    const authority = createGroupCommandAuthorityMock();
+    const first = createFixture();
+    const peer = createFixture();
+    for (const fixture of [first, peer])
+      Object.assign(fixture.service, { groupCommandAuthority: authority });
+    first.maxClient.sendMessage.mockRejectedValueOnce(
+      new Error('MAX send timeout: ambiguous outcome'),
+    );
+    await first.service.handleWebhookUpdate(createUpdate());
+    await peer.service.handleWebhookUpdate(createUpdate({ updateId: 'mirrored-after-timeout' }));
+    expect(first.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(peer.maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(first.maxClient.sendMessage.mock.calls[0]?.[3]).toEqual(
+      expect.objectContaining({
+        candidateBotIds: ['bot-1'],
+        routing: { purpose: 'send_message', requiredBotId: 'bot-1' },
+        beforeImmediateSendMutation: expect.any(Function),
+      }),
+    );
+  });
+
+  it('does not bootstrap a public Start without a proven actor', async () => {
+    const fixture = createFixture();
+    expect(
+      await fixture.service.handleWebhookUpdate(createUpdate({ message: { senderId: null } })),
+    ).toBe('denied');
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('connects a chat when Старт is sent by an admin and the bot is admin', async () => {
@@ -378,7 +517,7 @@ describe('ManagedEntityHandshakeService', () => {
       expect.objectContaining({
         immediate: true,
         botId: 'bot-1',
-        idempotencyKey: 'managed-handshake-start:-100:u-start-1',
+        idempotencyKey: `managed-handshake-start:${buildGroupCommandKey('-100', 'm-start-1')}`,
         autoDeleteDelayMs: 180_000,
       }),
     );
@@ -1149,7 +1288,7 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
   });
 
-  it('bootstraps a channel without user access when sender is a bot/system identity', async () => {
+  it('silently denies public Start when sender is a bot/system identity', async () => {
     const fixture = createFixture();
 
     await expect(
@@ -1166,48 +1305,25 @@ describe('ManagedEntityHandshakeService', () => {
           },
         }),
       ),
-    ).resolves.toBe('bootstrapped_without_user');
+    ).resolves.toBe('denied');
 
     expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
     expect(fixture.chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
-    expect(fixture.chatContextCache.upsertManagedEntitiesRecentBootstrap).toHaveBeenCalledWith(
-      expect.objectContaining({ id: '-200', entityType: 'channel' }),
-      expect.any(Number),
-      null,
-    );
-    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chatId: '-200',
-        botId: 'bot-1',
-        checkedAt: expect.any(Date),
-        source: 'handshake_start',
-        allowMembershipRecovery: true,
-      }),
-    );
-    const lockSql = fixture.prisma.$queryRaw.mock.calls.map(([query]) =>
-      (query as readonly string[]).join(''),
-    );
-    expect(lockSql).toHaveLength(2);
-    expect(lockSql[0]).toContain('FROM "chats"');
-    expect(lockSql[1]).toContain('FROM "chat_bot_memberships"');
-    expect(lockSql[1]).not.toContain('FROM "chat_membership_activity_events"');
+    expect(fixture.chatContextCache.upsertManagedEntitiesRecentBootstrap).not.toHaveBeenCalled();
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
-    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userId: 'bot-1',
-        status: ManagedEntityHandshakeOutcomeStatus.BOOTSTRAPPED_WITHOUT_USER,
-        reason: 'sender_missing',
-      }),
-    );
   });
 
-  it('does not revive catalog or recent UI when a newer removal supersedes bot-only bootstrap', async () => {
+  it('ignores bot lifecycle events in the explicit handshake handler without reviving catalog or UI', async () => {
     const fixture = createFixture();
     fixture.maxBotLinkService.recordBotAccessProbe.mockResolvedValueOnce(false);
 
     await expect(
       fixture.service.handleWebhookUpdate(
         createUpdate({
+          type: 'bot_added',
           message: {
             messageId: 'm-channel-superseded',
             chatId: '-201',
@@ -1219,18 +1335,13 @@ describe('ManagedEntityHandshakeService', () => {
           },
         }),
       ),
-    ).resolves.toBe('failed');
+    ).resolves.toBe('ignored');
 
     expect(fixture.prisma.$transaction).not.toHaveBeenCalled();
     expect(fixture.prisma.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
     expect(fixture.chatContextCache.upsertManagedEntitiesRecentBootstrap).not.toHaveBeenCalled();
     expect(fixture.chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
-    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: ManagedEntityHandshakeOutcomeStatus.FAILED,
-        reason: 'bot_access_probe_superseded',
-      }),
-    );
+    expect(fixture.handshakeOutcomes.recordOutcome).not.toHaveBeenCalled();
   });
 
   it('connects but leaves the Старт message when the bot lacks delete permission', async () => {

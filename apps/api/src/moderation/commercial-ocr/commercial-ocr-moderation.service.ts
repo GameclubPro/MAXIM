@@ -1285,6 +1285,9 @@ export class CommercialOcrModerationService {
     }
 
     const owner = semanticClaim.webhookEvent;
+    // FLAG: A semantic tombstone proves prior completion, but cannot supply the retained
+    // exact source/native binding required to authorize a new commercial OCR action.
+    if (!owner) return { kind: 'terminal' };
     if (
       owner.status !== WebhookStatus.PROCESSED ||
       !(owner.processedAt instanceof Date) ||

@@ -1039,7 +1039,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    maxim_topology_require_max_api_metrics_minute_reader \
+    maxim_topology_require_multibot_authority \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1054,14 +1054,15 @@ rollback_release() {
   local remote_command
   local capability_marker=select_release_recovery_base
   local rollback_component
-  # FLAG: API rollback after a ref rollback must restore tooling with the minute
-  # reader floor. Static-only rollback keeps its existing image-only offline path.
+  # FLAG: API rollback must restore tooling with the latest multibot authority floor;
+  # older minute-reader tooling cannot protect pending semantic and command journals.
+  # Static-only rollback keeps its existing image-only offline path.
   if [[ $# -eq 1 ]]; then
-    capability_marker=maxim_topology_require_max_api_metrics_minute_reader
+    capability_marker=maxim_topology_require_multibot_authority
   else
     for rollback_component in "${@:2}"; do
       if [[ "$rollback_component" == api-shared ]]; then
-        capability_marker=maxim_topology_require_max_api_metrics_minute_reader
+        capability_marker=maxim_topology_require_multibot_authority
         break
       fi
     done

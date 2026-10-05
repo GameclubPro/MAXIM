@@ -19,6 +19,10 @@ type HotPathStageSummary = {
 type HotChatSummary = {
   chatId: string;
   messageCreatedCount: number;
+  messageEditedCount?: number;
+  deliveryCount?: number;
+  executionCount?: number;
+  mirrorCount?: number;
   botsSeen: number;
   lastSeenAt: string;
 };
@@ -179,6 +183,7 @@ const HOT_PATH_BUCKET_PREFIX = 'runtime:diag:hot-path:v1';
 const HOT_CHAT_COUNT_BUCKET_PREFIX = 'runtime:diag:hot-chat:count:v1';
 const HOT_CHAT_LAST_BUCKET_PREFIX = 'runtime:diag:hot-chat:last:v1';
 const HOT_CHAT_BOT_BUCKET_PREFIX = 'runtime:diag:hot-chat:bot:v1';
+const HOT_CHAT_ACTIVITY_BUCKET_PREFIX = 'runtime:diag:hot-chat:activity:v2';
 const BACKGROUND_REASON_COUNT_BUCKET_PREFIX = 'runtime:diag:bg:reason:count:v1';
 const BACKGROUND_REASON_LAST_BUCKET_PREFIX = 'runtime:diag:bg:reason:last:v1';
 const MEMBERSHIP_HOT_PREFIX = 'runtime:diag:membership:hot:v1';
@@ -337,7 +342,26 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     await this.execPipeline(pipeline, 'recordHotPathStageOutcome');
   }
 
-  async recordHotChatMessage(params: { chatId: string; botId?: string | null }): Promise<void> {
+  async recordHotChatMessage(params: {
+    chatId: string;
+    botId?: string | null;
+    eventType?: string;
+  }): Promise<void> {
+    return this.recordHotChatActivity({ ...params, stage: 'EXECUTION' });
+  }
+
+  async recordHotChatActivity(params: {
+    chatId: string;
+    botId?: string | null;
+    eventType?: string;
+    stage: 'RECEIPT' | 'EXECUTION' | 'MIRROR';
+  }): Promise<void> {
+    if (
+      params.eventType &&
+      params.eventType !== 'message_created' &&
+      params.eventType !== 'message_edited'
+    )
+      return;
     const chatId = params.chatId.trim();
     if (!chatId) {
       return;
@@ -349,7 +373,12 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     const botBucketKey = this.buildBucketKey(HOT_CHAT_BOT_BUCKET_PREFIX, now);
     const ttlSec = this.resolveBucketTtlSec(this.hotChatWindowSec);
     const pipeline = this.redis.pipeline();
-    pipeline.hincrby(countBucketKey, chatId, 1);
+    const activityKey = this.buildBucketKey(HOT_CHAT_ACTIVITY_BUCKET_PREFIX, now);
+    const type = params.eventType === 'message_edited' ? 'edit' : 'create';
+    pipeline.hincrby(activityKey, `${chatId}\t${params.stage}\t${type}`, 1);
+    pipeline.expire(activityKey, ttlSec);
+    if (params.stage === 'EXECUTION' && type === 'create')
+      pipeline.hincrby(countBucketKey, chatId, 1);
     pipeline.hset(lastBucketKey, chatId, String(now));
     pipeline.expire(countBucketKey, ttlSec);
     pipeline.expire(lastBucketKey, ttlSec);
@@ -845,6 +874,37 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     const botHashes = await this.readHashes(
       this.buildWindowBucketKeys(HOT_CHAT_BOT_BUCKET_PREFIX, this.hotChatWindowSec),
     );
+    const activityHashes = await this.readHashes(
+      this.buildWindowBucketKeys(HOT_CHAT_ACTIVITY_BUCKET_PREFIX, this.hotChatWindowSec),
+    );
+    const activity = new Map<
+      string,
+      {
+        messageEditedCount: number;
+        deliveryCount: number;
+        executionCount: number;
+        mirrorCount: number;
+      }
+    >();
+    for (const hash of activityHashes)
+      for (const [field, raw] of Object.entries(hash)) {
+        const [chatId, stage, type] = field.split('\t');
+        if (!chatId) continue;
+        const entry = activity.get(chatId) ?? {
+          messageEditedCount: 0,
+          deliveryCount: 0,
+          executionCount: 0,
+          mirrorCount: 0,
+        };
+        const count = this.parseNonNegativeInt(raw);
+        if (stage === 'RECEIPT') entry.deliveryCount += count;
+        if (stage === 'MIRROR') entry.mirrorCount += count;
+        if (stage === 'EXECUTION') {
+          entry.executionCount += count;
+          if (type === 'edit') entry.messageEditedCount += count;
+        }
+        activity.set(chatId, entry);
+      }
 
     const aggregate = new Map<
       string,
@@ -906,6 +966,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
       .map(([chatId, entry]) => ({
         chatId,
         messageCreatedCount: entry.count,
+        ...activity.get(chatId),
         botsSeen: Math.max(1, entry.botIds.size || 0),
         lastSeenAt: new Date(entry.lastObservedAtMs || Date.now()).toISOString(),
       }))

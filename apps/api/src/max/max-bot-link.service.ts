@@ -12,10 +12,19 @@ import type { ManagedEntityBotCapability } from '@maxim/contracts';
 import { resolveChatCatalogKind } from '../common/chat-catalog-kind.util';
 import { isNightModeTransitionMembershipCandidate } from '../moderation/night-mode-transition-eligibility.util';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
+import { RedisCounterService } from '../moderation/redis-counter.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { isValidMaxBotStartPayload, isValidMaxMiniappStartPayload } from './max-deep-link.util';
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
+import {
+  executionRouteProof,
+  hasExecutionCapability,
+  type MaxExecutionAccessEpoch,
+  type MaxExecutionOwnerState,
+  type MaxExecutionPurpose,
+  type MaxExecutionRouteProof,
+} from './max-execution-route-proof';
 import {
   canAuthenticateInitDataForBotState,
   canDiscoverChatsForBotState,
@@ -104,6 +113,7 @@ type BotAccessProbeParams = {
   checkedAt: Date;
   lastErrorCode?: string | null;
   allowMembershipRecovery?: boolean;
+  channelReadVerified?: boolean;
 };
 
 export type ChatBotExecutionBinding = {
@@ -281,6 +291,23 @@ type ResolvedChatRouteMembership = {
   sendRouteLastFailureCode: string | null;
 };
 
+export type MaxChatRouteSnapshot = {
+  chatId: string;
+  title?: string;
+  entityType: ChatEntityType | null;
+  primaryBotId: string | null;
+  botId?: string | null;
+  routingState: ChatRoutingState;
+  routingVersion: number;
+  botMemberships: Array<
+    Pick<
+      ResolvedChatRouteMembership,
+      'botId' | 'role' | 'status' | 'botAccessState' | 'permissionsSnapshot'
+    > &
+      Partial<ResolvedChatRouteMembership>
+  >;
+};
+
 type ResolvedChatRouteState = {
   chatId: string;
   title: string;
@@ -339,6 +366,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     private readonly moderationDeleteIntentAccessWake: ModerationDeleteIntentAccessWakeService,
     @Optional()
     private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
+    @Optional() private readonly routeEpochPublisher?: RedisCounterService,
   ) {}
 
   onModuleDestroy(): void {
@@ -902,7 +930,12 @@ export class MaxBotLinkService implements OnModuleDestroy {
         `,
             );
             if (locked.length !== 1) {
-              return { persisted: false, wake: null, nightModeAccessActivated: false };
+              return {
+                persisted: false,
+                wake: null,
+                nightModeAccessActivated: false,
+                accessChanged: false,
+              };
             }
 
             const previous = await tx.chatBotMembership.findUnique({
@@ -936,17 +969,29 @@ export class MaxBotLinkService implements OnModuleDestroy {
                   select: {
                     status: true,
                     botAccessState: true,
+                    permissionsSnapshot: true,
                   },
                 })
               : null;
+            const accessChanged = Boolean(
+              current &&
+              (!previous ||
+                previous.status !== current.status ||
+                previous.botAccessState !== current.botAccessState ||
+                this.accessCapabilityIdentity(previous.permissionsSnapshot) !==
+                  this.accessCapabilityIdentity(current.permissionsSnapshot)),
+            );
             return {
               persisted,
+              accessChanged,
               nightModeAccessActivated:
                 persisted &&
                 locked[0]!.entityType === ChatEntityType.CHAT &&
                 this.getExecutableBotById(botId) !== null &&
                 !isNightModeTransitionMembershipCandidate({ ...previous, botId }) &&
                 isNightModeTransitionMembershipCandidate({ ...current, botId }),
+              // FLAG: A renewed identical capability can restore an expired action proof.
+              // The bounded wake helper checks the prior freshness and skips healthy renewals.
               wake: persisted
                 ? {
                     chatId,
@@ -977,13 +1022,33 @@ export class MaxBotLinkService implements OnModuleDestroy {
         );
       }
     }
-    if (result.persisted) {
+    if (result.persisted) this.forgetChatBotBinding(chatId);
+    if (result.persisted && result.accessChanged) {
       await this.reconcileChatPrimaryByAccess({ chatId });
+      await this.publishCommittedChatRoute(chatId, {
+        checkedAt: params.checkedAt,
+        source: params.source,
+      });
     }
     if (this.nightModeTransitionScheduler && this.pendingNightModeReconciliations.has(chatId)) {
       await this.reconcilePendingNightModeTransition(chatId);
     }
     return result.persisted;
+  }
+
+  private accessCapabilityIdentity(value: unknown): string {
+    const snapshot = normalizeMembershipAccessSnapshot(value);
+    const raw =
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as { channelReadProof?: { kind?: unknown } })
+        : null;
+    return JSON.stringify({
+      isAdmin: snapshot?.isAdmin === true,
+      isOwner: snapshot?.isOwner === true,
+      permissionsKnown: snapshot?.permissionsKnown === true,
+      permissions: snapshot?.permissions.slice().sort() ?? [],
+      channelRead: raw?.channelReadProof?.kind === 'MAX_CHANNEL_GET',
+    });
   }
 
   private async runChatMembershipWriteWithDeadlockRetry<T>(
@@ -1128,6 +1193,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
         source: params.source,
         now: checkedAt,
         lastErrorCode: params.lastErrorCode,
+        channelReadVerified: params.channelReadVerified,
       }),
       lastSeenAt: checkedAt,
     };
@@ -2274,6 +2340,11 @@ export class MaxBotLinkService implements OnModuleDestroy {
       checkedAt: Date;
       source: string;
     };
+    expectedPreviousOwner?: {
+      botId: string;
+      accessEpoch: MaxExecutionAccessEpoch;
+      purpose: MaxExecutionPurpose;
+    };
   }): Promise<boolean> {
     const chatId = params.chatId.trim();
     const botId = this.resolveOperationalBotId(params.botId);
@@ -2288,6 +2359,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       explicitPrimaryBotId: botId,
       expectedRoutingVersion: params.expectedRoutingVersion,
       expectedAccessEpoch: params.expectedAccessEpoch,
+      expectedPreviousOwner: params.expectedPreviousOwner,
     });
     if (reconciled?.primaryBotId !== botId) {
       return false;
@@ -2307,8 +2379,13 @@ export class MaxBotLinkService implements OnModuleDestroy {
       checkedAt: Date;
       source: string;
     };
+    expectedPreviousOwner?: {
+      botId: string;
+      accessEpoch: MaxExecutionAccessEpoch;
+      purpose: MaxExecutionPurpose;
+    };
   }): Promise<LockedChatRouteReconcileResult | null> {
-    return this.prisma.$transaction(
+    const result = await this.prisma.$transaction(
       async (tx) => {
         const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           SELECT chat."id"
@@ -2338,6 +2415,26 @@ export class MaxBotLinkService implements OnModuleDestroy {
           state.routingVersion !== params.expectedRoutingVersion
         ) {
           return null;
+        }
+
+        // FLAG: A newer healthy-owner probe must defeat a delayed failover decision. Route
+        // version alone does not change when an access epoch renews without a role change.
+        if (params.expectedPreviousOwner) {
+          const previous = state.allMemberships.find(
+            (membership) => membership.botId === params.expectedPreviousOwner!.botId,
+          );
+          const previousAccess = normalizeMembershipAccessSnapshot(previous?.permissionsSnapshot);
+          if (
+            !previous ||
+            !previousAccess ||
+            ((previousAccess.isAdmin || previousAccess.isOwner) &&
+              previousAccess.permissionsKnown !== true) ||
+            previous.botAccessCheckedAt?.getTime() !==
+              params.expectedPreviousOwner.accessEpoch.checkedAt.getTime() ||
+            previous.botAccessSource !== params.expectedPreviousOwner.accessEpoch.source ||
+            hasExecutionCapability(previous, state.entityType, params.expectedPreviousOwner.purpose)
+          )
+            return null;
         }
 
         const explicitMembership = params.explicitPrimaryBotId
@@ -2489,6 +2586,36 @@ export class MaxBotLinkService implements OnModuleDestroy {
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
     );
+    if (result) await this.publishCommittedChatRoute(params.chatId);
+    return result;
+  }
+
+  private async publishCommittedChatRoute(
+    chatId: string,
+    epoch?: { checkedAt: Date; source: string },
+  ): Promise<void> {
+    if (!this.routeEpochPublisher) return;
+    try {
+      // FLAG: SQL commits access/route authority first. Cross-role cache invalidation is
+      // advisory and must never hold the parent Chat lock or turn a grant into a failure.
+      const chat = await this.prisma.chat.findUnique({
+        where: { id: chatId },
+        select: { primaryBotId: true, routingVersion: true },
+      });
+      if (chat)
+        await this.routeEpochPublisher.publishChatRouteEpoch({
+          chatId,
+          routingVersion: chat.routingVersion,
+          botId: chat.primaryBotId,
+          checkedAt: epoch?.checkedAt,
+          source: epoch?.source,
+        });
+    } catch (error: unknown) {
+      this.logger.warn(
+        { chatId, err: error instanceof Error ? error.message : String(error) },
+        'Committed route cache invalidation failed; SQL execution gates remain authoritative',
+      );
+    }
   }
 
   private async resolveDefaultBotRoute(params: {
@@ -2798,29 +2925,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     }
 
     const state = await this.loadChatRouteState(normalizedChatId);
-    const candidateBotIds =
-      state?.routingState === ChatRoutingState.READY
-        ? this.buildModerationActionCandidateBotIdsFromState(
-            state,
-            action,
-            fallbackToPrimary !== false,
-          )
-        : [];
-    const selectedBotId = candidateBotIds[0] ?? null;
-
-    return this.buildRoute({
-      purpose: 'moderation_action',
-      chatId: normalizedChatId,
-      primaryBotId: state?.primaryBotId ?? null,
-      botId: selectedBotId,
-      candidateBotIds,
-      routingVersion: state?.routingVersion ?? null,
-      reason:
-        state && selectedBotId
-          ? this.resolveModerationActionRouteReason(state, selectedBotId, action)
-          : null,
-      action,
-    });
+    return this.buildModerationActionBotRouteFromState(state, action, fallbackToPrimary !== false);
   }
 
   private async resolveCapabilityBotRoute(
@@ -2875,6 +2980,84 @@ export class MaxBotLinkService implements OnModuleDestroy {
     });
   }
 
+  async loadChatExecutionOwnerState(chatId: string): Promise<MaxExecutionOwnerState | null> {
+    const state = await this.loadChatRouteState(chatId);
+    if (!state) return null;
+    return {
+      chatId: state.chatId,
+      entityType: state.entityType,
+      primaryBotId: state.storedPrimaryBotId ?? state.storedBotId,
+      routingVersion: state.routingVersion,
+      candidates: state.activeKnownMemberships.filter((membership) =>
+        Boolean(this.resolveExecutableBotId(membership.botId)),
+      ),
+    };
+  }
+
+  async getFreshChatBotExecutionProof(params: {
+    chatId: string;
+    botId: string;
+    purpose?: MaxExecutionPurpose;
+    maxAgeMs?: number;
+  }): Promise<MaxExecutionRouteProof | null> {
+    const state = await this.loadChatExecutionOwnerState(params.chatId);
+    return state ? executionRouteProof(state, params.botId, params.purpose, params.maxAgeMs) : null;
+  }
+
+  async verifyChatExecutionProof(params: {
+    chatId: string;
+    botId: string;
+    routingVersion: number;
+    accessEpoch: MaxExecutionAccessEpoch;
+    purpose?: MaxExecutionPurpose;
+    maxAgeMs?: number;
+  }): Promise<boolean> {
+    const proof = await this.getFreshChatBotExecutionProof(params);
+    return Boolean(
+      proof &&
+      proof.routingVersion === params.routingVersion &&
+      proof.accessEpoch.checkedAt.getTime() === params.accessEpoch.checkedAt.getTime() &&
+      proof.accessEpoch.source === params.accessEpoch.source,
+    );
+  }
+
+  resolveModerationActionBotRouteFromSnapshot(
+    snapshot: MaxChatRouteSnapshot,
+    action: ModerationActionPermission,
+    fallbackToPrimary = true,
+  ): MaxBotRoute {
+    return this.buildModerationActionBotRouteFromState(
+      this.buildChatRouteState(snapshot),
+      action,
+      fallbackToPrimary,
+    );
+  }
+
+  private buildModerationActionBotRouteFromState(
+    state: ResolvedChatRouteState | null,
+    action: ModerationActionPermission,
+    fallbackToPrimary = true,
+  ): MaxBotRoute {
+    const candidateBotIds =
+      state?.routingState === ChatRoutingState.READY
+        ? this.buildModerationActionCandidateBotIdsFromState(state, action, fallbackToPrimary)
+        : [];
+    const selectedBotId = candidateBotIds[0] ?? null;
+    return this.buildRoute({
+      purpose: 'moderation_action',
+      chatId: state?.chatId ?? null,
+      primaryBotId: state?.primaryBotId ?? null,
+      botId: selectedBotId,
+      candidateBotIds,
+      routingVersion: state?.routingVersion ?? null,
+      reason:
+        state && selectedBotId
+          ? this.resolveModerationActionRouteReason(state, selectedBotId, action)
+          : null,
+      action,
+    });
+  }
+
   private async loadChatRouteState(
     chatId: string,
     client: Pick<ChatRouteTransactionClient, 'chat'> = this.prisma,
@@ -2920,7 +3103,25 @@ export class MaxBotLinkService implements OnModuleDestroy {
       return null;
     }
 
-    const allMemberships = chat.botMemberships ?? [];
+    return this.buildChatRouteState({ ...chat, chatId: normalizedChatId });
+  }
+
+  private buildChatRouteState(chat: MaxChatRouteSnapshot): ResolvedChatRouteState {
+    const normalizedChatId = chat.chatId.trim();
+    const allMemberships: ResolvedChatRouteMembership[] = chat.botMemberships.map((membership) => ({
+      botAccessCheckedAt: null,
+      botAccessExpiresAt: null,
+      botAccessSource: null,
+      lifecycleEventAt: null,
+      lifecycleEventType: null,
+      lifecycleSource: null,
+      capabilities: [],
+      sendRouteFailureCount: 0,
+      sendRouteQuarantinedUntil: null,
+      sendRouteLastFailureAt: null,
+      sendRouteLastFailureCode: null,
+      ...membership,
+    }));
     const memberships = allMemberships.filter((membership) =>
       Boolean(this.botRegistry.getBotById(membership.botId)),
     );
@@ -2970,12 +3171,12 @@ export class MaxBotLinkService implements OnModuleDestroy {
       null;
     const primaryBotId = preferredPrimaryBotId;
     if (chat.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
-      this.forgetChatBotBinding(normalizedChatId);
+      // Selection is pure; authorization reads still validate the SQL route version.
     }
 
     return {
       chatId: normalizedChatId,
-      title: chat.title,
+      title: chat.title ?? `Chat ${normalizedChatId}`,
       entityType: chat.entityType ?? null,
       routingState: chat.routingState,
       hasStoredBotAssignment: Boolean(chat.primaryBotId || chat.botId),
@@ -4088,7 +4289,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     if (!liveProbe && params.lifecycleEventType !== 'bot_added') {
       return;
     }
-    await this.prisma.chat.updateMany({
+    const updated = await this.prisma.chat.updateMany({
       where: {
         id: params.chatId,
         routingState: { not: ChatRoutingState.READY },
@@ -4115,6 +4316,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
         routingVersion: { increment: 1 },
       },
     });
+    if (updated.count) await this.publishCommittedChatRoute(params.chatId);
   }
 
   private getOperationalBotById(botId: string | null | undefined): MaxBotDefinition | null {

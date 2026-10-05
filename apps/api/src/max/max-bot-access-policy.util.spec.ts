@@ -16,14 +16,29 @@ describe('max bot access policy', () => {
         isAdmin: true,
         isOwner: false,
         permissions: ['Delete Messages', 'delete-messages', '', null, 'Can Edit-Link'],
+        permissionsKnown: true,
       }),
     ).toEqual({
       checkedAt: '2026-05-09T10:00:00.000Z',
       isAdmin: true,
       isOwner: false,
       permissions: ['delete_messages', 'can_edit_link'],
+      permissionsKnown: true,
     });
     expect(calculatePrimaryPermissionScore(['edit-link', 'can edit link', 'unknown'])).toBe(2_000);
+  });
+
+  it('keeps permission knowledge unknown for legacy snapshots with a nonempty permission list', () => {
+    expect(
+      normalizeMembershipAccessSnapshot({
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'delete_messages'],
+      }),
+    ).toMatchObject({
+      permissions: ['read_all_messages', 'delete_messages'],
+      permissionsKnown: false,
+    });
   });
 
   it('only treats explicit non-admin snapshots as lacking access', () => {

@@ -3072,13 +3072,8 @@ describe('ModerationService', () => {
 
       expect(maxClient.deleteMessage).toHaveBeenCalledTimes(2);
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
-      expect(prisma.violation.count).toHaveBeenCalledTimes(1);
-      expect(redisCounter.incrementWithTtl).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'moderation:violation-count:v1:chat-1:user-1:REQUIRED_SUBSCRIPTION',
-        ),
-        24 * 60 * 60 + 60,
-      );
+      expect(prisma.violation.count).toHaveBeenCalledTimes(2);
+      expect(redisCounter.incrementWithTtl).not.toHaveBeenCalled();
       const secondNoticeText = maxClient.sendMessage.mock.calls[1]?.[1] ?? '';
       expect(secondNoticeText).toContain('Новости MAX');
       expect(prisma.moderationEvent.create.mock.calls).toEqual(

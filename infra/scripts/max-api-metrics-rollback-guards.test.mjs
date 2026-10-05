@@ -12,6 +12,7 @@ const paths = {
   keys: 'apps/api/src/max/max-api-metrics-key.util.ts',
 };
 const minuteReaderMarker = 'maxim_topology_require_max_api_metrics_minute_reader';
+const apiAuthorityMarker = 'maxim_topology_require_multibot_authority';
 const previousReleaseMarker = 'select_release_recovery_base';
 const connect = readFileSync(resolve(root, 'infra/scripts/vps-connect.sh'), 'utf8');
 
@@ -48,7 +49,7 @@ function wrapperMarker(name, args) {
   return result.stdout.trim();
 }
 
-function bootstrapProbe(t, { name, args, current = false, gitMode = 'reviewed' }) {
+function bootstrapProbe(t, { name, args, current = false, previousMarker, gitMode = 'reviewed' }) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-metric-reader-bootstrap-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const entrypoint = join(directory, 'entrypoint.sh');
@@ -65,15 +66,16 @@ function bootstrapProbe(t, { name, args, current = false, gitMode = 'reviewed' }
     printf '${label}\\n'
   `;
   writeFileSync(gitLog, '');
-  writeFileSync(currentEntrypoint, makeEntrypoint(minuteReaderMarker, 'current'), { mode: 0o700 });
+  writeFileSync(currentEntrypoint, makeEntrypoint(apiAuthorityMarker, 'current'), { mode: 0o700 });
   writeFileSync(
     entrypoint,
     makeEntrypoint(
       current
-        ? minuteReaderMarker
-        : name === 'rollback_runtime'
-          ? 'select_runtime_rollback_recovery_base'
-          : previousReleaseMarker,
+        ? apiAuthorityMarker
+        : (previousMarker ??
+            (name === 'rollback_runtime'
+              ? 'select_runtime_rollback_recovery_base'
+              : previousReleaseMarker)),
       current ? 'current' : 'previous',
     ),
     { mode: 0o700 },
@@ -305,10 +307,10 @@ test('ref source floor checks the exact target before Git switch, image build, o
 });
 
 for (const [name, args, expected] of [
-  ['rollback_runtime', ['compatibility-sha', 'api-action'], minuteReaderMarker],
-  ['rollback_release', ['release-id'], minuteReaderMarker],
-  ['rollback_release', ['release-id', 'api-shared'], minuteReaderMarker],
-  ['rollback_release', ['release-id', 'admin-static', 'api-shared'], minuteReaderMarker],
+  ['rollback_runtime', ['compatibility-sha', 'api-action'], apiAuthorityMarker],
+  ['rollback_release', ['release-id'], apiAuthorityMarker],
+  ['rollback_release', ['release-id', 'api-shared'], apiAuthorityMarker],
+  ['rollback_release', ['release-id', 'admin-static', 'api-shared'], apiAuthorityMarker],
   ['rollback_release', ['release-id', 'miniapp-major-static'], previousReleaseMarker],
   [
     'rollback_release',
@@ -325,7 +327,7 @@ for (const [name, args] of [
   ['rollback_runtime', ['compatibility-sha', 'api-action']],
   ['rollback_release', ['release-id', 'admin-static', 'api-shared']],
 ]) {
-  test(`${name} restores reviewed tooling when the previous guarded entrypoint lacks the minute floor`, (t) => {
+  test(`${name} restores reviewed tooling when the previous guarded entrypoint lacks the authority floor`, (t) => {
     const probe = bootstrapProbe(t, { name, args });
     assert.equal(probe.result.status, 0, probe.result.stderr);
     assert.equal(probe.result.stdout, 'current\n');
@@ -339,7 +341,15 @@ for (const [name, args] of [
     ]);
   });
 
-  test(`${name} stays offline when the checked-out entrypoint already retains the minute floor`, (t) => {
+  test(`${name} upgrades minute-reader tooling before API rollback with pending multibot journals`, (t) => {
+    const probe = bootstrapProbe(t, { name, args, previousMarker: minuteReaderMarker });
+    assert.equal(probe.result.status, 0, probe.result.stderr);
+    assert.equal(probe.result.stdout, 'current\n');
+    assert.deepEqual(probe.arguments, args);
+    assert.ok(probe.gitCalls.includes('checkout main'));
+  });
+
+  test(`${name} stays offline when the checked-out entrypoint already retains the authority floor`, (t) => {
     const probe = bootstrapProbe(t, { name, args, current: true, gitMode: 'forbidden' });
     assert.equal(probe.result.status, 0, probe.result.stderr);
     assert.equal(probe.result.stdout, 'current\n');
@@ -362,7 +372,7 @@ for (const [gitMode, error] of [
   ['missing', /Reviewed rollback tooling commit is not retained/u],
   ['wrong-main', /Retained VPS main does not match the reviewed/u],
 ]) {
-  test(`minute floor bootstrap preserves the ${gitMode} tooling synchronization rejection`, (t) => {
+  test(`authority floor bootstrap preserves the ${gitMode} tooling synchronization rejection`, (t) => {
     const probe = bootstrapProbe(t, {
       name: 'rollback_release',
       args: ['release-id'],
