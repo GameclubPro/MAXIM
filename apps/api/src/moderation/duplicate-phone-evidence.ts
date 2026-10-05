@@ -1,8 +1,9 @@
 import { getUrlTextRanges } from '../common/url-text.util';
+import { hasDuplicateQuantityUnitSuffix } from './duplicate-semantic-text';
 
 // FLAG: This is deliberately stricter than phone blocking. Erasing an ambiguous number or
 // using it as a phone-only duplicate match can authorize deletion of a different message.
-export const DUPLICATE_PHONE_EVIDENCE_VERSION = 5;
+export const DUPLICATE_PHONE_EVIDENCE_VERSION = 6;
 
 // FLAG: A period followed by spacing starts another phrase. Never erase its numeric content
 // as part of the phone; dots without spacing remain conventional phone separators.
@@ -33,6 +34,7 @@ function hasProtectedValueContext(before: string, after: string): boolean {
   return (
     QUANTITY_PREFIX.test(before) ||
     QUANTITY_SUFFIX.test(after) ||
+    hasDuplicateQuantityUnitSuffix(after) ||
     (IDENTIFIER_CONTEXT.test(before) && !phoneNumberLabel) ||
     PROTECTED_LABEL_IN_CLAUSE.test(protectedClause)
   );
@@ -94,6 +96,7 @@ function hasEmbeddedIdentifierAdjacency(
     const value = after.slice(colon[0].length).replace(/\p{Cf}/gu, '');
     if (
       QUANTITY_SUFFIX.test(value) ||
+      hasDuplicateQuantityUnitSuffix(value) ||
       /^[\p{N}_]|^\p{L}\p{M}*(?=$|[^\p{L}\p{M}\p{N}_])/u.test(value) ||
       (afterTruncated && !/[\s.!?;,\n\r\u2028\u2029]/u.test(value))
     )

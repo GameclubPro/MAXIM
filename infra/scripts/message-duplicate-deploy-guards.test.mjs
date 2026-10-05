@@ -25,6 +25,7 @@ const paths = {
   history: 'apps/api/src/moderation/message-duplicate/message-duplicate-history.service.ts',
   window: 'apps/api/src/moderation/message-duplicate/message-duplicate-window.script.ts',
   settings: 'packages/contracts/src/duplicate-settings.ts',
+  semantic: 'apps/api/src/moderation/duplicate-semantic-text.ts',
 };
 function probe(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-duplicate-floor-'));
@@ -72,7 +73,8 @@ test('requires the message-v3 reader, durable admission and last action permit o
 
 const mutations = [
   ['state', 'z.literal(3)', 'z.literal(4)'],
-  ['state', 'text-fixed-window-safe-text-v11', 'text-fixed-window-safe-text-v10'],
+  ['state', 'text-fixed-window-safe-text-v12', 'text-fixed-window-safe-text-v11'],
+  ['state', 'text-fixed-window-v12', 'text-fixed-window-v5'],
   ['state', 'version: safeTextMatchingEnabled ?', 'version: false ?'],
   ['state', 'nearEnabled || phoneValueMatchingEnabled', 'nearEnabled'],
   [
@@ -109,8 +111,32 @@ const mutations = [
     'const numericTokens = approximateSource.match(',
     'const numericTokens = normalized.match(',
   ],
-  ['detector', 'text-v9\\0', 'text-v8\\0'],
-  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 5', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 4'],
+  ['detector', 'text-v12\\0', 'text-v9\\0'],
+  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 6', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 5'],
+  ['detector', 'return normalizeDuplicateSemanticText(value);', 'return value.toLowerCase();'],
+  ['content', 'return normalizeDuplicateSemanticText(value);', 'return value.toLowerCase();'],
+  [
+    'semantic',
+    'protectedQuantityUnit(source.slice(from, end))',
+    'source.slice(from, end).toLowerCase()',
+  ],
+  ['phones', 'hasDuplicateQuantityUnitSuffix(after)', 'false'],
+  ['phones', 'hasDuplicateQuantityUnitSuffix(value)', 'false'],
+  ['semantic', 'const QUANTITY_UNITS = new Set(', 'const QUANTITY_UNITS = new Map('],
+  [
+    'semantic',
+    'wordUnit[1]! + wordUnit[2]!.toLowerCase() : unit',
+    'wordUnit[1]!.toLowerCase() + wordUnit[2]!.toLowerCase() : unit.toLowerCase()',
+  ],
+  ['semantic', "unit.replace(/\\p{Cf}/gu, '').toLowerCase()", 'unit.toLowerCase()'],
+  ['semantic', 'return unit !== undefined && isQuantityUnit(unit);', 'return unit !== undefined;'],
+  ['semantic', 'if (!isQuantityUnit(unit)) continue;', 'if (false) continue;'],
+  ['semantic', 'if (!next || !isQuantityUnit(next[1]!)) break;', 'if (!next) break;'],
+  [
+    'semantic',
+    'quantities.lastIndex = end;',
+    'quantities.lastIndex = quantity.index + quantity[0].length;',
+  ],
   [
     'phones',
     "import { getUrlTextRanges } from '../common/url-text.util';",
@@ -399,9 +425,9 @@ for (const [key, before, after] of mutations) {
   });
 }
 
-test('rejects broad phone roots even with phone evidence v5 and the v11 settings fence', (t) => {
+test('rejects broad phone roots even with phone evidence v6 and the v12 settings fences', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
-  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*5\b/u);
+  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*6\b/u);
   const declaration = /const PHONE_CONTEXT\s*=\s*\/[^\r\n]+\/iu;/u;
   assert.match(source, declaration);
   const phones = source.replace(

@@ -10,9 +10,25 @@ import {
   prePhoneBoundarySettingsDigests,
   preSourceBoundPhoneSettingsDigests,
   preV3HistorySettingsDigests,
+  preSemanticUnitSettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 describe('safe text evidence compatibility', () => {
+  it.each([
+    ['STANDARD', {}],
+    ['STRICT', { duplicateDetectionPreset: 'STRICT' }],
+    ['CUSTOM_NEAR', { duplicateDetectionPreset: 'CUSTOM', duplicateNearMatchEnabled: true }],
+    ['CUSTOM_PHONE', { duplicateDetectionPreset: 'CUSTOM', duplicateIgnorePhonesEnabled: true }],
+  ] as const)('revokes pre-unit %s text evidence', (key, overrides) => {
+    expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
+      preSemanticUnitSettingsDigests[key],
+    );
+  });
+  it('keeps exact IMAGE authority unchanged by quantity-unit semantics', () => {
+    expect(exactImageSettingsDigest(duplicateSettings())).toBe(
+      preSemanticUnitSettingsDigests.IMAGE,
+    );
+  });
   it.each([
     ['STRICT', { duplicateDetectionPreset: 'STRICT' }],
     ['CUSTOM_NEAR', { duplicateDetectionPreset: 'CUSTOM', duplicateNearMatchEnabled: true }],
