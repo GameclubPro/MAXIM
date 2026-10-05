@@ -262,7 +262,7 @@ export function multibotRecoveryPsqlArgs(applicationName, client) {
     '-e',
     `PGAPPNAME=${applicationName}`,
     '-e',
-    'PGOPTIONS=-c statement_timeout=3600s -c lock_timeout=5s -c idle_in_transaction_session_timeout=5s -c max_parallel_workers_per_gather=0 -c max_parallel_maintenance_workers=0 -c maintenance_work_mem=512MB -c temp_file_limit=6GB -c work_mem=1MB -c search_path=pg_catalog,public',
+    'PGOPTIONS=-c statement_timeout=3600s -c lock_timeout=5s -c idle_in_transaction_session_timeout=5s -c max_parallel_workers_per_gather=0 -c max_parallel_maintenance_workers=0 -c maintenance_work_mem=512MB -c temp_file_limit=6GB -c work_mem=1MB -c search_path=pg_catalog,public -c default_tablespace= -c temp_tablespaces=',
     '--entrypoint',
     'psql',
     client.imageId,

@@ -86,9 +86,10 @@ WITH expected_migrations(name, checksum, position) AS (VALUES
   ('webhook_events_semantic_replay_fence_idx', ARRAY['semantic_key', 'id'],
     $predicate$((semantic_key IS NOT NULL) AND ((status = ANY (ARRAY['RECEIVED'::"WebhookStatus", 'QUEUED'::"WebhookStatus"])) OR ((status = 'FAILED'::"WebhookStatus") AND (next_enqueue_at IS NOT NULL)) OR (timeout_quarantine_expires_at IS NOT NULL) OR (COALESCE(error_message, ''::text) ~~* '%ambiguous%'::text) OR (COALESCE(error_message, ''::text) ~~ 'WEBHOOK_HOT_PATH_TIMEOUT%QUARANTINED%'::text)))$predicate$, 3)
 ), inspected_indexes AS MATERIALIZED (
-  SELECT expected.*, relation.oid, relation.relkind, state.*,
+  SELECT expected.*, relation.oid, relation.relkind, relation.reltablespace, state.*,
     method.amname,
     COALESCE(relation.relkind = 'i'
+      AND relation.reltablespace = 0 AND relation.reloptions IS NULL
       AND state.indrelid = to_regclass('public.webhook_events')
       AND method.amname = 'btree'
       AND NOT state.indisunique AND NOT state.indisprimary AND NOT state.indisexclusion
@@ -161,6 +162,14 @@ SELECT json_build_object(
   'read_only', current_setting('transaction_read_only') = 'on',
   'authority', 'DIAGNOSTICS_ONLY',
   'parent_kind', (SELECT relkind FROM pg_class WHERE oid = to_regclass('public.webhook_events')),
+  'storage_layout_matches', COALESCE((
+    SELECT relation.relpersistence = 'p' AND relation.reltablespace = 0
+      AND database.dattablespace = (SELECT oid FROM pg_tablespace WHERE spcname = 'pg_default')
+    FROM pg_class relation JOIN pg_database database ON database.datname = current_database()
+    WHERE relation.oid = to_regclass('public.webhook_events')
+  ), false) AND NOT EXISTS (
+    SELECT 1 FROM inspected_indexes WHERE oid IS NOT NULL AND reltablespace <> 0
+  ),
   'table_bytes', pg_table_size(to_regclass('public.webhook_events')),
   'settings', (SELECT json_object_agg(name, json_build_object('setting', setting, 'unit', unit))
     FROM pg_settings WHERE name IN ('shared_buffers', 'maintenance_work_mem',

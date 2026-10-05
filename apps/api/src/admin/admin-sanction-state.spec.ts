@@ -140,13 +140,14 @@ describe('existing sanction-button unban attempt', () => {
     });
     prisma.moderationEvent.findFirst.mockResolvedValue({ id: 'ban-event-1' });
     const mutation = jest.fn();
+    const revalidateRoute = jest.fn().mockResolvedValue(undefined);
     const maxClient = createBanMaxClient({
       getChatMemberAccess: jest.fn().mockResolvedValue(null),
       clearTerminalBanStateAfterConfirmedUnban: jest.fn(),
       unbanMember: jest.fn(),
       attemptUnbanMember: jest.fn(
         async (_chat: string, _user: string, opts: MaxActionDispatchOptions) => {
-          await opts.beforeImmediateMemberMutation!();
+          await opts.beforeImmediateMemberMutation!(revalidateRoute);
           mutation();
         },
       ),
@@ -162,15 +163,22 @@ describe('existing sanction-button unban attempt', () => {
         'group_command',
         options,
       );
-    return { prisma, maxClient, service, harness, run, mutation };
+    return { prisma, maxClient, service, harness, run, mutation, revalidateRoute };
   }
 
   it('sends a guarded attempt without releasing the ban or granting exemptions', async () => {
-    const { prisma, maxClient, harness, run, mutation } = fixture();
+    const { prisma, maxClient, harness, run, mutation, revalidateRoute } = fixture();
     await expect(run()).resolves.toMatchObject({
       message: 'Запрос выполнен. Проверьте вход в чат.',
     });
     expect(mutation).toHaveBeenCalledTimes(1);
+    expect(revalidateRoute).toHaveBeenCalledTimes(1);
+    expect(harness.leaseGuard.assertOwned.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      revalidateRoute.mock.invocationCallOrder[0]!,
+    );
+    expect(revalidateRoute.mock.invocationCallOrder[0]).toBeLessThan(
+      mutation.mock.invocationCallOrder[0]!,
+    );
     expect(maxClient.attemptUnbanMember).toHaveBeenCalledWith(
       'chat-1',
       'user-4',
@@ -194,6 +202,77 @@ describe('existing sanction-button unban attempt', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     expect(prisma.adminGlobalSpammerExemption.upsert).not.toHaveBeenCalled();
   });
+
+  it.each(['member lookup', 'lease renewal'] as const)(
+    'rejects a selected executor proof superseded during the final %s',
+    async (blockedStep) => {
+      const { prisma, maxClient, harness, run, mutation, revalidateRoute } = fixture();
+      let routeVersion = 1;
+      const originalRouteVersion = routeVersion;
+      const proofRejected = Object.assign(new Error('Selected member executor proof changed'), {
+        code: 'max_action_executor_proof_rejected',
+      });
+      revalidateRoute.mockImplementation(async () => {
+        if (routeVersion !== originalRouteVersion) throw proofRejected;
+      });
+      let releaseWait!: () => void;
+      let reachedWait!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        releaseWait = resolve;
+      });
+      const reached = new Promise<void>((resolve) => {
+        reachedWait = resolve;
+      });
+      let finalTargetReadFinished = false;
+      // FLAG: Block the second, fresh target read or its following Redis lease
+      // check. The captured dispatch proof is valid until that exact final wait.
+      maxClient.getChatMemberAccess.mockResolvedValueOnce(null).mockImplementationOnce(async () => {
+        if (blockedStep === 'member lookup') {
+          reachedWait();
+          await waiting;
+        }
+        finalTargetReadFinished = true;
+        return null;
+      });
+      harness.leaseGuard.assertOwned.mockImplementation(async () => {
+        harness.trace.push('guard');
+        if (blockedStep === 'lease renewal' && finalTargetReadFinished) {
+          reachedWait();
+          await waiting;
+        }
+      });
+
+      const settled = run().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      try {
+        const outcome = await Promise.race([
+          reached.then(() => 'reached'),
+          settled.then(() => 'settled'),
+        ]);
+        expect(outcome).toBe('reached');
+        expect(revalidateRoute).not.toHaveBeenCalled();
+        expect(mutation).not.toHaveBeenCalled();
+        routeVersion += 1;
+      } finally {
+        releaseWait();
+      }
+      await expect(settled).resolves.toBe(proofRejected);
+      expect(maxClient.getChatMemberAccess).toHaveBeenCalledTimes(2);
+      expect(revalidateRoute).toHaveBeenCalledTimes(1);
+      expect(harness.leaseGuard.assertOwned.mock.invocationCallOrder.at(-1)).toBeLessThan(
+        revalidateRoute.mock.invocationCallOrder[0]!,
+      );
+      expect(mutation).not.toHaveBeenCalled();
+      expect(maxClient.attemptUnbanMember).toHaveBeenCalledTimes(1);
+      expect(maxClient.clearTerminalBanStateAfterConfirmedUnban).not.toHaveBeenCalled();
+      expect(harness.sanctionStateFence.prepare).not.toHaveBeenCalled();
+      expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(prisma.adminGlobalSpammerExemption.upsert).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not remove a member who returned while the request was prepared', async () => {
     const { maxClient, run, mutation, harness } = fixture();

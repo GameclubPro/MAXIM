@@ -122,6 +122,7 @@ type ServiceInternals = {
   resolveDeleteRouteWithRefresh(
     intent: Record<string, unknown>,
     heartbeat: { renew: () => Promise<boolean>; stop: () => void },
+    canRead?: () => Promise<boolean>,
   ): Promise<unknown>;
   finishRetryableAttempt(
     intent: Record<string, unknown>,
@@ -459,6 +460,25 @@ const confirmedRoute = {
     routeEligible: true,
   })),
 } as const;
+
+function unconfirmedDeleteRoute(botIds: readonly string[]) {
+  return {
+    ...confirmedRoute,
+    botId: null as string | null,
+    candidateBotIds: [] as string[],
+    capabilityState: 'stale_or_unknown',
+    capabilityReason: 'snapshot_stale',
+    candidateCapabilities: botIds.map((botId) => ({
+      ...confirmedRoute.candidateCapabilities[0],
+      botId,
+      state: 'stale_or_unknown',
+      reason: 'snapshot_stale',
+      checkedAt: new Date(Date.now() - 60_000).toISOString(),
+      expiresAt: new Date(Date.now() - 1).toISOString(),
+      routeEligible: false,
+    })),
+  };
+}
 
 function nightModeCleanupSettings(overrides: Record<string, unknown> = {}) {
   return {
@@ -4107,6 +4127,219 @@ describe('ModerationDeleteIntentService', () => {
         checkedAt: accessProbeStartedAt,
       }),
     );
+  });
+
+  it.each([1, 3, 4, 6, 9, 12])(
+    'reaches the last of %i standby bots across process restarts despite unknown earlier probes',
+    async (count) => {
+      const botIds = Array.from(
+        { length: count },
+        (_, index) => `bot-${String(index).padStart(2, '0')}`,
+      );
+      const survivor = botIds.at(-1)!;
+      const route = unconfirmedDeleteRoute(botIds);
+      const getCurrentChatMemberAccess = jest
+        .fn()
+        .mockImplementation(async (_chatId: string, options: { botId: string }) => {
+          if (options.botId !== survivor)
+            throw { response: { status: 503, data: { code: 'service.unavailable' } } };
+          return { isAdmin: true, isOwner: false, permissionsKnown: true, permissions: ['write'] };
+        });
+      const recordBotAccessProbe = jest
+        .fn()
+        .mockImplementation(async ({ botId }: { botId: string }) => {
+          route.botId = botId;
+          route.candidateBotIds = [botId];
+          const candidate = route.candidateCapabilities.find((value) => value.botId === botId)!;
+          Object.assign(candidate, {
+            state: 'confirmed_capable',
+            reason: 'confirmed',
+            routeEligible: true,
+          });
+          return true;
+        });
+      const deadline = new Date(Date.now() + 60_000);
+      for (let attemptCount = 1; attemptCount <= Math.ceil(count / 4); attemptCount += 1) {
+        // A new service has no process-local cursor. The persisted attempt is the only
+        // position shared across workers, and the original work deadline stays fixed.
+        const { service, prisma, maxClient } = createService(
+          { MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: 'chat-1' },
+          {},
+          { getCurrentChatMemberAccess },
+          {
+            resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(route),
+            recordBotAccessProbe,
+            getExecutableBotById: jest.fn((botId: string) =>
+              botIds.includes(botId) ? { id: botId } : null,
+            ),
+          },
+        );
+        const before = getCurrentChatMemberAccess.mock.calls.length;
+        const intent = {
+          ...baseIntent,
+          originBotId: botIds[0],
+          retryUntilAt: deadline,
+          attemptCount,
+        };
+        await (service as unknown as ServiceInternals).resolveDeleteRouteWithRefresh(
+          intent,
+          ownedHeartbeat,
+        );
+        expect(getCurrentChatMemberAccess.mock.calls.length - before).toBeLessThanOrEqual(4);
+        expect(prisma.$executeRaw).not.toHaveBeenCalled();
+        expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+        expect(intent.retryUntilAt).toBe(deadline);
+      }
+      expect(route.candidateBotIds).toEqual([survivor]);
+      expect(recordBotAccessProbe).toHaveBeenCalledWith(expect.objectContaining({ botId: survivor }));
+      expect(new Set(getCurrentChatMemberAccess.mock.calls.map((call) => call[1].botId))).toEqual(
+        new Set(botIds),
+      );
+    },
+  );
+
+  it('passes fresh negative first-four proofs to reach a later stale standby without extra MAX probes', async () => {
+    const botIds = Array.from({ length: 9 }, (_, index) => `bot-${index + 1}`);
+    const route = unconfirmedDeleteRoute(botIds);
+    for (const candidate of route.candidateCapabilities.slice(0, 8))
+      Object.assign(candidate, {
+        state: 'explicitly_incapable',
+        reason: 'access_denied',
+        checkedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+    const getCurrentChatMemberAccess = jest
+      .fn()
+      .mockResolvedValue({ isAdmin: true, permissionsKnown: true, permissions: ['write'] });
+    const { service } = createService(
+      { MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: 'chat-1' },
+      {},
+      { getCurrentChatMemberAccess },
+      {
+        resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(route),
+        getExecutableBotById: jest.fn((botId: string) =>
+          botIds.includes(botId) ? { id: botId } : null,
+        ),
+      },
+    );
+    await (service as unknown as ServiceInternals).resolveDeleteRouteWithRefresh(
+      baseIntent,
+      ownedHeartbeat,
+    );
+    expect(getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ botId: 'bot-9' }),
+    );
+  });
+
+  it('respects the negative-proof cooldown boundary and never trusts a future timestamp', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-05T12:00:00Z'));
+    const route = unconfirmedDeleteRoute(['bot-1']);
+    Object.assign(route.candidateCapabilities[0]!, {
+      state: 'explicitly_incapable',
+      reason: 'access_denied',
+      checkedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const getCurrentChatMemberAccess = jest.fn().mockRejectedValue({ response: { status: 403 } });
+    const { service } = createService(
+      { MODERATION_DELETE_INTENT_CAPABILITY_RETRY_MS: 30_000 },
+      {},
+      { getCurrentChatMemberAccess },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(route) },
+    );
+    const internals = service as unknown as ServiceInternals;
+    await internals.resolveDeleteRouteWithRefresh(baseIntent, ownedHeartbeat);
+    expect(getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    jest.setSystemTime(new Date(Date.now() + 30_000));
+    await internals.resolveDeleteRouteWithRefresh({ ...baseIntent, attemptCount: 2 }, ownedHeartbeat);
+    expect(getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    route.candidateCapabilities[0]!.checkedAt = new Date(Date.now() + 60_000).toISOString();
+    await internals.resolveDeleteRouteWithRefresh({ ...baseIntent, attemptCount: 3 }, ownedHeartbeat);
+    expect(getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps durable candidate backoff, origin-only routing and lifecycle exclusion while rotating probes', async () => {
+    const route = unconfirmedDeleteRoute(['bot-1', 'bot-2', 'bot-3', 'bot-4', 'bot-5', 'bot-6']);
+    route.candidateCapabilities[3]!.reason = 'bot_not_actionable';
+    const getCurrentChatMemberAccess = jest.fn().mockRejectedValue({ response: { status: 503 } });
+    const getExecutableBotById = jest.fn((botId: string) =>
+      botId === 'bot-5' ? null : { id: botId },
+    );
+    const { service, prisma } = createService(
+      { MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: 'chat-1' },
+      {},
+      { getCurrentChatMemberAccess },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(route), getExecutableBotById },
+    );
+    const failedAt = new Date().toISOString();
+    const candidateFailures = {
+      'bot-2': {
+        failedAt,
+        retryAt: new Date(Date.now() + 60_000).toISOString(),
+        errorCode: 'access.denied',
+        statusCode: 403,
+      },
+    };
+    const internals = service as unknown as ServiceInternals;
+    await internals.resolveDeleteRouteWithRefresh(
+      { ...baseIntent, attemptCount: 2, candidateFailures },
+      ownedHeartbeat,
+    );
+    expect(getCurrentChatMemberAccess.mock.calls.map((call) => call[1].botId)).toEqual([
+      'bot-1',
+      'bot-3',
+      'bot-6',
+    ]);
+    getCurrentChatMemberAccess.mockClear();
+    const { service: originOnlyService } = createService(
+      { MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: '' },
+      {},
+      { getCurrentChatMemberAccess },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(route), getExecutableBotById },
+    );
+    await (originOnlyService as unknown as ServiceInternals).resolveDeleteRouteWithRefresh(
+      { ...baseIntent, attemptCount: 3, routingPolicy: 'origin_only' },
+      ownedHeartbeat,
+    );
+    expect(getCurrentChatMemberAccess.mock.calls.map((call) => call[1].botId)).toEqual(['bot-1']);
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('fences rotated probes on a lost lease and preserves read-only reconciliation permission', async () => {
+    const route = unconfirmedDeleteRoute(Array.from({ length: 9 }, (_, index) => `bot-${index + 1}`));
+    const { service, prisma, maxClient, maxBotLink } = createService(
+      { MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: 'chat-1' },
+      {},
+      {},
+      {
+        resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(route),
+        getExecutableBotById: jest.fn((botId: string) =>
+          route.candidateCapabilities.some((candidate) => candidate.botId === botId)
+            ? { id: botId }
+            : null,
+        ),
+      },
+    );
+    const internals = service as unknown as ServiceInternals;
+    await expect(
+      internals.resolveDeleteRouteWithRefresh(
+        { ...baseIntent, attemptCount: 2 },
+        { renew: jest.fn().mockResolvedValue(false), stop: jest.fn() },
+      ),
+    ).rejects.toMatchObject({ name: 'ModerationDeleteIntentLeaseLostError' });
+    const canRead = jest.fn().mockResolvedValue(false);
+    await internals.resolveDeleteRouteWithRefresh(
+      { ...baseIntent, attemptCount: 3, leaseToken: null },
+      ownedHeartbeat,
+      canRead,
+    );
+    expect(canRead).toHaveBeenCalledTimes(4);
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxBotLink.recordBotAccessProbe).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
   });
 
   it('preserves an explicit null event type so callers can suppress delete events', () => {

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { PGlite } from '@electric-sql/pglite';
@@ -74,6 +77,7 @@ test('fixed audit needs only receipt metadata grants and never reads application
     assert.equal(report.read_only, true);
     assert.equal(report.authority, 'DIAGNOSTICS_ONLY');
     assert.equal(report.metadata_limit_exceeded, false);
+    assert.equal(report.storage_layout_matches, true);
     assert.deepEqual(
       report.metadata.migrations.map((entry) => entry.name),
       MULTIBOT_PREPARATION_MIGRATIONS,
@@ -191,6 +195,34 @@ test('all exact definitions are ready, while ordering, includes, predicates and 
     report = await audit(db);
     assert.equal(report.indexes[0].parent_matches, false);
     assert.equal(report.indexes[0].state, 'DEFINITION_DRIFT');
+  } finally {
+    await db.close();
+  }
+});
+
+test('unlogged parents and nondefault index storage options cannot authorize recovery', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(fixtureSql + createIndexesSql);
+    const names = (await audit(db)).indexes.map((index) => index.name);
+    for (const name of names) {
+      await db.exec(`ALTER INDEX ${name} SET (fillfactor=70)`);
+      const report = await audit(db);
+      const index = report.indexes.find((entry) => entry.name === name);
+      assert.equal(report.storage_layout_matches, true);
+      assert.equal(index.definition_matches, false);
+      assert.equal(index.state, 'DEFINITION_DRIFT');
+      assert.equal(index.definition, null);
+      await db.exec(`ALTER INDEX ${name} RESET (fillfactor)`);
+      assert.equal(
+        (await audit(db)).indexes.find((entry) => entry.name === name).definition_matches,
+        true,
+      );
+    }
+    await db.exec('ALTER TABLE webhook_events SET UNLOGGED');
+    assert.equal((await audit(db)).storage_layout_matches, false);
+    await db.exec('ALTER TABLE webhook_events SET LOGGED');
+    assert.equal((await audit(db)).storage_layout_matches, true);
   } finally {
     await db.close();
   }
@@ -401,6 +433,15 @@ test(
     let adminConnected = false;
     let databaseCreated = false;
     let clientConnected = false;
+    const tablespaceName = `multibot_storage_${randomUUID().replaceAll('-', '')}`;
+    const externalDatabaseName = `race_test_mb_external_${randomUUID().replaceAll('-', '')}`;
+    const externalAddress = new URL(nativePostgresUrl);
+    externalAddress.pathname = `/${externalDatabaseName}`;
+    const externalClient = new pg.Client({ ...options, connectionString: externalAddress.href });
+    let externalClientConnected = false;
+    let externalDatabaseCreated = false;
+    let tablespaceCreated = false;
+    let tablespaceDirectory;
     let building;
     try {
       await admin.connect();
@@ -450,8 +491,55 @@ test(
         assert.fail('The ended local backend must disappear before absence diagnostics');
       };
       let report = await read();
+      assert.equal(report.storage_layout_matches, true);
       assert.equal(report.builders.statistics_visible, true);
       assert.equal(report.builders.absent, true);
+      // FLAG: Only this disposable local cluster and UUID-owned directory receive
+      // tablespace DDL. The fixed audit emits a boolean, never its name or location.
+      tablespaceDirectory = await mkdtemp(join(tmpdir(), 'maxim-multibot-storage-'));
+      await admin.query(
+        `CREATE TABLESPACE "${tablespaceName}" LOCATION '${tablespaceDirectory.replaceAll("'", "''")}'`,
+      );
+      tablespaceCreated = true;
+      await client.query(`CREATE INDEX webhook_events_status_created_at_id_idx
+        ON ${schema}.webhook_events (status, created_at, id)`);
+      await client.query(`ALTER INDEX ${schema}.webhook_events_status_created_at_id_idx
+        SET TABLESPACE "${tablespaceName}"`);
+      report = await read();
+      assert.equal(report.storage_layout_matches, false);
+      assert.equal(report.indexes[1].definition_matches, false);
+      assert.equal(report.indexes[1].definition, null);
+      assert.equal(JSON.stringify(report).includes(tablespaceName), false);
+      assert.equal(JSON.stringify(report).includes(tablespaceDirectory), false);
+      await client.query(
+        `ALTER INDEX ${schema}.webhook_events_status_created_at_id_idx SET TABLESPACE pg_default`,
+      );
+      assert.equal((await read()).storage_layout_matches, true);
+      await client.query(`ALTER TABLE ${schema}.webhook_events SET TABLESPACE "${tablespaceName}"`);
+      assert.equal((await read()).storage_layout_matches, false);
+      await client.query(`ALTER TABLE ${schema}.webhook_events SET TABLESPACE pg_default`);
+      assert.equal((await read()).storage_layout_matches, true);
+      await admin.query(
+        `CREATE DATABASE "${externalDatabaseName}" TEMPLATE template0 TABLESPACE "${tablespaceName}"`,
+      );
+      externalDatabaseCreated = true;
+      await externalClient.connect();
+      externalClientConnected = true;
+      await externalClient.query(`CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED', 'QUEUED', 'FAILED', 'PROCESSED');
+        CREATE TABLE public.webhook_events (id text, semantic_key text, execution_deadline_at timestamp(3),
+          created_at timestamp, status "WebhookStatus", next_enqueue_at timestamp,
+          timeout_quarantine_expires_at timestamp, error_message text);
+        CREATE TABLE public._prisma_migrations (id text, migration_name text, checksum text,
+          started_at timestamptz, finished_at timestamptz, rolled_back_at timestamptz,
+          applied_steps_count int, logs text);`);
+      await externalClient.query('BEGIN READ ONLY');
+      assert.equal(
+        (await externalClient.query(sql)).rows[0].json_build_object.storage_layout_matches,
+        false,
+      );
+      await externalClient.query('ROLLBACK');
+      await externalClient.end();
+      externalClientConnected = false;
       await builder.connect();
       builderConnected = true;
       const builderPid = (await builder.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
@@ -593,10 +681,15 @@ test(
           await client.query('RESET ROLE').catch(() => {});
           await client.end();
         }
+        if (externalClientConnected) await externalClient.end();
         if (databaseCreated) await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+        if (externalDatabaseCreated)
+          await admin.query(`DROP DATABASE "${externalDatabaseName}" WITH (FORCE)`);
+        if (tablespaceCreated) await admin.query(`DROP TABLESPACE "${tablespaceName}"`);
         if (roleCreated) await admin.query(`DROP ROLE "${roleName}"`);
       } finally {
         if (adminConnected) await admin.end();
+        if (tablespaceDirectory) await rm(tablespaceDirectory, { recursive: true, force: true });
       }
     }
   },

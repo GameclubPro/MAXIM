@@ -9,6 +9,16 @@ const root = resolve(import.meta.dirname, '../..');
 const protectedSources = [
   ['apps/api/src/max/max-action-ledger.service.ts', 'pg_advisory_xact_lock'],
   [
+    'apps/api/src/max/max-action-ledger.service.ts',
+    `AND "action_type" IN ('BAN_MEMBER', 'KICK_MEMBER', 'TRY_UNBAN_MEMBER')`,
+  ],
+  ['apps/api/src/max/max-action-ledger.service.ts', "${job.actionType !== 'TRY_UNBAN_MEMBER'}"],
+  [
+    'apps/api/src/system/max-action-ledger-watchdog.service.ts',
+    'mayHaveStarted && AMBIGUOUS_CAPABLE_ACTION_TYPES.has(row.actionType)',
+  ],
+  ['apps/api/src/admin/manual-member-unban-attempt.ts', 'await revalidateRoute?.()'],
+  [
     'apps/api/src/moderation/moderation-delete-intent.service.ts',
     'closedChatDeleteGuard!.authorize',
   ],
@@ -159,6 +169,103 @@ const protectedSources = [
   ],
 ];
 
+const mutateNamedActionSet = (source, name, mutateMembers) => {
+  const declaration = new RegExp(
+    `(const\\s+${name}\\b[^=;]*=\\s*new Set\\(\\s*\\[)([^\\]]*)(\\]\\s*\\))`,
+    'u',
+  );
+  assert.match(source, declaration, `Fixture action set missing: ${name}`);
+  return source.replace(
+    declaration,
+    (_, prefix, members, suffix) => `${prefix}${mutateMembers(members)}${suffix}`,
+  );
+};
+
+const unbanAttemptMutations = [
+  ...[
+    ['apps/api/src/max/max-action-ledger.service.ts', 'IRREVERSIBLE_ACTION_TYPES'],
+    ['apps/api/src/max/max-action-ledger.service.ts', 'CRASH_FENCED_MEMBER_ACTION_TYPES'],
+    ['apps/api/src/system/max-action-ledger-watchdog.service.ts', 'AMBIGUOUS_CAPABLE_ACTION_TYPES'],
+  ].map(([path, name]) => ({
+    path,
+    name: `unban attempt removed only from ${name}`,
+    mutate: (source) => {
+      const changed = mutateNamedActionSet(source, name, (members) =>
+        members.replace("'TRY_UNBAN_MEMBER',", ''),
+      );
+      // Keep an unrelated marker so a whole-file presence check cannot certify this set.
+      return `${changed}\nconst unrelatedUnbanAttempt = 'TRY_UNBAN_MEMBER';\n`;
+    },
+  })),
+  {
+    path: 'apps/api/src/system/max-action-ledger-watchdog.service.ts',
+    name: 'unban attempt admitted to background recovery without a live guard',
+    mutate: (source) =>
+      mutateNamedActionSet(
+        source,
+        'RECOVERABLE_MEMBER_ACTION_TYPES',
+        (members) => `'TRY_UNBAN_MEMBER', ${members}`,
+      ),
+  },
+  {
+    path: 'apps/api/src/system/max-action-ledger-watchdog.service.ts',
+    name: 'recoverable member classifier missing',
+    mutate: (source) =>
+      source.replaceAll(
+        'RECOVERABLE_MEMBER_ACTION_TYPES',
+        'LEGACY_RECOVERABLE_MEMBER_ACTION_TYPES',
+      ),
+  },
+  {
+    path: 'apps/api/src/system/max-action-ledger-watchdog.service.ts',
+    name: 'double-quoted unban attempt admitted to background recovery',
+    mutate: (source) =>
+      mutateNamedActionSet(
+        source,
+        'RECOVERABLE_MEMBER_ACTION_TYPES',
+        (members) => `"TRY_UNBAN_MEMBER", ${members}`,
+      ),
+  },
+  {
+    path: 'apps/api/src/system/max-action-ledger-watchdog.service.ts',
+    name: 'unknown member outcome loses ambiguity while other branches retain it',
+    mutate: (source) =>
+      source.replace(
+        /(if \(mayHaveStarted && AMBIGUOUS_CAPABLE_ACTION_TYPES\.has\(row\.actionType\)\) \{\s*await this\.applyOutcome\(row, MaxActionLedgerStatus\.AMBIGUOUS, summary, \{\s*)ambiguous: true,/u,
+        '$1ambiguous: false,',
+      ),
+  },
+  {
+    path: 'apps/api/src/system/max-action-ledger-watchdog.service.ts',
+    name: 'unknown member branch falls through while later send branch still quarantines',
+    mutate: (source) =>
+      source.replace(
+        /(if \(mayHaveStarted && AMBIGUOUS_CAPABLE_ACTION_TYPES\.has\(row\.actionType\)\) \{[\s\S]*?\}\);)\s*return;/u,
+        '$1',
+      ),
+  },
+  {
+    path: 'apps/api/src/admin/manual-member-unban-attempt.ts',
+    name: 'live route proof runs before the final target lookup',
+    mutate: (source) =>
+      source
+        .replace('      await revalidateRoute?.();', '')
+        .replace(
+          '      if (await readTargetAccess())',
+          '      await revalidateRoute?.();\n      if (await readTargetAccess())',
+        ),
+  },
+  {
+    path: 'apps/api/src/admin/manual-member-unban-attempt.ts',
+    name: 'target lookup can outlive the final live route proof',
+    mutate: (source) =>
+      source.replace(
+        '      await revalidateRoute?.();',
+        '      await revalidateRoute?.();\n      await readTargetAccess();',
+      ),
+  },
+];
+
 test('both API rollback paths retain shared member and immutable Publisher effect protections', () => {
   const fixture = mkdtempSync(resolve(tmpdir(), 'maxim-bot-publisher-rollback-'));
   const git = (...args) =>
@@ -205,6 +312,14 @@ test('both API rollback paths retain shared member and immutable Publisher effec
       assert.ok(source.includes(guard), `Fixture guard missing: ${guard}`);
       writeFileSync(resolve(fixture, path), source.replaceAll(guard, 'unsafe_legacy_executor'));
       assert.equal(check(commit()).status, 1, `Rollback erased ${guard}`);
+      writeFileSync(resolve(fixture, path), source);
+    }
+    for (const { path, name, mutate } of unbanAttemptMutations) {
+      const source = readFileSync(resolve(root, path), 'utf8');
+      const changed = mutate(source);
+      assert.notEqual(changed, source, `Fixture mutation had no effect: ${name}`);
+      writeFileSync(resolve(fixture, path), changed);
+      assert.equal(check(commit()).status, 1, `Rollback accepted ${name}`);
       writeFileSync(resolve(fixture, path), source);
     }
     for (const path of [

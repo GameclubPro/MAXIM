@@ -38,6 +38,8 @@ import {
 } from './stop-words/stop-words.policy';
 
 import { MaxBotLinkService, type MaxDeleteMessageBotRoute } from '../max/max-bot-link.service';
+import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
+import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
 import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
 import {
   isMaxApiCircuitOpenError,
@@ -2824,6 +2826,62 @@ export class ModerationDeleteIntentService {
               'delete_pre_dispatch_guard_rejected',
             );
             const terminalGuardRejection = this.isTerminalDeleteGuardRejection(error.guardError);
+            // FLAG: A final read can reveal revoked bot access while its saved proof is
+            // still fresh. No DELETE ran. Switch only after a fresh own-member probe
+            // confirms capability loss; a policy/storage error or unknown probe cannot
+            // authorize a peer. Keep this same intent, lease, reasons and deadline.
+            const definiteAccessRejection =
+              details.statusCode === 401 ||
+              details.statusCode === 403 ||
+              (details.statusCode === 404 &&
+                ['chat.denied', 'chat.not.found'].includes(details.errorCode.toLowerCase()));
+            if (!terminalGuardRejection && definiteAccessRejection) {
+              const refreshed = await this.refreshCandidateAccess(intent, botId, heartbeat);
+              route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
+                chatId: intent.chatId,
+                expectedEntityType: intent.entityType,
+                requireFreshSnapshot: true,
+              });
+              const current = route.candidateCapabilities.find(
+                (candidate) => candidate.botId === botId,
+              );
+              const state =
+                refreshed !== 'unknown' && current?.state === 'explicitly_incapable'
+                  ? await this.maxBotLinkService.loadChatExecutionOwnerState(intent.chatId)
+                  : null;
+              const membership = state?.candidates.find((candidate) => candidate.botId === botId);
+              const snapshot = normalizeMembershipAccessSnapshot(membership?.permissionsSnapshot);
+              const confirmedCapabilityLoss =
+                current?.checkedAt === membership?.botAccessCheckedAt?.toISOString() &&
+                (current?.reason === 'access_denied' ||
+                  (snapshot !== null &&
+                    ((!snapshot.isAdmin && !snapshot.isOwner) ||
+                      (snapshot.permissionsKnown === true &&
+                        !hasConfirmedDeleteMessageAccess(snapshot, intent.entityType)))));
+              if (
+                refreshed !== 'unknown' &&
+                current?.state === 'explicitly_incapable' &&
+                confirmedCapabilityLoss
+              ) {
+                lastAccessFailure = {
+                  ...details,
+                  status: 'WAITING_CAPABILITY',
+                  retryDelayMs: this.capabilityRetryDelayMs(intent.attemptCount),
+                };
+                await this.recordCandidateFailure(
+                  intent.id,
+                  leaseToken,
+                  botId,
+                  intent.attemptCount,
+                  lastAccessFailure,
+                );
+                for (const nextBotId of this.filterAndOrderRouteCandidates(intent, route)) {
+                  if (!attemptedBotIds.has(nextBotId) && !candidateBotIds.includes(nextBotId))
+                    candidateBotIds.push(nextBotId);
+                }
+                continue;
+              }
+            }
             const internalQuotaDeferral =
               !intent.retentionOwned && error.guardError instanceof MaxApiInternalRateLimitError;
             const outcome = terminalGuardRejection
@@ -7134,16 +7192,36 @@ export class ModerationDeleteIntentService {
       }
     }
 
-    const probeCandidates = route.candidateCapabilities
+    const nowMs = Date.now();
+    // FLAG: Fresh negative proofs observe the existing capability backoff. Rotate the
+    // bounded probe window using the durable attempt count, so unknown responses and
+    // process restarts cannot keep every later standby behind the same first four.
+    const probePool = route.candidateCapabilities
       .filter(
         (candidate) =>
           (candidate.state === 'stale_or_unknown' || candidate.state === 'explicitly_incapable') &&
           candidate.reason !== 'bot_not_actionable' &&
           Boolean(this.maxBotLinkService.getExecutableBotById(candidate.botId)) &&
-          this.isBotAllowedByRoutingPolicy(intent, candidate.botId) &&
-          !this.isCandidateBackedOff(intent, candidate.botId, candidate.checkedAt),
+          this.isBotAllowedByRoutingPolicy(intent, candidate.botId),
       )
-      .slice(0, 4);
+      .sort((left, right) => (left.botId < right.botId ? -1 : left.botId > right.botId ? 1 : 0));
+    const probeLimit = 4;
+    const probeOffset =
+      ((Math.max(1, intent.attemptCount) - 1) * probeLimit) % Math.max(1, probePool.length);
+    const probeCandidates = [...probePool.slice(probeOffset), ...probePool.slice(0, probeOffset)]
+      .filter(
+        (candidate) => !this.isCandidateBackedOff(intent, candidate.botId, candidate.checkedAt),
+      )
+      .filter((candidate) => {
+        if (candidate.state !== 'explicitly_incapable') return true;
+        const checkedAtMs = candidate.checkedAt ? Date.parse(candidate.checkedAt) : Number.NaN;
+        return (
+          !Number.isFinite(checkedAtMs) ||
+          checkedAtMs > nowMs ||
+          checkedAtMs + this.capabilityRetryMs <= nowMs
+        );
+      })
+      .slice(0, probeLimit);
     for (const candidate of probeCandidates) {
       await this.refreshCandidateAccess(intent, candidate.botId, heartbeat, canRead);
     }

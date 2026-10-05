@@ -20,12 +20,12 @@ the remaining action boundaries rather than restarting whole-engine processing.
 | A queued warning can outlive a caller-only callback or retain a demoted ingress bot                                 | Persist the exact reason/policy/source deadline in the existing action envelope and revalidate after queue and quota waits using the selected executor                                         | High / medium     | Real queued delivery, changed policy/author access/immunity, malformed proof, known receipt and unknown-send recovery    |
 | Required-subscription and duplicate notices can outlive the lease checked before queue handoff                      | Persist each feature's original notice proof; use its current authority at the actual transport boundary and retain the original media anchor and deadline                                     | High / medium     | Changed subscription, disabled rule, duplicate reset/revocation, protected author, old unbound plans and unknown sends   |
 | A background DELETE winner can hide its verified reason from an inline caller                                       | Recover the caller's exact successful reason receipt without re-running deletion or the whole moderation engine                                                                                | Medium / medium   | Worker wins before inline attempt, one strike/follow-up, unrelated reason cannot lend its successful receipt             |
-| A later background DELETE can finish after the engine exits, permanently losing its violation and follow-up         | Persist a versioned follow-up before DELETE; make only its own confirmed reason ready, then claim the semantic violation and frozen remaining action plan through a dedicated durable executor | High / high       | Confirmation after inline wait, restart after deletion, competing workers, changed policy and unknown SEND/member effect |
+| A later background DELETE can finish after the engine exits, permanently losing its violation and follow-up         | Persist a versioned follow-up before DELETE; make only its own confirmed reason ready, then claim the semantic violation and frozen remaining action plan through a dedicated durable executor | High / high       | Confirmation after inline wait, persisted continuation after interruption, competing workers, changed policy and unknown SEND/member effect |
 | Duplicate or bot-account follow-up can borrow shared deletion success without its own reason proof                  | Require the exact source/subject/reason receipt; duplicate explanations reuse real lifecycle authority through an independent lazy provider token                                              | High / medium     | Length-only success cannot authorize a duplicate sanction; foreign, pending and unverified bot receipts reject           |
 | Queue-unavailable SEND fallback skips journal creation and mistakes a fresh action for an ambiguous retry           | Use the existing immediate action journal before execution in both fallback paths                                                                                                              | Medium / low      | Fresh send succeeds once; concurrent copies, accepted receipts and unknown outcomes retain their fences                  |
 | Night/manual close deletes have only initial checks                                                                 | Current close/session proof, exact author/message and immunity at final dispatch                                                                                                               | Medium / low      | Opened/reclosed chat, elapsed timed close, changed schedule, protected author                                            |
 | Returning to the same night schedule can revive old pending work                                                    | Advance the shared chat-control order for enabled, schedule and timezone writes; preserve the independent rules boundary                                                                       | Medium / low      | Real API disable/enable, schedule/restore and timezone/restore; old source rejected, new source accepted                 |
-| Bot-scoped production member-action identity can bypass another bot's unknown outcome                               | Shared member-operation identity and compatibility with retained execution evidence; serialize competing starts                                                                                | High / medium     | Actual production wrappers, different bots/processes, unknown BAN/KICK, proven pre-dispatch rejection, confirmed unban   |
+| Bot-scoped production member-action identity can bypass another bot's unknown outcome                               | Shared member-operation identity and compatibility with retained execution evidence; serialize competing starts                                                                                | High / medium     | Production wrappers, different bots and independent ledger instances, unknown BAN/KICK, proven pre-dispatch rejection, confirmed unban   |
 | Content edits rewrite a leased/sending publication envelope and its recovery key                                    | Atomic edit/claim exclusion and immutable delivery attribution; receipts recover before new work                                                                                               | High / medium     | Real SQL/queue races, same-content save, lost receipt, cancel and post-actions                                           |
 | Video preparation lacks identity attestation and failed completion cannot resume                                    | Attest both phases, delay runtime blockers without consuming attempts, explicitly resume owned unexpired completion                                                                            | Medium / low      | Wrong/unavailable identity, pause, retained failed BullMQ job and one actor-owned asset                                  |
 | VK source lease reuses process identity across attempts                                                             | Unique attempt lease with expiry and transactional effect fences                                                                                                                               | Medium / medium   | Old attempt resumes after lease replacement; no stale import or lease completion                                         |
@@ -101,6 +101,70 @@ flowchart LR
   C -->|Unverified or expired| F[Stop without escalation]
   E -->|Unknown remote outcome| G[Preserve receipt fence]
 ```
+
+## Remaining action-boundary review
+
+Native acceptance found a gap when the administrator loses access before the
+five-minute proof expires and no membership webhook arrives. A final MAX read
+returns an access rejection, but the old guard path retained a retry without
+refreshing the selected bot. The correction probes that bot's own membership and
+switches only after confirmed loss of the needed capability. It retains the
+original intent, lease, reason proofs and deadline; the new executor repeats every
+final rule check. Missing permission fields and unavailable probes remain unknown
+and cannot authorize a switch. An engine that already started keeps its historical
+owner; only its remaining action transfers. Complexity is medium and risk is medium,
+with native regressions for independently stale route caches, fresh/expired proof,
+late mirrors, exact own-member uncertainty and restoration before/after expiry.
+
+Action-only recovery also needs fair bounded reserve probing: four unavailable
+candidates must not prevent later candidates from being checked on a subsequent
+pass. The four-probe budget remains, while current negative proofs yield to unseen
+or stale candidates. This is separate from the canonical owner readiness scan.
+
+Index recovery remains one fixed reviewed command. Before repair or resolution,
+it now checks successful-parent and unresolved/resolved step counts, freezes the
+original failure family, and attests permanent default storage for the table,
+database and indexes. Nondefault index options and tablespaces reject admission;
+the disposable backend explicitly clears default and temporary tablespace choices.
+These checks prevent an apparently matching index from writing to an unmonitored
+device. They do not replace live capacity and queue-pressure supervision.
+
+## Combined-release dependencies found in final review
+
+The newly introduced manual unban attempt discarded the final route callback.
+Its fresh target read and final Redis lease renewal could therefore finish after
+the selected bot's SQL proof changed. Revalidate the selected route after both
+waits, retain the sanction and lease checks, and keep no feature await after that
+route check. The focused regressions block each wait separately and revoke the
+route while it is blocked. This is a medium-risk integration correction; it does
+not make independent SQL/Redis authorities atomic or confirm that MAX supports
+unbanning. An attempted unban must retain its separate unknown-outcome fence and
+must never clear BAN state or create a confirmed unban event.
+
+The combined source floor also explicitly requires TRY_UNBAN_MEMBER's
+irreversible start fence, watchdog quarantine and final unban route guard.
+Once migration 10300 is applied, the existing schema gates already reject a
+plain rollback to the earlier f25 source in both wrappers. The added source
+checks are independent protection against a schema-compatible executor that
+loses those readers/guards; source-only acceptance of f25 did not establish an
+otherwise permitted production rollback. Isolated fixtures remove each classifier,
+query, quarantine or final-route protection and must reject that target.
+A separate local source test confirmed that the old gate accepts 7b1755f8,
+which has the same migrations as corrected 9d440787 but lacks the final unban
+route check. The strengthened gate rejects 7b and accepts 9d. This demonstrates
+a schema-compatible unsafe source downgrade; other production rollback admission
+conditions and live state were not exercised by that source test.
+
+Independent read-only review also confirmed a release-blocking text-normalizer
+gap: `(MB): 100` and `(Mb): 100` lose unit case before the number. The shared
+normalizer affects source digests as well as duplicate fingerprints, so such an
+edit can leave old deletion evidence apparently current. The parallel duplicate
+review owns its correction. Before the combined runtime release, require its exact
+green commit, text evidence-version advance and both rollback floors. Cover
+numeric unit labels with brackets, separators, compound units, Cyrillic and format
+characters; preserve ordinary prose and identifier case behavior. IMAGE identity
+is separate. Source review establishes the defect, not successful correction or
+production activation.
 
 ## Implementation and validation order
 
@@ -180,8 +244,44 @@ messages in user groups.
 
 ## Recorded validation
 
+The final unban-boundary integration staged run on 2026-10-05 passed all
+783 API suites and 18,127 API tests without skips, all 50 native storage/queue
+cases, API typecheck/build, and 1,080 static checks. Only two nested store-wrapper
+lifecycle self-tests were skipped. The focused sanction suite passed 54 tests,
+including route loss during the final target read and the final Redis renewal.
+These are local/native-store results with simulated MAX, not production activation.
+
+The access-loss follow-up staged run on 2026-10-05 passed 782 API suites and
+18,102 tests, 50 storage/queue tests, API typecheck/build, all 959 infrastructure
+checks, and 1,079 of 1,081 static checks. The two static skips are nested
+store-wrapper lifecycle self-tests. The full API run skipped one executable-gated
+Redis parity test; a separate public targeted run with the local Redis executable
+passed that test. All 19 new full-path access cases, 373 delete-intent service
+checks and 40 focused native recovery cases passed.
+
+Independent review corrected two coverage descriptions: member-effect races use
+independent ledger instances in one OS process; follow-up interruption recovery
+uses persisted SQL state with the same service instance. Those cases do not
+establish a service/OS restart, two-process execution, or SIGKILL recovery between
+a remote effect and its receipt commit. The access-loss fixtures likewise use
+two independent route caches in one OS process, not two API processes.
+
+The follow-up native access fixtures cover absent permission webhooks with fresh
+and expired proofs, two independent stale route-cache instances, recovery before
+and after the saved deadline for 1/4/9 bots, restored former owners and late mirrors.
+The action-only fixture reaches the ninth reserve through at most four probes per
+pass while retaining one DELETE intent, its original deadline and one violation,
+without replaying the engine. Unavailable own-member lookups and omitted permission
+fields cannot authorize an immediate switch. These use real PostgreSQL 16, Redis 7
+and BullMQ with simulated MAX transport. Accelerated deadlines and proof expiry
+are explicit fixture inputs, not a five-minute or production soak result.
+
+All 40 focused recovery checks passed with native stores and no skipped cases,
+including actual cancelled concurrent-index repair, default-storage attestation
+and the disposable PostgreSQL client's effective memory/temp/tablespace settings.
+
 On 2026-10-05 the focused native continuation suite passed all 16 cases, including
-restart, late DELETE, exact unknown-BAN reconciliation, cleanup pinning and lease
+persisted continuation after interruption, late DELETE, exact unknown-BAN reconciliation, cleanup pinning and lease
 replacement during the last settings read. The queued duplicate suite passed
 12 cases with real PostgreSQL, Redis and BullMQ. Final typecheck, source-generation
 preflight, migration policy, whitespace and 196 selected rollback/deploy guard
