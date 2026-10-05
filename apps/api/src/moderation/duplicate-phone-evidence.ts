@@ -15,13 +15,13 @@ const PHONE_CONTEXT =
 const PHONE_NUMBER_CONTEXT =
   /(?:^|[^\p{L}\p{N}_])номер(?:а|у|ом|е|ов|ам|ами|ах)?\s+телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?\s*(?:для\s+связи\s*)?[:=№#.-]?\s*$/iu;
 const IDENTIFIER_CONTEXT =
-  /(?:номер(?:а|у|ом|е|ов|ам|ами|ах)?|код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|идентификатор(?:а|у|ом|е|ы|ов|ам|ами|ах)?|артикул(?:а|у|ом|е|ы|ов|ам|ами|ах)?|инн|кпп|огрн|сч[её]т|заказ\p{L}*|накладн\p{L}*|договор\p{L}*|документ\p{L}*|кадастр\p{L}*|серийн\p{L}*|order|invoice|account|sku|part|identifier|number|id)(?:\s+[\p{L}]+){0,2}\s*[:=№#.-]?\s*$/iu;
+  /(?:номер(?:а|у|ом|е|ов|ам|ами|ах)?|код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|идентификатор(?:а|у|ом|е|ы|ов|ам|ами|ах)?|артикул(?:а|у|ом|е|ы|ов|ам|ами|ах)?|модел(?:ь|и|ью|ей|ям|ями|ях)|сертификат(?:а|у|ом|е|ы|ов|ам|ами|ах)?|штрих[- ]?код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|model|certificate|barcode|imei|ean|gtin|инн|кпп|огрн|сч[её]т|заказ\p{L}*|накладн\p{L}*|договор\p{L}*|документ\p{L}*|кадастр\p{L}*|серийн\p{L}*|order|invoice|account|sku|part|identifier|number|id)(?:\s+[\p{L}]+){0,2}\s*[:=№#.-]?\s*$/iu;
 const QUANTITY_PREFIX =
   /(?:цен\p{L}*|стоимост\p{L}*|сумм\p{L}*|бюджет\p{L}*|оплат\p{L}*|баланс\p{L}*|остат[оа]к\p{L}*|средств\p{L}*|температур\p{L}*|вес\p{L}*|масс\p{L}*|длин\p{L}*|площад\p{L}*|объ[её]м\p{L}*|price|cost|total|amount|balance|weight|length|temperature)(?:\s+[\p{L}]+){0,2}\s*[:=]?\s*$/iu;
 const QUANTITY_SUFFIX =
   /^\s*(?:\p{Sc}|%|руб\p{L}*|р\.|коп\p{L}*|usd|eur|rub|rubles?|dollars?|тыс\.?|тысяч\p{L}*|млн|миллион\p{L}*|млрд|миллиард\p{L}*|кг|мг|грамм\p{L}*|тонн\p{L}*|т\.?|метр\p{L}*|мм|см|км|м[²³]?|литр\p{L}*|мл|л|градус\p{L}*|°[cfс]?|ватт\p{L}*|вт|квт|час\p{L}*|минут\p{L}*|секунд\p{L}*|шт\.?|штук\p{L}*|человек\p{L}*|людей|участник\p{L}*|people|persons?|participants?|pieces?|items?|байт\p{L}*|бит\p{L}*|[кмгт]б|(?:кило|мега|гига|тера)байт\p{L}*|bytes?|bps|[kmgt]i?(?:b|bps|bits?))(?![\p{L}\p{N}])/iu;
 const PROTECTED_LABEL_IN_CLAUSE =
-  /(?:^|[^\p{L}\p{N}_])(?:номер(?:а|у|ом|е|ов|ам|ами|ах)?|код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|идентификатор(?:а|у|ом|е|ы|ов|ам|ами|ах)?|артикул(?:а|у|ом|е|ы|ов|ам|ами|ах)?|инн|кпп|огрн|сч[её]т|заказ\p{L}*|накладн\p{L}*|договор\p{L}*|документ\p{L}*|кадастр\p{L}*|серийн\p{L}*|цен\p{L}*|стоимост\p{L}*|сумм\p{L}*|бюджет\p{L}*|оплат\p{L}*|баланс\p{L}*|остат[оа]к\p{L}*|средств\p{L}*|температур\p{L}*|вес\p{L}*|масс\p{L}*|длин\p{L}*|площад\p{L}*|объ[её]м\p{L}*|размер\p{L}*|диапазон\p{L}*|order|invoice|account|sku|part|identifier|number|id|price|cost|total|amount|balance|weight|length|temperature|range|size|dimensions)(?![\p{L}\p{N}_])/iu;
+  /(?:^|[^\p{L}\p{N}_])(?:номер(?:а|у|ом|е|ов|ам|ами|ах)?|код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|идентификатор(?:а|у|ом|е|ы|ов|ам|ами|ах)?|артикул(?:а|у|ом|е|ы|ов|ам|ами|ах)?|модел(?:ь|и|ью|ей|ям|ями|ях)|сертификат(?:а|у|ом|е|ы|ов|ам|ами|ах)?|штрих[- ]?код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|model|certificate|barcode|imei|ean|gtin|инн|кпп|огрн|сч[её]т|заказ\p{L}*|накладн\p{L}*|договор\p{L}*|документ\p{L}*|кадастр\p{L}*|серийн\p{L}*|цен\p{L}*|стоимост\p{L}*|сумм\p{L}*|бюджет\p{L}*|оплат\p{L}*|баланс\p{L}*|остат[оа]к\p{L}*|средств\p{L}*|температур\p{L}*|вес\p{L}*|масс\p{L}*|длин\p{L}*|площад\p{L}*|объ[её]м\p{L}*|размер\p{L}*|диапазон\p{L}*|order|invoice|account|sku|part|identifier|number|id|price|cost|total|amount|balance|weight|length|temperature|range|size|dimensions)(?![\p{L}\p{N}_])/iu;
 
 function hasProtectedValueContext(before: string, after: string): boolean {
   const clause = before.split(/[.!?;,\n\r\u2028\u2029]/u).at(-1) ?? '';
@@ -134,6 +134,9 @@ function phoneEvidence(candidate: string, before: string, after: string): string
     (/^[17]/u.test(digits) && digits.length === 11) ||
     (!international && digits.startsWith('8') && digits.length === 11) ||
     (!international && digits.startsWith('9') && digits.length === 10);
+  // FLAG: A phone noun cannot prove an arbitrary compact EAN/document number. Without
+  // an international + prefix only the known 1/7 and national 8/9 forms are admissible.
+  if (!international && !knownLength) return null;
   if (!knownLength && /[^\d+]/u.test(candidate)) return null;
   // FLAG: A signed decimal is not phone evidence. Dotted phones require known, finite
   // group lengths; preserving every other dotted span costs only an approximate match.

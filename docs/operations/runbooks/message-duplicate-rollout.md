@@ -430,6 +430,9 @@ rejected whole, preserving every numeric character without guessing a shorter ph
 Unknown-length grouped candidates remain whole; dotted candidates require the known
 `1/3/3/2/2`, `1/3/3/4` or national `3/3/2/2` digit grouping. Signed decimals and other ambiguous
 groups are preserved even with a phone label.
+Unprefixed compact numbers require a known-length 1/7 or national 8/9 form even with a phone
+label; an arbitrary EAN/document number cannot inherit phone authority from that label.
+Model, certificate, barcode, IMEI, EAN and GTIN contexts protect even phone-shaped identifiers.
 Both rollback paths require these actual guards and their
 order; raising only a version cannot admit a source that omits them. The separate phone-blocking
 policy is unchanged. Near may

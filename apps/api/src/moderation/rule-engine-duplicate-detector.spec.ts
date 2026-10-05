@@ -565,6 +565,29 @@ describe('RuleEngineDuplicateDetector', () => {
         `${label} +79991234567`,
         `${label} +79991234568`,
       ]),
+      ...['Телефон:', 'Модель телефона:', 'Сертификат телефона:'].map((label) => [
+        `unprefixed EAN13 under ${label}`,
+        `${label} 4601234567890`,
+        `${label} 4601234567891`,
+      ]),
+      ...[
+        'Модель телефона:',
+        'Сертификат телефона:',
+        'Штрихкод телефона:',
+        'IMEI телефона:',
+        'EAN телефона:',
+        'GTIN телефона:',
+      ].flatMap((label) =>
+        [
+          ['9991234567', '9991234568'],
+          ['79991234567', '79991234568'],
+          ['+79991234567', '+79991234568'],
+        ].map(([firstId, secondId]) => [
+          `phone-shaped product identifier ${label} ${firstId}`,
+          `${label} ${firstId}`,
+          `${label} ${secondId}`,
+        ]),
+      ),
     ])(
       'preserves %s without creating a phone-only match',
       async (_name, firstValue, secondValue) => {
@@ -615,6 +638,50 @@ describe('RuleEngineDuplicateDetector', () => {
       },
     );
   });
+
+  it.each(['STRICT', 'CUSTOM'] as const)(
+    'retains a compact explicitly labelled unknown-country international phone in %s',
+    async (preset) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({
+        duplicateDetectionPreset: preset,
+        duplicateIgnorePhonesEnabled: true,
+      });
+      const first =
+        'Подробная инструкция для участников встречи доступна после завершения регистрации телефон: +442079460958';
+      if (preset === 'CUSTOM') {
+        expect(
+          detector
+            .buildFingerprints(first, settings)
+            .filter((fingerprint) => fingerprint.type === 'phone')
+            .map((fingerprint) => fingerprint.value),
+        ).toEqual(['442079460958']);
+      }
+      await detectRevision({
+        detector,
+        messageId: 'international-first',
+        revision: 100,
+        text: first,
+        settings,
+      });
+      await expect(
+        detectRevision({
+          detector,
+          messageId: 'international-second',
+          revision: 200,
+          text:
+            preset === 'STRICT'
+              ? first.replace('+442079460958', '+442079460959')
+              : 'Покупателю доступна консультация по приобретению нового оборудования телефон: +442079460958',
+          settings,
+        }),
+      ).resolves.toMatchObject({
+        hit: { count: 1, fingerprintType: preset === 'STRICT' ? 'content' : 'phone' },
+      });
+    },
+  );
 
   it.each([' ', '\n'])(
     'recognizes both explicitly labelled CUSTOM list phones across %j',

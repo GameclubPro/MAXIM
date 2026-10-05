@@ -247,6 +247,12 @@ const mutations = [
     '',
   ],
   ['phones', 'const knownLength =', 'const knownLength = true ||'],
+  ['phones', 'if (!international && !knownLength) return null;', ''],
+  [
+    'phones',
+    'if (!international && !knownLength) return null;',
+    'if (false && !knownLength) return null;',
+  ],
   ['phones', 'if (!knownLength && /[^\\d+]/u.test(candidate)) return null;', ''],
   [
     'phones',
@@ -448,6 +454,9 @@ for (const context of ['IDENTIFIER_CONTEXT', 'PROTECTED_LABEL_IN_CLAUSE']) {
     ['код', 'код(?:а|у|ом|е|ы|ов|ам|ами|ах)?'],
     ['идентификатор', 'идентификатор(?:а|у|ом|е|ы|ов|ам|ами|ах)?'],
     ['артикул', 'артикул(?:а|у|ом|е|ы|ов|ам|ами|ах)?'],
+    ['модель', 'модел(?:ь|и|ью|ей|ям|ями|ях)'],
+    ['сертификат', 'сертификат(?:а|у|ом|е|ы|ов|ам|ами|ах)?'],
+    ['штрихкод', 'штрих[- ]?код(?:а|у|ом|е|ы|ов|ам|ами|ах)?'],
   ]) {
     test('rejects singular-only ' + noun + ' in ' + context, (t) => {
       const source = readFileSync(resolve(root, paths.phones), 'utf8');
@@ -471,7 +480,42 @@ for (const context of ['IDENTIFIER_CONTEXT', 'PROTECTED_LABEL_IN_CLAUSE']) {
       );
     });
   }
+  for (const technicalLabel of ['model', 'certificate', 'barcode', 'imei', 'ean', 'gtin']) {
+    test('rejects missing ' + technicalLabel + ' in ' + context, (t) => {
+      const source = readFileSync(resolve(root, paths.phones), 'utf8');
+      const declaration = new RegExp('const ' + context + '\\s*=\\s*\\/[^\\r\\n]+\\/iu;', 'u');
+      const matched = source.match(declaration)?.[0];
+      assert.ok(matched);
+      const anchor = '|' + technicalLabel + '|';
+      assert.ok(matched.includes(anchor));
+      const updated = matched.replace(anchor, '|');
+      const phones = source.replace(matched, updated);
+      const result = probe(t, { phones });
+      assert.notEqual(result.status, 0);
+      assert.match(
+        result.stderr,
+        /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+      );
+    });
+  }
 }
+
+test('rejects the unprefixed confidence gate moved after label admission', (t) => {
+  const source = readFileSync(resolve(root, paths.phones), 'utf8');
+  const gate = '  if (!international && !knownLength) return null;\n';
+  const label = '  const labelled = PHONE_CONTEXT.test(before);\n';
+  assert.ok(source.includes(gate));
+  assert.ok(source.includes(label));
+  assert.ok(source.indexOf(gate) < source.indexOf(label));
+  const phones = source.replace(gate, '').replace(label, label + gate);
+  assert.ok(phones.indexOf(gate) > phones.indexOf(label));
+  const result = probe(t, { phones });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+  );
+});
 
 test('rejects raw adjacency guard moved after wrapper normalization', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');

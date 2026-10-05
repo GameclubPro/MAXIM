@@ -256,6 +256,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const quantitySuffix = phones.match(/const QUANTITY_SUFFIX\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1] ?? "";
     const phoneEvidence = topLevelFunction(phones, "function phoneEvidence(");
     const phoneEvidenceCode = squash(phoneEvidence).replace(/\s+(?=\?\.|\.)/gu, "");
+    const unprefixedConfidence = phoneEvidenceCode.indexOf("if (!international && !knownLength) return null;");
+    const labelAdmission = phoneEvidenceCode.indexOf("const labelled = PHONE_CONTEXT.test(before);");
     const phoneListContinuation = topLevelFunction(phones, "function hasLabelledPhoneListContinuation(");
     const phoneListPredecessor = topLevelFunction(phones, "function hasLabelledPhoneListPredecessor(");
     const adjacency = topLevelFunction(phones, "function hasEmbeddedIdentifierAdjacency(");
@@ -273,7 +275,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const arithmeticCondition = squash(adjacency).match(/if\s*\(\s*!PHONE_CONTEXT\.test\(arithmeticBefore\) &&([\s\S]*?)\)\s*return true;/u)?.[1]?.trim();
     const identifierContext = phones.match(/const IDENTIFIER_CONTEXT\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1] ?? "";
     const protectedLabelContext = phones.match(/const PROTECTED_LABEL_IN_CLAUSE\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1] ?? "";
-    const identifierForms = "номер(?:а|у|ом|е|ов|ам|ами|ах)?|код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|идентификатор(?:а|у|ом|е|ы|ов|ам|ами|ах)?|артикул(?:а|у|ом|е|ы|ов|ам|ами|ах)?|инн";
+    const technicalIdentifierForms = "модел(?:ь|и|ью|ей|ям|ями|ях)|сертификат(?:а|у|ом|е|ы|ов|ам|ами|ах)?|штрих[- ]?код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|model|certificate|barcode|imei|ean|gtin";
+    const identifierForms = "номер(?:а|у|ом|е|ов|ам|ами|ах)?|код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|идентификатор(?:а|у|ом|е|ы|ов|ам|ами|ах)?|артикул(?:а|у|ом|е|ы|ов|ам|ами|ах)?|" + technicalIdentifierForms + "|инн";
     const phoneUrlGuard = "if (isDuplicatePhoneCandidateInUrl(urlRanges, start, start + candidate.length))";
     const urlExcludedBeforeEvidence = (source, outcome) => {
       const ranges = source.indexOf("const urlRanges = getUrlTextRanges(text);");
@@ -354,8 +357,9 @@ maxim_topology_require_message_duplicate_delete_guard() {
       phoneEvidence.includes("if (/^[17]/u.test(digits) && digits.length !== 11) return null;") &&
       phoneEvidence.includes("if (!international && digits.startsWith(\u00278\u0027) && digits.length !== 11) return null;") &&
       phoneEvidence.includes("if (!international && digits.startsWith(\u00279\u0027) && digits.length !== 10) return null;") &&
-      squash(phoneEvidence).includes("const knownLength = (/^[17]/u.test(digits) && digits.length === 11) || (!international && digits.startsWith(\u00278\u0027) && digits.length === 11) || (!international && digits.startsWith(\u00279\u0027) && digits.length === 10);") &&
+      squash(phoneEvidence).includes("const knownLength = (/^[17]/u.test(digits) && digits.length === 11) || (!international && digits.startsWith(\u00278\u0027) && digits.length === 11) || (!international && digits.startsWith(\u00279\u0027) && digits.length === 10); if (!international && !knownLength) return null;") &&
       squash(phoneEvidence).includes("if (!knownLength && /[^\\d+]/u.test(candidate)) return null;") &&
+      unprefixedConfidence >= 0 && labelAdmission > unprefixedConfidence &&
       phoneEvidenceCode.includes("if (candidate.includes(\u0027.\u0027)) { const groups = candidate.match(/\\d+/gu)?.map((group) => group.length).join(\u0027/\u0027); const conventionalGroups = (digits.length === 11 && [\u00271/3/3/2/2\u0027, \u00271/3/3/4\u0027].includes(groups ?? \u0027\u0027)) || (digits.length === 10 && groups === \u00273/3/2/2\u0027); if (!knownLength || !conventionalGroups) return null; }") &&
       phones.includes("const labelled = PHONE_CONTEXT.test(before);") &&
       phones.includes("if (!international && !labelled) return null;") &&
