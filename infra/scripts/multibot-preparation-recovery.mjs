@@ -199,6 +199,10 @@ export function multibotRecoveryPsqlArgs(applicationName, client) {
     '--name',
     applicationName,
     '--read-only',
+    // FLAG: The server image declares PGDATA as a volume. Override it so a
+    // short-lived psql client cannot create or leave an anonymous data volume.
+    '--tmpfs',
+    '/var/lib/postgresql/data:ro,noexec,nosuid,size=64k',
     '--cap-drop',
     'ALL',
     '--security-opt',

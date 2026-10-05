@@ -136,6 +136,7 @@ test('one PostgreSQL backend owns the bounded recovery budget and exact UUID tag
   assert.match(options, /maintenance_work_mem=512MB/u);
   assert.match(options, /temp_file_limit=6GB/u);
   assert.match(options, /statement_timeout=3600s/u);
+  assert(command.includes('/var/lib/postgresql/data:ro,noexec,nosuid,size=64k'));
   assert.throws(() => multibotRecoveryPsqlArgs('api-ingress'), /OWNED_IDENTITY_INVALID/u);
   assert.equal(command[0], 'create');
   assert.ok(command.includes('--interactive'));

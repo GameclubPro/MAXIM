@@ -112,7 +112,10 @@ recovery has a 7500-second wall-clock ceiling. A fresh two-minute low-lag window
 precedes every operation; the same reserve/runtime supervisor applies during work.
 Available host memory is checked again after that window and immediately before
 DDL. The PostgreSQL client uses the running PostgreSQL image ID and its attested
-Compose network, with no stateful volumes. Prisma resolution uses the retained
+Compose network, with no stateful volumes. Its inherited PostgreSQL data volume
+is overridden by a 64 KiB read-only tmpfs; the actual Docker CI smoke verifies
+that no anonymous or bind-mounted volume is created and checks the backend's
+maintenance, temporary-file and parallel-worker settings. Prisma resolution uses the retained
 cancelled API image ID, a read-only migration bind and bounded temporary storage;
 only the attested local `maxim` database/user and `public` schema are accepted.
 Temporary-file limits exclude index/WAL output, and one worker is not an I/O cap.

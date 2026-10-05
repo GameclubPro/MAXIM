@@ -305,12 +305,16 @@ test(
       'Native diagnostic requires disposable local PostgreSQL race_test',
     );
     const { default: pg } = await import('pg');
+    const databaseName = `race_test_mb_diagnostic_${randomUUID().replaceAll('-', '')}`;
+    const diagnosticAddress = new URL(nativePostgresUrl);
+    diagnosticAddress.pathname = `/${databaseName}`;
     const options = {
-      connectionString: nativePostgresUrl,
+      connectionString: diagnosticAddress.href,
       connectionTimeoutMillis: 5000,
       query_timeout: 10_000,
       options: '-c statement_timeout=10000 -c lock_timeout=3000 -c timezone=UTC',
     };
+    const admin = new pg.Client({ ...options, connectionString: nativePostgresUrl });
     const client = new pg.Client(options);
     const tag = `maxim-online-${randomUUID()}`;
     const builder = new pg.Client({ ...options, application_name: tag });
@@ -329,13 +333,28 @@ test(
     let writerConnected = false;
     let indexBuilderConnected = false;
     let roleCreated = false;
+    let adminConnected = false;
+    let databaseCreated = false;
+    let clientConnected = false;
     let building;
     try {
+      await admin.connect();
+      adminConnected = true;
+      // FLAG: The fixed audit deliberately counts every tagged session in its DB.
+      // Isolate this native fixture from parallel tests without weakening that scope.
+      await admin.query(`CREATE DATABASE "${databaseName}" TEMPLATE template0`);
+      databaseCreated = true;
       await client.connect();
+      clientConnected = true;
       const identity = await client.query('SELECT version() AS version');
       assert.match(identity.rows[0].version, /^PostgreSQL /u);
       assert.doesNotMatch(identity.rows[0].version, /pglite|wasm/iu);
-      await client.query(`CREATE SCHEMA ${schema};
+      assert.equal(
+        (await client.query('SELECT current_database() AS name')).rows[0].name,
+        databaseName,
+      );
+      await client.query(`CREATE TYPE public."WebhookStatus" AS ENUM ('RECEIVED', 'QUEUED', 'FAILED', 'PROCESSED');
+        CREATE SCHEMA ${schema};
         CREATE TABLE ${schema}.webhook_events (id text, semantic_key text, execution_deadline_at timestamp(3),
           created_at timestamp, status public."WebhookStatus", next_enqueue_at timestamp,
           timeout_quarantine_expires_at timestamp, error_message text);
@@ -350,17 +369,34 @@ test(
           await client.query('ROLLBACK');
         }
       };
+      const waitForBackendAbsence = async (pid) => {
+        // FLAG: Client end acknowledges socket closure, not completed PG backend teardown.
+        // Observe the exact ended backend before asserting the fixed report's absence.
+        const stopAt = Date.now() + 5000;
+        while (Date.now() < stopAt) {
+          const activity = await client.query(
+            `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+              WHERE datname = current_database() AND pid = $1) AS present`,
+            [pid],
+          );
+          if (activity.rows[0].present === false) return;
+          await delay(10);
+        }
+        assert.fail('The ended local backend must disappear before absence diagnostics');
+      };
       let report = await read();
       assert.equal(report.builders.statistics_visible, true);
       assert.equal(report.builders.absent, true);
       await builder.connect();
       builderConnected = true;
+      const builderPid = (await builder.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
       report = await read();
       assert.equal(report.builders.tagged_sessions, 1);
       assert.equal(report.builders.absent, false);
       assert.doesNotMatch(JSON.stringify(report), new RegExp(tag, 'u'));
       await builder.end();
       builderConnected = false;
+      await waitForBackendAbsence(builderPid);
       assert.equal((await read()).builders.absent, true);
       await client.query(
         `INSERT INTO ${schema}.webhook_events (id, semantic_key) VALUES ('1', 'same')`,
@@ -370,6 +406,8 @@ test(
       await writer.query(`BEGIN; UPDATE ${schema}.webhook_events SET id = id`);
       await indexBuilder.connect();
       indexBuilderConnected = true;
+      const indexBuilderPid = (await indexBuilder.query('SELECT pg_backend_pid() AS pid')).rows[0]
+        .pid;
       building = indexBuilder
         .query(
           `CREATE INDEX CONCURRENTLY webhook_events_semantic_order_idx
@@ -409,6 +447,7 @@ test(
       building = null;
       await indexBuilder.end();
       indexBuilderConnected = false;
+      await waitForBackendAbsence(indexBuilderPid);
       await writer.query('ROLLBACK');
       report = await read();
       assert.equal(report.builders.absent, true);
@@ -449,7 +488,7 @@ test(
         PGPORT: address.port || '5432',
         PGUSER: decodeURIComponent(address.username),
         PGPASSWORD: decodeURIComponent(address.password),
-        PGDATABASE: decodeURIComponent(address.pathname.slice(1)),
+        PGDATABASE: decodeURIComponent(diagnosticAddress.pathname.slice(1)),
         PGOPTIONS: '-c statement_timeout=10000 -c lock_timeout=3000 -c timezone=UTC',
       };
       const runCli = (explain = false) =>
@@ -477,17 +516,23 @@ test(
         assert.equal(result.stdout.trim(), 'MULTIBOT_PREPARATION_RECEIPT_PRIVILEGES_INVALID');
       }
     } finally {
-      if (builderConnected) await builder.end();
-      if (writerConnected) {
-        await writer.query('ROLLBACK').catch(() => {});
-        await writer.end();
+      try {
+        if (builderConnected) await builder.end();
+        if (writerConnected) {
+          await writer.query('ROLLBACK').catch(() => {});
+          await writer.end();
+        }
+        if (building) await building;
+        if (indexBuilderConnected) await indexBuilder.end();
+        if (clientConnected) {
+          await client.query('RESET ROLE').catch(() => {});
+          await client.end();
+        }
+        if (databaseCreated) await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+        if (roleCreated) await admin.query(`DROP ROLE "${roleName}"`);
+      } finally {
+        if (adminConnected) await admin.end();
       }
-      if (building) await building;
-      if (indexBuilderConnected) await indexBuilder.end();
-      await client.query('RESET ROLE').catch(() => {});
-      await client.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => {});
-      if (roleCreated) await client.query(`DROP ROLE "${roleName}"`).catch(() => {});
-      await client.end();
     }
   },
 );

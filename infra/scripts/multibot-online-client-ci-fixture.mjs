@@ -11,7 +11,10 @@ import {
   stopOwnedMigration,
   superviseMultibotOnlinePrepare,
 } from './multibot-online-supervisor.mjs';
-import { multibotRecoveryResolverArgs } from './multibot-preparation-recovery.mjs';
+import {
+  multibotRecoveryPsqlArgs,
+  multibotRecoveryResolverArgs,
+} from './multibot-preparation-recovery.mjs';
 import { MULTIBOT_ONLINE_PREFIX_NAME } from '../../scripts/agent/multibot-online-prepare.mjs';
 
 const receiptName = '20261005016100_index_multibot_retention_cursor';
@@ -23,6 +26,15 @@ const indexNames = [
 const tagPattern =
   /^maxim-online-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const privateOptions = { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 };
+export const MULTIBOT_PSQL_CLIENT_METADATA_SQL = `SELECT json_build_object(
+  'read_only', current_setting('transaction_read_only')::boolean,
+  'application_name', current_setting('application_name'),
+  'database_matches', current_database() = 'maxim',
+  'maintenance_bytes', pg_size_bytes(current_setting('maintenance_work_mem')),
+  'temp_limit_bytes', pg_size_bytes(current_setting('temp_file_limit')),
+  'parallel_maintenance_workers', current_setting('max_parallel_maintenance_workers')::integer,
+  'parallel_query_workers', current_setting('max_parallel_workers_per_gather')::integer
+);`;
 let stage = 'ADMISSION';
 const childResult = (child) =>
   new Promise((done) => {
@@ -402,11 +414,7 @@ fs.writeFileSync(p+'/ci-write-probe','ok',{mode:384});assert.equal(fs.readFileSy
       'PASS actual default supervisor preserves the private env file, ordered Compose overlay and non-infra project',
     );
 
-    // FLAG: A failed receipt is explicit disposable CI data, using the checksum
-    // already established by original source deploy; no production resolution runs.
-    stage = 'OFFICIAL_RESOLVE';
-    await pg(`UPDATE _prisma_migrations SET finished_at=NULL, applied_steps_count=0, logs='57014 CI cancelled migration receipt'
-      WHERE migration_name='${receiptName}' AND rolled_back_at IS NULL;`);
+    stage = 'PSQL_CLIENT';
     await docker([
       'network',
       'create',
@@ -424,6 +432,70 @@ fs.writeFileSync(p+'/ci-write-probe','ok',{mode:384});assert.equal(fs.readFileSy
     await docker(['network', 'connect', '--alias', 'postgres', 'infra_default', pgId]);
     const effective = await json(['compose', ...compose, 'config', '--format', 'json']);
     const [resolverNetwork] = await json(['network', 'inspect', 'infra_default']);
+    const [postgresFixture] = await json(['container', 'inspect', pgId]);
+    // FLAG: The official server image declares a data VOLUME. The actual short-lived
+    // psql client must override it with bounded readonly tmpfs, never an anonymous volume.
+    await docker(
+      multibotRecoveryPsqlArgs(cancelledTag, {
+        imageId: postgresFixture.Image,
+        networkName: 'infra_default',
+        networkId: resolverNetwork.Id,
+      }),
+      {
+        env: {
+          ...process.env,
+          PGPASSWORD: effective.services.postgres.environment.POSTGRES_PASSWORD,
+        },
+      },
+    );
+    const [psqlClient] = await json(['container', 'inspect', cancelledTag]);
+    assert.equal(psqlClient.Image, postgresFixture.Image);
+    assert.equal(psqlClient.State.Status, 'created');
+    assert.equal(psqlClient.HostConfig.ReadonlyRootfs, true);
+    assert.equal(psqlClient.HostConfig.AutoRemove, true);
+    assert.equal(psqlClient.HostConfig.NetworkMode, resolverNetwork.Id);
+    assert.equal(psqlClient.HostConfig.PidsLimit, 32);
+    assert.equal(psqlClient.HostConfig.Memory, 128 * 1024 ** 2);
+    assert.equal(psqlClient.HostConfig.NanoCpus, 250_000_000);
+    assert.equal(psqlClient.Config.User, 'postgres');
+    assert.deepEqual(psqlClient.Config.Entrypoint, ['psql']);
+    assert.deepEqual(psqlClient.HostConfig.CapDrop, ['ALL']);
+    assert(
+      psqlClient.HostConfig.SecurityOpt.some((option) => option.startsWith('no-new-privileges')),
+    );
+    assert.equal(
+      psqlClient.HostConfig.Tmpfs['/var/lib/postgresql/data'],
+      'ro,noexec,nosuid,size=64k',
+    );
+    assert.equal(
+      psqlClient.Mounts.some((mount) => mount.Type === 'volume' || mount.Type === 'bind'),
+      false,
+    );
+    const psqlOutput = await docker(['start', '--attach', '--interactive', cancelledTag], {
+      input: `BEGIN READ ONLY;\n${MULTIBOT_PSQL_CLIENT_METADATA_SQL}\nCOMMIT;`,
+    });
+    const metadataRows = psqlOutput.split('\n').filter((line) => line.startsWith('{'));
+    assert.equal(metadataRows.length, 1);
+    assert.deepEqual(JSON.parse(metadataRows[0]), {
+      read_only: true,
+      application_name: cancelledTag,
+      database_matches: true,
+      maintenance_bytes: 512 * 1024 ** 2,
+      temp_limit_bytes: 6 * 1024 ** 3,
+      parallel_maintenance_workers: 0,
+      parallel_query_workers: 0,
+    });
+    await absent(cancelledTag);
+    assert.deepEqual(await attestPrefix(), indexesBefore);
+    console.log(
+      'PASS actual readonly psql client without anonymous volumes, bounded data tmpfs, immutable network and backend maintenance/temp limits, schema unchanged',
+    );
+
+    // FLAG: A failed receipt is explicit disposable CI data, using the checksum
+    // already established by original source deploy; no production resolution runs.
+    stage = 'OFFICIAL_RESOLVE';
+    await pg(`UPDATE _prisma_migrations SET finished_at=NULL, applied_steps_count=0, logs='57014 CI cancelled migration receipt'
+      WHERE migration_name='${receiptName}' AND rolled_back_at IS NULL;`);
     await docker(
       multibotRecoveryResolverArgs(
         resolverTag,

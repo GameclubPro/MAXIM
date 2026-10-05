@@ -1,16 +1,71 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
-import { writeOnlineClientCiCompose } from './multibot-online-client-ci-fixture.mjs';
+import {
+  MULTIBOT_PSQL_CLIENT_METADATA_SQL,
+  writeOnlineClientCiCompose,
+} from './multibot-online-client-ci-fixture.mjs';
 import { verifyMultibotOnlineClientConfiguration } from './multibot-online-client.mjs';
+import { multibotRecoveryPsqlArgs } from './multibot-preparation-recovery.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const sha = 'a'.repeat(40);
 const image = `maxim-api:${sha}`;
 const smoke = resolve(root, 'infra/scripts/smoke-multibot-online-client-ci.sh');
+const nativePostgresUrl = process.env.MAXIM_TEST_POSTGRES_URL?.trim();
+
+test(
+  'native psql CI metadata observes the actual recovery backend limits in a readonly transaction',
+  { skip: !nativePostgresUrl, timeout: 15_000 },
+  async () => {
+    const address = new URL(nativePostgresUrl);
+    assert(
+      ['127.0.0.1', 'localhost', '[::1]'].includes(address.hostname) &&
+        address.pathname.includes('race_test'),
+      'Requires disposable local PostgreSQL race_test',
+    );
+    const tag = `maxim-online-${randomUUID()}`;
+    const command = multibotRecoveryPsqlArgs(tag, {
+      imageId: `sha256:${'a'.repeat(64)}`,
+      networkName: 'infra_default',
+      networkId: 'b'.repeat(64),
+    });
+    const { default: pg } = await import('pg');
+    const client = new pg.Client({
+      connectionString: nativePostgresUrl,
+      application_name: tag,
+      connectionTimeoutMillis: 5000,
+      query_timeout: 5000,
+      options: command.find((option) => option.startsWith('PGOPTIONS=')).slice('PGOPTIONS='.length),
+    });
+    try {
+      await client.connect();
+      assert.match(
+        (await client.query('SELECT version() AS version')).rows[0].version,
+        /^PostgreSQL /u,
+      );
+      await client.query('BEGIN READ ONLY');
+      const result = (await client.query(MULTIBOT_PSQL_CLIENT_METADATA_SQL)).rows[0]
+        .json_build_object;
+      assert.deepEqual(result, {
+        read_only: true,
+        application_name: tag,
+        database_matches: false,
+        maintenance_bytes: 512 * 1024 ** 2,
+        temp_limit_bytes: 6 * 1024 ** 3,
+        parallel_maintenance_workers: 0,
+        parallel_query_workers: 0,
+      });
+      await client.query('ROLLBACK');
+    } finally {
+      await client.end();
+    }
+  },
+);
 
 test('CI migration Compose uses its effective private overlay, isolated non-infra project and internal network', () => {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-online-client-ci-'));
