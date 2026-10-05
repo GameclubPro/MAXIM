@@ -56,6 +56,7 @@ export type SimulatedMaxEffect = {
   botId: string;
   messageId?: string;
   body?: unknown;
+  params?: Record<string, unknown>;
 };
 
 // FLAG: This fixture accepts only disposable local stores and never opens a MAX socket.
@@ -167,6 +168,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   );
   const adminUsers = new Set<string>();
   let ambiguousNextSend = false;
+  let ambiguousNextMemberMutation = false;
   const http = {
     request: (request: {
       method: string;
@@ -191,6 +193,9 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
             botId: bot.id,
             ...(messageId ? { messageId } : {}),
             body: request.data,
+            ...(method !== 'get' && path.endsWith('/members')
+              ? { params: { ...request.params } }
+              : {}),
           };
           requests.push(call);
           if (
@@ -258,6 +263,13 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
             };
           } else if (method !== 'get' && path.endsWith('/members')) {
             effects.push(call);
+            if (ambiguousNextMemberMutation) {
+              ambiguousNextMemberMutation = false;
+              throw Object.assign(new Error('Simulated ambiguous MAX member mutation timeout'), {
+                code: 'ECONNABORTED',
+                request: {},
+              });
+            }
             data = { success: true };
           } else throw new Error(`Unhandled simulated MAX endpoint: ${method} ${path}`);
           return { status: 200, data, headers: {}, config: request };
@@ -677,6 +689,9 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     resume: () => worker.resume(),
     ambiguousNextSend: () => {
       ambiguousNextSend = true;
+    },
+    ambiguousNextMemberMutation: () => {
+      ambiguousNextMemberMutation = true;
     },
     denyBot: (botId: string) => {
       deniedBots.add(botId);

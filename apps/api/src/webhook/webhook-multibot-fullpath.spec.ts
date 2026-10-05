@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import { Queue, QueueEvents, Worker, type ConnectionOptions } from 'bullmq';
 import {
   createMultibotHarness,
   type MultibotHarness,
 } from './webhook-multibot-fullpath.spec-support';
 import { AdminService } from '../admin/admin.service';
-import { MaxApiInternalRateLimitError } from '../max/max-client.service';
+import { MaxApiInternalRateLimitError, type MaxActionJob } from '../max/max-client.service';
+import { MaxActionDispatchService } from '../max/max-action-dispatch.service';
+import { MaxActionLedgerService } from '../max/max-action-ledger.service';
+import { MaxActionProcessor } from '../max/max-action.processor';
 import { Prisma } from '../prisma/prisma-client';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 
@@ -572,6 +576,154 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       1,
     );
   });
+
+  it.each(
+    (['BAN_MEMBER', 'KICK_MEMBER'] as const).flatMap((actionType) =>
+      (['AMBIGUOUS', 'IN_PROGRESS'] as const).map((journalStatus) => ({
+        actionType,
+        journalStatus,
+      })),
+    ),
+  )(
+    'fences an unknown $actionType after a worker restart with $journalStatus journal',
+    async ({ actionType, journalStatus }) => {
+      const s = await fixture(4);
+      const [chatId] = await s.seedCatalog(1);
+      const idempotencyKey = `unknown-member-${randomUUID()}`;
+      const data: MaxActionJob = {
+        actionType,
+        chatId: chatId!,
+        userId: 'fixture-user',
+        botId: s.bots[0]!.id,
+        candidateBotIds: s.bots.map((bot) => bot.id),
+        routing: { purpose: 'moderation_action', action: 'moderate_member' },
+        idempotencyKey,
+        createdAt: new Date().toISOString(),
+        attempt: 1,
+      };
+      const queue = new Queue<MaxActionJob>(`member-action-${randomUUID()}`, {
+        connection: s.redis as unknown as ConnectionOptions,
+      });
+      const eventsRedis = s.redis.duplicate();
+      const events = new QueueEvents(queue.name, {
+        connection: eventsRedis as unknown as ConnectionOptions,
+      });
+      let workerRedis = s.redis.duplicate();
+      const startWorker = (ledger: MaxActionLedgerService) => {
+        const dispatch = new MaxActionDispatchService(s.max, undefined, ledger, s.links, s.config);
+        const processor = new MaxActionProcessor(dispatch);
+        return new Worker<MaxActionJob>(queue.name, (job) => processor.process(job), {
+          connection: workerRedis as unknown as ConnectionOptions,
+          concurrency: 1,
+        });
+      };
+      const previousRole = process.env.APP_ROLE;
+      process.env.APP_ROLE = 'action';
+      let worker = startWorker(s.ledger);
+      const lostFinalJournal =
+        journalStatus === 'IN_PROGRESS'
+          ? jest.spyOn(s.ledger, 'recordFailed').mockRejectedValueOnce(
+              // Simulate loss of the final write after MAX received the mutation.
+              new Error('Simulated worker loss before final member journal write'),
+            )
+          : undefined;
+      try {
+        await Promise.all([
+          queue.waitUntilReady(),
+          events.waitUntilReady(),
+          worker.waitUntilReady(),
+        ]);
+        await s.ledger.recordEnqueuedIfAbsent(data);
+        s.ambiguousNextMemberMutation();
+        const first = await queue.add('execute-max-action', data, {
+          jobId: idempotencyKey,
+          attempts: 5,
+          backoff: { type: 'fixed', delay: 10 },
+        });
+        await expect(first.waitUntilFinished(events, 10_000)).rejects.toThrow(
+          `Ambiguous MAX ${actionType} transport failure`,
+        );
+        expect((await queue.getJob(first.id!))?.attemptsMade).toBe(1);
+        expect(await first.getState()).toBe('failed');
+        const before = await s.prisma.maxActionLedgerEntry.findUniqueOrThrow({
+          where: { jobId: idempotencyKey },
+        });
+        expect(before).toMatchObject({
+          actionType,
+          chatId,
+          userId: data.userId,
+          botId: data.botId,
+          status: journalStatus,
+          ambiguous: journalStatus === 'AMBIGUOUS',
+          terminal: journalStatus === 'AMBIGUOUS',
+          attemptCount: 1,
+          firstAttemptAt: expect.any(Date),
+          lastAttemptAt: expect.any(Date),
+          completedAt: journalStatus === 'AMBIGUOUS' ? expect.any(Date) : null,
+        });
+        if (journalStatus === 'AMBIGUOUS') {
+          expect(before).toMatchObject({ lastStatusCode: null, lastErrorCode: 'econnaborted' });
+          expect(before.metadata).toMatchObject({ attemptedBotIds: [data.botId] });
+        } else {
+          expect(lostFinalJournal).toHaveBeenCalledTimes(1);
+        }
+
+        await worker.close();
+        await workerRedis.quit();
+        lostFinalJournal?.mockRestore();
+        await s.demote(chatId!, data.botId!);
+        const peerRoute = await s.links.resolveBotRoute({
+          chatId: chatId!,
+          purpose: 'moderation_action',
+          action: 'moderate_member',
+        });
+        expect(peerRoute.candidateBotIds).toContain(s.bots[1]!.id);
+        workerRedis = s.redis.duplicate();
+        worker = startWorker(new MaxActionLedgerService(s.prisma as never));
+        await worker.waitUntilReady();
+        const replay = await queue.add(
+          'execute-max-action',
+          { ...data, botId: s.bots[1]!.id, candidateBotIds: peerRoute.candidateBotIds },
+          { jobId: `peer-replay-${randomUUID()}`, attempts: 5 },
+        );
+        expect(replay.id).not.toBe(first.id);
+        await expect(replay.waitUntilFinished(events, 10_000)).rejects.toThrow(
+          `is no longer executable (${journalStatus})`,
+        );
+        expect((await queue.getJob(replay.id!))?.attemptsMade).toBe(1);
+        expect(await replay.getState()).toBe('failed');
+        expect(
+          s.effects.filter(
+            (effect) => effect.method === 'delete' && effect.path === `/chats/${chatId}/members`,
+          ),
+        ).toEqual([
+          expect.objectContaining({
+            botId: data.botId,
+            params: {
+              user_id: data.userId,
+              ...(actionType === 'BAN_MEMBER' ? { block: true } : {}),
+            },
+          }),
+        ]);
+        expect(await s.prisma.maxActionLedgerEntry.count({ where: { chatId } })).toBe(1);
+        expect(
+          await s.prisma.maxActionLedgerEntry.findUniqueOrThrow({
+            where: { jobId: idempotencyKey },
+          }),
+        ).toEqual(before);
+      } finally {
+        lostFinalJournal?.mockRestore();
+        if (previousRole === undefined) delete process.env.APP_ROLE;
+        else process.env.APP_ROLE = previousRole;
+        await worker.close();
+        await workerRedis.quit();
+        await events.close();
+        await eventsRedis.quit();
+        await queue.obliterate({ force: true });
+        await queue.close();
+      }
+    },
+  );
 
   it('resumes only the immutable command notice after proven predispatch rejection', async () => {
     const { s, chatId, receipts, handler, started } = await adminCommandFixture();
