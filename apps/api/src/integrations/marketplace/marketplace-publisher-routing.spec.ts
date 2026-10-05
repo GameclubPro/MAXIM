@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
-import type { Job, Queue } from 'bullmq';
+import { QueueEvents, type Job, type Queue } from 'bullmq';
 import { MarketplaceAccessService } from './marketplace-access.service';
 import { MarketplacePublisherAccessProcessor } from './marketplace-publisher-access.processor';
 import {
@@ -171,9 +171,12 @@ describe('marketplace Publisher runtime boundary', () => {
 describe('marketplace Publisher queue replies', () => {
   const fixture = (reply: unknown) => {
     const job = { waitUntilFinished: jest.fn().mockResolvedValue(reply) };
+    const client = { xrevrange: jest.fn().mockResolvedValue([]) };
     const queue = {
       name: 'marketplace-publisher-access',
       opts: { connection: {} },
+      client: Promise.resolve(client),
+      toKey: jest.fn().mockReturnValue('marketplace-test-events'),
       getJobCounts: jest.fn().mockResolvedValue({ wait: 0 }),
       add: jest.fn().mockResolvedValue(job),
     };
@@ -181,6 +184,7 @@ describe('marketplace Publisher queue replies', () => {
       service: new MarketplacePublisherAccessQueueService(queue as unknown as Queue),
       queue,
       job,
+      client,
     };
   };
   it('validates completed results and bounds payload retention and wait time', async () => {
@@ -194,6 +198,63 @@ describe('marketplace Publisher queue replies', () => {
     );
     expect(f.job.waitUntilFinished).toHaveBeenCalledWith(expect.anything(), 8000);
     await f.service.onModuleDestroy();
+  });
+  it('fails closed before admission on an unavailable or malformed stream tail and recovers on a new request', async () => {
+    const id = randomUUID();
+    for (const tail of [new Error('Redis unavailable'), [['invalid-id', []]], [[], []]]) {
+      const f = fixture({ state: 'ACTIVE', bindingId: id });
+      if (tail instanceof Error) f.client.xrevrange.mockRejectedValueOnce(tail);
+      else f.client.xrevrange.mockResolvedValueOnce(tail);
+      await expect(f.service.attest(input)).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'MARKETPLACE_ACCESS_PENDING' }),
+      });
+      expect(f.queue.add).not.toHaveBeenCalled();
+      expect(f.job.waitUntilFinished).not.toHaveBeenCalled();
+      expect(await f.service.attest(input)).toBe(id);
+      expect(f.queue.add).toHaveBeenCalledTimes(1);
+      await f.service.onModuleDestroy();
+    }
+  });
+  it('creates no late event connection or request after destroy interrupts initialization', async () => {
+    const f = fixture({ state: 'ACTIVE', bindingId: randomUUID() });
+    let releaseTail!: () => void;
+    let recordRead!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      recordRead = resolve;
+    });
+    const tail = new Promise<never[]>((resolve) => {
+      releaseTail = () => resolve([]);
+    });
+    f.client.xrevrange.mockImplementationOnce(() => {
+      recordRead();
+      return tail;
+    });
+    const createdBefore = jest.mocked(QueueEvents).mock.calls.length;
+    const decision = f.service.attest(input).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    let stageTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        reading,
+        new Promise<never>((_, reject) => {
+          stageTimer = setTimeout(() => reject(new Error('Tail read test stage timed out')), 1000);
+        }),
+      ]);
+      await f.service.onModuleDestroy();
+      releaseTail();
+      expect(await decision).toBeInstanceOf(ServiceUnavailableException);
+      await expect(f.service.attest(input)).rejects.toThrow(ServiceUnavailableException);
+      expect(jest.mocked(QueueEvents).mock.calls).toHaveLength(createdBefore);
+      expect(f.queue.add).not.toHaveBeenCalled();
+      expect(f.client.xrevrange).toHaveBeenCalledTimes(1);
+    } finally {
+      clearTimeout(stageTimer);
+      releaseTail();
+      await decision;
+      await f.service.onModuleDestroy();
+    }
   });
   it.each([{ state: 'DENIED' }, { state: 'RETRY' }, { state: 'ACTIVE', bindingId: 'malformed' }])(
     'fails closed for %j',
