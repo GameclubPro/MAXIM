@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildCommercialQualitySample } from '../moderation/commercial/commercial-quality-sampling';
@@ -8,9 +18,15 @@ import {
   assertPrivateImageOutputSafe,
   capturePrivateImageExport,
   findPrivateImageRepositoryRoot,
+  runPrivateImageCheckpointExport,
   readPrivateImageExportOptions,
   selectPrivateImageExportSources,
   PRIVATE_IMAGE_SOURCE_CAP,
+  PRIVATE_IMAGE_RAW_SCAN_CAP,
+  PRIVATE_IMAGE_SCAN_PAGE_CAP,
+  type PrivateImagePageOptions,
+  type PrivateImageSamplePageRow,
+  type PrivateImageReceiptPageRow,
 } from './export-commercial-private-images';
 
 const secret = 'private-image-test-secret-1234567890';
@@ -104,6 +120,355 @@ describe('bounded private commercial source-image export', () => {
     );
     return scripts;
   }
+  function checkpointFixture(
+    samples?: PrivateImageSamplePageRow[],
+    receipts?: PrivateImageReceiptPageRow[],
+  ) {
+    const raw = receipt();
+    const sampleRows = samples ?? [
+      { ...sample(raw), id: 'sample-source', observedAt: new Date('2026-10-05T00:02:00.000Z') },
+    ];
+    const receiptRows = receipts ?? [
+      { ...raw, id: 'receipt-source', createdAt: new Date('2026-10-05T00:01:00.000Z') },
+    ];
+    const next = <T extends { id: string }>(
+      rows: T[],
+      options: PrivateImagePageOptions,
+      at: (row: T) => Date,
+    ) =>
+      rows
+        .filter(
+          (row) =>
+            !options.cursor ||
+            at(row).getTime() > options.cursor.createdAt.getTime() ||
+            (at(row).getTime() === options.cursor.createdAt.getTime() &&
+              row.id > options.cursor.id),
+        )
+        .slice(0, options.pageSize);
+    return {
+      options: { ...window, checkpointPath: join(folder, 'checkpoint.json') },
+      secret,
+      repositoryRoot: repo,
+      sourceIdentitySha256: 'f'.repeat(64),
+      loadSamplePage: jest.fn(async (options: PrivateImagePageOptions) =>
+        next(sampleRows, options, (row) => row.observedAt),
+      ),
+      loadReceiptPage: jest.fn(async (options: PrivateImagePageOptions) =>
+        next(receiptRows, options, (row) => row.createdAt),
+      ),
+      loadMatchedReceipts: jest.fn(async (ids: readonly string[]) =>
+        receiptRows.filter((row) => ids.includes(row.id)),
+      ),
+      downloader: {
+        download: jest.fn(async () => ({
+          bytes: Buffer.from('private original'),
+          format: 'jpeg' as const,
+        })),
+      },
+      now: () => Date.now(),
+    };
+  }
+  it('advances across TEXT-only pages and resumes past noisy padding without exposing private cursors', async () => {
+    const raw = receipt();
+    const text = Array.from({ length: 1000 }, (_, index) => ({
+      id: `text-${String(index).padStart(4, '0')}`,
+      observedAt: new Date(window.since),
+      source: 'TEXT',
+      qualityMetadata: {},
+    }));
+    const noise = Array.from({ length: 6000 }, (_, index) => ({
+      id: `noise-${String(index).padStart(4, '0')}`,
+      createdAt: new Date(Date.parse(window.since) - 9 * 60000),
+      normalizedPayload: { type: 'not-message', raw: 'private-noise' },
+    }));
+    const params = checkpointFixture(
+      [
+        ...text,
+        { ...sample(raw), id: 'source-sample', observedAt: new Date('2026-10-05T00:02:00.000Z') },
+      ],
+      [...noise, { ...raw, id: 'source-receipt', createdAt: new Date('2026-10-05T00:01:00.000Z') }],
+    );
+    const first = await runPrivateImageCheckpointExport(params);
+    expect(first).toMatchObject({
+      sampleRows: 1,
+      matchedAlbums: 0,
+      resumeRequired: true,
+      rawRowsScannedThisRun: PRIVATE_IMAGE_RAW_SCAN_CAP,
+      sampleWindowExhausted: true,
+    });
+    const checkpoint = await readFile(params.options.checkpointPath, 'utf8');
+    expect(checkpoint).toContain('noise-3998');
+    expect(checkpoint).not.toContain('private-noise');
+    expect((await stat(params.options.checkpointPath)).mode & 0o077).toBe(0);
+    const resumed = await runPrivateImageCheckpointExport({
+      ...params,
+      options: { ...params.options, resume: true },
+    });
+    expect(resumed).toMatchObject({
+      matchedAlbums: 1,
+      sourceLookupComplete: true,
+      resumeRequired: false,
+    });
+    expect(params.downloader.download).not.toHaveBeenCalled();
+    expect(JSON.stringify([first, resumed])).not.toMatch(
+      /source-sample|source-receipt|noise-|private-chat|private-user|oneme/u,
+    );
+    expect(
+      params.loadSamplePage.mock.calls.every(
+        ([page]) => page.pageSize <= PRIVATE_IMAGE_SCAN_PAGE_CAP,
+      ),
+    ).toBe(true);
+  });
+  it('charges fetched raw rows when the source cap is reached midway through a page', async () => {
+    const rows = Array.from({ length: 499 }, (_, index) => {
+      const raw = receipt(`message-${index}`, '', [`photo-${index}`]);
+      return {
+        ...sample(raw),
+        id: `sample-${String(index).padStart(4, '0')}`,
+        observedAt: new Date(window.since),
+      };
+    });
+    const final = {
+      ...sample(receipt('last')),
+      id: 'zz-final',
+      observedAt: new Date('2026-10-05T00:00:01.000Z'),
+    };
+    const texts = Array.from({ length: 499 }, (_, index) => ({
+      source: 'TEXT',
+      qualityMetadata: {},
+      id: `text-${String(index).padStart(4, '0')}`,
+      observedAt: new Date('2026-10-05T00:00:02.000Z'),
+    }));
+    const noise = Array.from({ length: 5000 }, (_, index) => ({
+      id: `noise-${String(index).padStart(4, '0')}`,
+      createdAt: new Date(window.since),
+      normalizedPayload: {},
+    }));
+    const params = checkpointFixture(
+      [
+        ...rows,
+        { source: 'TEXT', qualityMetadata: {}, id: 'zz-text', observedAt: new Date(window.since) },
+        final,
+        ...texts,
+      ],
+      noise,
+    );
+    const report = await runPrivateImageCheckpointExport(params);
+    expect(report).toMatchObject({
+      sampleRows: 500,
+      rawRowsScannedThisRun: PRIVATE_IMAGE_RAW_SCAN_CAP,
+      rawSampleRowsScanned: 1000,
+      rawReceiptRowsScanned: 4000,
+      resumeRequired: true,
+    });
+  });
+  it('roundtrips an authenticated checkpoint, exports once and carries image-budget residuals into a new batch', async () => {
+    const one = receipt('one', '', ['photo-one']);
+    const two = receipt('two', '', ['photo-two']);
+    const params = checkpointFixture(
+      [
+        { ...sample(one), id: 'sample-one', observedAt: new Date(window.since) },
+        { ...sample(two), id: 'sample-two', observedAt: new Date(window.since) },
+      ],
+      [
+        { ...one, id: 'receipt-one', createdAt: new Date(window.since) },
+        { ...two, id: 'receipt-two', createdAt: new Date(window.since) },
+      ],
+    );
+    params.options.limit = 1;
+    await runPrivateImageCheckpointExport(params);
+    const applied = {
+      ...params,
+      options: {
+        ...params.options,
+        resume: true,
+        apply: true,
+        outputDir: join(folder, 'first-images'),
+      },
+    };
+    const first = await runPrivateImageCheckpointExport(applied);
+    expect(first).toMatchObject({
+      capturedAlbums: 1,
+      residualMatchedAlbums: 1,
+      nextFrameAvailable: true,
+      completeWithinMatchedSources: false,
+    });
+    await runPrivateImageCheckpointExport(applied);
+    expect(params.downloader.download).toHaveBeenCalledTimes(1);
+    await runPrivateImageCheckpointExport({
+      ...params,
+      options: { ...params.options, resume: true, nextFrame: true },
+    });
+    const next = await runPrivateImageCheckpointExport({
+      ...params,
+      options: {
+        ...params.options,
+        resume: true,
+        apply: true,
+        outputDir: join(folder, 'second-images'),
+      },
+    });
+    expect(next).toMatchObject({
+      capturedAlbums: 1,
+      residualMatchedAlbums: 0,
+      nextFrameAvailable: false,
+    });
+    expect(params.downloader.download).toHaveBeenCalledTimes(2);
+    expect(params.downloader.download.mock.calls).toEqual([
+      [expect.stringContaining('photo-one'), expect.anything()],
+      [expect.stringContaining('photo-two'), expect.anything()],
+    ]);
+  });
+  it('revalidates frozen source bytes/identity before any download', async () => {
+    const params = checkpointFixture();
+    await runPrivateImageCheckpointExport(params);
+    params.loadMatchedReceipts.mockResolvedValueOnce([
+      {
+        ...receipt('source-one', 'Edited'),
+        id: 'receipt-source',
+        createdAt: new Date(window.since),
+      },
+    ]);
+    const report = await runPrivateImageCheckpointExport({
+      ...params,
+      options: {
+        ...params.options,
+        resume: true,
+        apply: true,
+        outputDir: join(folder, 'changed-source'),
+      },
+    });
+    expect(report.counters.source_receipt_revalidation_failed).toBe(1);
+    expect(report.completeWithinMatchedSources).toBe(false);
+    expect(params.downloader.download).not.toHaveBeenCalled();
+  });
+  it('reports an oversized album as a terminal omission and does not block the next sample batch', async () => {
+    const raw = receipt('oversized', '', ['one', 'two']);
+    const params = checkpointFixture(
+      [{ ...sample(raw), id: 'source-sample', observedAt: new Date(window.since) }],
+      [{ ...raw, id: 'source-receipt', createdAt: new Date(window.since) }],
+    );
+    params.options.limit = 1;
+    await runPrivateImageCheckpointExport(params);
+    const report = await runPrivateImageCheckpointExport({
+      ...params,
+      options: {
+        ...params.options,
+        resume: true,
+        apply: true,
+        outputDir: join(folder, 'oversized'),
+      },
+    });
+    expect(report).toMatchObject({
+      terminalAlbumBudgetOmissions: 1,
+      residualMatchedAlbums: 0,
+      nextFrameAvailable: false,
+      completeWithinMatchedSources: false,
+    });
+    expect(params.downloader.download).not.toHaveBeenCalled();
+  });
+  it('keeps unavailable original-source reasons and treats an exact-full raw page as unproven exhaustion', async () => {
+    const raw = receipt();
+    const missing = receipt();
+    missing.normalizedPayload.raw.message.body.attachments[0]!.payload.url = '';
+    const params = checkpointFixture(
+      [{ ...sample(raw), id: 'source-sample', observedAt: new Date(window.since) }],
+      [{ ...missing, id: 'source-receipt', createdAt: new Date(window.since) }],
+    );
+    const report = await runPrivateImageCheckpointExport(params);
+    expect(report).toMatchObject({
+      matchedAlbums: 0,
+      receiptWindowExhausted: true,
+      counters: { matched_source_unavailable: 1, unmatched_sample_revisions: 1 },
+    });
+    const textOnly = checkpointFixture(
+      Array.from({ length: PRIVATE_IMAGE_RAW_SCAN_CAP }, (_, index) => ({
+        id: `text-${String(index).padStart(4, '0')}`,
+        source: 'TEXT',
+        qualityMetadata: {},
+        observedAt: new Date(window.since),
+      })),
+      [],
+    );
+    textOnly.options.checkpointPath = join(folder, 'text-checkpoint.json');
+    const full = await runPrivateImageCheckpointExport(textOnly);
+    expect(full).toMatchObject({ sampleWindowExhausted: false, resumeRequired: true });
+    const probe = await runPrivateImageCheckpointExport({
+      ...textOnly,
+      options: { ...textOnly.options, resume: true },
+    });
+    expect(probe).toMatchObject({
+      sampleWindowExhausted: true,
+      resumeRequired: false,
+      rawRowsScannedThisRun: 0,
+    });
+  });
+  it('blocks an interrupted export on resume and stops private writes after run-lock loss', async () => {
+    const params = checkpointFixture();
+    await runPrivateImageCheckpointExport(params);
+    let lost = false;
+    params.downloader.download.mockImplementationOnce(async () => {
+      lost = true;
+      return { bytes: Buffer.from('private'), format: 'jpeg' };
+    });
+    const applied = {
+      ...params,
+      options: {
+        ...params.options,
+        resume: true,
+        apply: true,
+        outputDir: join(folder, 'interrupted'),
+      },
+      assertHeld: () => {
+        if (lost) throw new Error('Lost audit lock');
+      },
+    };
+    await expect(runPrivateImageCheckpointExport(applied)).rejects.toThrow('Lost audit lock');
+    await expect(
+      runPrivateImageCheckpointExport({ ...params, options: { ...params.options, resume: true } }),
+    ).rejects.toThrow('Interrupted private export requires operator recovery');
+    expect(params.downloader.download).toHaveBeenCalledTimes(1);
+    expect(await readdir(join(folder, 'interrupted'))).toEqual(['.capture-in-progress']);
+  });
+  it('rejects changed window/key/source, tampering and unsafe checkpoint locations before scanning', async () => {
+    const params = checkpointFixture();
+    await runPrivateImageCheckpointExport(params);
+    params.loadSamplePage.mockClear();
+    params.loadReceiptPage.mockClear();
+    for (const change of [
+      { options: { ...params.options, resume: true, since: '2026-10-05T00:00:01.000Z' } },
+      { options: { ...params.options, resume: true }, secret: 'another-private-key-1234567890' },
+      { options: { ...params.options, resume: true }, sourceIdentitySha256: 'a'.repeat(64) },
+    ])
+      await expect(runPrivateImageCheckpointExport({ ...params, ...change })).rejects.toThrow();
+    expect(params.loadSamplePage).not.toHaveBeenCalled();
+    expect(params.loadReceiptPage).not.toHaveBeenCalled();
+    const original = await readFile(params.options.checkpointPath, 'utf8');
+    await writeFile(params.options.checkpointPath, original.replace('READY', 'SAMPLES'));
+    await expect(
+      runPrivateImageCheckpointExport({ ...params, options: { ...params.options, resume: true } }),
+    ).rejects.toThrow();
+    await writeFile(params.options.checkpointPath, original);
+    await chmod(params.options.checkpointPath, 0o644);
+    await expect(
+      runPrivateImageCheckpointExport({ ...params, options: { ...params.options, resume: true } }),
+    ).rejects.toThrow();
+    await chmod(params.options.checkpointPath, 0o600);
+    const alias = join(folder, 'checkpoint-alias');
+    await symlink(params.options.checkpointPath, alias);
+    await expect(
+      runPrivateImageCheckpointExport({
+        ...params,
+        options: { ...params.options, checkpointPath: alias, resume: true },
+      }),
+    ).rejects.toThrow();
+    await expect(
+      runPrivateImageCheckpointExport({
+        ...params,
+        options: { ...params.options, checkpointPath: join(repo, 'inside.json') },
+      }),
+    ).rejects.toThrow();
+  });
   it('locates the loaded runtime workspace without a root package manifest', async () => {
     const scripts = await workspace('RUNTIME');
     expect(await readdir(repo)).not.toContain('package.json');

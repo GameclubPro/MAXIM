@@ -58,21 +58,52 @@ Follow pages even when `items` is empty and `nextCursor` is present. Attach thes
 pages as `holdoutFrame` in the report bundle; without them, passing paired metrics
 describe only the provided reviews and independent improvement remains unproven.
 
-Collect private originals through the bounded tool, first with its default preview:
+Collect private originals through the bounded tool. Use a past fixed UTC window,
+an existing owner-private directory outside the repository, and a new checkpoint:
 
 ```bash
 npm run moderation:export-commercial-private-images --workspace @maxim/api -- \
-  --since 2026-10-05T00:00:00.000Z --until 2026-10-06T00:00:00.000Z --limit 100
+  --since 2026-10-05T00:00:00.000Z --until 2026-10-06T00:00:00.000Z --limit 100 \
+  --checkpoint /private/image-selection.checkpoint.json
 ```
 
-After reviewing the preview, add `--output-dir /private/new-image-batch --apply`.
-The output directory must be new and outside the repository. The tool uses only
-bounded read-only receipts/capture windows and the secure photo downloader, keeps
-complete albums, and verifies the sampled source revision and configured key.
-It does no native OCR, MAX send, deletion, sanction or DB write. The source/receipt
-caps, 256 MiB total byte cap and 120-second deadline can leave incomplete coverage;
-omissions and truncation remain explicit. Files are private, with separate blind
-review sources and operator provenance, including original image file hashes.
+Preview never downloads photos. With `--checkpoint`, it writes an owner-only,
+authenticated private selection state containing bounded provenance and receipt
+PKs, without raw webhook payloads, URLs or recognized text. Each run fetches at
+most 5,000 raw rows across sample and receipt pages of at most 500 rows. TEXT-only
+sample pages and noisy receipt padding advance their own indexed tuple cursors.
+Follow `resumeRequired` by repeating the same window, key, limit and checkpoint
+with `--resume`; cursors and internal IDs never enter the public aggregate.
+Default preview without a checkpoint remains bounded but cannot resume.
+
+After `sourceLookupComplete` is true, repeat with `--resume`, a new
+`--output-dir /private/new-image-batch` and `--apply`. Before downloading, the tool
+reloads matched receipts by PK and rechecks the frozen source revision, original
+creation time, author and ordered photo identities. Edits never substitute the
+latest revision. The output directory must be new and outside the actual workspace.
+The checkpoint, its parent and the output parent must be real owner-private paths;
+symlinks, shared files, changed window/key/source/layout and tampered cursors fail
+closed. A release change invalidates earlier checkpoints; retain completed private
+artifacts and start a fresh selection rather than editing their state.
+
+Repeating a completed `--resume` returns its aggregate without downloading again.
+Use `--resume --next-frame` to select the next output batch: uncaptured matched
+albums are carried first, then the sample cursor continues. Supply a new output
+directory when applying that batch. An album larger than the fixed image limit is
+an explicit terminal budget omission; it cannot block later samples. Start a new
+selection with an adequate limit to retry such albums. An interrupted `EXPORTING`
+checkpoint fails closed; an operator must inspect and retain its existing files
+before starting fresh. Preserve each batch's report and operator manifest.
+
+The tool performs no native OCR, MAX send, deletion, sanction or DB write. It keeps
+complete albums and enforces a 500-selected-source cap, 256 MiB byte cap and a
+120-second deadline shared by paging and collection. The aggregate distinguishes
+bounded continuation, source-window exhaustion, unmatched revisions and failed
+revalidation. Receipts are `PROCESSED_ONLY`; late processing, missing/expired
+receipts and sources outside the padded window remain explicit unknown coverage.
+No cursor or completion flag proves population or independent-review completeness.
+Private output keeps separate blind review sources and operator provenance with
+original image file hashes.
 
 Create a `commercial-quality-paired/v1` private bundle with `detectorSourceSha256`,
 `frozenAt`, `evaluatedAt`, `development` and `holdout`. Each export page is
