@@ -19,6 +19,7 @@ import { WebhookOutboxService } from './webhook-outbox.service';
 import { webhookPayloadChange } from './webhook-payload-write';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
+import { WEBHOOK_QUEUE_CRITICAL } from './webhook-queues';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgres = databaseUrl ? describe : describe.skip;
@@ -174,13 +175,14 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
   }
 
   async function semanticReceipt(params: {
+    id?: string;
     chatId: string;
     messageId: string;
     createdAt: Date;
     sourceAt?: Date;
     botId?: string;
   }) {
-    const id = `semantic-${randomUUID()}`;
+    const id = params.id ?? `semantic-${randomUUID()}`;
     const update = {
       updateId: id,
       botId: params.botId ?? 'preparation-bot',
@@ -229,6 +231,67 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     });
     createdClaimIds.push(claim.id);
     return claim;
+  }
+
+  async function finishedCheckpoint() {
+    const source = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'finished-checkpoint',
+      createdAt: new Date(),
+    });
+    const claim = await readyClaim(source);
+    const worker = new WebhookCanonicalExecutionService(prisma as never);
+    const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
+    expect(context).not.toBeNull();
+    await (
+      worker as unknown as {
+        markExecutionHandlerFinished: (
+          finishedContext: NonNullable<typeof context>,
+        ) => Promise<void>;
+      }
+    ).markExecutionHandlerFinished(context!);
+    const event = await prisma.webhookEvent.update({
+      where: { id: source.event.id },
+      data: {
+        status: 'FAILED',
+        nextEnqueueAt: null,
+        errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:finished-checkpoint: interrupted completion`,
+      },
+    });
+    return {
+      source,
+      event,
+      claim: await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+    };
+  }
+
+  function freshOutbox() {
+    const queue = { getJob: jest.fn().mockResolvedValue(null), add: jest.fn() };
+    const prepare = preparationService();
+    const prepareCore = jest.spyOn(
+      prepare as unknown as { prepareWebhookEventCore: (...args: unknown[]) => Promise<never> },
+      'prepareWebhookEventCore',
+    );
+    const service = new WebhookOutboxService(
+      prisma as never,
+      new ConfigService({ ENQUEUE_BATCH_SIZE: 100, ENQUEUE_CONCURRENCY: 1 }),
+      { get: () => queue } as never,
+      { resolveQueueName: async () => WEBHOOK_QUEUE_CRITICAL } as never,
+      prepare,
+      queue as never,
+      queue as never,
+      queue as never,
+      {
+        getEffectiveSnapshot: async () => undefined,
+        peekCachedSnapshot: () => ({ mode: 'normal' }),
+      } as never,
+    );
+    return {
+      service,
+      queue,
+      prepareCore,
+      poll: () => (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch(),
+    };
   }
 
   it('keeps a permanent completed semantic tombstone after owner body retention', async () => {
@@ -428,6 +491,382 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     expect((await worker.prepareExecution(next.event.id, 'preparation-bot'))?.webhookEvent.id).toBe(
       next.event.id,
     );
+  });
+
+  it.each([false, true])(
+    'recovers an interrupted finished owner through a fresh outbox poll before its earlier mirror (same time=%s)',
+    async (sameTime) => {
+      const suffix = randomUUID();
+      const chatId = `-${suffix}`;
+      const base = new Date(Math.max(Date.now(), executionCutoverAt.getTime() + 1));
+      const mirror = await semanticReceipt({
+        id: `finished-poll-${suffix}-a`,
+        chatId,
+        messageId: 'first',
+        createdAt: base,
+        botId: 'observer-bot',
+      });
+      const next = await semanticReceipt({
+        id: `finished-poll-${suffix}-b`,
+        chatId,
+        messageId: 'second',
+        createdAt: new Date(base.getTime() + (sameTime ? 0 : 1)),
+      });
+      const owner = await semanticReceipt({
+        id: `finished-poll-${suffix}-c`,
+        chatId,
+        messageId: 'first',
+        createdAt: new Date(base.getTime() + (sameTime ? 0 : 2)),
+        sourceAt: base,
+      });
+      const claim = await readyClaim(owner);
+      await readyClaim(next);
+      const worker = new WebhookCanonicalExecutionService(prisma as never);
+      const context = await worker.prepareExecution(owner.event.id, 'preparation-bot');
+      expect(context).not.toBeNull();
+      // FLAG: Persist the real handler checkpoint, then interrupt before receipt settlement.
+      // The fresh outbox below recovers saved SQL state without starting this handler again.
+      await (
+        worker as unknown as {
+          markExecutionHandlerFinished: (
+            finishedContext: NonNullable<typeof context>,
+          ) => Promise<void>;
+        }
+      ).markExecutionHandlerFinished(context!);
+      const before = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+        where: { id: claim.id },
+      });
+      await prisma.webhookEvent.update({
+        where: { id: owner.event.id },
+        data: {
+          status: 'FAILED',
+          nextEnqueueAt: null,
+          errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:finished-poll: interrupted completion`,
+        },
+      });
+      const rawBefore = (
+        await prisma.webhookEvent.findUniqueOrThrow({
+          where: { id: owner.event.id },
+        })
+      ).rawPayload;
+      const { queue, prepareCore, poll } = freshOutbox();
+      await poll();
+      await poll();
+      const after = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+        where: { id: claim.id },
+      });
+      expect(after).toMatchObject({
+        status: 'COMPLETED',
+        executionBotId: before.executionBotId,
+        businessStartedAt: before.businessStartedAt,
+        commandResult: before.commandResult,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      });
+      expect(
+        await prisma.webhookEvent.findUniqueOrThrow({ where: { id: owner.event.id } }),
+      ).toMatchObject({
+        status: 'PROCESSED',
+        rawPayload: rawBefore,
+      });
+      expect(
+        (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirror.event.id } })).status,
+      ).toBe('DUPLICATE');
+      expect(queue.add).toHaveBeenCalledTimes(1);
+      expect(queue.add).toHaveBeenCalledWith(
+        'process-webhook-event',
+        { webhookEventId: next.event.id },
+        expect.anything(),
+      );
+      expect(prepareCore).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['lease renewal', 'receipt edit'] as const)(
+    'preserves an interrupted checkpoint when a concurrent %s wins its final CAS',
+    async (changedState) => {
+      const { event, claim } = await finishedCheckpoint();
+      const competitor = createPrismaClient(databaseUrl, { max: 1 });
+      let release!: () => void;
+      let reached!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const atCas = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      const recovery = prisma
+        .$transaction(
+          async (tx) => {
+            const client = {
+              webhookExecutionClaim: {
+                updateMany: async (args: Prisma.WebhookExecutionClaimUpdateManyArgs) => {
+                  if (changedState === 'lease renewal') {
+                    reached();
+                    await waiting;
+                  }
+                  return tx.webhookExecutionClaim.updateMany(args);
+                },
+              },
+              webhookEvent: {
+                updateMany: async (args: Prisma.WebhookEventUpdateManyArgs) => {
+                  if (changedState === 'receipt edit') {
+                    reached();
+                    await waiting;
+                  }
+                  return tx.webhookEvent.updateMany(args);
+                },
+              },
+            };
+            return WebhookCanonicalExecutionService.tryRecoverFinishedExecutionWithClient(
+              client as never,
+              event,
+              claim,
+            );
+          },
+          { timeout: 5_000 },
+        )
+        .then(
+          (value) => ({ value, error: null }),
+          (error: unknown) => ({ value: null, error }),
+        );
+      try {
+        expect(
+          await Promise.race([atCas.then(() => 'at-cas'), recovery.then(() => 'settled')]),
+        ).toBe('at-cas');
+        if (changedState === 'lease renewal') {
+          await competitor.webhookExecutionClaim.update({
+            where: { id: claim.id },
+            data: {
+              leaseToken: 'concurrent-renewal',
+              leaseExpiresAt: new Date(Date.now() + 60_000),
+            },
+          });
+        } else {
+          await competitor.webhookEvent.update({
+            where: { id: event.id },
+            data: {
+              normalizedPayload: { ...(event.normalizedPayload as object), concurrentEdit: true },
+            },
+          });
+        }
+      } finally {
+        release();
+        await competitor.$disconnect();
+      }
+      const outcome = await recovery;
+      if (changedState === 'lease renewal') expect(outcome).toEqual({ value: false, error: null });
+      else expect(outcome.error).toBeInstanceOf(WebhookPreparationDeferredError);
+      const after = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+        where: { id: claim.id },
+      });
+      expect(after).toMatchObject({
+        status: 'READY',
+        businessStartedAt: claim.businessStartedAt,
+        commandResult: claim.commandResult,
+        executionBotId: claim.executionBotId,
+        completedAt: null,
+        leaseToken: changedState === 'lease renewal' ? 'concurrent-renewal' : claim.leaseToken,
+      });
+      expect(
+        await prisma.webhookEvent.findUniqueOrThrow({ where: { id: event.id } }),
+      ).toMatchObject({
+        status: event.status,
+        rawPayload: event.rawPayload,
+        errorMessage: event.errorMessage,
+      });
+    },
+  );
+
+  it('settles only the finished handler after a same-key edit and preserves ambiguous independent actions', async () => {
+    const { event, claim, source } = await finishedCheckpoint();
+    const edited = {
+      ...source.update,
+      message: { ...source.update.message, text: 'edited after handler completion' },
+    };
+    expect(buildWebhookSemanticEventKey(edited)).toBe(source.semanticKey);
+    await prisma.webhookEvent.update({
+      where: { id: event.id },
+      data: { normalizedPayload: edited, rawPayload: { originalReceipt: true } },
+    });
+    const action = await prisma.maxActionLedgerEntry.create({
+      data: {
+        jobId: `finished-ambiguous-${randomUUID()}`,
+        actionType: 'SEND',
+        chatId: source.update.message.chatId,
+        botId: 'preparation-bot',
+        status: 'AMBIGUOUS',
+        ambiguous: true,
+        attemptCount: 1,
+        dispatchToken: 'original-send-token',
+        dispatchStartedAt: claim.businessStartedAt,
+        dispatchBotId: 'preparation-bot',
+        metadata: { webhookEventId: event.id, contentRevision: 'original-content' },
+      },
+    });
+    try {
+      const { service, queue, prepareCore } = freshOutbox();
+      // FLAG: This checkpoint certifies that the original handler finished, not that edited
+      // content or an ambiguous SEND may execute. The independent action journal stays intact.
+      expect(
+        await (
+          service as unknown as {
+            recoverFinishedOrderedHeads: (
+              heads: ReadonlyMap<string, OrderedWebhookHead>,
+            ) => Promise<number>;
+          }
+        ).recoverFinishedOrderedHeads(new Map([[source.update.message.chatId, event]])),
+      ).toBe(1);
+      expect(
+        await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+      ).toMatchObject({
+        status: 'COMPLETED',
+        commandResult: claim.commandResult,
+        executionBotId: claim.executionBotId,
+        businessStartedAt: claim.businessStartedAt,
+      });
+      expect(
+        await prisma.webhookEvent.findUniqueOrThrow({ where: { id: event.id } }),
+      ).toMatchObject({
+        status: 'PROCESSED',
+        normalizedPayload: edited,
+        rawPayload: { originalReceipt: true },
+      });
+      expect(
+        await prisma.maxActionLedgerEntry.findUniqueOrThrow({ where: { id: action.id } }),
+      ).toEqual(action);
+      expect(queue.add).not.toHaveBeenCalled();
+      expect(prepareCore).not.toHaveBeenCalled();
+    } finally {
+      await prisma.maxActionLedgerEntry.delete({ where: { id: action.id } });
+    }
+  });
+
+  it.each(['missing journal', 'wrong owner', 'wrong source', 'malformed date'] as const)(
+    'keeps a live or unknown head blocked through a fresh poll with %s',
+    async (variant) => {
+      const { event, claim, source } = await finishedCheckpoint();
+      const journal = claim.commandResult as Record<string, unknown>;
+      if (variant === 'wrong source') {
+        await prisma.webhookEvent.update({
+          where: { id: event.id },
+          data: {
+            normalizedPayload: {
+              ...source.update,
+              message: { ...source.update.message, messageId: 'changed-source' },
+            },
+          },
+        });
+      } else {
+        await prisma.webhookExecutionClaim.update({
+          where: { id: claim.id },
+          data: {
+            commandResult:
+              variant === 'missing journal'
+                ? Prisma.DbNull
+                : {
+                    ...journal,
+                    ...(variant === 'wrong owner'
+                      ? { webhookEventId: 'different-owner' }
+                      : { finishedAt: 'invalid' }),
+                  },
+          },
+        });
+      }
+      const next = await semanticReceipt({
+        chatId: source.update.message.chatId,
+        messageId: 'distinct-next',
+        createdAt: new Date(),
+      });
+      await readyClaim(next);
+      const before = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+        where: { id: claim.id },
+      });
+      const { poll, queue, prepareCore } = freshOutbox();
+      await poll();
+      expect(
+        await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+      ).toEqual(before);
+      expect(
+        (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).status,
+      ).toBe('FAILED');
+      expect(queue.add).not.toHaveBeenCalled();
+      expect(prepareCore).not.toHaveBeenCalled();
+    },
+  );
+
+  it('bounds finished proof probes to current selected heads instead of retained history', async () => {
+    const suffix = randomUUID();
+    const createdAt = new Date('2020-01-01T00:00:00Z');
+    const rows = Array.from({ length: 4_250 }, (_, index) => ({
+      id: `finished-probe-${suffix}-${index}`,
+      dedupKey: `finished-probe-${suffix}-${index}`,
+      status: WebhookStatus.FAILED,
+      createdAt,
+      semanticKey: `message:message_created:probe-${suffix}-${index}:message`,
+      rawPayload: {},
+      normalizedPayload: {
+        type: 'message_created',
+        message: { chatId: `probe-${suffix}-${index}`, messageId: 'message' },
+      },
+      errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:probe: retained`,
+    }));
+    createdEventIds.push(...rows.map(({ id }) => id));
+    await prisma.webhookEvent.createMany({ data: rows });
+    await prisma.webhookExecutionClaim.createMany({
+      data: rows.slice(-250).map((row) => ({
+        kind: 'EXECUTION',
+        semanticKey: row.semanticKey,
+        webhookEventId: row.id,
+        enforced: true,
+        status: WebhookExecutionClaimStatus.READY,
+        preparedAt: createdAt,
+        businessStartedAt: createdAt,
+        executionBotId: 'preparation-bot',
+      })),
+    });
+    await prisma.$executeRaw`ANALYZE webhook_events`;
+    await prisma.$executeRaw`ANALYZE webhook_execution_claims`;
+    const heads = new Map(
+      rows.slice(-250).map((row) => [row.semanticKey, { id: row.id, createdAt }]),
+    );
+    const { service, queue } = freshOutbox();
+    const internals = service as unknown as {
+      recoverFinishedOrderedHeads: (
+        heads: ReadonlyMap<string, OrderedWebhookHead>,
+      ) => Promise<number>;
+      selectFinishedOrderedHeadOwners: (
+        headIds: readonly string[],
+      ) => Promise<Array<{ ownerId: string }>>;
+      finishedOrderedHeadOwnersQuery: (headIds: readonly string[]) => Prisma.Sql;
+    };
+    const capture = jest.spyOn(internals, 'selectFinishedOrderedHeadOwners');
+    let selectedIds!: readonly string[];
+    try {
+      expect(await internals.recoverFinishedOrderedHeads(heads)).toBe(0);
+      expect(capture).toHaveBeenCalledTimes(1);
+      selectedIds = capture.mock.calls[0]![0];
+      expect(selectedIds).toHaveLength(200);
+    } finally {
+      capture.mockRestore();
+    }
+    const query = internals.finishedOrderedHeadOwnersQuery(selectedIds);
+    const explained = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+      Prisma.sql`EXPLAIN (ANALYZE, FORMAT JSON) ${query}`,
+    );
+    const probes = collectExplainNodes(explained).filter((node) =>
+      ['webhook_events', 'webhook_execution_claims'].includes(String(node['Relation Name'])),
+    );
+    expect(probes).toHaveLength(2);
+    expect(
+      probes.every(
+        (node) => Number(node['Actual Loops']) <= 200 && Number(node['Actual Rows']) <= 1,
+      ),
+    ).toBe(true);
+    expect(probes.map((node) => node['Index Name'])).toEqual(
+      expect.arrayContaining(['webhook_events_pkey', 'webhook_execution_claims_kind_semantic_key']),
+    );
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it.each([false, true])(

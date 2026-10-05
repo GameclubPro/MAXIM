@@ -557,6 +557,7 @@ function createService(params?: {
     $executeRaw: jest.fn().mockResolvedValue(0),
     $queryRaw: jest.fn().mockImplementation(async (query: SqlQuery) => {
       const values = query.values ?? [];
+      if (extractSql(query).includes('finished_ordered_head_proofs')) return [];
       if (extractSql(query).includes('AS "commandId"')) return [];
       if (extractSql(query).includes('AS "scanned"'))
         return [{ removed: 0, scanned: 0, lastId: null, lastCreatedAt: null }];
@@ -1027,6 +1028,240 @@ function createCompletedSemanticOwnerFixture(options?: {
 }
 
 describe('WebhookOutboxService', () => {
+  function finishedHeadSchedulingFixture(count: number) {
+    const fixture = createService();
+    const owners = Array.from({ length: count }, (_, index) => ({
+      ownerId: `finished-scheduling-${index}`,
+    }));
+    const heads = new Map(
+      owners.map(({ ownerId }, index) => [
+        `finished-scheduling-chat-${index}`,
+        { id: ownerId, createdAt: new Date(1_770_000_000_000 + index) },
+      ]),
+    );
+    const internals = fixture.service as unknown as {
+      recoverFinishedOrderedHeads: (
+        heads: ReadonlyMap<string, { id: string; createdAt: Date }>,
+        concurrency: number,
+      ) => Promise<number>;
+      selectFinishedOrderedHeadOwners: (ids: readonly string[]) => Promise<typeof owners>;
+    };
+    const selector = jest
+      .spyOn(internals, 'selectFinishedOrderedHeadOwners')
+      .mockResolvedValue(owners);
+    return { ...fixture, heads, internals, selector };
+  }
+
+  it('keeps finished-owner recovery within the actual single-worker admission width', async () => {
+    const f = finishedHeadSchedulingFixture(3);
+    const monotonic = jest.spyOn(performance, 'now').mockReturnValue(0);
+    let active = 0;
+    let peak = 0;
+    f.prisma.$transaction.mockImplementation(async (operation) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        return await operation(f.prisma);
+      } finally {
+        active -= 1;
+      }
+    });
+    try {
+      await expect(f.internals.recoverFinishedOrderedHeads(f.heads, 1)).resolves.toBe(0);
+      expect(f.prisma.$transaction).toHaveBeenCalledTimes(3);
+      expect(peak).toBe(1);
+      expect(active).toBe(0);
+      expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+      expect(Object.values(f.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(0);
+    } finally {
+      monotonic.mockRestore();
+      f.selector.mockRestore();
+    }
+  });
+
+  it('stops admitting recovery after its monotonic budget and drains already started work', async () => {
+    const f = finishedHeadSchedulingFixture(5);
+    let now = 0;
+    const monotonic = jest.spyOn(performance, 'now').mockImplementation(() => now);
+    const gates = Array.from({ length: 2 }, () => {
+      let release!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { waiting, release };
+    });
+    let started = 0;
+    let active = 0;
+    f.prisma.$transaction.mockImplementation(async (operation) => {
+      const index = started++;
+      active += 1;
+      try {
+        await gates[index]?.waiting;
+        return await operation(f.prisma);
+      } finally {
+        active -= 1;
+      }
+    });
+    let settled = false;
+    const recovery = f.internals.recoverFinishedOrderedHeads(f.heads, 2).finally(() => {
+      settled = true;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(started).toBe(2);
+      expect(active).toBe(2);
+      now = 251;
+      gates[0]!.release();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(started).toBe(2);
+      expect(active).toBe(1);
+      expect(settled).toBe(false);
+      gates[1]!.release();
+      await expect(recovery).resolves.toBe(0);
+      expect(active).toBe(0);
+      expect(started).toBe(2);
+
+      // A later pass visits the unattempted owner first without retaining a waiting task.
+      now = 1_001;
+      f.prisma.webhookEvent.findUnique.mockClear();
+      f.prisma.$transaction.mockImplementation(async (operation) => operation(f.prisma));
+      await expect(f.internals.recoverFinishedOrderedHeads(f.heads, 1)).resolves.toBe(0);
+      expect(f.prisma.webhookEvent.findUnique.mock.calls[0]?.[0]?.where?.id).toBe(
+        'finished-scheduling-2',
+      );
+    } finally {
+      for (const gate of gates) gate.release();
+      await recovery;
+      monotonic.mockRestore();
+      f.selector.mockRestore();
+    }
+  });
+
+  it('charges proof selection to the same recovery budget before admitting owner transactions', async () => {
+    const f = finishedHeadSchedulingFixture(3);
+    let now = 0;
+    const monotonic = jest.spyOn(performance, 'now').mockImplementation(() => now);
+    f.selector.mockImplementation(async () => {
+      now = 251;
+      return [{ ownerId: 'finished-scheduling-0' }];
+    });
+    try {
+      await expect(f.internals.recoverFinishedOrderedHeads(f.heads, 1)).resolves.toBe(0);
+      expect(f.prisma.$transaction).not.toHaveBeenCalled();
+      expect(f.prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+      expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+    } finally {
+      monotonic.mockRestore();
+      f.selector.mockRestore();
+    }
+  });
+
+  it('paces finished proof selection and rotates its bounded head window after the interval', async () => {
+    const f = finishedHeadSchedulingFixture(250);
+    let now = 0;
+    const monotonic = jest.spyOn(performance, 'now').mockImplementation(() => now);
+    f.selector.mockResolvedValue([]);
+    try {
+      await expect(f.internals.recoverFinishedOrderedHeads(f.heads, 1)).resolves.toBe(0);
+      expect(f.selector).toHaveBeenCalledTimes(1);
+      const first = f.selector.mock.calls[0]![0];
+      expect(first).toHaveLength(200);
+      expect(first[0]).toBe('finished-scheduling-0');
+      expect(first.at(-1)).toBe('finished-scheduling-199');
+
+      now = 999;
+      await expect(f.internals.recoverFinishedOrderedHeads(f.heads, 1)).resolves.toBe(0);
+      expect(f.selector).toHaveBeenCalledTimes(1);
+      now = 1_000;
+      await expect(f.internals.recoverFinishedOrderedHeads(f.heads, 1)).resolves.toBe(0);
+      expect(f.selector).toHaveBeenCalledTimes(2);
+      const second = f.selector.mock.calls[1]![0];
+      expect(second).toHaveLength(200);
+      expect(second[0]).toBe('finished-scheduling-200');
+      expect(second[49]).toBe('finished-scheduling-249');
+      expect(second[50]).toBe('finished-scheduling-0');
+      expect(second.at(-1)).toBe('finished-scheduling-149');
+      expect(f.prisma.$transaction).not.toHaveBeenCalled();
+      expect(f.prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+    } finally {
+      monotonic.mockRestore();
+      f.selector.mockRestore();
+    }
+  });
+
+  it('continues unrelated ordered admission after proof selection fails while preserving a blocked chat', async () => {
+    const blockedChatId = 'finished-selector-blocked-chat';
+    const f = createService({
+      systemMode: 'degrade',
+      configOverrides: { ENQUEUE_CONCURRENCY: 1 },
+      findManyResult: [
+        {
+          id: 'finished-selector-fenced-owner',
+          status: WebhookStatus.FAILED,
+          enqueueAttempts: 1,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: new Date(Date.now() + 60_000),
+          errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:fixture: unknown`,
+          createdAt: new Date('2026-09-02T08:00:00.000Z'),
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: blockedChatId, messageId: 'fenced-first' },
+          },
+        },
+        {
+          id: 'finished-selector-blocked-next',
+          enqueueAttempts: 0,
+          createdAt: new Date('2026-09-02T08:00:01.000Z'),
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: blockedChatId, messageId: 'blocked-next' },
+          },
+        },
+        {
+          id: 'finished-selector-unrelated',
+          enqueueAttempts: 0,
+          createdAt: new Date('2026-09-02T08:00:02.000Z'),
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: 'finished-selector-unrelated-chat', messageId: 'unrelated' },
+          },
+        },
+      ],
+    });
+    const retained = { ...f.webhookRows[0]! };
+    const originalQuery = f.prisma.$queryRaw.getMockImplementation()!;
+    f.prisma.$queryRaw.mockImplementation(async (query) => {
+      if (extractSql(query).includes('finished_ordered_head_proofs'))
+        throw new Error('statement timeout');
+      return originalQuery(query);
+    });
+
+    await expect(
+      (f.service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch(),
+    ).resolves.toBeUndefined();
+
+    expect(
+      f.prisma.$queryRaw.mock.calls.filter(([query]) =>
+        extractSql(query).includes('finished_ordered_head_proofs'),
+      ),
+    ).toHaveLength(1);
+    expect(f.webhookRows[0]).toEqual(retained);
+    expect(f.webhookRows[1]).toMatchObject({
+      status: WebhookStatus.RECEIVED,
+      enqueueAttempts: 0,
+      queueName: null,
+    });
+    expect(f.webhookService.preparePersistedWebhookEvent.mock.calls.map(([id]) => id)).toEqual([
+      'finished-selector-unrelated',
+    ]);
+    expect(
+      Object.values(f.queues).flatMap((queue) =>
+        queue.add.mock.calls.map(([, job]) => job.webhookEventId),
+      ),
+    ).toEqual(['finished-selector-unrelated']);
+  });
+
   function capacityFixture(count: number, prepare: (id: string) => Promise<void>) {
     const fixture = createService({
       systemMode: 'degrade',
@@ -1804,9 +2039,22 @@ describe('WebhookOutboxService', () => {
 
         expect(selectionQueries().at(-1)).toContain(`"next_enqueue_at" <= ?`);
         for (const [query] of prisma.$queryRaw.mock.calls) {
-          expect(extractSql(query)).not.toContain('semantic_owner');
-          expect(extractSql(query)).not.toContain('webhook_execution_claims');
+          const sql = extractSql(query);
+          expect(sql).not.toContain('semantic_owner');
+          if (sql.includes('finished_ordered_head_proofs')) {
+            expect(sql).toContain('WHERE "id" = requested_heads."id"');
+            expect(sql).toContain('"semantic_key" = head."semantic_key"');
+            expect(sql).toContain('OFFSET 0');
+            expect((query as SqlQuery).values).toContain('evt-due-retry');
+          } else {
+            expect(sql).not.toContain('webhook_execution_claims');
+          }
         }
+        expect(
+          prisma.$queryRaw.mock.calls.filter(([query]) =>
+            extractSql(query).includes('finished_ordered_head_proofs'),
+          ),
+        ).toHaveLength(0);
         expect(Object.values(queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(1);
 
         jest.setSystemTime(new Date('2026-09-14T09:00:05.000Z'));
@@ -3457,7 +3705,12 @@ describe('WebhookOutboxService', () => {
 
     expect(startedEventIds).toHaveLength(3);
     expect(maxActivePreparations).toBe(2);
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(4);
+    expect(
+      prisma.$queryRaw.mock.calls.filter(([query]) =>
+        extractSql(query).includes('finished_ordered_head_proofs'),
+      ),
+    ).toHaveLength(1);
     const orderedHeadsQuery = prisma.$queryRaw.mock.calls
       .map(([query]) => query as SqlQuery)
       .find((query) => extractSql(query).includes('WITH requested_chats'))!;
@@ -3849,6 +4102,7 @@ describe('WebhookOutboxService', () => {
     async (casLoss) => {
       const {
         service,
+        prisma,
         queues,
         webhookService,
         mirror,
@@ -3860,7 +4114,12 @@ describe('WebhookOutboxService', () => {
 
       await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-      expect(transaction).toHaveBeenCalledTimes(2);
+      expect(transaction).toHaveBeenCalledTimes(3);
+      expect(
+        prisma.$queryRaw.mock.calls.filter(([query]) =>
+          extractSql(query).includes('finished_ordered_head_proofs'),
+        ),
+      ).toHaveLength(1);
       expect(mirror).toEqual(
         expect.objectContaining({
           status: WebhookStatus.FAILED,
