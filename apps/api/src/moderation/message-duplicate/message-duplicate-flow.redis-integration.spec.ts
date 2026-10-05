@@ -113,7 +113,12 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
   const sanctions: Array<{ messageId: string; action: string }> = [];
   const records = new Map<
     string,
-    { input: EnsureModerationDeleteIntentInput; at: Date; deletedAt: Date | null }
+    {
+      input: EnsureModerationDeleteIntentInput;
+      at: Date;
+      deletedAt: Date | null;
+      verifiedReceiptMetadata: Record<string, unknown> | null;
+    }
   >();
   const durableClaims = new Map<string, { id: string; createdAt: Date; [key: string]: unknown }>();
   const claimedMessages = new Set<string>();
@@ -146,7 +151,13 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     ensureIntentWithMessageActionClaim: jest.fn(
       async ({ intent }: { intent: EnsureModerationDeleteIntentInput }) => {
         const id = `intent:${intent.messageId}`;
-        if (!records.has(id)) records.set(id, { input: intent, at: new Date(), deletedAt: null });
+        if (!records.has(id))
+          records.set(id, {
+            input: intent,
+            at: new Date(),
+            deletedAt: null,
+            verifiedReceiptMetadata: null,
+          });
         return { claim: 'claimed', intent: { intentId: id, rollout: 'execute' } };
       },
     ),
@@ -163,7 +174,12 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     deleteMessage: jest.fn(async (_chatId: string, messageId: string) => {
       remote.delete(messageId);
       deleted.push(messageId);
-      records.get(`intent:${messageId}`)!.deletedAt = new Date();
+      const record = records.get(`intent:${messageId}`)!;
+      record.deletedAt = new Date();
+      record.verifiedReceiptMetadata = {
+        ...(record.input.event?.metadata as Record<string, unknown>),
+        moderationDeleteVerified: true,
+      };
       return { success: true };
     }),
   };
@@ -208,18 +224,34 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       }),
     },
     moderationDeleteIntent: {
-      findUnique: jest.fn(async ({ where }: { where: { id: string } }) => {
-        const record = records.get(where.id);
-        return record
-          ? {
-              chatId,
-              messageId: record.input.messageId,
-              subjectUserId: record.input.subjectUserId,
-              remoteDeleteSucceededAt: record.deletedAt,
-              reasons: [{ metadata: record.input.event?.metadata, createdAt: record.at }],
-            }
-          : null;
-      }),
+      findUnique: jest.fn(
+        async ({
+          where,
+          select,
+        }: {
+          where: { id: string };
+          select?: { reasons?: { where?: { reasonKey?: string } } };
+        }) => {
+          const record = records.get(where.id);
+          if (!record) return null;
+          const reasonKey = select?.reasons?.where?.reasonKey;
+          return {
+            chatId,
+            messageId: record.input.messageId,
+            subjectUserId: record.input.subjectUserId,
+            remoteDeleteSucceededAt: record.deletedAt,
+            reasons:
+              reasonKey && reasonKey !== record.input.reasonKey
+                ? []
+                : [
+                    {
+                      metadata: record.verifiedReceiptMetadata ?? record.input.event?.metadata,
+                      createdAt: record.at,
+                    },
+                  ],
+          };
+        },
+      ),
     },
   };
   const bots = {

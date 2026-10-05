@@ -63,6 +63,7 @@ export class MessageDuplicateEnforcementService {
     chatId: string;
     sourceCreatedAt: string;
     botId: string;
+    readSelectedBotId?: () => string | undefined;
     text: string;
     settings: ChatSettings;
     hit: DuplicateHit;
@@ -222,15 +223,25 @@ export class MessageDuplicateEnforcementService {
     this.metrics?.record('enforcement.intent_accepted');
     params.assertLease?.();
     if (full && result.intent?.intentId && result.intent.rollout === 'execute') {
-      const check = async (sanction = false): Promise<boolean> => {
+      const check = async (
+        sanction = false,
+        beforeFinalAuthority?: () => Promise<void>,
+        finalMember = false,
+      ): Promise<boolean> => {
         params.assertLease?.();
         try {
           const allowed = await this.guard.assertMessageStillActionable({
             chatId: params.chatId,
             messageId: binding.messageId,
             subjectUserId: binding.senderId,
-            botId: params.botId,
+            botId: finalMember ? (params.readSelectedBotId?.() ?? params.botId) : params.botId,
             binding,
+            beforeFinalAuthority: beforeFinalAuthority
+              ? async () => {
+                  params.assertLease?.();
+                  await beforeFinalAuthority();
+                }
+              : undefined,
             ...(sanction ? { sanctionIntentId: result.intent!.intentId! } : {}),
           });
           params.assertLease?.();
@@ -266,8 +277,8 @@ export class MessageDuplicateEnforcementService {
               ...common,
               outcome: { kind: 'decision', decision: { ...decision, metadata } },
               authorizeSanction: () => check(true),
-              beforeSanctionMutation: async () => {
-                if (!(await check(true)))
+              beforeSanctionMutation: async (beforeFinalAuthority) => {
+                if (!(await check(true, beforeFinalAuthority, true)))
                   throw new MessageDuplicateGuardRejectedError(
                     'message_duplicate_sanction_revoked',
                   );

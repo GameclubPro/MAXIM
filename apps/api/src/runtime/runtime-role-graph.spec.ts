@@ -108,6 +108,10 @@ describe('runtime role dependency graphs', () => {
           const { BackgroundRuntimeGovernorService } =
             await import('../system/background-runtime-governor.service');
           const { SystemRuntimeModule } = await import('../system/system-runtime.module');
+          const { MESSAGE_DUPLICATE_NOTICE_AUTHORITY } =
+            await import('../moderation/message-duplicate/message-duplicate-guard.contract');
+          const { MessageDuplicateDeleteGuardService } =
+            await import('../moderation/message-duplicate/message-duplicate-delete-guard.service');
           const root = await loadRuntimeRootModule(service.appRole);
           const modules = new Set<unknown>();
           const queueTokens = new Set<string>();
@@ -156,6 +160,9 @@ describe('runtime role dependency graphs', () => {
           }
           const context = await builder.compile();
           try {
+            expect(context.get(MESSAGE_DUPLICATE_NOTICE_AUTHORITY)).toBe(
+              context.get(MessageDuplicateDeleteGuardService),
+            );
             expect(context.get(QueueMetricsService)).toBeInstanceOf(QueueMetricsService);
             expect(context.get(SystemModeService)).toBeInstanceOf(SystemModeService);
             expect(context.get(BackgroundRuntimeGovernorService)).toBeInstanceOf(

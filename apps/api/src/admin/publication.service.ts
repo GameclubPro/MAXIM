@@ -94,6 +94,7 @@ import {
 import {
   buildUnsafePublicationExecutionDeliveryWhere,
   cancelUnstartedPublicationExecutionBroadcasts,
+  reviseUnstartedPublicationExecutionBroadcasts,
   throwPublicationExecutionRequiresManualReview,
 } from './publication-execution-safety';
 import {
@@ -1050,58 +1051,24 @@ export class PublicationService {
             }
           }
         } else if (request.content) {
-          await tx.publicationOccurrence.updateMany({
-            where: {
-              publicationId,
-              ...(existing.schedule
-                ? {
-                    scheduleId: existing.schedule.id,
-                    scheduleRevision: existing.schedule.revision,
-                  }
-                : {}),
-              status: PublicationOccurrenceStatus.SCHEDULED,
-            },
-            data: { contentRevisionId },
+          const scheduledOccurrenceWhere = {
+            publicationId,
+            ...(existing.schedule
+              ? {
+                  scheduleId: existing.schedule.id,
+                  scheduleRevision: existing.schedule.revision,
+                }
+              : {}),
+            status: PublicationOccurrenceStatus.SCHEDULED,
+          };
+          const broadcasts = await tx.managedBroadcast.findMany({
+            where: { publicationOccurrence: { is: scheduledOccurrenceWhere } },
+            select: { id: true, lockedAt: true, lockToken: true },
           });
-          await tx.managedBroadcastDelivery.updateMany({
-            where: {
-              publicationOccurrence: {
-                is: {
-                  publicationId,
-                  ...(existing.schedule
-                    ? {
-                        scheduleId: existing.schedule.id,
-                        scheduleRevision: existing.schedule.revision,
-                      }
-                    : {}),
-                  status: PublicationOccurrenceStatus.SCHEDULED,
-                },
-              },
-              status: ManagedBroadcastDeliveryStatus.PENDING,
-            },
-            data: {
-              contentRevisionId,
-              ...publicationPostActionsInitialData(request.content.postPublish, new Date()),
-            },
-          });
-          await tx.managedBroadcast.updateMany({
-            where: {
-              publicationOccurrence: {
-                is: {
-                  publicationId,
-                  ...(existing.schedule
-                    ? {
-                        scheduleId: existing.schedule.id,
-                        scheduleRevision: existing.schedule.revision,
-                      }
-                    : {}),
-                  status: PublicationOccurrenceStatus.SCHEDULED,
-                },
-              },
-              status: ManagedBroadcastStatus.ACTIVE,
-              sentCount: 0,
-            },
-            data: {
+          await reviseUnstartedPublicationExecutionBroadcasts(
+            tx,
+            broadcasts,
+            {
               text: request.content.text,
               textFormat: request.content.textFormat,
               buttons: request.content.buttons.map(({ text, url }) => ({
@@ -1120,6 +1087,23 @@ export class PublicationService {
               mediaPayload: Prisma.DbNull,
               mediaMimeType: '',
               mediaFileName: '',
+            },
+            'Публикация уже начала отправку. Проверьте доставки отдельно.',
+          );
+          await tx.publicationOccurrence.updateMany({
+            where: scheduledOccurrenceWhere,
+            data: { contentRevisionId },
+          });
+          await tx.managedBroadcastDelivery.updateMany({
+            where: {
+              publicationOccurrence: {
+                is: scheduledOccurrenceWhere,
+              },
+              status: ManagedBroadcastDeliveryStatus.PENDING,
+            },
+            data: {
+              contentRevisionId,
+              ...publicationPostActionsInitialData(request.content.postPublish, new Date()),
             },
           });
         }

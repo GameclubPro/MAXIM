@@ -12,6 +12,7 @@ export YC_CLI_INITIALIZATION_SILENCE="${YC_CLI_INITIALIZATION_SILENCE:-true}"
 ENV_FILE="${MAXIM_VPS_ENV_FILE:-$ROOT_DIR/.env.vps}"
 DATABASE_BREAK_GLASS_FROM_CALLER="${MAXIM_VPS_DATABASE_BREAK_GLASS:-}"
 DATABASE_BREAK_GLASS_REASON_FROM_CALLER="${MAXIM_VPS_DATABASE_BREAK_GLASS_REASON:-}"
+DEPLOY_DISK_MIN_FREE_BYTES_FROM_CALLER="${MAXIM_DEPLOY_DISK_MIN_FREE_BYTES:-}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -456,6 +457,19 @@ prepend_post_release_reclaim_env() {
   esac
 }
 
+prepend_deploy_disk_floor_env() {
+  local command_var="$1"
+  local -n command_ref="$command_var"
+  local minimum="$DEPLOY_DISK_MIN_FREE_BYTES_FROM_CALLER"
+  [[ -n "$minimum" ]] || return 0
+  if [[ ! "$minimum" =~ ^[0-9]+$ ]]; then
+    echo "MAXIM_DEPLOY_DISK_MIN_FREE_BYTES must be a non-negative integer." >&2
+    return 2
+  fi
+  # FLAG: The remote capacity guard owns the component floor; callers may only raise it.
+  command_ref="MAXIM_DEPLOY_DISK_MIN_FREE_BYTES=$(printf '%q' "$minimum") $command_ref"
+}
+
 rollback_entrypoint_bootstrap_source() {
   cat <<'BOOTSTRAP'
 set -euo pipefail
@@ -757,6 +771,7 @@ deploy_main() {
   esac
   prepend_webhook_rollout_recovery_env remote_command
   prepend_post_release_reclaim_env remote_command
+  prepend_deploy_disk_floor_env remote_command
   maxim_prepend_git_ssh_transport remote_command "${MAXIM_DEPLOY_GIT_SSH_PORT:-default}"
   remote_exec "$remote_command"
 }

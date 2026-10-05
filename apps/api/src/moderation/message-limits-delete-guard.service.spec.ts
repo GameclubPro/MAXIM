@@ -1,5 +1,10 @@
 import { ConfigService } from '@nestjs/config';
-import { MessageLimitsDeleteGuardService } from './message-limits-delete-guard.service';
+import { stopWordsPolicySchema } from '@maxim/contracts/settings';
+import {
+  MessageLimitsDeleteGuardService,
+  bindMessageLimitEvidence,
+  fingerprintModerationSettings,
+} from './message-limits-delete-guard.service';
 
 const input = {
   chatId: '-123',
@@ -50,6 +55,182 @@ function fixture() {
 }
 
 describe('current message limit deletion authorization', () => {
+  it('normalizes full settings and a semantic DTO and ignores unrelated UI changes', () => {
+    const subset = {
+      maxMessageLengthEnabled: true,
+      maxMessageLength: 10,
+      messageLimitsWarnEnabled: true,
+    };
+    const full = {
+      ...subset,
+      id: 'row',
+      updatedAt: new Date(),
+      greetingEnabled: true,
+      publisherAutoReplyEnabled: true,
+    };
+    expect(fingerprintModerationSettings(full, 'MESSAGE_TOO_LONG_DELETE')).toBe(
+      fingerprintModerationSettings(subset, 'MESSAGE_TOO_LONG'),
+    );
+    expect(
+      fingerprintModerationSettings(
+        { ...full, greetingEnabled: false, updatedAt: new Date(0) },
+        'MESSAGE_TOO_LONG',
+      ),
+    ).toBe(fingerprintModerationSettings(full, 'MESSAGE_TOO_LONG'));
+    expect(
+      fingerprintModerationSettings({ ...full, maxMessageLength: 20 }, 'MESSAGE_TOO_LONG'),
+    ).not.toBe(fingerprintModerationSettings(full, 'MESSAGE_TOO_LONG'));
+  });
+
+  it.each(['MESSAGE_BLOCKED_WORD', 'MESSAGE_BLOCKED_DOMAIN'])(
+    'binds %s sanctions to the settings actually used by legacy and configured policies',
+    (rule) => {
+      const legacy = {
+        stopWordsPolicy: null,
+        stopWordsRevision: 0,
+        messageLimitsBlockedWords: ['casino'],
+        messageLimitsBlockedDomains: ['spam.test'],
+        textFiltersWarnEnabled: true,
+        textFiltersMuteEnabled: true,
+        textFiltersBanEnabled: true,
+        textFiltersMuteDurationHours: 1,
+        messageLimitsWarnEnabled: true,
+        messageLimitsMuteEnabled: true,
+        messageLimitsBanEnabled: true,
+        messageLimitsMuteDurationHours: 1,
+      };
+      const original = fingerprintModerationSettings(legacy, rule);
+      for (const patch of [
+        { messageLimitsWarnEnabled: false },
+        { messageLimitsMuteEnabled: false },
+        { messageLimitsBanEnabled: false },
+        { messageLimitsMuteDurationHours: 2 },
+      ])
+        expect(fingerprintModerationSettings({ ...legacy, ...patch }, rule)).not.toBe(original);
+      for (const patch of [
+        { textFiltersWarnEnabled: false },
+        { textFiltersMuteEnabled: false },
+        { textFiltersBanEnabled: false },
+        { textFiltersMuteDurationHours: 2 },
+      ])
+        expect(fingerprintModerationSettings({ ...legacy, ...patch }, rule)).toBe(original);
+      const stopWordsPolicy = stopWordsPolicySchema.parse({
+        enabled: true,
+        rules: [{ id: 'casino', kind: 'WORD', value: 'casino' }],
+        sanctions: { warnEnabled: true },
+      });
+      const configured = { ...legacy, stopWordsPolicy };
+      expect(
+        fingerprintModerationSettings({ ...configured, textFiltersWarnEnabled: false }, rule),
+      ).toBe(fingerprintModerationSettings(configured, rule));
+      expect(
+        fingerprintModerationSettings({ ...configured, messageLimitsBanEnabled: false }, rule),
+      ).toBe(fingerprintModerationSettings(configured, rule));
+      expect(
+        fingerprintModerationSettings(
+          {
+            ...configured,
+            stopWordsPolicy: {
+              ...stopWordsPolicy,
+              sanctions: { ...stopWordsPolicy.sanctions, warnEnabled: false },
+            },
+          },
+          rule,
+        ),
+      ).not.toBe(fingerprintModerationSettings(configured, rule));
+    },
+  );
+
+  it.each(['MESSAGE_RATE_LIMIT', 'MESSAGE_COUNT_LIMIT', 'PHOTO_RATE_LIMIT', 'STICKER_RATE_LIMIT'])(
+    'requires unchanged bounded evidence for %s without counting a retry',
+    async (rule) => {
+      const s = fixture();
+      Object.assign(s.settings, {
+        antiSpamEnabled: true,
+        messageCountLimitEnabled: true,
+        messageCountLimitMessages: 2,
+        messageCountLimitWindowHours: 1,
+        photoMessageCooldownEnabled: true,
+        photoMessageCooldownHours: 1,
+        stickerMessageCooldownEnabled: true,
+        stickerMessageCooldownMinutes: 5,
+      });
+      if (rule === 'PHOTO_RATE_LIMIT')
+        Object.assign(s.message.body, {
+          attachments: [{ type: 'image', payload: { photo_id: 'p1' } }],
+        });
+      if (rule === 'STICKER_RATE_LIMIT')
+        Object.assign(s.message.body, {
+          attachments: [{ type: 'sticker', payload: { code: 's1' } }],
+        });
+      const metadata = bindMessageLimitEvidence(s.settings as never, Date.now(), rule);
+      const reasons = [{ reasonKey: 'rate', ruleCode: `${rule}_DELETE`, metadata }];
+      await expect(s.service.authorize({ ...input, reasons })).resolves.toEqual({
+        reasonKeys: ['rate'],
+        deadlineAtMs: metadata.messageLimitDeadlineAtMs,
+        reasonDeadlines: [{ reasonKey: 'rate', deadlineAtMs: metadata.messageLimitDeadlineAtMs }],
+      });
+      await expect(s.service.authorize({ ...input, reasons })).resolves.toEqual({
+        reasonKeys: ['rate'],
+        deadlineAtMs: metadata.messageLimitDeadlineAtMs,
+        reasonDeadlines: [{ reasonKey: 'rate', deadlineAtMs: metadata.messageLimitDeadlineAtMs }],
+      });
+      Object.assign(
+        s.settings,
+        rule === 'MESSAGE_RATE_LIMIT'
+          ? { antiSpamEnabled: false }
+          : rule === 'MESSAGE_COUNT_LIMIT'
+            ? { messageCountLimitMessages: 5 }
+            : rule === 'PHOTO_RATE_LIMIT'
+              ? { photoMessageCooldownEnabled: false }
+              : { stickerMessageCooldownEnabled: false },
+      );
+      await expect(s.service.authorize({ ...input, reasons })).rejects.toMatchObject({
+        code: 'message_limits_delete_no_longer_authorized',
+      });
+    },
+  );
+
+  it('retains a rate reason deadline when current content independently authorizes deletion', async () => {
+    const s = fixture();
+    Object.assign(s.settings, { antiSpamEnabled: true });
+    const metadata = bindMessageLimitEvidence(
+      s.settings as never,
+      Date.now(),
+      'MESSAGE_RATE_LIMIT',
+    );
+    const reasons = [
+      ...input.reasons,
+      { ruleCode: 'MESSAGE_RATE_LIMIT_DELETE', reasonKey: 'rate', metadata },
+    ];
+    await expect(s.service.authorize({ ...input, reasons })).resolves.toEqual({
+      reasonKeys: ['length', 'rate'],
+      reasonDeadlines: [{ reasonKey: 'rate', deadlineAtMs: metadata.messageLimitDeadlineAtMs }],
+    });
+    s.settings.maxMessageLengthEnabled = false;
+    await expect(s.service.authorize({ ...input, reasons })).resolves.toEqual({
+      reasonKeys: ['rate'],
+      deadlineAtMs: metadata.messageLimitDeadlineAtMs,
+      reasonDeadlines: [{ reasonKey: 'rate', deadlineAtMs: metadata.messageLimitDeadlineAtMs }],
+    });
+  });
+
+  it('rejects historical frequency reasons without evidence and expired evidence', async () => {
+    const s = fixture();
+    Object.assign(s.settings, { antiSpamEnabled: true });
+    const reason = { ruleCode: 'MESSAGE_RATE_LIMIT_DELETE', reasonKey: 'burst' };
+    await expect(s.service.authorize({ ...input, reasons: [reason] })).rejects.toMatchObject({
+      code: 'message_limits_delete_no_longer_authorized',
+    });
+    const metadata = bindMessageLimitEvidence(
+      s.settings as never,
+      Date.now() - 5 * 60_000,
+      'MESSAGE_RATE_LIMIT',
+    );
+    await expect(
+      s.service.authorize({ ...input, reasons: [{ ...reason, metadata }] }),
+    ).rejects.toMatchObject({ code: 'message_limits_delete_no_longer_authorized' });
+  });
   it.each([1, 4, 9, 13])('uses the selected executor for %s receiving bots', async (count) => {
     const s = fixture();
     for (let receiver = 0; receiver < count; receiver++) {

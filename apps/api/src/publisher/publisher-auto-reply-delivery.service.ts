@@ -29,6 +29,7 @@ const DELIVERY_LEASE_MS = 2 * 60_000;
 const UPLOAD_LEASE_MS = 2 * 60_000;
 const UPLOAD_BOT_MARKER = '__maximUploadBotId';
 const FAILURE_MESSAGE_MAX_LENGTH = 500;
+const CONFIRMED_RECEIPT_WRITE_ATTEMPTS = 3;
 
 type DeliveryAttempt = {
   final: boolean;
@@ -235,8 +236,10 @@ export class PublisherAutoReplyDeliveryService {
       { buttonsPerRow: 1 },
     );
     let fenceActive = false;
+    let dispatchStartedAt: Date | null = null;
     let refreshedInvalidAttachments = false;
     for (;;) {
+      let confirmedRemoteMessageId: string | null = null;
       try {
         const sent = await this.maxClient.sendMessageImmediateWithId(
           delivery.chatId,
@@ -260,7 +263,7 @@ export class PublisherAutoReplyDeliveryService {
                 throw new PublisherAutoReplyEpochChangedError('Publisher route changed');
               }
               await this.assertCurrentSource(delivery);
-              await this.recordSendFence(delivery, lockToken);
+              dispatchStartedAt = await this.recordSendFence(delivery, lockToken);
               fenceActive = true;
             },
             debugContext: {
@@ -275,10 +278,16 @@ export class PublisherAutoReplyDeliveryService {
             botId: delivery.publisherBotId,
           },
         );
-        await this.completeSent(delivery, lockToken, sent.messageId);
+        confirmedRemoteMessageId = sent.messageId;
+        if (!dispatchStartedAt)
+          throw new Error('Confirmed auto-reply has no captured dispatch fence');
+        await this.completeSent(delivery, dispatchStartedAt, sent.messageId);
         await this.dispatchHealth.recordSendSuccess(delivery.chatId);
         return;
       } catch (error: unknown) {
+        // FLAG: A known remote receipt may retry only SQL persistence. Never downgrade it
+        // to an unknown MAX outcome or re-enter the remote send/attachment retry paths.
+        if (confirmedRemoteMessageId) throw error;
         if (error instanceof PublisherAutoReplyCooldownError) {
           await this.cancelClaim(delivery.id, lockToken, 'COOLDOWN_ACTIVE');
           return;
@@ -452,8 +461,8 @@ export class PublisherAutoReplyDeliveryService {
     }
   }
 
-  private async recordSendFence(delivery: LeasedDelivery, lockToken: string): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
+  private async recordSendFence(delivery: LeasedDelivery, lockToken: string): Promise<Date> {
+    return this.prisma.$transaction(async (tx) => {
       const sourceAdmitted = await this.sourceFence.lockAdmitted(tx, {
         publisherBotId: delivery.publisherBotId,
         chatId: delivery.chatId,
@@ -520,6 +529,7 @@ export class PublisherAutoReplyDeliveryService {
         contentRevision: { ...current.contentRevision, assets: delivery.contentRevision.assets },
       });
       await this.claimCooldown(tx, current);
+      const dispatchStartedAt = new Date();
       const started = await tx.publisherAutoReplyDelivery.updateMany({
         where: {
           id: delivery.id,
@@ -527,11 +537,12 @@ export class PublisherAutoReplyDeliveryService {
           lockToken,
           dispatchStartedAt: null,
         },
-        data: { dispatchStartedAt: new Date() },
+        data: { dispatchStartedAt },
       });
       if (started.count !== 1) {
         throw new PublisherAutoReplyClaimLostError();
       }
+      return dispatchStartedAt;
     });
   }
 
@@ -754,47 +765,58 @@ export class PublisherAutoReplyDeliveryService {
 
   private async completeSent(
     delivery: LeasedDelivery,
-    lockToken: string,
+    dispatchStartedAt: Date,
     remoteMessageId: string,
   ): Promise<void> {
-    const completed = await this.prisma.publisherAutoReplyDelivery.updateMany({
-      where: {
-        id: delivery.id,
-        status: PublisherAutoReplyDeliveryStatus.SENDING,
-        lockToken,
-        dispatchStartedAt: { not: null },
-      },
-      data: {
-        status: PublisherAutoReplyDeliveryStatus.SENT,
-        remoteMessageId,
-        lockedAt: null,
-        lockToken: null,
-        failureCode: null,
-        failureMessage: null,
-      },
-    });
-    if (completed.count === 1) {
-      return;
-    }
-    const recovered = await this.prisma.publisherAutoReplyDelivery.updateMany({
-      where: {
-        id: delivery.id,
-        publisherBotId: delivery.publisherBotId,
-        status: PublisherAutoReplyDeliveryStatus.SENDING,
-        dispatchStartedAt: { not: null },
-        remoteMessageId: null,
-      },
-      data: {
-        status: PublisherAutoReplyDeliveryStatus.SENT,
-        remoteMessageId,
-        lockedAt: null,
-        lockToken: null,
-        failureCode: null,
-        failureMessage: null,
-      },
-    });
-    if (recovered.count !== 1) {
-      throw new Error('Confirmed Publisher auto-reply message id could not be persisted');
+    for (let attempt = 0; attempt < CONFIRMED_RECEIPT_WRITE_ATTEMPTS; attempt++) {
+      try {
+        const completed = await this.prisma.publisherAutoReplyDelivery.updateMany({
+          where: {
+            id: delivery.id,
+            chatId: delivery.chatId,
+            ruleId: delivery.ruleId,
+            contentRevisionId: delivery.contentRevisionId,
+            publisherBotId: delivery.publisherBotId,
+            sourceMessageId: delivery.sourceMessageId,
+            dispatchStartedAt,
+            OR: [
+              {
+                status: {
+                  in: [
+                    PublisherAutoReplyDeliveryStatus.SENDING,
+                    PublisherAutoReplyDeliveryStatus.AMBIGUOUS,
+                  ],
+                },
+                remoteMessageId: null,
+              },
+              {
+                status: {
+                  in: [
+                    PublisherAutoReplyDeliveryStatus.SENDING,
+                    PublisherAutoReplyDeliveryStatus.AMBIGUOUS,
+                    PublisherAutoReplyDeliveryStatus.SENT,
+                  ],
+                },
+                remoteMessageId,
+              },
+            ],
+          },
+          data: {
+            status: PublisherAutoReplyDeliveryStatus.SENT,
+            remoteMessageId,
+            lockedAt: null,
+            lockToken: null,
+            failureCode: null,
+            failureMessage: null,
+          },
+        });
+        if (completed.count !== 1) {
+          throw new Error('Confirmed Publisher auto-reply message id could not be persisted');
+        }
+        return;
+      } catch (error: unknown) {
+        if (attempt + 1 === CONFIRMED_RECEIPT_WRITE_ATTEMPTS) throw error;
+      }
     }
   }
 

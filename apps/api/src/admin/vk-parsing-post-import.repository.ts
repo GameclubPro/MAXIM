@@ -66,6 +66,10 @@ export type VkMissingPostSpotCheck = (
   posts: Array<{ vkOwnerId: number; vkPostId: number }>,
 ) => Promise<Set<string> | null>;
 
+export type VkMissingPostsLeaseRunner = <T>(
+  operation: (database: VkParsingPostImportDatabase) => Promise<T>,
+) => Promise<T>;
+
 export type VkParsingPostImportDatabase = Pick<
   Prisma.TransactionClient,
   'vkParsingPost' | 'vkBotReview' | '$executeRaw'
@@ -193,6 +197,7 @@ export class VkParsingPostImportRepository {
     params: {
       missingConfirmationThreshold: number;
       spotCheckMissingPosts: VkMissingPostSpotCheck;
+      runWithLease: VkMissingPostsLeaseRunner;
     },
   ): Promise<void> {
     if (posts.length === 0) {
@@ -211,26 +216,28 @@ export class VkParsingPostImportRepository {
       return;
     }
 
-    const candidates = await this.prisma.vkParsingPost.findMany({
-      where: {
-        sourceId: source.id,
-        ownerProfile: source.ownerProfile,
-        ownerBotId: source.ownerBotId,
-        vkPublishedAt: { gte: oldestFetchedAt },
-        vkPostId: { notIn: posts.map((post) => post.vkPostId) },
-        status: {
-          in: VK_POST_MISSING_RECONCILIATION_STATUSES,
+    const candidates = await params.runWithLease((database) =>
+      database.vkParsingPost.findMany({
+        where: {
+          sourceId: source.id,
+          ownerProfile: source.ownerProfile,
+          ownerBotId: source.ownerBotId,
+          vkPublishedAt: { gte: oldestFetchedAt },
+          vkPostId: { notIn: posts.map((post) => post.vkPostId) },
+          status: {
+            in: VK_POST_MISSING_RECONCILIATION_STATUSES,
+          },
         },
-      },
-      select: {
-        id: true,
-        vkOwnerId: true,
-        vkPostId: true,
-        missingSeenCount: true,
-      },
-      orderBy: [{ lastAvailabilityCheckedAt: { sort: 'asc', nulls: 'first' } }, { id: 'asc' }],
-      take: 100,
-    });
+        select: {
+          id: true,
+          vkOwnerId: true,
+          vkPostId: true,
+          missingSeenCount: true,
+        },
+        orderBy: [{ lastAvailabilityCheckedAt: { sort: 'asc', nulls: 'first' } }, { id: 'asc' }],
+        take: 100,
+      }),
+    );
     if (candidates.length === 0) {
       return;
     }
@@ -239,19 +246,21 @@ export class VkParsingPostImportRepository {
       (post) => post.missingSeenCount + 1 < params.missingConfirmationThreshold,
     );
     if (belowThreshold.length > 0) {
-      await this.prisma.vkParsingPost.updateMany({
-        where: {
-          id: { in: belowThreshold.map((post) => post.id) },
-          ownerProfile: source.ownerProfile,
-          ownerBotId: source.ownerBotId,
-          status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
-        },
-        data: {
-          missingSeenCount: { increment: 1 },
-          missingSinceAt: seenAt,
-          lastAvailabilityCheckedAt: seenAt,
-        },
-      });
+      await params.runWithLease((database) =>
+        database.vkParsingPost.updateMany({
+          where: {
+            id: { in: belowThreshold.map((post) => post.id) },
+            ownerProfile: source.ownerProfile,
+            ownerBotId: source.ownerBotId,
+            status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
+          },
+          data: {
+            missingSeenCount: { increment: 1 },
+            missingSinceAt: seenAt,
+            lastAvailabilityCheckedAt: seenAt,
+          },
+        }),
+      );
     }
 
     const thresholdCandidates = candidates.filter(
@@ -264,19 +273,21 @@ export class VkParsingPostImportRepository {
     const foundPostKeys = await params.spotCheckMissingPosts(thresholdCandidates);
 
     if (foundPostKeys === null) {
-      await this.prisma.vkParsingPost.updateMany({
-        where: {
-          id: { in: thresholdCandidates.map((post) => post.id) },
-          ownerProfile: source.ownerProfile,
-          ownerBotId: source.ownerBotId,
-          status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
-        },
-        data: {
-          missingSeenCount: { increment: 1 },
-          missingSinceAt: seenAt,
-          lastAvailabilityCheckedAt: seenAt,
-        },
-      });
+      await params.runWithLease((database) =>
+        database.vkParsingPost.updateMany({
+          where: {
+            id: { in: thresholdCandidates.map((post) => post.id) },
+            ownerProfile: source.ownerProfile,
+            ownerBotId: source.ownerBotId,
+            status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
+          },
+          data: {
+            missingSeenCount: { increment: 1 },
+            missingSinceAt: seenAt,
+            lastAvailabilityCheckedAt: seenAt,
+          },
+        }),
+      );
       return;
     }
 
@@ -292,75 +303,79 @@ export class VkParsingPostImportRepository {
     }
 
     if (foundIds.length > 0) {
-      await this.prisma.vkParsingPost.updateMany({
-        where: {
-          id: { in: foundIds },
-          ownerProfile: source.ownerProfile,
-          ownerBotId: source.ownerBotId,
-          status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
-        },
-        data: {
-          missingSeenCount: 0,
-          missingSinceAt: null,
-          lastAvailabilityCheckedAt: seenAt,
-        },
-      });
+      await params.runWithLease((database) =>
+        database.vkParsingPost.updateMany({
+          where: {
+            id: { in: foundIds },
+            ownerProfile: source.ownerProfile,
+            ownerBotId: source.ownerBotId,
+            status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
+          },
+          data: {
+            missingSeenCount: 0,
+            missingSinceAt: null,
+            lastAvailabilityCheckedAt: seenAt,
+          },
+        }),
+      );
     }
 
     if (missingIds.length > 0) {
-      await this.prisma.vkParsingPost.updateMany({
-        where: {
-          id: { in: missingIds },
-          ownerProfile: source.ownerProfile,
-          ownerBotId: source.ownerBotId,
-          status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
-          publishLockedAt: null,
-          rollbackQueuedAt: null,
-          rollbackLockedAt: null,
-          rollbackIdempotencyKey: null,
-          AND: [
-            {
-              OR: [
-                { lastError: null },
-                {
-                  AND: [
-                    {
-                      NOT: {
-                        lastError: { startsWith: VK_MAX_SEND_AMBIGUOUS_ERROR_PREFIX },
-                      },
-                    },
-                    {
-                      NOT: {
-                        lastError: {
-                          startsWith: VK_MAX_SEND_CONFIRMED_PERSISTENCE_ERROR_PREFIX,
+      await params.runWithLease((database) =>
+        database.vkParsingPost.updateMany({
+          where: {
+            id: { in: missingIds },
+            ownerProfile: source.ownerProfile,
+            ownerBotId: source.ownerBotId,
+            status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
+            publishLockedAt: null,
+            rollbackQueuedAt: null,
+            rollbackLockedAt: null,
+            rollbackIdempotencyKey: null,
+            AND: [
+              {
+                OR: [
+                  { lastError: null },
+                  {
+                    AND: [
+                      {
+                        NOT: {
+                          lastError: { startsWith: VK_MAX_SEND_AMBIGUOUS_ERROR_PREFIX },
                         },
                       },
-                    },
-                  ],
-                },
-              ],
-            },
-            {
-              NOT: {
-                publishIdempotencyKey: { not: null },
-                publishAttemptCount: { gt: 0 },
+                      {
+                        NOT: {
+                          lastError: {
+                            startsWith: VK_MAX_SEND_CONFIRMED_PERSISTENCE_ERROR_PREFIX,
+                          },
+                        },
+                      },
+                    ],
+                  },
+                ],
               },
-            },
-          ],
-        },
-        data: {
-          status: VK_POST_STATUS_UNAVAILABLE,
-          missingSeenCount: { increment: 1 },
-          missingSinceAt: seenAt,
-          lastAvailabilityCheckedAt: seenAt,
-          unavailableAt: seenAt,
-          publishQueuedAt: null,
-          publishLockedAt: null,
-          publishIdempotencyKey: null,
-          publishReason: null,
-          publishScheduleFingerprint: null,
-        },
-      });
+              {
+                NOT: {
+                  publishIdempotencyKey: { not: null },
+                  publishAttemptCount: { gt: 0 },
+                },
+              },
+            ],
+          },
+          data: {
+            status: VK_POST_STATUS_UNAVAILABLE,
+            missingSeenCount: { increment: 1 },
+            missingSinceAt: seenAt,
+            lastAvailabilityCheckedAt: seenAt,
+            unavailableAt: seenAt,
+            publishQueuedAt: null,
+            publishLockedAt: null,
+            publishIdempotencyKey: null,
+            publishReason: null,
+            publishScheduleFingerprint: null,
+          },
+        }),
+      );
     }
   }
 

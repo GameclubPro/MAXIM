@@ -6,6 +6,7 @@ import {
   type GroupCommandResult,
 } from '../common/group-command-authority.service';
 import * as channelDialogValues from './admin-channel-dialog-values';
+import { assertManualGroupCommandSuccessNoticeAuthority } from './admin-manual-group-command-notice-authority';
 import { mergeManagedBotChatCatalogRows } from './admin-managed-bot-catalog-values';
 import { createManagedEntityHeader } from './admin-managed-entity-header';
 import {
@@ -1042,6 +1043,8 @@ export class AdminService implements OnModuleDestroy {
             select: { operation: true },
             take: 3,
           }),
+        assertManualGroupCommandSuccessNoticeAuthority: (input) =>
+          assertManualGroupCommandSuccessNoticeAuthority(owner.prisma, owner.maxClient, input),
         sendMessage: (chatId, text, options, dispatchOptions) =>
           owner.maxClient.sendMessage(chatId, text, options, dispatchOptions),
       }),

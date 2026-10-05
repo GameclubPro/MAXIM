@@ -117,4 +117,26 @@ describe('Publisher video upload admission and ownership', () => {
       asset: completed.returnvalue.asset,
     });
   });
+
+  it('rearms a retained failed completion without replacing its actor-owned source session', async () => {
+    const { service, queue, jobs } = fixture();
+    await service.create('actor', request);
+    const source = jobs.get(service.jobId('actor', request.requestId));
+    source.getState.mockResolvedValue('completed');
+    source.returnvalue = {
+      kind: 'session',
+      token: 'private-token',
+      url: 'https://test.okcdn.ru/upload',
+    };
+    await service.complete('actor', request.requestId);
+    const completion = jobs.get(service.jobId('actor', request.requestId, 'complete'));
+    completion.getState.mockResolvedValue('failed');
+    completion.retry = jest.fn().mockImplementation(async () => {
+      completion.getState.mockResolvedValue('waiting');
+    });
+    expect((await service.complete('actor', request.requestId)).status).toBe('PROCESSING');
+    expect(completion.retry).toHaveBeenCalledWith('failed', { resetAttemptsMade: true });
+    expect(jobs.size).toBe(2);
+    expect(queue.add.mock.calls.filter(([name]) => name === 'create')).toHaveLength(1);
+  });
 });

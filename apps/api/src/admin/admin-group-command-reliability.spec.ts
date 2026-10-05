@@ -195,7 +195,7 @@ describe('AdminService group command reliability', () => {
     );
   });
 
-  it('reports a definitive attempted member failure instead of calling it uncertain', async () => {
+  it('persists a definitive attempted failure privately without a group reply', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       deleteMessage: jest.fn(),
@@ -236,21 +236,23 @@ describe('AdminService group command reliability', () => {
       deleteBotMessagesDelayMinutes: 3,
     });
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('MAX отклонил бан'),
-      expect.anything(),
-      expect.anything(),
-    );
-    expect(maxClient.sendMessage).not.toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('итог не удалось надёжно подтвердить'),
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(
+      await prisma.manualModerationFanoutLedgerEntry.findMany({
+        where: { operation: 'COMMAND_NOTICE_OUTCOME' },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          outcome: 'FAILURE',
+          suppressed: true,
+          resultText: expect.stringContaining('MAX отклонил бан'),
+        }),
+      }),
+    ]);
   });
 
-  it('keeps one public outcome when a terminal failure is replayed as success', async () => {
+  it('keeps one silent durable outcome when a terminal failure is replayed as success', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
@@ -298,13 +300,21 @@ describe('AdminService group command reliability', () => {
     await service.processManualModerationFanoutJob(job);
 
     expect(service.applyManualSystemBan).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('Участник уже вышел из чата'),
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(
+      await prisma.manualModerationFanoutLedgerEntry.findMany({
+        where: { operation: 'COMMAND_NOTICE_OUTCOME' },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        status: 'SUCCEEDED',
+        metadata: expect.objectContaining({
+          outcome: 'FAILURE',
+          suppressed: true,
+          resultText: expect.stringContaining('Участник уже вышел из чата'),
+        }),
+      }),
+    ]);
   });
 
   it('retries a pre-dispatch command notice failure without replaying two notices', async () => {
@@ -385,6 +395,14 @@ describe('AdminService group command reliability', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    // The source operation authority is covered separately; this case isolates an
+    // unknown SEND outcome after the real shared notice journal starts dispatch.
+    jest
+      .spyOn(
+        (service as any).manualModerationRuntime.context,
+        'assertManualGroupCommandSuccessNoticeAuthority',
+      )
+      .mockResolvedValue(undefined);
     jest.spyOn(service, 'applyManualSystemBan').mockResolvedValue({
       ok: true,
       action: 'BAN',

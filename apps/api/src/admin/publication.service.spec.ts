@@ -236,7 +236,7 @@ function createPublicationUpdateTransaction() {
       createMany: jest.fn(),
     },
     managedBroadcast: {
-      findMany: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     managedBroadcastDelivery: {

@@ -36,6 +36,21 @@ import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { classifyDuplicateEventTime } from './duplicate-enforcement-safety';
 import { CommercialDeleteGuardRejectedError } from './commercial/commercial-delete-guard.service';
 import { buildNightModeTransitionScheduleFingerprint } from './night-mode-transition-generation.util';
+import { ConfigService } from '@nestjs/config';
+import {
+  CLOSED_CHAT_DELETE_RULE_CODES,
+  ClosedChatDeleteGuardService,
+} from './closed-chat-delete-guard.service';
+import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+
+// FLAG: These legacy transport mocks verify templates and hot-path orchestration only.
+// Native multibot/queue fixtures and the real notice-guard suites own v3 receipt authority.
+jest.mock('./message-duplicate/message-duplicate-notice-proof', () => ({
+  ...jest.requireActual('./message-duplicate/message-duplicate-notice-proof'),
+  buildMessageDuplicateNoticeContext: jest.fn(async () => ({
+    orchestrationFixture: 'duplicate-notice-handoff',
+  })),
+}));
 
 const NIGHT_MODE_V4_JOB_METADATA = {
   transitionRuntimeVersion: 4 as const,
@@ -76,6 +91,121 @@ function installCommercialDeleteGuard(service: ModerationService) {
     return remoteDelete(...args);
   });
   return { guard, remoteDelete };
+}
+
+function installClosedChatDeleteFixture(
+  service: ModerationService,
+  settings: ReturnType<typeof createSettings>,
+  update: MaxUpdate,
+) {
+  const message = update.message!;
+  const dependencies = service as unknown as {
+    prisma: { moderationEvent: { create: jest.Mock } };
+    maxClient: { deleteMessage: jest.Mock };
+  };
+  const access = jest.fn(async (chatId: string, userId: string) =>
+    chatId === message.chatId && userId === message.senderId
+      ? { userId, isAdmin: false, isOwner: false }
+      : null,
+  );
+  const source = jest.fn(async (chatId: string, messageId: string) =>
+    chatId === message.chatId && messageId === message.messageId
+      ? {
+          sender: { user_id: message.senderId },
+          recipient: { chat_id: message.chatId, chat_type: 'chat' },
+          timestamp: Date.parse(message.createdAt),
+          body: { mid: message.messageId, text: message.text },
+        }
+      : null,
+  );
+  const guard = new ClosedChatDeleteGuardService(
+    {
+      chatSettings: {
+        findUnique: jest.fn(async ({ where }: { where: { chatId: string } }) =>
+          where.chatId === message.chatId
+            ? {
+                ...settings,
+                chat: { entityType: ChatEntityType.CHAT, admins: [], chatControlOrderAt: null },
+              }
+            : null,
+        ),
+      },
+    } as never,
+    { getChatMemberAccess: access, getExactMessageRow: source } as never,
+    { isKnownBotUserId: () => false } as never,
+    { consumeForMessage: async () => 'not_granted' } as never,
+    new ConfigService(),
+  );
+  const remoteDelete = jest.fn(dependencies.maxClient.deleteMessage.getMockImplementation());
+  dependencies.maxClient.deleteMessage.mockImplementation(async (...args: unknown[]) => {
+    await (
+      args[2] as { beforeImmediateDeleteMutation?: () => Promise<void> }
+    )?.beforeImmediateDeleteMutation?.();
+    return remoteDelete(...args);
+  });
+  // FLAG: Closed-chat fixtures use the real current-session/source guard at transport.
+  // The intent adapter delegates authorization to that guard before recording success.
+  Object.assign(service, {
+    moderationDeleteIntentService: {
+      ensureIntent: jest.fn(),
+      getRolloutForInput: () => 'execute',
+      ensureAndAttempt: async (input: EnsureModerationDeleteIntentInput) => {
+        if (!input.ruleCode || !CLOSED_CHAT_DELETE_RULE_CODES.has(input.ruleCode))
+          throw new Error('Closed-chat fixture received an unrelated rule');
+        const botId = 'closed-chat-fixture-bot';
+        await dependencies.maxClient.deleteMessage(input.chatId, input.messageId, {
+          botId,
+          immediate: true,
+          trafficClass: 'critical',
+          actionHealthLane: 'critical',
+          sourceTag: 'moderation_delete',
+          timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+          ignoreFailureMetricStatuses: [403, 404],
+          beforeImmediateDeleteMutation: async () => {
+            const permit = await guard.authorize({
+              chatId: input.chatId,
+              messageId: input.messageId,
+              subjectUserId: input.subjectUserId ?? null,
+              sourceMessageAt: input.sourceMessageAt ? new Date(input.sourceMessageAt) : null,
+              botId,
+              reasons: [
+                {
+                  ruleCode: input.ruleCode!,
+                  reasonKey: input.reasonKey,
+                  metadata: input.event?.metadata,
+                },
+              ],
+            });
+            if (typeof permit !== 'object' || !permit.reasonKeys.includes(input.reasonKey))
+              throw new Error('Closed-chat fixture source is not authorized');
+          },
+        });
+        await dependencies.prisma.moderationEvent.create({
+          data: {
+            chatId: input.chatId,
+            userId: input.subjectUserId,
+            messageId: input.messageId,
+            eventType: EventType.MESSAGE,
+            ruleCode: input.ruleCode,
+            action: SanctionAction.DELETE_MESSAGE,
+            maskedExcerpt: input.event?.maskedExcerpt,
+            score: input.event?.score,
+            operator: Operator.BOT,
+            metadata: input.event?.metadata,
+          },
+        });
+        return {
+          kind: 'confirmed',
+          confirmed: true,
+          intentId: 'closed-chat-fixture-intent',
+          status: 'SUCCEEDED',
+          botId,
+          verifiedReasonKeys: [input.reasonKey],
+        };
+      },
+    },
+  });
+  return { access, source, remoteDelete };
 }
 
 jest
@@ -199,19 +329,20 @@ describe('ModerationService', () => {
     const startMinutes = (currentMinutes + 23 * 60) % (24 * 60);
     const endMinutes = (currentMinutes + 60) % (24 * 60);
 
+    const settings = createSettings({
+      nightModeEnabled: true,
+      nightModeStartTimeMinutes: startMinutes,
+      nightModeEndTimeMinutes: endMinutes,
+      nightModeTimezone: 'Europe/Moscow',
+      nightModeBotMessageEnabled: true,
+      nightModeBotMessageText: '',
+    });
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({
-            nightModeEnabled: true,
-            nightModeStartTimeMinutes: startMinutes,
-            nightModeEndTimeMinutes: endMinutes,
-            nightModeTimezone: 'Europe/Moscow',
-            nightModeBotMessageEnabled: true,
-            nightModeBotMessageText: '',
-          }),
+          settings,
           domains: [],
           admins: [],
         }),
@@ -262,7 +393,21 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
-    await service.handleUpdate(createUpdate());
+    const update = createUpdate();
+    const closed = installClosedChatDeleteFixture(service, settings, update);
+    await service.handleUpdate(update);
+
+    expect(closed.remoteDelete).toHaveBeenCalledTimes(1);
+    expect(closed.access).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+      expect.objectContaining({ botId: 'closed-chat-fixture-bot', bypassCache: true }),
+    );
+    expect(closed.source).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-1',
+      expect.objectContaining({ botId: 'closed-chat-fixture-bot', bypassCache: true }),
+    );
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
@@ -1552,18 +1697,19 @@ describe('ModerationService', () => {
   });
 
   it('deletes messages during manual group close silently', async () => {
+    const settings = createSettings({
+      nightModeForceCloseEnabled: true,
+      nightModeForceCloseForever: false,
+      nightModeForceCloseDays: 0,
+      nightModeForceCloseHours: 4,
+      nightModeForceCloseUntil: new Date(Date.now() + 4 * 60 * 60 * 1_000).toISOString(),
+    });
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({
-            nightModeForceCloseEnabled: true,
-            nightModeForceCloseForever: false,
-            nightModeForceCloseDays: 0,
-            nightModeForceCloseHours: 4,
-            nightModeForceCloseUntil: new Date(Date.now() + 4 * 60 * 60 * 1_000).toISOString(),
-          }),
+          settings,
           domains: [],
           admins: [],
         }),
@@ -1614,7 +1760,21 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
-    await service.handleUpdate(createUpdate());
+    const update = createUpdate();
+    const closed = installClosedChatDeleteFixture(service, settings, update);
+    await service.handleUpdate(update);
+
+    expect(closed.remoteDelete).toHaveBeenCalledTimes(1);
+    expect(closed.access).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+      expect.objectContaining({ botId: 'closed-chat-fixture-bot', bypassCache: true }),
+    );
+    expect(closed.source).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-1',
+      expect.objectContaining({ botId: 'closed-chat-fixture-bot', bypassCache: true }),
+    );
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
@@ -1631,15 +1791,16 @@ describe('ModerationService', () => {
   });
 
   it('keeps manual group close deletion on the hot path when local allowlist is stale', async () => {
+    const settings = createSettings({
+      nightModeForceCloseEnabled: true,
+      nightModeForceCloseForever: true,
+    });
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({
-            nightModeForceCloseEnabled: true,
-            nightModeForceCloseForever: true,
-          }),
+          settings,
           domains: [],
           admins: [{ userId: 'admin-1' }],
         }),
@@ -1691,7 +1852,21 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
-    await service.handleUpdate(createUpdate());
+    const update = createUpdate();
+    const closed = installClosedChatDeleteFixture(service, settings, update);
+    await service.handleUpdate(update);
+
+    expect(closed.remoteDelete).toHaveBeenCalledTimes(1);
+    expect(closed.access).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+      expect.objectContaining({ botId: 'closed-chat-fixture-bot', bypassCache: true }),
+    );
+    expect(closed.source).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-1',
+      expect.objectContaining({ botId: 'closed-chat-fixture-bot', bypassCache: true }),
+    );
 
     expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
@@ -1699,15 +1874,16 @@ describe('ModerationService', () => {
   });
 
   it('keeps manual close deletion in degrade mode without live admin lookup', async () => {
+    const settings = createSettings({
+      nightModeForceCloseEnabled: true,
+      nightModeForceCloseForever: true,
+    });
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({
-            nightModeForceCloseEnabled: true,
-            nightModeForceCloseForever: true,
-          }),
+          settings,
           domains: [],
           admins: [],
         }),
@@ -1768,7 +1944,21 @@ describe('ModerationService', () => {
       systemModeService as never,
     );
 
-    await service.handleUpdate(createUpdate());
+    const update = createUpdate();
+    const closed = installClosedChatDeleteFixture(service, settings, update);
+    await service.handleUpdate(update);
+
+    expect(closed.remoteDelete).toHaveBeenCalledTimes(1);
+    expect(closed.access).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+      expect.objectContaining({ botId: 'closed-chat-fixture-bot', bypassCache: true }),
+    );
+    expect(closed.source).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-1',
+      expect.objectContaining({ botId: 'closed-chat-fixture-bot', bypassCache: true }),
+    );
 
     expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
@@ -1951,15 +2141,16 @@ describe('ModerationService', () => {
   });
 
   it('deletes during manual close without waiting for remote admin access and schedules roster refresh', async () => {
+    const settings = createSettings({
+      nightModeForceCloseEnabled: true,
+      nightModeForceCloseForever: true,
+    });
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({
-            nightModeForceCloseEnabled: true,
-            nightModeForceCloseForever: true,
-          }),
+          settings,
           domains: [],
           admins: [{ userId: 'existing-admin' }],
         }),
@@ -2016,7 +2207,21 @@ describe('ModerationService', () => {
       maxChatAdminRosterSyncService as never,
     );
 
-    await service.handleUpdate(createUpdate());
+    const update = createUpdate();
+    const closed = installClosedChatDeleteFixture(service, settings, update);
+    await service.handleUpdate(update);
+
+    expect(closed.remoteDelete).toHaveBeenCalledTimes(1);
+    expect(closed.access).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+      expect.objectContaining({ botId: 'closed-chat-fixture-bot', bypassCache: true }),
+    );
+    expect(closed.source).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-1',
+      expect.objectContaining({ botId: 'closed-chat-fixture-bot', bypassCache: true }),
+    );
 
     expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
@@ -6993,7 +7198,6 @@ describe('ModerationService', () => {
         'remote-notice',
       ],
       expectedNotice: permanentBanNotice('Алексей'),
-      expectedGuardChecks: 10,
     },
     {
       actionLabel: 'MUTE',
@@ -7002,22 +7206,17 @@ describe('ModerationService', () => {
       settings: { profanityMuteEnabled: true },
       expectedEffects: ['fence-prepare', 'event', 'cache', 'fence-commit', 'remote-notice'],
       expectedNotice: muteNotice('Алексей', '6ч'),
-      expectedGuardChecks: 7,
     },
   ])(
     'keeps the automatic $actionLabel transition inside the injected sanction-state lock',
-    async ({
-      action,
-      violationCount,
-      settings,
-      expectedEffects,
-      expectedNotice,
-      expectedGuardChecks,
-    }) => {
+    async ({ action, violationCount, settings, expectedEffects, expectedNotice }) => {
       let lockActive = false;
+      let ownershipCheckedSinceEffect = false;
       const transitionEffects: Array<{ name: string; lockActive: boolean }> = [];
       const cacheLockStates: boolean[] = [];
       const recordTransitionEffect = (name: string) => {
+        expect(ownershipCheckedSinceEffect).toBe(true);
+        ownershipCheckedSinceEffect = false;
         transitionEffects.push({ name, lockActive });
       };
       const prisma = {
@@ -7087,6 +7286,7 @@ describe('ModerationService', () => {
       const leaseGuard = {
         assertOwned: jest.fn(async () => {
           expect(lockActive).toBe(true);
+          ownershipCheckedSinceEffect = true;
         }),
       };
       const sanctionStateLock = {
@@ -7143,7 +7343,6 @@ describe('ModerationService', () => {
       expect(transitionEffects).toEqual(
         expectedEffects.map((name) => ({ name, lockActive: true })),
       );
-      expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(expectedGuardChecks);
       expect(sanctionStateFence.prepare).toHaveBeenCalledWith({
         chatId: 'chat-1',
         userId: 'user-1',
@@ -7301,7 +7500,13 @@ describe('ModerationService', () => {
   });
 
   it('keeps the automatic BAN fence invalidating after MAX succeeds without an event', async () => {
-    const leaseGuard = { assertOwned: jest.fn().mockResolvedValue(undefined) };
+    let remoteBanConfirmed = false;
+    const ownershipPhases: Array<'before-confirmation' | 'after-confirmation'> = [];
+    const leaseGuard = {
+      assertOwned: jest.fn(async () => {
+        ownershipPhases.push(remoteBanConfirmed ? 'after-confirmation' : 'before-confirmation');
+      }),
+    };
     const sanctionStateLock = {
       runExclusive: jest.fn(
         async (_subject: unknown, operation: (guard: typeof leaseGuard) => Promise<unknown>) =>
@@ -7325,7 +7530,9 @@ describe('ModerationService', () => {
       abort: jest.fn(),
     };
     const maxClient = {
-      banMember: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn(async () => {
+        remoteBanConfirmed = true;
+      }),
       sendMessage: jest.fn().mockResolvedValue({ messageId: 'ban-notice-1' }),
     };
     const service = createModerationServiceWithSanctionStateLock({
@@ -7359,7 +7566,8 @@ describe('ModerationService', () => {
     expect(sanctionStateFence.commit).not.toHaveBeenCalled();
     expect(sanctionStateFence.abort).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(9);
+    expect(ownershipPhases).toContain('before-confirmation');
+    expect(ownershipPhases).toContain('after-confirmation');
   });
 
   it.each([
@@ -7529,14 +7737,11 @@ describe('ModerationService', () => {
       chatId: 'chat-1',
       userId: 'user-1',
     });
+    let remoteBanConfirmed = false;
     const leaseGuard = {
-      assertOwned: jest
-        .fn()
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValueOnce(leaseLostError),
+      assertOwned: jest.fn(async () => {
+        if (remoteBanConfirmed) throw leaseLostError;
+      }),
     };
     const sanctionStateLock = {
       runExclusive: jest.fn(
@@ -7561,7 +7766,9 @@ describe('ModerationService', () => {
       abort: jest.fn(),
     };
     const maxClient = {
-      banMember: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn(async () => {
+        remoteBanConfirmed = true;
+      }),
       sendMessage: jest.fn(),
     };
     const persistModerationEvent = jest.fn();

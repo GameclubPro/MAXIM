@@ -72,6 +72,11 @@ test('requires the message-v3 reader, durable admission and last action permit o
 });
 
 const mutations = [
+  [
+    'guard',
+    'Date.now() >= Math.min(binding.authorization!.deadlineAtMs, binding.original.expiresAtMs)',
+    'false',
+  ],
   ['state', 'z.literal(3)', 'z.literal(4)'],
   ['state', 'text-fixed-window-safe-text-v12', 'text-fixed-window-safe-text-v11'],
   ['state', 'text-fixed-window-v12', 'text-fixed-window-v5'],
@@ -635,10 +640,27 @@ test('rejects a guard that drops only the final authorization check after extern
   const end = source.indexOf('\n  private ', start + 1);
   assert.ok(start >= 0 && end > start);
   const check = source.slice(start, end);
-  const updated = check.replace(
-    /await this\.assertAuthorization\(params\.chatId, binding\);\s*return 'allowed';/u,
-    "return 'allowed';",
-  );
+  const finalAuthorization = 'await this.assertAuthorization(params.chatId, binding);';
+  const finalIndex = check.lastIndexOf(finalAuthorization);
+  assert.ok(finalIndex >= 0);
+  const updated = check.slice(0, finalIndex) + check.slice(finalIndex + finalAuthorization.length);
+  assert.notEqual(updated, check);
+  const result = probe(t, { guard: source.slice(0, start) + updated + source.slice(end) });
+  assert.notEqual(result.status, 0);
+});
+
+test('rejects an extra awaited read after the final duplicate authority permit', (t) => {
+  const source = readFileSync(resolve(root, paths.guard), 'utf8');
+  const start = source.indexOf('private async checkMessage(');
+  const end = source.indexOf('\n  private ', start + 1);
+  assert.ok(start >= 0 && end > start);
+  const check = source.slice(start, end);
+  const finalAuthorization = 'await this.assertAuthorization(params.chatId, binding);';
+  const finalIndex = check.lastIndexOf(finalAuthorization);
+  assert.ok(finalIndex >= 0);
+  const boundary = finalIndex + finalAuthorization.length;
+  const updated =
+    check.slice(0, boundary) + '\n    await unsafeReadAfterPermit();' + check.slice(boundary);
   assert.notEqual(updated, check);
   const result = probe(t, { guard: source.slice(0, start) + updated + source.slice(end) });
   assert.notEqual(result.status, 0);
@@ -668,8 +690,8 @@ for (const [name, method, before, after] of [
   [
     'qualification result',
     'private async authorizeGuardedUserDeleteReasons(',
-    /\)\) === 'allowed';/u,
-    ")) === 'denied';",
+    /(messageDuplicateVerified\s*=\s*\(await check\([\s\S]*?\)\)) === 'allowed';/u,
+    "$1 === 'denied';",
   ],
   [
     'returned qualification',

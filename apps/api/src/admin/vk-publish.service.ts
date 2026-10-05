@@ -1,3 +1,4 @@
+import { lockVkSyncLease, VkSyncLeaseLostError, type VkSyncLease } from './vk-sync-lease';
 import {
   publishVkParsingPostRequestSchema,
   publishVkParsingPostResultSchema,
@@ -2301,6 +2302,7 @@ export class VkPublishService {
   async enqueueAutoPublishImportedPosts(
     chatId: string,
     posts: VkParsingPostWithSource[],
+    syncLease?: VkSyncLease,
   ): Promise<void> {
     if (posts.length === 0) {
       return;
@@ -2318,6 +2320,17 @@ export class VkPublishService {
       )
     ) {
       throw new Error('VK autopublish candidates cross an ownership scope');
+    }
+    if (syncLease) {
+      if (
+        syncLease.chatId !== chatId ||
+        !this.isExactOwnerScope(syncLease, ownerScope) ||
+        posts.some((post) => post.sourceId !== syncLease.id)
+      ) {
+        throw new Error('VK sync enqueue lease crosses the candidate scope');
+      }
+      await this.enqueueAutoPublishImportedPostsUnderLease(posts, syncLease);
+      return;
     }
     const settings = await this.getSettingsForChat(chatId, ownerScope);
 
@@ -2390,6 +2403,95 @@ export class VkPublishService {
         );
       }
     }
+  }
+
+  private async enqueueAutoPublishImportedPostsUnderLease(
+    posts: VkParsingPostWithSource[],
+    lease: VkSyncLease,
+  ): Promise<void> {
+    for (const candidate of this.sortAutoPublishCandidates(posts)) {
+      try {
+        const prepared = await this.runWithVkSyncEnqueueLease(lease, async (tx) => {
+          const post = await tx.vkParsingPost.findFirst({
+            where: {
+              id: candidate.id,
+              sourceId: lease.id,
+              chatId: lease.chatId,
+              ownerProfile: lease.ownerProfile,
+              ownerBotId: lease.ownerBotId,
+            },
+            include: { source: true },
+          });
+          if (!post || post.status !== VK_POST_STATUS_NEW) return null;
+          const settings = await this.getSettingsForChat(
+            lease.chatId,
+            this.ownerScopeFromRow(post),
+            tx,
+          );
+          if (
+            !settings.autoPublishEnabled ||
+            !settings.autoPublishEnabledAt ||
+            !this.canAutoPublishPost(post, settings) ||
+            isVkManualReviewMode(post.source.publishMode)
+          ) {
+            await this.clearPendingAutoPublishPost(post, tx);
+            return null;
+          }
+          const scheduleFingerprint = buildVkAutoPublishScheduleFingerprint(settings, post.source);
+          const marked = await tx.vkParsingPost.updateMany({
+            where: {
+              id: post.id,
+              sourceId: lease.id,
+              chatId: lease.chatId,
+              ownerProfile: lease.ownerProfile,
+              ownerBotId: lease.ownerBotId,
+              status: VK_POST_STATUS_NEW,
+              publishQueuedAt: null,
+              publishScheduledAt: null,
+              publishLockedAt: null,
+              publishAttemptCount: 0,
+              publishIdempotencyKey: null,
+              publishReason: null,
+              publishCancelledAt: null,
+              publishScheduleFingerprint: post.publishScheduleFingerprint,
+            },
+            data: { publishScheduleFingerprint: scheduleFingerprint },
+          });
+          return marked.count === 1 ? { post, settings, scheduleFingerprint } : null;
+        });
+        if (!prepared) continue;
+        if (await this.pauseSourceAutoPublishForCircuit(prepared.post.source, lease)) continue;
+        const scheduledAt = await this.resolveInitialAutoPublishAt(
+          prepared.post,
+          prepared.settings,
+          prepared.scheduleFingerprint,
+        );
+        await this.enqueuePostPublish(prepared.post, 'autopublish', scheduledAt, {
+          scheduleFingerprint: prepared.scheduleFingerprint,
+          syncLease: lease,
+        });
+      } catch (error) {
+        if (error instanceof VkSyncLeaseLostError) throw error;
+        this.logger.warn(
+          { postId: candidate.id, sourceId: lease.id, err: error },
+          'VK sync post autopublish enqueue failed',
+        );
+      }
+    }
+  }
+
+  private runWithVkSyncEnqueueLease<T>(
+    lease: VkSyncLease,
+    operation: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      const chats = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM chats WHERE id = ${lease.chatId} FOR UPDATE
+      `;
+      if (chats.length !== 1) throw new VkSyncLeaseLostError();
+      await lockVkSyncLease(tx, lease);
+      return operation(tx);
+    });
   }
 
   async clearQueuedAutoPublishForChat(
@@ -3134,6 +3236,7 @@ export class VkPublishService {
       storedDraft?: VkParsingStoredDraft;
       scheduleFingerprint?: string;
       botReviewId?: string;
+      syncLease?: VkSyncLease;
     } = {},
   ): Promise<number> {
     this.assertNoAmbiguousMaxSendQuarantine(post);
@@ -3142,6 +3245,41 @@ export class VkPublishService {
     const now = new Date();
     const expectedRoute = this.readPersistedIntentRoute(post);
     const queued = await this.prisma.$transaction(async (tx) => {
+      if (options.syncLease) {
+        const lease = options.syncLease;
+        const chats = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM chats WHERE id = ${lease.chatId} FOR UPDATE
+        `;
+        if (chats.length !== 1) throw new VkSyncLeaseLostError();
+        await lockVkSyncLease(tx, lease);
+        const current = await tx.vkParsingPost.findFirst({
+          where: {
+            id: post.id,
+            sourceId: lease.id,
+            chatId: lease.chatId,
+            ownerProfile: lease.ownerProfile,
+            ownerBotId: lease.ownerBotId,
+          },
+          include: { source: true },
+        });
+        const settings = await this.getSettingsForChat(
+          lease.chatId,
+          this.ownerScopeFromRow(lease),
+          tx,
+        );
+        if (
+          !current ||
+          current.contentHash !== post.contentHash ||
+          !settings.autoPublishEnabled ||
+          !settings.autoPublishEnabledAt ||
+          !this.canAutoPublishPost(current, settings) ||
+          isVkManualReviewMode(current.source.publishMode) ||
+          buildVkAutoPublishScheduleFingerprint(settings, current.source) !==
+            options.scheduleFingerprint
+        ) {
+          return { count: 0 };
+        }
+      }
       if (options.botReviewId) {
         await tx.$queryRaw`SELECT id FROM chats WHERE id = ${post.chatId} FOR UPDATE`;
         const review = await tx.vkBotReview.findFirst({
@@ -3718,6 +3856,7 @@ export class VkPublishService {
 
   private async pauseSourceAutoPublishForCircuit(
     source: VkParsingPostWithSource['source'],
+    syncLease?: VkSyncLease,
   ): Promise<boolean> {
     const now = new Date();
     const ownerScope = this.ownerScopeFromRow(source);
@@ -3731,6 +3870,7 @@ export class VkPublishService {
       if (lockedChats.length !== 1) {
         return false;
       }
+      if (syncLease) await lockVkSyncLease(tx, syncLease);
       const currentSource = await tx.vkParsingSource.findFirst({
         where: { id: source.id, chatId: source.chatId, ...ownerScope },
       });
@@ -5055,11 +5195,12 @@ export class VkPublishService {
       VkParsingPostWithSource,
       'id' | 'chatId' | 'ownerProfile' | 'ownerBotId' | 'publishScheduleFingerprint'
     >,
+    database: Pick<Prisma.TransactionClient, 'vkParsingPost'> = this.prisma,
   ): Promise<boolean> {
     if (!post.publishScheduleFingerprint) {
       return false;
     }
-    const cleared = await this.prisma.vkParsingPost.updateMany({
+    const cleared = await database.vkParsingPost.updateMany({
       where: {
         id: post.id,
         chatId: post.chatId,
@@ -6223,8 +6364,9 @@ export class VkPublishService {
   private async getSettingsForChat(
     chatId: string,
     ownerScope: VkParsingOwnerScope,
+    database: Pick<Prisma.TransactionClient, 'vkParsingSettings'> = this.prisma,
   ): Promise<VkParsingSettingsLike> {
-    const settings = await this.prisma.vkParsingSettings.findUnique({
+    const settings = await database.vkParsingSettings.findUnique({
       where: {
         chatId_ownerProfile_ownerBotId: {
           chatId,

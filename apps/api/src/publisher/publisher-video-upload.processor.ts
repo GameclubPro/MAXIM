@@ -14,6 +14,12 @@ import {
 } from './publisher-video-upload.queue';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 import { PublisherDispatchHealthService } from './publisher-dispatch-health.service';
+import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
+import { assertPublisherIdentityOrDelay } from './publisher-identity-attestation-job-guard';
+import {
+  assertPublisherDispatchAllowedOrDelay,
+  assertPublisherRuntimeEnabledOrDelay,
+} from './publisher-dispatch-job-guard';
 
 @Processor(PUBLISHER_VIDEO_UPLOAD_QUEUE, { concurrency: 2 })
 export class PublisherVideoUploadProcessor extends WorkerHost {
@@ -23,11 +29,15 @@ export class PublisherVideoUploadProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly boundary: PublisherRuntimeBoundaryService,
     private readonly health: PublisherDispatchHealthService,
+    private readonly identity: PublisherIdentityAttestationService,
   ) {
     super();
   }
 
-  async process(job: Job<PublisherVideoUploadJob>): Promise<PublisherVideoUploadResult> {
+  async process(
+    job: Job<PublisherVideoUploadJob>,
+    token?: string,
+  ): Promise<PublisherVideoUploadResult> {
     const data = job.data;
     if (
       !roleRunsPublisher(getAppRole()) ||
@@ -39,8 +49,9 @@ export class PublisherVideoUploadProcessor extends WorkerHost {
     if (Date.now() - data.requestedAtMs > PUBLISHER_VIDEO_UPLOAD_TTL_MS) {
       throw new UnrecoverableError('Publisher video upload expired');
     }
-    this.boundary.assertDispatchEnabled();
-    await this.health.assertDispatchAllowed();
+    await assertPublisherRuntimeEnabledOrDelay(this.boundary, job, token);
+    await assertPublisherIdentityOrDelay(this.identity, job, token);
+    await assertPublisherDispatchAllowedOrDelay(this.health, job, token);
     const options = {
       botId: data.publisherBotId,
       trafficClass: 'interactive' as const,

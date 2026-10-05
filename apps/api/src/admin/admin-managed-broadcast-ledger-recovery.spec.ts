@@ -233,6 +233,7 @@ describe('managed broadcast ledger rollout recovery', () => {
               lockedAt,
               lockToken: 'stale-publik-lock',
               lastErrorCode: options.lastErrorCode,
+              contentRevisionId: 'revision-7',
             },
           ]),
           updateMany,

@@ -1,6 +1,26 @@
-import { createDuplicateDeleteAuthorizationGuard } from './duplicate-execution-guards';
+import {
+  createDuplicateDeleteAuthorizationGuard,
+  createDuplicateMemberMutationGuard,
+} from './duplicate-execution-guards';
 
 describe('duplicate delete authorization', () => {
+  it('runs the final lease and route within member authority before its final permit', async () => {
+    const order: string[] = [];
+    const lease = {
+      assertOwned: async () => {
+        order.push('lease');
+      },
+    };
+    const guard = createDuplicateMemberMutationGuard(lease, async (beforeFinalAuthority) => {
+      order.push('external-author');
+      await beforeFinalAuthority?.();
+      order.push('final-permit');
+    })!;
+    await guard(async () => {
+      order.push('route');
+    });
+    expect(order).toEqual(['lease', 'external-author', 'lease', 'route', 'final-permit']);
+  });
   it('distinguishes a transient verification failure from a confirmed rejection', async () => {
     const failure = new Error('temporary MAX failure');
     const authorizeDelete = jest.fn().mockRejectedValueOnce(failure).mockResolvedValue(true);

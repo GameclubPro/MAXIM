@@ -5588,15 +5588,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(assertBotCanManageMembers).not.toHaveBeenCalled();
     expect(assertBotCanDeleteMessages).not.toHaveBeenCalled();
     expect(resolveManualFanoutTargetState).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('включена блокировка в 16232 чатах по решению разработчика бота'),
-      { textFormat: 'markdown' },
-      expect.objectContaining({
-        immediate: true,
-        botId: 'command-bot',
-      }),
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('uses a delete-capable bot for developer super ban command cleanup after action reroute', async () => {
@@ -5710,15 +5702,7 @@ describe('AdminService.applyManualSystemBan', () => {
       trafficClass: 'interactive',
       botId: 'bot-6',
     });
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('включена блокировка в 7 чатах по решению разработчика бота'),
-      { textFormat: 'markdown' },
-      expect.objectContaining({
-        immediate: true,
-        botId: 'bot-5',
-      }),
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('records source-chat no-rights fallback without inspecting managed-chat fanout', async () => {
@@ -5832,18 +5816,10 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(assertBotCanManageMembers).not.toHaveBeenCalled();
     expect(resolveManualFanoutTargetState).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('включена блокировка в 3 чатах по решению разработчика бота'),
-      { textFormat: 'markdown' },
-      expect.objectContaining({
-        immediate: true,
-        botId: 'command-bot',
-      }),
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('uses the sum of active bot memberships for developer super ban coverage notice', async () => {
+  it('uses the sum of active bot memberships for developer super ban coverage without an unbound group notice', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
       .mockResolvedValueOnce([])
@@ -5913,15 +5889,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(activeMembershipCountSqlText).toContain('JOIN chats');
     expect(activeMembershipCountSqlText).not.toContain('managed_bot_chat_catalog');
     expect(activeMembershipCountSqlText).not.toContain('bot_id');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('включена блокировка в 12 чатах по решению разработчика бота'),
-      { textFormat: 'markdown' },
-      expect.objectContaining({
-        immediate: true,
-        botId: 'command-bot',
-      }),
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('processes queued primary group ban commands outside the webhook hot path', async () => {
@@ -6014,6 +5982,7 @@ describe('AdminService.applyManualSystemBan', () => {
         sourceTag: 'moderation_notice',
         autoDeleteDelayMs: 3 * 60 * 1000,
         beforeImmediateSendMutation: expect.any(Function),
+        ledgerContext: { moderationNoticeEnvelope: { version: 1 } },
         botId: 'bot-2',
         idempotencyKey: expect.stringContaining('COMMAND_NOTICE_OUTCOME'),
       },
@@ -6400,7 +6369,7 @@ describe('AdminService.applyManualSystemBan', () => {
     );
   });
 
-  it('uses the routed send bot for queued group command failure notices', async () => {
+  it('stores queued group command failures without a public notice', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       deleteMessage: jest.fn(),
@@ -6456,21 +6425,27 @@ describe('AdminService.applyManualSystemBan', () => {
       deleteBotMessagesDelayMinutes: 3,
     });
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      'Команда «бан» не выполнена: Нельзя применять это действие к своему аккаунту.',
-      { textFormat: 'markdown' },
-      {
-        immediate: true,
-        trafficClass: 'interactive',
-        actionHealthLane: 'background',
-        sourceTag: 'moderation_notice',
-        autoDeleteDelayMs: 3 * 60 * 1000,
-        beforeImmediateSendMutation: expect.any(Function),
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(
+      await prisma.manualModerationFanoutLedgerEntry.findMany({
+        where: { operation: 'COMMAND_NOTICE_OUTCOME' },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        status: 'SUCCEEDED',
+        terminal: true,
+        remoteMessageId: null,
+        actorUserId: 'admin-1',
+        targetUserId: 'admin-1',
         botId: 'bot-5',
-        idempotencyKey: expect.stringContaining('COMMAND_NOTICE_OUTCOME'),
-      },
-    );
+        metadata: expect.objectContaining({
+          outcome: 'FAILURE',
+          suppressed: true,
+          resultText:
+            'Команда «бан» не выполнена: Нельзя применять это действие к своему аккаунту.',
+        }),
+      }),
+    ]);
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
@@ -6611,6 +6586,7 @@ describe('AdminService.applyManualSystemBan', () => {
         sourceTag: 'moderation_notice',
         autoDeleteDelayMs: 3 * 60 * 1000,
         beforeImmediateSendMutation: expect.any(Function),
+        ledgerContext: { moderationNoticeEnvelope: { version: 1 } },
         idempotencyKey: expect.stringContaining('COMMAND_NOTICE_OUTCOME'),
       },
     );

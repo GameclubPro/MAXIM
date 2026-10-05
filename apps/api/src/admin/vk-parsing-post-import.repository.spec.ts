@@ -8,6 +8,7 @@ import {
   VK_MAX_SEND_AMBIGUOUS_ERROR_PREFIX,
   VK_MAX_SEND_CONFIRMED_PERSISTENCE_ERROR_PREFIX,
 } from './vk-publish-quarantine';
+import { VkSyncLeaseLostError } from './vk-sync-lease';
 
 describe('VkParsingPostImportRepository', () => {
   const source = {
@@ -188,6 +189,7 @@ describe('VkParsingPostImportRepository', () => {
       ],
       seenAt,
       {
+        runWithLease: (operation) => operation({ vkParsingPost } as never),
         missingConfirmationThreshold: 1,
         spotCheckMissingPosts: jest.fn().mockResolvedValue(new Set()),
       },
@@ -263,5 +265,42 @@ describe('VkParsingPostImportRepository', () => {
         publishScheduleFingerprint: null,
       },
     });
+  });
+
+  it('does not change missing counters or publication keys after losing its lease during a remote spot check', async () => {
+    const vkParsingPost = {
+      findMany: jest
+        .fn()
+        .mockResolvedValue([
+          { id: 'missing-post', vkOwnerId: source.wallOwnerId, vkPostId: 201, missingSeenCount: 2 },
+        ]),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    };
+    const repository = new VkParsingPostImportRepository({ vkParsingPost } as never);
+    let leaseOwned = true;
+    let transactionActive = false;
+    const post = { ...importedPosts(1)[0]!.post, vkPublishedAt: new Date('2026-09-04T10:00:00Z') };
+
+    await expect(
+      repository.markMissingPostsUnavailable(source, [post], new Date(), {
+        missingConfirmationThreshold: 3,
+        runWithLease: async (operation) => {
+          if (!leaseOwned) throw new VkSyncLeaseLostError();
+          transactionActive = true;
+          try {
+            return await operation({ vkParsingPost } as never);
+          } finally {
+            transactionActive = false;
+          }
+        },
+        spotCheckMissingPosts: async () => {
+          expect(transactionActive).toBe(false);
+          leaseOwned = false;
+          return new Set();
+        },
+      }),
+    ).rejects.toBeInstanceOf(VkSyncLeaseLostError);
+
+    expect(vkParsingPost.updateMany).not.toHaveBeenCalled();
   });
 });

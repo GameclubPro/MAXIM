@@ -407,6 +407,121 @@ describe('PublisherAutoReplyDeliveryService', () => {
     );
   });
 
+  it('retries only the receipt write after a transient database failure', async () => {
+    const { service, deliveryUpdateMany, maxClient, dispatchHealth } = harness();
+    let receiptWrites = 0;
+    deliveryUpdateMany.mockImplementation(async ({ data }) => {
+      if (data.status === PublisherAutoReplyDeliveryStatus.SENT && receiptWrites++ === 0) {
+        throw new Error('transient database connection failure');
+      }
+      return { count: 1 };
+    });
+
+    await service.process(job, attempt);
+
+    expect(receiptWrites).toBe(2);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(dispatchHealth.recordSendFailure).not.toHaveBeenCalled();
+    expect(deliveryUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: PublisherAutoReplyDeliveryStatus.AMBIGUOUS }),
+      }),
+    );
+  });
+
+  it('settles a known receipt after recovery quarantines the same immutable send fence', async () => {
+    const { service, deliveryUpdateMany, maxClient } = harness();
+    let state: PublisherAutoReplyDeliveryStatus = PublisherAutoReplyDeliveryStatus.SENDING;
+    let fence: Date | null = null;
+    deliveryUpdateMany.mockImplementation(async ({ where, data }) => {
+      if (data.dispatchStartedAt) fence = data.dispatchStartedAt;
+      if (data.status === PublisherAutoReplyDeliveryStatus.SENT) {
+        expect(state).toBe(PublisherAutoReplyDeliveryStatus.AMBIGUOUS);
+        expect(where).toEqual(
+          expect.objectContaining({
+            id: 'delivery-1',
+            chatId: '-100',
+            publisherBotId: 'publisher-bot',
+            sourceMessageId: 'source-message-1',
+            contentRevisionId: 'content-1',
+            dispatchStartedAt: fence,
+          }),
+        );
+        expect(where.OR[0].status.in).toContain(PublisherAutoReplyDeliveryStatus.AMBIGUOUS);
+        state = data.status;
+      }
+      return { count: 1 };
+    });
+    maxClient.sendMessageImmediateWithId.mockImplementation(async (_chatId, _text, options) => {
+      await options.beforeSend();
+      state = PublisherAutoReplyDeliveryStatus.AMBIGUOUS;
+      return { messageId: 'late-known-receipt' };
+    });
+
+    await service.process(job, attempt);
+
+    expect(state).toBe(PublisherAutoReplyDeliveryStatus.SENT);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a confirmed receipt out of ambiguous-send handling when all SQL retries fail', async () => {
+    const { service, prisma, deliveryUpdateMany, maxClient, dispatchHealth } = harness();
+    const failure = new Error('database unavailable');
+    let receiptWrites = 0;
+    deliveryUpdateMany.mockImplementation(async ({ data }) => {
+      if (data.status === PublisherAutoReplyDeliveryStatus.SENT) {
+        receiptWrites++;
+        throw failure;
+      }
+      return { count: 1 };
+    });
+
+    await expect(service.process(job, attempt)).rejects.toBe(failure);
+
+    expect(receiptWrites).toBe(3);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(dispatchHealth.recordSendFailure).not.toHaveBeenCalled();
+    expect(deliveryUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: PublisherAutoReplyDeliveryStatus.AMBIGUOUS }),
+      }),
+    );
+    prisma.publisherAutoReplyDelivery.findUnique.mockResolvedValue({
+      status: PublisherAutoReplyDeliveryStatus.SENDING,
+      dueAt: new Date(),
+      lockedAt: new Date(),
+      dispatchStartedAt: new Date(),
+    });
+    await service.process(job, attempt);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not settle or quarantine a replacement dispatch fence with an old known receipt', async () => {
+    const { service, deliveryUpdateMany, maxClient } = harness();
+    let originalFence: Date | null = null;
+    let replacementFence: Date | null = null;
+    deliveryUpdateMany.mockImplementation(async ({ where, data }) => {
+      if (data.dispatchStartedAt) {
+        originalFence = data.dispatchStartedAt;
+        replacementFence = new Date(originalFence!.getTime() + 1);
+      }
+      if (data.status === PublisherAutoReplyDeliveryStatus.SENT) {
+        expect(where.dispatchStartedAt).toEqual(originalFence);
+        return { count: Number(where.dispatchStartedAt.getTime() === replacementFence!.getTime()) };
+      }
+      return { count: 1 };
+    });
+
+    await expect(service.process(job, attempt)).rejects.toThrow('could not be persisted');
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(deliveryUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: PublisherAutoReplyDeliveryStatus.AMBIGUOUS }),
+      }),
+    );
+  });
+
   it('uploads again when a READY cache belongs to another bot', async () => {
     const leased = delivery({
       contentRevision: { ...delivery().contentRevision, assets: [asset()] },

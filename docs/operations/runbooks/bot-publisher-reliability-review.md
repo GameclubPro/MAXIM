@@ -1,0 +1,191 @@
+# Moderation fleet and Publisher reliability review
+
+## Scope and evaluated implementation plan
+
+The review starts at `46368d9f15801a249a743535dfb45d5b467d338a`. Every moderation
+persona uses the same rule/execution engine; registry state, permissions and route
+proofs determine which bot executes. Publisher is a separate exact-token,
+exact-binding owner and must never fall back to a moderation bot.
+
+Existing semantic message authority, command order fences, SQL sanction windows,
+route epochs, immutable readiness deadlines, unknown-send/member fences and
+bounded routing caches remain mandatory. Diagnostic off/shadow modes do not
+disable semantic execution authority. This work extends those protections at
+the remaining action boundaries rather than restarting whole-engine processing.
+
+| Confirmed gap                                                                                                   | Planned correction                                                                                                                                                                             | Complexity / risk | Acceptance evidence                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Rate/count, subscription, mute and spammer delete intents can outlive their settings, author access or immunity | Independently authorize durable reasons with current policy, exact message and selected executor; unavailable evidence stops the attempt; unsupported retired invitation access fails closed   | High / medium     | Disabled rules, changed limits, subscribed/protected author, unmute/unblock, mixed reasons and peer retries              |
+| Generic sanction follow-up can run after its deletion reason was rejected                                       | Gate sanction on its own current reason and valid effect evidence; never use another reason's authorization                                                                                    | High / medium     | Edit to acceptable content, policy/admin/immunity changes and independent violations                                     |
+| A queued warning can outlive a caller-only callback or retain a demoted ingress bot                             | Persist the exact reason/policy/source deadline in the existing action envelope and revalidate after queue and quota waits using the selected executor                                         | High / medium     | Real queued delivery, changed policy/author access/immunity, malformed proof, known receipt and unknown-send recovery    |
+| Required-subscription and duplicate notices can outlive the lease checked before queue handoff                  | Persist each feature's original notice proof; use its current authority at the actual transport boundary and retain the original media anchor and deadline                                     | High / medium     | Changed subscription, disabled rule, duplicate reset/revocation, protected author, old unbound plans and unknown sends   |
+| A background DELETE winner can hide its verified reason from an inline caller                                   | Recover the caller's exact successful reason receipt without re-running deletion or the whole moderation engine                                                                                | Medium / medium   | Worker wins before inline attempt, one strike/follow-up, unrelated reason cannot lend its successful receipt             |
+| A later background DELETE can finish after the engine exits, permanently losing its violation and follow-up     | Persist a versioned follow-up before DELETE; make only its own confirmed reason ready, then claim the semantic violation and frozen remaining action plan through a dedicated durable executor | High / high       | Confirmation after inline wait, restart after deletion, competing workers, changed policy and unknown SEND/member effect |
+| Duplicate or bot-account follow-up can borrow shared deletion success without its own reason proof              | Require the exact source/subject/reason receipt; duplicate explanations reuse real lifecycle authority through an independent lazy provider token                                              | High / medium     | Length-only success cannot authorize a duplicate sanction; foreign, pending and unverified bot receipts reject           |
+| Queue-unavailable SEND fallback skips journal creation and mistakes a fresh action for an ambiguous retry       | Use the existing immediate action journal before execution in both fallback paths                                                                                                              | Medium / low      | Fresh send succeeds once; concurrent copies, accepted receipts and unknown outcomes retain their fences                  |
+| Night/manual close deletes have only initial checks                                                             | Current close/session proof, exact author/message and immunity at final dispatch                                                                                                               | Medium / low      | Opened/reclosed chat, elapsed timed close, changed schedule, protected author                                            |
+| Returning to the same night schedule can revive old pending work                                                | Advance the shared chat-control order for enabled, schedule and timezone writes; preserve the independent rules boundary                                                                       | Medium / low      | Real API disable/enable, schedule/restore and timezone/restore; old source rejected, new source accepted                 |
+| Bot-scoped production member-action identity can bypass another bot's unknown outcome                           | Shared member-operation identity and compatibility with retained execution evidence; serialize competing starts                                                                                | High / medium     | Actual production wrappers, different bots/processes, unknown BAN/KICK, proven pre-dispatch rejection, confirmed unban   |
+| Content edits rewrite a leased/sending publication envelope and its recovery key                                | Atomic edit/claim exclusion and immutable delivery attribution; receipts recover before new work                                                                                               | High / medium     | Real SQL/queue races, same-content save, lost receipt, cancel and post-actions                                           |
+| Video preparation lacks identity attestation and failed completion cannot resume                                | Attest both phases, delay runtime blockers without consuming attempts, explicitly resume owned unexpired completion                                                                            | Medium / low      | Wrong/unavailable identity, pause, retained failed BullMQ job and one actor-owned asset                                  |
+| VK source lease reuses process identity across attempts                                                         | Unique attempt lease with expiry and transactional effect fences                                                                                                                               | Medium / medium   | Old attempt resumes after lease replacement; no stale import or lease completion                                         |
+| Auto-reply loses a known send receipt after a transient SQL failure or slow dispatch                            | Retry database-only settlement against the exact immutable dispatch fence, including recovery-created AMBIGUOUS state                                                                          | Medium / low      | One remote send, known receipt retained, conflicting source/dispatch cannot settle                                       |
+
+Additional scale correction: one unavailable recipient must not gate all other
+pending recipients. Admit at most four candidates per pass, rotate blocked
+recipients independently and preserve untouched attempt counts and final
+per-recipient author authority. Complexity and risk are medium; acceptance uses
+10,004 recipients with a stale/denied head, fresh tail, deadlines and cancellation.
+Due filtering precedes route priority, so a permanently blocked target cannot
+starve a recoverable route quarantine. The shared occurrence signal is cleared
+through an indexed negative proof only after every pending/sending recipient
+blocker is resolved, preserving explicit retry and missed-window evidence.
+
+The plan was checked against concurrency and rollback constraints before edits:
+checks are repeated after quota/preparation waits; policy rejection may yield to
+an independently valid reason but transport/storage uncertainty may not. An
+accepted or unknown remote effect is never retried with new content, a new bot
+or a new journal key. No long SQL transaction is held across MAX calls. Existing
+rows require compatibility handling, not a blind identity/version reset.
+Each verified reason retains its own expiry: a longer independent permit may
+authorize the shared delete, but cannot lend its lifetime or receipt to an expired
+mute, night closure, frequency decision or subscription binding. Policy hashes
+use explicit semantic fields, excluding timestamps and unrelated UI/Publisher
+settings; selected executor context is resolved again at the final sanction callback.
+Preparation after a peer DELETE uses that proven DELETE bot. Queued notices carry
+a versioned proof through the existing ledger and BullMQ envelope, while final
+SEND and member callbacks use the actual selected executor. Receipt settlement
+precedes policy revalidation; a policy change cannot erase an already known effect
+or permit another remote send. Own-reason lookup uses two unique indexed probes
+rather than scanning retained reason history.
+Required-subscription notices precede deletion and therefore use their own source
+proof instead of borrowing a generic post-delete proof. A recovered media plan
+keeps its original anchor. Legacy unbound plans cannot authorize a fresh notice or
+deletion; retained completed and unknown send journals still settle independently
+without another remote attempt. Anti-duplicate explanations require their exact
+policy, lifecycle and revocation authority rather than a fabricated sanction stage.
+Queued notice qualification rechecks the selected route after fresh external
+reads and before the feature's final policy/Redis permit; nothing awaits after
+that permit. A definite policy revocation ends follow-up normally, while unknown
+storage or transport results preserve the retry/ambiguity boundary.
+
+New moderation notice envelopes carry a compatibility version independent of
+their feature proof. Old unbound group notices cannot authorize a fresh SEND;
+known receipts and unknown dispatches still settle before this check. This
+conservatively suppresses old unverifiable greetings/night notices as well as
+old rule warnings. The envelope version never substitutes for current rule,
+required-subscription or duplicate authority.
+
+The inline receipt observer is bounded and only handles a concurrently active
+DELETE worker. It cannot provide crash recovery or authorize a later result.
+Late continuation therefore requires a durable envelope created before the
+original deletion, with exact reason/source/policy/deadline and semantic keys.
+Historical background deletes without that envelope retain their conservative
+no-escalation behavior. Continuation executes only remaining effects and must
+never re-enter the whole rule engine or retry an unknown remote action.
+
+```mermaid
+flowchart LR
+  A[One semantic message owner] --> B[Save exact rule and follow-up envelope]
+  B --> C[Guarded DELETE journal]
+  C -->|Own confirmed reason| D[Atomic violation and frozen action plan]
+  D --> E[Existing member and SEND journals]
+  C -->|Unverified or expired| F[Stop without escalation]
+  E -->|Unknown remote outcome| G[Preserve receipt fence]
+```
+
+## Implementation and validation order
+
+1. Implement independent moderation guards and sanction/member execution fences.
+2. Implement publication editing/recovery isolation and video preparation recovery.
+3. Fence VK attempt ownership, heartbeat, imports and terminal writes; settle known
+   auto-reply receipts without another send.
+4. Review the combined diff, run focused regressions, then public impact checks
+   using disposable PostgreSQL 16, Redis 7 and BullMQ. Record actual coverage and
+   skips; mock runs do not count as store/crash acceptance.
+5. Submit the owned worktree; require Required and CodeQL on exact head/main SHA.
+   Deploy every shared API role through the guarded wrapper, with migrations and
+   compatible rollback floors. Never mutate production stores with ad hoc SQL.
+
+## Scale and rollout acceptance
+
+Use 1/4/9 receiving bots, plus 3/6/12, with one/all/limited administrators and a
+replacement anywhere in the registry. Exercise absent rights webhooks, stale
+role caches, concurrent mirrors, edits, delayed commands, recovery and deadlines.
+Test catalog sizes 10,000/12,000/30,000 with uniform/hot/cold/media profiles.
+
+Short synthetic catalog runs establish regression evidence only. Sustained
+throughput, native IMAGE/OCR capacity, OS process kills, live MAX verification
+and four 24-hour rollout cohorts require separately recorded results. Do not
+claim a supported production throughput from a short simulated transport run.
+
+Publication recipient admission changes to a bounded four-candidate pass with
+independent blockers, fresh final authority and fair retry rotation. This bounds
+access-probe fanout, not the existing delivery materialization/rollup reads, which
+still scale with recipient count. Measure those reads before replacing them with
+indexed keyset pages and incremental aggregates; a SQL LIMIT alone cannot certify
+bounded work. Resource expansion follows measured limits and explicit authorization
+for cost changes.
+
+The shared member fence adds one concurrent partial index on the existing MAX
+journal. Its predicate retains in-progress/ambiguous BAN/KICK and successful BAN
+until confirmed unban; no history reset or new outbox is needed. The exact tuple
+start lock ends before remote work. MAX API participant restoration is retired;
+the unban regression models externally confirmed restoration through the existing
+receipt-clear boundary, not a new unsupported MAX call.
+An additional concurrent partial index covers unresolved Publisher recipient
+blockers by occurrence. Both migrations are additive, have bounded lock/statement
+timeouts and intentionally omit `IF NOT EXISTS`; failed concurrent-index receipts
+must be reviewed rather than silently accepting an invalid retained index.
+
+Ordinary message-limit and stop-list continuation uses a separate new empty SQL
+outbox. It receives no historical authority backfill. Its original DELETE reason,
+source time, five-minute maximum deadline and shorter reason deadline stay fixed.
+Violation admission and the action plan commit together; the sanction event and
+effect checkpoint also commit together. Unknown effects pin their parent evidence
+and can enter only exact receipt reconciliation. Due searches use a database-clock
+snapshot as an index bound; action claims and final fences use fresh wall time
+after locks. Runtime shutdown stops admission and drains owned attempts before
+closing stores. Commercial permits retain their original in-memory identity and
+expiry, so they cannot be attached to this durable recovery path.
+Receipt-only settlement makes no MAX profile reads and cannot renew global
+spammer reputation. The final ownership fence runs after the last awaited policy
+read, followed by a synchronous deadline check, so a blocked settings query
+cannot let a replaced lease owner start a BAN.
+
+The implementation also checks the final route from inside each feature permit,
+rejects mixed feature authorities on a single SEND and preserves the production
+action-key format through golden fixtures. Automatic immediate switching is
+limited to a genuine local rejection before dispatch with the same journal,
+callback and deadline. Exact Publisher bindings and pinned routes keep their
+existing ownership boundary.
+
+The earlier release encountered the guarded VPS migration-capacity preflight.
+Reassess admission against the current infrastructure code at release time;
+historical free-space measurements do not prove the current result. This session
+retains the explicitly required 20 GiB shared-build reserve through the connector's
+caller-supplied floor. Do not bypass data/temp/WAL/Docker floors or perform
+host-wide garbage collection. A code implementation and green CI do not mean
+the new runtime is active. Live tests use only the repository-designated test
+chat/channel and agent-created content; no participant sanctions or diagnostic
+messages in user groups.
+
+## Recorded validation
+
+On 2026-10-05 the focused native continuation suite passed all 16 cases, including
+restart, late DELETE, exact unknown-BAN reconciliation, cleanup pinning and lease
+replacement during the last settings read. The queued duplicate suite passed
+12 cases with real PostgreSQL, Redis and BullMQ. Final typecheck, source-generation
+preflight, migration policy, whitespace and 196 selected rollback/deploy guard
+checks passed before broad staged verification.
+
+The final finite catalog run passed all 12 combinations of 10,000/12,000/30,000
+chats and uniform/hot/cold/media profiles with nine receiving bots. Each profile
+submitted 20 logical messages at one message/second under the existing quotas:
+240 logical messages produced 2,160 receipts, 240 violations and exactly 240
+remote DELETE effects. Every profile drained to zero pending receipts/actions.
+Per-profile completion p95 was 146–280 ms and ingress p95 was 12–54 ms on this
+local host. These are sampled scenario timings, not a measured throughput ceiling;
+transport and media were simulated, and one healthy primary executed each fixture.
+Native IMAGE/OCR capacity, prolonged load, production rollout cohorts and production
+activation remain separate acceptance evidence.

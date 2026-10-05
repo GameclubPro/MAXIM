@@ -17,6 +17,7 @@ import { buildNightModeNoticeIdempotencyKey } from './max-action-idempotency.uti
 import {
   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  markMaxPreDispatchGuardRejected,
   wasMaxPreDispatchGuardRejected,
 } from './max-action-pre-dispatch-guard';
 import type { MaxActionJob, MaxActionType } from './max-client.service';
@@ -680,6 +681,37 @@ export class MaxActionLedgerService {
       await this.recordProtectedSendTransition(job, mutation);
       return;
     }
+    if (this.isCrashFencedMemberAction(job.actionType)) {
+      if (!job.userId?.trim() || !job.chatId.trim())
+        throw new UnrecoverableError('Member action requires an exact chat and user');
+      // FLAG: Semantic commands do not cover later messages or retained bot-scoped keys.
+      // Serialize every member start and fence unknown effects across all bot identities.
+      // This transaction ends before any MAX request; a crashed IN_PROGRESS owner stays fenced.
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['max-member', job.chatId, job.userId])}, 0))::text
+        `;
+        const blockers = await tx.$queryRaw<Array<{ job_id: string }>>`
+          SELECT "job_id" FROM "max_action_ledger"
+          WHERE "chat_id" = ${job.chatId} AND "user_id" = ${job.userId}
+            AND "job_id" <> ${job.idempotencyKey}
+            AND "action_type" IN ('BAN_MEMBER', 'KICK_MEMBER')
+            AND ("status" = 'IN_PROGRESS'::"MaxActionLedgerStatus" OR "ambiguous" = TRUE
+              OR ("action_type" = 'BAN_MEMBER' AND "status" = 'SUCCEEDED'::"MaxActionLedgerStatus"))
+          LIMIT 1
+        `;
+        if (blockers.length)
+          throw markMaxPreDispatchGuardRejected(
+            new Error(
+              'Retained member action requires settlement before another bot or operation can act',
+            ),
+            MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+          );
+        await this.recordGuardedStart(job, mutation, tx);
+      });
+      return;
+    }
     await this.recordGuardedStart(job, mutation);
   }
 
@@ -1139,12 +1171,13 @@ export class MaxActionLedgerService {
   private async recordGuardedStart(
     job: MaxActionJob,
     mutation: MaxActionLedgerMutation,
+    db: Pick<PrismaService, 'maxActionLedgerEntry'> = this.prisma,
   ): Promise<void> {
-    if (await this.updateExecutableStart(job, mutation)) {
+    if (await this.updateExecutableStart(job, mutation, db)) {
       return;
     }
 
-    const created = await this.prisma.maxActionLedgerEntry.createMany({
+    const created = await db.maxActionLedgerEntry.createMany({
       data: [
         {
           ...this.buildCreateInput(job),
@@ -1154,7 +1187,7 @@ export class MaxActionLedgerService {
       ],
       skipDuplicates: true,
     });
-    if (created.count > 0 || (await this.updateExecutableStart(job, mutation))) {
+    if (created.count > 0 || (await this.updateExecutableStart(job, mutation, db))) {
       return;
     }
 
@@ -1167,6 +1200,7 @@ export class MaxActionLedgerService {
   private async updateExecutableStart(
     job: MaxActionJob,
     mutation: MaxActionLedgerMutation,
+    db: Pick<PrismaService, 'maxActionLedgerEntry'> = this.prisma,
   ): Promise<boolean> {
     const where: Prisma.MaxActionLedgerEntryWhereInput = {
       jobId: job.idempotencyKey,
@@ -1207,7 +1241,7 @@ export class MaxActionLedgerService {
       ambiguous: false,
       terminal: false,
     };
-    return this.updateStartedRowPreservingFirstAttempt(job, mutation, where);
+    return this.updateStartedRowPreservingFirstAttempt(job, mutation, where, db);
   }
 
   private isCrashFencedMemberAction(actionType: MaxActionType): boolean {
@@ -1589,8 +1623,9 @@ export class MaxActionLedgerService {
     job: MaxActionJob,
     mutation: MaxActionLedgerMutation,
     where: Prisma.MaxActionLedgerEntryWhereInput,
+    db: Pick<PrismaService, 'maxActionLedgerEntry'> = this.prisma,
   ): Promise<boolean> {
-    const firstAttempt = await this.prisma.maxActionLedgerEntry.updateMany({
+    const firstAttempt = await db.maxActionLedgerEntry.updateMany({
       where: {
         ...where,
         firstAttemptAt: null,
@@ -1607,7 +1642,7 @@ export class MaxActionLedgerService {
 
     const retryMutation = { ...mutation };
     delete retryMutation.firstAttemptAt;
-    const retry = await this.prisma.maxActionLedgerEntry.updateMany({
+    const retry = await db.maxActionLedgerEntry.updateMany({
       where: {
         ...where,
         firstAttemptAt: { not: null },
