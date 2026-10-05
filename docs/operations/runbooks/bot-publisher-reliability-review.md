@@ -187,20 +187,21 @@ replacement during the last settings read. The queued duplicate suite passed
 preflight, migration policy, whitespace and 196 selected rollback/deploy guard
 checks passed before broad staged verification.
 
-The complete staged native verification then passed 781 API suites and all 18,047
+The final merged-head staged native verification of
+`1359b31f05e076f49fca6f0d8233f20f2fe18148` passed 781 API suites and all 18,067
 API tests, plus 50 retention/delete-lease storage tests, Prisma validation and build.
-Repository static checks passed 974 tests with two explicitly skipped nested
-test-store wrapper lifecycle self-tests; infrastructure passed all 857 tests.
-The API/store coverage itself had no skipped tests. A final review then identified
-the auto-reply epoch race above; its fix and final merged-head verification are
-separate release gates, rather than being implied by this earlier successful run.
+Repository static checks passed 1,007 tests with two explicitly skipped nested
+test-store wrapper lifecycle self-tests; infrastructure passed all 887 tests.
+The API/store coverage itself had no skipped tests.
 
 The focused auto-reply follow-up run passed all 42 tests across two suites with
 disposable PostgreSQL and Redis. It covers policy/content and binding changes
 behind cooldown/delivery locks, last-read supersession, expired/future access,
 unchanged proof renewal, immutable receipt settlement and the dispatch-anchored
-cooldown. The final shared API verification and exact-SHA hosted CI remain the
-release gates for the combined implementation.
+cooldown. Successful hosted Required and CodeQL checks on the exact selected
+release commit, synchronized VPS HEAD equality, guarded migrations/deployment and
+strict smokes remain release gates. These local results do not establish production
+activation.
 
 The final finite catalog run passed all 12 combinations of 10,000/12,000/30,000
 chats and uniform/hot/cold/media profiles with nine receiving bots. Each profile
@@ -210,5 +211,34 @@ remote DELETE effects. Every profile drained to zero pending receipts/actions.
 Per-profile completion p95 was 146–280 ms and ingress p95 was 12–54 ms on this
 local host. These are sampled scenario timings, not a measured throughput ceiling;
 transport and media were simulated, and one healthy primary executed each fixture.
+The fixture used one physical webhook queue and one physical delete queue, each
+with concurrency four. Its media profile covers attachment ingress and text/length
+rules, excluding native IMAGE/OCR.
 Native IMAGE/OCR capacity, prolonged load, production rollout cohorts and production
 activation remain separate acceptance evidence.
+
+The extended finite local run passed all four profiles at 30,000 chats with nine
+receiving bots. Each profile submitted 600 logical messages at two/second over
+five minutes, producing 5,400 receipts and exactly 600 violations, successful
+delete intents and distinct remote DELETE effects. Across the run, 2,400 logical
+messages produced 21,600 receipts and exactly 2,400 DELETE effects. All four
+profiles finished with zero pending receipts/actions under the existing quotas.
+
+| Profile | Ingress p95 | Receipt completion p95 | Final drain | Sampled peak pending receipts |
+| ------- | ----------- | ---------------------- | ----------- | ----------------------------- |
+| Uniform | 32 ms       | 312 ms                 | 103 ms      | 32                            |
+| Hot     | 23 ms       | 241 ms                 | 115 ms      | 9                             |
+| Cold    | 21 ms       | 460 ms                 | 232 ms      | 17                            |
+| Media   | 116 ms      | 8,808 ms               | 7,716 ms    | 240                           |
+
+The media profile's sampled oldest pending receipt reached 22,504 ms; pending
+work was sampled every ten logical messages and drain peaks were excluded.
+Its completion p95 and final drain differ materially from the other profiles.
+Including final drain, its observed logical rate was 1.95/second against the
+requested two/second. This latency/backlog tradeoff calls for separate media
+profiling and capacity tuning before a production throughput commitment.
+This run used the same local simulated transport, single-primary executor and
+one-queue-per-type fixture above; the media profile still covers attachment
+ingress and text/length rules only. These finite measurements establish admission,
+effect uniqueness and final drainage for these scenarios, without certifying
+production throughput, native IMAGE/OCR capacity or 24-hour rollout acceptance.

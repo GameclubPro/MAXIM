@@ -1,7 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { ModerationStateDeleteGuardService } from './moderation-state-delete-guard.service';
 
-function fixture(rule = 'MUTE_ACTIVE_DELETE') {
+function fixture({ ruleCode = 'MUTE_ACTIVE_DELETE' }: { ruleCode?: string } = {}) {
   const at = new Date();
   const settings = {
     nightModeTimezone: 'UTC',
@@ -21,7 +21,7 @@ function fixture(rule = 'MUTE_ACTIVE_DELETE') {
     messageId: 'm1',
     subjectUserId: 'user-1',
     botId: 'peer-2',
-    reasons: [{ ruleCode: rule, reasonKey: 'state', metadata: { muteEventId: 'mute-1' } }],
+    reasons: [{ ruleCode, reasonKey: 'state', metadata: { muteEventId: 'mute-1' } }],
   };
   const prisma = {
     chatSettings: { findUnique: jest.fn(async () => settings) },
@@ -127,7 +127,7 @@ describe('current moderation state delete authorization', () => {
     ).resolves.toMatchObject({ reasonKeys: ['bot'] });
   });
   it('checks active global policy with cache bypass and honors current local ALLOW', async () => {
-    const s = fixture('GLOBAL_SPAMMER_MESSAGE_DELETE');
+    const s = fixture({ ruleCode: 'GLOBAL_SPAMMER_MESSAGE_DELETE' });
     await expect(s.service.authorize(s.input)).resolves.toMatchObject({ reasonKeys: ['state'] });
     expect(s.policy.evaluatePolicy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -142,7 +142,7 @@ describe('current moderation state delete authorization', () => {
     });
   });
   it('expires a spammer member permit during selected executor revalidation', async () => {
-    const s = fixture('GLOBAL_SPAMMER_MESSAGE_DELETE');
+    const s = fixture({ ruleCode: 'GLOBAL_SPAMMER_MESSAGE_DELETE' });
     const expiresAtMs = Date.now() + 1_000;
     s.policy.evaluatePolicy.mockResolvedValue({
       action: 'DELETE_AND_KICK',
@@ -168,7 +168,7 @@ describe('current moderation state delete authorization', () => {
     }
   });
   it('propagates selected executor demotion before the final bot-account permit', async () => {
-    const s = fixture('BOT_ACCOUNT_MESSAGE_DELETE');
+    const s = fixture({ ruleCode: 'BOT_ACCOUNT_MESSAGE_DELETE' });
     const demoted = new Error('Selected executor is no longer capable');
     const beforeFinalAuthority = jest.fn(async () => {
       throw demoted;
@@ -177,7 +177,7 @@ describe('current moderation state delete authorization', () => {
     expect(beforeFinalAuthority).toHaveBeenCalledTimes(1);
   });
   it('rejects a bot-account setting changed while revalidating the selected executor', async () => {
-    const s = fixture('BOT_ACCOUNT_MESSAGE_DELETE');
+    const s = fixture({ ruleCode: 'BOT_ACCOUNT_MESSAGE_DELETE' });
     s.prisma.chatSettings.findUnique.mockImplementation(async () => structuredClone(s.settings));
     await expect(
       s.service.authorize({
@@ -189,7 +189,7 @@ describe('current moderation state delete authorization', () => {
     ).rejects.toMatchObject({ code: 'moderation_state_delete_no_longer_authorized' });
   });
   it('revokes a local BLOCK when it changes to ALLOW', async () => {
-    const s = fixture('LOCAL_ADMIN_BLOCK_MESSAGE_DELETE');
+    const s = fixture({ ruleCode: 'LOCAL_ADMIN_BLOCK_MESSAGE_DELETE' });
     s.prisma.adminGlobalSpammerExemption.findMany.mockResolvedValue([{ decision: 'BLOCK' }]);
     await expect(s.service.authorize(s.input)).resolves.toMatchObject({ reasonKeys: ['state'] });
     s.prisma.adminGlobalSpammerExemption.findMany.mockResolvedValue([{ decision: 'ALLOW' }]);
@@ -198,7 +198,7 @@ describe('current moderation state delete authorization', () => {
     });
   });
   it('protects newly configured runtime bot accounts and rejects retired invitation work', async () => {
-    const s = fixture('BOT_ACCOUNT_MESSAGE_DELETE');
+    const s = fixture({ ruleCode: 'BOT_ACCOUNT_MESSAGE_DELETE' });
     await expect(s.service.authorize(s.input)).resolves.toMatchObject({ reasonKeys: ['state'] });
     s.bots.isKnownBotUserId.mockReturnValue(true);
     await expect(s.service.authorize(s.input)).rejects.toMatchObject({
@@ -213,7 +213,7 @@ describe('current moderation state delete authorization', () => {
     ).rejects.toMatchObject({ code: 'moderation_state_delete_no_longer_authorized' });
   });
   it('permits absent-source bot KICK only after its own verified durable bot-author receipt', async () => {
-    const s = fixture('BOT_ACCOUNT_MESSAGE_DELETE');
+    const s = fixture({ ruleCode: 'BOT_ACCOUNT_MESSAGE_DELETE' });
     s.max.getExactMessageRow.mockResolvedValue(null);
     await expect(
       s.service.authorize({
@@ -256,7 +256,7 @@ describe('current moderation state delete authorization', () => {
   it.each(['pending', 'foreign-author', 'different-source', 'unverified-reason', 'foreign-reason'])(
     'rejects an absent-source follow-up with %s evidence',
     async (change) => {
-      const s = fixture('BOT_ACCOUNT_MESSAGE_DELETE');
+      const s = fixture({ ruleCode: 'BOT_ACCOUNT_MESSAGE_DELETE' });
       s.max.getExactMessageRow.mockResolvedValue(null);
       s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue({
         id: 'intent-1',
