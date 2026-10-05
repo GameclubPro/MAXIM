@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 const GiB = 1024 ** 3;
 const runtimeHeadroomBytes = 8 * GiB;
+export const MULTIBOT_PREPARE_MINIMUM_FREE_BYTES = 10 * GiB;
 const catalogSql = `BEGIN READ ONLY;
 SET LOCAL lock_timeout = '3s';
 SET LOCAL statement_timeout = '10s';
@@ -88,14 +89,19 @@ export function assessMultibotPrepareCapacity(metadata, filesystems) {
     partialIndexes: 2,
     partialIndexAllowanceBytes: GiB,
     serializedIndexBuilds: true,
+    admissionMinimumBytes: MULTIBOT_PREPARE_MINIMUM_FREE_BYTES,
+    supervisionRequired: true,
     devices: [...devices.values()].map((device) => ({
       ...device,
-      sufficient: device.availableBytes >= device.requiredBytes,
+      estimatedRequiredBytes: device.requiredBytes,
+      estimateSufficient: device.availableBytes >= device.requiredBytes,
+      requiredBytes: MULTIBOT_PREPARE_MINIMUM_FREE_BYTES,
+      sufficient: device.availableBytes >= MULTIBOT_PREPARE_MINIMUM_FREE_BYTES,
     })),
   };
 }
 
-export function checkMultibotPrepareCapacity(composeArgs, run = execFileSync) {
+export function validateMultibotComposeArgs(composeArgs) {
   if (!Array.isArray(composeArgs) || !composeArgs.length || composeArgs.length % 2 !== 0)
     throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
   // FLAG: Validate the complete global-option prefix before any probe. Preserve its
@@ -118,6 +124,10 @@ export function checkMultibotPrepareCapacity(composeArgs, run = execFileSync) {
     seen.add(canonicalOption);
   }
   if (!seen.has('-f')) throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
+}
+
+export function checkMultibotPrepareCapacity(composeArgs, run = execFileSync) {
+  validateMultibotComposeArgs(composeArgs);
   const options = { encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024 };
   const pgCommand = ['compose', ...composeArgs, 'exec', '-T', 'postgres'];
   const catalog = run(
@@ -139,7 +149,14 @@ export function checkMultibotPrepareCapacity(composeArgs, run = execFileSync) {
   const data = pgFilesystem(metadata.dataDirectory);
   const wal = pgFilesystem(walPath);
   const docker = parseCapacityFilesystem(run('df', ['-Pk', '/var/lib/docker'], options));
-  return assessMultibotPrepareCapacity(metadata, { data, temp: data, wal, docker });
+  return {
+    ...assessMultibotPrepareCapacity(metadata, { data, temp: data, wal, docker }),
+    monitorPaths: {
+      data: metadata.dataDirectory,
+      wal: walPath,
+      docker: '/var/lib/docker',
+    },
+  };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
