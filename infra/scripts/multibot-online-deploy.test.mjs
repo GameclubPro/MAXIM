@@ -111,11 +111,11 @@ trap 'printf "images=%s journal=%s ingress=%s workers=%s paused=%s cutoff=%s\\n"
 require_stateful_services_ready() { echo ready; }
 timeout() { [[ "$failure" != receipt ]] || return 1; printf '%s\\n' "$receipt"; }
 node() {
-  [[ "$1" == "$ROOT_DIR/infra/scripts/multibot-prepare-capacity.mjs" ]]
+  [[ "$1" == "$ROOT_DIR/infra/scripts/multibot-prepare-capacity.mjs" ]] || return 1
   shift
   expected=(--env-file .env -p infra -f infra/docker-compose.yml ${overlay ? '-f "infra/runtime overlay.yml"' : ''})
-  [[ "$#" -eq "\${#expected[@]}" ]]
-  for value in "\${expected[@]}"; do [[ "$1" == "$value" ]]; shift; done
+  [[ "$#" -eq "\${#expected[@]}" ]] || return 1
+  for value in "\${expected[@]}"; do [[ "$1" == "$value" ]] || return 1; shift; done
   echo capacity
   [[ "$failure" != capacity ]]
 }
@@ -159,7 +159,21 @@ test('a successful existing cutoff skips all online preparation work', () => {
   assert.match(result.stdout, /status=0 ingress=live workers=live paused=0 cutoff=0/u);
 });
 
-function probeHook(failure = 'none', receipt = '0') {
+test('conditional preparation rejects changed or reordered Compose context in the forwarding stub', () => {
+  for (const override of [
+    'COMPOSE_FILES=(--env-file wrong.env -p infra -f infra/docker-compose.yml)',
+    'COMPOSE_FILES=(--env-file .env -p other -f infra/docker-compose.yml)',
+    'COMPOSE_FILES=(--env-file .env -p infra -f wrong.yml)',
+    'COMPOSE_FILES=(-p infra --env-file .env -f infra/docker-compose.yml)',
+  ]) {
+    const result = probeHook('none', '0', override);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /status=1 ingress=live workers=live paused=0 cutoff=0/u);
+    assert.doesNotMatch(result.stdout, /^(?:capacity|prepare|exact-indexes)$/mu);
+  }
+});
+
+function probeHook(failure = 'none', receipt = '0', override = '') {
   return spawnSync(
     'bash',
     [
@@ -171,14 +185,15 @@ failure="$3"
 receipt="$4"
 MAIN_PROJECT_NAME=infra
 ${productionComposeInitializer}
+${override}
 ingress=live workers=live paused=0 cutoff=0
 maxim_webhook_read_multibot_cutover_receipt() { printf '%s\\n' "$receipt"; }
 node() {
-  [[ "$1" == "$ROOT_DIR/infra/scripts/multibot-prepare-capacity.mjs" ]]
+  [[ "$1" == "$ROOT_DIR/infra/scripts/multibot-prepare-capacity.mjs" ]] || return 1
   shift
   expected=(--env-file .env -p infra -f infra/docker-compose.yml)
-  [[ "$#" -eq "\${#expected[@]}" ]]
-  for value in "\${expected[@]}"; do [[ "$1" == "$value" ]]; shift; done
+  [[ "$#" -eq "\${#expected[@]}" ]] || return 1
+  for value in "\${expected[@]}"; do [[ "$1" == "$value" ]] || return 1; shift; done
   echo capacity
   [[ "$failure" != capacity ]]
 }
