@@ -171,10 +171,24 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     undefined,
     counters,
   );
+  const peerRouteRoles: MaxBotLinkService[] = [];
+  const createRouteRole = () => {
+    const role = new MaxBotLinkService(
+      prisma as never,
+      registry as never,
+      new MaxBotContextService(),
+      new ModerationDeleteIntentAccessWakeService(prisma as never),
+      undefined,
+      counters,
+    );
+    peerRouteRoles.push(role);
+    return role;
+  };
   const effects: SimulatedMaxEffect[] = [];
   const requests: SimulatedMaxEffect[] = [];
   const messages = new Map<string, Record<string, unknown>>();
   const deniedBots = new Set<string>();
+  const ownMemberProbeOverrides = new Map<string, 'unavailable' | 'permissions_unknown'>();
   const botPermissions = new Map(
     bots.map((bot) => [bot.id, ['read_all_messages', 'write', 'add_remove_members']]),
   );
@@ -227,8 +241,17 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
             permissions: isBot && !deniedBots.has(id) ? (botPermissions.get(id) ?? []) : [],
           });
           let data: unknown;
-          if (method === 'get' && path.endsWith('/members/me')) data = member(bot.id, true);
-          else if (method === 'get' && path.endsWith('/members/admins'))
+          if (method === 'get' && path.endsWith('/members/me')) {
+            const override = ownMemberProbeOverrides.get(bot.id);
+            if (override === 'unavailable')
+              throw Object.assign(new Error('Simulated own-member lookup unavailable'), {
+                response: { status: 503, data: { code: 'fixture.lookup.unavailable' } },
+              });
+            data =
+              override === 'permissions_unknown'
+                ? { user_id: bot.id, is_bot: true, is_admin: true, is_owner: false }
+                : member(bot.id, true);
+          } else if (method === 'get' && path.endsWith('/members/admins'))
             data = {
               members: bots.filter((b) => !deniedBots.has(b.id)).map((b) => member(b.id, true)),
               marker: null,
@@ -740,6 +763,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     moderation.onModuleDestroy();
     outbox.onModuleDestroy();
     links.onModuleDestroy();
+    for (const role of peerRouteRoles) role.onModuleDestroy();
     await Promise.all([
       max.onModuleDestroy(),
       cache.onModuleDestroy(),
@@ -791,6 +815,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     history,
     ledger,
     readiness,
+    createRouteRole,
     groupCommands,
     effects,
     requests,
@@ -816,6 +841,13 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     },
     denyBot: (botId: string) => {
       deniedBots.add(botId);
+    },
+    allowBot: (botId: string) => {
+      deniedBots.delete(botId);
+    },
+    setOwnMemberProbe: (botId: string, result: 'unavailable' | 'permissions_unknown' | null) => {
+      if (result === null) ownMemberProbeOverrides.delete(botId);
+      else ownMemberProbeOverrides.set(botId, result);
     },
     allowAdminUser: (userId: string) => {
       adminUsers.add(userId);

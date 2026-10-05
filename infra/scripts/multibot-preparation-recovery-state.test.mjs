@@ -65,6 +65,7 @@ function report() {
     read_only: true,
     authority: 'DIAGNOSTICS_ONLY',
     parent_kind: 'r',
+    storage_layout_matches: true,
     metadata_limit_exceeded: false,
     columns: [
       ['semantic_key', 'text'],
@@ -180,6 +181,49 @@ test('preview selects only the exact interrupted indexes and independently attes
   assert.equal(plan.migration, MULTIBOT_PREPARATION_RECOVERY_MIGRATION);
   assert.equal(JSON.stringify(plan).includes('e'.repeat(64)), false);
   assert.deepEqual(planMultibotPreparationRecovery(report(), context()).actions, []);
+});
+
+test('successful preparation parents require exactly one applied step each', () => {
+  for (const position of [0, 1]) {
+    for (const count of [0, 2, -1, 0.5, '1', null, undefined, NaN]) {
+      const value = report();
+      value.metadata.migrations[position].records[0].applied_steps_count = count;
+      assert.throws(() => planMultibotPreparationRecovery(value, context()), /RECEIPT_INVALID/u);
+    }
+  }
+});
+
+test('unknown or external storage layout never admits preview or repair', async () => {
+  for (const storageLayout of [false, null, undefined, 'true']) {
+    const value = absent(incomplete(report()));
+    value.storage_layout_matches = storageLayout;
+    assert.throws(
+      () => planMultibotPreparationRecovery(value, context()),
+      /ADMISSION_METADATA_INVALID/u,
+    );
+    const ops = operations(value);
+    await assert.rejects(
+      recoverMultibotPreparation(ops, context(), { apply: true }),
+      /ADMISSION_METADATA_INVALID/u,
+    );
+    assert.deepEqual(ops.calls, ['attest', 'read']);
+  }
+});
+
+test('cancelled original and new Prisma resolution receipts require exact zero-step evidence', () => {
+  for (const phase of ['unfinished', 'rolled-back', 'new-applied']) {
+    for (const count of [1, 2, -1, 0.5, '0', null, undefined, NaN]) {
+      const value = report();
+      if (phase !== 'unfinished') resolveReceipt(value);
+      const changed =
+        phase === 'new-applied' ? value.metadata.migrations[2].records[1] : record(value);
+      changed.applied_steps_count = count;
+      assert.throws(() => planMultibotPreparationRecovery(value, context()), /RECEIPT_INVALID/u);
+    }
+  }
+  const resolved = report();
+  resolveReceipt(resolved);
+  assert.equal(planMultibotPreparationRecovery(resolved, context()).state, 'ALREADY_APPLIED');
 });
 
 test('fixed DDL preserves all immutable161 index predicates and rejects arbitrary targets/actions', () => {
@@ -393,6 +437,88 @@ function operations(value, input = context()) {
     },
   };
 }
+
+test('invalid original step counts block apply before admission, DDL or resolution', async () => {
+  for (const count of [1, -1, '0', null]) {
+    const value = absent(incomplete(report()));
+    record(value).applied_steps_count = count;
+    const original = structuredClone(value);
+    const ops = operations(value);
+    await assert.rejects(
+      recoverMultibotPreparation(ops, context(), { apply: true }),
+      /RECEIPT_INVALID/u,
+    );
+    assert.deepEqual(ops.calls, ['attest', 'read']);
+    assert.deepEqual(value, original);
+  }
+});
+
+test('a changed allowed cancellation family blocks later work while preserving the original receipt', async () => {
+  for (const phase of ['before-repair', 'after-repair', 'before-resolve']) {
+    const value = phase === 'before-resolve' ? report() : absent(incomplete(report()));
+    const ops = operations(value);
+    if (phase === 'after-repair') {
+      const repair = ops.repairIndex;
+      ops.repairIndex = async (action) => {
+        await repair(action);
+        record(value).failure_code = 'QUERY_CANCELLED';
+      };
+    } else {
+      const admit = ops.assertAdmission;
+      ops.assertAdmission = async () => {
+        await admit();
+        record(value).failure_code = 'CONNECTION_TERMINATED';
+      };
+    }
+    await assert.rejects(
+      recoverMultibotPreparation(ops, context(), { apply: true }),
+      /RECEIPT_CHANGED/u,
+    );
+    assert.equal(ops.calls.includes('resolve'), false);
+    assert.equal(
+      ops.calls.filter((call) => ['create', 'reindex'].includes(call)).length,
+      phase === 'after-repair' ? 1 : 0,
+    );
+    assert.equal(record(value).state, 'UNFINISHED');
+    assert.equal(record(value).rolled_back_at, null);
+    assert.equal(record(value).applied_steps_count, 0);
+  }
+});
+
+test('changed original evidence or nonzero new receipt cannot report successful Prisma resolution', async () => {
+  for (const corruption of ['original-family', 'original-steps', 'applied-steps']) {
+    const value = report();
+    const ops = operations(value);
+    const resolveMigration = ops.resolveMigration;
+    ops.resolveMigration = async (name) => {
+      await resolveMigration(name);
+      if (corruption === 'original-family') record(value).failure_code = 'QUERY_CANCELLED';
+      if (corruption === 'original-steps') record(value).applied_steps_count = 1;
+      if (corruption === 'applied-steps')
+        value.metadata.migrations[2].records[1].applied_steps_count = 1;
+    };
+    await assert.rejects(
+      recoverMultibotPreparation(ops, context(), { apply: true }),
+      corruption === 'original-family' ? /RESOLVE_POSTCONDITION_FAILED/u : /RECEIPT_INVALID/u,
+    );
+    assert.equal(ops.calls.filter((call) => call === 'resolve').length, 1);
+    assert.equal(value.metadata.migrations[2].records.length, 2);
+  }
+});
+
+test('an independently attested cancellation family remains valid when unchanged through resolution', async () => {
+  for (const failure of ['NO_ERROR_RECORDED', 'QUERY_CANCELLED', 'CONNECTION_TERMINATED']) {
+    const value = absent(incomplete(report()));
+    record(value).failure_code = failure;
+    const ops = operations(value);
+    assert.equal((await recoverMultibotPreparation(ops, context(), { apply: true })).applied, true);
+    assert.equal(record(value).failure_code, failure);
+    assert.deepEqual(
+      value.metadata.migrations[2].records.map((entry) => entry.applied_steps_count),
+      [0, 0],
+    );
+  }
+});
 
 test('apply reattests cancellation and catalog/admission before each repair and resolves only complete proof', async () => {
   const value = absent(incomplete(report()));

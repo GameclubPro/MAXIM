@@ -70,7 +70,7 @@ export async function attemptManualMemberUnban(
       sanctionEventId: expectedSanctionEventId,
       actorUserId,
     },
-    beforeImmediateMemberMutation: async () => {
+    beforeImmediateMemberMutation: async (revalidateRoute) => {
       await leaseGuard.assertOwned();
       await assertSanctionState({
         chatId,
@@ -80,6 +80,9 @@ export async function attemptManualMemberUnban(
       });
       if (await readTargetAccess()) throw new ModerationSanctionStateChangedError();
       await leaseGuard.assertOwned();
+      // FLAG: Both the target lookup and Redis lease renewal can outlive this bot's
+      // route proof. Recheck that proof last; no feature guard may await after it.
+      await revalidateRoute?.();
     },
     ...(botId ? { botId } : {}),
   });

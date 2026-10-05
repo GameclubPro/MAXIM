@@ -59,6 +59,8 @@ test(
         temp_limit_bytes: 6 * 1024 ** 3,
         parallel_maintenance_workers: 0,
         parallel_query_workers: 0,
+        default_tablespace: '',
+        temp_tablespaces: '',
       });
       await client.query('ROLLBACK');
     } finally {
