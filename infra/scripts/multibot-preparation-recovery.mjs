@@ -95,7 +95,13 @@ export function parseMultibotRecoveryArgs(args) {
 }
 
 export function verifyMultibotBaselineContainers(containers, imageId) {
-  if (!Array.isArray(containers) || !/^sha256:[a-f0-9]{64}$/u.test(imageId))
+  if (
+    !Array.isArray(containers) ||
+    containers.some(
+      (container) => !container || typeof container !== 'object' || Array.isArray(container),
+    ) ||
+    !/^sha256:[a-f0-9]{64}$/u.test(imageId)
+  )
     fail('BASELINE_RUNTIME_INVALID');
   const relevant = containers.filter(
     (container) =>
@@ -145,10 +151,10 @@ export function verifyMultibotBaselineContainers(containers, imageId) {
       container.Image !== imageId ||
       container.Name !== `/infra-${service}-1` ||
       state?.Status !== 'running' ||
-      (state.Running !== undefined && state.Running !== true) ||
-      ['Paused', 'Restarting', 'Dead'].some(
-        (key) => state[key] !== undefined && state[key] !== false,
-      ) ||
+      state.Running !== true ||
+      state.Paused !== false ||
+      state.Restarting !== false ||
+      state.Dead !== false ||
       !validHealth ||
       serviceEnvironment.length !== 1 ||
       roleEnvironment.length !== 1 ||
@@ -160,8 +166,11 @@ export function verifyMultibotBaselineContainers(containers, imageId) {
   // FLAG: An unexpected MAXIM API container can process work outside the recorded fleet.
   for (const container of containers) {
     if (relevant.includes(container)) continue;
+    const environment = container.Config?.Env ?? [];
+    if (!Array.isArray(environment) || environment.some((entry) => typeof entry !== 'string'))
+      fail('BASELINE_RUNTIME_INVALID');
     if (
-      (container.Config?.Env ?? []).some((entry) => /^APP_(ROLE|SERVICE_NAME)=/u.test(entry)) &&
+      environment.some((entry) => /^APP_(ROLE|SERVICE_NAME)=/u.test(entry)) &&
       (container.Config?.Labels?.['com.maxim.release-protected'] === 'true' ||
         /^\/(?:infra|infra-scale)-api-/u.test(container.Name ?? ''))
     )

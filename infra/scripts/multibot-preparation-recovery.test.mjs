@@ -142,6 +142,36 @@ test('baseline accepts all fourteen singleton running exact-image API roles with
   }
 });
 
+test('baseline rejects incomplete running flags and malformed inspection rows with a fixed code', () => {
+  for (const flag of ['Running', 'Paused', 'Restarting', 'Dead']) {
+    for (const value of [undefined, null, 'false', 0]) {
+      const rows = containers();
+      if (value === undefined) delete rows[0].State[flag];
+      else rows[0].State[flag] = value;
+      assert.throws(() => verifyMultibotBaselineContainers(rows, image), {
+        message: 'MULTIBOT_RECOVERY_BASELINE_RUNTIME_INVALID',
+      });
+    }
+  }
+  for (const malformedRow of [null, undefined, false, 'container', []]) {
+    const rows = [...containers(), malformedRow];
+    assert.throws(() => verifyMultibotBaselineContainers(rows, image), {
+      message: 'MULTIBOT_RECOVERY_BASELINE_RUNTIME_INVALID',
+    });
+  }
+  for (const malformedEnvironment of ['APP_ROLE=ingress', {}, [null], [42]]) {
+    const rows = containers();
+    rows[0].Config.Env = malformedEnvironment;
+    assert.throws(() => verifyMultibotBaselineContainers(rows, image), {
+      message: 'MULTIBOT_RECOVERY_BASELINE_RUNTIME_INVALID',
+    });
+    const foreignRows = [...containers(), { Config: { Env: malformedEnvironment } }];
+    assert.throws(() => verifyMultibotBaselineContainers(foreignRows, image), {
+      message: 'MULTIBOT_RECOVERY_BASELINE_RUNTIME_INVALID',
+    });
+  }
+});
+
 test('baseline honors effective Docker healthchecks and rejects contradictory inspection state', () => {
   for (const healthcheck of [undefined, null, { Test: [] }, { Test: ['NONE'] }]) {
     const rows = containers();
