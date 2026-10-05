@@ -31,10 +31,18 @@ import { MaxBotModule } from './max-bot.module';
 import { GroupCommandAuthorityService } from '../common/group-command-authority.service';
 import { RedisCounterModule } from '../moderation/redis-counter.module';
 import { MaxExecutionOwnerReadinessService } from './max-execution-owner-readiness.service';
+import { MaxModerationRuleNoticeGuardService } from './max-moderation-rule-notice.guard';
+import { MaxRequiredSubscriptionNoticeGuardService } from './max-required-subscription-notice.guard';
+import { MaxDuplicateNoticeGuardService } from './max-duplicate-notice.guard';
+import { ParticipantModerationImmunityService } from '../moderation/participant-moderation-immunity.service';
 
 const maxProviders = [
   GroupCommandAuthorityService,
   MaxClientService,
+  MaxModerationRuleNoticeGuardService,
+  MaxRequiredSubscriptionNoticeGuardService,
+  MaxDuplicateNoticeGuardService,
+  ParticipantModerationImmunityService,
   MaxActionDispatchService,
   MaxActionLedgerService,
   MaxChatAdminRosterSyncService,

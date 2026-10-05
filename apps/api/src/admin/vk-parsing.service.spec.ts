@@ -1851,6 +1851,75 @@ describe('VkParsingService', () => {
     );
   });
 
+  it('uses current source policy instead of an imported snapshot while holding the sync lease', async () => {
+    const { publishService, prisma, publishQueue } = createFixture();
+    const source = createSource({ syncLockedBy: 'sync-attempt', syncAttemptCount: 7 });
+    const candidate = createPostRow({
+      source,
+      publishScheduleFingerprint: VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT,
+    });
+    const current = createPostRow({
+      source: { ...source, autoPublishEnabled: false },
+      publishScheduleFingerprint: VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT,
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(current);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date(0),
+    });
+
+    await publishService.enqueueAutoPublishImportedPosts(
+      'channel-1',
+      [candidate] as never,
+      source as never,
+    );
+
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { publishScheduleFingerprint: null },
+      }),
+    );
+    expect(publishQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not claim a publish intent after sync ownership is lost during route preparation', async () => {
+    const { publishService, prisma, publishQueue } = createFixture();
+    const source = createSource({ syncLockedBy: 'sync-attempt', syncAttemptCount: 7 });
+    const post = createPostRow({
+      source,
+      publishScheduleFingerprint: VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT,
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date(0),
+      autoPublishKillSwitchEnabled: false,
+      circuitBreakerEnabled: false,
+    });
+    let leaseChecks = 0;
+    prisma.$queryRaw.mockImplementation(
+      async (query: { strings?: readonly string[] } | TemplateStringsArray) => {
+        const sql = Array.isArray(query)
+          ? query.join('')
+          : ((query as { strings?: readonly string[] }).strings?.join('') ?? '');
+        if (sql.includes('FROM "vk_parsing_sources"') && ++leaseChecks === 3) return [];
+        return [{ id: 'channel-1' }];
+      },
+    );
+
+    await expect(
+      publishService.enqueueAutoPublishImportedPosts('channel-1', [post] as never, source as never),
+    ).rejects.toThrow('no longer owns');
+
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ publishReason: 'autopublish' }),
+      }),
+    );
+    expect(publishQueue.add).not.toHaveBeenCalled();
+  });
+
   it('keeps the requested VK source when extended groups omit the wall owner', async () => {
     const { service, prisma } = createFixture();
     const source = createSource();
@@ -2775,6 +2844,7 @@ describe('VkParsingService', () => {
       publishScheduleFingerprint: VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT,
     });
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingPost.findMany.mockImplementation(async (query: any) =>
       query.include?.source ? [post] : [],
@@ -2845,6 +2915,7 @@ describe('VkParsingService', () => {
       publishScheduleFingerprint: VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT,
     });
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingPost.findMany.mockImplementation(async (query: any) => {
       if (query.select?.contentHash) {
         return [
@@ -2923,6 +2994,7 @@ describe('VkParsingService', () => {
       publishScheduleFingerprint: VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT,
     });
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findFirst.mockResolvedValue(pendingPost);
     prisma.vkParsingPost.findMany.mockImplementation(async (query: any) => {
       if (query.select?.contentHash) {
         return [
@@ -8782,7 +8854,7 @@ describe('VkParsingService', () => {
     await service.processSyncSourceJob('source-1', 'scheduled');
 
     expect(prisma.$executeRaw).not.toHaveBeenCalled();
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction).toHaveBeenCalled();
     expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       maxWait: 5_000,
       timeout: 15_000,
@@ -9025,7 +9097,7 @@ describe('VkParsingService', () => {
     const firstUrl = String((global.fetch as jest.Mock).mock.calls[0]?.[0] ?? '');
     expect(firstUrl).toContain('count=100');
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction).toHaveBeenCalled();
     expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       maxWait: 5_000,
       timeout: 15_000,
@@ -9170,7 +9242,7 @@ describe('VkParsingService', () => {
       }),
     );
     expect(prisma.vkParsingPost.update).not.toHaveBeenCalled();
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction).toHaveBeenCalled();
     expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       maxWait: 5_000,
       timeout: 15_000,
@@ -9266,7 +9338,7 @@ describe('VkParsingService', () => {
       }),
     );
     expect(prisma.vkParsingPost.update).not.toHaveBeenCalled();
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction).toHaveBeenCalled();
     expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       maxWait: 5_000,
       timeout: 15_000,

@@ -43,6 +43,69 @@ import {
 import { MAX_SEND_FENCE_STALE_MS } from '../max/max-send-ambiguity.util';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { hasPersistedTerminalDuplicateSanction } from './moderation-message-action-claim';
+import { duplicateExplanationIdempotencyKey } from './duplicate-moderation.actions';
+import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+
+function installStateDeleteExecutorFixture(service: ModerationService) {
+  const dependencies = service as unknown as {
+    prisma: { moderationEvent: { create: jest.Mock } };
+    maxClient: { deleteMessage: jest.Mock };
+  };
+  const allowedRules = new Set([
+    'BOT_ACCOUNT_MESSAGE_DELETE',
+    'GLOBAL_SPAMMER_MESSAGE_DELETE',
+    'MUTE_ACTIVE_DELETE',
+    'NIGHT_MODE_DELETE',
+  ]);
+  // FLAG: These lifecycle fixtures exercise the durable executor boundary. Native
+  // multibot tests cover its actual source, current-state and transport guards.
+  const executor = {
+    ensureIntent: jest.fn(),
+    getRolloutForInput: () => 'execute',
+    ensureAndAttempt: jest.fn(async (input: EnsureModerationDeleteIntentInput) => {
+      if (!input.ruleCode || !allowedRules.has(input.ruleCode))
+        throw new Error('State executor fixture received an unrelated rule');
+      if (
+        !input.sourceMessageAt ||
+        Date.now() >= new Date(input.sourceMessageAt).getTime() + 300_000
+      )
+        return { kind: 'expired', confirmed: false };
+      await dependencies.maxClient.deleteMessage(input.chatId, input.messageId, {
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+        ignoreFailureMetricStatuses: [403, 404],
+      });
+      if (input.event?.eventType === 'MESSAGE')
+        await dependencies.prisma.moderationEvent.create({
+          data: {
+            chatId: input.chatId,
+            userId: input.subjectUserId,
+            messageId: input.messageId,
+            eventType: 'MESSAGE',
+            ruleCode: input.ruleCode,
+            action: SanctionAction.DELETE_MESSAGE,
+            operator: 'BOT',
+            maskedExcerpt: input.event.maskedExcerpt,
+            score: input.event.score,
+            metadata: input.event.metadata,
+          },
+        });
+      return {
+        kind: 'confirmed',
+        confirmed: true,
+        intentId: 'lifecycle-fixture-intent',
+        status: 'SUCCEEDED',
+        botId: 'lifecycle-fixture-bot',
+        verifiedReasonKeys: [input.reasonKey],
+      };
+    }),
+  };
+  Object.assign(service, { moderationDeleteIntentService: executor });
+  return executor;
+}
 
 function userMentionHtml(displayName: string, userId: string): string {
   return `<a href="max://user/${userId}">${displayName}</a>`;
@@ -1143,23 +1206,14 @@ describe('ModerationService', () => {
   });
 
   it('scopes photo duplicate explanation idempotency to the chat and message', () => {
-    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
     const metadata = { duplicateSource: 'photo' };
 
-    expect(
-      (service as any).buildPhotoDuplicateExplanationIdempotencyKey(
-        metadata,
-        'chat-1',
-        'message-1',
-      ),
-    ).toBe('photo-duplicate:chat-1:message-1:explanation');
-    expect(
-      (service as any).buildPhotoDuplicateExplanationIdempotencyKey(
-        metadata,
-        'chat-2',
-        'message-1',
-      ),
-    ).toBe('photo-duplicate:chat-2:message-1:explanation');
+    expect(duplicateExplanationIdempotencyKey(metadata, 'chat-1', 'message-1')).toBe(
+      'photo-duplicate:chat-1:message-1:explanation',
+    );
+    expect(duplicateExplanationIdempotencyKey(metadata, 'chat-2', 'message-1')).toBe(
+      'photo-duplicate:chat-2:message-1:explanation',
+    );
   });
 
   it('does not turn a photo duplicate ban into global spammer evidence', async () => {
@@ -3613,11 +3667,12 @@ describe('ModerationService', () => {
       maxClient as never,
       chatContextCache as never,
     );
+    installStateDeleteExecutorFixture(service);
     const ensureDeleteIntent = jest
       .spyOn(service as any, 'ensureModerationDeleteIntent')
       .mockResolvedValue(undefined);
     const update = createBotAuthoredUpdate();
-    update.message!.createdAt = '2026-08-15T09:35:00.000Z';
+    update.message!.createdAt = new Date().toISOString();
 
     await service.handleUpdate(update);
 
@@ -6744,11 +6799,12 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installStateDeleteExecutorFixture(service);
     const ensureDeleteIntent = jest
       .spyOn(service as any, 'ensureModerationDeleteIntent')
       .mockResolvedValue(undefined);
     const update = createUpdate();
-    update.message!.createdAt = '2026-08-15T09:36:00.000Z';
+    update.message!.createdAt = new Date().toISOString();
 
     await service.handleUpdate(update);
 
@@ -6939,11 +6995,12 @@ describe('ModerationService', () => {
       undefined,
       redisCounter as never,
     );
+    installStateDeleteExecutorFixture(service);
     const ensureDeleteIntent = jest
       .spyOn(service as any, 'ensureModerationDeleteIntent')
       .mockResolvedValue(undefined);
     const update = createUpdate();
-    update.message!.createdAt = '2026-08-15T09:38:00.000Z';
+    update.message!.createdAt = new Date().toISOString();
 
     await service.handleUpdate(update);
 
@@ -7595,6 +7652,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installStateDeleteExecutorFixture(service);
 
     await service.handleUpdate(createUpdate());
 
@@ -7619,7 +7677,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('deduplicates mirrored active-mute old-message deletion claims', async () => {
+  it('deduplicates mirrored active-mute expired-message claims without dispatch', async () => {
     const claimedKeys = new Set<string>();
     const prisma = {
       chat: {
@@ -7692,6 +7750,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installStateDeleteExecutorFixture(service);
 
     await service.handleUpdate(createOldUpdate());
     await service.handleUpdate({
@@ -7701,8 +7760,8 @@ describe('ModerationService', () => {
     });
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-old-1');
-    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     expect(maxClient.notifyModerators).not.toHaveBeenCalled();
     expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
     expect(claimedKeys.size).toBe(1);
@@ -7769,6 +7828,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installStateDeleteExecutorFixture(service);
 
     await service.handleUpdate(createUpdate());
 
@@ -8063,6 +8123,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installStateDeleteExecutorFixture(service);
 
     await service.handleUpdate(createUpdate());
 
@@ -8356,6 +8417,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installStateDeleteExecutorFixture(service);
 
     await service.handleUpdate(createUpdate());
 

@@ -90,12 +90,19 @@ describe('retention root dependency graph', () => {
           await import('../message-retention/message-retention-runtime.service');
         const { ModerationDeleteIntentService } =
           await import('../moderation/moderation-delete-intent.service');
+        const { MESSAGE_DUPLICATE_NOTICE_AUTHORITY } =
+          await import('../moderation/message-duplicate/message-duplicate-guard.contract');
+        const { MessageDuplicateDeleteGuardService } =
+          await import('../moderation/message-duplicate/message-duplicate-delete-guard.service');
         const builder = Test.createTestingModule({ imports: [root] })
           .overrideProvider(PrismaService)
           .useValue({});
         for (const token of queueTokens) builder.overrideProvider(token).useValue({});
         const context = await builder.compile();
         try {
+          expect(context.get(MESSAGE_DUPLICATE_NOTICE_AUTHORITY)).toBe(
+            context.get(MessageDuplicateDeleteGuardService),
+          );
           expect(context.get(MessageRetentionRuntime)).toBeInstanceOf(MessageRetentionRuntime);
           expect(context.get(ModerationDeleteIntentService)).toBeInstanceOf(
             ModerationDeleteIntentService,

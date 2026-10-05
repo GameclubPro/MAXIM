@@ -1,7 +1,11 @@
-import type { MaxUpdate } from '@maxim/contracts';
+import { chatSettingsSchema, type MaxUpdate } from '@maxim/contracts';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { AdminService } from '../admin/admin.service';
+import { saveChatSettings } from '../admin/admin-chat-settings';
+import { ConfigService } from '@nestjs/config';
+import { ClosedChatDeleteGuardService } from '../moderation/closed-chat-delete-guard.service';
+import { formatMinutesAsTime } from '../moderation/night-mode-transition-time.util';
 import { WebhookOutboxService } from '../webhook/webhook-outbox.service';
 import {
   ChatEntityType,
@@ -820,6 +824,116 @@ describePostgresRace('PostgreSQL durable GROUP command races', () => {
       }),
     ).toBe(1);
   });
+
+  it.each(['disable/enable', 'schedule/restore', 'timezone/restore'])(
+    'never revives old night deletes after API %s, and preserves RULES ordering',
+    async (change) => {
+      const data = await fixture(4);
+      const sourceAt = new Date(Date.now() - 60_000);
+      const minute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+      const start = (minute + 1380) % 1440;
+      const end = (minute + 60) % 1440;
+      await prisma.chatSettings.update({
+        where: { chatId: data.chatId },
+        data: {
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: start,
+          nightModeEndTimeMinutes: end,
+          nightModeTimezone: 'UTC',
+        },
+      });
+      const remoteRow = {
+        sender: { user_id: 'ordinary-night-user' },
+        recipient: { chat_id: data.chatId, chat_type: 'chat' },
+        timestamp: sourceAt.getTime(),
+        body: { mid: data.messageId, text: 'night message' },
+      };
+      const guard = new ClosedChatDeleteGuardService(
+        prisma as never,
+        {
+          getChatMemberAccess: async () => ({
+            userId: 'ordinary-night-user',
+            isAdmin: false,
+            isOwner: false,
+          }),
+          getExactMessageRow: async () => remoteRow,
+        } as never,
+        { isKnownBotUserId: () => false } as never,
+        { consumeForMessage: async () => 'not_granted' } as never,
+        new ConfigService(),
+      );
+      const authorization = {
+        chatId: data.chatId,
+        messageId: data.messageId,
+        subjectUserId: 'ordinary-night-user',
+        sourceMessageAt: sourceAt,
+        botId: 'bot-4',
+        reasons: [
+          {
+            ruleCode: 'NIGHT_MODE_DELETE',
+            reasonKey: 'night',
+            metadata: {
+              nightModeTimezone: 'UTC',
+              nightModeStartTime: formatMinutesAsTime(start),
+              nightModeEndTime: formatMinutesAsTime(end),
+            },
+          },
+        ],
+      };
+      await expect(guard.authorize(authorization)).resolves.toMatchObject({
+        reasonKeys: ['night'],
+      });
+      const original = await prisma.chat.findUniqueOrThrow({ where: { id: data.chatId } });
+      const bodies =
+        change === 'disable/enable'
+          ? [{ nightModeEnabled: false }, { nightModeEnabled: true }]
+          : change === 'schedule/restore'
+            ? [
+                { nightModeStartTimeMinutes: (start + 1) % 1440 },
+                { nightModeStartTimeMinutes: start },
+              ]
+            : [{ nightModeTimezone: 'Europe/Moscow' }, { nightModeTimezone: 'UTC' }];
+      for (const body of bodies) {
+        const snapshot: Record<string, unknown> = chatSettingsSchema.parse(
+          await prisma.chatSettings.findUniqueOrThrow({ where: { chatId: data.chatId } }),
+        );
+        // This request edits the night section, not the independent rules attachment setting.
+        delete snapshot.rulesAttachViolationsEnabled;
+        await saveChatSettings({
+          prisma: prisma as never,
+          chatContextCache: { invalidate: async () => undefined },
+          chatId: data.chatId,
+          actorUserId: actor.userId,
+          body: {
+            ...snapshot,
+            ...body,
+          },
+          source: 'miniapp',
+          resolveBotAssignmentData: () => ({}),
+          assertRequiredSubscriptionSettings: async () => undefined,
+          assertBotCapabilities: async () => undefined,
+          refreshExecutionReadiness: async () => undefined,
+        });
+      }
+      const current = await prisma.chat.findUniqueOrThrow({ where: { id: data.chatId } });
+      expect(current.chatControlOrderAt!.getTime()).toBeGreaterThan(sourceAt.getTime());
+      expect(current.rulesOrderAt).toEqual(original.rulesOrderAt);
+      await expect(guard.authorize(authorization)).rejects.toMatchObject({
+        code: 'closed_chat_delete_no_longer_authorized',
+      });
+      // FLAG: The fence excludes old source events, not valid messages from the new session.
+      const freshSource = new Date(Math.max(Date.now(), current.chatControlOrderAt!.getTime() + 1));
+      remoteRow.timestamp = freshSource.getTime();
+      await expect(
+        guard.authorize({ ...authorization, sourceMessageAt: freshSource }),
+      ).resolves.toMatchObject({
+        reasonKeys: ['night'],
+      });
+      expect(
+        await prisma.auditLog.count({ where: { chatId: data.chatId, action: 'UPDATE_SETTINGS' } }),
+      ).toBe(2);
+    },
+  );
 
   it('keeps a newer OPEN result when older SILENCE workers acquire the parent lock later', async () => {
     const oldData = await fixture(9, new Date(Date.now() - 120_000));

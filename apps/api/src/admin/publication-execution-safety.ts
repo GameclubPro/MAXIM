@@ -1,5 +1,9 @@
 import { ConflictException } from '@nestjs/common';
-import { ManagedBroadcastDeliveryStatus, ManagedBroadcastStatus } from '../prisma/prisma-client';
+import {
+  ManagedBroadcastDeliveryStatus,
+  ManagedBroadcastStatus,
+  type Prisma,
+} from '../prisma/prisma-client';
 
 type PublicationExecutionBroadcastLease = {
   id: string;
@@ -36,6 +40,45 @@ export function buildUnsafePublicationExecutionDeliveryWhere() {
       },
     ],
   };
+}
+
+export async function reviseUnstartedPublicationExecutionBroadcasts(
+  tx: PublicationExecutionMutationClient,
+  broadcasts: readonly PublicationExecutionBroadcastLease[],
+  data: Prisma.ManagedBroadcastUncheckedUpdateManyInput,
+  message: string,
+): Promise<void> {
+  assertPublicationExecutionBroadcastsUnleased(broadcasts, message);
+  const broadcastIds = broadcasts.map((broadcast) => broadcast.id);
+  if (broadcastIds.length === 0) return;
+
+  // FLAG: Update envelopes before their occurrences/deliveries in the same transaction. These
+  // row locks serialize with the worker's envelope claim; any lease or attempted delivery
+  // rejects the entire edit, even when the submitted content equals the previous revision.
+  const revised = await tx.managedBroadcast.updateMany({
+    where: {
+      id: { in: broadcastIds },
+      status: ManagedBroadcastStatus.ACTIVE,
+      sentCount: 0,
+      lockedAt: null,
+      lockToken: null,
+      deliveries: {
+        none: {
+          OR: [
+            ...buildUnsafePublicationExecutionDeliveryWhere().OR,
+            { lockToken: { not: null } },
+            { remoteMessageId: { not: null } },
+            { sentAt: { not: null } },
+            { postActionsToken: { not: null } },
+          ],
+        },
+      },
+    },
+    data,
+  });
+  if (revised.count !== broadcastIds.length) {
+    throwPublicationExecutionRequiresManualReview(message);
+  }
 }
 
 export function throwPublicationExecutionRequiresManualReview(message: string): never {

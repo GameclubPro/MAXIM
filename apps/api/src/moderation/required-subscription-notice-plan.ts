@@ -9,6 +9,10 @@ import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import type { MaxSendMessageOptions } from '../max/max-client.service';
 import { withModerationReleaseButton } from './moderation-release-callback.util';
 import {
+  readRequiredSubscriptionNoticeAuthority,
+  type RequiredSubscriptionNoticeAuthority,
+} from './required-subscription-notice-authority';
+import {
   MAX_ACTIVE_MUTE_DURATION_HOURS,
   REQUIRED_SUBSCRIPTION_RULE_CODE,
 } from './moderation.service.support';
@@ -26,6 +30,7 @@ export type RequiredSubscriptionNoticePlan = {
   mediaFieldKey: BotSpeechMediaFieldKey | null;
   deleteBotMessagesEnabled: boolean;
   deleteBotMessagesDelayMinutes: number;
+  executionProof?: RequiredSubscriptionNoticeAuthority;
 };
 
 export type RequiredSubscriptionPersistedDecision = {
@@ -69,6 +74,7 @@ export async function buildRequiredSubscriptionNoticePlan(params: {
   sanctionEventId: string | null;
   deleteBotMessagesEnabled: boolean;
   deleteBotMessagesDelayMinutes: number;
+  executionProof?: RequiredSubscriptionNoticeAuthority;
   copy: {
     explanation: () => Promise<string>;
     warning: () => Promise<string>;
@@ -114,6 +120,7 @@ export async function buildRequiredSubscriptionNoticePlan(params: {
     deleteBotMessagesDelayMinutes: normalizeDeleteBotMessagesDelayMinutes(
       params.deleteBotMessagesDelayMinutes,
     ),
+    ...(params.executionProof ? { executionProof: params.executionProof } : {}),
   };
 }
 
@@ -175,6 +182,9 @@ export function parseRequiredSubscriptionNoticePlanMetadata(
           ? (parsed.mediaFieldKey as BotSpeechMediaFieldKey)
           : undefined;
     const deleteBotMessagesDelayMinutes = parsed.deleteBotMessagesDelayMinutes;
+    const executionProof = Object.hasOwn(parsed, 'executionProof')
+      ? readRequiredSubscriptionNoticeAuthority(parsed.executionProof)
+      : undefined;
     if (
       parsed.version !== REQUIRED_SUBSCRIPTION_NOTICE_PLAN_VERSION ||
       !action ||
@@ -182,6 +192,7 @@ export function parseRequiredSubscriptionNoticePlanMetadata(
       Buffer.byteLength(renderedText, 'utf8') > REQUIRED_SUBSCRIPTION_NOTICE_PLAN_MAX_BYTES ||
       !messageOptions ||
       mediaFieldKey === undefined ||
+      executionProof === null ||
       typeof parsed.deleteBotMessagesEnabled !== 'boolean' ||
       typeof deleteBotMessagesDelayMinutes !== 'number' ||
       !Number.isFinite(deleteBotMessagesDelayMinutes) ||
@@ -199,6 +210,7 @@ export function parseRequiredSubscriptionNoticePlanMetadata(
       mediaFieldKey,
       deleteBotMessagesEnabled: parsed.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
+      ...(executionProof ? { executionProof } : {}),
     };
   } catch {
     return null;

@@ -155,6 +155,10 @@ import {
   PublisherDeliveryDeferredError,
   PublisherManagedBroadcastDispatch,
 } from './publisher-managed-broadcast-dispatch';
+import {
+  isPublicationRecipientAdmissionComplete,
+  resolveManagedBroadcastRecipientAdmission,
+} from './publisher-publication-recipient-admission';
 import { AdminManagedBroadcastMessageRuntime } from './admin-managed-broadcast-message-runtime';
 import {
   BadRequestException,
@@ -405,7 +409,6 @@ import {
   ensureManagedBroadcastPublicationExecutionActive as ensurePublicationExecutionActive,
   ManagedBroadcastPublicationExecutionStopped,
   resolvePublicationRateLimitRetryAt,
-  selectManagedBroadcastDeliveryCandidates,
 } from './publication-execution-recovery';
 import { isTransientPublicationPrismaError } from './publication-prisma-retry';
 import {
@@ -3408,32 +3411,10 @@ export class AdminManagedBroadcastRuntime {
         targetChatIds,
         initialDeliveries,
       );
-      if (isPublikExecution) {
-        // FLAG: Receipts and terminal outcomes are DB recovery, not new sends. Expired access for
-        // an already delivered target must not block rollup or the remaining authorized recipients.
-        const pendingTargetChatIds = initialDeliveries
-          .filter((delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING)
-          .map((delivery) => delivery.targetChatId);
-        if (pendingTargetChatIds.length > 0) {
-          const pendingAccessResult = await checkActorAccess(pendingTargetChatIds);
-          if (pendingAccessResult) return pendingAccessResult;
-        } else if (
-          initialDeliveries.length > 0 &&
-          initialDeliveries.every(
-            (delivery) => delivery.status !== PrismaManagedBroadcastDeliveryStatus.SENDING,
-          )
-        ) {
-          return await this.finalizeManagedBroadcastOccurrence(
-            row,
-            currentOccurrence,
-            [],
-            [],
-            null,
-            {
-              lease: activeLease,
-            },
-          );
-        }
+      if (isPublikExecution && isPublicationRecipientAdmissionComplete(initialDeliveries)) {
+        return await this.finalizeManagedBroadcastOccurrence(row, currentOccurrence, [], [], null, {
+          lease: activeLease,
+        });
       }
       const firstDeadlineScheduledAt =
         reason === 'deadline' &&
@@ -3846,17 +3827,15 @@ export class AdminManagedBroadcastRuntime {
         );
       };
 
-      const automaticDeliveryQuantum =
-        automaticDeliveryQuantumOverride ??
-        (reason === 'startup' || reason === 'scheduled' || reason === 'deadline'
-          ? MANAGED_BROADCAST_AUTOMATIC_DELIVERY_QUANTUM
-          : Number.POSITIVE_INFINITY);
-      const deliveryCandidates = selectManagedBroadcastDeliveryCandidates(
-        initialDeliveries,
-        Boolean(row.publicationOccurrenceId),
-      );
+      const admission = resolveManagedBroadcastRecipientAdmission(initialDeliveries, {
+        isPublikExecution,
+        isPublicationExecution: Boolean(row.publicationOccurrenceId),
+        reason,
+        quantumOverride: automaticDeliveryQuantumOverride,
+      });
+      const { automaticDeliveryQuantum, deliveryCandidates } = admission;
       let claimedDeliveryCount = 0;
-      let pendingNotBefore: Date | null = null;
+      let pendingNotBefore: Date | null = admission.pendingNotBefore;
       for (const delivery of deliveryCandidates) {
         activeDeliveryClaim = undefined;
         if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.PENDING) {
@@ -3886,6 +3865,7 @@ export class AdminManagedBroadcastRuntime {
             row,
             delivery,
             requiredPublisherBotId!,
+            row.actorUserId,
           );
           if (deferredUntil) {
             pendingNotBefore = resolveEarlierDate(pendingNotBefore, deferredUntil);
@@ -5883,11 +5863,22 @@ export class AdminManagedBroadcastRuntime {
             hasPublicationDeliveryAutomatedVerificationState(delivery),
         )
       : [];
-    const hasImmediatelyReadyPendingDelivery = pendingChats.some(
-      (delivery: any) =>
-        delivery.lastErrorCode !== PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE &&
-        !delivery.dispatchBlockerCode,
+    const recipientState = await this.publisherDispatch.prepareRecipientFinalization(
+      row,
+      options.lease,
+      pendingChats,
     );
+    if (!recipientState.leaseOwned) {
+      return this.readManagedBroadcastOccurrenceResult(
+        row.id,
+        sentChatIds,
+        failedLikeChatIds,
+        pendingChats.map((delivery: any) => delivery.targetChatId),
+        firstSendError,
+        false,
+      );
+    }
+    const { hasImmediatelyReadyPendingDelivery } = recipientState;
     const canRetry = failedChats.length > 0;
     const scheduleMode = normalizeBroadcastScheduleMode(row.scheduleMode);
 

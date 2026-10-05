@@ -483,6 +483,7 @@ SELECT json_build_object(
       'oldest_ordering_predecessor', CASE WHEN predecessor.fence IS NULL THEN NULL ELSE
         json_build_object(
           'age_seconds', greatest(0, floor(extract(epoch FROM clock_timestamp() - predecessor.created_at))::bigint),
+          'event_type', predecessor.event_type,
           'enqueue_attempts', predecessor.enqueue_attempts,
           'error_kind', predecessor.error_kind,
           'error_family', predecessor.error_family,
@@ -547,6 +548,12 @@ LEFT JOIN LATERAL (
     WHEN status = 'QUEUED'::"WebhookStatus" THEN 'queued_predecessor'
     ELSE 'received_predecessor'
   END AS fence,
+    CASE LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
+      NULLIF(BTRIM(normalized_payload->>'update_type'), '')))
+      WHEN 'message_created' THEN 'message_created'
+      WHEN 'message_edited' THEN 'message_edited'
+      ELSE 'unknown'
+    END AS event_type,
     created_at,
     enqueue_attempts,
     next_enqueue_at,
@@ -568,6 +575,18 @@ LEFT JOIN LATERAL (
     -- FLAG: Error text is untrusted and may contain payloads. Emit fixed families only.
     CASE
       WHEN error_message IS NULL THEN 'none'
+      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook claim is not ready for '
+        THEN 'canonical_not_ready'
+      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease is busy for '
+        THEN 'canonical_business_lease_busy'
+      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease was lost (before completion|before unfenced timeout settlement|during timeout quarantine) for '
+        THEN 'canonical_business_lease_lost'
+      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease storage is unavailable for '
+        THEN 'canonical_business_lease_unavailable'
+      WHEN error_message IN (
+        'Chat rules publication is in flight; retry own-bot message classification',
+        'Webhook preparation failed: Chat rules publication is in flight; retry own-bot message classification'
+      ) THEN 'rules_publication_fence'
       WHEN error_message ILIKE '%preparation lease was lost%' THEN 'preparation_lease_lost'
       WHEN error_message ILIKE '%execution claim disappeared%' THEN 'execution_claim_missing'
       WHEN error_message ILIKE '%Publisher webhook lifecycle boundary is unavailable%'

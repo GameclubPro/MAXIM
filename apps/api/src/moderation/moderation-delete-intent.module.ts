@@ -1,3 +1,8 @@
+import { ClosedChatDeleteGuardService } from './closed-chat-delete-guard.service';
+import { ModerationRuleSanctionGuardService } from './moderation-rule-sanction-guard.service';
+import { ModerationStateDeleteGuardService } from './moderation-state-delete-guard.service';
+import { RequiredSubscriptionExecutionGuardService } from './required-subscription-execution-guard.service';
+import { GlobalSpammerPolicyModule } from './global-spammer-policy.module';
 import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
 import { Module } from '@nestjs/common';
@@ -28,6 +33,7 @@ import { TrafficProtectionDeleteGuardService } from './traffic-protection-delete
 import { RuleEngineModule } from './rule-engine.module';
 import { MessageDuplicateStateModule } from './message-duplicate/message-duplicate-state.module';
 import { MessageDuplicateDeleteGuardService } from './message-duplicate/message-duplicate-delete-guard.service';
+import { MESSAGE_DUPLICATE_NOTICE_AUTHORITY } from './message-duplicate/message-duplicate-guard.contract';
 import { MessageDuplicateCleanupReconcilerService } from './message-duplicate/message-duplicate-cleanup-reconciler.service';
 
 const actionRoleProviders = roleRunsAction(getAppRole())
@@ -41,6 +47,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
 @Module({
   imports: [
     SuggestionSubscriptionModule,
+    GlobalSpammerPolicyModule,
     SystemRuntimeModule,
     MessageRetentionStateModule,
     ...registerRuntimeQueues(MODERATION_DELETE_INTENT_QUEUE),
@@ -52,6 +59,10 @@ const actionRoleProviders = roleRunsAction(getAppRole())
   ],
   providers: [
     MessageLimitsDeleteGuardService,
+    ClosedChatDeleteGuardService,
+    ModerationStateDeleteGuardService,
+    RequiredSubscriptionExecutionGuardService,
+    ModerationRuleSanctionGuardService,
     MessageRetentionDeleteGuard,
     ReportDeleteGuardService,
     LinkHistoryDeleteGuardService,
@@ -65,10 +76,17 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     CommercialOcrRuntimePolicyService,
     PhotoDuplicateRuntimePolicyService,
     MessageDuplicateDeleteGuardService,
+    {
+      provide: MESSAGE_DUPLICATE_NOTICE_AUTHORITY,
+      useExisting: MessageDuplicateDeleteGuardService,
+    },
     ModerationDeleteIntentService,
     ...actionRoleProviders,
   ],
   exports: [
+    ModerationStateDeleteGuardService,
+    RequiredSubscriptionExecutionGuardService,
+    ModerationRuleSanctionGuardService,
     MessageRetentionDeleteGuard,
     StopWordsDeleteGuardService,
     ModerationDeleteIntentService,
@@ -79,6 +97,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     CommercialOcrRuntimePolicyService,
     PhotoDuplicateRuntimePolicyService,
     MessageDuplicateDeleteGuardService,
+    MESSAGE_DUPLICATE_NOTICE_AUTHORITY,
   ],
 })
 export class ModerationDeleteIntentModule {}

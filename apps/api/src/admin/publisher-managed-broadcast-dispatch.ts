@@ -7,6 +7,7 @@ import {
   ManagedBroadcastDeliveryStatus,
   PublicationDispatchProfile,
   Prisma,
+  type ManagedBroadcastDelivery,
 } from '../prisma/prisma-client';
 import {
   classifyPublisherFailure,
@@ -16,13 +17,18 @@ import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadc
 import {
   PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
   PUBLISHER_EXPLICIT_RETRY_CODE,
+  PUBLISHER_PUBLICATION_BLOCKED_RETRY_MS as PUBLISHER_BLOCKED_RETRY_MS,
 } from './publication-dispatch-issue';
 import { publisherConnectedBindingWhere } from '../publisher/publisher-entity-connection.util';
 import { isTransientPublicationPrismaError } from './publication-prisma-retry';
 import { PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS } from '../publisher/publisher-readiness.service';
 import { recordPublicationDispatchOutcome } from './publication-delivery-timing';
+import {
+  buildClearResolvedPublisherRecipientBlockerQuery,
+  publisherPublicationRecipientRetryAt,
+} from './publisher-publication-recipient-admission';
+import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 
-const PUBLISHER_BLOCKED_RETRY_MS = 60_000;
 const PUBLISHER_RUNTIME_BLOCKER = 'PUBLISHER_RUNTIME_UNAVAILABLE';
 
 type PublisherBroadcastRow = {
@@ -222,9 +228,10 @@ export class PublisherManagedBroadcastDispatch {
     row: PublisherBroadcastRow,
     delivery: PublisherDeliveryRow,
     requiredBotId: string,
+    actorUserId?: string,
   ): Promise<Date | null> {
     try {
-      await this.assertDeliveryReady(delivery.targetChatId, requiredBotId);
+      await this.assertDeliveryReady(delivery.targetChatId, requiredBotId, actorUserId);
       await this.context.prisma.managedBroadcastDelivery.updateMany({
         where: {
           id: delivery.id,
@@ -339,6 +346,60 @@ export class PublisherManagedBroadcastDispatch {
       );
     }
     return dialogBotId;
+  }
+
+  async clearResolvedRecipientBlocker(
+    row: PublisherBroadcastRow,
+    lease: PublisherBroadcastLease,
+  ): Promise<boolean> {
+    if (!row.publicationOccurrenceId) return true;
+    return this.context.prisma.$transaction(async (tx) => {
+      const leaseCheck = await tx.managedBroadcast.updateMany({
+        where: {
+          id: row.id,
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          status: {
+            in: [
+              ManagedBroadcastStatus.ACTIVE,
+              ManagedBroadcastStatus.PARTIAL,
+              ManagedBroadcastStatus.FAILED,
+            ],
+          },
+          lockedAt: lease.lockedAt,
+          lockToken: lease.lockToken,
+        },
+        data: { lockedAt: lease.lockedAt },
+      });
+      if (leaseCheck.count !== 1) return false;
+      await tx.$executeRaw(
+        buildClearResolvedPublisherRecipientBlockerQuery(row.publicationOccurrenceId!, new Date()),
+      );
+      return true;
+    });
+  }
+
+  async prepareRecipientFinalization(
+    row: PublisherBroadcastRow & { dispatchProfile?: PublicationDispatchProfile },
+    lease: PublisherBroadcastLease | undefined,
+    pending: readonly Pick<
+      ManagedBroadcastDelivery,
+      'lastErrorCode' | 'dispatchBlockerCode' | 'dispatchBlockedAt'
+    >[],
+  ): Promise<{ leaseOwned: boolean; hasImmediatelyReadyPendingDelivery: boolean }> {
+    const isPublisher = row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1;
+    const leaseOwned =
+      !isPublisher || !lease || (await this.clearResolvedRecipientBlocker(row, lease));
+    const now = new Date();
+    return {
+      leaseOwned,
+      hasImmediatelyReadyPendingDelivery: pending.some(
+        (delivery) =>
+          delivery.lastErrorCode !== PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE &&
+          (isPublisher
+            ? !publisherPublicationRecipientRetryAt(delivery, now)
+            : !delivery.dispatchBlockerCode),
+      ),
+    };
   }
 
   async recordFailure(

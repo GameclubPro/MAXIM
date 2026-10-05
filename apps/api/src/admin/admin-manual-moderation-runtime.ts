@@ -53,6 +53,7 @@ import {
 } from './admin-manual-fanout.queue';
 import type { AdminSuperBanJob } from './admin-super-ban.queue';
 import { formatManualModerationUserLabel } from './manual-moderation-notice.util';
+import { ManualGroupCommandNoticeAuthorityRejectedError } from './admin-manual-group-command-notice-authority';
 import type {
   AdminManualModerationRuntimeContext,
   ManualBanFollowUpInput,
@@ -92,6 +93,7 @@ export type ManualGroupCommandNoticeInput = {
     targetUserId: string;
     commandMessageId: string;
     action: 'BAN' | 'MUTE';
+    issuedAtMs?: number;
   };
   text: string;
   release?: {
@@ -280,6 +282,7 @@ export class AdminManualModerationRuntime {
   }): AdminManualGroupModerationCommandJob {
     return {
       kind: 'manual_group_moderation_command',
+      issuedAtMs: Date.now(),
       jobId: this.buildManualGroupModerationCommandJobId(
         params.sourceChatId,
         params.commandMessageId,
@@ -846,6 +849,9 @@ export class AdminManualModerationRuntime {
         targetUserId: job.targetUserId,
         commandMessageId: job.commandMessageId,
         action: job.action,
+        ...(Number.isSafeInteger(job.issuedAtMs) && job.issuedAtMs! > 0
+          ? { issuedAtMs: job.issuedAtMs }
+          : {}),
       },
       text:
         job.action === 'BAN'
@@ -926,6 +932,10 @@ export class AdminManualModerationRuntime {
   }
 
   async sendManualGroupCommandNotice(params: ManualGroupCommandNoticeInput): Promise<void> {
+    // FLAG: Unbound legacy/developer notices and diagnostic outcomes stay out of groups.
+    // Only an explicit, durably recorded successful administrator command may publish.
+    if (!params.ledger) return;
+    const textHash = createHash('sha256').update(params.text).digest('hex').slice(0, 32);
     let operationKey: string | null = null;
     let ledgerLockToken: string | null = null;
     if (params.ledger) {
@@ -963,13 +973,28 @@ export class AdminManualModerationRuntime {
           action: params.ledger.action,
           outcome: params.ledger.outcome,
           commandMessageId: params.ledger.commandMessageId,
-          textHash: createHash('sha256').update(params.text).digest('hex').slice(0, 32),
+          textHash,
+          ...(params.ledger.issuedAtMs !== undefined
+            ? { issuedAtMs: params.ledger.issuedAtMs }
+            : {}),
+          ...(params.ledger.outcome !== 'SUCCESS'
+            ? { suppressed: true, resultText: params.text }
+            : {}),
         },
       });
       if (!claim.claimed) {
         return;
       }
       ledgerLockToken = claim.lockToken;
+    }
+
+    if (params.ledger.outcome !== 'SUCCESS') {
+      await this.context.completeManualModerationFanoutLedgerEntry({
+        operationKey: operationKey!,
+        lockToken: ledgerLockToken!,
+        botId: params.botId ?? null,
+      });
+      return;
     }
 
     const dispatchOptions = this.buildManualGroupCommandNoticeDispatchOptions({
@@ -979,7 +1004,9 @@ export class AdminManualModerationRuntime {
     });
 
     let noticeSendAttempted = false;
-    dispatchOptions.beforeImmediateSendMutation = async () => {
+    dispatchOptions.ledgerContext = { moderationNoticeEnvelope: { version: 1 } };
+    dispatchOptions.beforeImmediateSendMutation = async (revalidateRoute) => {
+      await revalidateRoute?.();
       if (operationKey && ledgerLockToken) {
         await this.context.markManualModerationFanoutLedgerFailed({
           operationKey,
@@ -993,6 +1020,13 @@ export class AdminManualModerationRuntime {
           requireClaim: true,
         });
       }
+      await this.context.assertManualGroupCommandSuccessNoticeAuthority({
+        ...params.ledger!,
+        operationKey: operationKey!,
+        lockToken: ledgerLockToken!,
+        chatId: params.chatId,
+        textHash,
+      });
       noticeSendAttempted = true;
     };
     if (operationKey) {
@@ -1027,11 +1061,17 @@ export class AdminManualModerationRuntime {
         await this.context.markManualModerationFanoutLedgerFailed({
           operationKey,
           lockToken: ledgerLockToken,
-          status: ambiguousSend
-            ? PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS
-            : PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
+          status:
+            error instanceof ManualGroupCommandNoticeAuthorityRejectedError
+              ? PrismaManualModerationFanoutLedgerStatus.SKIPPED
+              : ambiguousSend
+                ? PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS
+                : PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
           error,
           botId: params.botId ?? null,
+          ...(error instanceof ManualGroupCommandNoticeAuthorityRejectedError
+            ? { terminal: true }
+            : {}),
         });
       }
       this.logger.debug(
@@ -1041,7 +1081,7 @@ export class AdminManualModerationRuntime {
         },
         'Failed to send manual group command notice',
       );
-      if (!ambiguousSend) {
+      if (!ambiguousSend && !(error instanceof ManualGroupCommandNoticeAuthorityRejectedError)) {
         throw error;
       }
     }

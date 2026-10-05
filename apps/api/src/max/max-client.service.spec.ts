@@ -42,6 +42,7 @@ import {
   MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  wasMaxPreDispatchGuardRejected,
 } from './max-action-pre-dispatch-guard';
 import {
   MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
@@ -1164,6 +1165,72 @@ describe('MaxClientService inline keyboard guardrails', () => {
               maxAgeMs: actionType === 'SEND_MESSAGE' ? 15 * 60_000 : 5 * 60_000,
             }),
           );
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['BAN_MEMBER', 'KICK_MEMBER'] as const)(
+      'blocks %s when the executor loses authority during final feature qualification',
+      async (actionType) => {
+        const order: string[] = [];
+        const request = jest.fn();
+        const service = createService({ request });
+        let currentEpoch = true;
+        const proof = {
+          botId: '777000_bot',
+          routingVersion: 2,
+          accessEpoch: { checkedAt: new Date(), source: 'test' },
+          changed: false,
+        };
+        const verify = jest.fn(async () => {
+          order.push('epoch');
+          return currentEpoch;
+        });
+        Object.defineProperty(service, 'maxBotLinkService', {
+          value: {
+            getFreshChatBotExecutionProof: jest.fn(async () => proof),
+            verifyChatExecutionProof: verify,
+          },
+        });
+        const reserve = jest
+          .spyOn(service as any, 'reserveRateLimitSlot')
+          .mockImplementation(async () => {
+            order.push('quota');
+          });
+        const finalPermit = jest.fn();
+        try {
+          const error = await service
+            .executeActionJob(
+              {
+                actionType,
+                chatId: '-123',
+                userId: 'human',
+                botId: '777000_bot',
+                attempt: 1,
+                idempotencyKey: `demoted-during-qualification-${actionType}`,
+                createdAt: new Date().toISOString(),
+              },
+              {
+                beforeMemberMutation: async (revalidateRoute) => {
+                  order.push('author-read');
+                  await Promise.resolve();
+                  currentEpoch = false;
+                  await revalidateRoute?.();
+                  finalPermit();
+                },
+              },
+            )
+            .catch((caught: unknown) => caught);
+          expect(error).toMatchObject({ code: 'max_action_executor_proof_rejected' });
+          expect(wasMaxPreDispatchGuardRejected(error)).toBe(true);
+          expect(wasMaxMemberMutationAttempted(error)).toBe(false);
+          expect(order).toEqual(['quota', 'epoch', 'author-read', 'epoch']);
+          expect(reserve).toHaveBeenCalledTimes(1);
+          expect(verify).toHaveBeenCalledTimes(2);
+          expect(finalPermit).not.toHaveBeenCalled();
+          expect(request).not.toHaveBeenCalled();
         } finally {
           await service.onModuleDestroy();
         }
@@ -3815,6 +3882,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       trafficClass: 'interactive',
       actionHealthLane: 'interactive',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+      ledgerContext: { moderationNoticeEnvelope: { version: 1 } },
       timeoutMs: 2_345,
       ignoreFailureMetricStatuses: [409],
       botId: '777000_bot',
@@ -4294,6 +4362,288 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
 
     await service.onModuleDestroy();
+  });
+
+  it.each(['BAN_MEMBER', 'KICK_MEMBER'] as const)(
+    'resolves an exact logical %s receipt key from the dispatcher across bot identities',
+    async (actionType) => {
+      const ledger = {
+        isIrreversibleAction: jest.fn().mockReturnValue(true),
+        assertCanEnqueue: jest.fn(async () => undefined),
+        recordStarted: jest.fn(async (_job: MaxActionJob) => undefined),
+        recordSucceeded: jest.fn(async () => undefined),
+        recordFailed: jest.fn(async () => undefined),
+      };
+      const request = jest.fn(() => of({ status: 200, data: { success: true } }));
+      const service = createService({ request }, {}, undefined, ledger);
+      (service as any).botRegistry.getBotById.mockImplementation((id: string) => ({
+        id,
+        token: `synthetic-${id}`,
+      }));
+      const key = 'immutable-outbox:sanction-member';
+      try {
+        const action = actionType === 'BAN_MEMBER' ? service.banMember : service.kickMember;
+        for (const botId of ['777000_bot', 'surviving-peer'])
+          await action.call(service, '-123', 'human', {
+            immediate: true,
+            botId,
+            idempotencyKey: key,
+          });
+        const dispatched = ledger.recordStarted.mock.calls[0][0];
+        expect(ledger.recordStarted.mock.calls[1][0].idempotencyKey).toBe(
+          dispatched.idempotencyKey,
+        );
+        expect(service.getExplicitActionJobId(actionType, key)).toBe(dispatched.idempotencyKey);
+        expect(service.getExplicitActionJobId(actionType, key)).not.toBe(
+          service.getExplicitActionJobId(
+            actionType === 'BAN_MEMBER' ? 'KICK_MEMBER' : 'BAN_MEMBER',
+            key,
+          ),
+        );
+        expect(() => service.getExplicitActionJobId(actionType, ' ')).toThrow('nonempty');
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
+  it.each(['SEND_MESSAGE', 'BAN_MEMBER', 'KICK_MEMBER'] as const)(
+    'keeps an unknown %s fenced after safe immediate failover without trying a third bot',
+    async (actionType) => {
+      const failure = Object.assign(new Error('Synthetic socket closed after dispatch'), {
+        code: 'ECONNRESET',
+      });
+      const request = jest.fn(() => throwError(() => failure));
+      const ledger = {
+        isIrreversibleAction: jest.fn().mockReturnValue(true),
+        assertCanEnqueue: jest.fn(async () => undefined),
+        recordStarted: jest.fn(async (_job: MaxActionJob) => undefined),
+        recordSucceeded: jest.fn(async () => undefined),
+        recordFailed: jest.fn(async () => undefined),
+        getCompletedSendDispatchResult: jest.fn(async () => null),
+        claimSendDispatch: jest.fn(async () => ({ kind: 'claimed', dispatchToken: 'safe-fence' })),
+        releaseSendDispatch: jest.fn(async () => undefined),
+        recordAmbiguousSendDispatch: jest.fn(async () => true),
+      };
+      const service = createService(
+        { request },
+        { MAX_ROUTED_MUTATIONS_MODE: 'on' },
+        undefined,
+        ledger,
+      );
+      (service as any).botRegistry.getBotById.mockImplementation((id: string) => ({
+        id,
+        token: `synthetic-${id}`,
+      }));
+      let demoted = false;
+      const resolveBotRoute = jest.fn(async () => ({
+        purpose: actionType === 'SEND_MESSAGE' ? 'send_message' : 'moderation_action',
+        action: 'moderate_member',
+        chatId: '-123',
+        primaryBotId: 'peer-2',
+        botId: 'peer-2',
+        candidateBotIds: ['peer-2', 'peer-3'],
+        reason: 'alternate_confirmed',
+        routingVersion: 3,
+      }));
+      Object.defineProperty(service, 'maxBotLinkService', {
+        value: {
+          resolveBotRoute,
+          getFreshChatBotExecutionProof: async ({ botId }: { botId: string }) => ({
+            botId,
+            routingVersion: 3,
+            accessEpoch: { checkedAt: new Date(), source: 'test' },
+            changed: false,
+          }),
+          verifyChatExecutionProof: async ({ botId }: { botId: string }) =>
+            botId !== '777000_bot' || !demoted,
+        },
+      });
+      const qualified: string[] = [];
+      const permit = async (revalidateRoute?: () => Promise<void>) => {
+        const botId = (service as any).botContext.getActiveBotId() as string;
+        qualified.push(botId);
+        if (botId === '777000_bot') demoted = true;
+        await revalidateRoute?.();
+      };
+      const options = {
+        immediate: true,
+        botId: '777000_bot',
+        candidateBotIds: ['777000_bot', 'peer-2', 'peer-3'],
+        idempotencyKey: 'immutable-failover',
+        beforeImmediateSendMutation: actionType === 'SEND_MESSAGE' ? permit : undefined,
+        beforeImmediateMemberMutation: actionType !== 'SEND_MESSAGE' ? permit : undefined,
+      };
+      try {
+        const operation =
+          actionType === 'SEND_MESSAGE'
+            ? service.sendMessage('-123', 'Synthetic send', undefined, options)
+            : actionType === 'BAN_MEMBER'
+              ? service.banMember('-123', 'human', options)
+              : service.kickMember('-123', 'human', options);
+        const error = await operation.catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(UnrecoverableError);
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(request).toHaveBeenCalledWith(
+          expect.objectContaining({ headers: { Authorization: 'synthetic-peer-2' } }),
+        );
+        expect(qualified).toEqual(['777000_bot', 'peer-2']);
+        expect(resolveBotRoute).toHaveBeenCalledTimes(1);
+        expect(ledger.recordStarted).toHaveBeenCalledTimes(1);
+        expect(ledger.recordSucceeded).not.toHaveBeenCalled();
+        expect(ledger.recordFailed).toHaveBeenCalledWith(
+          expect.objectContaining({ botId: 'peer-2' }),
+          error,
+        );
+        if (actionType === 'SEND_MESSAGE')
+          expect(ledger.recordAmbiguousSendDispatch).toHaveBeenCalledTimes(1);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
+  it.each(['off', 'shadow', 'pinned', 'publisher'] as const)(
+    'preserves %s routing boundaries for immediate executor rejection',
+    async (boundary) => {
+      const request = jest.fn();
+      const ledger = {
+        isIrreversibleAction: jest.fn().mockReturnValue(true),
+        assertCanEnqueue: jest.fn(async () => undefined),
+        recordStarted: jest.fn(async () => undefined),
+        recordSucceeded: jest.fn(async () => undefined),
+        recordFailed: jest.fn(async () => undefined),
+        getCompletedSendDispatchResult: jest.fn(async () => null),
+        claimSendDispatch: jest.fn(async () => ({
+          kind: 'claimed',
+          dispatchToken: 'binding-fence',
+        })),
+        releaseSendDispatch: jest.fn(async () => undefined),
+      };
+      const service = createService(
+        { request },
+        {
+          MAX_ROUTED_MUTATIONS_MODE: boundary === 'off' || boundary === 'shadow' ? boundary : 'on',
+        },
+        undefined,
+        ledger,
+      );
+      const resolveBotRoute = jest.fn();
+      Object.defineProperty(service, 'maxBotLinkService', { value: { resolveBotRoute } });
+      const failure = Object.assign(new Error('Executor changed before HTTP'), {
+        code: 'max_action_executor_proof_rejected',
+      });
+      try {
+        const error = await service
+          .sendMessage('-123', 'Synthetic send', undefined, {
+            immediate: true,
+            botId: '777000_bot',
+            candidateBotIds: ['777000_bot', 'peer-2'],
+            routing:
+              boundary === 'pinned'
+                ? { purpose: 'send_message', requiredBotId: '777000_bot' }
+                : boundary === 'publisher'
+                  ? { purpose: 'publisher_exact_send' }
+                  : undefined,
+            beforeImmediateSendMutation: async () => {
+              throw failure;
+            },
+          })
+          .catch((caught: unknown) => caught);
+        expect(error).toBe(failure);
+        expect(wasMaxPreDispatchGuardRejected(error)).toBe(true);
+        expect(wasMaxMessageSendAttempted(error)).toBe(false);
+        expect(resolveBotRoute).not.toHaveBeenCalled();
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
+  it('creates the durable SEND start before queue-less fallback claims its dispatch fence', async () => {
+    const order: string[] = [];
+    const httpService = {
+      request: jest.fn(() => {
+        order.push('http');
+        return of({ status: 200, data: { message: { body: { mid: 'fallback-sent' } } } });
+      }),
+    };
+    let started = false;
+    const ledger = {
+      isIrreversibleAction: jest.fn().mockReturnValue(true),
+      assertCanEnqueue: jest.fn(),
+      recordStarted: jest.fn(async () => {
+        started = true;
+        order.push('journal');
+      }),
+      recordSucceeded: jest.fn(async () => undefined),
+      recordFailed: jest.fn(async () => undefined),
+      getCompletedSendDispatchResult: jest.fn(async () => null),
+      claimSendDispatch: jest.fn(async () => {
+        if (!started) throw new UnrecoverableError('Missing durable SEND journal');
+        order.push('claim');
+        return { kind: 'claimed', dispatchToken: 'fallback-token' };
+      }),
+      completeSendDispatch: jest.fn(async () => new Date()),
+    };
+    const service = createService(httpService, {}, undefined, ledger);
+    try {
+      await service.sendMessage('-123', 'Fallback notice', undefined, {
+        idempotencyKey: 'fallback-notice',
+      });
+      expect(order).toEqual(['journal', 'claim', 'http']);
+      expect(ledger.recordStarted).toHaveBeenCalledTimes(1);
+      expect(ledger.completeSendDispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ actionType: 'SEND_MESSAGE' }),
+        'fallback-token',
+        'fallback-sent',
+      );
+      expect(ledger.recordFailed).not.toHaveBeenCalled();
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('keeps an unknown queue-less SEND outcome fenced before the next fallback can reach HTTP', async () => {
+    const timeout = Object.assign(new Error('Synthetic fallback timeout'), { code: 'ETIMEDOUT' });
+    const manualReview = new UnrecoverableError('Unknown fallback SEND requires manual review');
+    const httpService = { request: jest.fn(() => throwError(() => timeout)) };
+    let quarantined = false;
+    const ledger = {
+      isIrreversibleAction: jest.fn().mockReturnValue(true),
+      assertCanEnqueue: jest.fn(async () => {
+        if (quarantined) throw manualReview;
+      }),
+      recordStarted: jest.fn(async () => undefined),
+      recordSucceeded: jest.fn(async () => undefined),
+      recordFailed: jest.fn(async () => undefined),
+      getCompletedSendDispatchResult: jest.fn(async () => null),
+      claimSendDispatch: jest.fn(async () => ({ kind: 'claimed', dispatchToken: 'unknown-token' })),
+      recordAmbiguousSendDispatch: jest.fn(async () => {
+        quarantined = true;
+        return true;
+      }),
+    };
+    const service = createService(httpService, {}, undefined, ledger);
+    try {
+      await expect(
+        service.sendMessage('-123', 'Fallback notice', undefined, {
+          idempotencyKey: 'unknown-fallback',
+        }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+      await expect(
+        service.sendMessage('-123', 'Fallback notice', undefined, {
+          idempotencyKey: 'unknown-fallback',
+        }),
+      ).rejects.toBe(manualReview);
+      expect(ledger.recordStarted).toHaveBeenCalledTimes(1);
+      expect(httpService.request).toHaveBeenCalledTimes(1);
+      expect(ledger.recordAmbiguousSendDispatch).toHaveBeenCalledTimes(1);
+      expect(ledger.recordSucceeded).not.toHaveBeenCalled();
+    } finally {
+      await service.onModuleDestroy();
+    }
   });
 
   it('does not mark a member mutation attempted when the immediate action ledger start fails', async () => {

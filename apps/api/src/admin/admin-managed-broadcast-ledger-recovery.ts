@@ -61,9 +61,13 @@ export function buildManagedBroadcastLedgerRecoveryActionKeys(
   occurrenceIndex: number,
   targetChatId: string,
   attemptCount: number,
+  contentRevisionId?: string,
 ): ManagedBroadcastLedgerRecoveryActionKeys {
+  const immutableRow = contentRevisionId
+    ? { ...row, publicationContentRevisionId: contentRevisionId }
+    : row;
   const currentKey = buildManagedBroadcastDeliveryActionKey(
-    row,
+    immutableRow,
     occurrenceIndex,
     targetChatId,
     attemptCount,
@@ -72,7 +76,7 @@ export function buildManagedBroadcastLedgerRecoveryActionKeys(
     currentKey,
     legacyKey:
       attemptCount > 1
-        ? buildManagedBroadcastDeliveryActionKey(row, occurrenceIndex, targetChatId)
+        ? buildManagedBroadcastDeliveryActionKey(immutableRow, occurrenceIndex, targetChatId)
         : currentKey,
   };
 }
@@ -224,20 +228,29 @@ export async function reconcileRoutedManagedBroadcastSendingDeliveries(options: 
       lockedAt: true,
       lockToken: true,
       lastErrorCode: true,
+      contentRevisionId: true,
+      contentRevision: { select: { text: true } },
     },
   });
   if (deliveries.length === 0) return;
 
+  const isPublikExecution = broadcast.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1;
+  const isPublicationExecution = isPublikExecution || Boolean(broadcast.publicationOccurrenceId);
+  // FLAG: A send ledger belongs to the delivery's immutable revision, never the current
+  // envelope. Missing Publication attribution cannot prove a pre-dispatch failure.
   const actionKeysByDeliveryId = new Map(
-    deliveries.map((delivery) => [
-      delivery.id,
-      buildManagedBroadcastLedgerRecoveryActionKeys(
-        broadcast,
-        occurrenceIndex,
-        delivery.targetChatId,
-        delivery.attemptCount,
-      ),
-    ]),
+    deliveries
+      .filter((delivery) => !isPublicationExecution || Boolean(delivery.contentRevisionId))
+      .map((delivery) => [
+        delivery.id,
+        buildManagedBroadcastLedgerRecoveryActionKeys(
+          broadcast,
+          occurrenceIndex,
+          delivery.targetChatId,
+          delivery.attemptCount,
+          isPublicationExecution ? delivery.contentRevisionId! : undefined,
+        ),
+      ]),
   );
   const actionKeys = collectManagedBroadcastLedgerRecoveryActionKeys(
     actionKeysByDeliveryId.values(),
@@ -270,10 +283,11 @@ export async function reconcileRoutedManagedBroadcastSendingDeliveries(options: 
     delivery: (typeof deliveries)[number];
     ledger: (typeof ledgerRows)[number];
   }> = [];
-  const isPublikExecution = broadcast.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1;
-
   for (const delivery of deliveries) {
-    if (isPublikExecution && delivery.lastErrorCode !== PUBLIK_LEDGER_DISPATCH_MARKER) {
+    if (
+      !actionKeysByDeliveryId.has(delivery.id) ||
+      (isPublikExecution && delivery.lastErrorCode !== PUBLIK_LEDGER_DISPATCH_MARKER)
+    ) {
       ambiguousDeliveryIds.push(delivery.id);
       continue;
     }
@@ -333,7 +347,7 @@ export async function reconcileRoutedManagedBroadcastSendingDeliveries(options: 
         chatId: delivery.targetChatId,
         actorUserId: broadcast.actorUserId,
         messageId: ledger.remoteMessageId,
-        text: broadcast.text,
+        text: isPublicationExecution ? (delivery.contentRevision?.text ?? '') : broadcast.text,
         reference: recoveredContext.reference,
         source: 'ledger_recovery',
         broadcastId,

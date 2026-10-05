@@ -144,7 +144,10 @@ export class CommercialDeleteGuardService {
     return permit;
   }
 
-  async authorizeSanction(permit: CommercialSanctionPermit): Promise<boolean> {
+  async authorizeSanction(
+    permit: CommercialSanctionPermit,
+    options: { botId?: string; beforeFinalAuthority?: () => Promise<void> } = {},
+  ): Promise<boolean> {
     try {
       const proof = this.issuedPermits.get(permit);
       if (!proof || Date.now() >= permit.expiresAtMs) return false;
@@ -154,15 +157,22 @@ export class CommercialDeleteGuardService {
       const evidence = this.resolveEvidence(proof.evidence, settings);
       await this.assertAuthority(proof.chatId, evidence, settings);
       const access = await this.maxClient.getChatMemberAccess(proof.chatId, userId, {
-        botId: proof.botId,
+        botId: options.botId ?? proof.botId,
         bypassCache: true,
         trafficClass: 'critical',
         actionHealthLane: 'critical',
         sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
         timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5000,
       });
-      if (access && access.userId !== null && access.userId !== userId) return false;
-      if (access?.isAdmin || access?.isOwner) return false;
+      // FLAG: Follow-up sanctions and notices require a current, exact regular-member proof.
+      // Departure and unknown privilege flags cannot authorize an irreversible follow-up.
+      if (
+        !access ||
+        access.userId !== userId ||
+        access.isAdmin !== false ||
+        access.isOwner !== false
+      )
+        return false;
       if (
         (await this.immunity.consumeForMessage({
           chatId: proof.chatId,
@@ -173,12 +183,17 @@ export class CommercialDeleteGuardService {
         })) === 'granted'
       )
         return false;
+      await options.beforeFinalAuthority?.();
       const finalSettings = await this.loadSettings(proof.chatId, userId);
       const finalEvidence = this.resolveEvidence(proof.evidence, finalSettings);
       await this.assertAuthority(proof.chatId, finalEvidence, finalSettings);
       return Date.now() < permit.expiresAtMs;
-    } catch {
-      return false;
+    } catch (error) {
+      // FLAG: Only definite commercial revocation is a clean denial. Preserve local route
+      // rejection and uncertain authority reads so safe pre-dispatch recovery can distinguish
+      // a demoted executor from a changed policy without reissuing this WeakMap permit.
+      if (error instanceof CommercialDeleteGuardRejectedError) return false;
+      throw error;
     }
   }
 

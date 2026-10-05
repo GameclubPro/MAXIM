@@ -543,6 +543,7 @@ export class MessageDuplicateMediaService {
             ...result,
             chatId: job.chatId,
             botId: source.botId,
+            readSelectedBotId: () => this.botContext.getActiveBotId() ?? source.botId,
             sourceCreatedAt: message.createdAt,
             text: content.text,
             settings,

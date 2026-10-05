@@ -115,11 +115,20 @@ export class PublisherVideoUploadQueueService {
     if ((await source.getState()) !== 'completed' || source.returnvalue?.kind !== 'session') {
       throw new BadRequestException('Загрузка видео ещё не готова.');
     }
-    await this.queue.add(
+    const completion = await this.queue.add(
       'complete',
       { ...source.data, phase: 'complete' },
       this.options(this.jobId(actorUserId, uploadId, 'complete'), 60),
     );
+    if ((await completion.getState()) === 'failed') {
+      // FLAG: Reuse the same completion identity and source token while the owned session is
+      // valid. Removing the job would race another completion request or an active worker.
+      try {
+        await completion.retry('failed', { resetAttemptsMade: true });
+      } catch (error: unknown) {
+        if ((await completion.getState()) === 'failed') throw error;
+      }
+    }
     return this.status(actorUserId, uploadId);
   }
 

@@ -64,6 +64,7 @@ export type AdminManualGroupModerationCommandJob = QueueJobEnvelope<
   {
     kind: 'manual_group_moderation_command';
     jobId: string;
+    issuedAtMs?: number;
     sourceChatId: string;
     commandBotId?: string | null;
     targetUserId: string;

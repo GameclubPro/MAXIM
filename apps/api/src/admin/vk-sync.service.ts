@@ -1,7 +1,7 @@
 import { VK_PARSING_MAX_LINKS, VK_PARSING_MAX_PHOTOS } from '@maxim/contracts';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { VkApiClientService } from './vk-api-client.service';
@@ -33,6 +33,7 @@ import {
 } from './vk-parsing-post-import.repository';
 import { type VkParsingSyncReason } from './vk-parsing.queue';
 import { VkPublishService } from './vk-publish.service';
+import { lockVkSyncLease, VkSyncLeaseLostError, type VkSyncLease } from './vk-sync-lease';
 
 type VkParsingSourceRow = Prisma.VkParsingSourceGetPayload<Record<string, never>>;
 type VkParsingPostWithSource = Prisma.VkParsingPostGetPayload<{ include: { source: true } }>;
@@ -107,7 +108,6 @@ export class VkSyncService {
   private readonly syncLeaseTtlMs: number;
   private readonly mediaConcurrency: number;
   private readonly sourceCircuitTerminalFailureThreshold: number;
-  private readonly workerId = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
   private readonly warningDedupe = new Map<string, { loggedAtMs: number; suppressed: number }>();
 
   constructor(
@@ -172,57 +172,61 @@ export class VkSyncService {
       }
       const posts = wallPages.posts;
 
-      if (!(await this.recordSourceHeartbeat(source.id))) {
+      if (!(await this.recordSourceHeartbeat(source))) {
         return 0;
       }
       const importResult = await this.importPostsWithPolicyFence(source, posts, startedAt, reason);
       await this.postImportRepository.markMissingPostsUnavailable(source, posts, startedAt, {
         missingConfirmationThreshold: this.missingConfirmationThreshold,
         spotCheckMissingPosts: (missingPosts) => this.spotCheckMissingPosts(missingPosts),
+        runWithLease: (operation) => this.runWithSourceLease(source, operation),
       });
-      if (!(await this.recordSourceHeartbeat(source.id))) {
+      if (!(await this.recordSourceHeartbeat(source))) {
         return 0;
       }
       if (importResult.publishCandidates.length > 0) {
         await this.publishService.enqueueAutoPublishImportedPosts(
           source.chatId,
           importResult.publishCandidates,
+          source,
         );
       }
       const completedAt = new Date();
       const adaptiveIntervalMs = this.resolveAdaptiveSyncIntervalMs(source, posts, completedAt);
       const newestPost = this.resolveNewestPost(posts);
 
-      const completed = await this.prisma.vkParsingSource.updateMany({
-        where: this.buildOwnedSourceLeaseWhere(source.id),
-        data: {
-          syncStatus: VK_SOURCE_SYNC_STATUS_IDLE,
-          nextSyncAt: new Date(completedAt.getTime() + adaptiveIntervalMs),
-          lastSyncAt: completedAt,
-          lastSuccessAt: completedAt,
-          syncStartedAt: null,
-          syncLockedAt: null,
-          syncLockedBy: null,
-          syncLockDeadlineAt: null,
-          syncHeartbeatAt: null,
-          consecutiveFailures: 0,
-          terminalFailureCount: 0,
-          circuitOpenedAt: null,
-          circuitReasonCode: null,
-          circuitReason: null,
-          circuitRetryAt: null,
-          lastErrorCode: null,
-          lastImportedCount: importResult.imported,
-          lastFetchedCount: posts.length,
-          lastFetchedPages: wallPages.pages,
-          lastFetchedOffsets: this.toJsonInput(wallPages.offsets),
-          lastVkNewestPostId: newestPost?.vkPostId ?? source.lastVkNewestPostId,
-          lastVkNewestPublishedAt: newestPost?.vkPublishedAt ?? source.lastVkNewestPublishedAt,
-          adaptiveIntervalMs,
-          lastSyncDurationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
-          lastError: null,
-        },
-      });
+      const completed = await this.runWithSourceLease(source, (tx) =>
+        tx.vkParsingSource.updateMany({
+          where: this.buildOwnedSourceLeaseWhere(source),
+          data: {
+            syncStatus: VK_SOURCE_SYNC_STATUS_IDLE,
+            nextSyncAt: new Date(completedAt.getTime() + adaptiveIntervalMs),
+            lastSyncAt: completedAt,
+            lastSuccessAt: completedAt,
+            syncStartedAt: null,
+            syncLockedAt: null,
+            syncLockedBy: null,
+            syncLockDeadlineAt: null,
+            syncHeartbeatAt: null,
+            consecutiveFailures: 0,
+            terminalFailureCount: 0,
+            circuitOpenedAt: null,
+            circuitReasonCode: null,
+            circuitReason: null,
+            circuitRetryAt: null,
+            lastErrorCode: null,
+            lastImportedCount: importResult.imported,
+            lastFetchedCount: posts.length,
+            lastFetchedPages: wallPages.pages,
+            lastFetchedOffsets: this.toJsonInput(wallPages.offsets),
+            lastVkNewestPostId: newestPost?.vkPostId ?? source.lastVkNewestPostId,
+            lastVkNewestPublishedAt: newestPost?.vkPublishedAt ?? source.lastVkNewestPublishedAt,
+            adaptiveIntervalMs,
+            lastSyncDurationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+            lastError: null,
+          },
+        }),
+      );
       if (completed.count === 0) {
         return 0;
       }
@@ -231,6 +235,7 @@ export class VkSyncService {
       }
       return importResult.imported;
     } catch (error) {
+      if (error instanceof VkSyncLeaseLostError) return 0;
       const completedAt = new Date();
       const classified = classifyVkParsingSyncError(error);
       const failureCount = source.consecutiveFailures + 1;
@@ -245,30 +250,35 @@ export class VkSyncService {
           ? this.resolveSyncBackoffMs(failureCount)
           : null;
       const nextRetryAt = backoffMs === null ? null : new Date(completedAt.getTime() + backoffMs);
-      const failed = await this.prisma.vkParsingSource.updateMany({
-        where: this.buildOwnedSourceLeaseWhere(source.id),
-        data: {
-          syncStatus:
-            backoffMs !== null ? VK_SOURCE_SYNC_STATUS_BACKOFF : VK_SOURCE_SYNC_STATUS_ERROR,
-          nextSyncAt: nextRetryAt,
-          lastSyncAt: completedAt,
-          syncStartedAt: null,
-          syncLockedAt: null,
-          syncLockedBy: null,
-          syncLockDeadlineAt: null,
-          syncHeartbeatAt: null,
-          consecutiveFailures: failureCount,
-          terminalFailureCount,
-          circuitOpenedAt: openCircuit ? completedAt : null,
-          circuitReasonCode: openCircuit ? classified.code : null,
-          circuitReason: openCircuit ? classified.message : null,
-          circuitRetryAt: retryTerminalBeforeCircuit ? nextRetryAt : null,
-          lastErrorCode: classified.code,
-          lastImportedCount: 0,
-          lastFetchedCount: 0,
-          lastSyncDurationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
-          lastError: classified.message,
-        },
+      const failed = await this.runWithSourceLease(source, (tx) =>
+        tx.vkParsingSource.updateMany({
+          where: this.buildOwnedSourceLeaseWhere(source),
+          data: {
+            syncStatus:
+              backoffMs !== null ? VK_SOURCE_SYNC_STATUS_BACKOFF : VK_SOURCE_SYNC_STATUS_ERROR,
+            nextSyncAt: nextRetryAt,
+            lastSyncAt: completedAt,
+            syncStartedAt: null,
+            syncLockedAt: null,
+            syncLockedBy: null,
+            syncLockDeadlineAt: null,
+            syncHeartbeatAt: null,
+            consecutiveFailures: failureCount,
+            terminalFailureCount,
+            circuitOpenedAt: openCircuit ? completedAt : null,
+            circuitReasonCode: openCircuit ? classified.code : null,
+            circuitReason: openCircuit ? classified.message : null,
+            circuitRetryAt: retryTerminalBeforeCircuit ? nextRetryAt : null,
+            lastErrorCode: classified.code,
+            lastImportedCount: 0,
+            lastFetchedCount: 0,
+            lastSyncDurationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+            lastError: classified.message,
+          },
+        }),
+      ).catch((failure: unknown) => {
+        if (failure instanceof VkSyncLeaseLostError) return { count: 0 };
+        throw failure;
       });
       if (failed.count === 0) {
         return 0;
@@ -312,10 +322,12 @@ export class VkSyncService {
         count: this.fetchCount,
         offset,
       });
-      if (!(await this.recordSourceHeartbeat(source.id))) {
+      if (!(await this.recordSourceHeartbeat(source))) {
         return { posts: [], pages: offsets.length, offsets, leaseLost: true };
       }
-      const enrichedItems = await this.enrichPostsWithVideoFiles(wall.items ?? []);
+      const enrichedItems = await this.enrichPostsWithVideoFiles(wall.items ?? [], async () => {
+        if (!(await this.recordSourceHeartbeat(source))) throw new VkSyncLeaseLostError();
+      });
       const pagePosts = enrichedItems
         .map((item) => this.normalizePost(item))
         .filter(
@@ -419,6 +431,7 @@ export class VkSyncService {
           return this.emptyImportedPostsBatchResult();
         }
 
+        await lockVkSyncLease(tx, source);
         const currentSource = await tx.vkParsingSource.findFirst({
           where: {
             id: source.id,
@@ -589,6 +602,7 @@ export class VkSyncService {
 
   private async acquireSourceLease(sourceId: string): Promise<VkParsingSourceRow | null> {
     const now = new Date();
+    const attemptToken = randomUUID();
     const staleLockBefore = new Date(now.getTime() - this.syncLeaseTtlMs);
     const syncLockDeadlineAt = new Date(now.getTime() + this.syncLeaseTtlMs);
     const ownerScope = this.ownership.getPublisherScope();
@@ -612,7 +626,7 @@ export class VkSyncService {
         syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
         syncStartedAt: now,
         syncLockedAt: now,
-        syncLockedBy: this.workerId,
+        syncLockedBy: attemptToken,
         syncLockDeadlineAt,
         syncHeartbeatAt: now,
         syncAttemptCount: { increment: 1 },
@@ -623,32 +637,68 @@ export class VkSyncService {
       return null;
     }
 
-    const source = await this.prisma.vkParsingSource.findUnique({ where: { id: sourceId } });
+    const source = await this.prisma.vkParsingSource.findUnique({
+      where: {
+        id: sourceId,
+        ...ownerScope,
+        status: VK_SOURCE_STATUS_ACTIVE,
+        importEnabled: true,
+        syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
+        syncLockedBy: attemptToken,
+        syncLockDeadlineAt: { gt: new Date() },
+      },
+    });
     if (!source || !this.ownership.isExactScope(source, ownerScope)) {
       return null;
     }
 
-    return source;
+    return { ...source, syncLockedBy: attemptToken };
   }
 
-  private async recordSourceHeartbeat(sourceId: string): Promise<boolean> {
+  private async recordSourceHeartbeat(source: VkSyncLease): Promise<boolean> {
     const now = new Date();
-    const updated = await this.prisma.vkParsingSource.updateMany({
-      where: this.buildOwnedSourceLeaseWhere(sourceId),
-      data: {
-        syncHeartbeatAt: now,
-        syncLockDeadlineAt: new Date(now.getTime() + this.syncLeaseTtlMs),
-      },
+    const updated = await this.runWithSourceLease(source, (tx) =>
+      tx.vkParsingSource.updateMany({
+        where: this.buildOwnedSourceLeaseWhere(source),
+        data: {
+          syncHeartbeatAt: now,
+          syncLockDeadlineAt: new Date(now.getTime() + this.syncLeaseTtlMs),
+        },
+      }),
+    ).catch((error: unknown) => {
+      if (error instanceof VkSyncLeaseLostError) return { count: 0 };
+      throw error;
     });
     return updated.count > 0;
   }
 
-  private buildOwnedSourceLeaseWhere(sourceId: string): Prisma.VkParsingSourceWhereInput {
+  private runWithSourceLease<T>(
+    source: VkSyncLease,
+    operation: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        await lockVkSyncLease(tx, source);
+        return operation(tx);
+      },
+      {
+        maxWait: VK_IMPORT_POLICY_TRANSACTION_MAX_WAIT_MS,
+        timeout: VK_IMPORT_POLICY_TRANSACTION_TIMEOUT_MS,
+      },
+    );
+  }
+
+  private buildOwnedSourceLeaseWhere(source: VkSyncLease): Prisma.VkParsingSourceWhereInput {
     return {
-      id: sourceId,
-      ...this.ownership.getPublisherScope(),
+      id: source.id,
+      chatId: source.chatId,
+      ownerProfile: source.ownerProfile,
+      ownerBotId: source.ownerBotId,
+      status: VK_SOURCE_STATUS_ACTIVE,
+      importEnabled: true,
       syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
-      syncLockedBy: this.workerId,
+      syncLockedBy: source.syncLockedBy,
+      syncAttemptCount: source.syncAttemptCount,
     };
   }
 
@@ -963,7 +1013,10 @@ export class VkSyncService {
     return found;
   }
 
-  private async enrichPostsWithVideoFiles(items: unknown[]): Promise<unknown[]> {
+  private async enrichPostsWithVideoFiles(
+    items: unknown[],
+    heartbeat?: () => Promise<void>,
+  ): Promise<unknown[]> {
     const videoRefs = this.collectVideoReferencesNeedingFiles(items);
     if (videoRefs.length === 0) {
       return items;
@@ -971,8 +1024,9 @@ export class VkSyncService {
 
     let videosByKey: Map<string, Record<string, unknown>>;
     try {
-      videosByKey = await this.fetchVideoDetails(videoRefs);
+      videosByKey = await this.fetchVideoDetails(videoRefs, heartbeat);
     } catch (error) {
+      if (error instanceof VkSyncLeaseLostError) throw error;
       this.logDedupedWarning(
         'vk-video-details',
         { reason: 'vk_video_details_failed', retryable: true, err: error },
@@ -1039,6 +1093,7 @@ export class VkSyncService {
 
   private async fetchVideoDetails(
     refs: VkVideoReference[],
+    heartbeat?: () => Promise<void>,
   ): Promise<Map<string, Record<string, unknown>>> {
     const videosByKey = new Map<string, Record<string, unknown>>();
     const chunkSize = 100;
@@ -1048,6 +1103,7 @@ export class VkSyncService {
         videos: chunk.map((ref) => this.formatVideoReference(ref)).join(','),
         extended: '0',
       });
+      await heartbeat?.();
       const record = this.asRecord(response);
       const items = Array.isArray(record?.items)
         ? record.items

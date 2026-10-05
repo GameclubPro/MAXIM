@@ -1105,6 +1105,12 @@ export async function saveChatSettings(params: {
       });
       if (
         [
+          // FLAG: Restoring an earlier schedule must not revive deletes prepared
+          // before a later disable/open/schedule change.
+          'nightModeEnabled',
+          'nightModeStartTimeMinutes',
+          'nightModeEndTimeMinutes',
+          'nightModeTimezone',
           'nightModeForceCloseEnabled',
           'nightModeForceCloseForever',
           'nightModeForceCloseHours',

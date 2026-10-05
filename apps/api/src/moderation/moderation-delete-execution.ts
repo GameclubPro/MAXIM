@@ -9,6 +9,10 @@ import {
 import type { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.service';
 import type { CommercialDeleteGuardService } from './commercial/commercial-delete-guard.service';
 import { executeCommercialGuardedLegacyDelete } from './commercial/commercial-delete-execution';
+import { CLOSED_CHAT_DELETE_RULE_CODES } from './closed-chat-delete-guard.service';
+import { MODERATION_STATE_DELETE_RULES } from './moderation-state-delete-guard.service';
+import { MESSAGE_LIMITS_STATEFUL_RULES } from './message-limits-delete-guard.service';
+import { REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE } from './required-subscription-execution-guard.service';
 import { TRAFFIC_PROTECTION_DELETE_RULE_CODES } from './traffic-protection';
 
 export async function executeDurableModerationDelete(params: {
@@ -19,7 +23,12 @@ export async function executeDurableModerationDelete(params: {
   logger: Pick<Logger, 'warn'>;
 }): Promise<ModerationDeleteExecutionResult> {
   const { input, service } = params;
-  const trafficOwned = TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(input.ruleCode ?? '');
+  const trafficOwned =
+    TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(input.ruleCode ?? '') ||
+    CLOSED_CHAT_DELETE_RULE_CODES.has(input.ruleCode ?? '') ||
+    MODERATION_STATE_DELETE_RULES.has(input.ruleCode ?? '') ||
+    MESSAGE_LIMITS_STATEFUL_RULES.has(input.ruleCode ?? '') ||
+    input.ruleCode === REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE;
   // FLAG: Opt-in traffic decisions cannot use legacy deletion even during an outage
   // or a base rollout downgrade. Their current-policy guard lives in durable dispatch.
   if (trafficOwned && !service)
@@ -40,6 +49,9 @@ export async function executeDurableModerationDelete(params: {
           deleted: result.kind === 'confirmed',
           eventPersistedByIntent: result.kind === 'confirmed',
           botId: result.kind === 'confirmed' ? result.botId : null,
+          ...(result.kind === 'confirmed' && result.verifiedReasonKeys?.includes(input.reasonKey)
+            ? { ownReasonVerified: true as const }
+            : {}),
           ...(result.kind === 'confirmed' && result.profanityVerified
             ? { profanityVerified: true as const }
             : {}),

@@ -1,3 +1,6 @@
+import { ModerationRuleFollowupService } from './moderation-rule-followup.service';
+import { MODERATION_RULE_FOLLOWUP_EXECUTOR } from './moderation-rule-followup.contract';
+import { GlobalSpammerPolicyModule } from './global-spammer-policy.module';
 import { NativePhotoSandboxClient } from './photo-duplicate/native-photo-sandbox.client';
 import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { Module } from '@nestjs/common';
@@ -58,7 +61,6 @@ import {
 import { PrivateControlController } from './private-control.controller';
 import { PrivateControlService } from './private-control.service';
 import { ModerationAccessService } from './moderation-access.service';
-import { GlobalSpammerIntelligenceService } from './global-spammer-intelligence.service';
 import { RedisCounterModule } from './redis-counter.module';
 import { RuleEngineModule } from './rule-engine.module';
 import { SanctionService } from './sanction.service';
@@ -111,6 +113,8 @@ const commercialOcrWorkerEnabled = commercialOcrProcessorEnabled();
 const commercialOcrEnqueueEnabled = moderationRoleEnabled && enabledModerationQueues.size > 0;
 const moderationProviders = [
   ModerationService,
+  ModerationRuleFollowupService,
+  { provide: MODERATION_RULE_FOLLOWUP_EXECUTOR, useExisting: ModerationService },
   {
     provide: MODERATION_EXECUTION_LEGACY,
     useExisting: ModerationService,
@@ -125,7 +129,6 @@ const moderationProviders = [
   NightModeRouteVerificationService,
   NightModeTransitionRuntimeService,
   PrivateControlService,
-  GlobalSpammerIntelligenceService,
   GlobalSpammerArchiveRunnerService,
   SanctionService,
   WebhookCanonicalExecutionService,
@@ -249,6 +252,7 @@ const moderationProviders = [
     RuleEngineModule,
     KaravanStorefrontRelayModule,
     ModerationDeleteIntentModule,
+    GlobalSpammerPolicyModule,
     MessageDuplicateStateModule,
     ReportsModule,
   ],
@@ -258,7 +262,7 @@ const moderationProviders = [
     ModerationExecutionService,
     ModerationService,
     ModerationDeleteIntentModule,
-    GlobalSpammerIntelligenceService,
+    GlobalSpammerPolicyModule,
     ...(commercialOcrEnqueueEnabled || commercialOcrWorkerEnabled
       ? [CommercialOcrMetricsService]
       : []),

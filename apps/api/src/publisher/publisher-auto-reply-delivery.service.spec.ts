@@ -1,5 +1,6 @@
 import {
   PublicationContentFormat,
+  type Prisma,
   PublisherAutoReplyAssetUploadStatus,
   PublisherAutoReplyDeliveryStatus,
   PublisherAutoReplyMatchKind,
@@ -99,14 +100,32 @@ function harness(
   const leased = options.leased ?? delivery();
   const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
   const uploadUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+  const sendFence = new Date();
   const tx = {
     publisherAutoReplyDelivery: {
       findFirst: jest.fn().mockResolvedValue(leased),
       updateMany: deliveryUpdateMany,
     },
-    $queryRaw: jest
-      .fn()
-      .mockResolvedValue(options.cooldownClaimed === false ? [] : [{ rule_id: 'rule-1' }]),
+    chat: {
+      findUnique: jest.fn().mockResolvedValue({
+        id: leased.chatId,
+        publisherBinding: {
+          publisherBotId: leased.publisherBotId,
+          permissionsSnapshot: { permissionsKnown: true, permissions: ['write'] },
+          botAccessState: 'CONFIRMED_ADMIN',
+          botAccessCheckedAt: new Date(),
+          botAccessExpiresAt: new Date(Date.now() + 15 * 60_000),
+          lifecycleEventAt: null,
+          sendRouteQuarantinedUntil: null,
+        },
+      }),
+    },
+    $queryRaw: jest.fn(async (query: Prisma.Sql) => {
+      if (query.sql.includes('publisher_auto_reply_send_fence_lock')) return [{ id: leased.id }];
+      if (query.sql.includes('publisher_auto_reply_send_fence_cas'))
+        return [{ dispatchStartedAt: sendFence }];
+      return options.cooldownClaimed === false ? [] : [{ rule_id: 'rule-1' }];
+    }),
   };
   const prisma = {
     publisherAutoReplyDelivery: {
@@ -135,6 +154,7 @@ function harness(
     }),
   };
   const readiness = {
+    resolveReadiness: jest.fn().mockReturnValue({ state: 'ready' }),
     assertEntityReady: jest.fn().mockResolvedValue({
       chatId: '-100',
       entityType: 'chat',
@@ -175,6 +195,7 @@ function harness(
     sourceFence,
     deliveryUpdateMany,
     uploadUpdateMany,
+    sendFence,
   };
 }
 
@@ -200,16 +221,14 @@ describe('PublisherAutoReplyDeliveryService', () => {
   );
 
   it('does not cross the send fence when cancellation owns the source row lock first', async () => {
-    const { service, sourceFence, deliveryUpdateMany } = harness({
+    const { service, sourceFence, deliveryUpdateMany, tx } = harness({
       sourceFenceLockAdmitted: false,
     });
 
     await service.process(job, attempt);
 
     expect(sourceFence.lockAdmitted).toHaveBeenCalledTimes(1);
-    expect(deliveryUpdateMany).not.toHaveBeenCalledWith(
-      expect.objectContaining({ data: { dispatchStartedAt: expect.any(Date) } }),
-    );
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
     expect(deliveryUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -403,6 +422,116 @@ describe('PublisherAutoReplyDeliveryService', () => {
           status: PublisherAutoReplyDeliveryStatus.AMBIGUOUS,
           failureCode: 'AMBIGUOUS_SEND',
         }),
+      }),
+    );
+  });
+
+  it('retries only the receipt write after a transient database failure', async () => {
+    const { service, deliveryUpdateMany, maxClient, dispatchHealth } = harness();
+    let receiptWrites = 0;
+    deliveryUpdateMany.mockImplementation(async ({ data }) => {
+      if (data.status === PublisherAutoReplyDeliveryStatus.SENT && receiptWrites++ === 0) {
+        throw new Error('transient database connection failure');
+      }
+      return { count: 1 };
+    });
+
+    await service.process(job, attempt);
+
+    expect(receiptWrites).toBe(2);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(dispatchHealth.recordSendFailure).not.toHaveBeenCalled();
+    expect(deliveryUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: PublisherAutoReplyDeliveryStatus.AMBIGUOUS }),
+      }),
+    );
+  });
+
+  it('settles a known receipt after recovery quarantines the same immutable send fence', async () => {
+    const { service, deliveryUpdateMany, maxClient, sendFence } = harness();
+    let state: PublisherAutoReplyDeliveryStatus = PublisherAutoReplyDeliveryStatus.SENDING;
+    const fence = sendFence;
+    deliveryUpdateMany.mockImplementation(async ({ where, data }) => {
+      if (data.status === PublisherAutoReplyDeliveryStatus.SENT) {
+        expect(state).toBe(PublisherAutoReplyDeliveryStatus.AMBIGUOUS);
+        expect(where).toEqual(
+          expect.objectContaining({
+            id: 'delivery-1',
+            chatId: '-100',
+            publisherBotId: 'publisher-bot',
+            sourceMessageId: 'source-message-1',
+            contentRevisionId: 'content-1',
+            dispatchStartedAt: fence,
+          }),
+        );
+        expect(where.OR[0].status.in).toContain(PublisherAutoReplyDeliveryStatus.AMBIGUOUS);
+        state = data.status;
+      }
+      return { count: 1 };
+    });
+    maxClient.sendMessageImmediateWithId.mockImplementation(async (_chatId, _text, options) => {
+      await options.beforeSend();
+      state = PublisherAutoReplyDeliveryStatus.AMBIGUOUS;
+      return { messageId: 'late-known-receipt' };
+    });
+
+    await service.process(job, attempt);
+
+    expect(state).toBe(PublisherAutoReplyDeliveryStatus.SENT);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a confirmed receipt out of ambiguous-send handling when all SQL retries fail', async () => {
+    const { service, prisma, deliveryUpdateMany, maxClient, dispatchHealth } = harness();
+    const failure = new Error('database unavailable');
+    let receiptWrites = 0;
+    deliveryUpdateMany.mockImplementation(async ({ data }) => {
+      if (data.status === PublisherAutoReplyDeliveryStatus.SENT) {
+        receiptWrites++;
+        throw failure;
+      }
+      return { count: 1 };
+    });
+
+    await expect(service.process(job, attempt)).rejects.toBe(failure);
+
+    expect(receiptWrites).toBe(3);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(dispatchHealth.recordSendFailure).not.toHaveBeenCalled();
+    expect(deliveryUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: PublisherAutoReplyDeliveryStatus.AMBIGUOUS }),
+      }),
+    );
+    prisma.publisherAutoReplyDelivery.findUnique.mockResolvedValue({
+      status: PublisherAutoReplyDeliveryStatus.SENDING,
+      dueAt: new Date(),
+      lockedAt: new Date(),
+      dispatchStartedAt: new Date(),
+    });
+    await service.process(job, attempt);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not settle or quarantine a replacement dispatch fence with an old known receipt', async () => {
+    const { service, deliveryUpdateMany, maxClient, sendFence } = harness();
+    const originalFence = sendFence;
+    const replacementFence = new Date(sendFence.getTime() + 1);
+    deliveryUpdateMany.mockImplementation(async ({ where, data }) => {
+      if (data.status === PublisherAutoReplyDeliveryStatus.SENT) {
+        expect(where.dispatchStartedAt).toEqual(originalFence);
+        return { count: Number(where.dispatchStartedAt.getTime() === replacementFence!.getTime()) };
+      }
+      return { count: 1 };
+    });
+
+    await expect(service.process(job, attempt)).rejects.toThrow('could not be persisted');
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(deliveryUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: PublisherAutoReplyDeliveryStatus.AMBIGUOUS }),
       }),
     );
   });

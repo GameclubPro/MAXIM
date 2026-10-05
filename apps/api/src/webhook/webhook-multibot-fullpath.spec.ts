@@ -112,6 +112,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
     const s = await fixture(bots, mode);
     const [chatId] = await s.seedCatalog(1);
     const messageId = `length-${randomUUID()}`;
+    const inlineDelete = jest.spyOn(s.intents, 'ensureAndAttempt');
     const receipts = await mirrors(
       s,
       chatId!,
@@ -130,6 +131,16 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
         where: { kind: 'EXECUTION', webhookEventId: { in: receipts }, status: 'COMPLETED' },
       }),
     ).toBe(1);
+    expect(
+      await s.prisma.moderationDeleteIntent.findUnique({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+        select: { status: true, lastErrorCode: true, lastError: true },
+      }),
+    ).toMatchObject({ status: 'SUCCEEDED' });
+    expect(await inlineDelete.mock.results[0]?.value).toMatchObject({
+      kind: 'confirmed',
+      verifiedReasonKeys: ['MESSAGE_TOO_LONG:violation-delete'],
+    });
     expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
     expect(
       await s.prisma.moderationDeleteIntent.count({
@@ -170,6 +181,16 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
           where: { chatId, messageId: repeat, reasons: { some: { ruleCode: 'DUPLICATE_DELETE' } } },
         }),
       ).toBe(1);
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId: repeat } },
+        include: { reasons: true },
+      });
+      expect(
+        intent.reasons.filter((reason) => reason.ruleCode === 'DUPLICATE_DELETE'),
+      ).toHaveLength(1);
+      expect(
+        intent.reasons.find((reason) => reason.ruleCode === 'DUPLICATE_DELETE')?.metadata,
+      ).toMatchObject({ moderationDeleteVerified: true });
     },
   );
 

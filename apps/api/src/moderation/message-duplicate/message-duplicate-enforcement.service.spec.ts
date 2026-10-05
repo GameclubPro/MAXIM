@@ -247,6 +247,24 @@ describe('message duplicate delete-only action claims', () => {
     expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
   });
 
+  it('reads the surviving member executor lazily and places route checks inside final authority', async () => {
+    const s = await enforcementCase();
+    let selected = 'original';
+    await s.service.enqueue({ ...s.params, readSelectedBotId: () => selected });
+    const request = s.executeFullAction.mock.calls[0]![0];
+    selected = 'surviving-peer';
+    const route = jest.fn(async () => undefined);
+    await request.beforeSanctionMutation(route);
+    const finalInput = s.guard.assertMessageStillActionable.mock.calls.at(-1)![0];
+    expect(finalInput.botId).toBe('surviving-peer');
+    expect(finalInput.sanctionIntentId).toBe('intent');
+    expect(route).not.toHaveBeenCalled();
+    await finalInput.beforeFinalAuthority();
+    expect(route).toHaveBeenCalledTimes(1);
+    await request.authorizeSanction();
+    expect(s.guard.assertMessageStillActionable.mock.calls.at(-1)![0].botId).toBe('bot');
+  });
+
   it.each(
     [
       [1, null],

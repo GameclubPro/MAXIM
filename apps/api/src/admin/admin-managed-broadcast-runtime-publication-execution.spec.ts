@@ -770,14 +770,12 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       },
       delivery,
     ]);
-    const actorAccess = jest.spyOn((runtime as any).publisherDispatch, 'ensureActorAdminAccess');
+    const actorAccess = jest.spyOn((runtime as any).publisherDispatch, 'deferUnreadyBeforeClaim');
     await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
       ManagedBroadcastStatus.ACTIVE,
     ]);
     expect(actorAccess).toHaveBeenCalledTimes(1);
-    expect(actorAccess).toHaveBeenCalledWith(
-      expect.objectContaining({ targetChatIds: ['chat-target'] }),
-    );
+    expect(actorAccess).toHaveBeenCalledWith(row, delivery, 'publisher-bot', 'admin-1');
   });
 
   it.each(['P2024', 'P2028'])(

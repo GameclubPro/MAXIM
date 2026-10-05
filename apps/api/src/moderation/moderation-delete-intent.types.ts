@@ -94,6 +94,7 @@ export type ModerationDeleteAttemptResult =
       profanityVerified?: true;
       commercialVerified?: true;
       commercialVerifiedReasonKeys?: string[];
+      verifiedReasonKeys?: string[];
     }
   | {
       kind: 'already_absent';

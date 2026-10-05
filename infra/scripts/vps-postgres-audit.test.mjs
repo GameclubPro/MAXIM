@@ -148,7 +148,12 @@ function writeLegacyDefaultWebhookSnapshot(data) {
   const timestamp = Date.parse('2026-03-30T12:00:00.000Z');
   const records = [
     { id: 'fixture-event-0001', state: 'prioritized', timestamp, priority: 5 },
-    { id: 'fixture-event-0002', state: 'failed', timestamp: timestamp + 1, priority: 5 },
+    {
+      id: 'fixture-event-0002',
+      state: 'failed',
+      timestamp: timestamp + 1,
+      priority: 5,
+    },
   ];
   writeFileSync(
     snapshot,
@@ -569,6 +574,10 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
   const statement = sql.slice(start, end + ') predecessor ON TRUE;'.length);
+  assert.equal([...statement.matchAll(/FROM webhook_events\b/gu)].length, 3);
+  assert.equal([...statement.matchAll(/\bLIMIT 2001\b/gu)].length, 1);
+  assert.equal([...statement.matchAll(/\bLIMIT 1\b/gu)].length, 2);
+  assert.doesNotMatch(statement, /webhook_execution_claims|moderation_delete_intents/u);
   const database = new PGlite();
   t.after(() => database.close());
   await database.exec(`
@@ -610,14 +619,20 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
     assert.doesNotMatch(JSON.stringify(classifiedReport), /private-|capacity unavailable/u);
   }
   await database.query(`UPDATE webhook_events SET normalized_payload = $1`, [
-    JSON.stringify({ type: 'message_created', message: { chatId: 'private-chat' } }),
+    JSON.stringify({
+      type: 'message_created',
+      message: { chatId: 'private-chat' },
+    }),
   ]);
   await database.query(
     `INSERT INTO webhook_events(status, created_at, error_message, normalized_payload)
      VALUES ('FAILED', now() - interval '10 minutes', $1, $2)`,
     [
       'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:private-nonce',
-      JSON.stringify({ type: 'message_created', message: { chatId: 'private-chat' } }),
+      JSON.stringify({
+        type: 'message_created',
+        message: { chatId: 'private-chat' },
+      }),
     ],
   );
   const fencedResult = await database.query(statement);
@@ -680,6 +695,93 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
     );
     assert.doesNotMatch(JSON.stringify(classifiedReport), /private-/u);
   }
+  // FLAG: Embedded copies of source-defined error literals remain unclassified.
+  // Even an anchored label describes a saved error and never grants recovery authority.
+  for (const [error, family] of [
+    ['Canonical webhook claim is not ready for private-event', 'canonical_not_ready'],
+    ['Canonical webhook business lease is busy for private-event', 'canonical_business_lease_busy'],
+    [
+      'Canonical webhook business lease was lost before completion for private-event',
+      'canonical_business_lease_lost',
+    ],
+    [
+      'Canonical webhook business lease was lost before unfenced timeout settlement for private-event',
+      'canonical_business_lease_lost',
+    ],
+    [
+      'Canonical webhook business lease was lost during timeout quarantine for private-event',
+      'canonical_business_lease_lost',
+    ],
+    [
+      'Canonical webhook business lease storage is unavailable for private-event',
+      'canonical_business_lease_unavailable',
+    ],
+    [
+      'Chat rules publication is in flight; retry own-bot message classification',
+      'rules_publication_fence',
+    ],
+  ]) {
+    for (const prefix of ['', 'Webhook preparation failed: ']) {
+      await database.query("UPDATE webhook_events SET error_message = $1 WHERE status = 'FAILED'", [
+        `${prefix}${error}`,
+      ]);
+      const classified = await database.query(statement);
+      const classifiedReport = JSON.parse(Object.values(classified.rows[0])[0]);
+      assert.equal(
+        classifiedReport.rows.find((row) => row.status === 'RECEIVED').oldest_ordering_predecessor
+          .error_family,
+        family,
+      );
+      assert.doesNotMatch(
+        JSON.stringify(classifiedReport),
+        /private-|Canonical webhook|Chat rules publication/u,
+      );
+    }
+  }
+  for (const error of [
+    'Private content: Canonical webhook claim is not ready for private-event',
+    'Webhook preparation failed: Private content: Canonical webhook business lease is busy for private-event',
+    'Private content: Canonical webhook business lease was lost before completion for private-event',
+    'Private content: Canonical webhook business lease storage is unavailable for private-event',
+    'Private content: Chat rules publication is in flight; retry own-bot message classification',
+    'Chat rules publication is in flight; retry own-bot message classification: private-suffix',
+  ]) {
+    await database.query("UPDATE webhook_events SET error_message = $1 WHERE status = 'FAILED'", [
+      error,
+    ]);
+    const classified = await database.query(statement);
+    const classifiedReport = JSON.parse(Object.values(classified.rows[0])[0]);
+    assert.equal(
+      classifiedReport.rows.find((row) => row.status === 'RECEIVED').oldest_ordering_predecessor
+        .error_family,
+      'other',
+    );
+    assert.doesNotMatch(JSON.stringify(classifiedReport), /private-|Private content/u);
+  }
+  const typed = await database.query(statement);
+  const typedReport = JSON.parse(Object.values(typed.rows[0])[0]);
+  assert.equal(
+    typedReport.rows.find((row) => row.status === 'RECEIVED').oldest_ordering_predecessor
+      .event_type,
+    'message_created',
+  );
+  await database.query(
+    "UPDATE webhook_events SET normalized_payload = $1 WHERE status = 'FAILED'",
+    [
+      JSON.stringify({
+        update_type: ' MESSAGE_EDITED ',
+        chatId: 'private-chat',
+      }),
+    ],
+  );
+  const edited = await database.query(statement);
+  const editedReport = JSON.parse(Object.values(edited.rows[0])[0]);
+  assert.equal(
+    editedReport.rows.find((row) => row.status === 'RECEIVED').oldest_ordering_predecessor
+      .event_type,
+    'message_edited',
+  );
+  assert.doesNotMatch(JSON.stringify(editedReport), /private-|MESSAGE_EDITED/u);
   await database.query("UPDATE webhook_events SET error_message = $1 WHERE status = 'FAILED'", [
     'Webhook preparation failed: Invalid prisma.chat.upsert() invocation in /app/apps/api/dist/apps/api/src/webhook/webhook.service.js:1915:72\nprivate-data',
   ]);
@@ -708,6 +810,20 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
   );
   const predecessorPlan = await database.query(`EXPLAIN (FORMAT JSON) ${statement}`);
   assert.match(JSON.stringify(predecessorPlan.rows), /webhook_events_ordered_chat_head_idx/u);
+  const relationScans = [];
+  const collectRelationScans = (node) => {
+    if (node['Relation Name'] === 'webhook_events') relationScans.push(node);
+    for (const child of node.Plans ?? []) collectRelationScans(child);
+  };
+  collectRelationScans(predecessorPlan.rows[0]['QUERY PLAN'][0].Plan);
+  assert.equal(relationScans.length, 3);
+  assert.ok(
+    relationScans.every((node) => ['Index Scan', 'Index Only Scan'].includes(node['Node Type'])),
+  );
+  assert.deepEqual([...new Set(relationScans.map((node) => node['Index Name']))].sort(), [
+    'webhook_events_ordered_chat_head_idx',
+    'webhook_events_status_created_at_idx',
+  ]);
 });
 
 test('monitor signal audit bounds both indexed source samples before aggregation', (t) => {
