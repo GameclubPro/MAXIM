@@ -4977,7 +4977,7 @@ describe('RuleEngineService', () => {
     await service.detect({
       chatId: 'chat-1',
       userId: 'user-1',
-      text: 'Первое сообщение с номером +7 (999) 123-45-67',
+      text: 'Первое сообщение с телефоном +7 (999) 123-45-67',
       settings,
       domainAllowlist: [],
     });
@@ -5016,7 +5016,7 @@ describe('RuleEngineService', () => {
     await service.detect({
       chatId: 'chat-1',
       userId: 'user-1',
-      text: 'Первое сообщение с номером +7 (999) 123-45-67',
+      text: 'Первое сообщение с телефоном +7 (999) 123-45-67',
       settings,
       domainAllowlist: [],
     });
@@ -5037,6 +5037,31 @@ describe('RuleEngineService', () => {
 
     expect(third.duplicateHit).toBeUndefined();
     expect(third.duplicateDecision).toBeUndefined();
+  });
+
+  it('preserves generic number labels as CUSTOM content instead of phone evidence', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      duplicateDetectionPreset: 'CUSTOM',
+      duplicateIgnorePhonesEnabled: true,
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+    });
+    for (const text of [
+      'Первое сообщение с номером +7 (999) 123-45-67',
+      'Документ с номером +7 (999) 123-45-67 подтверждён',
+      'Оборудование с номером +7 (999) 123-45-67 доступно',
+    ]) {
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        text,
+        settings,
+        domainAllowlist: [],
+      });
+      expect(result.duplicateHit).toBeUndefined();
+      expect(result.duplicateDecision).toBeUndefined();
+    }
   });
 
   it('still evaluates exact custom content when phone matching is disabled', async () => {

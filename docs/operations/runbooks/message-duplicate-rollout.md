@@ -392,9 +392,9 @@ and its matching content/revision binding. `MESSAGE_DUPLICATE_ENABLED=false` is 
 environment ceiling.
 
 Both API rollback paths require v3 binding, lifecycle and durable/permit authorization source
-capabilities, duplicate-only phone evidence v2, mode-aware TEXT lifecycle eligibility,
-and near punctuation/symbol positions with the `text-fixed-window-safe-text-v8` settings fence
-and `text-v6` matching namespace.
+capabilities, duplicate-only phone evidence v3, mode-aware TEXT lifecycle eligibility,
+and near punctuation/symbol positions with the `text-fixed-window-safe-text-v9` settings fence
+and `text-v7` matching namespace.
 The fence invalidates old STRICT, CUSTOM-with-near and CUSTOM-phone-value history, queued
 jobs and grants; other exact-only, CUSTOM-link-only and IMAGE settings retain their prior evidence
 versions. Ambiguous numeric identifiers, prices and measurements are never stripped as phones or
@@ -402,8 +402,23 @@ used as phone-only duplicate evidence. Phone evidence requires an international 
 explicit phone label from a finite list with word boundaries; unlabelled grouping alone remains
 content. Phone labels cannot match product names or words about bells and mobility through broad
 `тел`, `звон` or `мобильн` roots. Both rollback paths require the actual bounded label expression,
-so changing only the phone-evidence version cannot admit the old broad classifier. The separate
-phone-blocking policy is unchanged. Near may
+so changing only the phone-evidence version cannot admit the old broad classifier.
+The raw adjacency guard runs before whitespace or wrapper normalization: Unicode identifier and
+email characters next to a numeric candidate, including compact bracket/quote wrappers, remain
+content. Compact left-side explicit phone labels are allowed; right-side identifier characters
+always reject the candidate. Reserved URI schemes such as `tel:` and `mailto:` remain content.
+Raw arithmetic operators, short numeric operands and single-letter variables before a candidate
+also reject it unless an actual finite phone label supplies the context. Identifier labels
+`номер`, `код`, `идентификатор` and `артикул` retain their finite case/plural forms in both the
+adjacent-label and clause guards.
+Both extraction and stripping exclude candidates overlapping recognized URL ranges and preserve
+the complete URL bytes. Standalone international phones and proven explicit phone labels keep
+their positive matching behavior. Country-prefixed 1/7 forms, with or without `+`, require eleven
+total digits; national 8/9 forms require eleven/ten. A greedy span with an appended quantity is
+rejected whole, preserving every numeric character without guessing a shorter phone segment.
+Both rollback paths require these actual guards and their
+order; raising only a version cannot admit a source that omits them. The separate phone-blocking
+policy is unchanged. Near may
 normalize case and punctuation spacing, but cannot erase or move internal punctuation.
 Use the shared API queue fence to stop old producers/workers and recreate every API role
 before resuming processing. A mixed old/new fleet is not a supported activation state.
@@ -412,8 +427,8 @@ the stored enabled settings and old grants must not regain authority on a later 
 Pending intents
 can survive a control downgrade, so an older unguarded API is not a valid rollback target.
 Use a retained compatible immutable release and the normal queue-fenced rollback workflow.
-Safe-text-v7 was an unreleased intermediate and is not a production rollback target.
-At the first safe-text-v8 transition no earlier API image satisfies this source floor. Recovery
+Safe-text-v7 and safe-text-v8 were unreleased intermediates and are not production rollback targets.
+At the first safe-text-v9 transition no earlier API image satisfies this source floor. Recovery
 uses the reviewed control OFF path above and a forward compatible release; static-only rollback
 is independent. Do not weaken source or applied-migration compatibility checks to reuse an old API.
 Older images do not understand the new protocol and are rejected as targets; rollback does not downgrade

@@ -424,7 +424,7 @@ export class RuleEngineDuplicateDetector {
     return this.buildFingerprints(rawText, settings, navigationTargets).map((fingerprint) => {
       // FLAG: Never count old lossy fingerprints under the corrected comparison policy.
       const hash = createHash('sha256')
-        .update(safeTextMatching ? 'text-v6\0' : 'text-v4\0')
+        .update(safeTextMatching ? 'text-v7\0' : 'text-v4\0')
         .update(fingerprint.value)
         .digest('hex')
         .slice(0, 20);

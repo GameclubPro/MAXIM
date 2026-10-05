@@ -23,6 +23,7 @@ import {
   preUnicodeNearSettingsDigests,
   preSafeTextSettingsDigests,
   preBoundedPhoneSettingsDigests,
+  prePhoneBoundarySettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 function setup() {
@@ -214,7 +215,11 @@ describe('message duplicate final delete guard', () => {
     async (key, overrides) => {
       const s = setup();
       Object.assign(s.settings, overrides);
-      for (const digests of [preSafeTextSettingsDigests, preBoundedPhoneSettingsDigests]) {
+      for (const digests of [
+        preSafeTextSettingsDigests,
+        preBoundedPhoneSettingsDigests,
+        prePhoneBoundarySettingsDigests,
+      ]) {
         s.binding.settingsDigest = digests[key];
         await expect(
           s.service.assertQualificationAuthority(s.params.chatId, s.binding),
