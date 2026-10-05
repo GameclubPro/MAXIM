@@ -32,6 +32,8 @@ export const MULTIBOT_PSQL_CLIENT_METADATA_SQL = `SELECT json_build_object(
   'database_matches', current_database() = 'maxim',
   'maintenance_bytes', pg_size_bytes(current_setting('maintenance_work_mem')),
   'temp_limit_bytes', pg_size_bytes(current_setting('temp_file_limit')),
+  'default_tablespace', current_setting('default_tablespace'),
+  'temp_tablespaces', current_setting('temp_tablespaces'),
   'parallel_maintenance_workers', current_setting('max_parallel_maintenance_workers')::integer,
   'parallel_query_workers', current_setting('max_parallel_workers_per_gather')::integer
 );`;
@@ -484,6 +486,8 @@ fs.writeFileSync(p+'/ci-write-probe','ok',{mode:384});assert.equal(fs.readFileSy
       temp_limit_bytes: 6 * 1024 ** 3,
       parallel_maintenance_workers: 0,
       parallel_query_workers: 0,
+      default_tablespace: '',
+      temp_tablespaces: '',
     });
     await absent(cancelledTag);
     assert.deepEqual(await attestPrefix(), indexesBefore);

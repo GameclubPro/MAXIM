@@ -115,6 +115,7 @@ function verifyReport(report) {
     report.read_only !== true ||
     report.authority !== 'DIAGNOSTICS_ONLY' ||
     report.parent_kind !== 'r' ||
+    report.storage_layout_matches !== true ||
     report.metadata_limit_exceeded !== false ||
     report.metadata?.other_failed !== false ||
     report.repair_artifacts?.present !== false ||
@@ -169,6 +170,7 @@ function readReceipt(report, name, allowedStates) {
     !digestPattern.test(record.identity_hash ?? '') ||
     record.checksum !== multibotPreparationChecksums[name] ||
     record.checksum_matches !== true ||
+    record.applied_steps_count !== 1 ||
     record.rolled_back_at !== null ||
     !allowedStates.includes(record.state) ||
     (record.state === 'APPLIED') !== (record.finished_at !== null)
@@ -212,6 +214,7 @@ function readRecoveryReceipt(report, context) {
   verifyMultibotPreparationCancellation(context, record);
   if (
     record.finished_at !== null ||
+    record.applied_steps_count !== 0 ||
     !['NO_ERROR_RECORDED', 'QUERY_CANCELLED', 'CONNECTION_TERMINATED'].includes(record.failure_code)
   )
     fail('RECEIPT_INVALID');
@@ -229,6 +232,7 @@ function readRecoveryReceipt(report, context) {
     applied.state !== 'APPLIED' ||
     applied.rolled_back_at !== null ||
     applied.finished_at === null ||
+    applied.applied_steps_count !== 0 ||
     applied.started_at !== applied.finished_at ||
     timestamp(record.rolled_back_at) < timestamp(context.attemptAbortedAt) ||
     timestamp(applied.started_at) < timestamp(record.rolled_back_at) ||
@@ -319,7 +323,15 @@ function receiptIdentity(report, context) {
   const record = report.metadata.migrations
     .find((entry) => entry.name === MULTIBOT_PREPARATION_RECOVERY_MIGRATION)
     .records.find((entry) => entry.identity_hash === context.expectedReceiptIdentityHash);
-  return JSON.stringify([record.identity_hash, record.checksum, record.started_at]);
+  // FLAG: A stable row identity does not freeze its failure evidence. Reject a changed
+  // family or step count across admission, repair and Prisma's resolution checkpoint.
+  return JSON.stringify([
+    record.identity_hash,
+    record.checksum,
+    record.started_at,
+    record.applied_steps_count,
+    record.failure_code,
+  ]);
 }
 
 // FLAG: This pure state machine owns no SQL connection, deploy lock or live service.
