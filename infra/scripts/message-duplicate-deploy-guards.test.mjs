@@ -70,7 +70,7 @@ test('requires the message-v3 reader, durable admission and last action permit o
 
 const mutations = [
   ['state', 'z.literal(3)', 'z.literal(4)'],
-  ['state', 'text-fixed-window-safe-text-v9', 'text-fixed-window-safe-text-v8'],
+  ['state', 'text-fixed-window-safe-text-v10', 'text-fixed-window-safe-text-v9'],
   ['state', 'version: safeTextMatchingEnabled ?', 'version: false ?'],
   ['state', 'nearEnabled || phoneValueMatchingEnabled', 'nearEnabled'],
   [
@@ -103,10 +103,10 @@ const mutations = [
   ['detector', 'extractDuplicatePhoneNumbers(rawText)', 'extractDetectedPhoneNumbers(rawText)'],
   ['detector', 'stripDuplicatePhoneNumbers(value)', 'stripDetectedPhoneNumbers(value)'],
   ['detector', 'stripDuplicatePhoneNumbers(source)', 'stripDetectedPhoneNumbers(source)'],
-  ['detector', 'text-v7\\0', 'text-v6\\0'],
+  ['detector', 'text-v8\\0', 'text-v7\\0'],
   ['detector', "value = replaceUrlsInText(value, ' ');", 'value = stripUrlsFromText(value);'],
   ['detector', "source = replaceUrlsInText(source, ' ');", 'source = stripUrlsFromText(source);'],
-  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 3', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 2'],
+  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 4', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 3'],
   [
     'phones',
     "import { getUrlTextRanges } from '../common/url-text.util';",
@@ -115,13 +115,87 @@ const mutations = [
   ['phones', 'if (hasEmbeddedIdentifierAdjacency(before, after)) return null;', ''],
   ['phones', '(?:tel|mailto|sms|callto|sips?):$', '(?:unsupported):$'],
   ['phones', 'if (/@[^\\s]*$/u.test(before) || /^[^\\s]*@/u.test(after)) return true;', ''],
-  ['phones', '/[=+*/\\u2212-]\\s*$/u.test(before)', 'false'],
-  ['phones', '/(?:^|\\s)(?:\\p{L}\\p{M}*|\\p{N}{1,6}|_)\\s+$/u.test(before)', 'false'],
   [
     'phones',
-    '(IDENTIFIER_CONTEXT.test(before) || PROTECTED_LABEL_IN_CLAUSE.test(clause))',
-    'false',
+    "const arithmeticContext = before.replace(/\\p{Cf}/gu, '');",
+    'const arithmeticContext = before;',
   ],
+  [
+    'phones',
+    'const arithmeticBefore = arithmeticContext.replace(',
+    'const arithmeticBefore = before.replace(',
+  ],
+  ['phones', '/[\\p{Sm}*/%^·-]$/u.test(arithmeticBefore)', 'false'],
+  [
+    'phones',
+    '/[\\p{Sm}*/%^·-]$/u.test(arithmeticBefore)',
+    '/[=+*/\\u2212-]$/u.test(arithmeticBefore)',
+  ],
+  ['phones', '/(?:^|\\s)(?:\\p{L}\\p{M}*|\\p{N}{1,6}|_)\\s+$/u.test(arithmeticContext)', 'false'],
+  [
+    'phones',
+    '/(?:^|\\s)(?:\\p{L}\\p{M}*|\\p{N}{1,6}|_)\\s+$/u.test(arithmeticContext)',
+    '/(?:^|\\s)(?:\\p{L}\\p{M}*|\\p{N}{1,6}|_)\\s+$/u.test(before)',
+  ],
+  ['phones', 'if (/\\p{Sc}$/u.test(arithmeticBefore)) return true;', ''],
+  [
+    'phones',
+    '[\\s\\p{Cf})\\]}»"\'”’]*[\\p{Sm}*/%^·-]+[\\s\\p{Cf}]*',
+    '[\\s)\\]}»"\'”’]*[\\p{Sm}*/%^·-]+\\s*',
+  ],
+  ['phones', '[\\p{Sm}*/%^·-]', '[\\p{Sm}*/%^-]'],
+  ['phones', '!hasLabelledPhoneListContinuation(arithmeticBefore, after)', 'false'],
+  ['phones', '!hasLabelledPhoneListPredecessor(arithmeticContext)', 'false'],
+  ['phones', '/(?:^|\\s)[+-]?\\d(?:[\\d \\t().-]*\\d)?\\s+$/u.test(arithmeticContext)', 'false'],
+  ['phones', 'if (!PHONE_CONTEXT.test(before)) return false;', ''],
+  [
+    'phones',
+    'const next = after.matchAll(CANDIDATE).next().value;',
+    'const next = before.matchAll(CANDIDATE).next().value;',
+  ],
+  ['phones', 'after.slice(0, start)', 'after.slice(start, start)'],
+  [
+    'phones',
+    "phoneEvidence(candidate, '', after.slice(start + candidate.length)) !== null",
+    "phoneEvidence(candidate, 'телефон:', after.slice(start + candidate.length)) !== null",
+  ],
+  [
+    'phones',
+    "phoneEvidence(candidate, '', after.slice(start + candidate.length)) !== null",
+    'true',
+  ],
+  ['phones', 'const prefix = before.slice(0, start);', "const prefix = 'телефон:';"],
+  ['phones', '/^\\s*$/u.test(before.slice(start + candidate.length))', 'true'],
+  ['phones', "phoneEvidence(candidate, prefix, '') !== null", 'true'],
+  ['phones', "before = before.replace(/\\p{Cf}/gu, '').replace(", 'before = before.replace('],
+  ['phones', "after = after.replace(/\\p{Cf}/gu, '').replace(", 'after = after.replace('],
+  [
+    'phones',
+    'const phoneNumberLabel = PHONE_NUMBER_CONTEXT.test(before);',
+    'const phoneNumberLabel = PHONE_CONTEXT.test(before);',
+  ],
+  [
+    'phones',
+    "const protectedClause = clause.replace(PHONE_NUMBER_CONTEXT, ' ');",
+    'const protectedClause = clause;',
+  ],
+  ['phones', 'QUANTITY_PREFIX.test(before) ||', 'false ||'],
+  ['phones', 'QUANTITY_SUFFIX.test(after) ||', 'false ||'],
+  ['phones', '(IDENTIFIER_CONTEXT.test(before) && !phoneNumberLabel)', 'false'],
+  [
+    'phones',
+    '(IDENTIFIER_CONTEXT.test(before) && !phoneNumberLabel)',
+    '(!PHONE_CONTEXT.test(before) && IDENTIFIER_CONTEXT.test(before))',
+  ],
+  ['phones', 'PROTECTED_LABEL_IN_CLAUSE.test(protectedClause)', 'false'],
+  [
+    'phones',
+    'PROTECTED_LABEL_IN_CLAUSE.test(protectedClause)',
+    '(!PHONE_CONTEXT.test(before) && PROTECTED_LABEL_IN_CLAUSE.test(protectedClause))',
+  ],
+  ['phones', 'тыс\\.?', 'тыс'],
+  ['phones', 'участник\\p{L}*', 'unsupportedParticipants'],
+  ['phones', '[kmgt]i?(?:b|bps|bits?)', '[kmgt]i?b'],
   [
     'phones',
     'before.replace(/[^\\s\\p{L}\\p{M}\\p{N}_]+$/u,',
@@ -172,6 +246,18 @@ const mutations = [
     "if (!international && digits.startsWith('9') && digits.length !== 10) return null;",
     '',
   ],
+  ['phones', 'const knownLength =', 'const knownLength = true ||'],
+  ['phones', 'if (!knownLength && /[^\\d+]/u.test(candidate)) return null;', ''],
+  [
+    'phones',
+    'if (!knownLength && /[^\\d+]/u.test(candidate)) return null;',
+    'if (false && /[^\\d+]/u.test(candidate)) return null;',
+  ],
+  ['phones', "if (candidate.includes('.')) {", 'if (false) {'],
+  ['phones', '?.map((group) => group.length)', '?.map(() => 1)'],
+  ['phones', "['1/3/3/2/2', '1/3/3/4'].includes(groups ?? '')", 'true'],
+  ['phones', "groups === '3/3/2/2'", 'true'],
+  ['phones', 'if (!knownLength || !conventionalGroups) return null;', ''],
   ['phones', 'const labelled = PHONE_CONTEXT.test(before);', 'const labelled = true;'],
   ['phones', 'if (!international && !labelled) return null;', ''],
   [
@@ -256,9 +342,9 @@ for (const [key, before, after] of mutations) {
   });
 }
 
-test('rejects broad phone roots even with phone evidence v3 and the v9 settings fence', (t) => {
+test('rejects broad phone roots even with phone evidence v4 and the v10 settings fence', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
-  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*3\b/u);
+  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*4\b/u);
   const declaration = /const PHONE_CONTEXT\s*=\s*\/[^\r\n]+\/iu;/u;
   assert.match(source, declaration);
   const phones = source.replace(
@@ -275,9 +361,74 @@ test('rejects broad phone roots even with phone evidence v3 and the v9 settings 
   );
 });
 
+test('rejects an identifier label expanded into the finite phone-number exception', (t) => {
+  const source = readFileSync(resolve(root, paths.phones), 'utf8');
+  const declaration = /const PHONE_NUMBER_CONTEXT\s*=\s*\/[^\r\n]+\/iu;/u;
+  const matched = source.match(declaration)?.[0];
+  assert.ok(matched);
+  const updated = matched.replace('номер(?:а|у|ом|е|ов|ам|ами|ах)?', '(?:номер|артикул|код)');
+  assert.notEqual(updated, matched);
+  const result = probe(t, { phones: source.replace(matched, updated) });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+  );
+});
+
+test('rejects removal of the right arithmetic guard while its marker survives outside the body', (t) => {
+  const source = readFileSync(resolve(root, paths.phones), 'utf8');
+  const guard =
+    / {2}if \(\s*\/\^\[[^\r\n]+\/u\.test\(after\) &&\s*!hasLabelledPhoneListContinuation\(arithmeticBefore, after\)\s*\)\s*return true;\n/u;
+  const matched = source.match(guard)?.[0];
+  assert.ok(matched);
+  const phones =
+    source.replace(matched, '') + '\n/* Removed capability: ' + matched.trim() + ' */\n';
+  assert.ok(phones.includes(matched.trim()));
+  const result = probe(t, { phones });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+  );
+});
+
+for (const marker of [
+  'private normalizeContentFingerprint(',
+  'private extractNearNumericTokens(',
+]) {
+  test('rejects phone classification moved after URL removal in ' + marker, (t) => {
+    const source = readFileSync(resolve(root, paths.detector), 'utf8');
+    const start = source.indexOf(marker);
+    const end = source.indexOf('\n  private ', start + 1);
+    assert.ok(start >= 0 && end > start);
+    const body = source.slice(start, end);
+    const phoneBlock = body.match(/ {4}if \(config.ignorePhones\) \{[\s\S]*?\n {4}\}/u)?.[0];
+    const linkBlock = body.match(/ {4}if \(config.ignoreLinks\) \{[\s\S]*?\n {4}\}/u)?.[0];
+    assert.ok(phoneBlock && linkBlock);
+    assert.ok(body.indexOf(phoneBlock) < body.indexOf(linkBlock));
+    const updated = body
+      .replace(phoneBlock, '__MAXIM_PHONE_BLOCK__')
+      .replace(linkBlock, phoneBlock)
+      .replace('__MAXIM_PHONE_BLOCK__', linkBlock);
+    assert.ok(updated.indexOf(linkBlock) < updated.indexOf(phoneBlock));
+    const detector = source.slice(0, start) + updated + source.slice(end);
+    assert.equal(
+      detector.split('stripDuplicatePhoneNumbers(').length,
+      source.split('stripDuplicatePhoneNumbers(').length,
+    );
+    const result = probe(t, { detector });
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+    );
+  });
+}
+
 test('rejects removal of the raw arithmetic guard while identifier adjacency remains', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
-  const guard = /if\s*\(\s*!PHONE_CONTEXT\.test\(before\) &&[\s\S]*?\)\s*return true;/u;
+  const guard = /if\s*\(\s*!PHONE_CONTEXT\.test\(arithmeticBefore\) &&[\s\S]*?\)\s*return true;/u;
   assert.match(source, guard);
   const phones = source.replace(guard, '');
   assert.notEqual(phones, source);

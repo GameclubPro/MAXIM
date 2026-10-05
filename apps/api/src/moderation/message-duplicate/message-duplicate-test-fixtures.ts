@@ -29,6 +29,13 @@ export const prePhoneBoundarySettingsDigests = {
   CUSTOM_PHONE: '4ccdf485d90b61b1aec8f654c23240c384dcd8a3b3cc76462a194acd41d2b318',
 } as const;
 
+// Recorded at the v9 fence before source-bound stripping and numeric/phone-span protection.
+export const preSourceBoundPhoneSettingsDigests = {
+  STRICT: '23c6d8705f96598118048a504f18dee476d8dcf4b5a306a611bbf6eaddb35ef0',
+  CUSTOM_NEAR: 'ae6d5172357c34dc377d43a9d1e3b732beba7814308c1482b53e1a87e54bd81f',
+  CUSTOM_PHONE: '451a6a535e3fe18e7908285ee382c0e5481c838c917c8b9ba5525e2899e0c8b7',
+} as const;
+
 export function duplicateSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
     ...chatSettingsSchema.parse({}),

@@ -424,7 +424,7 @@ export class RuleEngineDuplicateDetector {
     return this.buildFingerprints(rawText, settings, navigationTargets).map((fingerprint) => {
       // FLAG: Never count old lossy fingerprints under the corrected comparison policy.
       const hash = createHash('sha256')
-        .update(safeTextMatching ? 'text-v7\0' : 'text-v4\0')
+        .update(safeTextMatching ? 'text-v8\0' : 'text-v4\0')
         .update(fingerprint.value)
         .digest('hex')
         .slice(0, 20);
@@ -541,12 +541,13 @@ export class RuleEngineDuplicateDetector {
     config: { ignoreLinks: boolean; ignorePhones: boolean },
   ): string {
     let value = compactText;
-    if (config.ignoreLinks) {
-      // FLAG: Preserve physical phrase boundaries until phone evidence is extracted.
-      value = replaceUrlsInText(value, ' ');
-    }
     if (config.ignorePhones) {
+      // FLAG: Classify phones in the original text. Removing a URL first can join unrelated
+      // numeric fragments into a fabricated phone; the helper excludes original URL ranges.
       value = stripDuplicatePhoneNumbers(value);
+    }
+    if (config.ignoreLinks) {
+      value = replaceUrlsInText(value, ' ');
     }
     return normalizeDuplicateText(value);
   }
@@ -594,11 +595,12 @@ export class RuleEngineDuplicateDetector {
     config: { ignoreLinks: boolean; ignorePhones: boolean },
   ): string[] {
     let source = value;
+    if (config.ignorePhones) {
+      // FLAG: Numeric evidence uses the same original-text phone boundary as content.
+      source = stripDuplicatePhoneNumbers(source);
+    }
     if (config.ignoreLinks) {
       source = replaceUrlsInText(source, ' ');
-    }
-    if (config.ignorePhones) {
-      source = stripDuplicatePhoneNumbers(source);
     }
     return source.match(/[+-]?\d+(?:[.,:]\d+)*/gu) ?? [];
   }

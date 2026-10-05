@@ -24,6 +24,7 @@ import {
   preSafeTextSettingsDigests,
   preBoundedPhoneSettingsDigests,
   prePhoneBoundarySettingsDigests,
+  preSourceBoundPhoneSettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 function setup() {
@@ -219,6 +220,7 @@ describe('message duplicate final delete guard', () => {
         preSafeTextSettingsDigests,
         preBoundedPhoneSettingsDigests,
         prePhoneBoundarySettingsDigests,
+        preSourceBoundPhoneSettingsDigests,
       ]) {
         s.binding.settingsDigest = digests[key];
         await expect(

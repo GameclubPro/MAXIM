@@ -392,9 +392,9 @@ and its matching content/revision binding. `MESSAGE_DUPLICATE_ENABLED=false` is 
 environment ceiling.
 
 Both API rollback paths require v3 binding, lifecycle and durable/permit authorization source
-capabilities, duplicate-only phone evidence v3, mode-aware TEXT lifecycle eligibility,
-and near punctuation/symbol positions with the `text-fixed-window-safe-text-v9` settings fence
-and `text-v7` matching namespace.
+capabilities, duplicate-only phone evidence v4, mode-aware TEXT lifecycle eligibility,
+and near punctuation/symbol positions with the `text-fixed-window-safe-text-v10` settings fence
+and `text-v8` matching namespace.
 The fence invalidates old STRICT, CUSTOM-with-near and CUSTOM-phone-value history, queued
 jobs and grants; other exact-only, CUSTOM-link-only and IMAGE settings retain their prior evidence
 versions. Ambiguous numeric identifiers, prices and measurements are never stripped as phones or
@@ -411,11 +411,25 @@ Raw arithmetic operators, short numeric operands and single-letter variables bef
 also reject it unless an actual finite phone label supplies the context. Identifier labels
 `номер`, `код`, `идентификатор` and `артикул` retain their finite case/plural forms in both the
 adjacent-label and clause guards.
+Arithmetic operators include Unicode math symbols and middle-dot multiplication; right-side
+operators with an operand reject even explicitly labelled candidates. Long signed numeric
+predecessors also remain arithmetic evidence. An independent phone-list exception requires an
+actual finite source label and a complete previous/next candidate passing the same conservative
+phone proof; a plus and numeric shape alone cannot supply that exception. Currency prefixes/suffixes,
+thousands, participant counts and data units remain numeric evidence. Bounded context views ignore
+format controls only for these protective checks, preserving original bytes. Strong identifier and
+quantity labels remain protected even when followed by a phone noun; only the finite `номер телефона`
+phrase is itself a phone label.
 Both extraction and stripping exclude candidates overlapping recognized URL ranges and preserve
-the complete URL bytes. Standalone international phones and proven explicit phone labels keep
+the complete URL bytes. Content and near-numeric normalization strip phones against the original
+source before removing URLs, so separated numeric fragments cannot become fabricated phone evidence.
+Compact international phones and proven explicit phone labels keep
 their positive matching behavior. Country-prefixed 1/7 forms, with or without `+`, require eleven
 total digits; national 8/9 forms require eleven/ten. A greedy span with an appended quantity is
 rejected whole, preserving every numeric character without guessing a shorter phone segment.
+Unknown-length grouped candidates remain whole; dotted candidates require the known
+`1/3/3/2/2`, `1/3/3/4` or national `3/3/2/2` digit grouping. Signed decimals and other ambiguous
+groups are preserved even with a phone label.
 Both rollback paths require these actual guards and their
 order; raising only a version cannot admit a source that omits them. The separate phone-blocking
 policy is unchanged. Near may
@@ -427,8 +441,7 @@ the stored enabled settings and old grants must not regain authority on a later 
 Pending intents
 can survive a control downgrade, so an older unguarded API is not a valid rollback target.
 Use a retained compatible immutable release and the normal queue-fenced rollback workflow.
-Safe-text-v7 and safe-text-v8 were unreleased intermediates and are not production rollback targets.
-At the first safe-text-v9 transition no earlier API image satisfies this source floor. Recovery
+API images before safe-text-v10 do not satisfy this source floor. Recovery
 uses the reviewed control OFF path above and a forward compatible release; static-only rollback
 is independent. Do not weaken source or applied-migration compatibility checks to reuse an old API.
 Older images do not understand the new protocol and are rejected as targets; rollback does not downgrade

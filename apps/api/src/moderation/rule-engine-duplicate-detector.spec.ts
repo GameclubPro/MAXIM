@@ -214,6 +214,16 @@ describe('RuleEngineDuplicateDetector', () => {
         `Запись на встречу открыта для всех желающих телефон: +7 (999) 123-45-67${separator}100 участников`,
         `Запись на встречу открыта для всех желающих телефон: +7 (999) 123-45-67${separator}200 участников`,
       ]),
+      ...[' ', '\t', '\n', '. '].map((separator) => [
+        `numeric fragments separated by URL across ${JSON.stringify(separator)}`,
+        `Подробная инструкция для участников доступна после регистрации: данные +7999${separator}https://example.test${separator}1234567 пользователей`,
+        `Подробная инструкция для участников доступна после регистрации: данные +7999${separator}https://example.test${separator}1234568 пользователей`,
+      ]),
+      [
+        'numeric punctuation boundaries across a URL',
+        'Подробная инструкция для участников доступна после регистрации: данные +7999 https://example.test 123.45.67 пользователей',
+        'Подробная инструкция для участников доступна после регистрации: данные +7999 https://example.test 123 .45 .67 пользователей',
+      ],
       ...['Серия', 'Модель', 'Версия', ''].map((label) => [
         label ? `grouped ${label}` : 'unlabelled grouped number',
         `${label} (999-123-45-67) доступна для заказа в нашем интернет магазине с доставкой по стране`,
@@ -434,6 +444,42 @@ describe('RuleEngineDuplicateDetector', () => {
     ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'content' } });
   });
 
+  it.each([' ', '\t', '\n', '. '])(
+    'still matches true labelled phones and visible URLs in STRICT across %j',
+    async (separator) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({ duplicateDetectionPreset: 'STRICT' });
+      const first = `Подробная инструкция для участников встречи доступна после завершения регистрации телефон: +7 (999) 123-45-67${separator}https://example.test/first`;
+      const second = `Подробная инструкция для участников встречи доступна после завершения регистрации телефон: +7 (999) 123-45-68${separator}https://example.test/second`;
+      const firstNear = detector
+        .buildFingerprints(first, settings)
+        .find((fingerprint) => fingerprint.type === 'near');
+      const secondNear = detector
+        .buildFingerprints(second, settings)
+        .find((fingerprint) => fingerprint.type === 'near');
+      expect(firstNear).toBeDefined();
+      expect(firstNear?.value).toBe(secondNear?.value);
+      await detectRevision({
+        detector,
+        messageId: 'phone-link-first',
+        revision: 100,
+        text: first,
+        settings,
+      });
+      await expect(
+        detectRevision({
+          detector,
+          messageId: 'phone-link-second',
+          revision: 200,
+          text: second,
+          settings,
+        }),
+      ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'content' } });
+    },
+  );
+
   it('uses only true phones for explicit CUSTOM value matching without near', async () => {
     const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
     const settings = buildSettings({
@@ -474,6 +520,149 @@ describe('RuleEngineDuplicateDetector', () => {
       }),
     ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'phone' } });
   });
+
+  describe.each(['STRICT', 'CUSTOM'] as const)('%s protected numeric expressions', (preset) => {
+    it.each([
+      [
+        'quantity after an unknown-length international phone',
+        'телефон: +44 20 7946 0958 100 участников',
+        'телефон: +44 20 7946 0958 200 участников',
+      ],
+      ...['телефон:', 'выражение'].map((label) => [
+        `spaced right arithmetic after ${label}`,
+        `${label} +79991234567 + 2`,
+        `${label} +79991234568 + 2`,
+      ]),
+      [
+        'long arithmetic first operand',
+        'Выражение +79991234567 +79991234568',
+        'Выражение +79991234569 +79991234568',
+      ],
+      [
+        'long arithmetic second operand',
+        'Выражение +79991234567 +79991234568',
+        'Выражение +79991234567 +79991234569',
+      ],
+      ...['^', '×', '÷', '⋅', '<', '>', '≠', '≈', '≤', '≥', '＋'].map((operator) => [
+        `left arithmetic operator ${operator}`,
+        `выражение 2 ${operator} +79991234567`,
+        `выражение 2 ${operator} +79991234568`,
+      ]),
+      ...['₽', '$', '€', '£'].flatMap((currency) =>
+        ['', ' '].map((spacing) => [
+          `currency prefix ${currency} with ${JSON.stringify(spacing)}`,
+          `${currency}${spacing}+79991234567`,
+          `${currency}${spacing}+79991234568`,
+        ]),
+      ),
+      ...['тыс.', 'участников', 'kB', 'MB', 'GiB'].map((unit) => [
+        `quantity or storage suffix ${unit}`,
+        `телефон: +79991234567 ${unit}`,
+        `телефон: +79991234568 ${unit}`,
+      ]),
+      ...['Артикул телефона:', 'Код телефона:'].map((label) => [
+        `identifier label ${label}`,
+        `${label} +79991234567`,
+        `${label} +79991234568`,
+      ]),
+    ])(
+      'preserves %s without creating a phone-only match',
+      async (_name, firstValue, secondValue) => {
+        const detector = new RuleEngineDuplicateDetector(
+          new InMemoryRevisionedRedisCounter() as never,
+        );
+        const settings = buildSettings({
+          duplicateDetectionPreset: preset,
+          duplicateIgnorePhonesEnabled: true,
+          duplicateNearMatchEnabled: true,
+        });
+        const prefix =
+          'Подробная инструкция для участников встречи доступна после завершения регистрации';
+        await detectRevision({
+          detector,
+          messageId: 'protected-first',
+          revision: 100,
+          text: `${prefix}: ${firstValue}`,
+          settings,
+        });
+        await expect(
+          detectRevision({
+            detector,
+            messageId: 'protected-changed',
+            revision: 200,
+            text: `${prefix}: ${secondValue}`,
+            settings,
+          }),
+        ).resolves.toEqual({});
+        await expect(
+          detectRevision({
+            detector,
+            messageId: 'protected-unrelated',
+            revision: 300,
+            text: `Сведения о наличии оборудования опубликованы для покупателя нового товара: ${firstValue}`,
+            settings,
+          }),
+        ).resolves.toEqual({});
+        await expect(
+          detectRevision({
+            detector,
+            messageId: 'protected-repeat',
+            revision: 400,
+            text: `${prefix}: ${secondValue}`,
+            settings,
+          }),
+        ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+      },
+    );
+  });
+
+  it.each([' ', '\n'])(
+    'recognizes both explicitly labelled CUSTOM list phones across %j',
+    (separator) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnorePhonesEnabled: true,
+      });
+      const text = `Телефоны: +7 (999) 123-45-67${separator}+7 (999) 123-45-68`;
+      expect(
+        detector
+          .buildFingerprints(text, settings)
+          .filter((fingerprint) => fingerprint.type === 'phone')
+          .map((fingerprint) => fingerprint.value),
+      ).toEqual(['79991234567', '79991234568']);
+    },
+  );
+
+  it.each([' ', '\n'])(
+    'still matches rotated explicitly labelled STRICT phone lists across %j',
+    async (separator) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({ duplicateDetectionPreset: 'STRICT' });
+      const prefix =
+        'Подробная инструкция для участников встречи доступна после завершения регистрации телефоны:';
+      await detectRevision({
+        detector,
+        messageId: 'list-first',
+        revision: 100,
+        text: `${prefix} +7 (999) 123-45-67${separator}+7 (999) 123-45-68`,
+        settings,
+      });
+      await expect(
+        detectRevision({
+          detector,
+          messageId: 'list-rotated',
+          revision: 200,
+          text: `${prefix} +7 (999) 123-45-69${separator}+7 (999) 123-45-70`,
+          settings,
+        }),
+      ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'content' } });
+    },
+  );
 
   it.each([
     ...[
