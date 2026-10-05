@@ -72,6 +72,7 @@ describePostgresRace('PostgreSQL durable GROUP command races', () => {
   });
 
   afterEach(async () => {
+    if (!prisma) return;
     await prisma.maxActionLedgerEntry.deleteMany({ where: { id: { in: ledgerIds.splice(0) } } });
     await prisma.webhookExecutionClaim.deleteMany({
       where: { id: { in: expiryClaimIds.splice(0) } },

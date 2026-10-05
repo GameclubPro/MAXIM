@@ -63,7 +63,12 @@ test('both rollback paths reject targets that erase shared multibot authority', 
       mkdirSync(dirname(resolve(fixture, path)), { recursive: true });
       writeFileSync(resolve(fixture, path), readFileSync(resolve(root, path)));
     }
-    assert.equal(check(commit()).status, 0);
+    const positive = check(commit());
+    assert.equal(
+      positive.status,
+      0,
+      `Current authority fixture was rejected: signal=${positive.signal ?? 'none'} error=${positive.error?.message ?? 'none'}\nstdout:\n${positive.stdout}\nstderr:\n${positive.stderr}`,
+    );
     const commandPath = paths[3];
     const commandSource = readFileSync(resolve(fixture, commandPath), 'utf8');
     writeFileSync(

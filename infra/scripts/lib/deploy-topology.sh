@@ -203,7 +203,7 @@ maxim_topology_require_multibot_authority() {
   done
   if ! printf '%s\0' "${sources[@]}" | node -e '
     const [version, ingress, worker, commands, outcome, client, schema,
-      noticeRecovery, noticeDelivery, moderation, outbox, legacy] = require("fs").readFileSync(0, "utf8").split("\0");
+      noticeRecovery, noticeDelivery, moderation, outbox, legacy] = require("node:fs").readFileSync(0).toString("utf8").split("\0");
     const claimModel = schema.match(/^model\s+WebhookExecutionClaim\s*\{([\s\S]*?)^\}/m)?.[1] ?? "";
     const claimRelation = claimModel.match(/\bwebhookEvent\s+WebhookEvent\?\s+@relation\(([^)]*)\)/u)?.[1] ?? "";
     const tombstoneSchema = /\bwebhookEventId\s+String\?\s+@map\("webhook_event_id"\)/u.test(claimModel) &&
