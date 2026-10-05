@@ -39,6 +39,7 @@ import {
 import { WebhookRoutingService } from './webhook-routing.service';
 import { WebhookService } from './webhook.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 import { describeWebhookPreparationFailure } from './webhook-preparation-diagnostic';
 import {
   isPendingWebhookTimeoutQuarantineMessage,
@@ -61,6 +62,8 @@ const DEGRADED_QUEUED_REPAIR_INTERVAL_MS = 5_000;
 const ENQUEUE_ADMISSION_MODE_CACHE_MS = 5_000;
 const COMPLETED_TIMEOUT_REPAIR_INTERVAL_MS = 5_000;
 const COMPLETED_TIMEOUT_REPAIR_RAW_ROWS = 200;
+const FINISHED_HEAD_RECOVERY_BUDGET_MS = 250;
+const FINISHED_HEAD_RECOVERY_INTERVAL_MS = 1_000;
 const SLOW_ENQUEUE_BATCH_MS = 1_000;
 const SLOW_ENQUEUE_BATCH_LOG_INTERVAL_MS = 30_000;
 const CANONICAL_PREPARATION_PENDING_RETRY_MS = 1_000;
@@ -431,6 +434,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly retentionBatchDelayMs = RETENTION_CLEANUP_BATCH_DELAY_MS;
 
   private enqueueScans?: Map<string, OutboxScanState>;
+  private finishedHeadRecoveryOffset = 0;
+  private finishedOwnerRecoveryOffset = 0;
+  private nextFinishedHeadRecoveryAt = 0;
   private poller: NodeJS.Timeout | null = null;
   private polling = false;
   private cleaner: NodeJS.Timeout | null = null;
@@ -1386,9 +1392,19 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
     const workUnits = this.buildEnqueueWorkUnits(candidates);
     progress.workUnits = workUnits.length;
-    const orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(
-      workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : [])),
+    const chatIds = workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : []));
+    let orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
+    // FLAG: The physical head may be an earlier mirror of a finished owner. Settle only
+    // that owner's exact SQL checkpoint before ordering rejects the later receipt; never
+    // invoke preparation, the moderation engine or a remote action from this recovery lane.
+    const recovered = await this.recoverFinishedOrderedHeads(
+      orderedHeadsByChatId,
+      enqueueConcurrency,
     );
+    if (recovered > 0) {
+      progress.settled += recovered;
+      orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
+    }
     const workerCount = Math.max(1, Math.min(enqueueConcurrency, workUnits.length));
     const dispatched = new Set<WebhookEnqueueWorkUnit>();
     const active = new Set<Promise<void>>();
@@ -1451,6 +1467,123 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }
     progress.preparationBlocked += workUnits.length - dispatched.size;
     return progress;
+  }
+
+  private async recoverFinishedOrderedHeads(
+    heads: ReadonlyMap<string, OrderedWebhookHead>,
+    concurrency = this.enqueueConcurrency,
+  ): Promise<number> {
+    if (heads.size === 0) return 0;
+    const startedAt = performance.now();
+    if (startedAt < (this.nextFinishedHeadRecoveryAt ?? 0)) return 0;
+    this.nextFinishedHeadRecoveryAt = startedAt + FINISHED_HEAD_RECOVERY_INTERVAL_MS;
+    const deadline = startedAt + FINISHED_HEAD_RECOVERY_BUDGET_MS;
+    const uniqueHeads = Array.from(
+      new Map(Array.from(heads.values(), (head) => [head.id, head])).values(),
+    ).sort((left, right) => this.compareCandidateSequence(left, right));
+    const take = Math.min(COMPLETED_TIMEOUT_REPAIR_RAW_ROWS, uniqueHeads.length);
+    const offset = (this.finishedHeadRecoveryOffset ?? 0) % uniqueHeads.length;
+    const selected = [...uniqueHeads.slice(offset), ...uniqueHeads.slice(0, offset)].slice(0, take);
+    this.finishedHeadRecoveryOffset = (offset + take) % uniqueHeads.length;
+    let owners: Array<{ ownerId: string }>;
+    try {
+      owners = await this.selectFinishedOrderedHeadOwners(selected.map((head) => head.id));
+    } catch {
+      // FLAG: Recovery is opportunistic; a failed or timed-out proof query must not stop
+      // normal ordered admission. The unchanged SQL owner and quarantine remain fenced.
+      return 0;
+    }
+    if (owners.length === 0) return 0;
+    owners.sort((left, right) => left.ownerId.localeCompare(right.ownerId));
+    const ownerOffset = (this.finishedOwnerRecoveryOffset ?? 0) % owners.length;
+    const orderedOwners = [...owners.slice(ownerOffset), ...owners.slice(0, ownerOffset)];
+    let next = 0;
+    let recovered = 0;
+    // FLAG: Coalesce shared heads, cap proof probes and SQL transactions per pass, and keep
+    // their concurrency within the pressure-mode DB width. Retained history is never scanned.
+    const workers = Array.from(
+      {
+        length: Math.max(
+          1,
+          Math.min(concurrency ?? 1, DEGRADED_ENQUEUE_CONCURRENCY, owners.length),
+        ),
+      },
+      async () => {
+        while (next < orderedOwners.length && performance.now() < deadline) {
+          const ownerId = orderedOwners[next++]!.ownerId;
+          try {
+            const settled = await this.prisma.$transaction(
+              async (tx) => {
+                const owner = await tx.webhookEvent.findUnique({ where: { id: ownerId } });
+                const semanticKey = owner && buildWebhookSemanticEventKey(owner.normalizedPayload);
+                if (!owner || !semanticKey) return false;
+                const claim = await tx.webhookExecutionClaim.findUnique({
+                  where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey } },
+                });
+                if (!claim) return false;
+                return WebhookCanonicalExecutionService.tryRecoverFinishedExecutionWithClient(
+                  tx as unknown as Parameters<
+                    typeof WebhookCanonicalExecutionService.tryRecoverFinishedExecutionWithClient
+                  >[0],
+                  owner,
+                  claim,
+                );
+              },
+              { maxWait: 1_000, timeout: 2_000 },
+            );
+            if (settled) recovered += 1;
+          } catch {
+            // FLAG: A changed checkpoint/body or unavailable SQL preserves its exact fences.
+            // Isolate this owner; a later poll can retry without repeating any business work.
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+    this.finishedOwnerRecoveryOffset = (ownerOffset + next) % owners.length;
+    return recovered;
+  }
+
+  private async selectFinishedOrderedHeadOwners(
+    headIds: readonly string[],
+  ): Promise<Array<{ ownerId: string }>> {
+    if (headIds.length === 0) return [];
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET LOCAL statement_timeout = '250ms'`;
+        return tx.$queryRaw<Array<{ ownerId: string }>>(
+          this.finishedOrderedHeadOwnersQuery(headIds),
+        );
+      },
+      { maxWait: 250, timeout: 500 },
+    );
+  }
+
+  private finishedOrderedHeadOwnersQuery(headIds: readonly string[]): Prisma.Sql {
+    const requested = Prisma.join(headIds.map((id) => Prisma.sql`(${id})`));
+    // FLAG: Each supplied head uses one primary-key body lookup and one unique semantic
+    // claim lookup before its JSON proof filter. OFFSET 0 preserves these bounded probes.
+    return Prisma.sql`
+      /* finished_ordered_head_proofs */
+      WITH requested_heads("id") AS (VALUES ${requested})
+      SELECT DISTINCT proof."ownerId"
+      FROM requested_heads
+      CROSS JOIN LATERAL (
+        SELECT "semantic_key" FROM "webhook_events"
+        WHERE "id" = requested_heads."id" AND "semantic_key" IS NOT NULL
+        OFFSET 0
+      ) head
+      CROSS JOIN LATERAL (
+        SELECT "webhook_event_id" AS "ownerId" FROM "webhook_execution_claims"
+        WHERE "kind" = 'EXECUTION' AND "semantic_key" = head."semantic_key"
+          AND "status" = 'READY'::"WebhookExecutionClaimStatus"
+          AND "enforced" AND "webhook_event_id" IS NOT NULL
+          AND "prepared_at" IS NOT NULL AND "completed_at" IS NULL
+          AND "business_started_at" IS NOT NULL
+          AND "command_result" @> ${JSON.stringify({ kind: 'EXECUTION_FINISHED', authorityVersion: MULTIBOT_EXECUTION_AUTHORITY_VERSION })}::jsonb
+        OFFSET 0
+      ) proof
+    `;
   }
 
   private buildEnqueueWorkUnits(

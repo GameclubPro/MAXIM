@@ -43,6 +43,7 @@ const WEBHOOK_TIMEOUT_PERSISTENCE_TRANSACTION_TIMEOUT_MS = 30_000;
 
 type WebhookExecutionClaimRecord = {
   id?: string;
+  kind?: string;
   semanticKey?: string;
   webhookEventId?: string | null;
   executionBotId?: string | null;
@@ -97,6 +98,7 @@ const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL = Prisma.raw(
 
 const WEBHOOK_EXECUTION_CLAIM_SELECT = {
   id: true,
+  kind: true,
   semanticKey: true,
   webhookEventId: true,
   executionBotId: true,
@@ -1070,60 +1072,114 @@ export class WebhookCanonicalExecutionService {
     event: WebhookEvent,
     claim: WebhookExecutionClaimRecord,
   ): Promise<boolean> {
+    return this.prisma.$transaction((tx) =>
+      WebhookCanonicalExecutionService.tryRecoverFinishedExecutionWithClient(
+        tx as unknown as WebhookCanonicalPersistenceClient,
+        event,
+        claim,
+      ),
+    );
+  }
+
+  // FLAG: Only the original handler's exact saved checkpoint authorizes this SQL-only
+  // settlement. A live or expired lease without that checkpoint never proves completion.
+  // This certifies the finished handler, not current content or new remote effects; existing
+  // independent action/delete/media journals retain their own authority and snapshots.
+  // The caller owns the transaction: a receipt CAS loss must roll back claim completion.
+  static async tryRecoverFinishedExecutionWithClient(
+    client: WebhookCanonicalPersistenceClient,
+    event: WebhookEvent,
+    claim: WebhookExecutionClaimRecord,
+  ): Promise<boolean> {
     const result = this.finishedExecutionJournal(event, claim);
     const semanticKey = buildWebhookSemanticEventKey(event.normalizedPayload);
-    if (!result) return false;
-    return this.prisma.$transaction(async (tx) => {
-      // The checkpoint certifies only the original finished handler. Recovery performs SQL
-      // settlement and retains its attribution; it cannot run a new rule, send or sanction.
-      const completed = await tx.webhookExecutionClaim.updateMany({
-        where: {
-          id: claim.id,
-          kind: 'EXECUTION',
-          webhookEventId: event.id,
-          semanticKey: semanticKey!,
-          status: 'READY',
-          enforced: true,
-          leaseToken: claim.leaseToken ?? null,
-          leaseExpiresAt: claim.leaseExpiresAt ?? null,
-          businessStartedAt: claim.businessStartedAt,
-          commandResult: { equals: result as Prisma.InputJsonValue },
-        },
-        data: {
-          status: 'COMPLETED',
-          completedAt: new Date(result.finishedAt as string),
-          leaseToken: null,
-          leaseExpiresAt: null,
-        },
-      });
-      if (completed.count !== 1) return false;
-      const settled = await tx.webhookEvent.updateMany({
-        where: {
-          id: event.id,
-          status: event.status,
-          normalizedPayload: { equals: event.normalizedPayload as Prisma.InputJsonValue },
-          errorMessage: event.errorMessage,
-          timeoutQuarantineExpiresAt: event.timeoutQuarantineExpiresAt,
-        },
-        data: {
-          status: WebhookStatus.PROCESSED,
-          processedAt: new Date(result.finishedAt as string),
-          errorMessage: null,
-          queueName: null,
-          nextEnqueueAt: null,
-          timeoutQuarantineExpiresAt: null,
-        },
-      });
-      if (settled.count !== 1)
-        throw new WebhookPreparationDeferredError(
-          'Finished-handler receipt recovery changed',
-          1_000,
-        );
-      return true;
+    if (
+      !result ||
+      !claim.id ||
+      (event.status !== WebhookStatus.RECEIVED &&
+        event.status !== WebhookStatus.QUEUED &&
+        event.status !== WebhookStatus.FAILED) ||
+      event.processedAt !== null ||
+      event.semanticKey !== semanticKey ||
+      claim.status !== 'READY' ||
+      claim.completedAt !== null ||
+      !client.webhookExecutionClaim?.updateMany ||
+      (claim.leaseToken !== null &&
+        (typeof claim.leaseToken !== 'string' || !claim.leaseToken.trim())) ||
+      (claim.leaseExpiresAt !== null &&
+        (!(claim.leaseExpiresAt instanceof Date) ||
+          !Number.isFinite(claim.leaseExpiresAt.getTime()))) ||
+      (claim.leaseToken === null) !== (claim.leaseExpiresAt === null)
+    )
+      return false;
+    // The checkpoint certifies only the original finished handler. Recovery performs SQL
+    // settlement and retains its attribution; it cannot run a new rule, send or sanction.
+    const completed = await client.webhookExecutionClaim.updateMany({
+      where: {
+        id: claim.id,
+        kind: 'EXECUTION',
+        webhookEventId: event.id,
+        semanticKey: semanticKey!,
+        status: 'READY',
+        enforced: true,
+        executionBotId: claim.executionBotId,
+        preparedAt: claim.preparedAt,
+        completedAt: null,
+        leaseToken: claim.leaseToken,
+        leaseExpiresAt: claim.leaseExpiresAt,
+        businessStartedAt: claim.businessStartedAt,
+        commandResult: { equals: result as Prisma.InputJsonValue },
+      },
+      data: {
+        status: 'COMPLETED',
+        completedAt: new Date(result.finishedAt as string),
+        leaseToken: null,
+        leaseExpiresAt: null,
+      },
     });
+    if (completed.count !== 1) return false;
+    const settled = await client.webhookEvent.updateMany({
+      where: {
+        id: event.id,
+        botId: event.botId,
+        dedupKey: event.dedupKey,
+        sourceIp: event.sourceIp,
+        createdAt: event.createdAt,
+        status: event.status,
+        semanticKey: event.semanticKey,
+        rawPayload: { equals: event.rawPayload as Prisma.InputJsonValue },
+        normalizedPayload: { equals: event.normalizedPayload as Prisma.InputJsonValue },
+        processedAt: event.processedAt,
+        queueName: event.queueName,
+        queuedAt: event.queuedAt,
+        enqueueAttempts: event.enqueueAttempts,
+        nextEnqueueAt: event.nextEnqueueAt,
+        executionDeadlineAt: event.executionDeadlineAt,
+        errorMessage: event.errorMessage,
+        timeoutQuarantineExpiresAt: event.timeoutQuarantineExpiresAt,
+      },
+      data: {
+        status: WebhookStatus.PROCESSED,
+        processedAt: new Date(result.finishedAt as string),
+        errorMessage: null,
+        queueName: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      },
+    });
+    if (settled.count !== 1)
+      throw new WebhookPreparationDeferredError('Finished-handler receipt recovery changed', 1_000);
+    return true;
   }
 
   private finishedExecutionJournal(
+    event: Pick<WebhookEvent, 'id' | 'normalizedPayload'>,
+    claim: WebhookExecutionClaimRecord,
+  ): Record<string, unknown> | null {
+    return WebhookCanonicalExecutionService.finishedExecutionJournal(event, claim);
+  }
+
+  private static finishedExecutionJournal(
     event: Pick<WebhookEvent, 'id' | 'normalizedPayload'>,
     claim: WebhookExecutionClaimRecord,
   ): Record<string, unknown> | null {
@@ -1131,9 +1187,16 @@ export class WebhookCanonicalExecutionService {
     const semanticKey = buildWebhookSemanticEventKey(event.normalizedPayload);
     if (
       !semanticKey ||
+      claim.kind !== 'EXECUTION' ||
       claim.enforced !== true ||
       claim.webhookEventId !== event.id ||
-      !claim.businessStartedAt ||
+      claim.semanticKey !== semanticKey ||
+      (claim.executionBotId !== null &&
+        (typeof claim.executionBotId !== 'string' || !claim.executionBotId.trim())) ||
+      !(claim.preparedAt instanceof Date) ||
+      !Number.isFinite(claim.preparedAt.getTime()) ||
+      !(claim.businessStartedAt instanceof Date) ||
+      !Number.isFinite(claim.businessStartedAt.getTime()) ||
       !result ||
       result.kind !== 'EXECUTION_FINISHED' ||
       result.authorityVersion !== MULTIBOT_EXECUTION_AUTHORITY_VERSION ||

@@ -869,6 +869,336 @@ test('activity query classification emits only fixed labels, including for sensi
   }
 });
 
+function extractQueueReportSql(sql) {
+  const start = sql.indexOf('WITH queue_statuses(status) AS');
+  const end = sql.indexOf(') predecessor ON TRUE;', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return sql.slice(start, end + ') predecessor ON TRUE;'.length);
+}
+
+test(
+  'native queue quarantine predecessor diagnostics stay bounded and private',
+  { skip: !nativePostgresUrl, timeout: 30_000 },
+  async (t) => {
+    const address = new URL(nativePostgresUrl);
+    assert.ok(
+      ['127.0.0.1', 'localhost', '[::1]'].includes(address.hostname) &&
+        address.pathname.includes('race_test'),
+      'Native queue integration requires disposable local PostgreSQL race_test',
+    );
+    const data = fixture();
+    t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+    const emitted = runAudit(data, ['queue']);
+    assert.equal(emitted.status, 0, emitted.stderr);
+    const statement = extractQueueReportSql(readFileSync(data.sql, 'utf8'));
+    assert.equal([...statement.matchAll(/FROM webhook_events\b/gu)].length, 3);
+    assert.equal([...statement.matchAll(/\bLIMIT 2001\b/gu)].length, 1);
+    assert.equal([...statement.matchAll(/\bLIMIT 1\b/gu)].length, 2);
+    assert.doesNotMatch(statement, /webhook_execution_claims|moderation_delete_intents/u);
+    const { default: pg } = await import('pg');
+    const client = new pg.Client({
+      connectionString: nativePostgresUrl,
+      connectionTimeoutMillis: 5_000,
+      query_timeout: 10_000,
+      options: '-c timezone=UTC -c statement_timeout=2500 -c lock_timeout=250',
+    });
+    const namespace = `queue_quarantine_${randomUUID().replaceAll('-', '')}`;
+    const nonce = '11111111-2222-4333-8444-555555555555';
+    const legacy =
+      'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required';
+    const started =
+      'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:CANONICAL_BUSINESS_ALREADY_STARTED; durable-effects recovery required';
+    const watchdog = `WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:${nonce}: Webhook user-facing hot path timed out after 10000ms for message_created`;
+    const payload = JSON.stringify({
+      type: 'message_created',
+      message: { chatId: 'private-chat', messageId: 'private-message', text: 'private-payload' },
+    });
+    let connected = false;
+    try {
+      await client.connect();
+      connected = true;
+      const identity = await client.query('SELECT version() AS version');
+      assert.match(identity.rows[0].version, /^PostgreSQL /u);
+      assert.doesNotMatch(identity.rows[0].version, /pglite|wasm/iu);
+      // FLAG: Execute the emitted fixed report in one rolled-back disposable schema;
+      // no production role, table, index, payload or query text participates in this fixture.
+      await client.query(`
+        BEGIN;
+        CREATE SCHEMA ${namespace};
+        SET LOCAL search_path = ${namespace}, pg_catalog;
+        CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED', 'QUEUED', 'FAILED');
+        CREATE TABLE webhook_events (
+          id text PRIMARY KEY, status "WebhookStatus", created_at timestamp,
+          enqueue_attempts integer DEFAULT 1, next_enqueue_at timestamp,
+          error_message text, timeout_quarantine_expires_at timestamp,
+          normalized_payload jsonb DEFAULT '{}'
+        );
+        CREATE INDEX webhook_events_status_created_at_idx ON webhook_events(status, created_at);
+      `);
+      await client.query(
+        readFileSync(
+          resolve(
+            root,
+            'apps/api/prisma/migrations/20260815123000_add_webhook_ordered_chat_head_index/migration.sql',
+          ),
+          'utf8',
+        ).replace('CREATE INDEX CONCURRENTLY', 'CREATE INDEX'),
+      );
+      // Equal predecessor times exercise runtime's (created_at, id) ordering;
+      // heap insertion order and a later receipt must not select the second predecessor.
+      await client.query(
+        `INSERT INTO webhook_events(id, status, created_at, error_message, normalized_payload)
+         VALUES ('private-predecessor-z', 'FAILED', clock_timestamp() - interval '2 minutes', $1, $3),
+           ('private-predecessor-a', 'FAILED', clock_timestamp() - interval '2 minutes', $2, $3),
+           ('private-received', 'RECEIVED', clock_timestamp() - interval '1 minute', NULL, $3)`,
+        [started, legacy, payload],
+      );
+      await client.query(`
+        UPDATE webhook_events SET created_at =
+          (SELECT created_at FROM webhook_events WHERE id = 'private-predecessor-z')
+        WHERE id = 'private-predecessor-a';
+      `);
+      const report = async () => {
+        const { rows } = await client.query(statement);
+        const value = JSON.parse(Object.values(rows[0])[0]);
+        assert.doesNotMatch(
+          JSON.stringify(value),
+          /private-|11111111|LEGACY_EXECUTION|CANONICAL_BUSINESS|Webhook user-facing/u,
+        );
+        return value.rows.find((row) => row.status === 'RECEIVED').oldest_ordering_predecessor;
+      };
+      const initial = await report();
+      assert.equal(initial.quarantine_subtype, 'legacy_execution_unverified');
+      assert.equal(initial.quarantine_deadline_present, false);
+      assert.equal(initial.quarantine_deadline_expired, null);
+      assert.equal(initial.quarantine_deadline_in_seconds, null);
+      assert.equal(initial.quarantine_deadline_overdue_seconds, null);
+      assert.equal(initial.source_marker, 'missing');
+      assert.equal(initial.raw_source_present, false);
+      assert.equal(initial.direct_update_timestamp_shape, 'shape_unknown');
+      assert.equal(initial.direct_update_receipt_delta_seconds, null);
+      assert.equal(initial.direct_message_shape, 'shape_unknown');
+      assert.equal(initial.direct_message_timestamp_shape, 'shape_unknown');
+      assert.equal(initial.direct_message_receipt_delta_seconds, null);
+      for (const [error, subtype] of [
+        [started, 'canonical_business_started'],
+        [watchdog, 'detached_timeout'],
+        [`${watchdog} | stage=private-stage`, 'detached_timeout'],
+        [
+          `${watchdog}; initial timeout quarantine persistence failed: private-error`,
+          'detached_timeout',
+        ],
+        [
+          `WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:${nonce}: detached execution completed without a canonical claim: private-error`,
+          'unclaimed_detached_completed',
+        ],
+        [
+          `WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:${nonce}: detached execution failed without a canonical claim: private-error`,
+          'unclaimed_detached_failed',
+        ],
+        [`${legacy}: private-suffix`, 'other_pending'],
+        [`${started}: private-suffix`, 'other_pending'],
+        [
+          `WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:${nonce}: private-content: LEGACY_EXECUTION_UNVERIFIED; exact effects proof required`,
+          'other_pending',
+        ],
+        [
+          'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:private-nonce: Webhook user-facing hot path timed out after 10000ms for message_created',
+          'other_pending',
+        ],
+        [`${watchdog}private-suffix`, 'other_pending'],
+        [`private-prefix: ${legacy}`, null],
+        [`Webhook preparation failed: ${started}`, null],
+      ]) {
+        await client.query(
+          `UPDATE webhook_events SET error_message = $1,
+             next_enqueue_at = clock_timestamp() - interval '1 second'
+           WHERE id = 'private-predecessor-a'`,
+          [error],
+        );
+        assert.equal((await report()).quarantine_subtype, subtype);
+      }
+      const receiptMs = Date.now() - 120_000;
+      await client.query(
+        `UPDATE webhook_events SET created_at = to_timestamp($1 / 1000.0) AT TIME ZONE 'UTC'
+         WHERE id IN ('private-predecessor-a', 'private-predecessor-z')`,
+        [receiptMs],
+      );
+      const numericCases = [
+        [receiptMs - 90_000, 'numeric_milliseconds', -90],
+        [(receiptMs - 90_000) / 1000, 'numeric_seconds', -90],
+        [receiptMs + 1234.9, 'numeric_milliseconds', 1.234],
+        [10_000_000_000, 'numeric_milliseconds', (10_000_000_000 - receiptMs) / 1000],
+        [8_640_000_000_000_000, 'numeric_milliseconds', (8_640_000_000_000_000 - receiptMs) / 1000],
+        [8_640_000_000_000_001, 'invalid_numeric', null],
+        [1e308, 'invalid_numeric', null],
+        [-1e308, 'invalid_numeric', null],
+        [0, 'invalid_numeric', null],
+        [-1, 'invalid_numeric', null],
+        [0.0001, 'invalid_numeric', null],
+        [null, 'missing', null],
+        [String(receiptMs), 'shape_unknown', null],
+        [new Date(receiptMs).toISOString(), 'shape_unknown', null],
+        ['2026-99-99T00:00:00Z', 'shape_unknown', null],
+        [true, 'shape_unknown', null],
+        [{ private: 'private-value' }, 'shape_unknown', null],
+        [[receiptMs], 'shape_unknown', null],
+      ];
+      for (const [timestamp, shape, delta] of numericCases) {
+        await client.query(
+          `UPDATE webhook_events SET normalized_payload = $1::jsonb
+           WHERE id = 'private-predecessor-a'`,
+          [
+            JSON.stringify({
+              ...JSON.parse(payload),
+              eventTimestampSource: 'payload',
+              raw: { timestamp, message: { timestamp, text: 'private-raw-message' } },
+            }),
+          ],
+        );
+        const value = await report();
+        assert.equal(value.source_marker, 'payload');
+        assert.equal(value.raw_source_present, true);
+        assert.equal(value.direct_update_timestamp_shape, shape);
+        assert.equal(value.direct_update_receipt_delta_seconds, delta);
+        assert.equal(value.direct_message_shape, 'object');
+        assert.equal(value.direct_message_timestamp_shape, shape);
+        assert.equal(value.direct_message_receipt_delta_seconds, delta);
+      }
+      for (const [fields, marker, rawPresent, updateShape, messageShape, messageTimeShape] of [
+        [
+          { eventTimestampSource: ' PAYLOAD ', timestamp: receiptMs },
+          'payload',
+          false,
+          'numeric_milliseconds',
+          'object',
+          'missing',
+        ],
+        [
+          { eventTimestampSource: 'ingress', timestamp: receiptMs },
+          'ingress',
+          false,
+          'shape_unknown',
+          'shape_unknown',
+          'shape_unknown',
+        ],
+        [
+          { eventTimestampSource: 'private-source', raw: {} },
+          'other',
+          true,
+          'missing',
+          'missing',
+          'missing',
+        ],
+        [{ eventTimestampSource: null, raw: {} }, 'missing', true, 'missing', 'missing', 'missing'],
+        [
+          { eventTimestampSource: { private: 'private-marker' } },
+          'other',
+          false,
+          'shape_unknown',
+          'shape_unknown',
+          'shape_unknown',
+        ],
+        [{ raw: [] }, 'missing', false, 'shape_unknown', 'shape_unknown', 'shape_unknown'],
+        [{ raw: null }, 'missing', false, 'shape_unknown', 'shape_unknown', 'shape_unknown'],
+        [
+          { raw: { createdAt: new Date(receiptMs).toISOString() } },
+          'missing',
+          true,
+          'shape_unknown',
+          'missing',
+          'missing',
+        ],
+        [
+          { raw: { data: { timestamp: receiptMs, message: { timestamp: receiptMs } } } },
+          'missing',
+          true,
+          'shape_unknown',
+          'shape_unknown',
+          'shape_unknown',
+        ],
+        [{ raw: { message: true } }, 'missing', true, 'missing', 'shape_unknown', 'shape_unknown'],
+        [
+          { raw: { message: { created_at: receiptMs } } },
+          'missing',
+          true,
+          'missing',
+          'object',
+          'shape_unknown',
+        ],
+      ]) {
+        await client.query(
+          `UPDATE webhook_events SET normalized_payload = $1::jsonb
+           WHERE id = 'private-predecessor-a'`,
+          [JSON.stringify({ ...JSON.parse(payload), ...fields })],
+        );
+        const value = await report();
+        assert.equal(value.source_marker, marker);
+        assert.equal(value.raw_source_present, rawPresent);
+        assert.equal(value.direct_update_timestamp_shape, updateShape);
+        assert.equal(value.direct_message_shape, messageShape);
+        assert.equal(value.direct_message_timestamp_shape, messageTimeShape);
+      }
+      for (const [delay, expired] of [
+        [60, false],
+        [-60, true],
+      ]) {
+        await client.query(
+          `UPDATE webhook_events SET error_message = $1,
+             timeout_quarantine_expires_at = (clock_timestamp() AT TIME ZONE 'UTC') + $2 * interval '1 second'
+           WHERE id = 'private-predecessor-a'`,
+          [legacy, delay],
+        );
+        const value = await report();
+        assert.equal(value.quarantine_deadline_present, true);
+        assert.equal(value.quarantine_deadline_expired, expired);
+        if (expired) {
+          assert.equal(value.quarantine_deadline_in_seconds, 0);
+          assert.ok(value.quarantine_deadline_overdue_seconds >= 60);
+        } else {
+          assert.ok(
+            value.quarantine_deadline_in_seconds > 0 && value.quarantine_deadline_in_seconds <= 60,
+          );
+          assert.equal(value.quarantine_deadline_overdue_seconds, 0);
+        }
+      }
+      await client.query(`
+        INSERT INTO webhook_events(id, status, created_at, error_message)
+        SELECT 'private-history-' || ordinal, 'FAILED',
+          clock_timestamp() - interval '1 day', 'private-terminal-error'
+        FROM generate_series(1, 2100) ordinal;
+        SET LOCAL enable_seqscan=off;
+        SET LOCAL enable_bitmapscan=off;
+        SET LOCAL max_parallel_workers_per_gather=0;
+        SET LOCAL jit=off;
+        ANALYZE webhook_events;
+      `);
+      const plans = await client.query(`EXPLAIN (FORMAT JSON) ${statement}`);
+      const relationScans = [];
+      const collect = (node) => {
+        if (node['Relation Name'] === 'webhook_events') relationScans.push(node);
+        for (const child of node.Plans ?? []) collect(child);
+      };
+      collect(plans.rows[0]['QUERY PLAN'][0].Plan);
+      assert.equal(relationScans.length, 3);
+      assert.ok(
+        relationScans.every((node) =>
+          ['Index Scan', 'Index Only Scan'].includes(node['Node Type']),
+        ),
+      );
+      assert.deepEqual([...new Set(relationScans.map((node) => node['Index Name']))].sort(), [
+        'webhook_events_ordered_chat_head_idx',
+        'webhook_events_status_created_at_idx',
+      ]);
+      assert.equal((await report()).quarantine_subtype, 'legacy_execution_unverified');
+    } finally {
+      if (connected) await client.query('ROLLBACK').catch(() => undefined);
+      await client.end();
+    }
+  },
+);
+
 test('queue oldest-state diagnostics remain bounded and never emit raw errors', async (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -890,7 +1220,7 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
     CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED', 'QUEUED', 'FAILED');
     CREATE TABLE webhook_events (
       status "WebhookStatus", created_at timestamptz, enqueue_attempts integer,
-      next_enqueue_at timestamptz, error_message text,
+      next_enqueue_at timestamptz, error_message text, timeout_quarantine_expires_at timestamptz,
       id text DEFAULT 'fixture', normalized_payload jsonb DEFAULT '{}'
     );
     CREATE INDEX webhook_events_status_created_at_idx ON webhook_events(status, created_at);

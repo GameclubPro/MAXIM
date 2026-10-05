@@ -530,6 +530,27 @@ SELECT json_build_object(
           'error_kind', predecessor.error_kind,
           'error_family', predecessor.error_family,
           'error_truncated', predecessor.error_truncated,
+          'quarantine_subtype', predecessor.quarantine_subtype,
+          'quarantine_deadline_present', predecessor.timeout_quarantine_expires_at IS NOT NULL,
+          'quarantine_deadline_expired', CASE WHEN predecessor.timeout_quarantine_expires_at IS NULL THEN NULL ELSE
+            predecessor.timeout_quarantine_expires_at <= clock_timestamp() END,
+          'quarantine_deadline_in_seconds', CASE WHEN predecessor.timeout_quarantine_expires_at IS NULL THEN NULL ELSE
+            greatest(0, ceil(extract(epoch FROM predecessor.timeout_quarantine_expires_at - clock_timestamp()))::bigint) END,
+          'quarantine_deadline_overdue_seconds', CASE WHEN predecessor.timeout_quarantine_expires_at IS NULL THEN NULL ELSE
+            greatest(0, floor(extract(epoch FROM clock_timestamp() - predecessor.timeout_quarantine_expires_at))::bigint) END,
+          'source_marker', predecessor.source_marker,
+          'raw_source_present', predecessor.raw_source_present,
+          'direct_update_timestamp_shape', predecessor.direct_update_timestamp_shape,
+          'direct_update_receipt_delta_seconds', CASE
+            WHEN predecessor.direct_update_timestamp_shape IN ('numeric_seconds', 'numeric_milliseconds') THEN
+              round((predecessor.direct_update_timestamp_ms / 1000) - extract(epoch FROM predecessor.created_at), 3)
+            ELSE NULL END,
+          'direct_message_shape', predecessor.direct_message_shape,
+          'direct_message_timestamp_shape', predecessor.direct_message_timestamp_shape,
+          'direct_message_receipt_delta_seconds', CASE
+            WHEN predecessor.direct_message_timestamp_shape IN ('numeric_seconds', 'numeric_milliseconds') THEN
+              round((predecessor.direct_message_timestamp_ms / 1000) - extract(epoch FROM predecessor.created_at), 3)
+            ELSE NULL END,
           'webhook_service_line', predecessor.webhook_service_line,
           'retry_in_seconds', CASE WHEN predecessor.next_enqueue_at IS NULL THEN NULL ELSE
             greatest(0, ceil(extract(epoch FROM predecessor.next_enqueue_at - clock_timestamp()))::bigint) END,
@@ -582,6 +603,82 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) oldest ON TRUE
 LEFT JOIN LATERAL (
+  -- FLAG: Project only the indexed predecessor already selected below. Direct numeric
+  -- timestamps are diagnostic scalars, never canonical source/cutoff or no-effects proof.
+  -- Strings, alternative dates and nested/scored MAX messages remain unknown; do not cast them.
+  SELECT numeric_source.*,
+    CASE
+      WHEN original_source IS NULL THEN 'shape_unknown'
+      WHEN original_source->'timestamp' IS NULL OR original_source->'timestamp' = 'null'::jsonb THEN
+        CASE WHEN original_source ?| ARRAY['created_at', 'createdAt', 'data', 'event', 'raw']
+          THEN 'shape_unknown' ELSE 'missing' END
+      WHEN jsonb_typeof(original_source->'timestamp') <> 'number' THEN 'shape_unknown'
+      WHEN direct_update_number IS NULL OR direct_update_number <= 0
+        OR direct_update_timestamp_ms < 1 OR direct_update_timestamp_ms > 8640000000000000
+        THEN 'invalid_numeric'
+      WHEN direct_update_number < 10000000000 THEN 'numeric_seconds'
+      ELSE 'numeric_milliseconds'
+    END AS direct_update_timestamp_shape,
+    CASE
+      WHEN original_source IS NULL THEN 'shape_unknown'
+      WHEN jsonb_typeof(original_source->'message') = 'object' THEN 'object'
+      WHEN original_source->'message' IS NULL OR original_source->'message' = 'null'::jsonb THEN
+        CASE WHEN original_source ?| ARRAY['data', 'event', 'message_created', 'message_edited', 'raw']
+          THEN 'shape_unknown' ELSE 'missing' END
+      ELSE 'shape_unknown'
+    END AS direct_message_shape,
+    CASE
+      WHEN original_source IS NULL THEN 'shape_unknown'
+      WHEN jsonb_typeof(original_source->'message') IS DISTINCT FROM 'object' THEN
+        CASE WHEN (original_source->'message' IS NULL OR original_source->'message' = 'null'::jsonb)
+          AND NOT original_source ?| ARRAY['data', 'event', 'message_created', 'message_edited', 'raw']
+          THEN 'missing' ELSE 'shape_unknown' END
+      WHEN original_source#>'{message,timestamp}' IS NULL OR original_source#>'{message,timestamp}' = 'null'::jsonb THEN
+        CASE WHEN original_source->'message' ?| ARRAY['created_at', 'createdAt']
+          THEN 'shape_unknown' ELSE 'missing' END
+      WHEN jsonb_typeof(original_source#>'{message,timestamp}') <> 'number' THEN 'shape_unknown'
+      WHEN direct_message_number IS NULL OR direct_message_number <= 0
+        OR direct_message_timestamp_ms < 1 OR direct_message_timestamp_ms > 8640000000000000
+        THEN 'invalid_numeric'
+      WHEN direct_message_number < 10000000000 THEN 'numeric_seconds'
+      ELSE 'numeric_milliseconds'
+    END AS direct_message_timestamp_shape
+  FROM (
+    SELECT guarded_source.*,
+      trunc(CASE WHEN direct_update_number < 10000000000 THEN direct_update_number * 1000
+        ELSE direct_update_number END) AS direct_update_timestamp_ms,
+      trunc(CASE WHEN direct_message_number < 10000000000 THEN direct_message_number * 1000
+        ELSE direct_message_number END) AS direct_message_timestamp_ms
+    FROM (
+      SELECT direct_source.*,
+        -- FLAG: Cast only bounded JSON numbers whose complete decimal shape is known.
+        -- Oversized/malformed values stay invalid or unknown without an unsafe SQL cast.
+        CASE WHEN jsonb_typeof(original_source->'timestamp') = 'number'
+          AND length(original_source->>'timestamp') <= 32
+          AND original_source->>'timestamp' ~ '^[0-9]+([.][0-9]+)?$'
+          THEN (original_source->>'timestamp')::numeric ELSE NULL END AS direct_update_number,
+        CASE WHEN jsonb_typeof(original_source->'message') = 'object'
+          AND jsonb_typeof(original_source#>'{message,timestamp}') = 'number'
+          AND length(original_source#>>'{message,timestamp}') <= 32
+          AND original_source#>>'{message,timestamp}' ~ '^[0-9]+([.][0-9]+)?$'
+          THEN (original_source#>>'{message,timestamp}')::numeric ELSE NULL END AS direct_message_number
+      FROM (
+        SELECT saved_predecessor.*,
+          CASE WHEN normalized_payload->'eventTimestampSource' IS NULL
+            OR normalized_payload->'eventTimestampSource' = 'null'::jsonb
+            OR (jsonb_typeof(normalized_payload->'eventTimestampSource') = 'string'
+              AND BTRIM(normalized_payload->>'eventTimestampSource') = '') THEN 'missing'
+            WHEN jsonb_typeof(normalized_payload->'eventTimestampSource') = 'string'
+              AND LOWER(BTRIM(normalized_payload->>'eventTimestampSource')) IN ('payload', 'ingress')
+              THEN LOWER(BTRIM(normalized_payload->>'eventTimestampSource'))
+            ELSE 'other' END AS source_marker,
+          COALESCE(jsonb_typeof(normalized_payload->'raw') = 'object', false) AS raw_source_present,
+          CASE WHEN jsonb_typeof(normalized_payload->'raw') = 'object' THEN normalized_payload->'raw'
+            WHEN jsonb_typeof(normalized_payload->'eventTimestampSource') = 'string'
+              AND LOWER(BTRIM(normalized_payload->>'eventTimestampSource')) = 'payload'
+              THEN normalized_payload
+            ELSE NULL END AS original_source
+        FROM (
   SELECT CASE
     WHEN status = 'FAILED'::"WebhookStatus"
       AND LEFT(COALESCE(error_message, ''), 37) = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'
@@ -599,6 +696,25 @@ LEFT JOIN LATERAL (
     created_at,
     enqueue_attempts,
     next_enqueue_at,
+    timeout_quarantine_expires_at,
+    normalized_payload,
+    -- FLAG: Match complete fixed markers or anchored source-defined UUID envelopes only.
+    -- These labels and deadline scalars describe saved evidence; none authorizes replay or release.
+    CASE
+      WHEN error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required'
+        THEN 'legacy_execution_unverified'
+      WHEN error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:CANONICAL_BUSINESS_ALREADY_STARTED; durable-effects recovery required'
+        THEN 'canonical_business_started'
+      WHEN error_message ~ '^WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}: Webhook user-facing hot path timed out after [1-9][0-9]*ms for (message_created|message_edited)([[:space:]]\|[[:space:]]|;|$)'
+        THEN 'detached_timeout'
+      WHEN error_message ~ '^WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}: detached execution completed without a canonical claim: .+'
+        THEN 'unclaimed_detached_completed'
+      WHEN error_message ~ '^WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}: detached execution failed without a canonical claim: .+'
+        THEN 'unclaimed_detached_failed'
+      WHEN LEFT(COALESCE(error_message, ''), 37) = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'
+        THEN 'other_pending'
+      ELSE NULL
+    END AS quarantine_subtype,
     -- FLAG: Classify only the exact indexed predecessor; never return its error text or identity.
     CASE
       WHEN error_message IS NULL THEN 'pristine'
@@ -682,6 +798,10 @@ LEFT JOIN LATERAL (
     AND (created_at, id) < (oldest.created_at, oldest.id)
   ORDER BY created_at ASC, id ASC
   LIMIT 1
+        ) saved_predecessor
+      ) direct_source
+    ) guarded_source
+  ) numeric_source
 ) predecessor ON TRUE;
 \else
 \echo MAXIM_POSTGRES_QUEUE_AUDIT_INDEX_MISSING

@@ -73,6 +73,26 @@ filtered role logs without reconciling webhooks or sending bot messages.
    source formats. A quoted literal inside unrelated error content does not qualify. These labels
    describe the last saved failure; they do not prove current lease authority or a remote outcome.
    `other` remains unknown. No classification authorizes lease expiry, quarantine removal or replay.
+   `quarantine_subtype` distinguishes exact `legacy_execution_unverified` and
+   `canonical_business_started` markers from source-defined UUID envelopes for `detached_timeout`,
+   `unclaimed_detached_completed`, and `unclaimed_detached_failed`. A partial, embedded or malformed
+   marker stays `other_pending`; an unrelated predecessor has no subtype. The
+   `quarantine_deadline_present`, `quarantine_deadline_expired`, `quarantine_deadline_in_seconds`,
+   and `quarantine_deadline_overdue_seconds` fields describe only that receipt's saved timeout
+   boundary. An absent or elapsed deadline does not prove that execution stopped or had no effects.
+   Never confuse the oldest global FAILED row with this exact same-chat predecessor.
+   Source diagnostics expose only `source_marker` (`payload`, `ingress`, `missing`, `other`) and
+   `raw_source_present`, which is true only for an original raw object. The `direct_update_*` and
+   `direct_message_*` fields inspect only that object's numeric `.timestamp` and direct
+   `.message.timestamp`; without a raw object, only an explicitly payload-marked normalized object
+   is inspected. Seconds and milliseconds follow the runtime numeric threshold and truncation.
+   Signed `*_receipt_delta_seconds` values are positive ahead of receipt time and negative before
+   it. `direct_message_shape` describes only the direct node, not the runtime's recursively selected
+   MAX message. Strings (including ISO dates), alternative date fields, nested message candidates
+   and unavailable sources stay `shape_unknown`; invalid or oversized numbers cannot trigger a
+   cast failure. These facts do not prove cutoff admission, all message timestamp checks, claim
+   authority or absence of an older semantic mirror. Read migration-cutoff metadata separately
+   through the existing `multibot-preparation` catalog.
    This extension reads the already selected predecessor only: no extra table probes, joins or
    grants. Semantic-claim lease/stage/deadline metadata remains unavailable to the audit role.
 
@@ -80,6 +100,14 @@ filtered role logs without reconciling webhooks or sending bot messages.
    describes that row's most recent deferral, not a fleet-wide cause. FAILED rows may be historical
    quarantine: report fresh deltas separately. Raw readiness, normal/healthy mode, burst state,
    exact images and queue fences must be assessed together; HTTP 200 may be hysteresis.
+   Readiness failure does not prevent the fixed read-only queue audit. If a reviewed queue-only
+   catalog revision is needed before runtime deployment, transport its exact script bytes over SSH
+   stdin into a private `infra/scripts/.maxim-multibot-audit.XXXXXXXX.sh` sibling created by `mktemp`
+   in the live checkout. Verify the received SHA256 before executing `queue` with stdin redirected
+   from `/dev/null`; EXIT and signal traps remove only that temporary file. Its unchanged relative
+   root preserves the live `.env` and Compose context, audit lock, role and time limits. Do not
+   replace tracked production files, sync dirty Git state, copy secrets or use this single-file
+   path for modes that require helpers from a different revision.
 
 2. Inspect queue-owner logs:
 
