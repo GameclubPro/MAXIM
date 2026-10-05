@@ -56,11 +56,13 @@ Commands:
   postgres-audit publisher-publications [--explain]
   postgres-audit publisher-access-census [--explain]
   postgres-audit storage [--explain]
+  postgres-audit multibot-preparation [--explain]
   postgres-audit commercial-quality [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
   recover-publisher-catalog-migration [--apply]
   recover-message-retention-migration [--apply]
+  recover-multibot-preparation <reviewed-attempt-options> [--apply]
   recover-publisher-access-migration [--apply]
   recover-suggestion-subscription-migration [--apply]
                               Run fixed, bounded, privacy-safe PostgreSQL diagnostics
@@ -314,7 +316,8 @@ postgres_audit() {
   local mode="${1:-all}"
 
   if [[ "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
-        "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ]]; then
+        "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
+        "$mode" == 'multibot-preparation' ]]; then
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2
@@ -393,6 +396,14 @@ recover_message_retention_migration() {
   target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
   remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-recover-message-retention-migration.sh "$@")"
+}
+
+recover_multibot_preparation() {
+  node "$ROOT_DIR/infra/scripts/multibot-preparation-recovery.mjs" --validate-args "$@"
+  local target_sha
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
+  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-recover-multibot-preparation.sh "$@")"
 }
 
 recover_publisher_access_migration() {
@@ -1297,6 +1308,9 @@ case "$command" in
     ;;
   recover-message-retention-migration)
     recover_message_retention_migration "$@"
+    ;;
+  recover-multibot-preparation)
+    recover_multibot_preparation "$@"
     ;;
   recover-publisher-access-migration)
     recover_publisher_access_migration "$@"

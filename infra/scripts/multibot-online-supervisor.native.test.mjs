@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
@@ -7,6 +8,7 @@ import {
   countOwnedMigrationSql,
   runMultibotSupervisorCommand,
   stopOwnedMigration,
+  superviseMultibotOnlinePrepare,
   terminateOwnedMigrationSql,
 } from './multibot-online-supervisor.mjs';
 
@@ -14,7 +16,7 @@ const nativePostgresUrl = process.env.MAXIM_TEST_POSTGRES_URL?.trim();
 const composeArgs = ['--env-file', '.env', '-p', 'infra', '-f', 'infra/docker-compose.yml'];
 
 test(
-  'native supervised cleanup removes owned idle/running sessions through real psql stdin and preserves a near-prefix observer',
+  'native runtime-pressure abort removes owned idle/running sessions through real psql stdin and preserves a near-prefix observer',
   { skip: !nativePostgresUrl, timeout: 30_000 },
   async () => {
     const address = new URL(nativePostgresUrl);
@@ -24,7 +26,7 @@ test(
       'Requires the disposable local PostgreSQL race_test database',
     );
     const { default: pg } = await import('pg');
-    const applicationName = `maxim-online-${randomUUID()}`;
+    let applicationName = `maxim-online-${randomUUID()}`;
     const clientOptions = {
       connectionString: nativePostgresUrl,
       connectionTimeoutMillis: 5_000,
@@ -105,6 +107,10 @@ test(
         assert.deepEqual(args, ['stop', '--time', '3', applicationName]);
         return { stdout: applicationName, stderr: '' };
       }
+      if (args[0] === 'rm') {
+        assert.deepEqual(args, ['rm', '--force', applicationName]);
+        return { stdout: applicationName, stderr: '' };
+      }
       assert.deepEqual(args, [
         'container',
         'ls',
@@ -114,7 +120,7 @@ test(
         '--format',
         '{{.Names}} {{.State}}',
       ]);
-      return { stdout: `${applicationName} exited\n`, stderr: '' };
+      return { stdout: '', stderr: '' };
     };
     try {
       await observer.connect();
@@ -127,45 +133,95 @@ test(
         const session = await client.query('SELECT pg_backend_pid() AS pid');
         ownedPids.push(session.rows[0].pid);
       }
-      runningQuery = ownedRunning.query('SELECT pg_sleep(20)').then(
-        () => ({ completed: true }),
-        (error) => ({ code: error.code }),
-      );
-      const deadline = Date.now() + 3_000;
-      let ready = false;
-      while (Date.now() < deadline) {
-        const sessions = await observer.query(
-          `SELECT pid, state, wait_event, application_name FROM pg_stat_activity
-           WHERE datname = current_database() AND pid = ANY($1::int[]) ORDER BY pid`,
-          [ownedPids],
+      const startOwnedWork = async (tag) => {
+        applicationName = tag;
+        await Promise.all(
+          clients.map((client) =>
+            client.query("SELECT set_config('application_name', $1, false)", [
+              client === observer ? `${tag}-observer` : tag,
+            ]),
+          ),
         );
-        if (
-          sessions.rows.length === 2 &&
-          sessions.rows.every((row) => row.application_name === applicationName) &&
-          sessions.rows.some((row) => row.pid === ownedPids[0] && row.state === 'idle') &&
-          sessions.rows.some(
-            (row) =>
-              row.pid === ownedPids[1] && row.state === 'active' && row.wait_event === 'PgSleep',
-          )
-        ) {
-          ready = true;
-          break;
+        runningQuery = ownedRunning.query('SELECT pg_sleep(20)').then(
+          () => ({ completed: true }),
+          (error) => ({ code: error.code }),
+        );
+        const deadline = Date.now() + 3_000;
+        let ready = false;
+        while (Date.now() < deadline) {
+          const sessions = await observer.query(
+            `SELECT pid, state, wait_event, application_name FROM pg_stat_activity
+           WHERE datname = current_database() AND pid = ANY($1::int[]) ORDER BY pid`,
+            [ownedPids],
+          );
+          if (
+            sessions.rows.length === 2 &&
+            sessions.rows.every((row) => row.application_name === applicationName) &&
+            sessions.rows.some((row) => row.pid === ownedPids[0] && row.state === 'idle') &&
+            sessions.rows.some(
+              (row) =>
+                row.pid === ownedPids[1] && row.state === 'active' && row.wait_event === 'PgSleep',
+            )
+          ) {
+            ready = true;
+            break;
+          }
+          await delay(20);
         }
-        await delay(20);
-      }
-      assert.equal(ready, true, 'Owned sessions must include real idle and running backends');
-      await stopOwnedMigration(
-        composeArgs,
-        {
-          kill: (signal) => {
-            assert.equal(signal, 'SIGKILL');
-            killCount += 1;
+        assert.equal(ready, true, 'Owned sessions must include real idle and running backends');
+      };
+      const child = new EventEmitter();
+      child.kill = (signal) => {
+        assert.equal(signal, 'SIGKILL');
+        killCount += 1;
+      };
+      let startup;
+      let clock = Date.now();
+      let runtimeSamples = 0;
+      const filesystem = { device: '/dev/disposable', availableBytes: 10 * 1024 ** 3 };
+      await assert.rejects(
+        superviseMultibotOnlinePrepare(composeArgs, {
+          now: () => clock,
+          signals: new EventEmitter(),
+          checkCapacity: async () => ({ devices: [filesystem] }),
+          readFilesystems: async () => [filesystem],
+          checkRuntime: async () => {
+            runtimeSamples += 1;
+            const lag = runtimeSamples <= 2 ? 0 : 121;
+            const body = {
+              ok: lag === 0,
+              timestamp: new Date(clock).toISOString(),
+              checks: {
+                database: true,
+                redis: true,
+                queueLag: {
+                  ok: lag === 0,
+                  rawOk: lag === 0,
+                  softWarning: false,
+                  softWarningCode: null,
+                  effectiveLagSec: lag,
+                  sampleGeneratedAt: new Date(clock).toISOString(),
+                },
+              },
+            };
+            const probe = { status: body.ok ? 200 : 503, body };
+            return { checkedAtMs: clock, ingress: probe, admin: structuredClone(probe) };
           },
-        },
-        applicationName,
-        applicationName,
-        { run },
+          start: (command, args) => {
+            assert.equal(command, 'docker');
+            startup = startOwnedWork(args[args.indexOf('--name') + 1]);
+            return child;
+          },
+          waitForTick: async () => {
+            await startup;
+            clock += 10_000;
+          },
+          stop: (scope, ownedChild, tag, container) =>
+            stopOwnedMigration(scope, ownedChild, tag, container, { run }),
+        }),
+        { message: 'MULTIBOT_PREPARE_RUNTIME_QUEUE_LAG' },
       );
+      assert.equal(runtimeSamples, 3);
       assert.equal(killCount, 1);
       assert.deepEqual(
         sqlResults.map((result) => result.sql),

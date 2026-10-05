@@ -25,6 +25,7 @@ local Docker-socket access under the production pg_hba rules, with:
   - sixteen Publisher binding/comment metadata columns
   - forty-three publication/access metadata columns; IDs are join-only and never report output
   - eight commercial-review metadata columns only; no evidence, captions or user/message IDs
+  - eight fixed migration receipt columns; errors classified in SQL, raw logs never reported
   - no publication content, media, tokens or raw permission payloads
   - INHERIT only so the pg_read_all_stats membership takes effect
   - read-only/time/parallel/memory/temp defaults used as a server-side backstop
@@ -124,7 +125,7 @@ BEGIN
         'moderation_delete_intent_reasons',
         'publications', 'publication_schedules', 'publication_occurrences',
         'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-        'managed_broadcast_deliveries', 'chats', 'commercial_review_samples'
+        'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations'
       )
     GROUP BY table_name
   LOOP
@@ -209,6 +210,24 @@ BEGIN
   END IF;
 END
 $commercial_quality_grants$;
+-- FLAG: Older/partial catalogs retain zero receipt access. Grant only the complete
+-- eight-column metadata group; generic reports do not require this opt-in group.
+DO $multibot_preparation_grants$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM (VALUES ('id'), ('migration_name'), ('checksum'), ('started_at'),
+      ('finished_at'), ('rolled_back_at'), ('applied_steps_count'), ('logs')) required(column_name)
+    LEFT JOIN pg_attribute attribute ON attribute.attrelid = to_regclass('public._prisma_migrations')
+      AND attribute.attname = required.column_name AND NOT attribute.attisdropped
+    WHERE attribute.attnum IS NULL
+  ) THEN
+    GRANT SELECT (
+      id, migration_name, checksum, started_at, finished_at,
+      rolled_back_at, applied_steps_count, logs
+    ) ON TABLE public._prisma_migrations TO maxim_audit;
+  END IF;
+END
+$multibot_preparation_grants$;
 GRANT pg_read_all_stats TO maxim_audit;
 
 ALTER ROLE maxim_audit RESET ALL;
@@ -393,6 +412,46 @@ BEGIN
     RAISE EXCEPTION 'maxim_audit has unexpected effective Antiduplicate column privileges';
   END IF;
 
+  -- FLAG: Zero or all eight effective receipt SELECTs preserve old catalogs and
+  -- reject partial, inherited, PUBLIC, table-level and mutation privileges.
+  IF (
+    SELECT count(DISTINCT (column_name, privilege_type))
+    FROM information_schema.role_column_grants
+    WHERE grantee = 'maxim_audit' AND table_schema = 'public'
+      AND table_name = '_prisma_migrations'
+  ) NOT IN (0, 8) OR EXISTS (
+    SELECT 1 FROM information_schema.role_column_grants
+    WHERE grantee = 'maxim_audit' AND table_schema = 'public'
+      AND table_name = '_prisma_migrations'
+      AND (privilege_type <> 'SELECT' OR column_name NOT IN (
+        'id', 'migration_name', 'checksum', 'started_at', 'finished_at',
+        'rolled_back_at', 'applied_steps_count', 'logs'
+      ))
+  ) OR (
+    SELECT count(*) FROM pg_attribute attribute
+    WHERE attribute.attrelid = to_regclass('public._prisma_migrations')
+      AND attribute.attnum > 0 AND NOT attribute.attisdropped
+      AND has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
+  ) NOT IN (0, 8) OR EXISTS (
+    SELECT 1 FROM pg_class relation
+    WHERE relation.oid = to_regclass('public._prisma_migrations')
+      AND has_table_privilege('maxim_audit', relation.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+  ) OR EXISTS (
+    SELECT 1 FROM pg_attribute attribute
+    WHERE attribute.attrelid = to_regclass('public._prisma_migrations')
+      AND attribute.attnum > 0 AND NOT attribute.attisdropped
+      AND (
+        has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'INSERT,UPDATE,REFERENCES')
+        OR (has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
+          AND attribute.attname NOT IN (
+            'id', 'migration_name', 'checksum', 'started_at', 'finished_at',
+            'rolled_back_at', 'applied_steps_count', 'logs'
+          ))
+      )
+  ) THEN
+    RAISE EXCEPTION 'maxim_audit multibot receipt metadata privileges are not exact';
+  END IF;
+
   IF EXISTS (
     SELECT 1
     FROM pg_class relation
@@ -496,7 +555,7 @@ BEGIN
               'chat_rules',
               'publications', 'publication_schedules', 'publication_occurrences',
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-              'managed_broadcast_deliveries', 'chats', 'commercial_review_samples',
+              'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations',
               'chat_settings',
               'moderation_delete_intents',
               'moderation_delete_intent_reasons'

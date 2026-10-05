@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import {
   chmodSync,
@@ -27,6 +28,7 @@ const provision = resolve(root, 'infra/scripts/vps-provision-postgres-audit-role
 const connect = resolve(root, 'infra/scripts/vps-connect.sh');
 const monitor = readFileSync(resolve(root, 'infra/scripts/vps-monitor-readonly.sh'), 'utf8');
 const schema = readFileSync(resolve(root, 'apps/api/prisma/schema.prisma'), 'utf8');
+const nativePostgresUrl = process.env.MAXIM_TEST_POSTGRES_URL?.trim();
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-postgres-audit-'));
@@ -70,6 +72,9 @@ if [[ "$all_args" == *pg_terminate_backend* ]]; then
   exit 0
 fi
 printf '%s\n' "$@" >"$MOCK_DOCKER_ARGS"
+if [[ -n "\${MOCK_NATIVE_PSQL_BRIDGE:-}" ]]; then
+  exec node -- "$MOCK_NATIVE_PSQL_BRIDGE" "$@"
+fi
 cat >"$MOCK_AUDIT_SQL"
 : >"$MOCK_AUDIT_STARTED"
 if [[ "\${MOCK_AUDIT_FAIL:-0}" == "1" ]]; then
@@ -227,7 +232,21 @@ function extractAuditColumnResetSql() {
   assert.ok(revokeEnd >= revokeEndMarker.length);
   assert.notEqual(grantStart, -1);
   assert.ok(grantEnd >= grantEndMarker.length);
-  return `${source.slice(revokeStart, revokeEnd)}\n${source.slice(grantStart, grantEnd)}`;
+  const receiptStart = source.indexOf('DO $multibot_preparation_grants$');
+  const receiptEndMarker = '$multibot_preparation_grants$;';
+  const receiptEnd = source.indexOf(receiptEndMarker, receiptStart) + receiptEndMarker.length;
+  assert.notEqual(receiptStart, -1);
+  assert.ok(receiptEnd >= receiptEndMarker.length);
+  return `${source.slice(revokeStart, revokeEnd)}\n${source.slice(grantStart, grantEnd)}\n${source.slice(receiptStart, receiptEnd)}`;
+}
+
+function extractAuditSessionReadinessSql(sql) {
+  const start = sql.indexOf('SELECT CASE\n  WHEN session_user');
+  const endMarker = 'END AS audit_session_ready';
+  const end = sql.indexOf(endMarker, start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return `${sql.slice(start, end + endMarker.length)};`;
 }
 
 function extractProvisionVerificationSql() {
@@ -240,6 +259,269 @@ function extractProvisionVerificationSql() {
   assert.notEqual(end, -1);
   return source.slice(start, end + endMarker.length);
 }
+
+test(
+  'native provision and generic session allow only zero or eight effective receipt metadata grants',
+  { skip: !nativePostgresUrl, timeout: 30_000 },
+  async (t) => {
+    const address = new URL(nativePostgresUrl);
+    assert.ok(
+      ['127.0.0.1', 'localhost', '[::1]'].includes(address.hostname) &&
+        address.pathname.includes('race_test'),
+      'Native grant integration requires disposable local PostgreSQL race_test',
+    );
+    const data = fixture();
+    t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+    const emitted = runAudit(data, ['multibot-preparation']);
+    assert.equal(emitted.status, 0, emitted.stderr);
+    const { default: pg } = await import('pg');
+    const client = new pg.Client({
+      connectionString: nativePostgresUrl,
+      connectionTimeoutMillis: 5000,
+      query_timeout: 10_000,
+      options: '-c statement_timeout=10000 -c lock_timeout=3000 -c timezone=UTC',
+    });
+    const namespace = `audit_grants_${randomUUID().replaceAll('-', '')}`;
+    const role = `audit_grants_${randomUUID().replaceAll('-', '')}`;
+    // FLAG: The complete production provision/session guards run with a unique
+    // role and schema, never altering real public catalogs or shared role grants.
+    const localSql = (sql) =>
+      sql
+        .replaceAll('public.', `${namespace}.`)
+        .replaceAll("'public'", `'${namespace}'`)
+        .replaceAll('maxim_audit', role);
+    const resetSql = localSql(extractAuditColumnResetSql());
+    const verificationSql = localSql(extractProvisionVerificationSql());
+    const readinessSql = localSql(extractAuditSessionReadinessSql(readFileSync(data.sql, 'utf8')));
+    const nativeBridge = join(data.directory, 'native-psql-bridge.mjs');
+    // FLAG: Preserve the actual wrapper's generated input, resource options and
+    // exit propagation. Only Docker transport and disposable role/schema differ.
+    writeFileSync(
+      nativeBridge,
+      `import { readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const namespace = ${JSON.stringify(namespace)};
+const role = ${JSON.stringify(role)};
+const sql = readFileSync(0, 'utf8')
+  .replaceAll('public.', namespace + '.')
+  .replaceAll("'public'", "'" + namespace + "'")
+  .replaceAll('maxim_audit', role);
+writeFileSync(process.env.MOCK_AUDIT_SQL, sql);
+const pgOptions = process.argv.slice(2).find((argument) => argument.startsWith('PGOPTIONS='));
+if (!pgOptions) throw new Error('Native wrapper bridge requires actual PGOPTIONS');
+const result = spawnSync('psql', ['-X', '--no-password', '-qAt', '-v', 'ON_ERROR_STOP=1',
+  '-v', 'ECHO=none', '-v', 'VERBOSITY=terse', '-v', 'SHOW_CONTEXT=never'], {
+  env: { ...process.env, PGOPTIONS: pgOptions.slice('PGOPTIONS='.length) },
+  input: "SET temp_file_limit='8MB'; SET SESSION AUTHORIZATION " + role + ";\\n" + sql,
+  encoding: 'utf8', timeout: 7000,
+});
+process.stdout.write(result.stdout || '');
+process.stderr.write(result.stderr || '');
+process.exit(result.status ?? 1);
+`,
+    );
+    const runNativeAudit = (args) =>
+      runAudit(data, args, {
+        MOCK_NATIVE_PSQL_BRIDGE: nativeBridge,
+        PGHOST: address.hostname,
+        PGPORT: address.port || '5432',
+        PGUSER: decodeURIComponent(address.username),
+        PGPASSWORD: decodeURIComponent(address.password),
+        PGDATABASE: decodeURIComponent(address.pathname.slice(1)),
+      });
+    const runNativeWrapper = (explain = false) =>
+      runNativeAudit(['multibot-preparation', ...(explain ? ['--explain'] : [])]);
+    const assertWrapperRejected = () => {
+      for (const explain of [false, true]) {
+        const result = runNativeWrapper(explain);
+        assert.equal(result.status, 3, result.stderr);
+        assert.equal(result.stdout.trim(), 'MAXIM_POSTGRES_AUDIT_SESSION_INVALID');
+        assert.doesNotMatch(
+          result.stdout,
+          /multibot_preparation|MULTIBOT_PREPARATION_RECEIPT_PRIVILEGES_INVALID/u,
+        );
+      }
+    };
+    let roleCreated = false;
+    try {
+      await client.connect();
+      const identity = await client.query('SELECT version() AS version');
+      assert.match(identity.rows[0].version, /^PostgreSQL /u);
+      assert.doesNotMatch(identity.rows[0].version, /pglite|wasm/iu);
+      await client.query(`
+        CREATE SCHEMA ${namespace};
+        SET search_path = ${namespace}, pg_catalog;
+        CREATE TABLE webhook_events (id text);
+        CREATE TABLE moderation_events (id text);
+        CREATE TABLE chat_settings (
+          id text, anti_duplicate_enabled bool, duplicate_photo_enabled bool,
+          duplicate_detection_preset text, duplicate_photo_match_preset text,
+          duplicate_photo_scope text, duplicate_compare_mode text, duplicate_window_mode text,
+          duplicate_start_time_minutes int, duplicate_end_time_minutes int, duplicate_timezone text,
+          private_extra text
+        );
+        CREATE TABLE moderation_delete_intents (id text, status text, updated_at timestamptz, private_extra text);
+        CREATE TABLE moderation_delete_intent_reasons (intent_id text, reason_key text, rule_code text, private_extra text);
+        CREATE TABLE publisher_entity_settings (
+          chat_id text, chat_comments_enabled bool, chat_comments_admins_enabled bool,
+          chat_comments_posts_enabled bool, channel_comments_enabled bool, updated_at timestamptz
+        );
+        CREATE TABLE chat_rules (
+          chat_id text, published_message_id text, published_bot_id text, publish_operation_id text,
+          publish_send_started_at timestamptz, pending_cleanup_message_id text,
+          pending_cleanup_bot_id text, pending_cleanup_intent_id text, pending_cleanup_kind text,
+          updated_at timestamptz, text text
+        );
+        ${readFileSync(resolve(root, 'infra/scripts/test-fixtures/publisher-publications.sql'), 'utf8')}
+        CREATE ROLE ${role} LOGIN INHERIT CONNECTION LIMIT 1;
+        GRANT USAGE ON SCHEMA ${namespace} TO ${role};
+        GRANT SELECT ON webhook_events, moderation_events TO ${role};
+        GRANT pg_read_all_stats TO ${role};
+        SET max_parallel_workers_per_gather=0;
+        SET enable_seqscan=off;
+        SET enable_bitmapscan=off;
+        SET jit=off;
+        SET work_mem='1MB';
+        SET temp_file_limit='8MB';
+      `);
+      roleCreated = true;
+      const ready = async () => {
+        await client.query(
+          `SET default_transaction_read_only=on; SET SESSION AUTHORIZATION ${role};`,
+        );
+        try {
+          return (await client.query(readinessSql)).rows[0].audit_session_ready;
+        } finally {
+          await client.query(
+            'SET SESSION AUTHORIZATION DEFAULT; SET default_transaction_read_only=off;',
+          );
+        }
+      };
+      await client.query(resetSql);
+      await client.query(verificationSql);
+      assert.equal(await ready(), 'true', 'absent catalog remains compatible');
+      await client.query('CREATE TABLE _prisma_migrations ()');
+      await client.query(resetSql);
+      await client.query(verificationSql);
+      assert.equal(await ready(), 'true', 'empty old catalog receives zero grants');
+      await client.query('GRANT SELECT ON _prisma_migrations TO PUBLIC');
+      await assert.rejects(
+        client.query(verificationSql),
+        /receipt metadata privileges are not exact/u,
+      );
+      assert.equal(await ready(), 'false', 'table SELECT is rejected even without columns');
+      await client.query(`REVOKE SELECT ON _prisma_migrations FROM PUBLIC;
+        ALTER TABLE _prisma_migrations ADD id text, ADD private_extra text;`);
+      await client.query(resetSql);
+      await client.query(verificationSql);
+      assert.equal(await ready(), 'true', 'partial catalog receives zero grants');
+      await client.query(`GRANT SELECT (id) ON _prisma_migrations TO PUBLIC;`);
+      await assert.rejects(
+        client.query(verificationSql),
+        /receipt metadata privileges are not exact/u,
+      );
+      assert.equal(await ready(), 'false', 'partial effective PUBLIC metadata fails closed');
+      await client.query(`REVOKE SELECT (id) ON _prisma_migrations FROM PUBLIC;
+        ALTER TABLE _prisma_migrations ADD migration_name text, ADD checksum text,
+          ADD started_at timestamptz, ADD finished_at timestamptz, ADD rolled_back_at timestamptz,
+          ADD applied_steps_count int, ADD logs text;
+        GRANT SELECT (private_extra), UPDATE (id) ON _prisma_migrations TO ${role};`);
+      await client.query(resetSql);
+      await client.query(resetSql);
+      await client.query(verificationSql);
+      assert.equal(await ready(), 'true', 'convergence admits exact receipt metadata');
+      let actualWrapper = runNativeWrapper();
+      assert.equal(actualWrapper.status, 0, actualWrapper.stderr);
+      assert.equal(JSON.parse(actualWrapper.stdout).audit, 'multibot_preparation');
+      actualWrapper = runNativeWrapper(true);
+      assert.equal(actualWrapper.status, 0, actualWrapper.stderr);
+      assert.ok(Array.isArray(JSON.parse(actualWrapper.stdout)));
+      for (const [args, marker] of [
+        [['queue'], 'MAXIM_POSTGRES_QUEUE_AUDIT_INDEX_MISSING'],
+        [['monitor-signals', '60'], 'MAXIM_POSTGRES_MONITOR_AUDIT_INDEX_MISSING'],
+        [['duplicate'], 'MAXIM_POSTGRES_DUPLICATE_AUDIT_UNAVAILABLE'],
+        [['duplicate', '--explain'], 'MAXIM_POSTGRES_DUPLICATE_AUDIT_UNAVAILABLE'],
+      ]) {
+        const result = runNativeAudit(args);
+        assert.equal(result.status, 3, result.stderr);
+        assert.equal(result.stdout.trim(), marker, 'missing indexes emit no report');
+      }
+      for (const [grant, revoke] of [
+        ['SELECT (private_extra) TO PUBLIC', 'SELECT (private_extra) FROM PUBLIC'],
+        ['UPDATE (id) TO PUBLIC', 'UPDATE (id) FROM PUBLIC'],
+        ['REFERENCES (id) TO PUBLIC', 'REFERENCES (id) FROM PUBLIC'],
+        [
+          'SELECT (private_extra) TO pg_read_all_stats',
+          'SELECT (private_extra) FROM pg_read_all_stats',
+        ],
+        ['SELECT TO PUBLIC', 'SELECT FROM PUBLIC'],
+      ]) {
+        const command = (verb, spec) =>
+          `${verb} ${spec.replace(' TO ', ' ON _prisma_migrations TO ').replace(' FROM ', ' ON _prisma_migrations FROM ')}`;
+        await client.query(command('GRANT', grant));
+        await assert.rejects(
+          client.query(verificationSql),
+          /receipt metadata privileges are not exact/u,
+        );
+        assert.equal(await ready(), 'false', grant);
+        assertWrapperRejected();
+        await client.query(command('REVOKE', revoke));
+        await client.query(verificationSql);
+        assert.equal(await ready(), 'true');
+      }
+      await client.query(`REVOKE SELECT (logs) ON _prisma_migrations FROM ${role}`);
+      await assert.rejects(
+        client.query(verificationSql),
+        /receipt metadata privileges are not exact/u,
+      );
+      assert.equal(await ready(), 'false', 'seven metadata grants fail closed');
+      assertWrapperRejected();
+      await client.query(resetSql);
+      await client.query(verificationSql);
+      assert.equal(await ready(), 'true');
+      // FLAG: The generic session permits legacy zero duplicate grants, but both
+      // duplicate modes must reject before any report even with all exact indexes.
+      await client.query(`
+        ALTER TABLE chat_settings ADD PRIMARY KEY (id);
+        ALTER TABLE moderation_events ADD created_at timestamptz;
+        CREATE INDEX moderation_events_created_at_idx ON moderation_events (created_at);
+        CREATE INDEX moderation_delete_intents_retention_idx ON moderation_delete_intents (status, updated_at);
+        CREATE UNIQUE INDEX moderation_delete_intent_reasons_intent_reason_key
+          ON moderation_delete_intent_reasons (intent_id, reason_key);
+      `);
+      assert.equal(runAudit(data, ['duplicate']).status, 0);
+      const duplicateReadiness = localSql(
+        extractDuplicateReadinessSql(readFileSync(data.sql, 'utf8')),
+      );
+      assert.equal(
+        (await client.query(duplicateReadiness)).rows[0].duplicate_audit_ready,
+        'true',
+        'all four exact indexes and seventeen grants are admitted',
+      );
+      await client.query(`
+        REVOKE SELECT (id, anti_duplicate_enabled, duplicate_photo_enabled,
+          duplicate_detection_preset, duplicate_photo_match_preset, duplicate_photo_scope,
+          duplicate_compare_mode, duplicate_window_mode, duplicate_start_time_minutes,
+          duplicate_end_time_minutes, duplicate_timezone) ON chat_settings FROM ${role};
+        REVOKE SELECT (id, status, updated_at) ON moderation_delete_intents FROM ${role};
+        REVOKE SELECT (intent_id, reason_key, rule_code) ON moderation_delete_intent_reasons FROM ${role};
+      `);
+      assert.equal(await ready(), 'true', 'legacy zero duplicate grant group remains compatible');
+      for (const explain of [false, true]) {
+        const result = runNativeAudit(['duplicate', ...(explain ? ['--explain'] : [])]);
+        assert.equal(result.status, 3, result.stderr);
+        assert.equal(result.stdout.trim(), 'MAXIM_POSTGRES_DUPLICATE_AUDIT_UNAVAILABLE');
+      }
+    } finally {
+      await client
+        .query('SET SESSION AUTHORIZATION DEFAULT; SET default_transaction_read_only=off;')
+        .catch(() => {});
+      await client.query(`DROP SCHEMA IF EXISTS ${namespace} CASCADE`).catch(() => {});
+      if (roleCreated) await client.query(`DROP ROLE ${role}`).catch(() => {});
+      await client.end();
+    }
+  },
+);
 
 test('commercial quality mode is opt-in, fixed, indexed and preserves the bounded audit envelope', (t) => {
   const data = fixture();
@@ -315,6 +597,30 @@ test('storage audit is opt-in, uses the bounded audit role, and rejects operator
   assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit', 'postgres_storage'/u);
 });
 
+test('multibot preparation diagnostics are fixed, read-only and opt-in', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['multibot-preparation']).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /BEGIN READ ONLY/u);
+  assert.match(sql, /multibot_preparation/u);
+  assert.match(sql, /webhook_events_semantic_order_idx/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /maxim_audit/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'multibot-preparation']).status, 0);
+  assert.match(
+    readFileSync(data.sshArgs, 'utf8'),
+    /vps-postgres-audit\.sh\\ multibot-preparation/u,
+  );
+  for (const argument of ['--apply', 'SELECT 1', '/tmp/operator.sql']) {
+    assert.equal(runAudit(data, ['multibot-preparation', argument]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'multibot-preparation', argument]).status, 2);
+  }
+  assert.equal(runAudit(data, ['multibot-preparation', '--explain']).status, 0);
+  assert.match(readFileSync(data.sql, 'utf8'), /EXPLAIN \(FORMAT JSON\)/u);
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /multibot_preparation/u);
+});
+
 test('queue audit uses the dedicated role and a hard read-only resource envelope', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -358,7 +664,7 @@ test('queue audit uses the dedicated role and a hard read-only resource envelope
   assert.match(sql, /has_column_privilege\([\s\S]*restricted_attribute\.attnum,[\s\S]*'SELECT'/u);
   assert.match(sql, /current_setting\('enable_bitmapscan'\) = 'off'/u);
   assert.match(sql, /pg_size_bytes\(current_setting\('temp_file_limit'\)\) BETWEEN 0 AND 8388608/u);
-  assert.match(sql, /hardened maxim_audit session invariant is missing/u);
+  assert.match(sql, /MAXIM_POSTGRES_AUDIT_SESSION_INVALID\nSELECT 1 \/ 0;/u);
   assert.match(sql, /to_regclass\('public\.webhook_events_status_created_at_idx'\)/u);
   assert.match(sql, /bounded_events AS MATERIALIZED/u);
   assert.match(sql, /WHERE webhook_events\.status = queue_statuses\.status/u);
@@ -679,6 +985,49 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
       family,
     );
     assert.doesNotMatch(JSON.stringify(classifiedReport), /private-/u);
+  }
+  for (const [message, family] of [
+    ['Canonical webhook claim is not ready for private-event', 'canonical_claim_not_ready'],
+    ['Canonical webhook business lease is busy for private-event', 'canonical_business_lease_busy'],
+    [
+      'Chat rules publication is in flight; retry own-bot message classification',
+      'chat_rules_publication_pending',
+    ],
+    ['No eligible moderation executor', 'no_eligible_executor'],
+    ['Moderation job already exists but cannot be loaded', 'job_missing'],
+    ['Moderation job exists in unsupported state: waiting-children', 'job_state_unsupported'],
+    ['Canonical webhook claim is not ready for ', 'other'],
+    ['Canonical webhook business lease is busy for ', 'other'],
+    ['Moderation job exists in unsupported state: ', 'other'],
+    ['No eligible moderation executor: private-payload', 'other'],
+    ['Moderation job already exists but cannot be loaded: private-payload', 'other'],
+    [
+      'Chat rules publication is in flight; retry own-bot message classification: private-payload',
+      'other',
+    ],
+    ['private-payload mentions Canonical webhook claim is not ready for private-event', 'other'],
+    [
+      'private-payload mentions Canonical webhook business lease is busy for private-event',
+      'other',
+    ],
+    [
+      'private-payload mentions Moderation job exists in unsupported state: waiting-children',
+      'other',
+    ],
+  ]) {
+    await database.query("UPDATE webhook_events SET error_message = $1 WHERE status = 'FAILED'", [
+      message,
+    ]);
+    const classified = await database.query(statement);
+    const classifiedReport = JSON.parse(Object.values(classified.rows[0])[0]);
+    assert.equal(
+      classifiedReport.rows.find((row) => row.status === 'RECEIVED').oldest_ordering_predecessor
+        .error_family,
+      family,
+    );
+    const output = JSON.stringify(classifiedReport);
+    assert.doesNotMatch(output, /private-|waiting-children/u);
+    assert.ok(!output.includes(message), 'classified output must not contain its source error');
   }
   await database.query("UPDATE webhook_events SET error_message = $1 WHERE status = 'FAILED'", [
     'Webhook preparation failed: Invalid prisma.chat.upsert() invocation in /app/apps/api/dist/apps/api/src/webhook/webhook.service.js:1915:72\nprivate-data',
@@ -1195,6 +1544,59 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
   });
 
   const verificationSql = extractProvisionVerificationSql();
+  await database.exec(verificationSql);
+
+  // FLAG: Older and partial catalogs retain zero receipt access; complete catalogs
+  // converge to exact metadata access, including after stale direct grants.
+  await database.exec('CREATE TABLE _prisma_migrations (id text, private_extra text);');
+  await database.exec(columnResetSql);
+  await database.exec(verificationSql);
+  assert.equal(
+    (
+      await database.query(`SELECT has_column_privilege('maxim_audit',
+      '_prisma_migrations', 'id', 'SELECT') AS allowed`)
+    ).rows[0].allowed,
+    false,
+  );
+  await database.exec(`ALTER TABLE _prisma_migrations ADD migration_name text,
+    ADD checksum text, ADD started_at timestamptz, ADD finished_at timestamptz,
+    ADD rolled_back_at timestamptz, ADD applied_steps_count int, ADD logs text;
+    GRANT SELECT (private_extra), UPDATE (id) ON _prisma_migrations TO maxim_audit;`);
+  await database.exec(columnResetSql);
+  await database.exec(columnResetSql);
+  await database.exec(verificationSql);
+  assert.equal(
+    (
+      await database.query(`SELECT count(*)::integer AS granted
+      FROM information_schema.role_column_grants WHERE grantee='maxim_audit'
+      AND table_name='_prisma_migrations'`)
+    ).rows[0].granted,
+    8,
+  );
+  for (const [grant, revoke] of [
+    ['SELECT (private_extra) TO PUBLIC', 'SELECT (private_extra) FROM PUBLIC'],
+    ['UPDATE (id) TO PUBLIC', 'UPDATE (id) FROM PUBLIC'],
+    [
+      'SELECT (private_extra) TO pg_read_all_stats',
+      'SELECT (private_extra) FROM pg_read_all_stats',
+    ],
+    ['SELECT TO PUBLIC', 'SELECT FROM PUBLIC'],
+  ]) {
+    const command = (verb, spec) =>
+      `${verb} ${spec.replace(' TO ', ' ON _prisma_migrations TO ').replace(' FROM ', ' ON _prisma_migrations FROM ')}`;
+    await database.exec(command('GRANT', grant));
+    await assert.rejects(
+      database.exec(verificationSql),
+      /receipt metadata privileges are not exact/u,
+    );
+    await database.exec(command('REVOKE', revoke));
+  }
+  await database.exec('REVOKE SELECT (logs) ON _prisma_migrations FROM maxim_audit;');
+  await assert.rejects(
+    database.exec(verificationSql),
+    /receipt metadata privileges are not exact/u,
+  );
+  await database.exec(columnResetSql);
   await database.exec(verificationSql);
 
   await database.exec('GRANT SELECT (bot_access_source) ON publisher_entity_bindings TO PUBLIC;');

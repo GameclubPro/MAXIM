@@ -71,6 +71,58 @@ to pass validation can inspect a different PostgreSQL container. Unknown flags,
 missing values, repeated environment/project selectors or missing Compose files
 abort before any catalog/filesystem command; multiple file selectors are supported.
 
+Preparation separately probes fixed local ingress/admin readiness every ten seconds.
+Both database/Redis checks and fresh queue-sample timestamps must be valid;
+missing, malformed, stale or dependency-failed evidence aborts. Admission and final
+checks require readiness with at most ten seconds of queue lag. During work,
+queue-only pressure above thirty seconds for ninety seconds, or above 120 seconds
+immediately, aborts only the exact owned preparation and preserves its partial state.
+These runtime gates are independent of the 10 GiB disk reserve.
+
+The launcher creates its exact UUID-named client before sending any start request.
+Cancellation waits for that creation to settle, removes the owned object, and
+verifies both container and tagged-session absence. A timed-out or ambiguous
+creation is unconfirmed cleanup. Killing a Docker client alone does not prove
+that the daemon cannot subsequently create or start a database client.
+The CLI records the attempt tag and UTC admission start before creation. A closed
+SSH output pipe follows the interruption path and waits for owned cleanup.
+
+## Interrupted retention-index preparation
+
+`postgres-audit multibot-preparation [--explain]` is a fixed read-only catalog report
+for the five receipts 159/160/161/200/202 and three exact indexes. Provision the
+eight reviewed receipt column grants first. The report never reads webhook bodies
+or emits raw migration logs, session identities or SQL. It does not authorize repair.
+
+Before the effects cutoff, an operator-cancelled 161 attempt can use
+`recover-multibot-preparation` through the normal exact-SHA CI wrapper. Preview is
+read-only. Supply the reviewed cancelled source and baseline source, original
+UUID-tagged attempt, observed start/abort UTC bounds; apply additionally requires
+the exact receipt identity hash and transition-journal hash from the preview.
+The transition journal contains the previous release inventory, not the target
+source of the cancelled attempt. All fourteen baseline roles must still match it.
+The original source's immutable migration checksums must match the reviewed code.
+Ambiguous receipts, other builders, repair artifacts, started cutoff, schema drift,
+or a missing/changed journal abort without resolution.
+
+Recovery runs only the fixed CREATE or REINDEX INDEX CONCURRENTLY needed for 161,
+with one PostgreSQL maintenance backend, 512 MiB maintenance work memory, a 6 GiB
+per-backend temporary-file limit and a 3600-second statement limit. The complete
+recovery has a 7500-second wall-clock ceiling. A fresh two-minute low-lag window
+precedes every operation; the same reserve/runtime supervisor applies during work.
+Available host memory is checked again after that window and immediately before
+DDL. The PostgreSQL client uses the running PostgreSQL image ID and its attested
+Compose network, with no stateful volumes. Prisma resolution uses the retained
+cancelled API image ID, a read-only migration bind and bounded temporary storage;
+only the attested local `maxim` database/user and `public` schema are accepted.
+Temporary-file limits exclude index/WAL output, and one worker is not an I/O cap.
+These budgets allow a measured attempt; they do not certify coexistence with live
+traffic. A failed repair preserves any concurrent-repair artifacts for separate review.
+Only three fully valid exact indexes permit Prisma resolution; verify the unchanged
+original rolled-back receipt and the new applied receipt that Prisma creates.
+Then resume normal deploy with explicit transition-journal adoption. This helper
+does not change messages, queues, live roles or release manifests.
+
 The storage audit at `2026-10-05T03:08:44.392856Z` estimated 46.85 million webhook
 rows, with 87.95 GB of table storage including 17.95 GB of TOAST, and 30.73
 million execution claims with 7.87 GB of table storage. Each concurrent webhook
