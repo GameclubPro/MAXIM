@@ -129,6 +129,29 @@ the disposable backend explicitly clears default and temporary tablespace choice
 These checks prevent an apparently matching index from writing to an unmonitored
 device. They do not replace live capacity and queue-pressure supervision.
 
+## Combined-release dependencies found in final review
+
+The newly introduced manual unban attempt discarded the final route callback.
+Its fresh target read and final Redis lease renewal could therefore finish after
+the selected bot's SQL proof changed. Revalidate the selected route after both
+waits, retain the sanction and lease checks, and keep no feature await after that
+route check. The focused regressions block each wait separately and revoke the
+route while it is blocked. This is a medium-risk integration correction; it does
+not make independent SQL/Redis authorities atomic or confirm that MAX supports
+unbanning. An attempted unban must retain its separate unknown-outcome fence and
+must never clear BAN state or create a confirmed unban event.
+
+Independent read-only review also confirmed a release-blocking text-normalizer
+gap: `(MB): 100` and `(Mb): 100` lose unit case before the number. The shared
+normalizer affects source digests as well as duplicate fingerprints, so such an
+edit can leave old deletion evidence apparently current. The parallel duplicate
+review owns its correction. Before the combined runtime release, require its exact
+green commit, text evidence-version advance and both rollback floors. Cover
+numeric unit labels with brackets, separators, compound units, Cyrillic and format
+characters; preserve ordinary prose and identifier case behavior. IMAGE identity
+is separate. Source review establishes the defect, not successful correction or
+production activation.
+
 ## Implementation and validation order
 
 1. Implement independent moderation guards and sanction/member execution fences.
