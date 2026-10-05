@@ -17,6 +17,29 @@ const photo = (id: string) => ({
 });
 
 describe('message duplicate canonical contents', () => {
+  it.each(['TEXT', 'MESSAGE'] as const)(
+    'binds numeric quantity-unit case to %s identity and source evidence',
+    (mode) => {
+      for (const [first, second] of [
+        ['100 MB/s', '100 Mb/s'],
+        ['10 MΩ', '10 mΩ'],
+        ['5 MW', '5 mW'],
+        ['10 Ms', '10 ms'],
+      ]) {
+        const original = content({ text: `Параметр устройства составляет ${first} сегодня` });
+        const edited = content({ text: `Параметр устройства составляет ${second} сегодня` });
+        expect(original.sourceDigest).not.toBe(edited.sourceDigest);
+        expect(buildMessageDuplicateIdentity(original, mode)).not.toBe(
+          buildMessageDuplicateIdentity(edited, mode),
+        );
+        const cosmetic = content({ text: ` ПАРАМЕТР  устройства составляет ${first}\nСЕГОДНЯ ` });
+        expect(cosmetic.sourceDigest).toBe(original.sourceDigest);
+        expect(buildMessageDuplicateIdentity(cosmetic, mode)).toBe(
+          buildMessageDuplicateIdentity(original, mode),
+        );
+      }
+    },
+  );
   it.each(['image_url', 'imageUrl'] as const)(
     'reads the existing MAX %s photo field variants',
     (key) => {

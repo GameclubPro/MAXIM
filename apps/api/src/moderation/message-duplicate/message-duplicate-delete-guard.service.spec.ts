@@ -26,6 +26,7 @@ import {
   prePhoneBoundarySettingsDigests,
   preSourceBoundPhoneSettingsDigests,
   preV3HistorySettingsDigests,
+  preSemanticUnitSettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 function setup() {
@@ -208,6 +209,88 @@ describe('scheduled duplicate final action guard', () => {
 });
 
 describe('message duplicate final delete guard', () => {
+  it.each([
+    ['STANDARD', {}],
+    ['STRICT', { duplicateDetectionPreset: 'STRICT' }],
+    ['CUSTOM_NEAR', { duplicateDetectionPreset: 'CUSTOM', duplicateNearMatchEnabled: true }],
+    ['CUSTOM_PHONE', { duplicateDetectionPreset: 'CUSTOM', duplicateIgnorePhonesEnabled: true }],
+  ] as const)(
+    'revokes pre-unit %s jobs before qualification and delete',
+    async (key, overrides) => {
+      const s = setup();
+      Object.assign(s.settings, overrides);
+      s.binding.settingsDigest = preSemanticUnitSettingsDigests[key];
+      await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toMatchObject({
+        code: 'message_duplicate_settings_changed',
+      });
+      for (const authorityOnly of [false, true]) {
+        await expect(
+          s.service.assertIntentStillActionable({ ...s.params, authorityOnly }),
+        ).rejects.toMatchObject({
+          code: 'message_duplicate_settings_changed',
+        });
+      }
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+      expect(s.history.qualify).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(
+    (['current', 'original'] as const).flatMap((stage) =>
+      (['TEXT', 'MESSAGE'] as const).flatMap((mode) =>
+        [
+          ['100 MB/s', '100 Mb/s'],
+          ['10 MΩ', '10 mΩ'],
+        ].map(([first, second]) => ({ stage, mode, first, second })),
+      ),
+    ),
+  )(
+    'revokes $mode evidence after a $stage unit-case edit $first → $second',
+    async ({ stage, mode, first, second }) => {
+      const s = setup();
+      s.settings.duplicateCompareMode = mode;
+      s.binding.compareMode = mode;
+      s.binding.settingsDigest = messageDuplicateSettingsDigest(s.settings);
+      const update = (mid: string, unit: string) =>
+        duplicateUpdate(mid, s.binding.eventTimestampMs, `Параметр устройства составляет ${unit}`);
+      const recorded = update('m2', first!);
+      const content = extractDuplicateMessageContent(recorded.raw);
+      s.binding.sourceDigest = duplicateSourceDigest(content, mode);
+      s.binding.contentDigest = buildMessageDuplicateIdentity(content, mode)!;
+      Object.assign(s.binding.original!, {
+        sourceDigest: s.binding.sourceDigest,
+        contentDigest: s.binding.contentDigest,
+      });
+      s.max.getExactMessageRow.mockResolvedValue((recorded.raw as { message: unknown }).message);
+      s.originalLookup.mockResolvedValue(
+        (update('m1', first!).raw as { message: typeof s.originalRaw }).message,
+      );
+      await expect(s.service.assertIntentStillActionable(s.params)).resolves.toBe('allowed');
+      const changed = (
+        update(stage === 'current' ? 'm2' : 'm1', second!).raw as { message: typeof s.originalRaw }
+      ).message;
+      if (stage === 'current') s.max.getExactMessageRow.mockResolvedValue(changed);
+      else s.originalLookup.mockResolvedValue(changed);
+      await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toMatchObject({
+        code:
+          stage === 'current'
+            ? 'message_duplicate_content_changed'
+            : 'message_duplicate_original_changed',
+      });
+      await expect(s.service.assertIntentStillActionable(s.params)).rejects.toMatchObject({
+        code:
+          stage === 'current'
+            ? 'message_duplicate_content_changed'
+            : 'message_duplicate_original_changed',
+      });
+      expect(s.history.invalidateLifecycle).toHaveBeenCalledWith({
+        chatId: s.params.chatId,
+        messageId: stage === 'current' ? 'm2' : 'm1',
+        content: expect.anything(),
+      });
+      expect(s.history.qualify).not.toHaveBeenCalled();
+    },
+  );
   it.each(['STANDARD', 'STRICT', 'CUSTOM_NEAR', 'CUSTOM_PHONE', 'IMAGE'] as const)(
     'revokes a pre-v3 %s grant at qualification and both delete boundaries',
     async (preset) => {

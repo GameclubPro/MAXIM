@@ -20,6 +20,7 @@ import {
   stripAnalyzedDuplicatePhoneNumbers,
 } from './duplicate-phone-evidence';
 import { RedisCounterService } from './redis-counter.service';
+import { normalizeDuplicateSemanticText } from './duplicate-semantic-text';
 import { resolveDuplicateFlowConfig, type DuplicateReactionStage } from './duplicate-flow-policy';
 import type {
   DuplicateAction,
@@ -434,12 +435,10 @@ export class RuleEngineDuplicateDetector {
     settings: ChatSettings,
     navigationTargets?: readonly NavigationTargetEvidence[],
   ): ResolvedDuplicateFingerprint[] {
-    const config = this.resolveFingerprintConfig(settings);
-    const safeTextMatching = config.ignorePhones || config.matchPhoneValues || config.nearMatch;
     return this.buildFingerprints(rawText, settings, navigationTargets).map((fingerprint) => {
       // FLAG: Never count old lossy fingerprints under the corrected comparison policy.
       const hash = createHash('sha256')
-        .update(safeTextMatching ? 'text-v9\0' : 'text-v4\0')
+        .update('text-v12\0')
         .update(fingerprint.value)
         .digest('hex')
         .slice(0, 20);
@@ -649,5 +648,5 @@ export class RuleEngineDuplicateDetector {
 
 function normalizeDuplicateText(value: string): string {
   // FLAG: Spam-obfuscation normalization is lossy and cannot define message equality.
-  return value.normalize('NFC').toLowerCase().replace(/\s+/gu, ' ').trim();
+  return normalizeDuplicateSemanticText(value);
 }

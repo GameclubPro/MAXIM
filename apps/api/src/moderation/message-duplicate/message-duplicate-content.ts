@@ -6,6 +6,7 @@ import {
 import { extractClientClickableTextEvidence } from '../navigation/client-clickable-text.extractor';
 import { extractNavigationEvidence } from '../navigation/navigation-evidence.extractor';
 import type { NavigationTargetEvidence } from '../navigation/navigation-evidence.types';
+import { normalizeDuplicateSemanticText } from '../duplicate-semantic-text';
 
 export type MessageDuplicateCompareMode = 'MESSAGE' | 'TEXT' | 'IMAGE';
 export type DuplicateMediaKind = 'photo' | 'video' | 'audio' | 'file';
@@ -74,7 +75,7 @@ export function digestDuplicateContent(value: unknown): string {
 
 export function normalizeMessageDuplicateText(value: string): string {
   // FLAG: Keep punctuation, numbers, emoji joiners and word order in exact comparisons.
-  return value.normalize('NFC').toLowerCase().replace(/\s+/gu, ' ').trim();
+  return normalizeDuplicateSemanticText(value);
 }
 
 export function duplicateNavigationAnchorIdentityKeys(

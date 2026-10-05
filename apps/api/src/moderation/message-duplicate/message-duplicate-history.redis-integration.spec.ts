@@ -73,6 +73,55 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     `dup:window:v1:${digestDuplicateContent(chatId)}:${MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION}:`;
   const recordExpiry = async (key: string) => Number(await inspector.call('PEXPIRETIME', key));
 
+  describe.each(['STANDARD', 'STRICT', 'CUSTOM_NEAR', 'CUSTOM_PHONE'] as const)(
+    '%s case-sensitive numeric quantities',
+    (preset) => {
+      it.each(
+        (['MESSAGE', 'TEXT'] as const).flatMap((mode) =>
+          [
+            ['100 MB/s', '100 Mb/s'],
+            ['10 MΩ', '10 mΩ'],
+            ['5 MW', '5 mW'],
+            ['100 MBps', '100 Mbps'],
+            ['10 V/(MΩ)', '10 V/(mΩ)'],
+            ['+79991234567 MΩ', '+79991234567 mΩ'],
+          ].map(([first, second]) => ({ mode, first, second })),
+        ),
+      )(
+        'never authorizes $mode $first as $second, but allows the true repeat',
+        async ({ mode, first, second }) => {
+          const override = {
+            settings: duplicateSettings({
+              duplicateCompareMode: mode,
+              duplicateDetectionPreset:
+                preset === 'CUSTOM_NEAR' || preset === 'CUSTOM_PHONE' ? 'CUSTOM' : preset,
+              duplicateNearMatchEnabled: preset === 'CUSTOM_NEAR',
+              duplicateIgnorePhonesEnabled: preset === 'CUSTOM_PHONE',
+            }),
+          };
+          const text = (unit: string) =>
+            `Промышленное оборудование доступно со склада с доставкой в регионы. Параметр устройства ${unit} по техническому паспорту производителя.`;
+          await observe('first', 0, text(first!), override);
+          expect(await observe('different', 100, text(second!), override)).toBeNull();
+          const repeat = await observe('repeat', 200, text(second!), override);
+          expect(repeat?.binding.original?.messageId).toBe('different');
+          expect(await history.stillMatches(chatId, repeat!.binding)).toBe(true);
+          expect(await history.qualify(chatId, repeat!.binding)).toBe(1);
+          const changed = extractDuplicateMessageContent({
+            message: { body: { text: text(first!) } },
+          });
+          await history.observeLifecycle({
+            chatId,
+            messageId: 'different',
+            eventTimestampMs: start + 300,
+            content: changed,
+          });
+          expect(await history.stillMatches(chatId, repeat!.binding)).toBe(false);
+        },
+      );
+    },
+  );
+
   describe.each(['STRICT', 'CUSTOM_PHONE'] as const)(
     '%s protected padded numeric context',
     (preset) => {

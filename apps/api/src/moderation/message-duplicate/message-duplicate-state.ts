@@ -156,10 +156,9 @@ export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
     settings.duplicateDetectionPreset === 'CUSTOM' && settings.duplicateIgnorePhonesEnabled;
   const safeTextMatchingEnabled = nearEnabled || phoneValueMatchingEnabled;
   return digestDuplicateContent({
-    // FLAG: Old near and phone-value grants/jobs must fail the fresh guard, not merely miss history.
-    // A storage incarnation change also revokes exact-only and IMAGE authority. Their
-    // comparison semantics remain separate from text normalization changes.
-    version: safeTextMatchingEnabled ? 'text-fixed-window-safe-text-v11' : 'text-fixed-window-v5',
+    // FLAG: Old text grants/jobs, including exact-only, must fail the fresh guard after
+    // quantity-unit protection. IMAGE has its independent settings/raster semantics.
+    version: safeTextMatchingEnabled ? 'text-fixed-window-safe-text-v12' : 'text-fixed-window-v12',
     historyStorageVersion: MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION,
     historyRevision: settings.duplicateHistoryRevision ?? 0,
     schedule: duplicateScheduleDigestInput(settings),

@@ -391,6 +391,21 @@ describe('RuleEngineDuplicateDetector', () => {
         'Согласно технической документации суммарная масса оборудования составляет 9000000000 кг включая упаковку',
         'Согласно технической документации суммарная масса оборудования составляет 9100000000 кг включая упаковку',
       ],
+      ...[
+        ['bit/byte quantity', '100 MB/s', '100 Mb/s'],
+        ['bit/byte data rate', '100 MBps', '100 Mbps'],
+        ['ohm SI prefix', '10 MΩ', '10 mΩ'],
+        ['power SI prefix', '5 MW', '5 mW'],
+        ['time SI prefix', '10 Ms', '10 ms'],
+        ['compound denominator unit', '100 MB/S', '100 MB/s'],
+        ['wrapped compound denominator', '10 V/(MΩ)', '10 V/(mΩ)'],
+        ['phone-shaped ohm quantity', '+79991234567 MΩ', '+79991234567 mΩ'],
+        ['quantity unit order', '10 MB, 20 Mb', '10 Mb, 20 MB'],
+      ].map(([label, first, second]) => [
+        label,
+        `Промышленное оборудование доступно со склада с доставкой в регионы значение ${first} по техническому паспорту производителя`,
+        `Промышленное оборудование доступно со склада с доставкой в регионы значение ${second} по техническому паспорту производителя`,
+      ]),
       [
         'comma placement',
         'Казнить, нельзя помиловать виновного сегодня согласно решению комиссии',
@@ -505,6 +520,29 @@ describe('RuleEngineDuplicateDetector', () => {
           revision: 200,
           text: ' СТОИМОСТЬ  заказа\nсоставляет 100 рублей ',
           settings,
+        }),
+      ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+    });
+
+    it('matches prose case and spacing while keeping the same quantity unit', async () => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({ duplicateDetectionPreset: preset });
+      await detectRevision({
+        detector,
+        messageId: 'first',
+        revision: 100,
+        settings,
+        text: 'Производительность промышленного оборудования составляет 100 MB/s согласно паспорту',
+      });
+      await expect(
+        detectRevision({
+          detector,
+          messageId: 'repeat',
+          revision: 200,
+          settings,
+          text: ' ПРОИЗВОДИТЕЛЬНОСТЬ  промышленного оборудования составляет\n100 MB/s СОГЛАСНО ПАСПОРТУ ',
         }),
       ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
     });

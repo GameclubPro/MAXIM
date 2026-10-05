@@ -7,6 +7,14 @@ import {
 import { extractDetectedPhoneNumbers } from './rule-engine-message-limits.detector';
 
 describe('conservative phone evidence for duplicates', () => {
+  it.each(['MΩ', 'mΩ', 'MW', 'mW', 'MBps', 'Mbps', '(MΩ)', '[mΩ]'])(
+    'never classifies a finite quantity unit %s as a phone value',
+    (unit) => {
+      const text = `Промышленное оборудование со склада. +79991234567 ${unit}`;
+      expect(extractDuplicatePhoneNumbers(text)).toEqual([]);
+      expect(stripDuplicatePhoneNumbers(text)).toBe(text);
+    },
+  );
   it.each([
     `+79991234567${' '.repeat(65)}рублей`,
     `+79991234567${'\u200b'.repeat(65)}@example.test`,
