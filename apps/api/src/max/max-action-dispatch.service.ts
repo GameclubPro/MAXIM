@@ -883,6 +883,7 @@ export class MaxActionDispatchService {
       actionType === 'DELETE_MESSAGE' ||
       actionType === 'KICK_MEMBER' ||
       actionType === 'BAN_MEMBER' ||
+      actionType === 'TRY_UNBAN_MEMBER' ||
       actionType === 'UNBAN_MEMBER'
     ) {
       return ROUTED_DESTRUCTIVE_ACCESS_MAX_AGE_MS;
@@ -1044,6 +1045,7 @@ export class MaxActionDispatchService {
         return 'send';
       case 'KICK_MEMBER':
       case 'BAN_MEMBER':
+      case 'TRY_UNBAN_MEMBER':
       case 'UNBAN_MEMBER':
         return 'member_moderation';
       default:

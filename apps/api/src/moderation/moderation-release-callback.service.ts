@@ -154,6 +154,7 @@ export class ModerationReleaseCallbackService {
           actorAlreadyVerified: true,
           allowTargetDisplayNameRemoteLookup: false,
           expectedSanctionEventId: sanctionEvent.id,
+          ...(release.action === 'UNBAN' ? { attemptUnbanWithRemove: true } : {}),
         },
       );
       await this.answerCallbackSafe(callbackId, result.message, botId, messageChatId);

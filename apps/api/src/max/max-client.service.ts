@@ -493,6 +493,7 @@ export type MaxActionType =
   | 'KICK_MEMBER'
   | 'BAN_MEMBER'
   | 'UNBAN_MEMBER'
+  | 'TRY_UNBAN_MEMBER'
   | 'NOTIFY_MODERATORS';
 
 export type MaxActionRoutingMetadata = {
@@ -2774,6 +2775,10 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
+  async attemptUnbanMember(chatId: string, userId: string, options: MaxActionDispatchOptions) {
+    await this.dispatchAction({ actionType: 'TRY_UNBAN_MEMBER', chatId, userId }, options);
+  }
+
   async clearTerminalBanStateAfterConfirmedUnban(chatId: string, userId: string): Promise<void> {
     await this.actionLedgerService?.clearTerminalBanStateAfterUnban(chatId, userId);
   }
@@ -3059,6 +3064,25 @@ export class MaxClientService implements OnModuleDestroy {
             beforeMutation: beforeMember,
           });
           return;
+
+        case 'TRY_UNBAN_MEMBER': {
+          // FLAG: The experimental DELETE can remove a present member. Never execute
+          // a queued/recovered attempt without the caller's fresh absence/sanction guard.
+          if (!action.userId || !beforeMember) {
+            throw new UnrecoverableError('Unban attempt requires an exact user and live guard');
+          }
+          this.assertMemberActionTargetIsNotRuntimeBot(
+            action.actionType,
+            action.chatId,
+            action.userId,
+          );
+          await this.executeQueuedMemberModerationAction(action, mutationOptions, {
+            block: false,
+            explicitBlock: true,
+            beforeMutation: beforeMember,
+          });
+          return;
+        }
 
         case 'UNBAN_MEMBER': {
           if (!action.userId) {
@@ -5170,13 +5194,27 @@ export class MaxClientService implements OnModuleDestroy {
       beforeImmediateMemberMutation &&
       payload.actionType !== 'KICK_MEMBER' &&
       payload.actionType !== 'BAN_MEMBER' &&
+      payload.actionType !== 'TRY_UNBAN_MEMBER' &&
       payload.actionType !== 'UNBAN_MEMBER'
     ) {
       throw new Error('Member mutation guard requires a member moderation action');
     }
 
     if (
-      (payload.actionType === 'KICK_MEMBER' || payload.actionType === 'BAN_MEMBER') &&
+      payload.actionType === 'TRY_UNBAN_MEMBER' &&
+      (options?.immediate !== true ||
+        !beforeImmediateMemberMutation ||
+        !options.idempotencyKey?.trim() ||
+        (options.delayMs ?? 0) !== 0 ||
+        !this.actionLedgerService)
+    ) {
+      throw new Error('Unban attempt requires immediate guarded dispatch and a durable exact key');
+    }
+
+    if (
+      (payload.actionType === 'KICK_MEMBER' ||
+        payload.actionType === 'BAN_MEMBER' ||
+        payload.actionType === 'TRY_UNBAN_MEMBER') &&
       payload.userId
     ) {
       this.assertMemberActionTargetIsNotRuntimeBot(
@@ -5246,7 +5284,9 @@ export class MaxClientService implements OnModuleDestroy {
       options?.idempotencyKey,
       payload.actionType,
       isRoutedAction ||
-        ((payload.actionType === 'BAN_MEMBER' || payload.actionType === 'KICK_MEMBER') &&
+        ((payload.actionType === 'BAN_MEMBER' ||
+          payload.actionType === 'KICK_MEMBER' ||
+          payload.actionType === 'TRY_UNBAN_MEMBER') &&
           !isPrivateDirectChatId(payload.chatId))
         ? null
         : bot.id,
@@ -5257,7 +5297,9 @@ export class MaxClientService implements OnModuleDestroy {
       this.buildDefaultActionIdempotencyKey(
         payload,
         isRoutedAction ||
-          ((payload.actionType === 'BAN_MEMBER' || payload.actionType === 'KICK_MEMBER') &&
+          ((payload.actionType === 'BAN_MEMBER' ||
+            payload.actionType === 'KICK_MEMBER' ||
+            payload.actionType === 'TRY_UNBAN_MEMBER') &&
             !isPrivateDirectChatId(payload.chatId))
           ? null
           : bot.id,
@@ -5871,7 +5913,10 @@ export class MaxClientService implements OnModuleDestroy {
 
   private isIrreversibleQueuedActionType(actionType: MaxActionType): boolean {
     return (
-      actionType === 'SEND_MESSAGE' || actionType === 'KICK_MEMBER' || actionType === 'BAN_MEMBER'
+      actionType === 'SEND_MESSAGE' ||
+      actionType === 'KICK_MEMBER' ||
+      actionType === 'BAN_MEMBER' ||
+      actionType === 'TRY_UNBAN_MEMBER'
     );
   }
 
@@ -5883,6 +5928,7 @@ export class MaxClientService implements OnModuleDestroy {
       value === 'KICK_MEMBER' ||
       value === 'BAN_MEMBER' ||
       value === 'UNBAN_MEMBER' ||
+      value === 'TRY_UNBAN_MEMBER' ||
       value === 'NOTIFY_MODERATORS'
     ) {
       return value;
@@ -7489,6 +7535,7 @@ export class MaxClientService implements OnModuleDestroy {
     mutationOptions: MaxApiRequestOptions,
     options: {
       block: boolean;
+      explicitBlock?: boolean;
       beforeMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
     },
   ): Promise<void> {
@@ -7501,7 +7548,7 @@ export class MaxClientService implements OnModuleDestroy {
           const response = await this.request('delete', `/chats/${action.chatId}/members`, {
             params: {
               user_id: action.userId,
-              ...(options.block ? { block: true } : {}),
+              ...(options.block || options.explicitBlock ? { block: options.block } : {}),
             },
             ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
           });
@@ -8449,7 +8496,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private assertMemberActionTargetIsNotRuntimeBot(
-    actionType: Extract<MaxActionType, 'KICK_MEMBER' | 'BAN_MEMBER'>,
+    actionType: Extract<MaxActionType, 'KICK_MEMBER' | 'BAN_MEMBER' | 'TRY_UNBAN_MEMBER'>,
     chatId: string,
     userId: string,
   ): void {
