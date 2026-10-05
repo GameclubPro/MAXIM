@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import {
@@ -11,6 +12,7 @@ import {
 
 const root = resolve(import.meta.dirname, '../..');
 const library = resolve(root, 'infra/scripts/lib/webhook-rollout-quiescence.sh');
+const mainComposeArgs = ['--env-file', '.env', '-p', 'infra', '-f', 'infra/docker-compose.yml'];
 const GiB = 1024 ** 3;
 const metadata = {
   tableBytes: 70 * GiB,
@@ -30,45 +32,87 @@ const sharedFilesystems = (availableBytes) =>
     ]),
   );
 
-test('early capacity preflight reads the cutoff before any build or transition', () => {
-  const result = probeEarlyPreflight();
+test('early capacity preflight reads the cutoff before any build or transition', (t) => {
+  const result = probeEarlyPreflight(t);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /ready\ncapacity\nafter-preflight/u);
+  assert.match(result.stdout, /ready\n\{"code":"MULTIBOT_PREPARE_CAPACITY"/u);
+  assert.match(result.stdout, /\nafter-preflight\n/u);
   assert.doesNotMatch(result.stdout, /Unexpected mutation/u);
 });
 
 for (const failure of ['capacity', 'receipt', 'malformed'])
-  test(`early ${failure} failure preserves the current inventory and live runtime`, () => {
-    const result = probeEarlyPreflight(failure, failure === 'malformed' ? 'unknown' : '0');
+  test(`early ${failure} failure preserves the current inventory and live runtime`, (t) => {
+    const result = probeEarlyPreflight(t, failure, failure === 'malformed' ? 'unknown' : '0');
     assert.equal(result.status, 1, result.stderr);
     assert.match(
       result.stdout,
       /images=unbuilt journal=current ingress=live workers=live paused=0 cutoff=0/u,
     );
     assert.doesNotMatch(result.stdout, /after-preflight|Unexpected mutation/u);
-    if (failure !== 'capacity') assert.doesNotMatch(result.stdout, /^capacity$/mu);
+    if (failure === 'capacity')
+      assert.match(result.stderr, /MULTIBOT_PREPARE_CAPACITY_INSUFFICIENT/u);
+    else assert.doesNotMatch(result.stdout, /MULTIBOT_PREPARE_CAPACITY/u);
   });
 
-test('early preflight skips capacity when the exact effects cutoff is already applied', () => {
-  const result = probeEarlyPreflight('none', '1');
+test('early preflight skips capacity when the exact effects cutoff is already applied', (t) => {
+  const result = probeEarlyPreflight(t, 'none', '1');
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /after-preflight/u);
-  assert.doesNotMatch(result.stdout, /^capacity$/mu);
+  assert.doesNotMatch(result.stdout, /MULTIBOT_PREPARE_CAPACITY/u);
 });
 
-test('static-only deploy does not require an early multibot capacity or receipt probe', () => {
-  const result = probeEarlyPreflight('receipt', '0', '0');
+test('static-only deploy does not require an early multibot capacity or receipt probe', (t) => {
+  const result = probeEarlyPreflight(t, 'receipt', '0', '0');
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /after-preflight/u);
-  assert.doesNotMatch(result.stdout, /^(?:ready|capacity)$/mu);
+  assert.doesNotMatch(result.stdout, /^(?:ready|.*MULTIBOT_PREPARE_CAPACITY.*)$/mu);
 });
 
-function probeEarlyPreflight(failure = 'none', receipt = '0', buildApiImage = '1') {
+function probeEarlyPreflight(t, failure = 'none', receipt = '0', buildApiImage = '1') {
   const deploy = readFileSync(resolve(root, 'infra/scripts/vps-pull-build-up.sh'), 'utf8');
+  const projectDeclaration = deploy.match(/^MAIN_PROJECT_NAME="[^"\r\n]+"$/mu)?.[0];
+  const composeDeclaration = deploy.match(/^COMPOSE_FILES=\([^\r\n]+\)$/mu)?.[0];
+  assert.ok(projectDeclaration && composeDeclaration, 'Use the real main Compose scope');
   const block = deploy.match(
     /\nif \[\[ "\$BUILD_API_IMAGE" -eq 1 \]\]; then\n {2}require_stateful_services_ready\n {2}maxim_webhook_preflight_multibot_prepare_capacity COMPOSE_FILES\nfi\n/u,
   )?.[0];
   assert.ok(block, 'An early API-only preflight block is required');
+  const bin = mkdtempSync(resolve(tmpdir(), 'maxim-multibot-capacity-'));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  writeFileSync(resolve(bin, '.env'), '');
+  const dfOutput = `printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/shared 100000000 1000 %s 1%% /\\n' "$MAXIM_TEST_CAPACITY_AVAILABLE_KIB"`;
+  writeFileSync(
+    resolve(bin, 'docker'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+[[ "$#" -ge 11 && "$1" == compose && "$2" == --env-file && "$3" == .env && "$4" == -p && "$5" == infra && "$6" == -f && "$7" == infra/docker-compose.yml && "$8" == exec && "$9" == -T && "\${10}" == postgres ]] || { echo 'Unexpected Docker scope' >&2; exit 99; }
+shift 10
+case "$1" in
+  psql) cat >/dev/null; printf '%s\\n' "$MAXIM_TEST_CAPACITY_METADATA" ;;
+  sh) printf '/var/lib/postgresql/data/pg_wal\\n' ;;
+  df) ${dfOutput} ;;
+  *) echo 'Unexpected mutation' >&2; exit 99 ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    resolve(bin, 'df'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+[[ "$#" == 2 && "$1" == -Pk && "$2" == /var/lib/docker ]] || exit 99
+${dfOutput}
+`,
+    { mode: 0o755 },
+  );
+  const env = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    MAXIM_TEST_CAPACITY_METADATA: JSON.stringify(metadata),
+    MAXIM_TEST_CAPACITY_AVAILABLE_KIB: String(((failure === 'capacity' ? 25 : 50) * GiB) / 1024),
+  };
+  // Run the real CLI outside the parent Node test harness.
+  delete env.NODE_TEST_CONTEXT;
   return spawnSync(
     'bash',
     [
@@ -79,16 +123,12 @@ source "$2"
 failure="$3"
 receipt="$4"
 BUILD_API_IMAGE="$5"
-COMPOSE_FILES=(-f fixture.yml)
+${projectDeclaration}
+${composeDeclaration}
 images=unbuilt journal=current ingress=live workers=live paused=0 cutoff=0
 trap 'printf "images=%s journal=%s ingress=%s workers=%s paused=%s cutoff=%s\\n" "$images" "$journal" "$ingress" "$workers" "$paused" "$cutoff"' EXIT
 require_stateful_services_ready() { echo ready; }
 timeout() { [[ "$failure" != receipt ]] || return 1; printf '%s\\n' "$receipt"; }
-node() {
-  [[ "$1" == "$ROOT_DIR/infra/scripts/multibot-prepare-capacity.mjs" && "$2" == -f && "$3" == fixture.yml ]]
-  echo capacity
-  [[ "$failure" != capacity ]]
-}
 docker() { echo 'Unexpected mutation' >&2; return 99; }
 run_online_multibot_migrations() { echo 'Unexpected mutation' >&2; return 99; }
 ${block}
@@ -102,7 +142,7 @@ images=built journal=transitioned
       receipt,
       buildApiImage,
     ],
-    { encoding: 'utf8' },
+    { encoding: 'utf8', cwd: bin, env },
   );
 }
 
@@ -244,11 +284,71 @@ test('typed capacity probe uses bounded read-only catalogs and actual PGDATA/WAL
     if (args.includes('sh')) return '/var/lib/postgresql/data/pg_wal\n';
     return 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/shared 100000000 1000 50000000 1% /\n';
   };
-  const report = checkMultibotPrepareCapacity(['-f', 'fixture.yml'], run);
-  assert.equal(report.devices.length, 1);
-  assert.ok(calls.every((call) => call.options.timeout === 30_000));
-  assert.ok(calls.some((call) => call.args.at(-1) === metadata.dataDirectory));
-  assert.ok(calls.some((call) => call.args.at(-1) === '/var/lib/postgresql/data/pg_wal'));
-  assert.ok(calls.some((call) => call.command === 'df' && call.args.at(-1) === '/var/lib/docker'));
-  assert.throws(() => checkMultibotPrepareCapacity(['--unsafe'], run));
+  for (const composeArgs of [
+    ['-f', 'fixture.yml'],
+    mainComposeArgs,
+    [...mainComposeArgs, '-f', 'infra/docker-compose.runtime-no-build.yml'],
+    ['-f', 'fixture.yml', '--project-name', 'infra-test', '--env-file', 'fixture env'],
+  ]) {
+    calls.length = 0;
+    const originalArgs = [...composeArgs];
+    const report = checkMultibotPrepareCapacity(composeArgs, run);
+    assert.deepEqual(composeArgs, originalArgs);
+    assert.equal(report.devices.length, 1);
+    const dockerCalls = calls.filter((call) => call.command === 'docker');
+    assert.equal(dockerCalls.length, 4);
+    const prefix = ['compose', ...composeArgs, 'exec', '-T', 'postgres'];
+    for (const call of dockerCalls) assert.deepEqual(call.args.slice(0, prefix.length), prefix);
+    assert.ok(calls.every((call) => call.options.timeout === 30_000));
+    assert.ok(calls.every((call) => call.options.maxBuffer === 1024 * 1024));
+    assert.ok(calls.some((call) => call.args.at(-1) === metadata.dataDirectory));
+    assert.ok(calls.some((call) => call.args.at(-1) === '/var/lib/postgresql/data/pg_wal'));
+    assert.ok(
+      calls.some((call) => call.command === 'df' && call.args.at(-1) === '/var/lib/docker'),
+    );
+  }
+});
+
+test('capacity rejects malformed or unsupported Compose scopes before any external probe', () => {
+  let calls = 0;
+  const run = () => {
+    calls += 1;
+    throw new Error('Unexpected probe');
+  };
+  for (const composeArgs of [
+    null,
+    '-f fixture.yml',
+    [],
+    ['--env-file', '.env'],
+    ['-p', 'infra'],
+    ['-f'],
+    ['-f', ''],
+    ['-f', '   '],
+    ['-f', null],
+    ['-f', '-'],
+    ['-f', '--env-file'],
+    ['-f', 'fixture.yml\0'],
+    ['-f', 'fixture.yml\n'],
+    ['-f', 'fixture.yml', '--env-file'],
+    ['-f', 'fixture.yml', '--env-file', ''],
+    ['-f', 'fixture.yml', '--env-file', '--help'],
+    ['-f', 'fixture.yml', '-p', ''],
+    ['-f', 'fixture.yml', '--project-name', ''],
+    ['-f', 'fixture.yml', '-p', 'InvalidProject'],
+    ['-f', 'fixture.yml', '--env-file', '.env', '--env-file', 'other.env'],
+    ['-f', 'fixture.yml', '-p', 'infra', '--project-name', 'other'],
+    ['-f', 'fixture.yml', '--unsafe', 'value'],
+    ['-f', 'fixture.yml', '--project-directory', 'directory'],
+    ['-f', 'fixture.yml', '--profile', 'unsafe'],
+    ['-f', 'fixture.yml', 'up', '-d'],
+    ['-f', 'fixture.yml', 'down', '--remove-orphans'],
+    ['-f', 'fixture.yml', '--build', 'true'],
+    ['-f', 'fixture.yml', '--', 'exec'],
+    ['--env-file=.env', '-f', 'fixture.yml'],
+  ])
+    assert.throws(
+      () => checkMultibotPrepareCapacity(composeArgs, run),
+      /MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID/u,
+    );
+  assert.equal(calls, 0);
 });
