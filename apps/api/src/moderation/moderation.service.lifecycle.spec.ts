@@ -6255,6 +6255,7 @@ describe('ModerationService', () => {
           actorAlreadyVerified: true,
           allowTargetDisplayNameRemoteLookup: false,
           expectedSanctionEventId: sanctionEventId,
+          ...(action === 'UNBAN' ? { attemptUnbanWithRemove: true } : {}),
         },
       );
       expect(maxClient.answerCallback).toHaveBeenCalledWith(

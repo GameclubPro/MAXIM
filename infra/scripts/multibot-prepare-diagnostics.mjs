@@ -140,6 +140,9 @@ WITH expected_migrations(name, checksum, position) AS (VALUES
 ), progress AS MATERIALIZED (
   SELECT CASE
     WHEN phase IN ('initializing', 'waiting for writers before build', 'building index',
+      'building index: initializing', 'building index: scanning table',
+      'building index: sorting live tuples', 'building index: sorting dead tuples',
+      'building index: loading tuples in tree',
       'waiting for writers before validation', 'index validation: scanning index',
       'index validation: sorting tuples', 'index validation: scanning table',
       'waiting for old snapshots', 'waiting for readers before marking dead',

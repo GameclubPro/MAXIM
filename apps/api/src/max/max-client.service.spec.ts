@@ -4323,6 +4323,137 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  describe('guarded unban attempt', () => {
+    function ledger() {
+      return {
+        isIrreversibleAction: jest.fn().mockReturnValue(true),
+        assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+        recordStarted: jest.fn().mockResolvedValue(undefined),
+        recordSucceeded: jest.fn().mockResolvedValue(undefined),
+        recordFailed: jest.fn().mockResolvedValue(undefined),
+        clearTerminalBanStateAfterUnban: jest.fn(),
+      };
+    }
+    const options = () => ({
+      immediate: true,
+      idempotencyKey: 'selected-ban',
+      beforeImmediateMemberMutation: jest.fn().mockResolvedValue(undefined),
+    });
+
+    it('sends explicit DELETE block=false after POST retirement and retains BAN evidence', async () => {
+      jest.useFakeTimers().setSystemTime(new Date(MAX_MEMBER_RESTORE_RETIRES_AT + 1));
+      const http = { request: jest.fn(() => of({ status: 200, data: { success: true } })) };
+      const log = ledger();
+      const service = createService(http, {}, undefined, log);
+      try {
+        const opts = options();
+        await service.attemptUnbanMember('chat-1', 'user-1', opts);
+        expect(http.request).toHaveBeenCalledWith(
+          expect.objectContaining({
+            method: 'delete',
+            url: 'https://platform-api2.max.ru/chats/chat-1/members',
+            params: { user_id: 'user-1', block: false },
+          }),
+        );
+        expect(opts.beforeImmediateMemberMutation).toHaveBeenCalledTimes(1);
+        expect(opts.beforeImmediateMemberMutation.mock.invocationCallOrder[0]).toBeLessThan(
+          http.request.mock.invocationCallOrder[0]!,
+        );
+        expect(log.recordSucceeded).toHaveBeenCalledWith(
+          expect.objectContaining({ actionType: 'TRY_UNBAN_MEMBER' }),
+        );
+        expect(log.clearTerminalBanStateAfterUnban).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each([
+      { immediate: false },
+      { idempotencyKey: '' },
+      { beforeImmediateMemberMutation: undefined },
+      { delayMs: 1 },
+    ])('rejects unsafe dispatch options %j before any request', async (overrides) => {
+      const http = { request: jest.fn() };
+      const service = createService(http, {}, undefined, ledger());
+      try {
+        await expect(
+          service.attemptUnbanMember('chat-1', 'user-1', { ...options(), ...overrides }),
+        ).rejects.toThrow();
+        expect(http.request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('rejects queued execution without its ephemeral guard', async () => {
+      const http = { request: jest.fn() };
+      const service = createService(http);
+      try {
+        await expect(
+          service.executeActionJob({
+            actionType: 'TRY_UNBAN_MEMBER',
+            chatId: 'chat-1',
+            userId: 'user-1',
+            idempotencyKey: 'queued-attempt',
+            attempt: 1,
+            createdAt: new Date().toISOString(),
+          }),
+        ).rejects.toThrow('live guard');
+        expect(http.request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('stops before HTTP when the final absence guard rejects', async () => {
+      const http = { request: jest.fn() };
+      const log = ledger();
+      const service = createService(http, {}, undefined, log);
+      try {
+        await expect(
+          service.attemptUnbanMember('chat-1', 'user-1', {
+            ...options(),
+            beforeImmediateMemberMutation: async () => {
+              throw new Error('participant returned');
+            },
+          }),
+        ).rejects.toThrow('participant returned');
+        expect(http.request).not.toHaveBeenCalled();
+        expect(log.recordFailed).toHaveBeenCalled();
+        expect(log.recordSucceeded).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each(['invalid_response', 'connection_reset'])(
+      'does not replay %s or clear the BAN',
+      async (failure) => {
+        const http = {
+          request: jest.fn(() =>
+            failure === 'invalid_response'
+              ? of({ status: 200, data: { success: false } })
+              : throwError(() =>
+                  Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+                ),
+          ),
+        };
+        const log = ledger();
+        const service = createService(http, {}, undefined, log);
+        try {
+          await expect(service.attemptUnbanMember('chat-1', 'user-1', options())).rejects.toThrow();
+          expect(http.request).toHaveBeenCalledTimes(1);
+          expect(log.recordFailed).toHaveBeenCalled();
+          expect(log.recordSucceeded).not.toHaveBeenCalled();
+          expect(log.clearTerminalBanStateAfterUnban).not.toHaveBeenCalled();
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+  });
+
   it('records successful immediate irreversible actions in the durable ledger', async () => {
     const httpService = {
       request: jest.fn(() => of({ data: { success: true } })),

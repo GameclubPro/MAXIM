@@ -246,6 +246,7 @@ export type ManualModerationExecutionOptions = {
   fanoutAllChats?: boolean;
   fanoutLedgerJobId?: string | null;
   expectedSanctionEventId?: string | null;
+  attemptUnbanWithRemove?: boolean;
   onModerationEventRecorded?: (eventId: string) => void;
   onAlreadyApplied?: () => void;
 };

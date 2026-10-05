@@ -38,6 +38,7 @@ const IRREVERSIBLE_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
   'SEND_MESSAGE',
   'KICK_MEMBER',
   'BAN_MEMBER',
+  'TRY_UNBAN_MEMBER',
 ]);
 const EXECUTABLE_LEDGER_STATUSES: ReadonlySet<MaxActionLedgerStatus> = new Set([
   MaxActionLedgerStatus.ENQUEUED,
@@ -48,6 +49,7 @@ const SUCCEEDED_DELETE_OWNERSHIP_LOOKUP_LIMIT = 20;
 const CRASH_FENCED_MEMBER_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
   'KICK_MEMBER',
   'BAN_MEMBER',
+  'TRY_UNBAN_MEMBER',
 ]);
 export const MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES = [
   'max_api_circuit_open',
@@ -692,13 +694,16 @@ export class MaxActionLedgerService {
         await tx.$queryRaw`
           SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['max-member', job.chatId, job.userId])}, 0))::text
         `;
+        // FLAG: Only a guarded unban attempt may follow a confirmed BAN. Unknown
+        // effects from any member operation still block it; BAN evidence stays intact.
         const blockers = await tx.$queryRaw<Array<{ job_id: string }>>`
           SELECT "job_id" FROM "max_action_ledger"
           WHERE "chat_id" = ${job.chatId} AND "user_id" = ${job.userId}
             AND "job_id" <> ${job.idempotencyKey}
-            AND "action_type" IN ('BAN_MEMBER', 'KICK_MEMBER')
+            AND "action_type" IN ('BAN_MEMBER', 'KICK_MEMBER', 'TRY_UNBAN_MEMBER')
             AND ("status" = 'IN_PROGRESS'::"MaxActionLedgerStatus" OR "ambiguous" = TRUE
-              OR ("action_type" = 'BAN_MEMBER' AND "status" = 'SUCCEEDED'::"MaxActionLedgerStatus"))
+              OR (${job.actionType !== 'TRY_UNBAN_MEMBER'} AND "action_type" = 'BAN_MEMBER'
+                AND "status" = 'SUCCEEDED'::"MaxActionLedgerStatus"))
           LIMIT 1
         `;
         if (blockers.length)
@@ -1689,6 +1694,7 @@ export class MaxActionLedgerService {
     if (
       (job.actionType === 'KICK_MEMBER' ||
         job.actionType === 'BAN_MEMBER' ||
+        job.actionType === 'TRY_UNBAN_MEMBER' ||
         job.actionType === 'UNBAN_MEMBER') &&
       statusCode === 200 &&
       (message.includes('already deleted') ||
@@ -1881,6 +1887,7 @@ export class MaxActionLedgerService {
     if (statusCode !== null) {
       return this.truncate(`max_http_${statusCode}`, 128);
     }
+    if (job.actionType === 'TRY_UNBAN_MEMBER') return 'max_member_unban_attempt_failed';
     return job.actionType === 'KICK_MEMBER'
       ? MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.KICK_FAILED
       : MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.BAN_FAILED;

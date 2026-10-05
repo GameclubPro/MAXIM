@@ -522,6 +522,33 @@ describe('MaxActionLedgerWatchdogService', () => {
     );
   });
 
+  it.each([
+    [MaxActionLedgerStatus.IN_PROGRESS, MaxActionLedgerStatus.AMBIGUOUS],
+    [MaxActionLedgerStatus.FAILED_RETRYABLE, MaxActionLedgerStatus.AMBIGUOUS],
+  ])(
+    'never recovers an unban attempt with %s without its live guard',
+    async (status, expectedStatus) => {
+      const row = createCandidate({
+        actionType: 'TRY_UNBAN_MEMBER',
+        userId: 'user-1',
+        status,
+        attemptCount: 1,
+        firstAttemptAt: new Date(Date.now() - 11 * 60_000),
+        lastAttemptAt: new Date(Date.now() - 10 * 60_000),
+        ...(status === MaxActionLedgerStatus.FAILED_RETRYABLE
+          ? { lastErrorCode: 'max_api_internal_rate_limit' }
+          : {}),
+      });
+      const { service, prisma, criticalQueue } = createHarness({ rows: [row] });
+      await service.runNow();
+      expect(criticalQueue.add).not.toHaveBeenCalled();
+      expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: expectedStatus }) }),
+      );
+      expect((await service.getSnapshot()).lastRequeuedCount).toBe(0);
+    },
+  );
+
   it('quarantines a stale network mutation that may already have executed', async () => {
     const row = createCandidate({
       status: MaxActionLedgerStatus.IN_PROGRESS,

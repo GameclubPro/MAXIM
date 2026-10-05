@@ -29,6 +29,7 @@ import { mergeManagedEntityGroups } from './admin-managed-entities-snapshot-code
 import { toSafeInteger, toIsoString } from './admin-statistics-values';
 import { SuggestionSubscriptionService } from '../suggestions/suggestion-subscription.service';
 import { MaxMemberRestoreUnavailableError } from '../max/max-member-restore-capability';
+import { attemptManualMemberUnban } from './manual-member-unban-attempt';
 import {
   assertChannelMemberBanScope,
   describeManualBanResult,
@@ -9698,6 +9699,16 @@ export class AdminService implements OnModuleDestroy {
         message: 'Мут снят. Автоматическое удаление новых сообщений остановлено.',
       });
     }
+
+    const unbanAttempt = await attemptManualMemberUnban(
+      { chatId, targetUserId, actorUserId: user.userId, source, options, botId: resolvedBotId },
+      this.maxClient,
+      leaseGuard,
+      this.assertExpectedManualModerationSanctionState.bind(this),
+      this.assertBotCanManageMembers.bind(this),
+      actionRequest.action,
+    );
+    if (unbanAttempt) return unbanAttempt;
 
     const sanctionFence = await this.prepareManualSanctionStateFence({
       chatId,

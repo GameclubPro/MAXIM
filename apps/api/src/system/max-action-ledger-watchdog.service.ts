@@ -44,7 +44,11 @@ const LIVE_QUEUE_STATES: ReadonlySet<JobState | 'unknown'> = new Set([
   'waiting-children',
 ]);
 
-const AMBIGUOUS_CAPABLE_ACTION_TYPES: ReadonlySet<string> = new Set(['KICK_MEMBER', 'BAN_MEMBER']);
+const AMBIGUOUS_CAPABLE_ACTION_TYPES: ReadonlySet<string> = new Set([
+  'KICK_MEMBER',
+  'BAN_MEMBER',
+  'TRY_UNBAN_MEMBER',
+]);
 const RECOVERABLE_MEMBER_ACTION_TYPES = new Set(['KICK_MEMBER', 'BAN_MEMBER', 'UNBAN_MEMBER']);
 const RECOVERABLE_PRE_DISPATCH_ERROR_CODES: ReadonlySet<string> = new Set([
   'max_api_circuit_open',

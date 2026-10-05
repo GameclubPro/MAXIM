@@ -97,6 +97,71 @@ test('fixed audit needs only receipt metadata grants and never reads application
   }
 });
 
+test('all five PostgreSQL16 Btree build subphases are visible while unlisted progress stays private', async () => {
+  const db = new PGlite();
+  const subphases = [
+    'building index: initializing',
+    'building index: scanning table',
+    'building index: sorting live tuples',
+    'building index: sorting dead tuples',
+    'building index: loading tuples in tree',
+  ];
+  const unlisted = [
+    'building index: scanning table PRIVATE_PHASE_SECRET',
+    'building index: unsupported PRIVATE_PHASE_SECRET',
+    'scanning table',
+    'BUILDING INDEX: scanning table',
+    null,
+  ];
+  try {
+    await db.exec(fixtureSql);
+    // FLAG: Only this disposable session shadows the progress view; the production SQL
+    // runs unchanged and the auditor cannot read the fixture's raw query, PID or tag.
+    await db.exec(`CREATE TEMP TABLE pg_stat_progress_create_index (
+      datname name, relid oid, phase text, pid integer, query text, application_name text
+    );
+    GRANT SELECT (datname, relid, phase)
+      ON pg_temp.pg_stat_progress_create_index TO multibot_diagnostic_auditor;`);
+    const insert = async (phase) =>
+      db.query(
+        `INSERT INTO pg_temp.pg_stat_progress_create_index
+          VALUES (current_database(), 'public.webhook_events'::regclass, $1,
+            42424242, 'PRIVATE_QUERY_SECRET', 'PRIVATE_APPLICATION_SECRET')`,
+        [phase],
+      );
+    for (const phase of subphases) await insert(phase);
+    await db.exec('SET ROLE multibot_diagnostic_auditor');
+    let report = await audit(db);
+    assert.deepEqual(report.builders.phases.toSorted(), subphases.toSorted());
+    assert.equal(report.builders.progress_sessions, subphases.length);
+    assert.equal(report.builders.absent, false);
+    assert.equal(report.builders.limited, false);
+    await assert.rejects(
+      db.query('SELECT pid FROM pg_temp.pg_stat_progress_create_index'),
+      /permission denied/u,
+    );
+    await db.exec('RESET ROLE');
+    for (const phase of unlisted) await insert(phase);
+    await db.exec(`INSERT INTO pg_temp.pg_stat_progress_create_index (datname, relid, phase)
+      VALUES ('another_database', 'public.webhook_events'::regclass, 'waiting for old snapshots'),
+        (current_database(), 'pg_catalog.pg_class'::regclass, 'waiting for writers before build');
+      SET ROLE multibot_diagnostic_auditor;`);
+    report = await audit(db);
+    assert.deepEqual(report.builders.phases.toSorted(), [...subphases, 'unknown'].toSorted());
+    assert.equal(report.builders.progress_sessions, subphases.length + unlisted.length);
+    assert.equal(report.builders.absent, false);
+    assert.equal(report.builders.limited, false);
+    assert.equal(report.authority, 'DIAGNOSTICS_ONLY');
+    assert.equal(report.read_only, true);
+    assert.doesNotMatch(
+      JSON.stringify(report),
+      /PRIVATE_PHASE_SECRET|PRIVATE_QUERY_SECRET|PRIVATE_APPLICATION_SECRET|42424242/u,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 test('all exact definitions are ready, while ordering, includes, predicates and table collisions drift', async () => {
   const db = new PGlite();
   try {
