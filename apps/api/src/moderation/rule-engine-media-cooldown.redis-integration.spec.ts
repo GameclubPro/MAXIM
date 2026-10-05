@@ -3,7 +3,11 @@ import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import type { ChatSettings } from '../prisma/prisma-client';
 import { RedisCounterService } from './redis-counter.service';
-import { RuleEngineMessageLimitsDetector } from './rule-engine-message-limits.detector';
+import {
+  ANTI_SPAM_BURST_LIMIT,
+  ANTI_SPAM_BURST_WINDOW_SEC,
+  RuleEngineMessageLimitsDetector,
+} from './rule-engine-message-limits.detector';
 
 const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
 const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
@@ -54,6 +58,27 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     };
     return detector.detectMediaCooldownLimits(input);
   };
+
+  const detectBurstDecision = async (
+    input: Parameters<RuleEngineMessageLimitsDetector['detectAntiSpamBurstLimit']>[0],
+  ) => {
+    // FLAG: Replay only this same detector input with native deadline guards; never the whole engine.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await detector.detectAntiSpamBurstLimit(input);
+      } catch (error: unknown) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== 'Message limit state deadline exceeded' ||
+          attempt === 2
+        )
+          throw error;
+      }
+    }
+  };
+
+  const burstWindowKey = () =>
+    `message:anti-spam-burst:v2:${chatId}:user:${ANTI_SPAM_BURST_LIMIT}:${ANTI_SPAM_BURST_WINDOW_SEC}`;
 
   it('replays the original violation without counting delivery twice or accusing the original', async () => {
     expect(await observe('first', now - 1000)).toEqual([]);
@@ -126,6 +151,29 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await inspector.mget(key, memberKey)).toEqual([null, null]);
   });
 
+  it('lets the Redis clock reject an expired burst deadline without late membership writes', async () => {
+    const key = `burst-deadline:${chatId}`;
+    const stateKey = `${key}:state`;
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now - 2000);
+    try {
+      // FLAG: The application clock passes both prechecks; the real Redis Lua guard owns expiry.
+      expect(
+        await redis.replaceRevisionedSetMembershipsBeforeDeadline({
+          stateKey,
+          member: 'member',
+          revision: now - 1000,
+          membershipKeys: [key],
+          windowSeconds: ANTI_SPAM_BURST_WINDOW_SEC,
+          ttlSeconds: 60,
+          deadlineAtMs: now - 1,
+        }),
+      ).toEqual({ kind: 'deadline_exceeded' });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(await inspector.exists(key, stateKey)).toBe(0);
+  });
+
   it('propagates a lost response and recovers the same decision on retry', async () => {
     await observe('first', now - 1000);
     const original = redis.claimEventCooldown.bind(redis);
@@ -170,15 +218,122 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       eventTimestampMs: now - 1000 + index,
     });
     for (let index = 0; index < 5; index++) {
-      expect(await detector.detectAntiSpamBurstLimit(input(index))).toBeNull();
+      expect(await detectBurstDecision(input(index))).toBeNull();
     }
-    expect(await detector.detectAntiSpamBurstLimit(input(5))).toMatchObject({
+    const sixth = input(5);
+    expect(await detectBurstDecision(sixth)).toMatchObject({
       ruleCode: 'MESSAGE_RATE_LIMIT',
     });
-    expect(await detector.detectAntiSpamBurstLimit(input(5))).toMatchObject({
+    expect(await inspector.zcard(burstWindowKey())).toBe(6);
+    expect(await detectBurstDecision(sixth)).toMatchObject({
       ruleCode: 'MESSAGE_RATE_LIMIT',
     });
-    expect(await detector.detectAntiSpamBurstLimit(input(0))).toBeNull();
+    expect(await detectBurstDecision(input(0))).toBeNull();
+    expect(await inspector.zcard(burstWindowKey())).toBe(6);
+  });
+
+  it('replays the same burst decision after a committed Redis response exceeds its deadline', async () => {
+    const config = { ...settings, antiSpamEnabled: true };
+    const input = (index: number) => ({
+      chatId,
+      userId: 'user',
+      messageId: `burst-${index}`,
+      settings: config,
+      eventTimestampMs: now - 1000 + index,
+    });
+    for (let index = 0; index < 5; index++) {
+      expect(await detectBurstDecision(input(index))).toBeNull();
+    }
+
+    const original = redis.replaceRevisionedSetMembershipsBeforeDeadline.bind(redis);
+    const sixth = input(5);
+    let committed = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let releaseResponse!: () => void;
+      const responseBarrier = new Promise<void>((resolve) => {
+        releaseResponse = resolve;
+      });
+      type NativeOutcome =
+        | { kind: 'result'; result: Awaited<ReturnType<typeof original>> }
+        | { kind: 'error'; error: unknown };
+      let recordNativeOutcome!: (outcome: NativeOutcome) => void;
+      const nativeOutcome = new Promise<NativeOutcome>((resolve) => {
+        recordNativeOutcome = resolve;
+      });
+      let responseFinished!: () => void;
+      const responseDone = new Promise<void>((resolve) => {
+        responseFinished = resolve;
+      });
+      const response = jest
+        .spyOn(redis, 'replaceRevisionedSetMembershipsBeforeDeadline')
+        .mockImplementationOnce(async (params) => {
+          try {
+            const result = await original(params);
+            recordNativeOutcome({ kind: 'result', result });
+            if (result.kind === 'applied') await responseBarrier;
+            return result;
+          } catch (error: unknown) {
+            recordNativeOutcome({ kind: 'error', error });
+            throw error;
+          } finally {
+            responseFinished();
+          }
+        });
+      const decision = detector.detectAntiSpamBurstLimit(sixth).then(
+        (result) => ({ kind: 'result' as const, result }),
+        (error: unknown) => ({ kind: 'error' as const, error }),
+      );
+      try {
+        const outcome = await decision;
+        expect(response).toHaveBeenCalledTimes(1);
+        const native = await nativeOutcome;
+        if (native.kind === 'error') throw native.error;
+        expect(outcome.kind).toBe('error');
+        if (outcome.kind !== 'error') throw new Error('Burst decision did not time out');
+        expect(outcome.error).toBeInstanceOf(Error);
+        expect((outcome.error as Error).message).toBe('Message limit state deadline exceeded');
+        if (native.result.kind === 'applied') {
+          expect(native.result).toMatchObject({ kind: 'applied', counts: [6] });
+          expect(await inspector.zcard(burstWindowKey())).toBe(6);
+          committed = true;
+        } else {
+          // FLAG: Retry only pre-commit expiry with identical detector input and fresh native guards.
+          expect(native.result).toEqual({ kind: 'deadline_exceeded' });
+        }
+      } finally {
+        releaseResponse();
+        await Promise.allSettled([decision, ...(response.mock.calls.length ? [responseDone] : [])]);
+        response.mockRestore();
+      }
+      if (committed) break;
+    }
+    expect(committed).toBe(true);
+
+    detector = new RuleEngineMessageLimitsDetector(redis);
+    expect(await detectBurstDecision(sixth)).toMatchObject({ ruleCode: 'MESSAGE_RATE_LIMIT' });
+    expect(await detectBurstDecision(input(0))).toBeNull();
+    expect(await inspector.zcard(burstWindowKey())).toBe(6);
+  });
+
+  it.each([
+    ['deadline', new Error('Message limit state deadline exceeded'), 3],
+    ['other failure', new Error('Redis response failed'), 1],
+  ])('bounds detector decision replay after %s', async (_, error, attempts) => {
+    const decision = jest.spyOn(detector, 'detectAntiSpamBurstLimit').mockRejectedValue(error);
+    const input = {
+      chatId,
+      userId: 'user',
+      messageId: 'burst',
+      settings,
+      eventTimestampMs: now,
+    };
+    try {
+      await expect(detectBurstDecision(input)).rejects.toBe(error);
+      expect(decision).toHaveBeenCalledTimes(attempts);
+      expect(decision.mock.calls.every(([observed]) => observed === input)).toBe(true);
+    } finally {
+      decision.mockRestore();
+    }
   });
 
   it('counts only chronological predecessors for delayed burst deliveries', async () => {

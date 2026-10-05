@@ -33,6 +33,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-access-census [--explain]
   ./infra/scripts/vps-postgres-audit.sh storage [--explain]
+  ./infra/scripts/vps-postgres-audit.sh multibot-preparation [--explain]
   ./infra/scripts/vps-postgres-audit.sh commercial-quality [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
@@ -84,7 +85,7 @@ case "$AUDIT_MODE" in
     fi
     DUPLICATE_EXPLAIN="${2:-}"
     ;;
-  publisher-publications|publisher-access-census|commercial-quality|storage)
+  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -181,6 +182,45 @@ SELECT CASE
     AND has_table_privilege('maxim_audit', 'public.moderation_events', 'SELECT')
     AND NOT has_table_privilege('maxim_audit', 'public.chat_settings', 'SELECT')
     AND NOT has_table_privilege('maxim_audit', 'public.chat_rules', 'SELECT')
+    AND (
+      SELECT count(DISTINCT (column_name, privilege_type))
+      FROM information_schema.role_column_grants
+      WHERE grantee = 'maxim_audit' AND table_schema = 'public'
+        AND table_name = '_prisma_migrations'
+    ) IN (0, 8)
+    AND NOT EXISTS (
+      SELECT 1 FROM information_schema.role_column_grants
+      WHERE grantee = 'maxim_audit' AND table_schema = 'public'
+        AND table_name = '_prisma_migrations'
+        AND (privilege_type <> 'SELECT' OR column_name NOT IN (
+          'id', 'migration_name', 'checksum', 'started_at', 'finished_at',
+          'rolled_back_at', 'applied_steps_count', 'logs'
+        ))
+    )
+    AND (
+      SELECT count(*) FROM pg_attribute attribute
+      WHERE attribute.attrelid = to_regclass('public._prisma_migrations')
+        AND attribute.attnum > 0 AND NOT attribute.attisdropped
+        AND has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
+    ) IN (0, 8)
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_class relation
+      WHERE relation.oid = to_regclass('public._prisma_migrations')
+        AND has_table_privilege('maxim_audit', relation.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_attribute attribute
+      WHERE attribute.attrelid = to_regclass('public._prisma_migrations')
+        AND attribute.attnum > 0 AND NOT attribute.attisdropped
+        AND (
+          has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'INSERT,UPDATE,REFERENCES')
+          OR (has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
+            AND attribute.attname NOT IN (
+              'id', 'migration_name', 'checksum', 'started_at', 'finished_at',
+              'rolled_back_at', 'applied_steps_count', 'logs'
+            ))
+        )
+    )
     AND (
       SELECT count(*) FROM information_schema.role_column_grants
       WHERE grantee = 'maxim_audit' AND table_schema = 'public' AND table_name = 'chat_rules'
@@ -380,7 +420,7 @@ SELECT CASE
               'chat_rules',
               'publications', 'publication_schedules', 'publication_occurrences',
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-              'managed_broadcast_deliveries', 'chats', 'commercial_review_samples',
+              'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations',
                 'chat_settings',
                 'moderation_delete_intents',
                 'moderation_delete_intent_reasons'
@@ -427,8 +467,10 @@ SELECT CASE
 END AS audit_session_ready \gset
 \if :audit_session_ready
 \else
-\echo 'The hardened maxim_audit session invariant is missing; refusing production diagnostics.'
-\quit 4
+-- FLAG: PostgreSQL 16 psql does not return a supplied exit code from \quit.
+-- ON_ERROR_STOP must terminate with an actual SQL error before any report.
+\echo MAXIM_POSTGRES_AUDIT_SESSION_INVALID
+SELECT 1 / 0;
 \endif
 SQL
 }
@@ -575,18 +617,24 @@ LEFT JOIN LATERAL (
     -- FLAG: Error text is untrusted and may contain payloads. Emit fixed families only.
     CASE
       WHEN error_message IS NULL THEN 'none'
-      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook claim is not ready for '
+      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook claim is not ready for .+'
         THEN 'canonical_not_ready'
-      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease is busy for '
+      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease is busy for .+'
         THEN 'canonical_business_lease_busy'
-      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease was lost (before completion|before unfenced timeout settlement|during timeout quarantine) for '
+      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease was lost (before completion|before unfenced timeout settlement|during timeout quarantine) for .+'
         THEN 'canonical_business_lease_lost'
-      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease storage is unavailable for '
+      WHEN error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease storage is unavailable for .+'
         THEN 'canonical_business_lease_unavailable'
       WHEN error_message IN (
         'Chat rules publication is in flight; retry own-bot message classification',
         'Webhook preparation failed: Chat rules publication is in flight; retry own-bot message classification'
       ) THEN 'rules_publication_fence'
+      WHEN error_message ~ '^(Webhook preparation failed: )?No eligible moderation executor$'
+        THEN 'no_eligible_executor'
+      WHEN error_message ~ '^(Webhook preparation failed: )?Moderation job already exists but cannot be loaded$'
+        THEN 'job_missing'
+      WHEN error_message ~ '^(Webhook preparation failed: )?Moderation job exists in unsupported state: .+'
+        THEN 'job_state_unsupported'
       WHEN error_message ILIKE '%preparation lease was lost%' THEN 'preparation_lease_lost'
       WHEN error_message ILIKE '%execution claim disappeared%' THEN 'execution_claim_missing'
       WHEN error_message ILIKE '%Publisher webhook lifecycle boundary is unavailable%'
@@ -636,8 +684,8 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) predecessor ON TRUE;
 \else
-\echo 'Required queue audit index is missing; refusing an unindexed production scan.'
-\quit 3
+\echo MAXIM_POSTGRES_QUEUE_AUDIT_INDEX_MISSING
+SELECT 1 / 0;
 \endif
 SQL
 }
@@ -933,8 +981,8 @@ SELECT json_build_object(
 FROM sample_state
 CROSS JOIN duplicate_summary;
 \else
-\echo 'Required monitor audit indexes are missing; refusing an unindexed production scan.'
-\quit 3
+\echo MAXIM_POSTGRES_MONITOR_AUDIT_INDEX_MISSING
+SELECT 1 / 0;
 \endif
 SQL
 }
@@ -1455,8 +1503,8 @@ SELECT json_build_object(
 )::text
 FROM intent_rows;
 \else
-\echo 'Duplicate audit column grants or required indexes are missing; run the reviewed audit-role provision step.'
-\quit 4
+\echo MAXIM_POSTGRES_DUPLICATE_AUDIT_UNAVAILABLE
+SELECT 1 / 0;
 \endif
 SQL
 }
@@ -1496,6 +1544,13 @@ emit_sql() {
         storage_args+=("$RULES_CLEANUP_EXPLAIN")
       fi
       node "$ROOT_DIR/infra/scripts/postgres-storage-audit.mjs" "${storage_args[@]}"
+      ;;
+    multibot-preparation)
+      local multibot_args=()
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+        multibot_args+=("$RULES_CLEANUP_EXPLAIN")
+      fi
+      node "$ROOT_DIR/infra/scripts/multibot-prepare-diagnostics.mjs" "${multibot_args[@]}"
       ;;
     rules-cleanup)
       local args=("$RULES_CLEANUP_CHAT_ID")

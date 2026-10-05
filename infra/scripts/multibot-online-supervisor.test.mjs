@@ -11,6 +11,7 @@ import {
   superviseMultibotOnlinePrepare,
   terminateOwnedMigrationSql,
   waitForMultibotTick,
+  installMultibotOutputFence,
 } from './multibot-online-supervisor.mjs';
 
 const GiB = 1024 ** 3;
@@ -33,11 +34,32 @@ const report = {
 const df = (device = '/dev/shared', bytes = 10 * GiB) =>
   `Filesystem 1024-blocks Used Available Capacity Mounted on\n${device} 20000000 1000 ${bytes / 1024} 40% /\n`;
 
+const runtime = (atMs = 0, lagSec = 0) => {
+  const body = {
+    ok: lagSec <= 30,
+    timestamp: new Date(atMs).toISOString(),
+    checks: {
+      database: true,
+      redis: true,
+      queueLag: {
+        ok: lagSec <= 30,
+        rawOk: lagSec <= 10,
+        softWarning: lagSec > 10 && lagSec <= 30,
+        softWarningCode: lagSec > 10 && lagSec <= 30 ? 'queue-lag-hysteresis' : null,
+        effectiveLagSec: lagSec,
+        sampleGeneratedAt: new Date(atMs).toISOString(),
+      },
+    },
+  };
+  const probe = { status: body.ok ? 200 : 503, body };
+  return { checkedAtMs: atMs, ingress: probe, admin: structuredClone(probe) };
+};
+
 function harness(overrides = {}) {
   const child = new EventEmitter();
   child.kill = () => {};
   const signals = new EventEmitter();
-  const calls = { start: [], stop: [], read: 0, capacity: 0, tick: 0 };
+  const calls = { start: [], stop: [], read: 0, capacity: 0, tick: 0, runtime: 0 };
   const options = {
     checkCapacity: async (args) => {
       assert.deepEqual(args, compose);
@@ -49,6 +71,10 @@ function harness(overrides = {}) {
       assert.equal(initial, report);
       calls.read += 1;
       return [filesystem];
+    },
+    checkRuntime: async () => {
+      calls.runtime += 1;
+      return runtime();
     },
     start: (...args) => {
       calls.start.push(args);
@@ -67,6 +93,35 @@ function harness(overrides = {}) {
   };
   return { child, signals, calls, options };
 }
+
+test('a closed SSH output pipe interrupts supervision and awaits exact owned cleanup', async () => {
+  const stdout = new EventEmitter(),
+    stderr = new EventEmitter();
+  const h = harness({ waitForTick: async () => stdout.emit('error', new Error('EPIPE')) });
+  const restore = installMultibotOutputFence({ signals: h.signals, stdout, stderr });
+  try {
+    await assert.rejects(superviseMultibotOnlinePrepare(compose, h.options), /INTERRUPTED/u);
+    assert.equal(h.calls.start.length, 1);
+    assert.equal(h.calls.stop.length, 1);
+    assert.equal(h.calls.stop[0][2], h.calls.stop[0][3]);
+  } finally {
+    restore();
+  }
+  assert.equal(stdout.listenerCount('error'), 0);
+  assert.equal(stderr.listenerCount('error'), 0);
+});
+
+test('attempt identity and UTC start are recorded before client creation', async () => {
+  const events = [];
+  const h = harness({ onAttempt: (event) => events.push(event) });
+  h.options.prepare = async (name) => {
+    assert.equal(events.length, 1);
+    assert.equal(events[0].attemptName, name);
+    assert.equal(events[0].startedAt, '1970-01-01T00:00:00.000Z');
+  };
+  await superviseMultibotOnlinePrepare(compose, h.options);
+  assert.equal(events[0].phase, 'admission');
+});
 
 test('supervisor runs once in the complete immutable Compose scope with a matching UUID session/container tag', async () => {
   const h = harness();
@@ -90,7 +145,8 @@ test('supervisor runs once in the complete immutable Compose scope with a matchi
   assert.ok(args.includes('--rm') && args.includes('--no-deps') && args.includes('never'));
   assert.deepEqual(options, { stdio: 'inherit' });
   assert.equal(h.calls.capacity, 2);
-  assert.equal(h.calls.read, 1);
+  assert.equal(h.calls.read, 2);
+  assert.equal(h.calls.runtime, 3);
   assert.deepEqual(h.calls.stop, []);
   assert.equal(
     h.signals.listenerCount('SIGINT') +
@@ -98,6 +154,44 @@ test('supervisor runs once in the complete immutable Compose scope with a matchi
       h.signals.listenerCount('SIGHUP'),
     0,
   );
+});
+
+test('production default selects the awaited named client and keeps immutable Compose scope', async () => {
+  const h = harness();
+  delete h.options.start;
+  const stages = [];
+  let createdName;
+  h.options.createLauncher = async (args) => {
+    assert.deepEqual(args, compose);
+    stages.push('factory');
+    return {
+      prepare: async (name) => {
+        stages.push('prepare');
+        createdName = name;
+      },
+      start: (name) => {
+        stages.push('start');
+        assert.equal(name, createdName);
+        return h.child;
+      },
+    };
+  };
+  await superviseMultibotOnlinePrepare(compose, h.options);
+  assert.deepEqual(stages, ['factory', 'prepare', 'start']);
+  assert.equal(h.calls.start.length, 0);
+  assert.equal(h.calls.read, 2);
+  assert.equal(h.calls.runtime, 3);
+});
+
+test('default client metadata failure keeps a fixed reason and never creates work or cleanup uncertainty', async () => {
+  const h = harness();
+  delete h.options.start;
+  h.options.createLauncher = async () => {
+    throw new Error('MULTIBOT_PREPARE_CLIENT_IMAGE_INVALID');
+  };
+  await assert.rejects(superviseMultibotOnlinePrepare(compose, h.options), /CLIENT_IMAGE_INVALID/u);
+  assert.equal(h.calls.start.length, 0);
+  assert.equal(h.calls.stop.length, 0);
 });
 
 test('insufficient or unknown initial reserve never launches a migration', async () => {
@@ -114,6 +208,50 @@ test('insufficient or unknown initial reserve never launches a migration', async
     assert.equal(h.calls.start.length, 0);
     assert.equal(h.calls.stop.length, 0);
   }
+});
+
+test('a created client is prepared completely before start, and a hangup while preparing never sends start', async () => {
+  let finish;
+  const prepared = new Promise((done) => {
+    finish = done;
+  });
+  let entered;
+  const began = new Promise((done) => {
+    entered = done;
+  });
+  const h = harness({
+    prepare: async (name) => {
+      assert.match(name, /^maxim-online-/u);
+      entered();
+      await prepared;
+    },
+  });
+  const result = superviseMultibotOnlinePrepare(compose, h.options);
+  await began;
+  h.signals.emit('SIGHUP');
+  assert.equal(h.calls.start.length, 0);
+  assert.equal(
+    h.calls.stop.length,
+    0,
+    'Cleanup must wait for creation to settle before proving absence',
+  );
+  finish();
+  await assert.rejects(result, /INTERRUPTED/u);
+  assert.equal(h.calls.start.length, 0);
+  assert.equal(h.calls.stop.length, 1);
+  assert.equal(h.calls.stop[0][1], undefined);
+  assert.equal(h.calls.stop[0][2], h.calls.stop[0][3]);
+});
+
+test('an uncertain create failure never starts work or reports confirmed cleanup', async () => {
+  const h = harness({
+    prepare: async () => {
+      throw new Error('daemon response lost');
+    },
+  });
+  await assert.rejects(superviseMultibotOnlinePrepare(compose, h.options), /CLEANUP_UNCONFIRMED/u);
+  assert.equal(h.calls.start.length, 0);
+  assert.equal(h.calls.stop.length, 1);
 });
 
 for (const scenario of [
@@ -151,17 +289,20 @@ for (const scenario of [
     if (scenario === 'lost sample') {
       expected = 'MONITOR_UNAVAILABLE';
       h.options.readFilesystems = () => {
+        if (++h.calls.read === 1) return [filesystem];
         throw new Error('MULTIBOT_PREPARE_MONITOR_UNAVAILABLE');
       };
     } else if (scenario === 'exhaustion') {
       expected = 'RESERVE_EXHAUSTED';
-      h.options.readFilesystems = () => [{ ...filesystem, availableBytes: 10 * GiB - 1 }];
+      h.options.readFilesystems = () =>
+        ++h.calls.read === 1 ? [filesystem] : [{ ...filesystem, availableBytes: 10 * GiB - 1 }];
     } else if (scenario === 'deadline') {
       expected = 'DEADLINE_EXHAUSTED';
       h.options.now = () => (h.calls.tick ? 5_700_000 : 0);
     } else if (['signal during sample', 'SSH hangup'].includes(scenario)) {
       expected = 'INTERRUPTED';
       h.options.readFilesystems = async () => {
+        if (++h.calls.read === 1) return [filesystem];
         h.signals.emit(scenario === 'SSH hangup' ? 'SIGHUP' : 'SIGTERM');
         h.child.emit('exit', 0, null);
         return [filesystem];
@@ -199,15 +340,93 @@ for (const scenario of [
 }
 
 test('successful exit still rejects a final changed storage device or lost attestation', async () => {
-  const h = harness({
-    readFilesystems: async () => {
-      throw new Error('MULTIBOT_PREPARE_STORAGE_DEVICE_CHANGED');
-    },
-  });
+  const h = harness();
+  h.options.readFilesystems = async () => {
+    if (++h.calls.read === 1) return [filesystem];
+    throw new Error('MULTIBOT_PREPARE_STORAGE_DEVICE_CHANGED');
+  };
   await assert.rejects(
     superviseMultibotOnlinePrepare(compose, h.options),
     /STORAGE_DEVICE_CHANGED/u,
   );
+  assert.equal(h.calls.stop.length, 1);
+});
+
+test('runtime admission failure never creates a migration; final failure cannot accept success', async () => {
+  for (const phase of ['admission', 'final']) {
+    const h = harness();
+    h.options.checkRuntime = async () => {
+      h.calls.runtime += 1;
+      return runtime(h.calls.runtime, phase === 'admission' || h.calls.runtime > 2 ? 11 : 0);
+    };
+    await assert.rejects(superviseMultibotOnlinePrepare(compose, h.options), {
+      message: `MULTIBOT_PREPARE_RUNTIME_${phase.toUpperCase()}_BLOCKED`,
+    });
+    assert.equal(h.calls.start.length, phase === 'admission' ? 0 : 1);
+    assert.equal(h.calls.stop.length, phase === 'admission' ? 0 : 1);
+  }
+});
+
+test('runtime probes have a10s cadence inside disk supervision and pressure cancels only one attempt', async () => {
+  let atMs = 0;
+  const h = harness({ now: () => atMs });
+  h.options.checkRuntime = async () => {
+    h.calls.runtime += 1;
+    return runtime(atMs, atMs >= 100_000 ? 121 : atMs >= 10_000 ? 31 : 0);
+  };
+  h.options.waitForTick = async (_done, ms) => {
+    assert.equal(ms, 2_000);
+    h.calls.tick += 1;
+    atMs += ms;
+  };
+  await assert.rejects(superviseMultibotOnlinePrepare(compose, h.options), {
+    message: 'MULTIBOT_PREPARE_RUNTIME_QUEUE_LAG',
+  });
+  assert.equal(atMs, 100_000);
+  assert.equal(h.calls.start.length, 1);
+  assert.equal(h.calls.stop.length, 1);
+  assert.equal(h.calls.read, 51);
+  assert.equal(h.calls.runtime, 12);
+});
+
+test('missing runtime evidence, stale fallback and dependency loss abort live attempts immediately', async () => {
+  for (const failure of ['missing', 'fallback', 'dependency']) {
+    let atMs = 0;
+    const h = harness({ now: () => atMs });
+    h.options.waitForTick = async () => {
+      atMs += 10_000;
+    };
+    h.options.checkRuntime = async () => {
+      if (atMs === 0) return runtime();
+      if (failure === 'missing') throw new Error('MULTIBOT_PREPARE_RUNTIME_UNAVAILABLE');
+      const sample = runtime(atMs);
+      if (failure === 'fallback') {
+        sample.ingress.body.checks.queueLag.softWarning = true;
+        sample.ingress.body.checks.queueLag.softWarningCode = 'stale-ready-fallback';
+      } else {
+        sample.admin.status = 503;
+        sample.admin.body.ok = false;
+        sample.admin.body.checks.redis = false;
+      }
+      return sample;
+    };
+    await assert.rejects(superviseMultibotOnlinePrepare(compose, h.options), {
+      message: `MULTIBOT_PREPARE_RUNTIME_${failure === 'missing' ? 'UNAVAILABLE' : failure === 'fallback' ? 'STALE' : 'NOT_READY'}`,
+    });
+    assert.equal(h.calls.start.length, 1);
+    assert.equal(h.calls.stop.length, 1);
+  }
+});
+
+test('runtime calls remain inside the original total deadline including final observation', async () => {
+  let atMs = 0;
+  const h = harness({ now: () => atMs });
+  h.options.checkRuntime = async () => {
+    h.calls.runtime += 1;
+    if (h.calls.runtime === 2) atMs = 5_700_000;
+    return runtime(atMs);
+  };
+  await assert.rejects(superviseMultibotOnlinePrepare(compose, h.options), /DEADLINE_EXHAUSTED/u);
   assert.equal(h.calls.stop.length, 1);
 });
 
@@ -298,6 +517,7 @@ test('cleanup kills its launcher, cancels, stops only its container and verifies
           return { stdout: String(++observations === 1 ? 1 : 0) };
       }
       if (args[0] === 'stop') assert.deepEqual(args, ['stop', '--time', '3', tag]);
+      if (args[0] === 'rm') assert.deepEqual(args, ['rm', '--force', tag]);
       return { stdout: '' };
     },
   });
@@ -308,9 +528,16 @@ test('cleanup kills its launcher, cancels, stops only its container and verifies
     2,
   );
   assert.equal(observations, 2);
+  assert.equal(calls.filter((call) => call.args?.[0] === 'rm').length, 1);
 });
 
-for (const reason of ['sessions remain', 'running container', 'probe unavailable'])
+for (const reason of [
+  'sessions remain',
+  'running container',
+  'created container',
+  'exited container',
+  'probe unavailable',
+])
   test(`cleanup refuses unconfirmed ${reason}`, async () => {
     await assert.rejects(
       stopOwnedMigration(compose, null, tag, tag, {
@@ -320,7 +547,10 @@ for (const reason of ['sessions remain', 'running container', 'probe unavailable
           if (options.input === countOwnedMigrationSql)
             return { stdout: reason === 'sessions remain' ? '1' : '0' };
           return {
-            stdout: args.includes('ls') && reason === 'running container' ? `${tag} running` : '',
+            stdout:
+              args.includes('ls') && reason.endsWith(' container')
+                ? `${tag} ${reason.split(' ')[0]}`
+                : '',
           };
         },
       }),

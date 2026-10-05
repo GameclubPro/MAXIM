@@ -10,10 +10,16 @@ import {
   parseCapacityFilesystem,
   validateMultibotComposeArgs,
 } from './multibot-prepare-capacity.mjs';
+import {
+  createMultibotRuntimeGuard,
+  readMultibotRuntimePressure,
+} from './multibot-runtime-pressure.mjs';
+import { createMultibotOnlineClientLauncher } from './multibot-online-client.mjs';
 
 const commandOptions = { encoding: 'utf8', timeout: 3_000, maxBuffer: 1024 * 1024 };
 const intervalMs = 2_000;
 const deadlineMs = 5_700_000;
+const runtimeIntervalMs = 10_000;
 const interruptionSignals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 const ownedNamePattern =
   /^maxim-online-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -29,10 +35,46 @@ const failureCodes = new Set([
   'MULTIBOT_PREPARE_MONITOR_UNAVAILABLE',
   'MULTIBOT_PREPARE_STORAGE_DEVICE_CHANGED',
   'MULTIBOT_PREPARE_RESERVE_EXHAUSTED',
+  'MULTIBOT_PREPARE_RUNTIME_UNAVAILABLE',
+  'MULTIBOT_PREPARE_RUNTIME_INVALID',
+  'MULTIBOT_PREPARE_RUNTIME_STALE',
+  'MULTIBOT_PREPARE_RUNTIME_NOT_READY',
+  'MULTIBOT_PREPARE_RUNTIME_CLOCK_INVALID',
+  'MULTIBOT_PREPARE_RUNTIME_ADMISSION_BLOCKED',
+  'MULTIBOT_PREPARE_RUNTIME_FINAL_BLOCKED',
+  'MULTIBOT_PREPARE_RUNTIME_QUEUE_LAG',
+  'MULTIBOT_PREPARE_CLIENT_SOURCE_SHA_INVALID',
+  'MULTIBOT_PREPARE_CLIENT_CONFIGURATION_INVALID',
+  'MULTIBOT_PREPARE_CLIENT_DATABASE_SCOPE_INVALID',
+  'MULTIBOT_PREPARE_CLIENT_IMAGE_INVALID',
+  'MULTIBOT_PREPARE_CLIENT_NETWORK_INVALID',
+  'MULTIBOT_PREPARE_CLIENT_NETWORK_CHANGED',
+  'MULTIBOT_PREPARE_CLIENT_IDENTITY_INVALID',
+  'MULTIBOT_PREPARE_CLIENT_ALREADY_PREPARED',
+  'MULTIBOT_PREPARE_CLIENT_START_WITHOUT_PREPARATION',
+  'MULTIBOT_PREPARE_CLIENT_COMMAND_FAILED',
+  'MULTIBOT_PREPARE_CLIENT_METADATA_INVALID',
+  'MULTIBOT_PREPARE_CLIENT_CREATE_UNCONFIRMED',
 ]);
 
 export function multibotSupervisorFailureCode(error) {
   return failureCodes.has(error?.message) ? error.message : 'MULTIBOT_PREPARE_SUPERVISOR_FAILED';
+}
+
+// FLAG: An SSH output pipe can close without delivering a terminal signal. Route
+// its error through the same owned cleanup instead of an unhandled stream exit.
+export function installMultibotOutputFence({
+  signals = process,
+  stdout = process.stdout,
+  stderr = process.stderr,
+} = {}) {
+  const interrupt = () => signals.emit('SIGHUP');
+  stdout.on('error', interrupt);
+  stderr.on('error', interrupt);
+  return () => {
+    stdout.off('error', interrupt);
+    stderr.off('error', interrupt);
+  };
 }
 
 // execFile has no input option: explicitly close stdin so psql cannot wait for EOF.
@@ -151,6 +193,16 @@ export async function stopOwnedMigration(
     /* A failed launcher may never have created the container. Verify below. */
   }
   try {
+    // FLAG: An exited/created client can still be the target of a queued start.
+    // Remove this exact UUID before accepting absence; never touch a service container.
+    await run('docker', ['rm', '--force', containerName], {
+      ...commandOptions,
+      timeout: 5_000,
+    });
+  } catch {
+    /* --rm clients may already be gone. Exact absence below is mandatory. */
+  }
+  try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await run('docker', queryArgs, { ...commandOptions, input: terminateOwnedMigrationSql });
       await wait(100);
@@ -172,9 +224,7 @@ export async function stopOwnedMigration(
         commandOptions,
       );
       const rows = containers.stdout.trim().split('\n').filter(Boolean);
-      const containerStopped =
-        rows.length === 0 || (rows.length === 1 && rows[0] === `${containerName} exited`);
-      if (sessions.stdout.trim() === '0' && containerStopped) return;
+      if (sessions.stdout.trim() === '0' && rows.length === 0) return;
     }
   } catch {
     /* Unknown state must be reported as unconfirmed cleanup. */
@@ -213,6 +263,10 @@ export async function superviseMultibotOnlinePrepare(
   {
     checkCapacity = checkMultibotPrepareCapacity,
     readFilesystems = readMultibotMigrationFilesystems,
+    checkRuntime = readMultibotRuntimePressure,
+    prepare,
+    createLauncher = createMultibotOnlineClientLauncher,
+    onAttempt = () => {},
     start = spawn,
     stop = stopOwnedMigration,
     waitForTick = waitForMultibotTick,
@@ -229,12 +283,20 @@ export async function superviseMultibotOnlinePrepare(
   const applicationName = `maxim-online-${randomUUID()}`;
   let child;
   let attempted = false;
+  let preparationUnconfirmed = false;
   const startedAt = now();
+  const runtimeGuard = createMultibotRuntimeGuard({ now });
+  let nextRuntimeAtMs;
   const requireActive = () => {
     if (interrupted) throw new Error('MULTIBOT_PREPARE_INTERRUPTED');
     if (now() - startedAt >= deadlineMs) throw new Error('MULTIBOT_PREPARE_DEADLINE_EXHAUSTED');
   };
   try {
+    onAttempt({
+      phase: 'admission',
+      attemptName: applicationName,
+      startedAt: new Date(startedAt).toISOString(),
+    });
     const initial = await checkCapacity(composeArgs);
     requireActive();
     if (
@@ -246,27 +308,48 @@ export async function superviseMultibotOnlinePrepare(
       )
     )
       throw new Error('MULTIBOT_PREPARE_CAPACITY_INSUFFICIENT');
+    runtimeGuard.admit(await checkRuntime());
+    requireActive();
+    nextRuntimeAtMs = now() + runtimeIntervalMs;
+    // FLAG: Production defaults use an awaited minimal named client. Injected
+    // launchers retain their command contract for isolated lifecycle tests.
+    const defaultLauncher =
+      start === spawn && prepare === undefined ? await createLauncher(composeArgs) : null;
+    requireActive();
     attempted = true;
-    child = start(
-      'docker',
-      [
-        'compose',
-        ...composeArgs,
-        'run',
-        '--rm',
-        '--no-deps',
-        '--pull',
-        'never',
-        '--name',
-        applicationName,
-        '-e',
-        `MAXIM_MULTIBOT_PREPARE_APPLICATION_NAME=${applicationName}`,
-        'api-ingress',
-        'node',
-        'scripts/agent/multibot-online-prepare.mjs',
-      ],
-      { stdio: 'inherit' },
-    );
+    preparationUnconfirmed = true;
+    await (defaultLauncher?.prepare ?? prepare ?? (async () => {}))(applicationName);
+    preparationUnconfirmed = false;
+    requireActive();
+    // FLAG: Preparation may spend time creating a client. Its earlier health/capacity
+    // observation cannot authorize a later heavy statement.
+    requireReserve({ devices: await readFilesystems(composeArgs, initial) });
+    requireActive();
+    runtimeGuard.admit(await checkRuntime());
+    requireActive();
+    nextRuntimeAtMs = now() + runtimeIntervalMs;
+    child = defaultLauncher
+      ? defaultLauncher.start(applicationName)
+      : start(
+          'docker',
+          [
+            'compose',
+            ...composeArgs,
+            'run',
+            '--rm',
+            '--no-deps',
+            '--pull',
+            'never',
+            '--name',
+            applicationName,
+            '-e',
+            `MAXIM_MULTIBOT_PREPARE_APPLICATION_NAME=${applicationName}`,
+            'api-ingress',
+            'node',
+            'scripts/agent/multibot-online-prepare.mjs',
+          ],
+          { stdio: 'inherit' },
+        );
     let result;
     const done = new Promise((resolve) => {
       const finish = (value) => {
@@ -295,6 +378,13 @@ export async function superviseMultibotOnlinePrepare(
         )
       )
         throw new Error('MULTIBOT_PREPARE_RESERVE_EXHAUSTED');
+      // FLAG: Disk headroom never grants permission to starve live work. Fresh local
+      // readiness samples have their own bounded cadence and abort only this owned attempt.
+      if (now() >= nextRuntimeAtMs) {
+        runtimeGuard.observe(await checkRuntime());
+        requireActive();
+        nextRuntimeAtMs = now() + runtimeIntervalMs;
+      }
     }
     requireActive();
     if (result.error || result.signal || result.code !== 0)
@@ -305,9 +395,12 @@ export async function superviseMultibotOnlinePrepare(
     // Reuse the same device attestation after success, before releasing the rollout.
     requireReserve({ devices: await readFilesystems(composeArgs, initial) });
     requireActive();
+    runtimeGuard.finish(await checkRuntime());
+    requireActive();
     return final;
   } catch (error) {
     if (attempted) await stop(composeArgs, child, applicationName, applicationName);
+    if (preparationUnconfirmed) throw new Error('MULTIBOT_PREPARE_CLEANUP_UNCONFIRMED');
     throw new Error(multibotSupervisorFailureCode(error));
   } finally {
     for (const signal of interruptionSignals) signals.off(signal, interrupt);
@@ -315,8 +408,20 @@ export async function superviseMultibotOnlinePrepare(
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  installMultibotOutputFence();
   try {
-    await superviseMultibotOnlinePrepare(process.argv.slice(2));
+    await superviseMultibotOnlinePrepare(process.argv.slice(2), {
+      onAttempt: (attempt) =>
+        console.log(
+          JSON.stringify({
+            stage: 'multibot_prepare_attempt',
+            ...attempt,
+            sourceSha: /^[a-f0-9]{40}$/u.test(process.env.MAXIM_EXPECTED_DEPLOY_SHA ?? '')
+              ? process.env.MAXIM_EXPECTED_DEPLOY_SHA
+              : null,
+          }),
+        ),
+    });
     console.log('Supervised online multibot preparation completed with a 10 GiB reserve.');
   } catch (error) {
     console.error(
