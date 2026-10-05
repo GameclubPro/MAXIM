@@ -4,8 +4,10 @@ import { PhotoDecodeBudget } from './photo-decode-resource';
 import {
   PHOTO_FINGERPRINT_ALGORITHM_VERSION,
   PhotoFingerprintRejectedError,
+  PhotoFingerprintService,
   type PhotoFingerprint,
 } from './photo-fingerprint';
+import { PhotoDownloadTimeoutError } from './secure-photo-downloader';
 
 const authorizationConfigDigest = 'f'.repeat(64);
 const actionConfigDigest = 'e'.repeat(64);
@@ -222,12 +224,202 @@ describe('PhotoDuplicateAnalysisService', () => {
     expect(s.downloader.download).toHaveBeenCalledTimes(1);
   });
 
+  it('bounds a stalled proof lookup and ignores its late proof after computing a cache miss', async () => {
+    jest.useFakeTimers();
+    try {
+      const s = createService([]);
+      let resolveLookup!: (lookup: { kind: string; fingerprints: PhotoFingerprint[] }) => void;
+      s.historyStore.getCachedPhotoFingerprints.mockImplementation(
+        () => new Promise((resolve) => (resolveLookup = resolve)),
+      );
+      const pending = s.service.fingerprintAlbum(
+        album([{ source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' }]),
+        3600,
+      );
+      await jest.advanceTimersByTimeAsync(251);
+      const result = await pending;
+      expect(result).toMatchObject({
+        kind: 'complete',
+        fingerprint: { images: [s.generated] },
+      });
+      expect(s.downloader.download).toHaveBeenCalledTimes(1);
+      expect(s.fingerprintService.fingerprint).toHaveBeenCalledTimes(1);
+      resolveLookup({ kind: 'available', fingerprints: [fingerprint('a')] });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(result).toMatchObject({ fingerprint: { images: [s.generated] } });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('treats proof-cache lookup failure as a miss', async () => {
+    const s = createService([]);
+    s.historyStore.getCachedPhotoFingerprints.mockRejectedValue(new Error('cache unavailable'));
+    await expect(
+      s.service.fingerprintAlbum(
+        album([{ source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' }]),
+        3600,
+      ),
+    ).resolves.toMatchObject({ kind: 'complete', fingerprint: { images: [s.generated] } });
+    expect(s.fingerprintService.fingerprint).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['stalled', 'rejected', 'late_rejected'] as const)(
+    'keeps verified native work usable with a %s checkpoint write',
+    async (failure) => {
+      jest.useFakeTimers();
+      try {
+        const s = createService([null]);
+        let rejectWrite!: (reason: Error) => void;
+        s.historyStore.cachePhotoFingerprints.mockImplementation(() =>
+          failure === 'rejected'
+            ? Promise.reject(new Error('cache unavailable'))
+            : new Promise((_resolve, reject) => (rejectWrite = reject)),
+        );
+        const pending = s.service.fingerprintAlbum(
+          album([{ source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' }]),
+          3600,
+        );
+        await jest.advanceTimersByTimeAsync(251);
+        await expect(pending).resolves.toMatchObject({ kind: 'complete' });
+        if (failure === 'late_rejected') {
+          rejectWrite(new Error('late cache failure'));
+          await jest.advanceTimersByTimeAsync(0);
+        }
+        expect(s.downloader.download).toHaveBeenCalledTimes(1);
+        expect(s.fingerprintService.fingerprint).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each(['read', 'write'] as const)(
+    'bounds a stalled proof-cache %s by the remaining attempt deadline',
+    async (operation) => {
+      jest.useFakeTimers();
+      try {
+        const s = createService([null]);
+        if (operation === 'read') {
+          s.historyStore.getCachedPhotoFingerprints.mockImplementation(() => new Promise(() => {}));
+        } else {
+          s.historyStore.cachePhotoFingerprints.mockImplementation(() => new Promise(() => {}));
+        }
+        const pending = s.service.fingerprintAlbum(
+          album([{ source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' }]),
+          3600,
+          Date.now() + 50,
+        );
+        await jest.advanceTimersByTimeAsync(51);
+        await expect(pending).resolves.toEqual({
+          kind: 'incomplete',
+          reason: 'decode_deadline_exceeded',
+        });
+        expect(s.fingerprintService.fingerprint).toHaveBeenCalledTimes(
+          operation === 'read' ? 0 : 1,
+        );
+        expect(s.historyStore.observeAlbum).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('performs no cache or source work when the attempt has already expired', async () => {
+    const s = createService([null]);
+    await expect(
+      s.service.fingerprintAlbum(
+        album([{ source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' }]),
+        3600,
+        Date.now() - 1,
+      ),
+    ).resolves.toEqual({ kind: 'incomplete', reason: 'decode_deadline_exceeded' });
+    expect(s.historyStore.getCachedPhotoFingerprints).not.toHaveBeenCalled();
+    expect(s.downloader.download).not.toHaveBeenCalled();
+    expect(s.fingerprintService.fingerprint).not.toHaveBeenCalled();
+  });
+
+  it.each(['completed', 'timed_out'] as const)(
+    'defers a %s download at the attempt deadline without starting native decoding',
+    async (outcome) => {
+      const s = createService([null]);
+      let currentTime = 100;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => currentTime);
+      try {
+        s.downloader.download.mockImplementation(async () => {
+          currentTime = 200;
+          if (outcome === 'timed_out') throw new PhotoDownloadTimeoutError();
+          return { bytes: Buffer.from('verified'), format: 'jpeg' };
+        });
+        await expect(
+          s.service.fingerprintAlbum(
+            album([
+              { source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' },
+            ]),
+            3600,
+            200,
+          ),
+        ).resolves.toEqual({ kind: 'incomplete', reason: 'decode_deadline_exceeded' });
+        expect(s.fingerprintService.fingerprint).not.toHaveBeenCalled();
+        expect(s.historyStore.cachePhotoFingerprints).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it('preserves source timeout errors while attempt time remains', async () => {
+    const s = createService([null]);
+    const original = new PhotoDownloadTimeoutError();
+    s.downloader.download.mockRejectedValue(original);
+    await expect(
+      s.service.fingerprintAlbum(
+        album([{ source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' }]),
+        3600,
+        Date.now() + 30_000,
+      ),
+    ).rejects.toBe(original);
+  });
+
+  it.each(['bytes', 'pixels'] as const)(
+    'returns a typed rejection when cached proof exceeds the current image %s limit',
+    async (limit) => {
+      const s = createService([fingerprint('a')]);
+      const fingerprintService = new PhotoFingerprintService({
+        canonicalOnly: true,
+        ...(limit === 'bytes' ? { maxInputBytes: 50 } : { maxInputPixels: 50 }),
+      });
+      const service = new PhotoDuplicateAnalysisService(
+        s.downloader as never,
+        fingerprintService,
+        s.historyStore as never,
+      );
+      await expect(
+        service.fingerprintAlbum(
+          album([{ source: 'direct', photoId: 'first', downloadUrl: 'https://i.oneme.ru/first' }]),
+          3600,
+        ),
+      ).resolves.toEqual({
+        kind: 'incomplete',
+        reason: limit === 'bytes' ? 'image_byte_limit_exceeded' : 'image_pixel_limit_exceeded',
+      });
+      expect(s.downloader.download).not.toHaveBeenCalled();
+      expect(s.historyStore.observeAlbum).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(Array.from({ length: 10 }, (_, index) => index + 1))(
-    'resumes in a fresh service after interruption following photo %i of 10',
+    'resumes in a fresh service after attempt expiry following photo %i of 10',
     async (completedBeforeInterruption) => {
       const proofs = new Map<string, string>();
       const first = createService([]);
       const resumed = createService([]);
+      let currentTime = 100;
+      const now = jest.spyOn(Date, 'now').mockImplementation(() => currentTime);
+      const prepareFirst = first.service.fingerprintAlbum.bind(first.service);
+      jest
+        .spyOn(first.service, 'fingerprintAlbum')
+        .mockImplementation((input, ttl) => prepareFirst(input, ttl, 200));
       let checkpointCount = 0;
       for (const fixture of [first, resumed]) {
         fixture.historyStore.getCachedPhotoFingerprints.mockImplementation(
@@ -242,9 +434,9 @@ describe('PhotoDuplicateAnalysisService', () => {
         fixture.historyStore.cachePhotoFingerprints.mockImplementation(async (entries) => {
           for (const entry of entries) proofs.set(entry.photoId, JSON.stringify(entry.fingerprint));
           if (fixture === first && ++checkpointCount === completedBeforeInterruption) {
-            // FLAG: Interrupt after persistence, before the next photo or complete-album
+            // FLAG: Expire after persistence, before the next photo or complete-album
             // handoff. The replacement service shares only serialized external proofs.
-            throw new Error('simulated service interruption');
+            currentTime = 200;
           }
           return true;
         });
@@ -265,35 +457,45 @@ describe('PhotoDuplicateAnalysisService', () => {
         allowedViolationMatchKinds: ['canonical_sha256'] as const,
         resolveActionEligibility,
       };
-      await expect(first.service.analyzeAlbum(input)).rejects.toThrow(
-        'simulated service interruption',
-      );
-      expect(proofs.size).toBe(completedBeforeInterruption);
-      expect(first.historyStore.observeAlbum).not.toHaveBeenCalled();
-      expect(resolveActionEligibility).not.toHaveBeenCalled();
+      try {
+        await expect(first.service.analyzeAlbum(input)).resolves.toEqual({
+          kind: 'incomplete',
+          reason: 'decode_deadline_exceeded',
+        });
+        expect(proofs.size).toBe(completedBeforeInterruption);
+        expect(first.historyStore.observeAlbum).not.toHaveBeenCalled();
+        expect(resolveActionEligibility).not.toHaveBeenCalled();
 
-      await expect(resumed.service.analyzeAlbum(input)).resolves.toMatchObject({
-        kind: 'observed',
-        imageCount: 10,
-        actionEligible: true,
-      });
-      expect(resumed.downloader.download.mock.calls.map(([url]) => url)).toEqual(
-        images.slice(completedBeforeInterruption).map((image) => image.downloadUrl),
-      );
-      expect(first.fingerprintService.fingerprint.mock.calls.length).toBe(
-        completedBeforeInterruption,
-      );
-      expect(resumed.fingerprintService.fingerprint).toHaveBeenCalledTimes(
-        10 - completedBeforeInterruption,
-      );
-      expect(resumed.historyStore.observeAlbum).toHaveBeenCalledTimes(1);
-      expect(resolveActionEligibility).toHaveBeenCalledTimes(1);
+        await expect(resumed.service.analyzeAlbum(input)).resolves.toMatchObject({
+          kind: 'observed',
+          imageCount: 10,
+          actionEligible: true,
+        });
+        expect(resumed.downloader.download.mock.calls.map(([url]) => url)).toEqual(
+          images.slice(completedBeforeInterruption).map((image) => image.downloadUrl),
+        );
+        expect(first.fingerprintService.fingerprint.mock.calls.length).toBe(
+          completedBeforeInterruption,
+        );
+        expect(resumed.fingerprintService.fingerprint).toHaveBeenCalledTimes(
+          10 - completedBeforeInterruption,
+        );
+        expect(resumed.historyStore.observeAlbum).toHaveBeenCalledTimes(1);
+        expect(resolveActionEligibility).toHaveBeenCalledTimes(1);
+      } finally {
+        now.mockRestore();
+      }
     },
   );
 
   it('persists the first proof before the next-image deadline, without partial observation', async () => {
     const s = createService([null, null]);
-    const now = jest.spyOn(Date, 'now').mockReturnValueOnce(100).mockReturnValue(201);
+    let currentTime = 100;
+    const now = jest.spyOn(Date, 'now').mockImplementation(() => currentTime);
+    s.historyStore.cachePhotoFingerprints.mockImplementation(async () => {
+      currentTime = 201;
+      return true;
+    });
     try {
       await expect(
         s.service.fingerprintAlbum(
@@ -304,7 +506,7 @@ describe('PhotoDuplicateAnalysisService', () => {
           3600,
           200,
         ),
-      ).rejects.toThrow('deadline exceeded');
+      ).resolves.toEqual({ kind: 'incomplete', reason: 'decode_deadline_exceeded' });
       expect(s.historyStore.cachePhotoFingerprints).toHaveBeenCalledTimes(1);
       expect(s.downloader.download).toHaveBeenCalledTimes(1);
       expect(s.historyStore.observeAlbum).not.toHaveBeenCalled();

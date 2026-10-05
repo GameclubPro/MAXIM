@@ -2,6 +2,9 @@ import {
   buildDuplicateFlowThresholds,
   resolveDuplicateFlowAllowedCount,
   resolveDuplicateFlowAllowedCountMax,
+  resolveDuplicateIntervalWindowSec,
+  DUPLICATE_WINDOW_MIN_SEC,
+  DUPLICATE_WINDOW_MAX_SEC,
   type ChatSettings,
 } from '@maxim/contracts';
 import { DUPLICATE_FLOW_SETTING_KEYS } from './private-control.constants';
@@ -58,19 +61,7 @@ export function isPrivateDuplicateFlowSettingKey(key: keyof ChatSettings): boole
 export function resolvePrivateDuplicateSharedWindowSec(
   settings: DuplicateFlowWindowSettings,
 ): number {
-  if (settings.duplicateWarnEnabled) {
-    return settings.duplicateWarnWindowSec;
-  }
-
-  if (settings.duplicateMuteEnabled) {
-    return settings.duplicateMuteWindowSec;
-  }
-
-  if (settings.duplicateBanEnabled) {
-    return settings.duplicateBanWindowSec;
-  }
-
-  return settings.duplicateWarnWindowSec;
+  return resolveDuplicateIntervalWindowSec(settings);
 }
 
 export function resolvePrivateDuplicateAllowedCountMax(
@@ -88,7 +79,10 @@ export function resolvePrivateDuplicateAllowedCount(
 export function buildPrivateDuplicateFlowSettings(
   settings: DuplicateFlowBuildParams,
 ): DuplicateFlowComputedSettings {
-  const windowSec = Math.max(3_600, Math.min(604_800, Math.round(settings.windowSec)));
+  const windowSec = Math.max(
+    DUPLICATE_WINDOW_MIN_SEC,
+    Math.min(DUPLICATE_WINDOW_MAX_SEC, Math.round(settings.windowSec)),
+  );
 
   return {
     duplicateWarnWindowSec: windowSec,

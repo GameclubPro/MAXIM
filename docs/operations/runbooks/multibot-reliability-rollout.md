@@ -179,14 +179,14 @@ local samples cannot certify a production maximum or replace daily observation.
 
 ## Local catalog measurements, 2026-10-05
 
-PostgreSQL 16, Redis 7, BullMQ and Node 24.16 ran on Linux with an Intel
+PostgreSQL 16, Redis 7, BullMQ and Node 24.21 ran on Linux with an Intel
 Core i5-14600KF, 20 logical CPUs and 31.3 GiB reported host RAM. MAX HTTP responses
 were simulated; the production governors remained enabled. Each catalog had nine registered
 members per chat and one shared healthy primary token. The fixture used one
 webhook queue and one delete queue, each with concurrency four; it does not
 measure the production sixteen-shard topology or nine-token aggregate capacity.
 
-The final run was recorded at `2026-10-05T04:37:22.964Z`. At two logical
+The final run was recorded at `2026-10-05T06:02:57.636Z`. At two logical
 messages/second (18 physical deliveries/second), each profile submitted 40
 messages over 20 seconds. All twelve profiles passed and completed 480 unique
 EXECUTION claims, violations, violation message claims, successful intents and
@@ -197,18 +197,18 @@ in every profile.
 
 | Catalog chats | Profile               | Ingress p95 | Receipt completion p95 | Action p95 from intent creation | Drain after input stopped |
 | ------------- | --------------------- | ----------- | ---------------------- | ------------------------------- | ------------------------- |
-| 10,000        | Uniform               | 17 ms       | 93 ms                  | 42 ms                           | 4 ms                      |
-| 10,000        | Hot                   | 12 ms       | 72 ms                  | 34 ms                           | 13 ms                     |
-| 10,000        | Cold                  | 9 ms        | 72 ms                  | 33 ms                           | 14 ms                     |
-| 10,000        | Media receipt/caption | 11 ms       | 76 ms                  | 34 ms                           | 13 ms                     |
-| 12,000        | Uniform               | 13 ms       | 80 ms                  | 34 ms                           | 13 ms                     |
-| 12,000        | Hot                   | 16 ms       | 63 ms                  | 32 ms                           | 9 ms                      |
-| 12,000        | Cold                  | 10 ms       | 72 ms                  | 32 ms                           | 6 ms                      |
-| 12,000        | Media receipt/caption | 12 ms       | 74 ms                  | 33 ms                           | 5 ms                      |
-| 30,000        | Uniform               | 19 ms       | 79 ms                  | 34 ms                           | 10 ms                     |
-| 30,000        | Hot                   | 11 ms       | 74 ms                  | 34 ms                           | 11 ms                     |
-| 30,000        | Cold                  | 46 ms       | 485 ms                 | 175 ms                          | 17 ms                     |
-| 30,000        | Media receipt/caption | 39 ms       | 431 ms                 | 145 ms                          | 14 ms                     |
+| 10,000        | Uniform               | 21 ms       | 82 ms                  | 38 ms                           | 5 ms                      |
+| 10,000        | Hot                   | 11 ms       | 72 ms                  | 33 ms                           | 13 ms                     |
+| 10,000        | Cold                  | 11 ms       | 72 ms                  | 32 ms                           | 16 ms                     |
+| 10,000        | Media receipt/caption | 10 ms       | 70 ms                  | 32 ms                           | 6 ms                      |
+| 12,000        | Uniform               | 12 ms       | 75 ms                  | 34 ms                           | 3 ms                      |
+| 12,000        | Hot                   | 10 ms       | 69 ms                  | 33 ms                           | 13 ms                     |
+| 12,000        | Cold                  | 10 ms       | 75 ms                  | 32 ms                           | 11 ms                     |
+| 12,000        | Media receipt/caption | 12 ms       | 75 ms                  | 31 ms                           | 9 ms                      |
+| 30,000        | Uniform               | 14 ms       | 73 ms                  | 33 ms                           | 5 ms                      |
+| 30,000        | Hot                   | 10 ms       | 68 ms                  | 33 ms                           | 3 ms                      |
+| 30,000        | Cold                  | 10 ms       | 72 ms                  | 33 ms                           | 5 ms                      |
+| 30,000        | Media receipt/caption | 10 ms       | 71 ms                  | 32 ms                           | 11 ms                     |
 
 The configured governor limits were 30 requests/second per token, five per
 bot/chat, two for managed refresh and two mutations per target. Critical,
@@ -222,13 +222,11 @@ IMAGE decoding, image duplicate analysis and OCR capacity remain unmeasured.
 Uniform/cold/media profiles touch a spread sample of forty chats per catalog;
 the hot profile touches four chats. The measured catalog cardinality therefore
 does not prove simultaneous sustained activity in all catalog chats. Backlog
-samples were taken every ten logical submissions, excluding drain peaks. The sampled receipt peak was nine in ten profiles, ten in the 30,000-chat cold
-profile and twenty in the 30,000-chat media profile. The largest sampled oldest
-receipt age was 1,001 ms, and sampled pending actions were zero. The final
-30,000-chat cold/media profiles had higher completion p95 (485/431 ms) than the
-other profiles (63–93 ms); these short samples do not identify the cause or
-establish a sustained trend. Unsampled peaks and sustained queue behavior over
-longer windows remain unknown.
+samples were taken every ten logical submissions, excluding drain peaks. The sampled
+receipt peak was nine in every profile, the largest sampled oldest receipt age
+was 16 ms, and sampled pending actions were zero. Completion p95 ranged from
+68 to 82 ms. These short samples do not establish a sustained trend. Unsampled
+peaks and sustained queue behavior over longer windows remain unknown.
 
 The earlier exploratory run, recorded at `2026-10-05T01:58:50.447Z`, used the same
 queue fixture with one primary token on 10,000 chats. It offered five logical

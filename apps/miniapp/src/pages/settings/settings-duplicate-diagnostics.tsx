@@ -134,6 +134,13 @@ export default function SettingsDuplicateDiagnostics({
   const queryKey = ['duplicate-diagnostics', userId, chatId];
   const path = `/chats/${encodeURIComponent(chatId)}/duplicate-diagnostics`;
   const scope = useMemo(() => ({ api, path, userId, chatId }), [api, path, userId, chatId]);
+  const activeScope = useRef<typeof scope | null>(scope);
+  useLayoutEffect(() => {
+    activeScope.current = scope;
+    return () => {
+      if (activeScope.current === scope) activeScope.current = null;
+    };
+  }, [scope]);
   const query = useQuery({
     queryKey,
     queryFn: async ({ signal }) =>
@@ -145,13 +152,27 @@ export default function SettingsDuplicateDiagnostics({
     retry: false,
     refetchOnWindowFocus: false,
   });
+  type RecheckRequest = {
+    scope: typeof scope;
+    state: ReturnType<typeof queryClient.getQueryState>;
+  };
   const recheck = useMutation({
-    mutationFn: async (request: typeof scope) =>
+    mutationFn: async (request: RecheckRequest) =>
       duplicateDiagnosticsResponseSchema.parse(
-        await request.api.request(`${request.path}/recheck`, { method: 'POST' }),
+        await request.scope.api.request(`${request.scope.path}/recheck`, { method: 'POST' }),
       ),
-    onSuccess: (data, request) =>
-      queryClient.setQueryData(['duplicate-diagnostics', request.userId, request.chatId], data),
+    onSuccess: (data, request) => {
+      const key = ['duplicate-diagnostics', request.scope.userId, request.scope.chatId];
+      // FLAG: Saving settings invalidates immutable query state before its fresh GET finishes.
+      // A later reply, even in the same millisecond, cannot restore the pre-save snapshot.
+      if (
+        activeScope.current !== request.scope ||
+        !request.state ||
+        queryClient.getQueryState(key) !== request.state
+      )
+        return;
+      queryClient.setQueryData(key, data);
+    },
   });
   const busy = query.isFetching || recheck.isPending;
   const failed = query.isError || recheck.isError;
@@ -232,7 +253,7 @@ export default function SettingsDuplicateDiagnostics({
           aria-label="Проверить права"
           title="Проверить права"
           disabled={busy || !userId}
-          onClick={() => recheck.mutate(scope)}
+          onClick={() => recheck.mutate({ scope, state: queryClient.getQueryState(queryKey) })}
         >
           <Refresh aria-hidden />
         </button>

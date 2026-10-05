@@ -1,7 +1,7 @@
 import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
-import Redis from 'ioredis';
+import Redis, { type RedisOptions } from 'ioredis';
 import {
   PHOTO_FINGERPRINT_ALGORITHM_VERSION,
   matchPhotoAlbums,
@@ -18,6 +18,18 @@ const HISTORY_NAMESPACE = 'photo-duplicate:history:v2';
 const DEFAULT_HISTORY_MAX_ITEMS = 250;
 const MAX_HISTORY_TTL_SECONDS = 31 * 24 * 60 * 60;
 const MAX_CACHE_BATCH_SIZE = 10;
+
+// FLAG: Optional cache commands never enter an offline queue or replay after reconnect.
+// A command timeout alone leaves ioredis inflight entries retained. Retire that cache
+// connection on timeout and suppress new sends until it is ready again.
+export const PHOTO_DUPLICATE_PROOF_CACHE_REDIS_OPTIONS = {
+  commandTimeout: 250,
+  connectTimeout: 250,
+  disconnectTimeout: 50,
+  enableOfflineQueue: false,
+  maxRetriesPerRequest: 1,
+  autoResendUnfulfilledCommands: false,
+} as const satisfies RedisOptions;
 
 // FLAG: Observation records matching evidence only. Sanction counters are committed separately,
 // after execution-time moderation guards, so this script must never increment a counter.
@@ -392,16 +404,28 @@ type StoredPerceptualCandidate = {
 export class PhotoDuplicateHistoryStore implements OnModuleDestroy {
   private readonly logger = new Logger(PhotoDuplicateHistoryStore.name);
   private readonly redis: Redis;
+  private readonly cacheRedis: Redis;
+  private cacheConnectionResetting = false;
   private readonly maxItems: number;
 
   constructor(configService: ConfigService) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.cacheRedis = new Redis(
+      configService.getOrThrow<string>('REDIS_URL'),
+      PHOTO_DUPLICATE_PROOF_CACHE_REDIS_OPTIONS,
+    );
+    // FLAG: Cache errors are reported as fixed fail-open outcomes by the operations below.
+    this.cacheRedis.on('error', () => undefined);
+    this.cacheRedis.on('ready', () => {
+      this.cacheConnectionResetting = false;
+    });
     this.maxItems = parseMaxItems(
       configService.get<string | number>('PHOTO_DUPLICATE_HISTORY_MAX_ITEMS'),
     );
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.cacheRedis.disconnect();
     await this.redis.quit();
   }
 
@@ -515,15 +539,17 @@ export class PhotoDuplicateHistoryStore implements OnModuleDestroy {
     photoIds: readonly string[],
   ): Promise<PhotoFingerprintCacheLookupResult> {
     const normalizedPhotoIds = validatePhotoIdBatch(photoIds);
+    if (this.cacheConnectionResetting) return { kind: 'unavailable' };
     try {
-      const values = await this.redis.mget(
+      const values = await this.cacheRedis.mget(
         ...normalizedPhotoIds.map(buildPhotoFingerprintCacheKey),
       );
       return {
         kind: 'available',
         fingerprints: values.map(parseCachedPhotoFingerprint),
       };
-    } catch {
+    } catch (error: unknown) {
+      this.retireTimedOutCacheConnection(error);
       this.logger.warn('Photo fingerprint cache unavailable; continuing fail-open');
       return { kind: 'unavailable' };
     }
@@ -541,10 +567,11 @@ export class PhotoDuplicateHistoryStore implements OnModuleDestroy {
       photoId: validateIdentifier(photoId, 'photoId'),
       fingerprint: validateCachedPhotoFingerprint(fingerprint),
     }));
+    if (this.cacheConnectionResetting) return false;
     try {
       await Promise.all(
         normalizedEntries.map(({ photoId, fingerprint }) =>
-          this.redis.set(
+          this.cacheRedis.set(
             buildPhotoFingerprintCacheKey(photoId),
             JSON.stringify(fingerprint),
             'EX',
@@ -553,9 +580,23 @@ export class PhotoDuplicateHistoryStore implements OnModuleDestroy {
         ),
       );
       return true;
-    } catch {
+    } catch (error: unknown) {
+      this.retireTimedOutCacheConnection(error);
       this.logger.warn('Photo fingerprint cache write failed; continuing fail-open');
       return false;
+    }
+  }
+
+  private retireTimedOutCacheConnection(error: unknown): void {
+    if (
+      error instanceof Error &&
+      error.message === 'Command timed out' &&
+      !this.cacheConnectionResetting
+    ) {
+      // FLAG: Late/ambiguous cache commands have no action authority. Retiring only this
+      // connection frees timed-out entries even if Redis trickles unrelated earlier replies.
+      this.cacheConnectionResetting = true;
+      this.cacheRedis.disconnect(true);
     }
   }
 

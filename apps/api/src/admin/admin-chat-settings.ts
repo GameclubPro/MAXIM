@@ -8,6 +8,8 @@ import {
   ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
   botSpeechMediaSchema,
   chatSettingsSchema,
+  DUPLICATE_WINDOW_MAX_SEC,
+  DUPLICATE_WINDOW_SETTING_KEYS,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
   normalizeHttpButtonUrl,
@@ -477,6 +479,18 @@ export function sanitizeStoredChatSettings(settings: unknown): unknown {
   }
 
   let normalizedSettings = settings as Record<string, unknown>;
+  // FLAG: Normalize only legacy window values before parsing. Otherwise one old seven-day
+  // value would reset all unrelated settings to defaults. Persist through the existing CAS.
+  for (const key of DUPLICATE_WINDOW_SETTING_KEYS) {
+    const seconds = normalizedSettings[key];
+    if (
+      typeof seconds === 'number' &&
+      Number.isSafeInteger(seconds) &&
+      seconds > DUPLICATE_WINDOW_MAX_SEC
+    ) {
+      normalizedSettings = { ...normalizedSettings, [key]: DUPLICATE_WINDOW_MAX_SEC };
+    }
+  }
   if (normalizedSettings.stopWordsPolicy != null) {
     // FLAG: An unsupported stop-list policy cannot reset unrelated settings during a read.
     normalizedSettings = {
@@ -668,6 +682,9 @@ export function getStoredChatSettingsSanitizationChanges(
 
   const currentSettings = current as Record<string, unknown>;
   const changes: Partial<ChatSettings> = {};
+  for (const key of DUPLICATE_WINDOW_SETTING_KEYS) {
+    if (currentSettings[key] !== sanitized[key]) changes[key] = sanitized[key];
+  }
   if (!areBotSpeechMediaEqual(currentSettings.botSpeechMedia, sanitized.botSpeechMedia)) {
     changes.botSpeechMedia = sanitized.botSpeechMedia;
   }

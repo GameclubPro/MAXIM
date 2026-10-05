@@ -14,6 +14,7 @@ import {
   duplicateUpdate,
   preUnicodeNearSettingsDigests,
   preSafeTextSettingsDigests,
+  preV3HistorySettingsDigests,
 } from './message-duplicate-test-fixtures';
 import type { MessageDuplicateJob } from './message-duplicate.queue';
 import {
@@ -172,6 +173,34 @@ function setup(config: Record<string, unknown> = {}) {
 }
 
 describe('bounded message duplicate media analysis', () => {
+  it.each(['STANDARD', 'STRICT', 'CUSTOM_NEAR', 'CUSTOM_PHONE', 'IMAGE'] as const)(
+    'rejects a pre-v3 %s job before any source or native work',
+    async (preset) => {
+      const s = setup();
+      s.settings.duplicateDetectionPreset =
+        preset === 'CUSTOM_NEAR' || preset === 'CUSTOM_PHONE'
+          ? 'CUSTOM'
+          : preset === 'IMAGE'
+            ? 'STANDARD'
+            : preset;
+      s.settings.duplicateNearMatchEnabled = preset === 'CUSTOM_NEAR';
+      s.settings.duplicateIgnorePhonesEnabled = preset === 'CUSTOM_PHONE';
+      const job = s.job('old-v2-history', 0);
+      if (preset === 'IMAGE') {
+        job.comparison = 'IMAGE';
+        s.policy.resolve.mockResolvedValue({
+          mode: 'full',
+          revision: 1,
+          expiresAtMs: Number.MAX_SAFE_INTEGER,
+        });
+      }
+      job.settingsDigest = preV3HistorySettingsDigests[preset];
+      expect(await s.service.process(job, s.lease)).toBe('SETTINGS_CHANGED');
+      expect(s.downloads).not.toHaveBeenCalled();
+      expect(s.photos.fingerprintAlbum).not.toHaveBeenCalled();
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+    },
+  );
   it.each(['STRICT', 'CUSTOM_NEAR', 'CUSTOM_PHONE'] as const)(
     'rejects pre-safe-text %s settings before any download or native work',
     async (preset) => {
@@ -592,6 +621,86 @@ describe('bounded message duplicate media analysis', () => {
         s.service.process(s.photoJob('b', 100, 'https://i.oneme.ru/b'), s.lease),
       ).rejects.toBeInstanceOf(MessageDuplicateMediaDeferredError);
       expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['photo_complete', 'source_refresh', 'outer_checkpoint'] as const)(
+    'defers attempt expiry at %s without consuming error attempts or authorizing current media',
+    async (boundary) => {
+      const s = photoSetup();
+      await s.service.process(s.photoJob('first', 0, 'https://i.oneme.ru/a'), s.lease);
+      const current = s.photoJob('repeat', 100, 'https://i.oneme.ru/b');
+      const absoluteDeadline = current.deadlineAtMs;
+      let currentTime = Date.now();
+      const attemptDeadline = currentTime + 30_000;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => currentTime);
+      const writeCheckpoint = s.redis.setStringWithTtl.getMockImplementation()!;
+      let completedOuterCheckpoints = 0;
+      s.redis.setStringWithTtl.mockImplementation(async (key, value) => {
+        await writeCheckpoint(key, value);
+        if (
+          boundary === 'outer_checkpoint' &&
+          key.startsWith('message-duplicate:media-hash:') &&
+          ++completedOuterCheckpoints === 2
+        ) {
+          currentTime = attemptDeadline;
+        }
+      });
+      if (boundary !== 'outer_checkpoint') {
+        s.photos.fingerprintAlbum
+          .mockResolvedValueOnce(s.complete)
+          .mockImplementationOnce(async () => {
+            currentTime = attemptDeadline;
+            return boundary === 'source_refresh'
+              ? { kind: 'incomplete', reason: 'missing_download_url' }
+              : s.complete;
+          });
+      }
+      try {
+        await expect(s.service.process(current, s.lease)).rejects.toMatchObject({
+          name: 'MessageDuplicateMediaDeferredError',
+          reason: 'proof_budget',
+        });
+        expect(current.deadlineAtMs).toBe(absoluteDeadline);
+        expect(s.history.observe).toHaveBeenCalledTimes(1);
+        expect(s.history.observe).toHaveBeenCalledWith(
+          expect.objectContaining({ messageId: 'first' }),
+        );
+        expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+        expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+        expect(s.metrics.recordObservation).toHaveBeenLastCalledWith('-123', 'DEFERRED', true);
+        expect(s.metrics.record).not.toHaveBeenCalledWith('media.failure_other');
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it.each(['completed', 'timed_out'] as const)(
+    'defers a %s binary download at the attempt deadline before native verification',
+    async (outcome) => {
+      const s = setup();
+      await s.service.process(s.job('first', 0), s.lease);
+      const current = s.job('repeat', 100);
+      let currentTime = Date.now();
+      const attemptDeadline = currentTime + 30_000;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => currentTime);
+      s.downloads.mockImplementation(async () => {
+        currentTime = attemptDeadline;
+        if (outcome === 'timed_out') throw new PhotoDownloadTimeoutError();
+        return { bytes: Buffer.from('complete') };
+      });
+      try {
+        await expect(s.service.process(current, s.lease)).rejects.toBeInstanceOf(
+          MessageDuplicateMediaDeferredError,
+        );
+        expect(s.verifyBinary).not.toHaveBeenCalled();
+        expect(s.history.observe).not.toHaveBeenCalled();
+        expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+        expect(s.metrics.recordObservation).toHaveBeenLastCalledWith('-123', 'DEFERRED', true);
+      } finally {
+        clock.mockRestore();
+      }
     },
   );
 

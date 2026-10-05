@@ -327,12 +327,14 @@ maxim_topology_require_message_duplicate_delete_guard() {
     apps/api/src/moderation/duplicate-phone-evidence.ts
     apps/api/src/moderation/message-duplicate/message-duplicate-content.ts
     apps/api/src/moderation/message-duplicate/message-duplicate-history.service.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-window.script.ts
+    packages/contracts/src/duplicate-settings.ts
   )
 
   # FLAG: Pending v3 decisions outlive environment downgrades. Both rollback paths
   # must retain lifecycle revisions, durable first admission/revocation and the last permit fence.
   # Bounded phone labels, strong identifier/quantity guards and original-text phone-before-URL
-  # normalization remain mandatory with the v10 safe-text fence and v4 phone evidence.
+  # normalization remain mandatory with the v11 safe-text fence, v5 phone evidence and bounded v3 storage.
   for source_path in "${source_paths[@]}"; do
     if ! source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)"; then
       echo "Rollback target predates the message duplicate v3 action guard." >&2
@@ -340,12 +342,14 @@ maxim_topology_require_message_duplicate_delete_guard() {
     fi
     sources+=("$source")
   done
+  # FLAG: JavaScript compares literal TypeScript template expressions, not shell variables.
+  # shellcheck disable=SC2016
   if ! printf '%s\0' "${sources[@]}" | node -e '
     const input = require("node:fs").readFileSync(0);
     if (input.length > 4 * 1024 * 1024) process.exit(1);
     const parts = input.toString("utf8").split("\0");
-    if (parts.length !== 15 || parts.pop() !== "") process.exit(1);
-    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector, phones, content, history] = parts;
+    if (parts.length !== 17 || parts.pop() !== "") process.exit(1);
+    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector, phones, content, history, window, settings] = parts;
     const method = (source, marker) => {
       const start = source.indexOf(marker);
       const end = source.indexOf("\n  private ", start + 1);
@@ -358,24 +362,21 @@ maxim_topology_require_message_duplicate_delete_guard() {
     };
     const count = (source, marker) => source.split(marker).length - 1;
     const squash = (source) => source.replace(/^\s*\/\/[^\r\n]*/gmu, "").replace(/\s+/gu, " ").trim();
-    const phonesBeforeLinks = (source, variable, initialValue) => squash(source).includes(
-      "let " + variable + " = " + initialValue + "; " +
-      "if (config.ignorePhones) { " + variable + " = stripDuplicatePhoneNumbers(" + variable + "); } " +
-      "if (config.ignoreLinks) { " + variable + " = replaceUrlsInText(" + variable + ", \u0027 \u0027); }"
-    );
     const start = executor.indexOf("private async runDeletePreDispatchGuards(");
     const end = executor.indexOf("\n  private ", start + 1);
     const boundary = executor.slice(start, end);
     const check = method(guard, "private async checkMessage(");
     const reasons = method(executor, "private async authorizeGuardedUserDeleteReasons(");
+    const returnsDuplicateQualification = (source) => /return\s*\{[^}]*\bmessageDuplicateVerified\s*,/u.test(source);
     const guardedReasons = boundary.includes("await this.authorizeGuardedUserDeleteReasons(") &&
       reasons.includes("ownedReasonsOnly: true") && reasons.includes("if (!reasons.length)") &&
-      reasons.includes("messageDuplicateVerified");
+      squash(reasons).includes("messageDuplicateVerified = (await check(() => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params), )) === \u0027allowed\u0027;") &&
+      boundary.includes("messageDuplicateVerified = proof.messageDuplicateVerified;") &&
+      returnsDuplicateQualification(reasons) && returnsDuplicateQualification(boundary);
     const permit = method(guard, "private async assertAuthorization(");
     const qualification = method(guard, "async assertQualificationAuthority(");
     const near = method(detector, "private buildNearDuplicateFingerprint(");
-    const contentNormalization = method(detector, "private normalizeContentFingerprint(");
-    const numericNormalization = method(detector, "private extractNearNumericTokens(");
+    const fingerprints = method(detector, "\n  buildFingerprints(");
     const authorityStart = guard.indexOf("if (params.authorityOnly)");
     const authorityEnd = guard.indexOf("return this.assertMessageStillActionable", authorityStart);
     const authority = guard.slice(authorityStart, authorityEnd);
@@ -395,10 +396,9 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const phoneListPredecessor = topLevelFunction(phones, "function hasLabelledPhoneListPredecessor(");
     const adjacency = topLevelFunction(phones, "function hasEmbeddedIdentifierAdjacency(");
     const protectedValue = topLevelFunction(phones, "function hasProtectedValueContext(");
-    const phoneUrl = topLevelFunction(phones, "function isDuplicatePhoneCandidateInUrl(");
-    const phoneExtraction = topLevelFunction(phones, "export function extractDuplicatePhoneNumbers(");
-    const phoneStripping = topLevelFunction(phones, "export function stripDuplicatePhoneNumbers(");
-    const rawAdjacencyCheck = phoneEvidence.indexOf("if (hasEmbeddedIdentifierAdjacency(before, after)) return null;");
+    const phoneExtraction = topLevelFunction(phones, "export function analyzeDuplicatePhoneNumbers(");
+    const phoneStripping = topLevelFunction(phones, "export function stripAnalyzedDuplicatePhoneNumbers(");
+    const rawAdjacencyCheck = phoneEvidence.indexOf("if (hasEmbeddedIdentifierAdjacency(before, after, afterTruncated)) return null;");
     const beforeNormalization = phoneEvidence.indexOf("before = before.replace(");
     const afterNormalization = phoneEvidence.indexOf("after = after.replace(");
     const protocolWrappers = adjacency.match(/const protocolBefore = before\.replace\(\/([^\r\n]+)\/u,/u)?.[1];
@@ -410,11 +410,10 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const protectedLabelContext = phones.match(/const PROTECTED_LABEL_IN_CLAUSE\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1] ?? "";
     const technicalIdentifierForms = "модел(?:ь|и|ью|ей|ям|ями|ях)|сертификат(?:а|у|ом|е|ы|ов|ам|ами|ах)?|штрих[- ]?код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|model|certificate|barcode|imei|ean|gtin";
     const identifierForms = "номер(?:а|у|ом|е|ов|ам|ами|ах)?|код(?:а|у|ом|е|ы|ов|ам|ами|ах)?|идентификатор(?:а|у|ом|е|ы|ов|ам|ами|ах)?|артикул(?:а|у|ом|е|ы|ов|ам|ами|ах)?|" + technicalIdentifierForms + "|инн";
-    const phoneUrlGuard = "if (isDuplicatePhoneCandidateInUrl(urlRanges, start, start + candidate.length))";
-    const urlExcludedBeforeEvidence = (source, outcome) => {
-      const ranges = source.indexOf("const urlRanges = getUrlTextRanges(text);");
-      const exclusion = source.indexOf(phoneUrlGuard + " " + outcome);
-      const evidence = source.indexOf("const phone = phoneEvidence(");
+    const urlExcludedBeforeEvidence = () => {
+      const ranges = phoneExtraction.indexOf("const urlRanges = getUrlTextRanges(text);");
+      const exclusion = phoneExtraction.indexOf("if (urlIndex < urlRanges.length && urlRanges[urlIndex]!.start < end) continue;");
+      const evidence = phoneExtraction.indexOf("const phone = phoneEvidence(");
       return ranges >= 0 && exclusion > ranges && evidence > exclusion;
     };
     const valid = start >= 0 && end > start &&
@@ -434,7 +433,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
       state.includes("lifecycleRevision:") &&
       state.includes("authorization:") &&
       state.includes("messageDuplicateEnforcementScope") &&
-      state.includes("text-fixed-window-safe-text-v10") &&
+      state.includes("text-fixed-window-safe-text-v11") &&
       state.includes("const safeTextMatchingEnabled = nearEnabled || phoneValueMatchingEnabled;") &&
       /const phoneValueMatchingEnabled\s*=\s*settings.duplicateDetectionPreset === .CUSTOM. && settings.duplicateIgnorePhonesEnabled/u.test(state) &&
       /version:\s*safeTextMatchingEnabled\s*\?/u.test(state) &&
@@ -445,11 +444,13 @@ maxim_topology_require_message_duplicate_delete_guard() {
       near.includes("protectedGaps.push([beforeToken, protectedGap])") &&
       near.includes("JSON.stringify({ version: 3, tokens, numericTokens, protectedGaps })") &&
       detector.includes("from \u0027./duplicate-phone-evidence\u0027") &&
-      detector.includes("extractDuplicatePhoneNumbers(rawText)") &&
-      phonesBeforeLinks(contentNormalization, "value", "compactText") &&
-      phonesBeforeLinks(numericNormalization, "source", "value") &&
-      detector.includes("safeTextMatching ? \u0027text-v8\\0\u0027 : \u0027text-v4\\0\u0027") &&
-      /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*4\b/u.test(phones) &&
+      fingerprints.includes("analyzeDuplicatePhoneNumbers(rawText)") &&
+      fingerprints.includes("stripAnalyzedDuplicatePhoneNumbers(rawText, phoneAnalysis, config)") &&
+      squash(fingerprints).includes("config.ignorePhones || config.ignoreLinks || config.matchPhoneValues") &&
+      fingerprints.includes("const content = normalizeDuplicateText(approximateSource);") &&
+      near.includes("const numericTokens = approximateSource.match(/[+-]?\\d+(?:[.,:]\\d+)*/gu) ?? [];") &&
+      detector.includes("safeTextMatching ? \u0027text-v9\\0\u0027 : \u0027text-v4\\0\u0027") &&
+      /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*5\b/u.test(phones) &&
       phoneContext === "/(?:^|[^\\p{L}\\p{N}_])(?:тел|телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?|звоните|позвоните|звони|позвони|звонить|позвонить|whatsapp|ватсап|viber|вайбер|phone|telephone|call)\\s*(?:для\\s+связи\\s*)?[:=№#.-]?\\s*$/iu" &&
       phoneNumberContext === "/(?:^|[^\\p{L}\\p{N}_])номер(?:а|у|ом|е|ов|ам|ами|ах)?\\s+телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?\\s*(?:для\\s+связи\\s*)?[:=№#.-]?\\s*$/iu" &&
       phones.includes("import { getUrlTextRanges } from \u0027../common/url-text.util\u0027;") &&
@@ -465,11 +466,11 @@ maxim_topology_require_message_duplicate_delete_guard() {
       squash(adjacency).includes("const arithmeticContext = before.replace(/\\p{Cf}/gu, \u0027\u0027); const arithmeticBefore = arithmeticContext.replace(") &&
       arithmeticWrappers === "[\\s([{«\"\u0027\u201c\u2018]+$" &&
       squash(adjacency).includes("if (/\\p{Sc}$/u.test(arithmeticBefore)) return true;") &&
-      squash(adjacency).includes("if ( /^[\\s\\p{Cf})\\]}»\"\u0027\u201d\u2019]*[\\p{Sm}*/%^·-]+[\\s\\p{Cf}]*[\\p{L}\\p{M}\\p{N}_]/u.test(after) && !hasLabelledPhoneListContinuation(arithmeticBefore, after) ) return true;") &&
-      arithmeticCondition === "(/[\\p{Sm}*/%^·-]$/u.test(arithmeticBefore) || /(?:^|\\s)(?:\\p{L}\\p{M}*|\\p{N}{1,6}|_)\\s+$/u.test(arithmeticContext))" &&
+      squash(adjacency).includes("if ( /^[\\s\\p{Cf})\\]}»\"\u0027\u201d\u2019]*[\\p{Sm}*/%^·\\u2010-\\u2013-]+[\\s\\p{Cf}]*[\\p{L}\\p{M}\\p{N}_]/u.test(after) && !hasLabelledPhoneListContinuation(arithmeticBefore, after, afterTruncated) ) return true;") &&
+      arithmeticCondition === "(/[\\p{Sm}*/%^·\\u2010-\\u2013-]$/u.test(arithmeticBefore) || /(?:^|\\s)(?:\\p{L}\\p{M}*|\\p{N}{1,6}|_)\\s+$/u.test(arithmeticContext))" &&
       squash(adjacency).includes("if ( /(?:^|\\s)[+-]?\\d(?:[\\d \\t().-]*\\d)?\\s+$/u.test(arithmeticContext) && !hasLabelledPhoneListPredecessor(arithmeticContext) ) return true;") &&
       squash(phoneListContinuation).includes("if (!PHONE_CONTEXT.test(before)) return false; const next = after.matchAll(CANDIDATE).next().value; if (!next) return false; const candidate = next[1]!; const start = next.index + next[0].length - candidate.length;") &&
-      squash(phoneListContinuation).includes("return ( candidate.startsWith(\u0027+\u0027) && /^[\\s\\p{Cf})\\]}»\"\u0027\u201d\u2019]*$/u.test(after.slice(0, start)) && phoneEvidence(candidate, \u0027\u0027, after.slice(start + candidate.length)) !== null );") &&
+      squash(phoneListContinuation).includes("return ( candidate.startsWith(\u0027+\u0027) && /^[\\s\\p{Cf})\\]}»\"\u0027\u201d\u2019]*$/u.test(after.slice(0, start)) && phoneEvidence(candidate, \u0027\u0027, after.slice(start + candidate.length), afterTruncated) !== null );") &&
       squash(phoneListPredecessor).includes("const previous = [...before.matchAll(CANDIDATE)].at(-1); if (!previous) return false; const candidate = previous[1]!; const start = previous.index + previous[0].length - candidate.length; const prefix = before.slice(0, start);") &&
       squash(phoneListPredecessor).includes("return ( PHONE_CONTEXT.test(prefix.replace(/[\\s([{«\"\u0027\u201c\u2018]+$/u, \u0027 \u0027)) && /^\\s*$/u.test(before.slice(start + candidate.length)) && phoneEvidence(candidate, prefix, \u0027\u0027) !== null );") &&
       identifierContext.includes(identifierForms) && protectedLabelContext.includes(identifierForms) &&
@@ -482,9 +483,17 @@ maxim_topology_require_message_duplicate_delete_guard() {
       adjacency.includes("(label.index === 0 || /^\\s/u.test(label[0]) || /\\s$/u.test(left.slice(0, label.index)))") &&
       adjacency.includes("(/[\\p{L}\\p{M}\\p{N}_]$/u.test(left) && !labelled) ||") &&
       adjacency.includes("/^[\\p{L}\\p{M}\\p{N}_]/u.test(right)") &&
-      phoneUrl.includes("return ranges.some((range) => start < range.end && end > range.start);") &&
-      urlExcludedBeforeEvidence(phoneExtraction, "continue;") &&
-      urlExcludedBeforeEvidence(phoneStripping, "return match;") &&
+      urlExcludedBeforeEvidence() &&
+      phoneExtraction.includes("while (urlIndex < urlRanges.length && urlRanges[urlIndex]!.end <= start) urlIndex += 1;") &&
+      phoneExtraction.includes("if (beforeStart > 0 && !CONTEXT_CLAUSE_BOUNDARY.test(before)) continue;") &&
+      phoneExtraction.includes("end + 64 < text.length") &&
+      phoneEvidence.includes("if (afterTruncated && UNFINISHED_RIGHT_CONTEXT.test(after)) return null;") &&
+      adjacency.includes("const colon = /^[\\s\\p{Cf})\\]}»\"\u0027\u201d\u2019]*:[\\s\\p{Cf}]*/u.exec(after);") &&
+      adjacency.includes("QUANTITY_SUFFIX.test(value) ||") &&
+      adjacency.includes("(afterTruncated && !/[\\s.!?;,\\n\\r\\u2028\\u2029]/u.test(value))") &&
+      phoneStripping.includes("options.ignorePhones ? analysis.phoneRanges : []") &&
+      phoneStripping.includes("options.ignoreLinks ? analysis.urlRanges : []") &&
+      phoneStripping.includes("parts.push(text.slice(cursor, range.start), \u0027 \u0027)") &&
       squash(phoneEvidence).includes("if (digits.length < 10 || digits.length > 15 || hasProtectedValueContext(before, after)) return null;") &&
       phoneEvidence.includes("const international = candidate.startsWith(\u0027+\u0027) && /^[1-9]\\d{9,14}$/u.test(digits);") &&
       phoneEvidence.includes("if (/^[17]/u.test(digits) && digits.length !== 11) return null;") &&
@@ -496,7 +505,30 @@ maxim_topology_require_message_duplicate_delete_guard() {
       phoneEvidenceCode.includes("if (candidate.includes(\u0027.\u0027)) { const groups = candidate.match(/\\d+/gu)?.map((group) => group.length).join(\u0027/\u0027); const conventionalGroups = (digits.length === 11 && [\u00271/3/3/2/2\u0027, \u00271/3/3/4\u0027].includes(groups ?? \u0027\u0027)) || (digits.length === 10 && groups === \u00273/3/2/2\u0027); if (!knownLength || !conventionalGroups) return null; }") &&
       phones.includes("const labelled = PHONE_CONTEXT.test(before);") &&
       phones.includes("if (!international && !labelled) return null;") &&
-      phones.includes("\\.(?![ \\t])") &&
+      phones.includes("\\.(?![ \\t\\u00a0\\u202f])") &&
+      state.includes("import { MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION } from \u0027./message-duplicate-window.script\u0027;") &&
+      count(state, "historyStorageVersion: MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION") === 2 &&
+      window.includes("MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = \u0027v3\u0027") &&
+      window.includes("local resetPrefix = prefix") &&
+      window.includes("local function eventExpiry(at)") &&
+      window.includes("math.min(at and at > 0 and at or now, now) + retentionMs") &&
+      window.includes("p.windowMs = math.min(p.windowMs, ${DUPLICATE_WINDOW_MAX_SEC * 1000})") &&
+      window.includes("\u0027PXAT\u0027, expiry") &&
+      window.includes("local expiry = math.min(expiresAt or (now + retentionMs), now + retentionMs)") &&
+      window.includes("redis.call(\u0027PEXPIRETIME\u0027, prefix .. key)") &&
+      window.includes("if previousExpiry > now then expiry = math.min(expiry, previousExpiry) end") &&
+      window.includes("write(stateKey(p.member), state, windowExpiry(state.at), true)") &&
+      window.includes("math.min((p.windowMs or 0) + graceMs, retentionMs)") &&
+      count(window, "materialized = previous and previous.materialized or nil") === 2 &&
+      window.includes("life.materialized = { epoch = currentEpoch, at = p.at, source = p.source, identity = p.identity }") &&
+      window.includes("local resetIncarnation = materialized and materialized.epoch ~= currentEpoch") &&
+      squash(window).includes("if resetIncarnation and (p.at <= materialized.at or p.identity == \u0027\u0027 or not materialized.identity or materialized.identity == \u0027\u0027 or p.identity == materialized.identity) then return cjson.encode({ kind = \u0027stale\u0027 }) end") &&
+      squash(window).includes("if not materialized and previousLife and previousLife.materializedRevision and currentEpoch ~= 0 then return cjson.encode({ kind = \u0027stale\u0027 }) end") &&
+      window.includes("if life.introducedAt <= currentEpoch then return cjson.encode({ kind = \u0027stale\u0027 }) end") &&
+      window.includes("if previous and previous.epoch == currentEpoch and previous.source ~= p.source") &&
+      window.includes("elseif previous and previous.epoch == currentEpoch and previous.revision == life.revision") &&
+      settings.includes("DUPLICATE_WINDOW_MAX_SEC = 48 * 3_600") &&
+      settings.includes("return Math.min(DUPLICATE_WINDOW_MAX_SEC, configured)") &&
       content.includes("export function isDuplicateContentComparable(") &&
       content.includes("if (!isDuplicateContentComparable(content, mode)) return null;") &&
       content.includes("content.complete || (mode === \u0027TEXT\u0027 && content.reason === \u0027unsupported_attachment\u0027)") &&

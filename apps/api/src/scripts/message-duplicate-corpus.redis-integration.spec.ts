@@ -18,6 +18,7 @@ import {
 import { extractDuplicateMessageContent } from '../moderation/message-duplicate/message-duplicate-content';
 import { duplicateSettings } from '../moderation/message-duplicate/message-duplicate-test-fixtures';
 import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from '../moderation/photo-duplicate/photo-fingerprint-version';
+import { MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION } from '../moderation/message-duplicate/message-duplicate-window.script';
 import type { RedisCounterService } from '../moderation/redis-counter.service';
 
 const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
@@ -195,7 +196,9 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/u.test(url);
       expect(window.candidates).toHaveLength(1);
       expect((await observe('violation', 200)).match?.binding.original?.messageId).toBe('original');
       const keys = await redis.keys('offline-antiduplicate:*');
-      const stateKeys = keys.filter((key) => key.includes(':v2:'));
+      const stateKeys = keys.filter((key) =>
+        key.includes(`:${MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION}:`),
+      );
       expect(stateKeys.length).toBeGreaterThan(0);
       expect(await redis.pttl(stateKeys[0]!)).toBe(-1);
       expect((await observe('after-simulated-expiry', 300000)).match).toBeNull();

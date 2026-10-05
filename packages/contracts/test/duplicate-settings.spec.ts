@@ -4,7 +4,41 @@ import {
   resolveDuplicateFlowAllowedCount,
   resolveDuplicateFlowAllowedCountMax,
   resolveDuplicateTextRuleSubjects,
+  resolveDuplicateIntervalWindowSec,
+  DUPLICATE_WINDOW_MAX_SEC,
+  chatSettingsSchema,
 } from '@maxim/contracts/settings';
+
+describe('bounded duplicate window', () => {
+  it.each(['duplicateWarnWindowSec', 'duplicateMuteWindowSec', 'duplicateBanWindowSec'])(
+    'rejects new %s writes beyond 48 hours',
+    (key) => {
+      expect(chatSettingsSchema.safeParse({ [key]: DUPLICATE_WINDOW_MAX_SEC }).success).toBe(true);
+      expect(chatSettingsSchema.safeParse({ [key]: DUPLICATE_WINDOW_MAX_SEC + 1 }).success).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each([
+    { duplicateWarnEnabled: true },
+    { duplicateMuteEnabled: true },
+    { duplicateBanEnabled: true },
+    {},
+  ])('caps the effective window of legacy records for every first reaction', (stage) => {
+    expect(
+      resolveDuplicateIntervalWindowSec({
+        duplicateWarnEnabled: false,
+        duplicateMuteEnabled: false,
+        duplicateBanEnabled: false,
+        duplicateWarnWindowSec: 604800,
+        duplicateMuteWindowSec: 604800,
+        duplicateBanWindowSec: 604800,
+        ...stage,
+      }),
+    ).toBe(DUPLICATE_WINDOW_MAX_SEC);
+  });
+});
 
 describe('duplicate flow thresholds', () => {
   it('keeps a WARN-only threshold at 20 while saturating hidden thresholds', () => {

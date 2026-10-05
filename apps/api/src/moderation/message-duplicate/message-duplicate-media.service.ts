@@ -500,8 +500,7 @@ export class MessageDuplicateMediaService {
           job.webhookEventId,
         ),
       );
-      if (Date.now() >= deadlineAtMs)
-        throw new Error('Message media verification deadline exceeded');
+      if (Date.now() >= deadlineAtMs) throw new MessageDuplicateMediaDeferredError('proof_budget');
       lease.assertOwned();
       const observation = await measureDuplicatePhase(this.metrics, 'history', () =>
         this.history.observeWithOutcome({
@@ -940,8 +939,7 @@ export class MessageDuplicateMediaService {
       });
     }
     for (let index = 0; index < content.media.length; index += 1) {
-      if (Date.now() >= deadlineAtMs)
-        throw new Error('Message media verification deadline exceeded');
+      if (Date.now() >= deadlineAtMs) throw new MessageDuplicateMediaDeferredError('proof_budget');
       const media = content.media[index]!;
       if (!hashes[index]) {
         if (!media.url) throw new MessageDuplicateMediaRejectedError('missing_download_url');
@@ -951,8 +949,12 @@ export class MessageDuplicateMediaService {
           ),
         ).catch((error: unknown) => {
           this.recordSourceRejection(error);
+          if (error instanceof PhotoDownloadTimeoutError && Date.now() >= deadlineAtMs)
+            throw new MessageDuplicateMediaDeferredError('proof_budget');
           throw error;
         });
+        if (Date.now() >= deadlineAtMs)
+          throw new MessageDuplicateMediaDeferredError('proof_budget');
         await this.verifyBinary(downloaded.bytes, media.kind);
         hashes[index] = createHash('sha256').update(downloaded.bytes).digest('hex');
       }
@@ -986,7 +988,7 @@ export class MessageDuplicateMediaService {
   ): Promise<DuplicateMessageContent> {
     const message = update.message!;
     const timeoutMs = Math.min(5000, deadlineAtMs - Date.now());
-    if (timeoutMs <= 0) throw new Error('Message media verification deadline exceeded');
+    if (timeoutMs <= 0) throw new MessageDuplicateMediaDeferredError('proof_budget');
     let raw: Record<string, unknown> | null;
     try {
       raw = await this.max.getExactMessageRow(message.chatId, message.messageId, {

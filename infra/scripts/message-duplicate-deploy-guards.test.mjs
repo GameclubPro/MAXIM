@@ -23,6 +23,8 @@ const paths = {
   phones: 'apps/api/src/moderation/duplicate-phone-evidence.ts',
   content: 'apps/api/src/moderation/message-duplicate/message-duplicate-content.ts',
   history: 'apps/api/src/moderation/message-duplicate/message-duplicate-history.service.ts',
+  window: 'apps/api/src/moderation/message-duplicate/message-duplicate-window.script.ts',
+  settings: 'packages/contracts/src/duplicate-settings.ts',
 };
 function probe(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-duplicate-floor-'));
@@ -70,7 +72,7 @@ test('requires the message-v3 reader, durable admission and last action permit o
 
 const mutations = [
   ['state', 'z.literal(3)', 'z.literal(4)'],
-  ['state', 'text-fixed-window-safe-text-v10', 'text-fixed-window-safe-text-v9'],
+  ['state', 'text-fixed-window-safe-text-v11', 'text-fixed-window-safe-text-v10'],
   ['state', 'version: safeTextMatchingEnabled ?', 'version: false ?'],
   ['state', 'nearEnabled || phoneValueMatchingEnabled', 'nearEnabled'],
   [
@@ -100,19 +102,21 @@ const mutations = [
     'JSON.stringify({ version: 3, tokens, numericTokens, protectedGaps })',
     'JSON.stringify({ tokens, numericTokens })',
   ],
-  ['detector', 'extractDuplicatePhoneNumbers(rawText)', 'extractDetectedPhoneNumbers(rawText)'],
-  ['detector', 'stripDuplicatePhoneNumbers(value)', 'stripDetectedPhoneNumbers(value)'],
-  ['detector', 'stripDuplicatePhoneNumbers(source)', 'stripDetectedPhoneNumbers(source)'],
-  ['detector', 'text-v8\\0', 'text-v7\\0'],
-  ['detector', "value = replaceUrlsInText(value, ' ');", 'value = stripUrlsFromText(value);'],
-  ['detector', "source = replaceUrlsInText(source, ' ');", 'source = stripUrlsFromText(source);'],
-  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 4', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 3'],
+  ['detector', 'analyzeDuplicatePhoneNumbers(rawText)', 'analyzeDetectedPhoneNumbers(rawText)'],
+  ['detector', 'stripAnalyzedDuplicatePhoneNumbers(rawText, phoneAnalysis, config)', 'rawText'],
+  [
+    'detector',
+    'const numericTokens = approximateSource.match(',
+    'const numericTokens = normalized.match(',
+  ],
+  ['detector', 'text-v9\\0', 'text-v8\\0'],
+  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 5', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 4'],
   [
     'phones',
     "import { getUrlTextRanges } from '../common/url-text.util';",
     "import { getUrlTextRanges } from '../common/unsupported-url-text.util';",
   ],
-  ['phones', 'if (hasEmbeddedIdentifierAdjacency(before, after)) return null;', ''],
+  ['phones', 'if (hasEmbeddedIdentifierAdjacency(before, after, afterTruncated)) return null;', ''],
   ['phones', '(?:tel|mailto|sms|callto|sips?):$', '(?:unsupported):$'],
   ['phones', 'if (/@[^\\s]*$/u.test(before) || /^[^\\s]*@/u.test(after)) return true;', ''],
   [
@@ -125,10 +129,10 @@ const mutations = [
     'const arithmeticBefore = arithmeticContext.replace(',
     'const arithmeticBefore = before.replace(',
   ],
-  ['phones', '/[\\p{Sm}*/%^·-]$/u.test(arithmeticBefore)', 'false'],
+  ['phones', '/[\\p{Sm}*/%^·\\u2010-\\u2013-]$/u.test(arithmeticBefore)', 'false'],
   [
     'phones',
-    '/[\\p{Sm}*/%^·-]$/u.test(arithmeticBefore)',
+    '/[\\p{Sm}*/%^·\\u2010-\\u2013-]$/u.test(arithmeticBefore)',
     '/[=+*/\\u2212-]$/u.test(arithmeticBefore)',
   ],
   ['phones', '/(?:^|\\s)(?:\\p{L}\\p{M}*|\\p{N}{1,6}|_)\\s+$/u.test(arithmeticContext)', 'false'],
@@ -140,11 +144,11 @@ const mutations = [
   ['phones', 'if (/\\p{Sc}$/u.test(arithmeticBefore)) return true;', ''],
   [
     'phones',
-    '[\\s\\p{Cf})\\]}»"\'”’]*[\\p{Sm}*/%^·-]+[\\s\\p{Cf}]*',
-    '[\\s)\\]}»"\'”’]*[\\p{Sm}*/%^·-]+\\s*',
+    '[\\s\\p{Cf})\\]}»"\'”’]*[\\p{Sm}*/%^·\\u2010-\\u2013-]+[\\s\\p{Cf}]*',
+    '[\\s)\\]}»"\'”’]*[\\p{Sm}*/%^·\\u2010-\\u2013-]+\\s*',
   ],
-  ['phones', '[\\p{Sm}*/%^·-]', '[\\p{Sm}*/%^-]'],
-  ['phones', '!hasLabelledPhoneListContinuation(arithmeticBefore, after)', 'false'],
+  ['phones', '[\\p{Sm}*/%^·\\u2010-\\u2013-]', '[\\p{Sm}*/%^-]'],
+  ['phones', '!hasLabelledPhoneListContinuation(arithmeticBefore, after, afterTruncated)', 'false'],
   ['phones', '!hasLabelledPhoneListPredecessor(arithmeticContext)', 'false'],
   ['phones', '/(?:^|\\s)[+-]?\\d(?:[\\d \\t().-]*\\d)?\\s+$/u.test(arithmeticContext)', 'false'],
   ['phones', 'if (!PHONE_CONTEXT.test(before)) return false;', ''],
@@ -156,12 +160,12 @@ const mutations = [
   ['phones', 'after.slice(0, start)', 'after.slice(start, start)'],
   [
     'phones',
-    "phoneEvidence(candidate, '', after.slice(start + candidate.length)) !== null",
-    "phoneEvidence(candidate, 'телефон:', after.slice(start + candidate.length)) !== null",
+    "phoneEvidence(candidate, '', after.slice(start + candidate.length), afterTruncated) !== null",
+    "phoneEvidence(candidate, 'телефон:', after.slice(start + candidate.length), afterTruncated) !== null",
   ],
   [
     'phones',
-    "phoneEvidence(candidate, '', after.slice(start + candidate.length)) !== null",
+    "phoneEvidence(candidate, '', after.slice(start + candidate.length), afterTruncated) !== null",
     'true',
   ],
   ['phones', 'const prefix = before.slice(0, start);', "const prefix = 'телефон:';"],
@@ -213,21 +217,68 @@ const mutations = [
   ],
   ['phones', '/[\\p{L}\\p{M}\\p{N}_]$/u.test(left) && !labelled', 'false'],
   ['phones', '/^[\\p{L}\\p{M}\\p{N}_]/u.test(right)', 'false'],
-  [
-    'phones',
-    'return ranges.some((range) => start < range.end && end > range.start);',
-    'return ranges.some((range) => start < range.end || end > range.start);',
-  ],
   ['phones', 'const urlRanges = getUrlTextRanges(text);', 'const urlRanges = [];'],
+  ['phones', 'if (urlIndex < urlRanges.length && urlRanges[urlIndex]!.start < end) continue;', ''],
   [
     'phones',
-    'if (isDuplicatePhoneCandidateInUrl(urlRanges, start, start + candidate.length)) continue;',
+    'while (urlIndex < urlRanges.length && urlRanges[urlIndex]!.end <= start) urlIndex += 1;',
     '',
   ],
+  ['phones', 'if (beforeStart > 0 && !CONTEXT_CLAUSE_BOUNDARY.test(before)) continue;', ''],
+  ['phones', 'end + 64 < text.length', 'false'],
+  ['phones', 'if (afterTruncated && UNFINISHED_RIGHT_CONTEXT.test(after)) return null;', ''],
+  ['phones', 'QUANTITY_SUFFIX.test(value) ||', 'false ||'],
+  ['phones', '(afterTruncated && !/[\\s.!?;,\\n\\r\\u2028\\u2029]/u.test(value))', 'false'],
+  ['phones', 'options.ignorePhones ? analysis.phoneRanges : []', 'analysis.phoneRanges'],
+  ['phones', 'options.ignoreLinks ? analysis.urlRanges : []', 'analysis.urlRanges'],
   [
-    'phones',
-    'if (isDuplicatePhoneCandidateInUrl(urlRanges, start, start + candidate.length)) return match;',
-    '',
+    'window',
+    "MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = 'v3'",
+    "MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = 'v2'",
+  ],
+  ['window', 'local resetPrefix = prefix', 'local resetPrefix = KEYS[1]'],
+  ['window', 'math.min(at and at > 0 and at or now, now) + retentionMs', 'now + retentionMs'],
+  ['window', "'PXAT', expiry", "'EX', 1209661"],
+  ['window', "redis.call('PEXPIRETIME', prefix .. key)", '-1'],
+  ['window', 'if previousExpiry > now then expiry = math.min(expiry, previousExpiry) end', ''],
+  [
+    'window',
+    'write(stateKey(p.member), state, windowExpiry(state.at), true)',
+    'write(stateKey(p.member), state)',
+  ],
+  ['window', 'math.min((p.windowMs or 0) + graceMs, retentionMs)', 'retentionMs'],
+  ['window', 'materialized = previous and previous.materialized or nil', 'materialized = nil'],
+  [
+    'window',
+    'life.materialized = { epoch = currentEpoch, at = p.at, source = p.source, identity = p.identity }',
+    "life.materialized = { epoch = currentEpoch, at = p.at, source = p.source, identity = 'old' }",
+  ],
+  ['window', 'materialized.epoch ~= currentEpoch', 'false'],
+  ['window', 'p.at <= materialized.at', 'false'],
+  ['window', "materialized.identity == '' or p.identity == materialized.identity", 'false'],
+  ['window', 'previousLife.materializedRevision and currentEpoch ~= 0', 'false'],
+  ['window', 'life.introducedAt <= currentEpoch', 'false'],
+  [
+    'window',
+    'if previous and previous.epoch == currentEpoch and previous.source ~= p.source',
+    'if previous and previous.source ~= p.source',
+  ],
+  [
+    'window',
+    'elseif previous and previous.epoch == currentEpoch and previous.revision == life.revision',
+    'elseif previous and previous.revision == life.revision',
+  ],
+  [
+    'window',
+    'p.windowMs = math.min(p.windowMs, ${DUPLICATE_WINDOW_MAX_SEC * 1000})',
+    'p.windowMs = p.windowMs',
+  ],
+  ['settings', 'DUPLICATE_WINDOW_MAX_SEC = 48 * 3_600', 'DUPLICATE_WINDOW_MAX_SEC = 168 * 3_600'],
+  ['settings', 'return Math.min(DUPLICATE_WINDOW_MAX_SEC, configured)', 'return configured'],
+  [
+    'state',
+    'historyStorageVersion: MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION',
+    "historyStorageVersion: 'v2'",
   ],
   ['phones', 'hasProtectedValueContext(before, after)', 'false'],
   [
@@ -271,7 +322,7 @@ const mutations = [
     'if (!international && !labelled) return null;',
     "if (!candidate.startsWith('+') && !grouped && !labelled) return null;",
   ],
-  ['phones', '\\.(?![ \\t])', '\\.'],
+  ['phones', '\\.(?![ \\t\\u00a0\\u202f])', '\\.'],
   ['content', 'if (!isDuplicateContentComparable(content, mode)) return null;', ''],
   [
     'content',
@@ -348,9 +399,9 @@ for (const [key, before, after] of mutations) {
   });
 }
 
-test('rejects broad phone roots even with phone evidence v4 and the v10 settings fence', (t) => {
+test('rejects broad phone roots even with phone evidence v5 and the v11 settings fence', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
-  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*4\b/u);
+  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*5\b/u);
   const declaration = /const PHONE_CONTEXT\s*=\s*\/[^\r\n]+\/iu;/u;
   assert.match(source, declaration);
   const phones = source.replace(
@@ -385,7 +436,7 @@ test('rejects an identifier label expanded into the finite phone-number exceptio
 test('rejects removal of the right arithmetic guard while its marker survives outside the body', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
   const guard =
-    / {2}if \(\s*\/\^\[[^\r\n]+\/u\.test\(after\) &&\s*!hasLabelledPhoneListContinuation\(arithmeticBefore, after\)\s*\)\s*return true;\n/u;
+    / {2}if \(\s*\/\^\[[^\r\n]+\/u\.test\(after\) &&\s*!hasLabelledPhoneListContinuation\(arithmeticBefore, after, afterTruncated\)\s*\)\s*return true;\n/u;
   const matched = source.match(guard)?.[0];
   assert.ok(matched);
   const phones =
@@ -399,38 +450,20 @@ test('rejects removal of the right arithmetic guard while its marker survives ou
   );
 });
 
-for (const marker of [
-  'private normalizeContentFingerprint(',
-  'private extractNearNumericTokens(',
-]) {
-  test('rejects phone classification moved after URL removal in ' + marker, (t) => {
-    const source = readFileSync(resolve(root, paths.detector), 'utf8');
-    const start = source.indexOf(marker);
-    const end = source.indexOf('\n  private ', start + 1);
-    assert.ok(start >= 0 && end > start);
-    const body = source.slice(start, end);
-    const phoneBlock = body.match(/ {4}if \(config.ignorePhones\) \{[\s\S]*?\n {4}\}/u)?.[0];
-    const linkBlock = body.match(/ {4}if \(config.ignoreLinks\) \{[\s\S]*?\n {4}\}/u)?.[0];
-    assert.ok(phoneBlock && linkBlock);
-    assert.ok(body.indexOf(phoneBlock) < body.indexOf(linkBlock));
-    const updated = body
-      .replace(phoneBlock, '__MAXIM_PHONE_BLOCK__')
-      .replace(linkBlock, phoneBlock)
-      .replace('__MAXIM_PHONE_BLOCK__', linkBlock);
-    assert.ok(updated.indexOf(linkBlock) < updated.indexOf(phoneBlock));
-    const detector = source.slice(0, start) + updated + source.slice(end);
-    assert.equal(
-      detector.split('stripDuplicatePhoneNumbers(').length,
-      source.split('stripDuplicatePhoneNumbers(').length,
-    );
-    const result = probe(t, { detector });
-    assert.notEqual(result.status, 0);
-    assert.match(
-      result.stderr,
-      /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
-    );
-  });
-}
+test('rejects phone analysis changed to a preprocessed source', (t) => {
+  const source = readFileSync(resolve(root, paths.detector), 'utf8');
+  const detector = source.replace(
+    'analyzeDuplicatePhoneNumbers(rawText)',
+    'analyzeDuplicatePhoneNumbers(normalizeDuplicateText(rawText))',
+  );
+  assert.notEqual(detector, source);
+  const result = probe(t, { detector });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+  );
+});
 
 test('rejects removal of the raw arithmetic guard while identifier adjacency remains', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
@@ -438,7 +471,11 @@ test('rejects removal of the raw arithmetic guard while identifier adjacency rem
   assert.match(source, guard);
   const phones = source.replace(guard, '');
   assert.notEqual(phones, source);
-  assert.ok(phones.includes('if (hasEmbeddedIdentifierAdjacency(before, after)) return null;'));
+  assert.ok(
+    phones.includes(
+      'if (hasEmbeddedIdentifierAdjacency(before, after, afterTruncated)) return null;',
+    ),
+  );
   assert.ok(phones.includes('const label = PHONE_CONTEXT.exec(left);'));
   const result = probe(t, { phones });
   assert.notEqual(result.status, 0);
@@ -519,7 +556,8 @@ test('rejects the unprefixed confidence gate moved after label admission', (t) =
 
 test('rejects raw adjacency guard moved after wrapper normalization', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
-  const guard = '  if (hasEmbeddedIdentifierAdjacency(before, after)) return null;\n';
+  const guard =
+    '  if (hasEmbeddedIdentifierAdjacency(before, after, afterTruncated)) return null;\n';
   const normalizationEnd = source.indexOf('\n', source.indexOf('  after = after.replace('));
   assert.ok(source.includes(guard));
   assert.ok(normalizationEnd > source.indexOf(guard));
@@ -530,8 +568,9 @@ test('rejects raw adjacency guard moved after wrapper normalization', (t) => {
     source.slice(normalizationEnd);
   assert.notEqual(phones, source);
   assert.ok(
-    phones.indexOf('if (hasEmbeddedIdentifierAdjacency(before, after)) return null;') >
-      phones.indexOf('after = after.replace('),
+    phones.indexOf(
+      'if (hasEmbeddedIdentifierAdjacency(before, after, afterTruncated)) return null;',
+    ) > phones.indexOf('after = after.replace('),
   );
   const result = probe(t, { phones });
   assert.notEqual(result.status, 0);
@@ -541,34 +580,28 @@ test('rejects raw adjacency guard moved after wrapper normalization', (t) => {
   );
 });
 
-for (const marker of [
-  'export function extractDuplicatePhoneNumbers(',
-  'export function stripDuplicatePhoneNumbers(',
-]) {
-  test('rejects missing URL range extraction in ' + marker, (t) => {
-    const source = readFileSync(resolve(root, paths.phones), 'utf8');
-    const start = source.indexOf(marker);
-    const end = source.indexOf('\n}', start + 1) + 2;
-    assert.ok(start >= 0 && end > start);
-    const body = source.slice(start, end);
-    const updated = body.replace(
-      'const urlRanges = getUrlTextRanges(text);',
-      'const urlRanges = [];',
-    );
-    assert.notEqual(updated, body);
-    const phones = source.slice(0, start) + updated + source.slice(end);
-    assert.ok(
-      phones.includes('const urlRanges = getUrlTextRanges(text);'),
-      'The other phone path must keep its URL ranges',
-    );
-    const result = probe(t, { phones });
-    assert.notEqual(result.status, 0);
-    assert.match(
-      result.stderr,
-      /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
-    );
-  });
-}
+test('rejects URL parsing removed from the shared analysis while its marker survives outside', (t) => {
+  const source = readFileSync(resolve(root, paths.phones), 'utf8');
+  const start = source.indexOf('export function analyzeDuplicatePhoneNumbers(');
+  const end = source.indexOf('\n}', start + 1) + 2;
+  const body = source.slice(start, end);
+  const updated = body.replace(
+    'const urlRanges = getUrlTextRanges(text);',
+    'const urlRanges = [];',
+  );
+  assert.notEqual(updated, body);
+  const phones =
+    source.slice(0, start) +
+    updated +
+    source.slice(end) +
+    '\n// const urlRanges = getUrlTextRanges(text);\n';
+  const result = probe(t, { phones });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+  );
+});
 
 test('rejects a guard that drops only the final authorization check after external reads', (t) => {
   const source = readFileSync(resolve(root, paths.guard), 'utf8');
@@ -604,6 +637,55 @@ test('rejects removal of only the last duplicate permit fence after suggestion p
   const result = probe(t, { executor });
   assert.notEqual(result.status, 0);
 });
+
+for (const [name, method, before, after] of [
+  [
+    'qualification result',
+    'private async authorizeGuardedUserDeleteReasons(',
+    /\)\) === 'allowed';/u,
+    ")) === 'denied';",
+  ],
+  [
+    'returned qualification',
+    'private async authorizeGuardedUserDeleteReasons(',
+    /messageDuplicateVerified,/u,
+    'messageDuplicateVerified: false,',
+  ],
+  [
+    'forwarded qualification',
+    'private async runDeletePreDispatchGuards(',
+    /messageDuplicateVerified = proof\.messageDuplicateVerified;/u,
+    'messageDuplicateVerified = false;',
+  ],
+  [
+    'returned forwarded qualification',
+    'private async runDeletePreDispatchGuards(',
+    /messageDuplicateVerified,/u,
+    'messageDuplicateVerified: false,',
+  ],
+]) {
+  test('rejects a disconnected delegated duplicate ' + name, (t) => {
+    const source = readFileSync(resolve(root, paths.executor), 'utf8');
+    const start = source.indexOf(method);
+    const end = source.indexOf('\n  private ', start + 1);
+    assert.ok(start >= 0 && end > start);
+    const body = source.slice(start, end);
+    const updated = body.replace(before, after);
+    assert.notEqual(updated, body);
+    const executor = source.slice(0, start) + updated + source.slice(end);
+    assert.ok(
+      executor.includes('this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params)'),
+    );
+    assert.ok(
+      executor.includes(
+        'if (this.messageDuplicateDeleteGuard && textProof.messageDuplicateVerified)',
+      ),
+    );
+    assert.ok(executor.includes('authorityOnly: true'));
+    const result = probe(t, { executor });
+    assert.notEqual(result.status, 0);
+  });
+}
 
 test('rejects a last duplicate fence that still uses remote content guards', (t) => {
   const source = readFileSync(resolve(root, paths.executor), 'utf8');

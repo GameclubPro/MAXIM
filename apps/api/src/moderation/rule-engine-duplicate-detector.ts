@@ -2,7 +2,6 @@ import { DUPLICATE_THRESHOLD_MAX, normalizeAllowlistLink } from '@maxim/contract
 import { createHash } from 'node:crypto';
 import type { ChatSettings } from '../prisma/prisma-client';
 import { raceWithTimeout } from '../common/promise-timeout.util';
-import { replaceUrlsInText } from '../common/url-text.util';
 import {
   buildDuplicateFingerprintMembershipKey,
   buildDuplicateMessageStateKey,
@@ -17,8 +16,8 @@ import { extractClientClickableTextEvidence } from './navigation/client-clickabl
 import { extractNavigationEvidence } from './navigation/navigation-evidence.extractor';
 import { extractUrlsFromText } from './rule-engine-link-detector';
 import {
-  extractDuplicatePhoneNumbers,
-  stripDuplicatePhoneNumbers,
+  analyzeDuplicatePhoneNumbers,
+  stripAnalyzedDuplicatePhoneNumbers,
 } from './duplicate-phone-evidence';
 import { RedisCounterService } from './redis-counter.service';
 import { resolveDuplicateFlowConfig, type DuplicateReactionStage } from './duplicate-flow-policy';
@@ -348,9 +347,23 @@ export class RuleEngineDuplicateDetector {
       fingerprints.push({ type, value: normalized });
     };
 
+    const config = this.resolveFingerprintConfig(settings);
+    const phoneAnalysis =
+      config.ignorePhones || config.ignoreLinks || config.matchPhoneValues
+        ? analyzeDuplicatePhoneNumbers(rawText)
+        : null;
     const navigationIdentityKeys = this.resolveNavigationIdentityKeys(navigationTargets, rawText);
+    // FLAG: Every value/content/near fingerprint must share one original-source analysis.
+    // Reusing it avoids repeated URL parsing and keeps numeric evidence on identical bytes.
+    const normalizedLinks =
+      navigationTargets === undefined || config.matchLinkValues
+        ? this.extractNormalizedLinks(
+            phoneAnalysis?.urlValues ?? extractUrlsFromText(rawText),
+            navigationTargets,
+          )
+        : [];
     if (navigationTargets === undefined) {
-      const links = this.extractNormalizedLinks(rawText);
+      const links = normalizedLinks;
       if (links.some((link) => link !== link.toLowerCase())) {
         const view = adaptMaxMessageNavigationView({ body: { text: rawText } });
         const evidence = extractNavigationEvidence(view, {
@@ -367,15 +380,14 @@ export class RuleEngineDuplicateDetector {
       this.buildTextFingerprint(normalizeDuplicateText(rawText), navigationIdentityKeys),
     );
 
-    const config = this.resolveFingerprintConfig(settings);
     if (config.matchLinkValues) {
-      for (const link of this.extractNormalizedLinks(rawText, navigationTargets)) {
+      for (const link of normalizedLinks) {
         push('link', link);
       }
     }
 
-    if (config.matchPhoneValues) {
-      for (const phone of extractDuplicatePhoneNumbers(rawText)) {
+    if (config.matchPhoneValues && phoneAnalysis) {
+      for (const phone of phoneAnalysis.phoneNumbers) {
         push('phone', phone);
       }
     }
@@ -394,16 +406,19 @@ export class RuleEngineDuplicateDetector {
     const approximateIdentityKeys = config.ignoreLinks
       ? structuredIdentityKeys
       : navigationIdentityKeys;
+    const approximateSource = phoneAnalysis
+      ? stripAnalyzedDuplicatePhoneNumbers(rawText, phoneAnalysis, config)
+      : rawText;
+    const content = normalizeDuplicateText(approximateSource);
 
     if (config.ignoreLinks || config.ignorePhones) {
-      const content = this.normalizeContentFingerprint(rawText, config);
       if (this.hasSufficientApproximateContent(content)) {
         push('content', this.buildTextFingerprint(content, approximateIdentityKeys));
       }
     }
 
     if (config.nearMatch) {
-      const near = this.buildNearDuplicateFingerprint(rawText, config);
+      const near = this.buildNearDuplicateFingerprint(content, approximateSource);
       if (near) {
         push('near', this.buildTextFingerprint(near, approximateIdentityKeys));
       }
@@ -424,7 +439,7 @@ export class RuleEngineDuplicateDetector {
     return this.buildFingerprints(rawText, settings, navigationTargets).map((fingerprint) => {
       // FLAG: Never count old lossy fingerprints under the corrected comparison policy.
       const hash = createHash('sha256')
-        .update(safeTextMatching ? 'text-v8\0' : 'text-v4\0')
+        .update(safeTextMatching ? 'text-v9\0' : 'text-v4\0')
         .update(fingerprint.value)
         .digest('hex')
         .slice(0, 20);
@@ -479,12 +494,12 @@ export class RuleEngineDuplicateDetector {
   }
 
   private extractNormalizedLinks(
-    rawText: string,
+    rawLinks: readonly string[],
     navigationTargets?: readonly NavigationTargetEvidence[],
   ): string[] {
     const normalizedLinks = new Set<string>();
 
-    for (const rawLink of extractUrlsFromText(rawText)) {
+    for (const rawLink of rawLinks) {
       const normalizedLink = normalizeAllowlistLink(rawLink);
       if (normalizedLink) {
         normalizedLinks.add(normalizedLink);
@@ -536,33 +551,16 @@ export class RuleEngineDuplicateDetector {
     return JSON.stringify({ text: compactText, navigationIdentity: navigationIdentityKeys });
   }
 
-  private normalizeContentFingerprint(
-    compactText: string,
-    config: { ignoreLinks: boolean; ignorePhones: boolean },
-  ): string {
-    let value = compactText;
-    if (config.ignorePhones) {
-      // FLAG: Classify phones in the original text. Removing a URL first can join unrelated
-      // numeric fragments into a fabricated phone; the helper excludes original URL ranges.
-      value = stripDuplicatePhoneNumbers(value);
-    }
-    if (config.ignoreLinks) {
-      value = replaceUrlsInText(value, ' ');
-    }
-    return normalizeDuplicateText(value);
-  }
-
   private buildNearDuplicateFingerprint(
-    compactText: string,
-    config: { ignoreLinks: boolean; ignorePhones: boolean },
+    normalized: string,
+    approximateSource: string,
   ): string | null {
-    const normalized = this.normalizeContentFingerprint(compactText, config);
     if (!this.hasSufficientApproximateContent(normalized)) {
       return null;
     }
     const matches = [...normalized.matchAll(/[\p{L}\p{N}][\p{L}\p{M}\p{N}]*/gu)];
     const tokens = matches.map((match) => match[0]);
-    const numericTokens = this.extractNearNumericTokens(compactText, config);
+    const numericTokens = approximateSource.match(/[+-]?\d+(?:[.,:]\d+)*/gu) ?? [];
     const uniqueLongTokens = new Set(tokens.filter((token) => token.length >= 4));
     if (
       tokens.length < NEAR_DUPLICATE_MIN_TOKEN_COUNT ||
@@ -588,21 +586,6 @@ export class RuleEngineDuplicateDetector {
     });
     protectGap(normalized.length, tokens.length);
     return JSON.stringify({ version: 3, tokens, numericTokens, protectedGaps });
-  }
-
-  private extractNearNumericTokens(
-    value: string,
-    config: { ignoreLinks: boolean; ignorePhones: boolean },
-  ): string[] {
-    let source = value;
-    if (config.ignorePhones) {
-      // FLAG: Numeric evidence uses the same original-text phone boundary as content.
-      source = stripDuplicatePhoneNumbers(source);
-    }
-    if (config.ignoreLinks) {
-      source = replaceUrlsInText(source, ' ');
-    }
-    return source.match(/[+-]?\d+(?:[.,:]\d+)*/gu) ?? [];
   }
 
   private hasSufficientApproximateContent(value: string): boolean {

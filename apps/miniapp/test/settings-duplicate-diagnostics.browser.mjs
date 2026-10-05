@@ -99,9 +99,14 @@ try {
       const errors = [];
       const heldPages = [];
       const heldLinks = [];
+      const heldRechecks = [];
+      const heldFirstPages = [];
       const stored = new Map();
       let holdPage = false;
       let holdLink = false;
+      let holdRecheck = false;
+      let holdFirstPage = false;
+      let recheckCapability = 'CONFIRMED';
       let invalidLink = false;
       let pageNumber = 0;
       let reads = 0;
@@ -142,6 +147,18 @@ try {
               : { state: 'AVAILABLE', url: 'https://max.ru/c/test/123' },
           });
         }
+        if (url.pathname.endsWith('/duplicate-diagnostics/recheck')) {
+          if (holdRecheck) {
+            heldRechecks.push({ route, prefix, enabled: stored.get(prefix) ?? true });
+            return;
+          }
+          return route.fulfill({
+            json: {
+              ...diagnostics(prefix, stored.get(prefix) ?? true),
+              capability: { state: recheckCapability, checkedAt: timestamp },
+            },
+          });
+        }
         if (url.searchParams.has('cursor')) {
           if (holdPage) {
             heldPages.push({ route, prefix });
@@ -163,6 +180,10 @@ try {
           });
         }
         reads += 1;
+        if (url.pathname.endsWith('/duplicate-diagnostics') && holdFirstPage) {
+          heldFirstPages.push({ route, prefix, enabled: stored.get(prefix) ?? true });
+          return;
+        }
         return route.fulfill({ json: diagnostics(prefix, stored.get(prefix) ?? true) });
       });
       await page.goto(`${base}diagnostics-test`);
@@ -185,12 +206,104 @@ try {
         fullPage: true,
       });
       const beforeSave = reads;
+      holdRecheck = true;
+      await panel.getByRole('button', { name: 'Проверить права', exact: true }).click();
+      await waitHeld(heldRechecks);
       await page.getByRole('button', { name: 'Сохранить выключение', exact: true }).click();
       await panel
         .locator('dd')
         .filter({ hasText: /^Выключен$/u })
         .waitFor();
       assert.ok(reads > beforeSave, 'Successful settings save refetches the mounted diagnostics');
+      const oldSettingsRecheck = heldRechecks.shift();
+      const afterFreshGet = page.waitForResponse((response) =>
+        response.url().endsWith('/duplicate-diagnostics/recheck'),
+      );
+      await oldSettingsRecheck.route.fulfill({
+        json: diagnostics(oldSettingsRecheck.prefix, oldSettingsRecheck.enabled),
+      });
+      await afterFreshGet;
+      await page.waitForTimeout(50);
+      assert.equal(
+        await panel
+          .locator('dd')
+          .filter({ hasText: /^Выключен$/u })
+          .count(),
+        1,
+        'An old recheck cannot overwrite diagnostics refetched after settings save',
+      );
+
+      holdFirstPage = true;
+      await panel.getByRole('button', { name: 'Проверить права', exact: true }).click();
+      await waitHeld(heldRechecks);
+      await page.getByRole('button', { name: 'Сохранить выключение', exact: true }).click();
+      await waitHeld(heldFirstPages);
+      const invalidatedRecheck = heldRechecks.shift();
+      const duringFreshGet = page.waitForResponse((response) =>
+        response.url().endsWith('/duplicate-diagnostics/recheck'),
+      );
+      await invalidatedRecheck.route.fulfill({
+        json: diagnostics(invalidatedRecheck.prefix, true, [attempt('stale-save-recheck')]),
+      });
+      await duringFreshGet;
+      await page.waitForTimeout(50);
+      assert.equal(
+        await panel
+          .locator('dd')
+          .filter({ hasText: /^Выключен$/u })
+          .count(),
+        1,
+        'Settings invalidation revokes an old recheck while the fresh GET is in flight',
+      );
+      assert.equal(
+        await panel.getByText('Номер повтора: stale-save-recheck', { exact: true }).count(),
+        0,
+      );
+      const freshPage = heldFirstPages.shift();
+      await freshPage.route.fulfill({ json: diagnostics(freshPage.prefix, freshPage.enabled) });
+      await panel.getByText('Номер повтора: a-u1-first', { exact: true }).waitFor();
+      holdFirstPage = false;
+
+      for (const [leave, returnTo] of [
+        ['Чат B', 'Чат A'],
+        ['Пользователь 2', 'Пользователь 1'],
+        ['Уйти с экрана', 'Вернуться'],
+      ]) {
+        await panel.getByRole('button', { name: 'Проверить права', exact: true }).click();
+        await waitHeld(heldRechecks);
+        await page.getByRole('button', { name: leave, exact: true }).click();
+        await page.getByRole('button', { name: returnTo, exact: true }).click();
+        await openHistory(panel);
+        await panel.getByText('Номер повтора: a-u1-first', { exact: true }).waitFor();
+        const oldScopeRecheck = heldRechecks.shift();
+        const oldScopeReply = page.waitForResponse((response) =>
+          response.url().endsWith('/duplicate-diagnostics/recheck'),
+        );
+        await oldScopeRecheck.route.fulfill({
+          json: diagnostics(oldScopeRecheck.prefix, true, [attempt('stale-scope-recheck')]),
+        });
+        await oldScopeReply;
+        await page.waitForTimeout(50);
+        assert.equal(
+          await panel.getByText('Номер повтора: stale-scope-recheck', { exact: true }).count(),
+          0,
+          'Leaving and returning to the same chat/account cannot restore an old recheck',
+        );
+        assert.equal(
+          await panel
+            .locator('dd')
+            .filter({ hasText: /^Выключен$/u })
+            .count(),
+          1,
+        );
+      }
+      holdRecheck = false;
+      recheckCapability = 'MISSING';
+      await panel.getByRole('button', { name: 'Проверить права', exact: true }).click();
+      await panel.getByText('Нет прав удаления', { exact: true }).waitFor();
+      recheckCapability = 'CONFIRMED';
+      await panel.getByRole('button', { name: 'Проверить права', exact: true }).click();
+      await panel.getByText('Права удаления подтверждены', { exact: true }).waitFor();
 
       await panel.getByRole('button', { name: 'Показать ещё', exact: true }).click();
       await panel.getByText('Номер повтора: a-u1-page-1-0', { exact: true }).waitFor();
@@ -298,7 +411,7 @@ try {
       );
       assert.deepEqual(errors, []);
       console.log(
-        `PASS ${name}: save refresh, same-timestamp chat/account races, delayed links, safe links, bounded pages`,
+        `PASS ${name}: save refresh, fresh rechecks, late rechecks after invalidation/fresh GET/scope changes, same-timestamp chat/account races, delayed links, safe links, bounded pages`,
       );
     } finally {
       await context.close();

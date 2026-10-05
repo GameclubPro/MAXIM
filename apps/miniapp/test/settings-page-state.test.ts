@@ -562,9 +562,9 @@ test('discarding duplicate changes restores normalized server values', () => {
   });
   const current = createSettings({
     antiSpamEnabled: true,
-    duplicateWarnWindowSec: 604_800,
-    duplicateMuteWindowSec: 604_800,
-    duplicateBanWindowSec: 604_800,
+    duplicateWarnWindowSec: 172_800,
+    duplicateMuteWindowSec: 172_800,
+    duplicateBanWindowSec: 172_800,
   });
   const restored = mergeSectionSettings(
     current,
