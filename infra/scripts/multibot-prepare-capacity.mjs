@@ -96,12 +96,28 @@ export function assessMultibotPrepareCapacity(metadata, filesystems) {
 }
 
 export function checkMultibotPrepareCapacity(composeArgs, run = execFileSync) {
-  if (
-    !composeArgs.length ||
-    composeArgs.length % 2 !== 0 ||
-    composeArgs.some((value, index) => (index % 2 === 0 ? value !== '-f' : !value))
-  )
+  if (!Array.isArray(composeArgs) || !composeArgs.length || composeArgs.length % 2 !== 0)
     throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
+  // FLAG: Validate the complete global-option prefix before any probe. Preserve its
+  // exact env/project scope; commands and mutation flags never belong in this prefix.
+  const seen = new Set();
+  for (let index = 0; index < composeArgs.length; index += 2) {
+    const option = composeArgs[index];
+    const value = composeArgs[index + 1];
+    const canonicalOption = option === '--project-name' ? '-p' : option;
+    if (
+      !['-f', '--env-file', '-p'].includes(canonicalOption) ||
+      typeof value !== 'string' ||
+      !value.trim() ||
+      value.startsWith('-') ||
+      /\p{Cc}/u.test(value) ||
+      (canonicalOption !== '-f' && seen.has(canonicalOption)) ||
+      (canonicalOption === '-p' && !/^[a-z0-9][a-z0-9_-]*$/u.test(value))
+    )
+      throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
+    seen.add(canonicalOption);
+  }
+  if (!seen.has('-f')) throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
   const options = { encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024 };
   const pgCommand = ['compose', ...composeArgs, 'exec', '-T', 'postgres'];
   const catalog = run(
