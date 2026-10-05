@@ -96,12 +96,29 @@ export function assessMultibotPrepareCapacity(metadata, filesystems) {
 }
 
 export function checkMultibotPrepareCapacity(composeArgs, run = execFileSync) {
-  if (
-    !composeArgs.length ||
-    composeArgs.length % 2 !== 0 ||
-    composeArgs.some((value, index) => (index % 2 === 0 ? value !== '-f' : !value))
-  )
+  // FLAG: Preserve the deploy caller's env/project/files as structured argv. Dropping
+  // --env-file or -p can probe a different PostgreSQL instance from the actual rollout.
+  const allowedFlags = new Set(['-f', '--env-file', '-p']);
+  if (!Array.isArray(composeArgs) || !composeArgs.length || composeArgs.length % 2 !== 0)
     throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
+  const seen = new Set();
+  for (let index = 0; index < composeArgs.length; index += 2) {
+    const flag = composeArgs[index];
+    const value = composeArgs[index + 1];
+    if (
+      !allowedFlags.has(flag) ||
+      (flag !== '-f' && seen.has(flag)) ||
+      typeof value !== 'string' ||
+      !value.trim() ||
+      value.startsWith('-') ||
+      value.includes('\0') ||
+      /[\r\n]/u.test(value) ||
+      (flag === '-p' && !/^[a-z0-9][a-z0-9_-]*$/u.test(value))
+    )
+      throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
+    seen.add(flag);
+  }
+  if (!seen.has('-f')) throw new Error('MULTIBOT_PREPARE_COMPOSE_ARGUMENTS_INVALID');
   const options = { encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024 };
   const pgCommand = ['compose', ...composeArgs, 'exec', '-T', 'postgres'];
   const catalog = run(
