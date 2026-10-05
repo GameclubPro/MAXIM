@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildCommercialQualitySample } from '../moderation/commercial/commercial-quality-sampling';
@@ -7,6 +7,7 @@ import { extractCommercialOcrExactMessageSource } from '../moderation/commercial
 import {
   assertPrivateImageOutputSafe,
   capturePrivateImageExport,
+  findPrivateImageRepositoryRoot,
   readPrivateImageExportOptions,
   selectPrivateImageExportSources,
   PRIVATE_IMAGE_SOURCE_CAP,
@@ -86,6 +87,100 @@ describe('bounded private commercial source-image export', () => {
   });
   afterEach(async () => {
     await rm(folder, { recursive: true, force: true });
+  });
+  async function workspace(layout: 'SOURCE' | 'RUNTIME') {
+    const scripts = join(
+      repo,
+      ...(layout === 'SOURCE'
+        ? ['apps', 'api', 'src', 'scripts']
+        : ['apps', 'api', 'dist', 'apps', 'api', 'src', 'scripts']),
+    );
+    await mkdir(scripts, { recursive: true, mode: 0o700 });
+    await mkdir(join(repo, 'packages', 'contracts'), { recursive: true, mode: 0o700 });
+    await writeFile(join(repo, 'apps', 'api', 'package.json'), '{"name":"@maxim/api"}');
+    await writeFile(
+      join(repo, 'packages', 'contracts', 'package.json'),
+      '{"name":"@maxim/contracts"}',
+    );
+    return scripts;
+  }
+  it('locates the loaded runtime workspace without a root package manifest', async () => {
+    const scripts = await workspace('RUNTIME');
+    expect(await readdir(repo)).not.toContain('package.json');
+    const root = await findPrivateImageRepositoryRoot(scripts);
+    expect(root).toBe(repo);
+    await expect(
+      assertPrivateImageOutputSafe(join(folder, 'private-output'), root),
+    ).resolves.toBeUndefined();
+    for (const output of [
+      join(repo, 'private-output'),
+      join(repo, 'apps', 'api', 'dist', 'private-output'),
+      join(repo, 'packages', 'contracts', 'private-output'),
+    ])
+      await expect(assertPrivateImageOutputSafe(output, root)).rejects.toThrow(
+        'Original images must remain outside the repository',
+      );
+  });
+  it('locates the source workspace and ignores a misleading cwd with a maxim manifest', async () => {
+    const scripts = await workspace('SOURCE');
+    await writeFile(join(repo, 'package.json'), '{"name":"maxim"}');
+    const unrelated = join(folder, 'unrelated');
+    await mkdir(unrelated);
+    await writeFile(join(unrelated, 'package.json'), '{"name":"maxim"}');
+    const cwd = jest.spyOn(process, 'cwd').mockReturnValue(unrelated);
+    try {
+      await expect(findPrivateImageRepositoryRoot(scripts)).resolves.toBe(repo);
+      expect(cwd).not.toHaveBeenCalled();
+      await expect(findPrivateImageRepositoryRoot(unrelated)).rejects.toThrow(
+        'Repository root unavailable; refuse original-image output',
+      );
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+  it.each(['apps/api/package.json', 'packages/contracts/package.json'])(
+    'rejects a wrong or missing workspace marker at %s even with a maxim root manifest',
+    async (manifest) => {
+      const scripts = await workspace('RUNTIME');
+      await writeFile(join(repo, 'package.json'), '{"name":"maxim"}');
+      await writeFile(join(repo, manifest), '{"name":"unrelated-workspace"}');
+      await expect(findPrivateImageRepositoryRoot(scripts)).rejects.toThrow(
+        'Repository root unavailable; refuse original-image output',
+      );
+      await rm(join(repo, manifest));
+      await expect(findPrivateImageRepositoryRoot(scripts)).rejects.toThrow(
+        'Repository root unavailable; refuse original-image output',
+      );
+    },
+  );
+  it('resolves module symlinks to the actual workspace and rejects symlinked workspace markers', async () => {
+    const scripts = await workspace('RUNTIME');
+    const alias = join(folder, 'module-alias');
+    await symlink(scripts, alias);
+    const root = await findPrivateImageRepositoryRoot(alias);
+    expect(root).toBe(repo);
+    await expect(assertPrivateImageOutputSafe(join(repo, 'out'), root)).rejects.toThrow();
+    const contracts = join(repo, 'packages', 'contracts', 'package.json');
+    const marker = join(folder, 'foreign-contracts.json');
+    await writeFile(marker, '{"name":"@maxim/contracts"}');
+    await rm(contracts);
+    await symlink(marker, contracts);
+    await expect(findPrivateImageRepositoryRoot(scripts)).rejects.toThrow(
+      'Repository root unavailable; refuse original-image output',
+    );
+  });
+  it('rejects an unsupported module layout, a missing module and a relative module path', async () => {
+    await workspace('SOURCE');
+    const wrong = join(repo, 'apps', 'api', 'dist', 'src', 'scripts');
+    await mkdir(wrong, { recursive: true });
+    for (const moduleDirectory of [
+      wrong,
+      join(folder, 'missing-private-module'),
+      'apps/api/src/scripts',
+    ])
+      await expect(findPrivateImageRepositoryRoot(moduleDirectory)).rejects.toThrow(
+        'Repository root unavailable; refuse original-image output',
+      );
   });
   it('defaults to preview and requires an explicit UTC window, bounded image limit and apply output', () => {
     expect(

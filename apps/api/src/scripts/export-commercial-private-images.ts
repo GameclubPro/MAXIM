@@ -364,19 +364,35 @@ export async function capturePrivateImageExport(params: {
   return report;
 }
 
-async function findPrivateImageRepositoryRoot() {
-  let current = resolve(process.cwd());
-  for (let depth = 0; depth < 12; depth += 1) {
+// FLAG: Resolve the loaded module's real workspace, never cwd or an unrelated root manifest.
+// The runtime image retains API/contracts manifests but omits the root package.json.
+export async function findPrivateImageRepositoryRoot(moduleDirectory = __dirname) {
+  if (isAbsolute(moduleDirectory)) {
     try {
-      const packageInfo = JSON.parse(await readFile(resolve(current, 'package.json'), 'utf8')) as {
-        name?: string;
-      };
-      if (packageInfo.name === 'maxim') return current;
+      const moduleReal = await realpath(moduleDirectory);
+      if (!(await lstat(moduleReal)).isDirectory()) throw new Error('Module directory unavailable');
+      for (const layout of [
+        ['apps', 'api', 'dist', 'apps', 'api', 'src', 'scripts'],
+        ['apps', 'api', 'src', 'scripts'],
+      ]) {
+        const root = resolve(moduleReal, ...layout.map(() => '..'));
+        if (relative(root, moduleReal) !== layout.join(sep)) continue;
+        try {
+          const names = await Promise.all(
+            ['apps/api/package.json', 'packages/contracts/package.json'].map(async (path) => {
+              const manifest = resolve(root, path);
+              if ((await realpath(manifest)) !== manifest) return null;
+              return record(JSON.parse(await readFile(manifest, 'utf8'))).name;
+            }),
+          );
+          if (names[0] === '@maxim/api' && names[1] === '@maxim/contracts') return root;
+        } catch {
+          /* Missing or invalid workspace markers cannot establish the real repository root. */
+        }
+      }
     } catch {
-      /* Missing parent manifest is expected while locating the root. */
+      /* Resolve failures remain generic; private filesystem details never enter output. */
     }
-    if (dirname(current) === current) break;
-    current = dirname(current);
   }
   throw new Error('Repository root unavailable; refuse original-image output');
 }
