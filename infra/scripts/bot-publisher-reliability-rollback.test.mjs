@@ -74,6 +74,50 @@ const protectedSources = [
     'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
     'completeSent(delivery, dispatchStartedAt, sent.messageId)',
   ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    'assertFinalAutoReplyEpochAndBinding',
+  ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    'publisher_auto_reply_send_fence_lock',
+  ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    'publisher_auto_reply_send_fence_cas',
+  ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    'publisher_auto_reply_send_fence_cooldown',
+  ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    'admitted."dispatchStartedAt" +',
+  ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    'OR EXISTS (SELECT 1 FROM cooldown)',
+  ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    '"publisher_auto_reply_cooldowns"."next_allowed_at" <= (clock_timestamp() AT TIME ZONE',
+  ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    'binding."bot_access_expires_at" > clock."now"',
+  ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    'binding."bot_access_checked_at" <= clock."now"',
+  ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    'rule."version" = delivery."matched_rule_version"',
+  ],
+  [
+    'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
+    'settings."auto_reply_config_revision" = delivery."auto_reply_config_revision"',
+  ],
   ['apps/api/src/admin/admin-chat-settings.ts', "'nightModeStartTimeMinutes',"],
   [
     'apps/api/src/moderation/moderation-rule-followup-persistence.ts',

@@ -1,5 +1,6 @@
 import {
   PublicationContentFormat,
+  type Prisma,
   PublisherAutoReplyAssetUploadStatus,
   PublisherAutoReplyDeliveryStatus,
   PublisherAutoReplyMatchKind,
@@ -99,14 +100,32 @@ function harness(
   const leased = options.leased ?? delivery();
   const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
   const uploadUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+  const sendFence = new Date();
   const tx = {
     publisherAutoReplyDelivery: {
       findFirst: jest.fn().mockResolvedValue(leased),
       updateMany: deliveryUpdateMany,
     },
-    $queryRaw: jest
-      .fn()
-      .mockResolvedValue(options.cooldownClaimed === false ? [] : [{ rule_id: 'rule-1' }]),
+    chat: {
+      findUnique: jest.fn().mockResolvedValue({
+        id: leased.chatId,
+        publisherBinding: {
+          publisherBotId: leased.publisherBotId,
+          permissionsSnapshot: { permissionsKnown: true, permissions: ['write'] },
+          botAccessState: 'CONFIRMED_ADMIN',
+          botAccessCheckedAt: new Date(),
+          botAccessExpiresAt: new Date(Date.now() + 15 * 60_000),
+          lifecycleEventAt: null,
+          sendRouteQuarantinedUntil: null,
+        },
+      }),
+    },
+    $queryRaw: jest.fn(async (query: Prisma.Sql) => {
+      if (query.sql.includes('publisher_auto_reply_send_fence_lock')) return [{ id: leased.id }];
+      if (query.sql.includes('publisher_auto_reply_send_fence_cas'))
+        return [{ dispatchStartedAt: sendFence }];
+      return options.cooldownClaimed === false ? [] : [{ rule_id: 'rule-1' }];
+    }),
   };
   const prisma = {
     publisherAutoReplyDelivery: {
@@ -135,6 +154,7 @@ function harness(
     }),
   };
   const readiness = {
+    resolveReadiness: jest.fn().mockReturnValue({ state: 'ready' }),
     assertEntityReady: jest.fn().mockResolvedValue({
       chatId: '-100',
       entityType: 'chat',
@@ -175,6 +195,7 @@ function harness(
     sourceFence,
     deliveryUpdateMany,
     uploadUpdateMany,
+    sendFence,
   };
 }
 
@@ -200,16 +221,14 @@ describe('PublisherAutoReplyDeliveryService', () => {
   );
 
   it('does not cross the send fence when cancellation owns the source row lock first', async () => {
-    const { service, sourceFence, deliveryUpdateMany } = harness({
+    const { service, sourceFence, deliveryUpdateMany, tx } = harness({
       sourceFenceLockAdmitted: false,
     });
 
     await service.process(job, attempt);
 
     expect(sourceFence.lockAdmitted).toHaveBeenCalledTimes(1);
-    expect(deliveryUpdateMany).not.toHaveBeenCalledWith(
-      expect.objectContaining({ data: { dispatchStartedAt: expect.any(Date) } }),
-    );
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
     expect(deliveryUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -430,11 +449,10 @@ describe('PublisherAutoReplyDeliveryService', () => {
   });
 
   it('settles a known receipt after recovery quarantines the same immutable send fence', async () => {
-    const { service, deliveryUpdateMany, maxClient } = harness();
+    const { service, deliveryUpdateMany, maxClient, sendFence } = harness();
     let state: PublisherAutoReplyDeliveryStatus = PublisherAutoReplyDeliveryStatus.SENDING;
-    let fence: Date | null = null;
+    const fence = sendFence;
     deliveryUpdateMany.mockImplementation(async ({ where, data }) => {
-      if (data.dispatchStartedAt) fence = data.dispatchStartedAt;
       if (data.status === PublisherAutoReplyDeliveryStatus.SENT) {
         expect(state).toBe(PublisherAutoReplyDeliveryStatus.AMBIGUOUS);
         expect(where).toEqual(
@@ -497,14 +515,10 @@ describe('PublisherAutoReplyDeliveryService', () => {
   });
 
   it('does not settle or quarantine a replacement dispatch fence with an old known receipt', async () => {
-    const { service, deliveryUpdateMany, maxClient } = harness();
-    let originalFence: Date | null = null;
-    let replacementFence: Date | null = null;
+    const { service, deliveryUpdateMany, maxClient, sendFence } = harness();
+    const originalFence = sendFence;
+    const replacementFence = new Date(sendFence.getTime() + 1);
     deliveryUpdateMany.mockImplementation(async ({ where, data }) => {
-      if (data.dispatchStartedAt) {
-        originalFence = data.dispatchStartedAt;
-        replacementFence = new Date(originalFence!.getTime() + 1);
-      }
       if (data.status === PublisherAutoReplyDeliveryStatus.SENT) {
         expect(where.dispatchStartedAt).toEqual(originalFence);
         return { count: Number(where.dispatchStartedAt.getTime() === replacementFence!.getTime()) };

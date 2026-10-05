@@ -529,21 +529,153 @@ export class PublisherAutoReplyDeliveryService {
         contentRevision: { ...current.contentRevision, assets: delivery.contentRevision.assets },
       });
       await this.claimCooldown(tx, current);
-      const dispatchStartedAt = new Date();
-      const started = await tx.publisherAutoReplyDelivery.updateMany({
-        where: {
-          id: delivery.id,
-          status: PublisherAutoReplyDeliveryStatus.SENDING,
-          lockToken,
-          dispatchStartedAt: null,
-        },
-        data: { dispatchStartedAt },
-      });
-      if (started.count !== 1) {
-        throw new PublisherAutoReplyClaimLostError();
-      }
-      return dispatchStartedAt;
+      return this.assertFinalAutoReplyEpochAndBinding(tx, delivery, lockToken);
     });
+  }
+
+  private async assertFinalAutoReplyEpochAndBinding(
+    tx: Prisma.TransactionClient,
+    delivery: LeasedDelivery,
+    lockToken: string,
+  ): Promise<Date> {
+    // FLAG: Finish every potentially blocking delivery/cooldown lock before the final SQL
+    // epoch check. A statement snapshot taken before a delivery-lock wait can admit a rule,
+    // module or binding that an administrator revoked during that wait.
+    const owned = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      /* publisher_auto_reply_send_fence_lock */
+      SELECT "id" FROM "publisher_auto_reply_deliveries"
+      WHERE "id" = ${delivery.id} AND "chat_id" = ${delivery.chatId}
+        AND "publisher_bot_id" = ${delivery.publisherBotId}
+        AND "status" = 'SENDING' AND "lock_token" = ${lockToken}
+        AND "dispatch_started_at" IS NULL
+      FOR UPDATE
+    `);
+    if (owned.length !== 1) throw new PublisherAutoReplyClaimLostError();
+
+    const source = await tx.chat.findUnique({
+      where: { id: delivery.chatId },
+      include: { publisherSettings: true, publicationPolicy: true, publisherBinding: true },
+    });
+    const binding = source?.publisherBinding;
+    if (
+      !source ||
+      !binding ||
+      binding.publisherBotId !== delivery.publisherBotId ||
+      this.readiness.resolveReadiness(source, { now: new Date(), runtimeAvailable: true }).state !==
+        'ready'
+    ) {
+      throw new PublisherAutoReplyEpochChangedError('Publisher auto-reply binding changed');
+    }
+    const permissionsSnapshot =
+      binding.permissionsSnapshot === null ? null : JSON.stringify(binding.permissionsSnapshot);
+    const snapshot = binding.permissionsSnapshot;
+    const timestampedSnapshot = Boolean(
+      snapshot &&
+      typeof snapshot === 'object' &&
+      !Array.isArray(snapshot) &&
+      snapshot.checkedAt === binding.botAccessCheckedAt?.toISOString(),
+    );
+    const sourceUserId = delivery.sourceUserId?.trim() ?? '';
+    const cooldownSeconds = Math.max(0, delivery.rule.cooldownSeconds);
+    const cooldownRequired = Boolean(sourceUserId && cooldownSeconds > 0);
+    // FLAG: The exact epoch CAS is the send admission point. Check the binding deadline with
+    // the database clock; only an unchanged authority snapshot may renew its access dates.
+    // Rebase only the already-owned cooldown row, preserving its same-source version.
+    // Preserve captured token/content and commit before HTTP. Later policy revocation must
+    // not invalidate settlement of this attempt's confirmed receipt.
+    const started = await tx.$queryRaw<Array<{ dispatchStartedAt: Date }>>(Prisma.sql`
+      /* publisher_auto_reply_send_fence_cas */
+      WITH clock AS MATERIALIZED (SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"), admitted AS (
+      UPDATE "publisher_auto_reply_deliveries" AS delivery
+      SET "dispatch_started_at" = date_trunc('milliseconds', clock."now"), "updated_at" = clock."now"
+      FROM clock
+      WHERE delivery."id" = ${delivery.id} AND delivery."chat_id" = ${delivery.chatId}
+        AND delivery."publisher_bot_id" = ${delivery.publisherBotId}
+        AND delivery."rule_id" = ${delivery.ruleId}
+        AND delivery."content_revision_id" = ${delivery.contentRevisionId}
+        AND delivery."source_message_id" = ${delivery.sourceMessageId}
+        AND delivery."matched_rule_version" = ${delivery.matchedRuleVersion}
+        AND delivery."matched_normalized_phrase" = ${delivery.matchedNormalizedPhrase}
+        AND delivery."matched_trigger_id" IS NOT DISTINCT FROM ${delivery.matchedTriggerId}
+        AND delivery."publisher_settings_revision" = ${delivery.publisherSettingsRevision}
+        AND delivery."auto_reply_config_revision" = ${delivery.autoReplyConfigRevision}
+        AND delivery."publication_policy_revision" = ${delivery.publicationPolicyRevision}
+        AND delivery."status" = 'SENDING' AND delivery."lock_token" = ${lockToken}
+        AND delivery."dispatch_started_at" IS NULL
+        AND EXISTS (
+          SELECT 1 FROM "publisher_auto_reply_rules" AS rule
+          WHERE rule."id" = delivery."rule_id" AND rule."chat_id" = delivery."chat_id"
+            AND rule."enabled" = TRUE AND rule."archived_at" IS NULL
+            AND rule."version" = delivery."matched_rule_version"
+            AND rule."current_content_revision_id" = delivery."content_revision_id"
+            AND (
+              (delivery."matched_trigger_id" IS NULL AND rule."normalized_phrase" = delivery."matched_normalized_phrase")
+              OR EXISTS (
+                SELECT 1 FROM "publisher_auto_reply_triggers" AS trigger
+                WHERE trigger."id" = delivery."matched_trigger_id" AND trigger."rule_id" = rule."id"
+                  AND trigger."chat_id" = delivery."chat_id" AND trigger."archived_at" IS NULL
+                  AND trigger."normalized_phrase" = delivery."matched_normalized_phrase"
+              )
+            )
+        )
+        AND EXISTS (
+          SELECT 1 FROM "publisher_entity_settings" AS settings
+          WHERE settings."chat_id" = delivery."chat_id" AND settings."auto_replies_enabled" = TRUE
+            AND settings."revision" = delivery."publisher_settings_revision"
+            AND settings."auto_reply_config_revision" = delivery."auto_reply_config_revision"
+        )
+        AND (
+          (delivery."publication_policy_revision" = 0 AND NOT EXISTS (
+            SELECT 1 FROM "managed_entity_publication_policies" AS policy WHERE policy."chat_id" = delivery."chat_id"
+          ))
+          OR EXISTS (
+            SELECT 1 FROM "managed_entity_publication_policies" AS policy
+            WHERE policy."chat_id" = delivery."chat_id" AND policy."publik_enabled" = TRUE
+              AND policy."revision" = delivery."publication_policy_revision"
+          )
+        )
+        AND EXISTS (
+          SELECT 1 FROM "chats" AS chat
+          JOIN "publisher_entity_bindings" AS binding ON binding."chat_id" = chat."id"
+          WHERE chat."id" = delivery."chat_id" AND chat."entity_type" = 'CHAT'
+            AND binding."publisher_bot_id" = delivery."publisher_bot_id" AND binding."status" = 'ACTIVE'
+            AND binding."bot_access_state"::text = ${binding.botAccessState}
+            AND binding."bot_access_checked_at" >= ${binding.botAccessCheckedAt}
+            AND binding."bot_access_checked_at" <= clock."now"
+            AND binding."bot_access_expires_at" >= ${binding.botAccessExpiresAt}
+            AND binding."bot_access_expires_at" > clock."now"
+            AND (
+              binding."permissions_snapshot" IS NOT DISTINCT FROM ${permissionsSnapshot}::jsonb
+              OR (
+                ${timestampedSnapshot}
+                AND (binding."permissions_snapshot" - 'checkedAt') IS NOT DISTINCT FROM (${permissionsSnapshot}::jsonb - 'checkedAt')
+                AND binding."permissions_snapshot"->>'checkedAt' = to_char(binding."bot_access_checked_at", 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+              )
+            )
+            AND binding."lifecycle_event_at" IS NOT DISTINCT FROM ${binding.lifecycleEventAt}
+            AND binding."send_route_quarantined_until" IS NOT DISTINCT FROM ${binding.sendRouteQuarantinedUntil}
+            AND (binding."send_route_quarantined_until" IS NULL OR binding."send_route_quarantined_until" <= clock."now")
+        )
+      RETURNING delivery."dispatch_started_at" AS "dispatchStartedAt", delivery."rule_id", delivery."source_message_id"
+      ), cooldown AS (
+        /* publisher_auto_reply_send_fence_cooldown */
+        UPDATE "publisher_auto_reply_cooldowns" AS cooldown
+        SET "next_allowed_at" = GREATEST(
+          cooldown."next_allowed_at", admitted."dispatchStartedAt" + ${cooldownSeconds} * interval '1 second'
+        ), "updated_at" = admitted."dispatchStartedAt"
+        FROM admitted
+        WHERE ${cooldownRequired} AND cooldown."rule_id" = ${delivery.ruleId}
+          AND cooldown."rule_id" = admitted."rule_id"
+          AND cooldown."source_user_id" = ${sourceUserId}
+          AND cooldown."last_source_message_id" = admitted."source_message_id"
+        RETURNING cooldown."rule_id"
+      )
+      SELECT admitted."dispatchStartedAt" FROM admitted
+      WHERE ${!cooldownRequired} OR EXISTS (SELECT 1 FROM cooldown)
+    `);
+    if (started.length !== 1)
+      throw new PublisherAutoReplyEpochChangedError('Publisher auto-reply final epoch changed');
+    return started[0]!.dispatchStartedAt;
   }
 
   private async claimCooldown(
@@ -555,21 +687,23 @@ export class PublisherAutoReplyDeliveryService {
     if (!sourceUserId || cooldownSeconds === 0) {
       return;
     }
-    const now = new Date();
-    const nextAllowedAt = new Date(now.getTime() + cooldownSeconds * 1_000);
+    // FLAG: ON CONFLICT evaluates eligibility after acquiring its row lock. Use the live
+    // database clock there, then rebase this owned row to the immutable final send fence.
     const rows = await tx.$queryRaw<Array<{ rule_id: string }>>(Prisma.sql`
       INSERT INTO "publisher_auto_reply_cooldowns" (
         "rule_id", "source_user_id", "next_allowed_at", "last_source_message_id", "version", "updated_at"
       )
       VALUES (
-        ${delivery.ruleId}, ${sourceUserId}, ${nextAllowedAt}, ${delivery.sourceMessageId}, 1, ${now}
+        ${delivery.ruleId}, ${sourceUserId},
+        (clock_timestamp() AT TIME ZONE 'UTC') + ${cooldownSeconds} * interval '1 second',
+        ${delivery.sourceMessageId}, 1, clock_timestamp() AT TIME ZONE 'UTC'
       )
       ON CONFLICT ("rule_id", "source_user_id") DO UPDATE
       SET
         "next_allowed_at" = CASE
           WHEN "publisher_auto_reply_cooldowns"."last_source_message_id" = EXCLUDED."last_source_message_id"
             THEN "publisher_auto_reply_cooldowns"."next_allowed_at"
-          ELSE EXCLUDED."next_allowed_at"
+          ELSE (clock_timestamp() AT TIME ZONE 'UTC') + ${cooldownSeconds} * interval '1 second'
         END,
         "last_source_message_id" = EXCLUDED."last_source_message_id",
         "version" = CASE
@@ -577,10 +711,10 @@ export class PublisherAutoReplyDeliveryService {
             THEN "publisher_auto_reply_cooldowns"."version"
           ELSE "publisher_auto_reply_cooldowns"."version" + 1
         END,
-        "updated_at" = EXCLUDED."updated_at"
+        "updated_at" = clock_timestamp() AT TIME ZONE 'UTC'
       WHERE
         "publisher_auto_reply_cooldowns"."last_source_message_id" = EXCLUDED."last_source_message_id"
-        OR "publisher_auto_reply_cooldowns"."next_allowed_at" <= ${now}
+        OR "publisher_auto_reply_cooldowns"."next_allowed_at" <= (clock_timestamp() AT TIME ZONE 'UTC')
       RETURNING "rule_id"
     `);
     if (rows.length !== 1) {

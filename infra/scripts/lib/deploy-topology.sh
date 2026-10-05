@@ -420,6 +420,18 @@ maxim_topology_require_bot_publisher_reliability() {
       replies.includes("confirmedRemoteMessageId") &&
       replies.includes("completeSent(delivery, dispatchStartedAt, sent.messageId)") &&
       replies.includes("PublisherAutoReplyDeliveryStatus.AMBIGUOUS") &&
+      /return this\.assertFinalAutoReplyEpochAndBinding\(tx,\s*delivery,\s*lockToken\)/u.test(replies) &&
+      replies.includes("publisher_auto_reply_send_fence_lock") &&
+      replies.includes("publisher_auto_reply_send_fence_cas") &&
+      replies.includes("publisher_auto_reply_send_fence_cooldown") &&
+      replies.includes("admitted.\u0022dispatchStartedAt\u0022 +") &&
+      replies.includes("OR EXISTS (SELECT 1 FROM cooldown)") &&
+      replies.includes("\u0022publisher_auto_reply_cooldowns\u0022.\u0022next_allowed_at\u0022 <= (clock_timestamp() AT TIME ZONE") &&
+      replies.includes("FOR UPDATE") &&
+      replies.includes("binding.\u0022bot_access_expires_at\u0022 > clock.\u0022now\u0022") &&
+      replies.includes("binding.\u0022bot_access_checked_at\u0022 <= clock.\u0022now\u0022") &&
+      replies.includes("rule.\u0022version\u0022 = delivery.\u0022matched_rule_version\u0022") &&
+      replies.includes("settings.\u0022auto_reply_config_revision\u0022 = delivery.\u0022auto_reply_config_revision\u0022") &&
       intents.includes("persistIntent(input, false, tx)") &&
       /persistRuleFollowupBeforeDelete\(\s*tx,/u.test(intents) &&
       intents.includes("activateOwnedRuleFollowups(tx,") &&

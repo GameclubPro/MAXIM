@@ -109,7 +109,7 @@ ${dfOutput}
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     MAXIM_TEST_CAPACITY_METADATA: JSON.stringify(metadata),
-    MAXIM_TEST_CAPACITY_AVAILABLE_KIB: String(((failure === 'capacity' ? 25 : 50) * GiB) / 1024),
+    MAXIM_TEST_CAPACITY_AVAILABLE_KIB: String(((failure === 'capacity' ? 9 : 10) * GiB) / 1024),
   };
   // Run the real CLI outside the parent Node test harness.
   delete env.NODE_TEST_CONTEXT;
@@ -255,8 +255,12 @@ test('online prep follows all image builds and precedes queue fence, ingress sto
     deploy.indexOf('run_online_multibot_migrations()'),
     deploy.indexOf('\nif ! command -v docker'),
   );
-  assert.match(runner, /run --rm --no-deps --pull never api-ingress/u);
-  assert.match(runner, /node scripts\/agent\/multibot-online-prepare\.mjs/u);
+  assert.match(runner, /MAXIM_MIGRATION_API_IMAGE="\$MAXIM_API_IMAGE"/u);
+  assert.match(
+    runner,
+    /node "\$ROOT_DIR\/infra\/scripts\/multibot-online-supervisor\.mjs" "\$\{MIGRATION_COMPOSE_FILES\[@\]\}"/u,
+  );
+  assert.doesNotMatch(runner, /docker compose.*run/u);
 });
 
 test('capacity sums simultaneous data, sort and WAL budgets on the shared Docker device', () => {
@@ -269,7 +273,20 @@ test('capacity sums simultaneous data, sort and WAL budgets on the shared Docker
   assert.equal(report.serializedIndexBuilds, true);
   assert.equal(report.devices[0].sufficient, true);
   const insufficient = assessMultibotPrepareCapacity(metadata, sharedFilesystems(25 * GiB));
-  assert.equal(insufficient.devices[0].sufficient, false);
+  assert.equal(insufficient.devices[0].sufficient, true);
+  assert.equal(insufficient.devices[0].estimateSufficient, false);
+  assert.equal(insufficient.devices[0].requiredBytes, 10 * GiB);
+  assert.equal(report.admissionMinimumBytes, 10 * GiB);
+  assert.equal(report.supervisionRequired, true);
+  assert.ok(insufficient.devices[0].estimatedRequiredBytes > 25 * GiB);
+  assert.equal(
+    assessMultibotPrepareCapacity(metadata, sharedFilesystems(10 * GiB)).devices[0].sufficient,
+    true,
+  );
+  assert.equal(
+    assessMultibotPrepareCapacity(metadata, sharedFilesystems(10 * GiB - 1)).devices[0].sufficient,
+    false,
+  );
 });
 
 test('capacity verifies each distinct data, WAL and Docker filesystem and uses minimum observed free bytes', () => {
@@ -281,8 +298,8 @@ test('capacity verifies each distinct data, WAL and Docker filesystem and uses m
   });
   assert.equal(report.devices.length, 3);
   assert.equal(report.devices[0].availableBytes, 20 * GiB);
-  assert.equal(report.devices[0].sufficient, false);
-  assert.equal(report.devices[1].sufficient, false);
+  assert.equal(report.devices[0].sufficient, true);
+  assert.equal(report.devices[1].sufficient, true);
   assert.equal(report.devices[2].sufficient, true);
 });
 

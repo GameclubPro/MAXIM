@@ -47,6 +47,42 @@ test('maps API runtime changes to the shared API component', () => {
   assert.equal(plan.migration.required, false);
 });
 
+test('deploys and validates the exact migration preparer copied into the API image', () => {
+  for (const status of ['A', 'M', 'D']) {
+    const plan = planFor([{ status, path: 'scripts/agent/multibot-online-prepare.mjs' }]);
+
+    assert.deepEqual(plan.deploy.components, ['api-shared']);
+    assert.deepEqual(plan.checks, ['repo-static', 'agent-tools', 'infra', 'api', 'prisma']);
+    assert.deepEqual(plan.unknownPaths, []);
+    assert.equal(plan.migration.required, false);
+    assert.equal(plan.migration.reviewRequired, false);
+  }
+
+  const renamed = planFor([
+    {
+      status: 'R100',
+      oldPath: 'scripts/agent/multibot-online-prepare.mjs',
+      newPath: 'scripts/agent/multibot-online-prepare-retired.mjs',
+    },
+  ]);
+  assert.deepEqual(renamed.deploy.components, ['api-shared']);
+});
+
+test('keeps other agent tools and migration preparer tests deployment-free', () => {
+  for (const path of [
+    'scripts/agent/plan.mjs',
+    'scripts/agent/test/multibot-online-prepare.test.mjs',
+    'scripts/agent/multibot-online-prepare-retired.mjs',
+    'scripts/agent/multibot-online-prepare.mjs.backup',
+  ]) {
+    const plan = planFor([{ status: 'M', path }]);
+
+    assert.deepEqual(plan.checks, ['repo-static', 'agent-tools']);
+    assert.deepEqual(plan.deploy.components, []);
+    assert.deepEqual(plan.unknownPaths, []);
+  }
+});
+
 test('keeps workspace tests out of production deploy scope', () => {
   const plan = planFor([
     { status: 'M', path: 'packages/contracts/test/publication-contract.spec.ts' },

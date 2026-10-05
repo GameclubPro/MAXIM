@@ -135,7 +135,7 @@ export class ModerationRuleFollowupService
       await this.prisma.$executeRaw(Prisma.sql`
         WITH due AS (SELECT "id" FROM "moderation_rule_followups"
           WHERE "status" = ${status} AND "deadline_at" <= ${sweepAt}
-            AND COALESCE("effects"->>'phase', 'UNSTARTED') = 'UNSTARTED' 
+            AND COALESCE("effects"->>'phase', 'UNSTARTED') = 'UNSTARTED'
           ORDER BY "deadline_at", "id" LIMIT ${PAGE_SIZE} FOR UPDATE SKIP LOCKED)
         UPDATE "moderation_rule_followups" row SET "status" = 'EXPIRED', "completed_at" = (clock_timestamp() AT TIME ZONE 'UTC'),
           "updated_at" = (clock_timestamp() AT TIME ZONE 'UTC') FROM due WHERE row."id" = due."id"

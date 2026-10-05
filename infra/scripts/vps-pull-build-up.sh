@@ -491,8 +491,17 @@ prepare_deploy_disk_capacity() {
 
   REUSE_PRELOADED_TARGET_IMAGES_ONLY=0
   if selected_target_images_are_preloaded; then
+    # FLAG: Exact image reuse removes build work but still requires the component rollout reserve.
+    for service in "${SERVICES[@]}"; do
+      case "$service" in
+        miniapp-static|miniapp-major-static|admin-static)
+          needs_static_build=1
+          ;;
+      esac
+    done
+    maxim_check_deploy_reuse_disk_capacity "$BUILD_API_IMAGE" "$needs_static_build" || return
     REUSE_PRELOADED_TARGET_IMAGES_ONLY=1
-    echo "Skipping deploy build disk preflight: every selected exact immutable target image is already local for $TARGET_SHA."
+    echo "Reusing every selected exact immutable target image already local for $TARGET_SHA; absolute deploy reserve verified."
     return 0
   fi
 
@@ -1207,8 +1216,7 @@ run_migrations() {
 run_online_multibot_migrations() {
   ensure_compose_env
   MAXIM_MIGRATION_API_IMAGE="$MAXIM_API_IMAGE" \
-    docker compose "${MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never api-ingress \
-    node scripts/agent/multibot-online-prepare.mjs
+    node "$ROOT_DIR/infra/scripts/multibot-online-supervisor.mjs" "${MIGRATION_COMPOSE_FILES[@]}"
 }
 
 if ! command -v docker >/dev/null 2>&1; then

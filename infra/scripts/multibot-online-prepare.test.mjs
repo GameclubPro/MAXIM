@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -13,7 +15,9 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
+  createMultibotPrepareEnvironment,
   createMultibotMigrationPrefix,
   MULTIBOT_ONLINE_PREFIX_NAME,
   runMultibotOnlinePrepare,
@@ -31,6 +35,8 @@ const fakeEnv = {
   DATABASE_URL: 'postgresql://fixture:fixture-secret@localhost/race_test_online_prepare',
   MAX_BOT_TOKEN: 'fixture-only-token',
 };
+const applicationTag = 'maxim-online-aceb2e88-5369-4e3e-bdf5-1b232c3a16af';
+const nativePostgresUrl = process.env.MAXIM_TEST_POSTGRES_URL?.trim();
 
 function snapshotTree(directory) {
   const files = new Map();
@@ -134,6 +140,141 @@ test('successful preparation uses one structured bounded Prisma deploy and remov
   assert.equal(result.migrationNames.at(-1), MULTIBOT_ONLINE_PREFIX_NAME);
   assert.equal(existsSync(tempRoot), false);
   assertSourceUnchanged(original);
+});
+
+test('supervised preparation preserves URL settings and credentials and clones the immutable caller environment', () => {
+  for (const databaseUrl of [
+    'postgresql://fixture:p%40ss%2Bword@localhost:5433/race_test?schema=tenant%20schema&sslmode=require&connect_timeout=9&options=-c%20timezone%3DUTC',
+    'postgres://fixture:fixture-secret@localhost/race_test',
+    'postgresql://fixture:fixture-secret@localhost/race_test?',
+    `postgresql://fixture:fixture-secret@localhost/race_test?schema=public&application_name=${applicationTag}`,
+  ]) {
+    const env = Object.freeze({
+      ...fakeEnv,
+      DATABASE_URL: databaseUrl,
+      MAXIM_MULTIBOT_PREPARE_APPLICATION_NAME: applicationTag,
+      PGOPTIONS: '-c timezone=UTC',
+    });
+    const before = { ...env };
+    const prepared = createMultibotPrepareEnvironment(env);
+    assert.notEqual(prepared, env);
+    assert.deepEqual(env, before);
+    assert.equal(prepared.MAX_BOT_TOKEN, env.MAX_BOT_TOKEN);
+    assert.equal(prepared.PGOPTIONS, env.PGOPTIONS);
+    const originalAddress = new URL(databaseUrl);
+    const preparedAddress = new URL(prepared.DATABASE_URL);
+    assert.equal(preparedAddress.searchParams.get('application_name'), applicationTag);
+    assert.equal(preparedAddress.searchParams.getAll('application_name').length, 1);
+    for (const part of ['protocol', 'username', 'password', 'hostname', 'port', 'pathname'])
+      assert.equal(preparedAddress[part], originalAddress[part]);
+    originalAddress.searchParams.delete('application_name');
+    preparedAddress.searchParams.delete('application_name');
+    assert.deepEqual([...preparedAddress.searchParams], [...originalAddress.searchParams]);
+    assert.ok(prepared.DATABASE_URL.startsWith(databaseUrl));
+    let calls = 0;
+    runMultibotOnlinePrepare({
+      root,
+      env,
+      runPrisma: (_command, args, options) => {
+        calls += 1;
+        assert.deepEqual(options.env, prepared);
+        assert.notEqual(options.env, env);
+        assertPrefix(args[4]);
+        assert.equal(
+          args.some((arg) => arg.includes('fixture-secret')),
+          false,
+        );
+        return { status: 0 };
+      },
+    });
+    assert.equal(calls, 1);
+    assert.deepEqual(env, before);
+  }
+});
+
+test('invalid session tags or conflicting database settings refuse preparation without files, commands or secret errors', () => {
+  const fixture = mkdtempSync(resolve(tmpdir(), 'maxim-online-invalid-tag-'));
+  const invalidTags = [
+    '',
+    ' ',
+    'maxim-online-',
+    applicationTag.toUpperCase(),
+    applicationTag.replace('-4e3e-', '-1e3e-'),
+    applicationTag.replace('-bdf5-', '-7df5-'),
+    `${applicationTag}\n`,
+    5,
+  ];
+  const invalidAddresses = [
+    'https://fixture:fixture-secret@localhost/race_test',
+    'not-a-url-fixture-secret',
+    'postgresql://fixture:fixture-secret@localhost/',
+    'postgresql://fixture:fixture-secret@localhost/race_test#fixture-secret',
+    'postgresql://fixture:fixture-secret@localhost/race_test ',
+    'postgresql://fixture:fixture-secret@local\nhost/race_test',
+    'postgresql://fixture:fixture-secret@local\thost/race_test',
+    'postgresql://fixture:fixture-secret@localhost/race_test\0',
+    'postgresql://fixture:fixture-secret@localhost/race_test?application_name=other',
+    `postgresql://fixture:fixture-secret@localhost/race_test?application_name=${applicationTag}&application_name=${applicationTag}`,
+    'postgresql://fixture:fixture-secret@localhost/race_test?options=-c%20application_name%3Dother',
+  ];
+  let calls = 0;
+  try {
+    for (const [DATABASE_URL, tag] of [
+      ...invalidTags.map((tag) => [fakeEnv.DATABASE_URL, tag]),
+      ...invalidAddresses.map((address) => [address, applicationTag]),
+    ]) {
+      const env = Object.freeze({
+        ...fakeEnv,
+        DATABASE_URL,
+        MAXIM_MULTIBOT_PREPARE_APPLICATION_NAME: tag,
+      });
+      assert.throws(
+        () =>
+          runMultibotOnlinePrepare({
+            root: fixture,
+            env,
+            runPrisma: () => {
+              calls += 1;
+              return { status: 0 };
+            },
+          }),
+        (error) => {
+          assert.match(
+            error.message,
+            /^MULTIBOT_PREPARE_(APPLICATION_NAME_(?:INVALID|CONFLICT)|TAGGED_DATABASE_URL_INVALID)$/u,
+          );
+          assert.equal(error.message.includes('fixture-secret'), false);
+          assert.equal(error.message.includes(DATABASE_URL), false);
+          return true;
+        },
+      );
+      assert.deepEqual(readdirSync(fixture), []);
+    }
+    assert.equal(calls, 0);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('CLI failure logs a fixed code without tagged connection URLs, credentials or tokens', () => {
+  const result = spawnSync(
+    process.execPath,
+    [resolve(root, 'scripts/agent/multibot-online-prepare.mjs')],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        ...fakeEnv,
+        MAXIM_MULTIBOT_PREPARE_APPLICATION_NAME: 'bad-fixture-tag',
+      },
+      encoding: 'utf8',
+      timeout: 5_000,
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /MULTIBOT_PREPARE_APPLICATION_NAME_INVALID/u);
+  for (const secret of Object.values(fakeEnv))
+    assert.equal(`${result.stdout}${result.stderr}`.includes(secret), false);
 });
 
 for (const [name, result] of [
@@ -248,3 +389,137 @@ test('an incomplete reviewed prefix refuses preparation before creating a tempor
     rmSync(fixture, { recursive: true, force: true });
   }
 });
+
+test(
+  'native Prisma migration engine retains the exact supervised tag and only its blocked session is canceled',
+  { skip: !nativePostgresUrl, timeout: 30_000 },
+  async () => {
+    const address = new URL(nativePostgresUrl);
+    assert.ok(
+      ['127.0.0.1', 'localhost', '[::1]'].includes(address.hostname) &&
+        address.pathname.includes('race_test'),
+      'Requires the disposable local PostgreSQL race_test database',
+    );
+    const { default: pg } = await import('pg');
+    const client = new pg.Client({
+      connectionString: nativePostgresUrl,
+      connectionTimeoutMillis: 5_000,
+      query_timeout: 5_000,
+      options: '-c statement_timeout=5000 -c lock_timeout=3000 -c timezone=UTC',
+      application_name: 'maxim-online-fixture-observer',
+    });
+    const tag = `maxim-online-${randomUUID()}`;
+    let connected = false;
+    let locked = false;
+    let child;
+    let childDone;
+    let childResult;
+    let output = '';
+    try {
+      await client.connect();
+      connected = true;
+      const identity = await client.query('SELECT version() AS version, pg_backend_pid() AS pid');
+      assert.match(identity.rows[0].version, /^PostgreSQL /u);
+      assert.doesNotMatch(identity.rows[0].version, /pglite|wasm/iu);
+      // FLAG: This disposable database fixture holds Prisma's own advisory lock, so
+      // observation/cancellation happens before the migration engine can perform DDL.
+      await client.query('SELECT pg_advisory_lock(72707369)');
+      locked = true;
+      child = spawn(
+        process.execPath,
+        [resolve(root, 'scripts/agent/multibot-online-prepare.mjs')],
+        {
+          cwd: root,
+          detached: true,
+          env: {
+            ...process.env,
+            ...fakeEnv,
+            DATABASE_URL: nativePostgresUrl,
+            MAXIM_MULTIBOT_PREPARE_APPLICATION_NAME: tag,
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      for (const stream of [child.stdout, child.stderr])
+        stream.on('data', (chunk) => {
+          output = (output + chunk).slice(-16_384);
+        });
+      childDone = new Promise((done) => {
+        child.once('error', () => {
+          childResult = { code: 1, error: true };
+          done(childResult);
+        });
+        child.once('close', (code, signal) => {
+          childResult = { code, signal };
+          done(childResult);
+        });
+      });
+      const deadline = Date.now() + 8_000;
+      let engine;
+      while (Date.now() < deadline && !childResult) {
+        const sessions = await client.query(
+          `SELECT pid, application_name FROM pg_stat_activity
+           WHERE datname = current_database() AND pid <> pg_backend_pid()
+             AND wait_event = 'advisory' AND query LIKE '%pg_advisory_lock(72707369)%'
+           LIMIT 10`,
+        );
+        if (sessions.rows.length) {
+          assert.equal(sessions.rows.length, 1, 'Expected only the owned migration engine waiter');
+          engine = sessions.rows[0];
+          assert.equal(engine.application_name, tag, 'Prisma must preserve the exact session tag');
+          break;
+        }
+        await delay(50);
+      }
+      assert.ok(
+        engine,
+        'Prisma must expose its tagged advisory-lock waiter before its own timeout',
+      );
+      const canceled = await client.query(
+        `SELECT pg_cancel_backend(pid) AS canceled FROM pg_stat_activity
+         WHERE datname = current_database() AND application_name = $1 AND pid = $2`,
+        [tag, engine.pid],
+      );
+      assert.deepEqual(canceled.rows, [{ canceled: true }]);
+      let finishTimeout;
+      let result;
+      try {
+        result = await Promise.race([
+          childDone,
+          new Promise((done) => {
+            finishTimeout = setTimeout(() => done({ timeout: true }), 5_000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(finishTimeout);
+      }
+      assert.equal(result.timeout, undefined, 'Canceled migration engine must stop promptly');
+      assert.equal(result.code, 1);
+      assert.match(output, /MULTIBOT_PREPARE_PRISMA_DEPLOY_FAILED/u);
+      assert.equal(output.includes(nativePostgresUrl), false);
+      assert.equal(output.includes(decodeURIComponent(address.password)), false);
+      const remaining = await client.query(
+        `SELECT pid FROM pg_stat_activity
+         WHERE datname = current_database() AND application_name = $1`,
+        [tag],
+      );
+      assert.deepEqual(remaining.rows, []);
+      const observer = await client.query('SELECT pg_backend_pid() AS pid');
+      assert.equal(observer.rows[0].pid, identity.rows[0].pid);
+    } finally {
+      if (child && !childResult) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch (error) {
+          assert.equal(error.code, 'ESRCH', 'Only an already-exited owned group may be absent');
+        }
+        await childDone;
+      }
+      try {
+        if (connected && locked) await client.query('SELECT pg_advisory_unlock(72707369)');
+      } finally {
+        await client.end();
+      }
+    }
+  },
+);

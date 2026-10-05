@@ -35,12 +35,34 @@ promise a completion time. Existing index names fail rather than skip a partial
 build.
 
 Preparation checks fresh storage metadata and data/temp/WAL/Docker filesystem
-capacity, adding budgets on shared devices rather than treating their free
-space independently. Unknown or unsupported storage layouts abort. The capacity
-calculation reserves index, temporary-sort, WAL and runtime headroom; it is an
-estimate, not a PostgreSQL worst-case guarantee. `max_wal_size` controls
-checkpoint pressure and does not cap WAL disk use. A successful build-image
-disk check does not replace this database preparation gate.
+capacity. Admission requires at least **10 GiB (10,737,418,240 bytes)** free on
+each involved device. The estimated index, temporary-sort, WAL and runtime peak
+remains in the report, adding modeled budgets on shared devices rather than
+treating their free space independently. That estimate is advisory and does not
+raise the admission threshold. Unknown or unsupported storage layouts abort.
+`max_wal_size` controls checkpoint pressure and does not cap WAL disk use. A
+successful build-image disk check does not replace this preparation gate.
+
+The production path uses `multibot-online-supervisor.mjs` to enforce the reserve
+throughout preparation with bounded, non-overlapping filesystem samples and a
+final fresh check before accepting success. The supervisor assigns one canonical
+UUID-v4 `maxim-online-<uuid>` tag to its migration container and PostgreSQL
+`application_name`; never persist this attempt-specific tag in production `.env`.
+The Prisma helper clones its environment and retains all other database URL
+settings. A conflicting tag or unsupported connection URL aborts before Prisma.
+Native PostgreSQL tests verify that the actual Prisma engine preserves its exact
+session tag.
+
+If the free reserve falls below 10 GiB, a sample cannot be obtained, the storage
+device changes, or the bounded attempt is interrupted/expires (including an SSH
+hangup), the supervisor
+aborts preparation. Cleanup addresses only its exact tagged database sessions
+and migration one-off container. It must not stop old API roles, clear failed
+migration receipts, resolve them or retry partial SQL. Unconfirmed cleanup fails
+the release; it cannot authorize quiescence or the effects cutoff. Preserve
+partial concurrent indexes for reviewed recovery. The sampled reserve does not
+guarantee enough space for every possible peak or prevent exhaustion between
+checks. Review advisory estimates and observe I/O/queue behavior during the run.
 
 The capacity probe receives the same structured Compose arguments as the deploy:
 `--env-file .env -p <project> -f infra/docker-compose.yml`, including any subsequent

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-MAXIM_API_BUILD_HARD_MIN_FREE_BYTES="21474836480"
+MAXIM_API_BUILD_HARD_MIN_FREE_BYTES="10737418240"
 MAXIM_STATIC_BUILD_HARD_MIN_FREE_BYTES="6442450944"
 
 maxim_deploy_disk_validate_nonnegative_int() {
@@ -50,6 +50,7 @@ maxim_deploy_disk_override_enabled() {
 maxim_check_deploy_disk_capacity() {
   local needs_api_build="${1:-}"
   local needs_static_build="${2:-}"
+  local capacity_mode="${3:-build}"
   local target_percent="${MAXIM_DEPLOY_DISK_TARGET_PERCENT:-${MAXIM_DEPLOY_DISK_WARN_PERCENT:-90}}"
   local critical_percent="${MAXIM_DEPLOY_DISK_CRITICAL_PERCENT:-${MAXIM_DEPLOY_DISK_MAX_PERCENT:-95}}"
   local hard_minimum_free_bytes="0"
@@ -60,6 +61,10 @@ maxim_check_deploy_disk_capacity() {
   local available_bytes
   local used_percent
 
+  if [[ "$capacity_mode" != "build" && "$capacity_mode" != "reuse" ]]; then
+    echo "Deploy disk capacity mode must be build or reuse." >&2
+    return 1
+  fi
   if [[ "$needs_api_build" != "0" && "$needs_api_build" != "1" ]] ||
      [[ "$needs_static_build" != "0" && "$needs_static_build" != "1" ]]; then
     echo "Deploy disk capacity requirements must be expressed as 0 or 1." >&2
@@ -118,17 +123,18 @@ maxim_check_deploy_disk_capacity() {
   available_bytes="$(maxim_deploy_disk_normalize_nonnegative_int "$available_bytes")"
   used_percent="$(maxim_deploy_disk_normalize_nonnegative_int "$used_percent")"
 
-  echo "Deploy disk preflight: components=$build_kind path=$disk_path used=${used_percent}% available=${available_bytes}B minimum-free=${minimum_free_bytes}B target=${target_percent}% critical=${critical_percent}%"
+  echo "Deploy disk preflight: components=$build_kind path=$disk_path used=${used_percent}% available=${available_bytes}B minimum-free=${minimum_free_bytes}B target=${target_percent}% critical=${critical_percent}% mode=$capacity_mode"
   if maxim_deploy_disk_decimal_less_than "$available_bytes" "$minimum_free_bytes"; then
     cat >&2 <<EOF
-Refusing to build with ${available_bytes} free bytes; at least ${minimum_free_bytes} bytes are required.
+Refusing deploy disk preflight with ${available_bytes} free bytes; at least ${minimum_free_bytes} bytes are required.
 Run infra/scripts/vps-docker-space-reclaim.sh after reviewing its inventory.
 This absolute free-space minimum is not bypassed by MAXIM_ALLOW_CRITICAL_DISK_DEPLOY.
 EOF
     return 1
   fi
 
-  if ! maxim_deploy_disk_decimal_less_than "$used_percent" "$target_percent" &&
+  if [[ "$capacity_mode" == "build" ]] &&
+     ! maxim_deploy_disk_decimal_less_than "$used_percent" "$target_percent" &&
      ! maxim_deploy_disk_override_enabled "${MAXIM_ALLOW_CRITICAL_DISK_DEPLOY:-0}"; then
     local severity="above the deploy target"
     if ! maxim_deploy_disk_decimal_less_than "$used_percent" "$critical_percent"; then
@@ -147,4 +153,9 @@ EOF
   elif ! maxim_deploy_disk_decimal_less_than "$used_percent" "$target_percent"; then
     echo "WARNING: deploy host disk utilization is ${used_percent}%." >&2
   fi
+}
+
+maxim_check_deploy_reuse_disk_capacity() {
+  # FLAG: Verified image reuse skips build-only percentage gating, never the absolute reserve.
+  maxim_check_deploy_disk_capacity "${1:-}" "${2:-}" reuse
 }
