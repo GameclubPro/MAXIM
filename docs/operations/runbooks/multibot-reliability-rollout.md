@@ -105,7 +105,10 @@ If online preparation fails, old ingress and workers remain live. Preserve the
 failed migration receipt, partial indexes and release transition journal; a
 timeout does not authorize clearing errors or accepting an existing index by
 name. Recovery must verify the exact migration checksum and complete catalog
-state before resolving its receipt. After the effects cutoff begins, preserve
+state before resolving its receipt. The fixed preview-first
+`recover-multibot-index-migration` helper handles only the retention-cursor
+index migration; see [its recovery runbook](multibot-index-migration-recovery.md).
+After the effects cutoff begins, preserve
 the queue fence and recover through the exact-image release path; never restart
 a legacy producer against that cutoff. New workers start only after migration
 and index proof, and the new current manifest is recorded only after strict
