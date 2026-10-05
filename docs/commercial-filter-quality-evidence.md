@@ -52,11 +52,11 @@ The checked-in automatic fixture remains a structural and behavioural regression
 `validateCommercialTextHoldoutArtifact` accepts a `commercial-text-holdout/v1` artifact with:
 
 - `detectorSourceSha256`, matching the current generated detector source digest;
-- `decisionVersion`, matching the current engine decision version;
+- `decisionVersion`, matching the version selected by the artifact cohorts (`commercial-intent-quality-v1` when that cohort is included, otherwise the current released engine version);
 - `settingsProfileDigest`, matching the exact public commercial settings tuple;
 - UTC ISO `evaluatedAt`, `expiresAt`, and `holdoutCutoffAt`;
 - explicit `minHoldoutGapHours`;
-- `cohorts`, containing `owned-service-contrast-v1`, `sliding-campaign-v1`, or both;
+- `cohorts`, containing one or more of `owned-service-contrast-v1`, `sliding-campaign-v1`, and `commercial-intent-quality-v1`;
 - non-empty `developmentRecords` and `holdoutRecords`, bounded at 100,000 rows each;
 - each holdout record's explicit `cohortId` in addition to the corpus/provenance fields above.
 
