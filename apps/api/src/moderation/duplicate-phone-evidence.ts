@@ -1,9 +1,12 @@
 import { getUrlTextRanges } from '../common/url-text.util';
-import { hasDuplicateQuantityUnitSuffix } from './duplicate-semantic-text';
+import {
+  hasDuplicateQuantityUnitPrefix,
+  hasDuplicateQuantityUnitSuffix,
+} from './duplicate-semantic-text';
 
 // FLAG: This is deliberately stricter than phone blocking. Erasing an ambiguous number or
 // using it as a phone-only duplicate match can authorize deletion of a different message.
-export const DUPLICATE_PHONE_EVIDENCE_VERSION = 6;
+export const DUPLICATE_PHONE_EVIDENCE_VERSION = 7;
 
 // FLAG: A period followed by spacing starts another phrase. Never erase its numeric content
 // as part of the phone; dots without spacing remain conventional phone separators.
@@ -13,7 +16,7 @@ const CONTEXT_CLAUSE_BOUNDARY = /[.!?;,\n\r\u2028\u2029]/u;
 const UNFINISHED_RIGHT_CONTEXT = /^[\s\p{Cf})\]}»"'”’\p{Sm}*/%^·:\u2010-\u2013-]*$/u;
 // FLAG: Bounded phone labels must never classify product names or bell/mobility words.
 const PHONE_CONTEXT =
-  /(?:^|[^\p{L}\p{N}_])(?:тел|телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?|звоните|позвоните|звони|позвони|звонить|позвонить|whatsapp|ватсап|viber|вайбер|phone|telephone|call)\s*(?:для\s+связи\s*)?[:=№#.-]?\s*$/iu;
+  /(?:^|[^\p{L}\p{N}_])(?:тел|телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?|звоните|позвоните|звони|позвони|звонить|позвонить|связаться|свяжитесь|whatsapp|ватсап|viber|вайбер|phone|telephone|call)\s*(?:для\s+связи\s*)?[:=№#.-]?\s*$/iu;
 // FLAG: Only this finite identifier phrase is itself a phone label. Product/order codes
 // containing a phone noun remain identifiers, even beside an otherwise valid phone label.
 const PHONE_NUMBER_CONTEXT =
@@ -30,11 +33,14 @@ const PROTECTED_LABEL_IN_CLAUSE =
 function hasProtectedValueContext(before: string, after: string): boolean {
   const clause = before.split(/[.!?;,\n\r\u2028\u2029]/u).at(-1) ?? '';
   const phoneNumberLabel = PHONE_NUMBER_CONTEXT.test(before);
+  const phoneLabel = PHONE_CONTEXT.exec(before);
   const protectedClause = clause.replace(PHONE_NUMBER_CONTEXT, ' ');
   return (
     QUANTITY_PREFIX.test(before) ||
     QUANTITY_SUFFIX.test(after) ||
     hasDuplicateQuantityUnitSuffix(after) ||
+    hasDuplicateQuantityUnitPrefix(before) ||
+    (phoneLabel !== null && hasDuplicateQuantityUnitPrefix(before.slice(0, phoneLabel.index))) ||
     (IDENTIFIER_CONTEXT.test(before) && !phoneNumberLabel) ||
     PROTECTED_LABEL_IN_CLAUSE.test(protectedClause)
   );
@@ -51,11 +57,12 @@ function hasLabelledPhoneListContinuation(
   const candidate = next[1]!;
   const start = next.index + next[0].length - candidate.length;
   // FLAG: A plus begins a phone list only after a finite phone label and a complete,
-  // independently valid next phone. Empty context prevents recursive list authority.
+  // independently valid next phone. Keep the finite source label for that bounded proof;
+  // an unlabelled signed operand must never gain authority from another positive number.
   return (
     candidate.startsWith('+') &&
     /^[\s\p{Cf})\]}»"'”’]*$/u.test(after.slice(0, start)) &&
-    phoneEvidence(candidate, '', after.slice(start + candidate.length), afterTruncated) !== null
+    phoneEvidence(candidate, before, after.slice(start + candidate.length), afterTruncated) !== null
   );
 }
 
@@ -163,7 +170,7 @@ function phoneEvidence(
   // an international + prefix only the known 1/7 and national 8/9 forms are admissible.
   if (!international && !knownLength) return null;
   if (!knownLength && /[^\d+]/u.test(candidate)) return null;
-  const labelled = PHONE_CONTEXT.test(before);
+  const labelled = PHONE_CONTEXT.test(before) || hasLabelledPhoneListPredecessor(before);
   // FLAG: Additional typographic separators are phones only with a finite source label
   // and a known complete length; they must not broaden signed identifiers or arithmetic.
   if (/[\u00a0\u202f\u2010-\u2013]/u.test(candidate) && (!knownLength || !labelled)) return null;
@@ -179,11 +186,19 @@ function phoneEvidence(
       (digits.length === 10 && groups === '3/3/2/2');
     if (!knownLength || !conventionalGroups) return null;
   }
-  if (!international && !labelled) return null;
+  // FLAG: A compact international + prefix is also an ordinary signed quantity. Only
+  // a finite phone label/list or conventional known-country grouping grants phone authority.
+  if (!labelled && !hasConventionalInternationalPhoneFormat(candidate)) return null;
   if (!international && digits.length === 11 && digits.startsWith('8'))
     return `7${digits.slice(1)}`;
   if (!international && digits.length === 10 && digits.startsWith('9')) return `7${digits}`;
   return digits;
+}
+
+function hasConventionalInternationalPhoneFormat(candidate: string): boolean {
+  return /^\+[17](?:\s*\(\d{3}\)\s*\d{3}(?:-\d{2}-\d{2}|-\d{4})|[ .-]\d{3}[ .-]\d{3}(?:[ .-]\d{2}[ .-]\d{2}|[ .-]\d{4}))$/u.test(
+    candidate,
+  );
 }
 
 type TextRange = { start: number; end: number };

@@ -157,8 +157,8 @@ export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   const safeTextMatchingEnabled = nearEnabled || phoneValueMatchingEnabled;
   return digestDuplicateContent({
     // FLAG: Old text grants/jobs, including exact-only, must fail the fresh guard after
-    // quantity-unit protection. IMAGE has its independent settings/raster semantics.
-    version: safeTextMatchingEnabled ? 'text-fixed-window-safe-text-v12' : 'text-fixed-window-v12',
+    // prefix-unit and numeric/phone protection. IMAGE has independent settings/raster semantics.
+    version: safeTextMatchingEnabled ? 'text-fixed-window-safe-text-v13' : 'text-fixed-window-v13',
     historyStorageVersion: MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION,
     historyRevision: settings.duplicateHistoryRevision ?? 0,
     schedule: duplicateScheduleDigestInput(settings),

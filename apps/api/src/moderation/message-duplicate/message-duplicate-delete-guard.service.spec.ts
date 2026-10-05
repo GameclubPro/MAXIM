@@ -31,6 +31,7 @@ import {
   preSourceBoundPhoneSettingsDigests,
   preV3HistorySettingsDigests,
   preSemanticUnitSettingsDigests,
+  prePrefixUnitSettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 function setup() {
@@ -236,16 +237,21 @@ describe('message duplicate final delete guard', () => {
     async (key, overrides) => {
       const s = setup();
       Object.assign(s.settings, overrides);
-      s.binding.settingsDigest = preSemanticUnitSettingsDigests[key];
-      await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toMatchObject({
-        code: 'message_duplicate_settings_changed',
-      });
-      for (const authorityOnly of [false, true]) {
-        await expect(
-          s.service.assertIntentStillActionable({ ...s.params, authorityOnly }),
-        ).rejects.toMatchObject({
+      for (const legacyDigest of [
+        preSemanticUnitSettingsDigests[key],
+        prePrefixUnitSettingsDigests[key],
+      ]) {
+        s.binding.settingsDigest = legacyDigest;
+        await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toMatchObject({
           code: 'message_duplicate_settings_changed',
         });
+        for (const authorityOnly of [false, true]) {
+          await expect(
+            s.service.assertIntentStillActionable({ ...s.params, authorityOnly }),
+          ).rejects.toMatchObject({
+            code: 'message_duplicate_settings_changed',
+          });
+        }
       }
       expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
       expect(s.history.qualify).not.toHaveBeenCalled();
@@ -258,6 +264,12 @@ describe('message duplicate final delete guard', () => {
         [
           ['100 MB/s', '100 Mb/s'],
           ['10 MΩ', '10 mΩ'],
+          ['MΩ: 10', 'mΩ: 10'],
+          ['MΩ²: 10', 'mΩ²: 10'],
+          ['MΩ⁺²: 10', 'mΩ⁺²: 10'],
+          ['MΩ³/V: 10', 'mΩ³/V: 10'],
+          ['(MB): 100', '(Mb): 100'],
+          ['MB/s — 100', 'Mb/s — 100'],
         ].map(([first, second]) => ({ stage, mode, first, second })),
       ),
     ),

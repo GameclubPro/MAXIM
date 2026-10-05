@@ -498,8 +498,9 @@ maxim_topology_require_message_duplicate_delete_guard() {
   # FLAG: Pending v3 decisions outlive environment downgrades. Both rollback paths
   # must retain lifecycle revisions, durable first admission/revocation and the last permit fence.
   # Bounded phone labels, strong identifier/quantity guards and original-text phone-before-URL
-  # normalization remain mandatory with v12 text fences, v6 phone evidence and bounded v3 storage.
-  # Case-sensitive quantity units must survive exact/near matching and lifecycle identity.
+  # normalization remain mandatory with v13 text fences, v7 phone evidence and bounded v3 storage.
+  # Case-sensitive quantity units before/after values and finite phone authority must survive
+  # exact/near matching and lifecycle identity.
   for source_path in "${source_paths[@]}"; do
     if ! source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)"; then
       echo "Rollback target predates the message duplicate v3 action guard." >&2
@@ -549,6 +550,13 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const protectedUnit = topLevelFunction(semantic, "function protectedQuantityUnit(");
     const finiteUnit = topLevelFunction(semantic, "function isQuantityUnit(");
     const unitSuffix = topLevelFunction(semantic, "export function hasDuplicateQuantityUnitSuffix(");
+    const unitPrefix = topLevelFunction(semantic, "export function hasDuplicateQuantityUnitPrefix(");
+    const prefixUnitSpans = squash(topLevelFunction(semantic, "function prefixQuantityUnitSpans("));
+    const mergeUnitSpans = squash(topLevelFunction(semantic, "function mergeQuantityUnitSpans("));
+    const quantityUnitToken = semantic.match(/const QUANTITY_UNIT_TOKEN\s*=\s*(\/[^\r\n]+\/gu);/u)?.[1];
+    const quantityCompoundComponent = semantic.match(/const QUANTITY_COMPOUND_COMPONENT\s*=\s*(\/[^\r\n]+\/uy);/u)?.[1];
+    const quantityPrefixSeparator = semantic.match(/const QUANTITY_PREFIX_SEPARATOR\s*=\s*(\/[^\r\n]+\/uy);/u)?.[1];
+    const quantityScalar = semanticTextNormalization.match(/const quantities\s*=\s*(\/[^\r\n]+\/gu);/u)?.[1];
     const authorityStart = guard.indexOf("if (params.authorityOnly)");
     const authorityEnd = guard.indexOf("return this.assertMessageStillActionable", authorityStart);
     const authority = guard.slice(authorityStart, authorityEnd);
@@ -563,7 +571,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const phoneEvidence = topLevelFunction(phones, "function phoneEvidence(");
     const phoneEvidenceCode = squash(phoneEvidence).replace(/\s+(?=\?\.|\.)/gu, "");
     const unprefixedConfidence = phoneEvidenceCode.indexOf("if (!international && !knownLength) return null;");
-    const labelAdmission = phoneEvidenceCode.indexOf("const labelled = PHONE_CONTEXT.test(before);");
+    const labelAdmission = phoneEvidenceCode.indexOf("const labelled = PHONE_CONTEXT.test(before) || hasLabelledPhoneListPredecessor(before);");
+    const conventionalInternationalPhone = topLevelFunction(phones, "function hasConventionalInternationalPhoneFormat(");
     const phoneListContinuation = topLevelFunction(phones, "function hasLabelledPhoneListContinuation(");
     const phoneListPredecessor = topLevelFunction(phones, "function hasLabelledPhoneListPredecessor(");
     const adjacency = topLevelFunction(phones, "function hasEmbeddedIdentifierAdjacency(");
@@ -605,8 +614,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
       state.includes("lifecycleRevision:") &&
       state.includes("authorization:") &&
       state.includes("messageDuplicateEnforcementScope") &&
-      state.includes("text-fixed-window-safe-text-v12") &&
-      state.includes("text-fixed-window-v12") &&
+      state.includes("text-fixed-window-safe-text-v13") &&
+      state.includes("text-fixed-window-v13") &&
       state.includes("const safeTextMatchingEnabled = nearEnabled || phoneValueMatchingEnabled;") &&
       /const phoneValueMatchingEnabled\s*=\s*settings.duplicateDetectionPreset === .CUSTOM. && settings.duplicateIgnorePhonesEnabled/u.test(state) &&
       /version:\s*safeTextMatchingEnabled\s*\?/u.test(state) &&
@@ -622,7 +631,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
       squash(fingerprints).includes("config.ignorePhones || config.ignoreLinks || config.matchPhoneValues") &&
       fingerprints.includes("const content = normalizeDuplicateText(approximateSource);") &&
       near.includes("const numericTokens = approximateSource.match(/[+-]?\\d+(?:[.,:]\\d+)*/gu) ?? [];") &&
-      detector.includes(".update(\u0027text-v12\\0\u0027)") &&
+      detector.includes(".update(\u0027text-v13\\0\u0027)") &&
       detector.includes("import { normalizeDuplicateSemanticText } from \u0027./duplicate-semantic-text\u0027;") &&
       content.includes("import { normalizeDuplicateSemanticText } from \u0027../duplicate-semantic-text\u0027;") &&
       detectorTextNormalization.includes("return normalizeDuplicateSemanticText(value);") &&
@@ -635,17 +644,34 @@ maxim_topology_require_message_duplicate_delete_guard() {
       squash(finiteUnit).includes("return QUANTITY_UNITS.has(unit.replace(/\\p{Cf}/gu, \u0027\u0027).toLowerCase());") &&
       unitSuffix.includes("value.normalize(\u0027NFC\u0027)") &&
       unitSuffix.includes("return unit !== undefined && isQuantityUnit(unit);") &&
+      squash(unitPrefix).includes("return prefixQuantityUnitSpans(value.normalize(\u0027NFC\u0027), true).length > 0;") &&
+      quantityUnitToken === "/(?<![\\p{L}\\p{M}\\p{N}_])([\\p{L}\\p{M}\\p{Cf}]+)(?=[²³⁻⁰¹⁴⁵⁶⁷⁸⁹]|$|[^\\p{L}\\p{M}\\p{N}_])/gu" &&
+      quantityCompoundComponent === "/(?:\\^[+-]?\\p{N}+|[²³⁻⁺⁰¹⁴⁵⁶⁷⁸⁹]+)?(?:[\\s\\p{Cf})\\]}»\"\u0027\u201d\u2019]*[/·⋅∙*×÷∕⁄][\\s\\p{Cf}([{«\"\u0027\u201c\u2018]*|[\\p{Cf})\\]}»\"\u0027\u201d\u2019]*\\s[\\s\\p{Cf}()[\\]{}«»\"\u0027\u201c\u2018\u201d\u2019]*)([\\p{L}\\p{M}\\p{Cf}]+)(?![\\p{L}\\p{M}_])/uy" &&
+      quantityPrefixSeparator === "/(?:[\\s\\p{Cf}()[\\]{}«»\"\u0027\u201c\u2018\u201d\u2019]*(?:[:=—–])[\\s\\p{Cf}()[\\]{}«»\"\u0027\u201c\u2018\u201d\u2019]*|[\\s\\p{Cf}()[\\]{}«»\"\u0027\u201c\u2018\u201d\u2019]+-[\\s\\p{Cf}()[\\]{}«»\"\u0027\u201c\u2018\u201d\u2019]+|[\\s\\p{Cf}()[\\]{}«»\"\u0027\u201c\u2018\u201d\u2019]+)/uy" &&
+      quantityScalar === "/(?:(?<![\\p{L}\\p{M}\\p{N}_])|(?<=\\p{N}[xXхХ]))[+-]?\\p{N}+(?:[.,]\\p{N}+)?(?:[eE][+-]?\\p{N}+)?[\\s\\p{Cf}()[\\]{}«»\"\u0027\u201c\u2018\u201d\u2019·⋅∙*/×÷∕⁄:=—–-]*([\\p{L}\\p{M}\\p{Cf}]+)(?![\\p{L}\\p{M}_])/gu" &&
+      prefixUnitSpans.includes("const tokens = new RegExp(QUANTITY_UNIT_TOKEN); const compound = new RegExp(QUANTITY_COMPOUND_COMPONENT); const separator = new RegExp(QUANTITY_PREFIX_SEPARATOR);") &&
+      prefixUnitSpans.includes("const scalar = /[+-]?\\p{N}+(?:[.,]\\p{N}+)?(?:[eE][+-]?\\p{N}+)?/uy;") &&
+      prefixUnitSpans.includes("const exponent = /(?:\\^[+-]?\\p{N}+|[²³⁻⁺⁰¹⁴⁵⁶⁷⁸⁹]+)/uy;") &&
+      prefixUnitSpans.includes("while ((token = tokens.exec(source)) !== null) { if (!isQuantityUnit(token[1]!)) continue;") &&
+      prefixUnitSpans.includes("compound.lastIndex = end; const next = compound.exec(source); if (!next || !isQuantityUnit(next[1]!)) break;") &&
+      prefixUnitSpans.includes("exponent.lastIndex = end; if (exponent.exec(source)) end = exponent.lastIndex;") &&
+      prefixUnitSpans.includes("tokens.lastIndex = end; separator.lastIndex = end; if (!separator.exec(source)) continue;") &&
+      prefixUnitSpans.includes("if (valueFollows) { if (separator.lastIndex === source.length) return expressionSpans; } else { scalar.lastIndex = separator.lastIndex; if (scalar.exec(source)) for (const span of expressionSpans) spans.push(span); }") &&
+      mergeUnitSpans.includes("while (suffixIndex < suffix.length || prefixIndex < prefix.length)") &&
+      mergeUnitSpans.includes("prefixIndex >= prefix.length || (suffixIndex < suffix.length && suffix[suffixIndex]![0] <= prefix[prefixIndex]![0]) ? suffix[suffixIndex++]! : prefix[prefixIndex++]!;") &&
+      mergeUnitSpans.includes("if (spans.at(-1)?.[0] === next[0]) continue; spans.push(next);") &&
       semanticTextNormalization.includes("while ((quantity = quantities.exec(source)) !== null)") &&
       semanticTextNormalization.includes("if (!isQuantityUnit(unit)) continue;") &&
       semanticTextNormalization.includes("compound.lastIndex = end;") &&
       semanticTextNormalization.includes("if (!next || !isQuantityUnit(next[1]!)) break;") &&
       semanticTextNormalization.includes("quantities.lastIndex = end;") &&
+      squash(semanticTextNormalization).includes("const spans = mergeQuantityUnitSpans(suffixSpans, prefixQuantityUnitSpans(source, false));") &&
       semanticTextNormalization.includes("protectedQuantityUnit(source.slice(from, end))") &&
       semanticTextNormalization.includes("parts.push(source.slice(cursor).toLowerCase());") &&
       phones.includes("from \u0027./duplicate-semantic-text\u0027;") &&
       protectedValue.includes("hasDuplicateQuantityUnitSuffix(after)") &&
-      /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*6\b/u.test(phones) &&
-      phoneContext === "/(?:^|[^\\p{L}\\p{N}_])(?:тел|телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?|звоните|позвоните|звони|позвони|звонить|позвонить|whatsapp|ватсап|viber|вайбер|phone|telephone|call)\\s*(?:для\\s+связи\\s*)?[:=№#.-]?\\s*$/iu" &&
+      /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*7\b/u.test(phones) &&
+      phoneContext === "/(?:^|[^\\p{L}\\p{N}_])(?:тел|телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?|звоните|позвоните|звони|позвони|звонить|позвонить|связаться|свяжитесь|whatsapp|ватсап|viber|вайбер|phone|telephone|call)\\s*(?:для\\s+связи\\s*)?[:=№#.-]?\\s*$/iu" &&
       phoneNumberContext === "/(?:^|[^\\p{L}\\p{N}_])номер(?:а|у|ом|е|ов|ам|ами|ах)?\\s+телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?\\s*(?:для\\s+связи\\s*)?[:=№#.-]?\\s*$/iu" &&
       phones.includes("import { getUrlTextRanges } from \u0027../common/url-text.util\u0027;") &&
       rawAdjacencyCheck >= 0 && beforeNormalization > rawAdjacencyCheck && afterNormalization > rawAdjacencyCheck &&
@@ -664,12 +690,12 @@ maxim_topology_require_message_duplicate_delete_guard() {
       arithmeticCondition === "(/[\\p{Sm}*/%^·\\u2010-\\u2013-]$/u.test(arithmeticBefore) || /(?:^|\\s)(?:\\p{L}\\p{M}*|\\p{N}{1,6}|_)\\s+$/u.test(arithmeticContext))" &&
       squash(adjacency).includes("if ( /(?:^|\\s)[+-]?\\d(?:[\\d \\t().-]*\\d)?\\s+$/u.test(arithmeticContext) && !hasLabelledPhoneListPredecessor(arithmeticContext) ) return true;") &&
       squash(phoneListContinuation).includes("if (!PHONE_CONTEXT.test(before)) return false; const next = after.matchAll(CANDIDATE).next().value; if (!next) return false; const candidate = next[1]!; const start = next.index + next[0].length - candidate.length;") &&
-      squash(phoneListContinuation).includes("return ( candidate.startsWith(\u0027+\u0027) && /^[\\s\\p{Cf})\\]}»\"\u0027\u201d\u2019]*$/u.test(after.slice(0, start)) && phoneEvidence(candidate, \u0027\u0027, after.slice(start + candidate.length), afterTruncated) !== null );") &&
+      squash(phoneListContinuation).includes("return ( candidate.startsWith(\u0027+\u0027) && /^[\\s\\p{Cf})\\]}»\"\u0027\u201d\u2019]*$/u.test(after.slice(0, start)) && phoneEvidence(candidate, before, after.slice(start + candidate.length), afterTruncated) !== null );") &&
       squash(phoneListPredecessor).includes("const previous = [...before.matchAll(CANDIDATE)].at(-1); if (!previous) return false; const candidate = previous[1]!; const start = previous.index + previous[0].length - candidate.length; const prefix = before.slice(0, start);") &&
       squash(phoneListPredecessor).includes("return ( PHONE_CONTEXT.test(prefix.replace(/[\\s([{«\"\u0027\u201c\u2018]+$/u, \u0027 \u0027)) && /^\\s*$/u.test(before.slice(start + candidate.length)) && phoneEvidence(candidate, prefix, \u0027\u0027) !== null );") &&
       identifierContext.includes(identifierForms) && protectedLabelContext.includes(identifierForms) &&
-      squash(protectedValue).includes("const phoneNumberLabel = PHONE_NUMBER_CONTEXT.test(before); const protectedClause = clause.replace(PHONE_NUMBER_CONTEXT, \u0027 \u0027);") &&
-      squash(protectedValue).includes("return ( QUANTITY_PREFIX.test(before) || QUANTITY_SUFFIX.test(after) || hasDuplicateQuantityUnitSuffix(after) || (IDENTIFIER_CONTEXT.test(before) && !phoneNumberLabel) || PROTECTED_LABEL_IN_CLAUSE.test(protectedClause) );") &&
+      squash(protectedValue).includes("const phoneNumberLabel = PHONE_NUMBER_CONTEXT.test(before); const phoneLabel = PHONE_CONTEXT.exec(before); const protectedClause = clause.replace(PHONE_NUMBER_CONTEXT, \u0027 \u0027);") &&
+      squash(protectedValue).includes("return ( QUANTITY_PREFIX.test(before) || QUANTITY_SUFFIX.test(after) || hasDuplicateQuantityUnitSuffix(after) || hasDuplicateQuantityUnitPrefix(before) || (phoneLabel !== null && hasDuplicateQuantityUnitPrefix(before.slice(0, phoneLabel.index))) || (IDENTIFIER_CONTEXT.test(before) && !phoneNumberLabel) || PROTECTED_LABEL_IN_CLAUSE.test(protectedClause) );") &&
       quantitySuffix.includes("\\p{Sc}") && quantitySuffix.includes("тыс\\.?") &&
       quantitySuffix.includes("участник\\p{L}*") && quantitySuffix.includes("[kmgt]i?(?:b|bps|bits?)") &&
       adjacency.includes("const label = PHONE_CONTEXT.exec(left);") &&
@@ -698,8 +724,9 @@ maxim_topology_require_message_duplicate_delete_guard() {
       squash(phoneEvidence).includes("if (!knownLength && /[^\\d+]/u.test(candidate)) return null;") &&
       unprefixedConfidence >= 0 && labelAdmission > unprefixedConfidence &&
       phoneEvidenceCode.includes("if (candidate.includes(\u0027.\u0027)) { const groups = candidate.match(/\\d+/gu)?.map((group) => group.length).join(\u0027/\u0027); const conventionalGroups = (digits.length === 11 && [\u00271/3/3/2/2\u0027, \u00271/3/3/4\u0027].includes(groups ?? \u0027\u0027)) || (digits.length === 10 && groups === \u00273/3/2/2\u0027); if (!knownLength || !conventionalGroups) return null; }") &&
-      phones.includes("const labelled = PHONE_CONTEXT.test(before);") &&
-      phones.includes("if (!international && !labelled) return null;") &&
+      phoneEvidenceCode.includes("const labelled = PHONE_CONTEXT.test(before) || hasLabelledPhoneListPredecessor(before);") &&
+      phoneEvidenceCode.includes("if (!labelled && !hasConventionalInternationalPhoneFormat(candidate)) return null;") &&
+      squash(conventionalInternationalPhone).includes("return /^\\+[17](?:\\s*\\(\\d{3}\\)\\s*\\d{3}(?:-\\d{2}-\\d{2}|-\\d{4})|[ .-]\\d{3}[ .-]\\d{3}(?:[ .-]\\d{2}[ .-]\\d{2}|[ .-]\\d{4}))$/u.test( candidate, );") &&
       phones.includes("\\.(?![ \\t\\u00a0\\u202f])") &&
       state.includes("import { MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION } from \u0027./message-duplicate-window.script\u0027;") &&
       count(state, "historyStorageVersion: MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION") === 2 &&

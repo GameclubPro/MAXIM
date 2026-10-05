@@ -78,8 +78,8 @@ const mutations = [
     'false',
   ],
   ['state', 'z.literal(3)', 'z.literal(4)'],
-  ['state', 'text-fixed-window-safe-text-v12', 'text-fixed-window-safe-text-v11'],
-  ['state', 'text-fixed-window-v12', 'text-fixed-window-v5'],
+  ['state', 'text-fixed-window-safe-text-v13', 'text-fixed-window-safe-text-v12'],
+  ['state', 'text-fixed-window-v13', 'text-fixed-window-v12'],
   ['state', 'version: safeTextMatchingEnabled ?', 'version: false ?'],
   ['state', 'nearEnabled || phoneValueMatchingEnabled', 'nearEnabled'],
   [
@@ -116,8 +116,8 @@ const mutations = [
     'const numericTokens = approximateSource.match(',
     'const numericTokens = normalized.match(',
   ],
-  ['detector', 'text-v12\\0', 'text-v9\\0'],
-  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 6', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 5'],
+  ['detector', 'text-v13\\0', 'text-v12\\0'],
+  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 7', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 6'],
   ['detector', 'return normalizeDuplicateSemanticText(value);', 'return value.toLowerCase();'],
   ['content', 'return normalizeDuplicateSemanticText(value);', 'return value.toLowerCase();'],
   [
@@ -137,6 +137,68 @@ const mutations = [
   ['semantic', 'return unit !== undefined && isQuantityUnit(unit);', 'return unit !== undefined;'],
   ['semantic', 'if (!isQuantityUnit(unit)) continue;', 'if (false) continue;'],
   ['semantic', 'if (!next || !isQuantityUnit(next[1]!)) break;', 'if (!next) break;'],
+  ['semantic', 'if (!isQuantityUnit(token[1]!)) continue;', 'if (false) continue;'],
+  [
+    'semantic',
+    'const tokens = new RegExp(QUANTITY_UNIT_TOKEN);',
+    'const tokens = QUANTITY_UNIT_TOKEN;',
+  ],
+  ['semantic', 'tokens.lastIndex = end;', 'tokens.lastIndex = token.index + token[0].length;'],
+  ['semantic', 'if (!separator.exec(source)) continue;', 'if (false) continue;'],
+  [
+    'semantic',
+    'if (separator.lastIndex === source.length) return expressionSpans;',
+    'return expressionSpans;',
+  ],
+  ['semantic', 'scalar.lastIndex = separator.lastIndex;', 'scalar.lastIndex = end;'],
+  [
+    'semantic',
+    'if (scalar.exec(source)) for (const span of expressionSpans) spans.push(span);',
+    'for (const span of expressionSpans) spans.push(span);',
+  ],
+  ['semantic', "prefixQuantityUnitSpans(value.normalize('NFC'), true).length > 0", 'true'],
+  [
+    'semantic',
+    'mergeQuantityUnitSpans(suffixSpans, prefixQuantityUnitSpans(source, false))',
+    'suffixSpans',
+  ],
+  ['semantic', 'suffix[suffixIndex]![0] <= prefix[prefixIndex]![0]', 'true'],
+  [
+    'semantic',
+    '(?<![\\p{L}\\p{M}\\p{N}_])([\\p{L}\\p{M}\\p{Cf}]+)(?=[²³⁻⁰¹⁴⁵⁶⁷⁸⁹]|$|[^\\p{L}\\p{M}\\p{N}_])',
+    '([\\p{L}\\p{M}\\p{Cf}]+)',
+  ],
+  ['semantic', '(?=[²³⁻⁰¹⁴⁵⁶⁷⁸⁹]|$|[^\\p{L}\\p{M}\\p{N}_])', '(?![\\p{L}\\p{M}\\p{N}_])'],
+  [
+    'semantic',
+    '(?=[²³⁻⁰¹⁴⁵⁶⁷⁸⁹]|$|[^\\p{L}\\p{M}\\p{N}_])',
+    '(?=[²³⁻⁰¹⁴⁵⁶⁷⁸⁹]|$|[^\\p{L}\\p{M}_])',
+  ],
+  [
+    'semantic',
+    'const exponent = /(?:\\^[+-]?\\p{N}+|[²³⁻⁺⁰¹⁴⁵⁶⁷⁸⁹]+)/uy;',
+    'const exponent = /\\^[+-]?\\p{N}+/uy;',
+  ],
+  [
+    'semantic',
+    'const exponent = /(?:\\^[+-]?\\p{N}+|[²³⁻⁺⁰¹⁴⁵⁶⁷⁸⁹]+)/uy;',
+    'const exponent = /(?:\\^[+-]?\\p{N}+|[³⁻⁺⁰¹⁴⁵⁶⁷⁸⁹]+)/uy;',
+  ],
+  [
+    'semantic',
+    'const exponent = /(?:\\^[+-]?\\p{N}+|[²³⁻⁺⁰¹⁴⁵⁶⁷⁸⁹]+)/uy;',
+    'const exponent = /(?:\\^[+-]?\\p{N}+|[²³⁻⁰¹⁴⁵⁶⁷⁸⁹]+)/uy;',
+  ],
+  ['semantic', '(?:\\^[+-]?\\p{N}+|[²³⁻⁺⁰¹⁴⁵⁶⁷⁸⁹]+)?', '(?:\\^[+-]?\\p{N}+|[²³⁻⁰¹⁴⁵⁶⁷⁸⁹]+)?'],
+  ['semantic', '(?:\\^[+-]?\\p{N}+|[²³⁻⁺⁰¹⁴⁵⁶⁷⁸⁹]+)?', ''],
+  ['semantic', '(?:[:=—–])', '(?:.)'],
+  ['semantic', ':=—–-', ''],
+  ['phones', 'hasDuplicateQuantityUnitPrefix(before) ||', 'false ||'],
+  [
+    'phones',
+    'phoneLabel !== null && hasDuplicateQuantityUnitPrefix(before.slice(0, phoneLabel.index))',
+    'false',
+  ],
   [
     'semantic',
     'quantities.lastIndex = end;',
@@ -191,13 +253,13 @@ const mutations = [
   ['phones', 'after.slice(0, start)', 'after.slice(start, start)'],
   [
     'phones',
-    "phoneEvidence(candidate, '', after.slice(start + candidate.length), afterTruncated) !== null",
-    "phoneEvidence(candidate, 'телефон:', after.slice(start + candidate.length), afterTruncated) !== null",
+    'phoneEvidence(candidate, before, after.slice(start + candidate.length), afterTruncated) !==',
+    "phoneEvidence(candidate, 'телефон:', after.slice(start + candidate.length), afterTruncated) !==",
   ],
   [
     'phones',
-    "phoneEvidence(candidate, '', after.slice(start + candidate.length), afterTruncated) !== null",
-    'true',
+    'phoneEvidence(candidate, before, after.slice(start + candidate.length), afterTruncated) !==',
+    'true ||',
   ],
   ['phones', 'const prefix = before.slice(0, start);', "const prefix = 'телефон:';"],
   ['phones', '/^\\s*$/u.test(before.slice(start + candidate.length))', 'true'],
@@ -346,12 +408,23 @@ const mutations = [
   ['phones', "['1/3/3/2/2', '1/3/3/4'].includes(groups ?? '')", 'true'],
   ['phones', "groups === '3/3/2/2'", 'true'],
   ['phones', 'if (!knownLength || !conventionalGroups) return null;', ''],
-  ['phones', 'const labelled = PHONE_CONTEXT.test(before);', 'const labelled = true;'],
-  ['phones', 'if (!international && !labelled) return null;', ''],
+  ['phones', 'PHONE_CONTEXT.test(before) || hasLabelledPhoneListPredecessor(before);', 'true;'],
   [
     'phones',
+    'if (!labelled && !hasConventionalInternationalPhoneFormat(candidate)) return null;',
+    '',
+  ],
+  [
+    'phones',
+    'if (!labelled && !hasConventionalInternationalPhoneFormat(candidate)) return null;',
     'if (!international && !labelled) return null;',
-    "if (!candidate.startsWith('+') && !grouped && !labelled) return null;",
+  ],
+  ['phones', 'return /^\\+[17](?:', 'return /^\\+\\d(?:'],
+  ['phones', '|-\\d{4})|[ .-]\\d{3}', '|-\\d{4})?|[ .-]\\d{3}'],
+  [
+    'phones',
+    'PHONE_CONTEXT.test(before) || hasLabelledPhoneListPredecessor(before);',
+    'PHONE_CONTEXT.test(before);',
   ],
   ['phones', '\\.(?![ \\t\\u00a0\\u202f])', '\\.'],
   ['content', 'if (!isDuplicateContentComparable(content, mode)) return null;', ''],
@@ -430,9 +503,9 @@ for (const [key, before, after] of mutations) {
   });
 }
 
-test('rejects broad phone roots even with phone evidence v6 and the v12 settings fences', (t) => {
+test('rejects broad phone roots even with phone evidence v7 and the v13 settings fences', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
-  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*6\b/u);
+  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*7\b/u);
   const declaration = /const PHONE_CONTEXT\s*=\s*\/[^\r\n]+\/iu;/u;
   assert.match(source, declaration);
   const phones = source.replace(
@@ -448,6 +521,31 @@ test('rejects broad phone roots even with phone evidence v6 and the v12 settings
     /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
   );
 });
+
+for (const [key, marker, fallback] of [
+  ['semantic', 'export function hasDuplicateQuantityUnitPrefix(', 'false'],
+  ['semantic', 'function prefixQuantityUnitSpans(', '[]'],
+  ['phones', 'function hasConventionalInternationalPhoneFormat(', 'true'],
+]) {
+  test('rejects missing ' + marker + ' body even when its markers remain outside', (t) => {
+    const source = readFileSync(resolve(root, paths[key]), 'utf8');
+    const start = source.indexOf(marker);
+    const end = source.indexOf('\n}', start + 1);
+    assert.ok(start >= 0 && end > start);
+    const body = source.slice(start, end + 2);
+    const opening = body.indexOf('{');
+    assert.ok(opening > 0);
+    const stub = body.slice(0, opening + 1) + '\n  return ' + fallback + ';\n}';
+    const updated = source.replace(body, stub) + '\n/* Removed capability:\n' + body + '\n*/\n';
+    assert.ok(updated.includes(body));
+    const result = probe(t, { [key]: updated });
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+    );
+  });
+}
 
 test('rejects an identifier label expanded into the finite phone-number exception', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
@@ -571,7 +669,8 @@ for (const context of ['IDENTIFIER_CONTEXT', 'PROTECTED_LABEL_IN_CLAUSE']) {
 test('rejects the unprefixed confidence gate moved after label admission', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
   const gate = '  if (!international && !knownLength) return null;\n';
-  const label = '  const labelled = PHONE_CONTEXT.test(before);\n';
+  const label =
+    '  const labelled = PHONE_CONTEXT.test(before) || hasLabelledPhoneListPredecessor(before);\n';
   assert.ok(source.includes(gate));
   assert.ok(source.includes(label));
   assert.ok(source.indexOf(gate) < source.indexOf(label));
