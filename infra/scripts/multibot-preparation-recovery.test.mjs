@@ -45,7 +45,7 @@ const containers = () =>
   PRODUCTION_API_SERVICES.map((service) => ({
     Image: image,
     Name: `/infra-${service}-1`,
-    State: { Status: 'running', Health: { Status: 'healthy' } },
+    State: { Status: 'running', Running: true, Paused: false, Restarting: false, Dead: false },
     Config: {
       Labels: { 'com.docker.compose.project': 'infra', 'com.docker.compose.service': service },
       Env: [
@@ -94,7 +94,7 @@ test('apply requires exact reviewed hashes and rejects arbitrary SQL, paths, sel
   );
 });
 
-test('baseline requires all fourteen singleton healthy exact-image identities', () => {
+test('baseline accepts all fourteen singleton running exact-image API roles without Docker healthchecks', () => {
   assert.equal(verifyMultibotBaselineContainers(containers(), image), true);
   for (const mutate of [
     (rows) => rows.pop(),
@@ -103,10 +103,28 @@ test('baseline requires all fourteen singleton healthy exact-image identities', 
       rows[0].Image = `sha256:${'f'.repeat(64)}`;
     },
     (rows) => {
-      rows[0].State.Health.Status = 'unhealthy';
+      rows[0].State.Status = 'dead';
+    },
+    (rows) => {
+      rows[0].State.Dead = true;
+    },
+    (rows) => {
+      rows[0].State.Running = false;
+    },
+    (rows) => {
+      rows[0].State.Restarting = true;
+    },
+    (rows) => {
+      rows[0].State.Paused = true;
     },
     (rows) => {
       rows[0].Config.Env[0] = 'APP_SERVICE_NAME=api-admin';
+    },
+    (rows) => {
+      rows[0].Config.Env.push(rows[0].Config.Env[0]);
+    },
+    (rows) => {
+      rows[0].Config.Env.push(rows[0].Config.Env[1]);
     },
     (rows) => {
       rows[0].Name = '/manual-api-ingress';
@@ -120,6 +138,63 @@ test('baseline requires all fourteen singleton healthy exact-image identities', 
   ]) {
     const rows = containers();
     mutate(rows);
+    assert.throws(() => verifyMultibotBaselineContainers(rows, image), /BASELINE_RUNTIME_INVALID/u);
+  }
+});
+
+test('baseline honors effective Docker healthchecks and rejects contradictory inspection state', () => {
+  for (const healthcheck of [undefined, null, { Test: [] }, { Test: ['NONE'] }]) {
+    const rows = containers();
+    rows[0].Config.Healthcheck = healthcheck;
+    assert.equal(verifyMultibotBaselineContainers(rows, image), true);
+    rows[0].State.Health = { Status: 'healthy' };
+    assert.throws(() => verifyMultibotBaselineContainers(rows, image), /BASELINE_RUNTIME_INVALID/u);
+  }
+  for (const test of [
+    ['CMD', 'node', '-e', 'process.exit(0)'],
+    ['CMD-SHELL', 'true'],
+  ]) {
+    const rows = containers();
+    for (const row of rows) {
+      row.Config.Healthcheck = { Test: test };
+      row.State.Health = { Status: 'healthy' };
+    }
+    assert.equal(verifyMultibotBaselineContainers(rows, image), true);
+    for (const health of [
+      undefined,
+      null,
+      {},
+      [],
+      { Status: 'unhealthy' },
+      { Status: 'starting' },
+    ]) {
+      rows[0].State.Health = health;
+      assert.throws(
+        () => verifyMultibotBaselineContainers(rows, image),
+        /BASELINE_RUNTIME_INVALID/u,
+      );
+    }
+  }
+  for (const healthcheck of [
+    false,
+    [],
+    {},
+    { Test: null },
+    { Test: 'CMD true' },
+    { Test: ['UNKNOWN', 'true'] },
+    { Test: ['NONE', 'true'] },
+    { Test: ['CMD'] },
+    { Test: ['CMD', ''] },
+    { Test: ['CMD', '   '] },
+    { Test: ['CMD', 1] },
+    { Test: ['CMD-SHELL'] },
+    { Test: ['CMD-SHELL', ''] },
+    { Test: ['CMD-SHELL', 'true', 'unexpected'] },
+  ]) {
+    const rows = containers();
+    rows[0].Config.Healthcheck = healthcheck;
+    assert.throws(() => verifyMultibotBaselineContainers(rows, image), /BASELINE_RUNTIME_INVALID/u);
+    rows[0].State.Health = { Status: 'healthy' };
     assert.throws(() => verifyMultibotBaselineContainers(rows, image), /BASELINE_RUNTIME_INVALID/u);
   }
 });

@@ -108,11 +108,34 @@ export function verifyMultibotBaselineContainers(containers, imageId) {
       (container) => container.Config.Labels['com.docker.compose.service'] === service,
     );
     const container = matches[0];
-    const env = Object.fromEntries(
-      (container?.Config?.Env ?? [])
-        .filter((entry) => /^APP_(ROLE|SERVICE_NAME)=/u.test(entry))
-        .map((entry) => [entry.slice(0, entry.indexOf('=')), entry.slice(entry.indexOf('=') + 1)]),
-    );
+    const environment = container?.Config?.Env;
+    if (!Array.isArray(environment) || environment.some((entry) => typeof entry !== 'string'))
+      fail('BASELINE_RUNTIME_INVALID');
+    const serviceEnvironment = environment.filter((entry) => entry.startsWith('APP_SERVICE_NAME='));
+    const roleEnvironment = environment.filter((entry) => entry.startsWith('APP_ROLE='));
+    const state = container.State;
+    const healthcheck = container.Config.Healthcheck;
+    let hasHealthcheck = false;
+    // FLAG: API roles normally have no Docker healthcheck. Only an effective CMD/CMD-SHELL
+    // check can attest State.Health; readiness and low-lag admission still gate every mutation.
+    if (healthcheck !== undefined && healthcheck !== null) {
+      const test = healthcheck.Test;
+      if (
+        typeof healthcheck !== 'object' ||
+        Array.isArray(healthcheck) ||
+        !Array.isArray(test) ||
+        test.some((part) => typeof part !== 'string')
+      )
+        fail('BASELINE_RUNTIME_INVALID');
+      const disabled = test.length === 0 || (test.length === 1 && test[0] === 'NONE');
+      hasHealthcheck =
+        (test[0] === 'CMD' && test.length >= 2 && test[1].trim().length > 0) ||
+        (test[0] === 'CMD-SHELL' && test.length === 2 && test[1].trim().length > 0);
+      if (!disabled && !hasHealthcheck) fail('BASELINE_RUNTIME_INVALID');
+    }
+    const validHealth = hasHealthcheck
+      ? state?.Health?.Status === 'healthy' && !Array.isArray(state.Health)
+      : state?.Health === undefined || state.Health === null;
     const role =
       service.startsWith('api-moderation') || service === 'api-media-analysis'
         ? 'moderation'
@@ -121,10 +144,16 @@ export function verifyMultibotBaselineContainers(containers, imageId) {
       matches.length !== 1 ||
       container.Image !== imageId ||
       container.Name !== `/infra-${service}-1` ||
-      container.State?.Status !== 'running' ||
-      container.State.Health?.Status !== 'healthy' ||
-      env.APP_SERVICE_NAME !== service ||
-      env.APP_ROLE !== role
+      state?.Status !== 'running' ||
+      (state.Running !== undefined && state.Running !== true) ||
+      ['Paused', 'Restarting', 'Dead'].some(
+        (key) => state[key] !== undefined && state[key] !== false,
+      ) ||
+      !validHealth ||
+      serviceEnvironment.length !== 1 ||
+      roleEnvironment.length !== 1 ||
+      serviceEnvironment[0] !== `APP_SERVICE_NAME=${service}` ||
+      roleEnvironment[0] !== `APP_ROLE=${role}`
     )
       fail('BASELINE_RUNTIME_INVALID');
   }

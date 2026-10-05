@@ -101,6 +101,10 @@ UUID-tagged attempt, observed start/abort UTC bounds; apply additionally require
 the exact receipt identity hash and transition-journal hash from the preview.
 The transition journal contains the previous release inventory, not the target
 source of the cancelled attempt. All fourteen baseline roles must still match it.
+API containers without a configured Docker healthcheck must be running on that
+exact image; a configured check requires a healthy result. Fresh ingress/admin
+readiness and low queue lag are separate mandatory admission checks before any
+recovery mutation, not inferred from container state.
 The original source's immutable migration checksums must match the reviewed code.
 Ambiguous receipts, other builders, repair artifacts, started cutoff, schema drift,
 or a missing/changed journal abort without resolution.
