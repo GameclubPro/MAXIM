@@ -141,6 +141,20 @@ not make independent SQL/Redis authorities atomic or confirm that MAX supports
 unbanning. An attempted unban must retain its separate unknown-outcome fence and
 must never clear BAN state or create a confirmed unban event.
 
+The combined source floor also explicitly requires TRY_UNBAN_MEMBER's
+irreversible start fence, watchdog quarantine and final unban route guard.
+Once migration 10300 is applied, the existing schema gates already reject a
+plain rollback to the earlier f25 source in both wrappers. The added source
+checks are independent protection against a schema-compatible executor that
+loses those readers/guards; source-only acceptance of f25 did not establish an
+otherwise permitted production rollback. Isolated fixtures remove each classifier,
+query, quarantine or final-route protection and must reject that target.
+A separate local source test confirmed that the old gate accepts 7b1755f8,
+which has the same migrations as corrected 9d440787 but lacks the final unban
+route check. The strengthened gate rejects 7b and accepts 9d. This demonstrates
+a schema-compatible unsafe source downgrade; other production rollback admission
+conditions and live state were not exercised by that source test.
+
 Independent read-only review also confirmed a release-blocking text-normalizer
 gap: `(MB): 100` and `(Mb): 100` lose unit case before the number. The shared
 normalizer affects source digests as well as duplicate fingerprints, so such an
@@ -229,6 +243,13 @@ chat/channel and agent-created content; no participant sanctions or diagnostic
 messages in user groups.
 
 ## Recorded validation
+
+The final unban-boundary integration staged run on 2026-10-05 passed all
+783 API suites and 18,127 API tests without skips, all 50 native storage/queue
+cases, API typecheck/build, and 1,080 static checks. Only two nested store-wrapper
+lifecycle self-tests were skipped. The focused sanction suite passed 54 tests,
+including route loss during the final target read and the final Redis renewal.
+These are local/native-store results with simulated MAX, not production activation.
 
 The access-loss follow-up staged run on 2026-10-05 passed 782 API suites and
 18,102 tests, 50 storage/queue tests, API typecheck/build, all 959 infrastructure

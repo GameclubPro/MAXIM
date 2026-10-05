@@ -343,7 +343,9 @@ maxim_topology_require_bot_publisher_reliability() {
     apps/api/src/common/group-command-notice-delivery.ts \
     apps/api/src/admin/admin-manual-moderation-runtime.ts \
     apps/api/src/admin/admin-manual-group-command-notice-authority.ts \
-    apps/api/src/moderation/night-mode-transition-delivery.service.ts; do
+    apps/api/src/moderation/night-mode-transition-delivery.service.ts \
+    apps/api/src/system/max-action-ledger-watchdog.service.ts \
+    apps/api/src/admin/manual-member-unban-attempt.ts; do
     if ! source="$(git show "${commit_sha}:${path}" 2>/dev/null)"; then
       echo "Rollback target predates shared member and Publisher reliability: $path" >&2
       return 1
@@ -352,6 +354,8 @@ maxim_topology_require_bot_publisher_reliability() {
   done
   # FLAG: A rollback must preserve shared unknown-member fences and immutable publication
   # receipts, final queued notice authority and saved unfinished rule follow-ups.
+  # Unverified unban attempts remain crash-fenced and require the final live route proof;
+  # their unknown outcomes cannot become safe terminal failures or queued recovery.
   # Diagnostic modes or a compatible schema alone cannot certify the executor.
   if ! printf '%s\0' "${sources[@]}" | node -e '
     const [member, intents, moderation, callbacks, authority, notices, client, maxModule,
@@ -362,10 +366,26 @@ maxim_topology_require_bot_publisher_reliability() {
       editing, receipts, video, vk, replies, settings, followupPersistence,
       followupService, followupSanction, followupExecution, moderationModule,
       commercialAuthority, sanctionNoticeDelivery, commandNoticeDelivery,
-      manualRuntime, manualAuthority, nightDelivery] =
+      manualRuntime, manualAuthority, nightDelivery, watchdog, manualUnban] =
       require("node:fs").readFileSync(0).toString("utf8").split("\0");
+    const readNamedSet = (source, name) =>
+      new RegExp("const\\s+" + name + "\\b[^=;]*=\\s*new Set\\(\\s*\\[([^\\]]*)\\]\\s*\\)", "u")
+        .exec(source)?.[1] ?? null;
+    const irreversible = readNamedSet(member, "IRREVERSIBLE_ACTION_TYPES");
+    const crashFenced = readNamedSet(member, "CRASH_FENCED_MEMBER_ACTION_TYPES");
+    const ambiguousCapable = readNamedSet(watchdog, "AMBIGUOUS_CAPABLE_ACTION_TYPES");
+    const recoverableMembers = readNamedSet(watchdog, "RECOVERABLE_MEMBER_ACTION_TYPES");
+    const hasUnbanAttempt = (set) =>
+      set !== null && /(?:\u0027TRY_UNBAN_MEMBER\u0027|\u0022TRY_UNBAN_MEMBER\u0022)/u.test(set);
     const valid = member.includes("pg_advisory_xact_lock") &&
       member.includes("Retained member action requires settlement") &&
+      hasUnbanAttempt(irreversible) && hasUnbanAttempt(crashFenced) &&
+      member.includes("AND \u0022action_type\u0022 IN (\u0027BAN_MEMBER\u0027, \u0027KICK_MEMBER\u0027, \u0027TRY_UNBAN_MEMBER\u0027)") &&
+      member.includes("\u0024{job.actionType !== \u0027TRY_UNBAN_MEMBER\u0027}") &&
+      hasUnbanAttempt(ambiguousCapable) && recoverableMembers !== null &&
+      !hasUnbanAttempt(recoverableMembers) &&
+      /if \(mayHaveStarted && AMBIGUOUS_CAPABLE_ACTION_TYPES\.has\(row\.actionType\)\) \{\s*await this\.applyOutcome\(row, MaxActionLedgerStatus\.AMBIGUOUS, summary, \{\s*ambiguous: true,\s*errorCode:[^\n]*\n\s*error:[^\n]*\n\s*outcome:\s*\u0027quarantined\u0027,\s*\}\);\s*return;\s*\}/u.test(watchdog) &&
+      /beforeImmediateMemberMutation:\s*async \(revalidateRoute\) => \{[\s\S]*?if \(await readTargetAccess\(\)\) throw new ModerationSanctionStateChangedError\(\);\s*await leaseGuard\.assertOwned\(\);\s*(?:\/\/[^\n]*\n\s*)*await revalidateRoute\?\.\(\);\s*(?:\/\/[^\n]*\n\s*)*\},/u.test(manualUnban) &&
       intents.includes("closedChatDeleteGuard!.authorize") &&
       intents.includes("requiredSubscriptionExecutionGuard!.authorize") &&
       intents.includes("moderationDeleteVerified") &&
