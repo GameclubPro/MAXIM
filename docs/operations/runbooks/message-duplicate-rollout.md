@@ -392,11 +392,12 @@ and its matching content/revision binding. `MESSAGE_DUPLICATE_ENABLED=false` is 
 environment ceiling.
 
 Both API rollback paths require v3 binding, lifecycle and durable/permit authorization source
-capabilities, duplicate-only phone evidence v7, mode-aware TEXT lifecycle eligibility,
-and near punctuation/symbol positions with the `text-fixed-window-safe-text-v13` / `text-fixed-window-v13` settings fences
-and common `text-v13` matching namespace. Shared semantic normalization must preserve case-sensitive
+capabilities, duplicate-only phone evidence v8, mode-aware TEXT lifecycle eligibility,
+and near punctuation/symbol positions with the `text-fixed-window-safe-text-v14` / `text-fixed-window-v14` settings fences
+and common `text-v14` matching namespace. Shared semantic normalization must preserve case-sensitive
 finite quantity units in scalar/dimension/compound expressions and prefix fields (`MB: 100`,
 `MΩ = 10`) for fingerprints, source digest and lifecycle identity. Phone evidence uses the same
+finite electrical units (`Wh`, `Ah`, `VA`, `var` and `Втч`, `Ач`, `ВА`, `вар`) and
 prefix/suffix quantity guards, including a prefix before an explicit phone label. Consumed
 compound expressions cannot be rescanned by the outer scanner; the ordered span merge stays linear.
 Truncated protective contexts must fail closed, and numeric
@@ -461,7 +462,7 @@ Legacy settings above 48 hours are clamped by the resolver and repaired with the
 CAS without overwriting unrelated fields or authored text. Old Redis keys expire naturally;
 do not mass-delete history or shorten durable sanction/action fences.
 See [Bounded history review](../../antiduplicate-bounded-history-2026-10-05.md).
-API images before text-v13/history-v3 do not satisfy this source floor. Recovery
+API images before text-v14/history-v3 do not satisfy this source floor. Recovery
 uses the reviewed control OFF path above and a forward compatible release; static-only rollback
 is independent. Do not weaken source or applied-migration compatibility checks to reuse an old API.
 Older images do not understand the new protocol and are rejected as targets; rollback does not downgrade

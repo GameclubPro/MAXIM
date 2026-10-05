@@ -6,7 +6,7 @@ import {
 
 // FLAG: This is deliberately stricter than phone blocking. Erasing an ambiguous number or
 // using it as a phone-only duplicate match can authorize deletion of a different message.
-export const DUPLICATE_PHONE_EVIDENCE_VERSION = 7;
+export const DUPLICATE_PHONE_EVIDENCE_VERSION = 8;
 
 // FLAG: A period followed by spacing starts another phrase. Never erase its numeric content
 // as part of the phone; dots without spacing remain conventional phone separators.

@@ -1,5 +1,6 @@
 import {
   hasDuplicateQuantityUnitPrefix,
+  hasDuplicateQuantityUnitSuffix,
   normalizeDuplicateSemanticText,
 } from './duplicate-semantic-text';
 
@@ -10,6 +11,21 @@ describe('case-sensitive duplicate quantity units', () => {
     ['100 Mbit/s', '100 mbit/s'],
     ['10 MΩ', '10 mΩ'],
     ['5 MW', '5 mW'],
+    ...[
+      ['MWh', 'mWh'],
+      ['MAh', 'mAh'],
+      ['MVA', 'mVA'],
+      ['Mvar', 'mvar'],
+      ['МВтч', 'мВтч'],
+      ['МАч', 'мАч'],
+      ['МВА', 'мВА'],
+      ['Мвар', 'мвар'],
+    ].flatMap(([large, small]) => [
+      [`10 ${large}`, `10 ${small}`],
+      [`${large}: 10`, `${small}: 10`],
+      [`10 ${large}²/V`, `10 ${small}²/V`],
+      [`V/(${large}⁻²): 10`, `V/(${small}⁻²): 10`],
+    ]),
     ['10 Ms', '10 ms'],
     ['1 PA', '1 pA'],
     ['1 MB/S', '1 MB/s'],
@@ -100,6 +116,15 @@ describe('case-sensitive duplicate quantity units', () => {
     );
   });
 
+  it.each(['MWh', 'MAh', 'MVA', 'Mvar', 'МВтч', 'МАч', 'МВА', 'Мвар', 'МВт·ч', 'мА·ч'])(
+    'keeps prose case cosmetic beside the unchanged electrical unit %s',
+    (unit) => {
+      expect(normalizeDuplicateSemanticText(` Запас оборудования  10 ${unit}\nсегодня `)).toBe(
+        normalizeDuplicateSemanticText(`ЗАПАС ОБОРУДОВАНИЯ 10 ${unit} СЕГОДНЯ`),
+      );
+    },
+  );
+
   it.each([
     'MS Excel',
     'ID100MB',
@@ -114,6 +139,10 @@ describe('case-sensitive duplicate quantity units', () => {
     'MB³ModelCode',
     'ModelCode: 100',
     'Передайте MB сегодня: 100',
+    'MWh100_item',
+    'MWh³ModelCode',
+    '100 ModelVA',
+    'VARIANT: 100',
   ])('does not extend unit protection to ordinary prose or identifiers: %s', (text) => {
     expect(normalizeDuplicateSemanticText(text)).toBe(text.toLowerCase());
   });
@@ -144,6 +173,25 @@ describe('case-sensitive duplicate quantity units', () => {
   ])('shares a finite prefix quantity classifier for %j', (prefix) => {
     expect(hasDuplicateQuantityUnitPrefix(prefix)).toBe(true);
   });
+
+  it.each(['Wh', 'Ah', 'VA', 'var', 'Втч', 'Ач', 'ВА', 'вар', 'ч'])(
+    'shares electrical quantity classifiers for the finite symbol %s',
+    (symbol) => {
+      for (const unit of [symbol, `M${symbol}`, `m${symbol}`]) {
+        if (/\p{Script=Cyrillic}/u.test(symbol) && unit !== symbol) continue;
+        expect(hasDuplicateQuantityUnitPrefix(`(${unit}²): `)).toBe(true);
+        expect(hasDuplicateQuantityUnitSuffix(` (${unit}²)`)).toBe(true);
+      }
+    },
+  );
+
+  it.each(['МВтч', 'мВтч', 'МАч', 'мАч', 'МВА', 'мВА', 'Мвар', 'мвар', 'МВт·ч', 'мА·ч'])(
+    'shares electrical quantity classifiers for the Russian unit %s',
+    (unit) => {
+      expect(hasDuplicateQuantityUnitPrefix(`(${unit}): `)).toBe(true);
+      expect(hasDuplicateQuantityUnitSuffix(` (${unit})`)).toBe(true);
+    },
+  );
 
   it.each(['Модель: ', 'MS Excel ', 'MB100 ', 'MB-100 ', '10 MB, ', 'MB сегодня: '])(
     'does not claim a quantity prefix from %j',

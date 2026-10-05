@@ -32,6 +32,7 @@ import {
   preV3HistorySettingsDigests,
   preSemanticUnitSettingsDigests,
   prePrefixUnitSettingsDigests,
+  preElectricalUnitSettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 function setup() {
@@ -240,6 +241,7 @@ describe('message duplicate final delete guard', () => {
       for (const legacyDigest of [
         preSemanticUnitSettingsDigests[key],
         prePrefixUnitSettingsDigests[key],
+        preElectricalUnitSettingsDigests[key],
       ]) {
         s.binding.settingsDigest = legacyDigest;
         await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toMatchObject({
@@ -264,6 +266,12 @@ describe('message duplicate final delete guard', () => {
         [
           ['100 MB/s', '100 Mb/s'],
           ['10 MΩ', '10 mΩ'],
+          ['10 MWh', '10 mWh'],
+          ['MAh: 10', 'mAh: 10'],
+          ['MVA²: 10', 'mVA²: 10'],
+          ['10 Mvar/V', '10 mvar/V'],
+          ['10 МВтч', '10 мВтч'],
+          ['МАч: 10', 'мАч: 10'],
           ['MΩ: 10', 'mΩ: 10'],
           ['MΩ²: 10', 'mΩ²: 10'],
           ['MΩ⁺²: 10', 'mΩ⁺²: 10'],

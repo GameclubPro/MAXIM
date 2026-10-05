@@ -78,8 +78,8 @@ const mutations = [
     'false',
   ],
   ['state', 'z.literal(3)', 'z.literal(4)'],
-  ['state', 'text-fixed-window-safe-text-v13', 'text-fixed-window-safe-text-v12'],
-  ['state', 'text-fixed-window-v13', 'text-fixed-window-v12'],
+  ['state', 'text-fixed-window-safe-text-v14', 'text-fixed-window-safe-text-v13'],
+  ['state', 'text-fixed-window-v14', 'text-fixed-window-v13'],
   ['state', 'version: safeTextMatchingEnabled ?', 'version: false ?'],
   ['state', 'nearEnabled || phoneValueMatchingEnabled', 'nearEnabled'],
   [
@@ -116,8 +116,8 @@ const mutations = [
     'const numericTokens = approximateSource.match(',
     'const numericTokens = normalized.match(',
   ],
-  ['detector', 'text-v13\\0', 'text-v12\\0'],
-  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 7', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 6'],
+  ['detector', 'text-v14\\0', 'text-v13\\0'],
+  ['phones', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 8', 'DUPLICATE_PHONE_EVIDENCE_VERSION = 7'],
   ['detector', 'return normalizeDuplicateSemanticText(value);', 'return value.toLowerCase();'],
   ['content', 'return normalizeDuplicateSemanticText(value);', 'return value.toLowerCase();'],
   [
@@ -128,6 +128,11 @@ const mutations = [
   ['phones', 'hasDuplicateQuantityUnitSuffix(after)', 'false'],
   ['phones', 'hasDuplicateQuantityUnitSuffix(value)', 'false'],
   ['semantic', 'const QUANTITY_UNITS = new Set(', 'const QUANTITY_UNITS = new Map('],
+  ...['Wh', 'Ah', 'VA', 'var', 'Втч', 'Ач', 'ВА', 'вар', 'ч'].map((unit) => [
+    'semantic',
+    `  '${unit}',`,
+    `  'legacy-unit-${unit}',`,
+  ]),
   [
     'semantic',
     'wordUnit[1]! + wordUnit[2]!.toLowerCase() : unit',
@@ -503,9 +508,9 @@ for (const [key, before, after] of mutations) {
   });
 }
 
-test('rejects broad phone roots even with phone evidence v7 and the v13 settings fences', (t) => {
+test('rejects broad phone roots even with phone evidence v8 and the v14 settings fences', (t) => {
   const source = readFileSync(resolve(root, paths.phones), 'utf8');
-  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*7\b/u);
+  assert.match(source, /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*8\b/u);
   const declaration = /const PHONE_CONTEXT\s*=\s*\/[^\r\n]+\/iu;/u;
   assert.match(source, declaration);
   const phones = source.replace(

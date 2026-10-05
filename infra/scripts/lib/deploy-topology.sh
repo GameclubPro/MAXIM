@@ -498,7 +498,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
   # FLAG: Pending v3 decisions outlive environment downgrades. Both rollback paths
   # must retain lifecycle revisions, durable first admission/revocation and the last permit fence.
   # Bounded phone labels, strong identifier/quantity guards and original-text phone-before-URL
-  # normalization remain mandatory with v13 text fences, v7 phone evidence and bounded v3 storage.
+  # normalization remain mandatory with v14 text fences, v8 phone evidence and bounded v3 storage.
   # Case-sensitive quantity units before/after values and finite phone authority must survive
   # exact/near matching and lifecycle identity.
   for source_path in "${source_paths[@]}"; do
@@ -553,6 +553,12 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const unitPrefix = topLevelFunction(semantic, "export function hasDuplicateQuantityUnitPrefix(");
     const prefixUnitSpans = squash(topLevelFunction(semantic, "function prefixQuantityUnitSpans("));
     const mergeUnitSpans = squash(topLevelFunction(semantic, "function mergeQuantityUnitSpans("));
+    const finiteUnitSymbols = (name) => {
+      const body = semantic.match(new RegExp("const " + name + "\\s*=\\s*\\[([\\s\\S]*?)\\];", "u"))?.[1] ?? "";
+      return new Set(Array.from(squash(body).matchAll(/\u0027([^\u0027\r\n]+)\u0027/gu), (match) => match[1]));
+    };
+    const latinUnitSymbols = finiteUnitSymbols("SI_SYMBOLS");
+    const cyrillicUnitSymbols = finiteUnitSymbols("CYRILLIC_SYMBOLS");
     const quantityUnitToken = semantic.match(/const QUANTITY_UNIT_TOKEN\s*=\s*(\/[^\r\n]+\/gu);/u)?.[1];
     const quantityCompoundComponent = semantic.match(/const QUANTITY_COMPOUND_COMPONENT\s*=\s*(\/[^\r\n]+\/uy);/u)?.[1];
     const quantityPrefixSeparator = semantic.match(/const QUANTITY_PREFIX_SEPARATOR\s*=\s*(\/[^\r\n]+\/uy);/u)?.[1];
@@ -614,8 +620,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
       state.includes("lifecycleRevision:") &&
       state.includes("authorization:") &&
       state.includes("messageDuplicateEnforcementScope") &&
-      state.includes("text-fixed-window-safe-text-v13") &&
-      state.includes("text-fixed-window-v13") &&
+      state.includes("text-fixed-window-safe-text-v14") &&
+      state.includes("text-fixed-window-v14") &&
       state.includes("const safeTextMatchingEnabled = nearEnabled || phoneValueMatchingEnabled;") &&
       /const phoneValueMatchingEnabled\s*=\s*settings.duplicateDetectionPreset === .CUSTOM. && settings.duplicateIgnorePhonesEnabled/u.test(state) &&
       /version:\s*safeTextMatchingEnabled\s*\?/u.test(state) &&
@@ -631,13 +637,15 @@ maxim_topology_require_message_duplicate_delete_guard() {
       squash(fingerprints).includes("config.ignorePhones || config.ignoreLinks || config.matchPhoneValues") &&
       fingerprints.includes("const content = normalizeDuplicateText(approximateSource);") &&
       near.includes("const numericTokens = approximateSource.match(/[+-]?\\d+(?:[.,:]\\d+)*/gu) ?? [];") &&
-      detector.includes(".update(\u0027text-v13\\0\u0027)") &&
+      detector.includes(".update(\u0027text-v14\\0\u0027)") &&
       detector.includes("import { normalizeDuplicateSemanticText } from \u0027./duplicate-semantic-text\u0027;") &&
       content.includes("import { normalizeDuplicateSemanticText } from \u0027../duplicate-semantic-text\u0027;") &&
       detectorTextNormalization.includes("return normalizeDuplicateSemanticText(value);") &&
       contentTextNormalization.includes("return normalizeDuplicateSemanticText(value);") &&
       semanticTextNormalization.includes("const source = value.normalize(\u0027NFC\u0027);") &&
       semantic.includes("const QUANTITY_UNITS = new Set(") &&
+      ["Wh", "Ah", "VA", "var"].every((unit) => latinUnitSymbols.has(unit)) &&
+      ["Втч", "Ач", "ВА", "вар", "ч"].every((unit) => cyrillicUnitSymbols.has(unit)) &&
       semantic.includes("...SI_PREFIXES.flatMap((prefix) => SI_SYMBOLS.map((symbol) => prefix + symbol))") &&
       semantic.includes("...CYRILLIC_PREFIXES.flatMap((prefix) => CYRILLIC_SYMBOLS.map((symbol) => prefix + symbol))") &&
       squash(protectedUnit).includes("const wordUnit = /^(.*?)(bytes?|bits?)$/iu.exec(unit); return wordUnit ? wordUnit[1]! + wordUnit[2]!.toLowerCase() : unit;") &&
@@ -670,7 +678,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
       semanticTextNormalization.includes("parts.push(source.slice(cursor).toLowerCase());") &&
       phones.includes("from \u0027./duplicate-semantic-text\u0027;") &&
       protectedValue.includes("hasDuplicateQuantityUnitSuffix(after)") &&
-      /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*7\b/u.test(phones) &&
+      /DUPLICATE_PHONE_EVIDENCE_VERSION\s*=\s*8\b/u.test(phones) &&
       phoneContext === "/(?:^|[^\\p{L}\\p{N}_])(?:тел|телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?|звоните|позвоните|звони|позвони|звонить|позвонить|связаться|свяжитесь|whatsapp|ватсап|viber|вайбер|phone|telephone|call)\\s*(?:для\\s+связи\\s*)?[:=№#.-]?\\s*$/iu" &&
       phoneNumberContext === "/(?:^|[^\\p{L}\\p{N}_])номер(?:а|у|ом|е|ов|ам|ами|ах)?\\s+телефон(?:а|у|ом|е|ы|ов|ам|ами|ах)?\\s*(?:для\\s+связи\\s*)?[:=№#.-]?\\s*$/iu" &&
       phones.includes("import { getUrlTextRanges } from \u0027../common/url-text.util\u0027;") &&

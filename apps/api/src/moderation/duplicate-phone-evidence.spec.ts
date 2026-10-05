@@ -7,6 +7,38 @@ import {
 import { extractDetectedPhoneNumbers } from './rule-engine-message-limits.detector';
 
 describe('conservative phone evidence for duplicates', () => {
+  it.each([
+    'MWh',
+    'mWh',
+    'MAh',
+    'mAh',
+    'MVA',
+    'mVA',
+    'Mvar',
+    'mvar',
+    'МВтч',
+    'мВтч',
+    'МАч',
+    'мАч',
+    'МВА',
+    'мВА',
+    'Мвар',
+    'мвар',
+    'МВт·ч',
+    'мА·ч',
+  ])('keeps a phone-sized electrical quantity with unit %s', (unit) => {
+    for (const text of [
+      `Промышленное оборудование. Телефон: +79991234567 ${unit}`,
+      `Промышленное оборудование. (${unit}): +79991234567`,
+      `Промышленное оборудование. (${unit}): телефон: +79991234567`,
+      `Промышленное оборудование. Телефон: +79991234567 ${unit}²/V`,
+      `Промышленное оборудование. V/(${unit}⁻²): телефон: +79991234567`,
+    ]) {
+      expect(extractDuplicatePhoneNumbers(text)).toEqual([]);
+      expect(stripDuplicatePhoneNumbers(text)).toBe(text);
+    }
+  });
+
   it.each(['MB:', '(Mb) =', 'MB/s —', 'MΩ:', 'V/(mΩ):', 'MB/s²:', 'M\u200bB:'])(
     'keeps the quantity value after a finite prefix unit %s',
     (unit) => {

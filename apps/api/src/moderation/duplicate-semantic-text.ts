@@ -66,6 +66,12 @@ const SI_SYMBOLS = [
   'bits',
   'byte',
   'bytes',
+  // FLAG: Established concatenated electrical symbols retain SI-prefix case.
+  // MWh/mWh, MAh/mAh, MVA/mVA and Mvar/mvar are different quantities.
+  'Wh',
+  'Ah',
+  'VA',
+  'var',
 ];
 const CYRILLIC_PREFIXES = ['', 'Т', 'Г', 'М', 'к', 'д', 'с', 'м', 'мк', 'н', 'п'];
 const CYRILLIC_SYMBOLS = [
@@ -96,6 +102,11 @@ const CYRILLIC_SYMBOLS = [
   'эВ',
   'б',
   'Б',
+  'Втч',
+  'Ач',
+  'ВА',
+  'вар',
+  'ч',
 ];
 const QUANTITY_UNITS = new Set(
   [
