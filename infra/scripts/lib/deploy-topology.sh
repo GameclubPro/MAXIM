@@ -223,7 +223,7 @@ maxim_topology_require_multibot_authority() {
     const proof = request.indexOf("await this.assertChatMutationExecutionProof(");
     const quota = request.indexOf("await this.reserveRateLimitSlot(");
     const epoch = request.indexOf("verifyChatExecutionProof(");
-    const feature = request.indexOf("await scope.finalGuard?.()");
+    const feature = request.indexOf("await scope.finalGuard?.(");
     const attempt = request.indexOf("scope.onDispatchAttempt?.()");
     const dispatch = request.indexOf("this.httpService.request<T>(");
     const sourceStart = legacy.indexOf("function hasNewOriginalSource(");
@@ -307,6 +307,169 @@ maxim_topology_require_multibot_authority() {
   fi
 }
 
+maxim_topology_require_bot_publisher_reliability() {
+  local commit_sha="$1" path source
+  local sources=()
+  for path in \
+    apps/api/src/max/max-action-ledger.service.ts \
+    apps/api/src/moderation/moderation-delete-intent.service.ts \
+    apps/api/src/moderation/moderation.service.legacy.ts \
+    apps/api/src/moderation/moderation-execution-guard-callbacks.ts \
+    apps/api/src/moderation/moderation-rule-sanction-authority.ts \
+    apps/api/src/max/max-moderation-rule-notice.guard.ts \
+    apps/api/src/max/max-client.service.ts \
+    apps/api/src/max/max.module.ts \
+    apps/api/src/max/max-required-subscription-notice.guard.ts \
+    apps/api/src/moderation/required-subscription-notice-authority.ts \
+    apps/api/src/moderation/required-subscription-notice-plan.ts \
+    apps/api/src/moderation/moderation-state-delete-guard.service.ts \
+    apps/api/src/max/max-duplicate-notice.guard.ts \
+    apps/api/src/moderation/message-duplicate/message-duplicate-notice-proof.ts \
+    apps/api/src/moderation/message-duplicate/message-duplicate-delete-guard.service.ts \
+    apps/api/src/max/max-moderation-notice-envelope.ts \
+    apps/api/src/admin/publication-execution-safety.ts \
+    apps/api/src/admin/admin-managed-broadcast-ledger-recovery.ts \
+    apps/api/src/publisher/publisher-video-upload.processor.ts \
+    apps/api/src/admin/vk-sync-lease.ts \
+    apps/api/src/publisher/publisher-auto-reply-delivery.service.ts \
+    apps/api/src/admin/admin-chat-settings.ts \
+    apps/api/src/moderation/moderation-rule-followup-persistence.ts \
+    apps/api/src/moderation/moderation-rule-followup.service.ts \
+    apps/api/src/moderation/moderation-rule-followup-sanction.ts \
+    apps/api/src/moderation/moderation-rule-followup-execution.ts \
+    apps/api/src/moderation/moderation.module.ts \
+    apps/api/src/moderation/commercial/commercial-delete-guard.service.ts \
+    apps/api/src/moderation/moderation-sanction-notice-delivery.ts \
+    apps/api/src/common/group-command-notice-delivery.ts \
+    apps/api/src/admin/admin-manual-moderation-runtime.ts \
+    apps/api/src/admin/admin-manual-group-command-notice-authority.ts \
+    apps/api/src/moderation/night-mode-transition-delivery.service.ts; do
+    if ! source="$(git show "${commit_sha}:${path}" 2>/dev/null)"; then
+      echo "Rollback target predates shared member and Publisher reliability: $path" >&2
+      return 1
+    fi
+    sources+=("$source")
+  done
+  # FLAG: A rollback must preserve shared unknown-member fences and immutable publication
+  # receipts, final queued notice authority and saved unfinished rule follow-ups.
+  # Diagnostic modes or a compatible schema alone cannot certify the executor.
+  if ! printf '%s\0' "${sources[@]}" | node -e '
+    const [member, intents, moderation, callbacks, authority, notices, client, maxModule,
+      subscriptionNotices, subscriptionAuthority, subscriptionPlans,
+      stateAuthority,
+      duplicateNotices, duplicateNoticeProof, duplicateAuthority,
+      noticeEnvelopes,
+      editing, receipts, video, vk, replies, settings, followupPersistence,
+      followupService, followupSanction, followupExecution, moderationModule,
+      commercialAuthority, sanctionNoticeDelivery, commandNoticeDelivery,
+      manualRuntime, manualAuthority, nightDelivery] =
+      require("node:fs").readFileSync(0).toString("utf8").split("\0");
+    const valid = member.includes("pg_advisory_xact_lock") &&
+      member.includes("Retained member action requires settlement") &&
+      intents.includes("closedChatDeleteGuard!.authorize") &&
+      intents.includes("requiredSubscriptionExecutionGuard!.authorize") &&
+      intents.includes("moderationDeleteVerified") &&
+      intents.includes("recoverKnownOwnReasonReceipt(input, result)") &&
+      moderation.includes("moderationRuleSanctionGuard!.assertAllowed") &&
+      moderation.includes("createRuleSanctionGuards") &&
+      callbacks.includes("botId: readProvenBotId()") &&
+      callbacks.includes("botId: readSelectedBotId()") &&
+      callbacks.includes("moderationRuleNotice: { version: 1, ...proof }") &&
+      authority.includes("chatId_messageId:") &&
+      authority.includes("intentId_reasonKey:") &&
+      authority.includes("metadata.moderationDeleteVerified !== true") &&
+      authority.includes("sourceAtMs + 5 * 60_000 !== proof.deadlineAtMs") &&
+      /await load\(\);\s*(?:\/\/[^\n]*\n\s*)*await dependencies\.assertFinalOwnership\?\.\(\);\s*if\s*\(/u.test(authority) &&
+      notices.includes("action.actionType !== \u0027SEND_MESSAGE\u0027") &&
+      notices.includes("value.chatId !== action.chatId") &&
+      notices.includes("assertModerationRuleSanctionAuthority(this.prisma, proof") &&
+      client.includes("hasMaxModerationRuleNoticeProof(action)") &&
+      client.includes("this.moderationRuleNoticeGuard.assertAllowed(") &&
+      /mutationOptions,\s*finalNoticeGuard,/u.test(client) &&
+      maxModule.includes("  MaxModerationRuleNoticeGuardService,") &&
+      moderation.includes("createRequiredSubscriptionNoticeHandoff") &&
+      callbacks.includes("plan.executionProof") &&
+      callbacks.includes("ledgerContext: { requiredSubscriptionNotice: proof }") &&
+      subscriptionNotices.includes("isMaxRequiredSubscriptionNoticeAction") &&
+      subscriptionNotices.includes("assertRequiredSubscriptionNoticeAuthority(this.prisma, proof") &&
+      subscriptionAuthority.includes("row.deadlineAtMs !== Number(row.sourceAtMs) + 5 * 60_000") &&
+      subscriptionAuthority.includes("binding.moderationDeleteVerified !== true") &&
+      subscriptionPlans.includes("executionProof: params.executionProof") &&
+      subscriptionPlans.includes("readRequiredSubscriptionNoticeAuthority(parsed.executionProof)") &&
+      stateAuthority.includes("intentId_reasonKey: { intentId: intent.id, reasonKey }") &&
+      stateAuthority.includes("intent.sourceMessageAt?.getTime() !== params.sourceMessageAt.getTime()") &&
+      duplicateNotices.includes("MESSAGE_DUPLICATE_NOTICE_AUTHORITY") &&
+      duplicateNotices.includes("notice: proof,") &&
+      duplicateNoticeProof.includes("binding.enforcementScope === \u0027full\u0027") &&
+      duplicateNoticeProof.includes("deadlineAtMs <= binding.authorization.deadlineAtMs") &&
+      duplicateAuthority.includes("receiptMetadata?.moderationDeleteVerified !== true") &&
+      duplicateAuthority.includes("await params.beforeFinalAuthority?.()") &&
+      client.includes("this.duplicateNoticeGuard.assertAllowed(") &&
+      maxModule.includes("  MaxDuplicateNoticeGuardService,") &&
+      noticeEnvelopes.includes("moderation_notice_legacy_envelope_unverified") &&
+      client.includes("assertMaxModerationNoticeEnvelope(action)") &&
+      callbacks.includes("moderationNoticeEnvelope: { version: 1 }") &&
+      client.includes("this.requiredSubscriptionNoticeGuard.assertAllowed(") &&
+      maxModule.includes("  MaxRequiredSubscriptionNoticeGuardService,") &&
+      editing.includes("reviseUnstartedPublicationExecutionBroadcasts") &&
+      editing.includes("revised.count !== broadcastIds.length") &&
+      receipts.includes("delivery.contentRevisionId") &&
+      video.includes("assertPublisherIdentityOrDelay(this.identity, job, token)") &&
+      vk.includes("syncAttemptCount") && vk.includes("FOR UPDATE OF source") &&
+      vk.includes("clock_timestamp() AT TIME ZONE") &&
+      replies.includes("confirmedRemoteMessageId") &&
+      replies.includes("completeSent(delivery, dispatchStartedAt, sent.messageId)") &&
+      replies.includes("PublisherAutoReplyDeliveryStatus.AMBIGUOUS") &&
+      /return this\.assertFinalAutoReplyEpochAndBinding\(tx,\s*delivery,\s*lockToken\)/u.test(replies) &&
+      replies.includes("publisher_auto_reply_send_fence_lock") &&
+      replies.includes("publisher_auto_reply_send_fence_cas") &&
+      replies.includes("publisher_auto_reply_send_fence_cooldown") &&
+      replies.includes("admitted.\u0022dispatchStartedAt\u0022 +") &&
+      replies.includes("OR EXISTS (SELECT 1 FROM cooldown)") &&
+      replies.includes("\u0022publisher_auto_reply_cooldowns\u0022.\u0022next_allowed_at\u0022 <= (clock_timestamp() AT TIME ZONE") &&
+      replies.includes("FOR UPDATE") &&
+      replies.includes("binding.\u0022bot_access_expires_at\u0022 > clock.\u0022now\u0022") &&
+      replies.includes("binding.\u0022bot_access_checked_at\u0022 <= clock.\u0022now\u0022") &&
+      replies.includes("rule.\u0022version\u0022 = delivery.\u0022matched_rule_version\u0022") &&
+      replies.includes("settings.\u0022auto_reply_config_revision\u0022 = delivery.\u0022auto_reply_config_revision\u0022") &&
+      intents.includes("persistIntent(input, false, tx)") &&
+      /persistRuleFollowupBeforeDelete\(\s*tx,/u.test(intents) &&
+      intents.includes("activateOwnedRuleFollowups(tx,") &&
+      intents.includes("followup.\u0022effects\u0022->>\u0027phase\u0027 IN (\u0027BAN_STARTED\u0027, \u0027UNKNOWN\u0027)") &&
+      followupPersistence.includes("intent.\u0022delete_dispatch_started_at\u0022 IS NULL") &&
+      followupPersistence.includes("reason.\u0022metadata\u0022->\u0027moderationDeleteVerified\u0027 = \u0027true\u0027::jsonb") &&
+      followupService.includes("roleRunsAction(getAppRole())") &&
+      followupService.includes("MODERATION_RULE_FOLLOWUP_EXECUTOR") &&
+      followupService.includes("moderationViolationMessageClaim.create") &&
+      followupService.includes("clock_timestamp() AT TIME ZONE") &&
+      followupSanction.includes("state.phase === \u0027BAN_STARTED\u0027") &&
+      followupSanction.includes("dependencies.recoverBanReceipt(actionKey)") &&
+      followupSanction.includes("RuleFollowupBanOutcomeUnknownError") &&
+      /host\.applyRuleFollowupSanction\(\s*durable,/u.test(followupExecution) &&
+      followupExecution.includes("durable?.plan.action") &&
+      moderation.includes("!journal.receiptOnly") &&
+      moderation.includes("assertFinalOwnership:") &&
+      /provide:\s*MODERATION_RULE_FOLLOWUP_EXECUTOR,\s*useExisting:\s*ModerationService/u.test(moderationModule) &&
+      /phase:\s*\u0027SQL_COMMITTED\u0027,\s*eventId:\s*plan\.eventId/u.test(moderation) &&
+      commercialAuthority.includes("this.issuedPermits.get(permit)") &&
+      commercialAuthority.includes("await options.beforeFinalAuthority?.()") &&
+      sanctionNoticeDelivery.includes("...input.noticeDispatchOptions") &&
+      commandNoticeDelivery.includes("await revalidateRoute?.()") &&
+      commandNoticeDelivery.includes("moderationNoticeEnvelope: { version: 1 }") &&
+      manualRuntime.includes("if (params.ledger.outcome !== \u0027SUCCESS\u0027)") &&
+      manualRuntime.includes("this.context.assertManualGroupCommandSuccessNoticeAuthority(") &&
+      manualAuthority.includes("notice.lockToken !== input.lockToken") &&
+      manualAuthority.includes("bypassCache: true") &&
+      manualAuthority.includes("moderationEventId: { not: null }") &&
+      /beforeImmediateSendMutation:\s*async \(revalidateRoute\) => \{\s*await revalidateRoute\?\.\(\);\s*await this\.assertCurrentTransitionState\(/u.test(nightDelivery) &&
+      /\[\s*(?:\/\/[^\n]*\n\s*)*\u0027nightModeEnabled\u0027,\s*\u0027nightModeStartTimeMinutes\u0027,\s*\u0027nightModeEndTimeMinutes\u0027,\s*\u0027nightModeTimezone\u0027,[\s\S]*?advanceChatMutationOrder\(tx, params.chatId, \u0027CHAT_CONTROL\u0027\)/u.test(settings);
+    process.exit(valid ? 0 : 1);
+  ' >/dev/null 2>&1; then
+    echo "Rollback target lacks member-effect, final-policy or immutable Publisher receipt fences." >&2
+    return 1
+  fi
+}
+
 maxim_topology_require_message_duplicate_delete_guard() {
   local commit_sha="$1"
   local source_path
@@ -372,7 +535,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const returnsDuplicateQualification = (source) => /return\s*\{[^}]*\bmessageDuplicateVerified\s*,/u.test(source);
     const guardedReasons = boundary.includes("await this.authorizeGuardedUserDeleteReasons(") &&
       reasons.includes("ownedReasonsOnly: true") && reasons.includes("if (!reasons.length)") &&
-      squash(reasons).includes("messageDuplicateVerified = (await check(() => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params), )) === \u0027allowed\u0027;") &&
+      (squash(reasons).includes("messageDuplicateVerified = (await check(() => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params), )) === \u0027allowed\u0027;") ||
+        squash(reasons).includes("messageDuplicateVerified = (await check( () => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params), duplicateReceipts.map((receipt) => receipt.reasonKey), )) === \u0027allowed\u0027;")) &&
       boundary.includes("messageDuplicateVerified = proof.messageDuplicateVerified;") &&
       returnsDuplicateQualification(reasons) && returnsDuplicateQualification(boundary);
     const permit = method(guard, "private async assertAuthorization(");
@@ -429,7 +593,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
       check.includes("await this.history.stillMatches(") &&
       check.includes("message_duplicate_content_changed") &&
       count(check, "await this.assertAuthorization(params.chatId, binding)") >= 2 &&
-      /await this\.assertAuthorization\(params\.chatId, binding\);\s*return .allowed./u.test(check) &&
+      /await this\.assertAuthorization\(params\.chatId, binding\); if \(notice && Date\.now\(\) >= notice\.deadlineAtMs\) throw new MessageDuplicateGuardRejectedError\(.message_duplicate_notice_expired.\); if \(Date\.now\(\) >= Math\.min\(binding\.authorization!\.deadlineAtMs, binding\.original\.expiresAtMs\)\) throw new MessageDuplicateGuardRejectedError\(.message_duplicate_action_expired.\); return .allowed./u.test(squash(check)) &&
       permit.includes("binding.version !== 3") &&
       permit.includes("binding.lifecycleRevision") &&
       permit.includes("binding.original?.revision") &&
@@ -811,7 +975,7 @@ maxim_topology_require_stop_words_policy_guard() {
       guard.includes("getExactMessageRow(") &&
       guard.includes("stop_words_delete_no_longer_authorized") &&
       guard.includes("stopWordsRevision") &&
-      /this\.stopWordsDeleteGuard!?\.assertIntentStillActionable\(/u.test(authority) &&
+      /this\.stopWordsDeleteGuard!?\.(?:assertIntentStillActionable|authorizeIntent)\(/u.test(authority) &&
       authority.includes("Stop-list delete guard unavailable") &&
       detector.includes("detectStopWordsViolations(") && detector.includes("stopWordsPolicy");
     process.exit(valid ? 0 : 1);

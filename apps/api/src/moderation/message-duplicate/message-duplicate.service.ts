@@ -97,6 +97,7 @@ export class MessageDuplicateService {
     eventTimestampMs?: number;
     settings: ChatSettings;
     botId: string;
+    readSelectedBotId?: () => string | undefined;
     actionEligible: boolean;
     track: boolean;
     executeFullAction?: ExecuteDuplicateModerationAction;
@@ -257,6 +258,7 @@ export class MessageDuplicateService {
             ...result,
             chatId: message.chatId,
             botId: params.botId,
+            readSelectedBotId: params.readSelectedBotId,
             sourceCreatedAt: message.createdAt,
             text: content.text,
             settings: params.settings,

@@ -20,6 +20,56 @@ import {
   type MaxUpdate,
 } from './moderation.service.spec-support';
 
+// FLAG: This suite verifies orchestration with an explicit successful deletion boundary.
+// Real current-policy, lease, receipt and selected-token guards run in the native fullpath suite.
+function installRequiredSubscriptionFixtureGuards(service: ModerationService): ModerationService {
+  const boundary = service as unknown as {
+    moderationDeleteIntentService?: unknown;
+    executeModerationDelete(
+      input: { chatId: string; messageId: string },
+      options?: unknown,
+    ): Promise<unknown>;
+    deleteMessageImmediatelyLegacy(
+      chatId: string,
+      messageId: string,
+      options?: unknown,
+    ): Promise<{ ok: boolean; botId: string | null }>;
+  };
+  const original = boundary.executeModerationDelete.bind(service);
+  Object.assign(service, {
+    requiredSubscriptionExecutionGuard: {
+      assertNoticeAllowed: jest.fn().mockResolvedValue(undefined),
+      authorize: jest
+        .fn()
+        .mockResolvedValue({ reasonKeys: ['REQUIRED_SUBSCRIPTION:message-delete'] }),
+    },
+    executeModerationDelete: jest.fn(
+      async (input: { chatId: string; messageId: string }, options?: unknown) => {
+        if (boundary.moderationDeleteIntentService) return original(input, options);
+        const result = await boundary.deleteMessageImmediatelyLegacy(
+          input.chatId,
+          input.messageId,
+          options,
+        );
+        return {
+          accepted: result.ok,
+          gone: result.ok,
+          deleted: result.ok,
+          eventPersistedByIntent: false,
+          botId: result.botId,
+        };
+      },
+    ),
+  });
+  return service;
+}
+
+function createRequiredSubscriptionService(
+  ...args: ConstructorParameters<typeof ModerationService>
+): ModerationService {
+  return installRequiredSubscriptionFixtureGuards(new ModerationService(...args));
+}
+
 describe('ModerationService', () => {
   describe('required subscription', () => {
     function createPrismaForRequiredSubscription(
@@ -145,7 +195,7 @@ describe('ModerationService', () => {
             action: 'delete_message',
           }),
         };
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           {} as never,
           {} as never,
           {} as never,
@@ -208,7 +258,7 @@ describe('ModerationService', () => {
           })),
         };
         const operation = jest.fn().mockResolvedValue(undefined);
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           prisma as never,
           {} as never,
           {} as never,
@@ -288,7 +338,7 @@ describe('ModerationService', () => {
           })),
         };
         const operation = jest.fn().mockResolvedValue(undefined);
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           prisma as never,
           {} as never,
           {} as never,
@@ -358,7 +408,7 @@ describe('ModerationService', () => {
           })),
         };
         const operation = jest.fn().mockResolvedValue(undefined);
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           prisma as never,
           {} as never,
           {} as never,
@@ -418,7 +468,7 @@ describe('ModerationService', () => {
           recordProblemChat: jest.fn().mockResolvedValue(undefined),
         };
         const operation = jest.fn().mockResolvedValue(undefined);
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           prisma as never,
           {} as never,
           {} as never,
@@ -514,7 +564,7 @@ describe('ModerationService', () => {
           .fn()
           .mockRejectedValueOnce(terminalError)
           .mockResolvedValueOnce(undefined);
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           {} as never,
           {} as never,
           {} as never,
@@ -661,7 +711,7 @@ describe('ModerationService', () => {
             throw terminalError;
           }
         });
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           prisma as never,
           {} as never,
           {} as never,
@@ -791,7 +841,7 @@ describe('ModerationService', () => {
             },
           }),
         };
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           prisma as never,
           {} as never,
           {} as never,
@@ -875,7 +925,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -926,7 +976,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -992,7 +1042,7 @@ describe('ModerationService', () => {
         ),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
@@ -1051,7 +1101,7 @@ describe('ModerationService', () => {
             }),
         ),
       };
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         {} as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
@@ -1140,7 +1190,7 @@ describe('ModerationService', () => {
         getMembershipResolution: jest.fn().mockResolvedValue({ membership: false, fresh: true }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
@@ -1191,7 +1241,7 @@ describe('ModerationService', () => {
           .mockResolvedValueOnce({ membership: true, fresh: true }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
@@ -1249,7 +1299,7 @@ describe('ModerationService', () => {
         }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
@@ -1315,7 +1365,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -1377,7 +1427,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -1426,7 +1476,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -1460,7 +1510,7 @@ describe('ModerationService', () => {
         getActiveBotId: jest.fn().mockReturnValue('id613002203036_4_bot'),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
@@ -1528,7 +1578,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -1654,7 +1704,7 @@ describe('ModerationService', () => {
         notifyModerators: jest.fn(),
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -1733,7 +1783,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -1799,7 +1849,7 @@ describe('ModerationService', () => {
           .mockResolvedValue(['id613002203036_bot', 'id613002203036_4_bot']),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -1898,7 +1948,7 @@ describe('ModerationService', () => {
           .mockResolvedValue(['id613002203036_bot', 'id613002203036_4_bot']),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -1964,7 +2014,7 @@ describe('ModerationService', () => {
         }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
@@ -2044,7 +2094,7 @@ describe('ModerationService', () => {
         resolveBotId: jest.fn().mockResolvedValue('id613002203036_bot'),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
@@ -2124,7 +2174,7 @@ describe('ModerationService', () => {
         invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
@@ -2184,7 +2234,7 @@ describe('ModerationService', () => {
         }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         { detect: jest.fn() } as never,
         { resolveAction: jest.fn() } as never,
@@ -2271,7 +2321,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/c/chat-1/rules'),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2354,7 +2404,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/c/chat-1/rules'),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2437,7 +2487,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2508,7 +2558,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/c/chat-1/rules'),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2559,7 +2609,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/c/chat-1/rules'),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2617,7 +2667,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2701,7 +2751,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2761,7 +2811,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2816,7 +2866,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2855,7 +2905,7 @@ describe('ModerationService', () => {
       const ruleEngine = { detect: jest.fn().mockResolvedValue({ violations: [] }) };
       const redisCounter = createRequiredSubscriptionRedisCounter();
       const maxClient = createRequiredSubscriptionMaxClient();
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2901,7 +2951,7 @@ describe('ModerationService', () => {
       const ruleEngine = { detect: jest.fn().mockResolvedValue({ violations: [] }) };
       const redisCounter = createRequiredSubscriptionRedisCounter();
       const maxClient = createRequiredSubscriptionMaxClient();
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2939,7 +2989,7 @@ describe('ModerationService', () => {
       const ruleEngine = { detect: jest.fn().mockResolvedValue({ violations: [] }) };
       const redisCounter = createRequiredSubscriptionRedisCounter();
       const maxClient = createRequiredSubscriptionMaxClient();
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -2985,7 +3035,7 @@ describe('ModerationService', () => {
         .mockRejectedValueOnce(new Error('MAX send failed'))
         .mockResolvedValue(undefined);
       const maxClient = createRequiredSubscriptionMaxClient(sendMessage);
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -3050,7 +3100,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -3121,7 +3171,7 @@ describe('ModerationService', () => {
           resolveMessageLink: jest.fn().mockResolvedValue(null),
         };
 
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           prisma as never,
           ruleEngine as never,
           { resolveAction: jest.fn() } as never,
@@ -3194,7 +3244,7 @@ describe('ModerationService', () => {
         }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -3258,7 +3308,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -3342,7 +3392,7 @@ describe('ModerationService', () => {
         notifyModerators: jest.fn(),
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -3419,7 +3469,7 @@ describe('ModerationService', () => {
             : null,
         );
         const maxClient = createRequiredSubscriptionMaxClient();
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           prisma as never,
           { detect: jest.fn().mockResolvedValue({ violations: [] }) } as never,
           { resolveAction: jest.fn() } as never,
@@ -3514,7 +3564,7 @@ describe('ModerationService', () => {
           notifyModerators: jest.fn(),
           resolveMessageLink: jest.fn().mockResolvedValue(null),
         };
-        const firstService = new ModerationService(
+        const firstService = createRequiredSubscriptionService(
           prisma as never,
           ruleEngine as never,
           { resolveAction: jest.fn() } as never,
@@ -3552,7 +3602,7 @@ describe('ModerationService', () => {
         expect(maxClient.deleteMessage).not.toHaveBeenCalled();
 
         useChangedSettings = true;
-        const retryService = new ModerationService(
+        const retryService = createRequiredSubscriptionService(
           prisma as never,
           ruleEngine as never,
           { resolveAction: jest.fn() } as never,
@@ -3658,6 +3708,7 @@ describe('ModerationService', () => {
         sanctionStateLock,
         sanctionStateFence,
       });
+      installRequiredSubscriptionFixtureGuards(service);
       const rememberActiveMuteState = jest.spyOn(service as any, 'rememberActiveMuteState');
       const ensureModerationDeleteIntent = jest.spyOn(
         service as any,
@@ -3713,7 +3764,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -3775,7 +3826,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -3832,7 +3883,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -3911,7 +3962,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -3971,7 +4022,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4061,7 +4112,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4121,7 +4172,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4185,7 +4236,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4251,7 +4302,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4317,7 +4368,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4389,7 +4440,7 @@ describe('ModerationService', () => {
           resolveMessageLink: jest.fn().mockResolvedValue(null),
         };
 
-        const service = new ModerationService(
+        const service = createRequiredSubscriptionService(
           prisma as never,
           ruleEngine as never,
           { resolveAction: jest.fn() } as never,
@@ -4451,7 +4502,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4528,7 +4579,7 @@ describe('ModerationService', () => {
         }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4572,7 +4623,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4625,7 +4676,7 @@ describe('ModerationService', () => {
         resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4703,7 +4754,7 @@ describe('ModerationService', () => {
         }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4743,6 +4794,7 @@ describe('ModerationService', () => {
             admins: [{ userId: 'owner-1' }],
           }),
         },
+        globalSpammer: { findUnique: jest.fn().mockResolvedValue(null) },
         adminGlobalSpammerExemption: {
           findMany: jest.fn().mockResolvedValue([
             {
@@ -4795,7 +4847,7 @@ describe('ModerationService', () => {
         }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -4812,7 +4864,7 @@ describe('ModerationService', () => {
         .mockResolvedValue(undefined);
       (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
       const update = createUpdate();
-      update.message!.createdAt = '2026-08-15T09:37:00.000Z';
+      update.message!.createdAt = new Date().toISOString();
 
       await service.handleUpdate(update);
 
@@ -4895,7 +4947,7 @@ describe('ModerationService', () => {
         evaluatePolicy: jest.fn().mockResolvedValue({ action: 'DELETE_AND_KICK' }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -5000,7 +5052,7 @@ describe('ModerationService', () => {
         }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -5077,7 +5129,7 @@ describe('ModerationService', () => {
         }),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -5119,7 +5171,7 @@ describe('ModerationService', () => {
         notifyModerators: jest.fn(),
       };
 
-      const service = new ModerationService(
+      const service = createRequiredSubscriptionService(
         prisma as never,
         ruleEngine as never,
         { resolveAction: jest.fn() } as never,
@@ -5140,7 +5192,7 @@ describe('ModerationService', () => {
       webhookDefaultWorkerGroups: {},
     });
     const getSnapshot = jest.fn().mockRejectedValue(new Error('full snapshot must not run'));
-    const service = new ModerationService(
+    const service = createRequiredSubscriptionService(
       {} as never,
       {} as never,
       {} as never,
@@ -5175,7 +5227,7 @@ describe('ModerationService', () => {
         },
       },
     });
-    const service = new ModerationService(
+    const service = createRequiredSubscriptionService(
       {} as never,
       {} as never,
       {} as never,
@@ -5206,7 +5258,7 @@ describe('ModerationService', () => {
       }),
     };
 
-    const service = new ModerationService(
+    const service = createRequiredSubscriptionService(
       {} as never,
       {} as never,
       {} as never,
@@ -5260,7 +5312,7 @@ describe('ModerationService', () => {
       decide: jest.fn().mockRejectedValue(new Error('timeout exceeded when trying to connect')),
     };
 
-    const service = new ModerationService(
+    const service = createRequiredSubscriptionService(
       prisma as never,
       {} as never,
       {} as never,
@@ -5338,7 +5390,7 @@ describe('ModerationService', () => {
         retryAfterMs: 45_000,
       }),
     };
-    const service = new ModerationService(
+    const service = createRequiredSubscriptionService(
       prisma as never,
       {} as never,
       {} as never,
@@ -5433,7 +5485,7 @@ describe('ModerationService', () => {
       ),
     };
 
-    const service = new ModerationService(
+    const service = createRequiredSubscriptionService(
       prisma as never,
       {} as never,
       {} as never,
@@ -5604,7 +5656,7 @@ describe('ModerationService', () => {
         },
       ),
     };
-    const service = new ModerationService(
+    const service = createRequiredSubscriptionService(
       prisma as never,
       {} as never,
       {} as never,
@@ -5692,7 +5744,12 @@ describe('ModerationService', () => {
   });
 
   it('passes the channel webhook message timestamp into replacement cleanup', async () => {
-    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    const service = createRequiredSubscriptionService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
     jest.spyOn(service as any, 'resolveSystemModeSnapshot').mockResolvedValue({ mode: 'normal' });
     jest.spyOn(service as any, 'resolveSenderChatAdminCheck').mockResolvedValue({
       isAdmin: true,
@@ -5763,7 +5820,7 @@ describe('ModerationService', () => {
       }),
     };
 
-    const service = new ModerationService(
+    const service = createRequiredSubscriptionService(
       {} as never,
       {} as never,
       {} as never,
@@ -5882,7 +5939,7 @@ describe('ModerationService', () => {
       }),
     };
 
-    const service = new ModerationService(
+    const service = createRequiredSubscriptionService(
       prisma as never,
       {} as never,
       {} as never,
@@ -5967,7 +6024,12 @@ describe('ModerationService participant immunity', () => {
     const prisma = {
       $queryRaw: jest.fn().mockResolvedValue([{ expires_at: null }]),
     };
-    const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
+    const service = createRequiredSubscriptionService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
 
     const consumed = await (service as any).consumeChatParticipantModerationImmunity({
       chatId: 'chat-1',
@@ -6037,7 +6099,7 @@ describe('ModerationService participant immunity', () => {
       resolveMessageLink: jest.fn().mockResolvedValue(null),
     };
 
-    const service = new ModerationService(
+    const service = createRequiredSubscriptionService(
       prisma as never,
       ruleEngine as never,
       sanctionService as never,

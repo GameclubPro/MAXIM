@@ -22,7 +22,7 @@ export const STOP_WORDS_DELETE_RULE_CODES = new Set([
   'MESSAGE_BLOCKED_WORD_DELETE',
   'MESSAGE_BLOCKED_DOMAIN_DELETE',
 ]);
-type GuardReason = { ruleCode: string; metadata: unknown };
+type GuardReason = { ruleCode: string; metadata: unknown; reasonKey?: string };
 type GuardInput = {
   chatId: string;
   messageId: string;
@@ -66,7 +66,18 @@ export class StopWordsDeleteGuardService {
       reasons.some((reason) => !STOP_WORDS_DELETE_RULE_CODES.has(reason.ruleCode))
     )
       return 'not_applicable';
-    return this.assertMessageStillActionable(params, reasons);
+    const result = await this.assertMessageStillActionable(params, reasons);
+    return result === 'absent' ? result : 'allowed';
+  }
+
+  async authorizeIntent(params: GuardInput & { intentId: string }) {
+    const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+      where: { intentId: params.intentId },
+      select: { ruleCode: true, reasonKey: true, metadata: true },
+    });
+    const owned = reasons.filter((r) => STOP_WORDS_DELETE_RULE_CODES.has(r.ruleCode));
+    if (!owned.length) return 'not_applicable' as const;
+    return this.assertMessageStillActionable(params, owned);
   }
 
   async assertSanctionStillActionable(
@@ -88,14 +99,14 @@ export class StopWordsDeleteGuardService {
       [{ ruleCode: params.ruleCode + '_DELETE', metadata: params.metadata }],
       params.action,
     );
-    if (result !== 'allowed') this.reject();
+    if (result === 'absent') this.reject();
   }
 
   private async assertMessageStillActionable(
     params: GuardInput,
     reasons: readonly GuardReason[],
     action?: 'WARN' | 'MUTE' | 'BAN',
-  ): Promise<'allowed' | 'absent'> {
+  ): Promise<{ reasonKeys: string[] } | 'absent'> {
     const senderId = params.subjectUserId;
     if (!senderId || this.maxBotLink.isKnownBotUserId(senderId)) this.reject();
     const settings = await this.load(params.chatId, senderId);
@@ -134,6 +145,7 @@ export class StopWordsDeleteGuardService {
             some: {
               ruleCode: reasons[0].ruleCode,
               AND: [
+                { metadata: { path: ['moderationDeleteVerified'], equals: true } },
                 {
                   metadata: {
                     path: ['stopWordsSourceSha256'],
@@ -158,7 +170,7 @@ export class StopWordsDeleteGuardService {
       if (!completed) this.reject();
       await this.assertNoImmunity(params, senderId, settings.nightModeTimezone);
       this.assertSanctionPolicy(await this.load(params.chatId, senderId), reasons[0], action);
-      return 'allowed';
+      return { reasonKeys: reasons.flatMap((r) => (r.reasonKey ? [r.reasonKey] : [])) };
     }
     const raw = { type: 'message_created', updateId: 'stop-words-delete-guard', message: row };
     const message = this.parser.parse(raw).message;
@@ -180,7 +192,7 @@ export class StopWordsDeleteGuardService {
       textSegments,
       navigationTargets: targets,
     });
-    const stillMatches = (current: typeof settings) => {
+    const matchingReasons = (current: typeof settings) => {
       const policy = readStopWordsPolicy(current) ?? migrateStopWordsPolicy(current);
       const hits = detectStopWordsViolations({
         text: message.text,
@@ -191,7 +203,7 @@ export class StopWordsDeleteGuardService {
           current.chat.domains.map((entry) => entry.domain),
         ),
       });
-      return reasons.some((reason) => {
+      return reasons.filter((reason) => {
         const metadata = this.metadata(reason.metadata);
         return hits.some(
           (hit) =>
@@ -205,12 +217,14 @@ export class StopWordsDeleteGuardService {
         );
       });
     };
-    if (!stillMatches(settings)) this.reject();
+    if (!matchingReasons(settings).length) this.reject();
     await this.assertNoImmunity(params, senderId, settings.nightModeTimezone);
     const finalSettings = await this.load(params.chatId, senderId);
-    if (!stillMatches(finalSettings)) this.reject();
+    if (!matchingReasons(finalSettings).length) this.reject();
     if (action) this.assertSanctionPolicy(finalSettings, reasons[0], action);
-    return 'allowed';
+    return {
+      reasonKeys: matchingReasons(finalSettings).flatMap((r) => (r.reasonKey ? [r.reasonKey] : [])),
+    };
   }
 
   private async load(chatId: string, senderId: string) {

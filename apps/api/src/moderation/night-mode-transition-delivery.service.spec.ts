@@ -1259,73 +1259,80 @@ describe('NightModeTransitionDeliveryService', () => {
     );
   });
 
-  it('revalidates the direct fallback after limiter interleave at the immediate send hook', async () => {
-    let current = true;
-    let releaseLimiter: () => void = () => undefined;
-    const limiterGate = new Promise<void>((resolve) => {
-      releaseLimiter = resolve;
-    });
-    let markLimiterEntered: () => void = () => undefined;
-    const limiterEntered = new Promise<void>((resolve) => {
-      markLimiterEntered = resolve;
-    });
-    let httpSendCalled = false;
-    const maxClient = {
-      sendMessage: jest.fn(
-        async (
-          _chatId: string,
-          _text: string,
-          _options: unknown,
-          dispatchOptions: {
-            idempotencyKey?: string;
-            beforeImmediateSendMutation?: () => Promise<void>;
+  it.each(['limiter', 'route'])(
+    'revalidates the direct fallback after %s interleave at the immediate send hook',
+    async (interleave) => {
+      let current = true;
+      let releaseLimiter: () => void = () => undefined;
+      const limiterGate = new Promise<void>((resolve) => {
+        releaseLimiter = resolve;
+      });
+      let markLimiterEntered: () => void = () => undefined;
+      const limiterEntered = new Promise<void>((resolve) => {
+        markLimiterEntered = resolve;
+      });
+      let httpSendCalled = false;
+      const maxClient = {
+        sendMessage: jest.fn(
+          async (
+            _chatId: string,
+            _text: string,
+            _options: unknown,
+            dispatchOptions: {
+              idempotencyKey?: string;
+              beforeImmediateSendMutation?: (
+                revalidateRoute?: () => Promise<void>,
+              ) => Promise<void>;
+            },
+          ) => {
+            expect(dispatchOptions.idempotencyKey).toBe(
+              'night-mode:open:chat-1:session:session-direct-final-guard',
+            );
+            markLimiterEntered();
+            await limiterGate;
+            await dispatchOptions.beforeImmediateSendMutation?.(async () => {
+              if (interleave === 'route') current = false;
+            });
+            httpSendCalled = true;
+            return { messageId: 'unexpected-message' };
           },
-        ) => {
-          expect(dispatchOptions.idempotencyKey).toBe(
-            'night-mode:open:chat-1:session:session-direct-final-guard',
-          );
-          markLimiterEntered();
-          await limiterGate;
-          await dispatchOptions.beforeImmediateSendMutation?.();
-          httpSendCalled = true;
-          return { messageId: 'unexpected-message' };
+        ),
+        deleteMessage: jest.fn(),
+      };
+      const eventService = createEventService();
+      const service = new NightModeTransitionDeliveryService(
+        maxClient as never,
+        {
+          resolveMedia: jest.fn().mockReturnValue(null),
+          withMediaOptions: jest.fn(async (options) => options),
+        } as never,
+        eventService as never,
+      );
+      const validateBeforeDispatch = jest.fn(async () => current);
+
+      const delivery = service.sendOpenedNotice(
+        createSettings(),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'session-direct-final-guard',
         },
-      ),
-      deleteMessage: jest.fn(),
-    };
-    const eventService = createEventService();
-    const service = new NightModeTransitionDeliveryService(
-      maxClient as never,
-      {
-        resolveMedia: jest.fn().mockReturnValue(null),
-        withMediaOptions: jest.fn(async (options) => options),
-      } as never,
-      eventService as never,
-    );
-    const validateBeforeDispatch = jest.fn(async () => current);
+        createAdapters(),
+        validateBeforeDispatch,
+      );
+      await limiterEntered;
+      if (interleave === 'limiter') current = false;
+      releaseLimiter();
 
-    const delivery = service.sendOpenedNotice(
-      createSettings(),
-      {
-        startMinutes: 23 * 60,
-        endMinutes: 8 * 60,
-        timezone: 'Europe/Moscow',
-        sessionKey: 'session-direct-final-guard',
-      },
-      createAdapters(),
-      validateBeforeDispatch,
-    );
-    await limiterEntered;
-    current = false;
-    releaseLimiter();
-
-    await expect(delivery).rejects.toThrow(
-      'Night mode transition state changed before dispatch (chat-1)',
-    );
-    expect(validateBeforeDispatch).toHaveBeenCalledTimes(1);
-    expect(httpSendCalled).toBe(false);
-    expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
-  });
+      await expect(delivery).rejects.toThrow(
+        'Night mode transition state changed before dispatch (chat-1)',
+      );
+      expect(validateBeforeDispatch).toHaveBeenCalledTimes(1);
+      expect(httpSendCalled).toBe(false);
+      expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
+    },
+  );
 
   it('fails closed when the direct immediate send completes without a message id', async () => {
     const eventService = createEventService();

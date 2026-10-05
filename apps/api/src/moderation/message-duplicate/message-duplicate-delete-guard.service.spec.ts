@@ -11,6 +11,10 @@ import {
 } from './message-duplicate-content';
 import { duplicateSourceDigest } from './message-duplicate-history.service';
 import {
+  messageDuplicateNoticeSettingsDigest,
+  type MessageDuplicateNoticeProof,
+} from './message-duplicate-notice-proof';
+import {
   MESSAGE_DUPLICATE_MEDIA_VERSION,
   messageDuplicateSettingsDigest,
   exactImageSettingsDigest,
@@ -209,6 +213,19 @@ describe('scheduled duplicate final action guard', () => {
 });
 
 describe('message duplicate final delete guard', () => {
+  it.each([
+    { userId: null, isAdmin: false, isOwner: false },
+    { userId: 'other', isAdmin: false, isOwner: false },
+    { userId: '123', isAdmin: null, isOwner: false },
+    { userId: '123', isAdmin: false, isOwner: null },
+  ])('keeps unknown or foreign author access unavailable: %j', async (access) => {
+    const s = setup();
+    s.max.getChatMemberAccess.mockResolvedValue(access as never);
+    await expect(
+      s.service.assertMessageStillActionable({ ...s.params, binding: s.binding }),
+    ).rejects.toThrow('author access unavailable');
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
   it.each([
     ['STANDARD', {}],
     ['STRICT', { duplicateDetectionPreset: 'STRICT' }],
@@ -807,12 +824,21 @@ describe('message duplicate final delete guard', () => {
       reasons: [
         {
           createdAt: new Date(Date.now() - 500),
-          metadata: { duplicateSource: 'message_v1', messageDuplicate: { ...s.binding } },
+          metadata: {
+            duplicateSource: 'message_v1',
+            messageDuplicate: { ...s.binding },
+            moderationDeleteVerified: true,
+          },
         },
       ],
     };
     s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(receipt);
     await expect(s.service.assertMessageStillActionable(s.request)).resolves.toBe('allowed');
+    receipt.reasons[0]!.metadata.moderationDeleteVerified = false;
+    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toThrow(
+      'unproven_absence',
+    );
+    receipt.reasons[0]!.metadata.moderationDeleteVerified = true;
     receipt.remoteDeleteSucceededAt = new Date(s.binding.eventTimestampMs - 1);
     await expect(s.service.assertMessageStillActionable(s.request)).rejects.toThrow(
       'unproven_absence',
@@ -861,7 +887,11 @@ describe('message duplicate final delete guard', () => {
       reasons: [
         {
           createdAt: new Date(Date.now() - 500),
-          metadata: { duplicateSource: 'message_v1', messageDuplicate: { ...s.binding } },
+          metadata: {
+            duplicateSource: 'message_v1',
+            messageDuplicate: { ...s.binding },
+            moderationDeleteVerified: true,
+          },
         },
       ],
     };
@@ -940,7 +970,11 @@ describe('message duplicate final delete guard', () => {
       reasons: [
         {
           createdAt: new Date(Date.now() - 500),
-          metadata: { duplicateSource: 'message_v1', messageDuplicate: { ...s.binding } },
+          metadata: {
+            duplicateSource: 'message_v1',
+            messageDuplicate: { ...s.binding },
+            moderationDeleteVerified: true,
+          },
         },
       ],
     });
@@ -1024,5 +1058,157 @@ describe('message duplicate final delete guard', () => {
     await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
       'message_duplicate_binding_invalid',
     );
+  });
+});
+
+describe('queued duplicate explanation authority', () => {
+  function noticeFixture() {
+    const s = setup();
+    s.settings.duplicateBotMessageEnabled = true;
+    s.binding.enforcementScope = 'full';
+    s.binding.settingsDigest = messageDuplicateSettingsDigest(s.settings);
+    s.policy.resolve.mockResolvedValue({
+      mode: 'full',
+      revision: 1,
+      effectiveAtMs: Date.now() - 10_000,
+      expiresAtMs: Date.now() + 3_600_000,
+    });
+    const receipt = {
+      chatId: s.params.chatId,
+      messageId: s.params.messageId,
+      subjectUserId: s.binding.senderId,
+      remoteDeleteSucceededAt: new Date(),
+      reasons: [
+        {
+          ruleCode: 'DUPLICATE_DELETE',
+          createdAt: new Date(Date.now() - 1_000),
+          metadata: {
+            duplicateSource: 'message_v1',
+            messageDuplicate: s.binding,
+            moderationDeleteVerified: true,
+            count: 1,
+          },
+        },
+      ],
+    };
+    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(receipt);
+    const notice: MessageDuplicateNoticeProof = {
+      version: 3,
+      chatId: s.params.chatId,
+      intentId: 'intent',
+      reasonKey: `MESSAGE_DUPLICATE:v1:${s.binding.eventTimestampMs}`,
+      deadlineAtMs: s.binding.authorization!.deadlineAtMs,
+      noticePolicySha256: messageDuplicateNoticeSettingsDigest(s.settings),
+      binding: s.binding,
+      stage: { kind: 'hit', repeatCount: 1, threshold: null },
+    };
+    return { ...s, notice, receipt, request: { ...s.params, binding: s.binding, notice } };
+  }
+
+  it('authorizes a hit after its own confirmed delete without fabricating a sanction stage', async () => {
+    const s = noticeFixture();
+    s.max.getExactMessageRow.mockResolvedValue(null);
+    await expect(s.service.assertMessageStillActionable(s.request)).resolves.toBe('allowed');
+    expect(s.binding.sanction).toBeUndefined();
+    expect(s.history.stillMatches).toHaveBeenCalledWith(s.params.chatId, s.binding, true);
+    expect(s.prisma.moderationDeleteIntent.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'intent' } }),
+    );
+  });
+
+  it('rejects an absent hit when a length DELETE succeeded but the duplicate reason was revoked', async () => {
+    const s = noticeFixture();
+    s.max.getExactMessageRow.mockResolvedValue(null);
+    s.receipt.reasons[0]!.metadata.moderationDeleteVerified = false;
+    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toMatchObject({
+      code: 'message_duplicate_unproven_absence',
+    });
+    expect(s.originalLookup).not.toHaveBeenCalled();
+  });
+
+  it.each(['intent', 'reason', 'stage', 'history', 'policy', 'enabled', 'template', 'immunity'])(
+    'rejects a queued explanation after %s authority changes',
+    async (change) => {
+      const s = noticeFixture();
+      if (change === 'intent') s.receipt.subjectUserId = 'other';
+      if (change === 'reason') s.receipt.reasons[0]!.ruleCode = 'LENGTH_DELETE';
+      if (change === 'stage') s.receipt.reasons[0]!.metadata.count = 2;
+      if (change === 'history') s.history.stillMatches.mockResolvedValue(false);
+      if (change === 'policy') s.policy.resolve.mockResolvedValue({ mode: 'delete_only' } as never);
+      if (change === 'enabled') s.settings.duplicateBotMessageEnabled = false;
+      if (change === 'template') s.settings.duplicateBotMessageText = 'new text';
+      if (change === 'immunity') s.immunity.consumeForMessage.mockResolvedValue('granted');
+      await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBeInstanceOf(
+        MessageDuplicateGuardRejectedError,
+      );
+    },
+  );
+
+  it('runs current route authority before the final settings and Redis grant fence', async () => {
+    const s = noticeFixture();
+    const beforeFinalAuthority = jest.fn(async () => {
+      s.settings.duplicateBotMessageEnabled = false;
+    });
+    await expect(
+      s.service.assertMessageStillActionable({ ...s.request, beforeFinalAuthority }),
+    ).rejects.toMatchObject({ code: 'message_duplicate_notice_settings_changed' });
+    expect(beforeFinalAuthority).toHaveBeenCalledTimes(1);
+    expect(s.authorization.isAllowed).toHaveBeenCalledTimes(1);
+  });
+
+  it('expires a queued explanation when its final Redis grant read crosses the original deadline', async () => {
+    const s = noticeFixture();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(s.binding.eventTimestampMs);
+    let reads = 0;
+    s.authorization.isAllowed.mockImplementation(async () => {
+      if (++reads === 2) clock.mockReturnValue(s.notice.deadlineAtMs);
+      return true;
+    });
+    try {
+      await expect(s.service.assertMessageStillActionable(s.request)).rejects.toMatchObject({
+        code: 'message_duplicate_notice_expired',
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('expires immediate member and sanction-notice authority after the final real permit boundary', async () => {
+    const s = setup();
+    s.policy.resolve.mockResolvedValue({
+      mode: 'full',
+      revision: 1,
+      effectiveAtMs: s.binding.eventTimestampMs - 10_000,
+      expiresAtMs: Number.MAX_SAFE_INTEGER,
+    });
+    s.settings.duplicateBanEnabled = true;
+    s.settings.duplicateBanMaxCount = 1;
+    s.binding.enforcementScope = 'full';
+    s.binding.settingsDigest = messageDuplicateSettingsDigest(s.settings);
+    s.binding.sanction = {
+      action: 'BAN',
+      repeatCount: 1,
+      threshold: 1,
+      settingsDigest: messageDuplicateSanctionSettingsDigest(s.settings),
+    };
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(s.binding.eventTimestampMs);
+    let reads = 0;
+    s.authorization.isAllowed.mockImplementation(async () => {
+      if (++reads === 2) clock.mockReturnValue(s.binding.authorization!.deadlineAtMs);
+      return true;
+    });
+    try {
+      await expect(
+        s.service.assertMessageStillActionable({
+          ...s.params,
+          binding: s.binding,
+          sanctionIntentId: 'intent',
+        }),
+      ).rejects.toMatchObject({
+        code: 'message_duplicate_action_expired',
+      });
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

@@ -41,6 +41,74 @@ import {
   createReplyToPhotoUpdate,
   type MaxUpdate,
 } from './moderation.service.spec-support';
+import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+import { MODERATION_ACTION_DISPATCH_TIMEOUT_MS } from './moderation.service.support';
+
+// FLAG: Template/orchestration mocks stop at the notice producer boundary. Real v3
+// authority and original-stage preservation are covered by native multibot/guard suites.
+jest.mock('./message-duplicate/message-duplicate-notice-proof', () => ({
+  ...jest.requireActual('./message-duplicate/message-duplicate-notice-proof'),
+  buildMessageDuplicateNoticeContext: jest.fn(async () => ({
+    orchestrationFixture: 'duplicate-notice-handoff',
+  })),
+}));
+
+function installGuardedDeleteExecutorFixture(service: ModerationService) {
+  const dependencies = service as unknown as {
+    prisma: { moderationEvent: { create: jest.Mock } };
+    maxClient: { deleteMessage: jest.Mock };
+  };
+  const allowedRules = new Set([
+    'MUTE_ACTIVE_DELETE',
+    'NIGHT_MODE_DELETE',
+    'MANUAL_GROUP_CLOSE_DELETE',
+    'MESSAGE_COUNT_LIMIT_DELETE',
+    'MESSAGE_RATE_LIMIT_DELETE',
+    'PHOTO_RATE_LIMIT_DELETE',
+  ]);
+  // FLAG: The orchestration fixture confirms its exact reason through the durable
+  // service; it never enables the unsupported unguarded runtime fallback.
+  const executor = {
+    ensureIntent: jest.fn(),
+    getRolloutForInput: () => 'execute',
+    ensureAndAttempt: jest.fn(async (input: EnsureModerationDeleteIntentInput) => {
+      if (!input.ruleCode || !allowedRules.has(input.ruleCode))
+        throw new Error('Guarded executor fixture received an unrelated rule');
+      await dependencies.maxClient.deleteMessage(input.chatId, input.messageId, {
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+        ignoreFailureMetricStatuses: [403, 404],
+      });
+      await dependencies.prisma.moderationEvent.create({
+        data: {
+          chatId: input.chatId,
+          userId: input.subjectUserId,
+          messageId: input.messageId,
+          eventType: 'MESSAGE',
+          ruleCode: input.ruleCode,
+          action: SanctionAction.DELETE_MESSAGE,
+          operator: 'BOT',
+          maskedExcerpt: input.event?.maskedExcerpt,
+          score: input.event?.score,
+          metadata: input.event?.metadata,
+        },
+      });
+      return {
+        kind: 'confirmed',
+        confirmed: true,
+        intentId: 'navigation-fixture-intent',
+        status: 'SUCCEEDED',
+        botId: 'navigation-fixture-bot',
+        verifiedReasonKeys: [input.reasonKey],
+      };
+    }),
+  };
+  Object.assign(service, { moderationDeleteIntentService: executor });
+  return executor;
+}
 
 describe('ModerationService', () => {
   describe('live typed navigation moderation', () => {
@@ -178,6 +246,7 @@ describe('ModerationService', () => {
             }),
           }),
         }),
+        { enqueue: false },
       );
     });
 
@@ -1120,6 +1189,7 @@ describe('ModerationService', () => {
       { resolveAction: jest.fn() } as never,
       maxClient as never,
     );
+    installGuardedDeleteExecutorFixture(service);
 
     await service.handleUpdate({
       ...createUpdate(),
@@ -1212,6 +1282,7 @@ describe('ModerationService', () => {
       { resolveAction: jest.fn() } as never,
       maxClient as never,
     );
+    installGuardedDeleteExecutorFixture(service);
 
     await service.handleUpdate({
       ...createUpdate(),
@@ -1291,6 +1362,7 @@ describe('ModerationService', () => {
       { resolveAction: jest.fn() } as never,
       maxClient as never,
     );
+    installGuardedDeleteExecutorFixture(service);
 
     await service.handleUpdate({
       ...createUpdate(),
@@ -3517,6 +3589,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installGuardedDeleteExecutorFixture(service);
 
     await service.handleUpdate(createUpdate());
 
@@ -3591,6 +3664,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installGuardedDeleteExecutorFixture(service);
 
     await service.handleUpdate(createUpdate());
 
@@ -3671,6 +3745,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installGuardedDeleteExecutorFixture(service);
 
     await service.handleUpdate(createUpdate());
 
@@ -4475,6 +4550,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installGuardedDeleteExecutorFixture(service);
 
     for (let index = 1; index <= 6; index += 1) {
       await service.handleUpdate(createStickerAttachmentUpdate(index));
@@ -5003,6 +5079,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installGuardedDeleteExecutorFixture(service);
 
     await service.handleUpdate(createUpdate());
 
@@ -5077,6 +5154,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
+    installGuardedDeleteExecutorFixture(service);
 
     await service.handleUpdate(createUpdate());
 

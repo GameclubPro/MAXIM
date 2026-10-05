@@ -58,9 +58,10 @@ export async function deliverGroupCommandNotice(params: {
         botId: permit.executionBotId,
         candidateBotIds: [permit.executionBotId],
         routing: { purpose: 'send_message', requiredBotId: permit.executionBotId },
-        beforeImmediateSendMutation: async () => {
+        beforeImmediateSendMutation: async (revalidateRoute) => {
           await authority.assertOwned(permit);
           await params.beforeMutation?.();
+          await revalidateRoute?.();
           // FLAG: No awaited proof may consume the command lease or source deadline
           // between its check and the actual HTTP mutation boundary.
           const now = Date.now();
@@ -72,6 +73,7 @@ export async function deliverGroupCommandNotice(params: {
             throw new Error('Group command notice authority expired before transport');
         },
         idempotencyKey: groupCommandNoticeIdempotencyKey(permit.semanticKey),
+        ledgerContext: { moderationNoticeEnvelope: { version: 1 } },
         ...(settings.deleteBotMessagesEnabled
           ? { autoDeleteDelayMs: settings.deleteBotMessagesDelayMinutes * 60_000 }
           : {}),

@@ -1,3 +1,15 @@
+import { ModerationRuleFollowupService } from '../moderation/moderation-rule-followup.service';
+import { ClosedChatDeleteGuardService } from '../moderation/closed-chat-delete-guard.service';
+import { ModerationStateDeleteGuardService } from '../moderation/moderation-state-delete-guard.service';
+import { RequiredSubscriptionExecutionGuardService } from '../moderation/required-subscription-execution-guard.service';
+import { ModerationRuleSanctionGuardService } from '../moderation/moderation-rule-sanction-guard.service';
+import { ModerationSanctionStateFenceService } from '../moderation/moderation-sanction-state-fence.service';
+import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
+import { StopWordsDeleteGuardService } from '../moderation/stop-words/stop-words-delete-guard.service';
+import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
+import { MaxModerationRuleNoticeGuardService } from '../max/max-moderation-rule-notice.guard';
+import { MaxRequiredSubscriptionNoticeGuardService } from '../max/max-required-subscription-notice.guard';
+import { MaxDuplicateNoticeGuardService } from '../max/max-duplicate-notice.guard';
 import { ConfigService } from '@nestjs/config';
 import { Queue, Worker, type ConnectionOptions } from 'bullmq';
 import { randomUUID } from 'node:crypto';
@@ -168,6 +180,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   );
   const adminUsers = new Set<string>();
   let ambiguousNextSend = false;
+  let ambiguousNextDelete = false;
   let ambiguousNextMemberMutation = false;
   const http = {
     request: (request: {
@@ -234,7 +247,14 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
             };
           else if (method === 'get' && path === '/messages')
             data = { messages: messages.has(messageId) ? [messages.get(messageId)] : [] };
-          else if (method === 'get' && path.startsWith('/chats/'))
+          else if (method === 'get' && path.startsWith('/messages/')) {
+            const exactMessageId = decodeURIComponent(path.slice('/messages/'.length));
+            if (!messages.has(exactMessageId))
+              throw Object.assign(new Error('Simulated exact message absence'), {
+                response: { status: 404, data: { code: 'message.not.found' } },
+              });
+            data = messages.get(exactMessageId);
+          } else if (method === 'get' && path.startsWith('/chats/'))
             data = {
               chat_id: path.split('/')[2],
               type: 'chat',
@@ -243,6 +263,13 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
             };
           else if (method === 'delete' && path === '/messages') {
             effects.push(call);
+            if (ambiguousNextDelete) {
+              ambiguousNextDelete = false;
+              throw Object.assign(new Error('Simulated ambiguous MAX delete timeout'), {
+                code: 'ECONNABORTED',
+                request: {},
+              });
+            }
             messages.delete(messageId);
             data = { success: true };
           } else if (method === 'post' && path === '/messages') {
@@ -286,6 +313,23 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     undefined,
     ledger,
     links,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    new MaxModerationRuleNoticeGuardService(
+      prisma as never,
+      registry as never,
+      new ParticipantModerationImmunityService(prisma as never),
+      config,
+    ),
+    new MaxRequiredSubscriptionNoticeGuardService(
+      prisma as never,
+      registry as never,
+      new ParticipantModerationImmunityService(prisma as never),
+      config,
+    ),
+    new MaxDuplicateNoticeGuardService({ get: () => duplicateGuard } as never),
   );
   const readiness = new MaxExecutionOwnerReadinessService(links, max, counters);
   const canonical = new WebhookCanonicalExecutionService(prisma as never, readiness);
@@ -312,6 +356,52 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     immunity,
     config,
   );
+  const closedGuard = new ClosedChatDeleteGuardService(
+    prisma as never,
+    max,
+    links,
+    immunity,
+    config,
+  );
+  const globalPolicy = new GlobalSpammerIntelligenceService(
+    prisma as never,
+    config,
+    registry as never,
+    counters,
+  );
+  const sanctionFence = new ModerationSanctionStateFenceService(prisma as never);
+  const stateGuard = new ModerationStateDeleteGuardService(
+    prisma as never,
+    max,
+    links,
+    immunity,
+    sanctionFence,
+    globalPolicy,
+    config,
+  );
+  const membership = new MaxMembershipLookupService(max, config, links, registry as never);
+  const subscriptionGuard = new RequiredSubscriptionExecutionGuardService(
+    prisma as never,
+    max,
+    links,
+    membership,
+    immunity,
+    config,
+  );
+  const sanctionGuard = new ModerationRuleSanctionGuardService(
+    prisma as never,
+    max,
+    links,
+    immunity,
+    config,
+  );
+  const stopWordsGuard = new StopWordsDeleteGuardService(
+    prisma as never,
+    max,
+    links,
+    immunity,
+    config,
+  );
   const intents = new ModerationDeleteIntentService(
     prisma as never,
     max,
@@ -324,7 +414,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     {} as never,
     immunity,
     duplicateGuard,
-    undefined,
+    stopWordsGuard,
     undefined,
     undefined,
     undefined,
@@ -334,6 +424,9 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     undefined,
     undefined,
     lengthGuard,
+    closedGuard,
+    stateGuard,
+    subscriptionGuard,
   );
   const duplicateService = new MessageDuplicateService(
     policy,
@@ -357,14 +450,24 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     links,
     context,
   );
+  const ruleFollowups = new ModerationRuleFollowupService(prisma as never, sanctionGuard, links, {
+    get: () => moderation,
+  } as never);
   const groupCommands = new GroupCommandAuthorityService(prisma as never);
   Object.assign(moderation, {
     injectedWebhookCanonicalExecutionService: canonical,
     moderationDeleteIntentService: intents,
+    moderationRuleFollowupService: ruleFollowups,
     maxActionLedgerService: ledger,
     messageDuplicateService: duplicateService,
     participantImmunity: immunity,
     injectedGroupCommandAuthority: groupCommands,
+    moderationRuleSanctionGuard: sanctionGuard,
+    moderationStateDeleteGuard: stateGuard,
+    requiredSubscriptionExecutionGuard: subscriptionGuard,
+    membershipLookupService: membership,
+    stopWordsDeleteGuard: stopWordsGuard,
+    globalSpammerIntelligence: globalPolicy,
   });
   Object.assign(moderation, { injectedExecutionOwnerReadiness: readiness });
   const ingress = new WebhookService(prisma as never, config, links);
@@ -551,6 +654,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       nextDeleteSweepAtMs = Date.now() + 1_000;
       await intents.sweepDueIntents();
     }
+    await ruleFollowups.sweep();
     const candidates = await prisma.webhookEvent.findMany({
       where: {
         id: { in: receiptIds },
@@ -590,7 +694,11 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
             },
           })
         : 0;
+    const pendingFollowups = await prisma.moderationRuleFollowup.count({
+      where: { chatId: { in: chatIds }, status: { in: ['READY', 'RETRYABLE', 'IN_PROGRESS'] } },
+    });
     return (
+      pendingFollowups +
       pending +
       (queued.waiting ?? 0) +
       (queued.active ?? 0) +
@@ -638,6 +746,8 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       health.onModuleDestroy(),
       counters.onModuleDestroy(),
       ordering.onModuleDestroy(),
+      membership.onModuleDestroy(),
+      globalPolicy.onModuleDestroy(),
     ]);
     if (previousControl === null) await redis.del(MESSAGE_DUPLICATE_CONTROL_KEY);
     else await redis.set(MESSAGE_DUPLICATE_CONTROL_KEY, previousControl);
@@ -663,6 +773,12 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     max,
     canonical,
     intents,
+    ruleFollowups,
+    stateGuard,
+    globalPolicy,
+    subscriptionGuard,
+    sanctionGuard,
+    membership,
     deleteQueue,
     ingress,
     outbox,
@@ -670,6 +786,8 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     cache,
     routing,
     duplicateService,
+    authorization,
+    duplicateGuard,
     history,
     ledger,
     readiness,
@@ -689,6 +807,9 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     resume: () => worker.resume(),
     ambiguousNextSend: () => {
       ambiguousNextSend = true;
+    },
+    ambiguousNextDelete: () => {
+      ambiguousNextDelete = true;
     },
     ambiguousNextMemberMutation: () => {
       ambiguousNextMemberMutation = true;

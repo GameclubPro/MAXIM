@@ -1258,12 +1258,11 @@ describe('AdminService sanction state ordering', () => {
     ]);
   });
 
-  it('keeps an ambiguous source BAN outcome uncertain when its first notice must retry', async () => {
+  it('keeps an ambiguous source BAN outcome durable and silent across command retries', async () => {
     const prisma = createPrismaMock();
     const timeoutError = markMaxMemberMutationAttempted(
       Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }),
     );
-    const noticeError = new Error('notice route unavailable');
     const maxClient = {
       getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'bot-2',
@@ -1280,7 +1279,7 @@ describe('AdminService sanction state ordering', () => {
       cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
       banMember: jest.fn().mockRejectedValue(timeoutError),
       deleteMessage: jest.fn().mockResolvedValue(undefined),
-      sendMessage: jest.fn().mockRejectedValueOnce(noticeError).mockResolvedValueOnce(undefined),
+      sendMessage: jest.fn().mockRejectedValue(new Error('group notice must remain silent')),
     };
     const service = createService(prisma, maxClient);
     const job = {
@@ -1305,28 +1304,28 @@ describe('AdminService sanction state ordering', () => {
       deleteBotMessagesDelayMinutes: 3,
     };
 
-    await expect(service.processManualModerationFanoutJob(job)).rejects.toBe(noticeError);
+    await expect(service.processManualModerationFanoutJob(job)).resolves.toBeUndefined();
     await expect(service.processManualModerationFanoutJob(job)).resolves.toBeUndefined();
 
     expect(maxClient.banMember).toHaveBeenCalledTimes(1);
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
-    expect(maxClient.sendMessage).toHaveBeenLastCalledWith(
-      'chat-1',
-      expect.stringContaining('итог не удалось надёжно подтвердить'),
-      { textFormat: 'markdown' },
-      expect.objectContaining({
-        immediate: true,
-        trafficClass: 'interactive',
-        botId: 'bot-2',
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(
+      await prisma.manualModerationFanoutLedgerEntry.findMany({
+        where: { operation: 'COMMAND_NOTICE_OUTCOME' },
       }),
-    );
-    expect(maxClient.sendMessage).not.toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('не выполнена'),
-      expect.anything(),
-      expect.anything(),
-    );
+    ).toEqual([
+      expect.objectContaining({
+        status: 'SUCCEEDED',
+        terminal: true,
+        remoteMessageId: null,
+        metadata: expect.objectContaining({
+          outcome: 'UNCERTAIN',
+          suppressed: true,
+          resultText: expect.stringContaining('итог не удалось надёжно подтвердить'),
+        }),
+      }),
+    ]);
     expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({

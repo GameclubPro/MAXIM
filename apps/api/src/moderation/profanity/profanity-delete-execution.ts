@@ -12,6 +12,7 @@ export type ModerationDeleteExecutionResult = {
   botId: string | null;
   profanityVerified?: true;
   commercialVerified?: true;
+  ownReasonVerified?: true;
 };
 
 export type ProfanityDeleteMutationHooks = {

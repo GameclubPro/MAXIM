@@ -1,5 +1,9 @@
-import { markMaxMessageSendAttempted } from './max-mutation-outcome.util';
+import {
+  markMaxMessageSendAttempted,
+  wasMaxMessageSendAttempted,
+} from './max-mutation-outcome.util';
 import { HttpService } from '@nestjs/axios';
+import { buildMaxActionIdempotencyKey } from './max-action-idempotency';
 import { InjectQueue } from '@nestjs/bullmq';
 import { BadRequestException, Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -52,6 +56,22 @@ import {
   type MaxBotRouteRequest,
 } from './max-bot-link.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
+import {
+  hasMaxModerationRuleNoticeProof,
+  MaxModerationRuleNoticeGuardService,
+} from './max-moderation-rule-notice.guard';
+import {
+  isMaxRequiredSubscriptionNoticeAction,
+  MaxRequiredSubscriptionNoticeGuardService,
+} from './max-required-subscription-notice.guard';
+import {
+  isMaxDuplicateNoticeAction,
+  MaxDuplicateNoticeGuardService,
+} from './max-duplicate-notice.guard';
+import {
+  assertMaxModerationNoticeEnvelope,
+  requiresMaxModerationNoticeEnvelope,
+} from './max-moderation-notice-envelope';
 import type { MaxBotLifecycleState } from './max-bot-config.util';
 import { canExecuteActionsForBotState } from './max-bot-state.util';
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
@@ -63,7 +83,15 @@ import {
   markMaxMemberMutationAttempted,
   markMaxMemberMutationConfirmed,
   wasMaxMemberMutationAttempted,
+  wasMaxMemberMutationConfirmed,
 } from './max-member-error.util';
+import {
+  normalizeMaxRoutedMutationCanaryPercent,
+  normalizeMaxRoutedMutationMode,
+  parseMaxRoutedMutationCanaryEntityIds,
+  shouldEnforceMaxRoutedMutation,
+  type MaxRoutedMutationMode,
+} from './max-routed-mutation-rollout.util';
 import { isAmbiguousMaxMutationError, isAmbiguousMaxSendError } from './max-send-ambiguity.util';
 import type { MaxFutureNightStickyRouteProbe } from './max-send-route-sticky-probe';
 import {
@@ -527,11 +555,11 @@ export type MaxActionDispatchOptions = {
   delayMs?: number;
   immediate?: boolean;
   /** Ephemeral guard evaluated after routing and ledger work, immediately before send HTTP. */
-  beforeImmediateSendMutation?: () => Promise<void>;
+  beforeImmediateSendMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
   /** Ephemeral guard evaluated after routing and ledger work, immediately before delete HTTP. */
   beforeImmediateDeleteMutation?: () => Promise<void>;
   /** Ephemeral guard evaluated after routing and ledger work, immediately before member HTTP. */
-  beforeImmediateMemberMutation?: () => Promise<void>;
+  beforeImmediateMemberMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
   autoDeleteDelayMs?: number;
   /**
    * Caller-provided logical dedupe key. Routed actions are scoped by action only;
@@ -551,8 +579,8 @@ export type MaxActionDispatchOptions = {
 
 type MaxActionExecutionOptions = {
   beforeDeleteMutation?: () => Promise<void>;
-  beforeMemberMutation?: () => Promise<void>;
-  beforeSendMutation?: () => Promise<void>;
+  beforeMemberMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
+  beforeSendMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
 };
 
 type MaxApiRequestOptions = {
@@ -606,37 +634,7 @@ export const MAX_API_SOURCE_TAGS = {
 } as const;
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
-const MAX_ACTION_IDEMPOTENCY_KEY_PART_MAX_LENGTH = 48;
-const MAX_ACTION_IDEMPOTENCY_KEY_READABLE_MAX_LENGTH = 160;
-
-export function normalizeMaxActionIdempotencyKeyPart(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  let readable = '';
-  let separatorPending = false;
-
-  for (const character of normalized) {
-    const code = character.charCodeAt(0);
-    const allowed = (code >= 97 && code <= 122) || (code >= 48 && code <= 57) || character === '-';
-    if (!allowed) {
-      separatorPending = true;
-      continue;
-    }
-
-    if (separatorPending && readable.length > 0) {
-      readable += '_';
-      if (readable.length >= MAX_ACTION_IDEMPOTENCY_KEY_PART_MAX_LENGTH) {
-        break;
-      }
-    }
-    separatorPending = false;
-    readable += character;
-    if (readable.length >= MAX_ACTION_IDEMPOTENCY_KEY_PART_MAX_LENGTH) {
-      break;
-    }
-  }
-
-  return readable;
-}
+export { normalizeMaxActionIdempotencyKeyPart } from './max-action-idempotency';
 
 const LIVE_MAX_ACTION_JOB_STATES = new Set([
   'active',
@@ -861,6 +859,9 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly logger = new Logger(MaxClientService.name);
   private readonly baseUrl: string;
   private readonly dispatchEnabled: boolean;
+  private readonly routedMutationsMode: MaxRoutedMutationMode;
+  private readonly routedMutationsCanaryPercent: number;
+  private readonly routedMutationsCanaryEntityIds: ReadonlySet<string>;
   private readonly globalRpsLimit: number;
   private readonly criticalGlobalRpsLimit: number;
   private readonly interactiveGlobalRpsLimit: number;
@@ -913,7 +914,7 @@ export class MaxClientService implements OnModuleDestroy {
     requestOptions: MaxApiRequestOptions;
     quotaState: { error?: unknown };
     messageMutation?: MaxMessageMutationRateLimitScope;
-    finalGuard?: () => Promise<void>;
+    finalGuard?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
     onDispatchAttempt?: () => void;
   }>();
 
@@ -943,6 +944,12 @@ export class MaxClientService implements OnModuleDestroy {
     private readonly backgroundActionQueue?: Queue<MaxActionJob>,
     @Optional()
     private readonly marketplaceState?: MarketplaceStateService,
+    @Optional()
+    private readonly moderationRuleNoticeGuard?: MaxModerationRuleNoticeGuardService,
+    @Optional()
+    private readonly requiredSubscriptionNoticeGuard?: MaxRequiredSubscriptionNoticeGuardService,
+    @Optional()
+    private readonly duplicateNoticeGuard?: MaxDuplicateNoticeGuardService,
   ) {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
     this.isProduction =
@@ -950,6 +957,15 @@ export class MaxClientService implements OnModuleDestroy {
         .trim()
         .toLowerCase() === 'production';
     this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
+    this.routedMutationsMode = normalizeMaxRoutedMutationMode(
+      configService.get('MAX_ROUTED_MUTATIONS_MODE'),
+    );
+    this.routedMutationsCanaryPercent = normalizeMaxRoutedMutationCanaryPercent(
+      configService.get('MAX_ROUTED_MUTATIONS_CANARY_PERCENT'),
+    );
+    this.routedMutationsCanaryEntityIds = parseMaxRoutedMutationCanaryEntityIds(
+      configService.get('MAX_ROUTED_MUTATIONS_CANARY_ENTITY_IDS'),
+    );
     this.metricsStorageLayout =
       configService.get<MaxApiMetricsStorageLayout>('MAX_API_METRICS_STORAGE_LAYOUT') ?? 'legacy';
     this.resumableVideoUploadEnabled = configService.get<boolean>(
@@ -3064,8 +3080,8 @@ export class MaxClientService implements OnModuleDestroy {
                 this.assertSuccessfulMemberMutationResponse(response);
               },
               mutationOptions,
-              async () => {
-                await beforeMember?.();
+              async (revalidateRoute) => {
+                await beforeMember?.(revalidateRoute);
                 assertMaxMemberRestoreAvailable();
               },
               () => {
@@ -5229,12 +5245,23 @@ export class MaxClientService implements OnModuleDestroy {
     const explicitIdempotencyKey = this.buildExplicitActionIdempotencyKey(
       options?.idempotencyKey,
       payload.actionType,
-      isRoutedAction ? null : bot.id,
+      isRoutedAction ||
+        ((payload.actionType === 'BAN_MEMBER' || payload.actionType === 'KICK_MEMBER') &&
+          !isPrivateDirectChatId(payload.chatId))
+        ? null
+        : bot.id,
     );
     const logicalIdempotencyKey =
       scheduledJobId ??
       explicitIdempotencyKey ??
-      this.buildDefaultActionIdempotencyKey(payload, isRoutedAction ? null : bot.id);
+      this.buildDefaultActionIdempotencyKey(
+        payload,
+        isRoutedAction ||
+          ((payload.actionType === 'BAN_MEMBER' || payload.actionType === 'KICK_MEMBER') &&
+            !isPrivateDirectChatId(payload.chatId))
+          ? null
+          : bot.id,
+      );
     const createdAt = new Date();
     const job: MaxActionJob = {
       ...payload,
@@ -5433,7 +5460,7 @@ export class MaxClientService implements OnModuleDestroy {
         if (scheduledJobId) {
           this.keyedActionTimeouts.delete(scheduledJobId);
         }
-        void this.executeActionJob(job).catch((error: unknown) => {
+        void this.executeImmediateActionJob(job).catch((error: unknown) => {
           this.logger.warn(
             {
               actionType: job.actionType,
@@ -5453,7 +5480,9 @@ export class MaxClientService implements OnModuleDestroy {
       return;
     }
 
-    await this.executeActionJob(job);
+    // FLAG: The queue-less compatibility path still owns the same durable dispatch journal.
+    // A direct executeActionJob call would attempt to claim a SEND whose SQL row is missing.
+    await this.executeImmediateActionJob(job);
   }
 
   private async resolveQueuedActionRoute(
@@ -5530,8 +5559,8 @@ export class MaxClientService implements OnModuleDestroy {
   private async executeImmediateActionJob(
     job: MaxActionJob,
     beforeDeleteMutation?: () => Promise<void>,
-    beforeMemberMutation?: () => Promise<void>,
-    beforeSendMutation?: () => Promise<void>,
+    beforeMemberMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>,
+    beforeSendMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>,
   ): Promise<MaxPublishedMessage | void> {
     const executionOptions: MaxActionExecutionOptions = {
       beforeDeleteMutation,
@@ -5544,32 +5573,63 @@ export class MaxClientService implements OnModuleDestroy {
 
     await this.actionLedgerService.assertCanEnqueue(job);
     await this.actionLedgerService.recordStarted(job, new Date(job.createdAt));
+    let executionJob = job;
+    const attemptedBotIds = new Set<string>(job.botId ? [job.botId] : []);
+    const configuredBotIds = new Set(
+      this.botRegistry.getAllBots?.().map((bot) => bot.id) ?? job.candidateBotIds ?? [],
+    );
     let result: MaxPublishedMessage | void;
     try {
-      result = await this.executeActionJob(job, executionOptions);
+      while (true) {
+        try {
+          result = await this.executeActionJob(executionJob, executionOptions);
+          break;
+        } catch (error: unknown) {
+          if (!this.canRetryImmediateRouteRejection(executionJob, error)) throw error;
+          // FLAG: Only a genuine local executor rejection before HTTP may hand this exact
+          // durable identity and original feature closure to a current surviving candidate.
+          // Never renew a feature deadline or replay an unknown SEND/BAN/KICK outcome.
+          const route = await this.resolveQueuedActionRoute(executionJob);
+          const nextBotId = route?.candidateBotIds.find((botId) => {
+            if (!configuredBotIds.has(botId) || attemptedBotIds.has(botId)) return false;
+            const bot = this.botRegistry.getBotById(botId);
+            return !!bot && this.canExecuteActionsForBot(bot);
+          });
+          if (!nextBotId) throw error;
+          attemptedBotIds.add(nextBotId);
+          executionJob = {
+            ...executionJob,
+            botId: nextBotId,
+            candidateBotIds: route!.candidateBotIds,
+            routing: this.buildActionRoutingMetadata(route!) ?? executionJob.routing,
+          };
+        }
+      }
     } catch (error: unknown) {
-      await this.actionLedgerService.recordFailed(job, error).catch((ledgerError: unknown) => {
-        this.logger.warn(
-          {
-            actionType: job.actionType,
-            chatId: job.chatId,
-            botId: job.botId,
-            error: this.extractErrorMessage(ledgerError),
-            originalError: this.extractErrorMessage(error),
-          },
-          'Failed to record immediate MAX action failure in durable ledger',
-        );
-      });
+      await this.actionLedgerService
+        .recordFailed(executionJob, error)
+        .catch((ledgerError: unknown) => {
+          this.logger.warn(
+            {
+              actionType: job.actionType,
+              chatId: job.chatId,
+              botId: executionJob.botId,
+              error: this.extractErrorMessage(ledgerError),
+              originalError: this.extractErrorMessage(error),
+            },
+            'Failed to record immediate MAX action failure in durable ledger',
+          );
+        });
       throw error;
     }
 
     if (!result?.recoveredSendDispatch) {
-      await this.actionLedgerService.recordSucceeded(job).catch((ledgerError: unknown) => {
+      await this.actionLedgerService.recordSucceeded(executionJob).catch((ledgerError: unknown) => {
         this.logger.warn(
           {
             actionType: job.actionType,
             chatId: job.chatId,
-            botId: job.botId,
+            botId: executionJob.botId,
             error: this.extractErrorMessage(ledgerError),
           },
           'Failed to record immediate MAX action success in durable ledger',
@@ -5577,6 +5637,35 @@ export class MaxClientService implements OnModuleDestroy {
       });
     }
     return result;
+  }
+
+  private canRetryImmediateRouteRejection(job: MaxActionJob, error: unknown): boolean {
+    if (
+      !wasMaxPreDispatchGuardRejected(error) ||
+      (error as { code?: unknown })?.code !== 'max_action_executor_proof_rejected' ||
+      wasMaxMessageSendAttempted(error) ||
+      wasMaxMemberMutationAttempted(error) ||
+      wasMaxMemberMutationConfirmed(error) ||
+      !['SEND_MESSAGE', 'BAN_MEMBER', 'KICK_MEMBER'].includes(job.actionType) ||
+      (!job.routing && !job.candidateBotIds?.length) ||
+      job.routing?.requiredBotId ||
+      job.routing?.purpose === 'publisher_exact_send' ||
+      job.routing?.purpose === 'channel_poll' ||
+      job.routing?.sendRouteHalfOpenProbe ||
+      job.routing?.sendRouteStickyProbe ||
+      job.chatId.startsWith('user:') ||
+      isPrivateDirectChatId(job.chatId) ||
+      this.botRegistry.getPublisherBotDescriptor?.().id === job.botId ||
+      typeof this.maxBotLinkService?.resolveBotRoute !== 'function'
+    )
+      return false;
+    return shouldEnforceMaxRoutedMutation({
+      mode: this.routedMutationsMode,
+      canaryPercent: this.routedMutationsCanaryPercent,
+      canaryEntityIds: this.routedMutationsCanaryEntityIds,
+      entityId: job.chatId,
+      rolloutKey: `${job.idempotencyKey}:${job.chatId}`,
+    });
   }
 
   private buildScheduledMemberActionJobId(
@@ -5591,6 +5680,17 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return `member-action__${logical ? 'logical' : (botId ?? this.botRegistry.getDefaultBot().id)}__${actionType}__${chatId}__${userId}`;
+  }
+
+  getExplicitActionJobId(
+    actionType: Extract<MaxActionType, 'BAN_MEMBER' | 'KICK_MEMBER'>,
+    idempotencyKey: string,
+  ): string {
+    // FLAG: Group member actions share the same logical key across all bot identities.
+    // Receipt recovery must use the dispatcher's exact key, never another action's result.
+    const jobId = this.buildExplicitActionIdempotencyKey(idempotencyKey, actionType, null);
+    if (!jobId) throw new Error('Explicit member action receipt requires a nonempty logical key');
+    return jobId;
   }
 
   private buildExplicitActionIdempotencyKey(
@@ -5642,17 +5742,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private buildActionIdempotencyKey(namespace: string, parts: readonly string[]): string {
-    const normalizedParts = [namespace, ...parts].map((part) => part.trim()).filter(Boolean);
-    const canonical = normalizedParts.join('\u001f');
-    const digest = createHash('sha256').update(canonical).digest('base64url').slice(0, 24);
-    const readable = normalizedParts
-      .map(normalizeMaxActionIdempotencyKeyPart)
-      .filter(Boolean)
-      .join('__')
-      .slice(0, MAX_ACTION_IDEMPOTENCY_KEY_READABLE_MAX_LENGTH)
-      .replace(/_+$/u, '');
-
-    return readable ? `max-action__${readable}__${digest}` : `max-action__${digest}`;
+    return buildMaxActionIdempotencyKey(namespace, parts);
   }
 
   private async removeQueuedActionJob(jobId: string) {
@@ -6730,7 +6820,7 @@ export class MaxClientService implements OnModuleDestroy {
     entityId: string | null,
     operation: () => Promise<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
-    finalGuard?: () => Promise<void>,
+    finalGuard?: (revalidateRoute?: () => Promise<void>) => Promise<void>,
   ): Promise<T> {
     const quotaState: { error?: unknown } = {};
     const scopedOperation =
@@ -6777,7 +6867,7 @@ export class MaxClientService implements OnModuleDestroy {
     method: 'post' | 'delete',
     operation: () => Promise<T>,
     options: MaxApiRequestOptions,
-    finalGuard: (() => Promise<void>) | undefined,
+    finalGuard: ((revalidateRoute?: () => Promise<void>) => Promise<void>) | undefined,
     onDispatchAttempt: () => void,
   ): Promise<T> {
     const quotaState: { error?: unknown } = {};
@@ -7076,8 +7166,77 @@ export class MaxClientService implements OnModuleDestroy {
     action: MaxActionJob,
     attachments: Record<string, unknown>[],
     mutationOptions: MaxApiRequestOptions,
-    beforeMutation?: () => Promise<void>,
+    beforeMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>,
   ): Promise<MaxQueuedSendResponse> {
+    const finalNoticeGuard =
+      hasMaxModerationRuleNoticeProof(action) ||
+      isMaxRequiredSubscriptionNoticeAction(action) ||
+      isMaxDuplicateNoticeAction(action) ||
+      requiresMaxModerationNoticeEnvelope(action)
+        ? async (revalidateRoute?: () => Promise<void>) => {
+            assertMaxModerationNoticeEnvelope(action);
+            await beforeMutation?.(revalidateRoute);
+            const selectedBotId =
+              this.readTrimmedString(mutationOptions.botId) ?? this.getCurrentBot().id;
+            const readOptions = (botId: string, timeoutMs: number): MaxApiRequestOptions => ({
+              botId,
+              timeoutMs,
+              bypassCache: true,
+              trafficClass: 'critical',
+              actionHealthLane: 'critical',
+              sourceTag: MAX_API_SOURCE_TAGS.MODERATION_SANCTION,
+            });
+            const getMemberAccess = ({
+              chatId,
+              userId,
+              botId,
+              timeoutMs,
+            }: {
+              chatId: string;
+              userId: string;
+              botId: string;
+              timeoutMs: number;
+            }) => this.getChatMemberAccess(chatId, userId, readOptions(botId, timeoutMs));
+            if (hasMaxModerationRuleNoticeProof(action)) {
+              if (!this.moderationRuleNoticeGuard)
+                throw new UnrecoverableError('Moderation rule notice guard unavailable');
+              await this.moderationRuleNoticeGuard.assertAllowed(
+                action,
+                selectedBotId,
+                getMemberAccess,
+                revalidateRoute,
+              );
+            }
+            if (isMaxRequiredSubscriptionNoticeAction(action)) {
+              if (!this.requiredSubscriptionNoticeGuard)
+                throw new UnrecoverableError('Required subscription notice guard unavailable');
+              await this.requiredSubscriptionNoticeGuard.assertAllowed(action, selectedBotId, {
+                getMemberAccess,
+                getSource: ({ chatId, messageId, botId, timeoutMs }) =>
+                  this.getExactMessageRow(chatId, messageId, readOptions(botId, timeoutMs)),
+                getMembership: async ({ targetId, userId, timeoutMs }) => {
+                  const targetBotId = await this.maxBotLinkService?.resolveBotIdForRead({
+                    chatId: targetId,
+                  });
+                  if (!targetBotId)
+                    throw new Error('Required subscription notice target read route unavailable');
+                  const members = await this.getChatMembersAccess(
+                    targetId,
+                    [userId],
+                    readOptions(targetBotId, timeoutMs),
+                  );
+                  return members.has(userId);
+                },
+                beforeFinalAuthority: revalidateRoute,
+              });
+            }
+            if (isMaxDuplicateNoticeAction(action)) {
+              if (!this.duplicateNoticeGuard)
+                throw new UnrecoverableError('Duplicate notice guard unavailable');
+              await this.duplicateNoticeGuard.assertAllowed(action, selectedBotId, revalidateRoute);
+            }
+          }
+        : beforeMutation;
     let currentAttachments = attachments;
     const preparePublication = async () => {
       const options = await this.prepareMarketplacePublicationOptions(
@@ -7118,7 +7277,7 @@ export class MaxClientService implements OnModuleDestroy {
             return sendRequest();
           },
           mutationOptions,
-          beforeMutation,
+          finalNoticeGuard,
         );
       } catch (error: unknown) {
         if (isAmbiguousMaxSendError(error)) {
@@ -7180,7 +7339,7 @@ export class MaxClientService implements OnModuleDestroy {
           };
         },
         mutationOptions,
-        beforeMutation,
+        finalNoticeGuard,
       );
     } catch (error: unknown) {
       if (!dispatchToken) {
@@ -7328,7 +7487,10 @@ export class MaxClientService implements OnModuleDestroy {
   private async executeQueuedMemberModerationAction(
     action: MaxActionJob,
     mutationOptions: MaxApiRequestOptions,
-    options: { block: boolean; beforeMutation?: () => Promise<void> },
+    options: {
+      block: boolean;
+      beforeMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
+    },
   ): Promise<void> {
     let memberMutationAttempted = false;
     try {
@@ -8362,20 +8524,25 @@ export class MaxClientService implements OnModuleDestroy {
           scope.quotaState.error = error;
           throw error;
         }
-        if (
-          proof &&
-          !(await this.maxBotLinkService!.verifyChatExecutionProof({
-            chatId: scope.chatId,
-            ...proof,
-            purpose: scope.purpose,
-            maxAgeMs: scope.purpose === 'send_message' ? 15 * 60_000 : 5 * 60_000,
-          }))
-        ) {
-          throw Object.assign(new Error('MAX action executor proof changed during quota wait'), {
-            code: 'max_action_executor_proof_rejected',
-          });
-        }
-        await scope.finalGuard?.();
+        const verifyExecutionProof = async (stage: string) => {
+          if (
+            proof &&
+            !(await this.maxBotLinkService!.verifyChatExecutionProof({
+              chatId: scope.chatId,
+              ...proof,
+              purpose: scope.purpose,
+              maxAgeMs: scope.purpose === 'send_message' ? 15 * 60_000 : 5 * 60_000,
+            }))
+          ) {
+            throw Object.assign(new Error(`MAX action executor proof changed during ${stage}`), {
+              code: 'max_action_executor_proof_rejected',
+            });
+          }
+        };
+        await verifyExecutionProof('quota wait');
+        // FLAG: The feature owns its last authority await. Queued notice qualification calls
+        // this route recheck before its final policy/Redis permit; never await after that permit.
+        await scope.finalGuard?.(() => verifyExecutionProof('feature qualification'));
       }, scope.guardCode);
       scope.onDispatchAttempt?.();
     }

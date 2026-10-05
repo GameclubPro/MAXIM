@@ -90,6 +90,7 @@ describe('commercial audit regressions in moderation execution', () => {
     await service.handleUpdate(update);
     expect(intents.ensureIntent).toHaveBeenCalledWith(
       expect.objectContaining({ ruleCode: 'MESSAGE_BLOCKED_WORD_DELETE' }),
+      { enqueue: false },
     );
     expect(prisma.violation.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ ruleCode: 'MESSAGE_BLOCKED_WORD' }),

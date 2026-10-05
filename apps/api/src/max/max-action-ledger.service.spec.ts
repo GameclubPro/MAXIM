@@ -54,6 +54,9 @@ function createJob(overrides: Partial<MaxActionJob> = {}): MaxActionJob {
 
 function createService(row: unknown = null) {
   const prisma = {
+    $transaction: jest.fn(),
+    $executeRaw: jest.fn().mockResolvedValue(0),
+    $queryRaw: jest.fn().mockResolvedValue([]),
     maxActionLedgerEntry: {
       findFirst: jest.fn().mockResolvedValue(row),
       findMany: jest.fn().mockResolvedValue(Array.isArray(row) ? row : row ? [row] : []),
@@ -64,6 +67,9 @@ function createService(row: unknown = null) {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
   };
+  prisma.$transaction.mockImplementation(
+    async (operation: (tx: typeof prisma) => Promise<unknown>) => operation(prisma),
+  );
   return {
     prisma,
     service: new MaxActionLedgerService(prisma as never),
@@ -73,6 +79,24 @@ function createService(row: unknown = null) {
 describe('MaxActionLedgerService', () => {
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('does not create a second member execution after an unknown effect under another bot key', async () => {
+    const { prisma, service } = createService();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ job_id: 'legacy-bot-a-ban' }]);
+    const job = createJob({
+      actionType: 'KICK_MEMBER',
+      userId: 'user-1',
+      botId: 'reserve-last',
+      idempotencyKey: 'new-kick',
+    });
+    await expect(service.recordStarted(job)).rejects.toThrow(
+      'Retained member action requires settlement',
+    );
+    expect(prisma.maxActionLedgerEntry.createMany).not.toHaveBeenCalled();
+    expect(prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
   });
 
   it('prepares only an exact definitively rejected night-mode open send for retry', async () => {

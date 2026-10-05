@@ -1,4 +1,5 @@
 import { AdminManualModerationRuntime } from './admin-manual-moderation-runtime';
+import { ManualGroupCommandNoticeAuthorityRejectedError } from './admin-manual-group-command-notice-authority';
 import {
   createAdminManualModerationRuntimeContext,
   type AdminManualModerationRuntimeContext,
@@ -36,6 +37,7 @@ function baseContext(): AdminManualModerationRuntimeContext {
     completeManualModerationFanoutLedgerEntry: jest.fn(),
     markManualModerationFanoutLedgerFailed: jest.fn(),
     findSettledManualGroupCommandOutcomeRows: jest.fn(),
+    assertManualGroupCommandSuccessNoticeAuthority: jest.fn(),
     sendMessage: jest.fn(),
   };
 }
@@ -131,6 +133,9 @@ function noticeFixture() {
   const completeManualModerationFanoutLedgerEntry = jest.fn(async () => {
     order.push('complete');
   });
+  const assertManualGroupCommandSuccessNoticeAuthority = jest.fn(async () => {
+    order.push('authority');
+  });
   const sendMessage: jest.MockedFunction<AdminManualModerationRuntimeContext['sendMessage']> =
     jest.fn(async (_chatId, _text, _options, dispatch) => {
       await dispatch.beforeImmediateSendMutation?.();
@@ -144,6 +149,7 @@ function noticeFixture() {
     claimManualModerationFanoutLedgerEntry,
     markManualModerationFanoutLedgerFailed,
     completeManualModerationFanoutLedgerEntry,
+    assertManualGroupCommandSuccessNoticeAuthority,
     sendMessage,
   };
   return {
@@ -153,15 +159,70 @@ function noticeFixture() {
     claimManualModerationFanoutLedgerEntry,
     markManualModerationFanoutLedgerFailed,
     completeManualModerationFanoutLedgerEntry,
+    assertManualGroupCommandSuccessNoticeAuthority,
     sendMessage,
   };
 }
 
 describe('manual moderation notice boundary', () => {
+  it.each(['FAILURE', 'UNCERTAIN'] as const)(
+    'records %s privately without a group send',
+    async (outcome) => {
+      const f = noticeFixture();
+      await f.runtime.sendManualGroupCommandNotice({
+        ...notice,
+        ledger: { ...notice.ledger, outcome },
+      });
+      expect(f.order).toEqual(['claim', 'complete']);
+      expect(f.sendMessage).not.toHaveBeenCalled();
+      expect(f.claimManualModerationFanoutLedgerEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({ outcome, suppressed: true, resultText: notice.text }),
+        }),
+      );
+    },
+  );
+
+  it('keeps an unbound legacy notice silent', async () => {
+    const f = noticeFixture();
+    const unbound = { ...notice, ledger: undefined };
+    await f.runtime.sendManualGroupCommandNotice(unbound);
+    expect(f.claimManualModerationFanoutLedgerEntry).not.toHaveBeenCalled();
+    expect(f.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('checks fresh authority after route validation and before sending', async () => {
+    const f = noticeFixture();
+    f.sendMessage.mockImplementation(async (_chatId, _text, _options, dispatch) => {
+      await dispatch.beforeImmediateSendMutation?.(async () => {
+        f.order.push('route');
+      });
+      f.order.push('send');
+      return { messageId: 'sent-1' } as never;
+    });
+    await f.runtime.sendManualGroupCommandNotice(notice);
+    expect(f.order).toEqual(['claim', 'route', 'record-attempt', 'authority', 'send', 'complete']);
+    expect(f.assertManualGroupCommandSuccessNoticeAuthority).toHaveBeenCalledWith(
+      expect.objectContaining({ ...notice.ledger, chatId: notice.chatId, lockToken: 'lease-1' }),
+    );
+  });
+
+  it('settles revoked success authority without sending or retrying the command', async () => {
+    const f = noticeFixture();
+    f.assertManualGroupCommandSuccessNoticeAuthority.mockRejectedValueOnce(
+      new ManualGroupCommandNoticeAuthorityRejectedError(),
+    );
+    await expect(f.runtime.sendManualGroupCommandNotice(notice)).resolves.toBeUndefined();
+    expect(f.order).toEqual(['claim', 'record-attempt', 'record-attempt']);
+    expect(f.markManualModerationFanoutLedgerFailed).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'SKIPPED', terminal: true }),
+    );
+  });
+
   it('records the dispatch attempt before sending and commits the exact receipt afterwards', async () => {
     const f = noticeFixture();
     await f.runtime.sendManualGroupCommandNotice(notice);
-    expect(f.order).toEqual(['claim', 'record-attempt', 'send', 'complete']);
+    expect(f.order).toEqual(['claim', 'record-attempt', 'authority', 'send', 'complete']);
     expect(f.markManualModerationFanoutLedgerFailed).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'AMBIGUOUS', retainClaim: true, requireClaim: true }),
     );

@@ -6,6 +6,7 @@ import {
   type PreparedVkPostImport,
   type VkParsingPostImportDatabase,
 } from './vk-parsing-post-import.repository';
+import { lockVkSyncLease, VkSyncLeaseLostError, type VkSyncLease } from './vk-sync-lease';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgres = databaseUrl ? describe : describe.skip;
@@ -15,6 +16,15 @@ describePostgres('PostgreSQL VK import storage', () => {
   let repository: VkParsingPostImportRepository;
   let database: VkParsingPostImportDatabase;
   let toastTable: string;
+  let leaseSchema: string;
+  let contender: Client;
+  let lastLeaseQuery: Prisma.Sql;
+  const leaseDatabase = {
+    $queryRaw: async (query: Prisma.Sql) => {
+      lastLeaseQuery = query;
+      return (await client.query(query.text, query.values)).rows;
+    },
+  };
   const source = {
     id: 'storage-source',
     chatId: 'storage-chat',
@@ -22,6 +32,7 @@ describePostgres('PostgreSQL VK import storage', () => {
     ownerProfile: 'PUBLISHER' as const,
     ownerBotId: 'storage-bot',
   };
+  const lease: VkSyncLease = { ...source, syncLockedBy: 'attempt-a', syncAttemptCount: 1 };
   let imported: PreparedVkPostImport;
 
   beforeAll(async () => {
@@ -34,6 +45,16 @@ describePostgres('PostgreSQL VK import storage', () => {
     }
     client = new Client({ connectionString: databaseUrl });
     await client.connect();
+    leaseSchema = `vk_sync_lease_${randomBytes(6).toString('hex')}`;
+    await client.query(`CREATE SCHEMA "${leaseSchema}"`);
+    await client.query(
+      `CREATE TABLE "${leaseSchema}".vk_parsing_sources (LIKE public.vk_parsing_sources INCLUDING ALL)`,
+    );
+    await client.query(`SET search_path TO "${leaseSchema}", pg_temp, public`);
+    contender = new Client({ connectionString: databaseUrl });
+    await contender.connect();
+    await contender.query(`SET search_path TO "${leaseSchema}", public`);
+    await contender.query("SET lock_timeout TO '100ms'");
     expect(
       Number((await client.query('SHOW server_version_num')).rows[0].server_version_num),
     ).toBeGreaterThanOrEqual(160000);
@@ -55,6 +76,17 @@ describePostgres('PostgreSQL VK import storage', () => {
   });
 
   beforeEach(async () => {
+    await client.query(`TRUNCATE "${leaseSchema}".vk_parsing_sources`);
+    await client.query(
+      `INSERT INTO "${leaseSchema}".vk_parsing_sources (
+      id, chat_id, owner_profile, owner_bot_id, owner_id, wall_owner_id,
+      screen_name, title, url, created_by_user_id, updated_at,
+      sync_status, sync_locked_by, sync_attempt_count, sync_lock_deadline_at
+    ) VALUES ($1, $2, 'PUBLISHER', $3, 123, -123, 'storage', 'Storage',
+      'https://vk.com/storage', 'test-user', now(), 'SYNCING', $4, 1,
+      (clock_timestamp() AT TIME ZONE 'UTC') + interval '2 minutes')`,
+      [source.id, source.chatId, source.ownerBotId, lease.syncLockedBy],
+    );
     await client.query('TRUNCATE pg_temp.vk_parsing_posts');
     repository = new VkParsingPostImportRepository(database as never);
     imported = {
@@ -83,7 +115,127 @@ describePostgres('PostgreSQL VK import storage', () => {
   });
 
   afterAll(async () => {
+    await contender?.end();
+    if (leaseSchema) await client.query(`DROP SCHEMA IF EXISTS "${leaseSchema}" CASCADE`);
     await client?.end();
+  });
+
+  it('blocks a reclaim while an import holds the generation lock, then fences its old worker', async () => {
+    await client.query('BEGIN');
+    try {
+      await lockVkSyncLease(leaseDatabase as never, lease);
+      await expect(
+        contender.query(
+          `UPDATE "${leaseSchema}".vk_parsing_sources
+        SET sync_locked_by = 'attempt-b', sync_attempt_count = 2 WHERE id = $1`,
+          [source.id],
+        ),
+      ).rejects.toMatchObject({ code: '55P03' });
+    } finally {
+      await client.query('ROLLBACK');
+    }
+    await contender.query(
+      `UPDATE "${leaseSchema}".vk_parsing_sources
+      SET sync_locked_by = 'attempt-b', sync_attempt_count = 2 WHERE id = $1`,
+      [source.id],
+    );
+    imported.post.text = 'new generation';
+    imported.post.contentHash = 'new-generation';
+    await repository.persistImportedPosts(source, [imported], new Date());
+    const before = await heapIdentity();
+
+    await client.query('BEGIN');
+    try {
+      await expect(lockVkSyncLease(leaseDatabase as never, lease)).rejects.toBeInstanceOf(
+        VkSyncLeaseLostError,
+      );
+    } finally {
+      await client.query('ROLLBACK');
+    }
+    expect(await heapIdentity()).toEqual(before);
+    expect((await client.query('SELECT text FROM pg_temp.vk_parsing_posts')).rows[0].text).toBe(
+      'new generation',
+    );
+    await expect(
+      lockVkSyncLease(leaseDatabase as never, {
+        ...lease,
+        syncLockedBy: 'attempt-b',
+        syncAttemptCount: 2,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(['expired', 'import-disabled', 'inactive', 'generation-changed'] as const)(
+    'rejects a %s lease before any import or missing-state effects',
+    async (kind) => {
+      const change = {
+        expired:
+          "sync_lock_deadline_at = (clock_timestamp() AT TIME ZONE 'UTC') - interval '1 second'",
+        'import-disabled': 'import_enabled = FALSE',
+        inactive: "status = 'PAUSED'",
+        'generation-changed': 'sync_attempt_count = 2',
+      }[kind];
+      await client.query(`UPDATE "${leaseSchema}".vk_parsing_sources SET ${change} WHERE id = $1`, [
+        source.id,
+      ]);
+
+      await expect(lockVkSyncLease(leaseDatabase as never, lease)).rejects.toBeInstanceOf(
+        VkSyncLeaseLostError,
+      );
+    },
+  );
+
+  it('checks expiry after acquiring a contended row lock rather than at statement start', async () => {
+    await client.query(
+      `UPDATE "${leaseSchema}".vk_parsing_sources
+      SET sync_lock_deadline_at = (clock_timestamp() AT TIME ZONE 'UTC') + interval '200 milliseconds'
+      WHERE id = $1`,
+      [source.id],
+    );
+    await contender.query('BEGIN');
+    await contender.query(
+      `SELECT id FROM "${leaseSchema}".vk_parsing_sources WHERE id = $1 FOR UPDATE`,
+      [source.id],
+    );
+    const outcome = lockVkSyncLease(leaseDatabase as never, lease).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    } finally {
+      await contender.query('ROLLBACK');
+    }
+    expect(await outcome).toBeInstanceOf(VkSyncLeaseLostError);
+  });
+
+  it('uses an indexed source lookup with ten thousand other sources', async () => {
+    await client.query(`INSERT INTO "${leaseSchema}".vk_parsing_sources (
+      id, chat_id, owner_profile, owner_bot_id, owner_id, wall_owner_id,
+      screen_name, title, url, created_by_user_id, updated_at
+    ) SELECT 'history-' || n, 'chat-' || n, 'PUBLISHER', 'bot-' || n,
+      n, -n, 'history', 'History', 'https://vk.com/history', 'test-user', now()
+      FROM generate_series(1000, 10999) AS n`);
+    await client.query(`ANALYZE "${leaseSchema}".vk_parsing_sources`);
+    await lockVkSyncLease(leaseDatabase as never, lease);
+    const plan = (
+      await client.query(
+        `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${lastLeaseQuery.text}`,
+        lastLeaseQuery.values,
+      )
+    ).rows[0]['QUERY PLAN'][0].Plan;
+    const nodes: Array<Record<string, unknown>> = [];
+    const walk = (node: Record<string, unknown>) => {
+      nodes.push(node);
+      for (const child of (node.Plans ?? []) as Array<Record<string, unknown>>) walk(child);
+    };
+    walk(plan);
+    expect(nodes.some((node) => node['Node Type'] === 'Index Scan')).toBe(true);
+    expect(nodes.some((node) => node['Node Type'] === 'Seq Scan')).toBe(false);
+    expect(plan['Actual Rows']).toBe(1);
+    expect(
+      Number(plan['Shared Hit Blocks'] ?? 0) + Number(plan['Shared Read Blocks'] ?? 0),
+    ).toBeLessThan(20);
   });
 
   async function toastChunks() {

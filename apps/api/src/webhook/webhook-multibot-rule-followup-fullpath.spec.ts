@@ -1,0 +1,677 @@
+import { randomUUID } from 'node:crypto';
+import { Prisma } from '../prisma/prisma-client';
+import {
+  bindMessageLimitEvidence,
+  fingerprintModerationSettings,
+} from '../moderation/message-limits-delete-guard.service';
+import {
+  createMultibotHarness,
+  type MultibotHarness,
+} from './webhook-multibot-fullpath.spec-support';
+
+const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
+const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
+const describeStores = databaseUrl && redisUrl ? describe : describe.skip;
+jest.setTimeout(60_000);
+
+describeStores('native durable moderation rule continuation across bot/process changes', () => {
+  let h: MultibotHarness | undefined;
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await h?.dispose();
+    h = undefined;
+  });
+  async function fixture(settings: Record<string, unknown> = {}, prior = 1) {
+    const s = (h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 9, mode: 'on' }));
+    const [chatId] = await s.seedCatalog(1, { messageLimitsWarnEnabled: true, ...settings });
+    if (prior)
+      await s.prisma.violation.createMany({
+        data: Array.from({ length: prior }, () => ({
+          chatId: chatId!,
+          userId: 'fixture-user',
+          ruleCode: 'MESSAGE_TOO_LONG',
+          score: 1,
+          createdAt: new Date(Date.now() - 1000),
+        })),
+      });
+    return { s, chatId: chatId! };
+  }
+  async function ready(
+    s: MultibotHarness,
+    chatId: string,
+    suffix = 'continuation',
+    sourceAgeMs = 0,
+  ) {
+    const messageId = `${suffix}-${randomUUID()}`;
+    const sourceAt = new Date(Date.now() - sourceAgeMs);
+    const text = 'Long harmless message with current durable source identity';
+    s.messages.set(messageId, {
+      sender: { user_id: 'fixture-user', is_bot: false },
+      recipient: { chat_id: chatId, chat_type: 'chat' },
+      timestamp: sourceAt.getTime(),
+      body: { mid: messageId, text },
+    });
+    const settings = await s.prisma.chatSettings.findUniqueOrThrow({ where: { chatId } });
+    const ruleCode = 'MESSAGE_TOO_LONG_DELETE';
+    const result = await s.intents.ensureIntentWithRuleFollowup(
+      {
+        chatId,
+        messageId,
+        subjectUserId: 'fixture-user',
+        sourceMessageAt: sourceAt,
+        originBotId: s.bots[0]!.id,
+        routingPolicy: 'delete_capable',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        reasonKey: 'MESSAGE_TOO_LONG:violation-delete',
+        ruleCode,
+        event: {
+          userId: 'fixture-user',
+          eventType: 'MESSAGE',
+          score: 1,
+          metadata: bindMessageLimitEvidence(settings, sourceAt.getTime(), ruleCode),
+        },
+      },
+      fingerprintModerationSettings(settings, ruleCode),
+      {
+        version: 1,
+        updateType: 'message_created',
+        originBotId: s.bots[0]!.id,
+        userLabel: 'Fixture user',
+        effectiveMessageLength: text.length,
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      },
+    );
+    expect(result.followupId).not.toBeNull();
+    const row = await s.prisma.moderationRuleFollowup.findUniqueOrThrow({
+      where: { id: result.followupId! },
+    });
+    expect((await s.intents.attemptIntent(row.intentId)).confirmed).toBe(true);
+    expect(
+      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } })).status,
+    ).toBe('READY');
+    return row;
+  }
+  async function due(s: MultibotHarness, id: string) {
+    await s.prisma.moderationRuleFollowup.update({
+      where: { id },
+      data: { nextAttemptAt: new Date(Date.now() - 1000), leaseExpiresAt: null, leaseToken: null },
+    });
+  }
+  async function expectWarnOnce(s: MultibotHarness, chatId: string, messageId: string) {
+    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(2);
+    expect(
+      await s.prisma.moderationViolationMessageClaim.count({ where: { chatId, messageId } }),
+    ).toBe(1);
+    expect(
+      await s.prisma.moderationEvent.count({ where: { chatId, messageId, action: 'WARN' } }),
+    ).toBe(1);
+    expect(s.effects.filter((e) => e.method === 'delete')).toHaveLength(1);
+    expect(s.effects.filter((e) => e.method === 'post' && e.path === '/messages')).toHaveLength(1);
+  }
+
+  it('continues only its own followup when DELETE finishes after the inline observer has exited across nine bots', async () => {
+    const { s, chatId } = await fixture();
+    (s.intents as any).deleteTimeoutMs = 50;
+    const messageId = `late-${randomUUID()}`;
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    const originalDelete = s.max.deleteMessage.bind(s.max);
+    jest.spyOn(s.max, 'deleteMessage').mockImplementation(async (...args) => {
+      started = true;
+      await hold;
+      return originalDelete(...args);
+    });
+    const originalEnsure = s.intents.ensureIntentWithRuleFollowup.bind(s.intents);
+    jest.spyOn(s.intents, 'ensureIntentWithRuleFollowup').mockImplementation(async (...args) => {
+      const result = await originalEnsure(...args);
+      await s.intents.sweepDueIntents();
+      const until = Date.now() + 5000;
+      while (!started && Date.now() < until)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      return result;
+    });
+    const executor = jest.spyOn(s.moderation, 'executeRuleFollowup');
+    const at = Date.now();
+    await Promise.all(
+      s.bots.map((bot) =>
+        s.ingest({
+          chatId,
+          messageId,
+          botId: bot.id,
+          at,
+          text: 'Long current content waits for the exact own DELETE receipt',
+        }),
+      ),
+    );
+    try {
+      const until = Date.now() + 10_000;
+      while (s.processedIds.length < 1 && Date.now() < until) {
+        await s.pumpOnce();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(started).toBe(true);
+      expect(s.processedIds).toHaveLength(1);
+      expect(s.effects.filter((e) => e.method === 'delete')).toHaveLength(0);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+    } finally {
+      release();
+    }
+    await s.drain();
+    await expectWarnOnce(s, chatId, messageId);
+    expect(executor).toHaveBeenCalledTimes(1);
+  });
+
+  it('resumes after confirmed DELETE without replaying DELETE or the moderation engine', async () => {
+    const { s, chatId } = await fixture();
+    const row = await ready(s, chatId, 'restart');
+    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+    await s.ruleFollowups.sweep();
+    await s.ruleFollowups.sweep();
+    await expectWarnOnce(s, chatId, row.messageId);
+    expect(s.processedIds).toHaveLength(0);
+  });
+
+  it('rolls back the semantic claim and plan when the strike insert fails, then retries once', async () => {
+    const { s, chatId } = await fixture();
+    const row = await ready(s, chatId, 'atomic');
+    const fn = `fixture_followup_${randomUUID().replace(/-/gu, '')}`;
+    await s.prisma.$executeRawUnsafe(
+      `CREATE FUNCTION "${fn}"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.chat_id = '${chatId.replace(/'/gu, "''")}' THEN RAISE EXCEPTION 'fixture strike insert failed'; END IF; RETURN NEW; END $$`,
+    );
+    await s.prisma.$executeRawUnsafe(
+      `CREATE TRIGGER "${fn}" BEFORE INSERT ON violations FOR EACH ROW EXECUTE FUNCTION "${fn}"()`,
+    );
+    try {
+      await s.ruleFollowups.attempt(row.id);
+      expect(
+        await s.prisma.moderationViolationMessageClaim.count({
+          where: { chatId, messageId: row.messageId },
+        }),
+      ).toBe(0);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+      expect(
+        (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } }))
+          .actionPlan,
+      ).toBeNull();
+    } finally {
+      await s.prisma.$executeRawUnsafe(`DROP TRIGGER "${fn}" ON violations`);
+      await s.prisma.$executeRawUnsafe(`DROP FUNCTION "${fn}"()`);
+    }
+    await due(s, row.id);
+    await s.ruleFollowups.attempt(row.id);
+    await expectWarnOnce(s, chatId, row.messageId);
+  });
+
+  it('keeps its frozen warning/count after a crash before execution and newer violations', async () => {
+    const { s, chatId } = await fixture({ messageLimitsBanEnabled: true });
+    const row = await ready(s, chatId, 'frozen');
+    const original = s.moderation.executeRuleFollowup.bind(s.moderation);
+    const crash = jest
+      .spyOn(s.moderation, 'executeRuleFollowup')
+      .mockRejectedValueOnce(new Error('fixture crash after plan'));
+    await s.ruleFollowups.attempt(row.id);
+    const frozen = (
+      await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } })
+    ).actionPlan;
+    expect(frozen).toMatchObject({ action: 'WARN', violationCount: 2 });
+    await s.prisma.violation.createMany({
+      data: Array.from({ length: 5 }, () => ({
+        chatId,
+        userId: 'fixture-user',
+        ruleCode: 'MESSAGE_TOO_LONG',
+        score: 1,
+      })),
+    });
+    crash.mockImplementation(original);
+    await due(s, row.id);
+    await s.ruleFollowups.attempt(row.id);
+    expect(
+      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } }))
+        .actionPlan,
+    ).toEqual(frozen);
+    expect(s.effects.filter((e) => e.path.endsWith('/members') && e.method !== 'get')).toHaveLength(
+      0,
+    );
+    expect(
+      await s.prisma.moderationEvent.count({
+        where: { chatId, messageId: row.messageId, action: 'WARN' },
+      }),
+    ).toBe(1);
+  });
+
+  it('never retransmits an unknown SEND on another bot', async () => {
+    const { s, chatId } = await fixture();
+    const row = await ready(s, chatId, 'unknown-send');
+    s.ambiguousNextSend();
+    await s.ruleFollowups.attempt(row.id);
+    expect(
+      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } })).status,
+    ).toBe('AMBIGUOUS');
+    await due(s, row.id);
+    await s.ruleFollowups.sweep();
+    await s.ruleFollowups.attempt(row.id);
+    expect(s.effects.filter((e) => e.method === 'post' && e.path === '/messages')).toHaveLength(1);
+    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(2);
+  });
+
+  it('fences an old owner after SQL lease takeover without finishing or starting effects', async () => {
+    const { s, chatId } = await fixture();
+    const row = await ready(s, chatId, 'takeover');
+    jest.spyOn(s.moderation, 'executeRuleFollowup').mockImplementation(async () => {
+      await s.prisma.moderationRuleFollowup.update({
+        where: { id: row.id },
+        data: { leaseToken: 'fixture-new-owner', leaseExpiresAt: new Date(Date.now() + 30000) },
+      });
+      throw new Error('fixture old owner lost lease');
+    });
+    await s.ruleFollowups.attempt(row.id);
+    const retained = await s.prisma.moderationRuleFollowup.findUniqueOrThrow({
+      where: { id: row.id },
+    });
+    expect(retained).toMatchObject({
+      status: 'IN_PROGRESS',
+      leaseToken: 'fixture-new-owner',
+      lastError: null,
+    });
+    expect(s.effects.filter((e) => e.method === 'post')).toHaveLength(0);
+  });
+
+  it('rejects a BAN by an old owner when takeover occurs during the last awaited policy read', async () => {
+    const { s, chatId } = await fixture(
+      { messageLimitsWarnEnabled: false, messageLimitsBanEnabled: true },
+      3,
+    );
+    const row = await ready(s, chatId, 'final-read-takeover');
+    const assertAllowed = s.sanctionGuard.assertAllowed.bind(s.sanctionGuard);
+    const readSettings = s.prisma.chatSettings.findUnique.bind(s.prisma.chatSettings);
+    let transferred = false;
+    jest.spyOn(s.sanctionGuard, 'assertAllowed').mockImplementation(async (proof, options) => {
+      if (!options?.assertFinalOwnership || !options.beforeFinalAuthority)
+        return assertAllowed(proof, options);
+      return assertAllowed(proof, {
+        ...options,
+        beforeFinalAuthority: async () => {
+          await options.beforeFinalAuthority!();
+          jest
+            .spyOn(
+              s.prisma.chatSettings as unknown as {
+                findUnique(args: Parameters<typeof readSettings>[0]): Promise<unknown>;
+              },
+              'findUnique',
+            )
+            .mockImplementationOnce(async (...args) => {
+              await s.prisma.moderationRuleFollowup.update({
+                where: { id: row.id },
+                data: {
+                  leaseToken: 'fixture-last-read-owner',
+                  leaseExpiresAt: new Date(Date.now() + 30000),
+                },
+              });
+              transferred = true;
+              return readSettings(...args);
+            });
+        },
+      });
+    });
+    await s.ruleFollowups.attempt(row.id);
+    expect(transferred).toBe(true);
+    expect(s.effects.filter((e) => e.method !== 'get' && e.path.endsWith('/members'))).toHaveLength(
+      0,
+    );
+    expect(
+      await s.prisma.moderationEvent.count({
+        where: { chatId, messageId: row.messageId, action: 'BAN' },
+      }),
+    ).toBe(0);
+    expect(
+      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } }))
+        .leaseToken,
+    ).toBe('fixture-last-read-owner');
+  });
+
+  it('settles a confirmed BAN after a crash and original deadline without repeating BAN or SEND', async () => {
+    const { s, chatId } = await fixture(
+      { messageLimitsWarnEnabled: false, messageLimitsBanEnabled: true },
+      3,
+    );
+    const row = await ready(s, chatId, 'ban-crash', 298000);
+    const reputation = jest.spyOn(s.moderation as any, 'upsertGlobalSpammerEntry');
+    const original = (s.moderation as any).persistRuleFollowupEvent.bind(s.moderation);
+    const crash = jest
+      .spyOn(s.moderation as any, 'persistRuleFollowupEvent')
+      .mockRejectedValueOnce(new Error('fixture crash after confirmed BAN'));
+    await s.ruleFollowups.attempt(row.id);
+    expect(
+      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } })).effects,
+    ).toMatchObject({ phase: 'BAN_CONFIRMED' });
+    expect(
+      s.effects.filter((e) => e.method === 'delete' && e.path.endsWith('/members')),
+    ).toHaveLength(1);
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(1, row.deadlineAt.getTime() - Date.now() + 20)),
+    );
+    crash.mockImplementation(original);
+    const readsBeforeExpiredSettlement = s.requests.filter(
+      (request) => request.method === 'get',
+    ).length;
+    jest
+      .spyOn(s.moderation as any, 'resolveSanctionUserLabel')
+      .mockRejectedValue(
+        new Error('Expired BAN receipt settlement must not enrich names through MAX'),
+      );
+    await due(s, row.id);
+    await s.ruleFollowups.attempt(row.id);
+    expect(
+      await s.prisma.moderationEvent.count({
+        where: { chatId, messageId: row.messageId, action: 'BAN' },
+      }),
+    ).toBe(1);
+    expect(
+      s.effects.filter((e) => e.method === 'delete' && e.path.endsWith('/members')),
+    ).toHaveLength(1);
+    expect(s.effects.filter((e) => e.method === 'post' && e.path === '/messages')).toHaveLength(0);
+    expect(reputation).not.toHaveBeenCalled();
+    expect(s.requests.filter((request) => request.method === 'get')).toHaveLength(
+      readsBeforeExpiredSettlement,
+    );
+    expect(
+      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } })).status,
+    ).toBe('COMPLETED');
+  });
+
+  it('quarantines an unknown BAN and later accepts only its exact positive receipt for SQL settlement', async () => {
+    const { s, chatId } = await fixture(
+      { messageLimitsWarnEnabled: false, messageLimitsBanEnabled: true },
+      3,
+    );
+    const row = await ready(s, chatId, 'ban-unknown');
+    const reputation = jest.spyOn(s.moderation as any, 'upsertGlobalSpammerEntry');
+    s.ambiguousNextMemberMutation();
+    await s.ruleFollowups.attempt(row.id);
+    expect(
+      await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } }),
+    ).toMatchObject({ status: 'AMBIGUOUS', effects: { phase: 'UNKNOWN' } });
+    const jobId = s.max.getExplicitActionJobId('BAN_MEMBER', `${row.id}:sanction-ban`);
+    const readsBeforeSettlement = s.requests.filter((request) => request.method === 'get').length;
+    jest
+      .spyOn(s.moderation as any, 'resolveSanctionUserLabel')
+      .mockRejectedValue(new Error('Receipt settlement must not enrich names through MAX'));
+    await due(s, row.id);
+    await s.ruleFollowups.attempt(row.id, true);
+    expect(
+      await s.prisma.moderationEvent.count({
+        where: { chatId, messageId: row.messageId, action: 'BAN' },
+      }),
+    ).toBe(0);
+    await s.prisma.maxActionLedgerEntry.update({
+      where: { jobId },
+      data: { status: 'SUCCEEDED', ambiguous: false, completedAt: new Date() },
+    });
+    await due(s, row.id);
+    await s.ruleFollowups.attempt(row.id, true);
+    expect(
+      await s.prisma.moderationEvent.count({
+        where: { chatId, messageId: row.messageId, action: 'BAN' },
+      }),
+    ).toBe(1);
+    expect(
+      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } })).status,
+    ).toBe('COMPLETED');
+    expect(
+      s.effects.filter((e) => e.method === 'delete' && e.path.endsWith('/members')),
+    ).toHaveLength(1);
+    expect(s.effects.filter((e) => e.method === 'post' && e.path === '/messages')).toHaveLength(0);
+    expect(s.requests.filter((request) => request.method === 'get')).toHaveLength(
+      readsBeforeSettlement,
+    );
+    expect(reputation).not.toHaveBeenCalled();
+  });
+
+  it('pins pending and unknown followups while allowing a settled terminal DELETE receipt to be purged', async () => {
+    const { s, chatId } = await fixture();
+    const rows = await Promise.all(
+      ['pending', 'unknown', 'settled'].map((name) => ready(s, chatId, name)),
+    );
+    await s.prisma.moderationRuleFollowup.update({
+      where: { id: rows[1]!.id },
+      data: { status: 'AMBIGUOUS', effects: { phase: 'UNKNOWN' } },
+    });
+    await s.prisma.moderationRuleFollowup.update({
+      where: { id: rows[2]!.id },
+      data: { status: 'COMPLETED', effects: { phase: 'SETTLED' } },
+    });
+    await s.prisma.moderationDeleteIntent.updateMany({
+      where: { id: { in: rows.map((row) => row.intentId) } },
+      data: { updatedAt: new Date(Date.now() - 365 * 86400000) },
+    });
+    await s.intents.purgeRetainedIntents();
+    expect(
+      await s.prisma.moderationDeleteIntent.count({
+        where: { id: { in: rows.slice(0, 2).map((row) => row.intentId) } },
+      }),
+    ).toBe(2);
+    expect(
+      await s.prisma.moderationDeleteIntent.findUnique({ where: { id: rows[2]!.intentId } }),
+    ).toBeNull();
+  });
+
+  it('keeps due/expiry/lease and exact receipt probes bounded with over sixteen thousand retained/future rows', async () => {
+    const { s, chatId } = await fixture();
+    const row = await ready(s, chatId, 'scale');
+    await s.prisma.$executeRaw(Prisma.sql`
+      INSERT INTO moderation_rule_followups (id,intent_id,reason_key,chat_id,user_id,message_id,rule_code,source_at,deadline_at,policy_sha256,envelope,status,next_attempt_at,lease_token,lease_expires_at,effects,updated_at)
+      SELECT ${row.id} || ':history:' || n, ${row.intentId}, 'history:' || n, ${chatId}, ${row.userId}, ${row.messageId}, ${row.ruleCode},
+        ${row.sourceAt}, ${row.deadlineAt}, ${row.policySha256}, ${JSON.stringify(row.envelope)}::jsonb,
+        CASE n % 4 WHEN 0 THEN 'COMPLETED' WHEN 1 THEN 'READY' WHEN 2 THEN 'RETRYABLE' ELSE 'IN_PROGRESS' END,
+        ${new Date(Date.now() + 86400000)}, CASE WHEN n % 4 = 3 THEN 'history-lease' ELSE NULL END,
+        CASE WHEN n % 4 = 3 THEN ${new Date(Date.now() + 86400000)}::timestamp ELSE NULL END, '{}'::jsonb, ${new Date()}
+      FROM generate_series(1,16001) n
+    `);
+    await s.prisma.$executeRawUnsafe('ANALYZE moderation_rule_followups');
+    const at = new Date();
+    const queries = [
+      Prisma.sql`SELECT id FROM moderation_rule_followups WHERE status='READY' AND next_attempt_at <= ${at} ORDER BY next_attempt_at,id LIMIT 32`,
+      Prisma.sql`SELECT id FROM moderation_rule_followups WHERE status='RETRYABLE' AND next_attempt_at <= ${at} ORDER BY next_attempt_at,id LIMIT 32`,
+      Prisma.sql`SELECT id FROM moderation_rule_followups WHERE status='IN_PROGRESS' AND lease_expires_at <= ${at} ORDER BY lease_expires_at,id LIMIT 32`,
+      Prisma.sql`SELECT id FROM moderation_rule_followups WHERE status='READY' AND deadline_at <= ${at} AND COALESCE(effects->>'phase','UNSTARTED')='UNSTARTED' ORDER BY deadline_at,id LIMIT 32 FOR UPDATE SKIP LOCKED`,
+      Prisma.sql`SELECT id FROM moderation_rule_followups WHERE intent_id=${row.intentId} AND reason_key=${row.reasonKey}`,
+    ];
+    const collect = (node: Record<string, unknown>): Record<string, unknown>[] => [
+      node,
+      ...((node.Plans as Array<Record<string, unknown>> | undefined) ?? []).flatMap(collect),
+    ];
+    for (const query of queries) {
+      const plan = await s.prisma.$queryRaw<
+        Array<{ 'QUERY PLAN': Array<{ Plan: Record<string, unknown> }> }>
+      >(Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`);
+      const nodes = collect(plan[0]!['QUERY PLAN'][0]!.Plan);
+      expect(nodes.some((node) => String(node['Node Type']).includes('Index'))).toBe(true);
+      for (const node of nodes) {
+        const examined =
+          Number(node['Actual Rows'] ?? 0) + Number(node['Rows Removed by Filter'] ?? 0);
+        expect(examined * Number(node['Actual Loops'] ?? 1)).toBeLessThanOrEqual(64);
+        expect(
+          Number(node['Shared Hit Blocks'] ?? 0) + Number(node['Shared Read Blocks'] ?? 0),
+        ).toBeLessThanOrEqual(64);
+      }
+    }
+  });
+
+  it('rejects a shortened reason deadline while retaining the original five-minute source binding', async () => {
+    const { s, chatId } = await fixture();
+    const row = await ready(s, chatId, 'short-deadline');
+    const reason = await s.prisma.moderationDeleteIntentReason.findUniqueOrThrow({
+      where: { intentId_reasonKey: { intentId: row.intentId, reasonKey: row.reasonKey } },
+    });
+    await s.prisma.moderationDeleteIntentReason.update({
+      where: { id: reason.id },
+      data: {
+        metadata: {
+          ...(reason.metadata as Prisma.JsonObject),
+          messageLimitDeadlineAtMs: Date.now() - 1,
+        },
+      },
+    });
+    await s.ruleFollowups.attempt(row.id);
+    expect(
+      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } })).status,
+    ).toBe('CANCELLED');
+    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+    expect(s.effects.filter((e) => e.method === 'post')).toHaveLength(0);
+  });
+
+  it('anchors a fresh edit to its edit event even when the original MAX message was created an hour ago', async () => {
+    const { s, chatId } = await fixture({}, 0);
+    const messageId = `old-edit-${randomUUID()}`;
+    const oldAt = Date.now() - 3600000;
+    s.messages.set(messageId, {
+      sender: { user_id: 'fixture-user', is_bot: false },
+      recipient: { chat_id: chatId, chat_type: 'chat' },
+      timestamp: oldAt,
+      body: { mid: messageId, text: 'small' },
+    });
+    const editAt = Date.now();
+    await Promise.all(
+      s.bots.map((bot) =>
+        s.ingest({
+          chatId,
+          messageId,
+          text: 'Fresh edited content is now longer than the configured limit',
+          type: 'message_edited',
+          at: editAt,
+          botId: bot.id,
+        }),
+      ),
+    );
+    s.messages.get(messageId)!.timestamp = oldAt;
+    await s.drain();
+    const row = await s.prisma.moderationRuleFollowup.findFirstOrThrow({
+      where: { chatId, messageId },
+    });
+    expect(row.sourceAt.getTime()).toBe(editAt);
+    expect(row.deadlineAt.getTime()).toBe(editAt + 300000);
+    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+    expect(s.effects.filter((e) => e.method === 'delete' && e.path === '/messages')).toHaveLength(
+      1,
+    );
+  });
+
+  it('cannot mint a new followup from another generation or reason of an already confirmed DELETE', async () => {
+    const { s, chatId } = await fixture();
+    const row = await ready(s, chatId, 'old-receipt');
+    const settings = await s.prisma.chatSettings.findUniqueOrThrow({ where: { chatId } });
+    const input = {
+      chatId,
+      messageId: row.messageId,
+      subjectUserId: row.userId,
+      sourceMessageAt: new Date(),
+      originBotId: s.bots[0]!.id,
+      routingPolicy: 'delete_capable' as const,
+      entityType: 'CHAT' as const,
+      messageAuthorKind: 'user' as const,
+      reasonKey: row.reasonKey,
+      ruleCode: row.ruleCode,
+      event: {
+        userId: row.userId,
+        eventType: 'MESSAGE' as const,
+        score: 1,
+        metadata: bindMessageLimitEvidence(settings, Date.now(), row.ruleCode),
+      },
+    };
+    const envelope = {
+      version: 1 as const,
+      updateType: 'message_edited',
+      originBotId: s.bots[0]!.id,
+      userLabel: 'Fixture user',
+      effectiveMessageLength: 45,
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    };
+    const wrongGeneration = await s.intents.ensureIntentWithRuleFollowup(
+      input,
+      row.policySha256,
+      envelope,
+    );
+    expect(wrongGeneration.followupId).toBeNull();
+    const wrongReason = await s.intents.ensureIntentWithRuleFollowup(
+      { ...input, sourceMessageAt: row.sourceAt, reasonKey: 'another-rule' },
+      row.policySha256,
+      envelope,
+    );
+    expect(wrongReason.followupId).toBeNull();
+    expect(await s.prisma.moderationRuleFollowup.count({ where: { intentId: row.intentId } })).toBe(
+      1,
+    );
+    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+  });
+
+  it('keeps an immutable MUTE expiry and honors a manual release after a crash at the SQL checkpoint', async () => {
+    const { s, chatId } = await fixture(
+      { messageLimitsWarnEnabled: false, messageLimitsMuteEnabled: true },
+      2,
+    );
+    const row = await ready(s, chatId, 'mute-crash');
+    const original = (s.moderation as any).getActiveMute.bind(s.moderation);
+    const crash = jest
+      .spyOn(s.moderation as any, 'getActiveMute')
+      .mockRejectedValueOnce(new Error('fixture crash before mute cache settlement'));
+    await s.ruleFollowups.attempt(row.id);
+    const checkpoint = await s.prisma.moderationRuleFollowup.findUniqueOrThrow({
+      where: { id: row.id },
+    });
+    expect(checkpoint.effects).toMatchObject({ phase: 'SQL_COMMITTED' });
+    const plan = checkpoint.actionPlan as Prisma.JsonObject;
+    const mute = await s.prisma.moderationEvent.findUniqueOrThrow({
+      where: { id: String(plan.eventId) },
+    });
+    expect(mute.action).toBe('MUTE');
+    expect((mute.metadata as Prisma.JsonObject).muteExpiresAt).toBe(
+      new Date(Number(plan.muteExpiresAtMs)).toISOString(),
+    );
+    await s.prisma.moderationEvent.create({
+      data: {
+        chatId,
+        userId: row.userId,
+        ruleCode: 'MANUAL_UNMUTE',
+        action: 'NONE',
+        operator: 'ADMIN',
+        eventType: 'SYSTEM',
+        score: 0,
+        createdAt: new Date(Math.max(Date.now(), Number(plan.issuedAtMs))),
+      },
+    });
+    crash.mockImplementation(original);
+    await due(s, row.id);
+    await s.ruleFollowups.attempt(row.id);
+    expect(
+      await (s.moderation as any).getActiveMute(chatId, row.userId, 1, { bypassCache: true }),
+    ).toBeNull();
+    expect(
+      await s.prisma.moderationEvent.count({
+        where: { chatId, messageId: row.messageId, action: 'MUTE' },
+      }),
+    ).toBe(1);
+    expect(
+      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } }))
+        .actionPlan,
+    ).toEqual(plan);
+    expect(s.effects.filter((e) => e.method === 'post' && e.path === '/messages')).toHaveLength(0);
+  });
+
+  it('stops new SQL admission on runtime drain while preserving already registered work', async () => {
+    const { s, chatId } = await fixture();
+    const row = await ready(s, chatId, 'shutdown');
+    const workers = s.ruleFollowups.stopWorkerAdmission();
+    await Promise.all(workers.map((worker) => worker.pause()));
+    expect(await s.ruleFollowups.sweep()).toBe(0);
+    expect(await s.ruleFollowups.attempt(row.id)).toBe(false);
+    expect(
+      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } })).status,
+    ).toBe('READY');
+  });
+});

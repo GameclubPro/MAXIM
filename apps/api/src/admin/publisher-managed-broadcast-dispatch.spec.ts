@@ -4,6 +4,40 @@ import {
 } from './publisher-managed-broadcast-dispatch';
 
 describe('Publisher pre-dispatch claim deferral', () => {
+  it('keeps shared blocker cleanup fenced by the exact envelope lease', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const executeRaw = jest.fn();
+    const service = new PublisherManagedBroadcastDispatch(
+      {
+        prisma: {
+          $transaction: async (run: (tx: unknown) => unknown) =>
+            run({
+              managedBroadcast: { updateMany },
+              $executeRaw: executeRaw,
+            }),
+        },
+      } as never,
+      {} as never,
+    );
+    const lease = { lockedAt: new Date(), lockToken: 'old-lease' };
+    expect(
+      await service.clearResolvedRecipientBlocker(
+        { id: 'broadcast', publicationOccurrenceId: 'occurrence', requiredBotId: 'publik' },
+        lease,
+      ),
+    ).toBe(false);
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'broadcast',
+          lockedAt: lease.lockedAt,
+          lockToken: lease.lockToken,
+        }),
+      }),
+    );
+    expect(executeRaw).not.toHaveBeenCalled();
+  });
+
   it('rechecks author authority at the final send boundary after a valid bot route', async () => {
     const requestActorAccessRefresh = jest.fn().mockResolvedValue(undefined);
     const findMany = jest.fn().mockResolvedValue([]);

@@ -1,5 +1,12 @@
 import { PublisherVideoUploadProcessor } from './publisher-video-upload.processor';
 import { PUBLICATION_UPLOADED_VIDEO_FIELD } from '../admin/publication-video-media';
+import { DelayedError } from 'bullmq';
+import { PublisherIdentityAttestationError } from './publisher-identity-attestation.service';
+import { PublisherDispatchDisabledError } from './publisher-runtime-boundary.service';
+import {
+  PublisherDispatchPausedError,
+  PublisherDispatchHealthUnavailableError,
+} from './publisher-dispatch-health.service';
 
 function fixture() {
   const uploads = {
@@ -16,24 +23,24 @@ function fixture() {
   };
   const prisma = {
     publicationAsset: {
-      upsert: jest
-        .fn()
-        .mockResolvedValue({
-          id: 'asset',
-          mimeType: 'video/mp4',
-          fileName: 'clip.mp4',
-          sizeBytes: 36_000_000,
-        }),
+      upsert: jest.fn().mockResolvedValue({
+        id: 'asset',
+        mimeType: 'video/mp4',
+        fileName: 'clip.mp4',
+        sizeBytes: 36_000_000,
+      }),
     },
   };
   const boundary = { assertDispatchEnabled: jest.fn() };
   const health = { assertDispatchAllowed: jest.fn() };
+  const identity = { assertAttested: jest.fn().mockResolvedValue(undefined) };
   const processor = new PublisherVideoUploadProcessor(
     uploads as never,
     max as never,
     prisma as never,
     boundary as never,
     health as never,
+    identity as never,
   );
   const data = {
     requestId: 'upload_request_123456',
@@ -45,7 +52,7 @@ function fixture() {
     mimeType: 'video/mp4',
     sizeBytes: 36_000_000,
   };
-  return { processor, uploads, max, prisma, boundary, data };
+  return { processor, uploads, max, prisma, boundary, health, identity, data };
 }
 
 describe('Publisher direct video completion', () => {
@@ -113,4 +120,37 @@ describe('Publisher direct video completion', () => {
     await processor.process({ data: { ...data, phase: 'create' } } as never);
     expect(max.createVideoUploadSession).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['create', 'complete'] as const)(
+    'attests the exact token before the %s phase and delays temporary blockers',
+    async (phase) => {
+      for (const blocker of ['runtime', 'identity', 'paused', 'unavailable'] as const) {
+        const { processor, max, prisma, boundary, health, identity, data } = fixture();
+        if (blocker === 'runtime')
+          boundary.assertDispatchEnabled.mockImplementation(() => {
+            throw new PublisherDispatchDisabledError();
+          });
+        if (blocker === 'identity')
+          identity.assertAttested.mockRejectedValue(
+            new PublisherIdentityAttestationError('transient_failure'),
+          );
+        if (blocker === 'paused')
+          health.assertDispatchAllowed.mockRejectedValue(new PublisherDispatchPausedError(null));
+        if (blocker === 'unavailable')
+          health.assertDispatchAllowed.mockRejectedValue(
+            new PublisherDispatchHealthUnavailableError(new Error('Redis offline')),
+          );
+        const moveToDelayed = jest.fn().mockResolvedValue(undefined);
+        const startedAt = Date.now();
+        await expect(
+          processor.process({ data: { ...data, phase }, moveToDelayed } as never, 'worker-token'),
+        ).rejects.toBeInstanceOf(DelayedError);
+        expect(moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'worker-token');
+        expect(moveToDelayed.mock.calls[0]![0]).toBeGreaterThanOrEqual(startedAt + 60_000);
+        expect(max.createVideoUploadSession).not.toHaveBeenCalled();
+        expect(max.getVideoDownloadUrl).not.toHaveBeenCalled();
+        expect(prisma.publicationAsset.upsert).not.toHaveBeenCalled();
+      }
+    },
+  );
 });

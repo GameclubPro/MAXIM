@@ -66,6 +66,16 @@ filtered role logs without reconciling webhooks or sending bot messages.
    unresolved earlier execution in that same chat. The probe uses the exact ordered-head index;
    never remove the fence or replay the old event merely because its heartbeat deadline elapsed.
 
+   The exact predecessor reports only the fixed `message_created`/`message_edited` event type.
+   Its saved `error_family` distinguishes source-defined `canonical_not_ready`,
+   `canonical_business_lease_busy`, `canonical_business_lease_lost`,
+   `canonical_business_lease_unavailable`, and `rules_publication_fence` failures with anchored
+   source formats. A quoted literal inside unrelated error content does not qualify. These labels
+   describe the last saved failure; they do not prove current lease authority or a remote outcome.
+   `other` remains unknown. No classification authorizes lease expiry, quarantine removal or replay.
+   This extension reads the already selected predecessor only: no extra table probes, joins or
+   grants. Semantic-claim lease/stage/deadline metadata remains unavailable to the audit role.
+
    Run catalog calls sequentially because they share a lock. The last preparation-capacity marker
    describes that row's most recent deferral, not a fleet-wide cause. FAILED rows may be historical
    quarantine: report fresh deltas separately. Raw readiness, normal/healthy mode, burst state,

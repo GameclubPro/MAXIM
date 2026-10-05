@@ -1,3 +1,6 @@
+import { fingerprintModerationSettings } from './moderation-settings-fingerprint';
+export { fingerprintModerationSettings } from './moderation-settings-fingerprint';
+import type { ChatSettings } from '../prisma/prisma-client';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { MaxUpdate } from '@maxim/contracts';
@@ -10,6 +13,7 @@ import {
   calculateEffectiveMessageLength,
   detectMediaFlags,
   hasForwardedMessage,
+  shouldSkipAntiSpamBurstForForward,
 } from './moderation-update-extractors';
 import { extractDetectedPhoneNumbers } from './rule-engine-message-limits.detector';
 import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from './moderation.service.support';
@@ -24,11 +28,35 @@ export const MESSAGE_LIMITS_CURRENT_CONTENT_RULES = new Set([
   'FORWARDED_MESSAGE_BLOCKED_DELETE',
 ]);
 
+export const MESSAGE_LIMITS_STATEFUL_RULES = new Set([
+  'MESSAGE_RATE_LIMIT_DELETE',
+  'MESSAGE_COUNT_LIMIT_DELETE',
+  'PHOTO_RATE_LIMIT_DELETE',
+  'STICKER_RATE_LIMIT_DELETE',
+]);
+export const MESSAGE_LIMITS_GUARDED_RULES = new Set([
+  ...MESSAGE_LIMITS_CURRENT_CONTENT_RULES,
+  ...MESSAGE_LIMITS_STATEFUL_RULES,
+]);
+
+export function bindMessageLimitEvidence(
+  settings: ChatSettings,
+  eventTimestampMs: number,
+  ruleCode: string,
+) {
+  return {
+    messageLimitEvidenceVersion: 1,
+    messageLimitPolicySha256: fingerprintModerationSettings(settings, ruleCode),
+    messageLimitEventTimestampMs: eventTimestampMs,
+    messageLimitDeadlineAtMs: eventTimestampMs + 5 * 60_000,
+  };
+}
+
 export class MessageLimitsDeleteGuardRejectedError extends Error {
   readonly code = 'message_limits_delete_no_longer_authorized';
 }
 
-type Reason = { ruleCode: string; reasonKey: string };
+type Reason = { ruleCode: string; reasonKey: string; metadata?: unknown };
 type Settings = Awaited<ReturnType<MessageLimitsDeleteGuardService['loadSettings']>>;
 
 @Injectable()
@@ -48,9 +76,17 @@ export class MessageLimitsDeleteGuardService {
     subjectUserId: string | null;
     botId: string;
     reasons: readonly Reason[];
-  }): Promise<'not_applicable' | 'absent' | { reasonKeys: string[] }> {
+  }): Promise<
+    | 'not_applicable'
+    | 'absent'
+    | {
+        reasonKeys: string[];
+        deadlineAtMs?: number;
+        reasonDeadlines?: { reasonKey: string; deadlineAtMs: number }[];
+      }
+  > {
     const owned = params.reasons.filter((reason) =>
-      MESSAGE_LIMITS_CURRENT_CONTENT_RULES.has(reason.ruleCode),
+      MESSAGE_LIMITS_GUARDED_RULES.has(reason.ruleCode),
     );
     if (!owned.length) return 'not_applicable';
     const userId = params.subjectUserId;
@@ -87,7 +123,7 @@ export class MessageLimitsDeleteGuardService {
       message.entityType === 'channel'
     )
       this.reject();
-    if (!owned.some((reason) => this.matches(reason.ruleCode, update, settings))) this.reject();
+    if (!owned.some((reason) => this.matchesReason(reason, update, settings))) this.reject();
     if (
       (await this.immunity.consumeForMessage({
         chatId: params.chatId,
@@ -100,10 +136,28 @@ export class MessageLimitsDeleteGuardService {
       this.reject();
     const finalSettings = await this.loadSettings(params.chatId, userId);
     const reasonKeys = owned
-      .filter((reason) => this.matches(reason.ruleCode, update, finalSettings))
+      .filter((reason) => this.matchesReason(reason, update, finalSettings))
       .map((reason) => reason.reasonKey);
     if (!reasonKeys.length) this.reject();
-    return { reasonKeys };
+    const matched = owned.filter((reason) => reasonKeys.includes(reason.reasonKey));
+    const hasContentReason = matched.some((reason) =>
+      MESSAGE_LIMITS_CURRENT_CONTENT_RULES.has(reason.ruleCode),
+    );
+    const reasonDeadlines = matched
+      .filter((reason) => MESSAGE_LIMITS_STATEFUL_RULES.has(reason.ruleCode))
+      .map((reason) => ({
+        reasonKey: reason.reasonKey,
+        deadlineAtMs: Number(this.metadata(reason.metadata).messageLimitDeadlineAtMs),
+      }));
+    return {
+      reasonKeys,
+      ...(reasonDeadlines.length ? { reasonDeadlines } : {}),
+      ...(hasContentReason
+        ? {}
+        : {
+            deadlineAtMs: Math.max(...reasonDeadlines.map((reason) => reason.deadlineAtMs)),
+          }),
+    };
   }
 
   async loadSettings(chatId: string, userId: string) {
@@ -121,6 +175,53 @@ export class MessageLimitsDeleteGuardService {
     if (!settings || settings.chat.entityType !== 'CHAT' || settings.chat.admins.length)
       this.reject();
     return settings;
+  }
+
+  private metadata(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  }
+
+  private matchesReason(reason: Reason, update: MaxUpdate, settings: Settings): boolean {
+    if (!MESSAGE_LIMITS_STATEFUL_RULES.has(reason.ruleCode))
+      return this.matches(reason.ruleCode, update, settings);
+    // FLAG: A retry never counts again. Only the original detector's bounded durable evidence
+    // under the unchanged policy can authorize a current eligible source message.
+    const proof = this.metadata(reason.metadata);
+    const eventAt = Number(proof.messageLimitEventTimestampMs);
+    const deadlineAt = Number(proof.messageLimitDeadlineAtMs);
+    if (
+      proof.messageLimitEvidenceVersion !== 1 ||
+      proof.messageLimitPolicySha256 !== fingerprintModerationSettings(settings, reason.ruleCode) ||
+      !Number.isSafeInteger(eventAt) ||
+      eventAt <= 0 ||
+      eventAt > Date.now() ||
+      deadlineAt !== eventAt + 5 * 60_000 ||
+      Date.now() >= deadlineAt
+    )
+      return false;
+    const media = detectMediaFlags(update);
+    switch (reason.ruleCode) {
+      case 'MESSAGE_RATE_LIMIT_DELETE':
+        return (
+          settings.antiSpamEnabled &&
+          !media.hasPhotoAttachment &&
+          !media.hasVideoAttachment &&
+          !media.hasFileAttachment &&
+          !media.hasVoiceAttachment &&
+          !media.hasMediaBatch &&
+          !shouldSkipAntiSpamBurstForForward(update)
+        );
+      case 'MESSAGE_COUNT_LIMIT_DELETE':
+        return settings.messageCountLimitEnabled;
+      case 'PHOTO_RATE_LIMIT_DELETE':
+        return settings.photoMessageCooldownEnabled && media.hasPhotoAttachment;
+      case 'STICKER_RATE_LIMIT_DELETE':
+        return settings.stickerMessageCooldownEnabled && media.hasStickerAttachment;
+      default:
+        return false;
+    }
   }
 
   private matches(ruleCode: string, update: MaxUpdate, settings: Settings): boolean {

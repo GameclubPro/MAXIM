@@ -5,13 +5,19 @@ import {
 
 export function createDuplicateMemberMutationGuard(
   lease: { assertOwned(): Promise<void> } | undefined,
-  beforeMutation: (() => Promise<void>) | undefined,
-): (() => Promise<void>) | undefined {
-  if (!beforeMutation) return lease ? () => lease.assertOwned() : undefined;
-  return async () => {
+  beforeMutation: ((beforeFinalAuthority?: () => Promise<void>) => Promise<void>) | undefined,
+): ((beforeFinalAuthority?: () => Promise<void>) => Promise<void>) | undefined {
+  if (!beforeMutation && !lease) return undefined;
+  return async (beforeFinalAuthority) => {
     await lease?.assertOwned();
-    await beforeMutation();
-    await lease?.assertOwned();
+    const finalLeaseAndRoute = async () => {
+      await lease?.assertOwned();
+      await beforeFinalAuthority?.();
+    };
+    // FLAG: Route/lease reads finish inside authority, before its final settings,
+    // Redis permit and synchronous deadline. No post-authority await extends that permit.
+    if (beforeMutation) await beforeMutation(finalLeaseAndRoute);
+    else await finalLeaseAndRoute();
   };
 }
 

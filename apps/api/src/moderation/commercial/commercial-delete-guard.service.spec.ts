@@ -162,6 +162,103 @@ describe('CommercialDeleteGuardService', () => {
     await expect(h.service.authorizeSanction(permit)).resolves.toBe(false);
   });
 
+  it.each([
+    null,
+    { userId: null, isAdmin: false, isOwner: false },
+    { userId: 'foreign', isAdmin: false, isOwner: false },
+    { userId: 'user', isAdmin: null, isOwner: false },
+    { userId: 'user', isAdmin: false, isOwner: null },
+  ])(
+    'does not authorize a commercial follow-up with incomplete author access: %o',
+    async (access) => {
+      const h = harness();
+      const permit = h.service.createSanctionPermit({
+        ...input,
+        evidence: [h.reason],
+        deleted: true,
+        commercialVerified: true,
+      })!;
+      h.max.getChatMemberAccess.mockResolvedValue(access);
+      await expect(h.service.authorizeSanction(permit)).resolves.toBe(false);
+      expect(h.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('uses the selected executor for the same immutable permit and rechecks policy after route qualification', async () => {
+    const h = harness();
+    const permit = h.service.createSanctionPermit({
+      ...input,
+      evidence: [h.reason],
+      deleted: true,
+      commercialVerified: true,
+    })!;
+    await expect(h.service.authorizeSanction(permit, { botId: 'surviving-peer' })).resolves.toBe(
+      true,
+    );
+    expect(h.max.getChatMemberAccess).toHaveBeenLastCalledWith(
+      'chat',
+      'user',
+      expect.objectContaining({ botId: 'surviving-peer', bypassCache: true }),
+    );
+    const beforeFinalAuthority = jest.fn(async () => {
+      h.settings.commercialAdsFilterEnabled = false;
+    });
+    await expect(
+      h.service.authorizeSanction(permit, {
+        botId: 'surviving-peer',
+        beforeFinalAuthority,
+      }),
+    ).resolves.toBe(false);
+    expect(beforeFinalAuthority).toHaveBeenCalledTimes(1);
+    expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it.each(['route', 'author', 'immunity'] as const)(
+    'preserves an uncertain %s authority failure instead of reporting commercial revocation',
+    async (failure) => {
+      const h = harness();
+      const permit = h.service.createSanctionPermit({
+        ...input,
+        evidence: [h.reason],
+        deleted: true,
+        commercialVerified: true,
+      })!;
+      const error = Object.assign(new Error('Synthetic authority read failed'), {
+        code: failure === 'route' ? 'max_action_executor_proof_rejected' : 'ECONNRESET',
+      });
+      if (failure === 'author') h.max.getChatMemberAccess.mockRejectedValue(error);
+      if (failure === 'immunity') h.immunity.consumeForMessage.mockRejectedValue(error);
+      await expect(
+        h.service.authorizeSanction(permit, {
+          beforeFinalAuthority: async () => {
+            if (failure === 'route') throw error;
+          },
+        }),
+      ).rejects.toBe(error);
+      expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
+    },
+  );
+
+  it('cannot renew the original commercial permit during a final route wait', async () => {
+    const h = harness();
+    const permit = h.service.createSanctionPermit({
+      ...input,
+      evidence: [h.reason],
+      deleted: true,
+      commercialVerified: true,
+    })!;
+    const originalExpiry = permit.expiresAtMs;
+    jest.useFakeTimers();
+    await expect(
+      h.service.authorizeSanction(permit, {
+        beforeFinalAuthority: async () => {
+          jest.setSystemTime(originalExpiry + 1);
+        },
+      }),
+    ).resolves.toBe(false);
+    expect(permit.expiresAtMs).toBe(originalExpiry);
+  });
+
   it.each(['disabled', 'settings', 'admin', 'immune', 'runtime'])(
     'revokes post-delete authority after %s changes',
     async (change) => {

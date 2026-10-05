@@ -2,6 +2,10 @@ import { ConfigService } from '@nestjs/config';
 import { performance } from 'node:perf_hooks';
 import type { DeleteIntentLeaseCheck } from './moderation-delete-intent-lease';
 import { MaxApiInternalRateLimitError } from '../max/max-client.service';
+import {
+  markMaxPreDispatchGuardRejected,
+  MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+} from '../max/max-action-pre-dispatch-guard';
 
 import { MAX_SEND_FENCE_STALE_MS } from '../max/max-send-ambiguity.util';
 import { Prisma } from '../prisma/prisma-client';
@@ -47,7 +51,44 @@ import { fingerprintCommercialDeleteReasons } from './commercial/commercial-dele
 import { MESSAGE_DUPLICATE_MEDIA_VERSION } from './message-duplicate/message-duplicate-state';
 import { MessageDuplicateGuardRejectedError } from './message-duplicate/message-duplicate-delete-guard.service';
 
+const VERIFIED_RECEIPT_RULE_CODES = [
+  'MESSAGE_TOO_LONG_DELETE',
+  'PHONE_NUMBER_BLOCKED_DELETE',
+  'PHOTO_BLOCKED_DELETE',
+  'VIDEO_BLOCKED_DELETE',
+  'FILE_BLOCKED_DELETE',
+  'VOICE_BLOCKED_DELETE',
+  'FORWARDED_MESSAGE_BLOCKED_DELETE',
+  'MESSAGE_RATE_LIMIT_DELETE',
+  'MESSAGE_COUNT_LIMIT_DELETE',
+  'PHOTO_RATE_LIMIT_DELETE',
+  'STICKER_RATE_LIMIT_DELETE',
+  'MESSAGE_BLOCKED_WORD_DELETE',
+  'MESSAGE_BLOCKED_DOMAIN_DELETE',
+  'MUTE_ACTIVE_DELETE',
+  'GLOBAL_SPAMMER_MESSAGE_DELETE',
+  'LOCAL_ADMIN_BLOCK_MESSAGE_DELETE',
+  'BOT_ACCOUNT_MESSAGE_DELETE',
+  'INVITATION_ACCESS_DELETE',
+  'NIGHT_MODE_DELETE',
+  'MANUAL_GROUP_CLOSE_DELETE',
+  'REQUIRED_SUBSCRIPTION_DELETE',
+];
+
 type ServiceInternals = {
+  authorizeGuardedUserDeleteReasons(
+    intent: Record<string, unknown>,
+    botId: string,
+    leaseToken?: string,
+  ): Promise<{
+    profanityVerified: boolean;
+    commercialVerifiedReasonKeys: string[];
+    verifiedReasonKeys: string[];
+    verifiedReasonDeadlines: { reasonKey: string; deadlineAtMs: number }[];
+    messageDuplicateVerified: boolean;
+    independentAuthorityDeadlineAtMs: number | null;
+    guardedReasonFingerprint: string;
+  }>;
   renewLease(
     intentId: string,
     leaseToken: string,
@@ -60,6 +101,7 @@ type ServiceInternals = {
   classifyDeleteError(
     error: unknown,
     attemptCount: number,
+    dispatchMarkerPersisted?: boolean,
   ): {
     status: string;
     errorCode: string;
@@ -219,6 +261,7 @@ function createService(
     },
     ...prismaOverrides,
     moderationDeleteIntentReason: {
+      findUnique: jest.fn().mockResolvedValue(null),
       findFirst: jest
         .fn()
         .mockImplementation(async (args: { where?: { ruleCode?: string } }) =>
@@ -771,6 +814,165 @@ function accessAmbiguousSourceSendRow() {
 }
 
 describe('ModerationDeleteIntentService', () => {
+  it.each([
+    ['expired active lease', { status: 'IN_PROGRESS', leaseExpiresAt: new Date(0) }, 'pending'],
+    ['unknown effect', { status: 'AMBIGUOUS' }, 'ambiguous'],
+    ['already absent source', { status: 'ALREADY_ABSENT' }, 'already_absent'],
+    ['another source identity', { status: 'SUCCEEDED', sourceMessageAt: new Date(0) }, 'pending'],
+  ] as const)(
+    'does not recover strike authority from %s while observing a worker',
+    async (_name, patch, kind) => {
+      const input = {
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        subjectUserId: 'user-1',
+        sourceMessageAt: baseIntent.sourceMessageAt,
+        ruleCode: 'MESSAGE_TOO_LONG_DELETE',
+        reasonKey: 'length:own',
+      };
+      const findUnique = jest.fn().mockResolvedValue({
+        id: 'intent-1',
+        chatId: input.chatId,
+        messageId: input.messageId,
+        subjectUserId: input.subjectUserId,
+        sourceMessageAt: input.sourceMessageAt,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        succeededBotId: 'bot-1',
+        ...patch,
+      });
+      const findReceipt = jest.fn();
+      const { service, maxClient } = createService(
+        {},
+        {
+          moderationDeleteIntent: { findUnique },
+          moderationDeleteIntentReason: { findUnique: findReceipt },
+        },
+      );
+      jest.spyOn(service as any, 'persistIntent').mockResolvedValue({
+        intentId: 'intent-1',
+        rollout: 'execute',
+        status: 'IN_PROGRESS',
+      });
+      jest.spyOn(service, 'attemptIntent').mockResolvedValue({
+        intentId: 'intent-1',
+        kind: 'pending',
+        confirmed: false,
+        status: 'IN_PROGRESS',
+      });
+      const result = await service.ensureAndAttempt(input);
+      expect(result.kind).toBe(kind);
+      expect(result).not.toHaveProperty('verifiedReasonKeys');
+      expect(findUnique).toHaveBeenCalledTimes(1);
+      expect(findReceipt).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'keeps executor admission rejection bounded by dispatch marker %s',
+    (dispatchMarkerPersisted) => {
+      const { service } = createService();
+      const result = (service as unknown as ServiceInternals).classifyDeleteError(
+        markMaxPreDispatchGuardRejected(
+          Object.assign(new Error('MAX action executor has no current capability proof'), {
+            code: 'max_action_executor_proof_rejected',
+          }),
+          MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+        ),
+        1,
+        dispatchMarkerPersisted,
+      );
+      expect(result.status).toBe(dispatchMarkerPersisted ? 'AMBIGUOUS' : 'WAITING_CAPABILITY');
+      expect(result.errorCode).toBe('max_action_executor_proof_rejected');
+    },
+  );
+  it.each([false, true])(
+    'does not treat forged executor rejection as local admission with dispatch marker %s',
+    (dispatchMarkerPersisted) => {
+      const { service } = createService();
+      const result = (service as unknown as ServiceInternals).classifyDeleteError(
+        Object.assign(new Error('Remote failure'), {
+          response: { data: { code: 'max_action_executor_proof_rejected' } },
+          code: 'max_action_executor_proof_rejected',
+        }),
+        1,
+        dispatchMarkerPersisted,
+      );
+      expect(result.status).toBe(dispatchMarkerPersisted ? 'AMBIGUOUS' : 'RETRYABLE');
+    },
+  );
+
+  it.each([
+    ['own exact receipt', {}, true],
+    ['unverified reason', { metadata: {} }, false],
+    ['other rule', { ruleCode: 'PHOTO_BLOCKED_DELETE' }, false],
+    ['other reason author', { userId: 'another-user' }, false],
+    ['other chat', { intent: { chatId: 'another-chat' } }, false],
+    ['other message', { intent: { messageId: 'another-message' } }, false],
+    ['other subject', { intent: { subjectUserId: 'another-user' } }, false],
+    ['other source', { intent: { sourceMessageAt: new Date(0) } }, false],
+    ['other executor', { intent: { succeededBotId: 'another-bot' } }, false],
+    ['unconfirmed intent', { intent: { status: 'AMBIGUOUS' } }, false],
+  ] as const)(
+    'recovers only %s from a queue worker that won the inline race',
+    async (_name, patch, allowed) => {
+      const input = {
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'length:own',
+        ruleCode: 'MESSAGE_TOO_LONG_DELETE',
+        subjectUserId: 'user-1',
+        sourceMessageAt: baseIntent.sourceMessageAt,
+      };
+      const reason = {
+        ruleCode: input.ruleCode,
+        userId: input.subjectUserId,
+        metadata: { moderationDeleteVerified: true },
+        ...patch,
+        intent: {
+          status: 'SUCCEEDED',
+          chatId: input.chatId,
+          messageId: input.messageId,
+          subjectUserId: input.subjectUserId,
+          sourceMessageAt: input.sourceMessageAt,
+          succeededBotId: 'bot-1',
+          ...('intent' in patch ? patch.intent : {}),
+        },
+      };
+      const findUnique = jest.fn().mockResolvedValue(reason);
+      const { service, maxClient } = createService(
+        {},
+        {
+          moderationDeleteIntentReason: { findUnique },
+        },
+      );
+      jest.spyOn(service as any, 'persistIntent').mockResolvedValue({
+        intentId: 'intent-1',
+        rollout: 'execute',
+        status: 'SUCCEEDED',
+      });
+      jest.spyOn(service, 'attemptIntent').mockResolvedValue({
+        intentId: 'intent-1',
+        kind: 'confirmed',
+        confirmed: true,
+        status: 'SUCCEEDED',
+        botId: 'bot-1',
+      });
+      const result = await service.ensureAndAttempt(input);
+      expect('verifiedReasonKeys' in result ? (result.verifiedReasonKeys ?? []) : []).toEqual(
+        allowed ? [input.reasonKey] : [],
+      );
+      expect(findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { intentId_reasonKey: { intentId: 'intent-1', reasonKey: input.reasonKey } },
+        }),
+      );
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(result).not.toHaveProperty('profanityVerified');
+      expect(result).not.toHaveProperty('commercialVerified');
+    },
+  );
+
   it.each([true, false])(
     'keeps DELETE and receipt order when metrics fail (duplicate owner: %s)',
     async (messageDuplicateOwned) => {
@@ -854,7 +1056,10 @@ describe('ModerationDeleteIntentService', () => {
           suggestionSubscriptionId: 'suggestion',
           leaseExpiresAt: new Date(now + 60_000),
         };
-        const { service, maxClient } = createService();
+        const { service, maxClient } = createService(
+          {},
+          { $executeRaw: jest.fn().mockResolvedValue(expired ? 0 : 1) },
+        );
         const remoteDelete = jest.fn();
         maxClient.deleteMessage.mockImplementation(async (_chatId, _messageId, options) => {
           await options?.beforeImmediateDeleteMutation?.();
@@ -924,6 +1129,143 @@ describe('ModerationDeleteIntentService', () => {
             }),
             expect.objectContaining({ reasonFingerprint: 'a'.repeat(64) }),
           );
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it.each(['longer-state', 'unbounded-content', 'duplicate-final'] as const)(
+    'keeps an expired rule out of the receipt with %s authority at the last boundary',
+    async (authority) => {
+      const now = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        const leased = { ...baseIntent, leaseExpiresAt: new Date(now + 60_000) };
+        const events: string[] = [];
+        const staleKey = authority === 'unbounded-content' ? 'burst' : 'mute';
+        const validKey = authority === 'unbounded-content' ? 'length' : 'global';
+        const reasons = [
+          {
+            ruleCode:
+              authority === 'unbounded-content'
+                ? 'MESSAGE_RATE_LIMIT_DELETE'
+                : 'MUTE_ACTIVE_DELETE',
+            reasonKey: staleKey,
+          },
+          ...(authority === 'duplicate-final'
+            ? [{ ruleCode: 'DUPLICATE_DELETE', reasonKey: 'MESSAGE_DUPLICATE:v1:current' }]
+            : [
+                {
+                  ruleCode:
+                    authority === 'unbounded-content'
+                      ? 'MESSAGE_TOO_LONG_DELETE'
+                      : 'GLOBAL_SPAMMER_MESSAGE_DELETE',
+                  reasonKey: validKey,
+                },
+              ]),
+        ];
+        const queryRaw = jest.fn(async (query: { strings?: readonly string[] }) => {
+          const sql = query.strings?.join('?') ?? '';
+          expect(sql).toContain('"lease_expires_at" > (clock_timestamp() AT TIME ZONE \'UTC\')');
+          expect(sql).toContain('"delete_dispatch_started_bot_id" =');
+          expect(sql).toContain(
+            'RETURNING (clock_timestamp() AT TIME ZONE \'UTC\') AS "verifiedReasonAuthorityAt"',
+          );
+          events.push('database-clock');
+          // The database may run ahead of the local clock. Only the duplicate-final case
+          // expires during the last MAX authority check after this SQL fence.
+          return [
+            {
+              verifiedReasonAuthorityAt: new Date(
+                now + (authority === 'duplicate-final' ? 0 : 100),
+              ),
+              verifiedReasonLeaseExpiresAt: leased.leaseExpiresAt,
+            },
+          ];
+        });
+        const { service, maxClient } = createService(
+          {},
+          {
+            $queryRaw: queryRaw,
+            moderationDeleteIntentReason: { findMany: jest.fn().mockResolvedValue(reasons) },
+          },
+        );
+        const composed = (
+          service as unknown as ServiceInternals
+        ).authorizeGuardedUserDeleteReasons.bind(service);
+        const remoteDelete = jest.fn(() => events.push('delete'));
+        maxClient.deleteMessage.mockImplementation(async (_chatId, _messageId, options) => {
+          await options?.beforeImmediateDeleteMutation?.();
+          remoteDelete();
+        });
+        const receipt = jest.fn().mockResolvedValue({
+          kind: 'confirmed',
+          status: 'SUCCEEDED',
+          confirmed: true,
+          intentId: leased.id,
+        });
+        const finitePermit = {
+          reasonKeys: authority === 'duplicate-final' ? [staleKey] : [staleKey, validKey],
+          ...(authority === 'unbounded-content'
+            ? {}
+            : { deadlineAtMs: now + (authority === 'duplicate-final' ? 100 : 10_000) }),
+          reasonDeadlines: [
+            { reasonKey: staleKey, deadlineAtMs: now + 100 },
+            ...(authority === 'longer-state'
+              ? [{ reasonKey: validKey, deadlineAtMs: now + 10_000 }]
+              : []),
+          ],
+        };
+        Object.assign(service, {
+          loadIntent: jest.fn().mockResolvedValue(leased),
+          startLeaseHeartbeat: () => ({ ...ownedHeartbeat, hasRemainingBudget: () => true }),
+          assertLeaseForExternalCall: jest.fn(),
+          finishProtectedManagedBotMessageAutoDelete: jest.fn().mockResolvedValue(null),
+          resolveDeleteRouteWithRefresh: jest.fn().mockResolvedValue(confirmedRoute),
+          filterAndOrderRouteCandidates: () => ['bot-1'],
+          recordAttemptBot: jest.fn().mockResolvedValue(true),
+          markDeleteDispatchStarted: jest.fn().mockResolvedValue(true),
+          runDeletePreDispatchGuards: async (
+            _intent: unknown,
+            _bot: string,
+            _options: unknown,
+            leaseToken?: string,
+          ) =>
+            leaseToken
+              ? composed(leased, 'bot-1', leaseToken)
+              : { profanityVerified: false, commercialVerifiedReasonKeys: [] },
+          messageLimitsDeleteGuard: { authorize: jest.fn().mockResolvedValue(finitePermit) },
+          moderationStateDeleteGuard: { authorize: jest.fn().mockResolvedValue(finitePermit) },
+          messageDuplicateDeleteGuard: {
+            assertIntentStillActionable: jest.fn(async (params: { authorityOnly?: boolean }) => {
+              if (params.authorityOnly) {
+                events.push('duplicate-final');
+                clock.mockReturnValue(now + 100);
+              }
+              return 'allowed';
+            }),
+          },
+          recordRemoteSuccessAndFinalize: receipt,
+        });
+        const result = await service.executeLeasedIntent(leased.id, 'lease-1');
+        const expectedKeys = authority === 'duplicate-final' ? [] : [validKey];
+        expect(receipt).toHaveBeenCalledWith(
+          expect.anything(),
+          'lease-1',
+          'bot-1',
+          false,
+          [],
+          expectedKeys,
+        );
+        expect(remoteDelete).toHaveBeenCalledTimes(1);
+        expect(events).toEqual([
+          'database-clock',
+          ...(authority === 'duplicate-final' ? ['duplicate-final'] : []),
+          'delete',
+        ]);
+        if (expectedKeys.length) expect(result).toHaveProperty('verifiedReasonKeys', expectedKeys);
+        else expect(result).not.toHaveProperty('verifiedReasonKeys');
       } finally {
         clock.mockRestore();
       }
@@ -5829,6 +6171,7 @@ describe('ModerationDeleteIntentService', () => {
         chatId: 'chat-1',
         messageId: 'message-1',
         subjectUserId: 'user-1',
+        sourceMessageAt: intent.sourceMessageAt,
         botId: 'bot-1',
         ownedReasonsOnly: true,
       });
@@ -5924,6 +6267,7 @@ describe('ModerationDeleteIntentService', () => {
       for (const query of queries) {
         expect(query.values).toEqual([
           'intent-1',
+          ...VERIFIED_RECEIPT_RULE_CODES,
           false,
           'PROFANITY_DELETE',
           'COMMERCIAL_AD_DELETE',
@@ -6396,6 +6740,7 @@ describe('ModerationDeleteIntentService', () => {
         expect(query.strings.join('?')).toContain('reason."moderation_event_id" IS NULL');
         expect(query.values).toEqual([
           'intent-1',
+          ...VERIFIED_RECEIPT_RULE_CODES,
           proof,
           'PROFANITY_DELETE',
           'COMMERCIAL_AD_DELETE',
@@ -10753,10 +11098,14 @@ describe('ModerationDeleteIntentService', () => {
     )?.[0] as Prisma.Sql;
     expect(eventInsert.values).toEqual([
       'intent-1',
+      ...VERIFIED_RECEIPT_RULE_CODES,
       false,
       'PROFANITY_DELETE',
       'COMMERCIAL_AD_DELETE',
     ]);
+    expect(eventInsert.strings.join('?')).toContain(
+      "reason.\"metadata\"->'moderationDeleteVerified' = 'true'::jsonb",
+    );
     expect(queue.add).not.toHaveBeenCalled();
   });
 

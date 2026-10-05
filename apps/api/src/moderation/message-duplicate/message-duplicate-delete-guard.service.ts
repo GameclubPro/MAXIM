@@ -30,13 +30,13 @@ import {
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
 import { MessageDuplicateAuthorizationService } from './message-duplicate-authorization.service';
-
-export class MessageDuplicateGuardRejectedError extends Error {
-  constructor(readonly code: string) {
-    super(code);
-    this.name = 'MessageDuplicateGuardRejectedError';
-  }
-}
+import { MessageDuplicateGuardRejectedError } from './message-duplicate-guard.contract';
+export { MessageDuplicateGuardRejectedError } from './message-duplicate-guard.contract';
+import {
+  messageDuplicateNoticeSettingsDigest,
+  readMessageDuplicateNoticeProof,
+  type MessageDuplicateNoticeProof,
+} from './message-duplicate-notice-proof';
 
 type MessageDuplicateGuardInput = {
   chatId: string;
@@ -45,6 +45,8 @@ type MessageDuplicateGuardInput = {
   botId: string;
   binding: MessageDuplicateBinding;
   sanctionIntentId?: string;
+  notice?: MessageDuplicateNoticeProof;
+  beforeFinalAuthority?: () => Promise<void>;
 };
 
 @Injectable()
@@ -174,6 +176,52 @@ export class MessageDuplicateDeleteGuardService {
 
   private async checkMessage(params: MessageDuplicateGuardInput): Promise<'allowed' | 'absent'> {
     const { binding } = params;
+    const notice = params.notice;
+    const canonicalBinding = parseMessageDuplicateBinding({
+      duplicateSource: MESSAGE_DUPLICATE_SOURCE,
+      messageDuplicate: binding,
+    });
+    const canonicalNotice = notice ? readMessageDuplicateNoticeProof(notice) : null;
+    if (
+      notice &&
+      (!canonicalNotice ||
+        notice.chatId !== params.chatId ||
+        JSON.stringify(canonicalNotice.binding) !== JSON.stringify(canonicalBinding) ||
+        Date.now() >= notice.deadlineAtMs)
+    )
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_notice_invalid');
+    const receiptIntentId = notice?.intentId ?? params.sanctionIntentId;
+    const noticeReceipt = notice
+      ? await this.prisma.moderationDeleteIntent.findUnique({
+          where: { id: notice.intentId },
+          select: {
+            chatId: true,
+            messageId: true,
+            subjectUserId: true,
+            remoteDeleteSucceededAt: true,
+            reasons: {
+              where: { reasonKey: notice.reasonKey },
+              select: { ruleCode: true, metadata: true, createdAt: true },
+              take: 1,
+            },
+          },
+        })
+      : null;
+    if (notice) {
+      const reason = noticeReceipt?.reasons[0];
+      const recorded = parseMessageDuplicateBinding(reason?.metadata);
+      const metadata = reason?.metadata as Record<string, unknown> | null;
+      if (
+        noticeReceipt?.chatId !== params.chatId ||
+        noticeReceipt.messageId !== params.messageId ||
+        noticeReceipt.subjectUserId !== binding.senderId ||
+        reason?.ruleCode !== 'DUPLICATE_DELETE' ||
+        !recorded ||
+        JSON.stringify(recorded) !== JSON.stringify(canonicalBinding) ||
+        metadata?.count !== notice.stage.repeatCount
+      )
+        throw new MessageDuplicateGuardRejectedError('message_duplicate_notice_reason_changed');
+    }
     await this.assertAuthorization(params.chatId, binding);
     if (!binding.original)
       throw new MessageDuplicateGuardRejectedError('message_duplicate_binding_invalid');
@@ -184,7 +232,7 @@ export class MessageDuplicateDeleteGuardService {
     )
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
     await this.assertPolicy(params.chatId, binding, Boolean(params.sanctionIntentId));
-    const settings = await this.loadSettings(params.chatId, binding);
+    const settings = await this.loadSettings(params.chatId, binding, notice);
     const options = {
       botId: params.botId,
       timeoutMs: this.timeoutMs,
@@ -199,30 +247,35 @@ export class MessageDuplicateDeleteGuardService {
     // Stop without sanctions; transport errors and malformed/mismatched responses still retry.
     if (!access)
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_not_member');
-    if (access.userId !== null && access.userId !== binding.senderId)
+    if (access.userId !== binding.senderId)
       throw new Error('Message duplicate author access unavailable');
     if (access.isAdmin || access.isOwner)
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
+    if (access.isAdmin !== false || access.isOwner !== false)
+      throw new Error('Message duplicate author access unavailable');
     const raw = await this.lookupMessage('current', params.chatId, params.messageId, options);
-    if (!raw && !params.sanctionIntentId) return 'absent';
+    if (!raw && !receiptIntentId) return 'absent';
     if (!raw) {
       // FLAG: Absence alone cannot authorize a sanction. Require our exact successful DELETE
       // receipt and its immutable binding; an unrelated deletion or an ambiguous send is insufficient.
-      const receipt = await this.prisma.moderationDeleteIntent.findUnique({
-        where: { id: params.sanctionIntentId },
-        select: {
-          chatId: true,
-          messageId: true,
-          subjectUserId: true,
-          remoteDeleteSucceededAt: true,
-          reasons: {
-            where: { reasonKey: `MESSAGE_DUPLICATE:v1:${binding.eventTimestampMs}` },
-            select: { metadata: true, createdAt: true },
-            take: 1,
+      const receipt =
+        noticeReceipt ??
+        (await this.prisma.moderationDeleteIntent.findUnique({
+          where: { id: receiptIntentId },
+          select: {
+            chatId: true,
+            messageId: true,
+            subjectUserId: true,
+            remoteDeleteSucceededAt: true,
+            reasons: {
+              where: { reasonKey: `MESSAGE_DUPLICATE:v1:${binding.eventTimestampMs}` },
+              select: { metadata: true, createdAt: true },
+              take: 1,
+            },
           },
-        },
-      });
+        }));
       const recorded = parseMessageDuplicateBinding(receipt?.reasons[0]?.metadata);
+      const receiptMetadata = receipt?.reasons[0]?.metadata as Record<string, unknown> | null;
       if (
         !receipt?.remoteDeleteSucceededAt ||
         !receipt.reasons[0] ||
@@ -230,6 +283,7 @@ export class MessageDuplicateDeleteGuardService {
         receipt.chatId !== params.chatId ||
         receipt.messageId !== params.messageId ||
         receipt.subjectUserId !== binding.senderId ||
+        receiptMetadata?.moderationDeleteVerified !== true ||
         !recorded ||
         recorded.contentDigest !== binding.contentDigest ||
         recorded.eventTimestampMs !== binding.eventTimestampMs ||
@@ -316,9 +370,7 @@ export class MessageDuplicateDeleteGuardService {
       });
       throw new MessageDuplicateGuardRejectedError('message_duplicate_original_changed');
     }
-    if (
-      !(await this.history.stillMatches(params.chatId, binding, Boolean(params.sanctionIntentId)))
-    ) {
+    if (!(await this.history.stillMatches(params.chatId, binding, Boolean(receiptIntentId)))) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_history_changed');
     }
     const protection = await this.immunity.consumeForMessage({
@@ -331,9 +383,16 @@ export class MessageDuplicateDeleteGuardService {
     if (protection === 'granted')
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
     // FLAG: Re-read policy and settings after external/content checks, including queued intents.
-    await this.loadSettings(params.chatId, binding);
+    await params.beforeFinalAuthority?.();
+    await this.loadSettings(params.chatId, binding, notice);
     await this.assertPolicy(params.chatId, binding, Boolean(params.sanctionIntentId));
     await this.assertAuthorization(params.chatId, binding);
+    if (notice && Date.now() >= notice.deadlineAtMs)
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_notice_expired');
+    // FLAG: The final SQL/Redis read may consume the original permit. Its success
+    // cannot extend a member mutation or immediate sanction notice past either deadline.
+    if (Date.now() >= Math.min(binding.authorization!.deadlineAtMs, binding.original.expiresAtMs))
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_action_expired');
     return 'allowed';
   }
 
@@ -401,7 +460,11 @@ export class MessageDuplicateDeleteGuardService {
     }
   }
 
-  private async loadSettings(chatId: string, binding: MessageDuplicateBinding) {
+  private async loadSettings(
+    chatId: string,
+    binding: MessageDuplicateBinding,
+    notice?: MessageDuplicateNoticeProof,
+  ) {
     const settings = await this.prisma.chatSettings.findUnique({
       where: { chatId },
       include: { chat: { select: { entityType: true, admins: { select: { userId: true } } } } },
@@ -419,6 +482,23 @@ export class MessageDuplicateDeleteGuardService {
       resolveDuplicateFlowConfig(settings).allowedCount + 2 !== binding.requiredCount
     ) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_settings_changed');
+    }
+    if (notice) {
+      const outcome = resolveDuplicateFlowOutcome({
+        settings,
+        repeatCount: notice.stage.repeatCount,
+        hash: binding.fingerprint,
+        fingerprintType: 'exact',
+      });
+      if (
+        !settings.duplicateBotMessageEnabled ||
+        messageDuplicateNoticeSettingsDigest(settings) !== notice.noticePolicySha256 ||
+        (notice.stage.kind === 'hit'
+          ? !outcome.hit || !!outcome.decision
+          : outcome.decision?.action !== notice.stage.kind ||
+            outcome.decision.threshold !== notice.stage.threshold)
+      )
+        throw new MessageDuplicateGuardRejectedError('message_duplicate_notice_settings_changed');
     }
     if (binding.sanction) {
       const decision = resolveDuplicateFlowOutcome({

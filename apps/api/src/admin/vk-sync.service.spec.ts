@@ -6,6 +6,7 @@ import {
   VkParsingPostImportRepository,
 } from './vk-parsing-post-import.repository';
 import { VkSyncService } from './vk-sync.service';
+import { VkSyncLeaseLostError } from './vk-sync-lease';
 
 type TestPost = {
   vkOwnerId: number;
@@ -45,6 +46,9 @@ describe('VkSyncService pending autopublish imports', () => {
       wallOwnerId: -36819802,
       status: 'ACTIVE',
       importEnabled: true,
+      syncStatus: 'SYNCING',
+      syncLockedBy: 'attempt-1',
+      syncAttemptCount: 1,
       autoPublishEnabled: true,
       autoPublishEnabledAt: new Date('2026-09-04T09:00:00.000Z'),
       autoPublishPausedAt: null,
@@ -115,11 +119,18 @@ describe('VkSyncService pending autopublish imports', () => {
       vkBotReview: { createMany: jest.fn().mockResolvedValue({ count: 1 }) },
       vkParsingSource: {
         findFirst: jest.fn().mockResolvedValue(createSource()),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
     const prisma = {
       vkParsingSettings,
       vkParsingPost,
+      vkParsingSource: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn(async ({ where }) =>
+          createSource({ syncLockedBy: where.syncLockedBy }),
+        ),
+      },
       $transaction: jest.fn((callback: (tx: typeof transaction) => Promise<unknown>) =>
         callback(transaction),
       ),
@@ -139,9 +150,17 @@ describe('VkSyncService pending autopublish imports', () => {
       {} as never,
       postImportRepository as never,
       configService as never,
-      {} as never,
+      {
+        getPublisherScope: () => ({
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+        }),
+        isExactScope: () => true,
+      } as never,
     );
     const internals = service as unknown as {
+      acquireSourceLease: (id: string) => Promise<ReturnType<typeof createSource>>;
+      recordSourceHeartbeat: (source: ReturnType<typeof createSource>) => Promise<boolean>;
       resolveAutoPublishImportBaseline: (
         source: ReturnType<typeof createSource>,
         reason: 'scheduled' | 'source-added',
@@ -188,6 +207,46 @@ describe('VkSyncService pending autopublish imports', () => {
     const conflictSql = sql.split('DO UPDATE SET')[1] ?? '';
     expect(query?.values).toContain(VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT);
     expect(conflictSql).not.toContain('publish_schedule_fingerprint');
+  });
+
+  it('assigns a distinct token to every acquisition by the same service instance', async () => {
+    const { internals, prisma } = createFixture();
+    const first = await internals.acquireSourceLease('source-1');
+    const second = await internals.acquireSourceLease('source-1');
+
+    expect(first.syncLockedBy).not.toBe(second.syncLockedBy);
+    expect(prisma.vkParsingSource.findUnique).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({ syncLockedBy: first.syncLockedBy, syncStatus: 'SYNCING' }),
+      }),
+    );
+    expect(prisma.vkParsingSource.findUnique).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          syncLockedBy: second.syncLockedBy,
+          syncStatus: 'SYNCING',
+        }),
+      }),
+    );
+  });
+
+  it('does not write an import when ownership is lost immediately after a successful heartbeat', async () => {
+    const { internals, transaction, postImportRepository } = createFixture();
+    const source = createSource();
+    transaction.$queryRaw
+      .mockResolvedValueOnce([{ id: source.id }])
+      .mockResolvedValueOnce([{ id: source.chatId }])
+      .mockResolvedValueOnce([]);
+    expect(await internals.recordSourceHeartbeat(source)).toBe(true);
+
+    await expect(
+      internals.importPostsWithPolicyFence(source, [createPost()], new Date(), 'scheduled'),
+    ).rejects.toBeInstanceOf(VkSyncLeaseLostError);
+
+    expect(postImportRepository.persistImportedPosts).not.toHaveBeenCalled();
+    expect(transaction.vkBotReview.createMany).not.toHaveBeenCalled();
   });
 
   it('creates a review only for newly observed posts after the explicit baseline', async () => {

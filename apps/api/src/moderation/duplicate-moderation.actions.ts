@@ -2,6 +2,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import type { ChatSettings } from '../prisma/prisma-client';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
 import type { DuplicateDecision, DuplicateHit } from './rule-engine.contract';
+import { messageDuplicateNoticeSettingsDigest } from './message-duplicate/message-duplicate-notice-proof';
 
 export type DuplicateModerationActionRequest = {
   update: MaxUpdate;
@@ -16,7 +17,7 @@ export type DuplicateModerationActionRequest = {
   assertActiveLease?: () => void;
   deleteIntent?: EnsureModerationDeleteIntentInput;
   authorizeDelete: () => Promise<boolean>;
-  beforeSanctionMutation?: () => Promise<void>;
+  beforeSanctionMutation?: (beforeFinalAuthority?: () => Promise<void>) => Promise<void>;
 } & (
   | { outcome: { kind: 'hit'; hit: DuplicateHit }; authorizeSanction?: never }
   | {
@@ -39,6 +40,17 @@ export function duplicateExplanationIdempotencyKey(
   return source === 'photo' || source === 'message_v1'
     ? `${source}-duplicate:${chatId}:${messageId}:explanation`
     : undefined;
+}
+
+export function duplicateSanctionNoticeIdempotencyKey(
+  metadata: Record<string, unknown> | undefined,
+  chatId: string,
+  messageId: string,
+  action: 'WARN' | 'MUTE' | 'BAN',
+): string {
+  const source = metadata?.duplicateSource;
+  const prefix = source === 'photo' || source === 'message_v1' ? source : 'legacy';
+  return `${prefix}-duplicate:${chatId}:${messageId}:sanction:${action.toLowerCase()}`;
 }
 
 export function buildDuplicateModerationParameters(
@@ -75,5 +87,6 @@ export function buildDuplicateModerationParameters(
     assertActiveLease: params.assertActiveLease,
     authorizeDelete: params.authorizeDelete,
     deleteIntent: params.deleteIntent,
+    duplicateNoticePolicySha256: messageDuplicateNoticeSettingsDigest(params.settings),
   } as const;
 }

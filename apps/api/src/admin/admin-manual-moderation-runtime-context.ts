@@ -2,6 +2,7 @@ import type { Logger } from '@nestjs/common';
 import type { ChatSummary, ManualModerationActionResult } from '@maxim/contracts';
 import type { Queue } from 'bullmq';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import type { ManualGroupCommandNoticeAuthorityInput } from './admin-manual-group-command-notice-authority';
 import type {
   MaxActionDispatchOptions,
   MaxPublishedMessage,
@@ -311,6 +312,9 @@ export type AdminManualModerationRuntimeContext = {
     chatId: string;
     targetUserId: string;
   }): Promise<Array<{ operation: string }>>;
+  assertManualGroupCommandSuccessNoticeAuthority(
+    input: ManualGroupCommandNoticeAuthorityInput,
+  ): Promise<void>;
   sendMessage(
     chatId: string,
     text: string,

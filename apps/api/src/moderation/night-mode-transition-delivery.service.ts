@@ -486,7 +486,8 @@ export class NightModeTransitionDeliveryService {
         ...this.buildRequestOptions(botId),
         immediate: true,
         idempotencyKey: params.logicalIdempotencyKey,
-        beforeImmediateSendMutation: async () => {
+        beforeImmediateSendMutation: async (revalidateRoute) => {
+          await revalidateRoute?.();
           await this.assertCurrentTransitionState(params.chatId, params.validateBeforeDispatch);
         },
       },
