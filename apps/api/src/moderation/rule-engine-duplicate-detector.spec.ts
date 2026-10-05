@@ -396,11 +396,47 @@ describe('RuleEngineDuplicateDetector', () => {
         ['bit/byte data rate', '100 MBps', '100 Mbps'],
         ['ohm SI prefix', '10 MΩ', '10 mΩ'],
         ['power SI prefix', '5 MW', '5 mW'],
+        ...[
+          ['energy', 'MWh', 'mWh'],
+          ['charge', 'MAh', 'mAh'],
+          ['apparent power', 'MVA', 'mVA'],
+          ['reactive power', 'Mvar', 'mvar'],
+          ['Russian energy', 'МВтч', 'мВтч'],
+          ['Russian charge', 'МАч', 'мАч'],
+          ['Russian apparent power', 'МВА', 'мВА'],
+          ['Russian reactive power', 'Мвар', 'мвар'],
+        ].flatMap(([label, large, small]) => [
+          [`${label} suffix quantity`, `10 ${large}`, `10 ${small}`],
+          [`${label} prefix quantity`, `${large}: 10`, `${small}: 10`],
+          [`${label} superscript compound quantity`, `10 ${large}²/V`, `10 ${small}²/V`],
+          [`${label} prefix compound quantity`, `V/(${large}⁻²): 10`, `V/(${small}⁻²): 10`],
+          [
+            `${label} phone-sized quantity`,
+            `Телефон: +79991234567 ${large}`,
+            `Телефон: +79991234568 ${large}`,
+          ],
+          [
+            `${label} phone-sized prefix quantity`,
+            `${large}: телефон: +79991234567`,
+            `${large}: телефон: +79991234568`,
+          ],
+        ]),
         ['time SI prefix', '10 Ms', '10 ms'],
         ['compound denominator unit', '100 MB/S', '100 MB/s'],
         ['wrapped compound denominator', '10 V/(MΩ)', '10 V/(mΩ)'],
         ['phone-shaped ohm quantity', '+79991234567 MΩ', '+79991234567 mΩ'],
         ['quantity unit order', '10 MB, 20 Mb', '10 Mb, 20 MB'],
+        ['prefix bit/byte field', 'Размер файла (MB): 100', 'Размер файла (Mb): 100'],
+        ['prefix resistance field', 'Сопротивление, MΩ: 10', 'Сопротивление, mΩ: 10'],
+        ['prefix speed field', 'Скорость, MB/s — 100', 'Скорость, Mb/s — 100'],
+        ['prefix denominator field', 'V/(MΩ) = 10', 'V/(mΩ) = 10'],
+        ['prefix signed quantity', 'MΩ: -10', 'mΩ: -10'],
+        ['prefix exponent quantity', 'MB/s²: 10', 'Mb/s²: 10'],
+        ['first prefix superscript quantity', 'MΩ²: 10', 'mΩ²: 10'],
+        ['first compound superscript quantity', 'MW³/V: 10', 'mW³/V: 10'],
+        ['first prefix signed superscript quantity', '(MΩ⁻²) = 10', '(mΩ⁻²) = 10'],
+        ['first prefix positive superscript quantity', 'MΩ⁺²: 10', 'mΩ⁺²: 10'],
+        ['compound positive superscript quantity', 'V/MΩ⁺²: 10', 'V/mΩ⁺²: 10'],
       ].map(([label, first, second]) => [
         label,
         `Промышленное оборудование доступно со склада с доставкой в регионы значение ${first} по техническому паспорту производителя`,
@@ -460,6 +496,16 @@ describe('RuleEngineDuplicateDetector', () => {
         'signed number',
         'Температура хранения оборудования составляет -10 градусов согласно инструкции производителя',
         'Температура хранения оборудования составляет +10 градусов согласно инструкции производителя',
+      ],
+      [
+        'unlabelled signed financial quantity',
+        'Прирост прибыли предприятия +79991234567 по итогам полного финансового аудита за этот месяц',
+        'Прирост прибыли предприятия +79991234568 по итогам полного финансового аудита за этот месяц',
+      ],
+      [
+        'unlabelled signed generic quantity',
+        'Результат наблюдения +79991234567 после выполнения полного контрольного измерения',
+        'Результат наблюдения +79991234568 после выполнения полного контрольного измерения',
       ],
       ...[
         ['status emoji', '✅', '❌'],
@@ -546,6 +592,32 @@ describe('RuleEngineDuplicateDetector', () => {
         }),
       ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
     });
+
+    it.each(['MWh', 'MAh', 'MVA', 'Mvar', 'МВтч', 'МАч', 'МВА', 'Мвар'])(
+      'matches cosmetic prose case beside the same electrical unit %s',
+      async (unit) => {
+        const detector = new RuleEngineDuplicateDetector(
+          new InMemoryRevisionedRedisCounter() as never,
+        );
+        const settings = buildSettings({ duplicateDetectionPreset: preset });
+        await detectRevision({
+          detector,
+          messageId: 'first',
+          revision: 100,
+          settings,
+          text: `Промышленное оборудование со склада значение 10 ${unit} согласно паспорту`,
+        });
+        await expect(
+          detectRevision({
+            detector,
+            messageId: 'repeat',
+            revision: 200,
+            settings,
+            text: ` ПРОМЫШЛЕННОЕ  оборудование со склада значение\n10 ${unit} СОГЛАСНО ПАСПОРТУ `,
+          }),
+        ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+      },
+    );
 
     it('allows cosmetic punctuation spacing without losing its position or protected symbols', () => {
       const detector = new RuleEngineDuplicateDetector(
@@ -675,6 +747,54 @@ describe('RuleEngineDuplicateDetector', () => {
       }),
     ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'phone' } });
   });
+
+  it.each([false, true])(
+    'never joins unrelated signed quantities through CUSTOM phone matching with near=%s',
+    async (near) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnorePhonesEnabled: true,
+        duplicateNearMatchEnabled: near,
+      });
+      const first =
+        'Прирост прибыли предприятия +79991234567 по итогам полного финансового аудита за этот месяц';
+      const unrelated =
+        'Финансовый результат другого проекта +79991234567 после проверки расходов и поступлений';
+      for (const text of [first, unrelated]) {
+        expect(
+          detector.buildFingerprints(text, settings).some((part) => part.type === 'phone'),
+        ).toBe(false);
+      }
+      await detectRevision({
+        detector,
+        messageId: 'quantity-first',
+        revision: 100,
+        text: first,
+        settings,
+      });
+      await expect(
+        detectRevision({
+          detector,
+          messageId: 'quantity-unrelated',
+          revision: 200,
+          text: unrelated,
+          settings,
+        }),
+      ).resolves.toEqual({});
+      await expect(
+        detectRevision({
+          detector,
+          messageId: 'quantity-repeat',
+          revision: 300,
+          text: unrelated,
+          settings,
+        }),
+      ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+    },
+  );
 
   describe.each(['STRICT', 'CUSTOM'] as const)('%s protected numeric expressions', (preset) => {
     it.each([

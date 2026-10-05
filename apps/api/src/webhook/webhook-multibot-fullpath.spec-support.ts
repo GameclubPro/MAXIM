@@ -739,6 +739,45 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     throw new Error(`Multibot drain exceeded ${maxMs} ms; effects=${effects.length}`);
   }
 
+  async function waitForConfirmedDelete(chatId: string, messageId: string, maxMs = 15_000) {
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+      if (failures.length) throw failures[0];
+      const intent = await prisma.moderationDeleteIntent.findUnique({
+        where: { chatId_messageId: { chatId, messageId } },
+        select: {
+          id: true,
+          status: true,
+          remoteDeleteSucceededAt: true,
+          reasons: {
+            where: { ruleCode: 'DUPLICATE_DELETE' },
+            select: { metadata: true },
+            take: 65,
+          },
+        },
+      });
+      // FLAG: A late-notice fault must follow our actual verified DELETE and completion
+      // of this fixture's isolated delete queue. Never drain the blocked webhook job here.
+      const queued = await deleteQueue.getJobCounts('waiting', 'active', 'delayed');
+      const verified = intent?.reasons.some(
+        (reason) =>
+          (reason.metadata as Record<string, unknown> | null)?.moderationDeleteVerified === true,
+      );
+      if (
+        intent?.status === 'SUCCEEDED' &&
+        intent.remoteDeleteSucceededAt &&
+        verified &&
+        !messages.has(messageId) &&
+        (queued.waiting ?? 0) + (queued.active ?? 0) + (queued.delayed ?? 0) === 0
+      ) {
+        if (failures.length) throw failures[0];
+        return intent;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`Confirmed duplicate DELETE did not settle within ${maxMs} ms`);
+  }
+
   async function demote(chatId: string, botId: string) {
     deniedBots.add(botId);
     await links.recordBotAccessProbe({
@@ -826,6 +865,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     ingest,
     pumpOnce,
     drain,
+    waitForConfirmedDelete,
     demote,
     dispose,
     pause: () => worker.pause(),

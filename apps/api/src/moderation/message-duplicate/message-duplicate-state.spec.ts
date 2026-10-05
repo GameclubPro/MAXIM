@@ -11,6 +11,8 @@ import {
   preSourceBoundPhoneSettingsDigests,
   preV3HistorySettingsDigests,
   preSemanticUnitSettingsDigests,
+  prePrefixUnitSettingsDigests,
+  preElectricalUnitSettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 describe('safe text evidence compatibility', () => {
@@ -19,14 +21,24 @@ describe('safe text evidence compatibility', () => {
     ['STRICT', { duplicateDetectionPreset: 'STRICT' }],
     ['CUSTOM_NEAR', { duplicateDetectionPreset: 'CUSTOM', duplicateNearMatchEnabled: true }],
     ['CUSTOM_PHONE', { duplicateDetectionPreset: 'CUSTOM', duplicateIgnorePhonesEnabled: true }],
-  ] as const)('revokes pre-unit %s text evidence', (key, overrides) => {
+  ] as const)('revokes prior quantity-unit %s text evidence', (key, overrides) => {
     expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
       preSemanticUnitSettingsDigests[key],
+    );
+    expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
+      prePrefixUnitSettingsDigests[key],
+    );
+    expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
+      preElectricalUnitSettingsDigests[key],
     );
   });
   it('keeps exact IMAGE authority unchanged by quantity-unit semantics', () => {
     expect(exactImageSettingsDigest(duplicateSettings())).toBe(
       preSemanticUnitSettingsDigests.IMAGE,
+    );
+    expect(exactImageSettingsDigest(duplicateSettings())).toBe(prePrefixUnitSettingsDigests.IMAGE);
+    expect(exactImageSettingsDigest(duplicateSettings())).toBe(
+      preElectricalUnitSettingsDigests.IMAGE,
     );
   });
   it.each([

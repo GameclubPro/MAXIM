@@ -392,21 +392,25 @@ and its matching content/revision binding. `MESSAGE_DUPLICATE_ENABLED=false` is 
 environment ceiling.
 
 Both API rollback paths require v3 binding, lifecycle and durable/permit authorization source
-capabilities, duplicate-only phone evidence v6, mode-aware TEXT lifecycle eligibility,
-and near punctuation/symbol positions with the `text-fixed-window-safe-text-v12` / `text-fixed-window-v12` settings fences
-and common `text-v12` matching namespace. Shared semantic normalization must preserve case-sensitive
-finite quantity units in scalar/dimension/compound expressions for fingerprints, source digest and
-lifecycle identity. Phone evidence uses the same quantity guard; consumed compound suffixes
-cannot be rescanned by the outer scanner. Truncated protective contexts must fail closed, and numeric
+capabilities, duplicate-only phone evidence v8, mode-aware TEXT lifecycle eligibility,
+and near punctuation/symbol positions with the `text-fixed-window-safe-text-v14` / `text-fixed-window-v14` settings fences
+and common `text-v14` matching namespace. Shared semantic normalization must preserve case-sensitive
+finite quantity units in scalar/dimension/compound expressions and prefix fields (`MB: 100`,
+`MΩ = 10`) for fingerprints, source digest and lifecycle identity. Phone evidence uses the same
+finite electrical units (`Wh`, `Ah`, `VA`, `var` and `Втч`, `Ач`, `ВА`, `вар`) and
+prefix/suffix quantity guards, including a prefix before an explicit phone label. Consumed
+compound expressions cannot be rescanned by the outer scanner; the ordered span merge stays linear.
+Truncated protective contexts must fail closed, and numeric
 colon operands cannot become phones. Shared analysis preserves independent CUSTOM switches.
 History storage v3 additionally participates in every settings digest, including exact-only,
 CUSTOM-link-only and IMAGE: this transition invalidates all older history, queued jobs and grants.
 The new baseline fills from newly accepted originals; the first repeat without such an original
 can be accepted. Exact IMAGE raster matching semantics remain unchanged.
 Ambiguous numeric identifiers, prices and measurements are never stripped as phones or
-used as phone-only duplicate evidence. Phone evidence requires an international prefix or an
-explicit phone label from a finite list with word boundaries; unlabelled grouping alone remains
-content. Phone labels cannot match product names or words about bells and mobility through broad
+used as phone-only duplicate evidence. Phone evidence requires an explicit phone label from a finite
+list with word boundaries, a proven labelled list, or conventional complete `+1`/`+7` grouping.
+A bare compact international prefix is a signed quantity and remains content without that label.
+Other unlabelled grouping remains content. Phone labels cannot match product names or words about bells and mobility through broad
 `тел`, `звон` or `мобильн` roots. Both rollback paths require the actual bounded label expression,
 so changing only the phone-evidence version cannot admit the old broad classifier.
 The raw adjacency guard runs before whitespace or wrapper normalization: Unicode identifier and
@@ -429,7 +433,7 @@ phrase is itself a phone label.
 Both extraction and stripping exclude candidates overlapping recognized URL ranges and preserve
 the complete URL bytes. Content and near-numeric normalization strip phones against the original
 source before removing URLs, so separated numeric fragments cannot become fabricated phone evidence.
-Compact international phones and proven explicit phone labels keep
+Explicitly labelled compact international phones and conventional complete grouped phones keep
 their positive matching behavior. Country-prefixed 1/7 forms, with or without `+`, require eleven
 total digits; national 8/9 forms require eleven/ten. A greedy span with an appended quantity is
 rejected whole, preserving every numeric character without guessing a shorter phone segment.
@@ -458,7 +462,7 @@ Legacy settings above 48 hours are clamped by the resolver and repaired with the
 CAS without overwriting unrelated fields or authored text. Old Redis keys expire naturally;
 do not mass-delete history or shorten durable sanction/action fences.
 See [Bounded history review](../../antiduplicate-bounded-history-2026-10-05.md).
-API images before text-v12/history-v3 do not satisfy this source floor. Recovery
+API images before text-v14/history-v3 do not satisfy this source floor. Recovery
 uses the reviewed control OFF path above and a forward compatible release; static-only rollback
 is independent. Do not weaken source or applied-migration compatibility checks to reuse an old API.
 Older images do not understand the new protocol and are rejected as targets; rollback does not downgrade

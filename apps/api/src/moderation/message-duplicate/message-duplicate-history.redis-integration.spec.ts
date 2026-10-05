@@ -81,10 +81,28 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
           [
             ['100 MB/s', '100 Mb/s'],
             ['10 MΩ', '10 mΩ'],
+            ['10 MWh', '10 mWh'],
+            ['MAh: 10', 'mAh: 10'],
+            ['MVA²: 10', 'mVA²: 10'],
+            ['10 Mvar/V', '10 mvar/V'],
+            ['10 МВтч', '10 мВтч'],
+            ['МАч: 10', 'мАч: 10'],
+            ['+79991234567 MWh', '+79991234567 mWh'],
+            ['MAh = +79991234567', 'mAh = +79991234567'],
             ['5 MW', '5 mW'],
             ['100 MBps', '100 Mbps'],
             ['10 V/(MΩ)', '10 V/(mΩ)'],
             ['+79991234567 MΩ', '+79991234567 mΩ'],
+            ['MΩ: 10', 'mΩ: 10'],
+            ['MΩ²: 10', 'mΩ²: 10'],
+            ['MΩ⁺²: 10', 'mΩ⁺²: 10'],
+            ['V/MΩ⁺²: 10', 'V/mΩ⁺²: 10'],
+            ['MW²: 10', 'mW²: 10'],
+            ['MΩ³/V: 10', 'mΩ³/V: 10'],
+            ['(MB): 100', '(Mb): 100'],
+            ['MB/s — 100', 'Mb/s — 100'],
+            ['MB = +79991234567', 'Mb = +79991234567'],
+            ['MB/s — +79991234567', 'Mb/s — +79991234567'],
           ].map(([first, second]) => ({ mode, first, second })),
         ),
       )(
@@ -119,6 +137,60 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
           expect(await history.stillMatches(chatId, repeat!.binding)).toBe(false);
         },
       );
+    },
+  );
+
+  describe.each(['STRICT', 'CUSTOM_PHONE'] as const)(
+    '%s unlabelled signed numeric values',
+    (preset) => {
+      it.each(['TEXT', 'MESSAGE'] as const)(
+        'never authorizes different %s numeric values, but retains exact repeats',
+        async (mode) => {
+          const override = {
+            settings: duplicateSettings({
+              duplicateCompareMode: mode,
+              duplicateDetectionPreset: preset === 'STRICT' ? 'STRICT' : 'CUSTOM',
+              duplicateIgnorePhonesEnabled: preset === 'CUSTOM_PHONE',
+              duplicateNearMatchEnabled: true,
+            }),
+          };
+          const text = (value: string) =>
+            `Изменение показателя предприятия ${value} по итогам полного аудита за этот месяц`;
+          await observe('numeric-original', 0, text('+79991234567'), override);
+          expect(
+            await observe('numeric-different', 100, text('+79991234568'), override),
+          ).toBeNull();
+          const repeat = await observe('numeric-repeat', 200, text('+79991234568'), override);
+          expect(repeat?.binding.original?.messageId).toBe('numeric-different');
+          expect(await history.stillMatches(chatId, repeat!.binding)).toBe(true);
+          expect(await history.qualify(chatId, repeat!.binding)).toBe(1);
+        },
+      );
+    },
+  );
+
+  it.each([false, true])(
+    'does not join unrelated numeric statements via CUSTOM phone evidence with near %s',
+    async (near) => {
+      const override = {
+        settings: duplicateSettings({
+          duplicateDetectionPreset: 'CUSTOM',
+          duplicateIgnorePhonesEnabled: true,
+          duplicateNearMatchEnabled: near,
+        }),
+      };
+      await observe(
+        'signed-original',
+        0,
+        'Прирост прибыли предприятия +79991234567 по итогам полного финансового аудита за этот месяц',
+        override,
+      );
+      const unrelated =
+        'Изменение показателя компании +79991234567 подтверждено независимой комиссией после годового отчёта';
+      expect(await observe('signed-unrelated', 100, unrelated, override)).toBeNull();
+      const repeat = await observe('signed-repeat', 200, unrelated, override);
+      expect(repeat?.binding.original?.messageId).toBe('signed-unrelated');
+      expect(await history.qualify(chatId, repeat!.binding)).toBe(1);
     },
   );
 

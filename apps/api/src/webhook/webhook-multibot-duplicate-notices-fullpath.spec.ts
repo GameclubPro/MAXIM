@@ -455,10 +455,15 @@ describeStores(
     it.each(['peer-demoted', 'policy-revoked', 'unknown-send'])(
       'guards the actual immediate MUTE notice with original authority after %s across nine mirrors',
       async (change) => {
+        let currentMessageId = '';
         const f: Awaited<ReturnType<typeof harness>> = await harness(
           9,
           { duplicateMuteEnabled: true, duplicateMuteMaxCount: 2 },
           async () => {
+            if (!currentMessageId) throw new Error('Expected the MUTE source message');
+            const receipt = await f.s.waitForConfirmedDelete(f.chatId, currentMessageId);
+            expect(receipt.status).toBe('SUCCEEDED');
+            expect(receipt.remoteDeleteSucceededAt).toBeInstanceOf(Date);
             if (change === 'peer-demoted')
               for (const bot of f.s.bots.slice(0, -1)) await f.s.demote(f.chatId, bot.id);
             if (change === 'policy-revoked')
@@ -472,6 +477,7 @@ describeStores(
         const text = 'Native duplicate mute and guarded successful sanction notification';
         for (let index = 0; index < 3; index += 1) {
           const messageId = `duplicate-mute-${index}-${randomUUID()}`;
+          currentMessageId = messageId;
           const at = Date.now();
           await Promise.all(
             f.s.bots.map((bot) =>
@@ -486,6 +492,8 @@ describeStores(
           );
           await f.s.drain();
         }
+        expect(f.s.failures).toEqual([]);
+        expect(f.s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(2);
         expect(f.immediateSends).toHaveLength(1);
         const send = f.immediateSends[0]!;
         expect(send.dispatch!.idempotencyKey).toMatch(/message_v1-duplicate:.*:sanction:mute$/u);
