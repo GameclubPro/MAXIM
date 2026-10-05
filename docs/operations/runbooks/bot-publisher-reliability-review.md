@@ -20,12 +20,12 @@ the remaining action boundaries rather than restarting whole-engine processing.
 | A queued warning can outlive a caller-only callback or retain a demoted ingress bot                                 | Persist the exact reason/policy/source deadline in the existing action envelope and revalidate after queue and quota waits using the selected executor                                         | High / medium     | Real queued delivery, changed policy/author access/immunity, malformed proof, known receipt and unknown-send recovery    |
 | Required-subscription and duplicate notices can outlive the lease checked before queue handoff                      | Persist each feature's original notice proof; use its current authority at the actual transport boundary and retain the original media anchor and deadline                                     | High / medium     | Changed subscription, disabled rule, duplicate reset/revocation, protected author, old unbound plans and unknown sends   |
 | A background DELETE winner can hide its verified reason from an inline caller                                       | Recover the caller's exact successful reason receipt without re-running deletion or the whole moderation engine                                                                                | Medium / medium   | Worker wins before inline attempt, one strike/follow-up, unrelated reason cannot lend its successful receipt             |
-| A later background DELETE can finish after the engine exits, permanently losing its violation and follow-up         | Persist a versioned follow-up before DELETE; make only its own confirmed reason ready, then claim the semantic violation and frozen remaining action plan through a dedicated durable executor | High / high       | Confirmation after inline wait, restart after deletion, competing workers, changed policy and unknown SEND/member effect |
+| A later background DELETE can finish after the engine exits, permanently losing its violation and follow-up         | Persist a versioned follow-up before DELETE; make only its own confirmed reason ready, then claim the semantic violation and frozen remaining action plan through a dedicated durable executor | High / high       | Confirmation after inline wait, persisted continuation after interruption, competing workers, changed policy and unknown SEND/member effect |
 | Duplicate or bot-account follow-up can borrow shared deletion success without its own reason proof                  | Require the exact source/subject/reason receipt; duplicate explanations reuse real lifecycle authority through an independent lazy provider token                                              | High / medium     | Length-only success cannot authorize a duplicate sanction; foreign, pending and unverified bot receipts reject           |
 | Queue-unavailable SEND fallback skips journal creation and mistakes a fresh action for an ambiguous retry           | Use the existing immediate action journal before execution in both fallback paths                                                                                                              | Medium / low      | Fresh send succeeds once; concurrent copies, accepted receipts and unknown outcomes retain their fences                  |
 | Night/manual close deletes have only initial checks                                                                 | Current close/session proof, exact author/message and immunity at final dispatch                                                                                                               | Medium / low      | Opened/reclosed chat, elapsed timed close, changed schedule, protected author                                            |
 | Returning to the same night schedule can revive old pending work                                                    | Advance the shared chat-control order for enabled, schedule and timezone writes; preserve the independent rules boundary                                                                       | Medium / low      | Real API disable/enable, schedule/restore and timezone/restore; old source rejected, new source accepted                 |
-| Bot-scoped production member-action identity can bypass another bot's unknown outcome                               | Shared member-operation identity and compatibility with retained execution evidence; serialize competing starts                                                                                | High / medium     | Actual production wrappers, different bots/processes, unknown BAN/KICK, proven pre-dispatch rejection, confirmed unban   |
+| Bot-scoped production member-action identity can bypass another bot's unknown outcome                               | Shared member-operation identity and compatibility with retained execution evidence; serialize competing starts                                                                                | High / medium     | Production wrappers, different bots and independent ledger instances, unknown BAN/KICK, proven pre-dispatch rejection, confirmed unban   |
 | Content edits rewrite a leased/sending publication envelope and its recovery key                                    | Atomic edit/claim exclusion and immutable delivery attribution; receipts recover before new work                                                                                               | High / medium     | Real SQL/queue races, same-content save, lost receipt, cancel and post-actions                                           |
 | Video preparation lacks identity attestation and failed completion cannot resume                                    | Attest both phases, delay runtime blockers without consuming attempts, explicitly resume owned unexpired completion                                                                            | Medium / low      | Wrong/unavailable identity, pause, retained failed BullMQ job and one actor-owned asset                                  |
 | VK source lease reuses process identity across attempts                                                             | Unique attempt lease with expiry and transactional effect fences                                                                                                                               | Medium / medium   | Old attempt resumes after lease replacement; no stale import or lease completion                                         |
@@ -207,6 +207,21 @@ messages in user groups.
 
 ## Recorded validation
 
+The access-loss follow-up staged run on 2026-10-05 passed 782 API suites and
+18,102 tests, 50 storage/queue tests, API typecheck/build, all 959 infrastructure
+checks, and 1,079 of 1,081 static checks. The two static skips are nested
+store-wrapper lifecycle self-tests. The full API run skipped one executable-gated
+Redis parity test; a separate public targeted run with the local Redis executable
+passed that test. All 19 new full-path access cases, 373 delete-intent service
+checks and 40 focused native recovery cases passed.
+
+Independent review corrected two coverage descriptions: member-effect races use
+independent ledger instances in one OS process; follow-up interruption recovery
+uses persisted SQL state with the same service instance. Those cases do not
+establish a service/OS restart, two-process execution, or SIGKILL recovery between
+a remote effect and its receipt commit. The access-loss fixtures likewise use
+two independent route caches in one OS process, not two API processes.
+
 The follow-up native access fixtures cover absent permission webhooks with fresh
 and expired proofs, two independent stale route-cache instances, recovery before
 and after the saved deadline for 1/4/9 bots, restored former owners and late mirrors.
@@ -222,7 +237,7 @@ including actual cancelled concurrent-index repair, default-storage attestation
 and the disposable PostgreSQL client's effective memory/temp/tablespace settings.
 
 On 2026-10-05 the focused native continuation suite passed all 16 cases, including
-restart, late DELETE, exact unknown-BAN reconciliation, cleanup pinning and lease
+persisted continuation after interruption, late DELETE, exact unknown-BAN reconciliation, cleanup pinning and lease
 replacement during the last settings read. The queued duplicate suite passed
 12 cases with real PostgreSQL, Redis and BullMQ. Final typecheck, source-generation
 preflight, migration policy, whitespace and 196 selected rollback/deploy guard
