@@ -229,6 +229,42 @@ attested stopped execution generation, protection of unknown effects by their
 message/member/publication scopes, all compatible readers, and rollback floors.
 Until those conditions are implemented and verified, legacy barriers stay intact.
 
+The extended recovery design has a separate safety review before implementation.
+It may release queue order while permanently refusing replay; it must never label
+an unknown outcome as COMPLETED or manufacture an action receipt. The following
+requirements are source-supported, rather than speculative performance changes:
+
+| Boundary | Required correction | Estimated risk / acceptance |
+| --- | --- | --- |
+| Unknown old execution | Add separate durable retirement certificates and versioned NO_REPLAY / ORDER_RELEASED dispositions. Preserve original claim, receipt, payload digests, intent and action journals. | High: exact snapshot CAS and failure rollback; no engine or MAX request from repair. |
+| Retirement provenance | Attest and stop every one of the 14 API roles. Install every selected disposition while they remain stopped, seal the certificate, then resume only compatible readers. | High: container/image drift, partial stop, crash before seal and modern lease races must abort. A migration timestamp alone is insufficient. |
+| Same message, later edit | Check a permanent chat/message hold before preparation, engine admission and every DELETE/EDIT start. | High: a different semantic edit key, late mirror or retained job cannot evade the hold. |
+| Local/member effects | Check the chat/member hold before strike admission, WARN/MUTE state writes, independent rule follow-ups and BAN/KICK/TRY_UNBAN starts. | High: final MAX member checks alone do not cover SQL/Redis sanctions. Holds survive confirmed-unban ledger cleanup. |
+| Cross-chat reputation | Add a permanent global-user hold for automatic reputation enforcement, or independently prove/reconcile the exact old reputation evidence. | High: old SANCTION_BAN reputation could be written before confirmed BAN; a hold in only the source chat cannot prevent a later GLOBAL_SPAMMER kick elsewhere. |
+| Historical commands | Accept only a complete known original raw shape with no reply/forward/target/membership/callback or Publisher/channel lane. Preserve current settings and seal CHAT_CONTROL/RULES order boundaries under the chat lock. | High: command names are configurable; present-day parsing cannot prove that old text was not a command. Do not infer historical authority from an empty normalized target. |
+| Remaining SEND/media work | Retain known and unknown dispatch fences. Refuse candidates with unmappable pending SEND or unsupported independent continuations until their final readers enforce the exact scope hold. | High: older notice ledger context may omit source message/user; absence of a source field is not absence of an effect. |
+| Retention and rollback | Keep dispositions and scope holds independently of body/ledger cleanup, without TTL or cascading deletion. Require every reader in both rollback paths. | High: schema-compatible source downgrades and cleanup must not restore replay authority. |
+
+The smallest admissible first population is closed and structural; unknown raw
+aliases, traversal truncation, service/bot authorship, a COMMAND claim, any modern
+lease field or business-start proof reject the candidate. Wider populations need
+their own evidence and readers. A hold may suppress legitimate future work for
+the affected message/member/reputation scope; expose that unresolved state in
+the private interface or initiating dialog, never through group diagnostics.
+Only explicit evidence reconciliation may end the hold. Age, the original
+deadline, a restored permission, or current membership cannot establish an old
+remote outcome.
+
+Implement compatibility readers before activating this recovery. Native
+acceptance must include actual independent OS processes and process termination
+around remote effect/receipt commit, Redis/BullMQ restart, late edits and mirrors,
+local MUTE/strike continuation, cross-chat reputation and interruption between
+certificate installation and sealing. Use indexed exact scope probes and a
+bounded, independently measured stopped-phase repair; no full historical JSON
+scan, automatic quarantine sweep or broad ledger rewrite is acceptable. This
+design is not yet implemented. The review supplies neither a retirement
+certificate nor effect receipts for a live repair.
+
 The next production release remains gated on exact current-source CI, the
 parallel text-evidence correction, and reviewed recovery of the admission
 barrier with actual authority/effect evidence. Preserve claims, mirrors, action
@@ -313,6 +349,17 @@ chat/channel and agent-created content; no participant sanctions or diagnostic
 messages in user groups.
 
 ## Recorded validation
+
+The SQL-only finished-owner recovery commit
+`e6bfe5b24a363f54c2c97eef05444b914feeb5ad` passed public staged verification
+with disposable PostgreSQL 16 and Redis 7: 782 API suites and 18,189 tests,
+50 native storage/queue cases, API typecheck/build, 961 infrastructure checks
+and 1,081 tooling checks. The full API run skipped one Redis-executable-gated
+campaign parity case; a separate public targeted run with the verified local
+Redis executable passed it. Two nested store-wrapper tooling lifecycle tests
+were intentionally skipped. Focused recovery coverage remains 165 unit and
+63 native cases, with the process/BullMQ limitations described above. PR 107
+requires exact-head Required and CodeQL before merge or release.
 
 The final unban-boundary integration staged run on 2026-10-05 passed all
 783 API suites and 18,127 API tests without skips, all 50 native storage/queue
