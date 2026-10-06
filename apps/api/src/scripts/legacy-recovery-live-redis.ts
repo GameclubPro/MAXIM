@@ -9,12 +9,22 @@ import { isLegacyRecoveryWebhookQueue } from './legacy-recovery-queue-inventory'
 import {
   legacyRecoveryLiveDigest,
   type LegacyRecoveryLiveIssue,
+  type LegacyRecoveryLivePlanProof,
   type LegacyRecoveryLiveRequest,
 } from './legacy-recovery-live-protocol';
 import {
   LEGACY_RECOVERY_LIVE_QUEUE_NAMES,
   LEGACY_RECOVERY_LIVE_QUEUE_STATES,
 } from './legacy-recovery-live-registry';
+import type {
+  LegacyRecoverySqlSourceInput,
+  LegacyRecoverySqlSourceResult,
+} from './legacy-recovery-sql-source-resolver';
+
+export type LegacyRecoveryLiveSourceResolver = (
+  input: LegacyRecoverySqlSourceInput,
+  allowance: LegacyRecoveryLiveRedisAllowance,
+) => Promise<LegacyRecoverySqlSourceResult>;
 
 export type LegacyRecoveryLiveRedis = {
   eval_ro(script: string, keyCount: number, ...args: string[]): Promise<unknown>;
@@ -46,6 +56,7 @@ export type LegacyRecoveryLiveRedisResult = Readonly<{
   stableDigest: string;
   cost: Readonly<LegacyRecoveryLiveRedisCost>;
   issues: readonly LegacyRecoveryLiveIssue[];
+  sqlPlans?: readonly LegacyRecoveryLivePlanProof[];
 }>;
 
 const maximum = { pages: 512, rows: 10_000, probes: 50_000, bytes: 8 * 1024 * 1024 };
@@ -485,10 +496,12 @@ export async function inventoryLegacyRecoveryLiveRedis(
   request: LegacyRecoveryLiveRequest,
   sources: readonly LegacyRecoveryLiveRedisSource[],
   allowance: LegacyRecoveryLiveRedisAllowance,
+  resolveSqlSource?: LegacyRecoveryLiveSourceResolver,
 ): Promise<LegacyRecoveryLiveRedisResult> {
   const cost: LegacyRecoveryLiveRedisCost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
   const issues: LegacyRecoveryLiveIssue[] = [];
   const proofs: LegacyRecoveryLiveRedisProof[] = [];
+  const sqlPlans: LegacyRecoveryLivePlanProof[] = [];
   const children = new Map<string, LegacyChildHoldInput>();
   const issue = (code: string, descriptor: string): void => {
     if (!issues.some((v) => v.code === code && v.descriptor === descriptor))
@@ -719,6 +732,68 @@ export async function inventoryLegacyRecoveryLiveRedis(
               states.add(job.id);
               const p = provenance(job, sources, new Set(owners), probe);
               if (!actionQueues.has(name)) {
+                if (
+                  resolveSqlSource &&
+                  (name === 'commercial-image-ocr' ||
+                    name === 'photo-duplicates' ||
+                    name === 'message-duplicates')
+                ) {
+                  // FLAG: Only this server-owned resolver can discharge an exact SQL
+                  // receipt pointer. Bull flow/scheduler ancestry remains independently refused.
+                  const envelope = provenance(
+                    { ...job, data: {} },
+                    sources,
+                    new Set(owners),
+                    probe,
+                  );
+                  if (envelope.related || envelope.opaque) {
+                    issue('NON_MAX_PARENT_PROVENANCE_UNKNOWN', name);
+                    continue;
+                  }
+                  check();
+                  const resolved = await resolveSqlSource(
+                    {
+                      queueName: name,
+                      jobId: job.id,
+                      jobPayloadDigest: legacySnapshotDigest(job.data),
+                      data: job.data,
+                    },
+                    {
+                      pages: allowance.pages - cost.pages,
+                      rows: allowance.rows - cost.rows,
+                      probes: allowance.probes - cost.probes,
+                      bytes: allowance.bytes - cost.bytes,
+                      deadlineAtMs: allowance.deadlineAtMs,
+                    },
+                  );
+                  for (const key of ['pages', 'rows', 'probes', 'bytes'] as const) {
+                    if (!integer(resolved.cost[key])) throw new Refused('SQL_SOURCE_COST_INVALID');
+                    cost[key] += resolved.cost[key];
+                  }
+                  check();
+                  sqlPlans.push(...resolved.plans);
+                  for (const row of resolved.issues) issue(row.code, row.descriptor);
+                  proofs.push({
+                    descriptor: `${name}:source:${legacyRecoveryLiveDigest(job.id)}`,
+                    sha256: resolved.proofSha256,
+                    rows: 1,
+                    complete: true,
+                  });
+                  if (
+                    resolved.decision !== 'INDEPENDENT' ||
+                    !resolved.source ||
+                    p.related ||
+                    resolved.issues.length
+                  ) {
+                    issue(
+                      resolved.decision === 'RELATED_UNSUPPORTED' || p.related
+                        ? 'RELATED_NON_MAX_WORK_REQUIRES_DISPOSITION'
+                        : 'NON_MAX_PARENT_PROVENANCE_UNKNOWN',
+                      name,
+                    );
+                  }
+                  continue;
+                }
                 issue(
                   p.related
                     ? 'RELATED_NON_MAX_WORK_REQUIRES_DISPOSITION'
@@ -859,5 +934,6 @@ export async function inventoryLegacyRecoveryLiveRedis(
     }),
     cost: Object.freeze(cost),
     issues: Object.freeze(sortedIssues),
+    sqlPlans: Object.freeze(sqlPlans),
   });
 }

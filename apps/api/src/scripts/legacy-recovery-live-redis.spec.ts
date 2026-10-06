@@ -2,6 +2,7 @@ import {
   inventoryLegacyRecoveryLiveRedis,
   type LegacyRecoveryLiveRedisSource,
   type LegacyRecoveryLiveRedisAllowance,
+  type LegacyRecoveryLiveSourceResolver,
 } from './legacy-recovery-live-redis';
 import type { LegacyRecoveryLiveRequest } from './legacy-recovery-live-protocol';
 import {
@@ -384,5 +385,126 @@ describe('bounded read-only live Redis inventory', () => {
     expect(
       changed.issues.some((issue) => issue.code === 'MAX_CHILD_PARENT_PROVENANCE_UNKNOWN'),
     ).toBe(true);
+  });
+});
+
+describe('same-snapshot SQL source resolver handoff', () => {
+  const job = {
+    queue: 'message-duplicates',
+    id: 'independent-job',
+    state: 'delayed',
+    data: {
+      webhookEventId: 'independent-receipt',
+      chatId: 'other-chat',
+      messageId: 'other-message',
+    },
+  };
+  const resolved = () => ({
+    decision: 'INDEPENDENT' as const,
+    source: {
+      webhookEventId: 'independent-receipt',
+      chatId: 'other-chat',
+      messageId: 'other-message',
+      userId: 'user-v',
+      sourceAt: '2026-10-01T00:00:00.000Z',
+      receiptSha256: 'a'.repeat(64),
+    },
+    proofSha256: 'b'.repeat(64),
+    cost: { pages: 4, rows: 3, probes: 3, bytes: 1024 },
+    plans: [],
+    issues: [],
+  });
+
+  it('requires the server resolver and binds its proof to the stable inventory', async () => {
+    const { redis } = fixture([job]);
+    const resolve = jest
+      .fn<
+        ReturnType<LegacyRecoveryLiveSourceResolver>,
+        Parameters<LegacyRecoveryLiveSourceResolver>
+      >()
+      .mockResolvedValue(resolved());
+    const first = await inventoryLegacyRecoveryLiveRedis(
+      redis,
+      request,
+      sources,
+      allowance(),
+      resolve,
+    );
+    expect(first.issues).toEqual([]);
+    expect(resolve).toHaveBeenCalledWith(
+      {
+        queueName: job.queue,
+        jobId: job.id,
+        jobPayloadDigest: legacySnapshotDigest(job.data),
+        data: job.data,
+      },
+      expect.objectContaining({
+        pages: expect.any(Number),
+        deadlineAtMs: expect.any(Number),
+      }),
+    );
+    const unproved = await inventoryLegacyRecoveryLiveRedis(redis, request, sources, allowance());
+    expect(unproved.issues.some((row) => row.code === 'NON_MAX_PARENT_PROVENANCE_UNKNOWN')).toBe(
+      true,
+    );
+    resolve.mockResolvedValue({ ...resolved(), proofSha256: 'c'.repeat(64) });
+    const changed = await inventoryLegacyRecoveryLiveRedis(
+      redis,
+      request,
+      sources,
+      allowance(),
+      resolve,
+    );
+    expect(first.stableDigest).not.toBe(changed.stableDigest);
+  });
+
+  it('does not discharge Bull flow ancestry with an unrelated receipt', async () => {
+    const { redis } = fixture([
+      { ...job, fields: { opts: JSON.stringify({ parent: { id: 'opaque-parent' } }) } },
+    ]);
+    const resolve = jest.fn().mockResolvedValue(resolved());
+    const result = await inventoryLegacyRecoveryLiveRedis(
+      redis,
+      request,
+      sources,
+      allowance(),
+      resolve,
+    );
+    expect(result.issues.some((row) => row.code === 'NON_MAX_PARENT_PROVENANCE_UNKNOWN')).toBe(
+      true,
+    );
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it.each(['RELATED_UNSUPPORTED', 'DENY'] as const)(
+    'retains refusal for %s SQL provenance',
+    async (decision) => {
+      const { redis } = fixture([job]);
+      const result = await inventoryLegacyRecoveryLiveRedis(
+        redis,
+        request,
+        sources,
+        allowance(),
+        jest.fn().mockResolvedValue({ ...resolved(), decision }),
+      );
+      expect(result.issues.length).toBeGreaterThan(0);
+    },
+  );
+
+  it('enforces the shared remaining cost after the SQL callback', async () => {
+    const { redis } = fixture([job]);
+    const result = await inventoryLegacyRecoveryLiveRedis(
+      redis,
+      request,
+      sources,
+      allowance(),
+      jest
+        .fn()
+        .mockResolvedValue({
+          ...resolved(),
+          cost: { pages: 513, rows: 3, probes: 3, bytes: 1024 },
+        }),
+    );
+    expect(result.issues.some((row) => row.code === 'REDIS_TOTAL_BUDGET_EXCEEDED')).toBe(true);
   });
 });

@@ -6,6 +6,7 @@ import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registr
 import { LEGACY_RECOVERY_SQL_PRIMARY_KEYS } from './legacy-recovery-sql-keys';
 import { inventoryLegacyRecoveryLiveSql } from './legacy-recovery-live-sql';
 import { inventoryLegacyRecoveryLiveRedis } from './legacy-recovery-live-redis';
+import { resolveLegacyRecoverySqlSource } from './legacy-recovery-sql-source-resolver';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import {
   collectLegacyRecoveryAdmission,
@@ -105,10 +106,24 @@ export async function collectLegacyRecoveryLiveEvidence(
       issues.push({ code: 'selected_owner_proof_incomplete', descriptor: 'sql:webhook_events' });
     // Keep catalog diagnostics available even if a selected source is refused.
     const sources = sql.candidates.map((candidate) => candidate.source);
-    first = await adapters.redis(redis, request, sources, allowance(cost, deadlineAtMs));
+    const resolveSource: NonNullable<Parameters<Adapters['redis']>[4]> = (input, remaining) =>
+      resolveLegacyRecoverySqlSource(tx, input, sources, remaining);
+    first = await adapters.redis(
+      redis,
+      request,
+      sources,
+      allowance(cost, deadlineAtMs),
+      resolveSource,
+    );
     charge(cost, first.cost);
     issues.push(...first.issues);
-    const second = await adapters.redis(redis, request, sources, allowance(cost, deadlineAtMs));
+    const second = await adapters.redis(
+      redis,
+      request,
+      sources,
+      allowance(cost, deadlineAtMs),
+      resolveSource,
+    );
     charge(cost, second.cost);
     issues.push(...second.issues);
     if (first.stableDigest !== second.stableDigest)
@@ -139,7 +154,7 @@ export async function collectLegacyRecoveryLiveEvidence(
     previewSha256: issues.length ? null : previewSha256,
     selectedOwners: sql?.selectedOwners ?? [],
     children: first?.children ?? [],
-    sqlPlans: sql?.proofs ?? [],
+    sqlPlans: [...(sql?.proofs ?? []), ...(first?.sqlPlans ?? [])],
     issues: issuesSorted(issues),
     cost,
   };
