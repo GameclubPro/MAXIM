@@ -508,6 +508,84 @@ if maxim_topology_smoke_media_analysis_tesseract compose_args required; then exi
   assert.match(notReady.stderr, /did not reach internal OCR readiness/u);
 });
 
+test('cold native admission accepts only fresh queue-only failure and keeps release readiness strict', () => {
+  const script = read('infra/scripts/lib/deploy-topology.sh').match(
+    /'(fetch\("http:\/\/127\.0\.0\.1:3001\/api\/health\/ready"[^\n]+)' "\$readiness_policy"/u,
+  )?.[1];
+  assert.ok(script);
+  const healthyNativeBacklog = {
+    ok: false,
+    checks: {
+      database: true,
+      redis: true,
+      queueLag: {
+        rawOk: false,
+        effectiveLagSec: 40000,
+        sampleGeneratedAt: new Date().toISOString(),
+      },
+      ocr: { ready: true, behaviorIdentity: { complete: true, verified: true } },
+    },
+    systemMode: { source: 'auto', condition: 'queue_backlog', manualMode: null },
+  };
+  const run = (policy, body, status = 503) =>
+    spawnSync(
+      process.execPath,
+      [
+        '-e',
+        `global.fetch = async () => ({ ok: ${status === 200}, status: ${status}, json: async () => (${JSON.stringify(body)}) });\n${script}`,
+        policy,
+      ],
+      { encoding: 'utf8' },
+    ).status;
+  assert.equal(run('cold-recovery', healthyNativeBacklog), 0);
+  assert.equal(run('strict', healthyNativeBacklog), 1);
+  assert.equal(run('cold-recovery', healthyNativeBacklog, 500), 1);
+  for (const mutate of [
+    (b) => {
+      b.checks.database = false;
+    },
+    (b) => {
+      b.checks.redis = false;
+    },
+    (b) => {
+      b.checks.ocr.ready = false;
+    },
+    (b) => {
+      b.checks.ocr.behaviorIdentity.complete = false;
+    },
+    (b) => {
+      b.checks.ocr.behaviorIdentity.verified = false;
+    },
+    (b) => {
+      b.systemMode.source = 'manual';
+    },
+    (b) => {
+      b.systemMode.manualMode = 'degrade';
+    },
+    (b) => {
+      b.systemMode.condition = 'action_errors';
+    },
+    (b) => {
+      b.checks.queueLag.sampleGeneratedAt = '2000-01-01T00:00:00.000Z';
+    },
+    (b) => {
+      b.checks.queueLag.sampleGeneratedAt = new Date(Date.now() + 60000).toISOString();
+    },
+    (b) => {
+      b.checks.queueLag.effectiveLagSec = null;
+    },
+  ]) {
+    const body = structuredClone(healthyNativeBacklog);
+    mutate(body);
+    assert.equal(run('cold-recovery', body), 1);
+  }
+  const ready = structuredClone(healthyNativeBacklog);
+  ready.ok = true;
+  assert.equal(run('strict', ready, 200), 0);
+  ready.checks.ocr.ready = false;
+  assert.equal(run('strict', ready, 200), 1);
+});
+
 test('sandbox OCR smoke uses only the attested UDS probe and never spawns Tesseract directly', () => {
   const result = runTopologyProbe(`
 maxim_topology_require_ocr_native_sandbox_config() { :; }

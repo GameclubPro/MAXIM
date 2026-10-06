@@ -19,5 +19,5 @@ maxim_topology_prepare_photo_native_target "$1" COMPOSE_FILES
 [[ "$target_has_media" == 1 && "$target_has_ocr" == 1 && "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" == 1 ]]
 maxim_topology_verify_api_commercial_ocr_version COMPOSE_FILES "$target_ocr_version"
 maxim_topology_verify_ocr_native_sandbox_runtime COMPOSE_FILES "$2" with-media
-maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox
+maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox cold-recovery
 maxim_topology_smoke_photo_native_sandbox_uds COMPOSE_FILES "$2"

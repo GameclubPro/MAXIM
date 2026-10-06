@@ -92,7 +92,10 @@ source nor permit replay, stopping or installation. No extra audit grants apply.
 
 Change `operation` to `prepare` only for an approved selection. Preparation runs
 native smokes, repeats fresh online admission, requires a 10 GiB Docker reserve,
-and refuses an existing queue fence. It writes a durable journal before stopping
+and refuses an existing queue fence. Its OCR readiness probe accepts a fresh, purely
+queue-backlog failure only when DB/Redis, the OCR worker and verified native identity
+are healthy; final recovery and release readiness remain strict. This avoids requiring
+an already drained queue before recovery can begin. It writes a durable journal before stopping
 exactly the captured 14 API and two native generations. Each must use
 `unless-stopped`. PostgreSQL, Redis and unrelated containers are preserved.
 The controller pauses/rechecks all 24 webhook queues, collects the authoritative

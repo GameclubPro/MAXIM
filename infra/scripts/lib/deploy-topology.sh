@@ -1941,6 +1941,7 @@ maxim_topology_smoke_media_analysis_tesseract() {
   local compose_args_var="$1"
   local raster_smoke_policy="${2:-required}"
   local native_boundary_policy="${3:-legacy}"
+  local readiness_policy="${4:-strict}"
   local -n compose_args_ref="$compose_args_var"
   local raster_smoke_capability
   local native_service="$MAXIM_MEDIA_ANALYSIS_SERVICE"
@@ -1948,6 +1949,11 @@ maxim_topology_smoke_media_analysis_tesseract() {
   local binary
   local output
   local ready=0
+
+  case "$readiness_policy" in
+    strict | cold-recovery) ;;
+    *) echo "Unknown OCR readiness policy: $readiness_policy" >&2; return 2 ;;
+  esac
 
   case "$raster_smoke_policy" in
     required | if-present)
@@ -2047,10 +2053,12 @@ maxim_topology_smoke_media_analysis_tesseract() {
       ;;
   esac
 
+  # FLAG: Cold recovery must prove the native worker before it can drain the backlog.
+  # Only fresh queue-only degradation may pass here; final release smokes stay strict.
   for ((attempt = 1; attempt <= 30; attempt += 1)); do
     if docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
       node -e \
-      'fetch("http://127.0.0.1:3001/api/health/ready", { signal: AbortSignal.timeout(3000) }).then(async (response) => { const body = await response.json(); if (!response.ok || body?.ok !== true || body?.checks?.ocr?.ready !== true) process.exit(1); }).catch(() => process.exit(1));' \
+      'fetch("http://127.0.0.1:3001/api/health/ready", { signal: AbortSignal.timeout(3000) }).then(async (response) => { const body = await response.json(); const lag = body?.checks?.queueLag; const age = Date.now() - Date.parse(lag?.sampleGeneratedAt); const coldBacklog = process.argv[1] === "cold-recovery" && response.status === 503 && body?.ok === false && body?.checks?.database === true && body?.checks?.redis === true && body?.systemMode?.source === "auto" && body?.systemMode?.condition === "queue_backlog" && body?.systemMode?.manualMode === null && lag?.rawOk === false && Number.isFinite(lag?.effectiveLagSec) && lag.effectiveLagSec > 10 && Number.isFinite(age) && age >= -1000 && age <= 15000 && body?.checks?.ocr?.behaviorIdentity?.complete === true && body?.checks?.ocr?.behaviorIdentity?.verified === true; if ((!response.ok || body?.ok !== true) && !coldBacklog || body?.checks?.ocr?.ready !== true) process.exit(1); }).catch(() => process.exit(1));' "$readiness_policy" \
       >/dev/null 2>&1; then
       ready=1
       break
