@@ -445,6 +445,7 @@ export class WebhookOutboxService
   private readonly retentionBatchDelayMs = RETENTION_CLEANUP_BATCH_DELAY_MS;
 
   private enqueueScans?: Map<string, OutboxScanState>;
+  private enqueueScanReserveOffset = 0;
   private finishedHeadRecoveryOffset = 0;
   private finishedOwnerRecoveryOffset = 0;
   private nextFinishedHeadRecoveryAt = 0;
@@ -818,11 +819,36 @@ export class WebhookOutboxService
       ? Math.min(50, Math.max(2, Math.floor(selectionWindowSize / 4)))
       : 0;
     const scans = (this.enqueueScans ??= new Map<string, OutboxScanState>());
+    const scanLanes = [
+      'received',
+      'failed',
+      ...(admission.includeCompletedTimeoutRepair ? ['completedTimeout'] : []),
+      ...(admission.includeQueuedRepair ? ['staleUserFacingQueued', 'staleBackgroundQueued'] : []),
+    ];
+    // FLAG: SQL may advance only across representatives guaranteed a final batch slot.
+    // Share one bounded reserve across lanes, with half for receipts; rotate small
+    // budgets too. Marked work survives both JS caps, including cross-lane chat dedupe.
+    const scanSlots = [
+      ...Array<string>(scanLanes.length - 1).fill('received'),
+      ...scanLanes.slice(1),
+    ];
+    const scanReserve = Math.max(1, Math.floor(admission.batchSize / 4));
+    const scanTakes = new Map<string, number>();
+    const scanOffset = this.enqueueScanReserveOffset ?? 0;
+    for (let slot = 0; slot < scanReserve; slot += 1) {
+      const lane = scanSlots[(scanOffset + slot) % scanSlots.length]!;
+      scanTakes.set(lane, (scanTakes.get(lane) ?? 0) + 1);
+    }
+    const rotation = (lane: string) => ({
+      lane,
+      state: scans.get(lane) ?? { horizon: now, after: null },
+      candidateTake: scanTakes.get(lane) ?? 0,
+    });
     const backlogReceiptCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
       columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
       workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
       eligibility: eligibility.received,
-      rotation: { lane: 'received', state: scans.get('received') ?? { horizon: now, after: null } },
+      rotation: rotation('received'),
       scanDirection: 'ASC',
       resultDirection: 'ASC',
       overscanTake,
@@ -841,7 +867,7 @@ export class WebhookOutboxService
       columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
       workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
       eligibility: Prisma.sql`"legacy_disposition_id" IS NULL AND "status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" <= ${now}`,
-      rotation: { lane: 'failed', state: scans.get('failed') ?? { horizon: now, after: null } },
+      rotation: rotation('failed'),
       scanDirection: 'ASC',
       resultDirection: 'ASC',
       overscanTake: overscanTake - repairRawTake,
@@ -855,10 +881,7 @@ export class WebhookOutboxService
           workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
           sourceEligibility: Prisma.sql`"legacy_disposition_id" IS NULL AND "status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" IS NULL`,
           eligibility: eligibility.failed,
-          rotation: {
-            lane: 'completedTimeout',
-            state: scans.get('completedTimeout') ?? { horizon: now, after: null },
-          },
+          rotation: rotation('completedTimeout'),
           scanDirection: 'ASC',
           resultDirection: 'ASC',
           overscanTake: repairRawTake,
@@ -870,10 +893,7 @@ export class WebhookOutboxService
           columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
           workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
           eligibility: eligibility.staleUserFacingQueued,
-          rotation: {
-            lane: 'staleUserFacingQueued',
-            state: scans.get('staleUserFacingQueued') ?? { horizon: now, after: null },
-          },
+          rotation: rotation('staleUserFacingQueued'),
           scanDirection: 'ASC',
           resultDirection: 'ASC',
           overscanTake,
@@ -885,10 +905,7 @@ export class WebhookOutboxService
           columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
           workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
           eligibility: eligibility.staleBackgroundQueued,
-          rotation: {
-            lane: 'staleBackgroundQueued',
-            state: scans.get('staleBackgroundQueued') ?? { horizon: now, after: null },
-          },
+          rotation: rotation('staleBackgroundQueued'),
           scanDirection: 'ASC',
           resultDirection: 'ASC',
           overscanTake,
@@ -963,6 +980,7 @@ export class WebhookOutboxService
 
     // FLAG: Commit cursor progress only after the whole SQL statement succeeds. Cursor loss
     // repeats a bounded scan; it never removes receipts or relaxes the exact-head CAS fence.
+    this.enqueueScanReserveOffset = (scanOffset + scanReserve) % scanSlots.length;
     for (const candidate of candidates) {
       const progress = candidate.scanProgress;
       if (!progress) continue;
@@ -1085,7 +1103,7 @@ export class WebhookOutboxService
     let fallbackReplacementIndex = -1;
     for (let index = selected.length - 1; index >= 0; index -= 1) {
       const candidate = selected[index]!;
-      if (this.isMembershipLeaveCandidate(candidate)) {
+      if (this.isMembershipLeaveCandidate(candidate) || candidate.isBacklogScan) {
         continue;
       }
       if (fallbackReplacementIndex < 0) {
@@ -1211,10 +1229,22 @@ export class WebhookOutboxService
     take: number,
     now?: Date,
   ): T[] {
-    const recentReceipts = candidates.filter(
+    // FLAG: These SQL representatives already advanced the durable-row scan cursor.
+    // Keep every reserved unit through both caps; dropping a suffix here can starve
+    // the same independent chats forever on each repeated cursor cycle.
+    const scanned = candidates.filter((candidate) => candidate.isBacklogScan).slice(0, take);
+    const scannedIds = new Set(scanned.map((candidate) => candidate.id));
+    const scannedReceipts = scanned.filter(
+      (candidate) => candidate.status === WebhookStatus.RECEIVED,
+    );
+    const scannedRecovery = scanned.filter(
+      (candidate) => candidate.status !== WebhookStatus.RECEIVED,
+    );
+    const unreserved = candidates.filter((candidate) => !scannedIds.has(candidate.id));
+    const recentReceipts = unreserved.filter(
       (candidate) => candidate.status === WebhookStatus.RECEIVED && candidate.isRecentReceipt,
     );
-    const backlogReceipts = candidates.filter(
+    const backlogReceipts = unreserved.filter(
       (candidate) => candidate.status === WebhookStatus.RECEIVED && !candidate.isRecentReceipt,
     );
     // FLAG: Priority alone can indefinitely starve old receipts under sustained joins/callbacks.
@@ -1234,21 +1264,35 @@ export class WebhookOutboxService
         ...backlogReceipts.filter((candidate) => !agedIds.has(candidate.id)),
       );
     }
-    const recoveryCandidates = candidates.filter(
+    const recoveryCandidates = unreserved.filter(
       (candidate) => candidate.status !== WebhookStatus.RECEIVED,
     );
-    const receivedTake = this.resolveReceivedTake(
-      recentReceipts.length + backlogReceipts.length,
-      take,
+    const receivedTake = Math.max(
+      scannedReceipts.length,
+      Math.min(
+        this.resolveReceivedTake(
+          scannedReceipts.length + recentReceipts.length + backlogReceipts.length,
+          take,
+        ),
+        take - scannedRecovery.length,
+      ),
     );
     const recentReceiptTake = Math.min(
-      this.resolveRecentReceiptTake(take),
-      receivedTake,
+      Math.max(
+        0,
+        this.resolveRecentReceiptTake(take) -
+          scannedReceipts.filter((candidate) => candidate.isRecentReceipt).length,
+      ),
+      receivedTake - scannedReceipts.length,
       recentReceipts.length,
     );
     const selectedReceipts = [
+      ...scannedReceipts,
       ...recentReceipts.slice(0, recentReceiptTake),
-      ...this.reserveScanCandidates(backlogReceipts, Math.max(0, receivedTake - recentReceiptTake)),
+      ...backlogReceipts.slice(
+        0,
+        Math.max(0, receivedTake - scannedReceipts.length - recentReceiptTake),
+      ),
     ];
     const selectedReceiptIds = new Set(selectedReceipts.map((candidate) => candidate.id));
     const unselectedReceipts = [...recentReceipts, ...backlogReceipts].filter(
@@ -1263,9 +1307,10 @@ export class WebhookOutboxService
 
     const selected = [
       ...selectedReceipts,
-      ...this.reserveScanCandidates(
-        recoveryCandidates,
-        Math.max(0, take - selectedReceipts.length),
+      ...scannedRecovery,
+      ...recoveryCandidates.slice(
+        0,
+        Math.max(0, take - selectedReceipts.length - scannedRecovery.length),
       ),
     ];
     if (selected.length < take) {
@@ -1273,19 +1318,6 @@ export class WebhookOutboxService
     }
 
     return selected;
-  }
-
-  private reserveScanCandidates<T extends WebhookEnqueueCandidate>(
-    candidates: readonly T[],
-    take: number,
-  ): T[] {
-    // FLAG: Keep a quarter of each existing backlog/recovery allowance for the rotating scan.
-    // This preserves the recent receipt reserve and keeps capped pages visible past final priority.
-    const scan = candidates
-      .filter((candidate) => candidate.isBacklogScan)
-      .slice(0, Math.ceil(take / 4));
-    const ids = new Set(scan.map((candidate) => candidate.id));
-    return [...scan, ...candidates.filter((candidate) => !ids.has(candidate.id))].slice(0, take);
   }
 
   private comparePrioritizedCandidates(

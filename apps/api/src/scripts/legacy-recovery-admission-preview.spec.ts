@@ -320,6 +320,11 @@ describe('live read-only admission preview', () => {
       request(),
     );
     expect(result.issues).toContainEqual(storeRefusedIssue);
+    expect(result.issues).toContainEqual({
+      code: 'online_admission_budget_exceeded',
+      descriptor: 'redis:accounting',
+    });
+    expect(result.cost.probes).toBe(LEGACY_RECOVERY_LIVE_BUDGET.probes + 1);
     expect(mockSql).not.toHaveBeenCalled();
   });
 
@@ -348,6 +353,55 @@ describe('live read-only admission preview', () => {
     expect(result).toMatchObject({ decision: 'DENY', sourceCoverageComplete: false });
   });
 
+  it('retains completed SQL evidence, refusal and cost when its return crosses the admission deadline', async () => {
+    const now = Date.UTC(2026, 9, 6);
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    const sql: ReturnType<typeof sqlFixture> = {
+      ...sqlFixture(),
+      cost: { pages: 12, rows: 30, probes: 50, bytes: 2048 },
+      issues: [{ code: 'sql_deadline_exceeded', descriptor: 'sql:semantic-mirror-source' }],
+      proofs: [
+        {
+          descriptor: 'sql:semantic-mirror-source:returned',
+          querySha256: 'a'.repeat(64),
+          planSha256: 'b'.repeat(64),
+          indexes: ['webhook_events_pkey'],
+          returnedRows: 1,
+          examinedRows: 0,
+          probes: 1,
+        },
+      ],
+    };
+    mockSql.mockImplementation(async () => {
+      clock.mockReturnValue(now + LEGACY_RECOVERY_LIVE_BUDGET.durationMs);
+      return sql;
+    });
+    const result = await collectLegacyRecoveryAdmission(
+      tx,
+      { eval_ro: jest.fn().mockResolvedValue(headerReply()) },
+      request(),
+    );
+    expect(result).toMatchObject({
+      decision: 'DENY',
+      sourceCoverageComplete: false,
+      stoppingAuthorized: false,
+      activationAuthorized: false,
+      selectedOwners: sql.selectedOwners,
+      sqlPlans: sql.proofs,
+      cost: {
+        pages: 13,
+        rows: 30,
+        probes: 50 + LEGACY_RECOVERY_LIVE_QUEUE_NAMES.length * 8,
+        bytes: 2048 + Buffer.byteLength(String(headerReply()[2])),
+      },
+    });
+    expect(result.issues).toEqual([
+      ...sql.issues,
+      storeRefusedIssue,
+      { code: 'online_admission_deadline_exceeded', descriptor: 'sql:accounting' },
+    ]);
+  });
+
   it.each(['redis', 'sql'] as const)('never emits secret-bearing %s errors', async (store) => {
     const error = new Error('redis://fixture:DO_NOT_EXPOSE@offline.invalid/0 source_text_secret');
     const redis = { eval_ro: jest.fn().mockResolvedValue(headerReply()) };
@@ -355,6 +409,10 @@ describe('live read-only admission preview', () => {
     else mockSql.mockRejectedValue(error);
     const result = await collectLegacyRecoveryAdmission(tx, redis, request());
     expect(result.issues).toContainEqual(storeRefusedIssue);
+    expect(result.issues).toContainEqual({
+      code: 'online_admission_store_query_failed',
+      descriptor: store === 'redis' ? 'redis:counts' : 'sql:inventory',
+    });
     expect(JSON.stringify(result)).not.toContain('DO_NOT_EXPOSE');
     expect(JSON.stringify(result)).not.toContain('source_text_secret');
     expect(result).toMatchObject({

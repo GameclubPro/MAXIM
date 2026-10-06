@@ -16,6 +16,13 @@ import {
   type LegacyRecoveryLiveRequest,
 } from './legacy-recovery-live-protocol';
 import type { LegacyRecoveryLiveRedis } from './legacy-recovery-live-redis';
+import { classifyLegacyRecoveryStoreRefusal } from './legacy-recovery-store-refusal';
+
+class AdmissionRefused extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
 
 export type LegacyRecoveryAdmissionRequest = Readonly<{
   version: 1;
@@ -136,19 +143,30 @@ export async function collectLegacyRecoveryAdmission(
   let queueCounts: { queueName: string; states: number[] }[] = [];
   let selectedOwners: LegacyRecoveryLiveOutput['selectedOwners'] = [];
   let sqlPlans: LegacyRecoveryLiveOutput['sqlPlans'] = [];
+  let stage:
+    | 'redis:counts'
+    | 'redis:accounting'
+    | 'redis:catalog'
+    | 'sql:inventory'
+    | 'sql:accounting' = 'redis:counts';
   const deadlineAtMs = Date.now() + LEGACY_RECOVERY_LIVE_BUDGET.durationMs;
   const charge = (next: typeof cost): void => {
-    if (Date.now() >= deadlineAtMs) throw new Error('Online admission deadline exceeded');
     for (const key of ['pages', 'rows', 'probes', 'bytes'] as const) {
       if (
         !Number.isSafeInteger(next[key]) ||
         next[key] < 0 ||
-        !Number.isSafeInteger(cost[key] + next[key]) ||
-        cost[key] + next[key] > LEGACY_RECOVERY_LIVE_BUDGET[key]
+        !Number.isSafeInteger(cost[key] + next[key])
       )
-        throw new Error('Online admission accounting refused');
+        throw new AdmissionRefused('online_admission_accounting_invalid');
     }
+    // FLAG: Preserve actual completed work when the deadline/budget refuses further
+    // work. A denied inventory's partial counters and proofs never authorize a stop.
     for (const key of ['pages', 'rows', 'probes', 'bytes'] as const) cost[key] += next[key];
+    if (Date.now() >= deadlineAtMs)
+      throw new AdmissionRefused('online_admission_deadline_exceeded');
+    for (const key of ['pages', 'rows', 'probes', 'bytes'] as const)
+      if (cost[key] > LEGACY_RECOVERY_LIVE_BUDGET[key])
+        throw new AdmissionRefused('online_admission_budget_exceeded');
   };
   try {
     const reply = await redis.eval_ro(
@@ -165,11 +183,13 @@ export async function collectLegacyRecoveryAdmission(
       typeof reply[2] !== 'string' ||
       Buffer.byteLength(reply[2]) > 64 * 1024
     )
-      throw new Error('Online queue header refused');
+      throw new AdmissionRefused('online_admission_queue_header_unproved');
+    stage = 'redis:accounting';
     charge({ pages: 1, rows: 0, probes: reply[1], bytes: Buffer.byteLength(reply[2]) });
+    stage = 'redis:catalog';
     const rows: unknown = JSON.parse(reply[2]);
     if (!Array.isArray(rows) || rows.length !== LEGACY_RECOVERY_LIVE_QUEUE_NAMES.length)
-      throw new Error('Online queue catalog refused');
+      throw new AdmissionRefused('online_admission_queue_catalog_unproved');
     queueCounts = rows.map((value, index) => {
       if (
         !Array.isArray(value) ||
@@ -177,7 +197,7 @@ export async function collectLegacyRecoveryAdmission(
         value[0] !== LEGACY_RECOVERY_LIVE_QUEUE_NAMES[index] ||
         value.slice(1).some((count) => !Number.isSafeInteger(count) || count < 0)
       )
-        throw new Error('Online queue state refused');
+        throw new AdmissionRefused('online_admission_queue_state_unproved');
       return { queueName: value[0] as string, states: value.slice(1) as number[] };
     });
     const effectRows = queueCounts
@@ -201,6 +221,7 @@ export async function collectLegacyRecoveryAdmission(
         descriptor: 'redis:webhooks',
       });
     } else {
+      stage = 'sql:inventory';
       const sql = await inventoryLegacyRecoverySelectedSql(
         tx,
         { selection: request.selection },
@@ -212,10 +233,11 @@ export async function collectLegacyRecoveryAdmission(
           deadlineAtMs,
         },
       );
-      charge(sql.cost);
       selectedOwners = sql.selectedOwners;
       sqlPlans = sql.proofs;
       issues.push(...sql.issues);
+      stage = 'sql:accounting';
+      charge(sql.cost);
       const expected = request.selection.ownerWebhookEventIds;
       const candidateIds = sql.candidates.map((row) => row.owner.id).sort();
       const proofIds = sql.selectedOwners.map((row) => row.ownerWebhookEventId).sort();
@@ -232,8 +254,15 @@ export async function collectLegacyRecoveryAdmission(
           descriptor: 'redis:webhooks',
         });
     }
-  } catch {
+  } catch (error) {
     issues.push({ code: 'online_admission_store_or_budget_refused', descriptor: 'inventory' });
+    issues.push({
+      code:
+        error instanceof AdmissionRefused
+          ? error.code
+          : `online_admission_store_${classifyLegacyRecoveryStoreRefusal(error)}`,
+      descriptor: stage,
+    });
   }
   const result: LegacyRecoveryAdmissionOutput = {
     version: 1,

@@ -1870,8 +1870,18 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     await prisma.webhookEvent.createMany({ data: rows });
     const now = new Date(base + 10_000);
     const observed = new Set<string>();
-    for (let pass = 0; pass < 12; pass++) {
-      for (const candidate of await reader.selectEnqueueCandidates(now)) observed.add(candidate.id);
+    for (let pass = 0; pass < 80; pass++) {
+      const candidates = await reader.selectEnqueueCandidates(now);
+      const prioritized = await (
+        reader as unknown as {
+          prioritizeCandidates(
+            candidates: unknown[],
+            now: Date,
+            take: number,
+          ): Promise<Array<{ id: string }>>;
+        }
+      ).prioritizeCandidates(candidates, now, 100);
+      for (const candidate of prioritized) observed.add(candidate.id);
       if (pass === 1) {
         const state = JSON.stringify([...service.enqueueScans.entries()]);
         const failure = jest

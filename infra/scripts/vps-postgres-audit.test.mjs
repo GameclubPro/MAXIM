@@ -3504,7 +3504,7 @@ test(
       await client.query(`BEGIN; CREATE SCHEMA ${namespace}; SET LOCAL search_path = ${namespace}, pg_catalog;
       CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED', 'QUEUED', 'FAILED');
       CREATE TABLE webhook_events(id text PRIMARY KEY, bot_id text, semantic_key text, status "WebhookStatus", created_at timestamp,
-        error_message text, next_enqueue_at timestamp, timeout_quarantine_expires_at timestamp, processed_at timestamp, normalized_payload jsonb);
+        error_message text, next_enqueue_at timestamp, timeout_quarantine_expires_at timestamp, processed_at timestamp, normalized_payload jsonb, raw_payload jsonb DEFAULT '{}');
       CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status, created_at, id);`);
       for (const migration of [
         '20260815123000_add_webhook_ordered_chat_head_index',
@@ -3597,6 +3597,30 @@ test(
       assert.equal(other.raw_equal, false);
       assert.equal(other.body_without_attachments_equal, true);
       assert.equal(other.receipt_receiver_matches, true);
+      assert.equal(other.source_guards.stored_raw_empty, true);
+      assert.equal(other.source_guards.stored_raw_matches, false);
+      assert.equal(other.source_guards.event_clock_not_after_receipt, true);
+      assert.equal(other.source_guards.ingress_clock, null);
+      await client.query(
+        "UPDATE webhook_events SET raw_payload = normalized_payload->'raw' WHERE id = 'mirror'",
+      );
+      const rawMatched = (await read()).mirrors.find((item) => !item.is_owner);
+      assert.equal(rawMatched.source_guards.stored_raw_matches, true);
+      const invalidClock = structuredClone(mirror);
+      invalidClock.raw.timestamp = Date.UTC(2099, 0, 1);
+      invalidClock.eventTimestampSource = 'ingress';
+      await client.query("UPDATE webhook_events SET normalized_payload = $1 WHERE id = 'mirror'", [
+        JSON.stringify(invalidClock),
+      ]);
+      const clockRefused = (await read()).mirrors.find((item) => !item.is_owner);
+      assert.equal(clockRefused.source_guards.stored_raw_matches, false);
+      assert.equal(clockRefused.source_guards.event_clock_not_after_receipt, false);
+      assert.equal(clockRefused.source_guards.ingress_clock, true);
+      assert.doesNotMatch(JSON.stringify(clockRefused), /private-|https?:|2099/u);
+      await client.query("UPDATE webhook_events SET normalized_payload = $1 WHERE id = 'mirror'", [
+        JSON.stringify(mirror),
+      ]);
+
       assert.equal(other.attachment_shapes[0].payload_url_equal, false);
       assert.equal(other.attachment_shapes[0].payload_token_equal, false);
       assert.equal(other.attachment_shapes[0].payload_without_url_token_equal, true);

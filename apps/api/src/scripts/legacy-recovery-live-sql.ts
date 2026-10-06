@@ -7,6 +7,7 @@ import {
 } from '../webhook/webhook-legacy-cold-install';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 import { isLegacyOpaqueSequence } from '../webhook/webhook-legacy-forward-source';
+import type { LegacyRecoverySourceRefusal } from '../webhook/webhook-legacy-source';
 import {
   legacyRecoveryLiveDigest,
   type LegacyRecoveryLiveIssue,
@@ -16,6 +17,7 @@ import {
 } from './legacy-recovery-live-protocol';
 import { LEGACY_RECOVERY_SQL_PRIMARY_KEYS } from './legacy-recovery-sql-keys';
 import { previewLegacyRecoveryMaterialization } from './legacy-recovery-materialization-preview';
+import { classifyLegacyRecoveryStoreRefusal } from './legacy-recovery-store-refusal';
 
 export type LegacyRecoveryLiveSqlSelection = Pick<LegacyRecoveryLiveRequest, 'selection'>;
 
@@ -848,6 +850,46 @@ function legacyMirrorContentDigest(value: unknown): string {
   return legacySnapshotDigest({ ...raw, message: { ...message, body: { ...body, attachments } } });
 }
 
+export type LegacyRecoveryMirrorRefusal =
+  | LegacyRecoverySourceRefusal
+  | 'row_missing'
+  | 'source_unproved'
+  | 'receiver_catalog_unproved'
+  | 'stored_semantic_mismatch'
+  | 'rebuilt_semantic_mismatch'
+  | 'scope_mismatch'
+  | 'content_mismatch';
+
+// FLAG: Fixed first-refusal codes expose which existing proof failed, never source
+// identities, source values or exception messages. Diagnostic precision grants no
+// new admission: every source, receiver, semantic, scope and content guard remains.
+export function inspectLegacyRecoveryMirror(
+  candidate: Pick<LegacyRecoveryCandidate, 'source' | 'owner' | 'claim'>,
+  mirror: Record<string, unknown> | null,
+  metadata: { bot_id: string | null; semantic_key: string | null },
+  majorBotIds: readonly string[],
+): LegacyRecoveryMirrorRefusal | null {
+  if (!mirror) return 'row_missing';
+  let sourceRefusal: LegacyRecoverySourceRefusal | undefined;
+  const source = inspectLegacyRecoverySource(mirror as never, (reason) => {
+    sourceRefusal = reason;
+  });
+  if (!source) return sourceRefusal ?? 'source_unproved';
+  if (!metadata.bot_id || !majorBotIds.includes(metadata.bot_id))
+    return 'receiver_catalog_unproved';
+  if (metadata.semantic_key !== candidate.claim.semanticKey) return 'stored_semantic_mismatch';
+  if (buildWebhookSemanticEventKey(mirror.normalizedPayload) !== candidate.claim.semanticKey)
+    return 'rebuilt_semantic_mismatch';
+  if (legacySnapshotDigest(source) !== legacySnapshotDigest(candidate.source))
+    return 'scope_mismatch';
+  if (
+    legacyMirrorContentDigest(object(mirror.normalizedPayload)?.raw) !==
+    legacyMirrorContentDigest(object(candidate.owner.normalizedPayload)?.raw)
+  )
+    return 'content_mismatch';
+  return null;
+}
+
 function quantity(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0)
     throw new Refused('sql_plan_unproved', 'sql:plan');
@@ -1063,6 +1105,7 @@ class Meter {
   readonly proofs: LegacyRecoveryLivePlanProof[] = [];
   private tail: Promise<void> = Promise.resolve();
   private failed = false;
+  storeFailure: LegacyRecoveryLiveIssue | null = null;
   constructor(
     readonly tx: Database,
     readonly allowance: Allowance,
@@ -1076,7 +1119,18 @@ class Meter {
         throw new Refused('sql_budget_exceeded', descriptor);
   }
   read<T>(descriptor: string, statement: Prisma.Sql): Promise<T[]> {
-    const pending = this.tail.then(() => this.performRead<T>(descriptor, statement));
+    const pending = this.tail.then(async () => {
+      try {
+        return await this.performRead<T>(descriptor, statement);
+      } catch (error) {
+        if (!(error instanceof Refused) && !this.storeFailure)
+          this.storeFailure = {
+            code: `sql_store_${classifyLegacyRecoveryStoreRefusal(error)}`,
+            descriptor,
+          };
+        throw error;
+      }
+    });
     this.tail = pending.then(
       () => undefined,
       () => {
@@ -1694,7 +1748,6 @@ async function inventoryLegacyRecoverySql(
             'webhook_events',
             Prisma.sql`t."id" = ${row.id}`,
           );
-          const source = mirror ? inspectLegacyRecoverySource(mirror as never) : null;
           if (mirror)
             evidence.push({
               descriptor: 'sql:semantic-mirror-source',
@@ -1702,19 +1755,22 @@ async function inventoryLegacyRecoverySql(
               rawPayloadSha256: legacySnapshotDigest(mirror.rawPayload),
               normalizedPayloadSha256: legacySnapshotDigest(mirror.normalizedPayload),
             });
-          if (
-            !mirror ||
-            !source ||
-            !row.bot_id ||
-            !request.selection.majorBotIds.includes(row.bot_id) ||
-            row.semantic_key !== candidate.claim.semanticKey ||
-            buildWebhookSemanticEventKey(mirror.normalizedPayload) !==
-              candidate.claim.semanticKey ||
-            legacySnapshotDigest(source) !== legacySnapshotDigest(candidate.source) ||
-            legacyMirrorContentDigest(object(mirror.normalizedPayload)?.raw) !==
-              legacyMirrorContentDigest(object(candidate.owner.normalizedPayload)?.raw)
-          )
+          const refusal = inspectLegacyRecoveryMirror(
+            candidate,
+            mirror,
+            {
+              bot_id: row.bot_id ?? null,
+              semantic_key: row.semantic_key ?? null,
+            },
+            request.selection.majorBotIds,
+          );
+          if (refusal) {
             issues.push({ code: 'sql_semantic_mirror_unproved', descriptor: 'sql:webhook_events' });
+            issues.push({
+              code: `sql_semantic_mirror_${refusal}`,
+              descriptor: 'sql:webhook_events',
+            });
+          }
         }
         exhausted = mirrors.length < PAGE_ROWS;
         cursor = mirrors.at(-1) ?? null;
@@ -1815,6 +1871,7 @@ async function inventoryLegacyRecoverySql(
     );
   }
   await meter.drain();
+  if (meter.storeFailure) issues.push(meter.storeFailure);
   const stableDigest = legacyRecoveryLiveDigest({
     selection: request.selection,
     scope: exhaustiveCatalog ? 'exhaustive-catalog' : 'selected-original-source',

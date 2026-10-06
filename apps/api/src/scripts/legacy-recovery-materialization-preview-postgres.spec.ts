@@ -7,6 +7,7 @@ import {
   createLegacyColdCertificate,
   installAndSealLegacyRecoveryBatch,
   materializeLegacyHeldReceiptPage,
+  readLegacyRecoveryInstallation,
   buildLegacyRecoveryPreviewDigest,
   legacySnapshotDigest,
   type LegacyRecoveryCandidate,
@@ -437,11 +438,127 @@ native('read-only materialization preview on representative PostgreSQL history',
       ).decision,
     ).toBe('DENY');
   });
-  it.each(['future', 'oversize', 'budget'] as const)(
+  async function nextCandidate() {
+    const event = await receipt(
+      'Next old source',
+      'next-held-user',
+      candidate.owner.createdAt.getTime() + 100,
+      {
+        status: 'FAILED',
+        errorMessage: candidate.owner.errorMessage,
+      },
+    );
+    await db.webhookExecutionClaim.create({
+      data: {
+        kind: 'EXECUTION',
+        semanticKey: event.semanticKey!,
+        webhookEventId: event.id,
+        enforced: false,
+        createdAt: event.createdAt,
+      },
+    });
+    candidate = (await inspectLegacyRecoveryCandidate(db, event.id, ['major']))!;
+    expect(candidate).toBeTruthy();
+  }
+  async function installation(certificateId: string) {
+    const certificate = await db.webhookLegacyQuiescenceCertificate.findUniqueOrThrow({
+      where: { id: certificateId },
+    });
+    return readLegacyRecoveryInstallation(db, certificateId, {
+      sourceSha: certificate.sourceSha,
+      imageId: certificate.imageId,
+      previewSha256: certificate.previewSha256,
+      recoveries: 1,
+      children: 0,
+    });
+  }
+  it('passes an independently proved prior certificate without changing its receipt or proof', async () => {
+    const firstOwner = candidate.owner.id;
+    expect(await actualPage()).toMatchObject({ complete: true, blocked: false });
+    const firstCertificate = certificates.at(-1)!;
+    const before = await db.webhookEvent.findUniqueOrThrow({ where: { id: firstOwner } });
+    const proof = await db.webhookLegacyReceiptDisposition.findUniqueOrThrow({
+      where: { receiptId: firstOwner },
+    });
+    await nextCandidate();
+    const result = await preview();
+    expect(result.issues).toEqual([]);
+    expect(result.decision).toBe('READY');
+    expect(result.scannedReceipts).toBe(2);
+    expect((await preview()).proofSha256).toBe(result.proofSha256);
+    expect(result.plans.flatMap((plan) => plan.indexes)).toEqual(
+      expect.arrayContaining([
+        'webhook_legacy_receipt_dispositions_pkey',
+        'webhook_legacy_sealed_authorities_pkey',
+      ]),
+    );
+    expect(await actualPage()).toMatchObject({ complete: true, blocked: false });
+    expect(await installation(firstCertificate)).toMatchObject({ state: 'MATERIALIZED' });
+    expect(await installation(certificates.at(-1)!)).toMatchObject({ state: 'MATERIALIZED' });
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: firstOwner } })).toEqual(before);
+    expect(
+      await db.webhookLegacyReceiptDisposition.findUniqueOrThrow({
+        where: { receiptId: firstOwner },
+      }),
+    ).toEqual(proof);
+  });
+  it('refuses a pointer whose source proof is invalid even outside the selected scope', async () => {
+    await actualPage();
+    const authority = await db.webhookLegacySealedAuthority.findUniqueOrThrow({
+      where: { certificateId: certificates.at(-1)! },
+    });
+    await nextCandidate();
+    const unknown = await receipt('Unproved source', 'unrelated-user', Date.now() - 1000, {
+      status: 'FAILED',
+      nextEnqueueAt: new Date(),
+    });
+    // FLAG: The disposable fixture obeys all database immutability/FK constraints.
+    // A non-null pointer and valid authority cannot replace the source-digest check.
+    const proof = await db.webhookLegacyReceiptDisposition.create({
+      data: {
+        id: randomUUID(),
+        receiptId: unknown.id,
+        authorityId: authority.id,
+        sourceDigest: '0'.repeat(64),
+        originalStatus: 'FAILED',
+        originalSnapshot: {},
+        scopeKind: 'EXACT_OWNER',
+      },
+    });
+    const before = await db.webhookEvent.update({
+      where: { id: unknown.id },
+      data: {
+        legacyDispositionId: proof.id,
+        legacyDispositionReceiptId: unknown.id,
+      },
+    });
+    expect((await preview()).issues).toEqual([
+      { code: 'materialization_preview_blocked', descriptor: 'sql:materialization-preview' },
+    ]);
+    expect(await actualPage()).toMatchObject({ complete: false, blocked: true });
+    expect(await installation(certificates.at(-1)!)).toMatchObject({ state: 'SEALED' });
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: unknown.id } })).toEqual(before);
+  });
+  it('passes an oversized unrelated receipt without fetching its body or changing it', async () => {
+    const event = await receipt('x'.repeat(150_000), 'unrelated-user');
+    const result = await preview({ bytes: 100_000 });
+    expect(result.decision).toBe('READY');
+    expect(result.cost.bytes).toBeLessThan(100_000);
+    expect(await actualPage()).toMatchObject({ complete: true, blocked: false, applied: 0 });
+    expect(await installation(certificates.at(-1)!)).toMatchObject({ state: 'MATERIALIZED' });
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).toEqual(event);
+  });
+  it('keeps an oversized held receipt blocked in preview and actual materialization', async () => {
+    const event = await receipt('x'.repeat(150_000));
+    expect((await preview()).decision).toBe('DENY');
+    expect(await actualPage()).toMatchObject({ complete: false, blocked: true });
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).toEqual(event);
+  });
+  it.each(['future', 'budget'] as const)(
     'refuses %s prefixes before installation',
     async (fault) => {
       await receipt(
-        fault === 'oversize' ? 'x'.repeat(150_000) : 'Ordinary',
+        'Ordinary',
         'unrelated-user',
         fault === 'future' ? Date.now() + 10_000 : Date.now() - 1000,
       );

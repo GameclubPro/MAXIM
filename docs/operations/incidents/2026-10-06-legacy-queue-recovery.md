@@ -59,6 +59,38 @@ frozen in the inventory. Cursor checkpoint updates are also batched atomically p
 page; a 302-receipt native fixture used nine updates instead of 303, with explicit
 blocked-prefix and rollback coverage. This fixture is not a production speed claim.
 
+At `2026-10-06T11:09:40Z`, all 18 application/native/static containers were
+running the exact `33d9f13a` source with no restarts. All 24 webhook queues were
+unpaused and unowned, and PostgreSQL/Redis were healthy. Both readiness endpoints
+still returned queue-backlog degradation, with oldest pending age about 57,503
+seconds. This was not fleet recovery. The next finite video-owner admission still
+refused mirror proof, and a separate two-owner admission refused before proving its
+selection; neither refusal stopped the running fleet.
+
+A second independent enqueue starvation defect was reproduced against native
+PostgreSQL/Redis: the rotating SQL page advanced over up to 375 chat representatives,
+but final batch selection retained only a smaller prefix. With 1,499 permanently
+blocked heads and one ready independent chat at position 600, repeated complete
+cursor cycles never prepared that chat. The correction bounds each rotating page
+by its share of one final-batch reserve and preserves every reserved representative
+through merging, prioritization and lifecycle reservation. It keeps the existing
+raw scan, final batch, concurrency and exact-head authority bounds. The full-path
+regression now reaches the independent chat without releasing unknown heads.
+
+A subsequent bounded mirror audit proved that the remaining oldest video mirror
+was outside the six selected configured Major bot identities. The selected owner
+was inside that catalog. Source type/clock/identity flags passed for both receipts;
+the diagnostic did not identify whether the other receiver was Publisher, retired
+Major or unknown. Recovery must retain the profile/catalog boundary until proved.
+
+Materialization also incorrectly rejected an already proved receipt from a prior
+sealed certificate in the selected chat, and an oversized unrelated payload could
+block preview before scope matching. Preview and the writer now independently
+validate prior proof pointers, source digests, scope/status and sealed authority;
+they leave that proof intact. Unheld bodies need only bounded scope metadata.
+Unknown held sources, invalid pointers and oversized held bodies still refuse.
+Native checks cover two separate certificates and independent positive readback.
+
 ## Moderation evidence
 
 The fixed `moderation-outcomes` audit was first inspected with plain EXPLAIN. Its

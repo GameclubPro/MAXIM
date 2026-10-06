@@ -1219,16 +1219,18 @@ WITH oldest_received AS MATERIALIZED (
   SELECT mirror.*, candidate.id AS candidate_id
   FROM candidate_parts candidate
   CROSS JOIN LATERAL (
-    SELECT id, bot_id, created_at, normalized_payload
+    SELECT id, bot_id, created_at, normalized_payload, raw_payload, semantic_key
     FROM webhook_events
     WHERE semantic_key IS NOT NULL AND semantic_key = candidate.semantic_key
     ORDER BY created_at, id LIMIT 9
   ) mirror
   WHERE candidate.eligible
 ), mirror_parts AS MATERIALIZED (
-  SELECT id = candidate_id AS is_owner, bot_id,
+  SELECT id = candidate_id AS is_owner, bot_id, created_at, semantic_key,
     octet_length(normalized_payload::text) > 262144 AS budget_exceeded,
-    CASE WHEN octet_length(normalized_payload::text) <= 262144 THEN normalized_payload END AS normalized
+    CASE WHEN octet_length(normalized_payload::text) <= 262144 THEN normalized_payload END AS normalized,
+    octet_length(raw_payload::text) > 262144 AS stored_raw_budget_exceeded,
+    CASE WHEN octet_length(raw_payload::text) <= 262144 THEN raw_payload END AS stored_raw
   FROM bounded_mirrors ORDER BY created_at, id LIMIT 8
 )
 SELECT json_build_object(
@@ -1242,6 +1244,35 @@ SELECT json_build_object(
     'budget_exceeded', mirror.budget_exceeded,
     'raw_kind', jsonb_typeof(mirror.normalized->'raw'),
     'receipt_receiver_matches', mirror.normalized->>'botId' = mirror.bot_id,
+    -- FLAG: Equality/type facts diagnose the independent source guard; neither raw
+    -- payloads, source IDs, timestamps nor receiver identities leave this fixed audit.
+    'source_guards', jsonb_build_object(
+      'normalized_object', jsonb_typeof(mirror.normalized) = 'object',
+      'normalized_message_object', jsonb_typeof(mirror.normalized->'message') = 'object',
+      'raw_object', jsonb_typeof(mirror.normalized->'raw') = 'object',
+      'stored_raw_kind', jsonb_typeof(mirror.stored_raw),
+      'stored_raw_budget_exceeded', mirror.stored_raw_budget_exceeded,
+      'stored_raw_empty', mirror.stored_raw = '{}'::jsonb,
+      'stored_raw_matches', mirror.stored_raw IS NOT DISTINCT FROM mirror.normalized->'raw',
+      'receiver_nonempty', jsonb_typeof(mirror.normalized->'botId') = 'string' AND btrim(mirror.bot_id) <> '',
+      'event_kind_valid', mirror.normalized->>'type' = 'message_created' AND mirror.normalized->'raw'->>'update_type' = 'message_created',
+      'membership_present', COALESCE(mirror.normalized->'membership' NOT IN ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '""'::jsonb), false),
+      'ingress_clock', mirror.normalized->>'eventTimestampSource' = 'ingress',
+      'normalized_entity_chat', mirror.normalized->'message'->>'entityType' = 'chat',
+      'normalized_chat_matches_raw', mirror.normalized->'message'->>'chatId' = mirror.normalized->'raw'->'message'->'recipient'->>'chat_id',
+      'normalized_message_matches_raw', mirror.normalized->'message'->>'messageId' = mirror.normalized->'raw'->'message'->'body'->>'mid',
+      'normalized_author_matches_raw', mirror.normalized->'message'->>'senderId' = mirror.normalized->'raw'->'message'->'sender'->>'user_id',
+      'normalized_clock_kind', jsonb_typeof(mirror.normalized->'message'->'createdAt'),
+      'normalized_clock_equals_owner', mirror.normalized->'message'->'createdAt' IS NOT DISTINCT FROM candidate.normalized_message->'createdAt',
+      'event_clock_not_after_receipt', CASE WHEN jsonb_typeof(mirror.normalized->'raw'->'timestamp') = 'number' THEN
+        CASE WHEN (mirror.normalized->'raw'->>'timestamp')::numeric > 0 THEN
+          trunc((mirror.normalized->'raw'->>'timestamp')::numeric * CASE WHEN (mirror.normalized->'raw'->>'timestamp')::numeric < 10000000000 THEN 1000 ELSE 1 END)
+            <= extract(epoch FROM mirror.created_at) * 1000 END END,
+      'created_semantic_matches_receipt', CASE WHEN mirror.normalized->>'type' = 'message_created'
+        AND jsonb_typeof(mirror.normalized->'message'->'chatId') = 'string'
+        AND jsonb_typeof(mirror.normalized->'message'->'messageId') = 'string' THEN
+          mirror.semantic_key = 'message:message_created:' || btrim(mirror.normalized->'message'->>'chatId') || ':' || btrim(mirror.normalized->'message'->>'messageId') END
+    ),
     'same_receiver', mirror.normalized->'botId' IS NOT DISTINCT FROM candidate.normalized->'botId',
     'normalized_kind_equal', mirror.normalized->'type' IS NOT DISTINCT FROM candidate.normalized->'type',
     'normalized_text_equal', mirror.normalized->'message'->'text' IS NOT DISTINCT FROM candidate.normalized_message->'text',

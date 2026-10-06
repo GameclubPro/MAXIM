@@ -257,10 +257,19 @@ native('native bounded live SQL inventory and actual plans', () => {
       expect(result.candidates).toHaveLength(1);
       expect(result.candidates[0]!.owner).toEqual(owner);
       expect(result.candidates[0]!.claim).toEqual(claim);
+      let plannerSettingsQueries = 0;
       for (let index = 0; index < queries.length; ) {
         if (queries[index]!.startsWith('EXPLAIN (VERBOSE, FORMAT JSON)')) {
           expect(queries[index]).toBe(`EXPLAIN (VERBOSE, FORMAT JSON) ${queries[index + 1]}`);
           index += 2;
+        } else if (queries[index]!.startsWith('SELECT set_config(')) {
+          expect(queries[index]!.replace(/\s+/gu, ' ').trim()).toBe(
+            "SELECT set_config('enable_seqscan', 'off', true) AS seq, " +
+              "set_config('enable_bitmapscan', 'off', true) AS bitmap, " +
+              "set_config('max_parallel_workers_per_gather', '0', true) AS parallel",
+          );
+          plannerSettingsQueries += 1;
+          index += 1;
         } else {
           expect(queries[index]).toContain("clock_timestamp() AT TIME ZONE 'UTC'");
           expect(queries[index]).toContain("current_setting('transaction_read_only')");
@@ -268,6 +277,7 @@ native('native bounded live SQL inventory and actual plans', () => {
           index += 1;
         }
       }
+      expect(plannerSettingsQueries).toBe(1);
       expect(queries.some((query) => /EXPLAIN[^\n]*ANALYZE/u.test(query))).toBe(false);
       expect(
         result.proofs.every((proof) => /:(?:bounded-planning|returned)$/u.test(proof.descriptor)),

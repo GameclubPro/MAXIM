@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { MaxUpdate } from '@maxim/contracts';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { HealthService } from '../health/health.service';
-import { createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
+import { createPrismaClient, type Prisma, type PrismaClient } from '../prisma/prisma-client';
 import { ActionHealthService } from '../system/action-health.service';
 import { QueueMetricsService } from '../system/queue-metrics.service';
 import { SystemModeService } from '../system/system-mode.service';
@@ -260,6 +260,73 @@ native('fleet admission isolation from one unknown ordered scope', () => {
       expect(internals.activeEnqueueUnits.size).toBe(1);
     } finally {
       release();
+      await Promise.all(internals.activeEnqueueUnits.values());
+      admission.mockRestore();
+    }
+  });
+
+  it('admits a middle chat across capped rotating pages with permanently blocked neighboring heads', async () => {
+    await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
+    const catalogue = Array.from({ length: 1500 }, () => `-scan-fleet-${randomUUID()}`);
+    chats.push(...catalogue);
+    await prisma.chat.createMany({
+      data: catalogue.map((id) => ({ id, title: 'Rotating fleet', entityType: 'CHAT' as const })),
+    });
+    const base = Date.now() - 120_000;
+    const independentIndex = 600;
+    let independentId = '';
+    const rows = catalogue.flatMap((chatId, index): Prisma.WebhookEventCreateManyInput[] => {
+      const id = randomUUID();
+      receipts.push(id);
+      if (index === independentIndex) independentId = id;
+      const receipt = {
+        id,
+        dedupKey: id,
+        botId: 'major-1',
+        status: 'RECEIVED' as const,
+        createdAt: new Date(base + index),
+        rawPayload: {},
+        normalizedPayload: JSON.parse(JSON.stringify(update(chatId, randomUUID(), base + index))),
+        errorMessage: null as string | null,
+      };
+      if (index === independentIndex) return [receipt];
+      const poisonId = randomUUID();
+      receipts.push(poisonId);
+      return [
+        {
+          ...receipt,
+          id: poisonId,
+          dedupKey: poisonId,
+          status: 'FAILED' as const,
+          createdAt: new Date(base - 1000),
+          errorMessage:
+            'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required',
+        },
+        receipt,
+      ];
+    });
+    await prisma.webhookEvent.createMany({ data: rows });
+    const internals = outbox as unknown as {
+      enqueueBatch(): Promise<void>;
+      enqueueScans: Map<string, unknown>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    internals.enqueueScans = new Map();
+    const admission = jest
+      .spyOn(ingress, 'preparePersistedWebhookEvent')
+      .mockImplementation(async () => {
+        throw new WebhookPreparationDeferredError('native_preparation_boundary', 60_000);
+      });
+    try {
+      // FLAG: Several full SQL cursor cycles must reach the middle independent chat
+      // through final priority and dispatch while every unknown predecessor stays fenced.
+      for (let pass = 0; pass < 16 && admission.mock.calls.length === 0; pass += 1)
+        await internals.enqueueBatch();
+      expect(admission.mock.calls.map(([id]) => id)).toEqual([independentId]);
+      expect(
+        await prisma.webhookEvent.count({ where: { id: { in: receipts }, status: 'FAILED' } }),
+      ).toBe(catalogue.length - 1);
+    } finally {
       await Promise.all(internals.activeEnqueueUnits.values());
       admission.mockRestore();
     }

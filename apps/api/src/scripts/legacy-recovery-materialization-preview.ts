@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
-import { Prisma, type WebhookEvent, type WebhookExecutionClaim } from '../prisma/prisma-client';
+import {
+  Prisma,
+  type WebhookEvent,
+  type WebhookExecutionClaim,
+  type WebhookLegacyReceiptDisposition,
+  type WebhookLegacySealedAuthority,
+} from '../prisma/prisma-client';
 import { buildGroupCommandKey } from '../common/group-command-key';
 import { materializeLegacyReceiptDisposition } from '../webhook/webhook-legacy-receipt-disposition';
 import { legacySnapshotDigest } from '../webhook/webhook-legacy-source';
@@ -24,6 +30,7 @@ type PrefixRow = {
   createdAt: Date;
   payloadBytes: number;
   legacyDispositionId: string | null;
+  legacyDispositionReceiptId: string | null;
   chatId: string | null;
   messageId: string | null;
   userId: string | null;
@@ -375,6 +382,7 @@ export async function previewLegacyRecoveryMaterialization(
         const page: PrefixRow[] = await read(
           Prisma.sql`
           SELECT id, created_at AS "createdAt", legacy_disposition_id AS "legacyDispositionId",
+            legacy_disposition_receipt_id AS "legacyDispositionReceiptId",
             octet_length(raw_payload::text) + octet_length(normalized_payload::text) AS "payloadBytes",
             CASE WHEN jsonb_typeof(normalized_payload->'message'->'chatId') = 'string' THEN left(normalized_payload->'message'->>'chatId', 512) END AS "chatId",
             CASE WHEN jsonb_typeof(normalized_payload->'message'->'messageId') = 'string' THEN left(normalized_payload->'message'->>'messageId', 512) END AS "messageId",
@@ -390,18 +398,21 @@ export async function previewLegacyRecoveryMaterialization(
           [literal(chatId)],
           PAGE_SIZE + 1,
         );
-        const heldMetas = page
+        const sourceMetas = page
           .slice(0, PAGE_SIZE)
-          .filter((meta) =>
-            scopes.some(
-              (scope) =>
-                meta.chatId !== null &&
-                ((scope.chatId === meta.chatId && scope.messageId === (meta.messageId ?? '')) ||
-                  scope.userId === (meta.userId ?? '')),
-            ),
+          .filter(
+            (meta) =>
+              meta.legacyDispositionId ||
+              meta.legacyDispositionReceiptId ||
+              scopes.some(
+                (scope) =>
+                  meta.chatId !== null &&
+                  ((scope.chatId === meta.chatId && scope.messageId === (meta.messageId ?? '')) ||
+                    scope.userId === (meta.userId ?? '')),
+              ),
           );
         if (
-          heldMetas.some(
+          sourceMetas.some(
             (meta) =>
               !Number.isSafeInteger(meta.payloadBytes) ||
               meta.payloadBytes > PAYLOAD_BYTES ||
@@ -410,31 +421,65 @@ export async function previewLegacyRecoveryMaterialization(
         )
           throw new Error('materialization_preview_receipt');
         if (
-          heldMetas.reduce((sum, meta) => sum + meta.payloadBytes, 0) >
+          sourceMetas.reduce((sum, meta) => sum + meta.payloadBytes, 0) >
           allowance.bytes - cost.bytes
         )
           throw new Error('materialization_preview_budget');
-        const heldEvents = await batchFullRow<WebhookEvent>(
+        const sourceEvents = await batchFullRow<WebhookEvent>(
           'webhook_events',
           'webhook_events_pkey',
           ['id'],
-          heldMetas.map(({ id }) => [id]),
+          sourceMetas.map(({ id }) => [id]),
         );
-        const eventsById = new Map(heldEvents.map((event) => [event.id, event]));
+        const eventsById = new Map(sourceEvents.map((event) => [event.id, event]));
         if (
-          eventsById.size !== heldMetas.length ||
-          heldMetas.some((meta) => !eventsById.has(meta.id))
+          eventsById.size !== sourceMetas.length ||
+          sourceMetas.some((meta) => !eventsById.has(meta.id))
         )
           throw new Error('materialization_preview_receipt');
+        // FLAG: Existing pointers require the same positive proof classifier as the
+        // writer, including prior certificates. Exact batched PK probes retain the
+        // original page/byte budget; pointers alone never skip receipt validation.
+        const proofs = await batchFullRow<WebhookLegacyReceiptDisposition>(
+          'webhook_legacy_receipt_dispositions',
+          'webhook_legacy_receipt_dispositions_pkey',
+          ['id'],
+          [
+            ...new Set(
+              sourceMetas
+                .map((meta) => meta.legacyDispositionId)
+                .filter((id): id is string => id !== null),
+            ),
+          ].map((id) => [id]),
+        );
+        const priorAuthorities = await batchFullRow<WebhookLegacySealedAuthority>(
+          'webhook_legacy_sealed_authorities',
+          'webhook_legacy_sealed_authorities_pkey',
+          ['id'],
+          [...new Set(proofs.map((proof) => proof.authorityId))].map((id) => [id]),
+        );
+        const authoritiesById = new Map(priorAuthorities.map((value) => [value.id, value]));
+        const proofsById = new Map(
+          proofs.map((proof) => [
+            proof.id,
+            {
+              ...proof,
+              authority: authoritiesById.get(proof.authorityId) ?? null,
+            },
+          ]),
+        );
+        const heldEvents = sourceEvents.filter(
+          (event) => !event.legacyDispositionId && !event.legacyDispositionReceiptId,
+        );
         const linkedClaims = await batchFullRow<WebhookExecutionClaim>(
           'webhook_execution_claims',
           'webhook_execution_claims_event_kind_idx',
           ['webhook_event_id'],
-          heldMetas.map(({ id }) => [id]),
+          heldEvents.map(({ id }) => [id]),
           33,
         );
         if (
-          heldMetas.some(
+          heldEvents.some(
             ({ id }) => linkedClaims.filter((claim) => claim.webhookEventId === id).length > 32,
           )
         )
@@ -470,8 +515,6 @@ export async function previewLegacyRecoveryMaterialization(
             !(meta.createdAt instanceof Date) ||
             meta.createdAt > current.now ||
             !Number.isSafeInteger(meta.payloadBytes) ||
-            meta.payloadBytes > PAYLOAD_BYTES ||
-            meta.legacyDispositionId ||
             meta.scopeOversize
           )
             throw new Error('materialization_preview_receipt');
@@ -487,13 +530,13 @@ export async function previewLegacyRecoveryMaterialization(
                 Number(b.ownerWebhookEventId === meta.id) -
                   Number(a.ownerWebhookEventId === meta.id) || a.id.localeCompare(b.id),
             );
-          if (!matches.length) {
+          if (!matches.length && !meta.legacyDispositionId && !meta.legacyDispositionReceiptId) {
             evidence({ meta, result: 'NOT_HELD' });
             continue;
           }
           const event = eventsById.get(meta.id);
           if (!event) throw new Error('materialization_preview_receipt');
-          const scope = matches[0]!;
+          const scope = matches[0];
           let claims: WebhookExecutionClaim[] | null = null;
           const readClaims = async () => {
             if (claims) return claims;
@@ -532,9 +575,9 @@ export async function previewLegacyRecoveryMaterialization(
           const facade = {
             $queryRaw: async (sql: Prisma.Sql) => {
               if (sql.sql.includes('FROM "webhook_events"') && sql.sql.includes('FOR UPDATE'))
-                return [{ id: event.id, payloadBytes: meta.payloadBytes }];
+                return [meta];
               if (sql.sql.includes('FROM "webhook_legacy_recoveries"'))
-                return [{ recoveryId: scope.id, authorityId: authority.id }];
+                return scope ? [{ recoveryId: scope.id, authorityId: authority.id }] : [];
               if (
                 sql.sql.includes('FROM "webhook_execution_claims"') &&
                 sql.sql.includes('FOR UPDATE')
@@ -544,7 +587,11 @@ export async function previewLegacyRecoveryMaterialization(
             },
             webhookEvent: { findUnique: async () => event },
             webhookLegacyReceiptDisposition: {
-              findUnique: async () => null,
+              findUnique: async (args: { where: { id: string } }) => {
+                const proof = proofsById.get(args.where.id) ?? null;
+                evidence({ proof });
+                return proof;
+              },
               create: async () => {
                 throw READY_BOUNDARY;
               },
@@ -583,7 +630,7 @@ export async function previewLegacyRecoveryMaterialization(
             if (error !== READY_BOUNDARY) throw error;
             outcome = 'WOULD_MATERIALIZE';
           }
-          if (!['WOULD_MATERIALIZE', 'NOT_HELD'].includes(outcome))
+          if (!['WOULD_MATERIALIZE', 'NOT_HELD', 'ALREADY_APPLIED_SAME_PROOF'].includes(outcome))
             throw new Error('materialization_preview_blocked');
           evidence({ event, outcome });
         }

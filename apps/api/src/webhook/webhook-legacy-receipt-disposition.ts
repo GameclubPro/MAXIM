@@ -42,44 +42,82 @@ export async function materializeLegacyReceiptDisposition(
   receiptId: string,
   options?: Options,
 ): Promise<LegacyReceiptDispositionResult> {
-  const locked = await tx.$queryRaw<Array<{ id: string; payloadBytes: number }>>(Prisma.sql`
-    SELECT "id", octet_length("raw_payload"::text) + octet_length("normalized_payload"::text) AS "payloadBytes"
+  // FLAG: Inspect only bounded scope metadata under the receipt lock. An unrelated
+  // oversized payload is NOT_HELD; a held source or existing proof still needs the
+  // complete size-bounded receipt and independent positive evidence below.
+  const locked = await tx.$queryRaw<
+    Array<{
+      id: string;
+      payloadBytes: number;
+      legacyDispositionId: string | null;
+      legacyDispositionReceiptId: string | null;
+      chatId: string | null;
+      messageId: string | null;
+      userId: string | null;
+      scopeOversize: boolean;
+    }>
+  >(Prisma.sql`
+    SELECT "id", octet_length("raw_payload"::text) + octet_length("normalized_payload"::text) AS "payloadBytes",
+      legacy_disposition_id AS "legacyDispositionId", legacy_disposition_receipt_id AS "legacyDispositionReceiptId",
+      CASE WHEN jsonb_typeof(normalized_payload->'message'->'chatId') = 'string' THEN left(normalized_payload->'message'->>'chatId', 512) END AS "chatId",
+      CASE WHEN jsonb_typeof(normalized_payload->'message'->'messageId') = 'string' THEN left(normalized_payload->'message'->>'messageId', 512) END AS "messageId",
+      CASE WHEN jsonb_typeof(normalized_payload->'message'->'senderId') = 'string' THEN left(normalized_payload->'message'->>'senderId', 512) END AS "userId",
+      COALESCE(octet_length(normalized_payload->'message'->>'chatId') > 512 OR octet_length(normalized_payload->'message'->>'messageId') > 512 OR octet_length(normalized_payload->'message'->>'senderId') > 512, false) AS "scopeOversize"
     FROM "webhook_events" WHERE "id" = ${receiptId} FOR UPDATE`);
-  if (locked.length !== 1 || locked[0]!.payloadBytes > 256 * 1024) return 'BLOCKED_UNKNOWN';
+  const meta = locked[0];
+  if (
+    locked.length !== 1 ||
+    !meta ||
+    meta.scopeOversize ||
+    !Number.isSafeInteger(meta.payloadBytes)
+  )
+    return 'BLOCKED_UNKNOWN';
+  const hasProof = Boolean(meta.legacyDispositionId || meta.legacyDispositionReceiptId);
+  let scopes: Array<{ recoveryId: string; authorityId: string | null }> = [];
+  if (!hasProof) {
+    if (meta.chatId === null) return 'NOT_HELD';
+    scopes = await tx.$queryRaw(Prisma.sql`
+      SELECT recovery."id" AS "recoveryId", authority."id" AS "authorityId"
+      FROM "webhook_legacy_recoveries" recovery
+      LEFT JOIN "webhook_legacy_sealed_authorities" authority ON authority."certificate_id" = recovery."certificate_id"
+      WHERE (recovery."chat_id" = ${meta.chatId} AND recovery."message_id" = ${meta.messageId ?? ''}
+        OR recovery."user_id" = ${meta.userId ?? ''})
+        ${options ? Prisma.sql`AND recovery."certificate_id" = ${options.certificateId}` : Prisma.empty}
+      ORDER BY (recovery."owner_webhook_event_id" = ${receiptId}) DESC, recovery."id" LIMIT 1`);
+    if (!scopes.length) return 'NOT_HELD';
+  }
+  if (meta.payloadBytes > 256 * 1024) return 'BLOCKED_UNKNOWN';
   const event = await tx.webhookEvent.findUnique({ where: { id: receiptId } });
   if (!event) return 'BLOCKED_UNKNOWN';
   const sourceDigest = legacyReceiptSourceDigest(event);
-  if (event.legacyDispositionId) {
+  if (hasProof) {
+    if (!event.legacyDispositionId || event.legacyDispositionReceiptId !== event.id)
+      return 'BLOCKED_UNKNOWN';
     const proof = await tx.webhookLegacyReceiptDisposition.findUnique({
       where: { id: event.legacyDispositionId },
       include: { authority: true },
     });
+    // FLAG: A prior sealed certificate may already have disposed this exact receipt.
+    // Validate its immutable proof independently; never replace it or treat a pointer
+    // alone as permission to pass the ordered prefix for a different certificate.
     return proof &&
+      proof.id === event.legacyDispositionId &&
       proof.receiptId === event.id &&
       proof.sourceDigest === legacyReceiptSourceDigest(event, proof.originalStatus) &&
       proof.reason === 'NO_REPLAY_HELD' &&
       (proof.scopeKind === 'EXACT_OWNER'
-        ? proof.originalStatus === event.status
-        : event.status === 'NO_REPLAY_HELD') &&
-      proof.authority.authorityVersion === 1 &&
-      (!options || proof.authority.certificateId === options.certificateId)
+        ? proof.originalStatus === 'FAILED' && event.status === 'FAILED'
+        : ['PRE_SEAL_SOURCE', 'POST_SEAL_MEMBER'].includes(proof.scopeKind) &&
+          proof.originalStatus !== 'NO_REPLAY_HELD' &&
+          event.status === 'NO_REPLAY_HELD') &&
+      proof.authority?.id === proof.authorityId &&
+      proof.authority.authorityVersion === 1
       ? 'ALREADY_APPLIED_SAME_PROOF'
       : 'BLOCKED_UNKNOWN';
   }
   const update = record(event.normalizedPayload);
   const message = record(update?.message);
-  if (!message || typeof message.chatId !== 'string') return 'NOT_HELD';
-  const scopes = await tx.$queryRaw<
-    Array<{ recoveryId: string; authorityId: string | null }>
-  >(Prisma.sql`
-    SELECT recovery."id" AS "recoveryId", authority."id" AS "authorityId"
-    FROM "webhook_legacy_recoveries" recovery
-    LEFT JOIN "webhook_legacy_sealed_authorities" authority ON authority."certificate_id" = recovery."certificate_id"
-    WHERE (recovery."chat_id" = ${message.chatId} AND recovery."message_id" = ${typeof message.messageId === 'string' ? message.messageId : ''}
-      OR recovery."user_id" = ${typeof message.senderId === 'string' ? message.senderId : ''})
-      ${options ? Prisma.sql`AND recovery."certificate_id" = ${options.certificateId}` : Prisma.empty}
-    ORDER BY (recovery."owner_webhook_event_id" = ${receiptId}) DESC, recovery."id" LIMIT 1`);
-  if (!scopes.length) return 'NOT_HELD';
+  if (!message || typeof message.chatId !== 'string') return 'BLOCKED_UNKNOWN';
   const scope = scopes[0]!;
   if (!scope.authorityId) return 'BLOCKED_UNKNOWN';
   const authority = await tx.webhookLegacySealedAuthority.findUnique({

@@ -20,11 +20,12 @@ type ScanQuery = {
   resultDirection: 'ASC' | 'DESC';
   overscanTake: number;
   candidateTake: number;
-  rotation?: { lane: string; state: OutboxScanState };
+  rotation?: { lane: string; state: OutboxScanState; candidateTake?: number };
 };
 
 export function buildBoundedEnqueueWorkUnitsSql(params: ScanQuery): Prisma.Sql {
-  if (params.rotation && params.candidateTake >= 2) return buildRotatingScan(params);
+  if (params.rotation && params.candidateTake > 0 && params.rotation.candidateTake !== 0)
+    return buildRotatingScan(params);
   const scanDirection = Prisma.raw(params.scanDirection);
   const resultDirection = Prisma.raw(params.resultDirection);
   return Prisma.sql`
@@ -58,7 +59,10 @@ export function buildBoundedEnqueueWorkUnitsSql(params: ScanQuery): Prisma.Sql {
 function buildRotatingScan(params: ScanQuery): Prisma.Sql {
   const { lane, state } = params.rotation!;
   const pageSize = Math.floor(params.overscanTake / 2);
-  const pageTake = Math.floor(params.candidateTake / 2);
+  const pageTake = Math.min(
+    params.candidateTake,
+    params.rotation!.candidateTake ?? Math.max(1, Math.floor(params.candidateTake / 2)),
+  );
   const head = buildBoundedEnqueueWorkUnitsSql({
     ...params,
     rotation: undefined,
