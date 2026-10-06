@@ -23,6 +23,8 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'job.sendAutoDelete.sourceSendJobId',
       'new Date(job.sendAutoDelete.sourceCreatedAt ?? NaN)',
       'exactMessageOnly: true',
+      'materializeLegacyReceiptDisposition(',
+      'return Prisma.sql`${Prisma.raw(eventAlias)}."legacy_disposition_id" IS NOT NULL`',
     ],
   ],
   [
@@ -32,10 +34,25 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'exports: [PrismaService, WebhookLegacyHoldService]',
     ],
   ],
-  ['apps/api/src/webhook/webhook.service.ts', ['this.legacyHolds', 'settleHeldReceipt(']],
+  [
+    'apps/api/src/webhook/webhook.service.ts',
+    ['this.legacyHolds', 'settleHeldReceipt(', 'WebhookStatus.NO_REPLAY_HELD'],
+  ],
   [
     'apps/api/src/moderation/webhook-canonical-execution.service.ts',
-    ['this.legacyHolds', 'settleHeldReceipt('],
+    ['this.legacyHolds', 'settleHeldReceipt(', 'WebhookStatus.NO_REPLAY_HELD'],
+  ],
+  [
+    'apps/api/src/webhook/webhook-legacy-receipt-disposition.ts',
+    [
+      'export async function materializeLegacyReceiptDisposition(',
+      'tx.webhookLegacyReceiptDisposition.create(',
+      'legacyDispositionId: proof.id',
+      'legacyDispositionReceiptId: event.id',
+      "...(scopeKind === 'EXACT_OWNER' ? {} : { status: 'NO_REPLAY_HELD' as const })",
+      'parseAdminForwardedModerationCommand(text, settings ?? undefined)',
+      "return 'BLOCKED_UNKNOWN'",
+    ],
   ],
   [
     'apps/api/src/common/group-command-authority.service.ts',
@@ -178,6 +195,10 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'model WebhookLegacyQuiescenceCertificate {',
       'model WebhookLegacyRecovery {',
       'model WebhookLegacyChildHold {',
+      'model WebhookLegacyReceiptDisposition {',
+      'model WebhookLegacyMaterializationCursor {',
+      'NO_REPLAY_HELD',
+      'fields: [legacyDispositionReceiptId, legacyDispositionId], references: [receiptId, id]',
     ],
   ],
 ]);
