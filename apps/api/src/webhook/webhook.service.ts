@@ -579,6 +579,15 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     }
 
     const update = event.normalizedPayload as MaxUpdate;
+    if (event.status === WebhookStatus.NO_REPLAY_HELD) {
+      return {
+        canonical: false,
+        prepared: false,
+        normalizedPayload: update,
+        executionBotId: null,
+        enforced: true,
+      };
+    }
     if (await this.legacyHolds?.isUpdateHeld(update)) {
       if (!(await this.legacyHolds!.settleHeldReceipt(event.id, update)))
         throw new WebhookPreparationDeferredError('Legacy scope installation is not sealed', 1_000);
@@ -1322,15 +1331,20 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     };
     const retentionInput = this.messageRetention?.captureInput(update);
     const removedInput = this.retentionRemovedInput(update);
-    if ((retentionInput || removedInput) && this.messageRetention) {
+    if (this.legacyHolds || ((retentionInput || removedInput) && this.messageRetention)) {
       const retention = this.messageRetention;
       return this.prisma.$transaction(
         async (tx) => {
           const result = await tx.webhookEvent.createMany({ data: [data], skipDuplicates: true });
           if (!result.count)
             throw Object.assign(new Error('Duplicate webhook receipt'), { code: 'P2002' });
-          if (retentionInput) await retention.capture(tx, retentionInput);
-          if (removedInput) await retention.settleRemovedMessage(tx, removedInput);
+          const held = await this.legacyHolds?.isUpdateHeld(update, tx);
+          const disposition = held
+            ? await this.legacyHolds!.materializeReceipt(webhookEventId, tx)
+            : 'NOT_HELD';
+          if (disposition !== 'NOT_HELD' && disposition !== undefined) return webhookEventId;
+          if (retentionInput) await retention!.capture(tx, retentionInput);
+          if (removedInput) await retention!.settleRemovedMessage(tx, removedInput);
           return webhookEventId;
         },
         { timeout: 2_000, maxWait: 500 },

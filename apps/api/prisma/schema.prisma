@@ -96,6 +96,7 @@ enum WebhookStatus {
   PROCESSED
   DUPLICATE
   FAILED
+  NO_REPLAY_HELD
 }
 
 enum WebhookExecutionClaimStatus {
@@ -2473,6 +2474,9 @@ model WebhookEvent {
   createdAt                  DateTime      @default(now()) @map("created_at")
   processedAt                DateTime?     @map("processed_at")
 
+  legacyDispositionId String? @map("legacy_disposition_id")
+  legacyDispositionReceiptId String? @map("legacy_disposition_receipt_id")
+  legacyDisposition WebhookLegacyReceiptDisposition? @relation(fields: [legacyDispositionReceiptId, legacyDispositionId], references: [receiptId, id], onDelete: Restrict, onUpdate: NoAction)
   executionClaims WebhookExecutionClaim[]
 
   @@index([status, createdAt])
@@ -4079,4 +4083,48 @@ model MarketplacePolicyRequest {
   binding     MarketplaceBinding @relation(fields: [bindingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("marketplace_policy_requests")
+}
+
+// FLAG: Positive abandonment evidence is separate from original execution outcomes.
+model WebhookLegacySealedAuthority {
+  id String @id
+  certificateId String @unique @map("certificate_id")
+  authorityVersion Int @default(1) @map("authority_version")
+  sourceSha String @map("source_sha")
+  imageId String @map("image_id")
+  attestationDigest String @map("attestation_digest")
+  previewSha256 String @map("preview_sha256")
+  sealedAt DateTime @map("sealed_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  dispositions WebhookLegacyReceiptDisposition[]
+  @@map("webhook_legacy_sealed_authorities")
+}
+
+model WebhookLegacyReceiptDisposition {
+  id String @id
+  receiptId String @unique @map("receipt_id")
+  authorityId String @map("authority_id")
+  reason String @default("NO_REPLAY_HELD")
+  sourceDigest String @map("source_digest")
+  originalStatus WebhookStatus @map("original_status")
+  originalSnapshot Json @map("original_snapshot")
+  scopeKind String @map("scope_kind")
+  createdAt DateTime @default(now()) @map("created_at")
+  authority WebhookLegacySealedAuthority @relation(fields: [authorityId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  receipts WebhookEvent[]
+  @@unique([receiptId, id], map: "webhook_legacy_receipt_dispositions_receipt_id_id_key")
+  @@index([authorityId], map: "webhook_legacy_receipt_dispositions_authority_idx")
+  @@map("webhook_legacy_receipt_dispositions")
+}
+
+model WebhookLegacyMaterializationCursor {
+  certificateId String @map("certificate_id")
+  chatId String @map("chat_id")
+  horizon DateTime
+  afterCreatedAt DateTime? @map("after_created_at")
+  afterId String? @map("after_id")
+  scanned Int @default(0)
+  complete Boolean @default(false)
+  @@id([certificateId, chatId])
+  @@map("webhook_legacy_materialization_cursors")
 }

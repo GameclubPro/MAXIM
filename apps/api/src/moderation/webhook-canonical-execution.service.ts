@@ -172,6 +172,7 @@ export class WebhookCanonicalExecutionService {
       return null;
     }
     if (
+      webhookEvent.status === WebhookStatus.NO_REPLAY_HELD ||
       webhookEvent.status === WebhookStatus.DUPLICATE ||
       webhookEvent.status === WebhookStatus.PROCESSED
     ) {
@@ -584,6 +585,7 @@ export class WebhookCanonicalExecutionService {
       });
       if (
         !latestWebhookEvent ||
+        latestWebhookEvent.status === WebhookStatus.NO_REPLAY_HELD ||
         latestWebhookEvent.status === WebhookStatus.DUPLICATE ||
         latestWebhookEvent.status === WebhookStatus.PROCESSED ||
         this.isHotPathTimeoutQuarantined(latestWebhookEvent)
@@ -705,13 +707,14 @@ export class WebhookCanonicalExecutionService {
       WHERE claim."id" = ${params.claimId} AND claim."kind" = 'EXECUTION'
         AND claim."semantic_key" = ${params.semanticKey}
         AND claim."webhook_event_id" = event."id" AND event."id" = ${params.webhookEventId}
+        AND event."legacy_disposition_id" IS NULL
         AND NOT ${legacyUpdateHeldSql('event')}
         AND claim."status"::text = ${ready ? 'PENDING' : 'READY'}
         AND claim."completed_at" IS NULL AND claim."business_started_at" IS NULL
         AND claim."lease_token" = ${params.leaseToken}
         AND claim."lease_expires_at" > instant."now"
         AND (${ready} OR claim."enforced")
-        AND event."status" NOT IN ('PROCESSED', 'DUPLICATE')
+        AND event."status" NOT IN ('PROCESSED', 'DUPLICATE', 'NO_REPLAY_HELD')
         AND event."timeout_quarantine_expires_at" IS NULL
         AND COALESCE(event."error_message", '') NOT LIKE ${`${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}%`}
         AND COALESCE(event."error_message", '') NOT LIKE ${`${WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX}%`}
@@ -756,6 +759,7 @@ export class WebhookCanonicalExecutionService {
       !event.executionDeadlineAt ||
       event.executionDeadlineAt.getTime() > now.getTime() ||
       hasWebhookReplayFence(event) ||
+      event.status === WebhookStatus.NO_REPLAY_HELD ||
       event.status === WebhookStatus.PROCESSED ||
       event.status === WebhookStatus.DUPLICATE ||
       buildWebhookSemanticEventKey(event.normalizedPayload) !== params.semanticKey
@@ -1244,7 +1248,9 @@ export class WebhookCanonicalExecutionService {
     await this.prisma.webhookEvent.updateMany({
       where: {
         id: context.webhookEvent.id,
-        status: { notIn: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE] },
+        status: {
+          notIn: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE, WebhookStatus.NO_REPLAY_HELD],
+        },
         executionClaims: { none: { kind: 'EXECUTION', status: 'COMPLETED' } },
       },
       data: {
@@ -2157,7 +2163,10 @@ export class WebhookCanonicalExecutionService {
       return 'invalid';
     }
     if (ownerEvent.status !== WebhookStatus.PROCESSED) {
-      return ownerEvent.status === WebhookStatus.DUPLICATE ? 'invalid' : 'retry';
+      return ownerEvent.status === WebhookStatus.DUPLICATE ||
+        ownerEvent.status === WebhookStatus.NO_REPLAY_HELD
+        ? 'invalid'
+        : 'retry';
     }
     if (
       !(ownerEvent.processedAt instanceof Date) ||

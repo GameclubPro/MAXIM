@@ -1,3 +1,7 @@
+import {
+  materializeLegacyReceiptDisposition,
+  type LegacyReceiptDispositionResult,
+} from './webhook-legacy-receipt-disposition';
 import { Injectable, Optional, type OnApplicationBootstrap } from '@nestjs/common';
 import { ModulesContainer } from '@nestjs/core';
 import type { MaxUpdate } from '@maxim/contracts';
@@ -144,7 +148,7 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
     return this.exists(
       Prisma.sql`SELECT (
       EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" WHERE "chat_id" = ${message.chatId} AND "message_id" = ${message.messageId ?? ''})
-      OR EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" WHERE "chat_id" = ${message.chatId} AND "user_id" = ${message.senderId ?? ''})
+      OR EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" WHERE "user_id" = ${message.senderId ?? ''})
     ) AS held`,
       client,
     );
@@ -157,37 +161,21 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
     if (await this.isUpdateHeld(update, client)) throw new WebhookLegacyHoldRejectedError();
   }
 
+  async materializeReceipt(
+    webhookEventId: string,
+    client?: Prisma.TransactionClient,
+  ): Promise<LegacyReceiptDispositionResult> {
+    return client
+      ? materializeLegacyReceiptDisposition(client, webhookEventId)
+      : this.prisma.$transaction((tx) => materializeLegacyReceiptDisposition(tx, webhookEventId));
+  }
+
   async settleHeldReceipt(
     webhookEventId: string,
-    update: Pick<MaxUpdate, 'message'>,
+    _update: Pick<MaxUpdate, 'message'>,
   ): Promise<boolean> {
-    const message = update.message;
-    if (!message?.chatId) return false;
-    // FLAG: A hold denies execution immediately. Only a sealed finite installation may
-    // release ordering. Original claims, payloads, leases and unknown receipts stay intact.
-    const released = await this.exists(Prisma.sql`SELECT EXISTS (
-      SELECT 1 FROM "webhook_legacy_recoveries" recovery
-      JOIN "webhook_legacy_quiescence_certificates" certificate ON certificate."id" = recovery."certificate_id"
-      WHERE recovery."chat_id" = ${message.chatId}
-        AND (recovery."message_id" = ${message.messageId ?? ''} OR recovery."user_id" = ${message.senderId ?? ''})
-        AND recovery."authority_version" = 1 AND recovery."disposition" = 'NO_REPLAY_ORDER_RELEASED'
-        AND certificate."authority_version" = 1 AND certificate."sealed_at" IS NOT NULL
-    ) AS held`);
-    if (!released) return false;
-    await this.prisma.$executeRaw(Prisma.sql`UPDATE "webhook_events" event
-      SET "status" = 'FAILED', "next_enqueue_at" = NULL, "queue_name" = NULL,
-          "error_message" = ${WEBHOOK_LEGACY_HELD_MARKER}
-      WHERE event."id" = ${webhookEventId}
-        AND event."status" NOT IN ('PROCESSED', 'DUPLICATE')
-        AND event."normalized_payload"->>'type' IN ('message_created', 'message_edited')
-        AND ${legacyReceiptBornAfterSealSql('event')}
-        AND event."timeout_quarantine_expires_at" IS NULL
-        AND (event."error_message" IS NULL OR event."error_message" = ${WEBHOOK_LEGACY_HELD_MARKER})
-        AND NOT EXISTS (SELECT 1 FROM "webhook_execution_claims" claim
-          WHERE claim."webhook_event_id" = event."id" AND claim."business_started_at" IS NOT NULL)
-        AND NOT EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" original
-          WHERE original."owner_webhook_event_id" = event."id")`);
-    return true;
+    const result = await this.materializeReceipt(webhookEventId);
+    return result === 'APPLIED_WITH_PROOF' || result === 'ALREADY_APPLIED_SAME_PROOF';
   }
 }
 
@@ -284,7 +272,8 @@ export async function assertLegacyActionAllowed(
 // FLAG: Ordered-head readers skip only a versioned sealed disposition. Scope hold
 // readers above deliberately do not depend on seal/version, so partial installation fails closed.
 export function legacyOrderReleasedSql(eventAlias: string): Prisma.Sql {
-  return legacyScopeSql(eventAlias, true);
+  if (!/^[a-z_]+$/u.test(eventAlias)) throw new Error('Invalid webhook SQL alias');
+  return Prisma.sql`${Prisma.raw(eventAlias)}."legacy_disposition_id" IS NOT NULL`;
 }
 
 export function legacyUpdateHeldSql(eventAlias: string): Prisma.Sql {
@@ -309,7 +298,6 @@ function legacyScopeSql(eventAlias: string, released: boolean, afterSeal = false
     ${scope(Prisma.sql`recovery."semantic_key" = ${event}."semantic_key"`)}
     OR ${scope(Prisma.sql`recovery."chat_id" = ${event}."normalized_payload"->'message'->>'chatId'
       AND recovery."message_id" = ${event}."normalized_payload"->'message'->>'messageId'`)}
-    OR ${scope(Prisma.sql`recovery."chat_id" = ${event}."normalized_payload"->'message'->>'chatId'
-      AND recovery."user_id" = ${event}."normalized_payload"->'message'->>'senderId'`)}
+    OR ${scope(Prisma.sql`recovery."user_id" = ${event}."normalized_payload"->'message'->>'senderId'`)}
   )`;
 }
