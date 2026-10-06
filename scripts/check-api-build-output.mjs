@@ -40,3 +40,28 @@ const syntaxCheck = spawnSync(process.execPath, ['--check', entrypoint], {
 if (syntaxCheck.status !== 0) {
   throw new Error(syntaxCheck.stderr || syntaxCheck.stdout || 'API entrypoint syntax check failed');
 }
+
+// FLAG: Prisma loads the permanent hold reader before effect services at startup.
+// Check the emitted CommonJS dependency order: ts-jest's different import order
+// can conceal a circular import that silently erases optional injection metadata.
+const holdInjectionCheck = spawnSync(process.execPath, ['-e', `
+  require('reflect-metadata');
+  const path = require('node:path');
+  const root = process.argv[1];
+  const { WebhookLegacyHoldService } = require(path.join(root, 'webhook/webhook-legacy-hold.service.js'));
+  for (const [file, name] of [
+    ['max/max-client.service.js', 'MaxClientService'],
+    ['common/group-command-authority.service.js', 'GroupCommandAuthorityService'],
+    ['max/max-action-ledger.service.js', 'MaxActionLedgerService'],
+    ['max/max-action-dispatch.service.js', 'MaxActionDispatchService'],
+  ]) {
+    const provider = require(path.join(root, file))[name];
+    const parameters = Reflect.getMetadata('design:paramtypes', provider);
+    if (!parameters?.includes(WebhookLegacyHoldService)) {
+      throw new Error('Compiled mandatory hold injection is missing in ' + name);
+    }
+  }
+`, emittedSourceRoot], { cwd: repoRoot, encoding: 'utf8', timeout: 15_000 });
+if (holdInjectionCheck.status !== 0) {
+  throw new Error(holdInjectionCheck.stderr || 'Compiled hold injection check failed');
+}
