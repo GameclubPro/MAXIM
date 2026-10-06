@@ -299,6 +299,8 @@ function createEnqueueProgress() {
     workUnits: 0,
     orderedHeadBlocked: 0,
     preparationBlocked: 0,
+    preparationSharedCapacityBlocked: 0,
+    preparationScopeBlocked: 0,
     prepared: 0,
     settled: 0,
     outstanding: 0,
@@ -1586,6 +1588,8 @@ export class WebhookOutboxService
     }
     const workerCount = Math.max(1, enqueueConcurrency);
     const dispatched = new Set<WebhookEnqueueWorkUnit>();
+    const sharedCapacityBlocked = new Set<WebhookEnqueueWorkUnit>();
+    const scopeBlocked = new Set<WebhookEnqueueWorkUnit>();
     const active = new Set<Promise<void>>();
     const deadlineMs = Date.now() + Math.max(1, Math.min(this.pollIntervalMs, 1_000));
     let timer: NodeJS.Timeout | undefined;
@@ -1635,16 +1639,21 @@ export class WebhookOutboxService
                 (event) => orderedHead && this.compareCandidateSequence(orderedHead, event) === 0,
               )
             : workUnit.candidates[0];
-          if (
-            first &&
-            !isPendingWebhookTimeoutQuarantineMessage(first.errorMessage) &&
-            !this.webhookService.canPreparePersistedWebhookEvent(
-              first.normalizedPayload as MaxUpdate,
-            )
-          ) {
-            // FLAG: An unavailable bot/class cannot occupy the shared FIFO and stop
-            // discovery of other scopes. Its durable receipt stays in the SQL lanes.
-            pending.delete(key);
+          const preparationState =
+            first && !isPendingWebhookTimeoutQuarantineMessage(first.errorMessage)
+              ? this.webhookService.webhookPreparationSchedulingState(
+                  first.normalizedPayload as MaxUpdate,
+                )
+              : 'available';
+          if (preparationState !== 'available') {
+            // FLAG: Shared saturation is temporary; retain scanned FIFO positions so
+            // a lifecycle stream cannot repeatedly overtake ordinary receipts. Release
+            // bot/class-local holds with spare shared capacity to keep other scopes discoverable.
+            if (preparationState === 'shared_capacity') sharedCapacityBlocked.add(workUnit);
+            else {
+              scopeBlocked.add(workUnit);
+              pending.delete(key);
+            }
             continue;
           }
           dispatched.add(workUnit);
@@ -1674,6 +1683,10 @@ export class WebhookOutboxService
       if (timer) clearTimeout(timer);
     }
     progress.preparationBlocked += workUnits.length - dispatched.size;
+    // FLAG: These count observed waits, not exclusive final outcomes; a unit may
+    // encounter both limits and later dispatch within this same poll.
+    progress.preparationSharedCapacityBlocked = sharedCapacityBlocked.size;
+    progress.preparationScopeBlocked = scopeBlocked.size;
     return { ...progress };
   }
 

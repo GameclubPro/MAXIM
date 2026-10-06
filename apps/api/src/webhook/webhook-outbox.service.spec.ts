@@ -1,7 +1,10 @@
 import { WebhookStatus } from '../prisma/prisma-client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { WebhookService } from './webhook.service';
-import { WebhookPreparationAdmission } from './webhook-preparation-admission';
+import {
+  WebhookPreparationAdmission,
+  type WebhookPreparationSchedulingState,
+} from './webhook-preparation-admission';
 import { getQueueToken } from '@nestjs/bullmq';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { WebhookOutboxService } from './webhook-outbox.service';
@@ -809,6 +812,9 @@ function createService(params?: {
   }
   const webhookService = {
     canPreparePersistedWebhookEvent: jest.fn((_update?: MaxUpdate) => true),
+    webhookPreparationSchedulingState: jest.fn(
+      (_update?: MaxUpdate): WebhookPreparationSchedulingState => 'available',
+    ),
     nextPreparationCompletion: jest.fn<Promise<void> | null, []>(() => null),
     preparePersistedWebhookEvent: jest.fn(
       async (eventId: string, _fallbackUpdate?: MaxUpdate, _admissionUpdate?: MaxUpdate) => {
@@ -1292,6 +1298,9 @@ describe('WebhookOutboxService', () => {
     fixture.webhookService.canPreparePersistedWebhookEvent.mockImplementation((update) =>
       boundary.canPreparePersistedWebhookEvent(update),
     );
+    fixture.webhookService.webhookPreparationSchedulingState.mockImplementation((update) =>
+      boundary.webhookPreparationSchedulingState(update),
+    );
     fixture.webhookService.nextPreparationCompletion.mockImplementation(() =>
       boundary.nextPreparationCompletion(),
     );
@@ -1306,6 +1315,95 @@ describe('WebhookOutboxService', () => {
       );
     return { ...fixture, admission, metrics, run, capacityWrites };
   }
+
+  it('dispatches scanned ordinary receipts during a sustained lifecycle stream at the real preparation cap', async () => {
+    jest.useFakeTimers();
+    const started: string[] = [];
+    const fixture = capacityFixture(26, async (id) => {
+      started.push(id);
+      await new Promise<void>((resolve) => setTimeout(resolve, 80));
+    });
+    fixture.prisma.webhookEvent.updateMany.mockImplementation(
+      createWebhookEventUpdateManyMock(fixture.webhookRows),
+    );
+    for (const [index, row] of fixture.webhookRows.entries()) {
+      Object.assign(row, { legacyDispositionId: null });
+      const payload = row.normalizedPayload as MaxUpdate;
+      payload.botId = index < 2 ? `ordinary-${index}` : `lifecycle-${index % 7}`;
+      payload.type =
+        index === 0 ? 'message_created' : index === 1 ? 'message_removed' : 'user_added';
+    }
+    type Candidate = MockWebhookEventRow & { isBacklogScan?: boolean; priority?: number };
+    const internals = fixture.service as unknown as {
+      readPendingEnqueueRepresentatives(now: Date, take: number): Promise<Candidate[]>;
+      mergeEnqueueCandidates(candidates: Candidate[], take: number): Candidate[];
+      prioritizeCandidates(candidates: Candidate[], now: Date, take: number): Promise<Candidate[]>;
+      enqueueCandidates(
+        candidates: Candidate[],
+      ): Promise<{ preparationSharedCapacityBlocked: number }>;
+      pendingEnqueueRepresentatives: Map<string, string>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    try {
+      let sharedDeferrals = 0;
+      for (let pass = 0; pass < 8; pass++) {
+        const freshIds = new Set<string>();
+        for (let index = 0; index < 12; index++) {
+          const id = `lifecycle-stream-${pass}-${index}`;
+          freshIds.add(id);
+          const template = fixture.webhookRows[2]!;
+          fixture.webhookRows.push({
+            ...template,
+            id,
+            dedupKey: id,
+            status: WebhookStatus.RECEIVED,
+            enqueueAttempts: 0,
+            queueName: null,
+            queuedAt: null,
+            createdAt: new Date(),
+            normalizedPayload: {
+              updateId: id,
+              botId: `lifecycle-${index % 7}`,
+              type: 'user_added',
+              message: { chatId: id, messageId: id },
+            },
+          });
+        }
+        const pending = await internals.readPendingEnqueueRepresentatives(new Date(), 400);
+        const source = fixture.webhookRows
+          .filter((row) => row.status === WebhookStatus.RECEIVED)
+          .map((row) => ({ ...row, isBacklogScan: pass === 0 || freshIds.has(row.id) }));
+        const selected = await internals.prioritizeCandidates(
+          internals.mergeEnqueueCandidates([...pending, ...source], 1000),
+          new Date(),
+          400,
+        );
+        const work = internals.enqueueCandidates(selected);
+        await jest.advanceTimersByTimeAsync(201);
+        sharedDeferrals += (await work).preparationSharedCapacityBlocked;
+        expect(fixture.admission.snapshot().inFlight).toBeLessThanOrEqual(2);
+        expect(internals.pendingEnqueueRepresentatives.size).toBeLessThanOrEqual(100);
+        await jest.advanceTimersByTimeAsync(200);
+        await Promise.all(internals.activeEnqueueUnits.values());
+      }
+      expect(sharedDeferrals).toBeGreaterThan(0);
+      expect(started).toEqual(expect.arrayContaining(['capacity-0', 'capacity-1']));
+      expect(started.filter((id) => id.startsWith('lifecycle-stream-')).length).toBeGreaterThan(0);
+      expect(fixture.capacityWrites()).toHaveLength(0);
+      expect(
+        fixture.webhookRows
+          .slice(0, 2)
+          .map(({ id, status, errorMessage }) => ({ id, status, errorMessage })),
+      ).toEqual([
+        { id: 'capacity-0', status: WebhookStatus.QUEUED, errorMessage: null },
+        { id: 'capacity-1', status: WebhookStatus.QUEUED, errorMessage: null },
+      ]);
+    } finally {
+      await jest.runOnlyPendingTimersAsync();
+      await Promise.all(internals.activeEnqueueUnits.values());
+      jest.useRealTimers();
+    }
+  });
 
   it('reuses a released preparation slot within its bounded selected batch without retry writes', async () => {
     const started: string[] = [];
@@ -1504,6 +1602,9 @@ describe('WebhookOutboxService', () => {
       );
       fixture.webhookService.canPreparePersistedWebhookEvent.mockImplementation((update) =>
         realBoundary.canPreparePersistedWebhookEvent(update),
+      );
+      fixture.webhookService.webhookPreparationSchedulingState.mockImplementation((update) =>
+        realBoundary.webhookPreparationSchedulingState(update),
       );
       fixture.webhookService.nextPreparationCompletion.mockImplementation(() =>
         realBoundary.nextPreparationCompletion(),
@@ -2210,6 +2311,8 @@ describe('WebhookOutboxService', () => {
             workUnits: 0,
             orderedHeadBlocked: 0,
             preparationBlocked: 0,
+            preparationSharedCapacityBlocked: 0,
+            preparationScopeBlocked: 0,
             prepared: 0,
             settled: 0,
             outstanding: 0,

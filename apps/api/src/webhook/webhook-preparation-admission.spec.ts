@@ -10,6 +10,29 @@ function gate() {
 }
 
 describe('Webhook durable preparation admission', () => {
+  it('distinguishes shared saturation from a poisoned bot behind a lifecycle reservation', async () => {
+    const admission = new WebhookPreparationAdmission(4, jest.fn());
+    const a = gate();
+    const b = gate();
+    const first = admission.run('a', 'ordinary', () => a.promise);
+    const second = admission.run('b', 'ordinary', () => b.promise);
+    try {
+      expect(admission.schedulingState('a', 'ordinary')).toBe('shared_capacity');
+      expect(admission.schedulingState('c', 'lifecycle')).toBe('shared_capacity');
+      b.release();
+      await second;
+      expect(admission.schedulingState('a', 'ordinary')).toBe('scope_capacity');
+      expect(admission.schedulingState('b', 'ordinary')).toBe('shared_capacity');
+      expect(admission.schedulingState('c', 'lifecycle')).toBe('available');
+      admission.stop();
+      expect(admission.schedulingState('b', 'ordinary')).toBe('closed');
+    } finally {
+      a.release();
+      b.release();
+      await Promise.all([first, second]);
+    }
+  });
+
   it('preserves lifecycle reservation and shutdown when the outbox checks scheduling availability', async () => {
     const admission = new WebhookPreparationAdmission(4, jest.fn());
     const a = gate();

@@ -1,6 +1,11 @@
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 
 type WorkClass = 'ordinary' | 'interactive' | 'lifecycle';
+export type WebhookPreparationSchedulingState =
+  | 'available'
+  | 'shared_capacity'
+  | 'scope_capacity'
+  | 'closed';
 const DURATION_BOUNDS_MS = [5, 25, 100, 1_000, 5_000, 15_000, 30_000];
 
 export class WebhookPreparationAdmission {
@@ -38,13 +43,26 @@ export class WebhookPreparationAdmission {
       reserved ||
       botActive >= botClassLimit ||
       (workClass === 'interactive' && this.byClass.interactive >= 1);
-    return { botCounts, botActive, botClassLimit, globalFull, limited };
+    return { botCounts, botActive, botClassLimit, globalFull, reserved, limited };
   }
 
   canRun(botId: string, workClass: WorkClass): boolean {
+    return this.schedulingState(botId, workClass) === 'available';
+  }
+
+  schedulingState(botId: string, workClass: WorkClass): WebhookPreparationSchedulingState {
     const availability = this.availability(botId, workClass);
     this.reserveLifecycle(workClass, availability);
-    return !availability.limited;
+    if (this.closed) return 'closed';
+    // FLAG: Shared saturation/reservation must not erase a scanned receipt's FIFO
+    // position. Only a scope-specific limit with spare shared capacity releases it.
+    if (availability.globalFull) return 'shared_capacity';
+    if (
+      availability.botActive >= availability.botClassLimit ||
+      (workClass === 'interactive' && this.byClass.interactive >= 1)
+    )
+      return 'scope_capacity';
+    return availability.reserved ? 'shared_capacity' : 'available';
   }
 
   nextCompletion(): Promise<void> | null {

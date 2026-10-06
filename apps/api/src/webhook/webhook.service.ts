@@ -2,7 +2,10 @@ import { holdUnverifiedLegacyExecution } from './webhook-legacy-authority';
 import { settleOperatorDiscardedMirror } from './webhook-operator-discard-mirror';
 import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
-import { WebhookPreparationAdmission } from './webhook-preparation-admission';
+import {
+  WebhookPreparationAdmission,
+  type WebhookPreparationSchedulingState,
+} from './webhook-preparation-admission';
 import { readPrismaPoolConfig } from '../prisma/prisma-client';
 import { RuntimeWorkerOwner, type RuntimeWorker } from '../runtime/runtime-worker-shutdown';
 import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
@@ -516,16 +519,22 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
   }
 
   canPreparePersistedWebhookEvent(admissionUpdate?: MaxUpdate): boolean {
+    return this.webhookPreparationSchedulingState(admissionUpdate) === 'available';
+  }
+
+  webhookPreparationSchedulingState(
+    admissionUpdate?: MaxUpdate,
+  ): WebhookPreparationSchedulingState {
     // FLAG: This is only a scheduling hint. Actual admission and persisted receipt reload
     // remain mandatory; a positive hint grants neither a slot nor execution authority.
     try {
-      return this.preparationAdmission.canRun(
+      return this.preparationAdmission.schedulingState(
         admissionUpdate?.botId?.trim() || 'unknown',
         this.preparationClass(admissionUpdate),
       );
     } catch {
       // Let the normal per-receipt preparation/error path handle malformed stored data.
-      return true;
+      return 'available';
     }
   }
 
