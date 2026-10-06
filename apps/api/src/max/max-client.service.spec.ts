@@ -1943,7 +1943,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       expect(request).not.toHaveBeenCalled();
     });
 
-    it('recovers a concurrent positive SEND receipt after hold rejection and preserves auto-delete', async () => {
+    it('recovers a concurrent positive SEND receipt after hold rejection without creating auto-delete', async () => {
       const request = jest.fn();
       const completedAt = new Date();
       const readReceipt = jest.fn().mockResolvedValueOnce(null).mockResolvedValue({
@@ -1983,16 +1983,198 @@ describe('MaxClientService inline keyboard guardrails', () => {
       expect(hold.isMessageHeld).toHaveBeenCalled();
       expect(claim).toHaveBeenCalledTimes(1);
       expect(request).not.toHaveBeenCalled();
-      expect(queue.add).toHaveBeenCalledWith(
-        'execute-max-action',
-        expect.objectContaining({
-          actionType: 'DELETE_MESSAGE',
-          messageId: 'late-confirmed-message',
-          botId: '777000_bot',
-        }),
-        expect.objectContaining({ delay: expect.any(Number) }),
-      );
+      expect(queue.add).not.toHaveBeenCalled();
     });
+
+    it.each(['message', 'member', 'global_user', 'child', 'old_chat', 'reply'] as const)(
+      'settles a confirmed SEND under %s hold without a new child or ledger entry',
+      async (scope) => {
+        const request = jest.fn();
+        const queue = {
+          add: jest.fn(),
+          getJob: jest.fn().mockResolvedValue(null),
+        };
+        const ledger = {
+          getCompletedSendDispatchResult: jest.fn().mockResolvedValue({
+            remoteMessageId: 'confirmed-parent',
+            dispatchBotId: '777000_bot',
+            completedAt: new Date(),
+          }),
+          claimSendDispatch: jest.fn(),
+          assertCanEnqueue: jest.fn(),
+          recordEnqueuedIfAbsent: jest.fn(),
+          recordEnqueueFailedIfAbsent: jest.fn(),
+        };
+        const service = createService({ request }, {}, queue, ledger);
+        const hold = holds(false);
+        const method = {
+          message: 'isMessageHeld',
+          member: 'isMemberHeld',
+          global_user: 'isGlobalUserHeld',
+          child: 'isOutboundJobHeld',
+          old_chat: 'isLegacyChatSendHeld',
+          reply: 'isMessageHeld',
+        }[scope] as keyof typeof hold;
+        hold[method].mockResolvedValue(true);
+        Object.assign(service, { legacyHolds: hold });
+        try {
+          await expect(
+            service.executeActionJob({
+              ...job,
+              actionType: 'SEND_MESSAGE',
+              ...(scope === 'reply'
+                ? {
+                    messageId: undefined,
+                    options: { messageLink: { type: 'reply' as const, mid: 'held-reply-source' } },
+                  }
+                : {}),
+              userId: 'source-user',
+              text: 'notice',
+              autoDeleteDelayMs: 60_000,
+            }),
+          ).resolves.toMatchObject({ messageId: 'confirmed-parent' });
+          expect(hold[method]).toHaveBeenCalled();
+          expect(request).not.toHaveBeenCalled();
+          expect(queue.add).not.toHaveBeenCalled();
+          expect(ledger.claimSendDispatch).not.toHaveBeenCalled();
+          expect(ledger.assertCanEnqueue).not.toHaveBeenCalled();
+          expect(ledger.recordEnqueuedIfAbsent).not.toHaveBeenCalled();
+          expect(ledger.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['independent_reply', 'incomplete_moderation'] as const)(
+      'keeps unrelated chat holds scoped for %s auto-delete',
+      async (source) => {
+        const request = jest.fn().mockReturnValue(of({ data: { success: true } }));
+        const queue = {
+          add: jest.fn().mockResolvedValue(undefined),
+          getJob: jest.fn().mockResolvedValue(null),
+        };
+        const completed = {
+          remoteMessageId: 'confirmed-independent-parent',
+          dispatchBotId: '777000_bot',
+          completedAt: new Date(),
+        };
+        const ledger = {
+          getCompletedSendDispatchResult: jest
+            .fn()
+            .mockImplementation(async (action: MaxActionJob) =>
+              action.actionType === 'SEND_MESSAGE' ? completed : null,
+            ),
+          assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+          recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+        };
+        const service = createService({ request }, {}, queue, ledger);
+        const hold = holds(false);
+        const sealedAt = Date.parse('2026-10-01T00:00:00.000Z');
+        hold.isMessageHeld.mockImplementation(
+          async (_chatId: string, messageId: string) => messageId === 'unrelated-held-source',
+        );
+        hold.isLegacyChatSendHeld.mockImplementation(
+          async (_chatId: string, createdAt: Date) =>
+            !Number.isFinite(createdAt.getTime()) || createdAt.getTime() <= sealedAt,
+        );
+        Object.assign(service, { legacyHolds: hold });
+        jest.spyOn(service, 'getExactMessagePresence').mockResolvedValue('present');
+        try {
+          await expect(
+            service.executeActionJob({
+              ...job,
+              actionType: 'SEND_MESSAGE',
+              messageId: undefined,
+              userId: undefined,
+              text: 'independently authored reply',
+              options: { messageLink: { type: 'reply', mid: 'independent-reply-source' } },
+              autoDeleteDelayMs: 60_000,
+              createdAt: '2026-10-05T00:00:00.000Z',
+              ...(source === 'incomplete_moderation'
+                ? {
+                    ledgerContext: {
+                      moderationSource: {
+                        version: 1,
+                        chatId: '-100',
+                        messageId: 'unheld-rule-source',
+                      },
+                    },
+                  }
+                : {}),
+            }),
+          ).resolves.toMatchObject({ messageId: completed.remoteMessageId });
+          if (source === 'incomplete_moderation') {
+            expect(queue.add).not.toHaveBeenCalled();
+            expect(request).not.toHaveBeenCalled();
+            return;
+          }
+          expect(queue.add).toHaveBeenCalledTimes(1);
+          const child = queue.add.mock.calls[0][1] as MaxActionJob;
+          expect(child).toMatchObject({
+            actionType: 'DELETE_MESSAGE',
+            options: { messageLink: { type: 'reply', mid: 'independent-reply-source' } },
+            sendAutoDelete: {
+              sourceMessageId: null,
+              sourceUserId: null,
+              sourceCreatedAt: '2026-10-05T00:00:00.000Z',
+            },
+          });
+          await expect(service.executeActionJob(child)).resolves.toBeUndefined();
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(request).toHaveBeenCalledWith(
+            expect.objectContaining({
+              method: 'delete',
+              params: { message_id: completed.remoteMessageId },
+            }),
+          );
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['initial', 'queue_admission'] as const)(
+      'fails closed on %s hold lookup outage while recovering a confirmed parent',
+      async (stage) => {
+        const request = jest.fn();
+        const queue = { add: jest.fn(), getJob: jest.fn().mockResolvedValue(null) };
+        const ledger = {
+          getCompletedSendDispatchResult: jest.fn().mockResolvedValue({
+            remoteMessageId: 'confirmed-parent',
+            dispatchBotId: '777000_bot',
+            completedAt: new Date(),
+          }),
+          assertCanEnqueue: jest.fn(),
+          recordEnqueuedIfAbsent: jest.fn(),
+          recordEnqueueFailedIfAbsent: jest.fn(),
+        };
+        const service = createService({ request }, {}, queue, ledger);
+        const hold = holds(false);
+        const outage = new Error('Authoritative hold lookup unavailable');
+        hold.isOutboundJobHeld.mockRejectedValue(outage);
+        if (stage === 'queue_admission') {
+          hold.isOutboundJobHeld.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+        }
+        Object.assign(service, { legacyHolds: hold });
+        try {
+          await expect(
+            service.executeActionJob({
+              ...job,
+              actionType: 'SEND_MESSAGE',
+              text: 'notice',
+              autoDeleteDelayMs: 60_000,
+            }),
+          ).rejects.toBe(outage);
+          expect(request).not.toHaveBeenCalled();
+          expect(queue.add).not.toHaveBeenCalled();
+          expect(ledger.recordEnqueuedIfAbsent).not.toHaveBeenCalled();
+          expect(ledger.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
 
     it('releases a denied SEND despite a late receipt-read outage and permits a fresh retry', async () => {
       const request = jest.fn().mockReturnValue(of({ data: { mid: 'fresh-retry-message' } }));
@@ -2224,7 +2406,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
           expect(failure).toBeInstanceOf(WebhookLegacyHoldRejectedError);
           expect(wasMaxPreDispatchGuardRejected(failure)).toBe(true);
           expect(wasMaxMessageSendAttempted(failure)).toBe(false);
-          expect(hold.isMessageHeld).toHaveBeenCalledWith('-100', 'held-source');
+          expect(hold.isMessageHeld).toHaveBeenCalledWith(
+            '-100',
+            'held-source',
+            ...(kind === 'queued' ? [undefined] : []),
+          );
           expect(beforeSend).not.toHaveBeenCalled();
           expect(
             request.mock.calls.some(([call]) => String(call.method).toLowerCase() === 'post'),
@@ -3976,6 +4162,15 @@ describe('MaxClientService inline keyboard guardrails', () => {
   });
 
   it('inherits queued send dispatch context when scheduling auto-delete', async () => {
+    const sourceCreatedAt = new Date().toISOString();
+    const ledgerContext = {
+      moderationSource: {
+        version: 1,
+        chatId: 'chat-1',
+        messageId: 'original-source',
+        userId: 'original-author',
+      },
+    };
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
         of({
@@ -3995,6 +4190,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.executeActionJob({
       actionType: 'SEND_MESSAGE',
       chatId: 'chat-1',
+      messageId: 'original-source',
+      userId: 'original-author',
+      ledgerContext,
+      options: { messageLink: { type: 'reply', mid: 'reply-source' } },
       text: 'hello',
       botId: '777000_bot',
       trafficClass: 'background',
@@ -4005,7 +4204,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ignoreFailureMetricStatuses: [403, 404, 409],
       attempt: 1,
       idempotencyKey: 'send-auto-delete-context',
-      createdAt: new Date().toISOString(),
+      createdAt: sourceCreatedAt,
     });
 
     expect(httpService.request).toHaveBeenCalledWith(
@@ -4027,9 +4226,15 @@ describe('MaxClientService inline keyboard guardrails', () => {
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
         timeoutMs: 1_234,
         ignoreFailureMetricStatuses: [409],
+        ledgerContext,
+        options: { messageLink: { type: 'reply', mid: 'reply-source' } },
         sendAutoDelete: {
           version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
           sourceSendJobId: 'send-auto-delete-context',
+          sourceChatId: 'chat-1',
+          sourceUserId: 'original-author',
+          sourceMessageId: 'original-source',
+          sourceCreatedAt,
           sourceSendCompletedAt: null,
           requestedDelayMs: 60_000,
           originBotId: '777000_bot',

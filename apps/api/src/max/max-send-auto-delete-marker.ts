@@ -14,6 +14,11 @@ type MaxSendAutoDeleteMarkerBase = {
   sourceSendCompletedAt: string | null;
   requestedDelayMs: number;
   originBotId: string;
+  /** FLAG: Original SEND identity; older v1/v2 jobs use conservative shared hold checks. */
+  sourceChatId?: string;
+  sourceUserId?: string | null;
+  sourceMessageId?: string | null;
+  sourceCreatedAt?: string;
 };
 
 export type MaxSendAutoDeleteLegacyMarker = MaxSendAutoDeleteMarkerBase & {
@@ -43,6 +48,19 @@ export function isMaxSendAutoDeleteMarker(value: unknown): value is MaxSendAutoD
   }
   const marker = value as Record<string, unknown>;
   const sourceSendCompletedAt = marker.sourceSendCompletedAt;
+  const validIdentity = (identity: unknown, nullable = false) =>
+    (nullable && identity === null) ||
+    (typeof identity === 'string' && identity.trim().length > 0 && identity === identity.trim());
+  const sourceFields = ['sourceChatId', 'sourceUserId', 'sourceMessageId', 'sourceCreatedAt'];
+  const hasSource = sourceFields.some((field) => Object.hasOwn(marker, field));
+  const validSource =
+    !hasSource ||
+    (sourceFields.every((field) => Object.hasOwn(marker, field)) &&
+      validIdentity(marker.sourceChatId) &&
+      validIdentity(marker.sourceUserId, true) &&
+      validIdentity(marker.sourceMessageId, true) &&
+      typeof marker.sourceCreatedAt === 'string' &&
+      Number.isFinite(Date.parse(marker.sourceCreatedAt)));
   return (
     (marker.version === MAX_SEND_AUTO_DELETE_LEGACY_MARKER_VERSION ||
       marker.version === MAX_SEND_AUTO_DELETE_MARKER_VERSION) &&
@@ -55,7 +73,8 @@ export function isMaxSendAutoDeleteMarker(value: unknown): value is MaxSendAutoD
     Number.isFinite(marker.requestedDelayMs) &&
     marker.requestedDelayMs > 0 &&
     typeof marker.originBotId === 'string' &&
-    marker.originBotId.trim().length > 0
+    marker.originBotId.trim().length > 0 &&
+    validSource
   );
 }
 

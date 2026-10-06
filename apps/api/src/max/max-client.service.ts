@@ -2867,6 +2867,16 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('Auto-delete scheduling requires a completed SEND_MESSAGE action');
     }
 
+    // FLAG: A confirmed SEND receipt settles its parent only. A held source must not
+    // create another effect; hold-store outages leave the child uncreated for safe recovery.
+    try {
+      if (this.legacyHolds) await assertLegacyActionAllowed(this.legacyHolds, action);
+      await this.assertLegacyMessageLinkAllowed(action.chatId, action.options?.messageLink);
+    } catch (error: unknown) {
+      if (error instanceof WebhookLegacyHoldRejectedError) return;
+      throw error;
+    }
+
     const persistedDispatchBotId = this.assertRecoveredSendDispatchBot(
       action,
       completedSend.dispatchBotId,
@@ -2894,9 +2904,16 @@ export class MaxClientService implements OnModuleDestroy {
           actionType: 'DELETE_MESSAGE',
           chatId: action.chatId,
           messageId: completedSend.remoteMessageId,
+          ...(action.options?.messageLink
+            ? { options: { messageLink: action.options.messageLink } }
+            : {}),
           sendAutoDelete: {
             version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
             sourceSendJobId: action.idempotencyKey,
+            sourceChatId: action.chatId,
+            sourceUserId: action.userId ?? null,
+            sourceMessageId: action.messageId ?? null,
+            sourceCreatedAt: action.createdAt,
             sourceSendCompletedAt: completedSend.completedAt?.toISOString() ?? null,
             requestedDelayMs: autoDeleteDelayMs,
             originBotId: dispatchBotId,
@@ -2905,6 +2922,7 @@ export class MaxClientService implements OnModuleDestroy {
         this.buildAutoDeleteDispatchOptions(action, dispatchBotId, remainingDelayMs),
       );
     } catch (error: unknown) {
+      if (error instanceof WebhookLegacyHoldRejectedError) return;
       this.logger.warn(
         {
           chatId: action.chatId,
@@ -5369,6 +5387,12 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('Immediate dispatch cannot be combined with delay');
     }
 
+    const assertAutoDeleteSchedulingAllowed = async () => {
+      if (!job.sendAutoDelete) return;
+      if (this.legacyHolds) await assertLegacyActionAllowed(this.legacyHolds, job);
+    };
+    await assertAutoDeleteSchedulingAllowed();
+
     if (immediate) {
       return this.executeImmediateActionJob(
         job,
@@ -5406,13 +5430,22 @@ export class MaxClientService implements OnModuleDestroy {
         },
       };
       const targetActionQueue = actionQueue;
-      const addActionJob = () => targetActionQueue.add('execute-max-action', job, queueJobOptions);
+      let queueSubmissionStarted = false;
+      const addActionJob = async () => {
+        queueSubmissionStarted = false;
+        await assertAutoDeleteSchedulingAllowed();
+        queueSubmissionStarted = true;
+        return targetActionQueue.add('execute-max-action', job, queueJobOptions);
+      };
       const enqueueAttemptStartedAt = new Date();
       let bullMqEnqueuedAt: Date | undefined;
       try {
         const addedJob = await addActionJob();
         bullMqEnqueuedAt = this.readBullMqJobEnqueuedAt(addedJob);
       } catch (error: unknown) {
+        // FLAG: A refused child was never submitted to BullMQ. Do not manufacture
+        // queue ambiguity or a new action-ledger entry from a pre-admission denial.
+        if (!queueSubmissionStarted) throw error;
         const queueObservation = await this.observeActionQueueJob(
           targetActionQueue,
           job.idempotencyKey,
@@ -5437,6 +5470,7 @@ export class MaxClientService implements OnModuleDestroy {
             queueAccepted = true;
             recoveryEvidence = 'bullmq_retry';
           } catch (retryError: unknown) {
+            if (!queueSubmissionStarted) throw retryError;
             executionObserved =
               (await this.actionLedgerService
                 ?.hasExecutionEvidenceSince(job.idempotencyKey, enqueueAttemptStartedAt)
@@ -5527,6 +5561,7 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (delayMs > 0) {
+      await assertAutoDeleteSchedulingAllowed();
       if (scheduledJobId) {
         const existingTimeout = this.keyedActionTimeouts.get(scheduledJobId);
         if (existingTimeout) {
@@ -7195,6 +7230,7 @@ export class MaxClientService implements OnModuleDestroy {
       ...(sourceTag ? { sourceTag } : {}),
       ...(timeoutMs ? { timeoutMs } : {}),
       ...(ignoreFailureMetricStatuses?.length ? { ignoreFailureMetricStatuses } : {}),
+      ...(action.ledgerContext ? { ledgerContext: action.ledgerContext } : {}),
     };
   }
 

@@ -275,6 +275,45 @@ stores('permanent legacy holds after OS worker SIGKILL and real BullMQ restart',
           idempotencyKey: `${job.idempotencyKey}-other-chat`,
           createdAt: laterAt,
         },
+        ...([1, 2] as const).map(
+          (version): MaxActionJob => ({
+            ...job,
+            actionType: 'DELETE_MESSAGE',
+            messageId: 'confirmed-bot-message',
+            userId: undefined,
+            botId: `fixture-bot-${bots}`,
+            idempotencyKey: `${job.idempotencyKey}-old-auto-delete-v${version}`,
+            createdAt: laterAt,
+            sendAutoDelete: {
+              version,
+              sourceSendJobId: job.idempotencyKey,
+              sourceSendCompletedAt: quiescedAt.toISOString(),
+              requestedDelayMs: 60_000,
+              originBotId: `fixture-bot-${bots}`,
+            },
+          }),
+        ),
+        {
+          ...job,
+          actionType: 'DELETE_MESSAGE',
+          messageId: 'confirmed-bot-message',
+          userId: undefined,
+          botId: `fixture-bot-${bots}`,
+          idempotencyKey: `${job.idempotencyKey}-new-auto-delete`,
+          createdAt: laterAt,
+          sendAutoDelete: {
+            version: 2,
+            sourceSendJobId: `${job.idempotencyKey}-source-send`,
+            sourceChatId: chatId,
+            sourceMessageId: 'source-message',
+            sourceUserId: userId,
+            sourceCreatedAt: job.createdAt,
+            sourceSendCompletedAt: quiescedAt.toISOString(),
+            requestedDelayMs: 60_000,
+            originBotId: `fixture-bot-${bots}`,
+          },
+          ledgerContext: { moderationSource: source },
+        },
       ];
       for (const blocked of blockedJobs) {
         const replay = await queue.add('guarded-replay', blocked, {
@@ -297,6 +336,49 @@ stores('permanent legacy holds after OS worker SIGKILL and real BullMQ restart',
       expect(await holds.isMemberHeld(chatId, userId)).toBe(true);
       expect(await holds.isGlobalUserHeld(userId)).toBe(true);
       expect(await holds.isOutboundJobHeld(job.idempotencyKey)).toBe(true);
+      if (actionType === 'SEND_MESSAGE') {
+        const confirmed: MaxActionJob = {
+          ...job,
+          idempotencyKey: `${job.idempotencyKey}-known-receipt`,
+          autoDeleteDelayMs: 60_000,
+        };
+        const receipt = await prisma.maxActionLedgerEntry.create({
+          data: {
+            jobId: confirmed.idempotencyKey,
+            chatId,
+            actionType,
+            botId: job.botId,
+            dispatchBotId: job.botId,
+            remoteMessageId: 'fixture-confirmed-message',
+            status: 'SUCCEEDED',
+            terminal: true,
+            completedAt: quiescedAt,
+          },
+        });
+        const recovered = await queue.add('confirmed-parent-recovery', confirmed, {
+          jobId: confirmed.idempotencyKey,
+          attempts: 1,
+        });
+        await expect(recovered.waitUntilFinished(events, 15_000)).resolves.toBeNull();
+        await second.checkpoint('completed', confirmed.idempotencyKey);
+        expect(second.messages.filter((message) => message.name === 'effect')).toHaveLength(0);
+        expect(await prisma.maxActionLedgerEntry.count({ where: { chatId } })).toBe(1);
+        expect(
+          await prisma.maxActionLedgerEntry.findUnique({ where: { id: receipt.id } }),
+        ).toMatchObject({
+          status: 'SUCCEEDED',
+          remoteMessageId: 'fixture-confirmed-message',
+          dispatchBotId: job.botId,
+          completedAt: quiescedAt,
+        });
+        expect(
+          await Promise.all([
+            queue.getWaitingCount(),
+            queue.getDelayedCount(),
+            queue.getActiveCount(),
+          ]),
+        ).toEqual([0, 0, 0]);
+      }
       const independent: MaxActionJob = {
         ...job,
         actionType: 'SEND_MESSAGE',

@@ -185,7 +185,12 @@ function object(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export type LegacyActionSourceScope = { chatId: string; messageId?: string; userId?: string };
+export type LegacyActionSourceScope = {
+  chatId: string;
+  messageId?: string;
+  userId?: string;
+  exactMessageOnly?: true;
+};
 
 // FLAG: Read every proof independently. A valid first envelope cannot mask a held
 // source in another envelope; duplicate notices keep chat outside their v3 binding.
@@ -207,6 +212,35 @@ export function readLegacyActionSourceScopes(job: MaxActionJob): LegacyActionSou
   const scopes: LegacyActionSourceScope[] = [
     { chatId, messageId: readIdentity([job.messageId]), userId: readIdentity([job.userId]) },
   ];
+  if (job.options?.messageLink) {
+    const link = job.options.messageLink;
+    if (link.type !== 'reply' || !readIdentity([link.mid]))
+      throw new WebhookLegacyHoldRejectedError();
+    scopes.push({ chatId, messageId: readIdentity([link.mid]), exactMessageOnly: true });
+  }
+  if (job.sendAutoDelete) {
+    const marker = object(job.sendAutoDelete);
+    if (!marker || !readIdentity([marker.sourceSendJobId]))
+      throw new WebhookLegacyHoldRejectedError();
+    const keys = ['sourceChatId', 'sourceUserId', 'sourceMessageId', 'sourceCreatedAt'];
+    if (keys.some((key) => Object.hasOwn(marker, key))) {
+      // FLAG: Derived DELETE jobs retain the exact original SEND source. A partial
+      // envelope cannot borrow the new remote message identity or child creation time.
+      if (
+        !keys.every((key) => Object.hasOwn(marker, key)) ||
+        readIdentity([marker.sourceChatId]) !== chatId ||
+        typeof marker.sourceCreatedAt !== 'string' ||
+        !Number.isFinite(Date.parse(marker.sourceCreatedAt)) ||
+        marker.sourceCreatedAt !== marker.sourceCreatedAt.trim() ||
+        (marker.sourceUserId !== null && !readIdentity([marker.sourceUserId])) ||
+        (marker.sourceMessageId !== null && !readIdentity([marker.sourceMessageId]))
+      )
+        throw new WebhookLegacyHoldRejectedError();
+      const messageId = readIdentity([marker.sourceMessageId]);
+      const userId = readIdentity([marker.sourceUserId]);
+      if (messageId || userId) scopes.push({ chatId, messageId, userId });
+    }
+  }
   const context = object(job.ledgerContext);
   for (const key of [
     'moderationSource',
@@ -245,9 +279,23 @@ export async function assertLegacyActionAllowed(
   if (await holds.isOutboundJobHeld(job.idempotencyKey, client))
     throw new WebhookLegacyHoldRejectedError();
   const scopes = readLegacyActionSourceScopes(job);
+  if (job.sendAutoDelete) {
+    // FLAG: Existing v1/v2 children may lack the additive source envelope. Exact
+    // parent holds still apply; an absent source clock never proves a post-seal SEND.
+    if (
+      (await holds.isOutboundJobHeld(job.sendAutoDelete.sourceSendJobId, client)) ||
+      (await holds.isLegacyChatSendHeld(
+        job.chatId,
+        new Date(job.sendAutoDelete.sourceCreatedAt ?? NaN),
+        client,
+      ))
+    )
+      throw new WebhookLegacyHoldRejectedError();
+  }
   for (const [index, scope] of scopes.entries()) {
     if (
       index > 0 &&
+      !scope.exactMessageOnly &&
       (!scope.messageId || !scope.userId) &&
       ((await holds.isLegacyChatSendHeld(job.chatId, new Date(NaN), client)) ||
         (await holds.isLegacyChatSendHeld(scope.chatId, new Date(NaN), client)))

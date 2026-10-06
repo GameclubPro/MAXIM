@@ -17,6 +17,9 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'instance.legacyHolds !== this',
       'throw new WebhookLegacyHoldRejectedError()',
       'certificate."sealed_at" IS NOT NULL',
+      'job.sendAutoDelete.sourceSendJobId',
+      'new Date(job.sendAutoDelete.sourceCreatedAt ?? NaN)',
+      'exactMessageOnly: true',
     ],
   ],
   [
@@ -99,6 +102,19 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'private async assertLegacyMessageLinkAllowed(',
       'await this.assertLegacyMessageLinkAllowed(',
       'await this.assertLegacyMessageMutationAllowed(chatId, sourceMessageId)',
+      'sourceCreatedAt: action.createdAt',
+      'sourceMessageId: action.messageId ?? null',
+      'sourceUserId: action.userId ?? null',
+    ],
+  ],
+  [
+    'apps/api/src/max/max-send-auto-delete-marker.ts',
+    [
+      'sourceSendJobId: string',
+      'sourceCreatedAt?: string',
+      'sourceUserId?: string | null',
+      'sourceMessageId?: string | null',
+      'validSource',
     ],
   ],
   [

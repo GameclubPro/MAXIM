@@ -18,6 +18,7 @@ import {
 import {
   assertLegacyActionAllowed,
   WebhookLegacyHoldService,
+  WebhookLegacyHoldRejectedError,
 } from '../webhook/webhook-legacy-hold.service';
 import { MaxBotLinkService, type MaxBotRouteRequest } from './max-bot-link.service';
 import {
@@ -150,11 +151,18 @@ export class MaxActionDispatchService {
       Number.isFinite(job.autoDeleteDelayMs) &&
       job.autoDeleteDelayMs > 0
     ) {
-      await this.maxClient.ensureSendAutoDeleteScheduled(job, {
-        remoteMessageId: completedSendMessageId,
-        dispatchBotId: persistedDispatchBotId,
-        completedAt: completedSendDispatch?.completedAt ?? null,
-      });
+      try {
+        // FLAG: A saved SEND can settle without new-effect authority. Its DELETE
+        // child still requires fresh parent source admission.
+        if (this.legacyHolds) await assertLegacyActionAllowed(this.legacyHolds, job);
+        await this.maxClient.ensureSendAutoDeleteScheduled(job, {
+          remoteMessageId: completedSendMessageId,
+          dispatchBotId: persistedDispatchBotId,
+          completedAt: completedSendDispatch?.completedAt ?? null,
+        });
+      } catch (error: unknown) {
+        if (!(error instanceof WebhookLegacyHoldRejectedError)) throw error;
+      }
     }
 
     return {
