@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -715,3 +716,28 @@ function readJsonLines(path) {
     .split('\n')
     .map((line) => JSON.parse(line));
 }
+
+test('one complete transition protects reclaim while current is absent without fabricating a release', () => {
+  const stateDir = createCompleteReleaseState('a');
+  const current = join(stateDir, 'current.json');
+  const bytes = readFileSync(current);
+  const journal = join(stateDir, 'current.invalid-deploy-20261001T000000Z-1.json');
+  writeFileSync(journal, bytes);
+  rmSync(current);
+  const retained = readRetainedReleaseImages(stateDir, { minimumRetainedReleases: 5 });
+  assert.equal(retained.journalState, 'verified');
+  assert.ok(retained.imageIds.includes(imageId('a')));
+  assert.equal(existsSync(current), false);
+  writeFileSync(join(stateDir, 'current.invalid-deploy-20261001T000000Z-2.json'), bytes);
+  assert.throws(() => readRetainedReleaseImages(stateDir), /exactly one/u);
+});
+
+test('missing current never permits reclaim from an absent or partial transition', () => {
+  const stateDir = createReleaseState('a');
+  const current = join(stateDir, 'current.json');
+  const bytes = readFileSync(current);
+  rmSync(current);
+  assert.throws(() => readRetainedReleaseImages(stateDir), /missing/u);
+  writeFileSync(join(stateDir, 'current.invalid-deploy-20261001T000000Z-1.json'), bytes);
+  assert.throws(() => readRetainedReleaseImages(stateDir));
+});

@@ -112,7 +112,9 @@ CLI also defaults to five distinct release IDs and refuses a lower value:
 ./infra/scripts/vps-connect.sh exec bash -c '
 set -euo pipefail
 source infra/scripts/lib/deploy-lock.sh
+source infra/scripts/lib/legacy-cold-maintenance.sh
 acquire_deploy_lock
+maxim_require_ordinary_effect_authority "$PWD"
 node infra/scripts/release-image-reclaim.mjs reclaim \
   --state-dir /var/lib/maxim-deploy --until 168h \
   --minimum-retained-releases 5 --dry-run
@@ -126,6 +128,14 @@ old immutable MAXIM image refs. It preserves all retained releases, containers,
 volumes, shared build cache and sibling-project images. Displayed image sizes
 do not predict physically reclaimed bytes; compare `df -B1 /var/lib/docker`
 before and after.
+
+An interrupted release may have no `current.json`. Reclaim then requires exactly
+one complete, verified typed transition as its recovery base; its images, every
+retained manifest and every container reference remain protected. Missing,
+partial or ambiguous transition evidence refuses cleanup. This does not finalize
+the release, relax component history floors, or bypass an incomplete cold-recovery
+journal. The maintenance wrapper accepts an explicitly reviewed `--until` cutoff;
+the optional deploy hook always keeps its fixed seven-day cutoff.
 
 An optional normal-deploy hook uses that fixed seven-day cutoff and minimum five
 distinct retained release IDs:

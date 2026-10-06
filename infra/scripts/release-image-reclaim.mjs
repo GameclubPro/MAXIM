@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
+  findRecoveryBaseManifest,
   getReleaseComponentHistory,
   getRetentionJournalState,
   listRetentionProtectionManifestPaths,
@@ -79,8 +80,13 @@ export function readRetainedReleaseImages(stateDir, { minimumRetainedReleases = 
   const currentPath = resolve(resolvedStateDir, 'current.json');
   const releasesDir = resolve(resolvedStateDir, 'releases');
 
-  if (!existsSync(currentPath)) {
-    throw new Error(`Current release manifest is missing: ${currentPath}`);
+  // FLAG: Interrupted releases may lack current.json. A single complete verified
+  // transition still protects its images; every retained manifest and live container
+  // remains protected. This never records a successful release or relaxes history floors.
+  if (!existsSync(currentPath) && !findRecoveryBaseManifest(resolvedStateDir)) {
+    throw new Error(
+      `Current release manifest and verified recovery base are missing: ${currentPath}`,
+    );
   }
   if (!existsSync(releasesDir) || !statSync(releasesDir).isDirectory()) {
     throw new Error(`Retained release manifest directory is missing: ${releasesDir}`);

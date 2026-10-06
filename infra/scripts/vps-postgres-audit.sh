@@ -28,6 +28,7 @@ usage() {
 Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|storage|all]
   ./infra/scripts/vps-postgres-audit.sh legacy-order-candidates
+  ./infra/scripts/vps-postgres-audit.sh legacy-order-window [--explain]
   ./infra/scripts/vps-postgres-audit.sh duplicate [--explain]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
@@ -87,7 +88,7 @@ case "$AUDIT_MODE" in
     fi
     DUPLICATE_EXPLAIN="${2:-}"
     ;;
-  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof)
+  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|legacy-order-window)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -813,7 +814,7 @@ SELECT 1 / 0;
 SQL
 }
 
-emit_legacy_order_candidates_audit() {
+emit_legacy_order_index_guard() {
   cat <<'SQL'
 SELECT CASE
   WHEN (
@@ -855,6 +856,12 @@ SELECT CASE
   ELSE 'false'
 END AS legacy_order_candidates_index_ready \gset
 \if :legacy_order_candidates_index_ready
+SQL
+}
+
+emit_legacy_order_candidates_audit() {
+  emit_legacy_order_index_guard
+  cat <<'SQL'
 -- FLAG: Both source probes stop at the exact first row before eligibility filtering.
 -- An earlier unknown fence must never be hidden by searching for a later eligible one.
 WITH oldest_received AS MATERIALIZED (
@@ -1002,6 +1009,22 @@ SELECT json_build_object(
     'recipient_nullable_actor', candidate.recipient->'user_id' = 'null'::jsonb,
     'content_keys_supported', CASE WHEN jsonb_typeof(candidate.original_body) = 'object' THEN
       candidate.original_body - ARRAY['mid', 'seq', 'text', 'attachments'] = '{}'::jsonb END,
+    'content_markup_keys_only', CASE WHEN jsonb_typeof(candidate.original_body) = 'object' THEN
+      candidate.original_body - ARRAY['mid', 'seq', 'text', 'attachments', 'markup'] = '{}'::jsonb END,
+    'content_markup_kind', jsonb_typeof(candidate.original_body->'markup'),
+    'content_markup_empty', candidate.original_body->'markup' = '[]'::jsonb,
+    'content_markup_types', CASE WHEN jsonb_typeof(candidate.original_body->'markup') = 'array' THEN
+      CASE WHEN jsonb_array_length(candidate.original_body->'markup') <= 64 THEN
+        (SELECT jsonb_agg(CASE WHEN item->>'type' = ANY(ARRAY['strong', 'emphasized', 'monospaced', 'strikethrough', 'underline', 'link', 'user_mention'])
+          THEN item->>'type' ELSE 'other' END) FROM jsonb_array_elements(candidate.original_body->'markup') item) END END,
+    'content_attachment_types', CASE WHEN jsonb_typeof(candidate.original_body->'attachments') = 'array' THEN
+      CASE WHEN jsonb_array_length(candidate.original_body->'attachments') <= 10 THEN
+        (SELECT jsonb_agg(CASE WHEN item->>'type' = ANY(ARRAY['image', 'photo', 'video', 'audio', 'file', 'share', 'contact', 'location', 'sticker', 'inline_keyboard'])
+          THEN item->>'type' ELSE 'other' END) FROM jsonb_array_elements(candidate.original_body->'attachments') item) END END,
+    'content_images_at_most_ten', CASE WHEN jsonb_typeof(candidate.original_body->'attachments') = 'array' THEN
+      CASE WHEN jsonb_array_length(candidate.original_body->'attachments') BETWEEN 1 AND 10 THEN
+        NOT EXISTS (SELECT 1 FROM jsonb_array_elements(candidate.original_body->'attachments') attachment
+          WHERE COALESCE(attachment->>'type', '') <> ALL(ARRAY['image', 'photo'])) END END,
     -- FLAG: Sequence is opaque MAX int64 metadata, never message identity. Emit only
     -- type/range facts for the one indexed candidate, without exposing its value.
     'sequence_kind', jsonb_typeof(candidate.original_body->'seq'),
@@ -1036,6 +1059,74 @@ SELECT json_build_object(
 )::text
 FROM (SELECT 1) singleton
 LEFT JOIN candidate_parts candidate ON TRUE;
+\else
+\echo MAXIM_POSTGRES_LEGACY_ORDER_CANDIDATES_INDEX_UNAVAILABLE
+SELECT 1 / 0;
+\endif
+SQL
+}
+
+emit_legacy_order_window_audit() {
+  emit_legacy_order_index_guard
+  if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+    printf '%s\n' 'EXPLAIN (FORMAT JSON)'
+  fi
+  cat <<'SQL'
+-- FLAG: Bound the status-index input BEFORE chat grouping; probe only the first
+-- actual predecessor of each selected chat. Unknown earlier fences stay visible.
+WITH receipt_window AS MATERIALIZED (
+  SELECT id, created_at, normalized_payload FROM webhook_events
+  WHERE status = 'RECEIVED'::"WebhookStatus"
+  ORDER BY created_at, id LIMIT 129
+), receipt_sources AS MATERIALIZED (
+  SELECT id, created_at,
+    CASE WHEN octet_length(normalized_payload::text) <= 262144
+      AND LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
+        NULLIF(BTRIM(normalized_payload->>'update_type'), ''))) = ANY(ARRAY['message_created','message_edited'])
+      THEN COALESCE(NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+        NULLIF(BTRIM(normalized_payload->>'chatId'), '')) END AS chat_id
+  FROM receipt_window ORDER BY created_at, id LIMIT 128
+), chat_sources AS MATERIALIZED (
+  SELECT DISTINCT ON (chat_id) chat_id, id, created_at FROM receipt_sources
+  WHERE chat_id IS NOT NULL ORDER BY chat_id, created_at, id
+), selected_chats AS MATERIALIZED (
+  SELECT * FROM chat_sources ORDER BY created_at, id LIMIT 32
+), predecessors AS MATERIALIZED (
+  SELECT selected_chats.created_at AS source_at, selected_chats.id AS source_id, predecessor.*
+  FROM selected_chats LEFT JOIN LATERAL (
+    SELECT id, status, error_message, next_enqueue_at, timeout_quarantine_expires_at, processed_at
+    FROM webhook_events
+    WHERE (status = ANY(ARRAY['RECEIVED','QUEUED']::"WebhookStatus"[]) OR
+      (status = 'FAILED'::"WebhookStatus" AND (next_enqueue_at IS NOT NULL OR
+        LEFT(COALESCE(error_message, ''), 37) = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:')))
+      AND LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
+        NULLIF(BTRIM(normalized_payload->>'update_type'), ''))) = ANY(ARRAY['message_created','message_edited'])
+      AND COALESCE(NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+        NULLIF(BTRIM(normalized_payload->>'chatId'), '')) = selected_chats.chat_id
+      AND (created_at, id) < (selected_chats.created_at, selected_chats.id)
+    ORDER BY created_at, id LIMIT 1
+  ) predecessor ON true
+), classified AS MATERIALIZED (
+  SELECT *, CASE WHEN id IS NULL THEN 'no_predecessor'
+    WHEN status = 'FAILED'::"WebhookStatus"
+      AND error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required'
+      AND next_enqueue_at IS NULL AND timeout_quarantine_expires_at IS NULL
+      AND processed_at IS NULL AND id ~ '^[a-zA-Z0-9_-]{1,128}$'
+      THEN 'legacy_unverified_candidate' ELSE 'ineligible_predecessor' END AS classification
+  FROM predecessors
+)
+SELECT json_build_object(
+  'schema_version', 1, 'audit', 'legacy_order_window', 'scope', 'bounded_oldest_received_window',
+  'receipt_sample_cap', 128, 'chat_sample_cap', 32,
+  'sampled_receipts', (SELECT count(*) FROM receipt_sources),
+  'receipts_truncated', (SELECT count(*) > 128 FROM receipt_window),
+  'unknown_sources', (SELECT count(*) FROM receipt_sources WHERE chat_id IS NULL),
+  'chats_truncated', (SELECT count(*) > 32 FROM chat_sources),
+  'candidates', COALESCE((SELECT json_agg(json_build_object(
+    'classification', classification,
+    'candidate_receipt_id', CASE WHEN classification = 'legacy_unverified_candidate' THEN id END
+  ) ORDER BY source_at, source_id) FROM classified), '[]'::json)
+)::text;
 \else
 \echo MAXIM_POSTGRES_LEGACY_ORDER_CANDIDATES_INDEX_UNAVAILABLE
 SELECT 1 / 0;
@@ -1893,6 +1984,9 @@ emit_sql() {
     legacy-order-candidates)
       emit_legacy_order_candidates_audit
       ;;
+    legacy-order-window)
+      emit_legacy_order_window_audit
+      ;;
     activity)
       emit_activity_audit
       ;;
@@ -1986,7 +2080,7 @@ prepare_audit_sql() {
     echo "Generated PostgreSQL audit input is invalid." >&2
     return 1
   fi
-  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "legacy-order-candidates" ]]; then
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
     AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
       echo "Could not create the private PostgreSQL audit diagnostics file." >&2
       return 1
@@ -2096,7 +2190,7 @@ trap 'exit 143' TERM
 
 prepare_audit_sql
 AUDIT_BACKEND_MAY_EXIST=1
-if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "legacy-order-candidates" ]]; then
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
   timeout --signal=TERM --kill-after=2s \
     "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
     2>"$AUDIT_STDERR_FILE" &
@@ -2117,7 +2211,7 @@ elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "webhook-owner-proof" ]]; then
   echo "Bounded webhook owner proof audit failed closed (owner_proof_unavailable)." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
   echo "Bounded legacy default webhook database audit failed closed." >&2
-elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-order-candidates" ]]; then
+elif [[ "$status" -ne 0 && ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
   echo "Bounded legacy order candidate audit failed closed." >&2
 fi
 exit "$status"

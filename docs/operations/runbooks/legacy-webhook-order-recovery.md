@@ -65,6 +65,9 @@ The online request is:
 The host independently derives the Major catalog from the exact admin container;
 Publisher is excluded. Selection is finite (at most 200 owners/100 bots). Supported sources are original human plain text in a Major group and a strictly
 validated flat forward with text or at most ten complete image/photo attachments.
+Direct sources also admit at most ten strict image/video attachments and bounded
+passive formatting spans from the official MAX shape. Video URL/token and scalar
+metadata must validate; formatting cannot introduce links, mentions or targets.
 Commands in direct, forwarded or composed text, replies, unknown fields and
 ambiguous provenance refuse. MAX `seq` is opaque int64 metadata; explicit `mid`
 supplies identity even when the sequence exceeds JavaScript exact integers. The modern duplicate guard checks both source
@@ -90,6 +93,13 @@ that one candidate. `source_shape` contains only booleans and JSON type names;
 it never includes message text, identities or unknown field names. The 256 KiB
 shape ceiling is explicit. These observations neither validate the complete
 source nor permit replay, stopping or installation. No extra audit grants apply.
+For several independent blockers, `postgres-audit legacy-order-window --explain`
+plans a fixed 128-receipt window plus one saturation sentinel and at most 32 chat
+predecessors. Review the plain plan, then omit `--explain` for candidate IDs. Chat
+grouping occurs only after the bounded status-index read; each chat still exposes
+its first actual predecessor, including ineligible fences. Truncation and unknown
+sources remain explicit. This window is not a fleet census or recovery authority;
+every finite selected owner must still pass online admission and cold inventory.
 
 Change `operation` to `prepare` only for an approved selection. Preparation runs
 native smokes, repeats fresh online admission, requires a 10 GiB Docker reserve,
@@ -165,9 +175,13 @@ abort-and-start or bypass command.
 Cold recovery does not write a current release manifest. After the journal is
 complete, use the official `finalize-release-recovery` wrapper to prove all
 required component identities, strict smokes and queue-fence release. Record the
-actual exact-SHA CI results; never hand-write a successful manifest. Only then
-consider manifest-aware reclaim, using its explicit `--dry-run` first (the reclaim
-helper defaults to apply). Preserve volumes, rollback images and sibling projects.
+actual exact-SHA CI results; never hand-write a successful manifest. Manifest-aware
+reclaim normally follows finalization. When disk capacity blocks another recovery,
+it may use exactly one complete verified transition as the recovery base after the
+previous cold journal is complete. Review its explicit `--dry-run` first (the reclaim
+helper defaults to apply); keep the shared lock, ordinary-effect authority check,
+all retained images and component history floors. Preserve volumes, rollback images
+and sibling projects. See `storage-cost-rollout.md`.
 
 Retain exact release/time windows and distinguish ingress, selection, ordered
 waits, held dispositions and confirmed remote actions. No live test messages go

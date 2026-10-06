@@ -54,6 +54,73 @@ function forwardedSource() {
 }
 
 describe('strict legacy cold recovery source', () => {
+  function videoSource() {
+    const receipt = source();
+    const raw = receipt.normalizedPayload.raw!;
+    const message = raw.message as Record<string, unknown>;
+    const body = message.body as Record<string, unknown>;
+    const attachment = {
+      type: 'video',
+      payload: { url: 'https://example.test/video.mp4', token: 'synthetic' },
+      thumbnail: 'https://example.test/preview.jpg',
+      width: 640,
+      height: 480,
+      duration: 30,
+    };
+    const markup = { type: 'strong', from: 0, length: 8 };
+    Object.assign(body, { attachments: [attachment], markup: [markup] });
+    receipt.normalizedPayload = new WebhookParser().parse(raw, { botId: receipt.botId });
+    return { receipt, raw, body, attachment, markup };
+  }
+
+  it('accepts an original video with passive formatting without changing the held scope', () => {
+    const { receipt } = videoSource();
+    expect(inspectLegacyRecoverySource(receipt as never)).toEqual(
+      inspectLegacyRecoverySource(source() as never),
+    );
+  });
+
+  it.each([
+    'payload',
+    'keyboard',
+    'url',
+    'duration',
+    'thumbnail',
+    'link',
+    'mention',
+    'markupTarget',
+    'range',
+    'tooMany',
+    'forged',
+  ])('refuses unproved direct media or markup: %s', (fault) => {
+    const { receipt, body, attachment, markup } = videoSource();
+    if (fault === 'payload') Object.assign(attachment.payload, { owner: { user_id: 'other' } });
+    if (fault === 'keyboard') attachment.type = 'inline_keyboard';
+    if (fault === 'url') attachment.payload.url = 'https://user:password@example.test/video';
+    if (fault === 'duration') attachment.duration = -1;
+    if (fault === 'thumbnail') Object.assign(attachment, { thumbnail: { url: 'hidden' } });
+    if (fault === 'link') markup.type = 'link';
+    if (fault === 'mention') markup.type = 'user_mention';
+    if (fault === 'markupTarget') Object.assign(markup, { user_id: 'other' });
+    if (fault === 'range') markup.length = 1_000_000;
+    if (fault === 'tooMany') body.attachments = Array.from({ length: 11 }, () => attachment);
+    if (fault === 'forged') receipt.normalizedPayload.message!.text = 'forged';
+    expect(inspectLegacyRecoverySource(receipt as never)).toBeNull();
+  });
+
+  it.each(['Старт', '/command', '$ товар', 'бан', 'тишина 12'])(
+    'keeps command denial for formatted video caption %s',
+    (text) => {
+      const { receipt, raw, body, markup } = videoSource();
+      body.text = text;
+      markup.length = text.length;
+      receipt.normalizedPayload = new WebhookParser().parse(raw, { botId: receipt.botId });
+      const reasons = jest.fn();
+      expect(inspectLegacyRecoverySource(receipt as never, reasons)).toBeNull();
+      expect(reasons).toHaveBeenCalledWith('source_command');
+    },
+  );
+
   it('uses the actual parser for ordinary multiline text', () => {
     const receipt = source();
     const raw = receipt.normalizedPayload.raw!;

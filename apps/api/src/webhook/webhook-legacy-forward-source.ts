@@ -22,7 +22,7 @@ function identity(value: unknown): boolean {
     ? Number.isSafeInteger(value)
     : typeof value === 'string' && value.length > 0 && value.trim() === value;
 }
-function image(value: unknown): boolean {
+export function isLegacyImageAttachment(value: unknown): boolean {
   const attachment = record(value);
   const payload = record(attachment?.payload);
   if (
@@ -65,7 +65,9 @@ function body(value: unknown, allowImages = false): Record<string, unknown> | nu
     (item.attachments === undefined ||
       (Array.isArray(item.attachments) &&
         (item.attachments.length === 0 ||
-          (allowImages && item.attachments.length <= 10 && item.attachments.every(image)))))
+          (allowImages &&
+            item.attachments.length <= 10 &&
+            item.attachments.every(isLegacyImageAttachment)))))
     ? item
     : null;
 }

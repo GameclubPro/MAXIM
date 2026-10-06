@@ -63,7 +63,20 @@ native('standalone legacy recovery store PostgreSQL boundaries', () => {
           sender: { user_id: '12345', name: 'Fixture', is_bot: false },
           recipient: { chat_id: chatId, chat_type: 'chat' },
           timestamp: at,
-          body: { mid: randomUUID(), text: 'Ordinary source' },
+          body: {
+            mid: randomUUID(),
+            text: 'Ordinary source',
+            markup: [{ type: 'strong', from: 0, length: 8 }],
+            attachments: [
+              {
+                type: 'video',
+                payload: { url: 'https://example.test/video.mp4', token: 'synthetic' },
+                width: 640,
+                height: 480,
+                duration: 30,
+              },
+            ],
+          },
         },
       },
       { botId: 'major-1' },

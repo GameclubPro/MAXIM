@@ -387,7 +387,7 @@ postgres_audit() {
 
   if [[ "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
-        "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' ]]; then
+        "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'legacy-order-window' ]]; then
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2

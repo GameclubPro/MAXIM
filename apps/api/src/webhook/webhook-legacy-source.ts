@@ -6,6 +6,7 @@ import {
   type AdminForwardedCommandSettings,
 } from '../moderation/admin-forwarded-command.util';
 import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
+import { isLegacyDirectMedia, isLegacyPassiveMarkup } from './webhook-legacy-direct-source';
 import {
   inspectLegacyForwardText,
   isLegacyOpaqueSequence,
@@ -36,6 +37,7 @@ export type LegacyRecoverySourceRefusal =
   | 'source_sequence'
   | 'source_update_identity'
   | 'source_attachments'
+  | 'source_markup'
   | 'source_text_mismatch'
   | 'source_clock_type'
   | 'source_identity_mismatch'
@@ -146,7 +148,8 @@ function inspectLegacyTextSource(
   )
     return refuse('source_sender_keys');
   if (!onlyKeys(recipient, ['chat_id', 'chat_type'])) return refuse('source_recipient_keys');
-  if (!onlyKeys(body, ['mid', 'seq', 'text', 'attachments'])) return refuse('source_body_keys');
+  if (!onlyKeys(body, ['mid', 'seq', 'text', 'attachments', 'markup']))
+    return refuse('source_body_keys');
   if (
     ['name', 'first_name', 'last_name', 'username', 'avatar_url'].some(
       (key) => sender[key] !== undefined && sender[key] !== null && typeof sender[key] !== 'string',
@@ -160,11 +163,8 @@ function inspectLegacyTextSource(
   if (!isLegacyOpaqueSequence(body.seq)) return refuse('source_sequence');
   if (raw.update_id !== undefined && identity(raw.update_id) === null)
     return refuse('source_update_identity');
-  if (
-    body.attachments !== undefined &&
-    (!Array.isArray(body.attachments) || body.attachments.length !== 0)
-  )
-    return refuse('source_attachments');
+  if (!isLegacyDirectMedia(body.attachments)) return refuse('source_attachments');
+  if (!isLegacyPassiveMarkup(body.markup, body.text)) return refuse('source_markup');
   if (message.link !== undefined) {
     const forwardRefusal = inspectLegacyForwardText(update, settings);
     if (forwardRefusal) return refuse(forwardRefusal);

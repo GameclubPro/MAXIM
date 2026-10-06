@@ -998,6 +998,30 @@ test('legacy order candidates are opt-in, input-free and keep the guarded privat
   }
 });
 
+test('legacy order window keeps the private envelope and accepts only plain explain', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['legacy-order-window']).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /BEGIN READ ONLY/u);
+  assert.match(sql, /ORDER BY created_at, id LIMIT 129/u);
+  assert.match(sql, /ORDER BY created_at, id LIMIT 128/u);
+  assert.match(sql, /ORDER BY created_at, id LIMIT 32/u);
+  assert.match(sql, /legacy_order_candidates_index_ready/u);
+  assert.equal(runAudit(data, ['legacy-order-window', '--explain']).status, 0);
+  assert.match(readFileSync(data.sql, 'utf8'), /EXPLAIN \(FORMAT JSON\)/u);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /EXPLAIN ANALYZE/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'legacy-order-window', '--explain']).status, 0);
+  for (const extra of ['--apply', 'SELECT 1', '/tmp/query.sql']) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, ['legacy-order-window', extra]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'legacy-order-window', extra]).status, 2);
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
+});
+
 test('legacy candidate classification never skips an earlier unknown fence or leaks source data', async (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -1340,6 +1364,47 @@ test(
       assert.equal(result.candidate_count, 1);
       assert.equal(result.candidate_receipt_id, 'c1111111111111111111111111');
       assert.doesNotMatch(JSON.stringify(result), /private-|LEGACY_EXECUTION|message_created/u);
+      assert.equal(runAudit(data, ['legacy-order-window']).status, 0);
+      const windowSql = readFileSync(data.sql, 'utf8');
+      const windowStatement = windowSql.slice(
+        windowSql.indexOf('WITH receipt_window AS MATERIALIZED'),
+        windowSql.indexOf('\n\\else', windowSql.indexOf('WITH receipt_window AS MATERIALIZED')),
+      );
+      const windowPlan = await client.query(`EXPLAIN (FORMAT JSON) ${windowStatement}`);
+      relationScans.length = 0;
+      collect(windowPlan.rows[0]['QUERY PLAN'][0].Plan);
+      assert.equal(relationScans.length, 2);
+      assert.ok(
+        relationScans.every(
+          (node) =>
+            ['Index Scan', 'Index Only Scan'].includes(node['Node Type']) &&
+            node.Filter === undefined,
+        ),
+      );
+      let windowReport = JSON.parse(
+        Object.values((await client.query(windowStatement)).rows[0])[0],
+      );
+      assert.equal(windowReport.sampled_receipts, 128);
+      assert.equal(windowReport.receipts_truncated, true);
+      assert.deepEqual(windowReport.candidates, [
+        {
+          classification: 'legacy_unverified_candidate',
+          candidate_receipt_id: 'c1111111111111111111111111',
+        },
+      ]);
+      await client.query(`INSERT INTO webhook_events(id,status,created_at,error_message,normalized_payload) VALUES
+        ('unknown-earlier','FAILED','2025-12-01','WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:UNKNOWN', '{"type":"message_created","message":{"chatId":"private-second"}}'),
+        ('must-not-skip-to','FAILED','2025-12-02','WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required', '{"type":"message_created","message":{"chatId":"private-second"}}'),
+        ('second-received','RECEIVED','2026-01-01',NULL,'{"type":"message_created","message":{"chatId":"private-second"}}')`);
+      windowReport = JSON.parse(Object.values((await client.query(windowStatement)).rows[0])[0]);
+      assert.deepEqual(windowReport.candidates, [
+        { classification: 'ineligible_predecessor', candidate_receipt_id: null },
+        {
+          classification: 'legacy_unverified_candidate',
+          candidate_receipt_id: 'c1111111111111111111111111',
+        },
+      ]);
+      assert.doesNotMatch(JSON.stringify(windowReport), /private-|must-not-skip|unknown-earlier/u);
       await client.query(`DROP INDEX webhook_events_ordered_chat_head_idx;
         CREATE INDEX webhook_events_ordered_chat_head_idx
         ON webhook_events ((normalized_payload->>'chatId'), created_at, id)`);
