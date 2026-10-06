@@ -699,7 +699,15 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         if (!sharedSnapshot) {
           throw new Error('System mode shared snapshot was unavailable');
         }
-        this.enqueueAdmissionDegraded = sharedSnapshot.mode === 'degrade';
+        // FLAG: One ordered poison scope may raise oldest lag without shared pressure.
+        // Keep independent chats admitted; MAX/mixed/unknown degradation retains the cap.
+        this.enqueueAdmissionDegraded =
+          sharedSnapshot.mode === 'degrade' &&
+          !(
+            sharedSnapshot.source === 'auto' &&
+            sharedSnapshot.manualMode === null &&
+            sharedSnapshot.condition === 'queue_backlog'
+          );
         this.enqueueAdmissionModeKnown = true;
       } catch (error: unknown) {
         // FLAG: Keep ingesting if no shared mode has ever been observed, but never lift a known
