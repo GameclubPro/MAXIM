@@ -310,7 +310,7 @@ export async function runLegacyColdHost(request) {
   try {
     writePrivate(environmentFile, connection.environment);
   } catch (error) {
-    // A killed controller can leave its exact private environment file. It may
+    // FLAG: A killed controller can leave its exact private environment file. It may
     // only be reused for the same journal and unchanged captured credentials.
     if (
       !continuing ||

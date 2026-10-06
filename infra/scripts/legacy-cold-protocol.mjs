@@ -147,7 +147,7 @@ export async function prepareLegacyColdRecovery({ store, bindings, adapters }) {
     )
       throw new Error('baseline_unproved');
     if (legacyColdDigest(baseline) !== bindings.baselineDigest) throw new Error('baseline_changed');
-    // Mark possible admission before the first durable write, including an fsync
+    // FLAG: Mark possible admission before the first durable write, including an fsync
     // whose success response is lost. Containment never restarts on uncertainty.
     admitted = true;
     let journal = store.admit(bindings, store.recordProof(baseline));
@@ -363,7 +363,7 @@ export async function applyLegacyColdRecovery({
       nativeIdentity: store.recordProof(native),
       strictSmokes: store.recordProof(smokes),
     });
-    // Release manifests are finalized separately through the existing guarded
+    // FLAG: Release manifests are finalized separately through the existing guarded
     // finalizer after this complete journal permits ordinary host operations.
     return {
       version: 1,

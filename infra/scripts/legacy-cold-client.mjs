@@ -213,7 +213,7 @@ export function createLegacyColdClient({
         try {
           output = run(['start', '-ai', id], { input, timeout: 55_000 });
         } catch (error) {
-          // A read-only collector uses exit 1 for a structured refusal. Preserve
+          // FLAG: A read-only collector uses exit 1 for a structured refusal. Preserve
           // its bounded evidence, never Docker stderr or an unverified writer result.
           if (
             !['inventory', 'admission'].includes(kind) ||

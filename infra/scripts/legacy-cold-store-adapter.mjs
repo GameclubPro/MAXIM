@@ -175,7 +175,7 @@ export function createLegacyColdStoreAdapter({
         )
       )
         throw new Error('inventory_refused');
-      // Query plans and cache costs can change between equivalent read-only
+      // FLAG: Query plans and cache costs can change between equivalent read-only
       // snapshots. Keep the reviewed artifact immutable and independently bind
       // the fresh diagnostic proof; all decision/source/child fields must agree.
       if (prior) {

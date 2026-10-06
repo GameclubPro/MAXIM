@@ -155,7 +155,7 @@ export function createLegacyColdRuntime({ bindings, baseline = null, run = execu
         )
       )
         throw new Error('runtime_baseline_invalid');
-      // Stopping the captured identities remains possible even if a different
+      // FLAG: Stopping the captured identities remains possible even if a different
       // unexpected producer appeared. Readback then refuses that changed fleet.
       const existing = inventory();
       const owned = generations.filter((row) =>
