@@ -52,7 +52,7 @@ function createJob(overrides: Partial<MaxActionJob> = {}): MaxActionJob {
   } as MaxActionJob;
 }
 
-function createService(row: unknown = null) {
+function createService(row: unknown = null, legacyHolds?: unknown) {
   const prisma = {
     $transaction: jest.fn(),
     $executeRaw: jest.fn().mockResolvedValue(0),
@@ -72,13 +72,65 @@ function createService(row: unknown = null) {
   );
   return {
     prisma,
-    service: new MaxActionLedgerService(prisma as never),
+    service: new MaxActionLedgerService(prisma as never, legacyHolds as never),
   };
 }
 
 describe('MaxActionLedgerService', () => {
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it.each(
+    (['BAN_MEMBER', 'KICK_MEMBER', 'TRY_UNBAN_MEMBER'] as const).flatMap((actionType) =>
+      (['isMemberHeld', 'isGlobalUserHeld', 'isOutboundJobHeld'] as const).map((method) => ({
+        actionType,
+        method,
+      })),
+    ),
+  )(
+    'keeps $actionType behind a permanent $method hold before starting its ledger',
+    async ({ actionType, method }) => {
+      const holds = {
+        isMessageHeld: jest.fn().mockResolvedValue(false),
+        isMemberHeld: jest.fn().mockResolvedValue(false),
+        isGlobalUserHeld: jest.fn().mockResolvedValue(false),
+        isLegacyChatSendHeld: jest.fn().mockResolvedValue(false),
+        isOutboundJobHeld: jest.fn().mockResolvedValue(false),
+      };
+      holds[method].mockResolvedValue(true);
+      const { service, prisma } = createService(null, holds);
+      const job = createJob({ actionType, userId: 'user-1', idempotencyKey: 'new-member-key' });
+      await expect(service.recordStarted(job)).rejects.toMatchObject({
+        code: 'webhook_legacy_effect_held',
+      });
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.maxActionLedgerEntry.createMany).not.toHaveBeenCalled();
+      expect(prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
+      expect(holds[method]).toHaveBeenCalledWith(
+        ...(method === 'isMemberHeld'
+          ? [job.chatId, job.userId, prisma]
+          : [method === 'isGlobalUserHeld' ? job.userId : job.idempotencyKey, prisma]),
+      );
+    },
+  );
+
+  it('fails closed on an authoritative hold lookup failure under the member SQL lock', async () => {
+    const failure = new Error('Fixture legacy hold database unavailable');
+    const holds = {
+      isMessageHeld: jest.fn().mockResolvedValue(false),
+      isMemberHeld: jest.fn().mockResolvedValue(false),
+      isGlobalUserHeld: jest.fn().mockResolvedValue(false),
+      isLegacyChatSendHeld: jest.fn().mockResolvedValue(false),
+      isOutboundJobHeld: jest.fn().mockRejectedValue(failure),
+    };
+    const { service, prisma } = createService(null, holds);
+    await expect(
+      service.recordStarted(createJob({ actionType: 'BAN_MEMBER', userId: 'user-1' })),
+    ).rejects.toBe(failure);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.maxActionLedgerEntry.createMany).not.toHaveBeenCalled();
+    expect(prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
   });
 
   it('does not create a second member execution after an unknown effect under another bot key', async () => {

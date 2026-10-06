@@ -5,7 +5,13 @@ import {
 } from './webhook-outbox-scan';
 import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import type { MaxUpdate } from '@maxim/contracts';
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import {
+  WebhookLegacyHoldService,
+  legacyOrderReleasedSql,
+  legacyReceiptBornAfterSealSql,
+  WEBHOOK_LEGACY_HELD_MARKER,
+} from './webhook-legacy-hold.service';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 import { SanctionHistoryRetention } from '../moderation/sanction-history-retention';
@@ -210,6 +216,7 @@ const ORDERED_WEBHOOK_HEAD_STATUS_SQL = Prisma.sql`
       )
     )
   )
+  AND NOT ${legacyOrderReleasedSql('webhook_events')}
 `;
 const ORDERED_WEBHOOK_MESSAGE_SQL = Prisma.sql`
   ${ORDERED_WEBHOOK_UPDATE_TYPE_SQL} = ANY(ARRAY['message_created', 'message_edited'])
@@ -472,6 +479,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     @InjectQueue(LEGACY_WEBHOOK_QUEUE)
     private readonly legacyQueue: Queue<ProcessWebhookJob>,
     private readonly systemModeService: SystemModeService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     this.enabled = roleRunsEnqueue(getAppRole());
     this.pollIntervalMs = this.configService.get<number>('ENQUEUE_POLL_INTERVAL_MS', 200);
@@ -1705,6 +1713,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
               )
             )
           )
+          AND NOT ${legacyOrderReleasedSql('webhook_events')}
           AND LOWER(
             COALESCE(
               NULLIF(BTRIM("normalized_payload"->>'type'), ''),
@@ -1748,6 +1757,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
             )
           )
         )
+        AND NOT ${legacyOrderReleasedSql('webhook_events')}
         AND LOWER(
           COALESCE(
             NULLIF(BTRIM("normalized_payload"->>'type'), ''),
@@ -2682,15 +2692,24 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const result = await this.prisma.$queryRaw<
       Array<{ removed: number; scanned: number; lastId: string | null; lastCreatedAt: Date | null }>
     >(Prisma.sql`
-      WITH candidates AS MATERIALIZED (
-        SELECT "id", "semantic_key", "created_at", "next_enqueue_at", "error_message", "timeout_quarantine_expires_at"
+      WITH candidate_ids AS MATERIALIZED (
+        SELECT "id"
         FROM "webhook_events"
         WHERE "status" = CAST(${WebhookStatus.FAILED} AS "WebhookStatus")
           AND "created_at" < ${cutoff}
           ${cursor ? Prisma.sql`AND ("created_at", "id") > (${cursor.createdAt}, ${cursor.id})` : Prisma.empty}
         ORDER BY "created_at" ASC, "id" ASC
         LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
-        FOR UPDATE SKIP LOCKED
+      ), candidates AS MATERIALIZED (
+        SELECT event."id", event."semantic_key", event."created_at", event."next_enqueue_at", event."error_message", event."timeout_quarantine_expires_at"
+        FROM candidate_ids CROSS JOIN LATERAL (
+          SELECT "id", "semantic_key", "created_at", "next_enqueue_at", "error_message", "timeout_quarantine_expires_at" FROM "webhook_events"
+          WHERE "id" = candidate_ids."id"
+            AND "status" = CAST(${WebhookStatus.FAILED} AS "WebhookStatus")
+            AND "created_at" < ${cutoff}
+          OFFSET 0 FOR UPDATE SKIP LOCKED
+        ) event
+        ORDER BY event."created_at" ASC, event."id" ASC
       ), expired AS (
         SELECT candidate."id"
         FROM candidates candidate
@@ -2698,8 +2717,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           AND candidate."timeout_quarantine_expires_at" IS NULL
           AND LEFT(COALESCE(candidate."error_message", ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}) <> ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
           AND COALESCE(candidate."error_message", '') NOT ILIKE '%ambiguous%'
-          AND COALESCE(candidate."error_message", '') NOT LIKE 'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED%'
-          AND ${this.webhookRetentionProofUnpinnedSql()}
+          AND (
+            (COALESCE(candidate."error_message", '') NOT LIKE 'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED%'
+              AND ${this.webhookRetentionProofUnpinnedSql()})
+            OR ${this.legacyHeldReceiptRetentionUnpinnedSql()}
+          )
       ), removed AS (
         DELETE FROM "webhook_events" target
         WHERE target."id" = ANY(ARRAY(SELECT "id" FROM expired)) RETURNING target."id"
@@ -2731,6 +2753,8 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     // mirror, action ambiguity, incomplete command result or lease pins the owner proof.
     return Prisma.sql`
       candidate."semantic_key" IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" original
+        WHERE original."owner_webhook_event_id" = candidate."id")
       AND candidate."timeout_quarantine_expires_at" IS NULL
       AND COALESCE(candidate."error_message", '') NOT ILIKE '%ambiguous%'
       AND COALESCE(candidate."error_message", '') NOT LIKE 'WEBHOOK_HOT_PATH_TIMEOUT%QUARANTINED%'
@@ -2765,6 +2789,26 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
             OR COALESCE(mirror."error_message", '') ILIKE '%ambiguous%'
             OR COALESCE(mirror."error_message", '') LIKE 'WEBHOOK_HOT_PATH_TIMEOUT%QUARANTINED%'
           )
+      )
+    `;
+  }
+
+  private legacyHeldReceiptRetentionUnpinnedSql(): Prisma.Sql {
+    // FLAG: Under the sealed all-role compatible generation, supported messages enter
+    // business only through durable semantic claims in every mode. A later exact held
+    // receipt with no owned claim adds no execution evidence. Never inspect action history
+    // or remove original/pre-seal evidence, claims, leases or independent permanent holds.
+    return Prisma.sql`
+      candidate."error_message" = ${WEBHOOK_LEGACY_HELD_MARKER}
+      AND candidate."semantic_key" IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" original
+        WHERE original."owner_webhook_event_id" = candidate."id")
+      AND NOT EXISTS (SELECT 1 FROM "webhook_execution_claims" claim
+        WHERE claim."webhook_event_id" = candidate."id")
+      AND EXISTS (
+        SELECT 1 FROM "webhook_events" late WHERE late."id" = candidate."id"
+          AND late."normalized_payload"->>'type' IN ('message_created', 'message_edited')
+          AND ${legacyReceiptBornAfterSealSql('late')}
       )
     `;
   }

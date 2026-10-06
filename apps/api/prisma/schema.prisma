@@ -2507,6 +2507,69 @@ model WebhookExecutionClaim {
   @@map("webhook_execution_claims")
 }
 
+// FLAG: These independent holds survive webhook retention and bot/chat removal. They
+// represent unknown legacy effects; no runtime expiry or successful action can clear them.
+model WebhookLegacyQuiescenceCertificate {
+  id String @id
+  authorityVersion Int @default(1) @map("authority_version")
+  sourceSha String @map("source_sha")
+  imageId String @map("image_id")
+  attestation Json
+  attestationDigest String @map("attestation_digest")
+  previewSha256 String @map("preview_sha256")
+  quiescedAt DateTime @default(now()) @map("quiesced_at")
+  sealedAt DateTime? @map("sealed_at")
+  recoveryCount Int @default(0) @map("recovery_count")
+  childCount Int @default(0) @map("child_count")
+  createdAt DateTime @default(now()) @map("created_at")
+  recoveries WebhookLegacyRecovery[]
+  children WebhookLegacyChildHold[]
+
+  @@map("webhook_legacy_quiescence_certificates")
+}
+
+model WebhookLegacyRecovery {
+  id String @id
+  authorityVersion Int @default(1) @map("authority_version")
+  disposition String @default("NO_REPLAY_ORDER_RELEASED")
+  semanticKey String @unique @map("semantic_key")
+  ownerWebhookEventId String @unique @map("owner_webhook_event_id")
+  claimId String @map("claim_id")
+  chatId String @map("chat_id")
+  messageId String @map("message_id")
+  userId String @map("user_id")
+  sourceAt DateTime @map("source_at")
+  rawPayloadDigest String @map("raw_payload_digest")
+  normalizedPayloadDigest String @map("normalized_payload_digest")
+  ownerSnapshot Json @map("owner_snapshot")
+  claimSnapshot Json @map("claim_snapshot")
+  settingsSnapshot Json @map("settings_snapshot")
+  certificateId String @map("certificate_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  certificate WebhookLegacyQuiescenceCertificate @relation(fields: [certificateId], references: [id], onDelete: Restrict)
+
+  @@index([chatId, messageId], map: "webhook_legacy_recoveries_chat_message_idx")
+  @@index([chatId, userId], map: "webhook_legacy_recoveries_chat_user_idx")
+  @@index([userId], map: "webhook_legacy_recoveries_global_user_idx")
+  @@index([certificateId], map: "webhook_legacy_recoveries_certificate_idx")
+  @@map("webhook_legacy_recoveries")
+}
+
+model WebhookLegacyChildHold {
+  jobKey String @id @map("job_key")
+  queueName String @map("queue_name")
+  jobPayloadDigest String @map("job_payload_digest")
+  chatId String @map("chat_id")
+  messageId String? @map("message_id")
+  userId String? @map("user_id")
+  certificateId String @map("certificate_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  certificate WebhookLegacyQuiescenceCertificate @relation(fields: [certificateId], references: [id], onDelete: Restrict)
+
+  @@index([certificateId], map: "webhook_legacy_child_holds_certificate_idx")
+  @@map("webhook_legacy_child_holds")
+}
+
 model ChatMembershipActivityEvent {
   id         String   @id @default(cuid())
   dedupeKey  String   @unique @map("dedupe_key")

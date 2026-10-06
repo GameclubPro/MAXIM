@@ -23,6 +23,7 @@ printf 'service=%s\\n' "\${SERVICES[@]}"
 
   return spawnSync('bash', ['-c', probe, 'deploy-selection-test', ...args], {
     encoding: 'utf8',
+    cwd: root,
   });
 }
 
@@ -67,4 +68,25 @@ test('--full rejects an explicitly requested service in either order', () => {
     assert.equal(result.status, 2);
     assert.match(result.stderr, /Explicit services cannot be combined with --full\./u);
   }
+});
+
+test('legacy preview/apply refuses before service selection or runtime mutation', () => {
+  for (const operation of [
+    '--legacy-order-preview=owner-a,owner-b',
+    `--legacy-order-apply=${'a'.repeat(64)}:owner-a,owner-b`,
+  ]) {
+    const result = runArgumentSelection(['main', operation, 'api-ingress']);
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /cold_activation_disabled/u);
+  }
+});
+
+test('legacy operations reject selection plans, duplicate operations and unreviewed apply', () => {
+  for (const args of [
+    ['main', '--plan', '--legacy-order-preview=owner-a'],
+    ['main', '--legacy-order-preview=owner-a', '--legacy-order-preview=owner-b'],
+    ['main', '--legacy-order-apply=owner-a'],
+  ])
+    assert.equal(runArgumentSelection(args).status, 2);
 });

@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookParser } from '../webhook/webhook.parser';
+import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
 import { GlobalSpammerIntelligenceService } from './global-spammer-intelligence.service';
 import { ModerationSanctionStateFenceService } from './moderation-sanction-state-fence.service';
 import { resolveModerationSanctionExpiry } from './moderation-sanction-expiry.util';
@@ -33,6 +34,7 @@ export class ModerationStateDeleteGuardService {
     private readonly fence: ModerationSanctionStateFenceService,
     private readonly globalPolicy: GlobalSpammerIntelligenceService,
     private readonly config: ConfigService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {}
 
   async authorize(params: {
@@ -53,10 +55,24 @@ export class ModerationStateDeleteGuardService {
         reasonDeadlines: { reasonKey: string; deadlineAtMs: number }[];
       }
   > {
-    const reasons = params.reasons.filter((r) => MODERATION_STATE_DELETE_RULES.has(r.ruleCode));
+    let reasons = params.reasons.filter((r) => MODERATION_STATE_DELETE_RULES.has(r.ruleCode));
     if (!reasons.length) return 'not_applicable';
     const userId = params.subjectUserId;
     if (!userId || this.bots.isKnownBotUserId(userId)) this.reject();
+    if (
+      (await this.legacyHolds?.isMessageHeld(params.chatId, params.messageId)) ||
+      (await this.legacyHolds?.isMemberHeld(params.chatId, userId))
+    )
+      this.reject();
+    // FLAG: Historical global authority must be rejected before consuming immunity.
+    // Independent local reasons retain their own current authorization in this chat.
+    if (
+      reasons.some((reason) => reason.ruleCode === 'GLOBAL_SPAMMER_MESSAGE_DELETE') &&
+      (await this.legacyHolds?.isGlobalUserHeld(userId))
+    ) {
+      reasons = reasons.filter((reason) => reason.ruleCode !== 'GLOBAL_SPAMMER_MESSAGE_DELETE');
+      if (!reasons.length) this.reject();
+    }
     const load = async () => {
       const settings = await this.prisma.chatSettings.findUnique({
         where: { chatId: params.chatId },
@@ -293,6 +309,12 @@ export class ModerationStateDeleteGuardService {
     localBlock: boolean;
     beforeFinalAuthority?: () => Promise<void>;
   }): Promise<void> {
+    if (
+      (await this.legacyHolds?.isMessageHeld(params.chatId, params.messageId)) ||
+      (await this.legacyHolds?.isMemberHeld(params.chatId, params.userId)) ||
+      (await this.legacyHolds?.isGlobalUserHeld(params.userId))
+    )
+      this.reject();
     if (this.bots.isKnownBotUserId(params.userId)) this.reject();
     const settings = await this.prisma.chatSettings.findUnique({
       where: { chatId: params.chatId },

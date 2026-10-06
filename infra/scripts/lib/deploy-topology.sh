@@ -307,6 +307,13 @@ maxim_topology_require_multibot_authority() {
   fi
 }
 
+maxim_topology_require_legacy_dispositions() {
+  local commit_sha="$1"
+  # FLAG: Permanent legacy source/member/global and child holds survive retention,
+  # unban cleanup and both rollback mechanisms. A schema-compatible image is insufficient.
+  node "$(dirname "${BASH_SOURCE[0]}")/../assert-legacy-disposition-source.mjs" "$commit_sha"
+}
+
 maxim_topology_require_bot_publisher_reliability() {
   local commit_sha="$1" path source
   local sources=()

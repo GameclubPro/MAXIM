@@ -9,6 +9,7 @@ import {
 } from './commercial-campaign.util';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
 import { type RuleViolation } from './rule-engine.contract';
 import { maskText } from './text-mask.util';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
@@ -638,6 +639,7 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
     @InjectQueue(GLOBAL_SPAMMER_DENORM_QUEUE)
     private readonly observationDenormQueue?: Queue<GlobalSpammerDenormJob>,
     @Optional() private readonly runtimeDiagnostics?: RuntimeDiagnosticsService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     this.defaultEnforcementMode = this.resolveDefaultEnforcementMode(configService);
     this.runtimeProfileCacheEnabled = this.readBooleanConfig(
@@ -977,6 +979,8 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
     if (!userId) {
       return this.emptyDecision('ignored', '');
     }
+    if (await this.legacyHolds?.isGlobalUserHeld(userId))
+      return this.emptyDecision('ignored', userId);
     if (this.isKnownRuntimeBotUserId(userId)) {
       return this.emptyDecision('ignored', userId);
     }
@@ -1147,6 +1151,8 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
       activeSuppression,
       observationId,
     } = ledger;
+    if (await this.legacyHolds?.isGlobalUserHeld(userId))
+      return this.emptyDecision('ignored', userId);
     const finish = <TDecision extends GlobalSpammerObservationDecision>(
       decision: TDecision,
       params: {
@@ -1329,6 +1335,7 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
     if (!userId || this.isKnownRuntimeBotUserId(userId)) {
       return;
     }
+    if (await this.legacyHolds?.isGlobalUserHeld(userId)) return;
 
     const startedAtMs = Date.now();
     try {
@@ -2267,6 +2274,26 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
     const now = params.lookupContext?.now ?? new Date();
     const enforcementMode = params.enforcementMode ?? this.defaultEnforcementMode;
     const adminExempt = Boolean(params.adminExempt);
+
+    // FLAG: Unverified historical reputation remains evidence, never new enforcement
+    // authority in another chat. Check SQL before every cached/read-model policy path.
+    if (userId && (await this.legacyHolds?.isGlobalUserHeld(userId))) {
+      return this.buildPolicyDecision({
+        userId,
+        chatId,
+        trigger: params.trigger,
+        registryStatus: 'NONE',
+        action: 'NONE',
+        enforcementMode,
+        deleteSpammersEnabled: params.deleteSpammersEnabled,
+        adminExempt,
+        confidenceScore: null,
+        reason: 'LEGACY_USER_EFFECT_HELD',
+        expiresAt: null,
+        sourceBreakdown: null,
+        enforced: false,
+      });
+    }
 
     if (!userId) {
       return this.buildPolicyDecision({
@@ -3926,6 +3953,7 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
     source: string;
     lookupContextProvided: boolean;
   }): Promise<void> {
+    if (await this.legacyHolds?.isGlobalUserHeld(params.decision.userId)) return;
     const snapshot = this.buildRuntimeProfileSnapshotFromDecision(params);
     const staleAfter = snapshot.staleAfter ? new Date(snapshot.staleAfter) : null;
     try {

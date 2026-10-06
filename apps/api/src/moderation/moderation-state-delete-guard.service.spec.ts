@@ -141,6 +141,64 @@ describe('current moderation state delete authorization', () => {
       code: 'moderation_state_delete_no_longer_authorized',
     });
   });
+  function heldGlobalReader() {
+    return {
+      isMessageHeld: jest.fn().mockResolvedValue(false),
+      isMemberHeld: jest.fn().mockResolvedValue(false),
+      isGlobalUserHeld: jest.fn().mockResolvedValue(true),
+    };
+  }
+  it('rejects held global-only deletion before reading MAX or spending immunity', async () => {
+    const s = fixture({ ruleCode: 'GLOBAL_SPAMMER_MESSAGE_DELETE' });
+    Object.assign(s.service, { legacyHolds: heldGlobalReader() });
+    await expect(s.service.authorize(s.input)).rejects.toMatchObject({
+      code: 'moderation_state_delete_no_longer_authorized',
+    });
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(s.policy.evaluatePolicy).not.toHaveBeenCalled();
+  });
+  it('keeps an independent local mute reason after dropping held global authority', async () => {
+    const s = fixture();
+    Object.assign(s.service, { legacyHolds: heldGlobalReader() });
+    await expect(
+      s.service.authorize({
+        ...s.input,
+        reasons: [
+          ...s.input.reasons,
+          { ruleCode: 'GLOBAL_SPAMMER_MESSAGE_DELETE', reasonKey: 'global', metadata: {} as never },
+        ],
+      }),
+    ).resolves.toMatchObject({ reasonKeys: ['state'] });
+    expect(s.policy.evaluatePolicy).not.toHaveBeenCalled();
+  });
+  it('fails closed on global hold lookup loss without spending immunity', async () => {
+    const s = fixture({ ruleCode: 'GLOBAL_SPAMMER_MESSAGE_DELETE' });
+    const reader = heldGlobalReader();
+    reader.isGlobalUserHeld.mockRejectedValue(new Error('Hold store unavailable'));
+    Object.assign(s.service, { legacyHolds: reader });
+    await expect(s.service.authorize(s.input)).rejects.toThrow('Hold store unavailable');
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+  });
+  it.each([false, true])(
+    'denies held spammer member authority before immunity (localBlock=%s)',
+    async (localBlock) => {
+      const s = fixture();
+      Object.assign(s.service, { legacyHolds: heldGlobalReader() });
+      await expect(
+        s.service.assertSpammerMemberAllowed({
+          chatId: s.input.chatId,
+          userId: s.input.subjectUserId,
+          messageId: s.input.messageId,
+          localBlock,
+        }),
+      ).rejects.toMatchObject({ code: 'moderation_state_delete_no_longer_authorized' });
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+    },
+  );
   it('expires a spammer member permit during selected executor revalidation', async () => {
     const s = fixture({ ruleCode: 'GLOBAL_SPAMMER_MESSAGE_DELETE' });
     const expiresAtMs = Date.now() + 1_000;

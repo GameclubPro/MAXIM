@@ -51,6 +51,11 @@ import { ActionHealthService, type ActionHealthLane } from '../system/action-hea
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { MaxBotContextService } from './max-bot-context.service';
 import {
+  assertLegacyActionAllowed,
+  WebhookLegacyHoldService,
+  WebhookLegacyHoldRejectedError,
+} from '../webhook/webhook-legacy-hold.service';
+import {
   MaxBotLinkService,
   type MaxBotRoute,
   type MaxBotRouteRequest,
@@ -951,6 +956,7 @@ export class MaxClientService implements OnModuleDestroy {
     private readonly requiredSubscriptionNoticeGuard?: MaxRequiredSubscriptionNoticeGuardService,
     @Optional()
     private readonly duplicateNoticeGuard?: MaxDuplicateNoticeGuardService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
     this.isProduction =
@@ -1204,7 +1210,10 @@ export class MaxClientService implements OnModuleDestroy {
         });
       },
       requestOptions,
-      options?.beforeSend,
+      async () => {
+        await this.assertLegacyMessageLinkAllowed(chatId, options?.messageLink);
+        await options?.beforeSend?.();
+      },
     );
 
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
@@ -1339,7 +1348,10 @@ export class MaxClientService implements OnModuleDestroy {
         });
       },
       normalizedRequestOptions,
-      beforeSend,
+      async () => {
+        await this.assertLegacyMessageLinkAllowed(chatId, payload.messageLink);
+        await beforeSend?.();
+      },
     );
   }
 
@@ -1440,6 +1452,12 @@ export class MaxClientService implements OnModuleDestroy {
         },
         requestOptions,
         async () => {
+          await this.assertLegacyMessageMutationAllowed(chatId, sourceMessageId);
+          const sourceChatId = this.extractChatIdFromSendResponse(sourceMessage);
+          if (sourceChatId && sourceChatId !== chatId) {
+            await this.assertLegacyMessageMutationAllowed(sourceChatId, sourceMessageId);
+            await this.assertLegacyMessageLinkAllowed(sourceChatId, replyLink);
+          }
           await options?.beforeSend?.();
           sendAttempted = true;
         },
@@ -1561,6 +1579,7 @@ export class MaxClientService implements OnModuleDestroy {
           exactOptions,
           async () => {
             await assertOwnership();
+            await this.assertLegacyMessageMutationAllowed(chatId, messageId);
             await beforeMutation();
             assertCurrentOwnership();
           },
@@ -1653,6 +1672,7 @@ export class MaxClientService implements OnModuleDestroy {
           requestOptions,
           async () => {
             await assertOwnership();
+            await this.assertLegacyMessageMutationAllowed(chatId, messageId);
             await options?.beforeEditMutation?.();
             assertCurrentOwnership();
           },
@@ -1696,6 +1716,9 @@ export class MaxClientService implements OnModuleDestroy {
         });
       },
       normalizedRequestOptions,
+      async () => {
+        await this.assertLegacyMessageMutationAllowed(chatId, messageId);
+      },
     );
 
     const replyMessageId = this.extractMessageIdFromSendResponse(sendResponse);
@@ -2939,9 +2962,24 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('MAX action executor does not match its required bot');
     }
     const mutationOptions = this.buildQueuedActionMutationOptions(action, bot.id);
-    const beforeDelete = executionOptions.beforeDeleteMutation;
-    const beforeMember = executionOptions.beforeMemberMutation;
-    const beforeSend = executionOptions.beforeSendMutation;
+    // FLAG: Permanent legacy holds are checked at the actual transport boundary.
+    // Existing feature permits remain last; recovered SEND paths never call this guard.
+    const assertLegacyAction = async () => {
+      if (this.legacyHolds) await assertLegacyActionAllowed(this.legacyHolds, action);
+    };
+    const beforeDelete = async () => {
+      await assertLegacyAction();
+      await executionOptions.beforeDeleteMutation?.();
+    };
+    const beforeMember = async (revalidateRoute?: () => Promise<void>) => {
+      await assertLegacyAction();
+      await executionOptions.beforeMemberMutation?.(revalidateRoute);
+    };
+    const beforeSend = async (revalidateRoute?: () => Promise<void>) => {
+      await assertLegacyAction();
+      await this.assertLegacyMessageLinkAllowed(action.chatId, action.options?.messageLink);
+      await executionOptions.beforeSendMutation?.(revalidateRoute);
+    };
 
     return this.botContext.runWithBot(bot.id, async () => {
       switch (action.actionType) {
@@ -3068,7 +3106,7 @@ export class MaxClientService implements OnModuleDestroy {
         case 'TRY_UNBAN_MEMBER': {
           // FLAG: The experimental DELETE can remove a present member. Never execute
           // a queued/recovered attempt without the caller's fresh absence/sanction guard.
-          if (!action.userId || !beforeMember) {
+          if (!action.userId || !executionOptions.beforeMemberMutation) {
             throw new UnrecoverableError('Unban attempt requires an exact user and live guard');
           }
           this.assertMemberActionTargetIsNotRuntimeBot(
@@ -6861,6 +6899,34 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
+  private async assertLegacyMessageMutationAllowed(
+    chatId: string,
+    messageId: string,
+  ): Promise<void> {
+    if (!this.legacyHolds) return;
+    if (
+      !chatId.trim() ||
+      chatId !== chatId.trim() ||
+      !messageId.trim() ||
+      messageId !== messageId.trim()
+    )
+      throw new WebhookLegacyHoldRejectedError();
+    if (await this.legacyHolds.isMessageHeld(chatId, messageId))
+      throw new WebhookLegacyHoldRejectedError();
+  }
+
+  private async assertLegacyMessageLinkAllowed(
+    chatId: string,
+    link?: MaxReplyMessageLink | null,
+  ): Promise<void> {
+    // FLAG: A nested reply is still an effect of its exact source. Group send helpers
+    // checks the shared permanent hold at transport; its original feature guard stays last.
+    if (!this.legacyHolds || link == null) return;
+    if (link.type !== 'reply' || typeof link.mid !== 'string')
+      throw new WebhookLegacyHoldRejectedError();
+    await this.assertLegacyMessageMutationAllowed(chatId, link.mid);
+  }
+
   private async executeMessageMutation<T>(
     operationType: MaxMessageMutationOperation,
     entityId: string | null,
@@ -7388,6 +7454,25 @@ export class MaxClientService implements OnModuleDestroy {
         finalNoticeGuard,
       );
     } catch (error: unknown) {
+      // FLAG: An exact SEND receipt can arrive after the initial read. Recover only
+      // that positive identity before a hold denial; never start another HTTP request.
+      if (error instanceof WebhookLegacyHoldRejectedError) {
+        // FLAG: This optional positive-receipt read cannot erase a proven pre-HTTP
+        // rejection or bypass the mandatory release of this attempt's dispatch token.
+        const receipt = await this.actionLedgerService
+          .getCompletedSendDispatchResult?.(action)
+          .catch(() => null);
+        if (receipt?.remoteMessageId) {
+          const dispatchBotId = this.assertRecoveredSendDispatchBot(action, receipt.dispatchBotId);
+          return {
+            message_id: receipt.remoteMessageId,
+            [MAX_RECOVERED_SEND_DISPATCH_RESPONSE]: {
+              dispatchBotId,
+              completedAt: receipt.completedAt,
+            },
+          };
+        }
+      }
       if (!dispatchToken) {
         throw error;
       }
