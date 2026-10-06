@@ -5,6 +5,8 @@ finite abandonment protocol. The former deploy flags `--legacy-order-preview`
 and `--legacy-order-apply` and the retired direct controller remain disabled.
 Do not invoke native test fixtures or the store writer directly in production.
 A diagnostic candidate is not evidence that its historical effects never occurred.
+A newly allocated unstarted claim can still belong to an original pre-migration
+receipt; source and owner birth define that historical scope, not claim birth.
 
 The operation preserves the original event, claims, settings and unknown action
 receipts. `NO_REPLAY_ORDER_RELEASED` and positive `NO_REPLAY_HELD` receipt pointers

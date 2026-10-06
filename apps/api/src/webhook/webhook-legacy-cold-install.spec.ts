@@ -371,6 +371,17 @@ describe('legacy candidate refusal provenance', () => {
     expect(reasons).not.toHaveBeenCalled();
   });
 
+  it('admits permanent abandonment of an old owner with a fresh unstarted enforced claim', async () => {
+    const { tx, owner, claim } = candidateDatabase();
+    claim.enforced = true;
+    claim.createdAt = new Date(owner.createdAt.getTime() + 2000);
+    const reasons = jest.fn();
+    expect(
+      await inspectLegacyRecoveryCandidate(tx as never, owner.id, ['major-1'], reasons),
+    ).toMatchObject({ owner, claim });
+    expect(reasons).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['status', 'QUEUED', 'candidate_owner_status'],
     ['errorMessage', 'private-error-value', 'candidate_owner_error'],

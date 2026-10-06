@@ -226,8 +226,10 @@ export async function inspectLegacyRecoveryCandidate(
   if (!cutoff[0]?.at) return refuse('candidate_cutoff_missing');
   if (owner.createdAt > cutoff[0].at) return refuse('candidate_owner_after_cutoff');
   if (source.sourceAt > cutoff[0].at) return refuse('candidate_source_after_cutoff');
-  if (claim.enforced && claim.createdAt > cutoff[0].at)
-    return refuse('candidate_claim_after_cutoff');
+  // FLAG: A fresh claim can point at an original pre-cutoff receipt. Runtime
+  // holdUnverifiedLegacyExecution correctly retains its historical uncertainty.
+  // Claim birth never renews the old source or prevents permanent abandonment;
+  // the original owner/source cutoff, no-start/no-lease guards and cold seal remain mandatory.
   return {
     owner,
     claim,

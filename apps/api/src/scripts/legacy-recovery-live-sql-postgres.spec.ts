@@ -168,7 +168,10 @@ native('native bounded live SQL inventory and actual plans', () => {
         kind: 'EXECUTION',
         semanticKey,
         webhookEventId: owner.id,
-        createdAt: owner.createdAt,
+        // FLAG: Production can allocate fresh enforced claims for old quarantined
+        // receipts. Full selected-source inventory must still prove abandonment.
+        enforced: forward,
+        createdAt: forward ? new Date(cutoff.getTime() + 1000) : owner.createdAt,
       },
     });
     const request: LegacyRecoveryLiveSqlSelection = {
