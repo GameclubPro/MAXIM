@@ -841,14 +841,16 @@ those manifests and every container, and removes only old unused immutable MAXIM
 does not prune shared BuildKit cache, generic images, containers, or volumes.
 
 The shared component-aware preflight requires 10 GiB free for a clean API build and 6 GiB for a
-static-only build; mixed builds use 10 GiB. The API floor is 10,737,418,240 bytes. The normal deploy skips only build-specific percentage gating when every
-selected local image ref exactly matches the verified target commit (`maxim-api:<sha>`,
-`maxim-miniapp-major:<sha>`, and/or `maxim-admin:<sha>`). The script still requires the absolute component reserve and then runs in reuse-only mode:
+static-only build; mixed builds use 10 GiB. The API floor is 10,737,418,240 bytes. Percentage
+thresholds report warning or critical storage pressure but do not block a sufficient absolute
+reserve. When every selected local image ref exactly matches the verified target commit
+(`maxim-api:<sha>`, `maxim-miniapp-major:<sha>`, and/or `maxim-admin:<sha>`), the normal deploy uses
+the same absolute component reserve and runs in reuse-only mode:
 runtime recreation uses `--no-build`, and a target image that disappears after the preflight aborts
 the rollout instead of falling back to a build. Manual, full, mixed API/static, missing-image,
 wrong-SHA, and unknown targets receive no mode-based bypass; each selected exact image must be
 present. Runtime rollback always receives the API floor. Scale deploy applies the relevant floor
-before creating/copying its Redis volume or stopping the main stack. The percentage emergency
+before creating/copying its Redis volume or stopping the main stack. The legacy percentage emergency
 override never bypasses an absolute component floor, and `MAXIM_DEPLOY_DISK_MIN_FREE_BYTES` can only
 raise it.
 

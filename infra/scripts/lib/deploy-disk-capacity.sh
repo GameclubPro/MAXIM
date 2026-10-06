@@ -133,21 +133,9 @@ EOF
     return 1
   fi
 
-  if [[ "$capacity_mode" == "build" ]] &&
-     ! maxim_deploy_disk_decimal_less_than "$used_percent" "$target_percent" &&
-     ! maxim_deploy_disk_override_enabled "${MAXIM_ALLOW_CRITICAL_DISK_DEPLOY:-0}"; then
-    local severity="above the deploy target"
-    if ! maxim_deploy_disk_decimal_less_than "$used_percent" "$critical_percent"; then
-      severity="critical"
-    fi
-    cat >&2 <<EOF
-Refusing to build with ${severity} disk utilization (${used_percent}%).
-Run infra/scripts/vps-docker-space-reclaim.sh after reviewing its inventory.
-This guard never prunes Docker volumes. Set MAXIM_ALLOW_CRITICAL_DISK_DEPLOY=1 only for an explicit emergency deploy.
-EOF
-    return 1
-  fi
-
+  # FLAG: Admission is the absolute component reserve. Percentage thresholds
+  # report storage pressure; a large filesystem must not require extra free
+  # space merely because the same sufficient reserve rounds to 95% used.
   if ! maxim_deploy_disk_decimal_less_than "$used_percent" "$critical_percent"; then
     echo "CRITICAL: deploy host disk utilization is ${used_percent}%." >&2
   elif ! maxim_deploy_disk_decimal_less_than "$used_percent" "$target_percent"; then
@@ -156,6 +144,6 @@ EOF
 }
 
 maxim_check_deploy_reuse_disk_capacity() {
-  # FLAG: Verified image reuse skips build-only percentage gating, never the absolute reserve.
+  # FLAG: Verified image reuse retains the same absolute component reserve.
   maxim_check_deploy_disk_capacity "${1:-}" "${2:-}" reuse
 }
