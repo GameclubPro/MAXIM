@@ -115,8 +115,10 @@ currently refuses proof. None of these finite budgets certifies throughput.
 
 ## Stable release acceptance
 
-Use the normal exact-green-SHA release wrappers without cold arguments, preserving
-the session's caller-supplied 20 GiB reserve. A stable compatibility release still
+Use the normal exact-green-SHA release wrappers without cold arguments and keep
+the validated component disk floors: 10 GiB for a clean shared API build and
+6 GiB for static-only builds. A caller override may raise, never lower, those
+floors. A stable compatibility release still
 requires all-role/native identity checks, strict live/ready smokes, recovered
 queue outcomes and a recorded current manifest. If readiness remains blocked by
 legacy evidence, report the interrupted release honestly and preserve the fence;

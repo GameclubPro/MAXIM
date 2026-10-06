@@ -374,15 +374,26 @@ existing ownership boundary.
 
 The earlier release encountered the guarded VPS migration-capacity preflight.
 Reassess admission against the current infrastructure code at release time;
-historical free-space measurements do not prove the current result. This session
-retains the explicitly required 20 GiB shared-build reserve through the connector's
-caller-supplied floor. Do not bypass data/temp/WAL/Docker floors or perform
+historical free-space measurements do not prove the current result. The current
+validated clean shared-build floor is 10 GiB; static-only builds require 6 GiB.
+The caller override may raise, never lower, these component floors. Do not bypass
+data/temp/WAL/Docker floors or perform
 host-wide garbage collection. A code implementation and green CI do not mean
 the new runtime is active. Live tests use only the repository-designated test
 chat/channel and agent-created content; no participant sanctions or diagnostic
 messages in user groups.
 
 ## Recorded validation
+
+The frozen compatibility/quarantine runtime commit
+`4734c9396ad329e8c7662fde35de393283cece53` passed the public staged wrapper
+with native PostgreSQL 16, Redis 7 and BullMQ: all 791 API suites and 18,908
+API tests, all 50 native storage/queue cases, API typecheck/build and Prisma
+checks, and all 1,081 infrastructure checks without skips. Tooling passed
+1,201 of 1,203 cases; the two skips are nested store-wrapper lifecycle
+self-tests. Final focused early-refusal/executor coverage passed 21 native
+API and 75 infrastructure cases. MAX transport remains simulated, production
+cold activation is disabled, and these results do not establish queue recovery.
 
 Final focused legacy acceptance passed 179 tests across five API suites with
 native PostgreSQL 16 and Redis 7, including the selected-CHAT private warning,
