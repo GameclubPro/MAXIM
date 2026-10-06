@@ -1852,6 +1852,11 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     }
 
     const entityType = this.readWebhookChatEntityType(update);
+    // FLAG: Private dialog ownership is the authenticated receiving bot, not a
+    // managed-chat moderation route. Keep lifecycle/read-model handling outside this helper.
+    if (entityType !== ChatEntityType.CHANNEL && isPrivateDirectChatId(chatId)) {
+      return this.buildChatBotBindingSyncResult(update.botId?.trim() || null);
+    }
     const normalizedType = update.type.trim().toLowerCase();
     const trustedLifecycleEventAt = readWebhookEventTimestamp(update);
     let pendingExecutionOwnerRecheck: ExecutionOwnerFailoverRecheckParams | null = null;
@@ -4203,6 +4208,11 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
   }
 
   private shouldScheduleExecutionOwnerFailoverRecheck(update: MaxUpdate): boolean {
+    if (
+      update.message?.entityType !== 'channel' &&
+      isPrivateDirectChatId(update.message?.chatId ?? '')
+    )
+      return false;
     const normalizedType = update.type.trim().toLowerCase();
     return (
       normalizedType === 'message_created' ||

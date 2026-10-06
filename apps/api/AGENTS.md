@@ -76,6 +76,7 @@
 - After changing a webhook host/domain, read `GET /subscriptions` and recreate the target; do not assume its secret binding changed automatically.
 - Keep `APP_BASE_URL` and `MAX_WEBHOOK_BASE_URL` aligned with the canonical host, currently `https://major-maksimov.ru`.
 - Webhook `dedupKey` is bot-scoped (`botId:updateId`). Dedupe logical side effects later by message/update semantics.
+- Publisher receipt completion is observation-only: keep its `publisher-observation:v1` semantic namespace separate from moderation EXECUTION authority. A PROCESSED Publisher observation must never suppress or block moderation of the same event; historical shared keys require reviewed recovery, not weaker prior-effect guards.
 - Stateful moderation always uses one semantic EXECUTION authority (`semantic-owner-lease-v1`), including diagnostics modes off/shadow. Immutable readiness deadlines derive from the original receipt/source (5 minutes text, 10 minutes strict IMAGE); previously waiting work cannot revive after expiry. A started whole-engine attempt never reruns: independently fenced action/delete/media journals own continuation, and only exact completion evidence permits SQL settlement. Saved command notices may switch only a certified unattempted SEND under the original deadline and both leases; unknown sends remain fenced. Completed semantic claims survive body retention as tombstones; every historical unenforced unfinished claim requires exact effects proof before recovery.
 - Use `Update.timestamp` as event/edit time; `Message.timestamp` is creation time and cannot identify successive edits.
 - Unfinished enforced EXECUTION claims created before the successful multibot authority migration also require exact effects proof: the previous runtime could release a lease after partial effects without a business-start marker. Check saved readiness deadlines and live leases with the database clock at the final preparation/start transition.
@@ -146,6 +147,7 @@
 
 ## Managed Entities And Multi-Bot
 
+- The fleet has six moderation bots (two Major, two Majorsha and two Rex) plus a separate Publisher that works alongside them. Publisher never replaces a moderator: keep its configured identity outside the non-Publisher runtime route registry and moderation candidate pool, and keep its lifecycle in `PublisherEntityBinding` without assigning `Chat.botId`, `primaryBotId` or `ChatBotMembership`.
 - Publisher access refresh uses `MAX_PUBLISHER_ACCESS_REFRESH_MODE=off|canary|on`: priorities apply queue-wide while the 30-minute roster cadence is cohort-scoped. Roster schedule/edge writes share the exact-proof SQL transaction; publication promotion preserves job identity and delayed retries. See `docs/operations/runbooks/publisher-access-refresh-rollout.md`.
 
 - Ownership is `Chat.primaryBotId` plus `ChatBotMembership`; `Chat.botId` is transitional compatibility.

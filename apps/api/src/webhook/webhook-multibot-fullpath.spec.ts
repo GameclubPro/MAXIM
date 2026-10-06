@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { MaxUpdate } from '@maxim/contracts';
 import { Queue, QueueEvents, Worker, type ConnectionOptions } from 'bullmq';
 import {
   createMultibotHarness,
@@ -11,6 +12,7 @@ import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import { MaxActionProcessor } from '../max/max-action.processor';
 import { Prisma } from '../prisma/prisma-client';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
+import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
@@ -103,6 +105,239 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
     expect(s.effects.filter((effect) => effect.method === 'post')).toEqual([]);
     return { s, chatId: chatId!, receipts, handler, started };
   }
+
+  async function privateDialogFixture(
+    type = 'message_callback',
+    options: { chatId?: string; entityType?: 'chat' | 'channel'; prepare?: boolean } = {},
+  ) {
+    const s = await fixture(2, 'on');
+    await s.pause();
+    const chatId =
+      options.chatId ?? String(BigInt(`0x${randomUUID().replaceAll('-', '').slice(0, 12)}`) + 1n);
+    const botId = s.bots[1]!.id;
+    const id = await s.ingest({ chatId, messageId: randomUUID(), text: '/start', botId });
+    const receipt = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    const stored = receipt.normalizedPayload as unknown as MaxUpdate;
+    const update = {
+      ...stored,
+      type,
+      message: {
+        ...stored.message!,
+        ...(options.entityType ? { entityType: options.entityType } : {}),
+      },
+      raw: {
+        ...(stored.raw as Record<string, unknown>),
+        update_type: type,
+        ...(type === 'message_callback' ? { callback: { callback_id: randomUUID() } } : {}),
+      },
+    } as MaxUpdate;
+    const semanticKey = buildWebhookSemanticEventKey(update)!;
+    expect(semanticKey).toEqual(expect.any(String));
+    await s.prisma.webhookEvent.update({
+      where: { id },
+      data: {
+        normalizedPayload: update as unknown as Prisma.InputJsonValue,
+        rawPayload: update.raw as Prisma.InputJsonValue,
+        semanticKey,
+        executionDeadlineAt: null,
+      },
+    });
+    if (options.prepare !== false) {
+      await expect(s.ingress.preparePersistedWebhookEvent(id)).resolves.toMatchObject({
+        canonical: true,
+        prepared: true,
+        executionBotId: botId,
+      });
+    } else {
+      await s.prisma.webhookExecutionClaim.create({
+        data: {
+          kind: 'EXECUTION',
+          semanticKey,
+          webhookEventId: id,
+          executionBotId: botId,
+          enforced: true,
+          status: 'READY',
+          preparedAt: new Date(),
+        },
+      });
+    }
+    await s.prisma.webhookEvent.update({ where: { id }, data: { status: 'QUEUED' } });
+    return { s, id, botId, chatId, semanticKey };
+  }
+
+  it.each(
+    ['bot_started', 'bot_stopped', 'dialog_removed', 'message_callback', 'message_created'].flatMap(
+      (type) => [false, true].map((nullExecutor) => ({ type, nullExecutor })),
+    ),
+  )(
+    'completes private dialog $type with null executor=$nullExecutor once without group readiness',
+    async ({ type, nullExecutor }) => {
+      const f = await privateDialogFixture(type);
+      const readiness = jest.spyOn(f.s.readiness, 'ensureReady').mockResolvedValue(null);
+      if (nullExecutor)
+        await f.s.prisma.webhookExecutionClaim.updateMany({
+          where: { webhookEventId: f.id },
+          data: { executionBotId: null },
+        });
+      const context = await f.s.canonical.prepareExecution(f.id, f.s.bots[0]!.id);
+      expect(context).toMatchObject({
+        activeBotId: f.botId,
+        businessLeaseToken: expect.any(String),
+      });
+      expect(
+        await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+          where: { webhookEventId: f.id },
+        }),
+      ).toMatchObject({
+        executionBotId: f.botId,
+        businessStartedAt: expect.any(Date),
+        enforced: true,
+      });
+      await f.s.canonical.completeExecution(context!);
+      expect(
+        await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } }),
+      ).toMatchObject({ status: 'PROCESSED' });
+      expect(
+        await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+          where: { webhookEventId: f.id },
+        }),
+      ).toMatchObject({
+        status: 'COMPLETED',
+        executionBotId: f.botId,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        commandResult: expect.objectContaining({
+          kind: 'EXECUTION_FINISHED',
+          executionBotId: f.botId,
+        }),
+      });
+      await expect(f.s.canonical.prepareExecution(f.id, f.s.bots[0]!.id)).resolves.toBeNull();
+      expect(readiness).not.toHaveBeenCalled();
+      expect(await f.s.prisma.chatBotMembership.count({ where: { chatId: f.chatId } })).toBe(0);
+      expect(f.s.effects).toEqual([]);
+    },
+  );
+
+  it.each([
+    { chatId: '-10101', entityType: 'chat' as const },
+    { chatId: '-10102', entityType: 'channel' as const },
+    { chatId: '10103', entityType: 'channel' as const },
+    { chatId: 'unknown-private-id', entityType: undefined },
+    { chatId: '0', entityType: undefined },
+  ])('keeps private dialog exception closed for $chatId / $entityType', async (options) => {
+    const f = await privateDialogFixture('message_callback', { ...options, prepare: false });
+    const readiness = jest.spyOn(f.s.readiness, 'ensureReady').mockResolvedValue(null);
+    await expect(f.s.canonical.prepareExecution(f.id, f.botId)).rejects.toThrow(
+      'No eligible moderation executor',
+    );
+    expect(readiness).toHaveBeenCalledWith({ chatId: f.chatId, preferredBotId: f.botId });
+    expect(
+      await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({ where: { webhookEventId: f.id } }),
+    ).toMatchObject({
+      businessStartedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    });
+  });
+
+  it.each(['receipt', 'claim'] as const)(
+    'refuses private dialog %s identity mismatches before execution',
+    async (changed) => {
+      const f = await privateDialogFixture();
+      if (changed === 'receipt')
+        await f.s.prisma.webhookEvent.update({
+          where: { id: f.id },
+          data: { botId: f.s.bots[0]!.id },
+        });
+      else
+        await f.s.prisma.webhookExecutionClaim.updateMany({
+          where: { webhookEventId: f.id },
+          data: { executionBotId: f.s.bots[0]!.id },
+        });
+      await expect(f.s.canonical.prepareExecution(f.id, f.botId)).rejects.toThrow(
+        'Private dialog executor must match receiving bot',
+      );
+      expect(
+        await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+          where: { webhookEventId: f.id },
+        }),
+      ).toMatchObject({ businessStartedAt: null, leaseToken: null });
+    },
+  );
+
+  it('retains private dialog quarantine fences', async () => {
+    const f = await privateDialogFixture();
+    const readiness = jest.spyOn(f.s.readiness, 'ensureReady');
+    await f.s.prisma.webhookEvent.update({
+      where: { id: f.id },
+      data: {
+        status: 'FAILED',
+        timeoutQuarantineExpiresAt: new Date(Date.now() + 60_000),
+        errorMessage: 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:fixture: retained',
+      },
+    });
+    await expect(f.s.canonical.prepareExecution(f.id, f.botId)).resolves.toBeNull();
+    expect(readiness).not.toHaveBeenCalled();
+    expect(
+      await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({ where: { webhookEventId: f.id } }),
+    ).toMatchObject({ businessStartedAt: null, leaseToken: null });
+  });
+
+  it('defers private dialog execution if its null executor changes before the start CAS', async () => {
+    const f = await privateDialogFixture();
+    await f.s.prisma.webhookExecutionClaim.updateMany({
+      where: { webhookEventId: f.id },
+      data: { executionBotId: null },
+    });
+    const originalTransaction = f.s.prisma.$transaction.bind(f.s.prisma);
+    const transaction = jest
+      .spyOn(f.s.prisma, '$transaction')
+      .mockImplementationOnce(async (...args: unknown[]) => {
+        await f.s.prisma.webhookExecutionClaim.updateMany({
+          where: { webhookEventId: f.id },
+          data: { executionBotId: f.s.bots[0]!.id },
+        });
+        return originalTransaction(...(args as Parameters<typeof originalTransaction>));
+      });
+    await expect(f.s.canonical.prepareExecution(f.id, f.botId)).rejects.toThrow(
+      'Canonical business-start fence changed',
+    );
+    transaction.mockRestore();
+    expect(
+      await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({ where: { webhookEventId: f.id } }),
+    ).toMatchObject({
+      executionBotId: f.s.bots[0]!.id,
+      businessStartedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    });
+  });
+
+  it('defers private dialog execution if its receipt changes before the start CAS', async () => {
+    const f = await privateDialogFixture();
+    const originalTransaction = f.s.prisma.$transaction.bind(f.s.prisma);
+    const transaction = jest
+      .spyOn(f.s.prisma, '$transaction')
+      .mockImplementationOnce(async (...args: unknown[]) => {
+        await f.s.prisma.webhookEvent.update({
+          where: { id: f.id },
+          data: { botId: f.s.bots[0]!.id },
+        });
+        return originalTransaction(...(args as Parameters<typeof originalTransaction>));
+      });
+    await expect(f.s.canonical.prepareExecution(f.id, f.botId)).rejects.toThrow(
+      'Canonical business-start fence changed',
+    );
+    transaction.mockRestore();
+    expect(
+      await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({ where: { webhookEventId: f.id } }),
+    ).toMatchObject({
+      executionBotId: f.botId,
+      businessStartedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    });
+  });
 
   it.each(
     (['off', 'shadow', 'on'] as const).flatMap((mode) =>

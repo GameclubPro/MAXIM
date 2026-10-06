@@ -31,6 +31,7 @@ import { MaxExecutionOwnerReadinessService } from '../max/max-execution-owner-re
 import { executionRouteProof, type MaxExecutionRouteProof } from '../max/max-execution-route-proof';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { WebhookExecutionOwnerUnavailableError } from '../common/webhook-execution-owner-unavailable.error';
+import { isPrivateDirectChatId } from '../common/chat-id.util';
 import {
   buildWebhookExecutionDeadlineAt,
   hasExpiredWebhookReadinessWait,
@@ -185,6 +186,9 @@ export class WebhookCanonicalExecutionService {
       return null;
     }
     const update = webhookEvent.normalizedPayload as MaxUpdate;
+    const privateDirectDialog =
+      update.message?.entityType !== 'channel' &&
+      isPrivateDirectChatId(update.message?.chatId ?? '');
     const legacyHeld = await this.legacyHolds?.isUpdateHeld(update);
     const freshHeldCommand = legacyHeld
       ? await this.legacyHolds!.readFreshCommandReceipt(webhookEvent.id, update)
@@ -479,6 +483,21 @@ export class WebhookCanonicalExecutionService {
       return null;
     }
 
+    const privateDialogBotId = privateDirectDialog ? this.normalizeBotId(webhookEvent.botId) : null;
+    // FLAG: A private dialog cannot fail over to another bot's credentials. Old null
+    // executors may bind only to the matching persisted receipt and payload identity.
+    if (
+      privateDirectDialog &&
+      (!privateDialogBotId ||
+        this.normalizeBotId(update.botId) !== privateDialogBotId ||
+        (this.normalizeBotId(executionClaim?.executionBotId) !== null &&
+          this.normalizeBotId(executionClaim?.executionBotId) !== privateDialogBotId))
+    )
+      throw new WebhookPreparationDeferredError(
+        'Private dialog executor must match receiving bot',
+        1_000,
+      );
+
     await this.assertNoOutstandingOrderedPredecessor(webhookEvent, update);
 
     const businessLeaseToken = await this.acquireBusinessLease({
@@ -492,6 +511,7 @@ export class WebhookCanonicalExecutionService {
       webhookEvent,
       update,
       activeBotId:
+        privateDialogBotId ??
         this.normalizeBotId(executionClaim?.executionBotId) ??
         this.normalizeBotId(webhookEvent.botId) ??
         this.normalizeBotId(update.botId) ??
@@ -500,7 +520,14 @@ export class WebhookCanonicalExecutionService {
     };
     let preparedProof: MaxExecutionRouteProof | null = null;
 
-    if (businessLeaseToken && this.executionOwnerReadiness && update.message?.chatId) {
+    // FLAG: Private dialogs retain canonical/hold/lease fences, but have no group
+    // moderation membership. Explicit channels and unknown IDs still require readiness.
+    if (
+      businessLeaseToken &&
+      this.executionOwnerReadiness &&
+      update.message?.chatId &&
+      !privateDirectDialog
+    ) {
       try {
         if (
           semanticKey &&
@@ -630,7 +657,20 @@ export class WebhookCanonicalExecutionService {
                 webhookEventId: webhookEvent.id,
                 semanticKey: executionClaim!.semanticKey!,
                 leaseToken: businessLeaseToken,
-                executionBotId: executionClaim!.executionBotId ?? null,
+                // FLAG: Older private preparation left the executor empty. Bind it only
+                // while this exact unstarted claim and its previous executor still match.
+                executionBotId: privateDirectDialog
+                  ? context.activeBotId
+                  : (executionClaim!.executionBotId ?? null),
+                ...(privateDirectDialog
+                  ? {
+                      expectedExecutionBotId: executionClaim!.executionBotId ?? null,
+                      privateReceipt: {
+                        botId: privateDialogBotId!,
+                        normalizedPayload: webhookEvent.normalizedPayload as Prisma.InputJsonValue,
+                      },
+                    }
+                  : {}),
                 executionDeadlineAt: webhookEvent.executionDeadlineAt,
                 enforced: true,
                 phase: 'start',
@@ -668,6 +708,7 @@ export class WebhookCanonicalExecutionService {
       leaseToken: string;
       executionBotId: string | null;
       expectedExecutionBotId?: string | null;
+      privateReceipt?: { botId: string; normalizedPayload: Prisma.InputJsonValue };
       executionDeadlineAt: Date | null;
       enforced: boolean;
       phase: 'ready' | 'start';
@@ -714,6 +755,12 @@ export class WebhookCanonicalExecutionService {
       params.expectedExecutionBotId !== undefined
         ? Prisma.sql`AND claim."execution_bot_id" IS NOT DISTINCT FROM ${params.expectedExecutionBotId}`
         : Prisma.empty;
+    // FLAG: Private execution stays on the authenticated receipt identity even if
+    // preparation or maintenance changes that receipt after the worker's first read.
+    const privateReceiptFence = params.privateReceipt
+      ? Prisma.sql`AND event."bot_id" = ${params.privateReceipt.botId}
+          AND event."normalized_payload" = ${JSON.stringify(params.privateReceipt.normalizedPayload)}::jsonb`
+      : Prisma.empty;
     const ready = params.phase === 'ready';
     const changed = await client.$executeRaw(Prisma.sql`
       WITH instant AS MATERIALIZED (SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now")
@@ -745,7 +792,7 @@ export class WebhookCanonicalExecutionService {
         AND event."execution_deadline_at" IS NOT DISTINCT FROM ${params.executionDeadlineAt}
         AND (NOT COALESCE(claim."command_result" @> ${waitingMarker}::jsonb, false)
              OR event."execution_deadline_at" > instant."now")
-        ${executionBotFence} ${routeFence}
+        ${executionBotFence} ${routeFence} ${privateReceiptFence}
     `);
     if (changed === 1) return 'transitioned';
     return (await WebhookCanonicalExecutionService.tryExpireUnstartedOwnerWithClient(
