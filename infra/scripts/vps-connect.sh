@@ -58,6 +58,7 @@ Commands:
   postgres-audit publisher-access-census [--explain]
   postgres-audit storage [--explain]
   postgres-audit multibot-preparation [--explain]
+  postgres-audit webhook-owner-proof [--explain]
   postgres-audit commercial-quality [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
@@ -318,7 +319,7 @@ postgres_audit() {
 
   if [[ "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
-        "$mode" == 'multibot-preparation' ]]; then
+        "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' ]]; then
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2

@@ -34,6 +34,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh publisher-access-census [--explain]
   ./infra/scripts/vps-postgres-audit.sh storage [--explain]
   ./infra/scripts/vps-postgres-audit.sh multibot-preparation [--explain]
+  ./infra/scripts/vps-postgres-audit.sh webhook-owner-proof [--explain]
   ./infra/scripts/vps-postgres-audit.sh commercial-quality [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
@@ -85,7 +86,7 @@ case "$AUDIT_MODE" in
     fi
     DUPLICATE_EXPLAIN="${2:-}"
     ;;
-  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation)
+  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -421,6 +422,7 @@ SELECT CASE
               'publications', 'publication_schedules', 'publication_occurrences',
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
               'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations',
+              'webhook_execution_claims', 'max_action_ledger',
                 'chat_settings',
                 'moderation_delete_intents',
                 'moderation_delete_intent_reasons'
@@ -1645,7 +1647,15 @@ emit_sql() {
     commercial_privilege_args+=(--require-all)
   fi
   node "$ROOT_DIR/infra/scripts/commercial-quality-audit.mjs" "${commercial_privilege_args[@]}"
+  node "$ROOT_DIR/infra/scripts/webhook-owner-proof-audit.mjs" --privileges
   case "$AUDIT_MODE" in
+    webhook-owner-proof)
+      local owner_proof_args=()
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+        owner_proof_args+=("$RULES_CLEANUP_EXPLAIN")
+      fi
+      node "$ROOT_DIR/infra/scripts/webhook-owner-proof-audit.mjs" "${owner_proof_args[@]}"
+      ;;
     queue)
       emit_queue_audit
       ;;
@@ -1742,7 +1752,7 @@ prepare_audit_sql() {
     echo "Generated PostgreSQL audit input is invalid." >&2
     return 1
   fi
-  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" ]]; then
     AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
       echo "Could not create the private PostgreSQL audit diagnostics file." >&2
       return 1
@@ -1852,7 +1862,7 @@ trap 'exit 143' TERM
 
 prepare_audit_sql
 AUDIT_BACKEND_MAY_EXIST=1
-if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" ]]; then
   timeout --signal=TERM --kill-after=2s \
     "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
     2>"$AUDIT_STDERR_FILE" &
@@ -1869,6 +1879,8 @@ AUDIT_PROCESS_PID=''
 
 if [[ "$status" -eq 124 ]]; then
   echo "Bounded PostgreSQL audit exceeded ${AUDIT_WALL_TIMEOUT_SEC}s and was terminated." >&2
+elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "webhook-owner-proof" ]]; then
+  echo "Bounded webhook owner proof audit failed closed (owner_proof_unavailable)." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
   echo "Bounded legacy default webhook database audit failed closed." >&2
 fi

@@ -626,6 +626,31 @@ test('multibot preparation diagnostics are fixed, read-only and opt-in', (t) => 
   assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /multibot_preparation/u);
 });
 
+test('owner proof is opt-in, fixed, preserves cleanup and suppresses raw database errors', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  for (const options of [[], ['--explain']]) {
+    assert.equal(runAudit(data, ['webhook-owner-proof', ...options]).status, 0);
+    const sql = readFileSync(data.sql, 'utf8');
+    assert.match(sql, /owner_proof_privileges_ready/u);
+    assert.match(sql, /owner_proof_indexes_ready/u);
+    assert.match(sql, /'audit', 'webhook_owner_proof'/u);
+    assert.equal(sql.includes('EXPLAIN (FORMAT JSON)'), options.length > 0);
+    assert.equal(runConnect(data, ['postgres-audit', 'webhook-owner-proof', ...options]).status, 0);
+  }
+  for (const options of [['SELECT 1'], ['--apply'], ['--explain', 'anything']]) {
+    assert.equal(runAudit(data, ['webhook-owner-proof', ...options]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'webhook-owner-proof', ...options]).status, 2);
+  }
+  const failed = runAudit(data, ['webhook-owner-proof'], { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7);
+  assert.match(failed.stderr, /owner_proof_unavailable/u);
+  assert.doesNotMatch(failed.stdout + failed.stderr, /fixture-event-0001|ERROR near/u);
+  assert.match(readFileSync(data.cleanupArgs, 'utf8'), /pg_terminate_backend/u);
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit', 'webhook_owner_proof'/u);
+});
+
 test('queue audit uses the dedicated role and a hard read-only resource envelope', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));

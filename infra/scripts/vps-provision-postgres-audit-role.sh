@@ -26,6 +26,8 @@ local Docker-socket access under the production pg_hba rules, with:
   - forty-three publication/access metadata columns; IDs are join-only and never report output
   - eight commercial-review metadata columns only; no evidence, captions or user/message IDs
   - eight fixed migration receipt columns; errors classified in SQL, raw logs never reported
+  - 25 owner-proof columns across execution claims and action ledger; source keys,
+    lease/dispatch tokens and command journal are join/check-only and never report output
   - no publication content, media, tokens or raw permission payloads
   - INHERIT only so the pg_read_all_stats membership takes effect
   - read-only/time/parallel/memory/temp defaults used as a server-side backstop
@@ -125,7 +127,8 @@ BEGIN
         'moderation_delete_intent_reasons',
         'publications', 'publication_schedules', 'publication_occurrences',
         'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-        'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations'
+        'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations',
+        'webhook_execution_claims', 'max_action_ledger'
       )
     GROUP BY table_name
   LOOP
@@ -228,6 +231,33 @@ BEGIN
   END IF;
 END
 $multibot_preparation_grants$;
+-- FLAG: The fixed owner-proof report needs both complete column groups. Older schemas
+-- get neither; tokens/journal are comparison-only, never report output or write authority.
+DO $webhook_owner_proof_grants$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM (VALUES
+      ('webhook_execution_claims', ARRAY['id', 'kind', 'semantic_key', 'webhook_event_id',
+        'execution_bot_id', 'enforced', 'status', 'prepared_at', 'business_started_at',
+        'completed_at', 'lease_token', 'lease_expires_at', 'command_result']),
+      ('max_action_ledger', ARRAY['chat_id', 'action_type', 'message_id', 'status', 'ambiguous',
+        'terminal', 'attempt_count', 'dispatch_token', 'dispatch_started_at', 'dispatch_bot_id',
+        'remote_message_id', 'completed_at'])
+    ) required(table_name, columns)
+    CROSS JOIN LATERAL unnest(required.columns) expected(column_name)
+    LEFT JOIN pg_attribute attribute ON attribute.attrelid = to_regclass('public.' || required.table_name)
+      AND attribute.attname = expected.column_name AND attribute.attnum > 0 AND NOT attribute.attisdropped
+    WHERE attribute.attnum IS NULL
+  ) THEN
+    GRANT SELECT (id, kind, semantic_key, webhook_event_id, execution_bot_id, enforced,
+      status, prepared_at, business_started_at, completed_at, lease_token, lease_expires_at,
+      command_result) ON TABLE public.webhook_execution_claims TO maxim_audit;
+    GRANT SELECT (chat_id, action_type, message_id, status, ambiguous, terminal, attempt_count,
+      dispatch_token, dispatch_started_at, dispatch_bot_id, remote_message_id, completed_at)
+      ON TABLE public.max_action_ledger TO maxim_audit;
+  END IF;
+END
+$webhook_owner_proof_grants$;
 GRANT pg_read_all_stats TO maxim_audit;
 
 ALTER ROLE maxim_audit RESET ALL;
@@ -412,6 +442,35 @@ BEGIN
     RAISE EXCEPTION 'maxim_audit has unexpected effective Antiduplicate column privileges';
   END IF;
 
+  -- FLAG: Provisioning must roll back on PUBLIC/inherited excess or mutation grants,
+  -- rather than waiting for the first diagnostic to discover an unsafe audit role.
+  IF (
+    WITH allowed(table_name, columns) AS (VALUES
+      ('webhook_execution_claims', ARRAY['id', 'kind', 'semantic_key', 'webhook_event_id',
+        'execution_bot_id', 'enforced', 'status', 'prepared_at', 'business_started_at',
+        'completed_at', 'lease_token', 'lease_expires_at', 'command_result']),
+      ('max_action_ledger', ARRAY['chat_id', 'action_type', 'message_id', 'status', 'ambiguous',
+        'terminal', 'attempt_count', 'dispatch_token', 'dispatch_started_at', 'dispatch_bot_id',
+        'remote_message_id', 'completed_at'])
+    ), relations AS (
+      SELECT table_name, columns, to_regclass('public.' || table_name) AS oid FROM allowed
+    )
+
+    SELECT
+      (SELECT count(*) FROM relations r JOIN pg_attribute a ON a.attrelid = r.oid
+        WHERE a.attnum > 0 AND NOT a.attisdropped
+          AND has_column_privilege('maxim_audit', r.oid, a.attnum, 'SELECT')) NOT IN (0, 25)
+      OR EXISTS (SELECT 1 FROM relations r WHERE r.oid IS NOT NULL
+        AND has_table_privilege('maxim_audit', r.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
+      OR EXISTS (SELECT 1 FROM relations r JOIN pg_attribute a ON a.attrelid = r.oid
+        WHERE a.attnum > 0 AND NOT a.attisdropped
+          AND (has_column_privilege('maxim_audit', r.oid, a.attnum, 'INSERT,UPDATE,REFERENCES')
+            OR (has_column_privilege('maxim_audit', r.oid, a.attnum, 'SELECT')
+              AND NOT (a.attname = ANY(r.columns)))))
+  ) THEN
+    RAISE EXCEPTION 'maxim_audit owner proof column privileges are not exact';
+  END IF;
+
   -- FLAG: Zero or all eight effective receipt SELECTs preserve old catalogs and
   -- reject partial, inherited, PUBLIC, table-level and mutation privileges.
   IF (
@@ -556,6 +615,7 @@ BEGIN
               'publications', 'publication_schedules', 'publication_occurrences',
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
               'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations',
+              'webhook_execution_claims', 'max_action_ledger',
               'chat_settings',
               'moderation_delete_intents',
               'moderation_delete_intent_reasons'
