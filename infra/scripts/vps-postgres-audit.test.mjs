@@ -1119,6 +1119,7 @@ test('legacy candidate classification never skips an earlier unknown fence or le
   assert.equal(nullable.attachments_kind, 'null');
   assert.equal(nullable.actor_is_human, true);
   assert.equal(nullable.content_matches, true);
+  assert.equal(nullable.original_content_kind, 'string');
   assert.equal(nullable.chat_identity_matches, true);
   assert.equal(nullable.message_identity_matches, true);
   assert.equal(nullable.actor_identity_matches, true);

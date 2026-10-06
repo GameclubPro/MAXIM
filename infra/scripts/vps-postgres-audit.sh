@@ -1006,6 +1006,7 @@ SELECT json_build_object(
     'attachments_empty', candidate.original_body->'attachments' = '[]'::jsonb,
     'content_matches', jsonb_typeof(candidate.original_body->'text') = 'string'
       AND candidate.original_body->'text' = candidate.normalized_message->'text',
+    'original_content_kind', jsonb_typeof(candidate.original_body->'text'),
     'original_content_nonempty', jsonb_typeof(candidate.original_body->'text') = 'string'
       AND btrim(candidate.original_body->>'text', E' \t\n\r') <> '',
     'content_matches_ascii_trim', jsonb_typeof(candidate.original_body->'text') = 'string'
