@@ -61,6 +61,7 @@ function database(
     readOnly?: string;
     historySequential?: boolean;
     time?: number;
+    exactRows?: Record<string, unknown>;
   } = {},
 ) {
   const queries: string[] = [];
@@ -97,6 +98,10 @@ function database(
       ];
     }
     if (sql.includes('FROM "message_retention_policies"')) return [{ activationId: 'activation' }];
+    if (sql.includes('to_jsonb(t)')) {
+      const table = sql.match(/FROM "([a-z_]+)"/u)?.[1] ?? '';
+      return [{ row: options.exactRows?.[table], oversize: false }];
+    }
     return [];
   });
   return { tx: { $queryRaw } as unknown as Prisma.TransactionClient, $queryRaw, queries };
@@ -110,6 +115,59 @@ describe('bounded read-only live SQL inventory', () => {
     });
   });
   afterEach(() => jest.restoreAllMocks());
+
+  it.each(['', '2026-10-05T19:11:00.000Z'])(
+    'preserves string expiry setting %j while hydrating actual date columns',
+    async (expiry) => {
+      const timestamp = '2026-10-05T19:11:00';
+      const { tx } = database({
+        exactRows: {
+          chat_settings: {
+            chat_id: '-held',
+            required_subscription_expires_at: expiry,
+            traffic_policy_effective_at: timestamp,
+            link_policy_effective_at: null,
+            created_at: timestamp,
+            updated_at: timestamp,
+          },
+        },
+      });
+      jest
+        .mocked(inspector.inspectLegacyRecoveryCandidate)
+        .mockImplementationOnce(async (reader) => {
+          const settings = await reader.chatSettings.findUnique({ where: { chatId: '-held' } });
+          expect(settings).toEqual({
+            chatId: '-held',
+            requiredSubscriptionExpiresAt: expiry,
+            trafficPolicyEffectiveAt: new Date(`${timestamp}Z`),
+            linkPolicyEffectiveAt: null,
+            createdAt: new Date(`${timestamp}Z`),
+            updatedAt: new Date(`${timestamp}Z`),
+          });
+          return null;
+        });
+      const result = await inventoryLegacyRecoveryLiveSql(tx, request, allowance());
+      expect(result.issues).toContainEqual({
+        code: 'sql_selected_owner_unproved',
+        descriptor: 'sql:webhook_events',
+      });
+      expect(inspector.inspectLegacyRecoveryCandidate).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('propagates only the fixed deciding refusal code with the existing generic denial', async () => {
+    jest
+      .mocked(inspector.inspectLegacyRecoveryCandidate)
+      .mockImplementationOnce(async (_tx, _id, _bots, onRefusal) => {
+        onRefusal?.('source_recipient_keys');
+        return null;
+      });
+    const result = await inventoryLegacyRecoveryLiveSql(database().tx, request, allowance());
+    expect(result.issues).toEqual([
+      { code: 'sql_selected_owner_source_recipient_keys', descriptor: 'sql:webhook_events' },
+      { code: 'sql_selected_owner_unproved', descriptor: 'sql:webhook_events' },
+    ]);
+  });
 
   it('charges filtered leaf rows, loop work, probes and inclusive buffers without double counting ancestors', () => {
     const measured = measureLegacyRecoverySqlPlan([

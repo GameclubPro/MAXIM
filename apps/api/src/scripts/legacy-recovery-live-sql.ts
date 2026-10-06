@@ -1269,13 +1269,41 @@ class Meter {
   }
 }
 
-function hydrate(value: unknown): Record<string, unknown> | null {
+// FLAG: Only these exact Prisma DateTime columns are hydrated. A string setting
+// such as required_subscription_expires_at must retain its stored type and value.
+const CANDIDATE_DATE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  webhook_events: [
+    'execution_deadline_at',
+    'queued_at',
+    'next_enqueue_at',
+    'timeout_quarantine_expires_at',
+    'created_at',
+    'processed_at',
+  ],
+  webhook_execution_claims: [
+    'business_started_at',
+    'lease_expires_at',
+    'prepared_at',
+    'completed_at',
+    'created_at',
+    'updated_at',
+  ],
+  chat_settings: [
+    'link_policy_effective_at',
+    'traffic_policy_effective_at',
+    'created_at',
+    'updated_at',
+  ],
+};
+function hydrate(value: unknown, table: string): Record<string, unknown> | null {
   const row = object(value);
   if (!row) return null;
   return Object.fromEntries(
     Object.entries(row).map(([key, val]) => [
       key.replace(/_([a-z])/gu, (_all, next: string) => next.toUpperCase()),
-      key.endsWith('_at') && typeof val === 'string' ? new Date(`${val.replace(/Z$/u, '')}Z`) : val,
+      CANDIDATE_DATE_COLUMNS[table]?.includes(key) && typeof val === 'string'
+        ? new Date(`${val.replace(/Z$/u, '')}Z`)
+        : val,
     ]),
   );
 }
@@ -1295,7 +1323,7 @@ async function exactRow(
     FROM ${identifier(table)} t WHERE ${where} LIMIT 1`,
   );
   if (rows[0]?.oversize) throw new Refused('sql_source_payload_oversize', descriptor);
-  return hydrate(rows[0]?.row);
+  return hydrate(rows[0]?.row, table);
 }
 
 // FLAG: The existing candidate inspector keeps every source/command/cutoff fence.
@@ -1590,6 +1618,8 @@ async function inventoryLegacyRecoverySql(
         candidateReader(meter),
         ownerId,
         request.selection.majorBotIds,
+        (reason) =>
+          issues.push({ code: `sql_selected_owner_${reason}`, descriptor: 'sql:webhook_events' }),
       );
       if (!candidate) {
         issues.push({ code: 'sql_selected_owner_unproved', descriptor: 'sql:webhook_events' });

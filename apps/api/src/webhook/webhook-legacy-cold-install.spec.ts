@@ -1,5 +1,10 @@
 import { WebhookParser } from './webhook.parser';
-import { inspectLegacyRecoverySource, legacySnapshotDigest } from './webhook-legacy-cold-install';
+import {
+  inspectLegacyRecoveryCandidate,
+  inspectLegacyRecoverySource,
+  legacySnapshotDigest,
+} from './webhook-legacy-cold-install';
+import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
 
 function source() {
@@ -23,6 +28,30 @@ function source() {
 }
 
 describe('strict legacy cold recovery source', () => {
+  it.each([
+    ['recipient', 'user_id', null, 'source_recipient_keys'],
+    ['body', 'attachments', null, 'source_attachments'],
+    ['body', 'attachments', [{ type: 'image' }], 'source_attachments'],
+    ['sender', 'is_bot', undefined, 'source_human_unproved'],
+    ['sender', 'is_bot', true, 'source_human_unproved'],
+    ['sender', 'name', { private: 'not a scalar' }, 'source_sender_metadata'],
+    ['body', 'unknown-private-key', 'private-value', 'source_body_keys'],
+  ])(
+    'reports a fixed refusal for %s.%s without source metadata',
+    (parent, key, value, expected) => {
+      const receipt = source();
+      const message = receipt.normalizedPayload.raw!.message as Record<
+        string,
+        Record<string, unknown>
+      >;
+      message[parent as string]![key as string] = value;
+      const reasons = jest.fn();
+      expect(inspectLegacyRecoverySource(receipt as never, reasons)).toBeNull();
+      expect(reasons.mock.calls).toEqual([[expected]]);
+      expect(inspectLegacyRecoverySource(receipt as never)).toBeNull();
+    },
+  );
+
   it('requires the direct original shape and timestamps even when raw receipt sampling was off', () => {
     const receipt = source();
     expect(inspectLegacyRecoverySource(receipt as never)).toEqual({
@@ -169,5 +198,109 @@ describe('strict legacy cold recovery source', () => {
     const failure = new Error('metadata unavailable');
     prisma.$queryRaw.mockRejectedValueOnce(failure);
     await expect(holds.hasChatHolds('-selected-chat')).rejects.toBe(failure);
+  });
+});
+
+describe('legacy candidate refusal provenance', () => {
+  function candidateDatabase() {
+    const receipt = source();
+    const owner = {
+      ...receipt,
+      id: 'private-owner',
+      status: 'FAILED',
+      errorMessage:
+        'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required',
+      processedAt: null,
+      nextEnqueueAt: null,
+      timeoutQuarantineExpiresAt: null,
+      semanticKey: buildWebhookSemanticEventKey(receipt.normalizedPayload),
+    };
+    const claim = {
+      id: 'private-claim',
+      webhookEventId: owner.id,
+      status: 'PENDING',
+      businessStartedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      completedAt: null,
+      commandResult: null,
+      enforced: false,
+      createdAt: receipt.createdAt,
+    };
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ payloadBytes: 1000 }])
+        .mockResolvedValue([{ at: new Date(receipt.createdAt.getTime() + 1000) }]),
+      webhookEvent: { findUnique: jest.fn().mockResolvedValue(owner) },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValueOnce(claim).mockResolvedValue(null),
+      },
+      moderationDeleteIntent: { findFirst: jest.fn().mockResolvedValue(null) },
+      maxActionLedgerEntry: { findFirst: jest.fn().mockResolvedValue(null) },
+      chatSettings: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
+    return { tx, owner, claim };
+  }
+
+  it('returns the same eligible candidate without emitting a refusal', async () => {
+    const { tx, owner, claim } = candidateDatabase();
+    const reasons = jest.fn();
+    expect(
+      await inspectLegacyRecoveryCandidate(tx as never, owner.id, ['major-1'], reasons),
+    ).toMatchObject({ owner, claim });
+    expect(reasons).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['status', 'QUEUED', 'candidate_owner_status'],
+    ['errorMessage', 'private-error-value', 'candidate_owner_error'],
+    ['processedAt', new Date(0), 'candidate_owner_processed'],
+    ['nextEnqueueAt', new Date(0), 'candidate_owner_retry'],
+    ['timeoutQuarantineExpiresAt', new Date(0), 'candidate_owner_quarantine'],
+    ['botId', 'private-other-bot', 'candidate_owner_bot'],
+    ['semanticKey', 'private-wrong-key', 'candidate_semantic_key'],
+  ])('refuses owner %s before reading its claim', async (field, value, expected) => {
+    const { tx, owner } = candidateDatabase();
+    Object.assign(owner, { [field as string]: value });
+    const reasons = jest.fn();
+    expect(
+      await inspectLegacyRecoveryCandidate(tx as never, owner.id, ['major-1'], reasons),
+    ).toBeNull();
+    expect(reasons.mock.calls).toEqual([[expected]]);
+    expect(tx.webhookExecutionClaim.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('keeps source refusal in the same decision path before the claim lookup', async () => {
+    const { tx, owner } = candidateDatabase();
+    (
+      owner.normalizedPayload.raw!.message as Record<string, Record<string, unknown>>
+    ).sender!.is_bot = null;
+    const reasons = jest.fn();
+    expect(
+      await inspectLegacyRecoveryCandidate(tx as never, owner.id, ['major-1'], reasons),
+    ).toBeNull();
+    expect(reasons.mock.calls).toEqual([['source_human_unproved']]);
+    expect(tx.webhookExecutionClaim.findUnique).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['webhookEventId', 'private-other-owner', 'candidate_claim_owner'],
+    ['status', 'COMPLETED', 'candidate_claim_completed'],
+    ['businessStartedAt', new Date(0), 'candidate_claim_started'],
+    ['leaseToken', 'private-token', 'candidate_claim_lease'],
+    ['leaseExpiresAt', new Date(0), 'candidate_claim_lease'],
+    ['completedAt', new Date(0), 'candidate_claim_completed'],
+    ['commandResult', { private: 'result' }, 'candidate_claim_command_result'],
+  ])('retains the claim %s fence', async (field, value, expected) => {
+    const { tx, owner, claim } = candidateDatabase();
+    Object.assign(claim, { [field as string]: value });
+    const reasons = jest.fn();
+    expect(
+      await inspectLegacyRecoveryCandidate(tx as never, owner.id, ['major-1'], reasons),
+    ).toBeNull();
+    expect(reasons.mock.calls).toEqual([[expected]]);
+    expect(tx.webhookExecutionClaim.findUnique).toHaveBeenCalledTimes(1);
+    expect(tx.moderationDeleteIntent.findFirst).not.toHaveBeenCalled();
   });
 });

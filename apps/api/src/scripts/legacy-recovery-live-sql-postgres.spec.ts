@@ -233,6 +233,8 @@ native('native bounded live SQL inventory and actual plans', () => {
     );
     expect(result.issues).toEqual([]);
     expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]!.owner).toEqual(owner);
+    expect(result.candidates[0]!.claim).toEqual(claim);
     for (let index = 0; index < queries.length; ) {
       if (queries[index]!.startsWith('EXPLAIN (VERBOSE, FORMAT JSON)')) {
         expect(queries[index]).toBe(`EXPLAIN (VERBOSE, FORMAT JSON) ${queries[index + 1]}`);
@@ -475,6 +477,60 @@ native('native bounded live SQL inventory and actual plans', () => {
     }
   });
 
+  it.each([
+    ['attachments', 'source_attachments'],
+    ['recipient', 'source_recipient_keys'],
+    ['sender', 'source_human_unproved'],
+    ['semantic', 'candidate_semantic_key'],
+    ['status', 'candidate_owner_status'],
+  ])(
+    'reports exact %s refusal through the native selected reader before any claim read',
+    async (shape, reason) => {
+      const { request, owner, normalized, raw } = await input();
+      if (shape === 'attachments') Object.assign(raw.message.body, { attachments: null });
+      if (shape === 'recipient') Object.assign(raw.message.recipient, { user_id: null });
+      if (shape === 'sender') delete (raw.message.sender as { is_bot?: boolean }).is_bot;
+      await db.webhookEvent.update({
+        where: { id: owner.id },
+        data: {
+          normalizedPayload: { ...normalized, raw } as unknown as Prisma.InputJsonValue,
+          ...(shape === 'semantic' ? { semanticKey: 'private-wrong-semantic-key' } : {}),
+          ...(shape === 'status' ? { status: 'QUEUED' as const } : {}),
+        },
+      });
+      const before = await db.webhookEvent.findUniqueOrThrow({ where: { id: owner.id } });
+      const queries: string[] = [];
+      const result = await db.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          const reader = {
+            $queryRaw: async (statement: Prisma.Sql) => {
+              queries.push(statement.sql);
+              return tx.$queryRaw(statement);
+            },
+          } as unknown as Prisma.TransactionClient;
+          return inventoryLegacyRecoverySelectedSql(
+            reader,
+            request,
+            allowance(LEGACY_RECOVERY_LIVE_BUDGET),
+          );
+        },
+        { isolationLevel: 'RepeatableRead' },
+      );
+      expect(result.candidates).toEqual([]);
+      expect(result.issues).toEqual([
+        { code: `sql_selected_owner_${reason}`, descriptor: 'sql:webhook_events' },
+        { code: 'sql_selected_owner_unproved', descriptor: 'sql:webhook_events' },
+      ]);
+      expect(result.cost.rows).toBe(3);
+      expect(queries.some((sql) => sql.includes('webhook_execution_claims'))).toBe(false);
+      expect(queries.some((sql) => /EXPLAIN[^\n]*ANALYZE/u.test(sql))).toBe(false);
+      expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: owner.id } })).toEqual(before);
+      expect(JSON.stringify(result)).not.toContain('Private native inventory source text');
+      expect(JSON.stringify(result)).not.toContain('private-wrong-semantic-key');
+    },
+  );
+
   it('reads one exact owner against retained history, accounts every native lookup and does not mutate it', async () => {
     const { request, owner, claim } = await input();
     const before = legacySnapshotDigest({ owner, claim });
@@ -507,7 +563,19 @@ native('native bounded live SQL inventory and actual plans', () => {
     expect(
       historyPlans.every((proof) => proof.indexes.length > 0 && proof.examinedRows < 100),
     ).toBe(true);
-    expect(result.cost.rows).toBeLessThan(10_000);
+    // FLAG: The diagnostic inventory charges every retained effect table, including
+    // unrelated suites' history. Bound the exact source probes above and verify total
+    // accounting here; the production selected path has its own shared-budget test.
+    expect(result.cost.rows).toBe(
+      result.proofs.reduce((sum, proof) => sum + proof.examinedRows * 2, 0),
+    );
+    expect(historyPlans.reduce((sum, proof) => sum + proof.examinedRows * 2, 0)).toBeLessThan(1000);
+    if (!bounded.issues.some((issue) => issue.code === 'sql_budget_exceeded')) {
+      expect(bounded.cost.rows).toBeLessThanOrEqual(10_000);
+      expect(bounded.cost.pages).toBeLessThanOrEqual(512);
+      expect(bounded.cost.probes).toBeLessThanOrEqual(50_000);
+      expect(bounded.cost.bytes).toBeLessThanOrEqual(8 * 1024 * 1024);
+    }
     const after = {
       owner: await db.webhookEvent.findUniqueOrThrow({ where: { id: owner.id } }),
       claim: await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),

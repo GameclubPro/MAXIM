@@ -9,6 +9,31 @@ export type LegacyRecoverySource = {
   userId: string;
   sourceAt: Date;
 };
+export type LegacyRecoverySourceRefusal =
+  | 'source_objects_missing'
+  | 'source_receiver_unproved'
+  | 'source_event_kind'
+  | 'source_membership_present'
+  | 'source_ingress_clock'
+  | 'source_chat_type'
+  | 'source_human_unproved'
+  | 'source_raw_keys'
+  | 'source_message_keys'
+  | 'source_sender_keys'
+  | 'source_recipient_keys'
+  | 'source_body_keys'
+  | 'source_sender_metadata'
+  | 'source_sequence'
+  | 'source_update_identity'
+  | 'source_attachments'
+  | 'source_text_mismatch'
+  | 'source_clock_type'
+  | 'source_identity_mismatch'
+  | 'source_clock_order'
+  | 'source_normalized_clock'
+  | 'source_command'
+  | 'source_raw_mismatch'
+  | 'source_command_parse_failed';
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -43,7 +68,14 @@ export function legacySnapshotDigest(value: unknown): string {
 // author, original time or secondary targets from defaults/current settings/text heuristics.
 export function inspectLegacyRecoverySource(
   owner: Pick<WebhookEvent, 'botId' | 'createdAt' | 'normalizedPayload' | 'rawPayload'>,
+  onRefusal?: (reason: LegacyRecoverySourceRefusal) => void,
 ): LegacyRecoverySource | null {
+  // FLAG: Emit one fixed code from the deciding guard. Never expose raw keys,
+  // source text, identities or exception details through refusal diagnostics.
+  const refuse = (reason: LegacyRecoverySourceRefusal): null => {
+    onRefusal?.(reason);
+    return null;
+  };
   const update = record(owner.normalizedPayload);
   const raw = record(update?.raw);
   const message = record(raw?.message);
@@ -53,26 +85,22 @@ export function inspectLegacyRecoverySource(
   const normalized = record(update?.message);
   // FLAG: The immutable ingress receiver must agree in both receipt representations.
   // A routed execution owner changes independently and cannot supply missing provenance.
+  if (!update || !raw || !message || !sender || !recipient || !body || !normalized)
+    return refuse('source_objects_missing');
+  if (typeof owner.botId !== 'string' || !identity(owner.botId) || update.botId !== owner.botId)
+    return refuse('source_receiver_unproved');
+  if (update.type !== 'message_created' || raw.update_type !== 'message_created')
+    return refuse('source_event_kind');
+  if (update.membership) return refuse('source_membership_present');
+  if (update.eventTimestampSource === 'ingress') return refuse('source_ingress_clock');
+  if (normalized.entityType !== 'chat' || recipient.chat_type !== 'chat')
+    return refuse('source_chat_type');
+  if (sender.is_bot !== false) return refuse('source_human_unproved');
+  if (!onlyKeys(raw, ['update_type', 'timestamp', 'message', 'update_id']))
+    return refuse('source_raw_keys');
+  if (!onlyKeys(message, ['sender', 'recipient', 'timestamp', 'body']))
+    return refuse('source_message_keys');
   if (
-    !update ||
-    typeof owner.botId !== 'string' ||
-    !identity(owner.botId) ||
-    update.botId !== owner.botId ||
-    !raw ||
-    !message ||
-    !sender ||
-    !recipient ||
-    !body ||
-    !normalized ||
-    update.type !== 'message_created' ||
-    raw.update_type !== 'message_created' ||
-    update.membership ||
-    update.eventTimestampSource === 'ingress' ||
-    normalized.entityType !== 'chat' ||
-    recipient.chat_type !== 'chat' ||
-    sender.is_bot !== false ||
-    !onlyKeys(raw, ['update_type', 'timestamp', 'message', 'update_id']) ||
-    !onlyKeys(message, ['sender', 'recipient', 'timestamp', 'body']) ||
     !onlyKeys(sender, [
       'user_id',
       'name',
@@ -82,26 +110,34 @@ export function inspectLegacyRecoverySource(
       'is_bot',
       'avatar_url',
       'last_activity_time',
-    ]) ||
-    !onlyKeys(recipient, ['chat_id', 'chat_type']) ||
-    !onlyKeys(body, ['mid', 'seq', 'text', 'attachments']) ||
+    ])
+  )
+    return refuse('source_sender_keys');
+  if (!onlyKeys(recipient, ['chat_id', 'chat_type'])) return refuse('source_recipient_keys');
+  if (!onlyKeys(body, ['mid', 'seq', 'text', 'attachments'])) return refuse('source_body_keys');
+  if (
     ['name', 'first_name', 'last_name', 'username', 'avatar_url'].some(
       (key) => sender[key] !== undefined && sender[key] !== null && typeof sender[key] !== 'string',
     ) ||
     (sender.last_activity_time !== undefined &&
       sender.last_activity_time !== null &&
       (typeof sender.last_activity_time !== 'number' ||
-        !Number.isSafeInteger(sender.last_activity_time))) ||
-    (body.seq !== undefined && (typeof body.seq !== 'number' || !Number.isSafeInteger(body.seq))) ||
-    (raw.update_id !== undefined && identity(raw.update_id) === null) ||
-    (body.attachments !== undefined &&
-      (!Array.isArray(body.attachments) || body.attachments.length !== 0)) ||
-    typeof body.text !== 'string' ||
-    body.text !== normalized.text ||
-    typeof raw.timestamp !== 'number' ||
-    typeof message.timestamp !== 'number'
+        !Number.isSafeInteger(sender.last_activity_time)))
   )
-    return null;
+    return refuse('source_sender_metadata');
+  if (body.seq !== undefined && (typeof body.seq !== 'number' || !Number.isSafeInteger(body.seq)))
+    return refuse('source_sequence');
+  if (raw.update_id !== undefined && identity(raw.update_id) === null)
+    return refuse('source_update_identity');
+  if (
+    body.attachments !== undefined &&
+    (!Array.isArray(body.attachments) || body.attachments.length !== 0)
+  )
+    return refuse('source_attachments');
+  if (typeof body.text !== 'string' || body.text !== normalized.text)
+    return refuse('source_text_mismatch');
+  if (typeof raw.timestamp !== 'number' || typeof message.timestamp !== 'number')
+    return refuse('source_clock_type');
   const chatId = identity(recipient.chat_id);
   const messageId = identity(body.mid);
   const userId = identity(sender.user_id);
@@ -114,27 +150,30 @@ export function inspectLegacyRecoverySource(
     !chatId.startsWith('-') ||
     normalized.chatId !== chatId ||
     normalized.messageId !== messageId ||
-    normalized.senderId !== userId ||
+    normalized.senderId !== userId
+  )
+    return refuse('source_identity_mismatch');
+  if (
     eventAt === null ||
     sourceAt === null ||
     sourceAt > eventAt ||
-    eventAt > owner.createdAt.getTime() ||
-    typeof normalized.createdAt !== 'string' ||
-    Date.parse(normalized.createdAt) !== eventAt ||
-    isManagedEntityHandshakeStartCommand(update) ||
-    /^[/$]/u.test(body.text.trim())
+    eventAt > owner.createdAt.getTime()
   )
-    return null;
+    return refuse('source_clock_order');
+  if (typeof normalized.createdAt !== 'string' || Date.parse(normalized.createdAt) !== eventAt)
+    return refuse('source_normalized_clock');
+  if (isManagedEntityHandshakeStartCommand(update) || /^[/$]/u.test(body.text.trim()))
+    return refuse('source_command');
   const storedRaw = record(owner.rawPayload);
   if (
     !storedRaw ||
     (Object.keys(storedRaw).length && legacySnapshotDigest(storedRaw) !== legacySnapshotDigest(raw))
   )
-    return null;
+    return refuse('source_raw_mismatch');
   try {
-    if (parseAdminForwardedModerationCommand(body.text)) return null;
+    if (parseAdminForwardedModerationCommand(body.text)) return refuse('source_command');
   } catch {
-    return null;
+    return refuse('source_command_parse_failed');
   }
   return { chatId, messageId, userId, sourceAt: new Date(sourceAt) };
 }

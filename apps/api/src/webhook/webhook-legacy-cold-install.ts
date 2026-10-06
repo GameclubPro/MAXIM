@@ -4,6 +4,7 @@ import {
   inspectLegacyRecoverySource,
   legacySnapshotDigest,
   type LegacyRecoverySource,
+  type LegacyRecoverySourceRefusal,
 } from './webhook-legacy-source';
 export { inspectLegacyRecoverySource, legacySnapshotDigest } from './webhook-legacy-source';
 import {
@@ -55,6 +56,32 @@ export type LegacyRecoveryCandidate = {
   rawPayloadDigest: string;
   normalizedPayloadDigest: string;
 };
+export type LegacyRecoveryCandidateRefusal =
+  | LegacyRecoverySourceRefusal
+  | 'candidate_payload_size'
+  | 'candidate_owner_missing'
+  | 'candidate_owner_status'
+  | 'candidate_owner_error'
+  | 'candidate_owner_processed'
+  | 'candidate_owner_retry'
+  | 'candidate_owner_quarantine'
+  | 'candidate_owner_bot'
+  | 'candidate_semantic_key'
+  | 'candidate_claim_missing'
+  | 'candidate_claim_owner'
+  | 'candidate_claim_completed'
+  | 'candidate_claim_started'
+  | 'candidate_claim_lease'
+  | 'candidate_claim_command_result'
+  | 'candidate_command_claim'
+  | 'candidate_delete_intent'
+  | 'candidate_action'
+  | 'candidate_configured_command'
+  | 'candidate_command_parse_failed'
+  | 'candidate_cutoff_missing'
+  | 'candidate_owner_after_cutoff'
+  | 'candidate_source_after_cutoff'
+  | 'candidate_claim_after_cutoff';
 
 const SHA = /^[0-9a-f]{64}$/u;
 const SOURCE_SHA = /^[0-9a-f]{40}$/u;
@@ -125,42 +152,38 @@ export async function inspectLegacyRecoveryCandidate(
   prisma: ReadDatabase,
   ownerId: string,
   majorBotIds: readonly string[],
+  onRefusal?: (reason: LegacyRecoveryCandidateRefusal) => void,
 ): Promise<LegacyRecoveryCandidate | null> {
+  const refuse = (reason: LegacyRecoveryCandidateRefusal): null => {
+    onRefusal?.(reason);
+    return null;
+  };
   const sizes = await prisma.$queryRaw<Array<{ payloadBytes: number }>>(Prisma.sql`
     SELECT octet_length("raw_payload"::text) + octet_length("normalized_payload"::text) AS "payloadBytes"
     FROM "webhook_events" WHERE "id" = ${ownerId}`);
   if (!Number.isSafeInteger(sizes[0]?.payloadBytes) || sizes[0]!.payloadBytes > 256 * 1024)
-    return null;
+    return refuse('candidate_payload_size');
   const owner = await prisma.webhookEvent.findUnique({ where: { id: ownerId } });
-  if (
-    !owner ||
-    owner.status !== 'FAILED' ||
-    owner.errorMessage !== LEGACY_ERROR ||
-    owner.processedAt ||
-    owner.nextEnqueueAt ||
-    owner.timeoutQuarantineExpiresAt ||
-    !owner.botId ||
-    !majorBotIds.includes(owner.botId)
-  )
-    return null;
-  const source = inspectLegacyRecoverySource(owner);
+  if (!owner) return refuse('candidate_owner_missing');
+  if (owner.status !== 'FAILED') return refuse('candidate_owner_status');
+  if (owner.errorMessage !== LEGACY_ERROR) return refuse('candidate_owner_error');
+  if (owner.processedAt) return refuse('candidate_owner_processed');
+  if (owner.nextEnqueueAt) return refuse('candidate_owner_retry');
+  if (owner.timeoutQuarantineExpiresAt) return refuse('candidate_owner_quarantine');
+  if (!owner.botId || !majorBotIds.includes(owner.botId)) return refuse('candidate_owner_bot');
+  const source = inspectLegacyRecoverySource(owner, onRefusal);
   if (!source) return null;
   const semanticKey = buildWebhookSemanticEventKey(owner.normalizedPayload);
-  if (!semanticKey || semanticKey !== owner.semanticKey) return null;
+  if (!semanticKey || semanticKey !== owner.semanticKey) return refuse('candidate_semantic_key');
   const claim = await prisma.webhookExecutionClaim.findUnique({
     where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey } },
   });
-  if (
-    !claim ||
-    claim.webhookEventId !== owner.id ||
-    claim.status === 'COMPLETED' ||
-    claim.businessStartedAt ||
-    claim.leaseToken ||
-    claim.leaseExpiresAt ||
-    claim.completedAt ||
-    claim.commandResult !== null
-  )
-    return null;
+  if (!claim) return refuse('candidate_claim_missing');
+  if (claim.webhookEventId !== owner.id) return refuse('candidate_claim_owner');
+  if (claim.status === 'COMPLETED' || claim.completedAt) return refuse('candidate_claim_completed');
+  if (claim.businessStartedAt) return refuse('candidate_claim_started');
+  if (claim.leaseToken || claim.leaseExpiresAt) return refuse('candidate_claim_lease');
+  if (claim.commandResult !== null) return refuse('candidate_claim_command_result');
   const command = await prisma.webhookExecutionClaim.findUnique({
     where: {
       kind_semanticKey: {
@@ -169,7 +192,7 @@ export async function inspectLegacyRecoveryCandidate(
       },
     },
   });
-  if (command) return null;
+  if (command) return refuse('candidate_command_claim');
   const [deleteIntent, action] = await Promise.all([
     prisma.moderationDeleteIntent.findFirst({
       where: { chatId: source.chatId, messageId: source.messageId },
@@ -180,7 +203,8 @@ export async function inspectLegacyRecoveryCandidate(
       select: { id: true },
     }),
   ]);
-  if (deleteIntent || action) return null;
+  if (deleteIntent) return refuse('candidate_delete_intent');
+  if (action) return refuse('candidate_action');
   const settings = await prisma.chatSettings.findUnique({ where: { chatId: source.chatId } });
   try {
     if (
@@ -190,21 +214,19 @@ export async function inspectLegacyRecoveryCandidate(
         settings,
       )
     )
-      return null;
+      return refuse('candidate_configured_command');
   } catch {
-    return null;
+    return refuse('candidate_command_parse_failed');
   }
   const cutoff = await prisma.$queryRaw<Array<{ at: Date }>>(Prisma.sql`
     SELECT finished_at AS at FROM _prisma_migrations
     WHERE migration_name = '20261005020000_add_multibot_order_fences' AND finished_at IS NOT NULL AND rolled_back_at IS NULL
     ORDER BY finished_at DESC LIMIT 1`);
-  if (
-    !cutoff[0]?.at ||
-    owner.createdAt > cutoff[0].at ||
-    source.sourceAt > cutoff[0].at ||
-    (claim.enforced && claim.createdAt > cutoff[0].at)
-  )
-    return null;
+  if (!cutoff[0]?.at) return refuse('candidate_cutoff_missing');
+  if (owner.createdAt > cutoff[0].at) return refuse('candidate_owner_after_cutoff');
+  if (source.sourceAt > cutoff[0].at) return refuse('candidate_source_after_cutoff');
+  if (claim.enforced && claim.createdAt > cutoff[0].at)
+    return refuse('candidate_claim_after_cutoff');
   return {
     owner,
     claim,
