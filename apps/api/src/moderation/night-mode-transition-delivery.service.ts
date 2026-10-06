@@ -431,6 +431,7 @@ export class NightModeTransitionDeliveryService {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
+        hydrateMessageUrl: false,
         ignoreFailureMetricStatuses: [403, 404],
         ...(params.allowHalfOpenProbe
           ? { sendRouteHalfOpenProbe: 'publication_exact_verification' as const }

@@ -484,6 +484,7 @@ describe('NightModeTransitionDeliveryService', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'night_mode_transition',
+        hydrateMessageUrl: false,
         ignoreFailureMetricStatuses: [403, 404],
         sendRouteHalfOpenProbe: 'publication_exact_verification',
         sendRouteStickyProbe: {
@@ -634,6 +635,7 @@ describe('NightModeTransitionDeliveryService', () => {
     ).resolves.toEqual({ shouldEnqueueNext: true });
 
     const request = maxRoutedPublicationService.publish.mock.calls[0]![0];
+    expect(request.hydrateMessageUrl).toBe(false);
     expect(request).not.toHaveProperty('sendRouteHalfOpenProbe');
     expect(request).not.toHaveProperty('sendRouteStickyProbe');
     expect(routeVerificationService.schedule).not.toHaveBeenCalled();

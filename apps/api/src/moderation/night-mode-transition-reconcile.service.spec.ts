@@ -1,3 +1,4 @@
+import type { Logger } from '@nestjs/common';
 import { NightModeTransitionReconcileService } from './night-mode-transition-reconcile.service';
 import {
   NightModeTransitionSchedulerService,
@@ -1252,16 +1253,82 @@ describe('NightModeTransitionReconcileService', () => {
       requests: [{ chat_id: 'chat-active-retry', generation: 3n }],
       repair: jest.fn().mockRejectedValue(error),
     });
+    const logger = (service as unknown as { logger: Logger }).logger;
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(
+        (
+          service as unknown as {
+            reconcileBatch: () => Promise<number>;
+          }
+        ).reconcileBatch(),
+      ).resolves.toBe(1);
 
-    await expect(
-      (
-        service as unknown as {
-          reconcileBatch: () => Promise<number>;
-        }
-      ).reconcileBatch(),
-    ).resolves.toBe(1);
+      const requeueQuery = prisma.$executeRaw.mock.calls[0]?.[0];
+      expect(extractSqlValues(requeueQuery)).toContain('night_mode_catch_up_active');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: 'chat-active-retry', generation: '3' }),
+        'Failed to reconcile durable night mode state; request was requeued',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
 
-    const requeueQuery = prisma.$executeRaw.mock.calls[0]?.[0];
-    expect(extractSqlValues(requeueQuery)).toContain('night_mode_catch_up_active');
+  it('reports ownership loss when the retry write no longer owns the request', async () => {
+    const { service } = createService({
+      requests: [{ chat_id: 'chat-revoked-retry', generation: 4n }],
+      repair: jest.fn().mockRejectedValue(new Error('repair failed')),
+      executeRaw: jest.fn().mockResolvedValue(0),
+    });
+    const logger = (service as unknown as { logger: Logger }).logger;
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    try {
+      await expect(
+        (service as unknown as { reconcileBatch: () => Promise<number> }).reconcileBatch(),
+      ).resolves.toBe(1);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        { chatId: 'chat-revoked-retry', generation: '4', phase: 'while persisting retry' },
+        'Skipped night mode reconcile work after losing lease ownership',
+      );
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('reports a failed retry write without claiming that the request was requeued', async () => {
+    const { service } = createService({
+      requests: [{ chat_id: 'chat-failed-retry', generation: 5n }],
+      repair: jest.fn().mockRejectedValue(new Error('repair failed')),
+      executeRaw: jest.fn().mockRejectedValue(new Error('retry storage unavailable')),
+    });
+    const logger = (service as unknown as { logger: Logger }).logger;
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    try {
+      await expect(
+        (service as unknown as { reconcileBatch: () => Promise<number> }).reconcileBatch(),
+      ).resolves.toBe(1);
+
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalledWith(
+        {
+          chatId: 'chat-failed-retry',
+          generation: '5',
+          error: 'retry storage unavailable',
+        },
+        'Failed to release night mode reconcile lease; expiry will recover it',
+      );
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
 });
