@@ -3179,10 +3179,34 @@ describe('WebhookOutboxService', () => {
 
     await internals.cleanupRetention();
 
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(4);
+    const retryQueries = prisma.$queryRaw.mock.calls.slice(1).map(([query]) => extractSql(query));
+    expect(
+      retryQueries.filter((sql) => sql.includes(`'NO_REPLAY_HELD'::"WebhookStatus"`)),
+    ).toHaveLength(1);
+    expect(retryQueries.some((sql) => sql.includes(`'PROCESSED'::"WebhookStatus"`))).toBe(false);
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(4);
     expect(internals.cleaning).toBe(false);
     expect(internals.retentionMaintenanceDue).toBe(false);
+
+    // FLAG: The failed completed turn must not starve held cleanup; the following tick
+    // returns to completed receipts under the same one-page-per-tick budget.
+    prisma.$queryRaw.mockClear();
+    prisma.$executeRaw.mockClear();
+    await internals.cleanupRetention();
+    const nextQueries = prisma.$queryRaw.mock.calls.map(([query]) => extractSql(query));
+    expect(
+      nextQueries.filter(
+        (sql) =>
+          sql.includes(`'PROCESSED'::"WebhookStatus"`) &&
+          sql.includes('DELETE FROM "webhook_events"'),
+      ),
+    ).toHaveLength(1);
+    expect(nextQueries.filter((sql) => sql.includes('AS "commandId"'))).toHaveLength(1);
+    expect(nextQueries.some((sql) => sql.includes(`'NO_REPLAY_HELD'::"WebhookStatus"`))).toBe(
+      false,
+    );
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    expect(internals.cleaning).toBe(false);
   });
 
   it('skips overlapping retention cleanup runs', async () => {

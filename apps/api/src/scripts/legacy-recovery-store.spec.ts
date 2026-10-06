@@ -115,6 +115,11 @@ describe('standalone legacy recovery store protocol', () => {
       },
       { ...request, operation: 'materialize', page: { chatId: '-chat', pageSize: 201 } },
       { ...request, page: { chatId: '-chat', pageSize: 1 } },
+      ...[0, 31, 127].map((code) => ({
+        ...request,
+        operation: 'materialize',
+        page: { chatId: `-chat${String.fromCharCode(code)}id`, pageSize: 1 },
+      })),
     ];
     for (const input of malformed)
       expect(() => parseLegacyRecoveryStoreRequest(JSON.stringify(input))).toThrow();

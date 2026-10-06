@@ -84,7 +84,9 @@ function identity(value: unknown, max = 128): value is string {
     value.length > 0 &&
     Buffer.byteLength(value) <= max &&
     value === value.trim() &&
-    !/[\u0000-\u001f\u007f]/u.test(value)
+    [...value].every(
+      (character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127,
+    )
   );
 }
 export function parseLegacyRecoveryStoreRequest(input: string): LegacyRecoveryStoreRequest {
