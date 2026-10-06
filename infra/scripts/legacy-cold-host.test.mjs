@@ -17,6 +17,17 @@ test('host selection is finite and canonical, with distinct online and exact app
     version: 1,
     operation: 'status',
   });
+  const retry = {
+    version: 1,
+    operation: 'retry-preview',
+    targetSha: 'a'.repeat(40),
+    expectedJournalDigest: 'b'.repeat(64),
+  };
+  assert.deepEqual(parseLegacyColdHostRequest(JSON.stringify(retry)), retry);
+  assert.throws(
+    () => parseLegacyColdHostRequest(JSON.stringify({ ...retry, selection: request.selection })),
+    /unknown_request_field/,
+  );
   assert.throws(
     () => parseLegacyColdHostRequest(JSON.stringify({ ...request, operation: 'apply' })),
     /unknown_request_field/,
