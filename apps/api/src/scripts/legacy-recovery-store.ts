@@ -193,6 +193,7 @@ export function verifyLegacyRecoveryInventory(
     'selectionSha256',
     'registrySha256',
     'inventorySha256',
+    'previewSha256',
     'selectedOwners',
     'children',
     'sqlPlans',
@@ -206,6 +207,7 @@ export function verifyLegacyRecoveryInventory(
     output.activationAuthorized !== false ||
     output.decision !== 'READY_TO_INSTALL' ||
     output.inventorySha256 !== request.expected.inventorySha256 ||
+    output.previewSha256 !== request.expected.previewSha256 ||
     output.selectionSha256 !== legacyRecoveryLiveDigest(request.selection) ||
     legacyRecoveryLiveDigest(output.binding) !== legacyRecoveryLiveDigest(request.binding) ||
     typeof output.registrySha256 !== 'string' ||

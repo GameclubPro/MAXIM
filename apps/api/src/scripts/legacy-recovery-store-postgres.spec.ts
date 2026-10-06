@@ -8,7 +8,10 @@ import {
 } from '../webhook/webhook-legacy-cold-install';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 import { WebhookParser } from '../webhook/webhook.parser';
-import { legacyRecoveryLiveDigest } from './legacy-recovery-live-protocol';
+import {
+  legacyRecoveryLiveDigest,
+  type LegacyRecoveryLiveOutput,
+} from './legacy-recovery-live-protocol';
 import {
   executeLegacyRecoveryStore,
   legacyRecoveryStorePoolConfig,
@@ -124,7 +127,7 @@ native('standalone legacy recovery store PostgreSQL boundaries', () => {
         },
       }),
     );
-    const output = {
+    const output: LegacyRecoveryLiveOutput = {
       version: 1,
       operation: 'inventory_preview',
       applied: false,
@@ -134,10 +137,11 @@ native('standalone legacy recovery store PostgreSQL boundaries', () => {
       selectionSha256: legacyRecoveryLiveDigest(request.selection),
       registrySha256: sha('registry'),
       inventorySha256: request.expected.inventorySha256,
+      previewSha256: request.expected.previewSha256,
       selectedOwners: [
         {
           ownerWebhookEventId: ownerId,
-          semanticKey: candidate.owner.semanticKey,
+          semanticKey: candidate.owner.semanticKey!,
           claimId: candidate.claim.id,
           ...candidate.source,
           sourceAt: candidate.source.sourceAt.toISOString(),
