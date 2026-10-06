@@ -291,6 +291,7 @@ function coherentSemanticClaims(service: object) {
         join?: (separator: string) => string;
       };
       const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
+      if (sql.includes('WITH authority_ids AS MATERIALIZED')) return [];
       if (sql.includes("migration_name = '20261005020000_add_multibot_order_fences'"))
         return [{ finishedAt: new Date(0) }];
       if (

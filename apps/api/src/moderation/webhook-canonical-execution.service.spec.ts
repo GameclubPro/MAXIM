@@ -80,7 +80,11 @@ function fixture(type: 'user_removed' | 'message_created', mirrorIsEarlier: bool
         return { count: 1 };
       }),
     },
-    $queryRaw: jest.fn().mockResolvedValue([{ finishedAt: new Date('2020-01-01T00:00:00Z') }]),
+    $queryRaw: jest.fn(async (query: { strings?: readonly string[] }) =>
+      query.strings?.join(' ').includes('WITH authority_ids AS MATERIALIZED')
+        ? []
+        : [{ finishedAt: new Date('2020-01-01T00:00:00Z') }],
+    ),
   };
   Object.assign(prisma, {
     $transaction: jest.fn(async (work: (tx: object) => unknown) => work(prisma)),

@@ -248,6 +248,7 @@ function withCanonicalWebhookFixture(prisma: CanonicalWebhookPrismaFixture) {
   prisma.$queryRaw = jest.fn(async (...args: unknown[]) => {
     const query = args[0] as { join?: (separator: string) => string; strings?: readonly string[] };
     const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
+    if (sql.includes('WITH authority_ids AS MATERIALIZED')) return [];
     if (sql.includes("migration_name = '20261005020000_add_multibot_order_fences'"))
       return [{ finishedAt: new Date(0) }];
     if (/SELECT "id" FROM .* FOR UPDATE/u.test(sql.replace(/\s+/gu, ' '))) return [];

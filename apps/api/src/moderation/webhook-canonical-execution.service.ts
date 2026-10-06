@@ -3,6 +3,7 @@ import {
   freshHeldCommandTransitionSql,
 } from '../webhook/webhook-legacy-fresh-command';
 import { holdUnverifiedLegacyExecution } from '../webhook/webhook-legacy-authority';
+import { settleOperatorDiscardedMirror } from '../webhook/webhook-operator-discard-mirror';
 import {
   WebhookLegacyHoldService,
   legacyOrderReleasedSql,
@@ -192,6 +193,13 @@ export class WebhookCanonicalExecutionService {
       await this.legacyHolds!.settleHeldReceipt(webhookEvent.id, update);
       return null;
     }
+    if (
+      await settleOperatorDiscardedMirror(this.prisma, {
+        webhookEventId: webhookEvent.id,
+        update,
+      })
+    )
+      return null;
     if (this.isHotPathTimeoutQuarantined(webhookEvent)) {
       const model = this.executionClaimModel;
       const finished =

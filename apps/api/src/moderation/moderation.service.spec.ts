@@ -231,7 +231,10 @@ describe('ModerationService', () => {
       await expect(service.processWebhookEvent('event-completed-owner-1')).resolves.toBeUndefined();
 
       expect(handleUpdate).not.toHaveBeenCalled();
-      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.$queryRaw.mock.calls[0]?.[0]?.strings.join(' ')).toContain(
+        'WITH authority_ids AS MATERIALIZED',
+      );
       expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenCalledTimes(enforced ? 1 : 2);
       expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenLastCalledWith({
         where: expect.objectContaining({
@@ -498,7 +501,11 @@ describe('ModerationService', () => {
     await expect(service.prepareExecution('event-ordered-b', 'bot-1')).rejects.toBeInstanceOf(
       WebhookOrderedPredecessorPendingError,
     );
-    const predecessorCalls = prisma.$queryRaw.mock.calls.filter((call) => call[0]?.strings);
+    const predecessorCalls = prisma.$queryRaw.mock.calls.filter(
+      (call) =>
+        call[0]?.strings &&
+        !call[0].strings.join(' ').includes('WITH authority_ids AS MATERIALIZED'),
+    );
     expect(predecessorCalls).toHaveLength(1);
     const predecessorQuery = predecessorCalls[0]?.[0] as
       | { strings?: readonly string[]; values?: readonly unknown[] }

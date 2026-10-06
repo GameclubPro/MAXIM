@@ -1,4 +1,5 @@
 import { holdUnverifiedLegacyExecution } from './webhook-legacy-authority';
+import { settleOperatorDiscardedMirror } from './webhook-operator-discard-mirror';
 import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { WebhookPreparationAdmission } from './webhook-preparation-admission';
@@ -595,6 +596,15 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     if (legacyHeld && !freshHeldCommand) {
       if (!(await this.legacyHolds!.settleHeldReceipt(event.id, update)))
         throw new WebhookPreparationDeferredError('Legacy scope installation is not sealed', 1_000);
+      return {
+        canonical: false,
+        prepared: false,
+        normalizedPayload: update,
+        executionBotId: null,
+        enforced: true,
+      };
+    }
+    if (await settleOperatorDiscardedMirror(this.prisma, { webhookEventId, update })) {
       return {
         canonical: false,
         prepared: false,
