@@ -2,6 +2,10 @@ import { ModerationService } from './moderation.service';
 import { ModerationRuleSanctionRejectedError } from './moderation-rule-sanction-authority';
 import { deliverSanctionNotice } from './moderation-sanction-notice-delivery';
 import { createSettings, createUpdate } from './moderation.service.spec-support';
+import type { MaxUpdate } from '@maxim/contracts';
+import type { FreshHeldCommandReceipt } from '../webhook/webhook-legacy-fresh-command';
+import { WebhookParser } from '../webhook/webhook.parser';
+import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 
 describe('permanent legacy moderation hold', () => {
   function fixture() {
@@ -24,6 +28,7 @@ describe('permanent legacy moderation hold', () => {
         chat: {
           upsert: jest.fn().mockResolvedValue({ id: 'chat-1', settings, domains: [] }),
         },
+        chatSettings: { findUnique: jest.fn().mockResolvedValue(settings) },
         moderationEvent: { findFirst: jest.fn().mockResolvedValue(null) },
       } as never,
       { detect } as never,
@@ -34,15 +39,60 @@ describe('permanent legacy moderation hold', () => {
       isMessageHeld: jest.fn().mockResolvedValue(false),
       isMemberHeld: jest.fn().mockResolvedValue(false),
       isGlobalUserHeld: jest.fn((userId: string) => Promise.resolve(userId === 'user-1')),
+      isUpdateHeld: jest.fn(async (update: MaxUpdate) => update.message?.senderId === 'user-1'),
+      readFreshCommandReceipt: jest.fn(async (): Promise<FreshHeldCommandReceipt | null> => null),
     };
     const admin = jest.fn().mockResolvedValue({ isAdmin: false, source: 'remote' });
-    const adminCommand = jest.fn().mockResolvedValue(undefined);
+    const adminCommand = jest.fn().mockResolvedValue(true);
+    const observeLifecycle = jest.fn();
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({ isAdmin: true }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({ isAdmin: true }),
+    };
     Object.assign(service, {
       legacyHolds,
+      maxClient,
+      messageDuplicateService: {
+        observeLifecycle,
+        isAuthoritative: jest.fn().mockResolvedValue(false),
+      },
       resolveSenderChatAdminCheck: admin,
-      handleChatAdminModerationBypass: adminCommand,
+      handleChatAdminModerationBypass: jest.fn().mockResolvedValue(undefined),
+      handleAdminForwardedModerationCommand: adminCommand,
     });
-    return { service, detect, legacyHolds, admin, adminCommand };
+    return { service, detect, legacyHolds, admin, adminCommand, observeLifecycle, maxClient };
+  }
+
+  function freshCommand(text = 'тишина выкл') {
+    const at = Date.now() - 1000;
+    const raw = {
+      update_type: 'message_created',
+      update_id: 'fresh-command',
+      timestamp: at,
+      message: {
+        sender: { user_id: 'user-1', is_bot: false },
+        recipient: { chat_id: '-chat-1', chat_type: 'chat' },
+        timestamp: at,
+        body: { mid: 'fresh-message', text },
+      },
+    };
+    const source = new WebhookParser().parse(raw, { botId: 'major-1' });
+    const proof: FreshHeldCommandReceipt = {
+      receiptId: 'fresh-receipt',
+      kind: 'ADMIN',
+      chatId: source.message!.chatId,
+      messageId: source.message!.messageId,
+      userId: source.message!.senderId,
+      sourceAt: new Date(at),
+      deadlineAt: new Date(at + 300_000),
+      receiptCreatedAt: new Date(at + 1),
+      botId: 'major-1',
+      semanticKey: buildWebhookSemanticEventKey(source)!,
+      normalizedPayload: JSON.parse(JSON.stringify(source)),
+      rawPayload: raw,
+    };
+    Object.assign(source, { executionOwnerBotId: 'major-1' });
+    return { source, proof };
   }
 
   it('denies a late edited message before any whole-engine or duplicate state mutation', async () => {
@@ -155,36 +205,86 @@ describe('permanent legacy moderation hold', () => {
   });
 
   it('stops automatic detection for a globally held author and admits an independent author', async () => {
-    const { service, detect, legacyHolds } = messageFixture();
-    await service.handleUpdate(createUpdate());
-    expect(legacyHolds.isMemberHeld).toHaveBeenCalledWith('chat-1', 'user-1');
-    expect(legacyHolds.isGlobalUserHeld).toHaveBeenCalledWith('user-1');
+    const { service, detect, legacyHolds, observeLifecycle, adminCommand } = messageFixture();
+    const held = createUpdate();
+    await service.handleUpdate(held);
+    expect(legacyHolds.isUpdateHeld).toHaveBeenCalledWith(held);
+    expect(legacyHolds.readFreshCommandReceipt).not.toHaveBeenCalled();
+    expect(observeLifecycle).not.toHaveBeenCalled();
+    expect(adminCommand).not.toHaveBeenCalled();
     expect(detect).not.toHaveBeenCalled();
     const independent = createUpdate();
     independent.message!.senderId = 'independent';
     await service.handleUpdate(independent);
     expect(detect).toHaveBeenCalledTimes(1);
+    expect(observeLifecycle).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves explicit admin command admission for an author held only in another chat', async () => {
-    const { service, detect, legacyHolds, admin, adminCommand } = messageFixture();
-    admin.mockResolvedValue({ isAdmin: true, source: 'remote' });
-    const source = createUpdate();
-    source.message!.text = 'тишина выкл';
-    await service.handleUpdate(source);
-    expect(adminCommand).toHaveBeenCalledWith(expect.objectContaining({ senderId: 'user-1' }));
-    expect(legacyHolds.isGlobalUserHeld).not.toHaveBeenCalled();
+  it('admits only the exact fresh persisted admin command after current bot and actor checks', async () => {
+    const { service, detect, legacyHolds, admin, adminCommand, observeLifecycle, maxClient } =
+      messageFixture();
+    const { source, proof } = freshCommand();
+    await service.handleUpdate(source, undefined, proof.receiptId);
+    expect(adminCommand).not.toHaveBeenCalled();
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    legacyHolds.readFreshCommandReceipt.mockResolvedValue(proof);
+    await service.handleUpdate(source, undefined, proof.receiptId);
+    expect(legacyHolds.readFreshCommandReceipt).toHaveBeenLastCalledWith(proof.receiptId, source);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      proof.chatId,
+      expect.objectContaining({ botId: 'major-1', bypassCache: true }),
+    );
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      proof.chatId,
+      proof.userId,
+      expect.objectContaining({ botId: 'major-1', bypassCache: true }),
+    );
+    expect(adminCommand).toHaveBeenCalledTimes(1);
+    expect(adminCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: source,
+        senderId: proof.userId,
+        messageId: proof.messageId,
+      }),
+    );
+    expect(admin).not.toHaveBeenCalled();
+    expect(observeLifecycle).not.toHaveBeenCalled();
     expect(detect).not.toHaveBeenCalled();
   });
 
-  it('preserves an explicit callback before any global automatic admission check', async () => {
+  it.each(['expired', 'start', 'bot-denied', 'actor-denied'] as const)(
+    'does not admit %s held command evidence into ordinary moderation',
+    async (reason) => {
+      const { service, detect, legacyHolds, adminCommand, observeLifecycle, maxClient } =
+        messageFixture();
+      const { source, proof } = freshCommand(reason === 'start' ? 'Старт' : 'тишина выкл');
+      if (reason === 'expired') proof.deadlineAt = new Date(Date.now() - 1);
+      if (reason === 'start') proof.kind = 'START';
+      if (reason === 'bot-denied')
+        maxClient.getCurrentChatMemberAccess.mockResolvedValue({ isAdmin: false });
+      if (reason === 'actor-denied')
+        maxClient.getChatMemberAccess.mockResolvedValue({ isAdmin: false });
+      legacyHolds.readFreshCommandReceipt.mockResolvedValue(proof);
+      await service.handleUpdate(source, undefined, proof.receiptId);
+      expect(adminCommand).not.toHaveBeenCalled();
+      expect(observeLifecycle).not.toHaveBeenCalled();
+      expect(detect).not.toHaveBeenCalled();
+    },
+  );
+
+  it('denies a held callback and preserves an independent callback', async () => {
     const { service, detect, legacyHolds } = messageFixture();
     const tryHandleCallback = jest.fn().mockResolvedValue(true);
     Object.assign(service, { managedPollService: { tryHandleCallback } });
     const callback = createUpdate();
     callback.type = 'message_callback';
     await service.handleUpdate(callback);
-    expect(tryHandleCallback).toHaveBeenCalledWith(callback);
+    expect(tryHandleCallback).not.toHaveBeenCalled();
+    const independent = structuredClone(callback);
+    independent.message!.senderId = 'independent';
+    await service.handleUpdate(independent);
+    expect(tryHandleCallback).toHaveBeenCalledTimes(1);
+    expect(tryHandleCallback).toHaveBeenCalledWith(independent);
     expect(legacyHolds.isGlobalUserHeld).not.toHaveBeenCalled();
     expect(detect).not.toHaveBeenCalled();
   });
