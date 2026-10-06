@@ -1086,6 +1086,62 @@ describe('MaxActionDispatchService', () => {
     expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
   });
 
+  it.each(['held', 'lookup_outage'] as const)(
+    'prevents confirmed SEND child creation when parent admission is %s',
+    async (admission) => {
+      const maxClient = {
+        executeActionJob: jest.fn(),
+        ensureSendAutoDeleteScheduled: jest.fn(),
+      };
+      const ledger = {
+        getCompletedSendDispatchResult: jest.fn().mockResolvedValue({
+          remoteMessageId: 'confirmed-parent',
+          dispatchBotId: 'origin-bot',
+          completedAt: new Date(),
+        }),
+        recordStarted: jest.fn(),
+        recordSucceeded: jest.fn(),
+        recordFailed: jest.fn(),
+      };
+      const holds = {
+        isOutboundJobHeld: jest.fn().mockResolvedValue(admission === 'held'),
+        isMessageHeld: jest.fn().mockResolvedValue(false),
+        isMemberHeld: jest.fn().mockResolvedValue(false),
+        isGlobalUserHeld: jest.fn().mockResolvedValue(false),
+        isLegacyChatSendHeld: jest.fn().mockResolvedValue(false),
+      };
+      const outage = new Error('Hold authority unavailable');
+      if (admission === 'lookup_outage') holds.isOutboundJobHeld.mockRejectedValue(outage);
+      const service = new MaxActionDispatchService(
+        maxClient as never,
+        undefined,
+        ledger as never,
+        undefined,
+        undefined,
+        holds as never,
+      );
+      const result = service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'source-chat',
+        botId: 'origin-bot',
+        userId: 'source-user',
+        messageId: 'source-message',
+        text: 'notice',
+        autoDeleteDelayMs: 60_000,
+        attempt: 2,
+        idempotencyKey: 'confirmed-parent-job',
+        createdAt: '2026-10-05T00:00:00.000Z',
+      });
+      if (admission === 'lookup_outage') await expect(result).rejects.toBe(outage);
+      else await expect(result).resolves.toMatchObject({ messageId: 'confirmed-parent' });
+      expect(maxClient.ensureSendAutoDeleteScheduled).not.toHaveBeenCalled();
+      expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+      expect(ledger.recordStarted).not.toHaveBeenCalled();
+      expect(ledger.recordSucceeded).not.toHaveBeenCalled();
+      expect(ledger.recordFailed).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     { label: 'another bot', dispatchBotId: 'foreign-bot' },
     { label: 'no persisted bot', dispatchBotId: null },
