@@ -180,42 +180,45 @@ native('fresh held command ingress, real SQL authority, BullMQ and guarded MAX',
     }
     await h.pause();
   }
-  it('runs one fresh configured command across mirrors and then admits another user without ordinary moderation', async () => {
-    h.allowAdminUser('held-user');
-    const messageId = randomUUID(),
-      at = Date.now();
-    const ids = await Promise.all(
-      h.bots.map((bot) => store(payload('тишина 12', 'held-user', at, messageId, bot.id))),
-    );
-    const observe = jest.spyOn(h.duplicateService, 'observeLifecycle');
-    await runReceipts(ids);
-    expect(observe).not.toHaveBeenCalled();
-    expect(
-      h.effects.filter((effect) => effect.method === 'post' && effect.path === '/messages'),
-    ).toHaveLength(1);
-    expect(h.effects.filter((effect) => effect.method === 'delete')).toEqual([]);
-    expect(
-      (await h.prisma.chatSettings.findUniqueOrThrow({ where: { chatId } }))
-        .nightModeForceCloseEnabled,
-    ).toBe(true);
-    const command = await h.prisma.webhookExecutionClaim.findFirstOrThrow({
-      where: { kind: 'COMMAND', webhookEventId: { in: ids } },
-    });
-    expect(command.status).toBe('COMPLETED');
-    expect(
-      await h.prisma.webhookLegacyReceiptDisposition.count({ where: { receiptId: { in: ids } } }),
-    ).toBe(0);
-    expect((await h.prisma.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } })).status).toBe(
-      'FAILED',
-    );
-    await h.prisma.chatSettings.update({
-      where: { chatId },
-      data: { nightModeForceCloseEnabled: false },
-    });
-    const independent = await store(payload('hello', 'unrelated-user'));
-    await runReceipts([independent]);
-    expect(observe).toHaveBeenCalledTimes(1);
-  });
+  it.each(['тишина 12', '  тишина\n\t  12  '])(
+    'runs one fresh configured command %j across mirrors and then admits another user without ordinary moderation',
+    async (commandText) => {
+      h.allowAdminUser('held-user');
+      const messageId = randomUUID(),
+        at = Date.now();
+      const ids = await Promise.all(
+        h.bots.map((bot) => store(payload(commandText, 'held-user', at, messageId, bot.id))),
+      );
+      const observe = jest.spyOn(h.duplicateService, 'observeLifecycle');
+      await runReceipts(ids);
+      expect(observe).not.toHaveBeenCalled();
+      expect(
+        h.effects.filter((effect) => effect.method === 'post' && effect.path === '/messages'),
+      ).toHaveLength(1);
+      expect(h.effects.filter((effect) => effect.method === 'delete')).toEqual([]);
+      expect(
+        (await h.prisma.chatSettings.findUniqueOrThrow({ where: { chatId } }))
+          .nightModeForceCloseEnabled,
+      ).toBe(true);
+      const command = await h.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { kind: 'COMMAND', webhookEventId: { in: ids } },
+      });
+      expect(command.status).toBe('COMPLETED');
+      expect(
+        await h.prisma.webhookLegacyReceiptDisposition.count({ where: { receiptId: { in: ids } } }),
+      ).toBe(0);
+      expect(
+        (await h.prisma.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } })).status,
+      ).toBe('FAILED');
+      await h.prisma.chatSettings.update({
+        where: { chatId },
+        data: { nightModeForceCloseEnabled: false },
+      });
+      const independent = await store(payload('hello', 'unrelated-user'));
+      await runReceipts([independent]);
+      expect(observe).toHaveBeenCalledTimes(1);
+    },
+  );
   it('ignores cached administrator data and silently completes a command denied by the live actor check', async () => {
     await h.cache.setAdminAccess(chatId, 'held-user', 'granted');
     await h.cache.rememberChatAdminUser(chatId, 'held-user');
@@ -360,30 +363,46 @@ native('fresh held command ingress, real SQL authority, BullMQ and guarded MAX',
         ).toMatchObject({ kind: 'COMMAND_NOTICE_EXPIRED' });
     },
   );
-  it.each(['old', 'sender', 'raw', 'future', 'same-message'] as const)(
-    'never grants a command exception for %s evidence',
-    async (fault) => {
-      const update = payload('тишина 12');
-      if (fault === 'old')
-        update.raw!.message = { ...(update.raw!.message as object), timestamp: 1 };
-      if (fault === 'sender') update.message!.senderId = 'forged';
-      if (fault === 'future') update.raw!.timestamp = Date.now() + 60_000;
-      if (fault === 'same-message') {
-        const owner = await h.prisma.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
-        const original = owner.normalizedPayload as unknown as { message: { messageId: string } };
-        update.message!.messageId = original.message.messageId;
-        (update.raw!.message as { body: { mid: string } }).body.mid = original.message.messageId;
-      }
-      const id = await store(update);
-      if (fault === 'raw')
-        await h.prisma.webhookEvent.update({
-          where: { id },
-          data: { rawPayload: { changed: true } },
-        });
-      expect(await readFreshHeldCommandReceipt(h.prisma, id)).toBeNull();
-      expect(h.effects).toEqual([]);
-    },
-  );
+  it.each([
+    'old',
+    'sender',
+    'raw',
+    'future',
+    'same-message',
+    'normalized-text',
+    'forward-text',
+    'forward-same-text',
+  ] as const)('never grants a command exception for %s evidence', async (fault) => {
+    let update = payload('тишина 12');
+    if (fault === 'old') update.raw!.message = { ...(update.raw!.message as object), timestamp: 1 };
+    if (fault === 'sender') update.message!.senderId = 'forged';
+    if (fault === 'normalized-text') update.message!.text = 'тишина 24';
+    if (fault === 'forward-text' || fault === 'forward-same-text') {
+      update.raw!.message = {
+        ...(update.raw!.message as object),
+        link: {
+          type: 'forward',
+          message: { body: { text: fault === 'forward-text' ? 'foreign text' : 'тишина 12' } },
+        },
+      };
+      update = new WebhookParser().parse(update.raw!, { botId: update.botId });
+    }
+    if (fault === 'future') update.raw!.timestamp = Date.now() + 60_000;
+    if (fault === 'same-message') {
+      const owner = await h.prisma.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+      const original = owner.normalizedPayload as unknown as { message: { messageId: string } };
+      update.message!.messageId = original.message.messageId;
+      (update.raw!.message as { body: { mid: string } }).body.mid = original.message.messageId;
+    }
+    const id = await store(update);
+    if (fault === 'raw')
+      await h.prisma.webhookEvent.update({
+        where: { id },
+        data: { rawPayload: { changed: true } },
+      });
+    expect(await readFreshHeldCommandReceipt(h.prisma, id)).toBeNull();
+    expect(h.effects).toEqual([]);
+  });
   it.each([true, false])(
     'runs the actual Start handshake with live actor access=%s and preserves source-message protection',
     async (authorized) => {

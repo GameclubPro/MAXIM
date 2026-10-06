@@ -80,6 +80,7 @@ export async function readFreshHeldCommandReceipt(
   const update = event.normalizedPayload as unknown as MaxUpdate;
   const raw = record(update.raw),
     message = record(raw?.message),
+    link = record(message?.link),
     sender = record(message?.sender),
     recipient = record(message?.recipient),
     body = record(message?.body);
@@ -95,7 +96,9 @@ export async function readFreshHeldCommandReceipt(
     recipient.chat_type !== 'chat' ||
     update.botId !== event.botId ||
     typeof body.text !== 'string' ||
-    body.text !== update.message?.text ||
+    // FLAG: Ingress collapses whitespace; the full parser-derived snapshot below remains mandatory.
+    body.text.replace(/\s+/g, ' ').trim() !== update.message?.text ||
+    (typeof link?.type === 'string' && link.type.trim().toLowerCase() === 'forward') ||
     update.membership ||
     update.eventTimestampSource !== 'payload'
   )
