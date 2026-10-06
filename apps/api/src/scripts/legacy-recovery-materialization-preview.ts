@@ -7,7 +7,10 @@ import {
   type WebhookLegacySealedAuthority,
 } from '../prisma/prisma-client';
 import { buildGroupCommandKey } from '../common/group-command-key';
-import { materializeLegacyReceiptDisposition } from '../webhook/webhook-legacy-receipt-disposition';
+import {
+  materializeLegacyReceiptDisposition,
+  type LegacyReceiptDispositionRefusal,
+} from '../webhook/webhook-legacy-receipt-disposition';
 import { legacySnapshotDigest } from '../webhook/webhook-legacy-source';
 import type { LegacyRecoveryCandidate } from '../webhook/webhook-legacy-cold-install';
 import type {
@@ -85,6 +88,7 @@ export async function previewLegacyRecoveryMaterialization(
     prefixPages = 0,
     snapshotAt = '';
   let planFailure: MaterializationPlanFailure | undefined;
+  let classifierRefusal: LegacyReceiptDispositionRefusal | undefined;
   const deadline = Math.min(allowance.deadlineAtMs, Date.now() + 120_000);
   const evidence = (value: unknown) => digest.update(legacySnapshotDigest(value)).update('\n');
   const check = () => {
@@ -621,18 +625,26 @@ export async function previewLegacyRecoveryMaterialization(
             chatSettings: { findUnique: readSettings },
           } as unknown as Prisma.TransactionClient;
           let outcome: string;
+          let refusal: LegacyReceiptDispositionRefusal | undefined;
           try {
             outcome = await materializeLegacyReceiptDisposition(facade, event.id, {
               preSeal: true,
               certificateId: PREVIEW_CERTIFICATE,
+              onRefusal: (reason) => {
+                refusal ??= reason;
+              },
             });
           } catch (error) {
             if (error !== READY_BOUNDARY) throw error;
             outcome = 'WOULD_MATERIALIZE';
           }
-          if (!['WOULD_MATERIALIZE', 'NOT_HELD', 'ALREADY_APPLIED_SAME_PROOF'].includes(outcome))
+          // FLAG: A refused source is part of the immutable evidence too. Diagnostics
+          // contain only the classifier's fixed code; source values stay in the digest.
+          evidence({ event, outcome, refusal });
+          if (!['WOULD_MATERIALIZE', 'NOT_HELD', 'ALREADY_APPLIED_SAME_PROOF'].includes(outcome)) {
+            classifierRefusal = refusal;
             throw new Error('materialization_preview_blocked');
-          evidence({ event, outcome });
+          }
         }
         if (page.length <= PAGE_SIZE) break;
         cursor = page[PAGE_SIZE - 1]!;
@@ -647,6 +659,11 @@ export async function previewLegacyRecoveryMaterialization(
           : 'materialization_preview_unproved',
       descriptor: 'sql:materialization-preview',
     });
+    if (classifierRefusal)
+      issues.push({
+        code: `materialization_preview_blocked_${classifierRefusal}`,
+        descriptor: 'sql:materialization-preview',
+      });
   }
   return {
     version: 1,

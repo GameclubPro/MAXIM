@@ -8,6 +8,7 @@ import {
   inspectLegacyPostSealTextSource,
   inspectLegacyRecoverySource,
   legacySnapshotDigest,
+  type LegacyRecoverySourceRefusal,
 } from './webhook-legacy-source';
 
 export type LegacyReceiptDispositionResult =
@@ -15,7 +16,78 @@ export type LegacyReceiptDispositionResult =
   | 'BLOCKED_UNKNOWN'
   | 'APPLIED_WITH_PROOF'
   | 'ALREADY_APPLIED_SAME_PROOF';
-type Options = { preSeal: true; certificateId: string };
+export type LegacyReceiptDispositionRefusal =
+  | LegacyRecoverySourceRefusal
+  | 'receipt_metadata_unproved'
+  | 'receipt_scope_unproved'
+  | 'receipt_payload_oversized'
+  | 'receipt_missing'
+  | 'receipt_pointer_unproved'
+  | 'receipt_proof_unproved'
+  | 'receipt_message_unproved'
+  | 'receipt_authority_missing'
+  | 'receipt_authority_unproved'
+  | 'receipt_terminal_without_proof'
+  | 'receipt_claims_unproved'
+  | 'receipt_claim_effects_unproved'
+  | 'receipt_owner_snapshot_unproved'
+  | 'receipt_post_seal_provenance_unproved'
+  | 'receipt_post_seal_source_unproved'
+  | 'source_unproved';
+type Options = {
+  preSeal: true;
+  certificateId: string;
+  onRefusal?: (reason: LegacyReceiptDispositionRefusal) => void;
+};
+
+export type LegacyReceiptScopeMetadata = {
+  id: string;
+  payloadBytes: number;
+  legacyDispositionId: string | null;
+  legacyDispositionReceiptId: string | null;
+  chatId: string | null;
+  messageId: string | null;
+  userId: string | null;
+  scopeOversize: boolean;
+};
+type RecoveryScope = { chatId: string; messageId: string; userId: string };
+
+// FLAG: The single-receipt classifier and offline page use exactly the same bounded
+// metadata. A page caller must hold every returned receipt lock until cursor commit.
+export const legacyReceiptScopeMetadataSql = Prisma.sql`"id", octet_length("raw_payload"::text) + octet_length("normalized_payload"::text) AS "payloadBytes",
+      legacy_disposition_id AS "legacyDispositionId", legacy_disposition_receipt_id AS "legacyDispositionReceiptId",
+      CASE WHEN jsonb_typeof(normalized_payload->'message'->'chatId') = 'string' THEN left(normalized_payload->'message'->>'chatId', 512) END AS "chatId",
+      CASE WHEN jsonb_typeof(normalized_payload->'message'->'messageId') = 'string' THEN left(normalized_payload->'message'->>'messageId', 512) END AS "messageId",
+      CASE WHEN jsonb_typeof(normalized_payload->'message'->'senderId') = 'string' THEN left(normalized_payload->'message'->>'senderId', 512) END AS "userId",
+      COALESCE(octet_length(normalized_payload->'message'->>'chatId') > 512 OR octet_length(normalized_payload->'message'->>'messageId') > 512 OR octet_length(normalized_payload->'message'->>'senderId') > 512, false) AS "scopeOversize"`;
+
+function knownScopeMetadata(meta: LegacyReceiptScopeMetadata): boolean {
+  return (
+    meta.scopeOversize === false &&
+    Number.isSafeInteger(meta.payloadBytes) &&
+    meta.payloadBytes >= 0
+  );
+}
+
+// FLAG: This proves only non-membership in a complete selected-certificate scope set.
+// Pointers, malformed scope metadata and held rows must use the full proof classifier.
+// Payload size does not grant authority; unrelated oversized receipts stay untouched.
+export function isLegacyReceiptOutsideRecoveryScopes(
+  meta: LegacyReceiptScopeMetadata,
+  scopes: readonly RecoveryScope[],
+): boolean {
+  return (
+    knownScopeMetadata(meta) &&
+    meta.legacyDispositionId === null &&
+    meta.legacyDispositionReceiptId === null &&
+    (meta.chatId === null ||
+      !scopes.some(
+        (scope) =>
+          (scope.chatId === meta.chatId && scope.messageId === (meta.messageId ?? '')) ||
+          scope.userId === (meta.userId ?? ''),
+      ))
+  );
+}
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -42,40 +114,28 @@ export async function materializeLegacyReceiptDisposition(
   receiptId: string,
   options?: Options,
 ): Promise<LegacyReceiptDispositionResult> {
+  // FLAG: Refusal diagnostics report only a fixed deciding-guard code. They do not
+  // change classification or disclose source values, identifiers or error details.
+  const refuse = (reason: LegacyReceiptDispositionRefusal): LegacyReceiptDispositionResult => {
+    options?.onRefusal?.(reason);
+    return 'BLOCKED_UNKNOWN';
+  };
   // FLAG: Inspect only bounded scope metadata under the receipt lock. An unrelated
   // oversized payload is NOT_HELD; a held source or existing proof still needs the
   // complete size-bounded receipt and independent positive evidence below.
-  const locked = await tx.$queryRaw<
-    Array<{
-      id: string;
-      payloadBytes: number;
-      legacyDispositionId: string | null;
-      legacyDispositionReceiptId: string | null;
-      chatId: string | null;
-      messageId: string | null;
-      userId: string | null;
-      scopeOversize: boolean;
-    }>
-  >(Prisma.sql`
-    SELECT "id", octet_length("raw_payload"::text) + octet_length("normalized_payload"::text) AS "payloadBytes",
-      legacy_disposition_id AS "legacyDispositionId", legacy_disposition_receipt_id AS "legacyDispositionReceiptId",
-      CASE WHEN jsonb_typeof(normalized_payload->'message'->'chatId') = 'string' THEN left(normalized_payload->'message'->>'chatId', 512) END AS "chatId",
-      CASE WHEN jsonb_typeof(normalized_payload->'message'->'messageId') = 'string' THEN left(normalized_payload->'message'->>'messageId', 512) END AS "messageId",
-      CASE WHEN jsonb_typeof(normalized_payload->'message'->'senderId') = 'string' THEN left(normalized_payload->'message'->>'senderId', 512) END AS "userId",
-      COALESCE(octet_length(normalized_payload->'message'->>'chatId') > 512 OR octet_length(normalized_payload->'message'->>'messageId') > 512 OR octet_length(normalized_payload->'message'->>'senderId') > 512, false) AS "scopeOversize"
+  const locked = await tx.$queryRaw<LegacyReceiptScopeMetadata[]>(Prisma.sql`
+    SELECT ${legacyReceiptScopeMetadataSql}
     FROM "webhook_events" WHERE "id" = ${receiptId} FOR UPDATE`);
   const meta = locked[0];
-  if (
-    locked.length !== 1 ||
-    !meta ||
-    meta.scopeOversize ||
-    !Number.isSafeInteger(meta.payloadBytes)
-  )
-    return 'BLOCKED_UNKNOWN';
+  if (locked.length !== 1 || !meta || !knownScopeMetadata(meta))
+    return refuse('receipt_metadata_unproved');
   const hasProof = Boolean(meta.legacyDispositionId || meta.legacyDispositionReceiptId);
   let scopes: Array<{ recoveryId: string; authorityId: string | null }> = [];
   if (!hasProof) {
-    if (meta.chatId === null) return 'NOT_HELD';
+    if (meta.chatId === null)
+      return isLegacyReceiptOutsideRecoveryScopes(meta, [])
+        ? 'NOT_HELD'
+        : refuse('receipt_scope_unproved');
     scopes = await tx.$queryRaw(Prisma.sql`
       SELECT recovery."id" AS "recoveryId", authority."id" AS "authorityId"
       FROM "webhook_legacy_recoveries" recovery
@@ -84,15 +144,18 @@ export async function materializeLegacyReceiptDisposition(
         OR recovery."user_id" = ${meta.userId ?? ''})
         ${options ? Prisma.sql`AND recovery."certificate_id" = ${options.certificateId}` : Prisma.empty}
       ORDER BY (recovery."owner_webhook_event_id" = ${receiptId}) DESC, recovery."id" LIMIT 1`);
-    if (!scopes.length) return 'NOT_HELD';
+    if (!scopes.length)
+      return isLegacyReceiptOutsideRecoveryScopes(meta, [])
+        ? 'NOT_HELD'
+        : refuse('receipt_scope_unproved');
   }
-  if (meta.payloadBytes > 256 * 1024) return 'BLOCKED_UNKNOWN';
+  if (meta.payloadBytes > 256 * 1024) return refuse('receipt_payload_oversized');
   const event = await tx.webhookEvent.findUnique({ where: { id: receiptId } });
-  if (!event) return 'BLOCKED_UNKNOWN';
+  if (!event) return refuse('receipt_missing');
   const sourceDigest = legacyReceiptSourceDigest(event);
   if (hasProof) {
     if (!event.legacyDispositionId || event.legacyDispositionReceiptId !== event.id)
-      return 'BLOCKED_UNKNOWN';
+      return refuse('receipt_pointer_unproved');
     const proof = await tx.webhookLegacyReceiptDisposition.findUnique({
       where: { id: event.legacyDispositionId },
       include: { authority: true },
@@ -113,13 +176,13 @@ export async function materializeLegacyReceiptDisposition(
       proof.authority?.id === proof.authorityId &&
       proof.authority.authorityVersion === 1
       ? 'ALREADY_APPLIED_SAME_PROOF'
-      : 'BLOCKED_UNKNOWN';
+      : refuse('receipt_proof_unproved');
   }
   const update = record(event.normalizedPayload);
   const message = record(update?.message);
-  if (!message || typeof message.chatId !== 'string') return 'BLOCKED_UNKNOWN';
+  if (!message || typeof message.chatId !== 'string') return refuse('receipt_message_unproved');
   const scope = scopes[0]!;
-  if (!scope.authorityId) return 'BLOCKED_UNKNOWN';
+  if (!scope.authorityId) return refuse('receipt_authority_missing');
   const authority = await tx.webhookLegacySealedAuthority.findUnique({
     where: { id: scope.authorityId },
   });
@@ -131,8 +194,9 @@ export async function materializeLegacyReceiptDisposition(
     recovery.authorityVersion !== 1 ||
     recovery.disposition !== 'NO_REPLAY_ORDER_RELEASED'
   )
-    return 'BLOCKED_UNKNOWN';
-  if (['PROCESSED', 'DUPLICATE', 'NO_REPLAY_HELD'].includes(event.status)) return 'BLOCKED_UNKNOWN';
+    return refuse('receipt_authority_unproved');
+  if (['PROCESSED', 'DUPLICATE', 'NO_REPLAY_HELD'].includes(event.status))
+    return refuse('receipt_terminal_without_proof');
   const commandKey =
     typeof message.messageId === 'string'
       ? buildGroupCommandKey(message.chatId, message.messageId)
@@ -141,7 +205,7 @@ export async function materializeLegacyReceiptDisposition(
     WHERE "webhook_event_id" = ${event.id} OR ("semantic_key" IN (${event.semanticKey}, ${commandKey}) AND "kind" IN ('EXECUTION', 'COMMAND'))
     ORDER BY "id" FOR UPDATE`);
   const claims = await readLegacyReceiptClaims(tx, event.id, event.semanticKey, commandKey);
-  if (!claims) return 'BLOCKED_UNKNOWN';
+  if (!claims) return refuse('receipt_claims_unproved');
   if (
     claims.some(
       (claim) =>
@@ -153,7 +217,7 @@ export async function materializeLegacyReceiptDisposition(
         claim.commandResult !== null,
     )
   )
-    return 'BLOCKED_UNKNOWN';
+    return refuse('receipt_claim_effects_unproved');
   let scopeKind: 'EXACT_OWNER' | 'PRE_SEAL_SOURCE' | 'POST_SEAL_MEMBER';
   if (event.id === recovery.ownerWebhookEventId) {
     const { rawPayload, normalizedPayload, ...ownerSnapshot } = event;
@@ -166,21 +230,30 @@ export async function materializeLegacyReceiptDisposition(
       claims[0]!.id !== recovery.claimId ||
       legacySnapshotDigest(claims[0]) !== legacySnapshotDigest(recovery.claimSnapshot)
     )
-      return 'BLOCKED_UNKNOWN';
+      return refuse('receipt_owner_snapshot_unproved');
     scopeKind = 'EXACT_OWNER';
   } else if (event.createdAt <= authority.sealedAt) {
     // FLAG: The sealed global hold may project a positively validated ordinary source
     // lazily at preparation. Commands and unknown sources retain their order fence.
     const settings = await tx.chatSettings.findUnique({ where: { chatId: message.chatId } });
-    if (!inspectLegacyRecoverySource(event, undefined, settings ?? undefined))
-      return 'BLOCKED_UNKNOWN';
+    let sourceRefusal: LegacyRecoverySourceRefusal | undefined;
+    if (
+      !inspectLegacyRecoverySource(
+        event,
+        (reason) => {
+          sourceRefusal = reason;
+        },
+        settings ?? undefined,
+      )
+    )
+      return refuse(sourceRefusal ?? 'source_unproved');
     if (
       parseAdminForwardedModerationCommand(
         (event.normalizedPayload as unknown as MaxUpdate).message!.text,
         settings ?? undefined,
       )
     )
-      return 'BLOCKED_UNKNOWN';
+      return refuse('source_command');
     scopeKind = 'PRE_SEAL_SOURCE';
   } else {
     // FLAG: Original persisted MAX provenance binds member/message identity. Source
@@ -208,14 +281,14 @@ export async function materializeLegacyReceiptDisposition(
       event.processedAt ||
       event.timeoutQuarantineExpiresAt
     )
-      return 'BLOCKED_UNKNOWN';
+      return refuse('receipt_post_seal_provenance_unproved');
     const text = typeof message.text === 'string' ? message.text : '';
     const settings = await tx.chatSettings.findUnique({ where: { chatId: message.chatId } });
     if (
       (rawMessage?.link !== undefined || body?.text !== message.text) &&
       !inspectLegacyPostSealTextSource(event, settings ?? undefined)
     )
-      return 'BLOCKED_UNKNOWN';
+      return refuse('receipt_post_seal_source_unproved');
     try {
       if (
         /^[/$]/u.test(text.trim()) ||
@@ -223,10 +296,10 @@ export async function materializeLegacyReceiptDisposition(
         parseAdminForwardedModerationCommand(text) ||
         parseAdminForwardedModerationCommand(text, settings ?? undefined)
       )
-        return 'BLOCKED_UNKNOWN';
+        return refuse('source_command');
     } catch {
       // Invalid command arguments still identify a command, never ordinary abandoned work.
-      return 'BLOCKED_UNKNOWN';
+      return refuse('source_command_parse_failed');
     }
     scopeKind = 'POST_SEAL_MEMBER';
   }

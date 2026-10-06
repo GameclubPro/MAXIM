@@ -10,6 +10,9 @@ export { inspectLegacyRecoverySource, legacySnapshotDigest } from './webhook-leg
 import {
   materializeLegacyReceiptDisposition,
   legacyReceiptSourceDigest,
+  legacyReceiptScopeMetadataSql,
+  isLegacyReceiptOutsideRecoveryScopes,
+  type LegacyReceiptScopeMetadata,
 } from './webhook-legacy-receipt-disposition';
 import type { MaxUpdate } from '@maxim/contracts';
 import { randomUUID } from 'node:crypto';
@@ -535,8 +538,19 @@ export async function materializeLegacyHeldReceiptPage(
       const authority = await tx.webhookLegacySealedAuthority.findUnique({
         where: { certificateId },
       });
-      const scope = await tx.webhookLegacyRecovery.findFirst({ where: { certificateId, chatId } });
-      if (!authority || !scope) throw new Error('Missing sealed materialization scope');
+      // FLAG: Global-user holds cross the selected chats. Load the complete bounded
+      // sealed-certificate scope set, never only this chat, before proving NOT_HELD.
+      const scopes = await tx.webhookLegacyRecovery.findMany({
+        where: { certificateId },
+        select: { chatId: true, messageId: true, userId: true },
+        take: MAX_TARGETS + 1,
+      });
+      if (
+        !authority ||
+        scopes.length > MAX_TARGETS ||
+        !scopes.some((scope) => scope.chatId === chatId)
+      )
+        throw new Error('Missing or incomplete sealed materialization scope');
       await tx.webhookLegacyMaterializationCursor.upsert({
         where: { certificateId_chatId: { certificateId, chatId } },
         create: { certificateId, chatId, horizon: authority.sealedAt },
@@ -550,8 +564,13 @@ export async function materializeLegacyHeldReceiptPage(
       if (cursor.horizon.getTime() !== authority.sealedAt.getTime())
         throw new Error('Legacy materialization horizon changed');
       if (cursor.complete) return { complete: true, scanned: 0, applied: 0, blocked: false };
-      const rows = await tx.$queryRaw<Array<{ id: string; createdAt: Date }>>(Prisma.sql`
-      SELECT "id", "created_at" AS "createdAt" FROM "webhook_events"
+      // FLAG: Lock the same bounded ordered page before classifying any receipt.
+      // No SKIP LOCKED: a concurrent source change must wait or abort this page,
+      // never let its cursor advance using stale non-membership evidence.
+      const rows = await tx.$queryRaw<
+        Array<LegacyReceiptScopeMetadata & { createdAt: Date }>
+      >(Prisma.sql`
+      SELECT ${legacyReceiptScopeMetadataSql}, "created_at" AS "createdAt" FROM "webhook_events"
       WHERE COALESCE(NULLIF(BTRIM("normalized_payload"->'message'->>'chatId'), ''),
           NULLIF(BTRIM("normalized_payload"->>'chatId'), '')) = ${chatId}
         AND ("status" = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[]) OR (
@@ -561,7 +580,7 @@ export async function materializeLegacyHeldReceiptPage(
           NULLIF(BTRIM("normalized_payload"->>'update_type'), ''))) = ANY(ARRAY['message_created','message_edited'])
         AND "created_at" <= ${cursor.horizon}
         ${cursor.afterId ? Prisma.sql`AND ("created_at", "id") > (${cursor.afterCreatedAt}, ${cursor.afterId})` : Prisma.empty}
-      ORDER BY "created_at", "id" LIMIT ${pageSize + 1}`);
+      ORDER BY "created_at", "id" LIMIT ${pageSize + 1} FOR UPDATE`);
       let scanned = 0;
       let applied = 0;
       let lastScanned: (typeof rows)[number] | undefined;
@@ -582,10 +601,12 @@ export async function materializeLegacyHeldReceiptPage(
         });
       };
       for (const row of rows.slice(0, pageSize)) {
-        const result = await materializeLegacyReceiptDisposition(tx, row.id, {
-          certificateId,
-          preSeal: true,
-        });
+        const result = isLegacyReceiptOutsideRecoveryScopes(row, scopes)
+          ? 'NOT_HELD'
+          : await materializeLegacyReceiptDisposition(tx, row.id, {
+              certificateId,
+              preSeal: true,
+            });
         if (result === 'BLOCKED_UNKNOWN') {
           await advanceCursor(false);
           return { complete: false, scanned, applied, blocked: true };

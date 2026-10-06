@@ -298,7 +298,11 @@ native('legacy disposition production ingestion activation regressions', () => {
     return { candidate: candidate!, chatId, userId, value };
   }
 
-  async function seal(candidate: LegacyRecoveryCandidate, materialize = true) {
+  async function seal(
+    input: LegacyRecoveryCandidate | LegacyRecoveryCandidate[],
+    materialize = true,
+  ) {
+    const candidates = Array.isArray(input) ? input : [input];
     const sourceSha = 'b'.repeat(40);
     const imageId = `sha256:${'a'.repeat(64)}`;
     const certificate = await createLegacyColdCertificate(prisma, {
@@ -306,7 +310,7 @@ native('legacy disposition production ingestion activation regressions', () => {
       sourceSha,
       imageId,
       transitionJournalSha256: 'c'.repeat(64),
-      previewSha256: buildLegacyRecoveryPreviewDigest([candidate], []),
+      previewSha256: buildLegacyRecoveryPreviewDigest(candidates, []),
       queueFenceNonce: 'disposable-local-only',
       roleSnapshots: RUNTIME_SERVICE_NAMES.filter((name) => name !== 'api-all').map(
         (serviceName) => ({
@@ -319,14 +323,12 @@ native('legacy disposition production ingestion activation regressions', () => {
       ),
     });
     certificates.push(certificate.id);
-    await installAndSealLegacyRecoveryBatch(prisma, certificate.id, [candidate], []);
+    await installAndSealLegacyRecoveryBatch(prisma, certificate.id, candidates, []);
     if (materialize) {
-      const page = await materializeLegacyHeldReceiptPage(
-        prisma,
-        certificate.id,
-        candidate.source.chatId,
-      );
-      expect(page).toMatchObject({ complete: true, blocked: false });
+      for (const chatId of new Set(candidates.map((candidate) => candidate.source.chatId))) {
+        const page = await materializeLegacyHeldReceiptPage(prisma, certificate.id, chatId);
+        expect(page).toMatchObject({ complete: true, blocked: false });
+      }
     }
     return certificate.id;
   }
@@ -849,6 +851,187 @@ native('legacy disposition production ingestion activation regressions', () => {
     expect(observed.lag.effectiveLagSec).toBe(0);
   });
 
+  it('classifies 200 unrelated receipts with a constant number of queries and no receipt mutation', async () => {
+    const source = await owner();
+    const createdAt = new Date(Date.now() - 1000);
+    const batch = Array.from({ length: 200 }, () => {
+      const id = randomUUID();
+      receipts.push(id);
+      const value = update(source.chatId, `independent-${randomUUID()}`, {
+        at: createdAt.getTime() - 1,
+      });
+      return {
+        id,
+        dedupKey: id,
+        botId: value.botId,
+        status: 'RECEIVED' as const,
+        normalizedPayload: JSON.parse(JSON.stringify(value)),
+        rawPayload: JSON.parse(JSON.stringify(value.raw)),
+        createdAt,
+      };
+    });
+    await prisma.webhookEvent.createMany({ data: batch });
+    const certificateId = await seal(source.candidate, false);
+    expect(
+      await materializeLegacyHeldReceiptPage(prisma, certificateId, source.chatId, 1),
+    ).toMatchObject({ complete: false, scanned: 1, blocked: false });
+    const operations: string[] = [];
+    const database = prisma.$extends({
+      query: {
+        async $allOperations({ model, operation, args, query }) {
+          operations.push(`${model ?? 'raw'}:${operation}`);
+          return query(args);
+        },
+      },
+    });
+    const startedAt = performance.now();
+    expect(
+      await materializeLegacyHeldReceiptPage(database as never, certificateId, source.chatId, 200),
+    ).toEqual({ complete: true, scanned: 200, applied: 0, blocked: false });
+    expect(operations.length).toBeLessThanOrEqual(10);
+    expect(operations.filter((operation) => operation.startsWith('WebhookEvent:'))).toEqual([]);
+    expect(
+      operations.filter((operation) => operation.startsWith('WebhookLegacyReceiptDisposition:')),
+    ).toEqual([]);
+    expect(
+      await prisma.webhookEvent.count({
+        where: {
+          id: { in: batch.map((row) => row.id) },
+          status: 'RECEIVED',
+          legacyDispositionId: null,
+        },
+      }),
+    ).toBe(200);
+    process.stdout.write(
+      `LEGACY_NOT_HELD_NATIVE_COST ${JSON.stringify({ receipts: 200, operations: operations.length, elapsedMs: Math.round(performance.now() - startedAt) })}\n`,
+    );
+  });
+
+  it('retains global-user holds from another chat in the same complete certificate scope set', async () => {
+    const first = await owner();
+    const second = await owner();
+    const held = await store(update(first.chatId, second.userId, { at: Date.now() - 1000 }));
+    const independent = await store(update(first.chatId, `independent-${randomUUID()}`));
+    const certificateId = await seal([first.candidate, second.candidate], false);
+    expect(
+      await materializeLegacyHeldReceiptPage(prisma, certificateId, first.chatId, 200),
+    ).toEqual({ complete: true, scanned: 3, applied: 1, blocked: false });
+    expect((await prisma.webhookEvent.findUniqueOrThrow({ where: { id: held.id } })).status).toBe(
+      'NO_REPLAY_HELD',
+    );
+    expect(await prisma.webhookEvent.findUniqueOrThrow({ where: { id: independent.id } })).toEqual(
+      independent,
+    );
+  });
+
+  it('keeps unrelated receipt locks through the atomic cursor checkpoint', async () => {
+    const source = await owner();
+    const independent = await store(update(source.chatId, `independent-${randomUUID()}`));
+    const certificateId = await seal(source.candidate, false);
+    let attempted = false;
+    const database = prisma.$extends({
+      query: {
+        webhookLegacyMaterializationCursor: {
+          async update({ args, query }) {
+            attempted = true;
+            await expect(
+              prisma.$transaction(async (tx) => {
+                await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '100ms'");
+                await tx.webhookEvent.update({
+                  where: { id: independent.id },
+                  data: { errorMessage: 'concurrent mutation' },
+                });
+              }),
+            ).rejects.toThrow(/lock timeout/u);
+            return query(args);
+          },
+        },
+      },
+    });
+    expect(
+      await materializeLegacyHeldReceiptPage(database as never, certificateId, source.chatId, 200),
+    ).toEqual({ complete: true, scanned: 2, applied: 0, blocked: false });
+    expect(attempted).toBe(true);
+    expect(await prisma.webhookEvent.findUniqueOrThrow({ where: { id: independent.id } })).toEqual(
+      independent,
+    );
+  });
+
+  it.each(['scope_oversize', 'invalid_proof'] as const)(
+    'stops a mixed page at %s after proving only the unrelated prefix',
+    async (fault) => {
+      const source = await owner();
+      const independent = await store(update(source.chatId, `independent-${randomUUID()}`));
+      const unknown = await store(update(source.chatId, `unknown-${randomUUID()}`));
+      const after = await store(update(source.chatId, `later-${randomUUID()}`));
+      const beforeAt = new Date(Date.now() - 1000);
+      await prisma.webhookEvent.update({
+        where: { id: independent.id },
+        data: { createdAt: beforeAt },
+      });
+      await prisma.webhookEvent.update({
+        where: { id: unknown.id },
+        data: {
+          createdAt: new Date(beforeAt.getTime() + 1),
+          status: 'FAILED',
+          nextEnqueueAt: beforeAt,
+          ...(fault === 'scope_oversize'
+            ? {
+                normalizedPayload: {
+                  ...(unknown.normalizedPayload as object),
+                  message: {
+                    ...(unknown.normalizedPayload as unknown as MaxUpdate).message!,
+                    senderId: 'x'.repeat(513),
+                  },
+                },
+              }
+            : {}),
+        },
+      });
+      const certificateId = await seal(source.candidate, false);
+      if (fault === 'invalid_proof') {
+        const authority = await prisma.webhookLegacySealedAuthority.findUniqueOrThrow({
+          where: { certificateId },
+        });
+        const proof = await prisma.webhookLegacyReceiptDisposition.create({
+          data: {
+            id: randomUUID(),
+            receiptId: unknown.id,
+            authorityId: authority.id,
+            sourceDigest: '0'.repeat(64),
+            originalStatus: 'FAILED',
+            originalSnapshot: {},
+            scopeKind: 'EXACT_OWNER',
+          },
+        });
+        await prisma.webhookEvent.update({
+          where: { id: unknown.id },
+          data: {
+            legacyDispositionId: proof.id,
+            legacyDispositionReceiptId: unknown.id,
+          },
+        });
+      }
+      const savedUnknown = await prisma.webhookEvent.findUniqueOrThrow({
+        where: { id: unknown.id },
+      });
+      expect(
+        await materializeLegacyHeldReceiptPage(prisma, certificateId, source.chatId, 200),
+      ).toEqual({ complete: false, scanned: 2, applied: 0, blocked: true });
+      expect(
+        await prisma.webhookLegacyMaterializationCursor.findUniqueOrThrow({
+          where: { certificateId_chatId: { certificateId, chatId: source.chatId } },
+        }),
+      ).toMatchObject({ afterId: independent.id, scanned: 2, complete: false });
+      expect(await prisma.webhookEvent.findUniqueOrThrow({ where: { id: unknown.id } })).toEqual(
+        savedUnknown,
+      );
+      expect(await prisma.webhookEvent.findUniqueOrThrow({ where: { id: after.id } })).toEqual(
+        after,
+      );
+    },
+  );
+
   it('uses one indexed actionable row despite 5,000 positive held receipts', async () => {
     const source = await owner();
     const certificateId = await seal(source.candidate);
@@ -940,6 +1123,7 @@ native('legacy disposition production ingestion activation regressions', () => {
 
   it('rolls back receipt proofs and all cursor progress when the single page checkpoint fails', async () => {
     const source = await owner();
+    const independent = await store(update(source.chatId, `independent-${randomUUID()}`));
     const receipt = await store(update(source.chatId, source.userId, { at: Date.now() - 1000 }));
     const certificateId = await seal(source.candidate, false);
     const failing = observeCursorUpdates(true);
@@ -952,6 +1136,9 @@ native('legacy disposition production ingestion activation regressions', () => {
       ),
     ).rejects.toThrow('Synthetic cursor write failure');
     expect(failing.writes).toHaveBeenCalledTimes(1);
+    expect(await prisma.webhookEvent.findUniqueOrThrow({ where: { id: independent.id } })).toEqual(
+      independent,
+    );
     expect(
       await prisma.webhookLegacyMaterializationCursor.findUnique({
         where: { certificateId_chatId: { certificateId, chatId: source.chatId } },
@@ -968,7 +1155,7 @@ native('legacy disposition production ingestion activation regressions', () => {
       await materializeLegacyHeldReceiptPage(prisma, certificateId, source.chatId, 200),
     ).toEqual({
       complete: true,
-      scanned: 2,
+      scanned: 3,
       applied: 1,
       blocked: false,
     });

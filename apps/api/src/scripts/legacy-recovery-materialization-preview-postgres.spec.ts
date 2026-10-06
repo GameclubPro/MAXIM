@@ -257,7 +257,13 @@ native('read-only materialization preview on representative PostgreSQL history',
       const certificatesBefore = await db.webhookLegacyQuiescenceCertificate.count();
       const result = await preview();
       expect(result.decision).toBe('DENY');
-      expect(result.issues[0]?.code).toMatch(/materialization_preview_(blocked|unproved)/u);
+      expect(result.issues).toEqual([
+        { code: 'materialization_preview_blocked', descriptor: 'sql:materialization-preview' },
+        {
+          code: `materialization_preview_blocked_source_${forward ? 'forward_' : ''}command`,
+          descriptor: 'sql:materialization-preview',
+        },
+      ]);
       expect(await db.webhookLegacyQuiescenceCertificate.count()).toBe(certificatesBefore);
       await expect(actualPage()).resolves.toMatchObject({ blocked: true });
     },
@@ -265,7 +271,12 @@ native('read-only materialization preview on representative PostgreSQL history',
   it('checks the current custom command name', async () => {
     await db.chatSettings.update({ where: { chatId }, data: { adminSilenceCommandName: 'пауза' } });
     await receipt('пауза 12');
-    expect((await preview()).decision).toBe('DENY');
+    const result = await preview();
+    expect(result.decision).toBe('DENY');
+    expect(result.issues).toContainEqual({
+      code: 'materialization_preview_blocked_source_command',
+      descriptor: 'sql:materialization-preview',
+    });
   });
   it.each(['EXECUTION', 'UNKNOWN_OLD_KIND'])(
     'includes %s claims when predicting a blocker',
@@ -282,6 +293,10 @@ native('read-only materialization preview on representative PostgreSQL history',
       });
       expect((await preview()).issues).toEqual([
         { code: 'materialization_preview_blocked', descriptor: 'sql:materialization-preview' },
+        {
+          code: 'materialization_preview_blocked_receipt_claim_effects_unproved',
+          descriptor: 'sql:materialization-preview',
+        },
       ]);
     },
   );
@@ -296,6 +311,59 @@ native('read-only materialization preview on representative PostgreSQL history',
       data: { errorMessage: 'changed evidence' },
     });
     expect((await preview()).proofSha256).not.toBe(first.proofSha256);
+  });
+  it('binds a refused source in the digest while exposing only its fixed guard code', async () => {
+    const event = await receipt('Private rejected source text');
+    const raw = JSON.parse(JSON.stringify(event.rawPayload));
+    const normalized = JSON.parse(JSON.stringify(event.normalizedPayload));
+    raw.message.body.privateUnsupportedField = 'private-proof-value-a';
+    normalized.raw = raw;
+    const firstSource = await db.webhookEvent.update({
+      where: { id: event.id },
+      data: { rawPayload: raw, normalizedPayload: normalized },
+    });
+    const first = await preview();
+    expect(first.decision).toBe('DENY');
+    expect(first.issues).toEqual([
+      { code: 'materialization_preview_blocked', descriptor: 'sql:materialization-preview' },
+      {
+        code: 'materialization_preview_blocked_source_body_keys',
+        descriptor: 'sql:materialization-preview',
+      },
+    ]);
+    expect((await preview()).proofSha256).toBe(first.proofSha256);
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).toEqual(
+      firstSource,
+    );
+    // FLAG: The rejected source changes without changing its size or refusal kind.
+    // Metadata and a generic DENY alone cannot bind this immutable content evidence.
+    raw.message.body.privateUnsupportedField = 'private-proof-value-b';
+    const secondSource = await db.webhookEvent.update({
+      where: { id: event.id },
+      data: { rawPayload: raw, normalizedPayload: normalized },
+    });
+    const second = await preview();
+    expect(second.decision).toBe('DENY');
+    expect(second.issues).toEqual(first.issues);
+    expect(second.proofSha256).not.toBe(first.proofSha256);
+    expect((await preview()).proofSha256).toBe(second.proofSha256);
+    for (const result of [first, second]) {
+      const diagnostic = JSON.stringify(result);
+      for (const value of [
+        event.id,
+        chatId,
+        'held-user',
+        'Private rejected source text',
+        'privateUnsupportedField',
+        'private-proof-value-a',
+        'private-proof-value-b',
+      ])
+        expect(diagnostic).not.toContain(value);
+    }
+    expect(await actualPage()).toMatchObject({ complete: false, blocked: true });
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).toEqual(
+      secondSource,
+    );
   });
   it('walks more than one same-timestamp page and stays out of unrelated retained history', async () => {
     const at = Date.now() - 1000;
@@ -534,6 +602,10 @@ native('read-only materialization preview on representative PostgreSQL history',
     });
     expect((await preview()).issues).toEqual([
       { code: 'materialization_preview_blocked', descriptor: 'sql:materialization-preview' },
+      {
+        code: 'materialization_preview_blocked_receipt_proof_unproved',
+        descriptor: 'sql:materialization-preview',
+      },
     ]);
     expect(await actualPage()).toMatchObject({ complete: false, blocked: true });
     expect(await installation(certificates.at(-1)!)).toMatchObject({ state: 'SEALED' });
