@@ -69,12 +69,16 @@ native('native cold legacy installation and ordering', () => {
     process.env.MAXIM_LEGACY_RECOVERY_OFFLINE = '1';
   });
   afterEach(async () => {
+    const ids = receipts.splice(0);
+    await prisma.webhookEvent.deleteMany({ where: { id: { in: ids } } });
+    await prisma.webhookLegacyReceiptDisposition.deleteMany({ where: { receiptId: { in: ids } } });
     for (const id of certificates.splice(0)) {
+      await prisma.webhookLegacyMaterializationCursor.deleteMany({ where: { certificateId: id } });
+      await prisma.webhookLegacySealedAuthority.deleteMany({ where: { certificateId: id } });
       await prisma.webhookLegacyChildHold.deleteMany({ where: { certificateId: id } });
       await prisma.webhookLegacyRecovery.deleteMany({ where: { certificateId: id } });
       await prisma.webhookLegacyQuiescenceCertificate.deleteMany({ where: { id } });
     }
-    await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts.splice(0) } } });
     await prisma.chat.deleteMany({ where: { id: { in: chats.splice(0) } } });
   });
   afterAll(async () => {
@@ -257,6 +261,8 @@ native('native cold legacy installation and ordering', () => {
     await sealLegacyColdCertificate(prisma, cert.id, { ...counts, previewSha256 });
     const late = structuredClone(update);
     late.type = 'message_edited';
+    late.botId = 'major-9';
+    late.raw!.update_type = 'message_edited';
     late.updateId = randomUUID();
     const receipt = await prisma.webhookEvent.create({
       data: {
@@ -268,6 +274,7 @@ native('native cold legacy installation and ordering', () => {
       },
     });
     receipts.push(receipt.id);
+    expect(await holds.settleHeldReceipt(receipt.id, late)).toBe(true);
     const independent = structuredClone(update);
     independent.updateId = randomUUID();
     independent.message!.messageId = randomUUID();
@@ -302,9 +309,11 @@ native('native cold legacy installation and ordering', () => {
       canonical: false,
       prepared: false,
     });
-    expect(await prisma.webhookEvent.findUnique({ where: { id: candidate.owner.id } })).toEqual(
-      candidate.owner,
-    );
+    expect(await prisma.webhookEvent.findUnique({ where: { id: candidate.owner.id } })).toEqual({
+      ...candidate.owner,
+      legacyDispositionId: expect.any(String),
+      legacyDispositionReceiptId: candidate.owner.id,
+    });
     expect(
       await prisma.webhookExecutionClaim.findUnique({ where: { id: candidate.claim.id } }),
     ).toEqual(candidate.claim);
@@ -322,9 +331,11 @@ native('native cold legacy installation and ordering', () => {
     const retention = outbox();
     retention.webhookRetentionCursors = new Map();
     await retention.deleteTerminalFailedWebhookBatch(new Date(Date.now() + 60_000));
-    expect(await prisma.webhookEvent.findUnique({ where: { id: candidate.owner.id } })).toEqual(
-      candidate.owner,
-    );
+    expect(await prisma.webhookEvent.findUnique({ where: { id: candidate.owner.id } })).toEqual({
+      ...candidate.owner,
+      legacyDispositionId: expect.any(String),
+      legacyDispositionReceiptId: candidate.owner.id,
+    });
     await prisma.chat.delete({ where: { id: chatId } });
     expect(
       await new WebhookLegacyHoldService(prisma as never).isMessageHeld(
@@ -516,7 +527,7 @@ native('native cold legacy installation and ordering', () => {
       (node) =>
         node['Relation Name'] === 'webhook_legacy_recoveries' && (node['Actual Loops'] ?? 0) > 0,
     );
-    expect(probes).toHaveLength(3);
+    expect(probes).toHaveLength(0);
     for (const probe of probes) {
       expect(probe['Node Type']).toMatch(/Index/);
       expect(probe['Actual Rows']).toBeLessThanOrEqual(1);
@@ -570,7 +581,7 @@ native('native cold legacy installation and ordering', () => {
     ).toBeNull();
   });
 
-  it('cleans bounded later held bodies while preserving original, pre-seal, claimed and unknown evidence', async () => {
+  it('retains marker-only bodies without positive receipt authority in bounded pages', async () => {
     const { candidate, update, chatId } = await fixture();
     const { cert } = await certificate(candidate);
     await installAndSealLegacyRecoveryBatch(prisma, cert.id, [candidate], []);
@@ -638,7 +649,7 @@ native('native cold legacy installation and ordering', () => {
               : { businessStartedAt: new Date() }),
           },
         });
-      expect(await holds.settleHeldReceipt(event.id, update)).toBe(true);
+      expect(await holds.settleHeldReceipt(event.id, update)).toBe(false);
       expect(await prisma.webhookEvent.findUnique({ where: { id: event.id } })).toEqual(event);
     }
     await prisma.$executeRaw`ANALYZE webhook_events`;
@@ -649,8 +660,7 @@ native('native cold legacy installation and ordering', () => {
     const query = capture.mock.calls[0]![0] as Prisma.Sql;
     capture.mockRestore();
     expect(first.scanned).toBe(500);
-    expect(first.removed).toBeGreaterThanOrEqual(500 - protectedRows.length - 1);
-    expect(first.removed).toBeLessThanOrEqual(500);
+    expect(first.removed).toBe(0);
     type Plan = {
       'Node Type': string;
       'Relation Name'?: string;
@@ -697,6 +707,7 @@ native('native cold legacy installation and ordering', () => {
     }
     // FLAG: Bound source reads before row locking. SKIP LOCKED must not bypass the
     // finite ID page and scan the rest of a busy retained-history catalog.
+    reader.webhookRetentionCursors.clear();
     let releaseLocks!: () => void;
     const locksReleased = new Promise<void>((resolve) => {
       releaseLocks = resolve;
@@ -762,12 +773,14 @@ native('native cold legacy installation and ordering', () => {
     }
     for (let batch = 0; batch < 25; batch++)
       await reader.deleteTerminalFailedWebhookBatch(new Date(Date.now() + 60_000));
-    expect(await prisma.webhookEvent.count({ where: { id: { in: ids } } })).toBe(0);
+    expect(await prisma.webhookEvent.count({ where: { id: { in: ids } } })).toBe(12000);
     for (const event of protectedRows)
       expect(await prisma.webhookEvent.findUnique({ where: { id: event.id } })).toEqual(event);
-    expect(await prisma.webhookEvent.findUnique({ where: { id: candidate.owner.id } })).toEqual(
-      candidate.owner,
-    );
+    expect(await prisma.webhookEvent.findUnique({ where: { id: candidate.owner.id } })).toEqual({
+      ...candidate.owner,
+      legacyDispositionId: expect.any(String),
+      legacyDispositionReceiptId: candidate.owner.id,
+    });
     expect(await holds.isMessageHeld(chatId, candidate.source.messageId)).toBe(true);
     expect(await holds.isGlobalUserHeld(candidate.source.userId)).toBe(true);
     process.stdout.write(

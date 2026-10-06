@@ -6,12 +6,7 @@ import {
 import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import type { MaxUpdate } from '@maxim/contracts';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
-import {
-  WebhookLegacyHoldService,
-  legacyOrderReleasedSql,
-  legacyReceiptBornAfterSealSql,
-  WEBHOOK_LEGACY_HELD_MARKER,
-} from './webhook-legacy-hold.service';
+import { WebhookLegacyHoldService, legacyOrderReleasedSql } from './webhook-legacy-hold.service';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 import { SanctionHistoryRetention } from '../moderation/sanction-history-retention';
@@ -104,6 +99,7 @@ const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL = Prisma.raw(
   `'${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER.replaceAll("'", "''")}'`,
 );
 const WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL = Prisma.raw(`
+  "legacy_disposition_id",
   "id",
   "status",
   "bot_id",
@@ -357,11 +353,13 @@ function buildEnqueueEligibilitySql(now: Date, includeCompletedTimeoutRepair = t
 
   return {
     received: Prisma.sql`
-      "status" = 'RECEIVED'::"WebhookStatus"
+      "legacy_disposition_id" IS NULL
+      AND "status" = 'RECEIVED'::"WebhookStatus"
       AND ("next_enqueue_at" IS NULL OR "next_enqueue_at" <= ${now})
     `,
     failed: Prisma.sql`
-      "status" = 'FAILED'::"WebhookStatus"
+      "legacy_disposition_id" IS NULL
+      AND "status" = 'FAILED'::"WebhookStatus"
       AND (
         "next_enqueue_at" <= ${now}
         ${
@@ -393,7 +391,8 @@ function buildEnqueueEligibilitySql(now: Date, includeCompletedTimeoutRepair = t
       )
     `,
     staleUserFacingQueued: Prisma.sql`
-      "status" = 'QUEUED'::"WebhookStatus"
+      "legacy_disposition_id" IS NULL
+      AND "status" = 'QUEUED'::"WebhookStatus"
       AND "processed_at" IS NULL
       AND ("queue_name" IS NULL OR "queue_name" <> ${WEBHOOK_QUEUE_BACKGROUND})
       AND (
@@ -403,7 +402,8 @@ function buildEnqueueEligibilitySql(now: Date, includeCompletedTimeoutRepair = t
       AND ("next_enqueue_at" IS NULL OR "next_enqueue_at" <= ${now})
     `,
     staleBackgroundQueued: Prisma.sql`
-      "status" = 'QUEUED'::"WebhookStatus"
+      "legacy_disposition_id" IS NULL
+      AND "status" = 'QUEUED'::"WebhookStatus"
       AND "processed_at" IS NULL
       AND "queue_name" = ${WEBHOOK_QUEUE_BACKGROUND}
       AND (
@@ -451,6 +451,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private retentionMaintenanceDue = false;
   private draining = false;
   private cleaning = false;
+  private webhookHeldRetentionTurn = false;
   private readonly webhookRetentionCursors = new Map<string, { id: string; createdAt: Date }>();
   private enqueueAdmissionModeCheckedAtMs = 0;
   private enqueueAdmissionModeKnown = false;
@@ -803,7 +804,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const failedCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
       columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
       workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
-      eligibility: Prisma.sql`"status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" <= ${now}`,
+      eligibility: Prisma.sql`"legacy_disposition_id" IS NULL AND "status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" <= ${now}`,
       rotation: { lane: 'failed', state: scans.get('failed') ?? { horizon: now, after: null } },
       scanDirection: 'ASC',
       resultDirection: 'ASC',
@@ -816,7 +817,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       ? buildBoundedEnqueueWorkUnitsSql({
           columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
           workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
-          sourceEligibility: Prisma.sql`"status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" IS NULL`,
+          sourceEligibility: Prisma.sql`"legacy_disposition_id" IS NULL AND "status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" IS NULL`,
           eligibility: eligibility.failed,
           rotation: {
             lane: 'completedTimeout',
@@ -1899,6 +1900,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         });
         if (
           !owner ||
+          owner.status === WebhookStatus.NO_REPLAY_HELD ||
           owner.status === WebhookStatus.PROCESSED ||
           owner.status === WebhookStatus.DUPLICATE ||
           owner.timeoutQuarantineExpiresAt !== null
@@ -2400,6 +2402,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     });
     if (
       !current ||
+      current.status === WebhookStatus.NO_REPLAY_HELD ||
       current.status === WebhookStatus.PROCESSED ||
       current.status === WebhookStatus.DUPLICATE ||
       (current.status === WebhookStatus.FAILED &&
@@ -2503,7 +2506,15 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         phases.push({
           name: 'webhookProcessedOrDuplicate',
           maxBatches: WEBHOOK_RETENTION_MAX_BATCHES_PER_TICK,
-          deleteBatch: () => this.deleteCompletedWebhookBatch(webhookCutoff),
+          // FLAG: Share the existing one-page budget between completed and positively
+          // held bodies; never multiply cleanup pressure during queue recovery.
+          deleteBatch: () => {
+            const held = this.webhookHeldRetentionTurn;
+            this.webhookHeldRetentionTurn = !held;
+            return held
+              ? this.deleteLegacyHeldWebhookBatch(webhookCutoff)
+              : this.deleteCompletedWebhookBatch(webhookCutoff);
+          },
         });
       }
       if (runMaintenance) {
@@ -2693,6 +2704,39 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     return this.advanceWebhookRetentionCursor('completed', result[0]);
   }
 
+  private async deleteLegacyHeldWebhookBatch(
+    cutoff: Date,
+  ): Promise<{ removed: number; scanned: number }> {
+    const cursor = this.webhookRetentionCursors.get('held');
+    const result = await this.prisma.$queryRaw<
+      Array<{ removed: number; scanned: number; lastId: string | null; lastCreatedAt: Date | null }>
+    >(Prisma.sql`
+      WITH candidate_ids AS MATERIALIZED (
+        SELECT "id" FROM "webhook_events"
+        WHERE "status" = 'NO_REPLAY_HELD'::"WebhookStatus" AND "created_at" < ${cutoff}
+          ${cursor ? Prisma.sql`AND ("created_at", "id") > (${cursor.createdAt}, ${cursor.id})` : Prisma.empty}
+        ORDER BY "created_at", "id" LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
+      ), candidates AS MATERIALIZED (
+        SELECT event."id", event."created_at", event."legacy_disposition_id"
+        FROM candidate_ids CROSS JOIN LATERAL (
+          SELECT "id", "created_at", "legacy_disposition_id" FROM "webhook_events"
+          WHERE "id" = candidate_ids."id" AND "status" = 'NO_REPLAY_HELD'::"WebhookStatus"
+          OFFSET 0 FOR UPDATE SKIP LOCKED
+        ) event
+      ), expired AS (
+        SELECT candidate."id" FROM candidates candidate
+        WHERE ${this.legacyHeldReceiptRetentionUnpinnedSql()}
+      ), removed AS (
+        DELETE FROM "webhook_events" target WHERE target."id" = ANY(ARRAY(SELECT "id" FROM expired)) RETURNING target."id"
+      )
+      SELECT (SELECT COUNT(*)::int FROM removed) AS "removed",
+        (SELECT COUNT(*)::int FROM candidates) AS "scanned",
+        (SELECT "id" FROM candidates ORDER BY "created_at" DESC, "id" DESC LIMIT 1) AS "lastId",
+        (SELECT "created_at" FROM candidates ORDER BY "created_at" DESC, "id" DESC LIMIT 1) AS "lastCreatedAt"
+    `);
+    return this.advanceWebhookRetentionCursor('held', result[0]);
+  }
+
   private async deleteTerminalFailedWebhookBatch(
     cutoff: Date,
   ): Promise<{ removed: number; scanned: number }> {
@@ -2709,9 +2753,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         ORDER BY "created_at" ASC, "id" ASC
         LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
       ), candidates AS MATERIALIZED (
-        SELECT event."id", event."semantic_key", event."created_at", event."next_enqueue_at", event."error_message", event."timeout_quarantine_expires_at"
+        SELECT event."id", event."legacy_disposition_id", event."semantic_key", event."created_at", event."next_enqueue_at", event."error_message", event."timeout_quarantine_expires_at"
         FROM candidate_ids CROSS JOIN LATERAL (
-          SELECT "id", "semantic_key", "created_at", "next_enqueue_at", "error_message", "timeout_quarantine_expires_at" FROM "webhook_events"
+          SELECT "id", "legacy_disposition_id", "semantic_key", "created_at", "next_enqueue_at", "error_message", "timeout_quarantine_expires_at" FROM "webhook_events"
           WHERE "id" = candidate_ids."id"
             AND "status" = CAST(${WebhookStatus.FAILED} AS "WebhookStatus")
             AND "created_at" < ${cutoff}
@@ -2802,22 +2846,15 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   private legacyHeldReceiptRetentionUnpinnedSql(): Prisma.Sql {
-    // FLAG: Under the sealed all-role compatible generation, supported messages enter
-    // business only through durable semantic claims in every mode. A later exact held
-    // receipt with no owned claim adds no execution evidence. Never inspect action history
-    // or remove original/pre-seal evidence, claims, leases or independent permanent holds.
+    // FLAG: A historical error marker or scope seal is not per-receipt proof. Only
+    // positive post-seal declined work without a claim can release its retained body.
     return Prisma.sql`
-      candidate."error_message" = ${WEBHOOK_LEGACY_HELD_MARKER}
-      AND candidate."semantic_key" IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" original
-        WHERE original."owner_webhook_event_id" = candidate."id")
+      candidate."legacy_disposition_id" IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM "webhook_execution_claims" claim
         WHERE claim."webhook_event_id" = candidate."id")
-      AND EXISTS (
-        SELECT 1 FROM "webhook_events" late WHERE late."id" = candidate."id"
-          AND late."normalized_payload"->>'type' IN ('message_created', 'message_edited')
-          AND ${legacyReceiptBornAfterSealSql('late')}
-      )
+      AND EXISTS (SELECT 1 FROM "webhook_legacy_receipt_dispositions" proof
+        WHERE proof."id" = candidate."legacy_disposition_id" AND proof."receipt_id" = candidate."id"
+          AND proof."reason" = 'NO_REPLAY_HELD' AND proof."scope_kind" = 'POST_SEAL_MEMBER')
     `;
   }
 

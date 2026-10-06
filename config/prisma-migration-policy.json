@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261006002000_assert_legacy_certificate_identity",
-  "baselineNamesSha256": "ee9c10801c2c5b43399d34bd7883d9b6ee1c4a81738d504abbac94e5dce09d60",
-  "baselineContentsSha256": "f5d90629d2fa06d73e0039f55f12c41cb4d4ec37078f1a2138eb3bc11bd91ee1",
+  "baselineThrough": "20261006010000_add_positive_receipt_dispositions",
+  "baselineNamesSha256": "e8ff24020a908b1b82d725197e956287133f53b35b32b365e360613a67fc39f4",
+  "baselineContentsSha256": "e50e1a04540cffe9c6b4fb28ac1baba0ae9d8bc52ee405284c2ec37af4f81f4e",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -101,6 +101,11 @@
       "reason": "Reviewed additive observer-only projection and one static reason-insert/update trigger. The function uses an exact primary-key intent lookup and never grants authority, scans retained history, or mutates existing intents. Projection insertion failure does not abort moderation.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Old and new reason writers register duplicate intents through the same database trigger. Old readers ignore the new empty table; new diagnostics report PROJECTED_ONLY. Legacy recovery is a separate exact-chat preview-first bounded operation that writes only this projection."
+    },
+    "20261006010000_add_positive_receipt_dispositions": {
+      "reason": "Reviewed additive static guard functions and triggers; no dynamic SQL, DROP, deletion or existing-data backfill. The SQL parser conservatively flags trigger bodies.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Two nullable receipt pointer columns preserve existing writes without rewriting retained history. An additive enum value removes only positively proven held receipts from existing actionable status indexes. Immutable source snapshots preserve original evidence. Activation requires compatible readers on every stopped role, a reviewed host transition journal and exact source readback; original unknown owners remain FAILED. No runtime epoch framework or existing-table index build is introduced."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -166,6 +171,9 @@
     },
     "20261005110000_add_webhook_legacy_dispositions": {
       "reason": "All indexes are created only on three new empty permanent safety tables. No existing history is scanned, backfilled or indexed, and runtime cannot create a recovery disposition."
+    },
+    "20261006010000_add_positive_receipt_dispositions": {
+      "reason": "Only new empty disposition tables receive ordinary indexes. All existing webhook table indexes are in the separate concurrent migration."
     }
   }
 }

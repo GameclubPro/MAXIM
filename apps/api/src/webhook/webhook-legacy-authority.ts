@@ -164,7 +164,8 @@ export async function holdUnverifiedLegacyExecution(
       owner &&
       buildWebhookSemanticEventKey(owner.normalizedPayload) === claim.semanticKey &&
       owner.status !== WebhookStatus.PROCESSED &&
-      owner.status !== WebhookStatus.DUPLICATE
+      owner.status !== WebhookStatus.DUPLICATE &&
+      owner.status !== WebhookStatus.NO_REPLAY_HELD
     ) {
       await prisma.webhookEvent.updateMany({
         where: {
