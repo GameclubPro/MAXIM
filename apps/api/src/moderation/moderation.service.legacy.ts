@@ -593,6 +593,11 @@ import {
   deferWebhookOrderedPredecessorJob,
   WebhookOrderedPredecessorPendingError,
 } from './webhook-ordered-predecessor-fence';
+import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
+import {
+  deferWebhookPreparationJob,
+  WebhookPreparationRetryError,
+} from './webhook-preparation-retry';
 import { ModerationDisplayNameResolver } from './moderation-display-name-resolver';
 import {
   persistModerationDecisionWithoutAppliedSanction,
@@ -1291,10 +1296,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       )
     )
       return;
-    const execution = await this.webhookCanonicalExecutionService.prepareExecution(
-      webhookEventId,
-      this.maxBotLinkService?.getDefaultBotId?.(),
-    );
+    let execution: WebhookCanonicalExecutionContext | null;
+    try {
+      execution = await this.webhookCanonicalExecutionService.prepareExecution(
+        webhookEventId,
+        this.maxBotLinkService?.getDefaultBotId?.(),
+      );
+    } catch (error: unknown) {
+      // FLAG: Mark only typed preparation deferrals before entering the handler.
+      // Handler failures retain their existing durable effects and recovery path.
+      if (error instanceof WebhookPreparationDeferredError)
+        throw new WebhookPreparationRetryError(webhookEventId, error);
+      throw error;
+    }
     if (!execution) {
       return;
     }
@@ -18430,6 +18444,9 @@ function createWebhookProcessor(
       } catch (error: unknown) {
         if (error instanceof WebhookOrderedPredecessorPendingError) {
           await deferWebhookOrderedPredecessorJob(job, token, error);
+        }
+        if (error instanceof WebhookPreparationRetryError) {
+          await deferWebhookPreparationJob(job, token, error);
         }
         throw error;
       }

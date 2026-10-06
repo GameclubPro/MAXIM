@@ -71,9 +71,9 @@ describeStores('native user_added finite executor readiness', () => {
       });
       await s.demote(chatId!, botId);
       const handler = jest.spyOn(s.moderation, 'handleUpdate');
-      await expect(s.moderation.processWebhookEvent(id)).rejects.toBeInstanceOf(
-        WebhookExecutionOwnerUnavailableError,
-      );
+      await expect(s.moderation.processWebhookEvent(id)).rejects.toMatchObject({
+        cause: expect.any(WebhookExecutionOwnerUnavailableError),
+      });
       expect(handler).not.toHaveBeenCalled();
       expect(s.effects).toEqual([]);
       expect(

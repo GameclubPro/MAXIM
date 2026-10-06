@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { MaxUpdate } from '@maxim/contracts';
-import { Queue, QueueEvents, Worker, type ConnectionOptions } from 'bullmq';
+import { Queue, QueueEvents, Worker, type ConnectionOptions, type Job } from 'bullmq';
 import {
   createMultibotHarness,
   type MultibotHarness,
@@ -11,10 +11,17 @@ import { MaxActionDispatchService } from '../max/max-action-dispatch.service';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import { MaxActionProcessor } from '../max/max-action.processor';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
+import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
+import { DefaultWebhookLeaseManagerService } from '../moderation/default-webhook-lease-manager.service';
+import {
+  BackgroundWebhookProcessor,
+  JOIN_WEBHOOK_SHARD_PROCESSORS,
+} from '../moderation/moderation.service';
 import { Prisma } from '../prisma/prisma-client';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WebhookParser } from './webhook.parser';
+import type { ProcessWebhookJob } from './webhook-queues';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
@@ -1256,6 +1263,214 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       s.effects.filter((effect) => effect.method === 'delete').map((effect) => effect.messageId),
     ).toEqual([firstId, secondId]);
   });
+
+  it.each([
+    { kind: 'static', type: 'message_removed' },
+    { kind: 'static', type: 'user_added' },
+    { kind: 'dynamic', type: 'message_created' },
+  ] as const)(
+    'retries a changed route proof in the same native $kind job for $type',
+    async ({ kind, type }) => {
+      const s = await fixture(2, 'on');
+      await s.pause();
+      Object.assign(s.ingress, {
+        messageRetention: new MessageRetentionStore(s.prisma as never, s.config, s.legacyHolds),
+      });
+      const [chatId, independentChatId] = await s.seedCatalog(2, {
+        maxMessageLengthEnabled: false,
+      });
+      const botId = s.bots[0]!.id;
+      const messageId = randomUUID();
+      let id: string;
+      if (type === 'message_created') {
+        id = await s.ingest({ chatId: chatId!, messageId, text: 'Fixture', botId });
+      } else {
+        const update = new WebhookParser().parse(
+          {
+            update_id: randomUUID(),
+            update_type: type,
+            chat_id: chatId,
+            timestamp: Date.now(),
+            ...(type === 'message_removed'
+              ? { message_id: messageId, user_id: 'fixture-user' }
+              : { user: { user_id: 'fixture-user', first_name: 'Fixture' } }),
+          },
+          { botId },
+        );
+        id = (await s.ingress.storeReceipt(update, null)).webhookEventId!;
+        s.receiptIds.push(id);
+      }
+      await s.ingress.preparePersistedWebhookEvent(id);
+      const originalReceipt = await s.prisma.webhookEvent.update({
+        where: { id },
+        data: { status: 'QUEUED', queuedAt: new Date(), enqueueAttempts: 1 },
+      });
+      const originalClaim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: id, kind: 'EXECUTION' },
+      });
+      const ensureReady = s.readiness.ensureReady.bind(s.readiness);
+      let allowStableProof = false;
+      let proofRevision = 0;
+      const readiness = jest.spyOn(s.readiness, 'ensureReady').mockImplementation(async (p) => {
+        const proof = await ensureReady(p);
+        expect(proof).not.toBeNull();
+        // FLAG: Change the real SQL proof only after readiness accepted it. The
+        // production adoption fence must reject this unstarted attempt itself.
+        // Keep this chat pending until independent work completes, even on slow CI.
+        if (p.chatId === chatId && !allowStableProof) {
+          await s.prisma.chatBotMembership.update({
+            where: { chatId_botId: { chatId: chatId!, botId: proof!.botId } },
+            data: { botAccessSource: `fixture-proof-${++proofRevision}` },
+          });
+        }
+        return proof;
+      });
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const historyRemove = jest.spyOn(s.history, 'remove');
+      type Processor = (job: Job<ProcessWebhookJob>, token?: string) => Promise<void>;
+      let processJob: Processor;
+      if (kind === 'static') {
+        const ProcessorClass = (type === 'user_added'
+          ? JOIN_WEBHOOK_SHARD_PROCESSORS[0]!
+          : BackgroundWebhookProcessor) as unknown as new (service: unknown) => {
+          process: Processor;
+        };
+        const processor = new ProcessorClass(s.moderation);
+        processJob = processor.process.bind(processor);
+      } else {
+        const manager = Object.create(DefaultWebhookLeaseManagerService.prototype) as {
+          createWebhookJobProcessor(): Processor;
+        };
+        Object.assign(manager, { moderationExecutionService: s.moderation });
+        processJob = manager.createWebhookJobProcessor();
+      }
+      const queue = new Queue<ProcessWebhookJob>(`preparation-retry-${randomUUID()}`, {
+        connection: s.redis as unknown as ConnectionOptions,
+      });
+      const eventsRedis = s.redis.duplicate();
+      const workerRedis = s.redis.duplicate();
+      const events = new QueueEvents(queue.name, {
+        connection: eventsRedis as unknown as ConnectionOptions,
+      });
+      const previousRole = process.env.APP_ROLE;
+      process.env.APP_ROLE = 'moderation';
+      const worker = new Worker<ProcessWebhookJob>(queue.name, processJob, {
+        connection: workerRedis as unknown as ConnectionOptions,
+        concurrency: 1,
+      });
+      const failed = jest.fn();
+      const completedIds: string[] = [];
+      events.on('failed', failed);
+      events.on('completed', ({ jobId }) => completedIds.push(jobId));
+      let delayedTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.all([
+          queue.waitUntilReady(),
+          events.waitUntilReady(),
+          worker.waitUntilReady(),
+        ]);
+        const delayed = new Promise<void>((resolve, reject) => {
+          delayedTimer = setTimeout(() => reject(new Error('Preparation was not delayed')), 5_000);
+          events.on('delayed', ({ jobId }) => {
+            if (jobId === id) {
+              clearTimeout(delayedTimer);
+              resolve();
+            }
+          });
+        });
+        const job = await queue.add(
+          'process-webhook',
+          { webhookEventId: id },
+          {
+            jobId: id,
+            attempts: 1,
+          },
+        );
+        await delayed;
+        expect(await job.getState()).toBe('delayed');
+        expect((await queue.getJob(id))?.attemptsMade).toBe(0);
+        expect(handler).not.toHaveBeenCalled();
+        expect(s.effects).toEqual([]);
+        expect(
+          await s.prisma.webhookExecutionClaim.findUniqueOrThrow({
+            where: { id: originalClaim.id },
+          }),
+        ).toMatchObject({
+          status: 'READY',
+          preparedAt: originalClaim.preparedAt,
+          businessStartedAt: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          commandResult: null,
+        });
+        expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: 'QUEUED',
+          executionDeadlineAt: originalReceipt.executionDeadlineAt,
+          queuedAt: originalReceipt.queuedAt,
+          enqueueAttempts: originalReceipt.enqueueAttempts,
+          errorMessage: null,
+          nextEnqueueAt: null,
+        });
+        const independentId = await s.ingest({
+          chatId: independentChatId!,
+          messageId: randomUUID(),
+          text: 'Independent',
+          botId,
+        });
+        await s.ingress.preparePersistedWebhookEvent(independentId);
+        const independent = await queue.add(
+          'process-webhook',
+          { webhookEventId: independentId },
+          {
+            jobId: independentId,
+            attempts: 1,
+          },
+        );
+        await independent.waitUntilFinished(events, 10_000);
+        expect(completedIds).toEqual([independentId]);
+        allowStableProof = true;
+        await job.waitUntilFinished(events, 10_000);
+        expect(completedIds).toEqual([independentId, id]);
+        expect(failed).not.toHaveBeenCalled();
+        expect(await queue.getFailedCount()).toBe(0);
+        expect((await queue.getJob(id))?.attemptsMade).toBe(1);
+        expect((await queue.getJob(id))?.id).toBe(id);
+        expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: 'PROCESSED',
+          executionDeadlineAt: originalReceipt.executionDeadlineAt,
+          enqueueAttempts: originalReceipt.enqueueAttempts,
+        });
+        expect(
+          await s.prisma.webhookExecutionClaim.findUniqueOrThrow({
+            where: { id: originalClaim.id },
+          }),
+        ).toMatchObject({ status: 'COMPLETED', businessStartedAt: expect.any(Date) });
+        await s.moderation.processWebhookEvent(id);
+        expect(
+          handler.mock.calls.filter(([update]) => update.message?.chatId === chatId),
+        ).toHaveLength(1);
+        if (type === 'message_removed') {
+          expect(
+            historyRemove.mock.calls.filter(([removedChatId]) => removedChatId === chatId),
+          ).toEqual([[chatId, messageId]]);
+        }
+        expect(s.effects).toEqual([]);
+      } finally {
+        clearTimeout(delayedTimer);
+        readiness.mockRestore();
+        handler.mockRestore();
+        historyRemove.mockRestore();
+        if (previousRole === undefined) delete process.env.APP_ROLE;
+        else process.env.APP_ROLE = previousRole;
+        await worker.close();
+        await workerRedis.quit();
+        await events.close();
+        await eventsRedis.quit();
+        await queue.obliterate({ force: true });
+        await queue.close();
+      }
+    },
+  );
 
   it('retains the business replay fence after the worker lease expires', async () => {
     const s = await fixture(9);

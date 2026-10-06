@@ -125,13 +125,13 @@ describeStores('native multibot access restoration retains the original waiting 
         await s.ingest({ chatId: chatId!, messageId, text, botId: bot.id, at: sourceAt });
 
       const handler = jest.spyOn(s.moderation, 'handleUpdate');
-      await expect(s.moderation.processWebhookEvent(receiptId)).rejects.toBeInstanceOf(
-        WebhookExecutionOwnerUnavailableError,
-      );
+      await expect(s.moderation.processWebhookEvent(receiptId)).rejects.toMatchObject({
+        cause: expect.any(WebhookExecutionOwnerUnavailableError),
+      });
       await s.ingest({ chatId: chatId!, messageId, text, botId: formerPrimary, at: sourceAt });
-      await expect(s.moderation.processWebhookEvent(receiptId)).rejects.toBeInstanceOf(
-        WebhookExecutionOwnerUnavailableError,
-      );
+      await expect(s.moderation.processWebhookEvent(receiptId)).rejects.toMatchObject({
+        cause: expect.any(WebhookExecutionOwnerUnavailableError),
+      });
       const waiting = await s.prisma.webhookExecutionClaim.findUniqueOrThrow({
         where: { id: original.id },
         include: { webhookEvent: true },

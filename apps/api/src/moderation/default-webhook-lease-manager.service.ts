@@ -37,6 +37,10 @@ import {
   deferWebhookOrderedPredecessorJob,
   WebhookOrderedPredecessorPendingError,
 } from './webhook-ordered-predecessor-fence';
+import {
+  deferWebhookPreparationJob,
+  WebhookPreparationRetryError,
+} from './webhook-preparation-retry';
 import type { QueueCounters } from '../system/queue-metrics.service';
 
 type WorkerHeartbeat = {
@@ -852,6 +856,9 @@ export class DefaultWebhookLeaseManagerService
       } catch (error: unknown) {
         if (error instanceof WebhookOrderedPredecessorPendingError) {
           await deferWebhookOrderedPredecessorJob(job, token, error);
+        }
+        if (error instanceof WebhookPreparationRetryError) {
+          await deferWebhookPreparationJob(job, token, error);
         }
         throw error;
       }
