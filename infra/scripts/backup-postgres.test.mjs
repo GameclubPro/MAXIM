@@ -16,6 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { deployLockEnvironment, deployLockFixture } from './test-fixtures/deploy-lock.mjs';
 
 const root = new URL('../..', import.meta.url).pathname;
 const helper = join(root, 'infra/scripts/backup-postgres.sh');
@@ -41,7 +42,18 @@ function fixture() {
   const readyCounter = join(directory, 'ready-counter');
   const dumpPid = join(directory, 'dump.pid');
   const lock = join(directory, 'backup.lock');
-  const deployLock = join(directory, 'deploy.lock');
+  const deployLockData = deployLockFixture(directory);
+  const deployLock = deployLockData.file;
+  const isolatedHelper = join(directory, 'backup-postgres.sh');
+  writeFileSync(
+    isolatedHelper,
+    readFileSync(helper, 'utf8')
+      .replace(/^ROOT_DIR=.*$/mu, `ROOT_DIR='${root}'`)
+      .replace(
+        'DEPLOY_LOCK_HELPER="$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"',
+        `DEPLOY_LOCK_HELPER='${deployLockData.helper}'`,
+      ),
+  );
   mkdirSync(bin);
   mkdirSync(backup);
 
@@ -126,19 +138,19 @@ exec "\${MOCK_REAL_NODE}" "$@"
     dumpPid,
     lock,
     deployLock,
+    deployLockData,
+    isolatedHelper,
   };
 }
 
 function helperEnv(data, extraEnv = {}) {
-  return {
-    ...process.env,
+  return deployLockEnvironment({
     PATH: `${data.bin}:${process.env.PATH}`,
     MAXIM_BACKUP_DIR: data.backup,
     MAXIM_BACKUP_COMPOSE_FILE: join(data.directory, 'compose.yml'),
     MAXIM_BACKUP_MIN_FREE_BYTES: '1',
     MAXIM_BACKUP_REQUIRE_DEDICATED_FILESYSTEM: '0',
     MAXIM_BACKUP_LOCK_FILE: data.lock,
-    MAXIM_DEPLOY_LOCK_DIR: data.deployLock,
     MAXIM_BACKUP_MAX_DURATION_SEC: '5',
     MOCK_READY_JSON: READY_JSON,
     MOCK_DOCKER_LOG: data.dockerLog,
@@ -147,11 +159,11 @@ function helperEnv(data, extraEnv = {}) {
     MOCK_DUMP_PID_FILE: data.dumpPid,
     MOCK_REAL_NODE: process.execPath,
     ...extraEnv,
-  };
+  });
 }
 
 function runHelper(data, args = [], extraEnv = {}) {
-  return spawnSync('bash', [helper, ...args], {
+  return spawnSync('bash', [data.isolatedHelper, ...args], {
     cwd: root,
     encoding: 'utf8',
     timeout: 10_000,
@@ -184,7 +196,8 @@ test('creates a rate-limited low-priority dump and publishes the validated pair 
   assert.match(dockerLog, /--lock-wait-timeout=10s/u);
   assert.match(dockerLog, /maxim-postgres-backup-[0-9TZ]+-[0-9]+/u);
   assert.equal(existsSync(data.cleanupMarker), true);
-  assert.equal(existsSync(data.deployLock), false);
+  assert.equal(existsSync(data.deployLock), true);
+  assert.equal(spawnSync('flock', ['-n', data.deployLock, 'true']).status, 0);
   assert.doesNotMatch(names.join('\n'), /\.tmp$/u);
 });
 
@@ -226,18 +239,55 @@ test('uses a nonblocking lock and does not enter readiness while another run own
   assert.equal(existsSync(data.dockerLog), false);
 });
 
-test('refuses to overlap a live deploy lock before touching PostgreSQL', (t) => {
+test('refuses a live legacy deploy lock without touching PostgreSQL or deleting its state', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
-  mkdirSync(data.deployLock);
-  writeFileSync(join(data.deployLock, 'pid'), `${process.pid}\n`);
+  mkdirSync(data.deployLockData.legacyDirectory);
+  writeFileSync(join(data.deployLockData.legacyDirectory, 'pid'), `${process.pid}\n`);
 
   const result = runHelper(data);
 
   assert.equal(result.status, 75, result.stderr);
   assert.match(result.stderr, /deployment or maintenance operation is active/u);
   assert.equal(existsSync(data.dockerLog), false);
+  assert.equal(
+    readFileSync(join(data.deployLockData.legacyDirectory, 'pid'), 'utf8'),
+    `${process.pid}\n`,
+  );
 });
+
+test(
+  'the real persistent flock fences the backup before PostgreSQL work',
+  { timeout: 5_000 },
+  async (t) => {
+    const data = fixture();
+    t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+    writeFileSync(data.deployLock, '', { mode: 0o600 });
+    const holder = spawn(
+      'flock',
+      ['-n', data.deployLock, 'bash', '-c', 'printf "%s\\n" READY; read -r _'],
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
+    const done = once(holder, 'close');
+    t.after(async () => {
+      holder.stdin.end('release\n');
+      await done;
+    });
+    const [ready] = await once(holder.stdout, 'data');
+    assert.equal(ready.toString().trim(), 'READY');
+    const inode = statSync(data.deployLock).ino;
+    const result = runHelper(data);
+    assert.equal(result.status, 75, result.stderr);
+    assert.equal(existsSync(data.dockerLog), false);
+    assert.equal(statSync(data.deployLock).ino, inode);
+    assert.equal(spawnSync('flock', ['-n', data.deployLock, 'true']).status, 1);
+    holder.stdin.end('release\n');
+    await done;
+    assert.equal(spawnSync('flock', ['-n', data.deployLock, 'true']).status, 0);
+  },
+);
 
 test('bounds dump duration, terminates its exact backend, and removes temporary output', (t) => {
   const data = fixture();
@@ -260,7 +310,7 @@ test('bounds dump duration, terminates its exact backend, and removes temporary 
 test('SIGTERM terminates the exact backend and every local pipeline process', async (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
-  const child = spawn('bash', [helper], {
+  const child = spawn('bash', [data.isolatedHelper], {
     cwd: root,
     stdio: 'ignore',
     env: helperEnv(data, {
