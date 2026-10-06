@@ -292,17 +292,20 @@ test('configuration may raise but never lower the selected component floor', () 
   assert.match(raisedEqual.stdout, /minimum-free=10737419264B/u);
 });
 
-test('keeps ten percent free as the default percentage gate', () => {
+test('admits the absolute reserve while reporting percentage pressure', () => {
   const belowTarget = runDiskPreflight(apiMinimumFreeBytes, { usedPercent: 89 });
   const atTarget = runDiskPreflight(apiMinimumFreeBytes, { usedPercent: 90 });
 
   assert.equal(belowTarget.status, 0, belowTarget.stderr);
   assert.match(belowTarget.stdout, /target=90% critical=95%/u);
-  assert.equal(atTarget.status, 1);
-  assert.match(atTarget.stderr, /above the deploy target disk utilization \(90%\)/u);
+  assert.equal(atTarget.status, 0, atTarget.stderr);
+  assert.match(atTarget.stderr, /WARNING: deploy host disk utilization is 90%/u);
+  const critical = runDiskPreflight(apiMinimumFreeBytes, { usedPercent: 95 });
+  assert.equal(critical.status, 0, critical.stderr);
+  assert.match(critical.stderr, /CRITICAL: deploy host disk utilization is 95%/u);
 });
 
-test('emergency override bypasses only percentage thresholds', () => {
+test('a legacy emergency flag cannot bypass the absolute reserve', () => {
   const percentOverride = runDiskPreflight(apiMinimumFreeBytes, {
     usedPercent: 95,
     emergencyOverride: 1,
@@ -325,11 +328,11 @@ test('normalizes percentage thresholds before comparing them', () => {
     criticalPercent: '090',
   });
 
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /above the deploy target disk utilization \(80%\)/u);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /WARNING: deploy host disk utilization is 80%/u);
 });
 
-test('exact-SHA API image reuse still enforces the 10 GiB reserve without build-only percentage gating', () => {
+test('exact-SHA API image reuse enforces the same 10 GiB reserve as a build', () => {
   const targetSha = 'a'.repeat(40);
   const localImages = [
     `maxim-api:${targetSha}`,
