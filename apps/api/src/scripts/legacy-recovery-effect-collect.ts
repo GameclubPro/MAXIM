@@ -2,11 +2,9 @@ import { type Readable, type Writable } from 'node:stream';
 import Redis from 'ioredis';
 import { Prisma, createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
 import { buildLegacyRecoveryPreviewDigest } from '../webhook/webhook-legacy-cold-install';
-import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
-import { LEGACY_RECOVERY_SQL_PRIMARY_KEYS } from './legacy-recovery-sql-keys';
-import { inventoryLegacyRecoveryLiveSql } from './legacy-recovery-live-sql';
-import { inventoryLegacyRecoveryLiveRedis } from './legacy-recovery-live-redis';
-import { resolveLegacyRecoverySqlSource } from './legacy-recovery-sql-source-resolver';
+import { inventoryLegacyRecoverySelectedSql } from './legacy-recovery-live-sql';
+import { inventoryLegacyRecoverySelectedRedis } from './legacy-recovery-live-redis';
+import { legacyRecoverySourceClosureDigest } from './legacy-recovery-source-closure';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import {
   collectLegacyRecoveryAdmission,
@@ -25,10 +23,10 @@ import {
 export { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 type Cost = { pages: number; rows: number; probes: number; bytes: number };
 type Allowance = Cost & { deadlineAtMs: number };
-type RedisReader = Parameters<typeof inventoryLegacyRecoveryLiveRedis>[0];
+type RedisReader = Parameters<typeof inventoryLegacyRecoverySelectedRedis>[0];
 type Adapters = {
-  sql: typeof inventoryLegacyRecoveryLiveSql;
-  redis: typeof inventoryLegacyRecoveryLiveRedis;
+  sql: typeof inventoryLegacyRecoverySelectedSql;
+  redis: typeof inventoryLegacyRecoverySelectedRedis;
 };
 
 function charge(cost: Cost, next: Cost): void {
@@ -63,8 +61,8 @@ export async function collectLegacyRecoveryLiveEvidence(
   redis: RedisReader,
   request: LegacyRecoveryLiveRequest,
   adapters: Adapters = {
-    sql: inventoryLegacyRecoveryLiveSql,
-    redis: inventoryLegacyRecoveryLiveRedis,
+    sql: inventoryLegacyRecoverySelectedSql,
+    redis: inventoryLegacyRecoverySelectedRedis,
   },
 ): Promise<LegacyRecoveryLiveOutput> {
   // Revalidate direct callers as strictly as the stdin boundary.
@@ -73,10 +71,10 @@ export async function collectLegacyRecoveryLiveEvidence(
   const deadlineAtMs = Date.now() + LEGACY_RECOVERY_LIVE_BUDGET.durationMs;
   const issues: LegacyRecoveryLiveIssue[] = [];
   const selectionSha256 = legacyRecoveryLiveDigest(request.selection);
-  const registrySha256 = legacyRecoveryLiveDigest({
-    sql: LEGACY_RECOVERY_SQL_PRIMARY_KEYS,
-    queues: [...LEGACY_RECOVERY_LIVE_QUEUE_NAMES].sort(),
-  });
+  const registrySha256 = legacyRecoverySourceClosureDigest(
+    request.binding.sourceSha,
+    request.binding.imageId,
+  );
   const base = {
     version: 1 as const,
     operation: 'inventory_preview' as const,
@@ -106,24 +104,10 @@ export async function collectLegacyRecoveryLiveEvidence(
       issues.push({ code: 'selected_owner_proof_incomplete', descriptor: 'sql:webhook_events' });
     // Keep catalog diagnostics available even if a selected source is refused.
     const sources = sql.candidates.map((candidate) => candidate.source);
-    const resolveSource: NonNullable<Parameters<Adapters['redis']>[4]> = (input, remaining) =>
-      resolveLegacyRecoverySqlSource(tx, input, sources, remaining);
-    first = await adapters.redis(
-      redis,
-      request,
-      sources,
-      allowance(cost, deadlineAtMs),
-      resolveSource,
-    );
+    first = await adapters.redis(redis, request, sources, allowance(cost, deadlineAtMs));
     charge(cost, first.cost);
     issues.push(...first.issues);
-    const second = await adapters.redis(
-      redis,
-      request,
-      sources,
-      allowance(cost, deadlineAtMs),
-      resolveSource,
-    );
+    const second = await adapters.redis(redis, request, sources, allowance(cost, deadlineAtMs));
     charge(cost, second.cost);
     issues.push(...second.issues);
     if (first.stableDigest !== second.stableDigest)
@@ -247,7 +231,9 @@ export async function runLegacyRecoveryLiveCli(
       },
     );
     output.write(`${JSON.stringify(result)}\n`);
-    return result.decision === 'READY_TO_INSTALL' ? 0 : 1;
+    return result.decision === 'READY_TO_INSTALL' || result.decision === 'READY_FOR_COLD_REVIEW'
+      ? 0
+      : 1;
   } catch {
     output.write(
       `${JSON.stringify({

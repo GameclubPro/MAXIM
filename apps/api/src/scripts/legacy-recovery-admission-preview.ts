@@ -1,5 +1,6 @@
 import type { Prisma } from '../prisma/prisma-client';
-import { inventoryLegacyRecoveryLiveSql } from './legacy-recovery-live-sql';
+import { inventoryLegacyRecoverySelectedSql } from './legacy-recovery-live-sql';
+import { legacyRecoverySourceClosureDigest } from './legacy-recovery-source-closure';
 import { isLegacyRecoveryWebhookQueue } from './legacy-recovery-queue-inventory';
 import {
   LEGACY_RECOVERY_LIVE_QUEUE_NAMES,
@@ -32,8 +33,9 @@ export type LegacyRecoveryAdmissionOutput = Readonly<{
   sourceSha: string;
   imageId: string;
   selectionSha256: string;
-  decision: 'DENY';
-  sourceCoverageComplete: false;
+  registrySha256: string;
+  decision: 'READY_FOR_COLD_REVIEW' | 'DENY';
+  sourceCoverageComplete: boolean;
   selectedOwners: LegacyRecoveryLiveOutput['selectedOwners'];
   sqlPlans: LegacyRecoveryLiveOutput['sqlPlans'];
   queueCounts: readonly Readonly<{ queueName: string; states: readonly number[] }>[];
@@ -120,17 +122,15 @@ if string.len(encoded) > 65536 then return {0} end
 return {1, probes, encoded}
 `;
 
-// FLAG: The current catalog still has unresolved SQL-parent families. Even an idle
-// live preview is DENY. Only a future reviewed, complete collector may admit host review.
+// FLAG: READY admits only host review of the exact supported source closure. The
+// host still owns cold stopping, both offline inventories and atomic installation.
 export async function collectLegacyRecoveryAdmission(
   tx: Prisma.TransactionClient,
   redis: LegacyRecoveryLiveRedis,
   request: LegacyRecoveryAdmissionRequest,
 ): Promise<LegacyRecoveryAdmissionOutput> {
   request = parseLegacyRecoveryAdmissionRequest(JSON.stringify(request));
-  const issues: LegacyRecoveryLiveIssue[] = [
-    { code: 'collector_source_coverage_incomplete', descriptor: 'inventory' },
-  ];
+  const issues: LegacyRecoveryLiveIssue[] = [];
   const cost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
   let minimumEffectRowsForTwoReads = 0;
   let queueCounts: { queueName: string; states: number[] }[] = [];
@@ -184,13 +184,24 @@ export async function collectLegacyRecoveryAdmission(
       .filter((row) => !isLegacyRecoveryWebhookQueue(row.queueName))
       .reduce((sum, row) => sum + row.states.reduce((a, b) => a + b, 0), 0);
     minimumEffectRowsForTwoReads = effectRows * 2;
+    // Source guards cover automatic descendants. Only selected owner hashes and
+    // their webhook list memberships require cold enumeration, twice.
+    const ownerProbeLowerBound =
+      queueCounts
+        .filter((row) => isLegacyRecoveryWebhookQueue(row.queueName))
+        .reduce((sum, row) => sum + row.states.slice(0, 3).reduce((a, b) => a + b, 0), 0) *
+      request.selection.ownerWebhookEventIds.length *
+      2;
     if (
-      !Number.isSafeInteger(minimumEffectRowsForTwoReads) ||
-      minimumEffectRowsForTwoReads > LEGACY_RECOVERY_LIVE_BUDGET.rows
+      !Number.isSafeInteger(ownerProbeLowerBound) ||
+      ownerProbeLowerBound > LEGACY_RECOVERY_LIVE_BUDGET.probes
     ) {
-      issues.push({ code: 'effect_rows_exceed_two_read_budget', descriptor: 'redis:all' });
+      issues.push({
+        code: 'selected_owner_probes_exceed_two_read_budget',
+        descriptor: 'redis:webhooks',
+      });
     } else {
-      const sql = await inventoryLegacyRecoveryLiveSql(
+      const sql = await inventoryLegacyRecoverySelectedSql(
         tx,
         { selection: request.selection },
         {
@@ -205,6 +216,21 @@ export async function collectLegacyRecoveryAdmission(
       selectedOwners = sql.selectedOwners;
       sqlPlans = sql.proofs;
       issues.push(...sql.issues);
+      const expected = request.selection.ownerWebhookEventIds;
+      const candidateIds = sql.candidates.map((row) => row.owner.id).sort();
+      const proofIds = sql.selectedOwners.map((row) => row.ownerWebhookEventId).sort();
+      if (
+        candidateIds.length !== expected.length ||
+        proofIds.length !== expected.length ||
+        candidateIds.some((id, index) => id !== expected[index]) ||
+        proofIds.some((id, index) => id !== expected[index])
+      )
+        issues.push({ code: 'selected_owner_proof_incomplete', descriptor: 'sql:webhook_events' });
+      if (ownerProbeLowerBound + cost.probes > LEGACY_RECOVERY_LIVE_BUDGET.probes)
+        issues.push({
+          code: 'selected_owner_probes_exceed_two_read_budget',
+          descriptor: 'redis:webhooks',
+        });
     }
   } catch {
     issues.push({ code: 'online_admission_store_or_budget_refused', descriptor: 'inventory' });
@@ -218,8 +244,9 @@ export async function collectLegacyRecoveryAdmission(
     sourceSha: request.sourceSha,
     imageId: request.imageId,
     selectionSha256: legacyRecoveryLiveDigest(request.selection),
-    decision: 'DENY',
-    sourceCoverageComplete: false,
+    registrySha256: legacyRecoverySourceClosureDigest(request.sourceSha, request.imageId),
+    decision: issues.length ? 'DENY' : 'READY_FOR_COLD_REVIEW',
+    sourceCoverageComplete: issues.length === 0,
     selectedOwners,
     sqlPlans,
     queueCounts,
@@ -230,6 +257,8 @@ export async function collectLegacyRecoveryAdmission(
   if (Buffer.byteLength(JSON.stringify(result)) > LEGACY_RECOVERY_LIVE_OUTPUT_MAX_BYTES)
     return {
       ...result,
+      decision: 'DENY',
+      sourceCoverageComplete: false,
       selectedOwners: [],
       sqlPlans: [],
       queueCounts: [],

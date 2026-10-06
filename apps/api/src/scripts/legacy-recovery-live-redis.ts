@@ -20,6 +20,7 @@ import type {
   LegacyRecoverySqlSourceInput,
   LegacyRecoverySqlSourceResult,
 } from './legacy-recovery-sql-source-resolver';
+import { legacyRecoverySourceClosureDigest } from './legacy-recovery-source-closure';
 
 export type LegacyRecoveryLiveSourceResolver = (
   input: LegacyRecoverySqlSourceInput,
@@ -498,6 +499,32 @@ export async function inventoryLegacyRecoveryLiveRedis(
   allowance: LegacyRecoveryLiveRedisAllowance,
   resolveSqlSource?: LegacyRecoveryLiveSourceResolver,
 ): Promise<LegacyRecoveryLiveRedisResult> {
+  return inventoryLegacyRecoveryRedis(redis, request, sources, allowance, false, resolveSqlSource);
+}
+
+export async function inventoryLegacyRecoverySelectedRedis(
+  redis: LegacyRecoveryLiveRedis,
+  request: LegacyRecoveryLiveRequest,
+  sources: readonly LegacyRecoveryLiveRedisSource[],
+  allowance: LegacyRecoveryLiveRedisAllowance,
+): Promise<LegacyRecoveryLiveRedisResult> {
+  return inventoryLegacyRecoveryRedis(
+    redis,
+    request,
+    sources,
+    { ...allowance, bytes: Math.min(allowance.bytes, maximum.bytes) },
+    true,
+  );
+}
+
+async function inventoryLegacyRecoveryRedis(
+  redis: LegacyRecoveryLiveRedis,
+  request: LegacyRecoveryLiveRequest,
+  sources: readonly LegacyRecoveryLiveRedisSource[],
+  allowance: LegacyRecoveryLiveRedisAllowance,
+  sourceClosure: boolean,
+  resolveSqlSource?: LegacyRecoveryLiveSourceResolver,
+): Promise<LegacyRecoveryLiveRedisResult> {
   const cost: LegacyRecoveryLiveRedisCost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
   const issues: LegacyRecoveryLiveIssue[] = [];
   const proofs: LegacyRecoveryLiveRedisProof[] = [];
@@ -618,42 +645,46 @@ export async function inventoryLegacyRecoveryLiveRedis(
       headers.set(row[0], row);
       if (isLegacyRecoveryWebhookQueue(row[0]) && row[2] !== '1')
         issue('WEBHOOK_QUEUE_NOT_PAUSED', row[0]);
-      if (row[12] !== 0) issue('FUTURE_SCHEDULER_PROVENANCE_UNKNOWN', row[0]);
+      if (!sourceClosure && row[12] !== 0) issue('FUTURE_SCHEDULER_PROVENANCE_UNKNOWN', row[0]);
       if (!isLegacyRecoveryWebhookQueue(row[0]))
         effectRows += row.slice(4, 12).reduce<number>((n, count) => n + (count as number), 0);
     }
     // FLAG: The aggregate requires two complete reads with one 10,000-row budget.
     // Refuse an impossible known lower bound before loading thousands of payloads.
     // Remaining allowance is not doubled here: this also runs during the second read.
-    if (!Number.isSafeInteger(effectRows) || effectRows * 2 > maximum.rows)
+    if (!sourceClosure && (!Number.isSafeInteger(effectRows) || effectRows * 2 > maximum.rows))
       throw new Refused('REDIS_DOUBLE_READ_ROW_BUDGET_EXCEEDED');
     const catalog = new Set<string>();
     let cursor = '0';
     const cursors = new Set<string>();
-    do {
-      descriptor = 'redis-catalog';
-      const reply = await read(catalogScript, [cursor]);
-      if (
-        typeof reply[2] !== 'string' ||
-        !/^[0-9]{1,20}$/u.test(reply[2]) ||
-        !Array.isArray(reply[3]) ||
-        reply[3].length > 200 ||
-        reply[3].some((key) => typeof key !== 'string')
-      )
-        throw new Refused('REDIS_CATALOG_INVALID');
-      cursor = reply[2];
-      if (cursor !== '0' && cursors.has(cursor)) throw new Refused('REDIS_CATALOG_CURSOR_REPEATED');
-      cursors.add(cursor);
-      for (const key of reply[3] as string[]) {
-        const match = /^bull:([^:]+):(.+)$/u.exec(key);
-        if (!match || !headers.has(match[1]))
-          issue('UNKNOWN_QUEUE_NAMESPACE', legacyRecoveryLiveDigest(key));
-        catalog.add(key);
-      }
-    } while (cursor !== '0');
+    if (!sourceClosure)
+      do {
+        descriptor = 'redis-catalog';
+        const reply = await read(catalogScript, [cursor]);
+        if (
+          typeof reply[2] !== 'string' ||
+          !/^[0-9]{1,20}$/u.test(reply[2]) ||
+          !Array.isArray(reply[3]) ||
+          reply[3].length > 200 ||
+          reply[3].some((key) => typeof key !== 'string')
+        )
+          throw new Refused('REDIS_CATALOG_INVALID');
+        cursor = reply[2];
+        if (cursor !== '0' && cursors.has(cursor))
+          throw new Refused('REDIS_CATALOG_CURSOR_REPEATED');
+        cursors.add(cursor);
+        for (const key of reply[3] as string[]) {
+          const match = /^bull:([^:]+):(.+)$/u.exec(key);
+          if (!match || !headers.has(match[1]))
+            issue('UNKNOWN_QUEUE_NAMESPACE', legacyRecoveryLiveDigest(key));
+          catalog.add(key);
+        }
+      } while (cursor !== '0');
     proofs.push({
-      descriptor: 'redis-catalog',
-      sha256: legacyRecoveryLiveDigest([...catalog].sort()),
+      descriptor: sourceClosure ? 'reviewed-source-continuation-closure' : 'redis-catalog',
+      sha256: sourceClosure
+        ? legacyRecoverySourceClosureDigest(request.binding.sourceSha, request.binding.imageId)
+        : legacyRecoveryLiveDigest([...catalog].sort()),
       rows: catalog.size,
       complete: true,
     });
@@ -702,7 +733,7 @@ export async function inventoryLegacyRecoveryLiveRedis(
           jobs.push(...page);
           offset += reply[2];
         } while (offset < owners.length);
-      } else {
+      } else if (!sourceClosure) {
         const states = new Set<string>();
         for (let i = 0; i < LEGACY_RECOVERY_LIVE_QUEUE_STATES.length; i += 1) {
           const state = LEGACY_RECOVERY_LIVE_QUEUE_STATES[i];

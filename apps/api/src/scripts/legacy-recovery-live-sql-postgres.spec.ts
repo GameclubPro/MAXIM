@@ -1,10 +1,20 @@
 import { randomUUID } from 'node:crypto';
+import Redis from 'ioredis';
+import { Queue } from 'bullmq';
+import { collectLegacyRecoveryLiveEvidence } from './legacy-recovery-effect-collect';
+import { collectLegacyRecoveryAdmission } from './legacy-recovery-admission-preview';
+import { parseLegacyRecoveryLiveRequest } from './legacy-recovery-live-protocol';
+import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
+import { isLegacyRecoveryWebhookQueue } from './legacy-recovery-queue-inventory';
+import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
+import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import { Prisma, createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 import { legacySnapshotDigest } from '../webhook/webhook-legacy-cold-install';
 import {
   inventoryLegacyRecoveryLiveSql,
+  inventoryLegacyRecoverySelectedSql,
   type LegacyRecoveryLiveSqlSelection,
   measureLegacyRecoverySqlPlan,
   type Allowance,
@@ -72,12 +82,18 @@ native('native bounded live SQL inventory and actual plans', () => {
     await db.$executeRaw`ANALYZE webhook_execution_claims`;
   });
   afterEach(async () => {
+    await db.maxActionLedgerEntry.deleteMany({
+      where: { id: { startsWith: `${prefix}:action:` } },
+    });
     await db.auditLog.deleteMany({ where: { id: { startsWith: `${prefix}:audit:` } } });
     await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: eventIds } } });
     await db.webhookEvent.deleteMany({ where: { id: { in: eventIds.splice(0) } } });
     await db.messageRetentionCandidate.deleteMany({ where: { chatId: { in: chatIds } } });
     await db.messageRetentionPolicy.deleteMany({ where: { chatId: { in: chatIds } } });
     await db.chat.deleteMany({ where: { id: { in: chatIds.splice(0) } } });
+    await db.nightModeTransitionReconcileRequest.deleteMany({
+      where: { chatId: { startsWith: `${prefix}:lookup:` } },
+    });
   });
   afterAll(async () => {
     await db.webhookExecutionClaim.deleteMany({
@@ -152,6 +168,261 @@ native('native bounded live SQL inventory and actual plans', () => {
       { isolationLevel: 'RepeatableRead', timeout: 65_000 },
     );
   }
+
+  async function sourceLookupHistory(selectedChatId: string): Promise<void> {
+    // FLAG: Representative unrelated history makes the strict source lookups use
+    // their real indexes. No planner hint or production-table change is involved.
+    const historyChats = Array.from({ length: 1000 }, (_, index) => `${prefix}:lookup:${index}`);
+    chatIds.push(...historyChats);
+    await db.chat.createMany({
+      data: historyChats.map((id) => ({ id, title: 'Unrelated fixture' })),
+    });
+    await db.chatSettings.createMany({ data: historyChats.map((chatId) => ({ chatId })) });
+    await db.moderationDeleteIntent.createMany({
+      data: historyChats.map((chatId, index) => ({
+        id: `${prefix}:intent:${index}`,
+        chatId: index % 2 === 0 ? selectedChatId : chatId,
+        messageId: `unrelated-${index}`,
+        retryUntilAt: new Date(Date.now() + 60_000),
+      })),
+    });
+    await db.maxActionLedgerEntry.createMany({
+      data: historyChats.map((chatId, index) => ({
+        id: `${prefix}:action:${index}`,
+        jobId: `${prefix}:action-job:${index}`,
+        chatId: index % 2 === 0 ? selectedChatId : chatId,
+        messageId: `unrelated-${index}`,
+        actionType: 'DELETE_MESSAGE',
+      })),
+    });
+    await db.$executeRaw`ANALYZE chat_settings`;
+    await db.$executeRaw`ANALYZE moderation_delete_intents`;
+    await db.$executeRaw`ANALYZE max_action_ledger`;
+  }
+
+  it('proves the selected original source with plain planning and one read within the production budget', async () => {
+    const { request, owner, claim, raw } = await input();
+    await sourceLookupHistory(raw.message.recipient.chat_id);
+    const before = legacySnapshotDigest({ owner, claim });
+    const queries: string[] = [];
+    const ledgerReads: Prisma.Sql[] = [];
+    const result = await db.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        const reader = {
+          $queryRaw: async (statement: Prisma.Sql) => {
+            queries.push(statement.sql);
+            if (
+              !statement.sql.startsWith('EXPLAIN') &&
+              statement.sql.includes('FROM "max_action_ledger"')
+            )
+              ledgerReads.push(statement);
+            return tx.$queryRaw(statement);
+          },
+        } as unknown as Prisma.TransactionClient;
+        return inventoryLegacyRecoverySelectedSql(
+          reader,
+          request,
+          allowance(LEGACY_RECOVERY_LIVE_BUDGET),
+        );
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
+    process.stdout.write(
+      `[native-selected-source-cost] ${JSON.stringify({ cost: result.cost, issues: result.issues })}\n`,
+    );
+    expect(result.issues).toEqual([]);
+    expect(result.candidates).toHaveLength(1);
+    expect(queries.length % 2).toBe(0);
+    for (let index = 0; index < queries.length; index += 2) {
+      expect(queries[index]).toBe(`EXPLAIN (VERBOSE, FORMAT JSON) ${queries[index + 1]}`);
+    }
+    expect(queries.some((query) => /EXPLAIN[^\n]*ANALYZE/u.test(query))).toBe(false);
+    expect(
+      result.proofs.every((proof) => /:(?:bounded-planning|returned)$/u.test(proof.descriptor)),
+    ).toBe(true);
+    expect(result.proofs.some((proof) => proof.descriptor === 'sql:audit_logs')).toBe(false);
+    expect(result.cost.rows).toBeLessThan(1000);
+    expect(
+      legacySnapshotDigest({
+        owner: await db.webhookEvent.findUniqueOrThrow({ where: { id: owner.id } }),
+        claim: await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+      }),
+    ).toBe(before);
+    // FLAG: Native-only ANALYZE checks physical work against 500 same-chat rows.
+    // The production query recorder above proves that its path never runs ANALYZE.
+    for (const statement of ledgerReads) {
+      const plans = await db.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement}`);
+      const plan = plans[0]!['QUERY PLAN'];
+      expect(measureLegacyRecoverySqlPlan(plan).examinedRows).toBeLessThan(10);
+      const root = (plan as Array<{ Plan: Record<string, number> }>)[0]!.Plan;
+      expect((root['Shared Hit Blocks'] ?? 0) + (root['Shared Read Blocks'] ?? 0)).toBeLessThan(64);
+    }
+    await db.maxActionLedgerEntry.create({
+      data: {
+        id: `${prefix}:action:unknown`,
+        jobId: `${prefix}:action-job:unknown`,
+        chatId: raw.message.recipient.chat_id,
+        messageId: raw.message.body.mid,
+        actionType: 'FUTURE_UNKNOWN_ACTION',
+      },
+    });
+    const refused = await db.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        return inventoryLegacyRecoverySelectedSql(
+          tx,
+          request,
+          allowance(LEGACY_RECOVERY_LIVE_BUDGET),
+        );
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
+    expect(refused.issues.length).toBeGreaterThan(0);
+    expect(refused.candidates).toEqual([]);
+  });
+
+  it('refuses a shadowed receipt relation before reading its source', async () => {
+    const { request, owner } = await input();
+    await db.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`CREATE TEMP TABLE webhook_events (LIKE public.webhook_events INCLUDING ALL) ON COMMIT DROP`;
+        await tx.$executeRaw(
+          Prisma.sql`INSERT INTO webhook_events SELECT * FROM public.webhook_events WHERE id = ${owner.id}`,
+        );
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        const queries: string[] = [];
+        const reader = {
+          $queryRaw: async (statement: Prisma.Sql) => {
+            queries.push(statement.sql);
+            return tx.$queryRaw(statement);
+          },
+        } as unknown as Prisma.TransactionClient;
+        const result = await inventoryLegacyRecoverySelectedSql(reader, request, allowance());
+        expect(result.issues).toContainEqual({
+          code: 'sql_selected_scan_refused',
+          descriptor: 'sql:owner-inspection',
+        });
+        expect(result.candidates).toEqual([]);
+        const receiptQueries = queries.filter((query) => query.includes('FROM "webhook_events"'));
+        expect(receiptQueries).toHaveLength(1);
+        expect(receiptQueries[0]).toMatch(/^EXPLAIN \(VERBOSE, FORMAT JSON\)/u);
+      },
+      { isolationLevel: 'RepeatableRead', timeout: 35_000 },
+    );
+  });
+
+  it('completes real online and cold previews while preserving unrelated queued work and unknown receipts', async () => {
+    const { request: selection, owner, claim, raw } = await input();
+    await sourceLookupHistory(raw.message.recipient.chat_id);
+    const redisUrl = new URL(process.env.MAXIM_TEST_REDIS_URL!);
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(redisUrl.hostname))
+      throw new Error('Combined closure test requires disposable Redis');
+    redisUrl.pathname = '/14';
+    const redis = new Redis(redisUrl.toString());
+    let queue: Queue | undefined;
+    let ownsRedis = false;
+    try {
+      if (await redis.dbsize()) throw new Error('Combined closure Redis database is occupied');
+      ownsRedis = true;
+      queue = new Queue('max-actions-background', { connection: { url: redisUrl.toString() } });
+      await queue.pause();
+      await queue.addBulk(
+        Array.from({ length: 8_000 }, (_, index) => ({
+          name: 'preserved-fixture',
+          data: { oldUnknownReceipt: index },
+          opts: { jobId: `unrelated-${index}`, delay: 3600_000 },
+        })),
+      );
+      const sourceSha = 'a'.repeat(40);
+      const imageId = `sha256:${'b'.repeat(64)}`;
+      const onlineRequest = {
+        version: 1 as const,
+        operation: 'admission_preview' as const,
+        sourceSha,
+        imageId,
+        selection: selection.selection,
+      };
+      const online = await db.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          return collectLegacyRecoveryAdmission(tx, redis, onlineRequest);
+        },
+        { isolationLevel: 'RepeatableRead', timeout: 35_000 },
+      );
+      expect(online.issues).toEqual([]);
+      expect(online).toMatchObject({
+        decision: 'READY_FOR_COLD_REVIEW',
+        sourceCoverageComplete: true,
+        stoppingAuthorized: false,
+        activationAuthorized: false,
+        minimumEffectRowsForTwoReads: 16_000,
+      });
+      const services = [
+        ...RUNTIME_SERVICE_NAMES.filter((name) => name !== 'api-all'),
+        'ocr-native-sandbox',
+        'photo-native-sandbox',
+      ];
+      const offline = parseLegacyRecoveryLiveRequest(
+        JSON.stringify({
+          version: 1,
+          operation: 'inventory_preview',
+          selection: selection.selection,
+          binding: {
+            maintenanceId: randomUUID(),
+            queueFenceNonce: 'combined-native-closure-fence',
+            transitionJournalSha256: 'c'.repeat(64),
+            sourceSha,
+            imageId,
+            stoppedGenerations: services.map((serviceName, index) => ({
+              serviceName,
+              sourceSha,
+              imageId,
+              containerId: (index + 1).toString(16).padStart(64, '0'),
+              stopped: true,
+            })),
+          },
+        }),
+      );
+      const pipeline = redis.pipeline();
+      for (const name of LEGACY_RECOVERY_LIVE_QUEUE_NAMES.filter(isLegacyRecoveryWebhookQueue))
+        pipeline.hset(`bull:${name}:meta`, 'paused', '1');
+      pipeline.set(
+        'maxim:webhook-rollout:pause-owner:v1',
+        `rollout:${offline.binding.queueFenceNonce}`,
+      );
+      await pipeline.exec();
+      const preserved = await redis.hgetall('bull:max-actions-background:unrelated-0');
+      const proof = await db.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          return collectLegacyRecoveryLiveEvidence(tx, redis, offline);
+        },
+        { isolationLevel: 'RepeatableRead', timeout: 35_000 },
+      );
+      expect(proof.issues).toEqual([]);
+      expect(proof).toMatchObject({
+        decision: 'READY_TO_INSTALL',
+        applied: false,
+        activationAuthorized: false,
+        registrySha256: online.registrySha256,
+        children: [],
+      });
+      expect(proof.inventorySha256).toMatch(/^[0-9a-f]{64}$/u);
+      expect(proof.previewSha256).toMatch(/^[0-9a-f]{64}$/u);
+      expect(await queue.getDelayedCount()).toBe(8_000);
+      expect(await redis.hgetall('bull:max-actions-background:unrelated-0')).toEqual(preserved);
+      expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: owner.id } })).toEqual(owner);
+      expect(await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } })).toEqual(
+        claim,
+      );
+    } finally {
+      await queue?.close();
+      if (ownsRedis) await redis.flushdb();
+      redis.disconnect();
+    }
+  });
 
   it('reads one exact owner against retained history, accounts every native lookup and does not mutate it', async () => {
     const { request, owner, claim } = await input();

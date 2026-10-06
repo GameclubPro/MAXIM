@@ -1,5 +1,5 @@
 import { type Prisma } from '../prisma/prisma-client';
-import { inventoryLegacyRecoveryLiveSql } from './legacy-recovery-live-sql';
+import { inventoryLegacyRecoverySelectedSql } from './legacy-recovery-live-sql';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import {
   LEGACY_RECOVERY_LIVE_QUEUE_NAMES,
@@ -14,18 +14,18 @@ import {
   parseLegacyRecoveryAdmissionRequest,
 } from './legacy-recovery-admission-preview';
 
-jest.mock('./legacy-recovery-live-sql', () => ({ inventoryLegacyRecoveryLiveSql: jest.fn() }));
+jest.mock('./legacy-recovery-live-sql', () => ({ inventoryLegacyRecoverySelectedSql: jest.fn() }));
 
 const sourceCoverageIssue = {
-  code: 'collector_source_coverage_incomplete',
-  descriptor: 'inventory',
+  code: 'selected_owner_proof_incomplete',
+  descriptor: 'sql:webhook_events',
 };
 const storeRefusedIssue = {
   code: 'online_admission_store_or_budget_refused',
   descriptor: 'inventory',
 };
 const noCost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
-const mockSql = jest.mocked(inventoryLegacyRecoveryLiveSql);
+const mockSql = jest.mocked(inventoryLegacyRecoverySelectedSql);
 function requestFixture() {
   return {
     version: 1,
@@ -50,10 +50,33 @@ function headerRows(): (string | number)[][] {
 function headerReply(rows = headerRows(), probes = LEGACY_RECOVERY_LIVE_QUEUE_NAMES.length * 8) {
   return [1, probes, JSON.stringify(rows)];
 }
-function sqlFixture(): Awaited<ReturnType<typeof inventoryLegacyRecoveryLiveSql>> {
+function sqlFixture(): Awaited<ReturnType<typeof inventoryLegacyRecoverySelectedSql>> {
   return {
-    selectedOwners: [],
-    candidates: [],
+    selectedOwners: ['owner-a', 'owner-z'].map((ownerWebhookEventId) => ({
+      ownerWebhookEventId,
+      semanticKey: `semantic-${ownerWebhookEventId}`,
+      claimId: `claim-${ownerWebhookEventId}`,
+      chatId: '-100',
+      messageId: ownerWebhookEventId,
+      userId: 'fixture-user',
+      sourceAt: '2026-10-06T00:00:00.000Z',
+      rawPayloadSha256: 'd'.repeat(64),
+      normalizedPayloadSha256: 'e'.repeat(64),
+      ownerSnapshotSha256: 'f'.repeat(64),
+      claimSnapshotSha256: '0'.repeat(64),
+    })),
+    candidates: ['owner-a', 'owner-z'].map((id) => ({
+      owner: { id, semanticKey: `semantic-${id}` },
+      claim: { id: `claim-${id}` },
+      source: {
+        chatId: '-100',
+        messageId: id,
+        userId: 'fixture-user',
+        sourceAt: new Date('2026-10-06T00:00:00Z'),
+      },
+      rawPayloadDigest: 'd'.repeat(64),
+      normalizedPayloadDigest: 'e'.repeat(64),
+    })) as unknown as Awaited<ReturnType<typeof inventoryLegacyRecoverySelectedSql>>['candidates'],
     proofs: [],
     stableDigest: 'c'.repeat(64),
     cost: { ...noCost },
@@ -186,7 +209,7 @@ describe('live read-only admission preview', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
-  it('always refuses incomplete source coverage even when every queue is empty', async () => {
+  it('permits cold host review of proved sources without authorizing stopping or activation', async () => {
     const redis = { eval_ro: jest.fn().mockResolvedValue(headerReply()) };
     const parsed = request();
     const result = await collectLegacyRecoveryAdmission(tx, redis, parsed);
@@ -195,13 +218,13 @@ describe('live read-only admission preview', () => {
       applied: false,
       activationAuthorized: false,
       stoppingAuthorized: false,
-      decision: 'DENY',
-      sourceCoverageComplete: false,
+      decision: 'READY_FOR_COLD_REVIEW',
+      sourceCoverageComplete: true,
       minimumEffectRowsForTwoReads: 0,
-      selectedOwners: [],
+      selectedOwners: sqlFixture().selectedOwners,
       sqlPlans: [],
       selectionSha256: legacyRecoveryLiveDigest(parsed.selection),
-      issues: [sourceCoverageIssue],
+      issues: [],
     });
     expect(result.queueCounts).toHaveLength(53);
     expect(redis.eval_ro).toHaveBeenCalledTimes(1);
@@ -225,21 +248,21 @@ describe('live read-only admission preview', () => {
     );
   });
 
-  it('detects the 15408-row lower bound from 6819 + 885 effect rows and skips SQL', async () => {
+  it('accepts protected descendants without walking 15408 unrelated effect rows', async () => {
     const rows = headerRows();
     rows.find((row) => row[0] === 'max-actions-background')![8] = 6819;
     rows.find((row) => row[0] === 'max-actions-interactive')![7] = 885;
     const redis = { eval_ro: jest.fn().mockResolvedValue(headerReply(rows)) };
     const result = await collectLegacyRecoveryAdmission(tx, redis, request());
-    expect(result).toMatchObject({ decision: 'DENY', minimumEffectRowsForTwoReads: 15408 });
-    expect(result.issues).toEqual([
-      sourceCoverageIssue,
-      { code: 'effect_rows_exceed_two_read_budget', descriptor: 'redis:all' },
-    ]);
-    expect(mockSql).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      decision: 'READY_FOR_COLD_REVIEW',
+      minimumEffectRowsForTwoReads: 15408,
+    });
+    expect(result.issues).toEqual([]);
+    expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
-  it('excludes webhook owner counts from the exhaustive effect-row lower bound', async () => {
+  it('rejects excessive webhook list membership work before SQL', async () => {
     const rows = headerRows();
     rows.find((row) => row[0] === 'moderation-default-15')![1] = 100_000;
     rows.find((row) => row[0] === 'max-actions-background')![1] = 5000;
@@ -249,8 +272,12 @@ describe('live read-only admission preview', () => {
       request(),
     );
     expect(result.minimumEffectRowsForTwoReads).toBe(10_000);
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(mockSql).not.toHaveBeenCalled();
     expect(result.decision).toBe('DENY');
+    expect(result.issues).toContainEqual({
+      code: 'selected_owner_probes_exceed_two_read_budget',
+      descriptor: 'redis:webhooks',
+    });
   });
 
   it.each([
@@ -309,6 +336,17 @@ describe('live read-only admission preview', () => {
       expect(result.decision).toBe('DENY');
     },
   );
+
+  it('refuses missing or duplicated source proofs', async () => {
+    mockSql.mockResolvedValue({ ...sqlFixture(), candidates: [] });
+    const result = await collectLegacyRecoveryAdmission(
+      tx,
+      { eval_ro: jest.fn().mockResolvedValue(headerReply()) },
+      request(),
+    );
+    expect(result.issues).toContainEqual(sourceCoverageIssue);
+    expect(result).toMatchObject({ decision: 'DENY', sourceCoverageComplete: false });
+  });
 
   it.each(['redis', 'sql'] as const)('never emits secret-bearing %s errors', async (store) => {
     const error = new Error('redis://fixture:DO_NOT_EXPOSE@offline.invalid/0 source_text_secret');

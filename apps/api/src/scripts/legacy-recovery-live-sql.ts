@@ -790,6 +790,16 @@ const PAGE_BYTES = 64 * 1024;
 const PLAN_BYTES = 64 * 1024;
 const FULL_ROW_BYTES = 384 * 1024;
 const SCALAR_BYTES = 512;
+const MIGRATION_CATALOG_MAX_BYTES = 1024 * 1024;
+
+type SelectedLookup = Readonly<{
+  table: string | null;
+  schema: 'public' | 'pg_catalog' | null;
+  equality: readonly string[];
+  maxReturnedRows: number;
+  metadataRows?: number;
+  actionTypeSeek?: 'first' | 'next';
+}>;
 
 class Refused extends Error {
   constructor(
@@ -869,6 +879,88 @@ export function admitLegacyRecoveryHistoryPlan(
   return [...indexes].sort();
 }
 
+// FLAG: Selected production reads admit actual equality predicates, never a Filter
+// over a broad index. The sole table-scan exception is the size-proved public
+// migration catalog; estimates are explicitly planning evidence, not measured work.
+function admitSelectedPlan(
+  value: unknown,
+  lookup: SelectedLookup,
+): { indexes: string[]; estimatedRows: number } {
+  const root = Array.isArray(value) && value.length === 1 ? object(object(value[0])?.Plan) : null;
+  if (!root) throw new Refused('sql_plan_unproved', 'sql:plan');
+  const indexes = new Set<string>();
+  let nodes = 0;
+  let scans = 0;
+  let estimatedRows = 0;
+  const bound = (condition: unknown): boolean => {
+    if (typeof condition !== 'string' || /\\|\bE'/u.test(condition)) return false;
+    const syntax = condition.replace(/'(?:[^']|'')*'/gu, '?');
+    if (/\bOR\b/u.test(syntax)) return false;
+    if (/\bNOT\b/u.test(syntax)) return false;
+    return lookup.equality.every((column) =>
+      new RegExp(`(?:\\b${column}\\b|"${column}")\\s*=`, 'u').test(syntax),
+    );
+  };
+  const walk = (node: PlanNode, depth: number, bitmap = false): void => {
+    if (++nodes > 128 || depth > 32 || typeof node['Node Type'] !== 'string')
+      throw new Refused('sql_plan_unproved', 'sql:plan');
+    if (
+      lookup.actionTypeSeek &&
+      ['Sort', 'Incremental Sort', 'Bitmap Heap Scan'].includes(node['Node Type'])
+    )
+      throw new Refused('sql_selected_scan_refused', 'sql:plan');
+    const relation = node['Relation Name'];
+    if (
+      node['Node Type'].includes('Scan') &&
+      relation === undefined &&
+      !['CTE Scan', 'Bitmap Index Scan'].includes(node['Node Type'])
+    )
+      throw new Refused('sql_selected_scan_refused', 'sql:plan');
+    if (relation !== undefined) {
+      scans += 1;
+      if (relation !== lookup.table || node.Schema !== lookup.schema)
+        throw new Refused('sql_selected_scan_refused', 'sql:plan');
+      const indexed = ['Index Scan', 'Index Only Scan'].includes(node['Node Type']);
+      const heap = node['Node Type'] === 'Bitmap Heap Scan';
+      if (
+        lookup.actionTypeSeek &&
+        (![
+          'max_action_ledger_chat_action_updated_idx',
+          'max_action_ledger_delete_owner_lookup_idx',
+        ].includes(String(node['Index Name'])) ||
+          (lookup.actionTypeSeek === 'next' &&
+            !/\baction_type\s*>/u.test(String(node['Index Cond']))))
+      )
+        throw new Refused('sql_selected_scan_refused', 'sql:plan');
+      if (
+        lookup.table !== '_prisma_migrations' &&
+        ((!indexed && !heap) || !bound(indexed ? node['Index Cond'] : node['Recheck Cond']))
+      )
+        throw new Refused('sql_selected_scan_refused', 'sql:plan');
+      if (
+        lookup.table === '_prisma_migrations' &&
+        !['Seq Scan', 'Index Scan', 'Index Only Scan'].includes(node['Node Type'])
+      )
+        throw new Refused('sql_selected_scan_refused', 'sql:plan');
+    }
+    if (bitmap && node['Node Type'] === 'Bitmap Index Scan' && !bound(node['Index Cond']))
+      throw new Refused('sql_selected_scan_refused', 'sql:plan');
+    if (typeof node['Index Name'] === 'string') indexes.add(node['Index Name']);
+    const children = node.Plans ?? [];
+    if (!Array.isArray(children)) throw new Refused('sql_plan_unproved', 'sql:plan');
+    if (children.length === 0) estimatedRows += Math.ceil(quantity(node['Plan Rows']));
+    for (const child of children) {
+      const nested = object(child);
+      if (!nested) throw new Refused('sql_plan_unproved', 'sql:plan');
+      walk(nested, depth + 1, bitmap || node['Node Type'] === 'Bitmap Heap Scan');
+    }
+  };
+  walk(root, 0);
+  if ((lookup.table !== null && scans !== 1) || (lookup.table === null && scans !== 0))
+    throw new Refused('sql_selected_scan_refused', 'sql:plan');
+  return { indexes: [...indexes].sort(), estimatedRows };
+}
+
 // FLAG: Count executed leaf work and filter/recheck work, including subplan loops.
 // LIMIT, index labels and estimated costs never substitute for measured work.
 export function measureLegacyRecoverySqlPlan(value: unknown): {
@@ -940,6 +1032,7 @@ class Meter {
   constructor(
     readonly tx: Database,
     readonly allowance: Allowance,
+    readonly measured: boolean,
   ) {}
   check(descriptor: string): void {
     if (Date.now() >= this.allowance.deadlineAtMs)
@@ -963,6 +1056,7 @@ class Meter {
   }
   private async performRead<T>(descriptor: string, statement: Prisma.Sql): Promise<T[]> {
     if (this.failed) throw new Refused('sql_inventory_query_failed', descriptor);
+    if (!this.measured) return this.performSelectedRead<T>(descriptor, statement);
     this.check(descriptor);
     if (this.cost.pages + 2 > this.allowance.pages)
       throw new Refused('sql_budget_exceeded', descriptor);
@@ -1030,6 +1124,148 @@ class Meter {
     this.check(descriptor);
     return rows;
   }
+
+  // FLAG: Production cost records returned scalar/metadata rows, database round
+  // trips and serialized replies. Plain planning never proves physical I/O work.
+  private async performSelectedRead<T>(descriptor: string, statement: Prisma.Sql): Promise<T[]> {
+    this.check(descriptor);
+    if (this.cost.pages + 2 > this.allowance.pages)
+      throw new Refused('sql_budget_exceeded', descriptor);
+    const normalized = statement.sql.trim().replace(/\s+/gu, ' ');
+    let lookup: SelectedLookup;
+    if (descriptor === 'sql:snapshot') {
+      lookup = { table: null, schema: null, equality: [], maxReturnedRows: 1 };
+    } else if (descriptor === 'sql:migrations-catalog-proof') {
+      lookup = { table: 'pg_class', schema: 'pg_catalog', equality: ['oid'], maxReturnedRows: 1 };
+    } else if (
+      normalized ===
+      "SELECT finished_at AS at FROM _prisma_migrations WHERE migration_name = '20261005020000_add_multibot_order_fences' AND finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY finished_at DESC LIMIT 1"
+    ) {
+      const catalog = await this.performSelectedRead<{
+        schema: string;
+        name: string;
+        kind: string;
+        totalBytes: string;
+      }>(
+        'sql:migrations-catalog-proof',
+        Prisma.sql`
+        SELECT c.relnamespace::regnamespace::text AS schema, c.relname AS name,
+          c.relkind::text AS kind, pg_catalog.pg_total_relation_size(c.oid)::text AS "totalBytes"
+        FROM pg_catalog.pg_class c WHERE c.oid = pg_catalog.to_regclass('public._prisma_migrations') LIMIT 1`,
+      );
+      const proof = catalog[0];
+      if (
+        catalog.length !== 1 ||
+        proof?.schema !== 'public' ||
+        proof.name !== '_prisma_migrations' ||
+        proof.kind !== 'r' ||
+        !/^\d+$/u.test(proof.totalBytes) ||
+        BigInt(proof.totalBytes) > BigInt(MIGRATION_CATALOG_MAX_BYTES)
+      )
+        throw new Refused('sql_migration_catalog_unproved', descriptor);
+      statement = Prisma.sql`
+        SELECT finished_at AS at FROM public._prisma_migrations
+        WHERE migration_name = '20261005020000_add_multibot_order_fences'
+          AND finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY finished_at DESC LIMIT 1`;
+      lookup = { table: '_prisma_migrations', schema: 'public', equality: [], maxReturnedRows: 1 };
+    } else {
+      const tables = [
+        ...normalized.matchAll(/\bFROM\s+(?:"([a-z_][a-z0-9_]*)"|([a-z_][a-z0-9_]*))/giu),
+      ]
+        .map((match) => match[1] ?? match[2])
+        .filter((table) => !['page', 'sized'].includes(table!));
+      const table = tables[0];
+      if (tables.length !== 1 || !table)
+        throw new Refused('sql_selected_lookup_unproved', descriptor);
+      const equality =
+        table === 'webhook_events'
+          ? [normalized.includes('"semantic_key" =') ? 'semantic_key' : 'id']
+          : table === 'webhook_execution_claims'
+            ? ['kind', 'semantic_key']
+            : table === 'chat_settings'
+              ? ['chat_id']
+              : table === 'max_action_ledger'
+                ? descriptor.startsWith('sql:action-types:')
+                  ? ['chat_id']
+                  : ['chat_id', 'action_type', 'message_id']
+                : table === 'moderation_delete_intents'
+                  ? ['chat_id', 'message_id']
+                  : null;
+      if (!equality) throw new Refused('sql_selected_lookup_unproved', descriptor);
+      lookup = {
+        table,
+        schema: 'public',
+        equality,
+        maxReturnedRows: 1,
+        ...(normalized.startsWith('WITH page AS MATERIALIZED') ? { metadataRows: PAGE_ROWS } : {}),
+        ...(descriptor === 'sql:action-types:first' || descriptor === 'sql:action-types:last'
+          ? { actionTypeSeek: 'first' as const }
+          : descriptor === 'sql:action-types:next'
+            ? { actionTypeSeek: 'next' as const }
+            : {}),
+      };
+    }
+    this.check(descriptor);
+    if (this.cost.pages + 2 > this.allowance.pages)
+      throw new Refused('sql_budget_exceeded', descriptor);
+    const planning = await this.tx.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+      Prisma.sql`EXPLAIN (VERBOSE, FORMAT JSON) ${statement}`,
+    );
+    this.cost.pages += 1;
+    this.cost.probes += 1;
+    const plan = planning[0]?.['QUERY PLAN'];
+    const planBytes = Buffer.byteLength(JSON.stringify(plan) ?? '');
+    this.cost.bytes += planBytes;
+    if (planning.length !== 1 || planBytes > PLAN_BYTES)
+      throw new Refused('sql_plan_reply_oversize', descriptor);
+    let admitted: ReturnType<typeof admitSelectedPlan>;
+    try {
+      admitted = admitSelectedPlan(plan, lookup);
+    } catch (error) {
+      if (error instanceof Refused) throw new Refused(error.code, descriptor);
+      throw error;
+    }
+    this.proofs.push({
+      descriptor: `${descriptor}:bounded-planning`,
+      querySha256: legacyRecoveryLiveDigest({ sql: statement.sql, values: statement.values }),
+      planSha256: legacyRecoveryLiveDigest(plan),
+      indexes: admitted.indexes,
+      returnedRows: 0,
+      examinedRows: admitted.estimatedRows,
+      probes: 0,
+    });
+    this.check(descriptor);
+    const rows = await this.tx.$queryRaw<T[]>(statement);
+    this.cost.pages += 1;
+    this.cost.probes += 1;
+    this.cost.rows += rows.length;
+    this.cost.bytes += Buffer.byteLength(JSON.stringify(rows));
+    if (rows.length > lookup.maxReturnedRows)
+      throw new Refused('sql_selected_reply_unproved', descriptor);
+    if (lookup.metadataRows !== undefined) {
+      for (const row of rows) {
+        const count = object(row)?.count;
+        if (
+          !Number.isSafeInteger(count) ||
+          (count as number) < 0 ||
+          (count as number) > lookup.metadataRows
+        )
+          throw new Refused('sql_selected_reply_unproved', descriptor);
+        this.cost.rows += count as number;
+      }
+    }
+    this.proofs.push({
+      descriptor: `${descriptor}:returned`,
+      querySha256: legacyRecoveryLiveDigest({ sql: statement.sql, values: statement.values }),
+      planSha256: legacyRecoveryLiveDigest({ mode: 'bounded-select', returnedRows: rows.length }),
+      indexes: admitted.indexes,
+      returnedRows: rows.length,
+      examinedRows: 0,
+      probes: 1,
+    });
+    this.check(descriptor);
+    return rows;
+  }
 }
 
 function hydrate(value: unknown): Record<string, unknown> | null {
@@ -1090,7 +1326,7 @@ function candidateReader(meter: Meter): Prisma.TransactionClient {
     },
     maxActionLedgerEntry: {
       findFirst: ({ where }: { where: { chatId: string; messageId: string } }) =>
-        exactIdentity(meter, 'max_action_ledger', where),
+        exactActionIdentity(meter, where),
     },
     chatSettings: {
       findUnique: ({ where }: { where: { chatId: string } }) =>
@@ -1108,13 +1344,62 @@ async function exactIdentity(
   table: string,
   where: { chatId: string; messageId: string },
 ) {
-  const rows = await meter.read<{ id: string }>(
+  const rows = await meter.read<{ present: boolean }>(
     `sql:${table}`,
     Prisma.sql`
-    SELECT left("id", ${SCALAR_BYTES}) AS id FROM ${identifier(table)}
-    WHERE "chat_id" = ${where.chatId} AND "message_id" = ${where.messageId} LIMIT 1`,
+    SELECT TRUE AS present FROM ${identifier(table)}
+    WHERE "chat_id" = ${where.chatId} AND "message_id" = ${where.messageId}
+    LIMIT 1`,
   );
   return rows[0] ?? null;
+}
+
+// FLAG: The ledger index is (chat, action type, message, status). Seek each actual
+// stored type, including unknown historical types, then probe the complete key.
+// A cap refuses recovery instead of treating an unvisited type as absent.
+async function exactActionIdentity(meter: Meter, where: { chatId: string; messageId: string }) {
+  const last = await meter.read<{ actionType: string; oversize: boolean }>(
+    'sql:action-types:last',
+    Prisma.sql`
+    SELECT left("action_type", ${SCALAR_BYTES}) AS "actionType",
+      octet_length("action_type") > ${SCALAR_BYTES} AS oversize
+    FROM "max_action_ledger" WHERE "chat_id" = ${where.chatId}
+    ORDER BY "action_type" DESC, "updated_at" DESC LIMIT 1`,
+  );
+  if (!last.length) return null;
+  if (last.length !== 1 || last[0]!.oversize || typeof last[0]!.actionType !== 'string')
+    throw new Refused('sql_action_types_unproved', 'sql:max_action_ledger');
+  let cursor: string | null = null;
+  for (let index = 0; index <= 32; index += 1) {
+    const types: Array<{ actionType: string; oversize: boolean }> = await meter.read(
+      cursor === null ? 'sql:action-types:first' : 'sql:action-types:next',
+      Prisma.sql`SELECT left("action_type", ${SCALAR_BYTES}) AS "actionType",
+        octet_length("action_type") > ${SCALAR_BYTES} AS oversize
+        FROM "max_action_ledger" WHERE "chat_id" = ${where.chatId}
+        ${cursor === null ? Prisma.empty : Prisma.sql`AND "action_type" > ${cursor}`}
+        ORDER BY "action_type", "updated_at" LIMIT 1`,
+    );
+    if (!types.length) throw new Refused('sql_action_types_unproved', 'sql:max_action_ledger');
+    const type = types[0]!;
+    if (
+      index === 32 ||
+      types.length !== 1 ||
+      type.oversize ||
+      typeof type.actionType !== 'string' ||
+      type.actionType === cursor
+    )
+      throw new Refused('sql_action_types_unproved', 'sql:max_action_ledger');
+    const rows = await meter.read<{ present: boolean }>(
+      'sql:max_action_ledger',
+      Prisma.sql`
+      SELECT TRUE AS present FROM "max_action_ledger" WHERE "chat_id" = ${where.chatId}
+        AND "action_type" = ${type.actionType} AND "message_id" = ${where.messageId} LIMIT 1`,
+    );
+    if (rows.length) return rows[0];
+    if (type.actionType === last[0]!.actionType) return null;
+    cursor = type.actionType;
+  }
+  throw new Refused('sql_action_types_unproved', 'sql:max_action_ledger');
 }
 
 function primaryKeys(table: string): readonly string[] {
@@ -1241,7 +1526,26 @@ export async function inventoryLegacyRecoveryLiveSql(
   request: LegacyRecoveryLiveSqlSelection,
   allowance: Allowance,
 ): Promise<LegacyRecoveryLiveSqlResult> {
-  const meter = new Meter(tx, allowance);
+  return inventoryLegacyRecoverySql(tx, request, allowance, true);
+}
+
+// FLAG: Source closure proves protection of descendants without claiming unrelated
+// SQL history empty. Preserve exact source/claim/mirror checks and all refusal fences.
+export async function inventoryLegacyRecoverySelectedSql(
+  tx: Prisma.TransactionClient,
+  request: LegacyRecoveryLiveSqlSelection,
+  allowance: Allowance,
+): Promise<LegacyRecoveryLiveSqlResult> {
+  return inventoryLegacyRecoverySql(tx, request, allowance, false);
+}
+
+async function inventoryLegacyRecoverySql(
+  tx: Prisma.TransactionClient,
+  request: LegacyRecoveryLiveSqlSelection,
+  allowance: Allowance,
+  exhaustiveCatalog: boolean,
+): Promise<LegacyRecoveryLiveSqlResult> {
+  const meter = new Meter(tx, allowance, exhaustiveCatalog);
   const issues: LegacyRecoveryLiveIssue[] = [];
   const candidates: LegacyRecoveryCandidate[] = [];
   const selectedOwners: LegacyRecoveryLiveOutput['selectedOwners'][number][] = [];
@@ -1269,7 +1573,7 @@ export async function inventoryLegacyRecoveryLiveSql(
       Prisma.sql`
       SELECT current_setting('transaction_read_only') AS "readOnly",
         current_setting('transaction_isolation') AS isolation,
-        (SELECT setting::int FROM pg_settings WHERE name = 'statement_timeout') AS "timeoutMs"`,
+        (extract(epoch FROM current_setting('statement_timeout')::interval) * 1000)::int AS "timeoutMs"`,
     );
     if (
       snapshot[0]?.readOnly !== 'on' ||
@@ -1345,7 +1649,7 @@ export async function inventoryLegacyRecoveryLiveSql(
         cursor = mirrors.at(-1) ?? null;
       }
     }
-    for (const descriptor of descriptors) {
+    for (const descriptor of exhaustiveCatalog ? descriptors : []) {
       // FLAG: Never scan the global receipt/claim history. Candidate inspection above
       // performs every exact owner, EXECUTION and COMMAND projection in this snapshot.
       if (['webhook_events', 'webhook_execution_claims'].includes(descriptor.table)) continue;
@@ -1387,6 +1691,7 @@ export async function inventoryLegacyRecoveryLiveSql(
   await meter.drain();
   const stableDigest = legacyRecoveryLiveDigest({
     selection: request.selection,
+    scope: exhaustiveCatalog ? 'exhaustive-catalog' : 'selected-original-source',
     selectedOwners,
     evidence,
     issues,

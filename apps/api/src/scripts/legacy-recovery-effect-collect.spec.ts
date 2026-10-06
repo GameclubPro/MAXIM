@@ -526,9 +526,9 @@ describe('offline legacy recovery CLI boundary', () => {
     };
     mockCreatePrisma.mockReturnValue(prisma as unknown as PrismaClient);
     mockRedisConstructor.mockImplementation(() => redis as unknown as Redis);
-    jest.spyOn(sqlInventory, 'inventoryLegacyRecoveryLiveSql').mockResolvedValue(sqlFixture());
+    jest.spyOn(sqlInventory, 'inventoryLegacyRecoverySelectedSql').mockResolvedValue(sqlFixture());
     jest
-      .spyOn(redisInventory, 'inventoryLegacyRecoveryLiveRedis')
+      .spyOn(redisInventory, 'inventoryLegacyRecoverySelectedRedis')
       .mockResolvedValue(redisFixture());
     const sink = outputFixture();
     await expect(

@@ -1,5 +1,6 @@
 import {
   inventoryLegacyRecoveryLiveRedis,
+  inventoryLegacyRecoverySelectedRedis,
   type LegacyRecoveryLiveRedisSource,
   type LegacyRecoveryLiveRedisAllowance,
   type LegacyRecoveryLiveSourceResolver,
@@ -498,13 +499,51 @@ describe('same-snapshot SQL source resolver handoff', () => {
       request,
       sources,
       allowance(),
-      jest
-        .fn()
-        .mockResolvedValue({
-          ...resolved(),
-          cost: { pages: 513, rows: 3, probes: 3, bytes: 1024 },
-        }),
+      jest.fn().mockResolvedValue({
+        ...resolved(),
+        cost: { pages: 513, rows: 3, probes: 3, bytes: 1024 },
+      }),
     );
     expect(result.issues.some((row) => row.code === 'REDIS_TOTAL_BUDGET_EXCEEDED')).toBe(true);
   });
+});
+
+it('binds stopped queue generations and selected owners without scanning protected descendant history', async () => {
+  const { redis } = fixture([
+    {
+      queue: 'moderation-default-0',
+      id: 'selected-owner',
+      state: 'paused',
+      data: { webhookEventId: 'selected-owner' },
+    },
+    {
+      queue: 'max-actions-background',
+      id: 'historical',
+      state: 'delayed',
+      data: { opaqueOldParent: 'preserved' },
+    },
+  ]);
+  const result = await inventoryLegacyRecoverySelectedRedis(redis, request, sources, allowance());
+  expect(result.issues).toEqual([]);
+  expect(result.children).toEqual([]);
+  expect(
+    result.proofs.some((proof) => proof.descriptor === 'reviewed-source-continuation-closure'),
+  ).toBe(true);
+  expect(
+    redis.eval_ro.mock.calls.some(([script]) => /legacy-live:(catalog|jobs)/u.test(script)),
+  ).toBe(false);
+});
+
+it('still refuses an unknown parent on the exact selected owner', async () => {
+  const { redis } = fixture([
+    {
+      queue: 'moderation-default-0',
+      id: 'selected-owner',
+      state: 'paused',
+      data: { webhookEventId: 'selected-owner' },
+      fields: { parentKey: 'unknown-parent' },
+    },
+  ]);
+  const result = await inventoryLegacyRecoverySelectedRedis(redis, request, sources, allowance());
+  expect(result.issues.some((issue) => issue.code === 'WEBHOOK_OWNER_ANCESTRY_UNKNOWN')).toBe(true);
 });
