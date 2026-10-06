@@ -1,5 +1,6 @@
 import { holdUnverifiedLegacyExecution } from './webhook-legacy-authority';
 import { settleOperatorDiscardedMirror } from './webhook-operator-discard-mirror';
+import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
 import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import {
@@ -613,7 +614,19 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
         enforced: true,
       };
     }
-    if (await settleOperatorDiscardedMirror(this.prisma, { webhookEventId, update })) {
+    const publisherUpdate = this.isPublisherUpdate(update);
+    const persistedSemanticKey = buildWebhookReceiptSemanticKey(update, this.publisherBotId);
+    // FLAG: Existing shared-key Publisher history needs reviewed cold recovery. Do not
+    // remove a live moderation order anchor or reinterpret historical execution proof.
+    if (publisherUpdate && event.semanticKey !== null && event.semanticKey !== persistedSemanticKey)
+      throw new WebhookPreparationDeferredError(
+        'Publisher receipt semantic namespace requires reviewed recovery',
+        1_000,
+      );
+    if (
+      !publisherUpdate &&
+      (await settleOperatorDiscardedMirror(this.prisma, { webhookEventId, update }))
+    ) {
       return {
         canonical: false,
         prepared: false,
@@ -622,12 +635,18 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
         enforced: true,
       };
     }
-    const persistedSemanticKey = buildWebhookSemanticEventKey(update);
     if (persistedSemanticKey && event.semanticKey !== persistedSemanticKey) {
-      await this.prisma.webhookEvent.updateMany({
+      const semanticBackfill = await this.prisma.webhookEvent.updateMany({
         where: { id: webhookEventId, semanticKey: null },
         data: { semanticKey: persistedSemanticKey },
       });
+      // FLAG: A lost Publisher backfill CAS may leave a shared moderation key. Reload
+      // on retry before observing or marking completion under a different identity.
+      if (publisherUpdate && event.persistedReceipt && semanticBackfill.count !== 1)
+        throw new WebhookPreparationDeferredError(
+          'Publisher receipt semantic backfill changed',
+          1_000,
+        );
     }
     if (!event.executionDeadlineAt) {
       const deadline = buildWebhookExecutionDeadlineAt(update, event.createdAt);
@@ -639,7 +658,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
         event.executionDeadlineAt = deadline;
       }
     }
-    if (this.isPublisherUpdate(update)) {
+    if (publisherUpdate) {
       await this.observePublisherWebhook(update, webhookEventId, false);
       await this.prisma.webhookEvent.updateMany({
         where: {
@@ -1345,7 +1364,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     const data: Prisma.WebhookEventCreateManyInput = {
       id: webhookEventId,
       dedupKey: this.buildWebhookDedupKey(update),
-      semanticKey: buildWebhookSemanticEventKey(update),
+      semanticKey: buildWebhookReceiptSemanticKey(update, this.publisherBotId),
       executionDeadlineAt: buildWebhookExecutionDeadlineAt(update, new Date()),
       ...(update.botId ? { botId: update.botId } : {}),
       sourceIp: sourceIp ?? undefined,
@@ -1503,7 +1522,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
       botId: fallbackUpdate.botId?.trim() || null,
       status: WebhookStatus.RECEIVED,
       normalizedPayload: fallbackUpdate,
-      semanticKey: buildWebhookSemanticEventKey(fallbackUpdate),
+      semanticKey: buildWebhookReceiptSemanticKey(fallbackUpdate, this.publisherBotId),
       executionDeadlineAt: null,
       createdAt: new Date(0),
       errorMessage: null,
