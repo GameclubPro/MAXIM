@@ -506,7 +506,26 @@ export async function previewLegacyRecoveryMaterialization(
             },
             webhookLegacySealedAuthority: { findUnique: async () => authority },
             webhookLegacyRecovery: { findUnique: async () => scope },
-            webhookExecutionClaim: { findMany: readClaims },
+            webhookExecutionClaim: {
+              findMany: async (args: { where: { webhookEventId: string }; take: number }) =>
+                (await readClaims())
+                  .filter((claim) => claim.webhookEventId === args.where.webhookEventId)
+                  .slice(0, args.take),
+              findUnique: async (args: {
+                where: { kind_semanticKey: { kind: string; semanticKey: string } };
+              }) =>
+                (await readClaims()).find(
+                  (claim) =>
+                    claim.kind === args.where.kind_semanticKey.kind &&
+                    claim.semanticKey === args.where.kind_semanticKey.semanticKey,
+                ) ?? null,
+              findFirst: async (args: { where: { kind?: { gt: string } } }) => {
+                const next = (await claimKinds()).find(
+                  (kind) => !args.where.kind || kind > args.where.kind.gt,
+                );
+                return next === undefined ? null : { kind: next };
+              },
+            },
             chatSettings: { findUnique: readSettings },
           } as unknown as Prisma.TransactionClient;
           let outcome: string;

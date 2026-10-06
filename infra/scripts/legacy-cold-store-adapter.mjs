@@ -134,7 +134,7 @@ export function createLegacyColdStoreAdapter({
       const stopped = runtime.readStoppedRuntime();
       const binding = prior?.inventory.binding ?? {
         maintenanceId: bindings.controllerNonce,
-        queueFenceNonce: bindings.controllerNonce,
+        queueFenceNonce: legacyColdDigest(bindings.controllerNonce),
         transitionJournalSha256: legacyColdDigest(journal),
         sourceSha: bindings.targetSha,
         imageId: bindings.targetImageId,

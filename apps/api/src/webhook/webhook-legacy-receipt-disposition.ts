@@ -1,3 +1,4 @@
+import { readLegacyReceiptClaims } from './webhook-legacy-claims';
 import type { MaxUpdate } from '@maxim/contracts';
 import { buildGroupCommandKey } from '../common/group-command-key';
 import { parseAdminForwardedModerationCommand } from '../moderation/admin-forwarded-command.util';
@@ -101,15 +102,8 @@ export async function materializeLegacyReceiptDisposition(
   await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "webhook_execution_claims"
     WHERE "webhook_event_id" = ${event.id} OR ("semantic_key" IN (${event.semanticKey}, ${commandKey}) AND "kind" IN ('EXECUTION', 'COMMAND'))
     ORDER BY "id" FOR UPDATE`);
-  const claims = await tx.webhookExecutionClaim.findMany({
-    where: {
-      OR: [
-        { webhookEventId: event.id },
-        { kind: 'COMMAND', semanticKey: commandKey },
-        ...(event.semanticKey ? [{ semanticKey: event.semanticKey }] : []),
-      ],
-    },
-  });
+  const claims = await readLegacyReceiptClaims(tx, event.id, event.semanticKey, commandKey);
+  if (!claims) return 'BLOCKED_UNKNOWN';
   if (
     claims.some(
       (claim) =>

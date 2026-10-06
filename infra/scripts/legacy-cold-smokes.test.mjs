@@ -4,7 +4,17 @@ import { createLegacyColdSmokes } from './legacy-cold-smokes.mjs';
 
 function fixture() {
   let time = Date.parse('2026-10-06T02:00:00Z');
-  const state = { lag: 0, paused: 0, owner: false, stale: false, nativeFails: false, reads: 0 };
+  const state = {
+    lag: 0,
+    paused: 0,
+    owner: false,
+    stale: false,
+    nativeFails: false,
+    reads: 0,
+    backlog: false,
+    database: true,
+    condition: 'queue_backlog',
+  };
   const smokes = createLegacyColdSmokes({
     bindings: {
       targetSha: 'a'.repeat(40),
@@ -26,14 +36,16 @@ function fixture() {
     fetchImpl: async () => {
       state.reads += 1;
       return {
-        ok: true,
+        ok: !state.backlog,
+        status: state.backlog ? 503 : 200,
         json: async () => ({
-          ok: true,
+          ok: !state.backlog,
+          systemMode: { source: 'auto', condition: state.condition, manualMode: null },
           checks: {
-            database: true,
+            database: state.database,
             redis: true,
             queueLag: {
-              rawOk: true,
+              rawOk: !state.backlog,
               effectiveLagSec: state.lag,
               sampleGeneratedAt: new Date(time - (state.stale ? 60_000 : 0)).toISOString(),
             },
@@ -72,3 +84,21 @@ test('container identity alone cannot replace actual native smokes', async () =>
   h.state.nativeFails = true;
   await assert.rejects(h.smokes.readNativeIdentity(), /native_smokes_unproved/);
 });
+
+test('a different backlog stays visible without stopping a positively sealed fleet', async () => {
+  const h = fixture();
+  Object.assign(h.state, { backlog: true, lag: 40000 });
+  const result = await h.smokes.strictSmokes();
+  assert.equal(result.ingressReady, false);
+  assert.equal(result.adminReady, false);
+  assert.equal(result.dependenciesReady, true);
+  assert.equal(result.queueBacklogOnly, true);
+  assert.equal(result.actionableLagSeconds, 40000);
+  assert.equal(h.state.reads, 6);
+});
+for (const extra of [{ database: false }, { condition: 'action_errors' }, { stale: true }])
+  test(`queue backlog cannot hide another failure ${JSON.stringify(extra)}`, async () => {
+    const h = fixture();
+    Object.assign(h.state, { backlog: true, lag: 40000 }, extra);
+    await assert.rejects(h.smokes.strictSmokes(), /strict_smoke_deadline/);
+  });

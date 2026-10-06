@@ -29,24 +29,33 @@ export function createLegacyColdSmokes({
       redirect: 'error',
       headers: { accept: 'application/json' },
     });
-    if (!response.ok) throw new Error('ready_unproved');
     const body = await response.json();
     const lag = body?.checks?.queueLag;
     const age = now() - Date.parse(lag?.sampleGeneratedAt);
     if (
-      body?.ok !== true ||
-      body.checks.database !== true ||
-      body.checks.redis !== true ||
-      lag.rawOk !== true ||
+      body?.checks?.database !== true ||
+      body?.checks?.redis !== true ||
       !Number.isFinite(lag.effectiveLagSec) ||
       lag.effectiveLagSec < 0 ||
-      lag.effectiveLagSec > 10 ||
       !Number.isFinite(age) ||
       age < -1_000 ||
       age > 15_000
     )
       throw new Error('ready_detail_unproved');
-    return lag.effectiveLagSec;
+    const strictReady =
+      response.ok && body.ok === true && lag.rawOk === true && lag.effectiveLagSec <= 10;
+    // FLAG: A sealed finite scope cannot stop the fleet because another chat is backlogged.
+    // Preserve the true readiness result; only fresh queue-only degradation may keep running.
+    const queueBacklogOnly =
+      response.status === 503 &&
+      body.ok === false &&
+      lag.rawOk === false &&
+      lag.effectiveLagSec > 10 &&
+      body.systemMode?.source === 'auto' &&
+      body.systemMode?.condition === 'queue_backlog' &&
+      body.systemMode?.manualMode === null;
+    if (!strictReady && !queueBacklogOnly) throw new Error('ready_detail_unproved');
+    return { lag: lag.effectiveLagSec, strictReady, queueBacklogOnly };
   };
   return {
     async readNativeIdentity() {
@@ -74,12 +83,14 @@ export function createLegacyColdSmokes({
           if (queues.ownerPresent !== false || queues.pausedCount !== 0 || queues.queueCount !== 24)
             throw new Error('queue_resume_unproved');
           const values = await Promise.all([readReady(3001), readReady(3002)]);
-          lag = Math.max(...values);
+          lag = Math.max(...values.map((value) => value.lag));
           if (++good >= 3)
             return {
               ...base,
-              ingressReady: true,
-              adminReady: true,
+              ingressReady: values[0].strictReady,
+              adminReady: values[1].strictReady,
+              dependenciesReady: true,
+              queueBacklogOnly: values.some((value) => value.queueBacklogOnly),
               queuesResumed: true,
               actionableLagSeconds: lag,
             };

@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
@@ -125,7 +126,13 @@ const execute = (command, args, options = {}) =>
 // FLAG: This controller never creates containers or restores an earlier image.
 // Manual stop plus unless-stopped survives a Docker daemon restart. Startup is
 // limited to the exact captured generations after the caller proves sealed holds.
-export function createLegacyColdRuntime({ bindings, baseline = null, run = execute }) {
+export function createLegacyColdRuntime({
+  bindings,
+  baseline = null,
+  run = execute,
+  now = Date.now,
+  wait = delay,
+}) {
   let captured = baseline;
   const inventory = () => {
     const raw = run('docker', ['ps', '-aq', '--no-trunc']);
@@ -166,7 +173,7 @@ export function createLegacyColdRuntime({ bindings, baseline = null, run = execu
           timeout: 180_000,
         });
     },
-    startBoundRuntime() {
+    async startBoundRuntime() {
       if (!captured) throw new Error('runtime_baseline_missing');
       const stopped = inspectLegacyColdGenerations(inventory(), bindings, captured, true);
       run('docker', ['start', ...stopped.auxiliaries.map((row) => row.containerId)], {
@@ -175,6 +182,25 @@ export function createLegacyColdRuntime({ bindings, baseline = null, run = execu
       run('docker', ['start', ...stopped.services.map((row) => row.containerId)], {
         timeout: 120_000,
       });
+      // FLAG: Docker start precedes the first healthcheck. Attest the same native
+      // generations after bounded startup; a starting probe is not a foreign producer.
+      const deadline = now() + 60_000;
+      for (;;) {
+        const rows = inventory();
+        const native = stopped.auxiliaries.map(({ containerId, imageId }) => {
+          const row = rows.find((value) => value.Id === containerId);
+          if (
+            !row?.State?.Running ||
+            row.Image !== imageId ||
+            !['starting', 'healthy'].includes(row.State.Health?.Status)
+          )
+            throw new Error('native_startup_unproved');
+          return row;
+        });
+        if (native.every((row) => row.State.Health.Status === 'healthy')) break;
+        if (now() >= deadline) throw new Error('native_startup_deadline');
+        await wait(1000);
+      }
     },
     readRuntimeIdentity() {
       if (!captured) throw new Error('runtime_baseline_missing');

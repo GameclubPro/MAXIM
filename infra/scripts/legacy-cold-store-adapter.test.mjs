@@ -41,7 +41,8 @@ function fixture(t) {
     },
     invoke(kind, request) {
       state.calls.push(request.operation);
-      if (kind === 'inventory')
+      if (kind === 'inventory') {
+        assert.equal(request.binding.queueFenceNonce, legacyColdDigest(bindings.controllerNonce));
         return {
           version: 1,
           operation: 'inventory_preview',
@@ -59,6 +60,7 @@ function fixture(t) {
           issues: [],
           cost: { rows: 1, pages: 1, probes: 1, bytes: state.diagnosticCost },
         };
+      }
       if (kind === 'queues')
         return {
           version: 1,

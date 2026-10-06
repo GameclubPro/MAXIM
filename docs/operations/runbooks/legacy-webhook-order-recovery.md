@@ -81,7 +81,8 @@ total budget. It never scans retained claim history for a batch.
 It must report complete source coverage and
 `READY_FOR_COLD_REVIEW` before any producer is stopped. A DENY leaves the runtime
 running and writes private diagnostic evidence. Do not raise budgets to force an
-incomplete inventory through admission.
+incomplete inventory through admission. The inventory fence nonce is the SHA256
+of the host controller nonce, matching the queue owner token encoding.
 
 For a source refusal, `postgres-audit legacy-order-candidates` schema v2 keeps
 the same two indexed first-row probes and adds bounded structure diagnostics for
@@ -129,9 +130,14 @@ removed before independent positive SQL readback. Lost writer output never
 permits replay. Finite indexed materialization then writes positive held receipt
 pointers (200 rows/page, at most 200 pages/120 seconds), with another readback.
 Only complete protection and chat cursors permit starting captured native
-containers, then the 14 captured API containers. Native checks precede queue
-resume. Three fresh strict ready samples with actionable lag at most 10 seconds
-are required to mark the host journal `COMPLETE`.
+containers, then the 14 captured API containers. Wait for the captured native
+healthchecks after Docker start; `starting` is not a changed generation. Native
+checks precede queue resume. Three fresh samples must prove healthy DB/Redis,
+exact runtime identities and released queues. A purely automatic queue-backlog
+failure may remain visible while this positively proved scope completes with
+`fleetReady: false`; it cannot stop unrelated chats. Other failures remain contained.
+Fleet recovery and release finalization still require strict ready and lag at most
+10 seconds; scope completion alone must never be reported as a drained fleet.
 
 Any failure after cold admission attempts to stop the captured runtime first,
 remove its exact client, pause its queues and persist the blocked state. It never

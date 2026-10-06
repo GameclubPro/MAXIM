@@ -148,6 +148,8 @@
 - Read-only monitor keyword scans must discard successful 2xx/3xx access-log lines before matching words such as `error`, `failed`, or `denied` in asset names.
 - Compare completed capacity windows locally with `node infra/scripts/monitor-capacity-report.cjs --from <UTC-ISO> --to <UTC-ISO> [--compare-from <UTC-ISO> --compare-to <UTC-ISO>]`. The report reads only bounded private archive files, makes no network/DB calls, and distinguishes missing coverage from healthy observations. Its percentiles describe sampled oldest-queue lag, not request latency; see `docs/bot-runtime-optimization-plan.md`.
 
+- Cold recovery completes a finite protected scope independently from overall queue drainage. A verified seal, complete receipt cursors, exact fleet/native identity, released queues and fresh healthy DB/Redis may finish with `fleetReady: false` only for automatic queue-backlog degradation. Keep the true HTTP/lag result visible and final release smokes strict; another chat's backlog must not stop the recovered fleet. Wait for native health after starting captured containers before attesting them.
+
 ## Environment And Git Safety
 
 - Production `.env` is dotenv, not shell; values can contain unquoted spaces. Read individual keys or container environment and never print secret values.

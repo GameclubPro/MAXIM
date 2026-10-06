@@ -349,11 +349,15 @@ export async function applyLegacyColdRecovery({
       throw new Error('restarted_identity_unproved');
     await adapters.resumeQueues(bindings);
     const smokes = assertBinding(await adapters.strictSmokes(bindings), bindings, 'strict_smokes');
+    const fleetReady =
+      smokes.ingressReady === true &&
+      smokes.adminReady === true &&
+      smokes.actionableLagSeconds <= 10;
+    // FLAG: Positive seal and cursor proof completes only this selected scope. A different
+    // backlog may remain visible while the verified fleet runs; final release stays strict.
     if (
-      smokes.ingressReady !== true ||
-      smokes.adminReady !== true ||
+      (!fleetReady && !(smokes.dependenciesReady === true && smokes.queueBacklogOnly === true)) ||
       smokes.queuesResumed !== true ||
-      smokes.actionableLagSeconds > 10 ||
       smokes.actionableLagSeconds < 0 ||
       !Number.isFinite(smokes.actionableLagSeconds)
     )
@@ -368,6 +372,7 @@ export async function applyLegacyColdRecovery({
     return {
       version: 1,
       coldRecoveryComplete: true,
+      fleetReady,
       releaseRecorded: false,
       journalDigest: legacyColdDigest(journal),
     };

@@ -75,7 +75,7 @@ for (const [label, mutate] of [
     assert.throws(() => inspectLegacyColdGenerations(stopped, bindings, baseline, true));
   });
 
-test('controller stops and starts only captured IDs, with native services first', () => {
+test('controller stops and starts only captured IDs, with native services first', async () => {
   const rows = legacyColdFleet();
   const calls = [];
   const run = (command, args) => {
@@ -90,14 +90,24 @@ test('controller stops and starts only captured IDs, with native services first'
       assert.ok(row);
       row.State.Running = args[0] === 'start';
       row.State.Status = row.State.Running ? 'running' : 'exited';
+      if (row.State.Health && args[0] === 'start') row.State.Health.Status = 'starting';
     }
     return '';
   };
-  const runtime = createLegacyColdRuntime({ bindings, run });
+  let waited = 0;
+  const runtime = createLegacyColdRuntime({
+    bindings,
+    run,
+    now: () => waited * 1000,
+    wait: async () => {
+      if (++waited === 2) for (const row of rows.slice(14)) row.State.Health.Status = 'healthy';
+    },
+  });
   runtime.inspectRuntime();
   runtime.stopRuntime();
   runtime.readStoppedRuntime();
-  runtime.startBoundRuntime();
+  await runtime.startBoundRuntime();
+  assert.equal(waited, 2);
   assert.equal(runtime.readRuntimeIdentity().exactGenerationCount, 14);
   assert.equal(calls.filter((args) => args[0] === 'stop').length, 1);
   const starts = calls.filter((args) => args[0] === 'start');

@@ -370,3 +370,22 @@ test('preinstall retry retains reviewed evidence and cannot silently replace a c
   assert.equal(h.running(), false);
   assert.equal(h.events.includes('installDispositions'), false);
 });
+
+test('completed scope keeps healthy fleet running while unrelated backlog remains explicit', async (t) => {
+  const h = fixture(t);
+  const preview = await h.prepare();
+  h.overrides.strictSmokes = () => ({
+    ...h.implementations.strictSmokes(),
+    ingressReady: false,
+    adminReady: false,
+    dependenciesReady: true,
+    queueBacklogOnly: true,
+    actionableLagSeconds: 40000,
+  });
+  const result = await h.apply(preview);
+  assert.equal(result.coldRecoveryComplete, true);
+  assert.equal(result.fleetReady, false);
+  assert.equal(result.releaseRecorded, false);
+  assert.equal(h.running(), true);
+  assert.equal(h.store.read().journal.phase, 'COMPLETE');
+});

@@ -19,6 +19,10 @@
 - Refactor guards track real `*.legacy` files. New code imports public facades; only thin facade modules may import legacy implementations.
 - Ingress `SystemModeService` polling and readiness use the lightweight `QueueMetricsService.getLagSnapshot()` path: keep it limited to indexed oldest `RECEIVED`/`QUEUED` reads. Runtime governors and bounded drain probes may use `getOperationalSnapshot()`, which adds fixed BullMQ default-shard/action counters and the bounded dynamic-lease summary to those two indexed reads. Per-bot, JSON, count, action-health, auxiliary-queue, and dynamic full-fleet fanout belong only to the closed dashboard snapshot; health may read that detail from cache but must never refresh it.
 
+- A slow, failed, retrying or quarantined event must not starve unrelated chats, administrator commands or queue shards. Keep SQL/Redis work and ordering waits bounded within the dependent scope, preserve independent admission capacity, and never throttle or stop the whole fleet solely because of oldest queue age. Verify independent progress with a blocked head and backlog.
+- Permanent holds on uncertain automatic effects must permit exact fresh persisted administrator commands under current bot/actor authorization and command authority. Never replay an uncertain original, fabricate completion, or relax automatic-effect holds to unblock a command.
+- Legacy receipt claim lookup uses `readLegacyReceiptClaims`: exact event probes and at most 32 indexed kind-prefix probes preserve unknown-kind semantic aliases. `semantic_key` alone has no leading index; never restore the unqualified semantic `OR` scan over retained claims.
+
 ## Validation And Prisma
 
 - Focused validation: `npm run check:api`, `npm run check:prisma`, or a targeted `npm test --workspace @maxim/api -- <spec-or-pattern>` while iterating.

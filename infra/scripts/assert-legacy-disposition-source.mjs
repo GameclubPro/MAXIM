@@ -49,12 +49,22 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
     'apps/api/src/webhook/webhook-legacy-receipt-disposition.ts',
     [
       'export async function materializeLegacyReceiptDisposition(',
+      'readLegacyReceiptClaims(tx, event.id, event.semanticKey, commandKey)',
       'tx.webhookLegacyReceiptDisposition.create(',
       'legacyDispositionId: proof.id',
       'legacyDispositionReceiptId: event.id',
       "...(scopeKind === 'EXACT_OWNER' ? {} : { status: 'NO_REPLAY_HELD' as const })",
       'parseAdminForwardedModerationCommand(text, settings ?? undefined)',
       "return 'BLOCKED_UNKNOWN'",
+    ],
+  ],
+  [
+    'apps/api/src/webhook/webhook-legacy-claims.ts',
+    [
+      'export async function readLegacyReceiptClaims(',
+      'take: 33',
+      'i <= 32',
+      'kind_semanticKey: { kind: next.kind, semanticKey }',
     ],
   ],
   [
