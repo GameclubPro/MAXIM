@@ -98,3 +98,42 @@ independent work is proven at preparation, not at remote transport acceptance.
 The emergency admission fix preserves configured capacity only for automatic,
 non-manual `queue_backlog` degradation. It preserves raw readiness and unknown
 ordering fences and does not itself abandon any original event.
+
+## Standalone store client
+
+The new `apps/api/src/scripts/legacy-recovery-store.ts` entrypoint emits to
+`apps/api/dist/apps/api/src/scripts/legacy-recovery-store.js`. The previous production
+activation entrypoint remains hard-disabled. This client creates no Nest context,
+workers or MAX client, and grants no restart authority.
+
+One stdin JSON request, at most 64 KiB, contains `version: 1`, `operation`
+(`certificate_create`, `install`, `readback` or `materialize`), `certificateId`, the
+shared inventory `binding` and `selection`, and `expected` hashes for `inventorySha256`,
+`inventoryArtifactSha256` and `previewSha256`. Materialization also supplies
+`page: { chatId, pageSize }` with size 1..200. Owner selection is bounded to 200 IDs and
+Major bot selection to 100. Every supplied generation must be stopped and match the
+same immutable image and source; the complete 16-generation binding is preserved in
+certificate evidence, with 14 API roles projected into the existing SQL attestation.
+
+The host mounts its private reviewed inventory artifact read-only at
+`/run/maxim-legacy-recovery/inventory.json`. The client bounds it to 8 MiB and verifies
+its SHA-256 over exact bytes, including any newline, before opening the database. It
+accepts only `READY_TO_INSTALL` with no issues and exact binding/selection identity.
+Create and install freshly read every exact owner and compare all source/claim hashes
+and the approved installation preview. There is no automatic retry or certificate
+upsert. Materialize executes at most one page and returns its durable cursor.
+
+The host supplies `MAXIM_LEGACY_RECOVERY_OFFLINE=1`,
+`MAXIM_LEGACY_RECOVERY_STORE_PROTOCOL=host-offline-v1`,
+`MAXIM_LEGACY_RECOVERY_STORE_MODE=writer` (or `readback` for that operation),
+`APP_SERVICE_NAME=legacy-recovery-store`, exact `APP_SOURCE_SHA` and
+`MAXIM_LEGACY_RECOVERY_IMAGE_ID`, `TZ=UTC`, and `DATABASE_URL`. These are protocol
+assertions under the host's protected maintenance lock, not independent authorization
+for an arbitrary shell caller. Only the trusted cold host wrapper may launch the client.
+
+The client uses one Prisma connection, UTC, bounded statement/lock/connect timeouts
+and a 45-second total watchdog. Readback uses a separate database session with
+`default_transaction_read_only=on`. After lost output the host must remove the exact
+previous container before launching this read-only reconciliation. The client emits
+only bounded state/count/cursor output with `activationAuthorized: false`; a failed
+operation reports `DENY_OR_UNKNOWN` without source payloads or raw database errors.
