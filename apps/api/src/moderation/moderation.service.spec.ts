@@ -3908,7 +3908,7 @@ describe('ModerationService', () => {
         },
       );
 
-      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(0);
       expect(redisCounter.getString).toHaveBeenCalledTimes(1);
       await jest.advanceTimersByTimeAsync(DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS);
 

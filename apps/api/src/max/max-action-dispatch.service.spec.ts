@@ -7,12 +7,16 @@ import {
   MaxActionNoExecutableRouteError,
   MaxActionRouteQuarantinedError,
 } from './max-action-dispatch.service';
-import { markMaxPreDispatchGuardRejected } from './max-action-pre-dispatch-guard';
+import {
+  markMaxPreDispatchGuardRejected,
+  wasMaxPreDispatchGuardRejected,
+} from './max-action-pre-dispatch-guard';
 import {
   MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
   MAX_SEND_AUTO_DELETE_MARKER_VERSION,
   MaxApiCircuitOpenError,
   type MaxActionJob,
+  type MaxActionLedgerContext,
 } from './max-client.service';
 import type { RecordManagedEntityAccessLostFromErrorResult } from './managed-entity-access-loss.service';
 import {
@@ -59,7 +63,285 @@ function createSendAutoDeleteJob(): MaxActionJob {
   } as MaxActionJob;
 }
 
+function createLegacyHoldFixture() {
+  const holds = {
+    isMessageHeld: jest.fn().mockResolvedValue(false),
+    isMemberHeld: jest.fn().mockResolvedValue(false),
+    isGlobalUserHeld: jest.fn().mockResolvedValue(false),
+    isLegacyChatSendHeld: jest.fn().mockResolvedValue(false),
+    isOutboundJobHeld: jest.fn().mockResolvedValue(false),
+  };
+  const effect = jest.fn();
+  const max = {
+    executeActionJob: jest.fn(
+      async (
+        job: MaxActionJob,
+        options?: {
+          beforeSendMutation?: () => Promise<void>;
+          beforeDeleteMutation?: () => Promise<void>;
+          beforeMemberMutation?: () => Promise<void>;
+        },
+      ) => {
+        const guard =
+          job.actionType === 'SEND_MESSAGE'
+            ? options?.beforeSendMutation
+            : job.actionType === 'DELETE_MESSAGE'
+              ? options?.beforeDeleteMutation
+              : options?.beforeMemberMutation;
+        await guard?.();
+        effect();
+      },
+    ),
+  };
+  const ledger = {
+    getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+    assertCanExecute: jest.fn().mockResolvedValue(undefined),
+    recordStarted: jest.fn().mockResolvedValue(undefined),
+    recordPrepared: jest.fn().mockResolvedValue(undefined),
+    recordSucceeded: jest.fn().mockResolvedValue(undefined),
+    recordFailed: jest.fn(async (_job: MaxActionJob, _error: unknown) => {}),
+  };
+  const service = new MaxActionDispatchService(
+    max as never,
+    undefined,
+    ledger as never,
+    undefined,
+    undefined,
+    holds as never,
+  );
+  const job: MaxActionJob = {
+    actionType: 'SEND_MESSAGE',
+    chatId: 'held-chat',
+    text: 'Fixture publication',
+    botId: 'fixture-bot',
+    attempt: 1,
+    idempotencyKey: 'fixture-outbound',
+    createdAt: new Date().toISOString(),
+  };
+  return { holds, effect, max, ledger, service, job };
+}
+
 describe('MaxActionDispatchService', () => {
+  it.each(['SEND_MESSAGE', 'DELETE_MESSAGE', 'BAN_MEMBER', 'KICK_MEMBER'] as const)(
+    'denies an exact permanently held %s job before preparing another attempt',
+    async (actionType) => {
+      const f = createLegacyHoldFixture();
+      f.holds.isOutboundJobHeld.mockResolvedValue(true);
+      await expect(
+        f.service.execute({
+          ...f.job,
+          actionType,
+          messageId: 'source-message',
+          userId: 'source-user',
+        }),
+      ).rejects.toMatchObject({ code: 'webhook_legacy_effect_held' });
+      expect(f.ledger.recordStarted).not.toHaveBeenCalled();
+      expect(f.max.executeActionJob).not.toHaveBeenCalled();
+      expect(f.effect).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['SEND_MESSAGE', 'DELETE_MESSAGE', 'BAN_MEMBER', 'KICK_MEMBER'] as const)(
+    'rechecks a new permanent %s hold after asynchronous preparation at the mutation boundary',
+    async (actionType) => {
+      const f = createLegacyHoldFixture();
+      await expect(
+        f.service.execute(
+          { ...f.job, actionType, messageId: 'source-message', userId: 'source-user' },
+          {
+            onDispatchAttempt: async () => {
+              f.holds.isOutboundJobHeld.mockResolvedValue(true);
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ code: 'webhook_legacy_effect_held' });
+      expect(f.ledger.recordStarted).toHaveBeenCalledTimes(1);
+      expect(f.max.executeActionJob).toHaveBeenCalledTimes(1);
+      expect(f.effect).not.toHaveBeenCalled();
+      expect(f.ledger.recordSucceeded).not.toHaveBeenCalled();
+      const rejection = f.ledger.recordFailed.mock.calls[0]?.[1];
+      expect(wasMaxPreDispatchGuardRejected(rejection)).toBe(true);
+    },
+  );
+
+  it('denies an unbound send from a held pre-certificate chat', async () => {
+    const f = createLegacyHoldFixture();
+    f.holds.isLegacyChatSendHeld.mockResolvedValue(true);
+    await expect(f.service.execute(f.job)).rejects.toMatchObject({
+      code: 'webhook_legacy_effect_held',
+    });
+    expect(f.effect).not.toHaveBeenCalled();
+    expect(f.ledger.recordStarted).not.toHaveBeenCalled();
+  });
+
+  it.each(
+    (
+      [
+        'moderationSource',
+        'moderationRuleNotice',
+        'requiredSubscriptionNotice',
+        'duplicateNotice',
+      ] as const
+    ).flatMap((contextKey) =>
+      (['isMessageHeld', 'isMemberHeld', 'isGlobalUserHeld'] as const).map((holdMethod) => ({
+        contextKey,
+        holdMethod,
+      })),
+    ),
+  )(
+    'denies a new $contextKey send using its original $holdMethod source',
+    async ({ contextKey, holdMethod }) => {
+      const f = createLegacyHoldFixture();
+      f.holds[holdMethod].mockResolvedValue(true);
+      const source: MaxActionLedgerContext[string] =
+        contextKey === 'duplicateNotice'
+          ? {
+              version: 3,
+              chatId: 'source-chat',
+              binding: { messageId: 'source-message', senderId: 'source-user' },
+            }
+          : {
+              version: 1,
+              chatId: 'source-chat',
+              messageId: 'source-message',
+              userId: 'source-user',
+            };
+      await expect(
+        f.service.execute({
+          ...f.job,
+          idempotencyKey: 'new-notice-from-another-bot',
+          botId: 'surviving-bot',
+          ledgerContext: { [contextKey]: source },
+        }),
+      ).rejects.toMatchObject({ code: 'webhook_legacy_effect_held' });
+      expect(f.holds[holdMethod]).toHaveBeenCalledWith(
+        ...(holdMethod === 'isMessageHeld'
+          ? ['source-chat', 'source-message', undefined]
+          : holdMethod === 'isMemberHeld'
+            ? ['source-chat', 'source-user', undefined]
+            : ['source-user', undefined]),
+      );
+      expect(f.max.executeActionJob).not.toHaveBeenCalled();
+      expect(f.ledger.recordStarted).not.toHaveBeenCalled();
+      expect(f.effect).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rechecks the attributed source introduced during send preparation', async () => {
+    const f = createLegacyHoldFixture();
+    f.holds.isMessageHeld.mockResolvedValue(true);
+    const beforeSendMutation = jest.fn();
+    await expect(
+      f.service.execute(f.job, {
+        prepareAttempt: async () => ({
+          ledgerContext: {
+            moderationSource: {
+              version: 1,
+              chatId: 'source-chat',
+              messageId: 'source-message',
+              userId: 'source-user',
+            },
+          },
+        }),
+        beforeSendMutation,
+      }),
+    ).rejects.toMatchObject({ code: 'webhook_legacy_effect_held' });
+    expect(f.ledger.recordPrepared).toHaveBeenCalledTimes(1);
+    expect(f.ledger.recordSucceeded).not.toHaveBeenCalled();
+    expect(beforeSendMutation).not.toHaveBeenCalled();
+    expect(f.effect).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when an authoritative hold lookup is unavailable', async () => {
+    const f = createLegacyHoldFixture();
+    const failure = new Error('Fixture authoritative legacy hold lookup failed');
+    f.holds.isOutboundJobHeld.mockRejectedValue(failure);
+    await expect(f.service.execute(f.job)).rejects.toBe(failure);
+    expect(f.max.executeActionJob).not.toHaveBeenCalled();
+    expect(f.ledger.recordStarted).not.toHaveBeenCalled();
+  });
+
+  it('does not manufacture live unban authority from the shared hold or send guards', async () => {
+    const f = createLegacyHoldFixture();
+    const beforeSendMutation = jest.fn();
+    f.max.executeActionJob.mockImplementation(async (_job, options) => {
+      if (!options?.beforeMemberMutation) {
+        throw new Error('TRY_UNBAN_MEMBER requires a live guard');
+      }
+      f.effect();
+    });
+    await expect(
+      f.service.execute(
+        { ...f.job, actionType: 'TRY_UNBAN_MEMBER', userId: 'source-user' },
+        { beforeSendMutation },
+      ),
+    ).rejects.toThrow('TRY_UNBAN_MEMBER requires a live guard');
+    expect(f.max.executeActionJob).toHaveBeenCalledTimes(1);
+    expect(f.max.executeActionJob).toHaveBeenCalledWith(
+      expect.objectContaining({ actionType: 'TRY_UNBAN_MEMBER', userId: 'source-user' }),
+    );
+    expect(beforeSendMutation).not.toHaveBeenCalled();
+    expect(f.effect).not.toHaveBeenCalled();
+    expect(f.ledger.recordSucceeded).not.toHaveBeenCalled();
+  });
+
+  it('settles an exact confirmed send before consulting permanent holds', async () => {
+    const f = createLegacyHoldFixture();
+    f.ledger.getCompletedSendDispatchResult.mockResolvedValue({
+      remoteMessageId: 'confirmed-send',
+      dispatchBotId: 'original-bot',
+      completedAt: new Date(),
+    });
+    f.holds.isOutboundJobHeld.mockResolvedValue(true);
+    await expect(f.service.execute(f.job)).resolves.toMatchObject({
+      messageId: 'confirmed-send',
+      botId: 'original-bot',
+    });
+    expect(f.holds.isOutboundJobHeld).not.toHaveBeenCalled();
+    expect(f.ledger.recordStarted).not.toHaveBeenCalled();
+    expect(f.effect).not.toHaveBeenCalled();
+  });
+
+  it('settles a send receipt committed during a competing permanent-hold lookup', async () => {
+    const f = createLegacyHoldFixture();
+    f.holds.isOutboundJobHeld.mockImplementation(async () => {
+      f.ledger.getCompletedSendDispatchResult.mockResolvedValue({
+        remoteMessageId: 'late-confirmed-send',
+        dispatchBotId: 'original-bot',
+        completedAt: new Date(),
+      });
+      return true;
+    });
+    await expect(f.service.execute(f.job)).resolves.toMatchObject({
+      messageId: 'late-confirmed-send',
+      botId: 'original-bot',
+    });
+    expect(f.ledger.recordStarted).not.toHaveBeenCalled();
+    expect(f.ledger.recordSucceeded).not.toHaveBeenCalled();
+    expect(f.effect).not.toHaveBeenCalled();
+  });
+
+  it('checks shared holds before the caller final feature guard', async () => {
+    const f = createLegacyHoldFixture();
+    const order: string[] = [];
+    f.holds.isOutboundJobHeld.mockImplementation(async () => {
+      order.push('hold');
+      return false;
+    });
+    f.effect.mockImplementation(() => {
+      order.push('effect');
+    });
+    await f.service.execute(f.job, {
+      onDispatchAttempt: async () => {
+        order.length = 0;
+      },
+      beforeSendMutation: async () => {
+        order.push('feature');
+      },
+    });
+    expect(order).toEqual(['hold', 'feature', 'effect']);
+  });
+
   it.each([1, 4, 9, 3, 6, 12])(
     'rechecks a definite capability rejection across %i bots and chooses the last eligible reserve',
     async (count) => {

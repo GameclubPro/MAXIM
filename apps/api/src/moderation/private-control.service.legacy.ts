@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import * as settingsRenderer from './private-control-settings-renderer';
+import * as legacyHoldAdvisory from './private-control-legacy-hold-advisory';
 import {
   buildPrivateCallbackButton,
   buildPrivateCallbackPayload,
@@ -72,6 +73,7 @@ import {
 } from '../max/max-client.service';
 import { normalizeMaxInlineKeyboardButtons } from '../max/max-inline-keyboard-layout';
 import { PrismaService } from '../prisma/prisma.service';
+import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
 import {
   extractIncomingFormattedText,
   extractIncomingFormattedTextPayload,
@@ -288,6 +290,7 @@ export class PrivateControlService {
   private readonly privateDialogSendTimeoutMs: number;
   private readonly privateControlMediaUploader: PrivateControlMediaAttachmentUploader;
   private readonly sessionStore: PrivateControlSessionStore;
+  private readonly describeChatHolds: ReturnType<typeof legacyHoldAdvisory.create>;
   private readonly sessionBotContext = new PrivateControlSessionBotContext();
   private readonly launcherIntroSeenUsers = new Set<string>();
   private readonly activeBroadcastPublishes = new Set<string>();
@@ -311,7 +314,9 @@ export class PrivateControlService {
     @Optional() private readonly prisma?: PrismaService,
     @Optional()
     private readonly karavanStorefrontAllowlistService?: KaravanStorefrontAllowlistService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
+    this.describeChatHolds = legacyHoldAdvisory.create(this.adminService, this.legacyHolds);
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
     this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
     this.publisherBotId =
@@ -8778,19 +8783,13 @@ export class PrivateControlService {
     context: PrivateContext,
     session: PrivateSession,
     focus?: string | null,
-    config?: {
-      title?: string;
-      description?: string;
-      buttonText?: string;
-    },
+    config?: legacyHoldAdvisory.PrivateSettingsHandoffConfig,
   ): Promise<PrivateView> {
     const entityType = session.selectedEntityType ?? 'chat';
     const chatId = session.selectedChatId ?? context.chatId;
     return this.renderMiniappMovedScreen(context, session, {
       title: config?.title ?? 'Настройки перенесены в mini app',
-      description:
-        config?.description ??
-        'Основные настройки и rich-сценарии больше не управляются inline-кнопками в боте.',
+      description: await this.describeChatHolds(context.actor.userId, session, config?.description),
       buttonText: config?.buttonText ?? '📱 Открыть в приложении',
       miniappRoute: this.buildEntitySettingsHandoffMiniappRoute(chatId, entityType, focus),
       miniappUrl: this.buildEntitySettingsHandoffMiniappUrl(chatId, entityType, focus),

@@ -545,6 +545,80 @@ function readSpammerL1State(service: GlobalSpammerIntelligenceService) {
 }
 
 describe('GlobalSpammerIntelligenceService', () => {
+  describe('permanent legacy global-user hold', () => {
+    function fixture() {
+      const { prisma } = createPrismaMock();
+      const isGlobalUserHeld = jest.fn().mockResolvedValue(true);
+      const service = new GlobalSpammerIntelligenceService(
+        prisma as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { isGlobalUserHeld } as never,
+      );
+      return { prisma, service, isGlobalUserHeld };
+    }
+
+    it('denies old reputation before any cached policy or new observation', async () => {
+      const { prisma, service } = fixture();
+      const result = await service.evaluatePolicy({
+        userId: 'held-user',
+        chatId: 'other-chat',
+        trigger: 'message',
+        deleteSpammersEnabled: true,
+      });
+      expect(result).toMatchObject({ action: 'NONE', reason: 'LEGACY_USER_EFFECT_HELD' });
+      await service.recordObservation({
+        userId: 'held-user',
+        chatId: 'original-chat',
+        source: 'SANCTION_BAN',
+        score: 1,
+        reason: 'Legacy unconfirmed BAN',
+      });
+      expect(prisma.globalSpammer.findUnique).not.toHaveBeenCalled();
+      expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+      expect(prisma.spammerObservation.upsert).not.toHaveBeenCalled();
+    });
+
+    it('denies an already stored denormalization job without rewriting its evidence/profile', async () => {
+      const { prisma, service } = fixture();
+      await service.processObservationDenormJob({
+        userId: 'held-user',
+        chatId: 'original-chat',
+        observationId: 'old-observation',
+        source: 'SANCTION_BAN',
+        reason: 'Legacy',
+      } as never);
+      expect(prisma.globalSpammer.findUnique).not.toHaveBeenCalled();
+      expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+      expect(prisma.globalSpammerRuntimeProfile.upsert).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when durable hold storage is unavailable', async () => {
+      const { prisma, service, isGlobalUserHeld } = fixture();
+      isGlobalUserHeld.mockRejectedValue(new Error('Hold store unavailable'));
+      await expect(
+        service.evaluatePolicy({
+          userId: 'held-user',
+          chatId: 'other-chat',
+          trigger: 'message',
+          deleteSpammersEnabled: true,
+        }),
+      ).rejects.toThrow('Hold store unavailable');
+      await expect(
+        service.recordObservation({
+          userId: 'held-user',
+          source: 'SANCTION_BAN',
+          score: 1,
+          reason: 'Legacy',
+        }),
+      ).rejects.toThrow('Hold store unavailable');
+      expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+    });
+  });
+
   describe('bounded runtime profile L1 lifecycle', () => {
     beforeEach(() => {
       jest.useFakeTimers().setSystemTime(new Date('2026-10-01T13:00:00.000Z'));

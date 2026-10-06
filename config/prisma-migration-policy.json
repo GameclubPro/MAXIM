@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261005103000_index_member_unban_attempt_fence",
-  "baselineNamesSha256": "f50aafd694c941e9c2730f0ab261111f86a14d06bb5d9b0425a798b7644b9233",
-  "baselineContentsSha256": "dcbb0a471d6ef73f6b9301e2f54a9bad8577f8cd7ffca30dbb2891d1a619387f",
+  "baselineThrough": "20261006002000_assert_legacy_certificate_identity",
+  "baselineNamesSha256": "ee9c10801c2c5b43399d34bd7883d9b6ee1c4a81738d504abbac94e5dce09d60",
+  "baselineContentsSha256": "f5d90629d2fa06d73e0039f55f12c41cb4d4ec37078f1a2138eb3bc11bd91ee1",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -163,6 +163,9 @@
     },
     "20261005102000_add_moderation_rule_followup_outbox": {
       "reason": "All indexes are created on the new empty follow-up outbox. No authority is backfilled and no existing history or schema is rewritten; the foreign key preserves the original DELETE journal and runtime cleanup pins unfinished and unknown effects."
+    },
+    "20261005110000_add_webhook_legacy_dispositions": {
+      "reason": "All indexes are created only on three new empty permanent safety tables. No existing history is scanned, backfilled or indexed, and runtime cannot create a recovery disposition."
     }
   }
 }

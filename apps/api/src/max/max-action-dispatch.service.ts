@@ -8,7 +8,17 @@ import {
   MaxActionRouteQuarantinedError,
 } from './max-action-dispatch-error';
 import { MaxActionLedgerService } from './max-action-ledger.service';
-import { wasMaxPreDispatchGuardRejected } from './max-action-pre-dispatch-guard';
+import {
+  markMaxPreDispatchGuardRejected,
+  MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  wasMaxPreDispatchGuardRejected,
+} from './max-action-pre-dispatch-guard';
+import {
+  assertLegacyActionAllowed,
+  WebhookLegacyHoldService,
+} from '../webhook/webhook-legacy-hold.service';
 import { MaxBotLinkService, type MaxBotRouteRequest } from './max-bot-link.service';
 import {
   isMaxApiCircuitOpenError,
@@ -96,6 +106,7 @@ export class MaxActionDispatchService {
     @Optional()
     private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() configService?: ConfigService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     this.routedMutationsMode = normalizeMaxRoutedMutationMode(
       configService?.get('MAX_ROUTED_MUTATIONS_MODE'),
@@ -160,6 +171,17 @@ export class MaxActionDispatchService {
     const completedSend = await this.recoverCompletedSend(job);
     if (completedSend) {
       return completedSend;
+    }
+    if (this.legacyHolds) {
+      try {
+        await assertLegacyActionAllowed(this.legacyHolds, job);
+      } catch (error) {
+        // FLAG: An exact positive receipt wins a concurrent hold lookup. This path only
+        // settles the saved send; it never lends its identity to another HTTP attempt.
+        const recovered = await this.recoverCompletedSend(job);
+        if (recovered) return recovered;
+        throw error;
+      }
     }
     await this.actionLedgerService?.assertCanExecute?.(job);
     const routedMutationEnforced = this.shouldEnforceRoutedFailover(job);
@@ -310,15 +332,38 @@ export class MaxActionDispatchService {
           job: attemptJob,
         });
         dispatchAttemptStartedAt = new Date();
-        const executionResult = options.beforeSendMutation
-          ? await this.maxClient.executeActionJob(attemptJob, {
-              beforeSendMutation: async () => {
-                await options.beforeSendMutation!({
-                  botId: candidateBotId ?? null,
-                  job: attemptJob,
-                });
-              },
-            })
+        let executionOptions: Parameters<MaxClientService['executeActionJob']>[1] = undefined;
+        // FLAG: A permanent-hold check cannot supply the live caller authority needed to unban.
+        if (this.legacyHolds && attemptJob.actionType === 'DELETE_MESSAGE') {
+          executionOptions = {
+            beforeDeleteMutation: () => this.assertLegacyEffectsAllowed(attemptJob),
+          };
+        } else if (
+          this.legacyHolds &&
+          attemptJob.actionType !== 'SEND_MESSAGE' &&
+          attemptJob.actionType !== 'TRY_UNBAN_MEMBER'
+        ) {
+          executionOptions = {
+            beforeMemberMutation: () => this.assertLegacyEffectsAllowed(attemptJob),
+          };
+        } else if (
+          attemptJob.actionType === 'SEND_MESSAGE' &&
+          (this.legacyHolds || options.beforeSendMutation)
+        ) {
+          executionOptions = {
+            beforeSendMutation: async () => {
+              // FLAG: Shared holds precede the feature's final deadline/authority guard.
+              // An unchanged route or prepared body cannot waive a permanent disposition.
+              await this.assertLegacyEffectsAllowed(attemptJob);
+              await options.beforeSendMutation?.({
+                botId: candidateBotId ?? null,
+                job: attemptJob,
+              });
+            },
+          };
+        }
+        const executionResult = executionOptions
+          ? await this.maxClient.executeActionJob(attemptJob, executionOptions)
           : await this.maxClient.executeActionJob(attemptJob);
         const recoveredSendDispatch = executionResult?.recoveredSendDispatch;
         if (!recoveredSendDispatch) {
@@ -511,6 +556,23 @@ export class MaxActionDispatchService {
       terminalError,
     );
     throw terminalError;
+  }
+
+  private async assertLegacyEffectsAllowed(job: MaxActionJob): Promise<void> {
+    if (!this.legacyHolds) return;
+    try {
+      await assertLegacyActionAllowed(this.legacyHolds, job);
+    } catch (error) {
+      // FLAG: Preserve denial for the client's exact SEND receipt recovery. Turning
+      // a saved receipt into permission would still run the caller's new-effect guard.
+      const code =
+        job.actionType === 'SEND_MESSAGE'
+          ? MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE
+          : job.actionType === 'DELETE_MESSAGE'
+            ? MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE
+            : MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE;
+      throw markMaxPreDispatchGuardRejected(error, code);
+    }
   }
 
   private async resolveExecutionCandidateBotIds(

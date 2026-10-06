@@ -52,6 +52,7 @@ import { WebhookParser } from './webhook.parser';
 import { WebhookRoutingService } from './webhook-routing.service';
 import { ALL_WEBHOOK_QUEUE_NAMES, DEFAULT_WEBHOOK_QUEUE_NAMES } from './webhook-queues';
 import { getDefaultWebhookWorkerGroupQueues } from '../runtime/moderation-runtime';
+import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
 import { GroupCommandAuthorityService } from '../common/group-command-authority.service';
 
 export type MultibotHarnessOptions = {
@@ -162,7 +163,8 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   const context = new MaxBotContextService();
   const counters = new RedisCounterService(config);
   const health = new ActionHealthService(config);
-  const ledger = new MaxActionLedgerService(prisma as never);
+  const legacyHolds = new WebhookLegacyHoldService(prisma as never);
+  const ledger = new MaxActionLedgerService(prisma as never, legacyHolds);
   const links = new MaxBotLinkService(
     prisma as never,
     registry as never,
@@ -258,7 +260,9 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
             };
           else if (method === 'get' && path.endsWith('/members'))
             data = {
-              members: String(request.params?.user_ids ?? 'fixture-user')
+              members: String(
+                request.params?.user_ids ?? url.searchParams.get('user_ids') ?? 'fixture-user',
+              )
                 .split(',')
                 .map((id) =>
                   member(
@@ -353,9 +357,15 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       config,
     ),
     new MaxDuplicateNoticeGuardService({ get: () => duplicateGuard } as never),
+    legacyHolds,
   );
   const readiness = new MaxExecutionOwnerReadinessService(links, max, counters);
-  const canonical = new WebhookCanonicalExecutionService(prisma as never, readiness);
+  const canonical = new WebhookCanonicalExecutionService(
+    prisma as never,
+    readiness,
+    undefined,
+    legacyHolds,
+  );
   const cache = new ChatContextCacheService(prisma as never, config, links);
   const immunity = new ParticipantModerationImmunityService(prisma as never);
   const policy = new MessageDuplicatePolicyService(counters, config);
@@ -391,6 +401,9 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     config,
     registry as never,
     counters,
+    undefined,
+    undefined,
+    legacyHolds,
   );
   const sanctionFence = new ModerationSanctionStateFenceService(prisma as never);
   const stateGuard = new ModerationStateDeleteGuardService(
@@ -401,6 +414,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     sanctionFence,
     globalPolicy,
     config,
+    legacyHolds,
   );
   const membership = new MaxMembershipLookupService(max, config, links, registry as never);
   const subscriptionGuard = new RequiredSubscriptionExecutionGuardService(
@@ -450,6 +464,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     closedGuard,
     stateGuard,
     subscriptionGuard,
+    legacyHolds,
   );
   const duplicateService = new MessageDuplicateService(
     policy,
@@ -473,11 +488,18 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     links,
     context,
   );
-  const ruleFollowups = new ModerationRuleFollowupService(prisma as never, sanctionGuard, links, {
-    get: () => moderation,
-  } as never);
-  const groupCommands = new GroupCommandAuthorityService(prisma as never);
+  const ruleFollowups = new ModerationRuleFollowupService(
+    prisma as never,
+    sanctionGuard,
+    links,
+    {
+      get: () => moderation,
+    } as never,
+    legacyHolds,
+  );
+  const groupCommands = new GroupCommandAuthorityService(prisma as never, legacyHolds);
   Object.assign(moderation, {
+    legacyHolds,
     injectedWebhookCanonicalExecutionService: canonical,
     moderationDeleteIntentService: intents,
     moderationRuleFollowupService: ruleFollowups,
@@ -494,7 +516,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   });
   Object.assign(moderation, { injectedExecutionOwnerReadiness: readiness });
   const ingress = new WebhookService(prisma as never, config, links);
-  Object.assign(ingress, { executionOwnerReadiness: readiness, maxClient: max });
+  Object.assign(ingress, { executionOwnerReadiness: readiness, maxClient: max, legacyHolds });
   const routing = new WebhookRoutingService(
     prisma as never,
     {
@@ -541,6 +563,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     queue as never,
     queue as never,
     {} as never,
+    legacyHolds,
   );
   Object.assign(outbox, {
     queuesByName: Object.fromEntries(ALL_WEBHOOK_QUEUE_NAMES.map((name) => [name, queue])),
@@ -829,6 +852,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
 
   return {
     prisma,
+    legacyHolds,
     redis,
     bots,
     config,

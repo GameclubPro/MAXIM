@@ -3,7 +3,8 @@ import {
   resolveMessageLimitsRuleEscalation,
 } from './moderation-rule-escalation';
 import { RuntimeWorkerOwner, type RuntimeWorker } from '../runtime/runtime-worker-shutdown';
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
 import { ModuleRef } from '@nestjs/core';
 import { randomUUID } from 'node:crypto';
 import {
@@ -54,6 +55,7 @@ export class ModerationRuleFollowupService
     private readonly guard: ModerationRuleSanctionGuardService,
     private readonly bots: MaxBotLinkService,
     private readonly moduleRef: ModuleRef,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     super();
   }
@@ -292,6 +294,13 @@ export class ModerationRuleFollowupService
     journal: RuleFollowupSanctionJournal,
   ): Promise<ModerationRuleFollowupPlan | null> {
     if (row.actionPlan) return readPlan(row.actionPlan, row);
+    // FLAG: A fresh decision must not spend immunity or access quota before the
+    // transaction's durable hold recheck. Existing plans retain receipt recovery.
+    if (
+      (await this.legacyHolds?.isMessageHeld(row.chatId, row.messageId)) ||
+      (await this.legacyHolds?.isMemberHeld(row.chatId, row.userId))
+    )
+      return null;
     const envelope = readRuleFollowupEnvelope(row.envelope)!;
     const route = await this.bots.resolveBotRoute({ purpose: 'member_access', chatId: row.chatId });
     if (!route.botId) throw new Error('Rule follow-up has no currently capable read route');
@@ -328,6 +337,13 @@ export class ModerationRuleFollowupService
       )
         throw new Error('Rule follow-up plan lease lost');
       if (own.actionPlan) return readPlan(own.actionPlan, own);
+      // FLAG: An existing plan may settle exact receipts; a new plan/strike must
+      // never consume legacy participant evidence while its durable hold remains.
+      if (
+        (await this.legacyHolds?.isMessageHeld(row.chatId, row.messageId, tx)) ||
+        (await this.legacyHolds?.isMemberHeld(row.chatId, row.userId, tx))
+      )
+        return null;
       await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "chats" WHERE "id" = ${row.chatId} FOR SHARE`);
       await tx.$queryRaw(
         Prisma.sql`SELECT "chat_id" FROM "chat_settings" WHERE "chat_id" = ${row.chatId} FOR SHARE`,

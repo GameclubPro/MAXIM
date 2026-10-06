@@ -4,6 +4,17 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
+# FLAG: Refuse quarantined recovery arguments locally before loading credentials,
+# invoking GitHub/SSH, or beginning any production transition. No env override exists.
+for argument in "$@"; do
+  case "$argument" in
+    --legacy-order-preview|--legacy-order-preview=*|--legacy-order-apply|--legacy-order-apply=*)
+      echo "Legacy cold recovery activation is disabled (cold_activation_disabled)." >&2
+      exit 2
+      ;;
+  esac
+done
+
 # shellcheck source=infra/scripts/lib/deploy-git-transport.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-git-transport.sh"
 
@@ -51,6 +62,7 @@ Commands:
   monitor-readonly [duration-sec] [interval-sec]
                               Sample health, ps, restarts, public app, and error logs
   postgres-audit [queue|activity|duplicate|publication-schema|storage|all]
+  postgres-audit legacy-order-candidates
   postgres-audit duplicate [--explain]
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
@@ -339,16 +351,16 @@ postgres_audit() {
   fi
 
   if [[ $# -gt 1 ]]; then
-    echo "Usage: $0 postgres-audit [queue|activity|duplicate|publication-schema|storage|all]" >&2
+    echo "Usage: $0 postgres-audit [queue|activity|duplicate|publication-schema|storage|legacy-order-candidates|all]" >&2
     exit 2
   fi
 
   case "$mode" in
-    queue|activity|duplicate|publication-schema|all)
+    queue|activity|duplicate|publication-schema|legacy-order-candidates|all)
       ;;
     *)
       echo "Unknown PostgreSQL audit mode: $mode" >&2
-      echo "Usage: $0 postgres-audit [queue|activity|duplicate|publication-schema|storage|all]" >&2
+      echo "Usage: $0 postgres-audit [queue|activity|duplicate|publication-schema|storage|legacy-order-candidates|all]" >&2
       exit 2
       ;;
   esac

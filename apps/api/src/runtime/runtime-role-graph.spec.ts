@@ -103,6 +103,8 @@ describe('runtime role dependency graphs', () => {
           const { QueueKeys } = await import('bullmq');
           const { loadRuntimeRootModule } = await import('./runtime-root-module');
           const { PrismaService } = await import('../prisma/prisma.service');
+          const { WebhookLegacyHoldService } =
+            await import('../webhook/webhook-legacy-hold.service');
           const { QueueMetricsService } = await import('../system/queue-metrics.service');
           const { SystemModeService } = await import('../system/system-mode.service');
           const { BackgroundRuntimeGovernorService } =
@@ -159,6 +161,9 @@ describe('runtime role dependency graphs', () => {
             });
           }
           const context = await builder.compile();
+          const legacyHolds = context.get(WebhookLegacyHoldService);
+          expect(() => legacyHolds.onApplicationBootstrap()).not.toThrow();
+          expect(WebhookLegacyHoldService.forPrisma(context.get(PrismaService))).toBe(legacyHolds);
           try {
             expect(context.get(MESSAGE_DUPLICATE_NOTICE_AUTHORITY)).toBe(
               context.get(MessageDuplicateDeleteGuardService),
