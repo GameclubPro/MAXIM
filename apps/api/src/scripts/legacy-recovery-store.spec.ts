@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
-import { legacyRecoveryLiveDigest } from './legacy-recovery-live-protocol';
+import {
+  legacyRecoveryLiveDigest,
+  type LegacyRecoveryLiveOutput,
+} from './legacy-recovery-live-protocol';
 import {
   assertLegacyRecoveryStoreEnvironment,
   legacyRecoveryStorePoolConfig,
@@ -50,7 +53,7 @@ function fixture() {
       },
     }),
   );
-  const output = {
+  const output: LegacyRecoveryLiveOutput = {
     version: 1,
     operation: 'inventory_preview',
     applied: false,
@@ -60,6 +63,7 @@ function fixture() {
     selectionSha256: legacyRecoveryLiveDigest(request.selection),
     registrySha256: sha('registry'),
     inventorySha256: request.expected.inventorySha256,
+    previewSha256: request.expected.previewSha256,
     selectedOwners: [
       {
         ownerWebhookEventId: 'owner-1',
@@ -122,6 +126,8 @@ describe('standalone legacy recovery store protocol', () => {
     expect(() => verifyLegacyRecoveryInventory(request, bytes.subarray(0, -1))).toThrow('binding');
     for (const bad of [
       { ...output, decision: 'DENY' },
+      { ...output, previewSha256: undefined },
+      { ...output, previewSha256: sha('different preview') },
       { ...output, issues: [{ code: 'unknown', descriptor: 'scope' }] },
       { ...output, binding: { ...output.binding, queueFenceNonce: 'changed-nonce-12345' } },
       { ...output, selectedOwners: [] },
