@@ -101,6 +101,18 @@ its first actual predecessor, including ineligible fences. Truncation and unknow
 sources remain explicit. This window is not a fleet census or recovery authority;
 every finite selected owner must still pass online admission and cold inventory.
 
+For observed moderation outcomes, first review
+`postgres-audit moderation-outcomes --explain`, then run the same command without
+`--explain`. Its existing read-only role reads the newest 513 indexed moderation
+events in 60 minutes and classifies at most 512. The report distinguishes confirmed
+remote bans, confirmed remove-only actions, locally installed mutes and confirmed
+deletions independently attributed to an active mute. Other or ambiguous evidence
+remains explicitly unverified. It emits no identities or message content and needs
+no new grants. Counts are lower bounds when truncated; timestamps are event-recording
+times, which may include delayed receipt settlement. Empty results, installed mutes
+and individual successful actions do not establish current mute state, command
+latency, successful processing of every attempt or whole-fleet recovery.
+
 Change `operation` to `prepare` only for an approved selection. Preparation runs
 native smokes, repeats fresh online admission, requires a 10 GiB Docker reserve,
 and refuses an existing queue fence. Its OCR readiness probe accepts a fresh, purely

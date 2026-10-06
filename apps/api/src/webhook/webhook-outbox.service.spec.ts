@@ -2145,6 +2145,7 @@ describe('WebhookOutboxService', () => {
           selectedCount: 0,
           degraded: false,
           completedTimeoutRepair: true,
+          inFlightWorkUnits: 0,
           progress: {
             workUnits: 0,
             orderedHeadBlocked: 0,
@@ -3391,6 +3392,140 @@ describe('WebhookOutboxService', () => {
     } finally {
       release();
       await firstTick;
+    }
+  });
+
+  it('admits a fresh chat on the next poll while a slow prior unit retains its chat fence', async () => {
+    jest.useFakeTimers();
+    const { service, webhookRows, webhookService, webhookRoutingService, queues } = createService({
+      configOverrides: { ENQUEUE_POLL_INTERVAL_MS: 200, ENQUEUE_CONCURRENCY: 2 },
+      findManyResult: [
+        {
+          id: 'slow-head',
+          enqueueAttempts: 0,
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: 'slow-chat', messageId: 'slow-head' },
+          },
+        },
+      ],
+    });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    webhookRoutingService.resolveQueueName.mockImplementation(async (id) => {
+      if (id === 'slow-head') await blocked;
+      return 'moderation-critical';
+    });
+    const internal = service as unknown as {
+      tick(): Promise<void>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    const wallClock = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+    try {
+      const first = internal.tick();
+      await jest.advanceTimersByTimeAsync(201);
+      await first;
+      wallClock.mockRestore();
+      expect(internal.activeEnqueueUnits.size).toBe(1);
+      const original = webhookRows[0]!;
+      webhookRows.push(
+        {
+          ...original,
+          id: 'same-chat-next',
+          createdAt: new Date(original.createdAt.getTime() + 1),
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: 'slow-chat', messageId: 'same-chat-next' },
+          },
+        },
+        {
+          ...original,
+          id: 'fresh-chat',
+          createdAt: new Date(),
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: 'fresh-chat', messageId: 'fresh-chat' },
+          },
+        },
+      );
+      await internal.tick();
+      expect(webhookService.preparePersistedWebhookEvent.mock.calls.map(([id]) => id)).toEqual([
+        'slow-head',
+        'fresh-chat',
+      ]);
+      expect(
+        Object.values(queues).flatMap((queue) =>
+          queue.add.mock.calls.map(([, job]) => job.webhookEventId),
+        ),
+      ).toEqual(['fresh-chat']);
+      expect(internal.activeEnqueueUnits.size).toBe(1);
+      let stopped = false;
+      const [worker] = service.stopWorkerAdmission();
+      const drain = worker!.pause().then(() => {
+        stopped = true;
+      });
+      await internal.tick();
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(2);
+      release();
+      await drain;
+      expect(internal.activeEnqueueUnits.size).toBe(0);
+      expect(stopped).toBe(true);
+    } finally {
+      release();
+      await service.onModuleDestroy();
+      wallClock.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('retains one global concurrency budget across timed-out polls until owned units finish', async () => {
+    jest.useFakeTimers();
+    const { service, webhookService, webhookRoutingService } = createService({
+      configOverrides: { ENQUEUE_POLL_INTERVAL_MS: 200, ENQUEUE_CONCURRENCY: 2 },
+      findManyResult: Array.from({ length: 6 }, (_, index) => ({
+        id: `bounded-${index}`,
+        enqueueAttempts: 0,
+        normalizedPayload: {
+          type: 'message_created',
+          message: { chatId: `bounded-chat-${index}`, messageId: `bounded-${index}` },
+        },
+      })),
+    });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    webhookRoutingService.resolveQueueName.mockImplementation(async () => {
+      await blocked;
+      return 'moderation-critical';
+    });
+    const internal = service as unknown as {
+      tick(): Promise<void>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    try {
+      const first = internal.tick();
+      await jest.advanceTimersByTimeAsync(201);
+      await first;
+      for (let poll = 0; poll < 4; poll += 1) await internal.tick();
+      expect(internal.activeEnqueueUnits.size).toBe(2);
+      expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(2);
+      release();
+      await Promise.all(internal.activeEnqueueUnits.values());
+      await internal.tick();
+      expect(
+        webhookService.preparePersistedWebhookEvent.mock.calls
+          .map(([id]) => id)
+          .filter((id) => !['bounded-0', 'bounded-1'].includes(id)),
+      ).toEqual(['bounded-2', 'bounded-3', 'bounded-4', 'bounded-5']);
+    } finally {
+      release();
+      await service.onModuleDestroy();
+      jest.useRealTimers();
     }
   });
 

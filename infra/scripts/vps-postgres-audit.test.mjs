@@ -1022,6 +1022,38 @@ test('legacy order window keeps the private envelope and accepts only plain expl
   }
 });
 
+test('moderation outcomes retain the bounded read-only envelope and reject operator SQL', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['moderation-outcomes']).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /BEGIN READ ONLY/u);
+  assert.match(sql, /moderation_outcomes_index_ready/u);
+  assert.match(sql, /ORDER BY created_at DESC LIMIT 513/u);
+  assert.match(sql, /ORDER BY created_at DESC LIMIT 512/u);
+  assert.match(sql, /recent_moderation_outcomes/u);
+  assert.match(sql, /MUTE_ENFORCEMENT_REMOTE_CONFIRMED/u);
+  assert.equal(runAudit(data, ['moderation-outcomes', '--explain']).status, 0);
+  assert.match(readFileSync(data.sql, 'utf8'), /EXPLAIN \(FORMAT JSON\)/u);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /EXPLAIN ANALYZE/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'moderation-outcomes', '--explain']).status, 0);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /moderation-outcomes/u);
+  const failed = runAudit(data, ['moderation-outcomes'], { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7);
+  assert.match(failed.stderr, /Bounded moderation outcomes audit failed closed/u);
+  assert.doesNotMatch(`${failed.stdout}${failed.stderr}`, /fixture-event|ERROR near/u);
+  for (const extra of ['--apply', 'SELECT 1', '/tmp/query.sql', '--explain=analyze']) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, ['moderation-outcomes', extra]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'moderation-outcomes', extra]).status, 2);
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /recent_moderation_outcomes/u);
+});
+
 test('legacy candidate classification never skips an earlier unknown fence or leaks source data', async (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -1088,14 +1120,38 @@ test('legacy candidate classification never skips an earlier unknown fence or le
     if (id === null) assert.equal(value.source_shape, null);
     else {
       assert.equal(value.source_shape.diagnostics_only, true);
-      assert.ok(
-        Object.values(value.source_shape).every(
-          (entry) =>
-            entry === null ||
-            typeof entry === 'boolean' ||
-            ['object', 'array', 'string', 'number', 'boolean', 'null'].includes(entry),
-        ),
-      );
+      const diagnosticValue = (entry) =>
+        entry === null ||
+        typeof entry === 'boolean' ||
+        [
+          'object',
+          'array',
+          'string',
+          'number',
+          'boolean',
+          'null',
+          'strong',
+          'emphasized',
+          'monospaced',
+          'strikethrough',
+          'underline',
+          'link',
+          'user_mention',
+          'image',
+          'photo',
+          'video',
+          'audio',
+          'file',
+          'share',
+          'contact',
+          'location',
+          'sticker',
+          'inline_keyboard',
+          'other',
+        ].includes(entry) ||
+        (Array.isArray(entry) && entry.every(diagnosticValue)) ||
+        (typeof entry === 'object' && Object.values(entry).every(diagnosticValue));
+      assert.ok(Object.values(value.source_shape).every(diagnosticValue));
     }
     assert.doesNotMatch(
       JSON.stringify(value),
@@ -1182,6 +1238,39 @@ test('legacy candidate classification never skips an earlier unknown fence or le
   }));
   assert.equal((await shape(source)).linked_media_shape_bounded, false);
   assert.equal((await shape(source)).linked_images_only, null);
+  source.raw.message.body.attachments = [
+    {
+      type: 'video',
+      payload: { url: 'https://private.example/private-video', token: 'private-token' },
+      thumbnail: { url: 'https://private.example/private-preview' },
+      width: 640,
+      height: 480,
+      duration: 1,
+    },
+  ];
+  source.raw.message.body.markup = [{ type: 'strong', from: 0, length: 3 }];
+  const direct = await shape(source);
+  assert.deepEqual(direct.content_attachment_types, ['video']);
+  assert.deepEqual(direct.content_markup_types, ['strong']);
+  assert.equal(direct.content_attachment_shapes[0].payload_known_keys_only, true);
+  assert.equal(direct.content_attachment_shapes[0].payload_token_nonempty, true);
+  assert.equal(direct.content_attachment_shapes[0].thumbnail_kind, 'object');
+  assert.equal(direct.content_attachment_shapes[0].thumbnail_known_keys_only, true);
+  assert.equal(direct.content_markup_shapes[0].integer_nonnegative_from, true);
+  assert.equal(direct.content_markup_shapes[0].within_codepoint_text, true);
+  source.raw.message.body.markup[0].from = 'private-invalid';
+  source.raw.message.body.attachments[0].thumbnail['private-key'] = 'private-hidden';
+  const malformed = await shape(source);
+  assert.equal(malformed.content_markup_shapes[0].integer_nonnegative_from, null);
+  assert.equal(malformed.content_markup_shapes[0].within_codepoint_text, null);
+  assert.equal(malformed.content_attachment_shapes[0].thumbnail_known_keys_only, false);
+  source.raw.message.body.attachments = Array.from({ length: 11 }, () => ({ type: 'video' }));
+  source.raw.message.body.markup = Array.from({ length: 65 }, () => ({ type: 'strong' }));
+  const bounded = await shape(source);
+  assert.equal(bounded.content_attachment_shapes, null);
+  assert.equal(bounded.content_markup_shapes, null);
+  delete source.raw.message.body.markup;
+  source.raw.message.body.attachments = [];
   source.raw.message['private-unknown-key'] = 'private-unknown-value';
   assert.equal((await shape(source)).original_keys_supported, false);
   source.message.text = 'private-'.repeat(40000);

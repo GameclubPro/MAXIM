@@ -20,6 +20,7 @@ import { WebhookPreparationDeferredError } from '../common/webhook-preparation-d
 import { expireUnclaimedGroupStarts } from '../common/group-command-start-expiry';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
+import { RuntimeWorkerOwner, type RuntimeWorker } from '../runtime/runtime-worker-shutdown';
 import { SystemModeService } from '../system/system-mode.service';
 import {
   ALL_WEBHOOK_QUEUE_NAMES,
@@ -424,7 +425,10 @@ function buildEmptyEnqueueCandidatesSql(): Prisma.Sql {
 }
 
 @Injectable()
-export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
+export class WebhookOutboxService
+  extends RuntimeWorkerOwner
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(WebhookOutboxService.name);
   private readonly enabled: boolean;
   private readonly pollIntervalMs: number;
@@ -450,6 +454,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private maintenanceScheduler: NodeJS.Timeout | null = null;
   private retentionMaintenanceDue = false;
   private draining = false;
+  private shuttingDown = false;
+  private activeTick: Promise<void> | null = null;
+  private readonly activeEnqueueUnits = new Map<string, Promise<void>>();
   private cleaning = false;
   private webhookHeldRetentionTurn = false;
   private readonly webhookRetentionCursors = new Map<string, { id: string; createdAt: Date }>();
@@ -482,6 +489,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     private readonly systemModeService: SystemModeService,
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
+    super();
     this.enabled = roleRunsEnqueue(getAppRole());
     this.pollIntervalMs = this.configService.get<number>('ENQUEUE_POLL_INTERVAL_MS', 200);
     this.batchSize = this.configService.get<number>('ENQUEUE_BATCH_SIZE', 400);
@@ -558,7 +566,26 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     void this.poll();
   }
 
-  onModuleDestroy() {
+  stopWorkerAdmission(): readonly RuntimeWorker[] {
+    this.stopPolling();
+    return [
+      {
+        name: 'webhook-outbox',
+        pause: async () => this.drainEnqueueUnits(),
+        close: async (force) => {
+          if (!force) await this.drainEnqueueUnits();
+        },
+      },
+    ];
+  }
+
+  async onModuleDestroy() {
+    this.stopPolling();
+    await this.drainEnqueueUnits();
+  }
+
+  private stopPolling() {
+    this.shuttingDown = true;
     this.polling = false;
     if (this.poller) {
       clearTimeout(this.poller);
@@ -575,13 +602,20 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.retentionMaintenanceDue = false;
   }
 
+  private async drainEnqueueUnits() {
+    // FLAG: Work remains owned across polls. Stop selecting first, then drain each
+    // admitted operation before the module releases its SQL/Redis dependencies.
+    await this.activeTick;
+    await Promise.all(this.activeEnqueueUnits.values());
+  }
+
   private async poll() {
     const startedAt = performance.now();
     await this.tick();
     if (!this.polling) return;
-    // FLAG: Keep polls serialized and at least one configured interval apart. A batch
-    // that outlives that interval has already waited; do not add another fixed timer slot.
-    // Rearm only after all admitted work drains, and never after module shutdown.
+    // FLAG: Serialize selection, not unrelated in-flight chat work. A slow operation
+    // retains its own slot and chat fence while fresh polls may use other slots.
+    // A selection that outlives its interval must not wait another fixed timer slot.
     this.poller = setTimeout(
       () => {
         this.poller = null;
@@ -592,21 +626,22 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.poller.unref();
   }
 
-  private async tick() {
-    if (this.draining) {
-      return;
-    }
+  private tick(): Promise<void> {
+    if (this.draining || this.shuttingDown) return Promise.resolve();
     this.draining = true;
-    try {
-      await this.enqueueBatch();
-    } catch (error: unknown) {
-      this.logger.warn(
-        { err: error instanceof Error ? error.message : String(error) },
-        'Failed to enqueue webhook batch',
-      );
-    } finally {
-      this.draining = false;
-    }
+    const tick = this.enqueueBatch()
+      .catch((error: unknown) => {
+        this.logger.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          'Failed to enqueue webhook batch',
+        );
+      })
+      .finally(() => {
+        this.draining = false;
+        this.activeTick = null;
+      });
+    this.activeTick = tick;
+    return tick;
   }
 
   private async enqueueBatch() {
@@ -677,6 +712,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           degraded: admission.degraded,
           completedTimeoutRepair: admission.includeCompletedTimeoutRepair,
           progress,
+          inFlightWorkUnits: this.activeEnqueueUnits.size,
         },
         durationMs >= SLOW_ENQUEUE_BATCH_MS
           ? 'Slow webhook enqueue batch'
@@ -1422,10 +1458,21 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       progress.settled += recovered;
       orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
     }
-    const workerCount = Math.max(1, Math.min(enqueueConcurrency, workUnits.length));
+    const workerCount = Math.max(1, enqueueConcurrency);
     const dispatched = new Set<WebhookEnqueueWorkUnit>();
     const active = new Set<Promise<void>>();
-    let capacityDeadlineMs: number | null = null;
+    const deadlineMs = Date.now() + Math.max(1, Math.min(this.pollIntervalMs, 1_000));
+    let timer: NodeJS.Timeout | undefined;
+    let budgetExhausted = false;
+    const budgetExpired = new Promise<void>((resolve) => {
+      timer = setTimeout(
+        () => {
+          budgetExhausted = true;
+          resolve();
+        },
+        Math.max(1, deadlineMs - Date.now()),
+      );
+    });
     const runUnit = async (workUnit: WebhookEnqueueWorkUnit) => {
       try {
         await this.enqueueCandidateSequence(
@@ -1434,22 +1481,25 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           progress,
         );
       } catch {
-        // FLAG: Isolate a failed unit and drain every worker before the next poll starts.
-        // The persisted receipt remains retryable; never log its payload or an unsafe error.
+        // FLAG: Isolate a failed unit without dropping its durable receipt or logging
+        // payloads. This task stays owned until its entire SQL/queue handoff settles.
         progress.workUnitErrors += 1;
       }
     };
 
-    // FLAG: Revisit only this already-bounded selection while its admitted work drains.
-    // Do not create waiting task promises or write SQL backoff for known busy slots.
-    // A slow preparation cannot keep admitting this batch ahead of fresh priority work:
-    // after one poll interval of contention, leave undispatched receipts in SQL.
+    // FLAG: Keep only admitted tasks in memory, bounded across every poll. Do not
+    // cancel a slow task or release its slot/chat fence on a polling deadline: it may
+    // still own preparation or queue activation. Fresh independent units can advance.
     try {
-      while (dispatched.size < workUnits.length) {
-        if (capacityDeadlineMs !== null && Date.now() >= capacityDeadlineMs) break;
+      while (dispatched.size < workUnits.length && !this.shuttingDown && !budgetExhausted) {
+        if (Date.now() >= deadlineMs) break;
         for (const workUnit of workUnits) {
-          if (active.size >= workerCount) break;
+          if (this.activeEnqueueUnits.size >= workerCount) break;
           if (dispatched.has(workUnit)) continue;
+          const key = workUnit.chatId
+            ? `chat:${workUnit.chatId}`
+            : `event:${workUnit.candidates[0]!.id}`;
+          if (this.activeEnqueueUnits.has(key)) continue;
           const orderedHead = workUnit.chatId
             ? (orderedHeadsByChatId.get(workUnit.chatId) ?? null)
             : null;
@@ -1458,32 +1508,41 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
                 (event) => orderedHead && this.compareCandidateSequence(orderedHead, event) === 0,
               )
             : workUnit.candidates[0];
-          // Ordering rejection and timeout settlement need no preparation slot. Their
-          // existing execution fences still run, including when all slots are occupied.
           if (
             first &&
             !isPendingWebhookTimeoutQuarantineMessage(first.errorMessage) &&
             !this.webhookService.canPreparePersistedWebhookEvent(
               first.normalizedPayload as MaxUpdate,
             )
-          ) {
-            capacityDeadlineMs ??= Date.now() + Math.max(1, Math.min(this.pollIntervalMs, 1_000));
+          )
             continue;
-          }
           dispatched.add(workUnit);
-          const task = runUnit(workUnit).finally(() => active.delete(task));
+          const task = runUnit(workUnit).finally(() => {
+            active.delete(task);
+            this.activeEnqueueUnits.delete(key);
+          });
           active.add(task);
+          this.activeEnqueueUnits.set(key, task);
         }
-        if (dispatched.size === workUnits.length || active.size === 0) break;
+        if (active.size === 0) break;
         const completion =
-          active.size < workerCount ? this.webhookService.nextPreparationCompletion() : null;
-        await Promise.race(completion ? [...active, completion] : active);
+          this.activeEnqueueUnits.size < workerCount
+            ? this.webhookService.nextPreparationCompletion()
+            : null;
+        await Promise.race(
+          completion ? [...active, completion, budgetExpired] : [...active, budgetExpired],
+        );
+      }
+      // A full selection may still contain a slow final task. Observe it only for
+      // the remaining poll budget; its ownership continues in activeEnqueueUnits.
+      if (active.size > 0 && !budgetExhausted && Date.now() < deadlineMs) {
+        await Promise.race([Promise.all(active), budgetExpired]);
       }
     } finally {
-      await Promise.all(active);
+      if (timer) clearTimeout(timer);
     }
     progress.preparationBlocked += workUnits.length - dispatched.size;
-    return progress;
+    return { ...progress };
   }
 
   private async recoverFinishedOrderedHeads(

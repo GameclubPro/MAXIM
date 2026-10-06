@@ -70,7 +70,12 @@ native('standalone legacy recovery store PostgreSQL boundaries', () => {
             attachments: [
               {
                 type: 'video',
-                payload: { url: 'https://example.test/video.mp4', token: 'synthetic' },
+                payload: {
+                  url: 'https://example.test/video.mp4',
+                  token: 'synthetic',
+                  id: 9223372036854000000,
+                },
+                thumbnail: { url: 'https://example.test/preview.jpg' },
                 width: 640,
                 height: 480,
                 duration: 30,

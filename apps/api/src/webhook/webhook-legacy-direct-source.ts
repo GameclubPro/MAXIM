@@ -1,4 +1,4 @@
-import { isLegacyImageAttachment } from './webhook-legacy-forward-source';
+import { isLegacyImageAttachment, isLegacyOpaqueSequence } from './webhook-legacy-forward-source';
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -20,6 +20,14 @@ function httpsUrl(value: unknown): boolean {
   }
 }
 
+// FLAG: VideoThumbnail is the official { url } shape; retain the SDK's historical
+// string representation. Neither preview representation can add nested authority.
+function videoThumbnail(value: unknown): boolean {
+  if (value === undefined || value === null || httpsUrl(value)) return true;
+  const thumbnail = record(value);
+  return Boolean(thumbnail && onlyKeys(thumbnail, ['url']) && httpsUrl(thumbnail.url));
+}
+
 // FLAG: Official passive VideoAttachment metadata only; no download, execution,
 // nested content or additional target authority. The enclosing original mid/author
 // and permanent holds remain mandatory. Unknown attachment families stay blocked.
@@ -31,12 +39,15 @@ function video(value: unknown): boolean {
     item.type === 'video' &&
     onlyKeys(item, ['type', 'payload', 'thumbnail', 'width', 'height', 'duration']) &&
     payload &&
-    onlyKeys(payload, ['url', 'token']) &&
+    onlyKeys(payload, ['url', 'token', 'id']) &&
+    // FLAG: Incoming MAX video id is opaque int64 metadata, like seq. A rounded
+    // numeric id contributes no message identity, target, clock or hold authority.
+    isLegacyOpaqueSequence(payload.id) &&
     httpsUrl(payload.url) &&
     typeof payload.token === 'string' &&
     payload.token.length > 0 &&
     payload.token.length <= 32768 &&
-    (item.thumbnail === undefined || item.thumbnail === null || httpsUrl(item.thumbnail)) &&
+    videoThumbnail(item.thumbnail) &&
     ['width', 'height', 'duration'].every(
       (key) =>
         item[key] === undefined ||

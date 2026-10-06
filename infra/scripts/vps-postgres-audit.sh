@@ -29,6 +29,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|storage|all]
   ./infra/scripts/vps-postgres-audit.sh legacy-order-candidates
   ./infra/scripts/vps-postgres-audit.sh legacy-order-window [--explain]
+  ./infra/scripts/vps-postgres-audit.sh moderation-outcomes [--explain]
   ./infra/scripts/vps-postgres-audit.sh duplicate [--explain]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
@@ -88,7 +89,7 @@ case "$AUDIT_MODE" in
     fi
     DUPLICATE_EXPLAIN="${2:-}"
     ;;
-  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|legacy-order-window)
+  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|legacy-order-window|moderation-outcomes)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -1021,6 +1022,57 @@ SELECT json_build_object(
       CASE WHEN jsonb_array_length(candidate.original_body->'attachments') <= 10 THEN
         (SELECT jsonb_agg(CASE WHEN item->>'type' = ANY(ARRAY['image', 'photo', 'video', 'audio', 'file', 'share', 'contact', 'location', 'sticker', 'inline_keyboard'])
           THEN item->>'type' ELSE 'other' END) FROM jsonb_array_elements(candidate.original_body->'attachments') item) END END,
+    -- FLAG: One bounded source only. Known metadata types/shape flags expose no URL,
+    -- token, text, target identity, arbitrary keys or attachment body values.
+    'content_attachment_shapes', CASE WHEN jsonb_typeof(candidate.original_body->'attachments') = 'array' THEN
+      CASE WHEN jsonb_array_length(candidate.original_body->'attachments') <= 10 THEN
+        (SELECT jsonb_agg(jsonb_build_object(
+          'item_kind', jsonb_typeof(item),
+          'known_keys_only', CASE WHEN jsonb_typeof(item) = 'object' THEN
+            item - ARRAY['type', 'payload', 'thumbnail', 'width', 'height', 'duration'] = '{}'::jsonb END,
+          'payload_kind', jsonb_typeof(item->'payload'),
+          'payload_known_keys_only', CASE WHEN jsonb_typeof(item->'payload') = 'object' THEN
+            (item->'payload') - ARRAY['url', 'token'] = '{}'::jsonb END,
+          'payload_video_id_kind', jsonb_typeof(item->'payload'->'video_id'),
+          'payload_id_kind', jsonb_typeof(item->'payload'->'id'),
+          'payload_video_id_only_extra', CASE WHEN jsonb_typeof(item->'payload') = 'object' THEN
+            (item->'payload') - ARRAY['url', 'token', 'video_id'] = '{}'::jsonb END,
+          'payload_id_only_extra', CASE WHEN jsonb_typeof(item->'payload') = 'object' THEN
+            (item->'payload') - ARRAY['url', 'token', 'id'] = '{}'::jsonb END,
+          'payload_metadata_only_extra', CASE WHEN jsonb_typeof(item->'payload') = 'object' THEN
+            (item->'payload') - ARRAY['url', 'token', 'video_id', 'id', 'width', 'height', 'duration', 'thumbnail'] = '{}'::jsonb END,
+          'payload_width_kind', jsonb_typeof(item->'payload'->'width'),
+          'payload_height_kind', jsonb_typeof(item->'payload'->'height'),
+          'payload_duration_kind', jsonb_typeof(item->'payload'->'duration'),
+          'payload_thumbnail_kind', jsonb_typeof(item->'payload'->'thumbnail'),
+          'payload_url_kind', jsonb_typeof(item->'payload'->'url'),
+          'payload_token_kind', jsonb_typeof(item->'payload'->'token'),
+          'payload_url_https', (item->'payload'->>'url') LIKE 'https://%',
+          'payload_token_nonempty', length(item->'payload'->>'token') BETWEEN 1 AND 32768,
+          'thumbnail_kind', jsonb_typeof(item->'thumbnail'),
+          'thumbnail_url_kind', jsonb_typeof(item->'thumbnail'->'url'),
+          'thumbnail_known_keys_only', CASE WHEN jsonb_typeof(item->'thumbnail') = 'object' THEN
+            (item->'thumbnail') - ARRAY['url'] = '{}'::jsonb END,
+          'width_kind', jsonb_typeof(item->'width'),
+          'height_kind', jsonb_typeof(item->'height'),
+          'duration_kind', jsonb_typeof(item->'duration')
+        )) FROM jsonb_array_elements(candidate.original_body->'attachments') item) END END,
+    'content_markup_shapes', CASE WHEN jsonb_typeof(candidate.original_body->'markup') = 'array' THEN
+      CASE WHEN jsonb_array_length(candidate.original_body->'markup') <= 64 THEN
+        (SELECT jsonb_agg(jsonb_build_object(
+          'item_kind', jsonb_typeof(item),
+          'known_keys_only', CASE WHEN jsonb_typeof(item) = 'object' THEN
+            item - ARRAY['type', 'from', 'length'] = '{}'::jsonb END,
+          'from_kind', jsonb_typeof(item->'from'),
+          'length_kind', jsonb_typeof(item->'length'),
+          'integer_nonnegative_from', CASE WHEN jsonb_typeof(item->'from') = 'number' THEN
+            (item->>'from')::numeric >= 0 AND (item->>'from')::numeric = trunc((item->>'from')::numeric) END,
+          'integer_positive_length', CASE WHEN jsonb_typeof(item->'length') = 'number' THEN
+            (item->>'length')::numeric > 0 AND (item->>'length')::numeric = trunc((item->>'length')::numeric) END,
+          'within_codepoint_text', CASE WHEN jsonb_typeof(item->'from') = 'number'
+            AND jsonb_typeof(item->'length') = 'number' AND jsonb_typeof(candidate.original_body->'text') = 'string' THEN
+            (item->>'from')::numeric + (item->>'length')::numeric <= length(candidate.original_body->>'text') END
+        )) FROM jsonb_array_elements(candidate.original_body->'markup') item) END END,
     'content_images_at_most_ten', CASE WHEN jsonb_typeof(candidate.original_body->'attachments') = 'array' THEN
       CASE WHEN jsonb_array_length(candidate.original_body->'attachments') BETWEEN 1 AND 10 THEN
         NOT EXISTS (SELECT 1 FROM jsonb_array_elements(candidate.original_body->'attachments') attachment
@@ -1987,6 +2039,13 @@ emit_sql() {
     legacy-order-window)
       emit_legacy_order_window_audit
       ;;
+    moderation-outcomes)
+      local outcome_args=()
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+        outcome_args+=("$RULES_CLEANUP_EXPLAIN")
+      fi
+      node "$ROOT_DIR/infra/scripts/moderation-outcomes-audit.mjs" "${outcome_args[@]}"
+      ;;
     activity)
       emit_activity_audit
       ;;
@@ -2080,7 +2139,7 @@ prepare_audit_sql() {
     echo "Generated PostgreSQL audit input is invalid." >&2
     return 1
   fi
-  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "moderation-outcomes" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
     AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
       echo "Could not create the private PostgreSQL audit diagnostics file." >&2
       return 1
@@ -2190,7 +2249,7 @@ trap 'exit 143' TERM
 
 prepare_audit_sql
 AUDIT_BACKEND_MAY_EXIST=1
-if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "moderation-outcomes" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
   timeout --signal=TERM --kill-after=2s \
     "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
     2>"$AUDIT_STDERR_FILE" &
@@ -2213,5 +2272,7 @@ elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; th
   echo "Bounded legacy default webhook database audit failed closed." >&2
 elif [[ "$status" -ne 0 && ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
   echo "Bounded legacy order candidate audit failed closed." >&2
+elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "moderation-outcomes" ]]; then
+  echo "Bounded moderation outcomes audit failed closed." >&2
 fi
 exit "$status"

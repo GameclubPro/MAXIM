@@ -92,6 +92,7 @@ native('fleet admission isolation from one unknown ordered scope', () => {
   });
 
   afterAll(async () => {
+    await outbox?.onModuleDestroy();
     await health?.onModuleDestroy();
     await mode?.onModuleDestroy();
     await action?.onModuleDestroy();
@@ -212,5 +213,55 @@ native('fleet admission isolation from one unknown ordered scope', () => {
       prioritized: 0,
     });
     admission.mockRestore();
+  });
+
+  it('polls fresh independent receipts while a prior preparation remains in flight in real stores', async () => {
+    await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
+    const slowChat = `-slow-poll-${randomUUID()}`;
+    const freshChat = `-fresh-poll-${randomUUID()}`;
+    chats.push(slowChat, freshChat);
+    await prisma.chat.createMany({
+      data: [slowChat, freshChat].map((id) => ({
+        id,
+        title: 'Poll isolation',
+        entityType: 'CHAT' as const,
+      })),
+    });
+    const slow = await ingress.storeReceipt(update(slowChat, randomUUID()), null);
+    receipts.push(slow.webhookEventId!);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const admission = jest
+      .spyOn(ingress, 'preparePersistedWebhookEvent')
+      .mockImplementation(async (id) => {
+        if (id === slow.webhookEventId) await pending;
+        throw new WebhookPreparationDeferredError('native_preparation_boundary', 1_000);
+      });
+    const internals = outbox as unknown as {
+      enqueueBatch(): Promise<void>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    try {
+      await internals.enqueueBatch();
+      expect(internals.activeEnqueueUnits.size).toBe(1);
+      const next = await ingress.storeReceipt(update(slowChat, randomUUID()), null);
+      const fresh = await ingress.storeReceipt(update(freshChat, randomUUID()), null);
+      receipts.push(next.webhookEventId!, fresh.webhookEventId!);
+      await internals.enqueueBatch();
+      expect(admission.mock.calls.map(([id]) => id)).toEqual([
+        slow.webhookEventId,
+        fresh.webhookEventId,
+      ]);
+      expect(
+        await prisma.webhookEvent.findUnique({ where: { id: next.webhookEventId! } }),
+      ).toMatchObject({ status: 'RECEIVED', enqueueAttempts: 0, nextEnqueueAt: null });
+      expect(internals.activeEnqueueUnits.size).toBe(1);
+    } finally {
+      release();
+      await Promise.all(internals.activeEnqueueUnits.values());
+      admission.mockRestore();
+    }
   });
 });

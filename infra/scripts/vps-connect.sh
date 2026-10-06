@@ -67,6 +67,7 @@ Commands:
                               Sample health, ps, restarts, public app, and error logs
   postgres-audit [queue|activity|duplicate|publication-schema|storage|all]
   postgres-audit legacy-order-candidates
+  postgres-audit moderation-outcomes [--explain]
   postgres-audit duplicate [--explain]
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
@@ -387,7 +388,8 @@ postgres_audit() {
 
   if [[ "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
-        "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'legacy-order-window' ]]; then
+        "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'legacy-order-window' ||
+        "$mode" == 'moderation-outcomes' ]]; then
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2

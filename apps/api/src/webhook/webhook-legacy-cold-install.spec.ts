@@ -61,8 +61,12 @@ describe('strict legacy cold recovery source', () => {
     const body = message.body as Record<string, unknown>;
     const attachment = {
       type: 'video',
-      payload: { url: 'https://example.test/video.mp4', token: 'synthetic' },
-      thumbnail: 'https://example.test/preview.jpg',
+      payload: {
+        url: 'https://example.test/video.mp4',
+        token: 'synthetic',
+        id: 9223372036854000000,
+      },
+      thumbnail: { url: 'https://example.test/preview.jpg' },
       width: 640,
       height: 480,
       duration: 30,
@@ -81,11 +85,44 @@ describe('strict legacy cold recovery source', () => {
   });
 
   it.each([
+    undefined,
+    null,
+    'https://example.test/preview.jpg',
+    { url: 'https://example.test/preview.jpg' },
+  ])('supports passive video preview representation %p', (thumbnail) => {
+    const { receipt, attachment } = videoSource();
+    Object.assign(attachment, { thumbnail });
+    expect(inspectLegacyRecoverySource(receipt as never)).not.toBeNull();
+  });
+
+  it.each([undefined, 0, -42, 9223372036854000000])(
+    'ignores valid opaque video metadata id %p when binding the original source',
+    (id) => {
+      const { receipt, attachment } = videoSource();
+      Object.assign(attachment.payload, { id });
+      expect(inspectLegacyRecoverySource(receipt as never)).toEqual(
+        inspectLegacyRecoverySource(source() as never),
+      );
+    },
+  );
+
+  it.each([null, '123', 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 64, { user_id: 'other' }])(
+    'refuses malformed opaque video id %p',
+    (id) => {
+      const { receipt, attachment } = videoSource();
+      Object.assign(attachment.payload, { id });
+      expect(inspectLegacyRecoverySource(receipt as never)).toBeNull();
+    },
+  );
+
+  it.each([
     'payload',
     'keyboard',
     'url',
     'duration',
     'thumbnail',
+    'thumbnailTarget',
+    'thumbnailCredentials',
     'link',
     'mention',
     'markupTarget',
@@ -99,6 +136,9 @@ describe('strict legacy cold recovery source', () => {
     if (fault === 'url') attachment.payload.url = 'https://user:password@example.test/video';
     if (fault === 'duration') attachment.duration = -1;
     if (fault === 'thumbnail') Object.assign(attachment, { thumbnail: { url: 'hidden' } });
+    if (fault === 'thumbnailTarget') Object.assign(attachment.thumbnail, { user_id: 'other' });
+    if (fault === 'thumbnailCredentials')
+      attachment.thumbnail.url = 'https://user:password@example.test/preview';
     if (fault === 'link') markup.type = 'link';
     if (fault === 'mention') markup.type = 'user_mention';
     if (fault === 'markupTarget') Object.assign(markup, { user_id: 'other' });
