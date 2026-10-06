@@ -217,10 +217,14 @@ export async function inspectLegacyRecoveryCandidate(
 export async function createLegacyColdCertificate(
   prisma: Database,
   attestation: LegacyStopAttestation,
+  id: string = randomUUID(),
 ): Promise<{ id: string; quiescedAt: Date; attestationDigest: string }> {
   requireOffline();
   validateAttestation(attestation);
-  const id = randomUUID();
+  // FLAG: The host persists this identity before starting the writer. Never upsert
+  // or silently replace it after a lost response; reconcile the exact primary key.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(id))
+    throw new Error('Legacy certificate identity must be a canonical UUID v4');
   const attestationDigest = legacySnapshotDigest(attestation);
   const rows = await prisma.$queryRaw<Array<{ quiescedAt: Date }>>(Prisma.sql`
     INSERT INTO "webhook_legacy_quiescence_certificates" ("id", "source_sha", "image_id", "attestation", "attestation_digest", "preview_sha256", "quiesced_at")

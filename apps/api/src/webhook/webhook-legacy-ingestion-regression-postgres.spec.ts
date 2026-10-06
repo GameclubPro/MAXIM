@@ -575,10 +575,26 @@ native('legacy disposition production ingestion activation regressions', () => {
     const installed = await prisma.webhookLegacyQuiescenceCertificate.findUniqueOrThrow({
       where: { id: certificateId },
     });
-    const unsealed = await createLegacyColdCertificate(
-      prisma,
-      installed.attestation as unknown as Parameters<typeof createLegacyColdCertificate>[1],
-    );
+    const preallocatedId = randomUUID();
+    const attestation = installed.attestation as unknown as Parameters<
+      typeof createLegacyColdCertificate
+    >[1];
+    const unsealed = await createLegacyColdCertificate(prisma, attestation, preallocatedId);
+    expect(unsealed.id).toBe(preallocatedId);
+    await expect(
+      createLegacyColdCertificate(prisma, attestation, preallocatedId),
+    ).rejects.toThrow();
+    for (const invalidId of [
+      '',
+      'not-a-uuid',
+      ` ${preallocatedId}`,
+      preallocatedId.toUpperCase(),
+      '00000000-0000-0000-0000-000000000000',
+    ]) {
+      await expect(createLegacyColdCertificate(prisma, attestation, invalidId)).rejects.toThrow(
+        'canonical UUID v4',
+      );
+    }
     certificates.push(unsealed.id);
     expect((await readLegacyRecoveryInstallation(prisma, unsealed.id, expected)).state).toBe(
       'UNSEALED',
@@ -675,6 +691,30 @@ native('legacy disposition production ingestion activation regressions', () => {
       await prisma.webhookLegacyReceiptDisposition.count({ where: { authorityId: certificateId } }),
     ).toBe(505);
   });
+
+  it.each(['Старт', '/ban', '$command', 'бан', 'блокируй'])(
+    'preserves the new held-source command %s without claiming abandonment authority',
+    async (text) => {
+      const source = await owner();
+      await seal(source.candidate);
+      await prisma.chatSettings.create({
+        data: { chatId: source.chatId, adminBanCommandName: 'блокируй' },
+      });
+      const value = update(source.chatId, source.userId);
+      value.message!.text = text;
+      (value.raw as { message: { body: { text: string } } }).message.body.text = text;
+      const command = await store(value);
+      expect(command.status).toBe('RECEIVED');
+      expect(command.legacyDispositionId).toBeNull();
+      expect(await holds.materializeReceipt(command.id)).toBe('BLOCKED_UNKNOWN');
+      await expect(ingress.preparePersistedWebhookEvent(command.id)).rejects.toBeInstanceOf(
+        WebhookPreparationDeferredError,
+      );
+      expect(
+        await prisma.webhookExecutionClaim.count({ where: { webhookEventId: command.id } }),
+      ).toBe(0);
+    },
+  );
 
   it('reconciles concurrent disposition retries against the same exact proof', async () => {
     const source = await owner();

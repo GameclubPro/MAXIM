@@ -39,8 +39,13 @@ Ingress materializes newly held receipts inside receipt persistence. Existing re
 can materialize lazily during canonical preparation, before engine or local effects.
 Pre-seal lazy projection requires the strict ordinary original-message validator and
 per-chat custom-command rejection. Unknown sources, pre-seal commands and unsupported
-shapes keep their ordering fence. New post-seal held commands follow the explicitly
-approved permanent suppression policy. Original unknown owners install only through
+shapes keep their ordering fence. Recognized post-seal commands also remain
+`BLOCKED_UNKNOWN` without an abandonment disposition: permanent protection against
+automatic sanctions does not authorize dropping legitimate new commands. The current
+held-source path defers these commands before execution. A separate path with fresh
+current administrator authorization and exact command identity is not yet implemented;
+this limitation must not be presented as an approved permanent command policy.
+Original unknown owners install only through
 the cold operation; normal runtime cannot manufacture their abandonment authority.
 
 `materializeLegacyHeldReceiptPage(prisma, certificateId, chatId, pageSize)` handles
@@ -49,6 +54,12 @@ to finite original-owner chat scopes and stops at the first held but unverified 
 The lifetime original-owner bound per chat is 200. This bounds retained FAILED owner
 prefixes in the existing ordered index. A complete owner-chat cursor does not claim
 all chats of a globally held user were inventoried or materialized.
+
+`createLegacyColdCertificate(prisma, attestation, certificateId?)` accepts a canonical
+UUID v4 preallocated and durably recorded by the host before the writer starts. Omitting
+it preserves the fixture default of a random UUID. Creation is insert-only; a duplicate
+ID is an error, never an overwrite or implicit retry. An unused unsealed certificate
+is harmless. After unknown output, reconcile only that exact recorded identity.
 
 `readLegacyRecoveryInstallation(prisma, certificateId, expected)` accepts exact
 `sourceSha`, `imageId`, `previewSha256`, `recoveries` and `children`. It returns

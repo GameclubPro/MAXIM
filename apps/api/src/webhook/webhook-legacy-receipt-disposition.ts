@@ -147,8 +147,8 @@ export async function materializeLegacyReceiptDisposition(
     scopeKind = 'PRE_SEAL_SOURCE';
   } else {
     // FLAG: Original persisted MAX provenance binds member/message identity. Source
-    // timestamps never grant authority and may be future-dated. New held commands
-    // are suppressed by the explicitly approved permanent participant hold policy.
+    // timestamps never grant authority and may be future-dated. Permanent automatic
+    // sanction protection does not grant authority to discard explicit commands.
     const raw = record(update?.raw);
     const rawMessage = record(raw?.message);
     const sender = record(rawMessage?.sender);
@@ -166,12 +166,27 @@ export async function materializeLegacyReceiptDisposition(
       String(sender?.user_id) !== message.senderId ||
       typeof message.messageId !== 'string' ||
       body?.mid !== message.messageId ||
+      body?.text !== message.text ||
       claims.length !== 0 ||
       event.errorMessage ||
       event.processedAt ||
       event.timeoutQuarantineExpiresAt
     )
       return 'BLOCKED_UNKNOWN';
+    const text = typeof message.text === 'string' ? message.text : '';
+    const settings = await tx.chatSettings.findUnique({ where: { chatId: message.chatId } });
+    try {
+      if (
+        /^[/$]/u.test(text.trim()) ||
+        /^старт$/iu.test(text.trim()) ||
+        parseAdminForwardedModerationCommand(text) ||
+        parseAdminForwardedModerationCommand(text, settings ?? undefined)
+      )
+        return 'BLOCKED_UNKNOWN';
+    } catch {
+      // Invalid command arguments still identify a command, never ordinary abandoned work.
+      return 'BLOCKED_UNKNOWN';
+    }
     scopeKind = 'POST_SEAL_MEMBER';
   }
   const proof = await tx.webhookLegacyReceiptDisposition.create({
