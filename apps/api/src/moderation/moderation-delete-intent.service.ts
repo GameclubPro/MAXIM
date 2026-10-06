@@ -2,6 +2,7 @@ import {
   persistRuleFollowupBeforeDelete,
   activateOwnedRuleFollowups,
 } from './moderation-rule-followup-persistence';
+import { readLegacyBotCleanupSourceAt } from './legacy-bot-message-cleanup-source';
 import type { ModerationRuleFollowupEnvelope } from './moderation-rule-followup.contract';
 import {
   MessageDuplicateMetricsService,
@@ -3763,6 +3764,23 @@ export class ModerationDeleteIntentService {
   private async isLegacyIntentHeld(intent: IntentRow): Promise<boolean> {
     if (!this.legacyHolds) return false;
     if (await this.legacyHolds.isMessageHeld(intent.chatId, intent.messageId)) return true;
+    if (intent.botMessageAutoDeleteReason === true || intent.botMessageAutoDeleteOnly === true) {
+      // FLAG: Legacy source_message_at may contain the webhook delivery clock.
+      // Only explicit original-message evidence can prove post-seal cleanup; a
+      // missing/old reason is held at preparation and again at the MAX boundary.
+      const reason = await this.prisma.moderationDeleteIntentReason.findUnique({
+        where: {
+          intentId_reasonKey: { intentId: intent.id, reasonKey: BOT_MESSAGE_AUTO_DELETE_RULE_CODE },
+        },
+        select: { ruleCode: true, metadata: true },
+      });
+      const sourceAt =
+        reason?.ruleCode === BOT_MESSAGE_AUTO_DELETE_RULE_CODE
+          ? readLegacyBotCleanupSourceAt(reason.metadata)
+          : null;
+      if (await this.legacyHolds.isLegacyChatSendHeld(intent.chatId, sourceAt ?? new Date(NaN)))
+        return true;
+    }
     return (
       !!intent.subjectUserId && this.legacyHolds.isMemberHeld(intent.chatId, intent.subjectUserId)
     );

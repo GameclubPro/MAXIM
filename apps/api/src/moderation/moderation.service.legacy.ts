@@ -4,6 +4,7 @@ import {
   resolveMessageLimitsRuleEscalation,
 } from './moderation-rule-escalation';
 import { ModerationRuleFollowupService } from './moderation-rule-followup.service';
+import { legacyBotCleanupSourceAt } from './legacy-bot-message-cleanup-source';
 import {
   WebhookLegacyHoldService,
   type WebhookLegacyHoldDatabase,
@@ -7432,8 +7433,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
     createdAt: string;
     delayMinutes: number;
+    raw?: unknown;
   }) {
     const { chatId, userId, messageId, text, createdAt, delayMinutes } = params;
+    const originalSourceAt = legacyBotCleanupSourceAt(params);
+    // FLAG: The notice's own webhook may arrive after sealing. Its new delivery
+    // clock cannot authorize cleanup of an old or unattributed original SEND.
+    if (await this.legacyHolds?.isLegacyChatSendHeld(chatId, originalSourceAt ?? new Date(NaN)))
+      return;
     const safeDelayMinutes = normalizeDeleteBotMessagesDelayMinutes(delayMinutes);
     const delayMs = safeDelayMinutes * 60 * 1000;
     const deleteOptions = { delayMs };
@@ -7443,7 +7450,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       reasonKey: 'BOT_MESSAGE_AUTO_DELETE',
       ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
       subjectUserId: userId,
-      sourceMessageAt: createdAt,
+      sourceMessageAt: originalSourceAt ?? createdAt,
       entityType: 'CHAT',
       messageAuthorKind: 'bot',
       originBotId:
@@ -7460,6 +7467,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         metadata: {
           reason: 'Bot-authored message deleted after configured delay',
           delayMinutes: safeDelayMinutes,
+          ...(originalSourceAt
+            ? {
+                botMessageOriginalCreatedAt: originalSourceAt.toISOString(),
+                botMessageOriginalCreatedAtSource: 'max_message_timestamp_v1',
+              }
+            : {}),
         },
       },
     };
@@ -7579,6 +7592,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text,
       createdAt,
       delayMinutes: settings.deleteBotMessagesDelayMinutes,
+      raw,
     });
   }
 

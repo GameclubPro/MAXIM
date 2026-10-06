@@ -111,6 +111,81 @@ describeStores('native permanent legacy effect holds', () => {
     return value;
   }
 
+  it.each([1, 4, 9])('denies late own-bot cleanup with %i receiving bots', async (bots) => {
+    const { s, chatId } = await fixture(bots);
+    const at = Date.now() - 60_000;
+    await installFixtureHold(s, chatId, `original-${randomUUID()}`);
+    const ensure = jest.spyOn(s.intents, 'ensureIntent');
+    const params = {
+      chatId,
+      userId: 'own-bot-user',
+      messageId: `notice-${randomUUID()}`,
+      text: 'Synthetic notice',
+      createdAt: new Date().toISOString(),
+      delayMinutes: 2,
+      raw: {
+        update_type: 'message_created',
+        timestamp: Date.now(),
+        message: {
+          timestamp: at,
+          sender: { user_id: 'own-bot-user', is_bot: true },
+          recipient: { chat_id: chatId, chat_type: 'chat' },
+          body: { mid: '' },
+        },
+      },
+    };
+    params.raw.message.body.mid = params.messageId;
+    await (s.moderation as any).handleBotMessageAutoDelete(params);
+    await (s.moderation as any).handleBotMessageAutoDelete({ ...params, raw: undefined });
+    expect(ensure).not.toHaveBeenCalled();
+    expect(s.effects).toHaveLength(0);
+  });
+
+  it.each(['unproved', 'old-proof', 'post-seal-proof'] as const)(
+    'checks persisted bot cleanup %s at preparation and final dispatch',
+    async (kind) => {
+      const { s, chatId } = await fixture();
+      const before = new Date(Date.now() - 60_000);
+      await installFixtureHold(s, chatId, `original-${randomUUID()}`);
+      // A native SQL clock keeps the positive post-seal case strictly after its seal.
+      const [{ at }] = await s.prisma.$queryRaw<Array<{ at: Date }>>`
+        SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at`;
+      const sourceAt = kind === 'old-proof' ? before : at!;
+      const messageId = `bot-cleanup-${randomUUID()}`;
+      const pending = await s.intents.ensureIntent({
+        chatId,
+        messageId,
+        subjectUserId: 'own-bot-user',
+        sourceMessageAt: at,
+        originBotId: s.bots[0]!.id,
+        routingPolicy: 'origin_only',
+        entityType: 'CHAT',
+        messageAuthorKind: 'bot',
+        reasonKey: 'BOT_MESSAGE_AUTO_DELETE',
+        ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+        event: {
+          userId: 'own-bot-user',
+          metadata:
+            kind === 'unproved'
+              ? {}
+              : {
+                  botMessageOriginalCreatedAt: sourceAt.toISOString(),
+                  botMessageOriginalCreatedAtSource: 'max_message_timestamp_v1',
+                },
+        },
+      });
+      const row = await (s.intents as any).loadRequiredIntent(pending.intentId);
+      expect(await (s.intents as any).isLegacyIntentHeld(row)).toBe(kind !== 'post-seal-proof');
+      if (kind === 'post-seal-proof') return;
+      await expect(
+        (s.intents as any).runDeletePreDispatchGuards(row, s.bots[0]!.id),
+      ).rejects.toMatchObject({ guardError: { code: 'webhook_legacy_effect_held' } });
+      expect((await s.intents.attemptIntent(pending.intentId!)).confirmed).toBe(false);
+      expect(s.requests).toHaveLength(0);
+      expect(s.effects).toHaveLength(0);
+    },
+  );
+
   it.each([1, 4, 9])(
     'preserves old strike/mute and denies late edits/new effects with %i bots',
     async (bots) => {
