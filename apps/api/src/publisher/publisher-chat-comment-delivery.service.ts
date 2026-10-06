@@ -23,6 +23,10 @@ import {
   CHAT_DIALOG_AUTO_ATTACH_ACTION,
 } from '../moderation/moderation.service.support';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  WebhookLegacyHoldRejectedError,
+  WebhookLegacyHoldService,
+} from '../webhook/webhook-legacy-hold.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import type {
   PublisherChatCommentAttachJob,
@@ -95,6 +99,7 @@ export class PublisherChatCommentDeliveryService {
     credentials: PublisherActionCredentialService,
     private readonly dialogLinks: PublisherDialogLinkService,
     private readonly bindingRefresh: PublisherBindingRefreshService,
+    private readonly legacyHolds: WebhookLegacyHoldService,
     @Optional() private readonly dispatchHealth?: PublisherDispatchHealthService,
     @Optional() private readonly channelDelivery?: PublisherChannelCommentDeliveryService,
     @Optional() private readonly notifications?: PublisherCommentNotificationDeliveryService,
@@ -167,6 +172,10 @@ export class PublisherChatCommentDeliveryService {
     if (auditRecovery?.status === 'done' || auditRecovery?.status === 'recovered_audit') {
       return;
     }
+
+    // FLAG: Exact positive receipts above may settle SQL. An unstarted automatic
+    // effect cannot refresh a claim, publish, or create cleanup for a held author.
+    if (await this.isAutomaticSourceHeld(job)) return;
 
     const initialClaimState = await this.markerStore.inspectChatAutoCommentDispatchClaim({
       markerId: job.markerId,
@@ -257,6 +266,7 @@ export class PublisherChatCommentDeliveryService {
           throw new PublisherCommentSenderNotAdminError();
         }
         route = immediateRoute;
+        if (await this.isAutomaticSourceHeld(job)) throw new WebhookLegacyHoldRejectedError();
         const sendFence = await this.markerStore.recordChatReplySendStarted({
           markerId: job.markerId,
           chatId: job.chatId,
@@ -323,6 +333,7 @@ export class PublisherChatCommentDeliveryService {
       replyMessageId = sent.messageId;
     } catch (error: unknown) {
       const attempted = sendFenceStartedAt !== null || wasMaxMessageSendAttempted(error);
+      if (!attempted && error instanceof WebhookLegacyHoldRejectedError) return;
       if (!attempted && error instanceof PublisherCommentSenderNotAdminError) {
         await this.skipNonAdminAttach(job);
         return;
@@ -474,6 +485,7 @@ export class PublisherChatCommentDeliveryService {
     });
     let originalDeleted = false;
     let retainedReason: string | null = null;
+    const sourceHeld = await this.isAutomaticSourceHeld(job);
     const options = {
       botId: this.publisherBotId,
       trafficClass: 'background' as const,
@@ -481,13 +493,15 @@ export class PublisherChatCommentDeliveryService {
       sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
     };
     const canCleanUp =
+      !sourceHeld &&
       originalHash &&
-      Date.now() - Date.parse(job.createdAt) < 24 * 60 * 60_000 &&
+      this.isSourceCleanupWindowCurrent(job) &&
       (await this.isAdminMessageSettingsCurrent(job)) &&
       (await this.isSenderAdmin(job, false));
     if (!canCleanUp) {
-      retainedReason =
-        'Original retained: replacement settings, author access, or cleanup window changed';
+      retainedReason = sourceHeld
+        ? 'Original retained: legacy source effects are held'
+        : 'Original retained: replacement settings, author access, or original cleanup window changed';
     } else {
       const route = await this.assertReady(job.chatId, 'chat_comments');
       this.assertAttachIdentity(job, route);
@@ -511,11 +525,20 @@ export class PublisherChatCommentDeliveryService {
         // FLAG: Never delete before the exact bot's receipt and dialog audit are durable.
         // A retry resumes this cleanup only; it must not publish a second copy.
         const guard = async () => {
+          // FLAG: The saved copy receipt never grants a new automatic source deletion.
+          if (await this.isAutomaticSourceHeld(job)) throw new WebhookLegacyHoldRejectedError();
           const immediateRoute = await this.assertReady(job.chatId, 'chat_comments');
           this.assertAttachIdentity(job, immediateRoute);
           const marker = await this.prisma.chatAutoCommentAttachMarker.findUnique({
             where: { id: job.markerId },
           });
+          const exactSource = await this.maxClient.getExactMessageRow(
+            job.chatId,
+            job.messageId,
+            options,
+          );
+          const sender = exactSource?.sender as { user_id?: unknown } | undefined;
+          const recipient = exactSource?.recipient as { chat_id?: unknown } | undefined;
           if (
             marker?.status !== 'IN_PROGRESS' ||
             marker.lockToken !== job.lockToken ||
@@ -524,9 +547,10 @@ export class PublisherChatCommentDeliveryService {
             marker.deliveryMode !== PUBLISHER_REPLACEMENT_MODE ||
             !(await this.isAdminMessageSettingsCurrent(job)) ||
             !(await this.isSenderAdmin(job, false)) ||
-            sourceContentHash(
-              await this.maxClient.getExactMessageRow(job.chatId, job.messageId, options),
-            ) !== originalHash
+            String(sender?.user_id) !== job.senderId ||
+            String(recipient?.chat_id) !== job.chatId ||
+            sourceContentHash(exactSource) !== originalHash ||
+            !this.isSourceCleanupWindowCurrent(job)
           )
             throw new Error('Publisher replacement cleanup guard changed');
         };
@@ -536,6 +560,13 @@ export class PublisherChatCommentDeliveryService {
             immediate: true,
             idempotencyKey: `publisher-comment-cleanup:${job.markerId}`,
             beforeImmediateDeleteMutation: guard,
+            ledgerContext: {
+              moderationSource: {
+                chatId: job.chatId,
+                messageId: job.messageId,
+                userId: job.senderId,
+              },
+            },
           });
           originalDeleted = true;
         } catch (error: unknown) {
@@ -608,6 +639,25 @@ export class PublisherChatCommentDeliveryService {
       throw error;
     }
     await this.recordSendSuccess(job.chatId);
+  }
+
+  private async isAutomaticSourceHeld(job: PublisherChatCommentAttachJob): Promise<boolean> {
+    return (
+      (await this.legacyHolds.isMessageHeld(job.chatId, job.messageId)) ||
+      (await this.legacyHolds.isMemberHeld(job.chatId, job.senderId)) ||
+      (await this.legacyHolds.isGlobalUserHeld(job.senderId))
+    );
+  }
+
+  private isSourceCleanupWindowCurrent(job: PublisherChatCommentAttachJob): boolean {
+    // FLAG: Queue creation/redelivery never renews the original message's cleanup window.
+    // Legacy envelopes without the additive authenticated source clock retain the original.
+    const sourceAtMs =
+      typeof job.sourceCreatedAt === 'string' && job.sourceCreatedAt === job.sourceCreatedAt.trim()
+        ? Date.parse(job.sourceCreatedAt)
+        : NaN;
+    const now = Date.now();
+    return Number.isFinite(sourceAtMs) && sourceAtMs <= now && now - sourceAtMs < 24 * 60 * 60_000;
   }
 
   private async isSenderAdmin(

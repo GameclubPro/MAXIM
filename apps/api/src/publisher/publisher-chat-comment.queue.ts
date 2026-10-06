@@ -45,6 +45,8 @@ export type PublisherChatCommentAttachJob = QueueJobEnvelope<
     dialogBotId: string;
     publisherSettingsRevision?: number;
     publicationPolicyRevision?: number;
+    /** Authenticated original message time; absence never grants a fresh cleanup window. */
+    sourceCreatedAt?: string;
     button?: MaxMessageButton;
   },
   PublisherCommentJobMetadata
@@ -164,6 +166,7 @@ export class PublisherChatCommentQueueService {
     publicationPolicyRevision: number;
     button?: MaxMessageButton;
     createdAt?: Date;
+    sourceCreatedAt?: Date;
   }): Promise<void> {
     const markerId = this.requireString(params.markerId, 'markerId');
     const lockToken = this.requireString(params.lockToken, 'lockToken');
@@ -196,6 +199,9 @@ export class PublisherChatCommentQueueService {
         dialogBotId,
         publisherSettingsRevision,
         publicationPolicyRevision,
+        ...(params.sourceCreatedAt
+          ? { sourceCreatedAt: params.sourceCreatedAt.toISOString() }
+          : {}),
         ...(params.button ? { button: params.button } : {}),
         idempotencyKey: markerId,
         sourceTag: 'chat_auto_comment',

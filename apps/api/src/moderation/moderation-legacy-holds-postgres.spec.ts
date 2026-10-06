@@ -245,6 +245,60 @@ describeStores('native permanent legacy effect holds', () => {
     expect(s.effects).toHaveLength(0);
   });
 
+  it.each([1, 4, 9])(
+    'denies another-chat automatic moderation for the held author with %i bots and admits another author',
+    async (bots) => {
+      const { s, chatId, otherChatId } = await fixture(bots, { deleteSpammersEnabled: false });
+      const userId = `held-cross-chat-${randomUUID()}`;
+      const messageId = `new-cross-chat-${randomUUID()}`;
+      await installFixtureHold(s, chatId, `old-cross-chat-${randomUUID()}`, userId);
+      const holds = new WebhookLegacyHoldService(s.prisma as never);
+      expect(await holds.isMessageHeld(otherChatId, messageId)).toBe(false);
+      expect(await holds.isMemberHeld(otherChatId, userId)).toBe(false);
+      expect(await holds.isGlobalUserHeld(userId)).toBe(true);
+      const immunityBefore = await s.prisma.chatParticipantModerationImmunity.create({
+        data: {
+          chatId: otherChatId,
+          userId,
+          dailyViolationLimit: 5,
+          expiresAt: new Date(Date.now() + 3_600_000),
+        },
+      });
+      const detect = jest.spyOn((s.moderation as any).ruleEngine, 'detect');
+      const source = update(s, otherChatId, messageId, userId);
+      expect(await holds.isUpdateHeld(source)).toBe(true);
+      // FLAG: This consumer fixture installs an effect hold without receipt authority.
+      // Exercise the automatic engine directly; positive ingress disposition is covered
+      // by the separate native offline installer/ingestion suite.
+      await s.moderation.handleUpdate(source);
+      expect(detect).not.toHaveBeenCalled();
+      expect(await s.prisma.violation.count({ where: { chatId: otherChatId, userId } })).toBe(0);
+      expect(await s.prisma.moderationEvent.count({ where: { chatId: otherChatId, userId } })).toBe(
+        0,
+      );
+      expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId: otherChatId } })).toBe(
+        0,
+      );
+      expect(s.effects).toHaveLength(0);
+      expect(
+        await s.prisma.chatParticipantModerationImmunity.findUniqueOrThrow({
+          where: { id: immunityBefore.id },
+        }),
+      ).toEqual(immunityBefore);
+
+      const independent = update(s, otherChatId, `independent-${randomUUID()}`, 'independent-user');
+      const receipt = await s.ingress.storeReceipt(independent, null);
+      ownedReceiptIds.push(receipt.webhookEventId!);
+      expect(await s.ingress.preparePersistedWebhookEvent(receipt.webhookEventId!)).toMatchObject({
+        prepared: true,
+        enforced: true,
+      });
+      await s.moderation.processWebhookEvent(receipt.webhookEventId!);
+      expect(detect).toHaveBeenCalledTimes(1);
+      expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+    },
+  );
+
   it('ignores already warm global spammer caches and keeps queued global-delete immunity intact', async () => {
     const { s, chatId, otherChatId } = await fixture();
     const userId = `held-cached-global-${randomUUID()}`;
@@ -346,163 +400,180 @@ describeStores('native permanent legacy effect holds', () => {
     expect(s.effects).toHaveLength(0);
   });
 
-  it('settles a genuinely confirmed modern BAN after a hold without repeating BAN or sending its notice', async () => {
-    const { s, chatId } = await fixture(4, {
-      messageLimitsWarnEnabled: false,
-      messageLimitsBanEnabled: true,
-      deleteSpammersEnabled: false,
-    });
-    const messageId = `confirmed-ban-${randomUUID()}`;
-    const source = update(s, chatId, messageId);
-    const sourceAt = new Date(source.message!.createdAt);
-    const settings = await s.prisma.chatSettings.findUniqueOrThrow({ where: { chatId } });
-    await s.prisma.violation.createMany({
-      data: Array.from({ length: 3 }, () => ({
-        chatId,
-        userId: 'fixture-user',
-        ruleCode: 'MESSAGE_TOO_LONG',
-        score: 1,
-      })),
-    });
-    const result = await s.intents.ensureIntentWithRuleFollowup(
-      {
-        chatId,
-        messageId,
-        subjectUserId: 'fixture-user',
-        sourceMessageAt: sourceAt,
-        originBotId: s.bots[0]!.id,
-        routingPolicy: 'delete_capable',
-        entityType: 'CHAT',
-        messageAuthorKind: 'user',
-        reasonKey: 'MESSAGE_TOO_LONG:violation-delete',
-        ruleCode: 'MESSAGE_TOO_LONG_DELETE',
-        event: {
+  it.each(['same-chat', 'another-chat'])(
+    'settles a genuinely confirmed modern BAN after a %s hold without repeating BAN or sending its notice',
+    async (scope) => {
+      const {
+        s,
+        chatId: heldChatId,
+        otherChatId,
+      } = await fixture(4, {
+        messageLimitsWarnEnabled: false,
+        messageLimitsBanEnabled: true,
+        deleteSpammersEnabled: false,
+      });
+      const chatId = scope === 'same-chat' ? heldChatId : otherChatId;
+      const messageId = `confirmed-ban-${randomUUID()}`;
+      const source = update(s, chatId, messageId);
+      const sourceAt = new Date(source.message!.createdAt);
+      const settings = await s.prisma.chatSettings.findUniqueOrThrow({ where: { chatId } });
+      await s.prisma.violation.createMany({
+        data: Array.from({ length: 3 }, () => ({
+          chatId,
           userId: 'fixture-user',
-          eventType: 'MESSAGE',
+          ruleCode: 'MESSAGE_TOO_LONG',
           score: 1,
-          metadata: bindMessageLimitEvidence(
-            settings,
-            sourceAt.getTime(),
-            'MESSAGE_TOO_LONG_DELETE',
-          ),
+        })),
+      });
+      const result = await s.intents.ensureIntentWithRuleFollowup(
+        {
+          chatId,
+          messageId,
+          subjectUserId: 'fixture-user',
+          sourceMessageAt: sourceAt,
+          originBotId: s.bots[0]!.id,
+          routingPolicy: 'delete_capable',
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          reasonKey: 'MESSAGE_TOO_LONG:violation-delete',
+          ruleCode: 'MESSAGE_TOO_LONG_DELETE',
+          event: {
+            userId: 'fixture-user',
+            eventType: 'MESSAGE',
+            score: 1,
+            metadata: bindMessageLimitEvidence(
+              settings,
+              sourceAt.getTime(),
+              'MESSAGE_TOO_LONG_DELETE',
+            ),
+          },
         },
-      },
-      fingerprintModerationSettings(settings, 'MESSAGE_TOO_LONG_DELETE'),
-      {
-        version: 1,
-        updateType: 'message_created',
-        originBotId: s.bots[0]!.id,
-        userLabel: 'Fixture user',
-        effectiveMessageLength: 60,
-        rulesPublishedUrl: null,
-        rulesPublishedMessageId: null,
-      },
-    );
-    const row = await s.prisma.moderationRuleFollowup.findUniqueOrThrow({
-      where: { id: result.followupId! },
-    });
-    expect((await s.intents.attemptIntent(row.intentId)).confirmed).toBe(true);
-    const originalPersist = (s.moderation as any).persistRuleFollowupEvent.bind(s.moderation);
-    const crash = jest
-      .spyOn(s.moderation as any, 'persistRuleFollowupEvent')
-      .mockRejectedValueOnce(new Error('Consumer fixture stopped after confirmed BAN'));
-    await s.ruleFollowups.attempt(row.id);
-    expect(
-      (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } })).effects,
-    ).toMatchObject({ phase: 'BAN_CONFIRMED' });
-    expect(s.effects.filter((effect) => effect.path.endsWith('/members'))).toHaveLength(1);
-    crash.mockImplementation(originalPersist);
-    await installFixtureHold(s, chatId, messageId);
-    await s.prisma.moderationRuleFollowup.update({
-      where: { id: row.id },
-      data: {
-        nextAttemptAt: new Date(Date.now() - 1000),
-        leaseToken: null,
-        leaseExpiresAt: null,
-      },
-    });
-    await s.ruleFollowups.attempt(row.id);
-    expect(
-      await s.prisma.moderationEvent.count({ where: { chatId, messageId, action: 'BAN' } }),
-    ).toBe(1);
-    expect(s.effects.filter((effect) => effect.path.endsWith('/members'))).toHaveLength(1);
-    expect(
-      s.effects.filter((effect) => effect.method === 'post' && effect.path === '/messages'),
-    ).toHaveLength(0);
-  });
+        fingerprintModerationSettings(settings, 'MESSAGE_TOO_LONG_DELETE'),
+        {
+          version: 1,
+          updateType: 'message_created',
+          originBotId: s.bots[0]!.id,
+          userLabel: 'Fixture user',
+          effectiveMessageLength: 60,
+          rulesPublishedUrl: null,
+          rulesPublishedMessageId: null,
+        },
+      );
+      const row = await s.prisma.moderationRuleFollowup.findUniqueOrThrow({
+        where: { id: result.followupId! },
+      });
+      expect((await s.intents.attemptIntent(row.intentId)).confirmed).toBe(true);
+      const originalPersist = (s.moderation as any).persistRuleFollowupEvent.bind(s.moderation);
+      const crash = jest
+        .spyOn(s.moderation as any, 'persistRuleFollowupEvent')
+        .mockRejectedValueOnce(new Error('Consumer fixture stopped after confirmed BAN'));
+      await s.ruleFollowups.attempt(row.id);
+      expect(
+        (await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } }))
+          .effects,
+      ).toMatchObject({ phase: 'BAN_CONFIRMED' });
+      expect(s.effects.filter((effect) => effect.path.endsWith('/members'))).toHaveLength(1);
+      crash.mockImplementation(originalPersist);
+      await installFixtureHold(s, heldChatId, messageId);
+      await s.prisma.moderationRuleFollowup.update({
+        where: { id: row.id },
+        data: {
+          nextAttemptAt: new Date(Date.now() - 1000),
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+      await s.ruleFollowups.attempt(row.id);
+      expect(
+        await s.prisma.moderationEvent.count({ where: { chatId, messageId, action: 'BAN' } }),
+      ).toBe(1);
+      expect(s.effects.filter((effect) => effect.path.endsWith('/members'))).toHaveLength(1);
+      expect(
+        s.effects.filter((effect) => effect.method === 'post' && effect.path === '/messages'),
+      ).toHaveLength(0);
+    },
+  );
 
-  it('cancels a held unprepared followup before author access or immunity consumption', async () => {
-    const { s, chatId } = await fixture();
-    const messageId = `unprepared-followup-${randomUUID()}`;
-    const source = update(s, chatId, messageId);
-    const sourceAt = new Date(source.message!.createdAt);
-    const settings = await s.prisma.chatSettings.findUniqueOrThrow({ where: { chatId } });
-    const pending = await s.intents.ensureIntentWithRuleFollowup(
-      {
-        chatId,
-        messageId,
-        subjectUserId: 'fixture-user',
-        sourceMessageAt: sourceAt,
-        originBotId: s.bots[0]!.id,
-        entityType: 'CHAT',
-        messageAuthorKind: 'user',
-        reasonKey: 'MESSAGE_TOO_LONG:violation-delete',
-        ruleCode: 'MESSAGE_TOO_LONG_DELETE',
-        event: {
-          userId: 'fixture-user',
-          eventType: 'MESSAGE',
-          metadata: bindMessageLimitEvidence(
-            settings,
-            sourceAt.getTime(),
-            'MESSAGE_TOO_LONG_DELETE',
-          ),
+  it.each(['same-chat', 'another-chat'])(
+    'cancels a %s held unprepared followup before author access or immunity consumption',
+    async (scope) => {
+      const { s, chatId: heldChatId, otherChatId } = await fixture();
+      const chatId = scope === 'same-chat' ? heldChatId : otherChatId;
+      const messageId = `unprepared-followup-${randomUUID()}`;
+      const source = update(s, chatId, messageId);
+      const sourceAt = new Date(source.message!.createdAt);
+      const settings = await s.prisma.chatSettings.findUniqueOrThrow({ where: { chatId } });
+      const pending = await s.intents.ensureIntentWithRuleFollowup(
+        {
+          chatId,
+          messageId,
+          subjectUserId: 'fixture-user',
+          sourceMessageAt: sourceAt,
+          originBotId: s.bots[0]!.id,
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          reasonKey: 'MESSAGE_TOO_LONG:violation-delete',
+          ruleCode: 'MESSAGE_TOO_LONG_DELETE',
+          event: {
+            userId: 'fixture-user',
+            eventType: 'MESSAGE',
+            metadata: bindMessageLimitEvidence(
+              settings,
+              sourceAt.getTime(),
+              'MESSAGE_TOO_LONG_DELETE',
+            ),
+          },
         },
-      },
-      fingerprintModerationSettings(settings, 'MESSAGE_TOO_LONG_DELETE'),
-      {
-        version: 1,
-        updateType: 'message_created',
-        originBotId: s.bots[0]!.id,
-        userLabel: 'Fixture user',
-        effectiveMessageLength: 60,
-        rulesPublishedUrl: null,
-        rulesPublishedMessageId: null,
-      },
-    );
-    const persistedIntent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
-      where: { chatId_messageId: { chatId, messageId } },
-      select: { id: true },
-    });
-    expect((await s.intents.attemptIntent(persistedIntent.id)).confirmed).toBe(true);
-    const requestsBefore = s.requests.length;
-    const effectsBefore = s.effects.length;
-    const immunityBefore = await s.prisma.chatParticipantModerationImmunity.create({
-      data: {
-        chatId,
-        userId: 'fixture-user',
-        dailyViolationLimit: 5,
-        expiresAt: new Date(Date.now() + 3_600_000),
-      },
-    });
-    await installFixtureHold(s, chatId, messageId);
-    expect(await s.ruleFollowups.attempt(pending.followupId!)).toBe(true);
-    expect(
-      await s.prisma.moderationRuleFollowup.findUniqueOrThrow({
-        where: { id: pending.followupId! },
-      }),
-    ).toMatchObject({
-      status: 'CANCELLED',
-      actionPlan: null,
-    });
-    expect(
-      await s.prisma.chatParticipantModerationImmunity.findUniqueOrThrow({
-        where: { id: immunityBefore.id },
-      }),
-    ).toEqual(immunityBefore);
-    expect(s.requests).toHaveLength(requestsBefore);
-    expect(s.effects).toHaveLength(effectsBefore);
-    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
-  });
+        fingerprintModerationSettings(settings, 'MESSAGE_TOO_LONG_DELETE'),
+        {
+          version: 1,
+          updateType: 'message_created',
+          originBotId: s.bots[0]!.id,
+          userLabel: 'Fixture user',
+          effectiveMessageLength: 60,
+          rulesPublishedUrl: null,
+          rulesPublishedMessageId: null,
+        },
+      );
+      const persistedIntent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId, messageId } },
+        select: { id: true },
+      });
+      expect((await s.intents.attemptIntent(persistedIntent.id)).confirmed).toBe(true);
+      const requestsBefore = s.requests.length;
+      const effectsBefore = s.effects.length;
+      const immunityBefore = await s.prisma.chatParticipantModerationImmunity.create({
+        data: {
+          chatId,
+          userId: 'fixture-user',
+          dailyViolationLimit: 5,
+          expiresAt: new Date(Date.now() + 3_600_000),
+        },
+      });
+      await installFixtureHold(s, heldChatId, messageId);
+      const holds = new WebhookLegacyHoldService(s.prisma as never);
+      expect(await holds.isGlobalUserHeld('fixture-user')).toBe(true);
+      expect(await holds.isMemberHeld(chatId, 'fixture-user')).toBe(scope === 'same-chat');
+      expect(await holds.isMessageHeld(chatId, messageId)).toBe(scope === 'same-chat');
+      expect(await s.ruleFollowups.attempt(pending.followupId!)).toBe(true);
+      expect(
+        await s.prisma.moderationRuleFollowup.findUniqueOrThrow({
+          where: { id: pending.followupId! },
+        }),
+      ).toMatchObject({
+        status: 'CANCELLED',
+        actionPlan: null,
+      });
+      expect(
+        await s.prisma.chatParticipantModerationImmunity.findUniqueOrThrow({
+          where: { id: immunityBefore.id },
+        }),
+      ).toEqual(immunityBefore);
+      expect(s.requests).toHaveLength(requestsBefore);
+      expect(s.effects).toHaveLength(effectsBefore);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+    },
+  );
 
   it('uses the real durable reader and leaves an unrelated actor outside the hold', async () => {
     const { s, chatId } = await fixture();

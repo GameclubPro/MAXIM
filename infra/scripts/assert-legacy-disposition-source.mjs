@@ -10,6 +10,9 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'async isMessageHeld(',
       'async hasChatHolds(',
       "'PrivateControlService',",
+      "'MessageRetentionStore',",
+      "'PublisherChatCommentProducerService',",
+      "'PublisherChatCommentDeliveryService',",
       'async isMemberHeld(',
       'async isGlobalUserHeld(',
       'async isOutboundJobHeld(',
@@ -64,7 +67,47 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
   ],
   [
     'apps/api/src/moderation/moderation-rule-followup.service.ts',
-    ['await this.legacyHolds?.isMessageHeld(', 'await this.legacyHolds?.isMemberHeld('],
+    [
+      'await this.legacyHolds?.isMessageHeld(',
+      'await this.legacyHolds?.isMemberHeld(',
+      'await this.legacyHolds?.isGlobalUserHeld(',
+    ],
+  ],
+  [
+    'apps/api/src/message-retention/message-retention-store.service.ts',
+    [
+      'WebhookLegacyHoldService.forPrisma(this.prisma)',
+      'await holds?.isMessageHeld(',
+      'await holds?.isMemberHeld(',
+      'await holds?.isGlobalUserHeld(',
+    ],
+  ],
+  [
+    'apps/api/src/publisher/publisher-chat-comment-producer.service.ts',
+    [
+      'private readonly legacyHolds: WebhookLegacyHoldService',
+      'legacyHolds.isMessageHeld(',
+      'legacyHolds.isMemberHeld(',
+      'legacyHolds.isGlobalUserHeld(',
+    ],
+  ],
+  [
+    'apps/api/src/publisher/publisher-chat-comment-delivery.service.ts',
+    [
+      'private readonly legacyHolds: WebhookLegacyHoldService',
+      'legacyHolds.isMessageHeld(',
+      'legacyHolds.isMemberHeld(',
+      'legacyHolds.isGlobalUserHeld(',
+      'moderationSource: {',
+    ],
+  ],
+  [
+    'apps/api/src/moderation/photo-duplicate/photo-duplicate-moderation.service.ts',
+    ['NO_REPLAY_HELD'],
+  ],
+  [
+    'apps/api/src/moderation/commercial-ocr/commercial-ocr-moderation.service.ts',
+    ['NO_REPLAY_HELD'],
   ],
   [
     'apps/api/src/moderation/global-spammer-intelligence.service.ts',

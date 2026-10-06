@@ -36,6 +36,9 @@ const protectedProviders = new Set([
   'ModerationRuleFollowupService',
   'GlobalSpammerIntelligenceService',
   'PrivateControlService',
+  'MessageRetentionStore',
+  'PublisherChatCommentProducerService',
+  'PublisherChatCommentDeliveryService',
 ]);
 const instances = new WeakMap<object, WebhookLegacyHoldService>();
 

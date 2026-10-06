@@ -101,6 +101,11 @@ function fixture() {
     prisma as never,
     queue as never,
     config as never,
+    {
+      isMessageHeld: jest.fn().mockResolvedValue(false),
+      isMemberHeld: jest.fn().mockResolvedValue(false),
+      isGlobalUserHeld: jest.fn().mockResolvedValue(false),
+    } as never,
   );
   const update: MaxUpdate = {
     updateId: 'update-1',

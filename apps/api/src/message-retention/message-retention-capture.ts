@@ -21,6 +21,7 @@ export async function captureRetentionMessage(
   tx: Prisma.TransactionClient,
   input: RetentionCapture,
   shadowOnly: boolean,
+  isSourceHeld?: () => Promise<boolean>,
 ): Promise<boolean> {
   const eligible = await tx.$queryRaw<Array<{ shard: number }>>(Prisma.sql`
     SELECT p."quota_shard" AS "shard"
@@ -41,6 +42,9 @@ export async function captureRetentionMessage(
   `);
   const shard = eligible[0]?.shard;
   if (shard === undefined) return false;
+  // FLAG: Read eligibility first so disabled chats stay on the cheap path. A held
+  // receipt may be saved, but must not lock/charge quota or pause a shared shard.
+  if (isSourceHeld && (await isSourceHeld())) return false;
 
   // FLAG: Materialization locks quota before policy. The following statement gets a
   // fresh snapshot after lock waits, so mirrored receipts cannot consume duplicate credit.

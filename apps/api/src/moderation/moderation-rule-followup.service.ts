@@ -298,7 +298,8 @@ export class ModerationRuleFollowupService
     // transaction's durable hold recheck. Existing plans retain receipt recovery.
     if (
       (await this.legacyHolds?.isMessageHeld(row.chatId, row.messageId)) ||
-      (await this.legacyHolds?.isMemberHeld(row.chatId, row.userId))
+      (await this.legacyHolds?.isMemberHeld(row.chatId, row.userId)) ||
+      (await this.legacyHolds?.isGlobalUserHeld(row.userId))
     )
       return null;
     const envelope = readRuleFollowupEnvelope(row.envelope)!;
@@ -341,7 +342,8 @@ export class ModerationRuleFollowupService
       // never consume legacy participant evidence while its durable hold remains.
       if (
         (await this.legacyHolds?.isMessageHeld(row.chatId, row.messageId, tx)) ||
-        (await this.legacyHolds?.isMemberHeld(row.chatId, row.userId, tx))
+        (await this.legacyHolds?.isMemberHeld(row.chatId, row.userId, tx)) ||
+        (await this.legacyHolds?.isGlobalUserHeld(row.userId, tx))
       )
         return null;
       await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "chats" WHERE "id" = ${row.chatId} FOR SHARE`);

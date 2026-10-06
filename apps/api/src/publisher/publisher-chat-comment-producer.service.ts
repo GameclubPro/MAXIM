@@ -10,6 +10,7 @@ import {
   ManagedEntityAccessState,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
 import {
   buildChatAutoCommentAuditId,
   ReplacementAttachMarkerStore,
@@ -48,6 +49,7 @@ export class PublisherChatCommentProducerService {
     private readonly prisma: PrismaService,
     private readonly queue: PublisherChatCommentQueueService,
     configService: ConfigService,
+    private readonly legacyHolds: WebhookLegacyHoldService,
   ) {
     this.markerStore = new ReplacementAttachMarkerStore(prisma);
     this.publisherBotId = buildPublisherBotDescriptor({
@@ -74,6 +76,17 @@ export class PublisherChatCommentProducerService {
     if (!chatId || !messageId || !senderId) {
       return;
     }
+
+    // FLAG: Duplicate webhook repair reaches this producer without canonical preparation.
+    // Automatic effects retain the original author scope; explicit publications are independent.
+    if (
+      (await this.legacyHolds.isMessageHeld(chatId, messageId)) ||
+      (await this.legacyHolds.isMemberHeld(chatId, senderId)) ||
+      (await this.legacyHolds.isGlobalUserHeld(senderId))
+    )
+      return;
+
+    const sourceCreatedAt = new Date(update.message?.createdAt ?? '');
 
     const now = new Date();
     const legacyGraceStart = new Date(now.getTime() - PUBLISHER_ACCESS_LEGACY_GRACE_MS);
@@ -203,6 +216,7 @@ export class PublisherChatCommentProducerService {
         dialogBotId: this.publisherBotId,
         publisherSettingsRevision: entity.publisherSettings.revision,
         publicationPolicyRevision,
+        ...(Number.isFinite(sourceCreatedAt.getTime()) ? { sourceCreatedAt } : {}),
       });
     } catch (error: unknown) {
       if (error instanceof PublisherChatCommentAdmissionError) {

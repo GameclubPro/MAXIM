@@ -49,6 +49,7 @@ describe('PublisherChatCommentQueueService', () => {
       publicationPolicyRevision: 3,
       button: { type: 'link', text: 'Comments', url: 'https://max.ru/main-bot?startapp=x' },
       createdAt: new Date('2026-08-26T09:00:00.000Z'),
+      sourceCreatedAt: new Date('2026-08-26T08:59:00.000Z'),
     });
 
     expect(queue.add).toHaveBeenCalledWith(
@@ -62,6 +63,7 @@ describe('PublisherChatCommentQueueService', () => {
         publicationPolicyRevision: 3,
         retryPolicyName: 'publisher-chat-comment',
         createdAt: '2026-08-26T09:00:00.000Z',
+        sourceCreatedAt: '2026-08-26T08:59:00.000Z',
       }),
       expect.objectContaining({
         attempts: 12,

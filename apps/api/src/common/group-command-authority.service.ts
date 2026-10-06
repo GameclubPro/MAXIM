@@ -1,3 +1,5 @@
+import { buildGroupCommandKey } from './group-command-key';
+export { buildGroupCommandKey } from './group-command-key';
 import { Injectable, Optional } from '@nestjs/common';
 import {
   WebhookLegacyHoldService,
@@ -122,14 +124,6 @@ export async function runGroupCommandWithAuthority(
     await authority.release(permit);
     throw error;
   }
-}
-
-export function buildGroupCommandKey(chatId: string, messageId: string): string {
-  if (!chatId.trim() || !messageId.trim())
-    throw new Error('Group command requires chat/message identity');
-  return `group-command:v1:${createHash('sha256')
-    .update(JSON.stringify([chatId, messageId]))
-    .digest('hex')}`;
 }
 
 export function buildLegacyStartLedgerKey(chatId: string, updateId: string, botId: string): string {

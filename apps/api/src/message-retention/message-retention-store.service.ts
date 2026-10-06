@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { MaxUpdate } from '@maxim/contracts';
 import type { MessageRetentionSummary } from '@maxim/contracts/settings';
@@ -9,6 +9,7 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
+import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
 import { captureRetentionMessage } from './message-retention-capture';
 import { purgeRetentionPage, type RetentionPurgeCursor } from './message-retention-purge';
 import { discoverRetentionReceipts } from './message-retention-recovery';
@@ -44,7 +45,12 @@ export class MessageRetentionStore {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    @Optional() private readonly injectedLegacyHolds?: WebhookLegacyHoldService,
   ) {}
+
+  private get legacyHolds(): WebhookLegacyHoldService | undefined {
+    return this.injectedLegacyHolds ?? WebhookLegacyHoldService.forPrisma(this.prisma);
+  }
 
   get mode(): string {
     return this.config.get<string>('MESSAGE_RETENTION_MODE', 'off');
@@ -120,7 +126,18 @@ export class MessageRetentionStore {
   }
 
   async capture(tx: Prisma.TransactionClient, input: RetentionCapture): Promise<void> {
-    if (await captureRetentionMessage(tx, input, this.mode === 'shadow'))
+    // FLAG: Keep the authenticated raw receipt, but admit no new automatic deletion
+    // candidate or shared quota/pause effects for an exactly held source or global user.
+    const holds = this.legacyHolds;
+    if (
+      await captureRetentionMessage(tx, input, this.mode === 'shadow', async () =>
+        Boolean(
+          (await holds?.isMessageHeld(input.chatId, input.messageId, tx)) ||
+          (await holds?.isMemberHeld(input.chatId, input.authorId, tx)) ||
+          (await holds?.isGlobalUserHeld(input.authorId, tx)),
+        ),
+      )
+    )
       this.logger.warn('Message retention intake paused by capacity guard');
   }
 

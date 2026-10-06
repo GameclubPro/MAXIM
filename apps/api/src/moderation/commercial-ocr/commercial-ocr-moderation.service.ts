@@ -844,6 +844,12 @@ export class CommercialOcrModerationService {
       };
     }
     let webhookEvent: CommercialOcrWebhookSource = initialWebhookEvent;
+    // FLAG: A permanent no-replay disposition is terminal and cannot be rebound
+    // through a semantic owner to manufacture new OCR action authority.
+    if (String(webhookEvent.status) === 'NO_REPLAY_HELD') {
+      this.metrics.recordCounter('source.receipt.no_replay_held');
+      return { kind: 'terminal' };
+    }
     if (webhookEvent.status === WebhookStatus.DUPLICATE) {
       const owner = await this.loadCompletedSemanticOwner(job, webhookEvent.normalizedPayload);
       if (owner.kind !== 'ready') {
@@ -1262,6 +1268,9 @@ export class CommercialOcrModerationService {
       !semanticClaim.webhookEventId ||
       semanticClaim.webhookEventId === job.webhookEventId
     ) {
+      return { kind: 'terminal' };
+    }
+    if (String(semanticClaim.webhookEvent?.status) === 'NO_REPLAY_HELD') {
       return { kind: 'terminal' };
     }
     if (
