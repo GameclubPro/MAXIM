@@ -226,7 +226,8 @@ export class WebhookCanonicalExecutionService {
     }
 
     const normalizedUpdateType = update.type.trim().toLowerCase();
-    const preparedObservationOnly = normalizedUpdateType === 'user_removed';
+    const preparedObservationOnly =
+      normalizedUpdateType === 'user_removed' || normalizedUpdateType === 'bot_removed';
     const executionClaimModel = this.executionClaimModel;
     const semanticKey = buildWebhookSemanticEventKey(update);
     if (semanticKey && !webhookEvent.semanticKey) {

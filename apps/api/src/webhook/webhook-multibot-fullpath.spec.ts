@@ -10,9 +10,11 @@ import { MaxApiInternalRateLimitError, type MaxActionJob } from '../max/max-clie
 import { MaxActionDispatchService } from '../max/max-action-dispatch.service';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import { MaxActionProcessor } from '../max/max-action.processor';
+import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { Prisma } from '../prisma/prisma-client';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { WebhookParser } from './webhook.parser';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
@@ -338,6 +340,301 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       leaseExpiresAt: null,
     });
   });
+
+  it.each([false, true])(
+    'settles actual bot_removed after the last membership is revoked, local preparation retry=%s',
+    async (retryPreparation) => {
+      const s = await fixture(1, 'on');
+      await s.pause();
+      const chatId = (await s.seedCatalog(1))[0]!;
+      const botId = s.bots[0]!.id;
+      const removedAt = Date.now();
+      await seedRemovalAccess(s, chatId, botId, removedAt);
+      await s.prisma.managedBotChatCatalog.create({
+        data: { chatId, botId, status: 'ACTIVE', lastSeenAt: new Date(removedAt - 1_000) },
+      });
+      const cleanupQueue = { add: jest.fn().mockResolvedValue({}) };
+      const roster = { scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(undefined) };
+      Object.assign(s.ingress, {
+        chatContextCache: s.cache,
+        membershipLookupService: s.membership,
+        maxChatAdminRosterSyncService: roster,
+        managedEntityAccessLossService: new ManagedEntityAccessLossService(
+          s.prisma as never,
+          s.links,
+          s.cache,
+          undefined,
+          cleanupQueue as never,
+        ),
+      });
+      const update = new WebhookParser().parse(
+        {
+          update_id: randomUUID(),
+          update_type: 'bot_removed',
+          chat_id: chatId,
+          timestamp: removedAt,
+          user: { user_id: 'fixture-user', first_name: 'Fixture actor' },
+          callback: {
+            callback_id: randomUUID(),
+            payload: 'injected-poll-callback',
+            user: { user_id: 'fixture-user' },
+          },
+        },
+        { botId },
+      );
+      expect(update.membership).toEqual({ action: 'removed', memberUserIds: [botId] });
+      const id = (await s.ingress.storeReceipt(update, null)).webhookEventId!;
+      s.receiptIds.push(id);
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const poll = {
+        tryHandleCallback: jest
+          .fn()
+          .mockRejectedValue(new Error('Removed bot cannot dispatch poll effects')),
+      };
+      Object.assign(s.moderation, { managedPollService: poll });
+      if (retryPreparation) {
+        const readModels = jest
+          .spyOn(
+            s.ingress as unknown as { persistAdminReadModels(update: MaxUpdate): Promise<void> },
+            'persistAdminReadModels',
+          )
+          .mockRejectedValueOnce(new Error('Fixture local read models pending'));
+        await expect(s.ingress.preparePersistedWebhookEvent(id)).rejects.toThrow(
+          'Fixture local read models pending',
+        );
+        expect(
+          await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+            where: { webhookEventId: id, kind: 'EXECUTION' },
+          }),
+        ).toMatchObject({ status: 'PENDING', preparedAt: null, businessStartedAt: null });
+        expect(
+          await s.prisma.chatBotMembership.findUniqueOrThrow({
+            where: { chatId_botId: { chatId, botId } },
+          }),
+        ).toMatchObject({ status: 'REMOVED', lifecycleEventType: 'bot_removed' });
+        await expect(s.moderation.processWebhookEvent(id)).rejects.toThrow(
+          'Canonical webhook claim is not ready',
+        );
+        expect(handler).not.toHaveBeenCalled();
+        expect(s.effects).toEqual([]);
+        readModels.mockRestore();
+      }
+      await expect(s.ingress.preparePersistedWebhookEvent(id)).resolves.toMatchObject({
+        canonical: true,
+        prepared: true,
+        executionBotId: null,
+      });
+      const prepared = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: id, kind: 'EXECUTION' },
+      });
+      expect(prepared).toMatchObject({
+        status: 'READY',
+        preparedAt: expect.any(Date),
+        businessStartedAt: null,
+        executionBotId: null,
+        commandResult: null,
+      });
+      const removedMembership = await s.prisma.chatBotMembership.findUniqueOrThrow({
+        where: { chatId_botId: { chatId, botId } },
+      });
+      expect(removedMembership).toMatchObject({
+        status: 'REMOVED',
+        role: 'STANDBY',
+        lifecycleEventAt: new Date(removedAt),
+        lifecycleEventType: 'bot_removed',
+        lifecycleSource: 'webhook',
+      });
+      expect(await s.prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).toMatchObject({
+        primaryBotId: null,
+        botId: null,
+        routingState: 'NO_ELIGIBLE_BOT',
+      });
+      expect(
+        await s.prisma.managedEntityAccessEdge.findUniqueOrThrow({
+          where: { chatId_userId_botId: { chatId, userId: 'fixture-user', botId } },
+        }),
+      ).toMatchObject({ state: 'BOT_DENIED', deniedReason: 'bot_removed' });
+      expect(await s.prisma.managedEntityAdminMember.count({ where: { chatId } })).toBe(0);
+      expect(
+        await s.prisma.managedBotChatCatalog.findUniqueOrThrow({
+          where: { botId_chatId: { chatId, botId } },
+        }),
+      ).toMatchObject({ status: 'REMOVED' });
+      expect(cleanupQueue.add).toHaveBeenCalled();
+      expect(roster.scheduleChatAdminRosterSync).toHaveBeenCalled();
+      expect(await s.readiness.ensureReady({ chatId })).toBeNull();
+      const readiness = jest.spyOn(s.readiness, 'ensureReady');
+      await s.moderation.processWebhookEvent(id);
+      await s.moderation.processWebhookEvent(id);
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'PROCESSED',
+      });
+      expect(
+        await s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: prepared.id } }),
+      ).toMatchObject({
+        status: 'COMPLETED',
+        preparedAt: prepared.preparedAt,
+        businessStartedAt: expect.any(Date),
+        executionBotId: botId,
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+        leaseToken: null,
+        leaseExpiresAt: null,
+      });
+      expect(
+        await s.prisma.chatBotMembership.findUniqueOrThrow({
+          where: { chatId_botId: { chatId, botId } },
+        }),
+      ).toEqual(removedMembership);
+      expect(readiness).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+      expect(poll.tryHandleCallback).not.toHaveBeenCalled();
+      expect(s.effects).toEqual([]);
+    },
+  );
+
+  async function seedRemovalAccess(
+    s: MultibotHarness,
+    chatId: string,
+    botId: string,
+    removedAt: number,
+  ) {
+    const checkedAt = new Date(removedAt - 1_000);
+    await s.prisma.chatAdminAllowlist.create({ data: { chatId, userId: 'fixture-user' } });
+    await s.prisma.managedEntityAccessEdge.create({
+      data: {
+        chatId,
+        userId: 'fixture-user',
+        botId,
+        state: 'GRANTED',
+        userRole: 'ADMIN',
+        botRole: 'ADMIN',
+        checkedAt,
+      },
+    });
+    await s.prisma.managedEntityAdminMember.create({
+      data: { chatId, userId: 'fixture-user', observedByBotId: botId, checkedAt },
+    });
+  }
+
+  it.each([false, true])(
+    'prepares actual user_removed with no eligible route before admission, stored owner=%s',
+    async (keepStoredOwner) => {
+      const s = await fixture(1, 'on');
+      await s.pause();
+      const chatId = (await s.seedCatalog(1))[0]!;
+      const botId = s.bots[0]!.id;
+      await s.demote(chatId, botId);
+      expect(await s.readiness.ensureReady({ chatId })).toBeNull();
+      if (keepStoredOwner)
+        await s.prisma.chat.update({
+          where: { id: chatId },
+          data: { primaryBotId: botId, botId, routingState: 'READY' },
+        });
+      const removedAt = Date.now();
+      await seedRemovalAccess(s, chatId, botId, removedAt);
+      const update = new WebhookParser().parse(
+        {
+          update_id: randomUUID(),
+          update_type: 'user_removed',
+          chat_id: chatId,
+          timestamp: removedAt,
+          user: { user_id: 'fixture-user', first_name: 'Fixture removed' },
+          callback: {
+            callback_id: randomUUID(),
+            payload: 'injected-poll-callback',
+            user: { user_id: 'fixture-user' },
+          },
+        },
+        { botId },
+      );
+      const id = (await s.ingress.storeReceipt(update, null)).webhookEventId!;
+      s.receiptIds.push(id);
+      const readiness = jest.spyOn(s.readiness, 'ensureReady');
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const cachePublication = jest.spyOn(s.cache, 'applyAdminAccessEpochMutation');
+      const roster = {
+        scheduleChatAdminRosterSync: jest
+          .fn()
+          .mockRejectedValueOnce(new Error('Fixture roster handoff pending'))
+          .mockResolvedValue(undefined),
+      };
+      const poll = { tryHandleCallback: jest.fn() };
+      Object.assign(s.ingress, {
+        chatContextCache: s.cache,
+        membershipLookupService: s.membership,
+        maxChatAdminRosterSyncService: roster,
+      });
+      Object.assign(s.moderation, { managedPollService: poll });
+      const requestCount = s.requests.length;
+      await expect(s.ingress.preparePersistedWebhookEvent(id)).rejects.toThrow(
+        'Chat admin roster handoff pending',
+      );
+      expect(
+        await s.prisma.webhookExecutionClaim.findFirstOrThrow({ where: { webhookEventId: id } }),
+      ).toMatchObject({ status: 'PENDING', preparedAt: null, businessStartedAt: null });
+      await expect(s.moderation.processWebhookEvent(id)).rejects.toThrow(
+        'Canonical webhook claim is not ready',
+      );
+      expect(
+        await s.prisma.managedEntityAccessEdge.findUniqueOrThrow({
+          where: { chatId_userId_botId: { chatId, userId: 'fixture-user', botId } },
+        }),
+      ).toMatchObject({
+        state: 'USER_DENIED',
+        checkedAt: new Date(removedAt),
+        source: 'webhook_user_removed',
+      });
+      expect(await s.prisma.chatAdminAllowlist.count({ where: { chatId } })).toBe(0);
+      expect(await s.prisma.managedEntityAdminMember.count({ where: { chatId } })).toBe(0);
+      expect(cachePublication).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId, userId: 'fixture-user', state: 'user_denied' }),
+        expect.any(Object),
+      );
+      await expect(s.ingress.preparePersistedWebhookEvent(id)).resolves.toMatchObject({
+        canonical: true,
+        prepared: true,
+        executionBotId: keepStoredOwner ? botId : null,
+      });
+      expect(
+        await s.prisma.chatMembershipActivityEvent.count({
+          where: { chatId, userId: 'fixture-user', eventType: 'user_removed' },
+        }),
+      ).toBe(1);
+      expect(
+        await s.prisma.chatUserDisplayName.findUniqueOrThrow({
+          where: { chatId_userId: { chatId, userId: 'fixture-user' } },
+        }),
+      ).toMatchObject({ displayName: 'Fixture removed', observedAt: new Date(removedAt) });
+      const membership = await s.prisma.chatBotMembership.findUniqueOrThrow({
+        where: { chatId_botId: { chatId, botId } },
+      });
+      expect(membership).toMatchObject({ botAccessState: 'CONFIRMED_MEMBER' });
+      await s.moderation.processWebhookEvent(id);
+      await s.moderation.processWebhookEvent(id);
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'PROCESSED',
+      });
+      expect(
+        await s.prisma.webhookExecutionClaim.findFirstOrThrow({ where: { webhookEventId: id } }),
+      ).toMatchObject({
+        status: 'COMPLETED',
+        executionBotId: botId,
+        preparedAt: expect.any(Date),
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+      expect(
+        await s.prisma.chatBotMembership.findUniqueOrThrow({
+          where: { chatId_botId: { chatId, botId } },
+        }),
+      ).toEqual(membership);
+      expect(roster.scheduleChatAdminRosterSync).toHaveBeenCalledTimes(2);
+      expect(readiness).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+      expect(poll.tryHandleCallback).not.toHaveBeenCalled();
+      expect(s.requests).toHaveLength(requestCount);
+      expect(s.effects).toEqual([]);
+    },
+  );
 
   async function removedObservationFixture() {
     const s = await fixture(2, 'on');
