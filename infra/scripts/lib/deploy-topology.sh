@@ -154,7 +154,15 @@ maxim_topology_require_image_text_stop_list_delete_guard() {
       const methodDefinition =
         /private async assertImageTextStopListDeleteIntentStillActionable\s*\(/gu;
       const methodCall =
-        /await\s+this\.assertImageTextStopListDeleteIntentStillActionable\(intent,\s*botId\);/gu;
+        /await\s+this\.assertImageTextStopListDeleteIntentStillActionable\(\s*intent,\s*botId\s*,?\s*\);/gu;
+      // FLAG: Accept the legacy void guard or the value-returning guard with its
+      // exact absence rejection. A bare call must not discard an absent result.
+      const legacyVoidDefinition =
+        /private async assertImageTextStopListDeleteIntentStillActionable\(\s*intent:\s*IntentRow,\s*botId:\s*string\s*,?\s*\):\s*Promise<void>\s*\{/gu;
+      const legacyCall =
+        /(?:^|\n)\s*await\s+this\.assertImageTextStopListDeleteIntentStillActionable\(\s*intent,\s*botId\s*,?\s*\);/gu;
+      const checkedCall =
+        /(?:^|\n)\s*const imageTextStopListGuard\s*=\s*await\s+this\.assertImageTextStopListDeleteIntentStillActionable\(\s*intent,\s*botId\s*,?\s*\);\s*if\s*\(imageTextStopListGuard\s*===\s*\x27absent\x27\)\s*\{\s*throw new ModerationDeleteGuardedMessageAbsentError\(\s*\x27guarded_image_text_stop_list_predispatch_exact_absence\x27\s*,?\s*\);\s*\}/gu;
       if (
         exactCount(binding, bindingVersion) !== 1 ||
         exactCount(executor, methodDefinition) !== 1 ||
@@ -168,9 +176,14 @@ maxim_topology_require_image_text_stop_list_delete_guard() {
       const guardEnd = executor.indexOf("\n  private ", guardStart + 1);
       const callAt = executor.search(methodCall);
       const dispatchAt = executor.indexOf("await options?.beforeDeleteMutation?.();", guardStart);
+      const checked = [...executor.matchAll(checkedCall)];
+      const resultHandled = checked.length === 1 && checked[0].index > guardStart &&
+        checked[0].index + checked[0][0].length < dispatchAt;
+      const legacyVoid = exactCount(executor, legacyVoidDefinition) === 1 &&
+        exactCount(executor, legacyCall) === 1;
       const valid =
         guardStart >= 0 && guardEnd > guardStart && callAt > guardStart && callAt < guardEnd &&
-        dispatchAt > callAt && dispatchAt < guardEnd;
+        dispatchAt > callAt && dispatchAt < guardEnd && (resultHandled || legacyVoid);
       process.exit(valid ? 0 : 1);
     ' >/dev/null 2>&1; then
     echo "Rollback target lacks the reviewed image-text stop-list pre-dispatch guard capability." >&2
