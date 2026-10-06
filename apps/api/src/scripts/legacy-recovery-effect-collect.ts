@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { type Readable, type Writable } from 'node:stream';
 import Redis from 'ioredis';
 import { Prisma, createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
@@ -179,7 +180,7 @@ export async function readLegacyRecoveryLiveStdin(input: Readable): Promise<stri
 }
 
 // FLAG: SQL is read-only and uses one snapshot. This command never constructs Nest,
-// workers, queue writers or MAX clients. Production activation stays hard-disabled.
+// workers, queue writers or MAX clients. This read-only entrypoint cannot authorize activation.
 export async function runLegacyRecoveryLiveCli(
   input: Readable = process.stdin,
   output: Writable = process.stdout,
@@ -197,7 +198,7 @@ export async function runLegacyRecoveryLiveCli(
     if (!databaseUrl || !redisUrl) throw new Error('Offline stores unavailable');
     prisma = createPrismaClient(databaseUrl, {
       max: 1,
-      application_name: 'maxim-legacy-readonly-preview',
+      application_name: `maxim-legacy-preview:${randomUUID()}`,
       connectionTimeoutMillis: 3_000,
       statement_timeout: 5_000,
       options: '-c default_transaction_read_only=on',
