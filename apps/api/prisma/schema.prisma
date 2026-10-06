@@ -2546,7 +2546,7 @@ model WebhookLegacyRecovery {
   settingsSnapshot Json @map("settings_snapshot")
   certificateId String @map("certificate_id")
   createdAt DateTime @default(now()) @map("created_at")
-  certificate WebhookLegacyQuiescenceCertificate @relation(fields: [certificateId], references: [id], onDelete: Restrict)
+  certificate WebhookLegacyQuiescenceCertificate @relation(fields: [certificateId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@index([chatId, messageId], map: "webhook_legacy_recoveries_chat_message_idx")
   @@index([chatId, userId], map: "webhook_legacy_recoveries_chat_user_idx")
@@ -2564,7 +2564,7 @@ model WebhookLegacyChildHold {
   userId String? @map("user_id")
   certificateId String @map("certificate_id")
   createdAt DateTime @default(now()) @map("created_at")
-  certificate WebhookLegacyQuiescenceCertificate @relation(fields: [certificateId], references: [id], onDelete: Restrict)
+  certificate WebhookLegacyQuiescenceCertificate @relation(fields: [certificateId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@index([certificateId], map: "webhook_legacy_child_holds_certificate_idx")
   @@map("webhook_legacy_child_holds")

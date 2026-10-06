@@ -1,5 +1,8 @@
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { Client } from 'pg';
 import { Prisma, createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
 import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
 import { GroupCommandAuthorityService } from '../common/group-command-authority.service';
@@ -170,6 +173,67 @@ native('native cold legacy installation and ordering', () => {
       webhookRetentionCursors: Map<string, unknown>;
     };
   }
+
+  it.each(['webhook_legacy_recoveries', 'webhook_legacy_child_holds'] as const)(
+    'refuses a certificate identity cascade in %s without changing the reviewed schema',
+    async (table) => {
+      const assertion = readFileSync(
+        resolve(
+          __dirname,
+          '../../prisma/migrations/20261006002000_assert_legacy_certificate_identity/migration.sql',
+        ),
+        'utf8',
+      );
+      const assertionBody = assertion.match(/DO \$\$[\s\S]*END \$\$;/u)?.[0];
+      expect(assertionBody).toBeDefined();
+      const client = new Client({ connectionString: databaseUrl });
+      await client.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query("SET LOCAL lock_timeout = '3s'");
+        await client.query("SET LOCAL statement_timeout = '10s'");
+        // FLAG: Only these two static table names can enter this disposable-store DDL.
+        await client.query(`
+          ALTER TABLE "${table}" DROP CONSTRAINT "${table}_certificate_id_fkey";
+          ALTER TABLE "${table}" ADD CONSTRAINT "${table}_certificate_id_fkey"
+            FOREIGN KEY (certificate_id)
+            REFERENCES webhook_legacy_quiescence_certificates(id)
+            ON DELETE RESTRICT ON UPDATE CASCADE;
+        `);
+        await expect(client.query(assertionBody!)).rejects.toThrow(
+          'Legacy certificate identity constraint differs from reviewed definition',
+        );
+      } finally {
+        await client.query('ROLLBACK');
+        await client.end();
+      }
+      const restored = new Client({ connectionString: databaseUrl });
+      await restored.connect();
+      try {
+        await expect(restored.query(assertion)).resolves.toBeDefined();
+      } finally {
+        await restored.end();
+      }
+    },
+  );
+
+  it('keeps linked evidence unchanged when a certificate identity update is attempted', async () => {
+    const { candidate } = await fixture();
+    const { cert } = await certificate(candidate);
+    await installLegacyRecoveryBatch(prisma, cert.id, [candidate], []);
+    await expect(
+      prisma.webhookLegacyQuiescenceCertificate.update({
+        where: { id: cert.id },
+        data: { id: randomUUID() },
+      }),
+    ).rejects.toThrow(/Foreign key constraint/iu);
+    expect(
+      await prisma.webhookLegacyRecovery.findFirst({ where: { certificateId: cert.id } }),
+    ).toMatchObject({ certificateId: cert.id });
+    await expect(
+      prisma.webhookLegacyQuiescenceCertificate.findUniqueOrThrow({ where: { id: cert.id } }),
+    ).resolves.toMatchObject({ id: cert.id });
+  });
 
   it('preserves unknown evidence, denies partial installation, and releases only the sealed order position', async () => {
     const { candidate, update, chatId } = await fixture();
