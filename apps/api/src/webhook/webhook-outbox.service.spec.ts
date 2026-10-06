@@ -1989,6 +1989,28 @@ describe('WebhookOutboxService', () => {
     expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    { source: 'auto', manualMode: null, condition: 'queue_backlog', expected: [400, 32] },
+    { source: 'manual', manualMode: 'degrade', condition: 'queue_backlog', expected: [100, 4] },
+    { source: 'auto', manualMode: 'degrade', condition: 'queue_backlog', expected: [100, 4] },
+    { source: undefined, manualMode: null, condition: 'queue_backlog', expected: [100, 4] },
+    { source: 'auto', manualMode: null, condition: 'mixed', expected: [100, 4] },
+    { source: 'auto', manualMode: null, condition: 'max_api', expected: [100, 4] },
+    { source: 'auto', manualMode: null, condition: 'unknown', expected: [100, 4] },
+  ])(
+    'isolates automatic queue lag while preserving $source/$condition admission authority',
+    async ({ expected, ...snapshot }) => {
+      const { service, systemModeService } = createService({
+        systemMode: 'degrade',
+        configOverrides: { ENQUEUE_BATCH_SIZE: 400, ENQUEUE_CONCURRENCY: 32 },
+      });
+      systemModeService.peekCachedSnapshot.mockReturnValueOnce({ mode: 'degrade', ...snapshot });
+      await expect(
+        (service as unknown as EnqueueAdmissionInternals).resolveEnqueueAdmission(new Date()),
+      ).resolves.toMatchObject({ batchSize: expected[0], enqueueConcurrency: expected[1] });
+    },
+  );
+
   it('does not raise configured enqueue limits while system mode degrades', async () => {
     const { service } = createService({
       systemMode: 'degrade',
