@@ -26,6 +26,13 @@ describe('rule follow-up global legacy holds', () => {
       leaseExpiresAt: new Date(now.getTime() + 30_000),
       status: 'IN_PROGRESS',
       actionPlan: null,
+      effects: {},
+      createdAt: now,
+      updatedAt: now,
+      nextAttemptAt: now,
+      attemptCount: 0,
+      lastError: null,
+      completedAt: null,
       policySha256: fingerprintModerationSettings(settings as never, 'MESSAGE_TOO_LONG_DELETE'),
       envelope: {
         version: 1,
