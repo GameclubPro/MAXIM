@@ -567,6 +567,7 @@ describe('offline legacy recovery CLI boundary', () => {
     });
     expect(tx.$executeRaw.mock.calls.map((call) => String(call[0]))).toEqual([
       'SET TRANSACTION READ ONLY',
+      "SET LOCAL TIME ZONE 'UTC'",
       "SET LOCAL lock_timeout = '1s'",
       "SET LOCAL statement_timeout = '5s'",
       "SET LOCAL idle_in_transaction_session_timeout = '35s'",

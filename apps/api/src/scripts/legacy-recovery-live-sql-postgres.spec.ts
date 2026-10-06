@@ -233,9 +233,16 @@ native('native bounded live SQL inventory and actual plans', () => {
     );
     expect(result.issues).toEqual([]);
     expect(result.candidates).toHaveLength(1);
-    expect(queries.length % 2).toBe(0);
-    for (let index = 0; index < queries.length; index += 2) {
-      expect(queries[index]).toBe(`EXPLAIN (VERBOSE, FORMAT JSON) ${queries[index + 1]}`);
+    for (let index = 0; index < queries.length; ) {
+      if (queries[index]!.startsWith('EXPLAIN (VERBOSE, FORMAT JSON)')) {
+        expect(queries[index]).toBe(`EXPLAIN (VERBOSE, FORMAT JSON) ${queries[index + 1]}`);
+        index += 2;
+      } else {
+        expect(queries[index]).toContain("clock_timestamp() AT TIME ZONE 'UTC'");
+        expect(queries[index]).toContain("current_setting('transaction_read_only')");
+        expect(queries[index]).toContain("current_setting('TimeZone')");
+        index += 1;
+      }
     }
     expect(queries.some((query) => /EXPLAIN[^\n]*ANALYZE/u.test(query))).toBe(false);
     expect(
@@ -417,6 +424,50 @@ native('native bounded live SQL inventory and actual plans', () => {
       expect(await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } })).toEqual(
         claim,
       );
+      const commandRaw = {
+        ...raw,
+        message: { ...raw.message, body: { mid: `held-command-${randomUUID()}`, text: 'Старт' } },
+      };
+      const commandUpdate = new WebhookParser().parse(commandRaw, { botId: 'major' });
+      const command = await db.webhookEvent.create({
+        data: {
+          botId: 'major',
+          dedupKey: randomUUID(),
+          semanticKey: buildWebhookSemanticEventKey(commandUpdate),
+          status: 'RECEIVED',
+          createdAt: owner.createdAt,
+          rawPayload: {},
+          normalizedPayload: commandUpdate as unknown as Prisma.InputJsonValue,
+        },
+      });
+      eventIds.push(command.id);
+      const deniedOnline = await db.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          return collectLegacyRecoveryAdmission(tx, redis, onlineRequest);
+        },
+        { isolationLevel: 'RepeatableRead', timeout: 35_000 },
+      );
+      const deniedCold = await db.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          return collectLegacyRecoveryLiveEvidence(tx, redis, offline);
+        },
+        { isolationLevel: 'RepeatableRead', timeout: 35_000 },
+      );
+      for (const denied of [deniedOnline, deniedCold]) {
+        expect(denied.decision).toBe('DENY');
+        expect(denied.issues).toContainEqual({
+          code: 'materialization_preview_blocked',
+          descriptor: 'sql:materialization-preview',
+        });
+      }
+      expect(deniedOnline.sourceCoverageComplete).toBe(false);
+      expect(deniedCold.inventorySha256).toBeNull();
+      expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: command.id } })).toEqual(
+        command,
+      );
+      expect(await queue.getDelayedCount()).toBe(8_000);
     } finally {
       await queue?.close();
       if (ownsRedis) await redis.flushdb();

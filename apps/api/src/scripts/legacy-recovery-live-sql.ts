@@ -14,6 +14,7 @@ import {
   type LegacyRecoveryLiveRequest,
 } from './legacy-recovery-live-protocol';
 import { LEGACY_RECOVERY_SQL_PRIMARY_KEYS } from './legacy-recovery-sql-keys';
+import { previewLegacyRecoveryMaterialization } from './legacy-recovery-materialization-preview';
 
 export type LegacyRecoveryLiveSqlSelection = Pick<LegacyRecoveryLiveRequest, 'selection'>;
 
@@ -1680,6 +1681,61 @@ async function inventoryLegacyRecoverySql(
         if (!exhausted && !cursor) throw new Refused('sql_cursor_unproved', descriptor.id);
       }
       evidence.push({ descriptor: descriptor.id, exhausted: true });
+    }
+    // FLAG: Source protection alone cannot prove that cold materialization will
+    // finish. Check the pending prefix in this same snapshot before either preview
+    // can report READY; its work shares the original total inventory allowance.
+    if (
+      !exhaustiveCatalog &&
+      !issues.length &&
+      candidates.length === request.selection.ownerWebhookEventIds.length
+    ) {
+      meter.check('sql:materialization-preview');
+      const prefix = await previewLegacyRecoveryMaterialization(tx, candidates, {
+        pages: allowance.pages - meter.cost.pages,
+        rows: allowance.rows - meter.cost.rows,
+        probes: allowance.probes - meter.cost.probes,
+        bytes: allowance.bytes - meter.cost.bytes,
+        deadlineAtMs: allowance.deadlineAtMs,
+      });
+      for (const key of ['pages', 'rows', 'probes', 'bytes'] as const) {
+        if (!Number.isSafeInteger(prefix.cost[key]) || prefix.cost[key] < 0)
+          throw new Refused(
+            'sql_materialization_accounting_refused',
+            'sql:materialization-preview',
+          );
+        meter.cost[key] += prefix.cost[key];
+      }
+      meter.check('sql:materialization-preview');
+      for (const plan of prefix.plans) {
+        // FLAG: The prefix helper reports estimated plan rows alongside actual
+        // results. Keep their diagnostic identities separate on the frozen wire.
+        meter.proofs.push(
+          {
+            ...plan,
+            descriptor: `${plan.descriptor}:bounded-planning`,
+            returnedRows: 0,
+            probes: 0,
+          },
+          {
+            ...plan,
+            descriptor: `${plan.descriptor}:returned`,
+            planSha256: legacyRecoveryLiveDigest({
+              mode: 'bounded-select',
+              returnedRows: plan.returnedRows,
+            }),
+            examinedRows: 0,
+            probes: 1,
+          },
+        );
+      }
+      issues.push(...prefix.issues);
+      if (prefix.decision !== 'READY' || !/^[a-f0-9]{64}$/u.test(prefix.proofSha256))
+        issues.push({
+          code: 'sql_materialization_prefix_unproved',
+          descriptor: 'sql:materialization-preview',
+        });
+      evidence.push({ descriptor: 'sql:materialization-preview', proofSha256: prefix.proofSha256 });
     }
   } catch (error) {
     issues.push(

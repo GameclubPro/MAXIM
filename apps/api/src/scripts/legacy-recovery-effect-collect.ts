@@ -217,6 +217,7 @@ export async function runLegacyRecoveryLiveCli(
     const result = await prisma.$transaction(
       async (tx) => {
         await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
         await tx.$executeRaw`SET LOCAL lock_timeout = '1s'`;
         await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
         await tx.$executeRaw`SET LOCAL idle_in_transaction_session_timeout = '35s'`;

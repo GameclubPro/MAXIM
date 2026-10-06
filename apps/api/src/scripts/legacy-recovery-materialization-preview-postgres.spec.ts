@@ -119,12 +119,16 @@ native('read-only materialization preview on representative PostgreSQL history',
     }
     await db.chatSettings.deleteMany({ where: { chatId } });
     await db.chat.deleteMany({ where: { id: chatId } });
+    await db.nightModeTransitionReconcileRequest.deleteMany({ where: { chatId } });
   });
   afterAll(async () => {
     await db.webhookExecutionClaim.deleteMany({ where: { id: { startsWith: noise } } });
     await db.webhookEvent.deleteMany({ where: { id: { startsWith: noise } } });
     await db.chatSettings.deleteMany({ where: { chatId: { startsWith: noise } } });
     await db.chat.deleteMany({ where: { id: { startsWith: noise } } });
+    await db.nightModeTransitionReconcileRequest.deleteMany({
+      where: { chatId: { startsWith: noise } },
+    });
     await reader.$disconnect();
     await db.$disconnect();
     if (oldOffline === undefined) delete process.env.MAXIM_LEGACY_RECOVERY_OFFLINE;
