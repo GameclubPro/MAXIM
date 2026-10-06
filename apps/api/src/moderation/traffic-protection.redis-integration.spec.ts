@@ -16,7 +16,7 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
   let now: number;
   let settings: TrafficProtectionSettings;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     redis = new RedisCounterService(new ConfigService({ REDIS_URL: url }));
     inspector = new Redis(url);
     detector = new TrafficProtectionDetector(redis);
@@ -31,6 +31,9 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       trafficPolicyRevision: 1,
       trafficPolicyEffectiveAt: new Date(now - 100_000),
     };
+    // FLAG: Connection setup is fixture work, not part of the detector's 200 ms
+    // Redis operation budget. Await both clients before testing policy decisions.
+    await Promise.all([inspector.ping(), redis.getString(`traffic:v1:${chatId}:ready`)]);
   });
 
   afterEach(async () => {
