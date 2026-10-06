@@ -75,6 +75,9 @@ effect-family guards. It also checks the pending prefix of each selected chat
 against the actual receipt materializer in a read-only snapshot: old commands,
 started effects, unsupported sources and exhausted budgets refuse before stop.
 Cold inventory repeats this prefix check and binds its stable semantic digest.
+Preview groups receipt and claim reads in pages of at most 200 exact keys, using
+indexed lateral probes; every key, response byte and query shares the existing
+total budget. It never scans retained claim history for a batch.
 It must report complete source coverage and
 `READY_FOR_COLD_REVIEW` before any producer is stopped. A DENY leaves the runtime
 running and writes private diagnostic evidence. Do not raise budgets to force an

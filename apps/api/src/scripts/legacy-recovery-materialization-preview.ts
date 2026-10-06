@@ -96,7 +96,12 @@ export async function previewLegacyRecoveryMaterialization(
     index: string,
     bounds: string[],
     maximum: number,
+    batchInputs = 0,
   ): Promise<T[]> => {
+    if (batchInputs) {
+      cost.probes += batchInputs;
+      check();
+    }
     const explain = await query<{ 'QUERY PLAN': unknown }>(
       Prisma.sql`EXPLAIN (VERBOSE, FORMAT JSON) ${statement}`,
       1,
@@ -127,7 +132,21 @@ export async function previewLegacyRecoveryMaterialization(
       !['Index Scan', 'Index Only Scan'].includes(String(scan['Node Type'])) ||
       scan.Filter !== undefined ||
       nodes.some(
-        (node) => !['Limit', 'Index Scan', 'Index Only Scan'].includes(String(node['Node Type'])),
+        (node) =>
+          !(
+            batchInputs
+              ? [
+                  'Limit',
+                  'Index Scan',
+                  'Index Only Scan',
+                  'Nested Loop',
+                  'Values Scan',
+                  'Memoize',
+                  'Result',
+                ]
+              : ['Limit', 'Index Scan', 'Index Only Scan']
+          ).includes(String(node['Node Type'])) ||
+          (node['Node Type'] === 'Values Scan' && Number(node['Plan Rows']) > batchInputs),
       ) ||
       bounds.some((bound) => !String(scan['Index Cond']).includes(bound))
     )
@@ -140,7 +159,7 @@ export async function previewLegacyRecoveryMaterialization(
       indexes: [index],
       returnedRows: result.length,
       examinedRows: Number(scan['Plan Rows'] ?? 0),
-      probes: 2,
+      probes: 2 + batchInputs,
     });
     return result;
   };
@@ -161,6 +180,52 @@ export async function previewLegacyRecoveryMaterialization(
       index,
       bounds,
       maximum,
+    );
+    if (values.some((value) => value.oversize || !value.value))
+      throw new Error('materialization_preview_oversize');
+    return values.map((value) => hydrate<T>(value.value!));
+  };
+  // FLAG: One bounded VALUES input drives exact indexed probes. LATERAL LIMIT
+  // prevents the planner from replacing per-key lookups with a retained-history scan.
+  // Charge every input probe, including absent claims, to the original total budget.
+  const batchFullRow = async <T>(
+    table: string,
+    index: string,
+    columns: readonly string[],
+    keys: readonly string[][],
+    perKey = 1,
+  ): Promise<T[]> => {
+    if (!keys.length) return [];
+    if (
+      keys.length > PAGE_SIZE * 33 ||
+      columns.length < 1 ||
+      columns.length > 2 ||
+      keys.some((key) => key.length !== columns.length)
+    )
+      throw new Error('materialization_preview_input');
+    const aliases = columns.map((_, i) => `key${i}`);
+    const values = await read<{ value: ObjectRow | null; oversize: boolean }>(
+      Prisma.sql`SELECT found.value, found.oversize
+        FROM (VALUES ${Prisma.join(keys.map((key) => Prisma.sql`(${Prisma.join(key)})`))})
+          AS wanted(${Prisma.raw(aliases.join(', '))})
+        CROSS JOIN LATERAL (
+          SELECT CASE WHEN octet_length(to_jsonb(t)::text) <= ${ROW_BYTES} THEN to_jsonb(t) ELSE NULL END AS value,
+            octet_length(to_jsonb(t)::text) > ${ROW_BYTES} AS oversize
+          FROM ${Prisma.raw(table)} t
+          WHERE ${Prisma.join(
+            columns.map(
+              (column, i) =>
+                Prisma.sql`${Prisma.raw(`t.${column}`)} = ${Prisma.raw(`wanted.${aliases[i]}`)}`,
+            ),
+            ' AND ',
+          )}
+          LIMIT ${perKey}
+        ) found LIMIT ${keys.length * perKey}`,
+      table,
+      index,
+      [...columns],
+      keys.length * perKey,
+      keys.length,
     );
     if (values.some((value) => value.oversize || !value.value))
       throw new Error('materialization_preview_oversize');
@@ -280,6 +345,80 @@ export async function previewLegacyRecoveryMaterialization(
           [literal(chatId)],
           PAGE_SIZE + 1,
         );
+        const heldMetas = page
+          .slice(0, PAGE_SIZE)
+          .filter((meta) =>
+            scopes.some(
+              (scope) =>
+                meta.chatId !== null &&
+                ((scope.chatId === meta.chatId && scope.messageId === (meta.messageId ?? '')) ||
+                  scope.userId === (meta.userId ?? '')),
+            ),
+          );
+        if (
+          heldMetas.some(
+            (meta) =>
+              !Number.isSafeInteger(meta.payloadBytes) ||
+              meta.payloadBytes > PAYLOAD_BYTES ||
+              meta.scopeOversize,
+          )
+        )
+          throw new Error('materialization_preview_receipt');
+        if (
+          heldMetas.reduce((sum, meta) => sum + meta.payloadBytes, 0) >
+          allowance.bytes - cost.bytes
+        )
+          throw new Error('materialization_preview_budget');
+        const heldEvents = await batchFullRow<WebhookEvent>(
+          'webhook_events',
+          'webhook_events_pkey',
+          ['id'],
+          heldMetas.map(({ id }) => [id]),
+        );
+        const eventsById = new Map(heldEvents.map((event) => [event.id, event]));
+        if (
+          eventsById.size !== heldMetas.length ||
+          heldMetas.some((meta) => !eventsById.has(meta.id))
+        )
+          throw new Error('materialization_preview_receipt');
+        const linkedClaims = await batchFullRow<WebhookExecutionClaim>(
+          'webhook_execution_claims',
+          'webhook_execution_claims_event_kind_idx',
+          ['webhook_event_id'],
+          heldMetas.map(({ id }) => [id]),
+          33,
+        );
+        if (
+          heldMetas.some(
+            ({ id }) => linkedClaims.filter((claim) => claim.webhookEventId === id).length > 32,
+          )
+        )
+          throw new Error('materialization_preview_claims');
+        const semanticPairs = new Map<string, string[]>();
+        const allKinds = heldEvents.length ? await claimKinds() : [];
+        for (const event of heldEvents) {
+          const message = row(row(event.normalizedPayload)?.message);
+          const commandKey =
+            typeof message?.messageId === 'string'
+              ? buildGroupCommandKey(String(message.chatId), message.messageId)
+              : '';
+          for (const pair of [
+            ['COMMAND', commandKey],
+            ...(event.semanticKey ? allKinds.map((kind) => [kind, event.semanticKey!]) : []),
+          ])
+            semanticPairs.set(JSON.stringify(pair), pair);
+        }
+        const semanticClaims = await batchFullRow<WebhookExecutionClaim>(
+          'webhook_execution_claims',
+          'webhook_execution_claims_kind_semantic_key',
+          ['kind', 'semantic_key'],
+          [...semanticPairs.values()],
+        );
+        const pageClaims = [
+          ...new Map(
+            [...linkedClaims, ...semanticClaims].map((claim) => [claim.id, claim]),
+          ).values(),
+        ];
         for (const meta of page.slice(0, PAGE_SIZE)) {
           if (++scannedReceipts > MAX_ROWS) throw new Error('materialization_preview_saturated');
           if (
@@ -307,49 +446,25 @@ export async function previewLegacyRecoveryMaterialization(
             evidence({ meta, result: 'NOT_HELD' });
             continue;
           }
-          const event = (
-            await fullRow<WebhookEvent>(
-              'webhook_events',
-              'webhook_events_pkey',
-              Prisma.sql`t.id = ${meta.id}`,
-              [eq('id', meta.id)],
-            )
-          )[0];
+          const event = eventsById.get(meta.id);
           if (!event) throw new Error('materialization_preview_receipt');
           const scope = matches[0]!;
           let claims: WebhookExecutionClaim[] | null = null;
           const readClaims = async () => {
             if (claims) return claims;
-            const all = await fullRow<WebhookExecutionClaim>(
-              'webhook_execution_claims',
-              'webhook_execution_claims_event_kind_idx',
-              Prisma.sql`t.webhook_event_id = ${event.id}`,
-              [eq('webhook_event_id', event.id)],
-              33,
-            );
-            if (all.length > 32) throw new Error('materialization_preview_claims');
             const message = row(row(event.normalizedPayload)?.message);
             const commandKey =
               typeof message?.messageId === 'string'
                 ? buildGroupCommandKey(String(message.chatId), message.messageId)
                 : '';
-            for (const [kind, semanticKey] of [
-              ['COMMAND', commandKey],
-              ...(event.semanticKey
-                ? (await claimKinds()).map((kind) => [kind, event.semanticKey!])
-                : []),
-            ])
-              all.push(
-                ...(await fullRow<WebhookExecutionClaim>(
-                  'webhook_execution_claims',
-                  'webhook_execution_claims_kind_semantic_key',
-                  Prisma.sql`t.kind = ${kind} AND t.semantic_key = ${semanticKey}`,
-                  [eq('kind', kind!), eq('semantic_key', semanticKey!)],
-                )),
-              );
-            claims = [...new Map(all.map((claim) => [claim.id, claim])).values()].sort((a, b) =>
-              a.id.localeCompare(b.id),
-            );
+            claims = pageClaims
+              .filter(
+                (claim) =>
+                  claim.webhookEventId === event.id ||
+                  (claim.kind === 'COMMAND' && claim.semanticKey === commandKey) ||
+                  (event.semanticKey && claim.semanticKey === event.semanticKey),
+              )
+              .sort((a, b) => a.id.localeCompare(b.id));
             evidence(claims);
             return claims;
           };

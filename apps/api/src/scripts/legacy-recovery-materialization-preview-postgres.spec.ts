@@ -308,6 +308,29 @@ native('read-only materialization preview on representative PostgreSQL history',
     ).toHaveLength(2);
     expect(result.cost.probes).toBeLessThan(40);
   });
+  it('previews and materializes 800 held receipts within the production query budget', async () => {
+    for (let index = 0; index < 800; index++)
+      await receipt(`Ordinary retained photo caption ${index}`);
+    const result = await preview({ pages: 512, rows: 10_000, probes: 50_000 });
+    expect(result.issues).toEqual([]);
+    expect(result.decision).toBe('READY');
+    expect(result.scannedReceipts).toBe(801);
+    expect(result.prefixPages).toBe(5);
+    expect(result.cost.pages).toBeLessThan(60);
+    expect(result.cost.probes).toBeLessThan(10_000);
+    expect(
+      await db.webhookLegacyReceiptDisposition.count({ where: { receiptId: { in: receipts } } }),
+    ).toBe(0);
+    let page = await actualPage();
+    let pages = 1;
+    while (!page.complete && !page.blocked && pages++ < 6)
+      page = await materializeLegacyHeldReceiptPage(db, certificates.at(-1)!, chatId, 200);
+    expect(page).toMatchObject({ blocked: false, complete: true });
+    expect(
+      await db.webhookLegacyReceiptDisposition.count({ where: { receiptId: { in: receipts } } }),
+    ).toBe(801);
+  });
+
   it('rejects a new pre-seal command at the required cold recheck', async () => {
     await receipt();
     expect((await preview()).decision).toBe('READY');
