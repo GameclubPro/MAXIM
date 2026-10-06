@@ -30,7 +30,11 @@ import {
   canonicalLegacyColdDigest,
   createLegacyColdStoreAdapter,
 } from './legacy-cold-store-adapter.mjs';
-import { prepareLegacyColdRecovery, applyLegacyColdRecovery } from './legacy-cold-protocol.mjs';
+import {
+  prepareLegacyColdRecovery,
+  applyLegacyColdRecovery,
+  retryLegacyColdPreview,
+} from './legacy-cold-protocol.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const hash = /^[0-9a-f]{64}$/u;
@@ -59,7 +63,9 @@ export function parseLegacyColdHostRequest(text) {
   const value = object(JSON.parse(text));
   if (
     value.version !== 1 ||
-    !['status', 'preflight', 'prepare', 'apply', 'reconcile'].includes(value.operation)
+    !['status', 'preflight', 'prepare', 'apply', 'reconcile', 'retry-preview'].includes(
+      value.operation,
+    )
   )
     throw new Error('host_operation_required');
   if (value.operation === 'status') {
@@ -67,6 +73,11 @@ export function parseLegacyColdHostRequest(text) {
     return value;
   }
   if (!source.test(value.targetSha ?? '')) throw new Error('exact_target_required');
+  if (value.operation === 'retry-preview') {
+    keys(value, ['version', 'operation', 'targetSha', 'expectedJournalDigest']);
+    if (!hash.test(value.expectedJournalDigest ?? '')) throw new Error('exact_review_required');
+    return value;
+  }
   if (['apply', 'reconcile'].includes(value.operation)) {
     keys(value, [
       'version',
@@ -232,12 +243,14 @@ export async function runLegacyColdHost(request) {
   let baseline;
   let selection;
   let context;
-  const continuing = ['apply', 'reconcile'].includes(request.operation);
+  const continuing = ['apply', 'reconcile', 'retry-preview'].includes(request.operation);
   if (continuing) {
     if (
-      (request.operation === 'reconcile'
-        ? !['INSTALLING', 'SEALED', 'RESUMING'].includes(state.journal?.phase)
-        : state.journal?.phase !== 'INVENTORIED' || state.journal.blockedReason) ||
+      (request.operation === 'retry-preview'
+        ? !['ADMITTED', 'STOPPING', 'STOPPED', 'INVENTORIED'].includes(state.journal?.phase)
+        : request.operation === 'reconcile'
+          ? !['INSTALLING', 'SEALED', 'RESUMING'].includes(state.journal?.phase)
+          : state.journal?.phase !== 'INVENTORIED' || state.journal.blockedReason) ||
       state.journal.bindings.targetSha !== identity.sourceSha ||
       state.journal.bindings.targetImageId !== identity.imageId ||
       legacyColdDigest(state.journal) !== request.expectedJournalDigest
@@ -389,6 +402,12 @@ export async function runLegacyColdHost(request) {
         });
       return await prepareLegacyColdRecovery({ store, bindings, adapters });
     }
+    if (request.operation === 'retry-preview')
+      return await retryLegacyColdPreview({
+        store,
+        adapters,
+        expectedJournalDigest: request.expectedJournalDigest,
+      });
     return await applyLegacyColdRecovery({
       store,
       adapters,

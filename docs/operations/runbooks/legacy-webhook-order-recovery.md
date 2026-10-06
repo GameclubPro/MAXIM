@@ -120,8 +120,13 @@ producers/removes the old client/pauses queues, then reads the existing certific
 independently. It **never creates or installs a certificate again**. An absent,
 unsealed or mismatched certificate stays blocked. A positive existing seal may
 finish bounded receipt materialization and repeat the same strict restart checks.
-A corrupt/interrupted durable filesystem write or pre-install failure requires
-separate diagnosis; there is no generic reset, abort-and-start or bypass command.
+A pre-install read/stop interruption can use `operation: "retry-preview"` with
+`version`, `targetSha` and the current `expectedJournalDigest`. It re-proves the
+same stopped fleet and owned queues, then repeats read-only preview. It cannot
+install anything, change an existing reviewed inventory, or restart producers;
+`INSTALLING` and later phases refuse this operation. A corrupt/interrupted durable
+filesystem write requires separate diagnosis. There is no generic reset,
+abort-and-start or bypass command.
 
 ## Release acceptance
 

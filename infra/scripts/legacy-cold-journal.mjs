@@ -468,6 +468,33 @@ export function createLegacyColdJournalStore({
       atomicPrivateWrite(directory, LEGACY_COLD_JOURNAL, next);
       return next;
     },
+    retryPreinstall(expectedDigest, proofs) {
+      mutation();
+      const { journal } = readLegacyColdState(directory);
+      if (
+        !journal ||
+        !['ADMITTED', 'STOPPING', 'STOPPED', 'INVENTORIED'].includes(journal.phase) ||
+        legacyColdDigest(journal) !== expectedDigest ||
+        !keysExactly(proofs, ['stoppedInventory', 'repausedQueues'])
+      )
+        refuse('preinstall retry CAS failed');
+      for (const [name, hash] of Object.entries(proofs)) {
+        if (journal.proofs[name] && journal.proofs[name] !== hash)
+          refuse('immutable proof changed');
+      }
+      // FLAG: INSTALLING is persisted before the first SQL writer. This retry
+      // cannot cross that boundary, discard its uncertainty or resume producers.
+      const next = validateLegacyColdJournal({
+        ...journal,
+        revision: journal.revision + 1,
+        phase: 'STOPPED',
+        updatedAt: now(),
+        blockedReason: null,
+        proofs: { ...journal.proofs, ...proofs },
+      });
+      atomicPrivateWrite(directory, LEGACY_COLD_JOURNAL, next);
+      return next;
+    },
     block(expectedDigest, reason, proofs = {}) {
       mutation();
       const { journal } = readLegacyColdState(directory);

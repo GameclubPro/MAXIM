@@ -8,7 +8,11 @@ import {
   createLegacyColdJournalStore,
   legacyColdDigest,
 } from './legacy-cold-journal.mjs';
-import { applyLegacyColdRecovery, prepareLegacyColdRecovery } from './legacy-cold-protocol.mjs';
+import {
+  applyLegacyColdRecovery,
+  prepareLegacyColdRecovery,
+  retryLegacyColdPreview,
+} from './legacy-cold-protocol.mjs';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
 
 function fixture(t) {
@@ -145,6 +149,12 @@ function fixture(t) {
     seal,
     prepare,
     apply,
+    retryPreview: () =>
+      retryLegacyColdPreview({
+        store,
+        adapters,
+        expectedJournalDigest: legacyColdDigest(store.read().journal),
+      }),
     running: () => running,
   };
 }
@@ -333,4 +343,30 @@ test('unknown installation cannot be retried or resumed by reconciliation', asyn
   assert.equal(h.running(), false);
   assert.equal(h.events.slice(offset).includes('installDispositions'), false);
   assert.equal(h.events.slice(offset).includes('startBoundRuntime'), false);
+  await assert.rejects(h.retryPreview(), /preinstall_journal_unproved/);
+});
+
+test('preinstall snapshot interruption can retry the same stopped operation without any writer or restart', async (t) => {
+  const h = fixture(t);
+  h.overrides.snapshotPending = () => {
+    throw new Error('temporary readonly error');
+  };
+  await assert.rejects(h.prepare());
+  assert.equal(h.store.read().journal.phase, 'STOPPED');
+  delete h.overrides.snapshotPending;
+  const result = await h.retryPreview();
+  assert.equal(result.phase, 'INVENTORIED');
+  assert.equal(h.running(), false);
+  assert.equal(h.events.includes('installDispositions'), false);
+  assert.equal(h.events.includes('startBoundRuntime'), false);
+  assert.equal((await h.apply(result)).coldRecoveryComplete, true);
+});
+
+test('preinstall retry retains reviewed evidence and cannot silently replace a changed inventory', async (t) => {
+  const h = fixture(t);
+  await h.prepare();
+  h.pending.inventoryDigest = 'f'.repeat(64);
+  await assert.rejects(h.retryPreview(), /producers remain stopped/);
+  assert.equal(h.running(), false);
+  assert.equal(h.events.includes('installDispositions'), false);
 });

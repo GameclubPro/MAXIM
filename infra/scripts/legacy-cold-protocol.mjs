@@ -186,6 +186,57 @@ export async function prepareLegacyColdRecovery({ store, bindings, adapters }) {
   }
 }
 
+export async function retryLegacyColdPreview({ store, adapters, expectedJournalDigest }) {
+  context({ store, adapters });
+  const initial = store.read().journal;
+  if (
+    !initial ||
+    !['ADMITTED', 'STOPPING', 'STOPPED', 'INVENTORIED'].includes(initial.phase) ||
+    legacyColdDigest(initial) !== expectedJournalDigest
+  )
+    throw new Error('preinstall_journal_unproved');
+  const bindings = initial.bindings;
+  try {
+    await adapters.stopRuntime(bindings);
+    await adapters.removeStoreClient(bindings);
+    await adapters.pauseQueues(bindings);
+    const stopped = assertLegacyColdStopped(await adapters.readStoppedRuntime(bindings), bindings);
+    const fence = assertFence(await adapters.readQueueFence(bindings), bindings);
+    let journal = store.retryPreinstall(expectedJournalDigest, {
+      stoppedInventory: store.recordProof(stopped),
+      repausedQueues: store.recordProof(fence),
+    });
+    const fresh = assertPending(await adapters.snapshotPending(bindings), bindings);
+    const pending = Object.fromEntries(
+      Object.entries(fresh).filter(([name]) => name !== 'recheckProof'),
+    );
+    await adapters.removeStoreClient(bindings);
+    journal = store.advance(legacyColdDigest(journal), 'INVENTORIED', {
+      pendingInventory: store.recordProof(pending),
+      reviewedPreview: store.recordProof({
+        version: 1,
+        previewDigest: pending.previewDigest,
+        inventoryDigest: pending.inventoryDigest,
+        selectionDigest: bindings.selectionDigest,
+      }),
+    });
+    return {
+      version: 1,
+      prepared: true,
+      phase: journal.phase,
+      previewDigest: pending.previewDigest,
+      inventoryDigest: pending.inventoryDigest,
+      journalDigest: legacyColdDigest(journal),
+    };
+  } catch (cause) {
+    const containment = await contain(store, bindings, adapters);
+    throw Object.assign(
+      new Error('Cold preview retry refused; producers remain stopped', { cause }),
+      { containment },
+    );
+  }
+}
+
 export async function applyLegacyColdRecovery({
   store,
   adapters,
