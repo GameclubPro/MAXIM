@@ -61,6 +61,9 @@ export function createGroupCommandAuthorityMock() {
       record.leased = true;
       return { ...record.permit };
     }),
+    isHeldSource: jest.fn().mockResolvedValue(false),
+    isFreshHeldCommandAccessAllowed: jest.fn().mockResolvedValue(true),
+    assertFreshHeldCommandAccess: jest.fn().mockResolvedValue(undefined),
     assertOwned: jest.fn().mockResolvedValue(undefined),
     prepareResult: jest.fn(async (permit: GroupCommandPermit, result: GroupCommandResult) => {
       const record = records.get(permit.semanticKey);

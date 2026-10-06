@@ -59,6 +59,7 @@ export async function deliverGroupCommandNotice(params: {
         candidateBotIds: [permit.executionBotId],
         routing: { purpose: 'send_message', requiredBotId: permit.executionBotId },
         beforeImmediateSendMutation: async (revalidateRoute) => {
+          await authority.assertFreshHeldCommandAccess(permit, max);
           await authority.assertOwned(permit);
           await params.beforeMutation?.();
           await revalidateRoute?.();

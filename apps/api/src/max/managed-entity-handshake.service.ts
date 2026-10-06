@@ -856,6 +856,9 @@ export class ManagedEntityHandshakeService {
     context: ManagedEntityHandshakeContext,
     botAccess: MaxChatMemberAccess,
   ): Promise<void> {
+    // FLAG: An explicit fresh Start may confirm connection, but the held author's
+    // source message keeps its permanent protection from automatic cleanup.
+    if (await this.groupCommandAuthority?.isHeldSource(context.update)) return;
     if (!context.commandMessageId) {
       return;
     }
@@ -927,7 +930,12 @@ export class ManagedEntityHandshakeService {
           botId: context.botId,
           candidateBotIds: [permit.executionBotId],
           routing: { purpose: 'send_message', requiredBotId: permit.executionBotId },
-          beforeImmediateSendMutation: () => this.groupCommandAuthority!.assertOwned(permit),
+          beforeImmediateSendMutation: async () => {
+            await this.groupCommandAuthority!.assertFreshHeldCommandAccess(permit, this.maxClient);
+            await this.groupCommandAuthority!.assertOwned(permit);
+            if (permit.executionDeadlineAt && permit.executionDeadlineAt.getTime() <= Date.now())
+              throw new Error('Start command expired before transport');
+          },
           idempotencyKey: `managed-handshake-start:${permit.semanticKey}`,
           autoDeleteDelayMs: MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS,
           trafficClass: 'interactive',

@@ -1,4 +1,8 @@
 import {
+  readFreshHeldCommandReceipt,
+  type FreshHeldCommandDatabase,
+} from './webhook-legacy-fresh-command';
+import {
   materializeLegacyReceiptDisposition,
   type LegacyReceiptDispositionResult,
 } from './webhook-legacy-receipt-disposition';
@@ -162,6 +166,14 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
     client?: WebhookLegacyHoldDatabase,
   ): Promise<void> {
     if (await this.isUpdateHeld(update, client)) throw new WebhookLegacyHoldRejectedError();
+  }
+
+  readFreshCommandReceipt(
+    webhookEventId: string,
+    expectedUpdate?: MaxUpdate,
+    client: FreshHeldCommandDatabase = this.prisma,
+  ) {
+    return readFreshHeldCommandReceipt(client, webhookEventId, expectedUpdate);
   }
 
   async materializeReceipt(

@@ -293,7 +293,10 @@ export async function recoverGroupCommandNotice(
   });
   const completedSend = isCompletedSend(ledger, journal, chatId);
   const legacyHolds = WebhookLegacyHoldService.forPrisma(prisma);
-  if (!completedSend) await legacyHolds?.assertUpdateAllowed(update);
+  if (!completedSend && (await legacyHolds?.isUpdateHeld(update))) {
+    if (!(await legacyHolds!.readFreshCommandReceipt(event.id, update)))
+      await legacyHolds!.assertUpdateAllowed(update);
+  }
   if (command.status === 'COMPLETED' && !completedSend) return false;
   if (!completedSend && !isUnattemptedSend(ledger, journal, chatId, journal.noticeBotId))
     return false;
