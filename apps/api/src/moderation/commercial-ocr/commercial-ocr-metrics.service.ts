@@ -132,6 +132,7 @@ export const COMMERCIAL_OCR_METRIC_COUNTERS = [
   'source.receipt.unavailable',
   'source.receipt.missing',
   'source.receipt.owner_terminal',
+  'source.receipt.no_replay_held',
   'source.receipt.failed',
   'source.receipt.invalid',
   'source.identity_mismatch',

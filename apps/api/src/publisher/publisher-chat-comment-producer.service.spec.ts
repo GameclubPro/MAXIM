@@ -183,7 +183,7 @@ describe('PublisherChatCommentProducerService', () => {
     const fixture = automaticFixture();
     await fixture.service.observeWebhook({
       ...update,
-      message: { ...update.message!, createdAt: undefined },
+      message: { ...update.message!, createdAt: undefined as never },
     });
     expect(fixture.queue.enqueueAttach.mock.calls[0]?.[0]).not.toHaveProperty('sourceCreatedAt');
   });
