@@ -939,7 +939,7 @@ SELECT json_build_object(
     WHEN candidate.id IS NULL THEN 'no_predecessor'
     WHEN candidate.eligible THEN 'legacy_unverified_candidate'
     ELSE 'ineligible_predecessor' END,
-  'source_shape', CASE WHEN candidate.eligible THEN json_build_object(
+  'source_shape', CASE WHEN candidate.eligible THEN jsonb_build_object(
     'diagnostics_only', true,
     'budget_exceeded', candidate.source_budget_exceeded,
     'normalized_kind', jsonb_typeof(candidate.normalized),
@@ -981,8 +981,19 @@ SELECT json_build_object(
     'linked_nested_content_kind', jsonb_typeof(candidate.original_message->'link'->'message'->'body'),
     'linked_attachments_kind', jsonb_typeof(candidate.original_message->'link'->'message'->'attachments'),
     'linked_attachments_empty', candidate.original_message->'link'->'message'->'attachments' = '[]'::jsonb,
+    'linked_media_shape_bounded', CASE WHEN jsonb_typeof(candidate.original_message->'link'->'message'->'attachments') = 'array' THEN
+      jsonb_array_length(candidate.original_message->'link'->'message'->'attachments') <= 32 END,
+    'linked_images_only', CASE WHEN jsonb_typeof(candidate.original_message->'link'->'message'->'attachments') = 'array' THEN
+      CASE WHEN jsonb_array_length(candidate.original_message->'link'->'message'->'attachments') BETWEEN 1 AND 32 THEN
+        NOT EXISTS (SELECT 1 FROM jsonb_array_elements(candidate.original_message->'link'->'message'->'attachments') attachment
+          WHERE COALESCE(attachment->>'type', '') <> ALL(ARRAY['image', 'photo'])) END END,
+    'linked_passive_media_only', CASE WHEN jsonb_typeof(candidate.original_message->'link'->'message'->'attachments') = 'array' THEN
+      CASE WHEN jsonb_array_length(candidate.original_message->'link'->'message'->'attachments') BETWEEN 1 AND 32 THEN
+        NOT EXISTS (SELECT 1 FROM jsonb_array_elements(candidate.original_message->'link'->'message'->'attachments') attachment
+          WHERE COALESCE(attachment->>'type', '') <> ALL(ARRAY['image', 'photo', 'video', 'audio', 'file'])) END END,
     'linked_markup_kind', jsonb_typeof(candidate.original_message->'link'->'message'->'markup'),
-    'linked_markup_empty', candidate.original_message->'link'->'message'->'markup' = '[]'::jsonb,
+    'linked_markup_empty', candidate.original_message->'link'->'message'->'markup' = '[]'::jsonb
+  ) || jsonb_build_object(
     'actor_keys_supported', CASE WHEN jsonb_typeof(candidate.sender) = 'object' THEN
       candidate.sender - ARRAY['user_id', 'name', 'first_name', 'last_name', 'username',
         'is_bot', 'avatar_url', 'last_activity_time'] = '{}'::jsonb END,
