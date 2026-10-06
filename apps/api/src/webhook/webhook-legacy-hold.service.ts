@@ -37,6 +37,8 @@ const protectedProviders = new Set([
   'MaxActionDispatchService',
   'ModerationDeleteIntentService',
   'ModerationStateDeleteGuardService',
+  'MessageDuplicateDeleteGuardService',
+  'MessageDuplicateMediaService',
   'ModerationRuleFollowupService',
   'GlobalSpammerIntelligenceService',
   'PrivateControlService',
@@ -119,6 +121,31 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
     return this.exists(
       Prisma.sql`SELECT EXISTS (SELECT 1 FROM "webhook_legacy_recoveries"
       WHERE "user_id" = ${userId}) AS held`,
+      client,
+    );
+  }
+  // FLAG: A CHAT image match may target a different participant from its original.
+  // Read both immutable sources in one bounded indexed query before any new effect.
+  async isAnyMessageSourceHeld(
+    chatId: string,
+    sources: readonly { messageId: string; userId: string }[],
+    client?: WebhookLegacyHoldDatabase,
+  ): Promise<boolean> {
+    if (
+      sources.length < 1 ||
+      sources.length > 2 ||
+      [chatId, ...sources.flatMap((source) => [source.messageId, source.userId])].some(
+        (value) => typeof value !== 'string' || !value || value.trim() !== value,
+      )
+    )
+      throw new WebhookLegacyHoldRejectedError();
+    return this.exists(
+      Prisma.sql`SELECT (
+      EXISTS (SELECT 1 FROM "webhook_legacy_recoveries"
+        WHERE "chat_id" = ${chatId} AND "message_id" IN (${Prisma.join(sources.map((source) => source.messageId))}))
+      OR EXISTS (SELECT 1 FROM "webhook_legacy_recoveries"
+        WHERE "user_id" IN (${Prisma.join(sources.map((source) => source.userId))}))
+    ) AS held`,
       client,
     );
   }

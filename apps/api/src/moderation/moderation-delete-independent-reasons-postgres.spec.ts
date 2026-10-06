@@ -105,6 +105,71 @@ type Authorization = {
     return { service, intent, message, max, chatId };
   }
 
+  it.each([false, true])(
+    'terminalizes retired photo evidence while rechecking a concurrently added independent reason (%s)',
+    async (addIndependent) => {
+      const s = await fixture();
+      await prisma.moderationDeleteIntentReason.deleteMany({ where: { intentId: s.intent.id } });
+      await prisma.moderationDeleteIntentReason.create({
+        data: {
+          id: randomUUID(),
+          intentId: s.intent.id,
+          reasonKey: 'old-photo',
+          ruleCode: 'DUPLICATE_DELETE',
+          metadata: {
+            duplicateSource: 'photo',
+            matchKind: 'canonical_sha256',
+            preset: 'SAME_IMAGE',
+            scope: 'SAME_AUTHOR',
+          },
+        },
+      });
+      const leaseToken = randomUUID();
+      await prisma.moderationDeleteIntent.update({
+        where: { id: s.intent.id },
+        data: {
+          status: 'IN_PROGRESS',
+          leaseToken,
+          leaseExpiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+      const service = s.service as unknown as {
+        loadRequiredIntent(id: string): Promise<unknown>;
+        finishTerminalPreDispatchGuardRejection(
+          intent: unknown,
+          token: string,
+          details: unknown,
+        ): Promise<unknown>;
+      };
+      const enqueueWakeup = jest.fn().mockResolvedValue(undefined);
+      Object.assign(service, { enqueueWakeup, mode: 'on', canaryChatIds: new Set() });
+      const original = await service.loadRequiredIntent(s.intent.id);
+      if (addIndependent)
+        await prisma.moderationDeleteIntentReason.create({
+          data: {
+            id: randomUUID(),
+            intentId: s.intent.id,
+            reasonKey: 'new-length',
+            ruleCode: 'MESSAGE_TOO_LONG_DELETE',
+          },
+        });
+      await service.finishTerminalPreDispatchGuardRejection(original, leaseToken, {
+        statusCode: null,
+        errorCode: 'photo_duplicate_legacy_evidence_retired',
+        message: 'Retired photo evidence cannot authorize a new deletion',
+      });
+      const actual = await prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { id: s.intent.id },
+      });
+      expect(actual.status).toBe(addIndependent ? 'RETRYABLE' : 'FAILED_TERMINAL');
+      expect(actual.leaseToken).toBeNull();
+      expect(actual.leaseExpiresAt).toBeNull();
+      expect(actual.remoteDeleteSucceededAt).toBeNull();
+      expect(enqueueWakeup).toHaveBeenCalledTimes(addIndependent ? 1 : 0);
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([1, 4, 9, 13])(
     'authorizes length without borrowing duplicate authority for %s receipts',
     async (bots) => {

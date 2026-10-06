@@ -139,6 +139,7 @@ native('read-only materialization preview on representative PostgreSQL history',
     userId = 'held-user',
     at = Date.now() - 1000,
     change: Partial<WebhookEvent> = {},
+    forward = false,
   ) {
     const id = randomUUID();
     const raw = {
@@ -149,7 +150,23 @@ native('read-only materialization preview on representative PostgreSQL history',
         sender: { user_id: userId, is_bot: false },
         recipient: { chat_id: chatId, chat_type: 'chat' },
         timestamp: at,
-        body: { mid: id, text },
+        body: { mid: id, text: forward ? '' : text },
+        ...(forward
+          ? {
+              link: {
+                type: 'forward',
+                chat_id: '-foreign-chat',
+                sender: { user_id: 'foreign-author', is_bot: false },
+                message: {
+                  mid: 'foreign-image',
+                  text,
+                  attachments: [
+                    { type: 'image', payload: { photo_id: 42, url: 'https://i.oneme.ru/fixture' } },
+                  ],
+                },
+              },
+            }
+          : {}),
       },
     };
     const normalized = new WebhookParser().parse(raw, { botId: 'major' });
@@ -198,24 +215,37 @@ native('read-only materialization preview on representative PostgreSQL history',
     await installAndSealLegacyRecoveryBatch(db, cert.id, [candidate], []);
     return materializeLegacyHeldReceiptPage(db, cert.id, chatId);
   }
-  it('predicts an ordinary held prefix using the real classifier without writing and matches actual installation', async () => {
-    const event = await receipt();
-    const result = await preview();
-    expect(result.issues).toEqual([]);
-    expect(result.decision).toBe('READY');
-    expect(result.activationAuthorized).toBe(false);
-    expect(
-      (await db.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).legacyDispositionId,
-    ).toBeNull();
-    expect(
-      await db.webhookLegacyReceiptDisposition.count({ where: { receiptId: { in: receipts } } }),
-    ).toBe(0);
-    expect(await actualPage()).toMatchObject({ blocked: false, complete: true, applied: 1 });
-  });
-  it.each(['тишина 12', '/ban', 'Старт'])(
-    'refuses pre-seal command %s before any writer',
-    async (text) => {
-      await receipt(text);
+  it.each([false, true])(
+    'matches preview and actual installation for an ordinary held prefix (forward=%s)',
+    async (forward) => {
+      const event = await receipt(
+        'Ordinary\n forwarded caption',
+        'held-user',
+        Date.now() - 1000,
+        {},
+        forward,
+      );
+      const result = await preview();
+      expect(result.issues).toEqual([]);
+      expect(result.decision).toBe('READY');
+      expect(result.activationAuthorized).toBe(false);
+      expect(
+        (await db.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).legacyDispositionId,
+      ).toBeNull();
+      expect(
+        await db.webhookLegacyReceiptDisposition.count({ where: { receiptId: { in: receipts } } }),
+      ).toBe(0);
+      expect(await actualPage()).toMatchObject({ blocked: false, complete: true, applied: 1 });
+    },
+  );
+  it.each(
+    ['тишина 12', '/ban', 'Старт'].flatMap((text) =>
+      [false, true].map((forward) => ({ text, forward })),
+    ),
+  )(
+    'refuses pre-seal command $text before any writer (forward=$forward)',
+    async ({ text, forward }) => {
+      await receipt(text, 'held-user', Date.now() - 1000, {}, forward);
       const certificatesBefore = await db.webhookLegacyQuiescenceCertificate.count();
       const result = await preview();
       expect(result.decision).toBe('DENY');

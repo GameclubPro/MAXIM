@@ -3,7 +3,11 @@ import { buildGroupCommandKey } from '../common/group-command-key';
 import { parseAdminForwardedModerationCommand } from '../moderation/admin-forwarded-command.util';
 import { randomUUID } from 'node:crypto';
 import { Prisma, type WebhookEvent } from '../prisma/prisma-client';
-import { inspectLegacyRecoverySource, legacySnapshotDigest } from './webhook-legacy-source';
+import {
+  inspectLegacyPostSealTextSource,
+  inspectLegacyRecoverySource,
+  legacySnapshotDigest,
+} from './webhook-legacy-source';
 
 export type LegacyReceiptDispositionResult =
   | 'NOT_HELD'
@@ -135,8 +139,9 @@ export async function materializeLegacyReceiptDisposition(
   } else if (event.createdAt <= authority.sealedAt) {
     // FLAG: The sealed global hold may project a positively validated ordinary source
     // lazily at preparation. Commands and unknown sources retain their order fence.
-    if (!inspectLegacyRecoverySource(event)) return 'BLOCKED_UNKNOWN';
     const settings = await tx.chatSettings.findUnique({ where: { chatId: message.chatId } });
+    if (!inspectLegacyRecoverySource(event, undefined, settings ?? undefined))
+      return 'BLOCKED_UNKNOWN';
     if (
       parseAdminForwardedModerationCommand(
         (event.normalizedPayload as unknown as MaxUpdate).message!.text,
@@ -166,7 +171,6 @@ export async function materializeLegacyReceiptDisposition(
       String(sender?.user_id) !== message.senderId ||
       typeof message.messageId !== 'string' ||
       body?.mid !== message.messageId ||
-      body?.text !== message.text ||
       claims.length !== 0 ||
       event.errorMessage ||
       event.processedAt ||
@@ -175,6 +179,11 @@ export async function materializeLegacyReceiptDisposition(
       return 'BLOCKED_UNKNOWN';
     const text = typeof message.text === 'string' ? message.text : '';
     const settings = await tx.chatSettings.findUnique({ where: { chatId: message.chatId } });
+    if (
+      (rawMessage?.link !== undefined || body?.text !== message.text) &&
+      !inspectLegacyPostSealTextSource(event, settings ?? undefined)
+    )
+      return 'BLOCKED_UNKNOWN';
     try {
       if (
         /^[/$]/u.test(text.trim()) ||

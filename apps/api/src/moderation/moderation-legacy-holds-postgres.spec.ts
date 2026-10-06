@@ -6,6 +6,8 @@ import {
   type MultibotHarness,
 } from '../webhook/webhook-multibot-fullpath.spec-support';
 import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
+import type { MessageDuplicateBinding } from './message-duplicate/message-duplicate-state';
+import { measureLegacyRecoverySqlPlan } from '../scripts/legacy-recovery-live-sql';
 import { buildActiveMuteStateKey } from './moderation-state.util';
 import { buildDeveloperForcedGlobalSpammerCacheKey } from './developer-forced-global-spammer-cache';
 import { ModerationRuleSanctionRejectedError } from './moderation-rule-sanction-guard.service';
@@ -649,6 +651,97 @@ describeStores('native permanent legacy effect holds', () => {
       expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
     },
   );
+
+  it.each([1, 4, 9])(
+    'blocks an IMAGE comparison from a held original without holding the other author (%s bots)',
+    async (bots) => {
+      const { s, chatId, otherChatId } = await fixture(bots);
+      const originalId = `held-image-${randomUUID()}`;
+      const senderId = `independent-${randomUUID()}`;
+      await installFixtureHold(s, chatId, originalId);
+      const sources = [
+        { messageId: 'new-image', userId: senderId },
+        { messageId: originalId, userId: 'fixture-user' },
+      ];
+      expect(await s.legacyHolds.isGlobalUserHeld(senderId)).toBe(false);
+      expect(await s.legacyHolds.isAnyMessageSourceHeld(chatId, sources)).toBe(true);
+      expect(await s.legacyHolds.isAnyMessageSourceHeld(otherChatId, sources)).toBe(true);
+      expect(await s.legacyHolds.isAnyMessageSourceHeld(chatId, [sources[0]!])).toBe(false);
+      expect(
+        await s.legacyHolds.isAnyMessageSourceHeld(chatId, [
+          sources[0]!,
+          { messageId: 'independent-original', userId: 'independent-original-author' },
+        ]),
+      ).toBe(false);
+      const binding = {
+        version: 3,
+        lifecycleRevision: 'retained',
+        authorization: {},
+        compareMode: 'IMAGE',
+        imageScope: 'CHAT',
+        senderId,
+        messageId: sources[0]!.messageId,
+        original: {
+          messageId: originalId,
+          senderId: 'fixture-user',
+          revision: 'retained',
+          originalId: 'retained',
+        },
+      } as unknown as MessageDuplicateBinding;
+      const requestsBefore = s.requests.length;
+      await expect(s.duplicateGuard.assertQualificationAuthority(chatId, binding)).rejects.toThrow(
+        'message_duplicate_source_held',
+      );
+      expect(s.requests).toHaveLength(requestsBefore);
+      expect(s.effects).toHaveLength(0);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+    },
+  );
+
+  it('bounds both immutable-source lookups against 12,000 unrelated holds', async () => {
+    const { s, chatId } = await fixture();
+    await installFixtureHold(s, chatId, 'held-image');
+    const certificateId = certificates.at(-1)!;
+    await s.prisma.$executeRaw(Prisma.sql`
+      INSERT INTO webhook_legacy_recoveries
+        (id, semantic_key, owner_webhook_event_id, claim_id, chat_id, message_id, user_id, source_at,
+         raw_payload_digest, normalized_payload_digest, owner_snapshot, claim_snapshot, settings_snapshot, certificate_id)
+      SELECT ${certificateId} || ':history:' || i, ${certificateId} || ':semantic:' || i,
+        ${certificateId} || ':owner:' || i, ${certificateId} || ':claim:' || i,
+        '-history:' || i, 'history:' || i, 'history-user:' || i, clock_timestamp() AT TIME ZONE 'UTC',
+        ${'c'.repeat(64)}, ${'d'.repeat(64)}, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, ${certificateId}
+      FROM generate_series(1, 12000) i`);
+    await s.prisma.$executeRaw`ANALYZE webhook_legacy_recoveries`;
+    const statements: Prisma.Sql[] = [];
+    const client = {
+      $queryRaw: (statement: Prisma.Sql) => {
+        statements.push(statement);
+        return s.prisma.$queryRaw(statement);
+      },
+    };
+    for (const messageId of ['held-image', 'independent-image']) {
+      expect(
+        await s.legacyHolds.isAnyMessageSourceHeld(
+          chatId,
+          [
+            { messageId: 'new-image', userId: 'independent' },
+            { messageId, userId: 'another-independent' },
+          ],
+          client as never,
+        ),
+      ).toBe(messageId === 'held-image');
+    }
+    expect(statements).toHaveLength(2);
+    for (const statement of statements) {
+      const [plan] = await s.prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+        Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement}`,
+      );
+      const measured = measureLegacyRecoverySqlPlan(plan!['QUERY PLAN']);
+      expect(measured.examinedRows).toBeLessThanOrEqual(2);
+      expect(measured.indexes.length).toBeGreaterThan(0);
+      expect(measured.bufferBytes).toBeLessThan(64 * 8192);
+    }
+  });
 
   it('uses the real durable reader and leaves an unrelated actor outside the hold', async () => {
     const { s, chatId } = await fixture();

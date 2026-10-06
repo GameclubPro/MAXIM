@@ -174,6 +174,7 @@ native('legacy disposition production ingestion activation regressions', () => {
       messageId?: string;
       at?: number;
       type?: 'message_created' | 'message_edited';
+      forward?: boolean;
     } = {},
   ): MaxUpdate {
     const at = options.at ?? Date.now();
@@ -185,7 +186,29 @@ native('legacy disposition production ingestion activation regressions', () => {
           sender: { user_id: userId, name: 'Local fixture', is_bot: false },
           recipient: { chat_id: chatId, chat_type: 'chat' },
           timestamp: at,
-          body: { mid: options.messageId ?? randomUUID(), text: 'Ordinary human text' },
+          body: {
+            mid: options.messageId ?? randomUUID(),
+            text: options.forward ? '  ' : 'Ordinary human text',
+          },
+          ...(options.forward
+            ? {
+                link: {
+                  type: 'forward',
+                  chat_id: '-foreign-chat',
+                  sender: { user_id: 'foreign-author', is_bot: false },
+                  message: {
+                    mid: 'foreign-image',
+                    text: 'Ordinary\n  forwarded caption',
+                    attachments: [
+                      {
+                        type: 'image',
+                        payload: { photo_id: 42, url: 'https://i.oneme.ru/fixture' },
+                      },
+                    ],
+                  },
+                },
+              }
+            : {}),
         },
       },
       { botId: options.botId ?? 'major-1' },
@@ -243,14 +266,14 @@ native('legacy disposition production ingestion activation regressions', () => {
     };
   }
 
-  async function owner() {
+  async function owner(forward = false) {
     const chatId = `-legacy-ingestion-${randomUUID()}`;
     const userId = `human-${randomUUID()}`;
     chats.push(chatId);
     await prisma.chat.create({
       data: { id: chatId, entityType: 'CHAT', title: 'Local regression' },
     });
-    const value = update(chatId, userId, { at: cutoff.getTime() - 5000 });
+    const value = update(chatId, userId, { at: cutoff.getTime() - 5000, forward });
     const receipt = await store(value);
     const saved = await prisma.webhookEvent.update({
       where: { id: receipt.id },
@@ -382,33 +405,37 @@ native('legacy disposition production ingestion activation regressions', () => {
     },
   );
 
-  it('materializes held-only post-seal ingress including nine mirrors, edits and future source time', async () => {
-    const source = await owner();
-    await seal(source.candidate);
-    const messageId = randomUUID();
-    const saved = [];
-    for (let bot = 1; bot <= 9; bot++) {
-      for (const type of ['message_created', 'message_edited'] as const)
-        saved.push(
-          await store(
-            update(source.chatId, source.userId, {
-              botId: `major-${bot}`,
-              messageId,
-              type,
-              at: Date.now() + 60_000,
-            }),
-          ),
-        );
-    }
-    const observed = await pollAndObserve(source.chatId);
-    expect(observed.calls).not.toHaveBeenCalled();
-    expect(observed.heads.has(source.chatId)).toBe(false);
-    for (const receipt of saved)
-      expect(
-        rawEvidence(await prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } })),
-      ).toEqual(rawEvidence(receipt));
-    expect(observed.lag.oldestReceivedEventId).toBeNull();
-  });
+  it.each([false, true])(
+    'materializes post-seal ingress including nine mirrors/edits/future time (forward=%s)',
+    async (forward) => {
+      const source = await owner(forward);
+      await seal(source.candidate);
+      const messageId = randomUUID();
+      const saved = [];
+      for (let bot = 1; bot <= 9; bot++) {
+        for (const type of ['message_created', 'message_edited'] as const)
+          saved.push(
+            await store(
+              update(source.chatId, source.userId, {
+                botId: `major-${bot}`,
+                messageId,
+                type,
+                at: Date.now() + 60_000,
+                forward,
+              }),
+            ),
+          );
+      }
+      const observed = await pollAndObserve(source.chatId);
+      expect(observed.calls).not.toHaveBeenCalled();
+      expect(observed.heads.has(source.chatId)).toBe(false);
+      for (const receipt of saved)
+        expect(
+          rawEvidence(await prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } })),
+        ).toEqual(rawEvidence(receipt));
+      expect(observed.lag.oldestReceivedEventId).toBeNull();
+    },
+  );
 
   it('does not report successful receipt settlement when the exact target row is absent', async () => {
     const source = await owner();

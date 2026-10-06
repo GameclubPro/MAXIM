@@ -4,6 +4,7 @@ import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookParser } from '../../webhook/webhook.parser';
+import { WebhookLegacyHoldService } from '../../webhook/webhook-legacy-hold.service';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
 import { resolveDuplicateFlowConfig, resolveDuplicateFlowOutcome } from '../duplicate-flow-policy';
 import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation.service.support';
@@ -64,6 +65,7 @@ export class MessageDuplicateDeleteGuardService {
     config: ConfigService,
     private readonly authorization: MessageDuplicateAuthorizationService,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     this.timeoutMs = config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5000;
   }
@@ -170,8 +172,24 @@ export class MessageDuplicateDeleteGuardService {
       !binding.authorization
     )
       throw new MessageDuplicateGuardRejectedError('message_duplicate_binding_invalid');
+    await this.assertLegacySourcesAllowed(chatId, binding);
     if (!(await this.authorization.isAllowed(chatId, binding)))
       throw new MessageDuplicateGuardRejectedError('message_duplicate_action_revoked');
+  }
+
+  private async assertLegacySourcesAllowed(
+    chatId: string,
+    binding: MessageDuplicateBinding,
+  ): Promise<void> {
+    if (!binding.original)
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_binding_invalid');
+    if (
+      await this.legacyHolds?.isAnyMessageSourceHeld(chatId, [
+        { messageId: binding.messageId, userId: binding.senderId },
+        { messageId: binding.original.messageId, userId: binding.original.senderId },
+      ])
+    )
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_source_held');
   }
 
   private async checkMessage(params: MessageDuplicateGuardInput): Promise<'allowed' | 'absent'> {
@@ -373,6 +391,7 @@ export class MessageDuplicateDeleteGuardService {
     if (!(await this.history.stillMatches(params.chatId, binding, Boolean(receiptIntentId)))) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_history_changed');
     }
+    await this.assertLegacySourcesAllowed(params.chatId, binding);
     const protection = await this.immunity.consumeForMessage({
       chatId: params.chatId,
       userId: binding.senderId,

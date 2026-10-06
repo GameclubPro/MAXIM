@@ -1,8 +1,16 @@
 import { createHash } from 'node:crypto';
 import type { WebhookEvent } from '../prisma/prisma-client';
 import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
-import { parseAdminForwardedModerationCommand } from '../moderation/admin-forwarded-command.util';
+import {
+  parseAdminForwardedModerationCommand,
+  type AdminForwardedCommandSettings,
+} from '../moderation/admin-forwarded-command.util';
 import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
+import {
+  inspectLegacyForwardText,
+  legacyParsedTextMatches,
+  type LegacyForwardRefusal,
+} from './webhook-legacy-forward-source';
 export type LegacyRecoverySource = {
   chatId: string;
   messageId: string;
@@ -10,6 +18,7 @@ export type LegacyRecoverySource = {
   sourceAt: Date;
 };
 export type LegacyRecoverySourceRefusal =
+  | LegacyForwardRefusal
   | 'source_objects_missing'
   | 'source_receiver_unproved'
   | 'source_event_kind'
@@ -64,11 +73,30 @@ export function legacySnapshotDigest(value: unknown): string {
     .digest('hex');
 }
 
-// FLAG: One positively known original MAX shape only. Never infer CHAT, non-command,
+// FLAG: Positively known original MAX text shapes only. Never infer CHAT, non-command,
 // author, original time or secondary targets from defaults/current settings/text heuristics.
 export function inspectLegacyRecoverySource(
   owner: Pick<WebhookEvent, 'botId' | 'createdAt' | 'normalizedPayload' | 'rawPayload'>,
   onRefusal?: (reason: LegacyRecoverySourceRefusal) => void,
+  settings?: AdminForwardedCommandSettings,
+): LegacyRecoverySource | null {
+  return inspectLegacyTextSource(owner, false, onRefusal, settings);
+}
+
+// FLAG: Only the already-held POST_SEAL receipt path may use edit/future-clock
+// provenance. This grants no recovery/cutoff authority and retains the strict text/image shapes.
+export function inspectLegacyPostSealTextSource(
+  owner: Pick<WebhookEvent, 'botId' | 'createdAt' | 'normalizedPayload' | 'rawPayload'>,
+  settings?: AdminForwardedCommandSettings,
+): LegacyRecoverySource | null {
+  return inspectLegacyTextSource(owner, true, undefined, settings);
+}
+
+function inspectLegacyTextSource(
+  owner: Pick<WebhookEvent, 'botId' | 'createdAt' | 'normalizedPayload' | 'rawPayload'>,
+  postSealForward: boolean,
+  onRefusal?: (reason: LegacyRecoverySourceRefusal) => void,
+  settings?: AdminForwardedCommandSettings,
 ): LegacyRecoverySource | null {
   // FLAG: Emit one fixed code from the deciding guard. Never expose raw keys,
   // source text, identities or exception details through refusal diagnostics.
@@ -89,7 +117,10 @@ export function inspectLegacyRecoverySource(
     return refuse('source_objects_missing');
   if (typeof owner.botId !== 'string' || !identity(owner.botId) || update.botId !== owner.botId)
     return refuse('source_receiver_unproved');
-  if (update.type !== 'message_created' || raw.update_type !== 'message_created')
+  if (
+    (update.type !== 'message_created' && !(postSealForward && update.type === 'message_edited')) ||
+    raw.update_type !== update.type
+  )
     return refuse('source_event_kind');
   if (update.membership) return refuse('source_membership_present');
   if (update.eventTimestampSource === 'ingress') return refuse('source_ingress_clock');
@@ -98,7 +129,7 @@ export function inspectLegacyRecoverySource(
   if (sender.is_bot !== false) return refuse('source_human_unproved');
   if (!onlyKeys(raw, ['update_type', 'timestamp', 'message', 'update_id']))
     return refuse('source_raw_keys');
-  if (!onlyKeys(message, ['sender', 'recipient', 'timestamp', 'body']))
+  if (!onlyKeys(message, ['sender', 'recipient', 'timestamp', 'body', 'link']))
     return refuse('source_message_keys');
   if (
     !onlyKeys(sender, [
@@ -134,8 +165,12 @@ export function inspectLegacyRecoverySource(
     (!Array.isArray(body.attachments) || body.attachments.length !== 0)
   )
     return refuse('source_attachments');
-  if (typeof body.text !== 'string' || body.text !== normalized.text)
+  if (message.link !== undefined) {
+    const forwardRefusal = inspectLegacyForwardText(update, settings);
+    if (forwardRefusal) return refuse(forwardRefusal);
+  } else if (typeof body.text !== 'string' || !legacyParsedTextMatches(update))
     return refuse('source_text_mismatch');
+  if (typeof body.text !== 'string') return refuse('source_text_mismatch');
   if (typeof raw.timestamp !== 'number' || typeof message.timestamp !== 'number')
     return refuse('source_clock_type');
   const chatId = identity(recipient.chat_id);
@@ -157,7 +192,7 @@ export function inspectLegacyRecoverySource(
     eventAt === null ||
     sourceAt === null ||
     sourceAt > eventAt ||
-    eventAt > owner.createdAt.getTime()
+    (!postSealForward && eventAt > owner.createdAt.getTime())
   )
     return refuse('source_clock_order');
   if (typeof normalized.createdAt !== 'string' || Date.parse(normalized.createdAt) !== eventAt)
@@ -171,7 +206,11 @@ export function inspectLegacyRecoverySource(
   )
     return refuse('source_raw_mismatch');
   try {
-    if (parseAdminForwardedModerationCommand(body.text)) return refuse('source_command');
+    if (
+      parseAdminForwardedModerationCommand(body.text) ||
+      (settings && parseAdminForwardedModerationCommand(body.text, settings))
+    )
+      return refuse('source_command');
   } catch {
     return refuse('source_command_parse_failed');
   }

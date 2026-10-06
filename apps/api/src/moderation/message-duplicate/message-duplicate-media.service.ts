@@ -17,6 +17,7 @@ import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MaxClientService } from '../../max/max-client.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookParser } from '../../webhook/webhook.parser';
+import { WebhookLegacyHoldService } from '../../webhook/webhook-legacy-hold.service';
 import { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
 import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
 import { resolveTrustedDuplicateStateRevision } from '../duplicate-message-revision';
@@ -167,6 +168,7 @@ export class MessageDuplicateMediaService {
     private readonly botContext: MaxBotContextService,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
     @Optional() private readonly executionReadiness?: MaxExecutionOwnerReadinessService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     this.sharedAdmissionEnabled =
       config.get('MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED') === true;
@@ -774,14 +776,18 @@ export class MessageDuplicateMediaService {
     if (
       !row ||
       row.status === 'DUPLICATE' ||
+      row.status === 'NO_REPLAY_HELD' ||
       (row.status === 'FAILED' &&
         row.nextEnqueueAt === null &&
         !isPendingWebhookTimeoutQuarantineMessage(row.errorMessage))
     )
       return null;
-    if (row.status !== 'PROCESSED') throw new PhotoDuplicateSourceNotReadyError(webhookEventId);
     const update = row.normalizedPayload as unknown as MaxUpdate;
-    if (!update.message) return null;
+    // FLAG: Permanent holds also cover the unchanged FAILED owner receipt. Settle its
+    // media job without retrying, downloading, or creating a new duplicate baseline.
+    if (update?.message && (await this.legacyHolds?.isUpdateHeld(update))) return null;
+    if (row.status !== 'PROCESSED') throw new PhotoDuplicateSourceNotReadyError(webhookEventId);
+    if (!update?.message) return null;
     const revision = resolveTrustedDuplicateStateRevision(
       update.type,
       update.message.createdAt,

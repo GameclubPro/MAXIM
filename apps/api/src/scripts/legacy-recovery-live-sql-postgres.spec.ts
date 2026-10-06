@@ -113,7 +113,7 @@ native('native bounded live SQL inventory and actual plans', () => {
       ...overrides,
     };
   }
-  async function input() {
+  async function input(forward = false) {
     const chatId = `-${prefix}-${randomUUID()}`;
     chatIds.push(chatId);
     await db.chat.create({
@@ -130,6 +130,23 @@ native('native bounded live SQL inventory and actual plans', () => {
         body: { mid: `source-${randomUUID()}`, text: 'Private native inventory source text' },
       },
     };
+    if (forward) {
+      raw.message.body.text = '';
+      Object.assign(raw.message, {
+        link: {
+          type: 'forward',
+          sender: { user_id: 'foreign-author', is_bot: false },
+          chat_id: '-foreign-chat',
+          message: {
+            mid: 'foreign-message',
+            text: 'Private native inventory source text',
+            attachments: [
+              { type: 'image', payload: { photo_id: 42, url: 'https://i.oneme.ru/fixture' } },
+            ],
+          },
+        },
+      });
+    }
     const normalized = new WebhookParser().parse(raw, { botId: 'major' });
     const semanticKey = buildWebhookSemanticEventKey(normalized)!;
     const owner = await db.webhookEvent.create({
@@ -200,97 +217,102 @@ native('native bounded live SQL inventory and actual plans', () => {
     await db.$executeRaw`ANALYZE max_action_ledger`;
   }
 
-  it('proves the selected original source with plain planning and one read within the production budget', async () => {
-    const { request, owner, claim, raw } = await input();
-    await sourceLookupHistory(raw.message.recipient.chat_id);
-    const before = legacySnapshotDigest({ owner, claim });
-    const queries: string[] = [];
-    const ledgerReads: Prisma.Sql[] = [];
-    const result = await db.$transaction(
-      async (tx) => {
-        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
-        const reader = {
-          $queryRaw: async (statement: Prisma.Sql) => {
-            queries.push(statement.sql);
-            if (
-              !statement.sql.startsWith('EXPLAIN') &&
-              statement.sql.includes('FROM "max_action_ledger"')
-            )
-              ledgerReads.push(statement);
-            return tx.$queryRaw(statement);
-          },
-        } as unknown as Prisma.TransactionClient;
-        return inventoryLegacyRecoverySelectedSql(
-          reader,
-          request,
-          allowance(LEGACY_RECOVERY_LIVE_BUDGET),
-        );
-      },
-      { isolationLevel: 'RepeatableRead' },
-    );
-    process.stdout.write(
-      `[native-selected-source-cost] ${JSON.stringify({ cost: result.cost, issues: result.issues })}\n`,
-    );
-    expect(result.issues).toEqual([]);
-    expect(result.candidates).toHaveLength(1);
-    expect(result.candidates[0]!.owner).toEqual(owner);
-    expect(result.candidates[0]!.claim).toEqual(claim);
-    for (let index = 0; index < queries.length; ) {
-      if (queries[index]!.startsWith('EXPLAIN (VERBOSE, FORMAT JSON)')) {
-        expect(queries[index]).toBe(`EXPLAIN (VERBOSE, FORMAT JSON) ${queries[index + 1]}`);
-        index += 2;
-      } else {
-        expect(queries[index]).toContain("clock_timestamp() AT TIME ZONE 'UTC'");
-        expect(queries[index]).toContain("current_setting('transaction_read_only')");
-        expect(queries[index]).toContain("current_setting('TimeZone')");
-        index += 1;
+  it.each([false, true])(
+    'proves the selected source within the production budget (forward=%s)',
+    async (forward) => {
+      const { request, owner, claim, raw } = await input(forward);
+      await sourceLookupHistory(raw.message.recipient.chat_id);
+      const before = legacySnapshotDigest({ owner, claim });
+      const queries: string[] = [];
+      const ledgerReads: Prisma.Sql[] = [];
+      const result = await db.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          const reader = {
+            $queryRaw: async (statement: Prisma.Sql) => {
+              queries.push(statement.sql);
+              if (
+                !statement.sql.startsWith('EXPLAIN') &&
+                statement.sql.includes('FROM "max_action_ledger"')
+              )
+                ledgerReads.push(statement);
+              return tx.$queryRaw(statement);
+            },
+          } as unknown as Prisma.TransactionClient;
+          return inventoryLegacyRecoverySelectedSql(
+            reader,
+            request,
+            allowance(LEGACY_RECOVERY_LIVE_BUDGET),
+          );
+        },
+        { isolationLevel: 'RepeatableRead' },
+      );
+      process.stdout.write(
+        `[native-selected-source-cost] ${JSON.stringify({ cost: result.cost, issues: result.issues })}\n`,
+      );
+      expect(result.issues).toEqual([]);
+      expect(result.candidates).toHaveLength(1);
+      expect(result.candidates[0]!.owner).toEqual(owner);
+      expect(result.candidates[0]!.claim).toEqual(claim);
+      for (let index = 0; index < queries.length; ) {
+        if (queries[index]!.startsWith('EXPLAIN (VERBOSE, FORMAT JSON)')) {
+          expect(queries[index]).toBe(`EXPLAIN (VERBOSE, FORMAT JSON) ${queries[index + 1]}`);
+          index += 2;
+        } else {
+          expect(queries[index]).toContain("clock_timestamp() AT TIME ZONE 'UTC'");
+          expect(queries[index]).toContain("current_setting('transaction_read_only')");
+          expect(queries[index]).toContain("current_setting('TimeZone')");
+          index += 1;
+        }
       }
-    }
-    expect(queries.some((query) => /EXPLAIN[^\n]*ANALYZE/u.test(query))).toBe(false);
-    expect(
-      result.proofs.every((proof) => /:(?:bounded-planning|returned)$/u.test(proof.descriptor)),
-    ).toBe(true);
-    expect(result.proofs.some((proof) => proof.descriptor === 'sql:audit_logs')).toBe(false);
-    expect(result.cost.rows).toBeLessThan(1000);
-    expect(
-      legacySnapshotDigest({
-        owner: await db.webhookEvent.findUniqueOrThrow({ where: { id: owner.id } }),
-        claim: await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
-      }),
-    ).toBe(before);
-    // FLAG: Native-only ANALYZE checks physical work against 500 same-chat rows.
-    // The production query recorder above proves that its path never runs ANALYZE.
-    for (const statement of ledgerReads) {
-      const plans = await db.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
+      expect(queries.some((query) => /EXPLAIN[^\n]*ANALYZE/u.test(query))).toBe(false);
+      expect(
+        result.proofs.every((proof) => /:(?:bounded-planning|returned)$/u.test(proof.descriptor)),
+      ).toBe(true);
+      expect(result.proofs.some((proof) => proof.descriptor === 'sql:audit_logs')).toBe(false);
+      expect(result.cost.rows).toBeLessThan(1000);
+      expect(
+        legacySnapshotDigest({
+          owner: await db.webhookEvent.findUniqueOrThrow({ where: { id: owner.id } }),
+          claim: await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+        }),
+      ).toBe(before);
+      // FLAG: Native-only ANALYZE checks physical work against 500 same-chat rows.
+      // The production query recorder above proves that its path never runs ANALYZE.
+      for (const statement of ledgerReads) {
+        const plans = await db.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement}`);
-      const plan = plans[0]!['QUERY PLAN'];
-      expect(measureLegacyRecoverySqlPlan(plan).examinedRows).toBeLessThan(10);
-      const root = (plan as Array<{ Plan: Record<string, number> }>)[0]!.Plan;
-      expect((root['Shared Hit Blocks'] ?? 0) + (root['Shared Read Blocks'] ?? 0)).toBeLessThan(64);
-    }
-    await db.maxActionLedgerEntry.create({
-      data: {
-        id: `${prefix}:action:unknown`,
-        jobId: `${prefix}:action-job:unknown`,
-        chatId: raw.message.recipient.chat_id,
-        messageId: raw.message.body.mid,
-        actionType: 'FUTURE_UNKNOWN_ACTION',
-      },
-    });
-    const refused = await db.$transaction(
-      async (tx) => {
-        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
-        return inventoryLegacyRecoverySelectedSql(
-          tx,
-          request,
-          allowance(LEGACY_RECOVERY_LIVE_BUDGET),
+        const plan = plans[0]!['QUERY PLAN'];
+        expect(measureLegacyRecoverySqlPlan(plan).examinedRows).toBeLessThan(10);
+        const root = (plan as Array<{ Plan: Record<string, number> }>)[0]!.Plan;
+        expect((root['Shared Hit Blocks'] ?? 0) + (root['Shared Read Blocks'] ?? 0)).toBeLessThan(
+          64,
         );
-      },
-      { isolationLevel: 'RepeatableRead' },
-    );
-    expect(refused.issues.length).toBeGreaterThan(0);
-    expect(refused.candidates).toEqual([]);
-  });
+      }
+      await db.maxActionLedgerEntry.create({
+        data: {
+          id: `${prefix}:action:unknown`,
+          jobId: `${prefix}:action-job:unknown`,
+          chatId: raw.message.recipient.chat_id,
+          messageId: raw.message.body.mid,
+          actionType: 'FUTURE_UNKNOWN_ACTION',
+        },
+      });
+      const refused = await db.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          return inventoryLegacyRecoverySelectedSql(
+            tx,
+            request,
+            allowance(LEGACY_RECOVERY_LIVE_BUDGET),
+          );
+        },
+        { isolationLevel: 'RepeatableRead' },
+      );
+      expect(refused.issues.length).toBeGreaterThan(0);
+      expect(refused.candidates).toEqual([]);
+    },
+  );
 
   it('refuses a shadowed receipt relation before reading its source', async () => {
     const { request, owner } = await input();

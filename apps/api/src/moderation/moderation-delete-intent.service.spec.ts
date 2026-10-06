@@ -37,7 +37,6 @@ import {
   BotMessageAutoDeleteExplicitCleanupPolicyConflictError,
   ImageTextStopListDeleteIntentGuardRejectedError,
   ModerationDeleteIntentService,
-  PhotoDuplicateDeleteIntentGuardRejectedError,
 } from './moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
 import {
@@ -4191,7 +4190,9 @@ describe('ModerationDeleteIntentService', () => {
         expect(intent.retryUntilAt).toBe(deadline);
       }
       expect(route.candidateBotIds).toEqual([survivor]);
-      expect(recordBotAccessProbe).toHaveBeenCalledWith(expect.objectContaining({ botId: survivor }));
+      expect(recordBotAccessProbe).toHaveBeenCalledWith(
+        expect.objectContaining({ botId: survivor }),
+      );
       expect(new Set(getCurrentChatMemberAccess.mock.calls.map((call) => call[1].botId))).toEqual(
         new Set(botIds),
       );
@@ -4253,10 +4254,16 @@ describe('ModerationDeleteIntentService', () => {
     await internals.resolveDeleteRouteWithRefresh(baseIntent, ownedHeartbeat);
     expect(getCurrentChatMemberAccess).not.toHaveBeenCalled();
     jest.setSystemTime(new Date(Date.now() + 30_000));
-    await internals.resolveDeleteRouteWithRefresh({ ...baseIntent, attemptCount: 2 }, ownedHeartbeat);
+    await internals.resolveDeleteRouteWithRefresh(
+      { ...baseIntent, attemptCount: 2 },
+      ownedHeartbeat,
+    );
     expect(getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
     route.candidateCapabilities[0]!.checkedAt = new Date(Date.now() + 60_000).toISOString();
-    await internals.resolveDeleteRouteWithRefresh({ ...baseIntent, attemptCount: 3 }, ownedHeartbeat);
+    await internals.resolveDeleteRouteWithRefresh(
+      { ...baseIntent, attemptCount: 3 },
+      ownedHeartbeat,
+    );
     expect(getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
   });
 
@@ -4308,7 +4315,9 @@ describe('ModerationDeleteIntentService', () => {
   });
 
   it('fences rotated probes on a lost lease and preserves read-only reconciliation permission', async () => {
-    const route = unconfirmedDeleteRoute(Array.from({ length: 9 }, (_, index) => `bot-${index + 1}`));
+    const route = unconfirmedDeleteRoute(
+      Array.from({ length: 9 }, (_, index) => `bot-${index + 1}`),
+    );
     const { service, prisma, maxClient, maxBotLink } = createService(
       { MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: 'chat-1' },
       {},
@@ -8915,27 +8924,28 @@ describe('ModerationDeleteIntentService', () => {
     },
   );
 
-  it('re-reads photo policy after the dispatch fence and blocks a last-moment downgrade', async () => {
+  it('terminalizes a retired photo-only retry even when current settings and rollout allow it', async () => {
     const photoIntent = {
       ...baseIntent,
       attemptCount: 2,
       leasedFromStatus: 'RETRYABLE',
       photoDuplicateDeleteOnly: true,
     };
-    const retryableIntent = {
+    const terminalIntent = {
       ...photoIntent,
-      status: 'RETRYABLE',
+      status: 'FAILED_TERMINAL',
       leaseToken: null,
       leaseExpiresAt: null,
       leasedFromStatus: null,
       deleteDispatchStartedAt: null,
       deleteDispatchStartedBotId: null,
-      lastErrorCode: 'delete_pre_dispatch_guard_rejected',
+      lastErrorCode: 'photo_duplicate_legacy_evidence_retired',
     };
     const queryRaw = jest
       .fn()
       .mockResolvedValueOnce([photoIntent])
-      .mockResolvedValueOnce([retryableIntent]);
+      .mockResolvedValueOnce([terminalIntent]);
+    const terminalWrite = jest.fn().mockResolvedValue(1);
     const remoteDelete = jest.fn();
     const resolveEffectivePolicy = jest
       .fn()
@@ -8962,6 +8972,15 @@ describe('ModerationDeleteIntentService', () => {
       {
         $queryRaw: queryRaw,
         $executeRaw: jest.fn().mockResolvedValue(1),
+        $transaction: jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+          callback({
+            $queryRaw: jest
+              .fn()
+              .mockResolvedValueOnce([{ id: photoIntent.id }])
+              .mockResolvedValueOnce([photoIntent]),
+            $executeRaw: terminalWrite,
+          }),
+        ),
         moderationDeleteIntentReason: {
           findMany: jest.fn().mockResolvedValue([
             {
@@ -8990,12 +9009,21 @@ describe('ModerationDeleteIntentService', () => {
       { resolveEffectivePolicy },
     );
 
-    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).rejects.toBeInstanceOf(
-      PhotoDuplicateDeleteIntentGuardRejectedError,
-    );
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
 
-    expect(resolveEffectivePolicy).toHaveBeenCalledTimes(2);
+    expect(resolveEffectivePolicy).toHaveBeenCalledTimes(1);
     expect(remoteDelete).not.toHaveBeenCalled();
+    expect(
+      terminalWrite.mock.calls.some((call: unknown[]) =>
+        (call[0] as { values?: unknown[] }).values?.includes(
+          'photo_duplicate_legacy_evidence_retired',
+        ),
+      ),
+    ).toBe(true);
   });
 
   it('does not let photo controls suppress an independent reason on the same intent', async () => {

@@ -22,7 +22,10 @@ All 14 API roles and both native auxiliaries must first run the same reviewed
 source and immutable image. The host checkout must be clean at that exact SHA.
 This compatibility deployment alone does not remove an old ordering barrier.
 Use the normal exact-SHA CI gate, or an explicitly authorized emergency reason;
-a successful live endpoint alone is not completed recovery.
+a successful live endpoint alone is not completed recovery. During a queue incident,
+`MAXIM_DEPLOY_API_READY_TIMEOUT_SEC=180` bounds the compatibility rollout wait;
+the connector accepts caller values from 180 through 3600 seconds without
+weakening readiness or recording a successful release.
 
 All supported runtime entrypoints serialize through the persistent, protected
 `/var/lib/maxim-deploy/deploy.lock` inode. Never unlink it. Before the first
@@ -58,9 +61,12 @@ The online request is:
 ```
 
 The host independently derives the Major catalog from the exact admin container;
-Publisher is excluded. Selection is finite (at most 200 owners/100 bots). The
-first supported source is original human plain text in a Major group, without
-media, commands, replies/forwards or ambiguous provenance. Other classes refuse.
+Publisher is excluded. Selection is finite (at most 200 owners/100 bots). Supported sources are original human plain text in a Major group and a strictly
+validated flat forward with text or at most ten complete image/photo attachments.
+Commands in direct, forwarded or composed text, replies, unknown fields and
+ambiguous provenance refuse. The modern duplicate guard checks both source
+authors; retired photo evidence cannot authorize new deletion. Held media jobs
+settle without download or repeated deferral.
 The collector uses bounded exact source/claim/mirror reads and reviewed reachable
 effect-family guards. It also checks the pending prefix of each selected chat
 against the actual receipt materializer in a read-only snapshot: old commands,

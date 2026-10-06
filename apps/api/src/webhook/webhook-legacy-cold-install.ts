@@ -209,10 +209,11 @@ export async function inspectLegacyRecoveryCandidate(
   try {
     if (
       settings &&
-      parseAdminForwardedModerationCommand(
-        (owner.normalizedPayload as unknown as MaxUpdate).message!.text,
-        settings,
-      )
+      (!inspectLegacyRecoverySource(owner, undefined, settings) ||
+        parseAdminForwardedModerationCommand(
+          (owner.normalizedPayload as unknown as MaxUpdate).message!.text,
+          settings,
+        ))
     )
       return refuse('candidate_configured_command');
   } catch {

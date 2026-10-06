@@ -4338,6 +4338,7 @@ export class ModerationDeleteIntentService {
     const code = this.firstString(this.asRecord(error)?.code);
     if (
       code === 'moderation_delete_reason_missing' ||
+      code === 'photo_duplicate_legacy_evidence_retired' ||
       code === CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE ||
       code === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE ||
       code === NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE
@@ -4982,6 +4983,14 @@ export class ModerationDeleteIntentService {
         'Photo duplicate match kind is no longer authorized by runtime control',
       );
     }
+    // FLAG: The retired photo queue has no producer or executor. Its saved reasons do not
+    // identify the original author/message and cannot prove that an abandoned source was
+    // excluded. Settings or a live rollout must never revive that legacy authority. Exact
+    // remote success settles before guards; independent reasons return above and keep theirs.
+    throw new PhotoDuplicateDeleteIntentGuardRejectedError(
+      'photo_duplicate_legacy_evidence_retired',
+      'Retired photo evidence cannot authorize a new deletion',
+    );
   }
 
   private parsePhotoDuplicateDeleteReasonFence(
@@ -6170,7 +6179,10 @@ export class ModerationDeleteIntentService {
                       : nightModeCleanupGuardRejected
                         ? latest.nightModeCloseNoticeCleanupReason === true &&
                           latest.nightModeCloseNoticeCleanupOnly !== true
-                        : this.hasExecutableNonCommercialOcrReason(latest)));
+                        : details.errorCode === 'photo_duplicate_legacy_evidence_retired'
+                          ? latest.photoDuplicateDeleteOnly !== true &&
+                            this.hasExecutableNonCommercialOcrReason(latest)
+                          : this.hasExecutableNonCommercialOcrReason(latest)));
         const now = Date.now();
         // A fresh independent reason does not inherit the obsolete OCR guard failure or its
         // backoff. Requeue it immediately; the next attempt reloads the mixed durable classifiers.

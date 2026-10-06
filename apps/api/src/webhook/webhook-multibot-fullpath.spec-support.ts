@@ -381,6 +381,8 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     history,
     config,
     authorization,
+    undefined,
+    legacyHolds,
   );
   const lengthGuard = new MessageLimitsDeleteGuardService(
     prisma as never,

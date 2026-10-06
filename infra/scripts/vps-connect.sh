@@ -24,6 +24,7 @@ ENV_FILE="${MAXIM_VPS_ENV_FILE:-$ROOT_DIR/.env.vps}"
 DATABASE_BREAK_GLASS_FROM_CALLER="${MAXIM_VPS_DATABASE_BREAK_GLASS:-}"
 DATABASE_BREAK_GLASS_REASON_FROM_CALLER="${MAXIM_VPS_DATABASE_BREAK_GLASS_REASON:-}"
 DEPLOY_DISK_MIN_FREE_BYTES_FROM_CALLER="${MAXIM_DEPLOY_DISK_MIN_FREE_BYTES:-}"
+DEPLOY_API_READY_TIMEOUT_SEC_FROM_CALLER="${MAXIM_DEPLOY_API_READY_TIMEOUT_SEC:-}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -536,6 +537,18 @@ prepend_post_release_reclaim_env() {
   esac
 }
 
+prepend_deploy_ready_timeout_env() {
+  local command_var="$1"
+  local -n command_ref="$command_var"
+  local timeout="$DEPLOY_API_READY_TIMEOUT_SEC_FROM_CALLER"
+  [[ -n "$timeout" ]] || return 0
+  if [[ ! "$timeout" =~ ^[1-9][0-9]{2,3}$ ]] || ((timeout < 180 || timeout > 3600)); then
+    echo "MAXIM_DEPLOY_API_READY_TIMEOUT_SEC must be an integer between 180 and 3600." >&2
+    return 2
+  fi
+  command_ref="MAXIM_DEPLOY_API_READY_TIMEOUT_SEC=$(printf '%q' "$timeout") $command_ref"
+}
+
 prepend_deploy_disk_floor_env() {
   local command_var="$1"
   local -n command_ref="$command_var"
@@ -842,6 +855,7 @@ deploy_main() {
   prepend_webhook_rollout_recovery_env remote_command
   prepend_post_release_reclaim_env remote_command
   prepend_deploy_disk_floor_env remote_command
+  prepend_deploy_ready_timeout_env remote_command
   maxim_prepend_git_ssh_transport remote_command "${MAXIM_DEPLOY_GIT_SSH_PORT:-default}"
   remote_exec "$remote_command"
 }

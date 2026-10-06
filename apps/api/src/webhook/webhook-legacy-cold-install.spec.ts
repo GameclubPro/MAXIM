@@ -27,7 +27,108 @@ function source() {
   };
 }
 
+function forwardedSource() {
+  const receipt = source();
+  const raw = receipt.normalizedPayload.raw!;
+  const message = raw.message as Record<string, unknown>;
+  (message.body as { text: string }).text = '  ';
+  const link = {
+    type: 'forward',
+    chat_id: '-foreign-chat',
+    sender: { user_id: 'foreign-author', is_bot: false },
+    message: {
+      mid: 'foreign-message',
+      seq: 1,
+      text: 'Original\n  photo caption',
+      attachments: [
+        {
+          type: 'image',
+          payload: { photo_id: 42, token: 'synthetic', url: 'https://i.oneme.ru/synthetic-image' },
+        },
+      ],
+    },
+  };
+  message.link = link;
+  receipt.normalizedPayload = new WebhookParser().parse(raw, { botId: receipt.botId });
+  return { receipt, raw, message, link };
+}
+
 describe('strict legacy cold recovery source', () => {
+  it('uses the actual parser for ordinary multiline text', () => {
+    const receipt = source();
+    const raw = receipt.normalizedPayload.raw!;
+    ((raw.message as Record<string, unknown>).body as { text: string }).text =
+      '  ordinary\n\t text  ';
+    receipt.normalizedPayload = new WebhookParser().parse(raw, { botId: receipt.botId });
+    expect(receipt.normalizedPayload.message!.text).toBe('ordinary text');
+    expect(inspectLegacyRecoverySource(receipt as never)).not.toBeNull();
+    receipt.normalizedPayload.message!.text = 'forged text';
+    expect(inspectLegacyRecoverySource(receipt as never)).toBeNull();
+  });
+
+  it('binds a flat forwarded image and parser-composed caption only to the outer participant and message', () => {
+    const { receipt } = forwardedSource();
+    expect(receipt.normalizedPayload.message!.text).toBe('Original photo caption');
+    expect(inspectLegacyRecoverySource(receipt as never)).toEqual({
+      chatId: '-legacy-chat',
+      messageId: 'legacy-message',
+      userId: 'legacy-human',
+      sourceAt: new Date(Date.UTC(2026, 9, 5, 19, 11)),
+    });
+  });
+
+  it.each([
+    'reply',
+    'nested',
+    'unknown',
+    'video',
+    'keyboard',
+    'payload',
+    'markup',
+    'oversize',
+    'forged',
+  ])('rejects unsupported forwarded content %s', (fault) => {
+    const { receipt, link } = forwardedSource();
+    if (fault === 'reply') link.type = 'reply';
+    if (fault === 'nested') Object.assign(link.message, { link: { type: 'forward' } });
+    if (fault === 'unknown') Object.assign(link, { unknown: 'hidden' });
+    if (fault === 'video') link.message.attachments[0]!.type = 'video';
+    if (fault === 'keyboard') link.message.attachments[0]!.type = 'inline_keyboard';
+    if (fault === 'payload')
+      Object.assign(link.message.attachments[0]!.payload, { hidden: { user_id: 'foreign' } });
+    if (fault === 'markup') Object.assign(link.message, { markup: [] });
+    if (fault === 'oversize')
+      link.message.attachments = Array.from({ length: 11 }, () => link.message.attachments[0]!);
+    if (fault === 'forged') receipt.normalizedPayload.message!.text = 'forged';
+    expect(inspectLegacyRecoverySource(receipt as never)).toBeNull();
+  });
+
+  it.each(['$', '$ товар', '/command', 'Старт', 'бан', 'тишина 12'])(
+    'denies a secondary command or seller trigger inside forwarded content %s',
+    (text) => {
+      for (const location of ['direct', 'linked']) {
+        const { receipt, raw, message, link } = forwardedSource();
+        if (location === 'direct') (message.body as { text: string }).text = text;
+        else {
+          link.message.text = text;
+          (message.body as { text: string }).text = 'ordinary prefix';
+        }
+        receipt.normalizedPayload = new WebhookParser().parse(raw, { botId: receipt.botId });
+        expect(inspectLegacyRecoverySource(receipt as never)).toBeNull();
+      }
+    },
+  );
+
+  it('checks configured commands in each content component even when the composed text is ordinary', () => {
+    const { receipt, raw, message, link } = forwardedSource();
+    (message.body as { text: string }).text = 'ordinary prefix';
+    link.message.text = 'особое';
+    receipt.normalizedPayload = new WebhookParser().parse(raw, { botId: receipt.botId });
+    expect(inspectLegacyRecoverySource(receipt as never)).not.toBeNull();
+    expect(
+      inspectLegacyRecoverySource(receipt as never, undefined, { adminBanCommandName: 'особое' }),
+    ).toBeNull();
+  });
   it.each([
     ['recipient', 'user_id', null, 'source_recipient_keys'],
     ['body', 'attachments', null, 'source_attachments'],

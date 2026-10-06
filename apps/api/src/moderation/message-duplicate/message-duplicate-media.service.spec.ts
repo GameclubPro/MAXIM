@@ -83,6 +83,7 @@ function setup(config: Record<string, unknown> = {}) {
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'allow' }) };
   const max = { getExactMessageRow: jest.fn() };
   const metrics = { record: jest.fn(), recordObservation: jest.fn(), recordPhase: jest.fn() };
+  const legacyHolds = { isUpdateHeld: jest.fn().mockResolvedValue(false) };
   const service = new MessageDuplicateMediaService(
     prisma as never,
     redis as never,
@@ -96,6 +97,8 @@ function setup(config: Record<string, unknown> = {}) {
     max as never,
     botContext,
     metrics as never,
+    undefined,
+    legacyHolds as never,
   );
   const downloads = jest.fn(async (url: string) => ({
     bytes: Buffer.from(url.endsWith('b') ? 'different' : 'same'),
@@ -151,6 +154,7 @@ function setup(config: Record<string, unknown> = {}) {
   };
   return {
     service,
+    legacyHolds,
     botContext,
     bots,
     settings,
@@ -173,6 +177,29 @@ function setup(config: Record<string, unknown> = {}) {
 }
 
 describe('bounded message duplicate media analysis', () => {
+  it.each(['NO_REPLAY_HELD', 'FAILED', 'PROCESSED'] as const)(
+    'settles a permanently held %s source and leaves independent media runnable',
+    async (status) => {
+      const s = setup();
+      const held = s.job('held-source', 0);
+      const row = s.rows.get(held.webhookEventId) as Record<string, unknown>;
+      row.status = status;
+      row.errorMessage = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:legacy: timeout';
+      s.legacyHolds.isUpdateHeld.mockImplementation(
+        async (update) => update.message.messageId === 'held-source',
+      );
+      expect(await s.service.process(held, s.lease)).toBe('SOURCE_UNAVAILABLE');
+      expect(s.downloads).not.toHaveBeenCalled();
+      expect(s.photos.fingerprintAlbum).not.toHaveBeenCalled();
+      expect(s.history.observe).not.toHaveBeenCalled();
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+      expect(await s.service.process(s.job('independent', 100), s.lease)).toBe('MEDIA_CANDIDATE');
+      await s.service.process(s.job('independent-next', 200), s.lease);
+      expect(s.downloads).toHaveBeenCalled();
+      expect(s.history.observe).toHaveBeenCalled();
+    },
+  );
+
   it.each(['STANDARD', 'STRICT', 'CUSTOM_NEAR', 'CUSTOM_PHONE', 'IMAGE'] as const)(
     'rejects a pre-v3 %s job before any source or native work',
     async (preset) => {

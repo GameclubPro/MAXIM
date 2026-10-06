@@ -10,6 +10,9 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'async isMessageHeld(',
       'async hasChatHolds(',
       "'PrivateControlService',",
+      "'MessageDuplicateDeleteGuardService',",
+      "'MessageDuplicateMediaService',",
+      'async isAnyMessageSourceHeld(',
       "'MessageRetentionStore',",
       "'PublisherChatCommentProducerService',",
       "'PublisherChatCommentDeliveryService',",
@@ -87,7 +90,22 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'this.legacyHolds.isMemberHeld(',
       'readLegacyBotCleanupSourceAt(reason.metadata)',
       'isLegacyChatSendHeld(intent.chatId, sourceAt ?? new Date(NaN))',
+      "code === 'photo_duplicate_legacy_evidence_retired'",
+      "'photo_duplicate_legacy_evidence_retired',",
+      "'Retired photo evidence cannot authorize a new deletion'",
     ],
+  ],
+  [
+    'apps/api/src/moderation/message-duplicate/message-duplicate-delete-guard.service.ts',
+    [
+      'await this.legacyHolds?.isAnyMessageSourceHeld(',
+      '{ messageId: binding.original.messageId, userId: binding.original.senderId }',
+      "'message_duplicate_source_held'",
+    ],
+  ],
+  [
+    'apps/api/src/moderation/message-duplicate/message-duplicate-media.service.ts',
+    ["row.status === 'NO_REPLAY_HELD'", 'await this.legacyHolds?.isUpdateHeld(update)'],
   ],
   [
     'apps/api/src/moderation/moderation-state-delete-guard.service.ts',
@@ -132,6 +150,10 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'legacyHolds.isGlobalUserHeld(',
       'moderationSource: {',
     ],
+  ],
+  [
+    'apps/api/src/moderation/photo-duplicate/photo-duplicate.processor.ts',
+    ['await this.orderingStore.abandon({'],
   ],
   [
     'apps/api/src/moderation/photo-duplicate/photo-duplicate-moderation.service.ts',

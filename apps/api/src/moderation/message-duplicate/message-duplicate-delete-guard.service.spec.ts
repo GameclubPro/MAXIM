@@ -140,6 +140,7 @@ function setup() {
   };
   const authorization = { isAllowed: jest.fn().mockResolvedValue(true) };
   const metrics = { record: jest.fn(), recordGuardRejection: jest.fn() };
+  const legacyHolds = { isAnyMessageSourceHeld: jest.fn().mockResolvedValue(false) };
   const service = new MessageDuplicateDeleteGuardService(
     prisma as never,
     guardedMax as never,
@@ -150,6 +151,7 @@ function setup() {
     new ConfigService(),
     authorization as never,
     metrics as never,
+    legacyHolds as never,
   );
   const params = {
     intentId: 'intent',
@@ -160,6 +162,7 @@ function setup() {
   };
   return {
     service,
+    legacyHolds,
     originalRaw,
     originalLookup,
     binding,
@@ -215,6 +218,64 @@ describe('scheduled duplicate final action guard', () => {
 });
 
 describe('message duplicate final delete guard', () => {
+  it.each(['qualification', 'qualification-retry', 'queued-delete', 'final-mutation'] as const)(
+    'rejects a held original belonging to another participant at %s',
+    async (stage) => {
+      const s = setup();
+      s.binding.original!.senderId = 'held-original-author';
+      s.legacyHolds.isAnyMessageSourceHeld.mockResolvedValue(true);
+      const action =
+        stage === 'qualification'
+          ? s.service.assertQualificationAuthority(s.params.chatId, s.binding)
+          : stage === 'qualification-retry'
+            ? s.service.qualify({ ...s.params, binding: s.binding })
+            : stage === 'queued-delete'
+              ? s.service.assertIntentStillActionable(s.params)
+              : s.service.assertMessageStillActionable({ ...s.params, binding: s.binding });
+      await expect(action).rejects.toThrow('message_duplicate_source_held');
+      expect(s.legacyHolds.isAnyMessageSourceHeld).toHaveBeenCalledWith(s.params.chatId, [
+        { messageId: 'm2', userId: '123' },
+        { messageId: 'm1', userId: 'held-original-author' },
+      ]);
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+      expect(s.history.qualify).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rechecks after remote content reads before consuming participant immunity', async () => {
+    const s = setup();
+    s.legacyHolds.isAnyMessageSourceHeld.mockResolvedValueOnce(false).mockResolvedValue(true);
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
+      'message_duplicate_source_held',
+    );
+    expect(s.max.getExactMessageRow).toHaveBeenCalled();
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the source after the final mutation lease boundary', async () => {
+    const s = setup();
+    await expect(
+      s.service.assertMessageStillActionable({
+        ...s.params,
+        binding: s.binding,
+        beforeFinalAuthority: async () => {
+          s.legacyHolds.isAnyMessageSourceHeld.mockResolvedValue(true);
+        },
+      }),
+    ).rejects.toThrow('message_duplicate_source_held');
+    expect(s.legacyHolds.isAnyMessageSourceHeld).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not treat unavailable source hold evidence as permission', async () => {
+    const s = setup();
+    s.legacyHolds.isAnyMessageSourceHeld.mockRejectedValue(new Error('hold read unavailable'));
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
+      'hold read unavailable',
+    );
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
   it.each([
     { userId: null, isAdmin: false, isOwner: false },
     { userId: 'other', isAdmin: false, isOwner: false },
