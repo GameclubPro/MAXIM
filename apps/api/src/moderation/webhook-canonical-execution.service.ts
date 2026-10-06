@@ -226,6 +226,7 @@ export class WebhookCanonicalExecutionService {
     }
 
     const normalizedUpdateType = update.type.trim().toLowerCase();
+    const preparedObservationOnly = normalizedUpdateType === 'user_removed';
     const executionClaimModel = this.executionClaimModel;
     const semanticKey = buildWebhookSemanticEventKey(update);
     if (semanticKey && !webhookEvent.semanticKey) {
@@ -483,7 +484,29 @@ export class WebhookCanonicalExecutionService {
       return null;
     }
 
-    const privateDialogBotId = privateDirectDialog ? this.normalizeBotId(webhookEvent.botId) : null;
+    const receivingBotId = this.normalizeBotId(webhookEvent.botId);
+    const privateDialogBotId = privateDirectDialog ? receivingBotId : null;
+    // FLAG: Membership removal already committed its access revocation and read models
+    // during preparation. Only that exact pristine authority may complete as an observation.
+    if (
+      preparedObservationOnly &&
+      (!executionClaim ||
+        executionClaim.enforced !== true ||
+        executionClaim.webhookEventId !== webhookEvent.id ||
+        executionClaim.status !== 'READY' ||
+        !(executionClaim.preparedAt instanceof Date) ||
+        !Number.isFinite(executionClaim.preparedAt.getTime()) ||
+        executionClaim.completedAt != null ||
+        executionClaim.commandResult != null ||
+        !semanticKey ||
+        webhookEvent.semanticKey !== semanticKey ||
+        !receivingBotId ||
+        this.normalizeBotId(update.botId) !== receivingBotId)
+    )
+      throw new WebhookPreparationDeferredError(
+        'Membership removal observation preparation proof incomplete',
+        1_000,
+      );
     // FLAG: A private dialog cannot fail over to another bot's credentials. Old null
     // executors may bind only to the matching persisted receipt and payload identity.
     if (
@@ -520,13 +543,14 @@ export class WebhookCanonicalExecutionService {
     };
     let preparedProof: MaxExecutionRouteProof | null = null;
 
-    // FLAG: Private dialogs retain canonical/hold/lease fences, but have no group
-    // moderation membership. Explicit channels and unknown IDs still require readiness.
+    // FLAG: Private dialogs and prepared local observations retain canonical/hold/lease
+    // fences. Every other managed or unknown scope still requires moderation readiness.
     if (
       businessLeaseToken &&
       this.executionOwnerReadiness &&
       update.message?.chatId &&
-      !privateDirectDialog
+      !privateDirectDialog &&
+      !preparedObservationOnly
     ) {
       try {
         if (
@@ -657,19 +681,23 @@ export class WebhookCanonicalExecutionService {
                 webhookEventId: webhookEvent.id,
                 semanticKey: executionClaim!.semanticKey!,
                 leaseToken: businessLeaseToken,
-                // FLAG: Older private preparation left the executor empty. Bind it only
+                // FLAG: Older preparation may leave the executor empty. Bind it only
                 // while this exact unstarted claim and its previous executor still match.
-                executionBotId: privateDirectDialog
-                  ? context.activeBotId
-                  : (executionClaim!.executionBotId ?? null),
-                ...(privateDirectDialog
+                executionBotId:
+                  privateDirectDialog || preparedObservationOnly
+                    ? context.activeBotId
+                    : (executionClaim!.executionBotId ?? null),
+                ...(privateDirectDialog || preparedObservationOnly
                   ? {
                       expectedExecutionBotId: executionClaim!.executionBotId ?? null,
-                      privateReceipt: {
-                        botId: privateDialogBotId!,
+                      expectedReceipt: {
+                        botId: receivingBotId!,
                         normalizedPayload: webhookEvent.normalizedPayload as Prisma.InputJsonValue,
                       },
                     }
+                  : {}),
+                ...(preparedObservationOnly
+                  ? { preparedObservationAt: executionClaim!.preparedAt! }
                   : {}),
                 executionDeadlineAt: webhookEvent.executionDeadlineAt,
                 enforced: true,
@@ -696,6 +724,12 @@ export class WebhookCanonicalExecutionService {
         throw new WebhookPreparationDeferredError('Canonical business-start fence changed', 1_000);
       }
     }
+    if (preparedObservationOnly) {
+      // FLAG: This completes only the prepared local observation. Never pass removal
+      // envelopes to the whole engine: raw callback fields must not dispatch poll effects.
+      await this.completeExecution(context);
+      return null;
+    }
     return context;
   }
 
@@ -708,7 +742,8 @@ export class WebhookCanonicalExecutionService {
       leaseToken: string;
       executionBotId: string | null;
       expectedExecutionBotId?: string | null;
-      privateReceipt?: { botId: string; normalizedPayload: Prisma.InputJsonValue };
+      expectedReceipt?: { botId: string; normalizedPayload: Prisma.InputJsonValue };
+      preparedObservationAt?: Date;
       executionDeadlineAt: Date | null;
       enforced: boolean;
       phase: 'ready' | 'start';
@@ -755,11 +790,15 @@ export class WebhookCanonicalExecutionService {
       params.expectedExecutionBotId !== undefined
         ? Prisma.sql`AND claim."execution_bot_id" IS NOT DISTINCT FROM ${params.expectedExecutionBotId}`
         : Prisma.empty;
-    // FLAG: Private execution stays on the authenticated receipt identity even if
+    // FLAG: Receipt-bound execution stays on the authenticated identity even if
     // preparation or maintenance changes that receipt after the worker's first read.
-    const privateReceiptFence = params.privateReceipt
-      ? Prisma.sql`AND event."bot_id" = ${params.privateReceipt.botId}
-          AND event."normalized_payload" = ${JSON.stringify(params.privateReceipt.normalizedPayload)}::jsonb`
+    const receiptFence = params.expectedReceipt
+      ? Prisma.sql`AND event."bot_id" = ${params.expectedReceipt.botId}
+          AND event."normalized_payload" = ${JSON.stringify(params.expectedReceipt.normalizedPayload)}::jsonb`
+      : Prisma.empty;
+    const observationFence = params.preparedObservationAt
+      ? Prisma.sql`AND claim."prepared_at" = ${params.preparedObservationAt}
+          AND claim."command_result" IS NULL AND event."semantic_key" = ${params.semanticKey}`
       : Prisma.empty;
     const ready = params.phase === 'ready';
     const changed = await client.$executeRaw(Prisma.sql`
@@ -792,7 +831,7 @@ export class WebhookCanonicalExecutionService {
         AND event."execution_deadline_at" IS NOT DISTINCT FROM ${params.executionDeadlineAt}
         AND (NOT COALESCE(claim."command_result" @> ${waitingMarker}::jsonb, false)
              OR event."execution_deadline_at" > instant."now")
-        ${executionBotFence} ${routeFence} ${privateReceiptFence}
+        ${executionBotFence} ${routeFence} ${receiptFence} ${observationFence}
     `);
     if (changed === 1) return 'transitioned';
     return (await WebhookCanonicalExecutionService.tryExpireUnstartedOwnerWithClient(
@@ -991,7 +1030,7 @@ export class WebhookCanonicalExecutionService {
   }
 
   async completeExecution(context: WebhookCanonicalExecutionContext): Promise<void> {
-    // FLAG: This method is called only after the awaited whole handler succeeds. Persist
+    // FLAG: Call only after the awaited handler or prepared local observation completes. Persist
     // that exact fact before receipt settlement, so a crash here never reruns the engine.
     await this.markExecutionHandlerFinished(context);
     if (context.businessLeaseToken) {

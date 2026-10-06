@@ -180,6 +180,40 @@ native('fresh held command ingress, real SQL authority, BullMQ and guarded MAX',
     }
     await h.pause();
   }
+  it('keeps a prepared user_removed observation under its real sealed legacy hold', async () => {
+    const original = payload('', 'held-user');
+    const update = {
+      ...original,
+      type: 'user_removed',
+      membership: { action: 'removed' as const, memberUserIds: ['held-user'] },
+      raw: { ...(original.raw as Record<string, unknown>), update_type: 'user_removed' },
+    };
+    const id = await store(update);
+    await h.prisma.webhookExecutionClaim.create({
+      data: {
+        kind: 'EXECUTION',
+        semanticKey: buildWebhookSemanticEventKey(update)!,
+        webhookEventId: id,
+        enforced: true,
+        status: 'READY',
+        preparedAt: new Date(),
+        executionBotId: h.bots[0]!.id,
+      },
+    });
+    const handler = jest.spyOn(h.moderation, 'handleUpdate');
+    const readiness = jest.spyOn(h.readiness, 'ensureReady');
+    expect(await h.legacyHolds.isUpdateHeld(update)).toBe(true);
+    await h.moderation.processWebhookEvent(id);
+    expect((await h.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).status).toBe(
+      'RECEIVED',
+    );
+    expect(
+      await h.prisma.webhookExecutionClaim.findFirstOrThrow({ where: { webhookEventId: id } }),
+    ).toMatchObject({ businessStartedAt: null, completedAt: null, leaseToken: null });
+    expect(handler).not.toHaveBeenCalled();
+    expect(readiness).not.toHaveBeenCalled();
+    expect(h.effects).toEqual([]);
+  });
   it.each(['тишина 12', '  тишина\n\t  12  '])(
     'runs one fresh configured command %j across mirrors and then admits another user without ordinary moderation',
     async (commandText) => {

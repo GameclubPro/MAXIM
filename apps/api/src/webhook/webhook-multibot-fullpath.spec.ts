@@ -339,6 +339,199 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
     });
   });
 
+  async function removedObservationFixture() {
+    const s = await fixture(2, 'on');
+    await s.pause();
+    const chatId = (await s.seedCatalog(1))[0]!;
+    await s.prisma.chatAdminAllowlist.create({ data: { chatId, userId: 'fixture-user' } });
+    const id = await s.ingest({ chatId, messageId: randomUUID(), text: '', botId: s.bots[1]!.id });
+    const event = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    const stored = event.normalizedPayload as unknown as MaxUpdate;
+    const update: MaxUpdate = {
+      ...stored,
+      type: 'user_removed',
+      membership: { action: 'removed', memberUserIds: ['fixture-user'] },
+      raw: {
+        ...(stored.raw as Record<string, unknown>),
+        update_type: 'user_removed',
+        callback: {
+          callback_id: randomUUID(),
+          payload: 'injected-poll-callback',
+          user: { user_id: 'fixture-user' },
+        },
+      },
+    };
+    const semanticKey = buildWebhookSemanticEventKey(update)!;
+    await s.prisma.webhookEvent.update({
+      where: { id },
+      data: {
+        semanticKey,
+        normalizedPayload: update as unknown as Prisma.InputJsonValue,
+        rawPayload: update.raw as Prisma.InputJsonValue,
+        executionDeadlineAt: null,
+      },
+    });
+    await expect(s.ingress.preparePersistedWebhookEvent(id)).resolves.toMatchObject({
+      canonical: true,
+      prepared: true,
+    });
+    expect(
+      await s.prisma.chatAdminAllowlist.count({ where: { chatId, userId: 'fixture-user' } }),
+    ).toBe(0);
+    expect(
+      await s.prisma.chatMembershipActivityEvent.count({
+        where: { chatId, userId: 'fixture-user', eventType: 'user_removed' },
+      }),
+    ).toBe(1);
+    await s.prisma.webhookEvent.update({ where: { id }, data: { status: 'QUEUED' } });
+    await s.prisma.chatBotMembership.updateMany({
+      where: { chatId },
+      data: { status: 'REMOVED', botAccessState: 'DENIED' },
+    });
+    const readiness = jest.spyOn(s.readiness, 'ensureReady').mockResolvedValue(null);
+    const handler = jest.spyOn(s.moderation, 'handleUpdate');
+    const poll = {
+      tryHandleCallback: jest
+        .fn()
+        .mockRejectedValue(new Error('Observation cannot dispatch poll effects')),
+    };
+    Object.assign(s.moderation, { managedPollService: poll });
+    return { s, id, chatId, semanticKey, readiness, handler, poll };
+  }
+
+  it.each([false, true])(
+    'settles prepared user_removed observation without an eligible route, null executor=%s',
+    async (nullExecutor) => {
+      const f = await removedObservationFixture();
+      const before = await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: f.id },
+      });
+      if (nullExecutor)
+        await f.s.prisma.webhookExecutionClaim.update({
+          where: { id: before.id },
+          data: { executionBotId: null },
+        });
+      await f.s.moderation.processWebhookEvent(f.id);
+      await f.s.moderation.processWebhookEvent(f.id);
+      expect(
+        await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } }),
+      ).toMatchObject({ status: 'PROCESSED' });
+      expect(
+        await f.s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: before.id } }),
+      ).toMatchObject({
+        status: 'COMPLETED',
+        preparedAt: before.preparedAt,
+        businessStartedAt: expect.any(Date),
+        executionBotId: nullExecutor ? f.s.bots[1]!.id : before.executionBotId,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+      expect(f.readiness).not.toHaveBeenCalled();
+      expect(f.handler).not.toHaveBeenCalled();
+      expect(f.poll.tryHandleCallback).not.toHaveBeenCalled();
+      expect(f.s.effects).toEqual([]);
+    },
+  );
+
+  it.each(['unprepared', 'result', 'identity', 'semantic', 'started', 'quarantined'] as const)(
+    'retains prepared user_removed observation fences for %s authority',
+    async (caseName) => {
+      const f = await removedObservationFixture();
+      const claim = await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: f.id },
+      });
+      if (caseName === 'unprepared')
+        await f.s.prisma.webhookExecutionClaim.update({
+          where: { id: claim.id },
+          data: { preparedAt: null },
+        });
+      if (caseName === 'result')
+        await f.s.prisma.webhookExecutionClaim.update({
+          where: { id: claim.id },
+          data: { commandResult: { kind: 'UNVERIFIED_EFFECT' } },
+        });
+      if (caseName === 'identity')
+        await f.s.prisma.webhookEvent.update({
+          where: { id: f.id },
+          data: { botId: f.s.bots[0]!.id },
+        });
+      if (caseName === 'semantic')
+        await f.s.prisma.webhookEvent.update({
+          where: { id: f.id },
+          data: { semanticKey: 'different-semantic-authority' },
+        });
+      if (caseName === 'started')
+        await f.s.prisma.webhookExecutionClaim.update({
+          where: { id: claim.id },
+          data: { businessStartedAt: new Date() },
+        });
+      if (caseName === 'quarantined')
+        await f.s.prisma.webhookEvent.update({
+          where: { id: f.id },
+          data: {
+            status: 'FAILED',
+            errorMessage: 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:fixture: retained',
+          },
+        });
+      if (caseName === 'started' || caseName === 'quarantined')
+        await expect(f.s.moderation.processWebhookEvent(f.id)).resolves.toBeUndefined();
+      else
+        await expect(f.s.moderation.processWebhookEvent(f.id)).rejects.toThrow(
+          'Membership removal observation preparation proof incomplete',
+        );
+      expect(
+        (await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } })).status,
+      ).not.toBe('PROCESSED');
+      expect(
+        (await f.s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }))
+          .status,
+      ).not.toBe('COMPLETED');
+      expect(f.handler).not.toHaveBeenCalled();
+      expect(f.poll.tryHandleCallback).not.toHaveBeenCalled();
+      expect(f.s.effects).toEqual([]);
+    },
+  );
+
+  it.each(['executor', 'preparation', 'receipt'] as const)(
+    'denies prepared user_removed observation %s races at the start CAS',
+    async (changed) => {
+      const f = await removedObservationFixture();
+      const claim = await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: f.id },
+      });
+      await f.s.prisma.webhookExecutionClaim.update({
+        where: { id: claim.id },
+        data: { executionBotId: null },
+      });
+      const originalTransaction = f.s.prisma.$transaction.bind(f.s.prisma);
+      const transaction = jest
+        .spyOn(f.s.prisma, '$transaction')
+        .mockImplementationOnce(async (...args: unknown[]) => {
+          if (changed === 'receipt')
+            await f.s.prisma.webhookEvent.update({
+              where: { id: f.id },
+              data: { botId: f.s.bots[0]!.id },
+            });
+          else
+            await f.s.prisma.webhookExecutionClaim.update({
+              where: { id: claim.id },
+              data:
+                changed === 'executor' ? { executionBotId: f.s.bots[0]!.id } : { preparedAt: null },
+            });
+          return originalTransaction(...(args as Parameters<typeof originalTransaction>));
+        });
+      await expect(f.s.canonical.prepareExecution(f.id, f.s.bots[0]!.id)).rejects.toThrow(
+        'Canonical business-start fence changed',
+      );
+      transaction.mockRestore();
+      expect(
+        await f.s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+      ).toMatchObject({ businessStartedAt: null, completedAt: null, leaseToken: null });
+      expect(f.s.effects).toEqual([]);
+    },
+  );
+
   it.each(
     (['off', 'shadow', 'on'] as const).flatMap((mode) =>
       [1, 3, 4, 6, 9, 12].map((bots) => ({ mode, bots })),

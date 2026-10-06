@@ -19,15 +19,18 @@ export function buildWebhookExecutionDeadlineAt(
   receiptCreatedAt: Date,
 ): Date | null {
   const eventType = update.type.trim().toLowerCase();
-  if (eventType !== 'message_created' && eventType !== 'message_edited') return null;
+  const messageEvent = eventType === 'message_created' || eventType === 'message_edited';
+  if (!messageEvent && eventType !== 'user_added') return null;
   const source = readWebhookEventTimestamp(update) ?? receiptCreatedAt;
   const sourceMs = Math.min(source.getTime(), receiptCreatedAt.getTime());
   if (!Number.isFinite(sourceMs)) return null;
   // FLAG: This bounds only unstarted executor readiness. Rule-specific source deadlines
   // remain stricter; retrying or choosing another bot never starts a new time window.
-  const lifetime = isExactImageContent(extractDuplicateMessageContent(update.raw))
-    ? IMAGE_PENDING_READINESS_MS
-    : TEXT_PENDING_READINESS_MS;
+  // FLAG: Membership joins may require moderation, but never inherit an image's longer wait.
+  const lifetime =
+    messageEvent && isExactImageContent(extractDuplicateMessageContent(update.raw))
+      ? IMAGE_PENDING_READINESS_MS
+      : TEXT_PENDING_READINESS_MS;
   return new Date(sourceMs + lifetime);
 }
 
