@@ -969,6 +969,20 @@ SELECT json_build_object(
     'original_link_kind', jsonb_typeof(candidate.original_message->'link'),
     'original_forward', candidate.original_message->'link'->>'type' = 'forward',
     'original_reply', candidate.original_message->'link'->>'type' = 'reply',
+    'original_forward_keys_only', CASE WHEN jsonb_typeof(candidate.original_message) = 'object' THEN
+      candidate.original_message - ARRAY['sender', 'recipient', 'timestamp', 'body', 'link'] = '{}'::jsonb END,
+    'link_keys_supported', CASE WHEN jsonb_typeof(candidate.original_message->'link') = 'object' THEN
+      (candidate.original_message->'link') - ARRAY['type', 'sender', 'chat_id', 'message'] = '{}'::jsonb END,
+    'linked_actor_kind', jsonb_typeof(candidate.original_message->'link'->'sender'),
+    'linked_content_kind', jsonb_typeof(candidate.original_message->'link'->'message'),
+    'linked_keys_supported', CASE WHEN jsonb_typeof(candidate.original_message->'link'->'message') = 'object' THEN
+      (candidate.original_message->'link'->'message') - ARRAY['mid', 'seq', 'text', 'attachments', 'markup'] = '{}'::jsonb END,
+    'linked_text_kind', jsonb_typeof(candidate.original_message->'link'->'message'->'text'),
+    'linked_nested_content_kind', jsonb_typeof(candidate.original_message->'link'->'message'->'body'),
+    'linked_attachments_kind', jsonb_typeof(candidate.original_message->'link'->'message'->'attachments'),
+    'linked_attachments_empty', candidate.original_message->'link'->'message'->'attachments' = '[]'::jsonb,
+    'linked_markup_kind', jsonb_typeof(candidate.original_message->'link'->'message'->'markup'),
+    'linked_markup_empty', candidate.original_message->'link'->'message'->'markup' = '[]'::jsonb,
     'actor_keys_supported', CASE WHEN jsonb_typeof(candidate.sender) = 'object' THEN
       candidate.sender - ARRAY['user_id', 'name', 'first_name', 'last_name', 'username',
         'is_bot', 'avatar_url', 'last_activity_time'] = '{}'::jsonb END,
@@ -981,6 +995,8 @@ SELECT json_build_object(
     'attachments_empty', candidate.original_body->'attachments' = '[]'::jsonb,
     'content_matches', jsonb_typeof(candidate.original_body->'text') = 'string'
       AND candidate.original_body->'text' = candidate.normalized_message->'text',
+    'original_content_nonempty', jsonb_typeof(candidate.original_body->'text') = 'string'
+      AND btrim(candidate.original_body->>'text', E' \t\n\r') <> '',
     'content_matches_ascii_trim', jsonb_typeof(candidate.original_body->'text') = 'string'
       AND btrim(candidate.original_body->>'text', E' \t\n\r') = candidate.normalized_message->>'text',
     'flat_content_matches', jsonb_typeof(candidate.original_message->'text') = 'string'

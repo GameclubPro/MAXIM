@@ -1140,6 +1140,13 @@ test('legacy candidate classification never skips an earlier unknown fence or le
   assert.equal(forwarded.original_metadata_keys_only, false);
   assert.equal(forwarded.original_forward, true);
   assert.equal(forwarded.original_link_kind, 'object');
+  assert.equal(forwarded.link_keys_supported, true);
+  assert.equal(forwarded.linked_keys_supported, true);
+  assert.equal(forwarded.linked_text_kind, 'string');
+  source.raw.message.link.message.attachments = [{ type: 'image', url: 'private-attachment' }];
+  const media = await shape(source);
+  assert.equal(media.linked_attachments_kind, 'array');
+  assert.equal(media.linked_attachments_empty, false);
   source.raw.message['private-unknown-key'] = 'private-unknown-value';
   assert.equal((await shape(source)).original_keys_supported, false);
   source.message.text = 'private-'.repeat(40000);
