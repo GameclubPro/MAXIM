@@ -588,7 +588,11 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
         enforced: true,
       };
     }
-    if (await this.legacyHolds?.isUpdateHeld(update)) {
+    const legacyHeld = await this.legacyHolds?.isUpdateHeld(update);
+    const freshHeldCommand = legacyHeld
+      ? await this.legacyHolds!.readFreshCommandReceipt(event.id, update)
+      : null;
+    if (legacyHeld && !freshHeldCommand) {
       if (!(await this.legacyHolds!.settleHeldReceipt(event.id, update)))
         throw new WebhookPreparationDeferredError('Legacy scope installation is not sealed', 1_000);
       return {
@@ -974,6 +978,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
           executionDeadlineAt: event.executionDeadlineAt,
           enforced: claim.enforced || enforceCanonicalExecution,
           phase: 'ready',
+          checkFreshHeldCommand: freshHeldCommand !== null,
         }),
       );
       if (published === 'expired') {
@@ -1602,7 +1607,16 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     );
     // FLAG: bot_added only updates access/discovery; never publish onboarding hints to the entity.
     // Only explicit Start may confirm connection after fresh bot AND actor checks.
-    await this.completeManagedEntityHandshake(update);
+    const heldForCommand = await this.legacyHolds?.isUpdateHeld(update);
+    const heldCommand = heldForCommand
+      ? await this.legacyHolds!.readFreshCommandReceipt(webhookEventId, update)
+      : null;
+    // FLAG: An expired fresh command may settle without effects; preparation must
+    // not publish Start before the command-only execution checks its original deadline.
+    if (heldForCommand && !heldCommand)
+      throw new WebhookPreparationDeferredError('Fresh command source proof changed', 1_000);
+    if (!heldCommand || heldCommand.deadlineAt.getTime() > Date.now())
+      await this.completeManagedEntityHandshake(update);
 
     await this.prisma.webhookEvent.updateMany(
       webhookPayloadChange(webhookEventId, this.sanitizeForJsonStorage(update)),

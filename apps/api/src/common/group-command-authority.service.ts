@@ -1,3 +1,5 @@
+import { verifyFreshHeldCommandAccess } from '../webhook/webhook-legacy-fresh-command';
+import type { MaxClientService } from '../max/max-client.service';
 import { buildGroupCommandKey } from './group-command-key';
 export { buildGroupCommandKey } from './group-command-key';
 import { Injectable, Optional } from '@nestjs/common';
@@ -190,13 +192,20 @@ export class GroupCommandAuthorityService {
     this.legacyHolds = legacyHolds ?? WebhookLegacyHoldService.forPrisma(prisma);
   }
 
+  async isHeldSource(update: MaxUpdate): Promise<boolean> {
+    return (await this.legacyHolds?.isUpdateHeld(update)) ?? false;
+  }
+
   async observeStart(update: MaxUpdate): Promise<void> {
-    if (await this.legacyHolds?.isUpdateHeld(update)) return;
     const chatId = update.message?.chatId?.trim() ?? '';
     const messageId = update.message?.messageId?.trim() ?? '';
     const dedupKey = update.botId ? `${update.botId}:${update.updateId}` : String(update.updateId);
     const receipt = await this.prisma.webhookEvent.findUnique({ where: { dedupKey } });
     if (!receipt) throw new Error('Group Start requires a persisted webhook receipt');
+    if (await this.legacyHolds?.isUpdateHeld(update)) {
+      const command = await this.legacyHolds!.readFreshCommandReceipt(receipt.id, update);
+      if (!command || command.deadlineAt.getTime() <= Date.now()) return;
+    }
     await this.prisma.webhookExecutionClaim.createMany({
       data: [
         {
@@ -315,13 +324,16 @@ export class GroupCommandAuthorityService {
   }
 
   async claim(update: MaxUpdate, executionBotId: string): Promise<GroupCommandPermit | null> {
-    if (await this.legacyHolds?.isUpdateHeld(update)) return null;
     const chatId = update.message?.chatId?.trim() ?? '';
     const messageId = update.message?.messageId?.trim() ?? '';
     const semanticKey = buildGroupCommandKey(chatId, messageId);
     const dedupKey = update.botId ? `${update.botId}:${update.updateId}` : String(update.updateId);
     const receipt = await this.prisma.webhookEvent.findUnique({ where: { dedupKey } });
     if (!receipt) throw new Error('Group command requires a persisted webhook receipt');
+    if (await this.legacyHolds?.isUpdateHeld(update)) {
+      const command = await this.legacyHolds!.readFreshCommandReceipt(receipt.id, update);
+      if (!command) return null;
+    }
     await this.prisma.webhookExecutionClaim.createMany({
       data: [
         {
@@ -445,6 +457,29 @@ export class GroupCommandAuthorityService {
     permit.result = result;
   }
 
+  async isFreshHeldCommandAccessAllowed(
+    permit: GroupCommandPermit,
+    max: MaxClientService,
+  ): Promise<boolean> {
+    if (!this.legacyHolds) return true;
+    const event = await this.prisma.webhookEvent.findUnique({
+      where: { id: permit.webhookEventId },
+    });
+    if (!event) throw new Error('Command receipt is missing');
+    const update = event.normalizedPayload as unknown as MaxUpdate;
+    if (!(await this.legacyHolds.isUpdateHeld(update))) return true;
+    const proof = await this.legacyHolds.readFreshCommandReceipt(event.id, update);
+    return !!proof && verifyFreshHeldCommandAccess(max, proof, permit.executionBotId);
+  }
+
+  async assertFreshHeldCommandAccess(
+    permit: GroupCommandPermit,
+    max: MaxClientService,
+  ): Promise<void> {
+    if (!(await this.isFreshHeldCommandAccessAllowed(permit, max)))
+      throw new WebhookLegacyHoldRejectedError();
+  }
+
   private async assertPermitAllowed(
     permit: GroupCommandPermit,
     tx: CommandDatabase,
@@ -457,10 +492,15 @@ export class GroupCommandAuthorityService {
       select: { normalizedPayload: true },
     });
     if (!receipt) throw new Error('Group command source receipt is missing');
-    await this.legacyHolds.assertUpdateAllowed(
-      receipt.normalizedPayload as unknown as MaxUpdate,
-      tx,
-    );
+    const update = receipt.normalizedPayload as unknown as MaxUpdate;
+    if (await this.legacyHolds.isUpdateHeld(update, tx)) {
+      const command = await this.legacyHolds.readFreshCommandReceipt(
+        permit.webhookEventId,
+        update,
+        tx,
+      );
+      if (!command) throw new WebhookLegacyHoldRejectedError();
+    }
   }
 
   async complete(permit: GroupCommandPermit, tx: CommandDatabase = this.prisma): Promise<void> {

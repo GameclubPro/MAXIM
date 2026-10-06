@@ -1,3 +1,7 @@
+import {
+  readFreshHeldCommandReceipt,
+  freshHeldCommandTransitionSql,
+} from '../webhook/webhook-legacy-fresh-command';
 import { holdUnverifiedLegacyExecution } from '../webhook/webhook-legacy-authority';
 import {
   WebhookLegacyHoldService,
@@ -119,6 +123,7 @@ const WEBHOOK_EXECUTION_CLAIM_SELECT = {
 } as const;
 
 export type WebhookCanonicalExecutionContext = {
+  freshHeldCommand?: boolean;
   webhookEvent: WebhookEvent;
   update: MaxUpdate;
   activeBotId: string | null;
@@ -179,7 +184,11 @@ export class WebhookCanonicalExecutionService {
       return null;
     }
     const update = webhookEvent.normalizedPayload as MaxUpdate;
-    if (await this.legacyHolds?.isUpdateHeld(update)) {
+    const legacyHeld = await this.legacyHolds?.isUpdateHeld(update);
+    const freshHeldCommand = legacyHeld
+      ? await this.legacyHolds!.readFreshCommandReceipt(webhookEvent.id, update)
+      : null;
+    if (legacyHeld && !freshHeldCommand) {
       await this.legacyHolds!.settleHeldReceipt(webhookEvent.id, update);
       return null;
     }
@@ -471,6 +480,7 @@ export class WebhookCanonicalExecutionService {
     });
 
     const context: WebhookCanonicalExecutionContext = {
+      freshHeldCommand: freshHeldCommand !== null,
       webhookEvent,
       update,
       activeBotId:
@@ -616,6 +626,7 @@ export class WebhookCanonicalExecutionService {
                 executionDeadlineAt: webhookEvent.executionDeadlineAt,
                 enforced: true,
                 phase: 'start',
+                checkFreshHeldCommand: context.freshHeldCommand,
               }),
             );
       } catch (error: unknown) {
@@ -652,6 +663,7 @@ export class WebhookCanonicalExecutionService {
       executionDeadlineAt: Date | null;
       enforced: boolean;
       phase: 'ready' | 'start';
+      checkFreshHeldCommand?: boolean;
       route?: { chatId: string; proof: MaxExecutionRouteProof };
     },
   ): Promise<'transitioned' | 'expired' | 'deferred'> {
@@ -663,6 +675,9 @@ export class WebhookCanonicalExecutionService {
     await client.$queryRaw(Prisma.sql`
       SELECT "id" FROM "webhook_events" WHERE "id" = ${params.webhookEventId} FOR UPDATE
     `);
+    const freshHeldCommand = params.checkFreshHeldCommand
+      ? await readFreshHeldCommandReceipt(client, params.webhookEventId)
+      : null;
     const waitingMarker = JSON.stringify({
       kind: 'EXECUTION_WAITING',
       authorityVersion: MULTIBOT_EXECUTION_AUTHORITY_VERSION,
@@ -708,7 +723,7 @@ export class WebhookCanonicalExecutionService {
         AND claim."semantic_key" = ${params.semanticKey}
         AND claim."webhook_event_id" = event."id" AND event."id" = ${params.webhookEventId}
         AND event."legacy_disposition_id" IS NULL
-        AND NOT ${legacyUpdateHeldSql('event')}
+        AND (NOT ${legacyUpdateHeldSql('event')} OR ${freshHeldCommandTransitionSql('event', freshHeldCommand)})
         AND claim."status"::text = ${ready ? 'PENDING' : 'READY'}
         AND claim."completed_at" IS NULL AND claim."business_started_at" IS NULL
         AND claim."lease_token" = ${params.leaseToken}
@@ -891,6 +906,7 @@ export class WebhookCanonicalExecutionService {
           executionDeadlineAt: context.webhookEvent.executionDeadlineAt,
           enforced: true,
           phase: 'start',
+          checkFreshHeldCommand: context.freshHeldCommand,
           route: { chatId, proof: accepted },
         },
       );

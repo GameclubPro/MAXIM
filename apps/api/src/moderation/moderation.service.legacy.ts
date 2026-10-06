@@ -1,3 +1,4 @@
+import { verifyFreshHeldCommandAccess } from '../webhook/webhook-legacy-fresh-command';
 import {
   resolveConfiguredRuleEscalation,
   resolveMessageLimitsRuleEscalation,
@@ -1485,6 +1486,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     // This check precedes duplicate evidence, callbacks and every whole-engine state mutation.
     if (await this.legacyHolds?.isMessageHeld(update.message.chatId, update.message.messageId))
       return;
+
+    // FLAG: A held author's new explicit command has an independent current authority.
+    // It never enters lifecycle/evidence/immunity or any ordinary moderation path.
+    if (await this.legacyHolds?.isUpdateHeld(update)) {
+      if (webhookEventId) await this.handleFreshHeldCommand(update, webhookEventId);
+      return;
+    }
 
     // FLAG: Edits/removals revoke duplicate evidence even when later moderation exits early.
     await this.messageDuplicateService?.observeLifecycle?.(update);
@@ -6764,6 +6772,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return activeMute;
   }
 
+  private async handleFreshHeldCommand(update: MaxUpdate, webhookEventId: string): Promise<void> {
+    const proof = await this.legacyHolds!.readFreshCommandReceipt(webhookEventId, update);
+    if (!proof || proof.deadlineAt.getTime() <= Date.now() || proof.kind === 'START') return;
+    const botId =
+      this.readExecutionOwnerBotId(update) ?? this.maxBotContextService?.getActiveBotId();
+    if (!botId || !(await verifyFreshHeldCommandAccess(this.maxClient, proof, botId))) return;
+    const settings = await this.prisma.chatSettings.findUnique({ where: { chatId: proof.chatId } });
+    if (!settings || proof.deadlineAt.getTime() <= Date.now()) return;
+    await this.handleAdminForwardedModerationCommand({
+      update,
+      chatId: proof.chatId,
+      senderId: proof.userId,
+      messageId: proof.messageId,
+      settings,
+      ...(update.message?.chatTitle !== undefined ? { chatTitle: update.message.chatTitle } : {}),
+      ...(update.message?.senderName !== undefined
+        ? { senderName: update.message.senderName }
+        : {}),
+    });
+  }
+
   private async handleAdminForwardedModerationCommand(params: {
     update: MaxUpdate;
     chatId: string;
@@ -6829,6 +6858,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
     const commandBotId = params.permit.executionBotId;
+    if (!(await params.authority.isFreshHeldCommandAccessAllowed(params.permit, this.maxClient)))
+      return true;
     const sendNotice = (notice: { chatId: string; settings: ChatSettings; text: string }) =>
       deliverGroupCommandNotice({
         max: this.maxClient,
@@ -6929,7 +6960,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
 
         if (adopted?.commandSkipped) return true;
-        await this.deleteAdminCommandMessage(chatId, messageId, update.message?.createdAt ?? null);
+        if (!(await this.legacyHolds?.isUpdateHeld(update)))
+          await this.deleteAdminCommandMessage(
+            chatId,
+            messageId,
+            update.message?.createdAt ?? null,
+          );
         await sendNotice({
           chatId,
           settings,
@@ -6980,7 +7016,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               );
 
         if (result.skipped) return true;
-        await this.deleteAdminCommandMessage(chatId, messageId, update.message?.createdAt ?? null);
+        if (!(await this.legacyHolds?.isUpdateHeld(update)))
+          await this.deleteAdminCommandMessage(
+            chatId,
+            messageId,
+            update.message?.createdAt ?? null,
+          );
         await sendNotice({
           chatId,
           settings,
