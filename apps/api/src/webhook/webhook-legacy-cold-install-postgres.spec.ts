@@ -266,7 +266,7 @@ native('native cold legacy installation and ordering', () => {
     late.updateId = randomUUID();
     const receipt = await prisma.webhookEvent.create({
       data: {
-        dedupKey: randomUUID(),
+        dedupKey: `${late.botId}:${late.updateId}`,
         botId: 'major-9',
         semanticKey: buildWebhookSemanticEventKey(late),
         normalizedPayload: late as unknown as Prisma.InputJsonValue,

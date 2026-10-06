@@ -207,17 +207,20 @@ native('read-only materialization preview on representative PostgreSQL history',
     expect(
       (await db.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).legacyDispositionId,
     ).toBeNull();
-    expect(await db.webhookLegacyReceiptDisposition.count()).toBe(0);
+    expect(
+      await db.webhookLegacyReceiptDisposition.count({ where: { receiptId: { in: receipts } } }),
+    ).toBe(0);
     expect(await actualPage()).toMatchObject({ blocked: false, complete: true, applied: 1 });
   });
   it.each(['тишина 12', '/ban', 'Старт'])(
     'refuses pre-seal command %s before any writer',
     async (text) => {
       await receipt(text);
+      const certificatesBefore = await db.webhookLegacyQuiescenceCertificate.count();
       const result = await preview();
       expect(result.decision).toBe('DENY');
       expect(result.issues[0]?.code).toMatch(/materialization_preview_(blocked|unproved)/u);
-      expect(await db.webhookLegacyQuiescenceCertificate.count()).toBe(0);
+      expect(await db.webhookLegacyQuiescenceCertificate.count()).toBe(certificatesBefore);
       await expect(actualPage()).resolves.toMatchObject({ blocked: true });
     },
   );
