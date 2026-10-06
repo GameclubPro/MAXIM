@@ -119,6 +119,24 @@ describe('strict legacy cold recovery source', () => {
     },
   );
 
+  it.each([2 ** 53, 2 ** 62, -(2 ** 62)])(
+    'accepts opaque int64 sequence %s without changing outer identity',
+    (seq) => {
+      const { receipt, raw, message, link } = forwardedSource();
+      (message.body as Record<string, unknown>).seq = seq;
+      link.message.seq = seq;
+      receipt.normalizedPayload = new WebhookParser().parse(raw, { botId: receipt.botId });
+      const result = inspectLegacyRecoverySource(receipt as never);
+      expect(result?.messageId).toBe((message.body as Record<string, unknown>).mid);
+      expect(result?.messageId).not.toBe(String(seq));
+    },
+  );
+  it.each([1.5, 2 ** 64, '1234', {}, null])('refuses non-int64 sequence metadata %p', (seq) => {
+    const { receipt, message } = forwardedSource();
+    (message.body as Record<string, unknown>).seq = seq;
+    expect(inspectLegacyRecoverySource(receipt as never)).toBeNull();
+  });
+
   it('checks configured commands in each content component even when the composed text is ordinary', () => {
     const { receipt, raw, message, link } = forwardedSource();
     (message.body as { text: string }).text = 'ordinary prefix';

@@ -8,6 +8,7 @@ import {
 import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
 import {
   inspectLegacyForwardText,
+  isLegacyOpaqueSequence,
   legacyParsedTextMatches,
   type LegacyForwardRefusal,
 } from './webhook-legacy-forward-source';
@@ -156,8 +157,7 @@ function inspectLegacyTextSource(
         !Number.isSafeInteger(sender.last_activity_time)))
   )
     return refuse('source_sender_metadata');
-  if (body.seq !== undefined && (typeof body.seq !== 'number' || !Number.isSafeInteger(body.seq)))
-    return refuse('source_sequence');
+  if (!isLegacyOpaqueSequence(body.seq)) return refuse('source_sequence');
   if (raw.update_id !== undefined && identity(raw.update_id) === null)
     return refuse('source_update_identity');
   if (

@@ -1002,6 +1002,19 @@ SELECT json_build_object(
     'recipient_nullable_actor', candidate.recipient->'user_id' = 'null'::jsonb,
     'content_keys_supported', CASE WHEN jsonb_typeof(candidate.original_body) = 'object' THEN
       candidate.original_body - ARRAY['mid', 'seq', 'text', 'attachments'] = '{}'::jsonb END,
+    -- FLAG: Sequence is opaque MAX int64 metadata, never message identity. Emit only
+    -- type/range facts for the one indexed candidate, without exposing its value.
+    'sequence_kind', jsonb_typeof(candidate.original_body->'seq'),
+    'sequence_integer', CASE WHEN jsonb_typeof(candidate.original_body->'seq') = 'number' THEN
+      (candidate.original_body->>'seq')::numeric = trunc((candidate.original_body->>'seq')::numeric) END,
+    'sequence_safe_integer', CASE WHEN jsonb_typeof(candidate.original_body->'seq') = 'number' THEN
+      abs((candidate.original_body->>'seq')::numeric) <= 9007199254740991 END,
+    'sequence_int64', CASE WHEN jsonb_typeof(candidate.original_body->'seq') = 'number' THEN
+      (candidate.original_body->>'seq')::numeric BETWEEN -9223372036854775808 AND 9223372036854775808 END,
+    'linked_sequence_kind', jsonb_typeof(candidate.original_message->'link'->'message'->'seq'),
+    'linked_actor_bot_flag_kind', jsonb_typeof(candidate.original_message->'link'->'sender'->'is_bot'),
+    'linked_media_at_most_ten', CASE WHEN jsonb_typeof(candidate.original_message->'link'->'message'->'attachments') = 'array' THEN
+      jsonb_array_length(candidate.original_message->'link'->'message'->'attachments') BETWEEN 1 AND 10 END,
     'attachments_kind', jsonb_typeof(candidate.original_body->'attachments'),
     'attachments_empty', candidate.original_body->'attachments' = '[]'::jsonb,
     'content_matches', jsonb_typeof(candidate.original_body->'text') = 'string'

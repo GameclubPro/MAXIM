@@ -46,12 +46,21 @@ function image(value: unknown): boolean {
   }
   return identity(payload.photo_id) || typeof payload.url === 'string';
 }
+// FLAG: MAX seq is opaque int64 metadata and can exceed JavaScript's exact integer
+// range. The explicit mid alone supplies message identity; never derive ordering,
+// identity or a timestamp from this rounded metadata value.
+export function isLegacyOpaqueSequence(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === 'number' && Number.isInteger(value) && Math.abs(value) <= 2 ** 63)
+  );
+}
 function body(value: unknown, allowImages = false): Record<string, unknown> | null {
   const item = record(value);
   return item &&
     onlyKeys(item, ['mid', 'seq', 'text', 'attachments']) &&
     identity(item.mid) &&
-    (item.seq === undefined || (typeof item.seq === 'number' && Number.isSafeInteger(item.seq))) &&
+    isLegacyOpaqueSequence(item.seq) &&
     typeof item.text === 'string' &&
     (item.attachments === undefined ||
       (Array.isArray(item.attachments) &&

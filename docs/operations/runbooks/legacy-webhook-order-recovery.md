@@ -64,7 +64,8 @@ The host independently derives the Major catalog from the exact admin container;
 Publisher is excluded. Selection is finite (at most 200 owners/100 bots). Supported sources are original human plain text in a Major group and a strictly
 validated flat forward with text or at most ten complete image/photo attachments.
 Commands in direct, forwarded or composed text, replies, unknown fields and
-ambiguous provenance refuse. The modern duplicate guard checks both source
+ambiguous provenance refuse. MAX `seq` is opaque int64 metadata; explicit `mid`
+supplies identity even when the sequence exceeds JavaScript exact integers. The modern duplicate guard checks both source
 authors; retired photo evidence cannot authorize new deletion. Held media jobs
 settle without download or repeated deferral.
 The collector uses bounded exact source/claim/mirror reads and reviewed reachable
