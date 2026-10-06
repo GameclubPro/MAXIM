@@ -95,6 +95,32 @@ function fixture() {
   };
 }
 describe('standalone legacy recovery store protocol', () => {
+  it('keeps the separately attested Publisher in the frozen binding and rejects identity changes', () => {
+    const { request, output } = fixture();
+    const parsed = parseLegacyRecoveryStoreRequest(
+      JSON.stringify({ ...request, binding: { ...request.binding, publisherBotId: 'publisher' } }),
+    );
+    expect(parsed.binding.publisherBotId).toBe('publisher');
+    expect(parsed.selection.majorBotIds).not.toContain('publisher');
+    for (const publisherBotId of ['major-1', '', null, 'invalid:receiver'])
+      expect(() =>
+        parseLegacyRecoveryStoreRequest(
+          JSON.stringify({ ...request, binding: { ...request.binding, publisherBotId } }),
+        ),
+      ).toThrow('Invalid separate Publisher catalog');
+    const bytes = Buffer.from(JSON.stringify({ ...output, binding: parsed.binding }));
+    const bound = {
+      ...parsed,
+      expected: { ...parsed.expected, inventoryArtifactSha256: sha(bytes.toString()) },
+    };
+    expect(verifyLegacyRecoveryInventory(bound, bytes).decision).toBe('READY_TO_INSTALL');
+    expect(() =>
+      verifyLegacyRecoveryInventory(
+        { ...bound, binding: { ...bound.binding, publisherBotId: 'other-publisher' } },
+        bytes,
+      ),
+    ).toThrow();
+  });
   it('accepts the exact finite stopped generation and rejects extra or unbounded inputs', () => {
     const { request } = fixture();
     expect(parseLegacyRecoveryStoreRequest(JSON.stringify(request))).toEqual(request);

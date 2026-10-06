@@ -90,7 +90,16 @@ export async function collectLegacyRecoveryLiveEvidence(
   let inventorySha256: string | null = null;
   let previewSha256: string | null = null;
   try {
-    sql = await adapters.sql(tx, request, allowance(cost, deadlineAtMs));
+    sql = await adapters.sql(
+      tx,
+      {
+        ...request,
+        ...(request.binding.publisherBotId
+          ? { publisherBotId: request.binding.publisherBotId }
+          : {}),
+      },
+      allowance(cost, deadlineAtMs),
+    );
     charge(cost, sql.cost);
     issues.push(...sql.issues);
     const expectedIds = request.selection.ownerWebhookEventIds;

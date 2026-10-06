@@ -11,6 +11,7 @@ import {
   LEGACY_RECOVERY_LIVE_REQUEST_MAX_BYTES,
   LEGACY_RECOVERY_LIVE_OUTPUT_MAX_BYTES,
   legacyRecoveryLiveDigest,
+  parseLegacyRecoveryPublisherBotId,
   type LegacyRecoveryLiveIssue,
   type LegacyRecoveryLiveOutput,
   type LegacyRecoveryLiveRequest,
@@ -30,6 +31,7 @@ export type LegacyRecoveryAdmissionRequest = Readonly<{
   sourceSha: string;
   imageId: string;
   selection: LegacyRecoveryLiveRequest['selection'];
+  publisherBotId?: string;
 }>;
 export type LegacyRecoveryAdmissionOutput = Readonly<{
   version: 1;
@@ -40,6 +42,7 @@ export type LegacyRecoveryAdmissionOutput = Readonly<{
   sourceSha: string;
   imageId: string;
   selectionSha256: string;
+  publisherCatalogSha256?: string;
   registrySha256: string;
   decision: 'READY_FOR_COLD_REVIEW' | 'DENY';
   sourceCoverageComplete: boolean;
@@ -78,7 +81,7 @@ export function parseLegacyRecoveryAdmissionRequest(input: string): LegacyRecove
   if (Buffer.byteLength(input) > LEGACY_RECOVERY_LIVE_REQUEST_MAX_BYTES)
     throw new Error('Admission request budget exceeded');
   const row = object(JSON.parse(input));
-  strictKeys(row, ['version', 'operation', 'sourceSha', 'imageId', 'selection']);
+  strictKeys(row, ['version', 'operation', 'sourceSha', 'imageId', 'selection', 'publisherBotId']);
   if (
     row.version !== 1 ||
     row.operation !== 'admission_preview' ||
@@ -90,6 +93,8 @@ export function parseLegacyRecoveryAdmissionRequest(input: string): LegacyRecove
     throw new Error('Invalid admission identity');
   const selection = object(row.selection);
   strictKeys(selection, ['ownerWebhookEventIds', 'majorBotIds']);
+  const majorBotIds = ids(selection.majorBotIds, 100);
+  const publisherBotId = parseLegacyRecoveryPublisherBotId(row.publisherBotId, majorBotIds);
   return Object.freeze({
     version: 1,
     operation: 'admission_preview',
@@ -97,8 +102,9 @@ export function parseLegacyRecoveryAdmissionRequest(input: string): LegacyRecove
     imageId: row.imageId,
     selection: Object.freeze({
       ownerWebhookEventIds: ids(selection.ownerWebhookEventIds, 200),
-      majorBotIds: ids(selection.majorBotIds, 100),
+      majorBotIds,
     }),
+    ...(publisherBotId ? { publisherBotId } : {}),
   });
 }
 
@@ -224,7 +230,10 @@ export async function collectLegacyRecoveryAdmission(
       stage = 'sql:inventory';
       const sql = await inventoryLegacyRecoverySelectedSql(
         tx,
-        { selection: request.selection },
+        {
+          selection: request.selection,
+          ...(request.publisherBotId ? { publisherBotId: request.publisherBotId } : {}),
+        },
         {
           ...LEGACY_RECOVERY_LIVE_BUDGET,
           pages: LEGACY_RECOVERY_LIVE_BUDGET.pages - cost.pages,
@@ -273,6 +282,13 @@ export async function collectLegacyRecoveryAdmission(
     sourceSha: request.sourceSha,
     imageId: request.imageId,
     selectionSha256: legacyRecoveryLiveDigest(request.selection),
+    ...(request.publisherBotId
+      ? {
+          publisherCatalogSha256: legacyRecoveryLiveDigest({
+            publisherBotId: request.publisherBotId,
+          }),
+        }
+      : {}),
     registrySha256: legacyRecoverySourceClosureDigest(request.sourceSha, request.imageId),
     decision: issues.length ? 'DENY' : 'READY_FOR_COLD_REVIEW',
     sourceCoverageComplete: issues.length === 0,

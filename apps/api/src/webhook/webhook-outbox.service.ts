@@ -446,6 +446,7 @@ export class WebhookOutboxService
 
   private enqueueScans?: Map<string, OutboxScanState>;
   private enqueueScanReserveOffset = 0;
+  private pendingEnqueueRepresentatives?: Map<string, string>;
   private finishedHeadRecoveryOffset = 0;
   private finishedOwnerRecoveryOffset = 0;
   private nextFinishedHeadRecoveryAt = 0;
@@ -648,10 +649,17 @@ export class WebhookOutboxService
   private async enqueueBatch() {
     const now = new Date();
     const admission = await this.resolveEnqueueAdmission(now);
+    const pendingCandidates = await this.readPendingEnqueueRepresentatives(
+      now,
+      admission.batchSize,
+    );
     const admissionFinishedAtMs = Date.now();
     let candidates: WebhookEnqueueCandidate[];
     try {
-      candidates = await this.selectEnqueueCandidates(now, admission);
+      candidates = this.mergeEnqueueCandidates(
+        [...pendingCandidates, ...(await this.selectEnqueueCandidates(now, admission))],
+        this.resolvePrioritySelectionWindowSize(admission.batchSize),
+      );
     } finally {
       // FLAG: Leave live/due-only polls after slow or failed recovery scans too.
       // Scheduling only from the start can make a >5s scan run on every poll.
@@ -798,6 +806,60 @@ export class WebhookOutboxService
     };
   }
 
+  private async readPendingEnqueueRepresentatives(
+    now: Date,
+    take: number,
+  ): Promise<WebhookEnqueueCandidate[]> {
+    const pending = this.pendingEnqueueRepresentatives;
+    if (!pending?.size) return [];
+    // FLAG: Retain only bounded FIFO identities, never queued payloads or execution
+    // authority. Reload exact primary keys before reuse; changed receipts still pass
+    // current eligibility, ordered-head, preparation and activation CAS fences.
+    const selected = Array.from(pending.entries()).slice(0, take);
+    const rows = await this.prisma.webhookEvent.findMany({
+      where: { id: { in: selected.map(([, id]) => id) } },
+      select: {
+        id: true,
+        status: true,
+        botId: true,
+        queueName: true,
+        enqueueAttempts: true,
+        createdAt: true,
+        queuedAt: true,
+        nextEnqueueAt: true,
+        timeoutQuarantineExpiresAt: true,
+        errorMessage: true,
+        normalizedPayload: true,
+        processedAt: true,
+        legacyDispositionId: true,
+      },
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const ready: WebhookEnqueueCandidate[] = [];
+    for (const [key, id] of selected) {
+      const row = byId.get(id);
+      if (
+        this.activeEnqueueUnits.has(key) ||
+        !row ||
+        row.legacyDispositionId !== null ||
+        row.processedAt !== null ||
+        (row.nextEnqueueAt !== null && row.nextEnqueueAt > now) ||
+        (row.status !== WebhookStatus.RECEIVED &&
+          row.status !== WebhookStatus.FAILED &&
+          row.status !== WebhookStatus.QUEUED) ||
+        (row.status === WebhookStatus.FAILED &&
+          row.nextEnqueueAt === null &&
+          !isPendingWebhookTimeoutQuarantineMessage(row.errorMessage)) ||
+        !this.shouldEnqueueCandidate(row, now)
+      ) {
+        pending.delete(key);
+        continue;
+      }
+      ready.push({ ...row, isBacklogScan: true });
+    }
+    return ready;
+  }
+
   private async selectEnqueueCandidates(
     now: Date,
     admission: WebhookEnqueueAdmission = this.defaultEnqueueAdmission(),
@@ -832,7 +894,15 @@ export class WebhookOutboxService
       ...Array<string>(scanLanes.length - 1).fill('received'),
       ...scanLanes.slice(1),
     ];
-    const scanReserve = Math.max(1, Math.floor(admission.batchSize / 4));
+    const scanReserve = Math.max(
+      0,
+      Math.min(
+        Math.max(1, Math.floor(admission.batchSize / 4)),
+        Math.max(1, Math.floor(this.batchSize / 4)) -
+          (this.pendingEnqueueRepresentatives?.size ?? 0),
+        admission.batchSize - (this.pendingEnqueueRepresentatives?.size ?? 0),
+      ),
+    );
     const scanTakes = new Map<string, number>();
     const scanOffset = this.enqueueScanReserveOffset ?? 0;
     for (let slot = 0; slot < scanReserve; slot += 1) {
@@ -1476,6 +1546,30 @@ export class WebhookOutboxService
     }
 
     const workUnits = this.buildEnqueueWorkUnits(candidates);
+    const pending = (this.pendingEnqueueRepresentatives ??= new Map<string, string>());
+    const pendingLimit = Math.max(1, Math.floor(this.batchSize / 4));
+    const workUnitKey = (unit: WebhookEnqueueWorkUnit) =>
+      unit.chatId ? `chat:${unit.chatId}` : `event:${unit.candidates[0]!.id}`;
+    for (const unit of workUnits) {
+      const representative = unit.candidates.find((candidate) => candidate.isBacklogScan);
+      const key = workUnitKey(unit);
+      if (
+        representative &&
+        !this.activeEnqueueUnits.has(key) &&
+        !pending.has(key) &&
+        pending.size < pendingLimit
+      )
+        pending.set(key, representative.id);
+    }
+    // FLAG: A bounded poll can end before all selected units start. Serve its oldest
+    // unsent scan representatives first next time; repeated slow queue repairs must
+    // not retake every free slot. In-flight work keeps its separate owner until done.
+    const pendingOrder = new Map(Array.from(pending.keys(), (key, index) => [key, index]));
+    workUnits.sort(
+      (left, right) =>
+        (pendingOrder.get(workUnitKey(left)) ?? Number.MAX_SAFE_INTEGER) -
+        (pendingOrder.get(workUnitKey(right)) ?? Number.MAX_SAFE_INTEGER),
+    );
     progress.workUnits = workUnits.length;
     const chatIds = workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : []));
     let orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
@@ -1528,10 +1622,11 @@ export class WebhookOutboxService
         for (const workUnit of workUnits) {
           if (this.activeEnqueueUnits.size >= workerCount) break;
           if (dispatched.has(workUnit)) continue;
-          const key = workUnit.chatId
-            ? `chat:${workUnit.chatId}`
-            : `event:${workUnit.candidates[0]!.id}`;
-          if (this.activeEnqueueUnits.has(key)) continue;
+          const key = workUnitKey(workUnit);
+          if (this.activeEnqueueUnits.has(key)) {
+            pending.delete(key);
+            continue;
+          }
           const orderedHead = workUnit.chatId
             ? (orderedHeadsByChatId.get(workUnit.chatId) ?? null)
             : null;
@@ -1546,9 +1641,14 @@ export class WebhookOutboxService
             !this.webhookService.canPreparePersistedWebhookEvent(
               first.normalizedPayload as MaxUpdate,
             )
-          )
+          ) {
+            // FLAG: An unavailable bot/class cannot occupy the shared FIFO and stop
+            // discovery of other scopes. Its durable receipt stays in the SQL lanes.
+            pending.delete(key);
             continue;
+          }
           dispatched.add(workUnit);
+          pending.delete(key);
           const task = runUnit(workUnit).finally(() => {
             active.delete(task);
             this.activeEnqueueUnits.delete(key);

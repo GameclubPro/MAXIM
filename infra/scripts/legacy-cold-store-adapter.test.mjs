@@ -9,7 +9,7 @@ import {
   canonicalLegacyColdDigest,
 } from './legacy-cold-store-adapter.mjs';
 
-function fixture(t) {
+function fixture(t, publisherBotId) {
   const dir = mkdtempSync(join(tmpdir(), 'maxim-cold-store-adapter-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const selection = { ownerWebhookEventIds: ['owner'], majorBotIds: ['major'] };
@@ -113,6 +113,7 @@ function fixture(t) {
   const adapter = createLegacyColdStoreAdapter({
     bindings,
     selection,
+    ...(publisherBotId ? { publisherBotId } : {}),
     inventoryPath,
     report: (event) => state.diagnostics.push(event),
     client,
@@ -164,6 +165,16 @@ test('stable inventory hash cannot mask a changed source envelope', (t) => {
   h.journal.proofs.pendingInventory = 'fixture';
   h.state.ownerChat = 'different-chat';
   assert.throws(() => h.adapter.snapshotPending(), /reviewed_inventory_changed/);
+});
+
+test('separate attested Publisher identity is immutable across both cold inventories', (t) => {
+  const h = fixture(t, 'publisher');
+  const pending = h.adapter.snapshotPending();
+  assert.equal(pending.inventory.binding.publisherBotId, 'publisher');
+  h.state.pending = pending;
+  h.journal.proofs.pendingInventory = 'fixture';
+  h.state.pending.inventory.binding.publisherBotId = 'changed-publisher';
+  assert.throws(() => h.adapter.snapshotPending(), /publisher_catalog_binding_changed/);
 });
 
 test('lost certificate-create response is independently read before the sole install', (t) => {

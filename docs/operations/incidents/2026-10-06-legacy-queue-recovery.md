@@ -91,6 +91,27 @@ they leave that proof intact. Unheld bodies need only bounded scope metadata.
 Unknown held sources, invalid pointers and oversized held bodies still refuse.
 Native checks cover two separate certificates and independent positive readback.
 
+The `d75e1759` runtime was verified at `2026-10-06T11:37:48Z`: all 18
+application/native/static containers matched, all 24 webhook queues were released,
+and strict readiness still failed on old queue age (about 59,191 seconds). Both
+exact-source CI and CodeQL completed successfully. Bounded post-start enqueue
+samples showed preparation progress; they did not prove fleet command latency.
+
+The foreign receiver was independently matched to the configured Publisher in the
+exact `33d9f13a` admin generation before its replacement. The next correction binds
+that separate profile in both host generations and frozen recovery evidence. It
+admits only a source-matching, cleanly processed Publisher mirror with no exact
+receipt-linked authority of any kind. That receipt is preserved and not replayed;
+Publisher is never added to Major candidate selection.
+
+A further dispatch regression showed that repeatedly eligible slow handoffs could
+retake all 32 slots after every bounded poll. The correction retains a capped FIFO
+of undelivered scan representatives, re-reads their current receipt eligibility,
+and dispatches them before repeated ordinary heads. Live operations keep their
+concurrency and same-chat ownership until actual completion. Native coverage uses
+real waiting BullMQ jobs and verifies independent progress, changed receipt state,
+bot/class capacity and shutdown without increasing the concurrency budget.
+
 ## Moderation evidence
 
 The fixed `moderation-outcomes` audit was first inspected with plain EXPLAIN. Its

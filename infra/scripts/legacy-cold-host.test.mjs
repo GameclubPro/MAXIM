@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseLegacyColdHostRequest } from './legacy-cold-host.mjs';
+import { parseLegacyColdHostRequest, readLegacyColdPublisherCatalog } from './legacy-cold-host.mjs';
 
 test('host selection is finite and canonical, with distinct online and exact apply requests', () => {
   const request = {
@@ -58,4 +58,52 @@ test('neither an environment override nor a guessed source enables a host reques
   ])
     assert.throws(() => parseLegacyColdHostRequest(JSON.stringify(value)));
   assert.throws(() => parseLegacyColdHostRequest(' '.repeat(65537)), /budget/);
+});
+
+test('Publisher catalog is separate, generation-derived, exact and never supplied by an operator', () => {
+  const admin = ['MAX_PUBLISHER_BOT_ID=publisher', 'MAX_BOT_ID=major'];
+  const publisher = [
+    'MAX_PUBLISHER_BOT_ID=publisher',
+    'MAX_BOT_ID=publisher',
+    'APP_ROLE=publisher',
+  ];
+  assert.equal(readLegacyColdPublisherCatalog(admin, publisher, ['major']), 'publisher');
+  for (const [a, p, m] of [
+    [[], publisher, ['major']],
+    [[...admin, 'MAX_PUBLISHER_BOT_ID=publisher'], publisher, ['major']],
+    [admin, [...publisher, 'MAX_BOT_ID=publisher'], ['major']],
+    [
+      admin,
+      publisher.map((value) => (value === 'MAX_BOT_ID=publisher' ? 'MAX_BOT_ID=other' : value)),
+      ['major'],
+    ],
+    [
+      admin,
+      publisher.map((value) => (value === 'APP_ROLE=publisher' ? 'APP_ROLE=admin' : value)),
+      ['major'],
+    ],
+    [admin, publisher, ['major', 'publisher']],
+    [['MAX_PUBLISHER_BOT_ID= publisher'], publisher, ['major']],
+  ])
+    assert.throws(() => readLegacyColdPublisherCatalog(a, p, m), /publisher_catalog_unproved/);
+  const request = {
+    version: 1,
+    operation: 'preflight',
+    targetSha: 'a'.repeat(40),
+    selection: { ownerWebhookEventIds: ['owner'], majorBotIds: ['major'] },
+  };
+  assert.throws(
+    () => parseLegacyColdHostRequest(JSON.stringify({ ...request, publisherBotId: 'publisher' })),
+    /unknown_request_field/,
+  );
+  assert.throws(
+    () =>
+      parseLegacyColdHostRequest(
+        JSON.stringify({
+          ...request,
+          selection: { ...request.selection, publisherBotId: 'publisher' },
+        }),
+      ),
+    /unknown_request_field/,
+  );
 });

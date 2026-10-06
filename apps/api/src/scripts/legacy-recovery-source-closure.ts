@@ -5,15 +5,15 @@ import { legacyRecoveryLiveDigest } from './legacy-recovery-live-protocol';
 // installation. Preserve unknown receipts and install all permanent scope holds.
 // Widening the source class or changing a descendant requires a new closure review.
 export const LEGACY_RECOVERY_SOURCE_CLOSURE = Object.freeze({
-  version: 2,
-  source: 'original-human-text-or-flat-forwarded-photos-major-chat',
+  version: 3,
+  source: 'original-human-text-direct-photos-or-videos-or-flat-forwarded-photos-major-chat',
   excluded: Object.freeze([
     'command',
     'private',
     'channel',
     'membership',
     'callback',
-    'direct-media',
+    'non-image-or-video-direct-media',
     'non-image-forward-media',
     'reply',
     'nested-or-unknown-forward',

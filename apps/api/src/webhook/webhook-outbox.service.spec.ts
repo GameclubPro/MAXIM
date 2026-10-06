@@ -1393,6 +1393,66 @@ describe('WebhookOutboxService', () => {
     }
   });
 
+  it('releases shared pending slots for a blocked bot while admitting an independent bot', async () => {
+    const fixture = capacityFixture(3, async () => undefined);
+    (fixture.webhookRows[2]!.normalizedPayload as MaxUpdate).botId = 'independent-bot';
+    const internals = fixture.service as unknown as {
+      enqueueCandidates(candidates: unknown[]): Promise<unknown>;
+      pendingEnqueueRepresentatives: Map<string, string>;
+    };
+    let release!: () => void;
+    const external = fixture.admission.run(
+      'same-bot',
+      'ordinary',
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    try {
+      await internals.enqueueCandidates(
+        fixture.webhookRows.map((row) => ({
+          ...row,
+          priority: 5,
+          isBacklogScan: true,
+        })),
+      );
+      expect(
+        fixture.webhookService.preparePersistedWebhookEvent.mock.calls.map(([id]) => id),
+      ).toEqual(['capacity-2']);
+      expect(internals.pendingEnqueueRepresentatives.size).toBe(0);
+      expect(fixture.admission.snapshot().inFlight).toBe(1);
+      expect(fixture.capacityWrites()).toHaveLength(0);
+    } finally {
+      release();
+      await external;
+    }
+  });
+
+  it('pauses new scan cursors when pressure mode shrinks below the pending cohort', async () => {
+    const fixture = createService({ configOverrides: { ENQUEUE_BATCH_SIZE: 1000 } });
+    const internals = fixture.service as unknown as {
+      pendingEnqueueRepresentatives: Map<string, string>;
+      selectEnqueueCandidates(now: Date, admission: unknown): Promise<unknown>;
+    };
+    internals.pendingEnqueueRepresentatives = new Map(
+      Array.from({ length: 246 }, (_, index) => [`chat:waiting-${index}`, `waiting-${index}`]),
+    );
+    const pressure = {
+      degraded: true,
+      batchSize: 100,
+      enqueueConcurrency: 4,
+      includeQueuedRepair: false,
+      includeCompletedTimeoutRepair: false,
+      expandSelectedChats: false,
+    };
+    await internals.selectEnqueueCandidates(new Date(), pressure);
+    expect(extractSql(fixture.prisma.$queryRaw.mock.calls[0]![0])).not.toContain('page_pool');
+    internals.pendingEnqueueRepresentatives.clear();
+    await internals.selectEnqueueCandidates(new Date(), pressure);
+    expect(extractSql(fixture.prisma.$queryRaw.mock.calls[1]![0])).toContain('page_pool');
+  });
+
   it.each([
     ['another bot', 'bot-b', 'message_created', 'ordinary'],
     ['same-bot lifecycle', 'bot-a', 'bot_removed', 'lifecycle'],

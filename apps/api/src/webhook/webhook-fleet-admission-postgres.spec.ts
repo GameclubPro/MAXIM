@@ -331,4 +331,128 @@ native('fleet admission isolation from one unknown ordered scope', () => {
       admission.mockRestore();
     }
   });
+
+  it('starts reserved receipts across poll deadlines while stale queue repairs remain eligible', async () => {
+    await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
+    const staleCount = 60;
+    const freshCount = 80;
+    const catalogue = Array.from(
+      { length: staleCount + freshCount },
+      () => `-fifo-${randomUUID()}`,
+    );
+    chats.push(...catalogue);
+    await prisma.chat.createMany({
+      data: catalogue.map((id) => ({ id, title: 'Dispatch FIFO', entityType: 'CHAT' as const })),
+    });
+    const queuedAt = new Date(Date.now() - 300_000);
+    const rows = catalogue.map((chatId, index) => {
+      const id = randomUUID();
+      receipts.push(id);
+      const stale = index < staleCount;
+      const createdAt = new Date((stale ? queuedAt.getTime() : Date.now() - 1000) + index);
+      return {
+        id,
+        dedupKey: id,
+        botId: 'major-1',
+        status: stale ? ('QUEUED' as const) : ('RECEIVED' as const),
+        queueName: stale ? WEBHOOK_QUEUE_CRITICAL : null,
+        queuedAt: stale ? queuedAt : null,
+        createdAt,
+        rawPayload: {},
+        normalizedPayload: JSON.parse(
+          JSON.stringify(update(chatId, randomUUID(), createdAt.getTime())),
+        ),
+      };
+    });
+    await prisma.webhookEvent.createMany({ data: rows });
+    await queue.addBulk(
+      rows.slice(0, staleCount).map(({ id }) => ({
+        name: 'process-webhook-event',
+        data: { webhookEventId: id },
+        opts: { jobId: id },
+      })),
+    );
+    const internals = outbox as unknown as {
+      enqueueBatch(): Promise<void>;
+      enqueueScans: Map<string, unknown>;
+      pendingEnqueueRepresentatives: Map<string, string>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+      webhookRoutingService: { resolveQueueName(id: string, update: unknown): Promise<string> };
+    };
+    internals.enqueueScans = new Map();
+    internals.pendingEnqueueRepresentatives = new Map();
+    const admission = jest
+      .spyOn(ingress, 'preparePersistedWebhookEvent')
+      .mockImplementation(async (_id, _fallback, snapshot) => ({
+        canonical: true,
+        prepared: true,
+        normalizedPayload: snapshot,
+        executionBotId: 'major-1',
+        enforced: false,
+      }));
+    let release: () => void = () => undefined;
+    let gate = Promise.resolve();
+    const routing = jest
+      .spyOn(internals.webhookRoutingService, 'resolveQueueName')
+      .mockImplementation(async () => {
+        await gate;
+        return WEBHOOK_QUEUE_CRITICAL;
+      });
+    try {
+      const freshIds: string[] = rows.slice(staleCount).map(({ id }) => id);
+      const changedWhilePending = new Set<string>();
+      for (let pass = 0; pass < 4; pass += 1) {
+        gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await internals.enqueueBatch();
+        expect(internals.activeEnqueueUnits.size).toBeLessThanOrEqual(32);
+        expect(internals.pendingEnqueueRepresentatives.size).toBeLessThanOrEqual(100);
+        if (pass === 0) {
+          expect(internals.activeEnqueueUnits.size).toBe(32);
+          const pendingFresh = Array.from(internals.pendingEnqueueRepresentatives.values()).filter(
+            (id) => freshIds.includes(id),
+          );
+          expect(pendingFresh.length).toBeGreaterThan(2);
+          const [completed, deferred] = pendingFresh;
+          changedWhilePending.add(completed!);
+          changedWhilePending.add(deferred!);
+          await prisma.webhookEvent.update({
+            where: { id: completed! },
+            data: { status: 'PROCESSED', processedAt: new Date() },
+          });
+          await prisma.webhookEvent.update({
+            where: { id: deferred! },
+            data: { nextEnqueueAt: new Date(Date.now() + 60_000) },
+          });
+        }
+        // FLAG: Complete the slow handoff between polls. Waiting Bull jobs retain
+        // their original queuedAt, so their same old repair heads stay eligible.
+        release();
+        await Promise.all(internals.activeEnqueueUnits.values());
+        const prepared = new Set(admission.mock.calls.map(([id]) => id));
+        if (freshIds.every((id) => changedWhilePending.has(id) || prepared.has(id))) break;
+      }
+      const prepared = new Set(admission.mock.calls.map(([id]) => id));
+      expect(freshIds.filter((id) => prepared.has(id))).toHaveLength(
+        freshCount - changedWhilePending.size,
+      );
+      expect(Array.from(changedWhilePending).some((id) => prepared.has(id))).toBe(false);
+      expect(
+        await prisma.webhookEvent.count({
+          where: {
+            id: { in: rows.slice(0, staleCount).map(({ id }) => id) },
+            status: 'QUEUED',
+            queuedAt,
+            nextEnqueueAt: null,
+          },
+        }),
+      ).toBe(staleCount);
+    } finally {
+      release();
+      await Promise.all(internals.activeEnqueueUnits.values());
+      admission.mockRestore();
+      routing.mockRestore();
+    }
+  });
 });

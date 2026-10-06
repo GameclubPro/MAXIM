@@ -72,6 +72,7 @@ export function createLegacyColdStoreAdapter({
   runtime,
   bindings,
   selection,
+  publisherBotId,
   inventoryPath,
   now = Date.now,
   report,
@@ -140,6 +141,7 @@ export function createLegacyColdStoreAdapter({
         transitionJournalSha256: legacyColdDigest(journal),
         sourceSha: bindings.targetSha,
         imageId: bindings.targetImageId,
+        ...(publisherBotId ? { publisherBotId } : {}),
         stoppedGenerations: [...stopped.services, ...stopped.auxiliaries]
           .map(({ serviceName, containerId, imageId, sourceSha }) => ({
             serviceName,
@@ -150,6 +152,8 @@ export function createLegacyColdStoreAdapter({
           }))
           .sort((a, b) => a.serviceName.localeCompare(b.serviceName)),
       };
+      if (binding.publisherBotId !== publisherBotId)
+        throw new Error('publisher_catalog_binding_changed');
       const inventory = client.invoke('inventory', {
         version: 1,
         operation: 'inventory_preview',

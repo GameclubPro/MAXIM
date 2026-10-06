@@ -20,6 +20,8 @@ export type LegacyRecoveryLiveBinding = Readonly<{
   sourceSha: string;
   imageId: string;
   stoppedGenerations: readonly LegacyRecoveryStoppedGeneration[];
+  /** FLAG: Separate host-attested Publisher identity; never a Major execution candidate. */
+  publisherBotId?: string;
 }>;
 
 /** FLAG: This input identifies an offline review; it never grants startup or a MAX effect. */
@@ -124,6 +126,16 @@ function identities(value: unknown, max: number): string[] {
   return [...value].sort();
 }
 
+export function parseLegacyRecoveryPublisherBotId(
+  value: unknown,
+  majorBotIds: readonly string[],
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !identity.test(value) || majorBotIds.includes(value))
+    throw new Error('Invalid separate Publisher catalog');
+  return value;
+}
+
 export function parseLegacyRecoveryLiveRequest(input: string): LegacyRecoveryLiveRequest {
   if (Buffer.byteLength(input) > LEGACY_RECOVERY_LIVE_REQUEST_MAX_BYTES)
     throw new Error('Offline request budget exceeded');
@@ -145,6 +157,7 @@ export function parseLegacyRecoveryLiveRequest(input: string): LegacyRecoveryLiv
     'sourceSha',
     'imageId',
     'stoppedGenerations',
+    'publisherBotId',
   ]);
   if (
     typeof binding.maintenanceId !== 'string' ||
@@ -184,18 +197,23 @@ export function parseLegacyRecoveryLiveRequest(input: string): LegacyRecoveryLiv
     throw new Error('Ambiguous stopped generations');
   const selection = object(request.selection);
   keys(selection, ['ownerWebhookEventIds', 'majorBotIds']);
+  const majorBotIds = identities(selection.majorBotIds, 100);
+  const publisherBotId = parseLegacyRecoveryPublisherBotId(binding.publisherBotId, majorBotIds);
   return Object.freeze({
     version: 1,
     operation: 'inventory_preview',
     binding: Object.freeze({
       ...binding,
-      stoppedGenerations: Object.freeze(generations.sort((a, b) => a.serviceName.localeCompare(b.serviceName))),
+      ...(publisherBotId ? { publisherBotId } : {}),
+      stoppedGenerations: Object.freeze(
+        generations.sort((a, b) => a.serviceName.localeCompare(b.serviceName)),
+      ),
     }) as LegacyRecoveryLiveBinding,
     selection: Object.freeze({
       ownerWebhookEventIds: Object.freeze(
         identities(selection.ownerWebhookEventIds, LEGACY_RECOVERY_LIVE_MAX_OWNERS),
       ),
-      majorBotIds: Object.freeze(identities(selection.majorBotIds, 100)),
+      majorBotIds: Object.freeze(majorBotIds),
     }),
     ...(request.expectedInventorySha256
       ? { expectedInventorySha256: request.expectedInventorySha256 as string }

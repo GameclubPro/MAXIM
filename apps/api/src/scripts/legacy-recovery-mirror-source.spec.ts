@@ -123,4 +123,41 @@ describe('exact source diagnostic for legacy semantic mirrors', () => {
       'row_missing',
     );
   });
+
+  it('refuses held Publisher pointers and receiver mismatches independently of terminal metadata', () => {
+    const f = fixture();
+    const mirror: Record<string, unknown> = {
+      ...f.mirror,
+      status: 'PROCESSED',
+      processedAt: f.mirror.createdAt,
+      queueName: null,
+      queuedAt: null,
+      nextEnqueueAt: null,
+      timeoutQuarantineExpiresAt: null,
+      errorMessage: null,
+      legacyDispositionId: null,
+      legacyDispositionReceiptId: null,
+      enqueueAttempts: 0,
+    };
+    const inspect = () =>
+      inspectLegacyRecoveryMirror(
+        f.candidate as never,
+        mirror,
+        f.metadata,
+        ['major'],
+        'major-mirror',
+        f.mirror.createdAt.getTime(),
+      );
+    expect(inspect()).toBeNull();
+    for (const field of ['legacyDispositionId', 'legacyDispositionReceiptId']) {
+      mirror[field] = 'existing-proof';
+      expect(inspect()).toBe('publisher_terminal_unproved');
+      mirror[field] = null;
+    }
+    mirror.status = 'NO_REPLAY_HELD';
+    expect(inspect()).toBe('publisher_terminal_unproved');
+    mirror.status = 'PROCESSED';
+    mirror.botId = 'another-receiver';
+    expect(inspect()).toBe('source_receiver_unproved');
+  });
 });

@@ -85,6 +85,19 @@ function sqlFixture(): Awaited<ReturnType<typeof inventoryLegacyRecoverySelected
 }
 
 describe('online legacy recovery admission request', () => {
+  it('binds the separate Publisher identity without inserting it into the Major catalog', async () => {
+    const parsed = parseLegacyRecoveryAdmissionRequest(
+      JSON.stringify({ ...requestFixture(), publisherBotId: 'publisher' }),
+    );
+    expect(parsed.publisherBotId).toBe('publisher');
+    expect(parsed.selection.majorBotIds).not.toContain('publisher');
+    for (const publisherBotId of ['', null, ' major-a', 'major-a', true, 'bad:receiver'])
+      expect(() =>
+        parseLegacyRecoveryAdmissionRequest(
+          JSON.stringify({ ...requestFixture(), publisherBotId }),
+        ),
+      ).toThrow('Invalid separate Publisher catalog');
+  });
   it('accepts a separate live discriminator without a fabricated stopped generation', () => {
     const parsed = request();
     expect(parsed).toEqual({
@@ -208,6 +221,25 @@ describe('live read-only admission preview', () => {
     mockSql.mockResolvedValue(sqlFixture());
   });
   afterEach(() => jest.restoreAllMocks());
+
+  it('passes the independently bound Publisher to SQL and returns only its catalog digest', async () => {
+    const parsed = parseLegacyRecoveryAdmissionRequest(
+      JSON.stringify({ ...requestFixture(), publisherBotId: 'publisher' }),
+    );
+    const result = await collectLegacyRecoveryAdmission(
+      tx,
+      { eval_ro: jest.fn().mockResolvedValue(headerReply()) },
+      parsed,
+    );
+    expect(mockSql.mock.calls[0][1]).toEqual({
+      selection: parsed.selection,
+      publisherBotId: 'publisher',
+    });
+    expect(result.publisherCatalogSha256).toBe(
+      legacyRecoveryLiveDigest({ publisherBotId: 'publisher' }),
+    );
+    expect(result).not.toHaveProperty('publisherBotId');
+  });
 
   it('permits cold host review of proved sources without authorizing stopping or activation', async () => {
     const redis = { eval_ro: jest.fn().mockResolvedValue(headerReply()) };

@@ -78,6 +78,16 @@ values. After independent strict source validation, mirror comparison ignores on
 those two transport fields when the passive numeric video ID is present. Original
 per-receipt raw and normalized hashes remain part of the reviewed evidence; a changed
 receipt still requires a fresh inventory. This does not authorize replay or media use.
+Publisher receipts share the message semantic key with Major. The host attests the
+separate Publisher identity from the captured `api-admin` and `api-publisher`
+generations and freezes it in the cold binding; never add it to `majorBotIds`.
+A matching Publisher mirror may remain untouched only when its original source
+matches, its receipt is positively `PROCESSED` within the database snapshot clock,
+all queue/retry/legacy-disposition fields are empty, and an exact indexed receipt
+lookup proves no execution claim of any kind. Unknown receivers, unfinished
+Publisher receipts and missing/changed catalog bindings refuse. This preserves a
+completed independent receipt; it neither proves historical effects absent nor
+releases automatic-effect holds or authorizes Publisher replay.
 The collector uses bounded exact source/claim/mirror reads and reviewed reachable
 effect-family guards. It also checks the pending prefix of each selected chat
 against the actual receipt materializer in a read-only snapshot: old commands,

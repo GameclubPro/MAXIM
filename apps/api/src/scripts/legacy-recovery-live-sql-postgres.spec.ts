@@ -761,6 +761,152 @@ native('native bounded live SQL inventory and actual plans', () => {
     expect(publicEvidence).not.toMatch(/owner-secret|mirror-secret|rotated-secret|example.test/u);
   });
 
+  it('preserves only independently terminal attested Publisher mirrors with indexed absence of every exact-receipt claim kind', async () => {
+    const f = await input();
+    await sourceLookupHistory(f.normalized.message!.chatId);
+    const mirror = await db.webhookEvent.create({
+      data: {
+        botId: 'publisher',
+        dedupKey: randomUUID(),
+        semanticKey: f.owner.semanticKey,
+        status: 'PROCESSED',
+        createdAt: f.owner.createdAt,
+        processedAt: new Date(f.owner.createdAt.getTime() + 1000),
+        normalizedPayload: new WebhookParser().parse(f.raw, {
+          botId: 'publisher',
+        }) as unknown as Prisma.InputJsonValue,
+        rawPayload: {},
+      },
+    });
+    eventIds.push(mirror.id);
+    const request = { ...f.request, publisherBotId: 'publisher' };
+    const run = (selected: LegacyRecoveryLiveSqlSelection = request) =>
+      db.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          return inventoryLegacyRecoverySelectedSql(
+            tx,
+            selected,
+            allowance(LEGACY_RECOVERY_LIVE_BUDGET),
+          );
+        },
+        { isolationLevel: 'RepeatableRead', timeout: 65000 },
+      );
+    const accepted = await run();
+    expect(accepted.issues).toEqual([]);
+    expect(accepted.selectedOwners.map((row) => row.ownerWebhookEventId)).toEqual([f.owner.id]);
+    const plan = accepted.proofs.find(
+      (row) => row.descriptor === 'sql:publisher-mirror-authority:bounded-planning',
+    );
+    expect(plan?.indexes).toEqual(['webhook_execution_claims_event_kind_idx']);
+    expect(
+      accepted.proofs.find((row) => row.descriptor === 'sql:publisher-mirror-authority:returned'),
+    ).toMatchObject({ returnedRows: 0, probes: 1 });
+    expect(await db.webhookEvent.findUnique({ where: { id: mirror.id } })).toEqual(mirror);
+    for (const selected of [f.request, { ...request, publisherBotId: 'other-publisher' }]) {
+      expect((await run(selected)).issues).toContainEqual({
+        code: 'sql_semantic_mirror_receiver_catalog_unproved',
+        descriptor: 'sql:webhook_events',
+      });
+    }
+    for (const status of ['RECEIVED', 'QUEUED', 'FAILED', 'DUPLICATE'] as const) {
+      await db.webhookEvent.update({ where: { id: mirror.id }, data: { status } });
+      expect((await run()).issues).toContainEqual({
+        code: 'sql_semantic_mirror_publisher_terminal_unproved',
+        descriptor: 'sql:webhook_events',
+      });
+    }
+    await db.webhookEvent.update({ where: { id: mirror.id }, data: { status: 'PROCESSED' } });
+    for (const change of [
+      { processedAt: null },
+      { processedAt: new Date(mirror.createdAt.getTime() - 1) },
+      { processedAt: new Date(Date.now() + 60000) },
+      { nextEnqueueAt: new Date() },
+      { timeoutQuarantineExpiresAt: new Date() },
+      { queueName: 'moderation-default' },
+      { queuedAt: new Date() },
+      { enqueueAttempts: 1 },
+      { errorMessage: 'unknown outcome' },
+    ]) {
+      await db.webhookEvent.update({ where: { id: mirror.id }, data: change });
+      expect((await run()).issues).toContainEqual({
+        code: 'sql_semantic_mirror_publisher_terminal_unproved',
+        descriptor: 'sql:webhook_events',
+      });
+      await db.webhookEvent.update({
+        where: { id: mirror.id },
+        data: {
+          processedAt: mirror.processedAt,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+          queueName: null,
+          queuedAt: null,
+          enqueueAttempts: 0,
+          errorMessage: null,
+        },
+      });
+    }
+    for (const kind of [
+      'EXECUTION',
+      'COMMAND',
+      'PUBLISHER_AUTO_REPLY_SOURCE',
+      'FUTURE_UNKNOWN_KIND',
+    ]) {
+      const authority = await db.webhookExecutionClaim.create({
+        data: {
+          kind,
+          semanticKey: `publisher-authority:${randomUUID()}`,
+          webhookEventId: mirror.id,
+        },
+      });
+      expect((await run()).issues).toContainEqual({
+        code: 'sql_publisher_mirror_authority_present',
+        descriptor: 'sql:webhook_execution_claims',
+      });
+      await db.webhookExecutionClaim.delete({ where: { id: authority.id } });
+    }
+    const changedRaw = structuredClone(f.raw);
+    changedRaw.message.body.text = 'Another ordinary source';
+    await db.webhookEvent.update({
+      where: { id: mirror.id },
+      data: {
+        normalizedPayload: new WebhookParser().parse(changedRaw, {
+          botId: 'publisher',
+        }) as unknown as Prisma.InputJsonValue,
+      },
+    });
+    expect((await run()).issues).toContainEqual({
+      code: 'sql_semantic_mirror_content_mismatch',
+      descriptor: 'sql:webhook_events',
+    });
+    changedRaw.message.body.text = '/ban';
+    await db.webhookEvent.update({
+      where: { id: mirror.id },
+      data: {
+        normalizedPayload: new WebhookParser().parse(changedRaw, {
+          botId: 'publisher',
+        }) as unknown as Prisma.InputJsonValue,
+      },
+    });
+    expect((await run()).issues).toContainEqual({
+      code: 'sql_semantic_mirror_source_command',
+      descriptor: 'sql:webhook_events',
+    });
+    await db.webhookEvent.update({
+      where: { id: mirror.id },
+      data: {
+        normalizedPayload: mirror.normalizedPayload as Prisma.InputJsonValue,
+        processedAt: new Date(mirror.processedAt!.getTime() + 1),
+      },
+    });
+    const changed = await run();
+    expect(changed.issues).toEqual([]);
+    expect(changed.stableDigest).not.toBe(accepted.stableDigest);
+    expect(JSON.stringify({ ...accepted, candidates: undefined })).not.toContain(
+      'Private native inventory source text',
+    );
+  });
+
   it('measures LIMIT work through real filtered history, loops and buffers, including empty scans', async () => {
     await db.$transaction(async (tx) => {
       // FLAG: Only disposable TEMP data is created. This fixture verifies the LIMIT

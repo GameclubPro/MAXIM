@@ -177,6 +177,34 @@ function sourceIdentity(targetSha) {
   return { sourceSha: head, imageId: rows[0].Id };
 }
 
+// FLAG: The host derives this receiver only from two captured same-image role
+// generations. Caller input, a fallback default and Major membership cannot attest it.
+export function readLegacyColdPublisherCatalog(
+  adminEnvironment,
+  publisherEnvironment,
+  majorBotIds,
+) {
+  const field = (environment, key) => {
+    if (!Array.isArray(environment)) throw new Error('publisher_catalog_unproved');
+    const matches = environment.filter(
+      (value) => typeof value === 'string' && value.startsWith(`${key}=`),
+    );
+    if (matches.length !== 1) throw new Error('publisher_catalog_unproved');
+    const value = matches[0].slice(key.length + 1);
+    if (!id.test(value)) throw new Error('publisher_catalog_unproved');
+    return value;
+  };
+  const publisherBotId = field(adminEnvironment, 'MAX_PUBLISHER_BOT_ID');
+  if (
+    majorBotIds.includes(publisherBotId) ||
+    field(publisherEnvironment, 'MAX_PUBLISHER_BOT_ID') !== publisherBotId ||
+    field(publisherEnvironment, 'MAX_BOT_ID') !== publisherBotId ||
+    field(publisherEnvironment, 'APP_ROLE') !== 'publisher'
+  )
+    throw new Error('publisher_catalog_unproved');
+  return publisherBotId;
+}
+
 // FLAG: Credentials are copied only from the exact captured admin generation, into
 // a private file consumed by an immutable, isolated store client. They are never
 // part of an output, journal, command argument, or lasting operation context.
@@ -203,6 +231,19 @@ function storeConnection(baseline) {
     majorBotIds.includes(env('MAX_PUBLISHER_BOT_ID'))
   )
     throw new Error('major_catalog_unproved');
+  const publisher = baseline.services.find((service) => service.serviceName === 'api-publisher');
+  const publisherRows = JSON.parse(execute('docker', ['inspect', publisher.containerId]));
+  if (
+    publisherRows.length !== 1 ||
+    publisherRows[0].Id !== publisher.containerId ||
+    publisherRows[0].Image !== baseline.imageId
+  )
+    throw new Error('publisher_generation_changed');
+  const publisherBotId = readLegacyColdPublisherCatalog(
+    row.Config.Env,
+    publisherRows[0].Config?.Env,
+    majorBotIds,
+  );
   const values = ['DATABASE_URL', 'REDIS_URL'].map((key) => {
     const matches = row.Config.Env.filter((entry) => entry.startsWith(`${key}=`));
     if (
@@ -222,7 +263,12 @@ function storeConnection(baseline) {
     inspected[0].Labels?.['com.docker.compose.project'] !== 'infra'
   )
     throw new Error('store_network_changed');
-  return { networkId: network.NetworkID, environment: `${values.join('\n')}\n`, majorBotIds };
+  return {
+    networkId: network.NetworkID,
+    environment: `${values.join('\n')}\n`,
+    majorBotIds,
+    publisherBotId,
+  };
 }
 
 export async function runLegacyColdHost(request) {
@@ -293,6 +339,9 @@ export async function runLegacyColdHost(request) {
   const topology = {
     networkId: connection.networkId,
     queueControlSha256,
+    publisherCatalogSha256: canonicalLegacyColdDigest({
+      publisherBotId: connection.publisherBotId,
+    }),
     serviceNames: [...baseline.services, ...baseline.auxiliaries]
       .map((row) => row.serviceName)
       .sort(),
@@ -302,6 +351,7 @@ export async function runLegacyColdHost(request) {
     (legacyColdDigest(selection) !== bindings.selectionDigest ||
       legacyColdDigest(topology) !== bindings.topologyDigest ||
       context.networkId !== connection.networkId ||
+      context.publisherBotId !== connection.publisherBotId ||
       context.queueControlSha256 !== queueControlSha256)
   )
     throw new Error('operation_context_changed');
@@ -323,7 +373,13 @@ export async function runLegacyColdHost(request) {
   try {
     if (!context) {
       writePrivate(queueControlPath, queueBytes);
-      context = { version: 1, selection, networkId: connection.networkId, queueControlSha256 };
+      context = {
+        version: 1,
+        selection,
+        publisherBotId: connection.publisherBotId,
+        networkId: connection.networkId,
+        queueControlSha256,
+      };
       writePrivate(join(operationDir, 'context.json'), `${JSON.stringify(context)}\n`);
     } else if (legacyColdDigest(readPrivate(queueControlPath)) !== queueControlSha256)
       throw new Error('queue_control_changed');
@@ -349,6 +405,7 @@ export async function runLegacyColdHost(request) {
           runtime,
           bindings,
           selection,
+          publisherBotId: connection.publisherBotId,
           inventoryPath,
           report,
         }),
@@ -368,6 +425,7 @@ export async function runLegacyColdHost(request) {
         sourceSha: identity.sourceSha,
         imageId: identity.imageId,
         selection,
+        publisherBotId: connection.publisherBotId,
       });
       writePrivate(join(operationDir, 'admission.json'), `${JSON.stringify(admission)}\n`);
       const admitted =
@@ -378,6 +436,7 @@ export async function runLegacyColdHost(request) {
         admission.sourceSha === identity.sourceSha &&
         admission.imageId === identity.imageId &&
         admission.selectionSha256 === canonicalLegacyColdDigest(selection) &&
+        admission.publisherCatalogSha256 === topology.publisherCatalogSha256 &&
         admission.decision === 'READY_FOR_COLD_REVIEW' &&
         admission.sourceCoverageComplete === true &&
         hash.test(admission.registrySha256 ?? '') &&

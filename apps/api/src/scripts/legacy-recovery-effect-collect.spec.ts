@@ -151,6 +151,42 @@ describe('read-only legacy recovery evidence coordinator', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
+  it('threads the separate Publisher from the stopped binding and binds it to the reviewed inventory', async () => {
+    const request = requestFixture();
+    const bound = { ...request, binding: { ...request.binding, publisherBotId: 'publisher' } };
+    const adapters = adapterFixture();
+    const result = await collectLegacyRecoveryLiveEvidence(tx, redis, bound, adapters);
+    expect(result.decision).toBe('READY_TO_INSTALL');
+    expect(adapters.sql.mock.calls[0][1]).toMatchObject({
+      publisherBotId: 'publisher',
+      selection: request.selection,
+    });
+    expect(result.binding.publisherBotId).toBe('publisher');
+    const different = await collectLegacyRecoveryLiveEvidence(
+      tx,
+      redis,
+      { ...bound, binding: { ...bound.binding, publisherBotId: 'other-publisher' } },
+      adapterFixture(),
+    );
+    expect(different.inventorySha256).not.toBe(result.inventorySha256);
+    expect(different.previewSha256).toBe(result.previewSha256);
+    const reviewed = await collectLegacyRecoveryLiveEvidence(
+      tx,
+      redis,
+      {
+        ...bound,
+        binding: { ...bound.binding, publisherBotId: 'other-publisher' },
+        expectedInventorySha256: result.inventorySha256!,
+      },
+      adapterFixture(),
+    );
+    expect(reviewed.decision).toBe('DENY');
+    expect(reviewed.issues).toContainEqual({
+      code: 'reviewed_inventory_changed',
+      descriptor: 'inventory',
+    });
+  });
+
   it('uses one SQL snapshot, reads Redis twice and never authorizes installation or effects', async () => {
     const request = requestFixture();
     const adapters = adapterFixture();

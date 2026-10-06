@@ -10,6 +10,7 @@ import { isLegacyOpaqueSequence } from '../webhook/webhook-legacy-forward-source
 import type { LegacyRecoverySourceRefusal } from '../webhook/webhook-legacy-source';
 import {
   legacyRecoveryLiveDigest,
+  parseLegacyRecoveryPublisherBotId,
   type LegacyRecoveryLiveIssue,
   type LegacyRecoveryLiveOutput,
   type LegacyRecoveryLivePlanProof,
@@ -19,7 +20,9 @@ import { LEGACY_RECOVERY_SQL_PRIMARY_KEYS } from './legacy-recovery-sql-keys';
 import { previewLegacyRecoveryMaterialization } from './legacy-recovery-materialization-preview';
 import { classifyLegacyRecoveryStoreRefusal } from './legacy-recovery-store-refusal';
 
-export type LegacyRecoveryLiveSqlSelection = Pick<LegacyRecoveryLiveRequest, 'selection'>;
+export type LegacyRecoveryLiveSqlSelection = Pick<LegacyRecoveryLiveRequest, 'selection'> & {
+  publisherBotId?: string;
+};
 
 const descriptors = Object.freeze(
   Object.keys(LEGACY_RECOVERY_SQL_PRIMARY_KEYS).map((table) =>
@@ -858,16 +861,19 @@ export type LegacyRecoveryMirrorRefusal =
   | 'stored_semantic_mismatch'
   | 'rebuilt_semantic_mismatch'
   | 'scope_mismatch'
-  | 'content_mismatch';
+  | 'content_mismatch'
+  | 'publisher_terminal_unproved';
 
-// FLAG: Fixed first-refusal codes expose which existing proof failed, never source
-// identities, source values or exception messages. Diagnostic precision grants no
-// new admission: every source, receiver, semantic, scope and content guard remains.
+// FLAG: Fixed first-refusal codes expose which proof failed, never source identities,
+// values or exception messages. Every profile retains the source, receiver, semantic,
+// scope and content guards; separate Publisher completion also needs SQL authority proof.
 export function inspectLegacyRecoveryMirror(
   candidate: Pick<LegacyRecoveryCandidate, 'source' | 'owner' | 'claim'>,
   mirror: Record<string, unknown> | null,
   metadata: { bot_id: string | null; semantic_key: string | null },
   majorBotIds: readonly string[],
+  publisherBotId?: string,
+  snapshotAtMs?: number,
 ): LegacyRecoveryMirrorRefusal | null {
   if (!mirror) return 'row_missing';
   let sourceRefusal: LegacyRecoverySourceRefusal | undefined;
@@ -875,7 +881,10 @@ export function inspectLegacyRecoveryMirror(
     sourceRefusal = reason;
   });
   if (!source) return sourceRefusal ?? 'source_unproved';
-  if (!metadata.bot_id || !majorBotIds.includes(metadata.bot_id))
+  const publisher = Boolean(
+    publisherBotId && metadata.bot_id === publisherBotId && mirror.botId === publisherBotId,
+  );
+  if (!metadata.bot_id || (!majorBotIds.includes(metadata.bot_id) && !publisher))
     return 'receiver_catalog_unproved';
   if (metadata.semantic_key !== candidate.claim.semanticKey) return 'stored_semantic_mismatch';
   if (buildWebhookSemanticEventKey(mirror.normalizedPayload) !== candidate.claim.semanticKey)
@@ -887,6 +896,30 @@ export function inspectLegacyRecoveryMirror(
     legacyMirrorContentDigest(object(candidate.owner.normalizedPayload)?.raw)
   )
     return 'content_mismatch';
+  // FLAG: Preserve an independently completed Publisher receipt, never settle or
+  // replay it. Unknown receivers and every pending/held/retry state remain denied.
+  // Absence of any exact-receipt authority is proved separately by the SQL caller.
+  if (
+    publisher &&
+    (mirror.status !== 'PROCESSED' ||
+      !(mirror.processedAt instanceof Date) ||
+      !(mirror.createdAt instanceof Date) ||
+      !Number.isSafeInteger(mirror.processedAt.getTime()) ||
+      !Number.isSafeInteger(snapshotAtMs) ||
+      mirror.processedAt.getTime() < mirror.createdAt.getTime() ||
+      mirror.processedAt.getTime() > snapshotAtMs! ||
+      [
+        'queueName',
+        'queuedAt',
+        'nextEnqueueAt',
+        'timeoutQuarantineExpiresAt',
+        'errorMessage',
+        'legacyDispositionId',
+        'legacyDispositionReceiptId',
+      ].some((key) => mirror[key] !== null) ||
+      mirror.enqueueAttempts !== 0)
+  )
+    return 'publisher_terminal_unproved';
   return null;
 }
 
@@ -904,7 +937,7 @@ function identifier(value: string): Prisma.Sql {
 // history. Require equality on the actual requested scope inside Index/Recheck Cond.
 export function admitLegacyRecoveryHistoryPlan(
   value: unknown,
-  scope: 'id' | 'semantic_key',
+  scope: 'id' | 'semantic_key' | 'webhook_event_id',
 ): string[] {
   const root = Array.isArray(value) && value.length === 1 ? object(object(value[0])?.Plan) : null;
   if (!root) throw new Refused('sql_plan_unproved', 'sql:plan');
@@ -1167,7 +1200,11 @@ class Meter {
       try {
         indexes = admitLegacyRecoveryHistoryPlan(
           plan,
-          statement.sql.includes('"semantic_key" =') ? 'semantic_key' : 'id',
+          descriptor === 'sql:publisher-mirror-authority'
+            ? 'webhook_event_id'
+            : statement.sql.includes('"semantic_key" =')
+              ? 'semantic_key'
+              : 'id',
         );
       } catch (error) {
         if (error instanceof Refused) throw new Refused(error.code, descriptor);
@@ -1269,7 +1306,9 @@ class Meter {
         table === 'webhook_events'
           ? [normalized.includes('"semantic_key" =') ? 'semantic_key' : 'id']
           : table === 'webhook_execution_claims'
-            ? ['kind', 'semantic_key']
+            ? descriptor === 'sql:publisher-mirror-authority'
+              ? ['webhook_event_id']
+              : ['kind', 'semantic_key']
             : table === 'chat_settings'
               ? ['chat_id']
               : table === 'max_action_ledger'
@@ -1667,6 +1706,7 @@ async function inventoryLegacyRecoverySql(
   const selectedOwners: LegacyRecoveryLiveOutput['selectedOwners'][number][] = [];
   const evidence: unknown[] = [];
   try {
+    parseLegacyRecoveryPublisherBotId(request.publisherBotId, request.selection.majorBotIds);
     if (
       ['pages', 'rows', 'probes', 'bytes'].some(
         (key) =>
@@ -1684,12 +1724,18 @@ async function inventoryLegacyRecoverySql(
       !request.selection.majorBotIds.length
     )
       throw new Refused('sql_selection_invalid', 'sql:inventory');
-    const snapshot = await meter.read<{ readOnly: string; isolation: string; timeoutMs: number }>(
+    const snapshot = await meter.read<{
+      readOnly: string;
+      isolation: string;
+      timeoutMs: number;
+      snapshotAtMs: number;
+    }>(
       'sql:snapshot',
       Prisma.sql`
       SELECT current_setting('transaction_read_only') AS "readOnly",
         current_setting('transaction_isolation') AS isolation,
-        (extract(epoch FROM current_setting('statement_timeout')::interval) * 1000)::int AS "timeoutMs"`,
+        (extract(epoch FROM current_setting('statement_timeout')::interval) * 1000)::int AS "timeoutMs",
+        floor(extract(epoch FROM CURRENT_TIMESTAMP) * 1000)::double precision AS "snapshotAtMs"`,
     );
     if (
       snapshot[0]?.readOnly !== 'on' ||
@@ -1763,12 +1809,34 @@ async function inventoryLegacyRecoverySql(
               semantic_key: row.semantic_key ?? null,
             },
             request.selection.majorBotIds,
+            request.publisherBotId,
+            snapshot[0]?.snapshotAtMs,
           );
           if (refusal) {
             issues.push({ code: 'sql_semantic_mirror_unproved', descriptor: 'sql:webhook_events' });
             issues.push({
               code: `sql_semantic_mirror_${refusal}`,
               descriptor: 'sql:webhook_events',
+            });
+          } else if (request.publisherBotId && row.bot_id === request.publisherBotId) {
+            // FLAG: All claim kinds count, including Publisher descendants or future
+            // unknown authority. One indexed row proves refusal; only zero permits
+            // retaining this already-terminal receipt outside Major recovery.
+            const claims = await meter.read<{ present: boolean }>(
+              'sql:publisher-mirror-authority',
+              Prisma.sql`SELECT TRUE AS present FROM "webhook_execution_claims"
+                WHERE "webhook_event_id" = ${row.id} LIMIT 1`,
+            );
+            if (claims.length)
+              issues.push({
+                code: 'sql_publisher_mirror_authority_present',
+                descriptor: 'sql:webhook_execution_claims',
+              });
+            evidence.push({
+              descriptor: 'sql:publisher-terminal-mirror',
+              receiptId: row.id,
+              receiptSha256: legacySnapshotDigest(mirror),
+              exactReceiptAuthorityAbsent: claims.length === 0,
             });
           }
         }
@@ -1832,7 +1900,6 @@ async function inventoryLegacyRecoverySql(
           );
         meter.cost[key] += prefix.cost[key];
       }
-      meter.check('sql:materialization-preview');
       for (const plan of prefix.plans) {
         // FLAG: The prefix helper reports estimated plan rows alongside actual
         // results. Keep their diagnostic identities separate on the frozen wire.
@@ -1855,6 +1922,9 @@ async function inventoryLegacyRecoverySql(
           },
         );
       }
+      // FLAG: Keep bounded completed-plan evidence even when its measured work
+      // exhausts the unchanged shared budget. Diagnostics grant no admission.
+      meter.check('sql:materialization-preview');
       issues.push(...prefix.issues);
       if (prefix.decision !== 'READY' || !/^[a-f0-9]{64}$/u.test(prefix.proofSha256))
         issues.push({
@@ -1874,6 +1944,7 @@ async function inventoryLegacyRecoverySql(
   if (meter.storeFailure) issues.push(meter.storeFailure);
   const stableDigest = legacyRecoveryLiveDigest({
     selection: request.selection,
+    ...(request.publisherBotId ? { publisherBotId: request.publisherBotId } : {}),
     scope: exhaustiveCatalog ? 'exhaustive-catalog' : 'selected-original-source',
     selectedOwners,
     evidence,
