@@ -62,7 +62,11 @@ Publisher is excluded. Selection is finite (at most 200 owners/100 bots). The
 first supported source is original human plain text in a Major group, without
 media, commands, replies/forwards or ambiguous provenance. Other classes refuse.
 The collector uses bounded exact source/claim/mirror reads and reviewed reachable
-effect-family guards. It must report complete source coverage and
+effect-family guards. It also checks the pending prefix of each selected chat
+against the actual receipt materializer in a read-only snapshot: old commands,
+started effects, unsupported sources and exhausted budgets refuse before stop.
+Cold inventory repeats this prefix check and binds its stable semantic digest.
+It must report complete source coverage and
 `READY_FOR_COLD_REVIEW` before any producer is stopped. A DENY leaves the runtime
 running and writes private diagnostic evidence. Do not raise budgets to force an
 incomplete inventory through admission.
