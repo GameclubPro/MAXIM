@@ -723,7 +723,10 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
     }
 
     if (repairFailed) {
-      await this.requeueRequest(request, leaseToken, repairError).catch((requeueError: unknown) => {
+      let requeued: boolean;
+      try {
+        requeued = await this.requeueRequest(request, leaseToken, repairError);
+      } catch (requeueError: unknown) {
         this.logger.error(
           {
             chatId: request.chat_id,
@@ -732,7 +735,12 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
           },
           'Failed to release night mode reconcile lease; expiry will recover it',
         );
-      });
+        return;
+      }
+      if (!requeued) {
+        this.logLostLease(request, 'while persisting retry');
+        return;
+      }
       this.logger.warn(
         {
           chatId: request.chat_id,
@@ -969,12 +977,12 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
     request: NightModeTransitionReconcileRequest,
     leaseToken: string,
     error: unknown,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const retryAt = new Date(Date.now() + NIGHT_MODE_RECONCILE_REQUEUE_DELAY_MS);
     const errorAt = new Date();
     const errorCode = this.normalizeErrorCode(error);
     const errorMessage = this.normalizeErrorMessage(error);
-    await this.prisma.$executeRaw(Prisma.sql`
+    const affected = await this.prisma.$executeRaw(Prisma.sql`
       UPDATE "night_mode_transition_reconcile_requests"
       SET
         "requested_at" = ${retryAt},
@@ -987,6 +995,7 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
         AND "generation" = ${request.generation}
         AND "lease_token" = ${leaseToken}
     `);
+    return affected === 1;
   }
 
   private normalizeErrorCode(error: unknown): string {
