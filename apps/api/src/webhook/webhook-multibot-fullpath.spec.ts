@@ -13,6 +13,8 @@ import { MaxActionProcessor } from '../max/max-action.processor';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 import { DefaultWebhookLeaseManagerService } from '../moderation/default-webhook-lease-manager.service';
+import { digestDuplicateContent } from '../moderation/message-duplicate/message-duplicate-content';
+import { MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION } from '../moderation/message-duplicate/message-duplicate-window.script';
 import {
   BackgroundWebhookProcessor,
   JOIN_WEBHOOK_SHARD_PROCESSORS,
@@ -643,6 +645,143 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
     },
   );
 
+  async function messageRemovalObservationFixture(clearPrimary = false) {
+    const s = await fixture(2, 'on');
+    await s.pause();
+    Object.assign(s.ingress, {
+      messageRetention: new MessageRetentionStore(s.prisma as never, s.config, s.legacyHolds),
+    });
+    const chatId = (await s.seedCatalog(1))[0]!;
+    for (const bot of s.bots) s.denyBot(bot.id);
+    await s.prisma.chatBotMembership.updateMany({
+      where: { chatId },
+      data: { status: 'REMOVED', botAccessState: 'DENIED' },
+    });
+    if (clearPrimary)
+      await s.prisma.chat.update({
+        where: { id: chatId },
+        data: { primaryBotId: null, botId: null, routingState: 'NO_ELIGIBLE_BOT' },
+      });
+    const messageId = randomUUID();
+    const raw = {
+      update_type: 'message_removed',
+      chat_id: chatId,
+      message_id: messageId,
+      user_id: 'fixture-user',
+      timestamp: Date.now(),
+      callback: { callback_id: randomUUID(), payload: 'injected-poll-callback' },
+    };
+    const ingestRemoval = async (botId: string) => {
+      const update = new WebhookParser().parse({ ...raw, update_id: randomUUID() }, { botId });
+      const receiptId = (await s.ingress.storeReceipt(update, null)).webhookEventId!;
+      s.receiptIds.push(receiptId);
+      return receiptId;
+    };
+    const readiness = jest
+      .spyOn(s.readiness, 'ensureReady')
+      .mockRejectedValue(new Error('A local removal cannot require a moderation executor'));
+    const id = await ingestRemoval(s.bots[0]!.id);
+    await s.ingress.preparePersistedWebhookEvent(id);
+    await s.prisma.webhookEvent.update({ where: { id }, data: { status: 'QUEUED' } });
+    const handler = jest.spyOn(s.moderation, 'handleUpdate');
+    const remove = jest.spyOn(s.history, 'remove');
+    const poll = {
+      tryHandleCallback: jest.fn().mockRejectedValue(new Error('Unexpected callback')),
+    };
+    Object.assign(s.moderation, { managedPollService: poll });
+    const tombstone = `dup:window:v1:${digestDuplicateContent(chatId)}:${MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION}:removed:${digestDuplicateContent(messageId)}`;
+    return { s, id, chatId, messageId, ingestRemoval, readiness, handler, remove, poll, tombstone };
+  }
+
+  it.each([false, true])(
+    'settles message_removed and revokes duplicate history without a live route, missing primary=%s',
+    async (clearPrimary) => {
+      const f = await messageRemovalObservationFixture(clearPrimary);
+      const claim = await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: f.id, kind: 'EXECUTION' },
+      });
+      expect(await f.s.redis.get(f.tombstone)).toBeNull();
+      await f.s.moderation.processWebhookEvent(f.id);
+      expect(await f.s.redis.get(f.tombstone)).toBe('true');
+      const expiry = await f.s.redis.pexpiretime(f.tombstone);
+      expect(expiry).toBeGreaterThan(Date.now());
+      await f.s.moderation.processWebhookEvent(f.id);
+      const mirrorId = await f.ingestRemoval(f.s.bots[1]!.id);
+      await f.s.ingress.preparePersistedWebhookEvent(mirrorId);
+      await f.s.moderation.processWebhookEvent(mirrorId);
+      expect(await f.s.redis.pexpiretime(f.tombstone)).toBe(expiry);
+      expect(f.remove).toHaveBeenCalledTimes(1);
+      expect(f.remove).toHaveBeenCalledWith(f.chatId, f.messageId);
+      expect(f.handler).toHaveBeenCalledTimes(1);
+      expect(
+        await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } }),
+      ).toMatchObject({
+        status: 'PROCESSED',
+        executionDeadlineAt: null,
+      });
+      expect(
+        await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirrorId } }),
+      ).toMatchObject({
+        status: 'DUPLICATE',
+      });
+      expect(
+        await f.s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+      ).toMatchObject({
+        status: 'COMPLETED',
+        preparedAt: claim.preparedAt,
+        businessStartedAt: expect.any(Date),
+        leaseToken: null,
+        leaseExpiresAt: null,
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+      expect(
+        await f.s.prisma.chatBotMembership.count({ where: { chatId: f.chatId, status: 'ACTIVE' } }),
+      ).toBe(0);
+      expect(f.readiness).not.toHaveBeenCalled();
+      expect(f.poll.tryHandleCallback).not.toHaveBeenCalled();
+      expect(f.s.requests).toEqual([]);
+      expect(f.s.effects).toEqual([]);
+    },
+  );
+
+  it.each(['unprepared', 'identity', 'result', 'started'] as const)(
+    'keeps message_removed history unchanged for %s canonical authority',
+    async (fault) => {
+      const f = await messageRemovalObservationFixture();
+      const claim = await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: f.id, kind: 'EXECUTION' },
+      });
+      if (fault === 'identity')
+        await f.s.prisma.webhookEvent.update({
+          where: { id: f.id },
+          data: { botId: f.s.bots[1]!.id },
+        });
+      else
+        await f.s.prisma.webhookExecutionClaim.update({
+          where: { id: claim.id },
+          data:
+            fault === 'unprepared'
+              ? { preparedAt: null }
+              : fault === 'result'
+                ? { commandResult: { kind: 'UNVERIFIED_EFFECT' } }
+                : { businessStartedAt: new Date() },
+        });
+      if (fault === 'started') await f.s.moderation.processWebhookEvent(f.id);
+      else
+        await expect(f.s.moderation.processWebhookEvent(f.id)).rejects.toThrow(
+          'Message removal observation preparation proof incomplete',
+        );
+      expect(await f.s.redis.get(f.tombstone)).toBeNull();
+      expect(f.remove).not.toHaveBeenCalled();
+      expect(f.handler).not.toHaveBeenCalled();
+      expect(
+        (await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } })).status,
+      ).not.toBe('PROCESSED');
+      expect(f.s.requests).toEqual([]);
+      expect(f.s.effects).toEqual([]);
+    },
+  );
+
   async function removedObservationFixture() {
     const s = await fixture(2, 'on');
     await s.pause();
@@ -1265,7 +1404,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
   });
 
   it.each([
-    { kind: 'static', type: 'message_removed' },
+    { kind: 'static', type: 'message_edited' },
     { kind: 'static', type: 'user_added' },
     { kind: 'dynamic', type: 'message_created' },
   ] as const)(
@@ -1273,17 +1412,14 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
     async ({ kind, type }) => {
       const s = await fixture(2, 'on');
       await s.pause();
-      Object.assign(s.ingress, {
-        messageRetention: new MessageRetentionStore(s.prisma as never, s.config, s.legacyHolds),
-      });
       const [chatId, independentChatId] = await s.seedCatalog(2, {
         maxMessageLengthEnabled: false,
       });
       const botId = s.bots[0]!.id;
       const messageId = randomUUID();
       let id: string;
-      if (type === 'message_created') {
-        id = await s.ingest({ chatId: chatId!, messageId, text: 'Fixture', botId });
+      if (type !== 'user_added') {
+        id = await s.ingest({ chatId: chatId!, messageId, text: 'Fixture', botId, type });
       } else {
         const update = new WebhookParser().parse(
           {
@@ -1291,9 +1427,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
             update_type: type,
             chat_id: chatId,
             timestamp: Date.now(),
-            ...(type === 'message_removed'
-              ? { message_id: messageId, user_id: 'fixture-user' }
-              : { user: { user_id: 'fixture-user', first_name: 'Fixture' } }),
+            user: { user_id: 'fixture-user', first_name: 'Fixture' },
           },
           { botId },
         );
@@ -1326,7 +1460,6 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
         return proof;
       });
       const handler = jest.spyOn(s.moderation, 'handleUpdate');
-      const historyRemove = jest.spyOn(s.history, 'remove');
       type Processor = (job: Job<ProcessWebhookJob>, token?: string) => Promise<void>;
       let processJob: Processor;
       if (kind === 'static') {
@@ -1449,17 +1582,11 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
         expect(
           handler.mock.calls.filter(([update]) => update.message?.chatId === chatId),
         ).toHaveLength(1);
-        if (type === 'message_removed') {
-          expect(
-            historyRemove.mock.calls.filter(([removedChatId]) => removedChatId === chatId),
-          ).toEqual([[chatId, messageId]]);
-        }
         expect(s.effects).toEqual([]);
       } finally {
         clearTimeout(delayedTimer);
         readiness.mockRestore();
         handler.mockRestore();
-        historyRemove.mockRestore();
         if (previousRole === undefined) delete process.env.APP_ROLE;
         else process.env.APP_ROLE = previousRole;
         await worker.close();

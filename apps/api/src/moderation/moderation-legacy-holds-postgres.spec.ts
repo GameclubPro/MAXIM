@@ -6,6 +6,7 @@ import {
   type MultibotHarness,
 } from '../webhook/webhook-multibot-fullpath.spec-support';
 import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
+import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 import type { MessageDuplicateBinding } from './message-duplicate/message-duplicate-state';
 import { measureLegacyRecoverySqlPlan } from '../scripts/legacy-recovery-live-sql';
 import { buildActiveMuteStateKey } from './moderation-state.util';
@@ -112,6 +113,50 @@ describeStores('native permanent legacy effect holds', () => {
     value.updateId = randomUUID();
     return value;
   }
+
+  it('keeps a prepared message_removed under a newly installed permanent hold', async () => {
+    const { s, chatId } = await fixture();
+    Object.assign(s.ingress, {
+      messageRetention: new MessageRetentionStore(s.prisma as never, s.config, s.legacyHolds),
+    });
+    const messageId = randomUUID();
+    const removal = new WebhookParser().parse(
+      {
+        update_id: randomUUID(),
+        update_type: 'message_removed',
+        timestamp: Date.now(),
+        chat_id: chatId,
+        message_id: messageId,
+        user_id: 'fixture-user',
+      },
+      { botId: s.bots[0]!.id },
+    );
+    const id = (await s.ingress.storeReceipt(removal, null)).webhookEventId!;
+    ownedReceiptIds.push(id);
+    await s.ingress.preparePersistedWebhookEvent(id);
+    await installFixtureHold(s, chatId, messageId);
+    const remove = jest.spyOn(s.history, 'remove');
+    const handler = jest.spyOn(s.moderation, 'handleUpdate');
+    await s.moderation.processWebhookEvent(id);
+    // FLAG: This consumer fixture denies effects without a positive receipt disposition.
+    // Keep the original receipt and unstarted claim fenced instead of inventing completion.
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      status: 'RECEIVED',
+    });
+    expect(
+      await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: id, kind: 'EXECUTION' },
+      }),
+    ).toMatchObject({
+      status: 'READY',
+      businessStartedAt: null,
+      completedAt: null,
+    });
+    expect(remove).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+    expect(s.requests).toEqual([]);
+    expect(s.effects).toEqual([]);
+  });
 
   it.each([1, 4, 9])('denies late own-bot cleanup with %i receiving bots', async (bots) => {
     const { s, chatId } = await fixture(bots);

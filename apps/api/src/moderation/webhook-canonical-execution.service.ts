@@ -228,6 +228,8 @@ export class WebhookCanonicalExecutionService {
     const normalizedUpdateType = update.type.trim().toLowerCase();
     const preparedObservationOnly =
       normalizedUpdateType === 'user_removed' || normalizedUpdateType === 'bot_removed';
+    const localObservationOnly =
+      preparedObservationOnly || normalizedUpdateType === 'message_removed';
     const executionClaimModel = this.executionClaimModel;
     const semanticKey = buildWebhookSemanticEventKey(update);
     if (semanticKey && !webhookEvent.semanticKey) {
@@ -487,10 +489,10 @@ export class WebhookCanonicalExecutionService {
 
     const receivingBotId = this.normalizeBotId(webhookEvent.botId);
     const privateDialogBotId = privateDirectDialog ? receivingBotId : null;
-    // FLAG: Membership removal already committed its access revocation and read models
-    // during preparation. Only that exact pristine authority may complete as an observation.
+    // FLAG: Local removals require exact pristine preparation and authenticated receipt
+    // identity. Message removal still owes its duplicate-history tombstone in the handler.
     if (
-      preparedObservationOnly &&
+      localObservationOnly &&
       (!executionClaim ||
         executionClaim.enforced !== true ||
         executionClaim.webhookEventId !== webhookEvent.id ||
@@ -502,10 +504,14 @@ export class WebhookCanonicalExecutionService {
         !semanticKey ||
         webhookEvent.semanticKey !== semanticKey ||
         !receivingBotId ||
+        (normalizedUpdateType === 'message_removed' &&
+          (!update.message?.chatId || !update.message.messageId)) ||
         this.normalizeBotId(update.botId) !== receivingBotId)
     )
       throw new WebhookPreparationDeferredError(
-        'Membership removal observation preparation proof incomplete',
+        preparedObservationOnly
+          ? 'Membership removal observation preparation proof incomplete'
+          : 'Message removal observation preparation proof incomplete',
         1_000,
       );
     // FLAG: A private dialog cannot fail over to another bot's credentials. Old null
@@ -551,7 +557,7 @@ export class WebhookCanonicalExecutionService {
       this.executionOwnerReadiness &&
       update.message?.chatId &&
       !privateDirectDialog &&
-      !preparedObservationOnly
+      !localObservationOnly
     ) {
       try {
         if (
@@ -685,10 +691,10 @@ export class WebhookCanonicalExecutionService {
                 // FLAG: Older preparation may leave the executor empty. Bind it only
                 // while this exact unstarted claim and its previous executor still match.
                 executionBotId:
-                  privateDirectDialog || preparedObservationOnly
+                  privateDirectDialog || localObservationOnly
                     ? context.activeBotId
                     : (executionClaim!.executionBotId ?? null),
-                ...(privateDirectDialog || preparedObservationOnly
+                ...(privateDirectDialog || localObservationOnly
                   ? {
                       expectedExecutionBotId: executionClaim!.executionBotId ?? null,
                       expectedReceipt: {
@@ -697,7 +703,7 @@ export class WebhookCanonicalExecutionService {
                       },
                     }
                   : {}),
-                ...(preparedObservationOnly
+                ...(localObservationOnly
                   ? { preparedObservationAt: executionClaim!.preparedAt! }
                   : {}),
                 executionDeadlineAt: webhookEvent.executionDeadlineAt,
@@ -726,8 +732,8 @@ export class WebhookCanonicalExecutionService {
       }
     }
     if (preparedObservationOnly) {
-      // FLAG: This completes only the prepared local observation. Never pass removal
-      // envelopes to the whole engine: raw callback fields must not dispatch poll effects.
+      // FLAG: Only membership removals finished all local work in preparation. Message
+      // removal must await its held-source checks and history tombstone before completion.
       await this.completeExecution(context);
       return null;
     }

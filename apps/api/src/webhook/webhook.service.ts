@@ -1918,9 +1918,9 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
         return this.buildChatBotBindingSyncResult(nextOwnerBotId);
       }
 
-      if (normalizedType === 'user_removed') {
-        // FLAG: Membership denial is already committed before this passive observation.
-        // Removal preparation must finish without granting or requiring an execution route.
+      if (normalizedType === 'user_removed' || normalizedType === 'message_removed') {
+        // FLAG: Passive user/message removals cannot grant or require an execution route.
+        // Membership denial is already committed; message removal later revokes local history.
         const storedOwnerBotId = await this.maxBotLinkService.getStoredChatPrimaryBotId(chatId, {
           bypassCache: true,
         });
