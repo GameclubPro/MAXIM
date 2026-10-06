@@ -30,6 +30,7 @@ function fixture(t) {
     wrongBinding: false,
     blocked: false,
     pages: 0,
+    diagnostics: [],
     forever: false,
     diagnosticCost: 1,
     ownerChat: 'chat',
@@ -113,6 +114,7 @@ function fixture(t) {
     bindings,
     selection,
     inventoryPath,
+    report: (event) => state.diagnostics.push(event),
     client,
     store: {
       read: () => ({ journal }),
@@ -140,6 +142,20 @@ test('host adapter preserves actual artifact bytes through install and independe
   h.adapter.materializeReceipts(h.bindings, preview);
   assert.equal(h.adapter.readSeal(h.bindings, preview).reviewedChatCursorsComplete, true);
   assert.equal(h.state.pages, 2);
+  assert.equal(h.state.diagnostics.length, 2);
+  assert.deepEqual(
+    h.state.diagnostics.map(({ page, scanned, applied, complete }) => ({
+      page,
+      scanned,
+      applied,
+      complete,
+    })),
+    [
+      { page: 1, scanned: 1, applied: 1, complete: false },
+      { page: 2, scanned: 1, applied: 1, complete: true },
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(h.state.diagnostics), /chatId|owner|inventory|certificate/u);
 });
 
 test('stable inventory hash cannot mask a changed source envelope', (t) => {

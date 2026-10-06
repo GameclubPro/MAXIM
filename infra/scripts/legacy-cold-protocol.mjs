@@ -19,6 +19,85 @@ const stages = [
   'strictSmokes',
 ];
 
+const diagnosticFailures = new Set([
+  'materialization_budget',
+  'materialization_page_unproved',
+  'client_result_unknown',
+  'client_removal_unproved',
+  'store_result_binding_unproved',
+  'installation_unproved',
+  'certificate_creation_unproved',
+  'inventory_refused',
+  'reviewed_inventory_changed',
+]);
+
+// FLAG: Diagnostics carry no identities, arguments, exception text, stderr or
+// inventory. They cannot grant authority or alter fail-closed protocol behavior.
+export function emitLegacyColdDiagnostic(report, value) {
+  if (
+    typeof report !== 'function' ||
+    !stages.includes(value?.stage) ||
+    !['begin', 'complete', 'failed', 'page'].includes(value?.event)
+  )
+    return;
+  const safe = {
+    version: 1,
+    diagnostic: 'legacy_cold_progress',
+    stage: value.stage,
+    event: value.event,
+  };
+  if (value.event === 'failed')
+    safe.code = diagnosticFailures.has(value.code) ? value.code : 'unclassified_failure';
+  for (const [key, maximum] of Object.entries({
+    elapsedMs: 86_400_000,
+    page: 200,
+    chatOrdinal: 200,
+    chatCount: 200,
+    scanned: 200,
+    applied: 200,
+  })) {
+    if (Number.isSafeInteger(value[key]) && value[key] >= 0 && value[key] <= maximum)
+      safe[key] = value[key];
+  }
+  if (typeof value.complete === 'boolean') safe.complete = value.complete;
+  try {
+    report(safe);
+  } catch {
+    // Diagnostic transport is independent from the durable recovery protocol.
+  }
+}
+
+export function observeLegacyColdAdapters(adapters, report, now = Date.now) {
+  return Object.fromEntries(
+    Object.entries(adapters).map(([stage, operation]) => [
+      stage,
+      stages.includes(stage) && typeof operation === 'function'
+        ? async (...args) => {
+            const startedAt = now();
+            emitLegacyColdDiagnostic(report, { stage, event: 'begin' });
+            try {
+              const result = await operation.apply(adapters, args);
+              emitLegacyColdDiagnostic(report, {
+                stage,
+                event: 'complete',
+                elapsedMs: now() - startedAt,
+              });
+              return result;
+            } catch (error) {
+              emitLegacyColdDiagnostic(report, {
+                stage,
+                event: 'failed',
+                elapsedMs: now() - startedAt,
+                code: error?.message,
+              });
+              throw error;
+            }
+          }
+        : operation,
+    ]),
+  );
+}
+
 function assertProof(value, name) {
   if (!value || value.version !== 1 || value.complete !== true) throw new Error(`${name}_unproved`);
   return value;

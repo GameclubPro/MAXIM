@@ -185,11 +185,18 @@ native('read-only materialization preview on representative PostgreSQL history',
     });
   }
   async function preview(overrides: Partial<ReturnType<typeof allowance>> = {}) {
-    return reader.$transaction(
+    // FLAG: Each case owns its data distribution. The 800-row case and prior
+    // suites delete their fixtures; inherited or autoanalyze statistics are not proof.
+    await db.$executeRawUnsafe('ANALYZE webhook_events');
+    await db.$executeRawUnsafe('ANALYZE webhook_execution_claims');
+    await db.$executeRawUnsafe('ANALYZE chat_settings');
+    const result = await reader.$transaction(
       (tx) =>
         previewLegacyRecoveryMaterialization(tx, [candidate], { ...allowance(), ...overrides }),
       { isolationLevel: 'RepeatableRead', timeout: 30_000 },
     );
+    expect(result.planFailure).toBeUndefined();
+    return result;
   }
   async function actualPage() {
     const sourceSha = 'a'.repeat(40),
@@ -329,6 +336,81 @@ native('read-only materialization preview on representative PostgreSQL history',
     expect(
       await db.webhookLegacyReceiptDisposition.count({ where: { receiptId: { in: receipts } } }),
     ).toBe(801);
+  });
+
+  it('keeps exact bounded plans for 801 receipts across planner costs', async () => {
+    for (let index = 0; index < 800; index++) await receipt(`Planner fixture ${index}`);
+    await db.$executeRawUnsafe('ANALYZE webhook_events');
+    await db.$executeRawUnsafe('ANALYZE webhook_execution_claims');
+    const observations: unknown[] = [];
+    for (const [randomPageCost, cacheSize] of [
+      ['1.1', '4GB'],
+      ['4', '1MB'],
+      ['50', '1MB'],
+    ] as const) {
+      const result = await reader.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT set_config('random_page_cost', ${randomPageCost}, true), set_config('effective_cache_size', ${cacheSize}, true)`;
+          return previewLegacyRecoveryMaterialization(tx, [candidate], {
+            ...allowance(),
+            probes: 50_000,
+          });
+        },
+        { isolationLevel: 'RepeatableRead', timeout: 30_000 },
+      );
+      observations.push({
+        randomPageCost,
+        cacheSize,
+        decision: result.decision,
+        failure: result.planFailure,
+        indexes: [...new Set(result.plans.flatMap((plan) => plan.indexes))],
+      });
+      expect(result.planFailure).toBeUndefined();
+      expect(result.decision).toBe('READY');
+      expect(result.scannedReceipts).toBe(801);
+    }
+    console.log('MATERIALIZATION_PLANNER_COSTS', JSON.stringify(observations));
+  });
+
+  it('refuses a real sequential fallback even when all planner scan hints are disabled', async () => {
+    await receipt();
+    const result = await reader.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT set_config('random_page_cost', '1000000', true), set_config('enable_indexscan', 'off', true), set_config('enable_indexonlyscan', 'off', true)`;
+        return previewLegacyRecoveryMaterialization(tx, [candidate], allowance());
+      },
+      { isolationLevel: 'RepeatableRead', timeout: 30_000 },
+    );
+    expect(result.decision).toBe('DENY');
+    expect(result.issues).toEqual([
+      { code: 'materialization_preview_plan', descriptor: 'sql:materialization-preview' },
+    ]);
+    expect(result.planFailure?.nodeTypes).toContain('Seq Scan');
+    expect(JSON.stringify(result.planFailure)).not.toContain(chatId);
+    expect(JSON.stringify(result.planFailure)).not.toContain(candidate.owner.id);
+  });
+
+  it('rejects a changed required index and keeps planner settings inside the transaction', async () => {
+    await receipt();
+    const [definition] = await db.$queryRaw<
+      Array<{ ddl: string }>
+    >`SELECT pg_get_indexdef('public.webhook_events_ordered_chat_head_idx'::regclass) AS ddl`;
+    await db.$executeRawUnsafe('DROP INDEX public.webhook_events_ordered_chat_head_idx');
+    try {
+      const result = await reader.$transaction(
+        (tx) => previewLegacyRecoveryMaterialization(tx, [candidate], allowance()),
+        { isolationLevel: 'RepeatableRead', timeout: 30_000 },
+      );
+      expect(result.decision).toBe('DENY');
+      expect(result.planFailure?.expectedIndex).toBe('webhook_events_ordered_chat_head_idx');
+      expect(result.planFailure?.indexes).not.toContain('webhook_events_ordered_chat_head_idx');
+    } finally {
+      await db.$executeRawUnsafe(definition!.ddl);
+    }
+    const [session] = await reader.$queryRaw<
+      Array<{ seq: string; bitmap: string }>
+    >`SELECT current_setting('enable_seqscan') AS seq, current_setting('enable_bitmapscan') AS bitmap`;
+    expect(session).toEqual({ seq: 'on', bitmap: 'on' });
   });
 
   it('rejects a new pre-seal command at the required cold recheck', async () => {

@@ -8,6 +8,7 @@ import {
   fsyncSync,
 } from 'node:fs';
 import { legacyColdDigest } from './legacy-cold-journal.mjs';
+import { emitLegacyColdDiagnostic } from './legacy-cold-protocol.mjs';
 
 const hash = /^[0-9a-f]{64}$/u;
 export function canonicalLegacyColdDigest(value) {
@@ -73,6 +74,7 @@ export function createLegacyColdStoreAdapter({
   selection,
   inventoryPath,
   now = Date.now,
+  report,
 }) {
   const base = {
     version: 1,
@@ -237,12 +239,12 @@ export function createLegacyColdStoreAdapter({
     materializeReceipts(_bindings, value) {
       const deadline = now() + 120_000;
       let pages = 0;
-      for (const chatId of [
-        ...new Set(value.inventory.selectedOwners.map((row) => row.chatId)),
-      ].sort()) {
+      const chats = [...new Set(value.inventory.selectedOwners.map((row) => row.chatId))].sort();
+      for (const [chatIndex, chatId] of chats.entries()) {
         let complete = false;
         while (!complete) {
           if (++pages > 200 || now() >= deadline) throw new Error('materialization_budget');
+          const startedAt = now();
           const result = invoke('materialize', value, { chatId, pageSize: 200 });
           if (
             !result.page ||
@@ -253,6 +255,17 @@ export function createLegacyColdStoreAdapter({
           )
             throw new Error('materialization_page_unproved');
           complete = result.page.complete;
+          emitLegacyColdDiagnostic(report, {
+            stage: 'materializeReceipts',
+            event: 'page',
+            page: pages,
+            chatOrdinal: chatIndex + 1,
+            chatCount: chats.length,
+            elapsedMs: now() - startedAt,
+            scanned: result.page.scanned,
+            applied: result.page.applied,
+            complete,
+          });
         }
       }
     },

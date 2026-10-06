@@ -29,6 +29,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|storage|all]
   ./infra/scripts/vps-postgres-audit.sh legacy-order-candidates
   ./infra/scripts/vps-postgres-audit.sh legacy-order-window [--explain]
+  ./infra/scripts/vps-postgres-audit.sh legacy-semantic-mirrors [--explain]
   ./infra/scripts/vps-postgres-audit.sh moderation-outcomes [--explain]
   ./infra/scripts/vps-postgres-audit.sh duplicate [--explain]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
@@ -89,7 +90,7 @@ case "$AUDIT_MODE" in
     fi
     DUPLICATE_EXPLAIN="${2:-}"
     ;;
-  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|legacy-order-window|moderation-outcomes)
+  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -1118,6 +1119,174 @@ SELECT 1 / 0;
 SQL
 }
 
+emit_legacy_semantic_mirrors_audit() {
+  emit_legacy_order_index_guard
+  cat <<'SQL'
+-- FLAG: A third exact index is mandatory before the bounded semantic mirror probe.
+SELECT CASE WHEN EXISTS (
+  SELECT 1 FROM pg_index index_state
+  JOIN pg_class index_relation ON index_relation.oid = index_state.indexrelid
+  JOIN pg_am method ON method.oid = index_relation.relam
+  WHERE index_state.indexrelid = to_regclass('public.webhook_events_semantic_order_idx')
+    AND index_state.indrelid = to_regclass('public.webhook_events')
+    AND index_state.indisvalid AND index_state.indisready AND index_state.indislive
+    AND index_relation.relkind = 'i' AND index_relation.reltablespace = 0
+    AND index_relation.reloptions IS NULL AND method.amname = 'btree'
+    AND NOT index_state.indisunique AND NOT index_state.indisprimary AND NOT index_state.indisexclusion
+    AND index_state.indnkeyatts = 3 AND index_state.indnatts = 3
+    AND index_state.indexprs IS NULL
+    AND NOT EXISTS (SELECT 1 FROM unnest(index_state.indoption::smallint[]) option WHERE option <> 0)
+    AND NOT EXISTS (SELECT 1 FROM unnest(index_state.indclass::oid[]) binding
+      JOIN pg_opclass definition ON definition.oid = binding
+      WHERE NOT definition.opcdefault OR definition.opcnamespace <> 'pg_catalog'::regnamespace)
+    AND ARRAY(SELECT pg_get_indexdef(index_relation.oid, ordinal, false)
+      FROM generate_series(1, 3) ordinal) = ARRAY['semantic_key', 'created_at', 'id']
+    AND pg_get_expr(index_state.indpred, index_state.indrelid) = '(semantic_key IS NOT NULL)'
+) THEN 'true' ELSE 'false' END AS legacy_semantic_mirrors_index_ready \gset
+\if :legacy_semantic_mirrors_index_ready
+SQL
+  if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+    echo 'EXPLAIN (FORMAT JSON)'
+  fi
+  cat <<'SQL'
+WITH oldest_received AS MATERIALIZED (
+  SELECT id, created_at, normalized_payload
+  FROM webhook_events
+  WHERE status = 'RECEIVED'::"WebhookStatus"
+  ORDER BY created_at ASC, id ASC
+  LIMIT 1
+), received_source AS MATERIALIZED (
+  SELECT id, created_at,
+    CASE WHEN LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
+      NULLIF(BTRIM(normalized_payload->>'update_type'), '')))
+      = ANY(ARRAY['message_created', 'message_edited'])
+      THEN COALESCE(NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+        NULLIF(BTRIM(normalized_payload->>'chatId'), ''))
+      ELSE NULL END AS message_chat_id
+  FROM oldest_received
+), bounded_predecessor AS MATERIALIZED (
+  SELECT predecessor.*
+  FROM received_source
+  CROSS JOIN LATERAL (
+    SELECT id, status, error_message, next_enqueue_at,
+      timeout_quarantine_expires_at, processed_at, normalized_payload, semantic_key
+    FROM webhook_events
+    -- FLAG: Keep the exact ordered-chat-head partial-index predicate. Source identity
+    -- stays join-only; neither this candidate nor a missing journal proves old effects.
+    WHERE (
+      status = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
+      OR (status = 'FAILED'::"WebhookStatus" AND (
+        next_enqueue_at IS NOT NULL
+        OR LEFT(COALESCE(error_message, ''), 37) = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'
+      ))
+    )
+      AND LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
+        NULLIF(BTRIM(normalized_payload->>'update_type'), '')))
+        = ANY(ARRAY['message_created', 'message_edited'])
+      AND COALESCE(NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+        NULLIF(BTRIM(normalized_payload->>'chatId'), '')) = received_source.message_chat_id
+      AND (created_at, id) < (received_source.created_at, received_source.id)
+    ORDER BY created_at ASC, id ASC
+    LIMIT 1
+  ) predecessor
+), classified_candidate AS MATERIALIZED (
+  SELECT id, normalized_payload, semantic_key,
+    status = 'FAILED'::"WebhookStatus"
+      AND error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required'
+      AND next_enqueue_at IS NULL AND timeout_quarantine_expires_at IS NULL
+      AND processed_at IS NULL
+      AND id ~ '^[a-zA-Z0-9_-]{1,128}$' AS eligible
+  FROM bounded_predecessor
+), candidate_source AS MATERIALIZED (
+  -- FLAG: Inspect only the selected receipt. Bounded shape booleans are diagnostics,
+  -- never source admission; no original field values or unknown key names leave SQL.
+  SELECT id, eligible, semantic_key,
+    octet_length(normalized_payload::text) > 262144 AS source_budget_exceeded,
+    CASE WHEN eligible AND octet_length(normalized_payload::text) <= 262144
+      THEN normalized_payload ELSE NULL END AS normalized
+  FROM classified_candidate
+), candidate_parts AS MATERIALIZED (
+  SELECT *, normalized->'raw' AS raw,
+    normalized->'message' AS normalized_message,
+    normalized->'raw'->'message' AS original_message,
+    normalized->'raw'->'message'->'sender' AS sender,
+    normalized->'raw'->'message'->'recipient' AS recipient,
+    normalized->'raw'->'message'->'body' AS original_body
+  FROM candidate_source
+), bounded_mirrors AS MATERIALIZED (
+  -- FLAG: Exact semantic prefix, at most eight observations and one sentinel.
+  -- Eligibility cannot skip an earlier owner fence and payload values never leave SQL.
+  SELECT mirror.*, candidate.id AS candidate_id
+  FROM candidate_parts candidate
+  CROSS JOIN LATERAL (
+    SELECT id, bot_id, created_at, normalized_payload
+    FROM webhook_events
+    WHERE semantic_key IS NOT NULL AND semantic_key = candidate.semantic_key
+    ORDER BY created_at, id LIMIT 9
+  ) mirror
+  WHERE candidate.eligible
+), mirror_parts AS MATERIALIZED (
+  SELECT id = candidate_id AS is_owner, bot_id,
+    octet_length(normalized_payload::text) > 262144 AS budget_exceeded,
+    CASE WHEN octet_length(normalized_payload::text) <= 262144 THEN normalized_payload END AS normalized
+  FROM bounded_mirrors ORDER BY created_at, id LIMIT 8
+)
+SELECT json_build_object(
+  'schema_version', 1, 'audit', 'legacy_semantic_mirrors', 'diagnostics_only', true,
+  'scope', 'oldest_received_only', 'mirror_sample_cap', 8,
+  'candidate_receipt_id', CASE WHEN candidate.eligible THEN candidate.id END,
+  'sampled', (SELECT count(*) FROM mirror_parts),
+  'truncated', (SELECT count(*) > 8 FROM bounded_mirrors),
+  'mirrors', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'is_owner', mirror.is_owner,
+    'budget_exceeded', mirror.budget_exceeded,
+    'raw_kind', jsonb_typeof(mirror.normalized->'raw'),
+    'receipt_receiver_matches', mirror.normalized->>'botId' = mirror.bot_id,
+    'same_receiver', mirror.normalized->'botId' IS NOT DISTINCT FROM candidate.normalized->'botId',
+    'normalized_kind_equal', mirror.normalized->'type' IS NOT DISTINCT FROM candidate.normalized->'type',
+    'normalized_text_equal', mirror.normalized->'message'->'text' IS NOT DISTINCT FROM candidate.normalized_message->'text',
+    'raw_equal', mirror.normalized->'raw' IS NOT DISTINCT FROM candidate.raw,
+    'raw_without_delivery_metadata_equal', (mirror.normalized->'raw') - ARRAY['timestamp', 'update_id'] IS NOT DISTINCT FROM candidate.raw - ARRAY['timestamp', 'update_id'],
+    'event_clock_equal', mirror.normalized->'raw'->'timestamp' IS NOT DISTINCT FROM candidate.raw->'timestamp',
+    'update_id_equal', mirror.normalized->'raw'->'update_id' IS NOT DISTINCT FROM candidate.raw->'update_id',
+    'message_clock_equal', mirror.normalized->'raw'->'message'->'timestamp' IS NOT DISTINCT FROM candidate.original_message->'timestamp',
+    'sender_equal', mirror.normalized->'raw'->'message'->'sender' IS NOT DISTINCT FROM candidate.sender,
+    'sender_identity_equal', mirror.normalized->'raw'->'message'->'sender'->'user_id' IS NOT DISTINCT FROM candidate.sender->'user_id',
+    'recipient_equal', mirror.normalized->'raw'->'message'->'recipient' IS NOT DISTINCT FROM candidate.recipient,
+    'body_equal', mirror.normalized->'raw'->'message'->'body' IS NOT DISTINCT FROM candidate.original_body,
+    'body_without_attachments_equal', (mirror.normalized->'raw'->'message'->'body') - 'attachments' IS NOT DISTINCT FROM candidate.original_body - 'attachments',
+    'body_text_equal', mirror.normalized->'raw'->'message'->'body'->'text' IS NOT DISTINCT FROM candidate.original_body->'text',
+    'message_id_equal', mirror.normalized->'raw'->'message'->'body'->'mid' IS NOT DISTINCT FROM candidate.original_body->'mid',
+    'sequence_equal', mirror.normalized->'raw'->'message'->'body'->'seq' IS NOT DISTINCT FROM candidate.original_body->'seq',
+    'markup_equal', mirror.normalized->'raw'->'message'->'body'->'markup' IS NOT DISTINCT FROM candidate.original_body->'markup',
+    'attachments_equal', mirror.normalized->'raw'->'message'->'body'->'attachments' IS NOT DISTINCT FROM candidate.original_body->'attachments',
+    'attachment_shapes', (SELECT jsonb_agg(jsonb_build_object(
+      'item_equal', item IS NOT DISTINCT FROM candidate.original_body->'attachments'->((ordinal - 1)::int),
+      'type_equal', item->'type' IS NOT DISTINCT FROM candidate.original_body->'attachments'->((ordinal - 1)::int)->'type',
+      'payload_equal', item->'payload' IS NOT DISTINCT FROM candidate.original_body->'attachments'->((ordinal - 1)::int)->'payload',
+      'payload_without_url_token_equal', (item->'payload') - ARRAY['url', 'token'] IS NOT DISTINCT FROM (candidate.original_body->'attachments'->((ordinal - 1)::int)->'payload') - ARRAY['url', 'token'],
+      'payload_id_equal', item->'payload'->'id' IS NOT DISTINCT FROM candidate.original_body->'attachments'->((ordinal - 1)::int)->'payload'->'id',
+      'payload_url_equal', item->'payload'->'url' IS NOT DISTINCT FROM candidate.original_body->'attachments'->((ordinal - 1)::int)->'payload'->'url',
+      'payload_token_equal', item->'payload'->'token' IS NOT DISTINCT FROM candidate.original_body->'attachments'->((ordinal - 1)::int)->'payload'->'token',
+      'thumbnail_equal', item->'thumbnail' IS NOT DISTINCT FROM candidate.original_body->'attachments'->((ordinal - 1)::int)->'thumbnail',
+      'metadata_without_payload_preview_equal', item - ARRAY['payload', 'thumbnail'] IS NOT DISTINCT FROM (candidate.original_body->'attachments'->((ordinal - 1)::int)) - ARRAY['payload', 'thumbnail']
+    )) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(mirror.normalized->'raw'->'message'->'body'->'attachments') = 'array' THEN
+      CASE WHEN jsonb_array_length(mirror.normalized->'raw'->'message'->'body'->'attachments') <= 10 THEN
+        mirror.normalized->'raw'->'message'->'body'->'attachments' ELSE '[]'::jsonb END ELSE '[]'::jsonb END)
+      WITH ORDINALITY attachment(item, ordinal))
+  )), '[]'::jsonb) FROM mirror_parts mirror)
+)::text FROM (SELECT 1) singleton LEFT JOIN candidate_parts candidate ON TRUE;
+\else
+\echo MAXIM_POSTGRES_LEGACY_SEMANTIC_MIRRORS_INDEX_UNAVAILABLE
+SELECT 1 / 0;
+\endif
+\else
+\echo MAXIM_POSTGRES_LEGACY_ORDER_CANDIDATES_INDEX_UNAVAILABLE
+SELECT 1 / 0;
+\endif
+SQL
+}
+
 emit_legacy_order_window_audit() {
   emit_legacy_order_index_guard
   if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
@@ -2039,6 +2208,9 @@ emit_sql() {
     legacy-order-window)
       emit_legacy_order_window_audit
       ;;
+    legacy-semantic-mirrors)
+      emit_legacy_semantic_mirrors_audit
+      ;;
     moderation-outcomes)
       local outcome_args=()
       if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
@@ -2139,7 +2311,7 @@ prepare_audit_sql() {
     echo "Generated PostgreSQL audit input is invalid." >&2
     return 1
   fi
-  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "moderation-outcomes" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "moderation-outcomes" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
     AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
       echo "Could not create the private PostgreSQL audit diagnostics file." >&2
       return 1
@@ -2249,7 +2421,7 @@ trap 'exit 143' TERM
 
 prepare_audit_sql
 AUDIT_BACKEND_MAY_EXIST=1
-if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "moderation-outcomes" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "moderation-outcomes" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
   timeout --signal=TERM --kill-after=2s \
     "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
     2>"$AUDIT_STDERR_FILE" &
@@ -2270,7 +2442,7 @@ elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "webhook-owner-proof" ]]; then
   echo "Bounded webhook owner proof audit failed closed (owner_proof_unavailable)." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
   echo "Bounded legacy default webhook database audit failed closed." >&2
-elif [[ "$status" -ne 0 && ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" ) ]]; then
+elif [[ "$status" -ne 0 && ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
   echo "Bounded legacy order candidate audit failed closed." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "moderation-outcomes" ]]; then
   echo "Bounded moderation outcomes audit failed closed." >&2

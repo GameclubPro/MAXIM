@@ -34,6 +34,7 @@ import {
   prepareLegacyColdRecovery,
   applyLegacyColdRecovery,
   retryLegacyColdPreview,
+  observeLegacyColdAdapters,
 } from './legacy-cold-protocol.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -338,18 +339,23 @@ export async function runLegacyColdHost(request) {
       queueControlSha256,
     });
     const smokes = createLegacyColdSmokes({ bindings, runtime, client });
-    const adapters = {
-      ...runtime,
-      ...createLegacyColdStoreAdapter({
-        store,
-        client,
-        runtime,
-        bindings,
-        selection,
-        inventoryPath,
-      }),
-      ...smokes,
-    };
+    const report = (value) => process.stderr.write(`${JSON.stringify(value)}\n`);
+    const adapters = observeLegacyColdAdapters(
+      {
+        ...runtime,
+        ...createLegacyColdStoreAdapter({
+          store,
+          client,
+          runtime,
+          bindings,
+          selection,
+          inventoryPath,
+          report,
+        }),
+        ...smokes,
+      },
+      report,
+    );
     if (!continuing) {
       const capacity = statfsSync('/var/lib/docker', { bigint: true });
       if (capacity.bavail * capacity.bsize < 10n * 1024n ** 3n)

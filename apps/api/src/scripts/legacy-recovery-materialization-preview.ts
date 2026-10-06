@@ -29,6 +29,14 @@ type PrefixRow = {
   userId: string | null;
   scopeOversize: boolean;
 };
+type MaterializationPlanFailure = {
+  reason: 'shape' | 'relation' | 'index' | 'filter' | 'node' | 'bound';
+  table: string;
+  expectedIndex: string;
+  indexes: string[];
+  nodeTypes: string[];
+  estimatedScanRows: number[];
+};
 export type LegacyRecoveryMaterializationPreview = {
   version: 1;
   activationAuthorized: false;
@@ -40,6 +48,7 @@ export type LegacyRecoveryMaterializationPreview = {
   cost: { pages: number; rows: number; probes: number; bytes: number };
   plans: LegacyRecoveryLivePlanProof[];
   issues: LegacyRecoveryLiveIssue[];
+  planFailure?: MaterializationPlanFailure;
 };
 function row(value: unknown): ObjectRow | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as ObjectRow) : null;
@@ -68,6 +77,7 @@ export async function previewLegacyRecoveryMaterialization(
   let scannedReceipts = 0,
     prefixPages = 0,
     snapshotAt = '';
+  let planFailure: MaterializationPlanFailure | undefined;
   const deadline = Math.min(allowance.deadlineAtMs, Date.now() + 120_000);
   const evidence = (value: unknown) => digest.update(legacySnapshotDigest(value)).update('\n');
   const check = () => {
@@ -123,34 +133,54 @@ export async function previewLegacyRecoveryMaterialization(
     visit(row(document[0])?.Plan, 0);
     const scans = nodes.filter((node) => node['Relation Name'] !== undefined);
     const scan = scans[0];
-    if (
-      scans.length !== 1 ||
-      !scan ||
-      scan['Relation Name'] !== table ||
-      scan.Schema !== 'public' ||
-      scan['Index Name'] !== index ||
-      !['Index Scan', 'Index Only Scan'].includes(String(scan['Node Type'])) ||
-      scan.Filter !== undefined ||
-      nodes.some(
-        (node) =>
-          !(
-            batchInputs
-              ? [
-                  'Limit',
-                  'Index Scan',
-                  'Index Only Scan',
-                  'Nested Loop',
-                  'Values Scan',
-                  'Memoize',
-                  'Result',
-                ]
-              : ['Limit', 'Index Scan', 'Index Only Scan']
-          ).includes(String(node['Node Type'])) ||
-          (node['Node Type'] === 'Values Scan' && Number(node['Plan Rows']) > batchInputs),
-      ) ||
-      bounds.some((bound) => !String(scan['Index Cond']).includes(bound))
-    )
+    const permittedNodes = batchInputs
+      ? [
+          'Limit',
+          'Index Scan',
+          'Index Only Scan',
+          'Nested Loop',
+          'Values Scan',
+          'Memoize',
+          'Result',
+        ]
+      : ['Limit', 'Index Scan', 'Index Only Scan'];
+    const failure: MaterializationPlanFailure['reason'] | null =
+      scans.length !== 1 || !scan
+        ? 'shape'
+        : scan['Relation Name'] !== table || scan.Schema !== 'public'
+          ? 'relation'
+          : scan['Index Name'] !== index ||
+              !['Index Scan', 'Index Only Scan'].includes(String(scan['Node Type']))
+            ? 'index'
+            : scan.Filter !== undefined
+              ? 'filter'
+              : nodes.some(
+                    (node) =>
+                      !permittedNodes.includes(String(node['Node Type'])) ||
+                      (node['Node Type'] === 'Values Scan' &&
+                        Number(node['Plan Rows']) > batchInputs),
+                  )
+                ? 'node'
+                : bounds.some((bound) => !String(scan['Index Cond']).includes(bound))
+                  ? 'bound'
+                  : null;
+    if (failure) {
+      // FLAG: Expose only fixed query identity and plan structure, never predicates,
+      // SQL, values, payloads, or source identifiers from a refused production plan.
+      planFailure = {
+        reason: failure,
+        table,
+        expectedIndex: index,
+        indexes: nodes
+          .map((node) => String(node['Index Name'] ?? ''))
+          .filter((name) => /^[a-z][a-z0-9_]{0,127}$/u.test(name)),
+        nodeTypes: nodes
+          .map((node) => String(node['Node Type'] ?? ''))
+          .filter((name) => /^[A-Za-z ]{1,48}$/u.test(name)),
+        estimatedScanRows: scans.map((node) => Number(node['Plan Rows'] ?? 0)),
+      };
       throw new Error('materialization_preview_plan');
+    }
     const result = await query<T>(statement, maximum);
     plans.push({
       descriptor: `sql:materialization-preview:${table}`,
@@ -293,6 +323,21 @@ export async function previewLegacyRecoveryMaterialization(
       Number(timeout[1]) * (timeout[2] === 's' ? 1000 : 1) > 5000
     )
       throw new Error('materialization_preview_snapshot');
+    // FLAG: Planner hints affect only this read-only transaction. They are not proof:
+    // every query still must pass the exact index, predicate and bounded-shape checks.
+    const planner = await query<{ seq: string; bitmap: string; parallel: string }>(
+      Prisma.sql`SELECT set_config('enable_seqscan', 'off', true) AS seq,
+        set_config('enable_bitmapscan', 'off', true) AS bitmap,
+        set_config('max_parallel_workers_per_gather', '0', true) AS parallel`,
+      1,
+    );
+    if (
+      planner.length !== 1 ||
+      planner[0]!.seq !== 'off' ||
+      planner[0]!.bitmap !== 'off' ||
+      planner[0]!.parallel !== '0'
+    )
+      throw new Error('materialization_preview_planner');
     snapshotAt = current.now.toISOString();
     const scopes = [...candidates]
       .sort((a, b) => a.owner.id.localeCompare(b.owner.id))
@@ -567,5 +612,6 @@ export async function previewLegacyRecoveryMaterialization(
     cost,
     plans,
     issues,
+    ...(planFailure ? { planFailure } : {}),
   };
 }

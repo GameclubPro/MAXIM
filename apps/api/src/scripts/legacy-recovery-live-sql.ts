@@ -6,6 +6,7 @@ import {
   type LegacyRecoveryCandidate,
 } from '../webhook/webhook-legacy-cold-install';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
+import { isLegacyOpaqueSequence } from '../webhook/webhook-legacy-forward-source';
 import {
   legacyRecoveryLiveDigest,
   type LegacyRecoveryLiveIssue,
@@ -815,6 +816,38 @@ function object(value: unknown): Record<string, unknown> | null {
     ? (value as Record<string, unknown>)
     : null;
 }
+// FLAG: Only independently validated ordinary direct sources may reach this
+// comparison. MAX delivers bot-specific video URL/token values for the same mid.
+// Strip exactly those two transport fields only when an opaque numeric media id is
+// present; retain id, preview, all body/actor/clock fields and exact source identity.
+// The rounded media id never supplies identity or replay/transfer authority. Original
+// per-receipt raw/normalized digests remain frozen in the private inventory evidence.
+function legacyMirrorContentDigest(value: unknown): string {
+  const raw = object(value);
+  const message = object(raw?.message);
+  const body = object(message?.body);
+  if (!raw || !message || !body || message.link !== undefined || !Array.isArray(body.attachments))
+    return legacySnapshotDigest(value);
+  const attachments = body.attachments.map((entry) => {
+    const attachment = object(entry);
+    const payload = object(attachment?.payload);
+    if (
+      attachment?.type !== 'video' ||
+      !payload ||
+      typeof payload.id !== 'number' ||
+      !isLegacyOpaqueSequence(payload.id)
+    )
+      return entry;
+    return {
+      ...attachment,
+      payload: Object.fromEntries(
+        Object.entries(payload).filter(([key]) => key !== 'url' && key !== 'token'),
+      ),
+    };
+  });
+  return legacySnapshotDigest({ ...raw, message: { ...message, body: { ...body, attachments } } });
+}
+
 function quantity(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0)
     throw new Refused('sql_plan_unproved', 'sql:plan');
@@ -1662,6 +1695,13 @@ async function inventoryLegacyRecoverySql(
             Prisma.sql`t."id" = ${row.id}`,
           );
           const source = mirror ? inspectLegacyRecoverySource(mirror as never) : null;
+          if (mirror)
+            evidence.push({
+              descriptor: 'sql:semantic-mirror-source',
+              receiptId: row.id,
+              rawPayloadSha256: legacySnapshotDigest(mirror.rawPayload),
+              normalizedPayloadSha256: legacySnapshotDigest(mirror.normalizedPayload),
+            });
           if (
             !mirror ||
             !source ||
@@ -1671,8 +1711,8 @@ async function inventoryLegacyRecoverySql(
             buildWebhookSemanticEventKey(mirror.normalizedPayload) !==
               candidate.claim.semanticKey ||
             legacySnapshotDigest(source) !== legacySnapshotDigest(candidate.source) ||
-            legacySnapshotDigest(object(mirror.normalizedPayload)?.raw) !==
-              legacySnapshotDigest(object(candidate.owner.normalizedPayload)?.raw)
+            legacyMirrorContentDigest(object(mirror.normalizedPayload)?.raw) !==
+              legacyMirrorContentDigest(object(candidate.owner.normalizedPayload)?.raw)
           )
             issues.push({ code: 'sql_semantic_mirror_unproved', descriptor: 'sql:webhook_events' });
         }

@@ -564,26 +564,38 @@ export async function materializeLegacyHeldReceiptPage(
       ORDER BY "created_at", "id" LIMIT ${pageSize + 1}`);
       let scanned = 0;
       let applied = 0;
+      let lastScanned: (typeof rows)[number] | undefined;
+      // FLAG: Every receipt proof and this cursor share one transaction. Persist the
+      // proved prefix once per page, including before a blocked row; a rollback must
+      // remove both dispositions and cursor progress. Never advance over unknown work.
+      const advanceCursor = async (complete: boolean) => {
+        if (!lastScanned && !complete) return;
+        await tx.webhookLegacyMaterializationCursor.update({
+          where: { certificateId_chatId: { certificateId, chatId } },
+          data: {
+            ...(lastScanned
+              ? { afterCreatedAt: lastScanned.createdAt, afterId: lastScanned.id }
+              : {}),
+            scanned: { increment: scanned },
+            ...(complete ? { complete: true } : {}),
+          },
+        });
+      };
       for (const row of rows.slice(0, pageSize)) {
         const result = await materializeLegacyReceiptDisposition(tx, row.id, {
           certificateId,
           preSeal: true,
         });
-        if (result === 'BLOCKED_UNKNOWN')
+        if (result === 'BLOCKED_UNKNOWN') {
+          await advanceCursor(false);
           return { complete: false, scanned, applied, blocked: true };
+        }
         scanned++;
+        lastScanned = row;
         if (result === 'APPLIED_WITH_PROOF') applied++;
-        await tx.webhookLegacyMaterializationCursor.update({
-          where: { certificateId_chatId: { certificateId, chatId } },
-          data: { afterCreatedAt: row.createdAt, afterId: row.id, scanned: { increment: 1 } },
-        });
       }
       const complete = rows.length <= pageSize;
-      if (complete)
-        await tx.webhookLegacyMaterializationCursor.update({
-          where: { certificateId_chatId: { certificateId, chatId } },
-          data: { complete: true },
-        });
+      await advanceCursor(complete);
       return { complete, scanned, applied, blocked: false };
     },
     { maxWait: 1000, timeout: 15_000 },

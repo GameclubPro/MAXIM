@@ -3452,3 +3452,174 @@ test('vps audit-role provisioning is preview-only by default and accepts only --
     assert.equal(existsSync(data.sshArgs), false);
   }
 });
+
+test('semantic mirror diagnostic is fixed and preserves its guarded private envelope', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['legacy-semantic-mirrors']).status, 0);
+  let sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /BEGIN READ ONLY;/u);
+  assert.match(sql, /webhook_events_semantic_order_idx/u);
+  assert.match(sql, /semantic_key IS NOT NULL AND semantic_key = candidate.semantic_key/u);
+  assert.match(sql, /ORDER BY created_at, id LIMIT 9/u);
+  assert.match(sql, /FROM bounded_mirrors ORDER BY created_at, id LIMIT 8/u);
+  assert.match(sql, /octet_length\(normalized_payload::text\) <= 262144/u);
+  assert.equal(runAudit(data, ['legacy-semantic-mirrors', '--explain']).status, 0);
+  sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\)\nWITH oldest_received/u);
+  assert.equal(
+    runConnect(data, ['postgres-audit', 'legacy-semantic-mirrors', '--explain']).status,
+    0,
+  );
+  assert.equal(runAudit(data, ['legacy-semantic-mirrors', 'private-argument']).status, 2);
+  assert.equal(
+    runConnect(data, ['postgres-audit', 'legacy-semantic-mirrors', 'private-argument']).status,
+    2,
+  );
+});
+
+test(
+  'native semantic mirror diagnostic bounds history and reports only shape equality',
+  { skip: !nativePostgresUrl },
+  async (t) => {
+    const address = new URL(nativePostgresUrl);
+    assert.ok(
+      ['127.0.0.1', 'localhost', '[::1]'].includes(address.hostname) &&
+        address.pathname.includes('race_test'),
+    );
+    const data = fixture();
+    t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+    assert.equal(runAudit(data, ['legacy-semantic-mirrors']).status, 0);
+    const sql = readFileSync(data.sql, 'utf8');
+    const start = sql.indexOf('WITH oldest_received AS MATERIALIZED');
+    const statement = sql.slice(start, sql.indexOf('\n\\else', start));
+    const { default: pg } = await import('pg');
+    const client = new pg.Client({
+      connectionString: nativePostgresUrl,
+      options: '-c timezone=UTC -c statement_timeout=2500 -c lock_timeout=250',
+    });
+    const namespace = `legacy_mirrors_${randomUUID().replaceAll('-', '')}`;
+    await client.connect();
+    try {
+      await client.query(`BEGIN; CREATE SCHEMA ${namespace}; SET LOCAL search_path = ${namespace}, pg_catalog;
+      CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED', 'QUEUED', 'FAILED');
+      CREATE TABLE webhook_events(id text PRIMARY KEY, bot_id text, semantic_key text, status "WebhookStatus", created_at timestamp,
+        error_message text, next_enqueue_at timestamp, timeout_quarantine_expires_at timestamp, processed_at timestamp, normalized_payload jsonb);
+      CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status, created_at, id);`);
+      for (const migration of [
+        '20260815123000_add_webhook_ordered_chat_head_index',
+        '20261005016000_add_multibot_semantic_order_index',
+      ]) {
+        await client.query(
+          readFileSync(
+            resolve(root, 'apps/api/prisma/migrations', migration, 'migration.sql'),
+            'utf8',
+          ).replace('CREATE INDEX CONCURRENTLY', 'CREATE INDEX'),
+        );
+      }
+      const guardStart = sql.indexOf(
+        'SELECT CASE WHEN EXISTS (',
+        sql.indexOf('-- FLAG: A third exact index'),
+      );
+      const guardEnd = sql.indexOf(' AS legacy_semantic_mirrors_index_ready', guardStart);
+      const guard = sql
+        .slice(guardStart, guardEnd + ' AS legacy_semantic_mirrors_index_ready'.length)
+        .replaceAll("'public.webhook_events", `'${namespace}.webhook_events`);
+      assert.equal((await client.query(guard)).rows[0].legacy_semantic_mirrors_index_ready, 'true');
+      const source = {
+        botId: 'private-bot',
+        type: 'message_created',
+        message: { chatId: '-private-chat', text: 'private-body' },
+        raw: {
+          update_type: 'message_created',
+          timestamp: 1,
+          message: {
+            sender: { user_id: 'private-human', is_bot: false },
+            recipient: { chat_id: '-private-chat', chat_type: 'chat' },
+            timestamp: 1,
+            body: {
+              mid: 'private-message',
+              text: 'private-body',
+              attachments: [
+                {
+                  type: 'video',
+                  payload: {
+                    id: 1,
+                    url: 'https://private.example/private-url',
+                    token: 'private-token',
+                  },
+                  thumbnail: { url: 'https://private.example/private-preview' },
+                },
+              ],
+            },
+          },
+        },
+      };
+      await client.query(
+        `INSERT INTO webhook_events(id, bot_id, semantic_key, status, created_at, error_message, normalized_payload)
+      VALUES ('owner', 'private-bot', 'private-semantic', 'FAILED', '2026-01-01', 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required', $1),
+      ('received', 'private-bot', 'private-next-semantic', 'RECEIVED', '2026-01-02', NULL, $1)`,
+        [JSON.stringify(source)],
+      );
+      const mirror = structuredClone(source);
+      mirror.botId = 'private-other-bot';
+      mirror.raw.message.body.attachments[0].payload.url = 'https://private.example/other-url';
+      mirror.raw.message.body.attachments[0].payload.token = 'private-other-token';
+      await client.query(
+        `INSERT INTO webhook_events(id, bot_id, semantic_key, status, created_at, normalized_payload)
+      VALUES ('mirror', 'private-other-bot', 'private-semantic', 'FAILED', '2026-01-01', $1)`,
+        [JSON.stringify(mirror)],
+      );
+      await client.query(`INSERT INTO webhook_events(id, semantic_key, status, created_at, normalized_payload)
+      SELECT 'private-history-' || ordinal, 'private-unrelated-' || ordinal, 'FAILED', '2025-01-01', '{}' FROM generate_series(1, 12000) ordinal;
+      SET LOCAL enable_seqscan=off; SET LOCAL enable_bitmapscan=off; SET LOCAL max_parallel_workers_per_gather=0; ANALYZE webhook_events;`);
+      const collect = (node) => [node, ...(node.Plans ?? []).flatMap(collect)];
+      const plan = collect(
+        (await client.query(`EXPLAIN (FORMAT JSON) ${statement}`)).rows[0]['QUERY PLAN'][0].Plan,
+      );
+      const scans = plan.filter((node) => node['Relation Name'] === 'webhook_events');
+      assert.equal(scans.length, 3);
+      assert.ok(scans.every((node) => node.Filter === undefined));
+      assert.ok(
+        scans.every((node) => ['Index Scan', 'Index Only Scan'].includes(node['Node Type'])),
+      );
+      assert.deepEqual(scans.map((node) => node['Index Name']).sort(), [
+        'webhook_events_ordered_chat_head_idx',
+        'webhook_events_semantic_order_idx',
+        'webhook_events_status_created_at_id_idx',
+      ]);
+      const read = async () =>
+        JSON.parse(Object.values((await client.query(statement)).rows[0])[0]);
+      const report = await read();
+      assert.equal(report.sampled, 2);
+      assert.equal(report.truncated, false);
+      const other = report.mirrors.find((item) => !item.is_owner);
+      assert.equal(other.raw_equal, false);
+      assert.equal(other.body_without_attachments_equal, true);
+      assert.equal(other.receipt_receiver_matches, true);
+      assert.equal(other.attachment_shapes[0].payload_url_equal, false);
+      assert.equal(other.attachment_shapes[0].payload_token_equal, false);
+      assert.equal(other.attachment_shapes[0].payload_without_url_token_equal, true);
+      assert.doesNotMatch(JSON.stringify(report), /private-|https?:|token"\s*:/u);
+      await client.query(
+        `INSERT INTO webhook_events(id, bot_id, semantic_key, status, created_at, normalized_payload)
+      SELECT 'extra-' || ordinal, 'private-bot', 'private-semantic', 'FAILED', '2026-01-01', $1 FROM generate_series(1, 8) ordinal`,
+        [JSON.stringify(source)],
+      );
+      const truncated = await read();
+      assert.equal(truncated.sampled, 8);
+      assert.equal(truncated.mirrors.length, 8);
+      assert.equal(truncated.truncated, true);
+      await client.query(
+        'DROP INDEX webhook_events_semantic_order_idx; CREATE INDEX webhook_events_semantic_order_idx ON webhook_events(semantic_key, id, created_at) WHERE semantic_key IS NOT NULL',
+      );
+      assert.equal(
+        (await client.query(guard)).rows[0].legacy_semantic_mirrors_index_ready,
+        'false',
+      );
+    } finally {
+      await client.query('ROLLBACK').catch(() => {});
+      await client.end();
+    }
+  },
+);

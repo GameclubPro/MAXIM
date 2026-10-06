@@ -614,6 +614,143 @@ native('native bounded live SQL inventory and actual plans', () => {
     expect(JSON.stringify(publicProjection)).not.toContain('"rawPayload":');
   });
 
+  it('proves bot-specific direct video delivery metadata while freezing every original mirror', async () => {
+    const { request, owner, raw } = await input();
+    await sourceLookupHistory(raw.message.recipient.chat_id);
+    const original = {
+      ...raw,
+      message: {
+        ...raw.message,
+        body: {
+          ...raw.message.body,
+          attachments: [
+            {
+              type: 'video',
+              payload: {
+                id: 9223372036854000000,
+                url: 'https://example.test/owner-video',
+                token: 'owner-secret',
+              },
+              thumbnail: { url: 'https://example.test/preview' },
+            },
+          ],
+        },
+      },
+    };
+    await db.webhookEvent.update({
+      where: { id: owner.id },
+      data: {
+        normalizedPayload: new WebhookParser().parse(original, {
+          botId: 'major',
+        }) as unknown as Prisma.InputJsonValue,
+        rawPayload: original,
+      },
+    });
+    const mirroredRequest = {
+      ...request,
+      selection: {
+        ...request.selection,
+        majorBotIds: [...request.selection.majorBotIds, 'major-mirror'],
+      },
+    };
+    const sameSource = structuredClone(original);
+    sameSource.message.body.attachments[0]!.payload.url = 'https://example.test/mirror-video';
+    sameSource.message.body.attachments[0]!.payload.token = 'mirror-secret';
+    const mirror = await db.webhookEvent.create({
+      data: {
+        botId: 'major-mirror',
+        dedupKey: randomUUID(),
+        semanticKey: owner.semanticKey,
+        status: 'RECEIVED',
+        createdAt: owner.createdAt,
+        normalizedPayload: new WebhookParser().parse(sameSource, {
+          botId: 'major-mirror',
+        }) as unknown as Prisma.InputJsonValue,
+        rawPayload: sameSource,
+      },
+    });
+    eventIds.push(mirror.id);
+    const run = () =>
+      db.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          return inventoryLegacyRecoverySelectedSql(
+            tx,
+            mirroredRequest,
+            allowance(LEGACY_RECOVERY_LIVE_BUDGET),
+          );
+        },
+        { isolationLevel: 'RepeatableRead', timeout: 65_000 },
+      );
+    const accepted = await run();
+    expect(accepted.issues).toEqual([]);
+    expect(accepted.selectedOwners).toHaveLength(1);
+    expect(accepted.candidates[0]!.owner.rawPayload).toEqual(original);
+    const changedTransport = structuredClone(sameSource);
+    changedTransport.message.body.attachments[0]!.payload.token = 'rotated-secret';
+    await db.webhookEvent.update({
+      where: { id: mirror.id },
+      data: {
+        normalizedPayload: new WebhookParser().parse(changedTransport, {
+          botId: 'major-mirror',
+        }) as unknown as Prisma.InputJsonValue,
+        rawPayload: changedTransport,
+      },
+    });
+    const refreshed = await run();
+    expect(refreshed.issues).toEqual([]);
+    expect(refreshed.stableDigest).not.toBe(accepted.stableDigest);
+    const faults = [
+      'mediaId',
+      'missingMediaId',
+      'invalidMediaId',
+      'bodyText',
+      'sender',
+      'senderProfile',
+      'eventClock',
+      'updateId',
+      'thumbnail',
+      'extraPayloadTarget',
+      'extraAttachment',
+      'command',
+      'rawMismatch',
+    ];
+    for (const fault of faults) {
+      const changed = structuredClone(sameSource);
+      const attachment = changed.message.body.attachments[0]!;
+      if (fault === 'mediaId') attachment.payload.id = 7;
+      if (fault === 'missingMediaId') Reflect.deleteProperty(attachment.payload, 'id');
+      if (fault === 'invalidMediaId') Object.assign(attachment.payload, { id: '7' });
+      if (fault === 'bodyText') changed.message.body.text = 'Different ordinary text';
+      if (fault === 'sender') changed.message.sender.user_id = 'another-author';
+      if (fault === 'senderProfile')
+        Object.assign(changed.message.sender, { name: 'Changed profile' });
+      if (fault === 'eventClock') changed.timestamp++;
+      if (fault === 'updateId') Object.assign(changed, { update_id: 'another-update' });
+      if (fault === 'thumbnail') attachment.thumbnail.url = 'https://example.test/other-preview';
+      if (fault === 'extraPayloadTarget')
+        Object.assign(attachment.payload, { user_id: 'other-target' });
+      if (fault === 'extraAttachment')
+        changed.message.body.attachments.push(structuredClone(attachment));
+      if (fault === 'command') changed.message.body.text = '/ban';
+      const normalized = new WebhookParser().parse(changed, { botId: 'major-mirror' });
+      await db.webhookEvent.update({
+        where: { id: mirror.id },
+        data: {
+          normalizedPayload: normalized as unknown as Prisma.InputJsonValue,
+          rawPayload: fault === 'rawMismatch' ? original : changed,
+        },
+      });
+      const refused = await run();
+      expect({
+        fault,
+        refused: refused.issues.some((issue) => issue.code === 'sql_semantic_mirror_unproved'),
+      }).toEqual({ fault, refused: true });
+    }
+    const publicEvidence = JSON.stringify({ ...refreshed, candidates: undefined });
+    expect(publicEvidence).not.toMatch(/owner-secret|mirror-secret|rotated-secret|example.test/u);
+  });
+
   it('measures LIMIT work through real filtered history, loops and buffers, including empty scans', async () => {
     await db.$transaction(async (tx) => {
       // FLAG: Only disposable TEMP data is created. This fixture verifies the LIMIT

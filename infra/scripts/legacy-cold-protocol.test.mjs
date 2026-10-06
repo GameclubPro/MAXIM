@@ -12,6 +12,8 @@ import {
   applyLegacyColdRecovery,
   prepareLegacyColdRecovery,
   retryLegacyColdPreview,
+  observeLegacyColdAdapters,
+  emitLegacyColdDiagnostic,
 } from './legacy-cold-protocol.mjs';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
 
@@ -388,4 +390,85 @@ test('completed scope keeps healthy fleet running while unrelated backlog remain
   assert.equal(result.releaseRecorded, false);
   assert.equal(h.running(), true);
   assert.equal(h.store.read().journal.phase, 'COMPLETE');
+});
+
+test('stage diagnostics preserve failures and exclude all private values', async () => {
+  const events = [];
+  let now = 100;
+  const failure = Object.assign(new Error('private-token-and-body'), { stderr: 'private-stderr' });
+  const original = {
+    privateState: 'private-state',
+    async readSeal(argument) {
+      assert.equal(this, original);
+      assert.equal(argument, 'private-argument');
+      now += 37;
+      throw failure;
+    },
+    async materializeReceipts() {
+      throw new Error('materialization_budget');
+    },
+    async inspectRuntime() {
+      return { private: 'private-result' };
+    },
+  };
+  const observed = observeLegacyColdAdapters(
+    original,
+    (event) => events.push(event),
+    () => now,
+  );
+  await assert.rejects(observed.readSeal('private-argument'), (error) => error === failure);
+  await assert.rejects(observed.materializeReceipts(), /materialization_budget/u);
+  assert.deepEqual(await observed.inspectRuntime(), { private: 'private-result' });
+  assert.deepEqual(events[1], {
+    version: 1,
+    diagnostic: 'legacy_cold_progress',
+    stage: 'readSeal',
+    event: 'failed',
+    code: 'unclassified_failure',
+    elapsedMs: 37,
+  });
+  assert.equal(events[3].code, 'materialization_budget');
+  assert.doesNotMatch(JSON.stringify(events), /private-|stderr|argument/u);
+  const brokenTransport = observeLegacyColdAdapters(original, () => {
+    throw new Error('output failed');
+  });
+  assert.deepEqual(await brokenTransport.inspectRuntime(), { private: 'private-result' });
+});
+
+test('diagnostics discard unknown fields, malformed counters and unreviewed stage names', () => {
+  const events = [];
+  const report = (value) => events.push(value);
+  emitLegacyColdDiagnostic(report, {
+    stage: 'materializeReceipts',
+    event: 'page',
+    page: 1,
+    chatOrdinal: 1,
+    chatCount: 2,
+    elapsedMs: 100,
+    scanned: 200,
+    applied: 0,
+    complete: false,
+    chatId: 'private-chat',
+    cursor: { afterId: 'private-receipt' },
+    token: 'private-token',
+  });
+  emitLegacyColdDiagnostic(report, {
+    stage: 'materializeReceipts',
+    event: 'page',
+    page: 201,
+    scanned: -1,
+    applied: 'private-number',
+    elapsedMs: Infinity,
+    chatCount: 201,
+  });
+  emitLegacyColdDiagnostic(report, { stage: 'private-stage', event: 'failed' });
+  assert.equal(events.length, 2);
+  assert.deepEqual(events[1], {
+    version: 1,
+    diagnostic: 'legacy_cold_progress',
+    stage: 'materializeReceipts',
+    event: 'page',
+  });
+  assert.equal(events[0].scanned, 200);
+  assert.doesNotMatch(JSON.stringify(events), /private-|token|cursor|chatId/u);
 });

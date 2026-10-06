@@ -73,6 +73,11 @@ ambiguous provenance refuse. MAX `seq` is opaque int64 metadata; explicit `mid`
 supplies identity even when the sequence exceeds JavaScript exact integers. The modern duplicate guard checks both source
 authors; retired photo evidence cannot authorize new deletion. Held media jobs
 settle without download or repeated deferral.
+MAX may deliver the same direct video to different bots with different URL/token
+values. After independent strict source validation, mirror comparison ignores only
+those two transport fields when the passive numeric video ID is present. Original
+per-receipt raw and normalized hashes remain part of the reviewed evidence; a changed
+receipt still requires a fresh inventory. This does not authorize replay or media use.
 The collector uses bounded exact source/claim/mirror reads and reviewed reachable
 effect-family guards. It also checks the pending prefix of each selected chat
 against the actual receipt materializer in a read-only snapshot: old commands,
@@ -100,6 +105,10 @@ grouping occurs only after the bounded status-index read; each chat still expose
 its first actual predecessor, including ineligible fences. Truncation and unknown
 sources remain explicit. This window is not a fleet census or recovery authority;
 every finite selected owner must still pass online admission and cold inventory.
+`postgres-audit legacy-semantic-mirrors [--explain]` diagnoses only that oldest
+candidate and at most eight mirrors plus a sentinel using three verified indexes.
+It emits fixed equality/type flags, with no media tokens, URLs or content; matching
+flags are observations and do not authorize recovery.
 
 For observed moderation outcomes, first review
 `postgres-audit moderation-outcomes --explain`, then run the same command without
@@ -169,6 +178,8 @@ while this journal is incomplete; missing/corrupt evidence also refuses.
 
 A process interruption after installation can be reconciled with the same request
 shape and `operation: "reconcile"`, using the current reviewed journal digest.
+The host reports fixed stage names, page counts and elapsed times on stderr. These
+diagnostics contain no source identities and never substitute for durable proof.
 Only `INSTALLING`, `SEALED` or `RESUMING` are eligible. Reconciliation first stops
 producers/removes the old client/pauses queues, then reads the existing certificate
 independently. It **never creates or installs a certificate again**. An absent,
