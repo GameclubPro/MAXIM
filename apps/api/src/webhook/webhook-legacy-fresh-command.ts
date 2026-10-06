@@ -1,4 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
+import type { MaxClientService } from '../max/max-client.service';
 import { Prisma } from '../prisma/prisma-client';
 import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
 import { recognizesAdminForwardedModerationCommand } from '../moderation/admin-forwarded-command.util';
@@ -216,10 +217,7 @@ export function freshHeldCommandTransitionSql(
 // FLAG: Live, exact bot and actor checks only. Cached admin IDs or a transport
 // failure supply no permission. This runs outside SQL transactions/row locks.
 export async function verifyFreshHeldCommandAccess(
-  max: Pick<
-    import('../max/max-client.service').MaxClientService,
-    'getCurrentChatMemberAccess' | 'getChatMemberAccess'
-  >,
+  max: Pick<MaxClientService, 'getCurrentChatMemberAccess' | 'getChatMemberAccess'>,
   proof: FreshHeldCommandReceipt,
   botId: string,
 ): Promise<boolean> {

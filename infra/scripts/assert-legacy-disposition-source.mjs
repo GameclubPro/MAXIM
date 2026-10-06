@@ -56,7 +56,14 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
   ],
   [
     'apps/api/src/common/group-command-authority.service.ts',
-    ['this.legacyHolds', 'assertUpdateAllowed('],
+    [
+      'this.legacyHolds',
+      'await this.assertPermitAllowed(permit, tx)',
+      'await this.legacyHolds.readFreshCommandReceipt(',
+      'if (!command) throw new WebhookLegacyHoldRejectedError()',
+      'async assertFreshHeldCommandAccess(',
+      'verifyFreshHeldCommandAccess(max, proof, permit.executionBotId)',
+    ],
   ],
   [
     'apps/api/src/webhook/webhook-outbox.service.ts',
@@ -68,11 +75,19 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'await this.legacyHolds.isMessageHeld(',
       'this.legacyHolds.isMemberHeld(',
       'await this.legacyHolds?.isGlobalUserHeld(',
+      'legacyBotCleanupSourceAt(params)',
+      'isLegacyChatSendHeld(chatId, originalSourceAt ?? new Date(NaN))',
+      "botMessageOriginalCreatedAtSource: 'max_message_timestamp_v1'",
     ],
   ],
   [
     'apps/api/src/moderation/moderation-delete-intent.service.ts',
-    ['await this.legacyHolds.isMessageHeld(', 'this.legacyHolds.isMemberHeld('],
+    [
+      'await this.legacyHolds.isMessageHeld(',
+      'this.legacyHolds.isMemberHeld(',
+      'readLegacyBotCleanupSourceAt(reason.metadata)',
+      'isLegacyChatSendHeld(intent.chatId, sourceAt ?? new Date(NaN))',
+    ],
   ],
   [
     'apps/api/src/moderation/moderation-state-delete-guard.service.ts',
@@ -217,7 +232,7 @@ export function assertLegacyDispositionSource(
     const source = readSource(path);
     if (typeof source !== 'string' || markers.some((marker) => !source.includes(marker)))
       throw new Error(
-        'Rollback target lacks permanent legacy disposition readers or final effect guards',
+        `Rollback target lacks permanent legacy disposition readers or final effect guards: ${path}`,
       );
   }
 }
