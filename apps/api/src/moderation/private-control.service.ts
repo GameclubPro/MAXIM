@@ -22,6 +22,7 @@ import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxClientService } from '../max/max-client.service';
 import { ManagedEntityHandshakeService } from '../max/managed-entity-handshake.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
 import { KaravanStorefrontAllowlistService } from '../integrations/karavan-storefront/karavan-storefront-allowlist.service';
 import { RedisCounterService } from './redis-counter.service';
 import type { PrivateSession } from './private-control.types';
@@ -47,6 +48,7 @@ export class PrivateControlService extends LegacyPrivateControlService {
     @Optional()
     private readonly managedEntityHandshakeService?: ManagedEntityHandshakeService,
     @Optional() karavanStorefrontAllowlistService?: KaravanStorefrontAllowlistService,
+    @Optional() legacyHolds?: WebhookLegacyHoldService,
   ) {
     super(
       maxClient,
@@ -62,6 +64,7 @@ export class PrivateControlService extends LegacyPrivateControlService {
       supportRequestsService,
       prisma,
       karavanStorefrontAllowlistService,
+      legacyHolds,
     );
   }
 

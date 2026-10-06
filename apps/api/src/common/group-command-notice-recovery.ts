@@ -8,6 +8,7 @@ import {
   type MaxActionLedgerEntry,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
 import type { WebhookCanonicalExecutionContext } from '../moderation/webhook-canonical-execution.service';
 import type { MaxClientService } from '../max/max-client.service';
 import type { MaxBotLinkService } from '../max/max-bot-link.service';
@@ -291,6 +292,8 @@ export async function recoverGroupCommandNotice(
     where: { jobId: journal.ledgerKey },
   });
   const completedSend = isCompletedSend(ledger, journal, chatId);
+  const legacyHolds = WebhookLegacyHoldService.forPrisma(prisma);
+  if (!completedSend) await legacyHolds?.assertUpdateAllowed(update);
   if (command.status === 'COMPLETED' && !completedSend) return false;
   if (!completedSend && !isUnattemptedSend(ledger, journal, chatId, journal.noticeBotId))
     return false;
@@ -367,7 +370,43 @@ export async function recoverGroupCommandNotice(
       );
   };
   try {
-    if (command.status === 'READY') {
+    if (command.status === 'READY' && completedSend && (await legacyHolds?.isUpdateHeld(update))) {
+      // FLAG: A held source may settle only its exact confirmed SEND receipt. No permit
+      // capable of publishing is created, and the permanent legacy holds remain intact.
+      await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM webhook_execution_claims WHERE id = ${command.id} FOR UPDATE`;
+        await tx.$queryRaw`SELECT id FROM max_action_ledger WHERE job_id = ${journal.ledgerKey} FOR UPDATE`;
+        const current = await tx.webhookExecutionClaim.findUnique({ where: { id: command.id } });
+        const action = await tx.maxActionLedgerEntry.findUnique({
+          where: { jobId: journal.ledgerKey },
+        });
+        if (
+          !current ||
+          !readJournal(event, execution, current) ||
+          !isCompletedSend(action, journal, chatId)
+        )
+          throw new WebhookPreparationDeferredError('Held command notice receipt changed', 1_000);
+        const changed = await tx.webhookExecutionClaim.updateMany({
+          where: {
+            id: current.id,
+            status: 'READY',
+            commandResult: { equals: current.commandResult as Prisma.InputJsonValue },
+            OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: new Date() } }],
+          },
+          data: {
+            status: 'COMPLETED',
+            completedAt: new Date(),
+            leaseToken: null,
+            leaseExpiresAt: null,
+          },
+        });
+        if (changed.count !== 1)
+          throw new WebhookPreparationDeferredError(
+            'Held command notice lease remains active',
+            1_000,
+          );
+      });
+    } else if (command.status === 'READY') {
       permit = await authority.claim(update, journal.noticeBotId);
       if (!permit || !permit.result || resultDigest(permit.result) !== journal.commandResultDigest)
         throw new WebhookPreparationDeferredError('Saved command notice lease unavailable', 1_000);

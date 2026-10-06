@@ -2,7 +2,7 @@ import {
   isMaxMutationOutcomeAmbiguous,
   wasMaxMessageSendAttempted,
 } from './max-mutation-outcome.util';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import {
@@ -12,6 +12,10 @@ import {
   Prisma,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  assertLegacyActionAllowed,
+  WebhookLegacyHoldService,
+} from '../webhook/webhook-legacy-hold.service';
 import { buildMaxActionNoExecutableRouteMessage } from './max-action-dispatch-error';
 import { buildNightModeNoticeIdempotencyKey } from './max-action-idempotency.util';
 import {
@@ -336,7 +340,10 @@ export function markMaxSendDispatchLedgerFinalized<T extends Error>(error: T): T
 
 @Injectable()
 export class MaxActionLedgerService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
+  ) {}
 
   async hasSucceededDelete(chatId: string, messageId: string): Promise<boolean> {
     const normalizedChatId = this.nullableString(chatId);
@@ -694,6 +701,18 @@ export class MaxActionLedgerService {
         await tx.$queryRaw`
           SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['max-member', job.chatId, job.userId])}, 0))::text
         `;
+        // FLAG: A legacy disposition releases chat ordering, never uncertain member effects.
+        // Read permanent holds under this start's SQL lock before recording a new attempt.
+        if (this.legacyHolds) {
+          try {
+            await assertLegacyActionAllowed(this.legacyHolds, job, tx);
+          } catch (error) {
+            throw markMaxPreDispatchGuardRejected(
+              error,
+              MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+            );
+          }
+        }
         // FLAG: Only a guarded unban attempt may follow a confirmed BAN. Unknown
         // effects from any member operation still block it; BAN evidence stays intact.
         const blockers = await tx.$queryRaw<Array<{ job_id: string }>>`

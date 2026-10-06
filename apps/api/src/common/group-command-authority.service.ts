@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import {
+  WebhookLegacyHoldService,
+  WebhookLegacyHoldRejectedError,
+} from '../webhook/webhook-legacy-hold.service';
 import type { MaxUpdate } from '@maxim/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import { Prisma, type ChatSettings, type PrismaClient } from '../prisma/prisma-client';
@@ -184,9 +188,16 @@ export async function advanceChatMutationOrder(
 @Injectable()
 export class GroupCommandAuthorityService {
   private legacyStartCutoff: Promise<Date | null> | null = null;
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly legacyHolds?: WebhookLegacyHoldService;
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() legacyHolds?: WebhookLegacyHoldService,
+  ) {
+    this.legacyHolds = legacyHolds ?? WebhookLegacyHoldService.forPrisma(prisma);
+  }
 
   async observeStart(update: MaxUpdate): Promise<void> {
+    if (await this.legacyHolds?.isUpdateHeld(update)) return;
     const chatId = update.message?.chatId?.trim() ?? '';
     const messageId = update.message?.messageId?.trim() ?? '';
     const dedupKey = update.botId ? `${update.botId}:${update.updateId}` : String(update.updateId);
@@ -211,6 +222,7 @@ export class GroupCommandAuthorityService {
     permit: GroupCommandPermit,
     botIds: readonly string[],
   ): Promise<'fresh' | 'recovered' | 'hold'> {
+    if (await this.legacyHolds?.isMessageHeld(permit.chatId, permit.messageId)) return 'hold';
     const cutoff = await this.readLegacyStartCutoff();
     const semanticKey = `message:message_created:${permit.chatId}:${permit.messageId}`;
     const execution = await this.prisma.webhookExecutionClaim.findUnique({
@@ -309,6 +321,7 @@ export class GroupCommandAuthorityService {
   }
 
   async claim(update: MaxUpdate, executionBotId: string): Promise<GroupCommandPermit | null> {
+    if (await this.legacyHolds?.isUpdateHeld(update)) return null;
     const chatId = update.message?.chatId?.trim() ?? '';
     const messageId = update.message?.messageId?.trim() ?? '';
     const semanticKey = buildGroupCommandKey(chatId, messageId);
@@ -399,6 +412,7 @@ export class GroupCommandAuthorityService {
     result: GroupCommandResult,
     tx: CommandDatabase = this.prisma,
   ): Promise<void> {
+    await this.assertPermitAllowed(permit, tx);
     const changed = await tx.webhookExecutionClaim.updateMany({
       where: {
         ...this.ownedWhere(permit),
@@ -411,6 +425,7 @@ export class GroupCommandAuthorityService {
   }
 
   async assertOwned(permit: GroupCommandPermit, tx: CommandDatabase = this.prisma): Promise<void> {
+    await this.assertPermitAllowed(permit, tx);
     const leaseExpiresAt = new Date(Date.now() + COMMAND_LEASE_MS);
     const changed = await tx.webhookExecutionClaim.updateMany({
       where: this.ownedWhere(permit),
@@ -434,6 +449,24 @@ export class GroupCommandAuthorityService {
     };
     await this.prepareResult(permit, result);
     permit.result = result;
+  }
+
+  private async assertPermitAllowed(
+    permit: GroupCommandPermit,
+    tx: CommandDatabase,
+  ): Promise<void> {
+    if (!this.legacyHolds) return;
+    if (await this.legacyHolds.isMessageHeld(permit.chatId, permit.messageId, tx))
+      throw new WebhookLegacyHoldRejectedError();
+    const receipt = await tx.webhookEvent.findUnique({
+      where: { id: permit.webhookEventId },
+      select: { normalizedPayload: true },
+    });
+    if (!receipt) throw new Error('Group command source receipt is missing');
+    await this.legacyHolds.assertUpdateAllowed(
+      receipt.normalizedPayload as unknown as MaxUpdate,
+      tx,
+    );
   }
 
   async complete(permit: GroupCommandPermit, tx: CommandDatabase = this.prisma): Promise<void> {

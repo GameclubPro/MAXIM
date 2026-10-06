@@ -1,4 +1,5 @@
 import { holdUnverifiedLegacyExecution } from './webhook-legacy-authority';
+import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { WebhookPreparationAdmission } from './webhook-preparation-admission';
 import { readPrismaPoolConfig } from '../prisma/prisma-client';
@@ -331,6 +332,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     @Optional() private readonly suggestionSubscriptions?: SuggestionSubscriptionService,
     @Optional() private readonly executionOwnerReadiness?: MaxExecutionOwnerReadinessService,
     @Optional() private readonly runtimeDiagnostics?: RuntimeDiagnosticsService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     super();
     this.preparationAdmission = new WebhookPreparationAdmission(
@@ -577,6 +579,17 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     }
 
     const update = event.normalizedPayload as MaxUpdate;
+    if (await this.legacyHolds?.isUpdateHeld(update)) {
+      if (!(await this.legacyHolds!.settleHeldReceipt(event.id, update)))
+        throw new WebhookPreparationDeferredError('Legacy scope installation is not sealed', 1_000);
+      return {
+        canonical: false,
+        prepared: false,
+        normalizedPayload: update,
+        executionBotId: null,
+        enforced: true,
+      };
+    }
     const persistedSemanticKey = buildWebhookSemanticEventKey(update);
     if (persistedSemanticKey && event.semanticKey !== persistedSemanticKey) {
       await this.prisma.webhookEvent.updateMany({

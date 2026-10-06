@@ -1,4 +1,9 @@
 import { holdUnverifiedLegacyExecution } from '../webhook/webhook-legacy-authority';
+import {
+  WebhookLegacyHoldService,
+  legacyOrderReleasedSql,
+  legacyUpdateHeldSql,
+} from '../webhook/webhook-legacy-hold.service';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
 import { randomUUID } from 'node:crypto';
@@ -152,6 +157,7 @@ export class WebhookCanonicalExecutionService {
     private readonly prisma: PrismaService,
     @Optional() private readonly executionOwnerReadiness?: MaxExecutionOwnerReadinessService,
     @Optional() private readonly runtimeDiagnostics?: RuntimeDiagnosticsService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {}
 
   async prepareExecution(
@@ -169,6 +175,11 @@ export class WebhookCanonicalExecutionService {
       webhookEvent.status === WebhookStatus.DUPLICATE ||
       webhookEvent.status === WebhookStatus.PROCESSED
     ) {
+      return null;
+    }
+    const update = webhookEvent.normalizedPayload as MaxUpdate;
+    if (await this.legacyHolds?.isUpdateHeld(update)) {
+      await this.legacyHolds!.settleHeldReceipt(webhookEvent.id, update);
       return null;
     }
     if (this.isHotPathTimeoutQuarantined(webhookEvent)) {
@@ -192,7 +203,6 @@ export class WebhookCanonicalExecutionService {
       return null;
     }
 
-    const update = webhookEvent.normalizedPayload as MaxUpdate;
     const normalizedUpdateType = update.type.trim().toLowerCase();
     const executionClaimModel = this.executionClaimModel;
     const semanticKey = buildWebhookSemanticEventKey(update);
@@ -695,6 +705,7 @@ export class WebhookCanonicalExecutionService {
       WHERE claim."id" = ${params.claimId} AND claim."kind" = 'EXECUTION'
         AND claim."semantic_key" = ${params.semanticKey}
         AND claim."webhook_event_id" = event."id" AND event."id" = ${params.webhookEventId}
+        AND NOT ${legacyUpdateHeldSql('event')}
         AND claim."status"::text = ${ready ? 'PENDING' : 'READY'}
         AND claim."completed_at" IS NULL AND claim."business_started_at" IS NULL
         AND claim."lease_token" = ${params.leaseToken}
@@ -2412,6 +2423,7 @@ export class WebhookCanonicalExecutionService {
             )
           )
         )
+        AND NOT ${legacyOrderReleasedSql('webhook_events')}
         AND LOWER(
           COALESCE(
             NULLIF(BTRIM("normalized_payload"->>'type'), ''),

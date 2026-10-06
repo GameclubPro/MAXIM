@@ -1,5 +1,9 @@
 import duplicateRulesCases from '../../../../packages/contracts/test/fixtures/duplicate-rules.json';
-import { BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import {
   channelSettingsSchema,
   chatSettingsSchema,
@@ -640,6 +644,7 @@ function createHarness(
     karavanStorefrontAllowlistService?: Record<string, unknown>;
     prisma?: Record<string, unknown>;
     managedEntityHandshakeService?: Record<string, unknown>;
+    legacyHolds?: Record<string, unknown>;
   } = {},
 ) {
   const chats = [
@@ -1134,6 +1139,7 @@ function createHarness(
     prisma as never,
     overrides.managedEntityHandshakeService as never,
     karavanStorefrontAllowlistService as never,
+    overrides.legacyHolds as never,
   );
 
   return {
@@ -1576,6 +1582,252 @@ describe('PrivateControlService', () => {
       'Сообщить о проблеме',
       'Открыть бота Публик',
     ]);
+  });
+
+  describe('private legacy moderation warning', () => {
+    const heldWarning =
+      'Автоматическая модерация для некоторых участников этого чата и их глобальная репутация приостановлены до проверки доказательств прежних действий. Восстановление прав ботов не снимает ограничение.';
+    const unavailableWarning =
+      'Статус ограничений автоматической модерации временно недоступен. Повторите запрос.';
+
+    it('waits for admin authorization before reading or disclosing the selected chat status', async () => {
+      let authorize!: () => void;
+      let signalAuthStarted!: () => void;
+      const authorization = new Promise<void>((resolve) => {
+        authorize = resolve;
+      });
+      const authStarted = new Promise<void>((resolve) => {
+        signalAuthStarted = resolve;
+      });
+      const assertManagedEntityAdminAccess = jest.fn().mockImplementation(async () => {
+        signalAuthStarted();
+        await authorization;
+      });
+      const hasChatHolds = jest.fn().mockResolvedValue(true);
+      const { service, maxClient, chats } = createHarness({
+        adminService: { assertManagedEntityAdminAccess },
+        legacyHolds: { hasChatHolds },
+      });
+
+      const handling = service.handleUpdate(
+        createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`),
+      );
+      await authStarted;
+
+      try {
+        expect(assertManagedEntityAdminAccess).toHaveBeenCalledWith(chats[0].id, 'user-1', 'chat');
+        expect(hasChatHolds).not.toHaveBeenCalled();
+        expect(maxClient.answerCallback).not.toHaveBeenCalled();
+        expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      } finally {
+        authorize();
+        await handling;
+      }
+
+      expect(hasChatHolds).toHaveBeenCalledTimes(1);
+      expect(hasChatHolds).toHaveBeenCalledWith(chats[0].id);
+      expect(getLastEditedText(maxClient)).toContain(heldWarning);
+    });
+
+    it.each([
+      ['denied', new ForbiddenException('Administrator access denied')],
+      ['timeout', new ServiceUnavailableException('Administrator lookup timeout')],
+    ])('does not read or disclose hold status after %s authorization', async (_case, error) => {
+      const assertManagedEntityAdminAccess = jest.fn().mockRejectedValue(error);
+      const hasChatHolds = jest.fn().mockResolvedValue(true);
+      const { service, maxClient, chats } = createHarness({
+        adminService: { assertManagedEntityAdminAccess },
+        legacyHolds: { hasChatHolds },
+      });
+
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+
+      expect(assertManagedEntityAdminAccess).toHaveBeenCalledWith(chats[0].id, 'user-1', 'chat');
+      expect(hasChatHolds).not.toHaveBeenCalled();
+      expect(getLastUiText(maxClient)).toContain('Что-то пошло не так.');
+      expect(getLastUiText(maxClient)).not.toContain(heldWarning);
+      expect(getLastUiText(maxClient)).not.toContain(unavailableWarning);
+      expect(maxClient.answerCallback).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).toHaveBeenCalledWith(
+        '152517912',
+        expect.any(String),
+        undefined,
+        expect.any(Object),
+      );
+    });
+
+    it('reports an unavailable status without claiming that moderation is unrestricted', async () => {
+      const hasChatHolds = jest.fn().mockRejectedValue(new Error('SQL status backend unavailable'));
+      const { service, maxClient, adminService, chats } = createHarness({
+        legacyHolds: { hasChatHolds },
+      });
+
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+
+      expect(adminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
+        chats[0].id,
+        'user-1',
+        'chat',
+      );
+      expect(hasChatHolds).toHaveBeenCalledWith(chats[0].id);
+      expect(getLastEditedText(maxClient)).toContain(unavailableWarning);
+      expect(getLastEditedText(maxClient)).not.toContain(heldWarning);
+      expect(getLastEditedText(maxClient)).not.toContain('SQL status backend unavailable');
+      expect(getLastEditedText(maxClient)).toContain('Настройки перенесены в mini app');
+    });
+
+    it('delivers an advisory warning only to the requesting private dialog after callback fallback', async () => {
+      const hasChatHolds = jest.fn().mockResolvedValue(true);
+      const { service, maxClient, chats } = createHarness({ legacyHolds: { hasChatHolds } });
+      maxClient.answerCallback.mockRejectedValueOnce(new Error('Callback edit unavailable'));
+
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+
+      expect(getLastSentText(maxClient)).toContain(heldWarning);
+      expect(getLastSentText(maxClient)).toContain(
+        'Команды этих участников в группе тоже приостановлены. Управление настройками чата через личный диалог бота остаётся доступным.',
+      );
+      expect(getLastSentText(maxClient)).not.toContain('user-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendMessage).toHaveBeenCalledWith(
+        '152517912',
+        expect.stringContaining(heldWarning),
+        expect.any(Object),
+        expect.objectContaining({ immediate: true }),
+      );
+      expect(
+        maxClient.answerCallback.mock.calls.every(
+          (call) => call[3]?.rateLimitEntityId === '152517912',
+        ),
+      ).toBe(true);
+      expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
+      expect(maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalled();
+    });
+
+    it('omits the advisory when the authorized chat has no holds', async () => {
+      const hasChatHolds = jest.fn().mockResolvedValue(false);
+      const { service, maxClient, chats } = createHarness({ legacyHolds: { hasChatHolds } });
+
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+
+      expect(hasChatHolds).toHaveBeenCalledWith(chats[0].id);
+      expect(getLastEditedText(maxClient)).toContain('Настройки перенесены в mini app');
+      expect(getLastEditedText(maxClient)).not.toContain(heldWarning);
+      expect(getLastEditedText(maxClient)).not.toContain(unavailableWarning);
+    });
+
+    it('rechecks authorization and status for each explicit selected chat response', async () => {
+      const hasChatHolds = jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      const { service, maxClient, adminService, chats } = createHarness({
+        legacyHolds: { hasChatHolds },
+      });
+
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+      expect(getLastEditedText(maxClient)).toContain(heldWarning);
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+
+      expect(adminService.assertManagedEntityAdminAccess).toHaveBeenCalledTimes(2);
+      expect(hasChatHolds).toHaveBeenCalledTimes(2);
+      expect(getLastEditedText(maxClient)).not.toContain(heldWarning);
+      expect(getLastEditedText(maxClient)).not.toContain(unavailableWarning);
+    });
+
+    it('does not inspect moderation holds for a selected channel', async () => {
+      const hasChatHolds = jest.fn().mockResolvedValue(true);
+      const { service, maxClient, adminService, channels } = createHarness({
+        legacyHolds: { hasChatHolds },
+      });
+
+      await service.handleUpdate(
+        createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
+      );
+
+      expect(hasChatHolds).not.toHaveBeenCalled();
+      expect(adminService.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+      expect(getLastEditedText(maxClient)).not.toContain(heldWarning);
+      expect(getLastEditedText(maxClient)).not.toContain(unavailableWarning);
+    });
+
+    it('does not inspect a previously selected chat when returning to the private home', async () => {
+      const hasChatHolds = jest.fn().mockResolvedValue(true);
+      const { service, maxClient, adminService, chats } = createHarness({
+        legacyHolds: { hasChatHolds },
+      });
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+      hasChatHolds.mockClear();
+      adminService.assertManagedEntityAdminAccess.mockClear();
+
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|home'));
+
+      expect(hasChatHolds).not.toHaveBeenCalled();
+      expect(adminService.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+      expect(getLastEditedText(maxClient)).toContain('**Майор Максимов**');
+      expect(getLastEditedText(maxClient)).not.toContain(heldWarning);
+      expect(getLastEditedText(maxClient)).not.toContain(unavailableWarning);
+    });
+
+    it('does not inspect holds for the private activity screen of a selected chat', async () => {
+      const hasChatHolds = jest.fn().mockResolvedValue(true);
+      const { service, maxClient, adminService, chats } = createHarness({
+        legacyHolds: { hasChatHolds },
+      });
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+      hasChatHolds.mockClear();
+      adminService.assertManagedEntityAdminAccess.mockClear();
+
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_logs'));
+
+      expect(hasChatHolds).not.toHaveBeenCalled();
+      expect(adminService.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+      expect(getLastEditedText(maxClient)).toContain('Активность открывается в mini app');
+      expect(getLastEditedText(maxClient)).not.toContain(heldWarning);
+      expect(getLastEditedText(maxClient)).not.toContain(unavailableWarning);
+    });
+
+    it('does not inspect holds when settings are requested without a selected chat', async () => {
+      const hasChatHolds = jest.fn().mockResolvedValue(true);
+      const { service, maxClient, adminService } = createHarness({ legacyHolds: { hasChatHolds } });
+
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_settings_hub'));
+
+      expect(hasChatHolds).not.toHaveBeenCalled();
+      expect(adminService.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+      expect(getLastEditedText(maxClient)).not.toContain(heldWarning);
+      expect(getLastEditedText(maxClient)).not.toContain(unavailableWarning);
+    });
+
+    it('ignores a group callback without reading status or publishing a warning', async () => {
+      const hasChatHolds = jest.fn().mockResolvedValue(true);
+      const { service, maxClient, adminService, chats } = createHarness({
+        legacyHolds: { hasChatHolds },
+      });
+      const privateUpdate = createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`);
+      const groupUpdate: MaxUpdate = {
+        ...privateUpdate,
+        message: { ...privateUpdate.message!, chatId: chats[0].id },
+        raw: {
+          update_type: 'message_callback',
+          callback: {
+            callback_id: 'callback-group',
+            payload: `pc2|chat_select|${chats[0].id}`,
+            user: { user_id: 'user-1', name: 'Тестовый пользователь' },
+          },
+          message: { recipient: { chat_id: Number(chats[0].id), chat_type: 'chat' } },
+        },
+      };
+
+      await service.handleUpdate(groupUpdate);
+
+      expect(hasChatHolds).not.toHaveBeenCalled();
+      expect(adminService.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+      expect(maxClient.answerCallback).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
+      expect(maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+    });
   });
 
   it('does not expose sticker-from-photo action in the private bot navigation', async () => {

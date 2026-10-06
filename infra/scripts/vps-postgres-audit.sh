@@ -27,6 +27,7 @@ usage() {
   cat <<'USAGE' >&2
 Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|storage|all]
+  ./infra/scripts/vps-postgres-audit.sh legacy-order-candidates
   ./infra/scripts/vps-postgres-audit.sh duplicate [--explain]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
@@ -101,7 +102,7 @@ case "$AUDIT_MODE" in
     RULES_CLEANUP_CHAT_ID="$2"
     RULES_CLEANUP_EXPLAIN="${3:-}"
     ;;
-  queue|activity|publication-schema|all)
+  queue|activity|publication-schema|legacy-order-candidates|all)
     if [[ $# -gt 1 ]]; then
       usage
       exit 2
@@ -805,6 +806,126 @@ LEFT JOIN LATERAL (
 ) predecessor ON TRUE;
 \else
 \echo MAXIM_POSTGRES_QUEUE_AUDIT_INDEX_MISSING
+SELECT 1 / 0;
+\endif
+SQL
+}
+
+emit_legacy_order_candidates_audit() {
+  cat <<'SQL'
+SELECT CASE
+  WHEN (
+    SELECT count(*) = 2
+    FROM pg_index index_state
+    JOIN pg_class index_relation ON index_relation.oid = index_state.indexrelid
+    JOIN pg_am method ON method.oid = index_relation.relam
+    WHERE index_state.indexrelid = ANY(ARRAY[
+      to_regclass('public.webhook_events_status_created_at_id_idx'),
+      to_regclass('public.webhook_events_ordered_chat_head_idx')
+    ]::oid[])
+      AND index_state.indrelid = to_regclass('public.webhook_events')
+      AND index_relation.relkind = 'i' AND index_relation.reltablespace = 0
+      AND index_relation.reloptions IS NULL
+      AND index_state.indisvalid AND index_state.indisready AND index_state.indislive
+      AND NOT index_state.indisunique AND NOT index_state.indisprimary AND NOT index_state.indisexclusion
+      AND method.amname = 'btree'
+      AND index_state.indnkeyatts = 3 AND index_state.indnatts = 3
+      AND NOT EXISTS (SELECT 1 FROM unnest(index_state.indoption::smallint[]) option WHERE option <> 0)
+      AND NOT EXISTS (SELECT 1 FROM unnest(index_state.indclass::oid[]) binding
+        JOIN pg_opclass definition ON definition.oid = binding
+        WHERE NOT definition.opcdefault OR definition.opcnamespace <> 'pg_catalog'::regnamespace)
+      AND (index_state.indexrelid <> to_regclass('public.webhook_events_status_created_at_id_idx')
+        OR (index_state.indexprs IS NULL AND index_state.indpred IS NULL
+          AND ARRAY(SELECT pg_get_indexdef(index_relation.oid, ordinal, false)
+            FROM generate_series(1, 3) ordinal) = ARRAY['status', 'created_at', 'id']))
+      -- FLAG: A familiar index name is insufficient. Compare the immutable key expression,
+      -- order and complete partial predicate before either bounded source probe can run.
+      AND (index_state.indexrelid <> to_regclass('public.webhook_events_ordered_chat_head_idx')
+        OR (ARRAY(SELECT pg_get_indexdef(index_relation.oid, ordinal, false)
+            FROM generate_series(1, 3) ordinal) = ARRAY[
+              $expression$COALESCE(NULLIF(btrim(((normalized_payload -> 'message'::text) ->> 'chatId'::text)), ''::text), NULLIF(btrim((normalized_payload ->> 'chatId'::text)), ''::text))$expression$,
+              'created_at', 'id']
+          AND pg_get_expr(index_state.indexprs, index_state.indrelid) =
+            $expression$COALESCE(NULLIF(btrim(((normalized_payload -> 'message'::text) ->> 'chatId'::text)), ''::text), NULLIF(btrim((normalized_payload ->> 'chatId'::text)), ''::text))$expression$
+          AND pg_get_expr(index_state.indpred, index_state.indrelid) =
+            $predicate$(((status = ANY (ARRAY['RECEIVED'::"WebhookStatus", 'QUEUED'::"WebhookStatus"])) OR ((status = 'FAILED'::"WebhookStatus") AND ((next_enqueue_at IS NOT NULL) OR ("left"(COALESCE(error_message, ''::text), 37) = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'::text)))) AND (lower(COALESCE(NULLIF(btrim((normalized_payload ->> 'type'::text)), ''::text), NULLIF(btrim((normalized_payload ->> 'update_type'::text)), ''::text))) = ANY (ARRAY['message_created'::text, 'message_edited'::text])))$predicate$))
+  ) THEN 'true'
+  ELSE 'false'
+END AS legacy_order_candidates_index_ready \gset
+\if :legacy_order_candidates_index_ready
+-- FLAG: Both source probes stop at the exact first row before eligibility filtering.
+-- An earlier unknown fence must never be hidden by searching for a later eligible one.
+WITH oldest_received AS MATERIALIZED (
+  SELECT id, created_at, normalized_payload
+  FROM webhook_events
+  WHERE status = 'RECEIVED'::"WebhookStatus"
+  ORDER BY created_at ASC, id ASC
+  LIMIT 1
+), received_source AS MATERIALIZED (
+  SELECT id, created_at,
+    CASE WHEN LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
+      NULLIF(BTRIM(normalized_payload->>'update_type'), '')))
+      = ANY(ARRAY['message_created', 'message_edited'])
+      THEN COALESCE(NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+        NULLIF(BTRIM(normalized_payload->>'chatId'), ''))
+      ELSE NULL END AS message_chat_id
+  FROM oldest_received
+), bounded_predecessor AS MATERIALIZED (
+  SELECT predecessor.*
+  FROM received_source
+  CROSS JOIN LATERAL (
+    SELECT id, status, error_message, next_enqueue_at,
+      timeout_quarantine_expires_at, processed_at
+    FROM webhook_events
+    -- FLAG: Keep the exact ordered-chat-head partial-index predicate. Source identity
+    -- stays join-only; neither this candidate nor a missing journal proves old effects.
+    WHERE (
+      status = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
+      OR (status = 'FAILED'::"WebhookStatus" AND (
+        next_enqueue_at IS NOT NULL
+        OR LEFT(COALESCE(error_message, ''), 37) = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'
+      ))
+    )
+      AND LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
+        NULLIF(BTRIM(normalized_payload->>'update_type'), '')))
+        = ANY(ARRAY['message_created', 'message_edited'])
+      AND COALESCE(NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+        NULLIF(BTRIM(normalized_payload->>'chatId'), '')) = received_source.message_chat_id
+      AND (created_at, id) < (received_source.created_at, received_source.id)
+    ORDER BY created_at ASC, id ASC
+    LIMIT 1
+  ) predecessor
+), classified_candidate AS MATERIALIZED (
+  SELECT id,
+    status = 'FAILED'::"WebhookStatus"
+      AND error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required'
+      AND next_enqueue_at IS NULL AND timeout_quarantine_expires_at IS NULL
+      AND processed_at IS NULL
+      AND id ~ '^[a-zA-Z0-9_-]{1,128}$' AS eligible
+  FROM bounded_predecessor
+)
+SELECT json_build_object(
+  'schema_version', 1,
+  'audit', 'legacy_order_candidates',
+  'scope', 'oldest_received_only',
+  'receipt_sample_cap', 1,
+  'predecessor_sample_cap', 1,
+  'candidate_count', CASE WHEN COALESCE(candidate.eligible, false) THEN 1 ELSE 0 END,
+  -- FLAG: This is the sole opt-in opaque identifier. Cold preview must prove ownership
+  -- and every source/action fence; this report grants no replay or no-effects authority.
+  'candidate_receipt_id', CASE WHEN candidate.eligible THEN candidate.id ELSE NULL END,
+  'classification', CASE
+    WHEN NOT EXISTS (SELECT 1 FROM oldest_received) THEN 'no_received'
+    WHEN NOT EXISTS (SELECT 1 FROM received_source WHERE message_chat_id IS NOT NULL)
+      THEN 'source_unknown'
+    WHEN candidate.id IS NULL THEN 'no_predecessor'
+    WHEN candidate.eligible THEN 'legacy_unverified_candidate'
+    ELSE 'ineligible_predecessor' END
+)::text
+FROM (SELECT 1) singleton
+LEFT JOIN classified_candidate candidate ON TRUE;
+\else
+\echo MAXIM_POSTGRES_LEGACY_ORDER_CANDIDATES_INDEX_UNAVAILABLE
 SELECT 1 / 0;
 \endif
 SQL
@@ -1649,6 +1770,9 @@ emit_sql() {
     queue)
       emit_queue_audit
       ;;
+    legacy-order-candidates)
+      emit_legacy_order_candidates_audit
+      ;;
     activity)
       emit_activity_audit
       ;;
@@ -1742,7 +1866,7 @@ prepare_audit_sql() {
     echo "Generated PostgreSQL audit input is invalid." >&2
     return 1
   fi
-  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "legacy-order-candidates" ]]; then
     AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
       echo "Could not create the private PostgreSQL audit diagnostics file." >&2
       return 1
@@ -1852,7 +1976,7 @@ trap 'exit 143' TERM
 
 prepare_audit_sql
 AUDIT_BACKEND_MAY_EXIST=1
-if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "legacy-order-candidates" ]]; then
   timeout --signal=TERM --kill-after=2s \
     "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
     2>"$AUDIT_STDERR_FILE" &
@@ -1871,5 +1995,7 @@ if [[ "$status" -eq 124 ]]; then
   echo "Bounded PostgreSQL audit exceeded ${AUDIT_WALL_TIMEOUT_SEC}s and was terminated." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
   echo "Bounded legacy default webhook database audit failed closed." >&2
+elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-order-candidates" ]]; then
+  echo "Bounded legacy order candidate audit failed closed." >&2
 fi
 exit "$status"

@@ -877,6 +877,368 @@ function extractQueueReportSql(sql) {
   return sql.slice(start, end + ') predecessor ON TRUE;'.length);
 }
 
+function extractLegacyOrderCandidatesSql(sql) {
+  const start = sql.indexOf('WITH oldest_received AS MATERIALIZED (');
+  const marker = 'LEFT JOIN classified_candidate candidate ON TRUE;';
+  const end = sql.indexOf(marker, start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return sql.slice(start, end + marker.length);
+}
+
+function extractLegacyOrderCandidatesReadinessSql(sql) {
+  const start = sql.indexOf('SELECT CASE\n  WHEN (\n    SELECT count(*) = 2');
+  const marker = 'END AS legacy_order_candidates_index_ready';
+  const end = sql.indexOf(marker, start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return `${sql.slice(start, end + marker.length)};`;
+}
+
+test('legacy order candidates are opt-in, input-free and keep the guarded private envelope', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const result = runAudit(data, ['legacy-order-candidates']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  const statement = extractLegacyOrderCandidatesSql(sql);
+  assert.match(sql, /^BEGIN READ ONLY;$/mu);
+  assert.match(sql, /session_user = 'maxim_audit'/u);
+  assert.match(sql, /webhook_events_status_created_at_id_idx/u);
+  assert.match(sql, /webhook_events_ordered_chat_head_idx/u);
+  assert.match(
+    sql,
+    /index_state\.indisvalid AND index_state\.indisready AND index_state\.indislive/u,
+  );
+  assert.match(sql, /pg_get_expr\(index_state\.indexprs, index_state\.indrelid\)/u);
+  assert.match(sql, /pg_get_expr\(index_state\.indpred, index_state\.indrelid\)/u);
+  assert.match(sql, /unnest\(index_state\.indoption::smallint\[\]\)/u);
+  assert.match(sql, /MAXIM_POSTGRES_LEGACY_ORDER_CANDIDATES_INDEX_UNAVAILABLE/u);
+  assert.equal([...statement.matchAll(/FROM webhook_events\b/gu)].length, 2);
+  assert.equal([...statement.matchAll(/\bLIMIT 1\b/gu)].length, 2);
+  assert.match(
+    statement,
+    /oldest_received AS MATERIALIZED \([\s\S]*WHERE status = 'RECEIVED'[\s\S]*ORDER BY created_at ASC, id ASC\n {2}LIMIT 1/u,
+  );
+  assert.match(statement, /bounded_predecessor AS MATERIALIZED/u);
+  assert.ok(
+    statement.indexOf('LIMIT 1\n  ) predecessor') <
+      statement.indexOf('classified_candidate AS MATERIALIZED'),
+  );
+  assert.doesNotMatch(
+    statement,
+    /raw_payload|source_ip|user_id|bot_id|webhook_execution_claims|moderation_delete_intents|COUNT\(|GROUP BY|DISTINCT/u,
+  );
+  const projection = statement.slice(statement.indexOf('SELECT json_build_object('));
+  assert.doesNotMatch(
+    projection,
+    /^\s*'[^'\n]*(?:chat|user|text|body|payload|token|error|owner)[^'\n]*',/mu,
+  );
+  assert.match(projection, /'candidate_receipt_id'/u);
+  assert.match(projection, /'scope', 'oldest_received_only'/u);
+  const args = readFileSync(data.dockerArgs, 'utf8');
+  for (const required of [
+    'maxim_audit',
+    'default_transaction_read_only=on',
+    'statement_timeout=2500ms',
+    'lock_timeout=250ms',
+    'max_parallel_workers_per_gather=0',
+    'enable_seqscan=off',
+    'enable_bitmapscan=off',
+    'work_mem=1MB',
+    'ECHO=none',
+    'SHOW_CONTEXT=never',
+  ])
+    assert.ok(args.includes(required), required);
+  const failed = runAudit(data, ['legacy-order-candidates'], { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7, failed.stderr);
+  assert.match(failed.stderr, /Bounded legacy order candidate audit failed closed/u);
+  assert.doesNotMatch(`${failed.stdout}${failed.stderr}`, /fixture-event|ERROR near/u);
+  for (const mode of ['all', 'monitor-signals']) {
+    assert.equal(runAudit(data, mode === 'all' ? ['all'] : ['monitor-signals', '30']).status, 0);
+    assert.doesNotMatch(
+      readFileSync(data.sql, 'utf8'),
+      /legacy_order_candidates|candidate_receipt_id/u,
+    );
+  }
+  assert.equal(runConnect(data, ['postgres-audit', 'legacy-order-candidates']).status, 0);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /legacy-order-candidates/u);
+  for (const extra of ['--explain', '--apply', 'SELECT 1', 'c1111111111111111111111111']) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, ['legacy-order-candidates', extra]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'legacy-order-candidates', extra]).status, 2);
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
+});
+
+test('legacy candidate classification never skips an earlier unknown fence or leaks source data', async (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['legacy-order-candidates']).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  const statement = extractLegacyOrderCandidatesSql(sql);
+  const readiness = extractLegacyOrderCandidatesReadinessSql(sql);
+  const database = new PGlite();
+  t.after(() => database.close());
+  await database.exec(`
+    CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED', 'QUEUED', 'FAILED');
+    CREATE TABLE webhook_events (
+      id text PRIMARY KEY, status "WebhookStatus", created_at timestamp,
+      error_message text, next_enqueue_at timestamp, timeout_quarantine_expires_at timestamp,
+      processed_at timestamp, normalized_payload jsonb DEFAULT '{}'
+    );
+    CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status, created_at, id);
+  `);
+  assert.equal(
+    (await database.query(readiness)).rows[0].legacy_order_candidates_index_ready,
+    'false',
+  );
+  const orderedIndexSql = readFileSync(
+    resolve(
+      root,
+      'apps/api/prisma/migrations/20260815123000_add_webhook_ordered_chat_head_index/migration.sql',
+    ),
+    'utf8',
+  ).replace('CREATE INDEX CONCURRENTLY', 'CREATE INDEX');
+  await database.exec(orderedIndexSql);
+  const candidateId = 'c1111111111111111111111111';
+  const legacy =
+    'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required';
+  const payload = JSON.stringify({
+    type: 'message_created',
+    token: 'private-token',
+    message: {
+      chatId: 'private-chat',
+      userId: 'private-user',
+      messageId: 'private-message',
+      text: 'private-body',
+    },
+  });
+  const report = async (classification, id = null) => {
+    const result = await database.query(statement);
+    const value = JSON.parse(Object.values(result.rows[0])[0]);
+    assert.deepEqual(Object.keys(value), [
+      'schema_version',
+      'audit',
+      'scope',
+      'receipt_sample_cap',
+      'predecessor_sample_cap',
+      'candidate_count',
+      'candidate_receipt_id',
+      'classification',
+    ]);
+    assert.equal(value.classification, classification);
+    assert.equal(value.candidate_receipt_id, id);
+    assert.equal(value.candidate_count, id === null ? 0 : 1);
+    assert.equal(value.receipt_sample_cap, 1);
+    assert.equal(value.predecessor_sample_cap, 1);
+    assert.doesNotMatch(
+      JSON.stringify(value),
+      /private-|LEGACY_EXECUTION|CANONICAL_BUSINESS|message_created|FAILED/u,
+    );
+  };
+  assert.equal(
+    (await database.query(readiness)).rows[0].legacy_order_candidates_index_ready,
+    'true',
+  );
+  await report('no_received');
+  await database.query(
+    `INSERT INTO webhook_events(id, status, created_at, error_message, normalized_payload)
+    VALUES ($1, 'FAILED', '2026-01-01', $2, $3::jsonb),
+      ('private-received-z', 'RECEIVED', '2026-01-02', NULL, $3::jsonb)`,
+    [candidateId, legacy, payload],
+  );
+  await report('legacy_unverified_candidate', candidateId);
+  for (const field of ['next_enqueue_at', 'timeout_quarantine_expires_at', 'processed_at']) {
+    await database.exec(
+      `UPDATE webhook_events SET ${field} = '2026-01-03' WHERE status = 'FAILED'`,
+    );
+    await report('ineligible_predecessor');
+    await database.exec(`UPDATE webhook_events SET ${field} = NULL WHERE status = 'FAILED'`);
+  }
+  for (const error of [
+    `${legacy}: private-suffix`,
+    'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:CANONICAL_BUSINESS_ALREADY_STARTED; durable-effects recovery required',
+    'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:private-token-error',
+  ]) {
+    await database.query("UPDATE webhook_events SET error_message = $1 WHERE status = 'FAILED'", [
+      error,
+    ]);
+    await report('ineligible_predecessor');
+  }
+  await database.query("UPDATE webhook_events SET error_message = $1 WHERE status = 'FAILED'", [
+    legacy,
+  ]);
+  // FLAG: A queued predecessor earlier than the eligible legacy row must remain the fence.
+  await database.query(
+    `INSERT INTO webhook_events(id, status, created_at, normalized_payload)
+    VALUES ('private-unknown', 'QUEUED', '2025-12-31', $1::jsonb)`,
+    [payload],
+  );
+  await report('ineligible_predecessor');
+  await database.exec("DELETE FROM webhook_events WHERE id = 'private-unknown'");
+  await database.query(
+    "UPDATE webhook_events SET id = 'private-invalid <body>' WHERE status = 'FAILED'",
+  );
+  await report('ineligible_predecessor');
+  await database.query("UPDATE webhook_events SET id = $1 WHERE status = 'FAILED'", [candidateId]);
+  // Equal timestamp receipts must choose the first ID before message-shape filtering.
+  await database.exec(`INSERT INTO webhook_events(id, status, created_at, normalized_payload)
+    VALUES ('private-received-a', 'RECEIVED', '2026-01-02', '{"type":"bot_started","token":"private-token"}')`);
+  await report('source_unknown');
+  await database.exec("DELETE FROM webhook_events WHERE id = 'private-received-a'");
+  await report('legacy_unverified_candidate', candidateId);
+  await database.exec("DELETE FROM webhook_events WHERE status = 'FAILED'");
+  await report('no_predecessor');
+  await database.exec(`DROP INDEX webhook_events_status_created_at_id_idx;
+    CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status, id, created_at)`);
+  assert.equal(
+    (await database.query(readiness)).rows[0].legacy_order_candidates_index_ready,
+    'false',
+  );
+  await database.exec(`DROP INDEX webhook_events_status_created_at_id_idx;
+    CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status, created_at, id)`);
+  // FLAG: Same-name, valid three-key indexes with altered ordering/expression/predicate
+  // must refuse admission; LIMIT 1 cannot protect a forced history sort or filtered scan.
+  for (const tamperedIndexSql of [
+    orderedIndexSql.replace('"created_at",\n  "id"', '"id",\n  "created_at"'),
+    orderedIndexSql.replace('"created_at",', '"created_at" DESC,'),
+    orderedIndexSql.replace("->'message'->>'chatId'", "->'message'->>'messageId'"),
+    orderedIndexSql.replace(
+      "ARRAY['message_created', 'message_edited']",
+      "ARRAY['message_created']",
+    ),
+    orderedIndexSql.replace("'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'", "'private-marker'"),
+  ]) {
+    assert.notEqual(tamperedIndexSql, orderedIndexSql);
+    await database.exec('DROP INDEX webhook_events_ordered_chat_head_idx');
+    await database.exec(tamperedIndexSql);
+    assert.equal(
+      (await database.query(readiness)).rows[0].legacy_order_candidates_index_ready,
+      'false',
+    );
+  }
+  await database.exec('DROP INDEX webhook_events_ordered_chat_head_idx');
+  await database.exec(orderedIndexSql);
+  assert.equal(
+    (await database.query(readiness)).rows[0].legacy_order_candidates_index_ready,
+    'true',
+  );
+});
+
+test(
+  'native legacy candidate probes use bounded indexes with 12000 retained and tied receipts',
+  { skip: !nativePostgresUrl, timeout: 30_000 },
+  async (t) => {
+    const address = new URL(nativePostgresUrl);
+    assert.ok(
+      ['127.0.0.1', 'localhost', '[::1]'].includes(address.hostname) &&
+        address.pathname.includes('race_test'),
+      'Native candidate integration requires disposable local PostgreSQL race_test',
+    );
+    const data = fixture();
+    t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+    assert.equal(runAudit(data, ['legacy-order-candidates']).status, 0);
+    const sql = readFileSync(data.sql, 'utf8');
+    const statement = extractLegacyOrderCandidatesSql(sql);
+    const { default: pg } = await import('pg');
+    const client = new pg.Client({
+      connectionString: nativePostgresUrl,
+      connectionTimeoutMillis: 5_000,
+      query_timeout: 10_000,
+      options: '-c timezone=UTC -c statement_timeout=2500 -c lock_timeout=250',
+    });
+    const namespace = `legacy_candidates_${randomUUID().replaceAll('-', '')}`;
+    let connected = false;
+    try {
+      await client.connect();
+      connected = true;
+      const identity = await client.query('SELECT version() AS version');
+      assert.match(identity.rows[0].version, /^PostgreSQL /u);
+      assert.doesNotMatch(identity.rows[0].version, /pglite|wasm/iu);
+      // FLAG: The large equal-time/history fixture and plan execute only in a rolled-back
+      // disposable schema. No production rows, payloads, identities or role participate.
+      await client.query(`BEGIN; CREATE SCHEMA ${namespace};
+        SET LOCAL search_path = ${namespace}, pg_catalog;
+        CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED', 'QUEUED', 'FAILED');
+        CREATE TABLE webhook_events (id text PRIMARY KEY, status "WebhookStatus", created_at timestamp,
+          error_message text, next_enqueue_at timestamp, timeout_quarantine_expires_at timestamp,
+          processed_at timestamp, normalized_payload jsonb DEFAULT '{}');
+        CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status, created_at, id);`);
+      await client.query(
+        readFileSync(
+          resolve(
+            root,
+            'apps/api/prisma/migrations/20260815123000_add_webhook_ordered_chat_head_index/migration.sql',
+          ),
+          'utf8',
+        ).replace('CREATE INDEX CONCURRENTLY', 'CREATE INDEX'),
+      );
+      const readiness = extractLegacyOrderCandidatesReadinessSql(sql).replaceAll(
+        "'public.webhook_events",
+        `'${namespace}.webhook_events`,
+      );
+      assert.equal(
+        (await client.query(readiness)).rows[0].legacy_order_candidates_index_ready,
+        'true',
+      );
+      await client.query(`INSERT INTO webhook_events(id, status, created_at, error_message, normalized_payload)
+        SELECT 'private-history-' || ordinal, 'FAILED', '2025-01-01', 'private-terminal-error', '{}'
+        FROM generate_series(1, 6000) ordinal;
+        INSERT INTO webhook_events(id, status, created_at, normalized_payload)
+        SELECT 'private-received-' || lpad(ordinal::text, 6, '0'), 'RECEIVED', '2026-01-02',
+          '{"type":"message_created","message":{"chatId":"private-chat","text":"private-body"}}'
+        FROM generate_series(1, 6000) ordinal;
+        INSERT INTO webhook_events(id, status, created_at, error_message, normalized_payload)
+        VALUES ('c1111111111111111111111111', 'FAILED', '2026-01-01',
+          'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required',
+          '{"type":"message_created","message":{"chatId":"private-chat","text":"private-body"}}');
+        SET LOCAL enable_seqscan=off; SET LOCAL enable_bitmapscan=off;
+        SET LOCAL max_parallel_workers_per_gather=0; SET LOCAL jit=off; ANALYZE webhook_events;`);
+      const plan = await client.query(`EXPLAIN (FORMAT JSON) ${statement}`);
+      const relationScans = [];
+      const sorts = [];
+      const collect = (node) => {
+        if (node['Relation Name'] === 'webhook_events') relationScans.push(node);
+        if (['Sort', 'Incremental Sort'].includes(node['Node Type'])) sorts.push(node);
+        for (const child of node.Plans ?? []) collect(child);
+      };
+      collect(plan.rows[0]['QUERY PLAN'][0].Plan);
+      assert.equal(relationScans.length, 2);
+      assert.equal(sorts.length, 0, 'Equal-time receipts must not amplify a LIMIT 1 sort');
+      assert.ok(
+        relationScans.every((node) =>
+          ['Index Scan', 'Index Only Scan'].includes(node['Node Type']),
+        ),
+      );
+      assert.ok(
+        relationScans.every((node) => node.Filter === undefined),
+        'Source probes must not filter through retained rows behind LIMIT 1',
+      );
+      assert.deepEqual(relationScans.map((node) => node['Index Name']).sort(), [
+        'webhook_events_ordered_chat_head_idx',
+        'webhook_events_status_created_at_id_idx',
+      ]);
+      const result = JSON.parse(Object.values((await client.query(statement)).rows[0])[0]);
+      assert.equal(result.candidate_count, 1);
+      assert.equal(result.candidate_receipt_id, 'c1111111111111111111111111');
+      assert.doesNotMatch(JSON.stringify(result), /private-|LEGACY_EXECUTION|message_created/u);
+      await client.query(`DROP INDEX webhook_events_ordered_chat_head_idx;
+        CREATE INDEX webhook_events_ordered_chat_head_idx
+        ON webhook_events ((normalized_payload->>'chatId'), created_at, id)`);
+      assert.equal(
+        (await client.query(readiness)).rows[0].legacy_order_candidates_index_ready,
+        'false',
+      );
+    } finally {
+      if (connected) await client.query('ROLLBACK').catch(() => undefined);
+      await client.end();
+    }
+  },
+);
+
 test(
   'native queue quarantine predecessor diagnostics stay bounded and private',
   { skip: !nativePostgresUrl, timeout: 30_000 },

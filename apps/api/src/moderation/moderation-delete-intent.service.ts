@@ -59,6 +59,10 @@ import {
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  WebhookLegacyHoldService,
+  WebhookLegacyHoldRejectedError,
+} from '../webhook/webhook-legacy-hold.service';
+import {
   STORAGE_DELETE_DUE_SWEEP_STAGES,
   StorageRuntimeMetricsService,
 } from '../system/storage-runtime-metrics.service';
@@ -759,6 +763,7 @@ export class ModerationDeleteIntentService {
     @Optional() private readonly moderationStateDeleteGuard?: ModerationStateDeleteGuardService,
     @Optional()
     private readonly requiredSubscriptionExecutionGuard?: RequiredSubscriptionExecutionGuardService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -2463,6 +2468,18 @@ export class ModerationDeleteIntentService {
         );
       }
 
+      // FLAG: Exact positive receipts settle above. Held legacy sources never spend
+      // access/presence quota or acquire fresh DELETE authority; unknown markers stay intact.
+      if (await this.isLegacyIntentHeld(intent)) {
+        return this.finishRetryableAttempt(intent, leaseToken, {
+          status: 'FAILED_TERMINAL',
+          statusCode: null,
+          errorCode: 'webhook_legacy_effect_held',
+          message: 'Permanent legacy source or participant hold denies a new delete effect',
+          retryDelayMs: 60_000,
+        });
+      }
+
       if (!this.hasDeleteMutationEvidence(intent)) {
         await this.assertLeaseForExternalCall(heartbeat);
         const protectedIntent = await this.finishProtectedManagedBotMessageAutoDelete(
@@ -3711,6 +3728,14 @@ export class ModerationDeleteIntentService {
     return total;
   }
 
+  private async isLegacyIntentHeld(intent: IntentRow): Promise<boolean> {
+    if (!this.legacyHolds) return false;
+    if (await this.legacyHolds.isMessageHeld(intent.chatId, intent.messageId)) return true;
+    return (
+      !!intent.subjectUserId && this.legacyHolds.isMemberHeld(intent.chatId, intent.subjectUserId)
+    );
+  }
+
   private async runDeletePreDispatchGuards(
     intent: IntentRow,
     botId: string,
@@ -3727,6 +3752,7 @@ export class ModerationDeleteIntentService {
     guardedReasonFingerprint?: string;
   }> {
     try {
+      if (await this.isLegacyIntentHeld(intent)) throw new WebhookLegacyHoldRejectedError();
       let profanityVerified = false;
       let commercialVerifiedReasonKeys: string[] = [];
       let messageDuplicateVerified = false;
@@ -4241,6 +4267,7 @@ export class ModerationDeleteIntentService {
   }
 
   private isTerminalDeleteGuardRejection(error: unknown): boolean {
+    if (error instanceof WebhookLegacyHoldRejectedError) return true;
     if (error instanceof MessageRetentionGuardError) return error.disposition === 'skip';
     if (
       error instanceof ProfanityDeleteGuardRejectedError ||

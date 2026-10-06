@@ -4,6 +4,10 @@ import {
 } from './moderation-rule-escalation';
 import { ModerationRuleFollowupService } from './moderation-rule-followup.service';
 import {
+  WebhookLegacyHoldService,
+  type WebhookLegacyHoldDatabase,
+} from '../webhook/webhook-legacy-hold.service';
+import {
   DURABLE_RULE_FOLLOWUP_RULES,
   readRuleFollowupEnvelope,
 } from './moderation-rule-followup-persistence';
@@ -882,6 +886,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     private readonly requiredSubscriptionExecutionGuard?: RequiredSubscriptionExecutionGuardService,
     @Optional() private readonly moderationRuleFollowupService?: ModerationRuleFollowupService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -1194,10 +1199,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private createBotModerationEvent(params: { data: Prisma.ModerationEventUncheckedCreateInput }) {
+  private async createBotModerationEvent(params: {
+    data: Prisma.ModerationEventUncheckedCreateInput;
+  }) {
+    await this.assertLegacyModerationAllowed(
+      params.data.chatId,
+      params.data.userId,
+      params.data.messageId,
+    );
     return this.prisma.moderationEvent.create({
       data: this.withBotModerationEventData(params.data),
     });
+  }
+
+  private async isLegacyModerationHeld(
+    chatId: string,
+    userId?: string | null,
+    messageId?: string | null,
+    tx?: WebhookLegacyHoldDatabase,
+  ): Promise<boolean> {
+    if (!this.legacyHolds) return false;
+    if (messageId && (await this.legacyHolds.isMessageHeld(chatId, messageId, tx))) return true;
+    return !!userId && this.legacyHolds.isMemberHeld(chatId, userId, tx);
+  }
+
+  private async assertLegacyModerationAllowed(
+    chatId: string,
+    userId?: string | null,
+    messageId?: string | null,
+    tx?: WebhookLegacyHoldDatabase,
+  ): Promise<void> {
+    if (await this.isLegacyModerationHeld(chatId, userId, messageId, tx))
+      throw new ModerationRuleSanctionRejectedError();
   }
 
   onModuleInit() {
@@ -1443,6 +1476,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       return;
     }
+
+    // FLAG: A legacy disposition denies the whole source family across late edits and bots.
+    // This check precedes duplicate evidence, callbacks and every whole-engine state mutation.
+    if (await this.legacyHolds?.isMessageHeld(update.message.chatId, update.message.messageId))
+      return;
 
     // FLAG: Edits/removals revoke duplicate evidence even when later moderation exits early.
     await this.messageDuplicateService?.observeLifecycle?.(update);
@@ -1725,6 +1763,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
         return;
       }
+
+      // FLAG: Old sender-scoped strikes/duplicate evidence cannot authorize another
+      // automatic effect while the original participant remains unreconciled.
+      if (await this.isLegacyModerationHeld(chatId, senderId, messageId)) return;
 
       const mediaFlags = detectMediaFlags(update);
       const requiredSubscriptionMediaNoticeScope = resolveRequiredSubscriptionMediaNoticeScope({
@@ -4410,6 +4452,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async applySanctionAction(params: ApplySanctionActionParams): Promise<boolean> {
+    await this.assertLegacyModerationAllowed(params.chatId, params.userId, params.messageId);
     await params.assertActiveLease?.();
     if (
       params.action !== SanctionAction.BAN &&
@@ -4432,6 +4475,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             params.assertActiveLease,
           );
           await activeLeaseGuard?.assertOwned();
+          await this.assertLegacyModerationAllowed(params.chatId, params.userId, params.messageId);
           if (params.authorizeSanction) {
             if (!(await params.authorizeSanction())) {
               resolvedOutcome = false;
@@ -4534,6 +4578,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
       return false;
     }
+
+    await this.assertLegacyModerationAllowed(chatId, userId, messageId);
 
     if (action === SanctionAction.MUTE) {
       const effectiveMuteDurationHours = this.readMuteDurationHoursFromMetadata(
@@ -4861,6 +4907,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
     profanityHooks?: ProfanityDeleteMutationHooks,
   ): Promise<ModerationActionExecutionResult> {
+    await this.assertLegacyModerationAllowed(chatId, undefined, messageId);
     return this.executeModerationActionWithFallbackResult({
       chatId,
       action: 'delete_message',
@@ -5579,6 +5626,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ruleCode: string;
     updateType?: string | null;
   }): Promise<boolean> {
+    if (await this.isLegacyModerationHeld(params.chatId, params.userId, params.messageId))
+      return false;
     const messageId = params.messageId?.trim();
     if (!messageId) {
       return true;
@@ -5704,7 +5753,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const recoveringOwnEffect = phase !== 'UNSTARTED';
     if (!botId && !recoveringOwnEffect) throw new Error('Rule follow-up has no capable executor');
     const guards = createRuleSanctionGuards(
-      (proof, options) => this.moderationRuleSanctionGuard!.assertAllowed(proof, options),
+      async (proof, options) => {
+        await this.assertLegacyModerationAllowed(proof.chatId, proof.userId, proof.messageId);
+        await this.moderationRuleSanctionGuard!.assertAllowed(proof, options);
+      },
       {
         chatId: row.chatId,
         messageId: row.messageId,
@@ -5801,6 +5853,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       // FLAG: Exact confirmed BAN permits receipt-only SQL settlement after expiry. New
       // WARN/MUTE effects require current policy and no newer manual release after locks.
       if (!confirmedBan) {
+        await this.assertLegacyModerationAllowed(row.chatId, row.userId, row.messageId, tx);
         await tx.$queryRaw(
           Prisma.sql`SELECT "id" FROM "chats" WHERE "id" = ${row.chatId} FOR SHARE`,
         );
@@ -5915,6 +5968,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return executeRuleFollowupSanction(plan, active, {
           authorize: async () => {
             await active.assertLease();
+            if (await this.isLegacyModerationHeld(row.chatId, row.userId, row.messageId))
+              return false;
             const manual = await this.resolveLatestManualReleaseCreatedAt(row.chatId, row.userId);
             if (manual && manual.getTime() >= plan.issuedAtMs) return false;
             return (await params.authorizeSanction?.()) !== false;
@@ -5979,6 +6034,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           // FLAG: Replay derives current effective SQL state under the shared sanction lock,
           // rather than restoring an old event over a newer mute, ban or manual release.
           rememberActiveMute: async () => {
+            if (await this.isLegacyModerationHeld(row.chatId, row.userId, row.messageId)) return;
             await this.getActiveMute(row.chatId, row.userId, plan.muteDurationHours, {
               bypassCache: true,
             });
@@ -6080,6 +6136,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ruleCode: string;
     score: number;
   }): Promise<boolean> {
+    if (await this.isLegacyModerationHeld(params.chatId, params.userId, params.messageId))
+      return false;
     return claimAndPersistModerationMessageViolation(
       this.prisma,
       {
@@ -6097,6 +6155,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     messageId: string;
   }): Promise<DurableModerationMessageActionClaimResult> {
+    if (await this.isLegacyModerationHeld(params.chatId, params.userId, params.messageId))
+      return 'blocked';
     const ruleCode = DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE;
     return resolveDuplicateMessageActionClaim({
       ...params,
@@ -8439,6 +8499,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    if (
+      (await this.isLegacyModerationHeld(chatId, userId, messageId)) ||
+      (await this.legacyHolds?.isGlobalUserHeld(userId))
+    )
+      return false;
+
     if (!claimAlreadyAcquired) {
       const claimed = await this.claimMessageScopedModerationAction({
         chatId,
@@ -8512,6 +8578,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (!this.redisCounter) {
       return baseResult;
     }
+    if (await this.legacyHolds?.isGlobalUserHeld(params.userId)) return baseResult;
 
     const {
       chatId,
@@ -8791,6 +8858,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     reason: string;
   }): Promise<boolean> {
     const { chatId, userId, messageId, text, createdAt, reason } = params;
+    if (await this.legacyHolds?.isGlobalUserHeld(userId)) return false;
     if (this.isKnownRuntimeBotUserId(userId)) {
       return false;
     }
@@ -9421,6 +9489,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     context?: { chatId?: string; messageId?: string; trigger?: string },
   ): Promise<boolean> {
+    if (await this.legacyHolds?.isGlobalUserHeld(userId)) return false;
     if (this.isKnownRuntimeBotUserId(userId)) {
       return false;
     }
@@ -9474,6 +9543,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async isDeveloperForcedGlobalSpammerCached(userId: string): Promise<boolean> {
+    if (await this.legacyHolds?.isGlobalUserHeld(userId)) return false;
     if (this.isKnownRuntimeBotUserId(userId)) {
       return false;
     }
@@ -9756,6 +9826,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     evidenceHash?: string;
   }) {
     const { userId, sourceChatId, reason, evidence } = params;
+    if (await this.legacyHolds?.isGlobalUserHeld(userId)) return;
     if (this.isKnownRuntimeBotUserId(userId)) {
       return;
     }
@@ -14232,6 +14303,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId?: string;
     nightModeTimezone: string | null;
   }): Promise<boolean> {
+    // FLAG: A held source bypasses automatic moderation without spending immunity.
+    if (await this.isLegacyModerationHeld(params.chatId, params.userId, params.messageId))
+      return true;
     if (params.messageId && this.participantImmunity) {
       return (
         (await this.participantImmunity.consumeForMessage({
@@ -18108,6 +18182,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     mute: ActiveMute,
   ): Promise<boolean> {
+    if (await this.isLegacyModerationHeld(chatId, userId)) return false;
     const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
       ?.setStringWithTtl;
     if (typeof setStringWithTtl !== 'function') {

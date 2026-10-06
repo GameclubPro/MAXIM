@@ -1,4 +1,5 @@
 import { maxApiMinuteCounterAddress } from './max-api-counter-storage';
+import { WebhookLegacyHoldRejectedError } from '../webhook/webhook-legacy-hold.service';
 import { isMaxMutationOutcomeAmbiguous } from './max-mutation-outcome.util';
 import {
   MAX_API_SOURCE_TAGS,
@@ -1876,6 +1877,453 @@ describe('MaxClientService inline keyboard guardrails', () => {
       marketplaceState as never,
     );
   }
+
+  describe('permanent legacy effects hold at the transport boundary', () => {
+    function holds(messageHeld = true) {
+      return {
+        isOutboundJobHeld: jest.fn().mockResolvedValue(false),
+        isMessageHeld: jest.fn().mockResolvedValue(messageHeld),
+        isMemberHeld: jest.fn().mockResolvedValue(false),
+        isGlobalUserHeld: jest.fn().mockResolvedValue(false),
+        isLegacyChatSendHeld: jest.fn().mockResolvedValue(false),
+      };
+    }
+    const job = {
+      actionType: 'DELETE_MESSAGE',
+      chatId: '-100',
+      messageId: 'held-source',
+      createdAt: new Date().toISOString(),
+      idempotencyKey: 'held-source-delete',
+      attempt: 1,
+      maxAttempts: 3,
+      retryPolicy: 'default',
+    } as MaxActionJob;
+
+    it('denies immediate legacy DELETE before HTTP with a proven pre-dispatch failure', async () => {
+      const request = jest.fn();
+      const service = createService({ request });
+      Object.assign(service, { legacyHolds: holds() });
+      let error: unknown;
+      try {
+        await service.executeActionJob(job);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(WebhookLegacyHoldRejectedError);
+      expect(wasMaxPreDispatchGuardRejected(error)).toBe(true);
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('fails closed on hold lookup loss before HTTP', async () => {
+      const request = jest.fn();
+      const service = createService({ request });
+      const hold = holds(false);
+      hold.isMessageHeld.mockRejectedValue(new Error('Hold store unavailable'));
+      Object.assign(service, { legacyHolds: hold });
+      await expect(service.executeActionJob(job)).rejects.toThrow('Hold store unavailable');
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('settles a known completed SEND without checking holds or sending again', async () => {
+      const request = jest.fn();
+      const service = createService({ request }, {}, undefined, {
+        getCompletedSendDispatchResult: jest.fn().mockResolvedValue({
+          remoteMessageId: 'confirmed-message',
+          dispatchBotId: 'default',
+          completedAt: new Date(),
+        }),
+      });
+      const hold = holds();
+      Object.assign(service, { legacyHolds: hold });
+      await expect(
+        service.executeActionJob({ ...job, actionType: 'SEND_MESSAGE', text: 'notice' }),
+      ).resolves.toMatchObject({ messageId: 'confirmed-message' });
+      expect(hold.isOutboundJobHeld).not.toHaveBeenCalled();
+      expect(hold.isMessageHeld).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('recovers a concurrent positive SEND receipt after hold rejection and preserves auto-delete', async () => {
+      const request = jest.fn();
+      const completedAt = new Date();
+      const readReceipt = jest.fn().mockResolvedValueOnce(null).mockResolvedValue({
+        remoteMessageId: 'late-confirmed-message',
+        dispatchBotId: '777000_bot',
+        completedAt,
+      });
+      const claim = jest.fn().mockResolvedValue({
+        kind: 'claimed',
+        dispatchToken: 'late-confirmation-token',
+      });
+      const queue = {
+        add: jest.fn().mockResolvedValue(undefined),
+        getJob: jest.fn().mockResolvedValue(null),
+      };
+      const service = createService({ request }, {}, queue, {
+        getCompletedSendDispatchResult: readReceipt,
+        claimSendDispatch: claim,
+        assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+        recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      });
+      const hold = holds();
+      Object.assign(service, { legacyHolds: hold });
+      await expect(
+        service.executeActionJob({
+          ...job,
+          actionType: 'SEND_MESSAGE',
+          text: 'notice',
+          botId: '777000_bot',
+          autoDeleteDelayMs: 60_000,
+        }),
+      ).resolves.toMatchObject({
+        messageId: 'late-confirmed-message',
+        recoveredSendDispatch: { dispatchBotId: '777000_bot' },
+      });
+      expect(readReceipt).toHaveBeenCalledTimes(2);
+      expect(hold.isMessageHeld).toHaveBeenCalled();
+      expect(claim).toHaveBeenCalledTimes(1);
+      expect(request).not.toHaveBeenCalled();
+      expect(queue.add).toHaveBeenCalledWith(
+        'execute-max-action',
+        expect.objectContaining({
+          actionType: 'DELETE_MESSAGE',
+          messageId: 'late-confirmed-message',
+          botId: '777000_bot',
+        }),
+        expect.objectContaining({ delay: expect.any(Number) }),
+      );
+    });
+
+    it('releases a denied SEND despite a late receipt-read outage and permits a fresh retry', async () => {
+      const request = jest.fn().mockReturnValue(of({ data: { mid: 'fresh-retry-message' } }));
+      let claimedToken: string | null = null;
+      const ledger = {
+        getCompletedSendDispatchResult: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockRejectedValueOnce(new Error('Transient receipt lookup unavailable'))
+          .mockResolvedValue(null),
+        claimSendDispatch: jest.fn().mockImplementation(async (action: MaxActionJob) => {
+          if (claimedToken) throw new Error('A surviving send fence prevents a fresh retry');
+          claimedToken = `attempt-${action.attempt}`;
+          return { kind: 'claimed', dispatchToken: claimedToken };
+        }),
+        releaseSendDispatch: jest
+          .fn()
+          .mockImplementation(async (_action: MaxActionJob, token: string) => {
+            expect(token).toBe(claimedToken);
+            claimedToken = null;
+          }),
+        completeSendDispatch: jest.fn().mockImplementation(async () => {
+          claimedToken = null;
+          return new Date();
+        }),
+        recordAmbiguousSendDispatch: jest.fn(),
+      };
+      const service = createService({ request }, {}, undefined, ledger);
+      const hold = holds();
+      Object.assign(service, { legacyHolds: hold });
+      const action = { ...job, actionType: 'SEND_MESSAGE' as const, text: 'notice' };
+      try {
+        let failure: unknown;
+        try {
+          await service.executeActionJob(action);
+        } catch (error: unknown) {
+          failure = error;
+        }
+        expect(failure).toBeInstanceOf(WebhookLegacyHoldRejectedError);
+        expect(wasMaxPreDispatchGuardRejected(failure)).toBe(true);
+        expect(wasMaxMessageSendAttempted(failure)).toBe(false);
+        expect(isMaxMutationOutcomeAmbiguous(failure, true)).toBe(false);
+        expect(request).not.toHaveBeenCalled();
+        expect(ledger.releaseSendDispatch).toHaveBeenCalledWith(action, 'attempt-1');
+        expect(claimedToken).toBeNull();
+
+        hold.isMessageHeld.mockResolvedValue(false);
+        await expect(service.executeActionJob({ ...action, attempt: 2 })).resolves.toMatchObject({
+          messageId: 'fresh-retry-message',
+        });
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(ledger.claimSendDispatch).toHaveBeenCalledTimes(2);
+        expect(ledger.completeSendDispatch).toHaveBeenCalledTimes(1);
+        expect(ledger.recordAmbiguousSendDispatch).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('retains quarantine when receipt lookup and the mandatory denied SEND release both fail', async () => {
+      const request = jest.fn();
+      const ledger = {
+        getCompletedSendDispatchResult: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockRejectedValue(new Error('Transient receipt lookup unavailable')),
+        claimSendDispatch: jest.fn().mockResolvedValue({
+          kind: 'claimed',
+          dispatchToken: 'unreleased-token',
+        }),
+        releaseSendDispatch: jest.fn().mockRejectedValue(new Error('Dispatch release unavailable')),
+        recordAmbiguousSendDispatch: jest.fn().mockResolvedValue(true),
+      };
+      const service = createService({ request }, {}, undefined, ledger);
+      Object.assign(service, { legacyHolds: holds() });
+      const action = { ...job, actionType: 'SEND_MESSAGE' as const, text: 'notice' };
+      try {
+        let failure: unknown;
+        try {
+          await service.executeActionJob(action);
+        } catch (error: unknown) {
+          failure = error;
+        }
+        expect(isMaxMutationOutcomeAmbiguous(failure, true)).toBe(true);
+        expect(ledger.releaseSendDispatch).toHaveBeenCalledWith(action, 'unreleased-token');
+        expect(ledger.recordAmbiguousSendDispatch).toHaveBeenCalledTimes(1);
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('settles a no-origin SEND receipt found at the wrapper final hold without running its revoked feature', async () => {
+      const request = jest.fn();
+      const readReceipt = jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue({
+          remoteMessageId: 'wrapper-confirmed-message',
+          dispatchBotId: '777000_bot',
+          completedAt: new Date(),
+        });
+      const ledger = {
+        getCompletedSendDispatchResult: readReceipt,
+        assertCanExecute: jest.fn().mockResolvedValue(undefined),
+        recordStarted: jest.fn().mockResolvedValue(undefined),
+        recordSucceeded: jest.fn().mockResolvedValue(undefined),
+        recordFailed: jest.fn().mockResolvedValue(undefined),
+        claimSendDispatch: jest.fn().mockResolvedValue({
+          kind: 'claimed',
+          dispatchToken: 'wrapper-late-confirmation-token',
+        }),
+      };
+      const service = createService({ request }, {}, undefined, ledger);
+      const hold = holds();
+      hold.isMessageHeld
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValue(true);
+      Object.assign(service, { legacyHolds: hold });
+      const dispatch = new MaxActionDispatchService(
+        service,
+        undefined,
+        ledger as never,
+        undefined,
+        undefined,
+        hold as never,
+      );
+      const feature = jest.fn().mockRejectedValue(new Error('Notice settings revoked'));
+      await expect(
+        dispatch.execute(
+          { ...job, actionType: 'SEND_MESSAGE', text: 'notice' },
+          {
+            beforeSendMutation: feature,
+          },
+        ),
+      ).resolves.toMatchObject({ messageId: 'wrapper-confirmed-message', botId: '777000_bot' });
+      expect(readReceipt).toHaveBeenCalledTimes(3);
+      expect(feature).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+      expect(ledger.claimSendDispatch).toHaveBeenCalledTimes(1);
+      expect(ledger.recordSucceeded).not.toHaveBeenCalled();
+      expect(ledger.recordFailed).not.toHaveBeenCalled();
+    });
+
+    it('denies direct EDIT even when the message was read successfully', async () => {
+      const request = jest.fn().mockImplementation(() =>
+        of({
+          data: {
+            sender: { user_id: 'source-user' },
+            recipient: { chat_id: '-100' },
+            body: { mid: 'held-source', text: 'Original', attachments: [] },
+          },
+        }),
+      );
+      const service = createService({ request });
+      Object.assign(service, { legacyHolds: holds() });
+      await expect(
+        service.editMessageInlineKeyboard('-100', 'held-source', 'Changed'),
+      ).rejects.toBeInstanceOf(WebhookLegacyHoldRejectedError);
+      expect(request.mock.calls.some(([call]) => String(call.method).toLowerCase() === 'put')).toBe(
+        false,
+      );
+    });
+
+    it.each(['immediate', 'custom', 'copy', 'reply', 'queued'] as const)(
+      'denies %s SEND from a held source before its feature guard or HTTP publication',
+      async (kind) => {
+        const request = jest.fn().mockImplementation(() =>
+          of({
+            data: {
+              sender: { user_id: 'source-user' },
+              recipient: { chat_id: '-100' },
+              body: { mid: 'held-source', text: 'Original', attachments: [] },
+            },
+          }),
+        );
+        const service = createService({ request });
+        const hold = holds();
+        Object.assign(service, { legacyHolds: hold });
+        const beforeSend = jest.fn().mockResolvedValue(undefined);
+        const link = { type: 'reply' as const, mid: 'held-source' };
+        const button = { text: 'Open', url: 'https://example.com' };
+        const send =
+          kind === 'immediate'
+            ? () =>
+                service.sendMessageImmediateWithId('-100', 'Reply', {
+                  messageLink: link,
+                  beforeSend,
+                })
+            : kind === 'custom'
+              ? () =>
+                  service.sendCustomMessageImmediate(
+                    '-100',
+                    { text: 'Reply', messageLink: link },
+                    {},
+                    beforeSend,
+                  )
+              : kind === 'copy'
+                ? () =>
+                    service.sendMessageCopyWithInlineKeyboard('-100', 'held-source', null, {
+                      button,
+                      beforeSend,
+                    })
+                : kind === 'reply'
+                  ? () =>
+                      service.sendMessageReplyWithInlineKeyboard('-100', 'held-source', 'Reply', {
+                        button,
+                      })
+                  : () =>
+                      service.executeActionJob(
+                        {
+                          ...job,
+                          actionType: 'SEND_MESSAGE',
+                          messageId: undefined,
+                          text: 'Reply',
+                          options: { messageLink: link },
+                        },
+                        { beforeSendMutation: beforeSend },
+                      );
+        try {
+          let failure: unknown;
+          try {
+            await send();
+          } catch (error: unknown) {
+            failure = error;
+          }
+          expect(failure).toBeInstanceOf(WebhookLegacyHoldRejectedError);
+          expect(wasMaxPreDispatchGuardRejected(failure)).toBe(true);
+          expect(wasMaxMessageSendAttempted(failure)).toBe(false);
+          expect(hold.isMessageHeld).toHaveBeenCalledWith('-100', 'held-source');
+          expect(beforeSend).not.toHaveBeenCalled();
+          expect(
+            request.mock.calls.some(([call]) => String(call.method).toLowerCase() === 'post'),
+          ).toBe(false);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['original', 'nested_reply'] as const)(
+      'checks a cross-chat copy against the actual source chat for %s holds',
+      async (scope) => {
+        const request = jest.fn().mockReturnValue(
+          of({
+            data: {
+              sender: { user_id: 'source-user' },
+              recipient: { chat_id: '-200' },
+              body: { mid: 'copy-source', text: 'Original', attachments: [] },
+              link: { type: 'reply', mid: 'held-parent' },
+            },
+          }),
+        );
+        const service = createService({ request });
+        const hold = holds(false);
+        hold.isMessageHeld.mockImplementation(
+          async (chatId: string, messageId: string) =>
+            chatId === '-200' &&
+            messageId === (scope === 'original' ? 'copy-source' : 'held-parent'),
+        );
+        Object.assign(service, { legacyHolds: hold });
+        const beforeSend = jest.fn().mockResolvedValue(undefined);
+        try {
+          await expect(
+            service.sendMessageCopyWithInlineKeyboard('-100', 'copy-source', null, { beforeSend }),
+          ).rejects.toBeInstanceOf(WebhookLegacyHoldRejectedError);
+          expect(hold.isMessageHeld).toHaveBeenCalledWith(
+            '-200',
+            scope === 'original' ? 'copy-source' : 'held-parent',
+          );
+          expect(beforeSend).not.toHaveBeenCalled();
+          expect(
+            request.mock.calls.some(([call]) => String(call.method).toLowerCase() === 'post'),
+          ).toBe(false);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('rejects malformed linked-source identity before the original feature guard', async () => {
+      const request = jest.fn();
+      const service = createService({ request });
+      Object.assign(service, { legacyHolds: holds(false) });
+      const beforeSend = jest.fn().mockResolvedValue(undefined);
+      try {
+        await expect(
+          service.sendMessageImmediateWithId('-100', 'Reply', {
+            messageLink: { type: 'reply', mid: ' held-source ' },
+            beforeSend,
+          }),
+        ).rejects.toBeInstanceOf(WebhookLegacyHoldRejectedError);
+        expect(beforeSend).not.toHaveBeenCalled();
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('keeps the current feature guard last for an allowed linked source', async () => {
+      const order: string[] = [];
+      const request = jest.fn().mockImplementation(() => {
+        order.push('http');
+        return of({ data: { mid: 'allowed-reply' } });
+      });
+      const service = createService({ request });
+      const hold = holds(false);
+      hold.isMessageHeld.mockImplementation(async () => {
+        order.push('hold');
+        return false;
+      });
+      Object.assign(service, { legacyHolds: hold });
+      const beforeSend = jest.fn().mockImplementation(async () => {
+        order.push('feature');
+      });
+      try {
+        await expect(
+          service.sendMessageImmediateWithId('-100', 'Reply', {
+            messageLink: { type: 'reply', mid: 'allowed-source' },
+            beforeSend,
+          }),
+        ).resolves.toMatchObject({ messageId: 'allowed-reply' });
+        expect(order).toEqual(['hold', 'feature', 'http']);
+        expect(beforeSend).toHaveBeenCalledTimes(1);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+  });
 
   describe('marketplace public-post delivery boundary', () => {
     const marketplaceUrl =
@@ -4386,25 +4834,38 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }
     });
 
-    it('rejects queued execution without its ephemeral guard', async () => {
-      const http = { request: jest.fn() };
-      const service = createService(http);
-      try {
-        await expect(
-          service.executeActionJob({
-            actionType: 'TRY_UNBAN_MEMBER',
-            chatId: 'chat-1',
-            userId: 'user-1',
-            idempotencyKey: 'queued-attempt',
-            attempt: 1,
-            createdAt: new Date().toISOString(),
-          }),
-        ).rejects.toThrow('live guard');
-        expect(http.request).not.toHaveBeenCalled();
-      } finally {
-        await service.onModuleDestroy();
-      }
-    });
+    it.each([false, true])(
+      'rejects queued execution without its ephemeral guard (legacy reader=%s)',
+      async (withLegacyHolds) => {
+        const http = { request: jest.fn() };
+        const service = createService(http);
+        if (withLegacyHolds)
+          Object.assign(service, {
+            legacyHolds: {
+              isOutboundJobHeld: jest.fn().mockResolvedValue(false),
+              isMessageHeld: jest.fn().mockResolvedValue(false),
+              isMemberHeld: jest.fn().mockResolvedValue(false),
+              isGlobalUserHeld: jest.fn().mockResolvedValue(false),
+              isLegacyChatSendHeld: jest.fn().mockResolvedValue(false),
+            },
+          });
+        try {
+          await expect(
+            service.executeActionJob({
+              actionType: 'TRY_UNBAN_MEMBER',
+              chatId: 'chat-1',
+              userId: 'user-1',
+              idempotencyKey: 'queued-attempt',
+              attempt: 1,
+              createdAt: new Date().toISOString(),
+            }),
+          ).rejects.toThrow('live guard');
+          expect(http.request).not.toHaveBeenCalled();
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
 
     it('stops before HTTP when the final absence guard rejects', async () => {
       const http = { request: jest.fn() };

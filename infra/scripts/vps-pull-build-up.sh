@@ -40,6 +40,12 @@ SERVICES=()
 if [[ $# -ge 2 ]]; then
   for argument in "${@:2}"; do
     case "$argument" in
+      --legacy-order-preview|--legacy-order-preview=*|--legacy-order-apply|--legacy-order-apply=*)
+        # FLAG: Recovery activation is quarantined before any runtime mutation.
+        # There is no caller or environment override for this authority boundary.
+        echo "Legacy cold recovery activation is disabled (cold_activation_disabled)." >&2
+        exit 2
+        ;;
       --plan|--auto|--full)
         if [[ "$DEPLOY_MODE" != "manual" ]]; then
           echo "Only one of --plan, --auto, or --full may be used." >&2
@@ -57,6 +63,7 @@ if [[ $# -ge 2 ]]; then
     esac
   done
 fi
+
 
 if [[ "$DEPLOY_MODE" != "manual" && "${#SERVICES[@]}" -gt 0 ]]; then
   echo "Explicit services cannot be combined with --$DEPLOY_MODE." >&2

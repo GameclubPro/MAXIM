@@ -86,6 +86,7 @@ describe('retention root dependency graph', () => {
         expect(providerNames.has('BackgroundRuntimeGovernorService')).toBe(true);
         expect(providerNames.has('MaxActionLedgerWatchdogService')).toBe(true);
         const { PrismaService } = await import('../prisma/prisma.service');
+        const { WebhookLegacyHoldService } = await import('../webhook/webhook-legacy-hold.service');
         const { MessageRetentionRuntime } =
           await import('../message-retention/message-retention-runtime.service');
         const { ModerationDeleteIntentService } =
@@ -99,6 +100,9 @@ describe('retention root dependency graph', () => {
           .useValue({});
         for (const token of queueTokens) builder.overrideProvider(token).useValue({});
         const context = await builder.compile();
+        const legacyHolds = context.get(WebhookLegacyHoldService);
+        expect(() => legacyHolds.onApplicationBootstrap()).not.toThrow();
+        expect(WebhookLegacyHoldService.forPrisma(context.get(PrismaService))).toBe(legacyHolds);
         try {
           expect(context.get(MESSAGE_DUPLICATE_NOTICE_AUTHORITY)).toBe(
             context.get(MessageDuplicateDeleteGuardService),

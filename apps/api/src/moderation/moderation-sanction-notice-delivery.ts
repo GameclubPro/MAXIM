@@ -67,7 +67,17 @@ export async function deliverSanctionNotice(params: {
       bypassNoticeBucket: input.bypassNoticeBucket,
       idempotencyKey: input.idempotencyKey,
       beforeSend: input.beforeSend,
-      ledgerContext: input.ledgerContext,
+      // FLAG: Generic notices retain exact source identity for permanent legacy holds.
+      // Completed SEND receipts settle before these identities can deny a new dispatch.
+      ledgerContext: {
+        ...input.ledgerContext,
+        moderationSource: {
+          version: 1,
+          chatId: input.chatId,
+          messageId: input.messageId,
+          userId: input.userId,
+        },
+      },
     });
   } catch (error) {
     params.logger.warn(

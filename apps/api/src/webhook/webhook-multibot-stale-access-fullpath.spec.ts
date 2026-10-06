@@ -61,9 +61,20 @@ describeStores('native multibot absent rights webhook and independently stale ro
       });
       expect(await s.intents.attemptIntent(pending.id)).toMatchObject({ kind: 'confirmed' });
       await s.ruleFollowups.sweep();
-      expect(s.effects.filter((e) => e.messageId === messageId)).toMatchObject([
-        { method: 'delete', botId: s.bots[1]!.id },
-      ]);
+      const deletes = s.effects.filter((e) => e.messageId === messageId);
+      expect(deletes).toMatchObject([{ method: 'delete', botId: expect.any(String) }]);
+      // Every standby has the same proved rights. SQL ties do not define which
+      // standby wins; continuation must use one eligible reserve exactly once.
+      expect(s.bots.slice(1).map((bot) => bot.id)).toContain(deletes[0]!.botId);
+      expect(
+        await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+          where: { id: pending.id },
+        }),
+      ).toMatchObject({
+        status: 'SUCCEEDED',
+        remoteDeleteSucceededBotId: deletes[0]!.botId,
+        retryUntilAt: pending.retryUntilAt,
+      });
       expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId } })).toBe(1);
       expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
       expect(engine).toHaveBeenCalledTimes(1);
