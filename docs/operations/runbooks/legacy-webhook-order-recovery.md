@@ -71,6 +71,13 @@ It must report complete source coverage and
 running and writes private diagnostic evidence. Do not raise budgets to force an
 incomplete inventory through admission.
 
+For a source refusal, `postgres-audit legacy-order-candidates` schema v2 keeps
+the same two indexed first-row probes and adds bounded structure diagnostics for
+that one candidate. `source_shape` contains only booleans and JSON type names;
+it never includes message text, identities or unknown field names. The 256 KiB
+shape ceiling is explicit. These observations neither validate the complete
+source nor permit replay, stopping or installation. No extra audit grants apply.
+
 Change `operation` to `prepare` only for an approved selection. Preparation runs
 native smokes, repeats fresh online admission, requires a 10 GiB Docker reserve,
 and refuses an existing queue fence. It writes a durable journal before stopping

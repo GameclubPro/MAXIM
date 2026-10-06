@@ -904,7 +904,7 @@ function extractQueueReportSql(sql) {
 
 function extractLegacyOrderCandidatesSql(sql) {
   const start = sql.indexOf('WITH oldest_received AS MATERIALIZED (');
-  const marker = 'LEFT JOIN classified_candidate candidate ON TRUE;';
+  const marker = 'LEFT JOIN candidate_parts candidate ON TRUE;';
   const end = sql.indexOf(marker, start);
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
@@ -952,12 +952,12 @@ test('legacy order candidates are opt-in, input-free and keep the guarded privat
   );
   assert.doesNotMatch(
     statement,
-    /raw_payload|source_ip|user_id|bot_id|webhook_execution_claims|moderation_delete_intents|COUNT\(|GROUP BY|DISTINCT/u,
+    /raw_payload|source_ip|webhook_execution_claims|moderation_delete_intents|COUNT\(|GROUP BY|DISTINCT/u,
   );
   const projection = statement.slice(statement.indexOf('SELECT json_build_object('));
   assert.doesNotMatch(
     projection,
-    /^\s*'[^'\n]*(?:chat|user|text|body|payload|token|error|owner)[^'\n]*',/mu,
+    /^\s*'(?:chat_id|user_id|text|body|payload|token|error|owner)',/mu,
   );
   assert.match(projection, /'candidate_receipt_id'/u);
   assert.match(projection, /'scope', 'oldest_received_only'/u);
@@ -1053,12 +1053,26 @@ test('legacy candidate classification never skips an earlier unknown fence or le
       'candidate_count',
       'candidate_receipt_id',
       'classification',
+      'source_shape',
     ]);
     assert.equal(value.classification, classification);
     assert.equal(value.candidate_receipt_id, id);
     assert.equal(value.candidate_count, id === null ? 0 : 1);
     assert.equal(value.receipt_sample_cap, 1);
     assert.equal(value.predecessor_sample_cap, 1);
+    assert.equal(value.schema_version, 2);
+    if (id === null) assert.equal(value.source_shape, null);
+    else {
+      assert.equal(value.source_shape.diagnostics_only, true);
+      assert.ok(
+        Object.values(value.source_shape).every(
+          (entry) =>
+            entry === null ||
+            typeof entry === 'boolean' ||
+            ['object', 'array', 'string', 'number', 'boolean', 'null'].includes(entry),
+        ),
+      );
+    }
     assert.doesNotMatch(
       JSON.stringify(value),
       /private-|LEGACY_EXECUTION|CANONICAL_BUSINESS|message_created|FAILED/u,
@@ -1076,6 +1090,50 @@ test('legacy candidate classification never skips an earlier unknown fence or le
     [candidateId, legacy, payload],
   );
   await report('legacy_unverified_candidate', candidateId);
+  const source = JSON.parse(payload);
+  source.botId = 'private-bot';
+  source.message.entityType = 'chat';
+  source.message.senderId = 'private-user';
+  source.message.createdAt = '2026-01-01T00:00:00.000Z';
+  source.raw = {
+    update_type: 'message_created',
+    timestamp: 1767225600000,
+    message: {
+      timestamp: 1767225600000,
+      sender: { user_id: 'private-user', name: 'private-name', is_bot: false },
+      recipient: { chat_id: 'private-chat', chat_type: 'chat', user_id: null },
+      body: { mid: 'private-message', text: 'private-body', attachments: null },
+    },
+  };
+  const shape = async (update) => {
+    await database.query('UPDATE webhook_events SET normalized_payload = $1::jsonb WHERE id = $2', [
+      JSON.stringify(update),
+      candidateId,
+    ]);
+    await report('legacy_unverified_candidate', candidateId);
+    return JSON.parse(Object.values((await database.query(statement)).rows[0])[0]).source_shape;
+  };
+  const nullable = await shape(source);
+  assert.equal(nullable.recipient_keys_supported, false);
+  assert.equal(nullable.recipient_nullable_actor, true);
+  assert.equal(nullable.attachments_kind, 'null');
+  assert.equal(nullable.actor_is_human, true);
+  assert.equal(nullable.content_matches, true);
+  assert.equal(nullable.chat_identity_matches, true);
+  assert.equal(nullable.message_identity_matches, true);
+  assert.equal(nullable.actor_identity_matches, true);
+  source.raw.message.body.attachments = [];
+  delete source.raw.message.recipient.user_id;
+  assert.equal((await shape(source)).attachments_empty, true);
+  assert.equal((await shape(source)).recipient_keys_supported, true);
+  source.raw.message['private-unknown-key'] = 'private-unknown-value';
+  assert.equal((await shape(source)).original_keys_supported, false);
+  source.message.text = 'private-'.repeat(40000);
+  assert.equal((await shape(source)).budget_exceeded, true);
+  await database.query('UPDATE webhook_events SET normalized_payload = $1::jsonb WHERE id = $2', [
+    payload,
+    candidateId,
+  ]);
   for (const field of ['next_enqueue_at', 'timeout_quarantine_expires_at', 'processed_at']) {
     await database.exec(
       `UPDATE webhook_events SET ${field} = '2026-01-03' WHERE status = 'FAILED'`,

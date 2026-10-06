@@ -877,7 +877,7 @@ WITH oldest_received AS MATERIALIZED (
   FROM received_source
   CROSS JOIN LATERAL (
     SELECT id, status, error_message, next_enqueue_at,
-      timeout_quarantine_expires_at, processed_at
+      timeout_quarantine_expires_at, processed_at, normalized_payload
     FROM webhook_events
     -- FLAG: Keep the exact ordered-chat-head partial-index predicate. Source identity
     -- stays join-only; neither this candidate nor a missing journal proves old effects.
@@ -898,16 +898,32 @@ WITH oldest_received AS MATERIALIZED (
     LIMIT 1
   ) predecessor
 ), classified_candidate AS MATERIALIZED (
-  SELECT id,
+  SELECT id, normalized_payload,
     status = 'FAILED'::"WebhookStatus"
       AND error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required'
       AND next_enqueue_at IS NULL AND timeout_quarantine_expires_at IS NULL
       AND processed_at IS NULL
       AND id ~ '^[a-zA-Z0-9_-]{1,128}$' AS eligible
   FROM bounded_predecessor
+), candidate_source AS MATERIALIZED (
+  -- FLAG: Inspect only the selected receipt. Bounded shape booleans are diagnostics,
+  -- never source admission; no original field values or unknown key names leave SQL.
+  SELECT id, eligible,
+    octet_length(normalized_payload::text) > 262144 AS source_budget_exceeded,
+    CASE WHEN eligible AND octet_length(normalized_payload::text) <= 262144
+      THEN normalized_payload ELSE NULL END AS normalized
+  FROM classified_candidate
+), candidate_parts AS MATERIALIZED (
+  SELECT *, normalized->'raw' AS raw,
+    normalized->'message' AS normalized_message,
+    normalized->'raw'->'message' AS original_message,
+    normalized->'raw'->'message'->'sender' AS sender,
+    normalized->'raw'->'message'->'recipient' AS recipient,
+    normalized->'raw'->'message'->'body' AS original_body
+  FROM candidate_source
 )
 SELECT json_build_object(
-  'schema_version', 1,
+  'schema_version', 2,
   'audit', 'legacy_order_candidates',
   'scope', 'oldest_received_only',
   'receipt_sample_cap', 1,
@@ -922,10 +938,50 @@ SELECT json_build_object(
       THEN 'source_unknown'
     WHEN candidate.id IS NULL THEN 'no_predecessor'
     WHEN candidate.eligible THEN 'legacy_unverified_candidate'
-    ELSE 'ineligible_predecessor' END
+    ELSE 'ineligible_predecessor' END,
+  'source_shape', CASE WHEN candidate.eligible THEN json_build_object(
+    'diagnostics_only', true,
+    'budget_exceeded', candidate.source_budget_exceeded,
+    'normalized_kind', jsonb_typeof(candidate.normalized),
+    'raw_kind', jsonb_typeof(candidate.raw),
+    'original_kind', jsonb_typeof(candidate.original_message),
+    'normalized_message_kind', jsonb_typeof(candidate.normalized_message),
+    'receiver_present', jsonb_typeof(candidate.normalized->'botId') = 'string'
+      AND COALESCE(candidate.normalized->>'botId', '') <> '',
+    'event_kinds_match', candidate.normalized->>'type' = 'message_created'
+      AND candidate.raw->>'update_type' = 'message_created',
+    'membership_present', COALESCE(candidate.normalized->'membership' <> 'null'::jsonb, false),
+    'ingress_clock', candidate.normalized->>'eventTimestampSource' = 'ingress',
+    'group_kinds_match', candidate.normalized_message->>'entityType' = 'chat'
+      AND candidate.recipient->>'chat_type' = 'chat',
+    'actor_is_human', candidate.sender->'is_bot' = 'false'::jsonb,
+    'actor_bot_flag_kind', jsonb_typeof(candidate.sender->'is_bot'),
+    'raw_keys_supported', CASE WHEN jsonb_typeof(candidate.raw) = 'object' THEN
+      candidate.raw - ARRAY['update_type', 'timestamp', 'message', 'update_id'] = '{}'::jsonb END,
+    'original_keys_supported', CASE WHEN jsonb_typeof(candidate.original_message) = 'object' THEN
+      candidate.original_message - ARRAY['sender', 'recipient', 'timestamp', 'body'] = '{}'::jsonb END,
+    'actor_keys_supported', CASE WHEN jsonb_typeof(candidate.sender) = 'object' THEN
+      candidate.sender - ARRAY['user_id', 'name', 'first_name', 'last_name', 'username',
+        'is_bot', 'avatar_url', 'last_activity_time'] = '{}'::jsonb END,
+    'recipient_keys_supported', CASE WHEN jsonb_typeof(candidate.recipient) = 'object' THEN
+      candidate.recipient - ARRAY['chat_id', 'chat_type'] = '{}'::jsonb END,
+    'recipient_nullable_actor', candidate.recipient->'user_id' = 'null'::jsonb,
+    'content_keys_supported', CASE WHEN jsonb_typeof(candidate.original_body) = 'object' THEN
+      candidate.original_body - ARRAY['mid', 'seq', 'text', 'attachments'] = '{}'::jsonb END,
+    'attachments_kind', jsonb_typeof(candidate.original_body->'attachments'),
+    'attachments_empty', candidate.original_body->'attachments' = '[]'::jsonb,
+    'content_matches', jsonb_typeof(candidate.original_body->'text') = 'string'
+      AND candidate.original_body->'text' = candidate.normalized_message->'text',
+    'event_clock_kind', jsonb_typeof(candidate.raw->'timestamp'),
+    'original_clock_kind', jsonb_typeof(candidate.original_message->'timestamp'),
+    'normalized_clock_kind', jsonb_typeof(candidate.normalized_message->'createdAt'),
+    'chat_identity_matches', candidate.recipient->>'chat_id' = candidate.normalized_message->>'chatId',
+    'message_identity_matches', candidate.original_body->>'mid' = candidate.normalized_message->>'messageId',
+    'actor_identity_matches', candidate.sender->>'user_id' = candidate.normalized_message->>'senderId'
+  ) ELSE NULL END
 )::text
 FROM (SELECT 1) singleton
-LEFT JOIN classified_candidate candidate ON TRUE;
+LEFT JOIN candidate_parts candidate ON TRUE;
 \else
 \echo MAXIM_POSTGRES_LEGACY_ORDER_CANDIDATES_INDEX_UNAVAILABLE
 SELECT 1 / 0;

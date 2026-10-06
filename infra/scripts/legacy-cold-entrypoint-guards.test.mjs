@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   cpSync,
@@ -14,7 +14,10 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
-const sourceSha = '38aa92f7445acfff7c36371138d328aa1fbd6af9';
+const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+  cwd: root,
+  encoding: 'utf8',
+}).trim();
 const scripts = [
   ['vps-pull-build-up.sh', ['main', '--full']],
   ['vps-pull-build-up-scale.sh', ['main']],
