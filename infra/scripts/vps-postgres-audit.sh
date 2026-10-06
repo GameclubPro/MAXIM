@@ -960,6 +960,15 @@ SELECT json_build_object(
       candidate.raw - ARRAY['update_type', 'timestamp', 'message', 'update_id'] = '{}'::jsonb END,
     'original_keys_supported', CASE WHEN jsonb_typeof(candidate.original_message) = 'object' THEN
       candidate.original_message - ARRAY['sender', 'recipient', 'timestamp', 'body'] = '{}'::jsonb END,
+    'original_metadata_keys_only', CASE WHEN jsonb_typeof(candidate.original_message) = 'object' THEN
+      candidate.original_message - ARRAY['sender', 'recipient', 'timestamp', 'body', 'url', 'stat'] = '{}'::jsonb END,
+    'original_flat_content_keys_only', CASE WHEN jsonb_typeof(candidate.original_message) = 'object' THEN
+      candidate.original_message - ARRAY['sender', 'recipient', 'timestamp', 'body', 'text'] = '{}'::jsonb END,
+    'original_url_kind', jsonb_typeof(candidate.original_message->'url'),
+    'original_stat_kind', jsonb_typeof(candidate.original_message->'stat'),
+    'original_link_kind', jsonb_typeof(candidate.original_message->'link'),
+    'original_forward', candidate.original_message->'link'->>'type' = 'forward',
+    'original_reply', candidate.original_message->'link'->>'type' = 'reply',
     'actor_keys_supported', CASE WHEN jsonb_typeof(candidate.sender) = 'object' THEN
       candidate.sender - ARRAY['user_id', 'name', 'first_name', 'last_name', 'username',
         'is_bot', 'avatar_url', 'last_activity_time'] = '{}'::jsonb END,
@@ -972,6 +981,10 @@ SELECT json_build_object(
     'attachments_empty', candidate.original_body->'attachments' = '[]'::jsonb,
     'content_matches', jsonb_typeof(candidate.original_body->'text') = 'string'
       AND candidate.original_body->'text' = candidate.normalized_message->'text',
+    'content_matches_ascii_trim', jsonb_typeof(candidate.original_body->'text') = 'string'
+      AND btrim(candidate.original_body->>'text', E' \t\n\r') = candidate.normalized_message->>'text',
+    'flat_content_matches', jsonb_typeof(candidate.original_message->'text') = 'string'
+      AND candidate.original_message->'text' = candidate.normalized_message->'text',
     'event_clock_kind', jsonb_typeof(candidate.raw->'timestamp'),
     'original_clock_kind', jsonb_typeof(candidate.original_message->'timestamp'),
     'normalized_clock_kind', jsonb_typeof(candidate.normalized_message->'createdAt'),
