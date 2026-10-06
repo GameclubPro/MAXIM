@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
@@ -27,11 +28,11 @@ function read(path) {
   return readFileSync(resolve(root, path), 'utf8');
 }
 
-function runTopologyProbe(probe) {
+function runTopologyProbe(probe, environment = {}) {
   return spawnSync('bash', ['-c', `source "$TOPOLOGY_PATH"\n${probe}`], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, TOPOLOGY_PATH: topologyPath },
+    env: { ...process.env, TOPOLOGY_PATH: topologyPath, ...environment },
   });
 }
 
@@ -114,7 +115,7 @@ test('rollback floor requires image-text binding v1 at the pre-dispatch delete b
   const guard = topology.slice(start, topology.indexOf('\n}\n', start) + 2);
   assert.match(guard, /git cat-file/u);
   assert.match(guard, /git show/u);
-  assert.doesNotMatch(guard, /docker|psql|redis|\.env/u);
+  assert.doesNotMatch(guard, /\b(?:docker|psql|redis)\b|\.env/u);
 
   const valid = runTopologyProbe(`
 git() {
@@ -130,7 +131,7 @@ git() {
       '    await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);' \\
       '    await options?.beforeDeleteMutation?.();' \\
       '  }' \\
-      '  private async assertImageTextStopListDeleteIntentStillActionable('
+      '  private async assertImageTextStopListDeleteIntentStillActionable(intent: IntentRow, botId: string): Promise<void> {'
     return 0
   fi
   return 2
@@ -153,7 +154,7 @@ git() {
       '    await options?.beforeDeleteMutation?.();' \\
       '    await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);' \\
       '  }' \\
-      '  private async assertImageTextStopListDeleteIntentStillActionable('
+      '  private async assertImageTextStopListDeleteIntentStillActionable(intent: IntentRow, botId: string): Promise<void> {'
     return 0
   fi
   return 2
@@ -162,6 +163,106 @@ if maxim_topology_require_image_text_stop_list_delete_guard target-sha; then exi
 `);
   assert.equal(stale.status, 0, stale.stderr);
   assert.match(stale.stderr, /lacks the reviewed image-text stop-list pre-dispatch guard/u);
+});
+
+test('image-text rollback floor accepts the real executor and rejects lost absence guards', () => {
+  const executor = read('apps/api/src/moderation/moderation-delete-intent.service.ts');
+  const binding = read('apps/api/src/moderation/commercial-ocr/image-text-stop-list-binding.ts');
+  const directory = mkdtempSync(resolve(tmpdir(), 'maxim-image-guard-'));
+  const executorPath = resolve(directory, 'executor.ts');
+  const bindingPath = resolve(directory, 'binding.ts');
+  const call =
+    /const imageTextStopListGuard = await this\.assertImageTextStopListDeleteIntentStillActionable\([\s\S]*?\);/u;
+  const absence = /if \(imageTextStopListGuard === 'absent'\) \{[\s\S]*?\n {6}\}/u;
+  assert.match(executor, call);
+  assert.match(executor, absence);
+  const cases = [
+    ['real multiline executor', executor, 0],
+    [
+      'same guard on one line',
+      executor.replace(
+        call,
+        'const imageTextStopListGuard = await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);',
+      ),
+      0,
+    ],
+    [
+      'discarded result',
+      executor
+        .replace(
+          call,
+          'await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);',
+        )
+        .replace(absence, ''),
+      1,
+    ],
+    ['missing absence check', executor.replace(absence, ''), 1],
+    [
+      'wrong error type',
+      executor.replace(absence, (value) =>
+        value.replace('ModerationDeleteGuardedMessageAbsentError', 'Error'),
+      ),
+      1,
+    ],
+    [
+      'absence branch does not throw',
+      executor.replace(absence, (value) => value.replace('throw new', 'return new')),
+      1,
+    ],
+    [
+      'call follows dispatch',
+      executor.replace(call, (value) => `await options?.beforeDeleteMutation?.();\n      ${value}`),
+      1,
+    ],
+    [
+      'dispatch before absence check',
+      executor.replace(
+        absence,
+        (value) => `await options?.beforeDeleteMutation?.();\n      ${value}`,
+      ),
+      1,
+    ],
+    [
+      'duplicate guard call',
+      executor.replace(
+        call,
+        (value) =>
+          `${value}\n      await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);`,
+      ),
+      1,
+    ],
+    [
+      'wrong argument order',
+      executor.replace(call, (value) =>
+        value.replace('intent,\n        botId,', 'botId,\n        intent,'),
+      ),
+      1,
+    ],
+  ];
+  try {
+    writeFileSync(bindingPath, binding);
+    for (const [label, source, expected] of cases) {
+      writeFileSync(executorPath, source);
+      const result = runTopologyProbe(
+        `
+git() {
+  if [[ "$1" == "cat-file" ]]; then return 0; fi
+  if [[ "$1" != "show" ]]; then return 2; fi
+  if [[ "$2" == *'image-text-stop-list-binding.ts' ]]; then
+    cat "$BINDING_FIXTURE"
+  else
+    cat "$EXECUTOR_FIXTURE"
+  fi
+}
+maxim_topology_require_image_text_stop_list_delete_guard target-sha
+`,
+        { BINDING_FIXTURE: bindingPath, EXECUTOR_FIXTURE: executorPath },
+      );
+      assert.equal(result.status, expected, `${label}: ${result.stderr}`);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('extracts a single literal behavior version from the target Git source', () => {
