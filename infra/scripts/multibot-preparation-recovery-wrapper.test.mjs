@@ -85,16 +85,14 @@ let closing = false;
 for (const signal of ['SIGTERM', 'SIGHUP', 'SIGINT']) process.on(signal, () => {
   if (closing) return;
   closing = true;
-  mark('cleaning.json', {pid: process.pid, signal, atMs: Date.now()});
-  setTimeout(() => {
-    const finish = () => {
-      if (!fs.existsSync(path.join(directory, 'allow-cleanup'))) return;
-      mark('finished.json', {pid: process.pid, atMs: Date.now()});
-      process.exit(1);
-    };
-    finish();
-    setInterval(finish, 10);
-  }, 100);
+  mark('cleaning.json', {pid: process.pid, signal});
+  const finish = () => {
+    if (!fs.existsSync(path.join(directory, 'allow-cleanup'))) return;
+    mark('finished.json', {pid: process.pid});
+    process.exit(1);
+  };
+  finish();
+  setInterval(finish, 10);
 });
 mark('started.json', {pid: process.pid});
 setInterval(() => {}, 1000);
@@ -143,13 +141,14 @@ setInterval(() => {}, 1000);
       );
       assert.equal(alive(nodePid), true);
       assert.equal(alive(observer.pid), true);
+      // FLAG: The explicit gate proves the lock survives pending cleanup. Timer
+      // callbacks and wall-clock differences do not guarantee a minimum duration.
       assert.equal(await observeLock(lock, env), 1);
       await assert.rejects(readFile(finished), { code: 'ENOENT' });
       await writeFile(gate, 'release');
       const outcome = await childDone;
       const completed = await marker(finished);
       assert.equal(completed.pid, nodePid);
-      assert.ok(completed.atMs - interrupted.atMs >= 100);
       assert.deepEqual(outcome, { code: 1, exitSignal: null });
       assert.equal(alive(nodePid), false);
       assert.equal(alive(observer.pid), true);
