@@ -249,6 +249,11 @@ function createHarness() {
   };
   const dialogLinks = { buildChatDialogButton: jest.fn() };
   const bindingRefresh = { refresh: jest.fn().mockResolvedValue(undefined) };
+  const legacyHolds = {
+    isMessageHeld: jest.fn().mockResolvedValue(false),
+    isMemberHeld: jest.fn().mockResolvedValue(false),
+    isGlobalUserHeld: jest.fn().mockResolvedValue(false),
+  };
   const service = new PublisherChatCommentDeliveryService(
     prisma as never,
     maxClient as never,
@@ -257,6 +262,7 @@ function createHarness() {
     { getBotId: () => 'publik-bot' } as never,
     dialogLinks as never,
     bindingRefresh as never,
+    legacyHolds as never,
     health as never,
   );
   return {
@@ -276,6 +282,7 @@ function createHarness() {
     health,
     dialogLinks,
     bindingRefresh,
+    legacyHolds,
     service,
   };
 }
@@ -286,9 +293,132 @@ describe('PublisherChatCommentDeliveryService', () => {
   function replacementHarness() {
     const harness = createHarness();
     harness.publisherSettings.chatCommentsReplaceOriginalEnabled = true;
-    const job = { ...buildAttachJob(), createdAt: new Date().toISOString() };
+    const job = {
+      ...buildAttachJob(),
+      createdAt: new Date().toISOString(),
+      sourceCreatedAt: new Date().toISOString(),
+    };
     return { ...harness, job };
   }
+
+  it('denies a fresh automatic replacement for globally held U before any new marker mutation', async () => {
+    const h = replacementHarness();
+    h.legacyHolds.isGlobalUserHeld.mockImplementation(async (userId) => userId === 'admin-1');
+    const before = { ...h.row };
+
+    await h.service.process(h.job, firstAttempt);
+
+    expect(h.row).toEqual(before);
+    expect(h.marker.updateMany).not.toHaveBeenCalled();
+    expect(h.maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(h.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(h.prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(h.legacyHolds.isGlobalUserHeld).toHaveBeenCalledWith('admin-1');
+  });
+
+  it('keeps the confirmed copy receipt but denies cleanup when U is held before final DELETE', async () => {
+    const h = replacementHarness();
+    const remoteDelete = jest.fn();
+    h.maxClient.deleteMessage.mockImplementation(async (...args) => {
+      await args[2].beforeImmediateDeleteMutation();
+      remoteDelete();
+    });
+    h.legacyHolds.isGlobalUserHeld
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+
+    await expect(h.service.process(h.job, firstAttempt)).rejects.toMatchObject({
+      code: 'webhook_legacy_effect_held',
+    });
+    expect(remoteDelete).not.toHaveBeenCalled();
+    expect(h.row.replyMessageId).toBe('publisher-copy-1');
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(remoteDelete).not.toHaveBeenCalled();
+    expect(h.row).toMatchObject({ status: 'SUCCEEDED', originalDeleted: false });
+  });
+
+  it('keeps an unstarted source claim intact if the final send fence discovers a hold', async () => {
+    const h = replacementHarness();
+    h.legacyHolds.isGlobalUserHeld.mockResolvedValueOnce(false).mockResolvedValue(true);
+    await h.service.process(h.job, firstAttempt);
+    expect(h.marker.updateMany).toHaveBeenCalledTimes(1); // Only the preceding lease refresh.
+    expect(h.row).toMatchObject({ status: 'IN_PROGRESS', replacementSendStartedAt: null });
+    expect(h.row.replyMessageId).toBeNull();
+    expect(h.prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(h.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('preserves confirmed receipt recovery without new cleanup when hold authority is unavailable', async () => {
+    const h = replacementHarness();
+    h.maxClient.deleteMessage.mockRejectedValueOnce(new Error('timeout'));
+    await expect(h.service.process(h.job, firstAttempt)).rejects.toThrow('timeout');
+    h.legacyHolds.isGlobalUserHeld.mockRejectedValueOnce(new Error('Hold store unavailable'));
+
+    await expect(h.service.process(h.job, firstAttempt)).rejects.toThrow('Hold store unavailable');
+
+    expect(h.row.replyMessageId).toBe('publisher-copy-1');
+    expect(h.maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(h.maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['legacy unknown', undefined],
+    ['invalid', 'unknown'],
+    ['expired', new Date(Date.now() - 25 * 60 * 60_000).toISOString()],
+    ['future', new Date(Date.now() + 60 * 60_000).toISOString()],
+  ])(
+    'retains the original for a %s source clock despite a fresh queue creation clock',
+    async (_, sourceCreatedAt) => {
+      const h = replacementHarness();
+      await h.service.process({ ...h.job, sourceCreatedAt }, firstAttempt);
+      expect(h.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(h.row).toMatchObject({ status: 'SUCCEEDED', originalDeleted: false });
+    },
+  );
+
+  it('uses the original source clock even if the queue envelope was created long ago', async () => {
+    const h = replacementHarness();
+    await h.service.process(
+      { ...h.job, createdAt: new Date(Date.now() - 48 * 60 * 60_000).toISOString() },
+      firstAttempt,
+    );
+    expect(h.maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(h.row.originalDeleted).toBe(true);
+  });
+
+  it('rechecks the fixed original cleanup deadline immediately before remote deletion', async () => {
+    const h = replacementHarness();
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    const remoteDelete = jest.fn();
+    h.job.sourceCreatedAt = new Date(now - 24 * 60 * 60_000 + 1_000).toISOString();
+    h.maxClient.deleteMessage.mockImplementation(async (...args) => {
+      clock.mockReturnValue(now + 1_001);
+      await args[2].beforeImmediateDeleteMutation();
+      remoteDelete();
+    });
+    try {
+      await expect(h.service.process(h.job, firstAttempt)).rejects.toThrow(
+        'Publisher replacement cleanup guard changed',
+      );
+      expect(remoteDelete).not.toHaveBeenCalled();
+      expect(h.row.replyMessageId).toBe('publisher-copy-1');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('allows an independent author V while globally held U remains blocked', async () => {
+    const h = replacementHarness();
+    h.legacyHolds.isGlobalUserHeld.mockImplementation(async (userId) => userId === 'held-U');
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(h.maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(h.row.originalDeleted).toBe(true);
+  });
 
   it('persists a replacement receipt and audit before deleting the original with the exact Publisher bot', async () => {
     const h = replacementHarness();
@@ -309,7 +439,13 @@ describe('PublisherChatCommentDeliveryService', () => {
     expect(h.maxClient.deleteMessage).toHaveBeenCalledWith(
       'chat-1',
       'message-1',
-      expect.objectContaining({ botId: 'publik-bot', immediate: true }),
+      expect.objectContaining({
+        botId: 'publik-bot',
+        immediate: true,
+        ledgerContext: {
+          moderationSource: { chatId: 'chat-1', messageId: 'message-1', userId: 'admin-1' },
+        },
+      }),
     );
     expect(h.row).toMatchObject({
       status: 'SUCCEEDED',

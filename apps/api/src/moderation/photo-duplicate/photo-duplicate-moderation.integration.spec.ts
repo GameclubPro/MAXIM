@@ -493,6 +493,19 @@ function readDeleteAuthorization(harness: ReturnType<typeof buildHarness>) {
 }
 
 describe('PhotoDuplicateModerationService', () => {
+  it('settles a no-replay source without retries, photo analysis, immunity or action claims', async () => {
+    const harness = buildHarness({ status: 'NO_REPLAY_HELD' as WebhookStatus });
+    await expect(
+      harness.service.processPhotoDuplicateJob(harness.job, harness.lease),
+    ).resolves.toBeUndefined();
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.analysisService.commitViolation).not.toHaveBeenCalled();
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
+    expect(harness.actions.claimPhotoDuplicateAction).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+    expect(harness.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+  });
+
   it('passes the exact configured comparison window to photo history', async () => {
     const harness = buildHarness();
     await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);

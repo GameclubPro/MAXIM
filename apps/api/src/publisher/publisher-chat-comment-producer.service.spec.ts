@@ -50,12 +50,18 @@ function createFixture(
     enqueueAttach: jest.fn().mockResolvedValue(undefined),
     hasMatchingAttachJob: jest.fn().mockResolvedValue(false),
   };
+  const legacyHolds = {
+    isMessageHeld: jest.fn().mockResolvedValue(false),
+    isMemberHeld: jest.fn().mockResolvedValue(false),
+    isGlobalUserHeld: jest.fn().mockResolvedValue(false),
+  };
   const service = new PublisherChatCommentProducerService(
     prisma as never,
     queue as never,
     {
       get: jest.fn((key: string) => (key === 'MAX_PUBLISHER_BOT_ID' ? 'publik-bot' : undefined)),
     } as unknown as ConfigService,
+    legacyHolds as never,
   );
   const markerStore = {
     claimChatAutoComment: jest.fn().mockResolvedValue({
@@ -68,7 +74,7 @@ function createFixture(
     skipChatAutoCommentAfterPublisherAdmissionFailure: jest.fn(),
   };
   (service as unknown as { markerStore: typeof markerStore }).markerStore = markerStore;
-  return { service, prisma, queue, markerStore };
+  return { service, prisma, queue, markerStore, legacyHolds };
 }
 
 describe('PublisherChatCommentProducerService', () => {
@@ -105,9 +111,82 @@ describe('PublisherChatCommentProducerService', () => {
         dialogBotId: 'publik-bot',
         publisherSettingsRevision: 7,
         publicationPolicyRevision: 3,
+        sourceCreatedAt: new Date(update.message!.createdAt!),
       });
     },
   );
+
+  function automaticFixture() {
+    return createFixture({
+      publisherSettings: { chatCommentsEnabled: true, chatCommentsAdminsEnabled: true },
+      accessEdges: [
+        { state: ManagedEntityAccessState.GRANTED, userRole: ManagedEntityAccessRole.ADMIN },
+      ],
+    });
+  }
+
+  it('denies a held original author on duplicate repair before creating a new marker or job', async () => {
+    const fixture = automaticFixture();
+    fixture.prisma.chat.findFirst.mockResolvedValueOnce(null);
+    await fixture.service.observeWebhook(update); // The original receipt had the feature disabled.
+    fixture.legacyHolds.isMessageHeld.mockImplementation(
+      async (_chatId, messageId) => messageId === 'other-held-original',
+    );
+    fixture.legacyHolds.isMemberHeld.mockImplementation(
+      async (chatId, userId) =>
+        chatId === update.message!.chatId && userId === update.message!.senderId,
+    );
+
+    await fixture.service.observeWebhook(update);
+    await fixture.service.observeWebhook(update);
+
+    expect(fixture.prisma.chat.findFirst).toHaveBeenCalledTimes(1);
+    expect(fixture.markerStore.claimChatAutoComment).not.toHaveBeenCalled();
+    expect(fixture.queue.enqueueAttach).not.toHaveBeenCalled();
+  });
+
+  it('denies globally held U in a fresh second chat while admitting an independent author V', async () => {
+    const fixture = automaticFixture();
+    fixture.legacyHolds.isGlobalUserHeld.mockImplementation(async (userId) => userId === 'held-U');
+    const inSecondChat: MaxUpdate = {
+      ...update,
+      message: { ...update.message!, chatId: 'chat-B', senderId: 'held-U', messageId: 'fresh-U' },
+    };
+    await fixture.service.observeWebhook(inSecondChat);
+    expect(fixture.markerStore.claimChatAutoComment).not.toHaveBeenCalled();
+    expect(fixture.queue.enqueueAttach).not.toHaveBeenCalled();
+
+    await fixture.service.observeWebhook({
+      ...inSecondChat,
+      updateId: 'independent-update',
+      message: { ...inSecondChat.message!, senderId: 'independent-V', messageId: 'fresh-V' },
+    });
+    expect(fixture.queue.enqueueAttach).toHaveBeenCalledTimes(1);
+    expect(fixture.queue.enqueueAttach).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-B',
+        senderId: 'independent-V',
+        messageId: 'fresh-V',
+      }),
+    );
+  });
+
+  it('creates no automatic work when source hold authority is unavailable', async () => {
+    const fixture = automaticFixture();
+    fixture.legacyHolds.isGlobalUserHeld.mockRejectedValueOnce(new Error('Hold store unavailable'));
+    await expect(fixture.service.observeWebhook(update)).rejects.toThrow('Hold store unavailable');
+    expect(fixture.markerStore.claimChatAutoComment).not.toHaveBeenCalled();
+    expect(fixture.queue.enqueueAttach).not.toHaveBeenCalled();
+  });
+
+  it('never invents a source clock for a webhook without a verified creation time', async () => {
+    const fixture = automaticFixture();
+    await fixture.service.observeWebhook({
+      ...update,
+      message: { ...update.message!, createdAt: undefined },
+    });
+    expect(fixture.queue.enqueueAttach.mock.calls[0]?.[0]).not.toHaveProperty('sourceCreatedAt');
+  });
 
   it('skips a sender without a fresh exact Publisher access edge', async () => {
     const fixture = createFixture({

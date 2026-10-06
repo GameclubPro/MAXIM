@@ -1,5 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
-import { buildGroupCommandKey } from '../common/group-command-authority.service';
+import { buildGroupCommandKey } from '../common/group-command-key';
 import { parseAdminForwardedModerationCommand } from '../moderation/admin-forwarded-command.util';
 import { randomUUID } from 'node:crypto';
 import { Prisma, type WebhookEvent } from '../prisma/prisma-client';
@@ -22,11 +22,11 @@ export function legacyReceiptSourceDigest(
   event: WebhookEvent,
   originalStatus = event.status,
 ): string {
-  const {
-    legacyDispositionId: _projection,
-    legacyDispositionReceiptId: _receiptProjection,
-    ...original
-  } = event;
+  const original = Object.fromEntries(
+    Object.entries(event).filter(
+      ([key]) => !['legacyDispositionId', 'legacyDispositionReceiptId'].includes(key),
+    ),
+  );
   return legacySnapshotDigest({ ...original, status: originalStatus });
 }
 

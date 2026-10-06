@@ -1220,7 +1220,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): Promise<boolean> {
     if (!this.legacyHolds) return false;
     if (messageId && (await this.legacyHolds.isMessageHeld(chatId, messageId, tx))) return true;
-    return !!userId && this.legacyHolds.isMemberHeld(chatId, userId, tx);
+    return (
+      !!userId &&
+      ((await this.legacyHolds.isMemberHeld(chatId, userId, tx)) ||
+        (await this.legacyHolds.isGlobalUserHeld(userId, tx)))
+    );
   }
 
   private async assertLegacyModerationAllowed(
@@ -1766,7 +1770,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       // FLAG: Old sender-scoped strikes/duplicate evidence cannot authorize another
       // automatic effect while the original participant remains unreconciled.
-      if (await this.isLegacyModerationHeld(chatId, senderId, messageId)) return;
+      if (
+        (await this.legacyHolds?.isMessageHeld(chatId, messageId)) ||
+        (await this.legacyHolds?.isMemberHeld(chatId, senderId))
+      )
+        return;
 
       const mediaFlags = detectMediaFlags(update);
       const requiredSubscriptionMediaNoticeScope = resolveRequiredSubscriptionMediaNoticeScope({
@@ -1927,6 +1935,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         });
         return;
       }
+
+      // FLAG: A hold in another chat denies fresh automatic moderation before
+      // immunity/evidence mutation. Explicit admin commands and callbacks remain separate.
+      if (await this.legacyHolds?.isGlobalUserHeld(senderId)) return;
 
       const latestSenderChatAdminCheck = senderChatAdminCheck;
       const ensureDestructiveModerationAllowed = async (stage: string): Promise<boolean> => {

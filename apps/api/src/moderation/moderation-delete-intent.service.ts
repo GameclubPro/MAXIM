@@ -987,6 +987,35 @@ export class ModerationDeleteIntentService {
     // FLAG: Never append a retention reason to another module's intent: several guards
     // intentionally yield to independent reasons. Normal writers atomically take ownership.
     return this.prisma.$transaction(async (tx) => {
+      // FLAG: Exact positive receipts remain readable before effect admission. Returning
+      // their identity never creates a new reason or attaches/rearms automatic work.
+      const receipt = await tx.moderationDeleteIntent.findUnique({
+        where: {
+          chatId_messageId: { chatId: candidate.chatId, messageId: candidate.messageId },
+        },
+        select: {
+          id: true,
+          status: true,
+          remoteDeleteSucceededAt: true,
+          remoteDeleteSucceededBotId: true,
+        },
+      });
+      if (
+        receipt &&
+        (receipt.status === 'SUCCEEDED' ||
+          receipt.status === 'ALREADY_ABSENT' ||
+          (receipt.remoteDeleteSucceededAt && receipt.remoteDeleteSucceededBotId))
+      )
+        return receipt.id;
+      const assertSourceAllowed = async () => {
+        if (
+          (await this.legacyHolds?.isMessageHeld(candidate.chatId, candidate.messageId, tx)) ||
+          (await this.legacyHolds?.isMemberHeld(candidate.chatId, candidate.authorId, tx)) ||
+          (await this.legacyHolds?.isGlobalUserHeld(candidate.authorId, tx))
+        )
+          throw new WebhookLegacyHoldRejectedError();
+      };
+      await assertSourceAllowed();
       const id = randomUUID();
       const created = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         INSERT INTO "moderation_delete_intents" (
@@ -1004,7 +1033,8 @@ export class ModerationDeleteIntentService {
           where: { chatId_messageId: { chatId: candidate.chatId, messageId: candidate.messageId } },
           select: { id: true },
         }));
-      if (created.length)
+      if (created.length) {
+        await assertSourceAllowed();
         await tx.moderationDeleteIntentReason.create({
           data: {
             id: randomUUID(),
@@ -1014,6 +1044,7 @@ export class ModerationDeleteIntentService {
             userId: candidate.authorId,
           },
         });
+      }
       // FLAG: Cancellation may win while the intent insert waits. Never attach work
       // using an old candidate snapshot or resurrect an ended activation.
       await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${candidate.chatId} FOR UPDATE`;
@@ -1035,6 +1066,7 @@ export class ModerationDeleteIntentService {
           'Retention activation ended',
           'activation_ended',
         );
+      await assertSourceAllowed();
       const attached = await tx.messageRetentionCandidate.updateMany({
         where: {
           chatId: candidate.chatId,

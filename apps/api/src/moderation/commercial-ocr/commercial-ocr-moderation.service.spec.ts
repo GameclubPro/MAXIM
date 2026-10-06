@@ -104,6 +104,69 @@ type HarnessOptions = {
 };
 
 describe('CommercialOcrModerationService', () => {
+  it('settles a no-replay source and suppresses pending OCR without rebind or new effects', async () => {
+    const harness = buildHarness({
+      webhookStatus: 'NO_REPLAY_HELD' as WebhookStatus,
+      admissionStates: ['pending'],
+    });
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toMatchObject({ kind: 'completed', terminal: { outcome: 'LEGITIMATE_SKIP' } });
+    expect(harness.admissionStore.suppress).toHaveBeenCalledTimes(1);
+    expect(harness.admissionStore.activate).not.toHaveBeenCalled();
+    expect(harness.prisma.webhookExecutionClaim.findUnique).not.toHaveBeenCalled();
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.participantImmunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it.each(['READY', 'COMPLETED'])(
+    'treats a duplicate OCR mirror with a no-replay owner and %s claim as terminal',
+    async (status) => {
+      const normalizedUpdate = update();
+      const semanticKey = buildWebhookSemanticEventKey(normalizedUpdate);
+      const completedAt = new Date('2026-08-12T08:00:01.000Z');
+      const harness = buildHarness({
+        normalizedUpdate,
+        webhookStatus: WebhookStatus.DUPLICATE,
+        admissionStates: ['pending'],
+      });
+      harness.prisma.webhookExecutionClaim.findUnique.mockResolvedValue({
+        id: 'claim-ocr-held-owner',
+        semanticKey,
+        webhookEventId: 'webhook-held-owner',
+        executionBotId: 'execution-bot',
+        enforced: true,
+        status,
+        preparedAt: new Date('2026-08-12T08:00:00.000Z'),
+        completedAt: status === 'COMPLETED' ? completedAt : null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        webhookEvent: {
+          status: 'NO_REPLAY_HELD',
+          processedAt: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+          errorMessage: null,
+          normalizedPayload: normalizedUpdate,
+        },
+      });
+      await expect(
+        harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+      ).resolves.toMatchObject({ kind: 'completed' });
+      expect(harness.admissionStore.suppress).toHaveBeenCalledTimes(1);
+      expect(harness.admissionStore.activate).not.toHaveBeenCalled();
+      expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+      expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+      expect(
+        harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }),
     Object.assign(new Error('limited'), {
