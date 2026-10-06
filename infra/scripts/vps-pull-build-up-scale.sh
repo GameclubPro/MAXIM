@@ -11,6 +11,8 @@ ORIGINAL_ARGS=("$@")
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
 # shellcheck source=infra/scripts/lib/deploy-disk-capacity.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
 
@@ -141,6 +143,7 @@ reexec_if_current_script_changed() {
     "$SCRIPT_REL_PATH" \
     "infra/scripts/lib/deploy-disk-capacity.sh" \
     "infra/scripts/lib/deploy-lock.sh" \
+    "infra/scripts/lib/legacy-cold-maintenance.sh" \
     "infra/scripts/lib/deploy-topology.sh"; then
     return 0
   fi
@@ -303,6 +306,7 @@ wait_for_service_running() {
 }
 
 recreate_service_wave() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local label="$1"
   shift
   local requested_services=()
@@ -327,6 +331,7 @@ recreate_service_wave() {
 }
 
 ensure_requested_services_running() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local excluded_service="${1:-}"
   local service
 
@@ -490,6 +495,7 @@ remove_stale_service_containers() {
 }
 
 run_migrations() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   ensure_compose_env
   MAXIM_MIGRATION_API_IMAGE="${SCALE_PROJECT_NAME}-api-ingress:latest" \
     docker compose "${MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never api-ingress \
@@ -503,8 +509,10 @@ fi
 
 require_scale_deploy_confirmation
 acquire_deploy_lock
+maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 sync_branch
 reexec_if_current_script_changed
+maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 ensure_compose_env
 warn_postgres_password_fallback
 warn_legacy_miniapp_static_target

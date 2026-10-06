@@ -9,6 +9,8 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
 # shellcheck source=infra/scripts/lib/webhook-rollout-quiescence.sh
 source "$ROOT_DIR/infra/scripts/lib/webhook-rollout-quiescence.sh"
 
@@ -595,6 +597,7 @@ best_effort_rearm_operator_pause() {
 }
 
 clear_operator_pause() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local summary result pause_kind
   summary="$(publisher_control clear)" || fail "Could not clear the owned publisher operator pause."
   result="$(control_field "$summary" result)" || fail "Publisher pause clear result is invalid."
@@ -653,6 +656,7 @@ recreate_wave() {
 }
 
 recreate_all_api_roles() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES
   recreate_wave "action and publisher" "${ACTION_AND_PUBLISHER_WAVE[@]}"
   recreate_wave "admin" "${ADMIN_WAVE[@]}"
@@ -1051,6 +1055,7 @@ rollout_preflight() {
 }
 
 apply_rollout() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   if [[ "$RECONCILE_ONLY" -eq 1 &&
         ("$COMMAND" != "disable" || "$DESIRED_STATE" != "false") ]]; then
     fail "Publisher reconcile-only mode is valid only for an exact disabled runtime."
@@ -1135,6 +1140,9 @@ require_topology
 [[ -f .env && ! -L .env ]] || fail "Production .env must be a regular non-symlink file."
 acquire_deploy_lock
 trap cleanup EXIT
+if [[ "$APPLY" -eq 1 ]]; then
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
+fi
 resolve_release_fence
 CURRENT_ENV_STATE="$(read_dispatch_env)" || fail "Could not read publisher dispatch dotenv state."
 CURRENT_ENV_CONFIGURED="$(read_dispatch_env_configured)" ||

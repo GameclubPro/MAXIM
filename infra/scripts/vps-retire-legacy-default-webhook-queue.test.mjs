@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { deployLockEnvironment, deployLockFixture } from './test-fixtures/deploy-lock.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const wrapper = resolve(root, 'infra/scripts/vps-retire-legacy-default-webhook-queue.sh');
@@ -25,7 +26,8 @@ function fixture() {
   const restartCount = join(directory, 'restart-count');
   const startAttempts = join(directory, 'start-attempts');
   const snapshot = join(directory, 'private-snapshot.json');
-  const lock = join(directory, 'deploy.lock');
+  const lockData = deployLockFixture(directory);
+  const lock = lockData.file;
   mkdirSync(bin);
   writeFileSync(runtimeState, 'running\n');
   writeFileSync(restartCount, '7\n');
@@ -77,25 +79,27 @@ esac
     startAttempts,
     snapshot,
     lock,
+    lockData,
   };
 }
 
 function baseEnv(data) {
-  return {
-    ...process.env,
+  return deployLockEnvironment({
     PATH: `${data.bin}:${process.env.PATH}`,
-    MAXIM_DEPLOY_LOCK_DIR: data.lock,
+    MOCK_DEPLOY_LOCK_HELPER: data.lockData.helper,
     MOCK_DOCKER_LOG: data.dockerLog,
     MOCK_LIFECYCLE_LOG: data.lifecycleLog,
     MOCK_RUNTIME_STATE: data.runtimeState,
     MOCK_RESTART_COUNT: data.restartCount,
     MOCK_START_ATTEMPTS: data.startAttempts,
     MOCK_PRIVATE_SNAPSHOT: data.snapshot,
-  };
+  });
 }
 
 const sourceAndMocks = `
 source ${JSON.stringify(wrapper)}
+source "$MOCK_DEPLOY_LOCK_HELPER"
+maxim_require_ordinary_effect_authority() { require_deploy_lock; }
 require_preconditions() { :; }
 resolve_release_fence() { :; }
 require_stateful_services_ready() { :; }
@@ -150,7 +154,8 @@ test('failure after enqueue stop restores a stable fleet and cleans snapshot and
 
   assert.equal(result.status, 42, result.stderr);
   assert.equal(existsSync(data.snapshot), false);
-  assert.equal(existsSync(data.lock), false);
+  assert.equal(existsSync(data.lock), true);
+  assert.equal(spawnSync('flock', ['-n', data.lock, 'true']).status, 0);
   assert.equal(readFileSync(data.runtimeState, 'utf8').trim(), 'running');
   assert.equal(readFileSync(data.startAttempts, 'utf8').trim(), '2');
   const dockerCalls = readFileSync(data.dockerLog, 'utf8').trim().split('\n');
@@ -329,7 +334,8 @@ main --apply
   assert.notEqual(result.status, 0);
   assert.equal(result.signal, null, result.stderr);
   assert.equal(existsSync(data.snapshot), false);
-  assert.equal(existsSync(data.lock), false);
+  assert.equal(existsSync(data.lock), true);
+  assert.equal(spawnSync('flock', ['-n', data.lock, 'true']).status, 0);
   assert.equal(readFileSync(data.runtimeState, 'utf8').trim(), 'running');
   const lifecycle = readFileSync(data.lifecycleLog, 'utf8').trim().split('\n');
   const applyIndex = lifecycle.indexOf('remote-apply');

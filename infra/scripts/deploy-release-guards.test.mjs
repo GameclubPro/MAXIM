@@ -208,7 +208,10 @@ test('synchronizes rollback entrypoints to reviewed main under the shared deploy
   );
   const builder = functionBlock(connect, 'build_guarded_rollback_command');
 
-  assert.match(bootstrap, /lock_dir=\/tmp\/maxim-main-deploy\.lock/u);
+  assert.match(bootstrap, /source infra\/scripts\/lib\/deploy-lock\.sh/u);
+  assert.match(bootstrap, /acquire_deploy_lock/u);
+  assert.match(bootstrap, /maxim_require_ordinary_effect_authority/u);
+  assert.doesNotMatch(bootstrap, /mkdir|rm -rf|\/tmp\/maxim-main-deploy\.lock/u);
   assert.ok(
     bootstrap.indexOf('grep -Fq -- "$capability_marker" "$entrypoint"') <
       bootstrap.indexOf('git status --porcelain --untracked-files=no'),
@@ -382,6 +385,8 @@ test('post-release hook performs no removal without successful publication and e
         '-c',
         `set -euo pipefail
 ${hook}
+ROOT_DIR=/safe/root
+maxim_require_ordinary_effect_authority() { return 0; }
 df() { printf 'space snapshot\\n'; }
 POST_RELEASE_RECLAIM="$1"
 DEPLOY_MANIFEST_RECORDED="$2"

@@ -6,6 +6,8 @@ cd "$ROOT_DIR"
 
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
 
 COMPOSE_FILES=(--env-file .env -p infra -f infra/docker-compose.yml)
 CONTROL_HELPER="$ROOT_DIR/infra/scripts/legacy-vk-publish-queue-cleanup.cjs"
@@ -99,4 +101,7 @@ run_control() {
 parse_args "$@"
 require_preconditions
 acquire_deploy_lock
+if [[ "$ACTION" == "apply" ]]; then
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
+fi
 run_control

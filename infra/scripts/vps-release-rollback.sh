@@ -10,6 +10,8 @@ source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 source "$ROOT_DIR/infra/scripts/lib/webhook-rollout-quiescence.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
 
 COMPOSE_FILES=(--env-file ".env" -p infra -f "infra/docker-compose.yml")
 SCALE_COMPOSE_FILES=(-p infra-scale -f "infra/docker-compose.scale.yml")
@@ -92,6 +94,7 @@ if [[ ! -s .env ]]; then
 fi
 
 acquire_deploy_lock
+maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 PLAN_FILE="$(mktemp)"
 SOURCE_MIGRATIONS_FILE="$(mktemp)"
 APPLIED_MIGRATIONS_FILE="$(mktemp)"
@@ -165,6 +168,7 @@ select_release_recovery_base() {
 }
 
 begin_release_runtime_transition() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local transition_kind=release-rollback-static
 
   if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
@@ -493,6 +497,7 @@ wait_for_strict_smoke() {
 }
 
 recreate_service() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local service="$1"
   ROLLBACK_RUNTIME_STARTED=1
   echo "Recreating $service from immutable release image..."
@@ -781,6 +786,7 @@ for smoke in "${SMOKE_RESULTS[@]}"; do
   COMMIT_ARGS+=(--smoke "$smoke")
 done
 
+maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
   node infra/scripts/release-manifest.mjs "${COMMIT_ARGS[@]}" >/dev/null
 ROLLBACK_MANIFEST_RECORDED=1

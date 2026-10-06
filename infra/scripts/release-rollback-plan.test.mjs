@@ -386,6 +386,8 @@ function runApiRecreationFixture(rollbackKind, { hasPublisher = true, failServic
     (service) => hasPublisher || service !== 'api-publisher',
   );
   const fixture = `
+ROOT_DIR=/fixture
+maxim_require_ordinary_effect_authority() { return 0; }
 COMPOSE_FILES=(-f fixture-compose.yml)
 SERVICES=(${services.join(' ')})
 MAXIM_WEBHOOK_MODERATION_SERVICES=(${PRODUCTION_API_SERVICES.filter((service) => service.startsWith('api-moderation')).join(' ')})

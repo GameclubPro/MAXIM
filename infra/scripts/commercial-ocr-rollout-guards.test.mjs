@@ -260,6 +260,8 @@ test('aborts recovery before patch or recreation when initial quiescence is not 
     [
       '-c',
       `
+ROOT_DIR=/fixture
+maxim_require_ordinary_effect_authority() { return 0; }
 RECOVERY_QUIESCENCE_PROVEN=9
 events=()
 quiesce_recovery_services() { events+=(quiesce); return 1; }

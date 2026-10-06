@@ -1,0 +1,262 @@
+import { execFileSync } from 'node:child_process';
+import { lstatSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute } from 'node:path';
+import { createHash } from 'node:crypto';
+
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const digest = /^[0-9a-f]{64}$/u;
+const execute = (args, options = {}) =>
+  execFileSync('docker', args, {
+    encoding: 'utf8',
+    timeout: 15_000,
+    maxBuffer: 8 * 1024 * 1024,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    ...options,
+  }).trim();
+
+function privateFile(path, maximum, uid) {
+  if (!isAbsolute(path) || /[,\r\n\0]/u.test(path))
+    throw new Error('private_client_input_required');
+  const stat = lstatSync(path);
+  const parent = lstatSync(dirname(path));
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.nlink !== 1 ||
+    stat.size > maximum ||
+    (stat.mode & 0o777) !== 0o600 ||
+    stat.uid !== uid ||
+    !parent.isDirectory() ||
+    parent.isSymbolicLink() ||
+    (parent.mode & 0o077) !== 0 ||
+    parent.uid !== uid
+  )
+    throw new Error('unsafe_client_input');
+}
+
+// FLAG: A single deterministic, labelled client belongs to one durable operation.
+// Never use Compose run, automatic retries, MAX credentials or a general shell in
+// this client. Its exact identity is removed and absence re-proven after any result.
+export function createLegacyColdClient({
+  sourceSha,
+  imageId,
+  networkId,
+  controllerNonce,
+  environmentFile,
+  inventoryPath,
+  queueControlPath,
+  queueControlSha256,
+  uid = process.getuid(),
+  gid = process.getgid(),
+  run = execute,
+}) {
+  if (
+    !/^[0-9a-f]{40}$/u.test(sourceSha ?? '') ||
+    !/^sha256:[0-9a-f]{64}$/u.test(imageId ?? '') ||
+    !digest.test(networkId ?? '') ||
+    !uuid.test(controllerNonce ?? '') ||
+    !Number.isSafeInteger(uid) ||
+    uid < 0 ||
+    !Number.isSafeInteger(gid) ||
+    gid < 0
+  )
+    throw new Error('invalid_client_binding');
+  const name = `maxim-legacy-recovery-${controllerNonce}`;
+  const label = `com.maxim.legacy-recovery-client=${controllerNonce}`;
+  let ownedId = null;
+  const discover = () => {
+    const text = run(['ps', '-aq', '--no-trunc', '--filter', `label=${label}`]);
+    const ids = text ? text.split('\n') : [];
+    if (ids.length > 1 || ids.some((id) => !digest.test(id)))
+      throw new Error('ambiguous_client_identity');
+    return ids;
+  };
+  const inspectOwned = (id) => {
+    const rows = JSON.parse(run(['inspect', id]));
+    const row = rows?.[0];
+    if (
+      rows.length !== 1 ||
+      row.Id !== id ||
+      row.Name !== `/${name}` ||
+      row.Image !== imageId ||
+      row.Config?.Labels?.['com.maxim.legacy-recovery-client'] !== controllerNonce
+    )
+      throw new Error('client_ownership_unproved');
+    return row;
+  };
+  const remove = () => {
+    const ids = discover();
+    if (ownedId && ids.length && ids[0] !== ownedId) throw new Error('client_identity_changed');
+    for (const id of ids) {
+      inspectOwned(id);
+      try {
+        run(['rm', '-f', id]);
+      } catch {
+        if (discover().length) throw new Error('client_removal_unproved');
+      }
+    }
+    if (discover().length) throw new Error('client_removal_unproved');
+    ownedId = null;
+  };
+  return {
+    remove,
+    invoke(kind, request) {
+      if (!['store', 'inventory', 'admission', 'queues'].includes(kind))
+        throw new Error('invalid_client_kind');
+      const input = JSON.stringify(request);
+      if (Buffer.byteLength(input) > 64 * 1024 || request?.version !== 1)
+        throw new Error('client_request_budget');
+      privateFile(environmentFile, 16 * 1024, uid);
+      const environment = readFileSync(environmentFile, 'utf8').trimEnd().split('\n');
+      const keys = environment.map((line) => line.slice(0, line.indexOf('=')));
+      if (
+        new Set(keys).size !== keys.length ||
+        !keys.includes('DATABASE_URL') ||
+        keys.some((key) => !['DATABASE_URL', 'REDIS_URL'].includes(key)) ||
+        environment.some((line) => /[\r\0]/u.test(line) || !/^[A-Z_]+=\S+$/u.test(line))
+      )
+        throw new Error('client_environment_not_allowlisted');
+      if (kind === 'store') privateFile(inventoryPath, 8 * 1024 * 1024, uid);
+      if (kind === 'queues') {
+        privateFile(queueControlPath, 64 * 1024, uid);
+        if (
+          !['pause', 'wait-drained', 'resume', 'status'].includes(request.operation) ||
+          !digest.test(queueControlSha256 ?? '') ||
+          createHash('sha256').update(readFileSync(queueControlPath)).digest('hex') !==
+            queueControlSha256
+        )
+          throw new Error('queue_control_binding_unproved');
+      }
+      if (discover().length) throw new Error('previous_client_requires_cleanup');
+      const images = JSON.parse(run(['image', 'inspect', imageId]));
+      if (
+        images.length !== 1 ||
+        images[0].Id !== imageId ||
+        images[0].Config?.Labels?.['org.opencontainers.image.revision'] !== sourceSha
+      )
+        throw new Error('client_image_unproved');
+      const command = kind === 'store' ? 'legacy-recovery-store' : 'legacy-recovery-effect-collect';
+      const args = [
+        'create',
+        '--name',
+        name,
+        '--label',
+        label,
+        '--interactive',
+        '--network',
+        networkId,
+        '--read-only',
+        '--cap-drop',
+        'ALL',
+        '--security-opt',
+        'no-new-privileges:true',
+        '--pids-limit',
+        '64',
+        '--memory',
+        '384m',
+        '--memory-swap',
+        '384m',
+        '--cpus',
+        '0.5',
+        '--user',
+        `${uid}:${gid}`,
+        '--tmpfs',
+        '/tmp:rw,size=16m,mode=1777',
+        '--env-file',
+        environmentFile,
+        '--env',
+        `APP_SOURCE_SHA=${sourceSha}`,
+        '--env',
+        `MAXIM_LEGACY_RECOVERY_IMAGE_ID=${imageId}`,
+        '--env',
+        'TZ=UTC',
+        '--env',
+        'MAXIM_LEGACY_RECOVERY_OFFLINE=1',
+      ];
+      if (kind === 'store')
+        args.push(
+          '--env',
+          'APP_SERVICE_NAME=legacy-recovery-store',
+          '--env',
+          'MAXIM_LEGACY_RECOVERY_STORE_PROTOCOL=host-offline-v1',
+          '--env',
+          `MAXIM_LEGACY_RECOVERY_STORE_MODE=${request.operation === 'readback' ? 'readback' : 'writer'}`,
+          '--mount',
+          `type=bind,source=${inventoryPath},target=/run/maxim-legacy-recovery/inventory.json,readonly`,
+        );
+      else if (kind === 'queues')
+        args.push(
+          '--env',
+          `MAXIM_WEBHOOK_ROLLOUT_OWNER_TOKEN=rollout:${createHash('sha256').update(controllerNonce).digest('hex')}`,
+          '--env',
+          'MAXIM_WEBHOOK_ROLLOUT_DRAIN_TIMEOUT_MS=1000',
+          '--mount',
+          `type=bind,source=${queueControlPath},target=/app/legacy-recovery-queues.cjs,readonly`,
+        );
+      else args.push('--env', 'APP_SERVICE_NAME=legacy-recovery-live');
+      args.push(
+        '--entrypoint',
+        'node',
+        imageId,
+        kind === 'queues'
+          ? '/app/legacy-recovery-queues.cjs'
+          : `apps/api/dist/apps/api/src/scripts/${command}.js`,
+      );
+      if (kind === 'queues') args.push(request.operation);
+      let output;
+      let failed = false;
+      try {
+        const id = run(args);
+        if (!digest.test(id)) throw new Error('client_create_identity_unproved');
+        ownedId = id;
+        inspectOwned(id);
+        try {
+          output = run(['start', '-ai', id], { input, timeout: 55_000 });
+        } catch (error) {
+          // A read-only collector uses exit 1 for a structured refusal. Preserve
+          // its bounded evidence, never Docker stderr or an unverified writer result.
+          if (
+            !['inventory', 'admission'].includes(kind) ||
+            error.status !== 1 ||
+            typeof error.stdout !== 'string' ||
+            Buffer.byteLength(error.stdout) > 8 * 1024 * 1024
+          )
+            throw error;
+          const refusal = JSON.parse(error.stdout);
+          if (
+            refusal?.version !== 1 ||
+            refusal.decision !== 'DENY' ||
+            refusal.applied !== false ||
+            refusal.activationAuthorized !== false
+          )
+            throw new Error('collector_refusal_unproved');
+          output = error.stdout;
+        }
+        if (Buffer.byteLength(output) > 8 * 1024 * 1024) throw new Error('client_output_budget');
+        output = JSON.parse(output);
+        if (kind === 'queues') {
+          if (
+            output?.queueCount !== 24 ||
+            !Number.isSafeInteger(output.pausedCount) ||
+            output.pausedCount < 0 ||
+            output.pausedCount > 24 ||
+            !Number.isSafeInteger(output.activeCount) ||
+            output.activeCount < 0
+          )
+            throw new Error('queue_response_unproved');
+          output = { version: 1, ...output };
+        } else if (!output || output.version !== 1) throw new Error('client_response_unproved');
+      } catch {
+        // Do not surface Docker errors: they may contain private inventory bytes.
+        failed = true;
+      }
+      try {
+        remove();
+      } catch {
+        throw Object.assign(new Error('client_removal_unproved'), { outcomeUnknown: true });
+      }
+      if (failed) throw Object.assign(new Error('client_result_unknown'), { outcomeUnknown: true });
+      return output;
+    },
+  };
+}

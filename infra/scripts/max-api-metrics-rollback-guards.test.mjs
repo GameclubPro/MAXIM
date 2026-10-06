@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { deployLockEnvironment, deployLockFixture } from './test-fixtures/deploy-lock.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const paths = {
@@ -12,7 +13,7 @@ const paths = {
   keys: 'apps/api/src/max/max-api-metrics-key.util.ts',
 };
 const minuteReaderMarker = 'maxim_topology_require_max_api_metrics_minute_reader';
-const apiAuthorityMarker = 'maxim_topology_require_multibot_authority';
+const apiAuthorityMarker = 'maxim_topology_require_legacy_dispositions';
 const previousReleaseMarker = 'select_release_recovery_base';
 const connect = readFileSync(resolve(root, 'infra/scripts/vps-connect.sh'), 'utf8');
 
@@ -56,12 +57,15 @@ function bootstrapProbe(t, { name, args, current = false, previousMarker, gitMod
   const currentEntrypoint = join(directory, 'current-entrypoint.sh');
   const gitLog = join(directory, 'git.log');
   const argumentLog = join(directory, 'arguments.log');
-  const lockDirectory = join(directory, 'deploy.lock');
+  const lock = deployLockFixture(directory, join(directory, 'infra/scripts/lib/deploy-lock.sh'));
+  writeFileSync(
+    join(directory, 'infra/scripts/lib/legacy-cold-maintenance.sh'),
+    'maxim_require_ordinary_effect_authority() { require_deploy_lock; }\n',
+  );
   const makeEntrypoint = (marker, label) => `
     #!/usr/bin/env bash
     # ${marker}
-    [[ "$MAXIM_DEPLOY_LOCK_DIR" == "$MAXIM_TEST_LOCK_DIR" ]]
-    [[ "$(cat "$MAXIM_TEST_LOCK_DIR/pid")" == "$$" ]]
+    require_deploy_lock
     printf '%s\\n' "$@" > "$MAXIM_TEST_ARGUMENT_LOG"
     printf '${label}\\n'
   `;
@@ -89,10 +93,9 @@ function bootstrapProbe(t, { name, args, current = false, previousMarker, gitMod
   const end = connect.indexOf('\nBOOTSTRAP\n}', start);
   assert.notEqual(end, -1);
   const productionBootstrap = connect.slice(start, end);
-  const productionLock = 'lock_dir=/tmp/maxim-main-deploy.lock';
-  assert.equal(productionBootstrap.split(productionLock).length, 2);
-  // Run the real bootstrap in isolated fixtures; never acquire the host deploy lock.
-  const bootstrap = productionBootstrap.replace(productionLock, 'lock_dir="$MAXIM_TEST_LOCK_DIR"');
+  // The production bootstrap sources the real protected helper relocated only
+  // inside this disposable fixture; no production lock-path override exists.
+  const bootstrap = productionBootstrap;
   const result = spawnSync(
     'bash',
     [
@@ -129,19 +132,19 @@ function bootstrapProbe(t, { name, args, current = false, previousMarker, gitMod
     ],
     {
       cwd: directory,
-      env: {
-        ...process.env,
-        MAXIM_TEST_LOCK_DIR: lockDirectory,
+      env: deployLockEnvironment({
         MAXIM_TEST_CURRENT_ENTRYPOINT: currentEntrypoint,
         MAXIM_TEST_ENTRYPOINT: entrypoint,
         MAXIM_TEST_GIT_LOG: gitLog,
         MAXIM_TEST_ARGUMENT_LOG: argumentLog,
         MAXIM_TEST_GIT_MODE: gitMode,
-      },
+      }),
       encoding: 'utf8',
     },
   );
-  assert.equal(existsSync(lockDirectory), false, 'Bootstrap must release its owned fixture lock');
+  assert.equal(existsSync(lock.file), true, 'The protected inode survives bootstrap cleanup');
+  const unlocked = spawnSync('flock', ['-n', lock.file, 'true']);
+  assert.equal(unlocked.status, 0, 'Bootstrap must close its owned lock descriptor');
   return {
     result,
     gitCalls: readFileSync(gitLog, 'utf8').trim().split('\n').filter(Boolean),

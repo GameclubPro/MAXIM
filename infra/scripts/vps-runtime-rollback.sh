@@ -10,6 +10,8 @@ source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 source "$ROOT_DIR/infra/scripts/lib/webhook-rollout-quiescence.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
 # shellcheck source=infra/scripts/lib/deploy-disk-capacity.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
 
@@ -336,6 +338,7 @@ verify_service_image_id() {
 }
 
 begin_runtime_rollback_transition() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
     return 0
   fi
@@ -415,6 +418,7 @@ remove_incompatible_publisher_container() {
 }
 
 record_runtime_rollback_release() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local release_id
   local args=()
 
@@ -492,6 +496,7 @@ if [[ ! -s infra/scripts/release-manifest.mjs || ! -s scripts/smoke-http.mjs ]];
 fi
 acquire_deploy_lock
 trap cleanup EXIT
+maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 if ! MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
   node infra/scripts/release-manifest.mjs validate-current >/dev/null; then
   select_runtime_rollback_recovery_base
@@ -562,6 +567,7 @@ if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 0 ]]; then
 fi
 
 recreate_runtime_api_wave() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local label="$1"
   shift
   local wave_services=("$@")

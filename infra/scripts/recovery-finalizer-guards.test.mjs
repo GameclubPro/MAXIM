@@ -206,6 +206,7 @@ test('guarded wrapper requires exact green CI and directly verifies the synchron
 test('main proves journal, runtime, released queues, smokes, and stability before commit', () => {
   const result = runSourced(`
 validate_finalizer_environment() { printf '%s\\n' validate >&2; }
+maxim_require_ordinary_effect_authority() { return 0; }
 acquire_deploy_lock() { printf '%s\\n' lock >&2; }
 verify_synchronized_checkout() { printf '%s\\n' checkout >&2; }
 resolve_recovery_base_manifest() { printf '%s\\n' journal >&2; }

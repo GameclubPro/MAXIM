@@ -13,6 +13,8 @@ source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 source "$ROOT_DIR/infra/scripts/lib/webhook-rollout-quiescence.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
 # shellcheck source=infra/scripts/lib/deploy-disk-capacity.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
 # shellcheck source=infra/scripts/lib/change-impact-components.generated.sh
@@ -228,6 +230,7 @@ initialize_release_inventory() {
 }
 
 begin_release_runtime_transition() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
     return 0
   fi
@@ -671,6 +674,7 @@ reexec_if_current_script_changed() {
     "$SCRIPT_REL_PATH" \
     "infra/scripts/lib/deploy-disk-capacity.sh" \
     "infra/scripts/lib/deploy-lock.sh" \
+    "infra/scripts/lib/legacy-cold-maintenance.sh" \
     "infra/scripts/lib/deploy-topology.sh" \
     "infra/scripts/lib/webhook-rollout-quiescence.sh" \
     "infra/scripts/lib/change-impact-components.generated.sh"; then
@@ -932,6 +936,7 @@ verify_inherited_release_components() {
 }
 
 record_successful_release() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local migrations_file=""
   local component
   local image_ref
@@ -1004,6 +1009,7 @@ record_successful_release() {
 
 reclaim_old_release_images() {
   [[ "$POST_RELEASE_RECLAIM" == 1 ]] || return 0
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   if [[ "$DEPLOY_MANIFEST_RECORDED" != 1 ]]; then
     echo "Post-release reclaim requires a newly committed successful manifest." >&2
     return 1
@@ -1084,6 +1090,7 @@ wait_for_service_running() {
 }
 
 recreate_service_wave() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local label="$1"
   shift
   local requested_services=()
@@ -1169,6 +1176,7 @@ validate_nonnegative_int() {
 }
 
 ensure_requested_services_running() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local excluded_service="${1:-}"
   local service
 
@@ -1214,6 +1222,7 @@ remove_stale_service_containers() {
 }
 
 run_migrations() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   ensure_compose_env
   MAXIM_MIGRATION_API_IMAGE="$MAXIM_API_IMAGE" \
     docker compose "${MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never api-ingress \
@@ -1221,6 +1230,7 @@ run_migrations() {
 }
 
 run_online_multibot_migrations() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   ensure_compose_env
   MAXIM_MIGRATION_API_IMAGE="$MAXIM_API_IMAGE" \
     node "$ROOT_DIR/infra/scripts/multibot-online-supervisor.mjs" "${MIGRATION_COMPOSE_FILES[@]}"
@@ -1238,6 +1248,9 @@ validate_api_ready_timeout
 validate_post_release_reclaim
 acquire_deploy_lock
 trap cleanup EXIT
+if [[ "$DEPLOY_MODE" != "plan" ]]; then
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
+fi
 sync_branch
 verify_expected_deploy_sha
 reexec_if_current_script_changed
@@ -1246,6 +1259,7 @@ if [[ "$DEPLOY_MODE" == "plan" ]]; then
   print_deploy_plan
   exit 0
 fi
+maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 ensure_compose_env
 initialize_release_inventory
 load_current_component_images

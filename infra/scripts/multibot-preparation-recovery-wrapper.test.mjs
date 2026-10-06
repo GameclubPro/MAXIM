@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { deployLockEnvironment, deployLockFixture } from './test-fixtures/deploy-lock.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
-const lockSource = resolve(root, 'infra/scripts/lib/deploy-lock.sh');
 const wrapperSource = resolve(root, 'infra/scripts/vps-recover-multibot-preparation.sh');
 
 async function marker(path) {
@@ -66,7 +66,7 @@ for (const signal of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
       const wrapper = resolve(scripts, 'vps-recover-multibot-preparation.sh');
       const lock = resolve(scripts, 'lib/deploy-lock.sh');
       await copyFile(wrapperSource, wrapper);
-      await copyFile(lockSource, lock);
+      const lockFixture = deployLockFixture(fixture, lock);
       const started = resolve(fixture, 'started.json');
       const cleaning = resolve(fixture, 'cleaning.json');
       const finished = resolve(fixture, 'finished.json');
@@ -85,10 +85,10 @@ let closing = false;
 for (const signal of ['SIGTERM', 'SIGHUP', 'SIGINT']) process.on(signal, () => {
   if (closing) return;
   closing = true;
-  mark('cleaning.json', {pid: process.pid, signal});
+  mark('cleaning.json', {pid: process.pid, signal, atMs: Date.now()});
   const finish = () => {
     if (!fs.existsSync(path.join(directory, 'allow-cleanup'))) return;
-    mark('finished.json', {pid: process.pid});
+    mark('finished.json', {pid: process.pid, atMs: Date.now()});
     process.exit(1);
   };
   finish();
@@ -99,12 +99,10 @@ setInterval(() => {}, 1000);
 `,
         { mode: 0o700 },
       );
-      const env = {
-        ...process.env,
+      const env = deployLockEnvironment({
         PATH: `${binaries}:${process.env.PATH}`,
-        MAXIM_DEPLOY_LOCK_DIR: resolve(fixture, 'deploy-lock'),
         MAXIM_WRAPPER_FIXTURE_DIRECTORY: fixture,
-      };
+      });
       const observer = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
         stdio: 'ignore',
       });
@@ -127,10 +125,7 @@ setInterval(() => {}, 1000);
       });
       nodePid = (await marker(started)).pid;
       assert.notEqual(nodePid, child.pid);
-      assert.equal(
-        (await readFile(resolve(env.MAXIM_DEPLOY_LOCK_DIR, 'pid'), 'utf8')).trim(),
-        String(child.pid),
-      );
+      assert.equal(await readFile(lockFixture.file, 'utf8'), '');
       assert.equal(await observeLock(lock, env), 1);
       // Deliver only to Bash, rather than the process group or Node itself.
       process.kill(child.pid, signal);
@@ -153,7 +148,7 @@ setInterval(() => {}, 1000);
       assert.equal(alive(nodePid), false);
       assert.equal(alive(observer.pid), true);
       assert.equal(await observeLock(lock, env), 0);
-      await assert.rejects(readFile(resolve(env.MAXIM_DEPLOY_LOCK_DIR, 'pid')), { code: 'ENOENT' });
+      assert.equal(await readFile(lockFixture.file, 'utf8'), '');
     },
   );
 }

@@ -6,6 +6,8 @@ cd "$ROOT_DIR"
 
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
 
 MAX_AGE="${MAXIM_DOCKER_RECLAIM_UNTIL:-168h}"
 RELEASE_STATE_DIR="${MAXIM_RELEASE_STATE_DIR:-/var/lib/maxim-deploy}"
@@ -61,6 +63,9 @@ if ! command -v node >/dev/null 2>&1 || \
 fi
 
 acquire_deploy_lock
+if [[ "$DRY_RUN" != 1 ]]; then
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
+fi
 
 echo "Docker disk inventory before reclaim:"
 df -h / /var/lib/docker 2>/dev/null || df -h /
@@ -77,6 +82,9 @@ reclaim_args=(
 )
 if [[ "$DRY_RUN" == 1 ]]; then
   reclaim_args+=(--dry-run)
+fi
+if [[ "$DRY_RUN" != 1 ]]; then
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 fi
 node infra/scripts/release-image-reclaim.mjs "${reclaim_args[@]}"
 echo

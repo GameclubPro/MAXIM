@@ -9,6 +9,8 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
 
 COMPOSE_FILES=(--env-file ".env" -p infra -f "infra/docker-compose.yml")
 RELEASE_STATE_DIR="${MAXIM_RELEASE_STATE_DIR:-/var/lib/maxim-deploy}"
@@ -855,6 +857,7 @@ wait_for_service_running() {
 }
 
 recreate_service() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local service="$1" deadline="${2:-$((SECONDS + API_READINESS_TIMEOUT_SEC))}"
   run_host_command_before_deadline "$deadline" "$DOCKER_MUTATION_MAX_TIMEOUT_SEC" \
     docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "$service" \
@@ -901,6 +904,7 @@ verify_ocr_producers_stopped() {
 }
 
 start_ocr_producers() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local service deadline
   deadline=$((SECONDS + API_READINESS_TIMEOUT_SEC))
   run_host_command_before_deadline "$deadline" "$DOCKER_MUTATION_MAX_TIMEOUT_SEC" \
@@ -991,6 +995,7 @@ quiesce_recovery_services() {
 }
 
 recreate_recovery_service() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local service="$1" deadline="$2"
   if run_host_command_before_deadline "$deadline" "$DOCKER_MUTATION_MAX_TIMEOUT_SEC" \
     docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate \
@@ -1039,6 +1044,7 @@ recreate_all_roles_best_effort() {
 }
 
 recover_shadow() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   RECOVERY_QUIESCENCE_PROVEN=0
   if ! quiesce_recovery_services; then
     return 1
@@ -1167,6 +1173,7 @@ build_control() {
 }
 
 apply_control() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   RECOVERY_ARMED=1
   CONTROL_OUTPUT_FILE="$(mktemp)"
   runtime_control api-admin set --expected-revision "$EXPECTED_REVISION" \
@@ -1209,6 +1216,7 @@ verify_applied_control_still_active() {
 }
 
 clear_control() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   RECOVERY_ARMED=1
   CONTROL_OUTPUT_FILE="$(mktemp)"
   runtime_control api-admin clear --expected-revision "$EXPECTED_REVISION" --apply --json \
@@ -1332,6 +1340,9 @@ require_topology
 [[ -s .env ]] || fail "Missing production .env."
 acquire_deploy_lock
 trap cleanup EXIT
+if [[ "$APPLY" -eq 1 ]]; then
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
+fi
 
 case "$COMMAND" in
   promote) promote ;;

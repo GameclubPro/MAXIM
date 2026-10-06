@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=infra/scripts/lib/deploy-lock.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
+
 ensure_compose_env() {
   local tmp_env
   local container_name
@@ -76,6 +81,9 @@ EOF
 }
 
 require_legacy_deploy_confirmation
+acquire_deploy_lock
+trap release_deploy_lock EXIT
+maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 
 ensure_compose_env
 warn_postgres_password_fallback
@@ -111,6 +119,7 @@ npm run build --workspace @maxim/miniapp
 
 docker compose -f infra/docker-compose.yml pull --ignore-buildable "${SERVICES[@]}" || true
 
+maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 docker compose -f infra/docker-compose.yml up -d --build --remove-orphans "${SERVICES[@]}"
 
 ensure_compose_env

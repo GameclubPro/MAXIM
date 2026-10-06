@@ -49,6 +49,9 @@ Commands:
                               Run or plan a manifest-aware production deploy
   finalize-release-recovery [branch]
                               Prove an exact runtime and finalize its interrupted manifest
+  install-deploy-flock <old-sha>  Install reviewed lock tooling under both protocols
+  legacy-cold-recovery <private-request.json>
+                              Inspect or apply an exact journal-bound legacy recovery
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS.
@@ -279,6 +282,58 @@ remote_exec() {
   ssh "${args[@]}" "$MAXIM_VPS_SSH_TARGET" "bash -lc $(printf '%q' "$remote_command")"
 }
 
+install_deploy_flock() {
+  if [[ $# != 1 || ! "$1" =~ ^[0-9a-f]{40}$ ]]; then
+    echo 'Usage: install-deploy-flock <reviewed-old-sha>' >&2
+    return 2
+  fi
+  local target_sha emergency_reason="${MAXIM_DEPLOY_EMERGENCY_REASON:-}"
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  case "${MAXIM_DEPLOY_EMERGENCY_BYPASS:-0}" in
+    0|'') node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha" ;;
+    1) [[ -n "${emergency_reason//[[:space:]]/}" ]] || return 2 ;;
+    *) return 2 ;;
+  esac
+  remote_exec "$(shell_quote_args bash -s -- "$1" "$target_sha")" <"$ROOT_DIR/infra/scripts/vps-install-deploy-flock.sh"
+}
+
+legacy_cold_recovery() {
+  if [[ $# != 1 ]]; then
+    echo 'Usage: legacy-cold-recovery <private-request.json>' >&2
+    return 2
+  fi
+  local request_file="$1" target_sha emergency_reason="${MAXIM_DEPLOY_EMERGENCY_REASON:-}"
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  node --input-type=module - "$ROOT_DIR" "$request_file" "$target_sha" <<'NODE'
+import { constants, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+const [root, path, sha] = process.argv.slice(2);
+const { parseLegacyColdHostRequest } = await import(pathToFileURL(join(root, 'infra/scripts/legacy-cold-host.mjs')));
+const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+try {
+  const stat = fstatSync(fd);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() ||
+    (stat.mode & 0o777) !== 0o600 || stat.size > 65536) throw new Error('Private bounded request required');
+  const request = parseLegacyColdHostRequest(readFileSync(fd, 'utf8'));
+  if (request.operation !== 'status' && request.targetSha !== sha)
+    throw new Error('Request must match the exact local source');
+} finally { closeSync(fd); }
+NODE
+  case "${MAXIM_DEPLOY_EMERGENCY_BYPASS:-0}" in
+    0|'') node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha" ;;
+    1)
+      if [[ -z "${emergency_reason//[[:space:]]/}" ]]; then
+        echo 'A reviewed emergency reason is required.' >&2
+        return 2
+      fi
+      echo "Emergency source admission: $emergency_reason" >&2
+      ;;
+    *) echo 'Invalid emergency source admission.' >&2; return 2 ;;
+  esac
+  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-legacy-cold-recovery.sh)" <"$request_file"
+}
+
 remote_from_args() {
   if [[ $# -eq 0 ]]; then
     echo "Missing remote command."
@@ -502,28 +557,19 @@ expected_tooling_sha="$1"
 entrypoint="$2"
 capability_marker="$3"
 shift 3
-lock_dir=/tmp/maxim-main-deploy.lock
-
-release_bootstrap_lock() {
-  local owner_pid
-  owner_pid="$(cat "$lock_dir/pid" 2>/dev/null || true)"
-  if [[ "$owner_pid" == "$$" ]]; then
-    rm -rf -- "$lock_dir"
-  fi
-}
-
-if ! mkdir "$lock_dir" 2>/dev/null; then
-  existing_pid="$(cat "$lock_dir/pid" 2>/dev/null || true)"
-  if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
-    echo "Another runtime deploy or rollback is already running (pid=$existing_pid)." >&2
-    exit 1
-  fi
-  rm -rf -- "$lock_dir"
-  mkdir "$lock_dir"
+bootstrap_root="$(pwd -P)"
+# FLAG: Bootstrap shares the protected inode with every runtime operation.
+# An older checkout must be explicitly upgraded before this entrypoint can run;
+# never recreate the retired PID lock or synchronize Git outside the new lock.
+if [[ ! -f infra/scripts/lib/deploy-lock.sh ]] ||
+   ! grep -Fq 'export MAXIM_DEPLOY_LOCK_VERSION=flock-v1' infra/scripts/lib/deploy-lock.sh; then
+  echo 'Reviewed flock tooling must be installed before rollback bootstrap.' >&2
+  exit 1
 fi
-printf '%s\n' "$$" >"$lock_dir/pid"
-trap release_bootstrap_lock EXIT
-export MAXIM_DEPLOY_LOCK_DIR="$lock_dir"
+source infra/scripts/lib/deploy-lock.sh
+acquire_deploy_lock
+source infra/scripts/lib/legacy-cold-maintenance.sh
+maxim_require_ordinary_effect_authority "$bootstrap_root"
 
 # Routine immutable rollback stays image-only and offline when the checked-out entrypoint is current.
 if [[ -x "$entrypoint" ]] && grep -Fq -- "$capability_marker" "$entrypoint"; then
@@ -554,7 +600,7 @@ if [[ ! -x "$entrypoint" ]] || ! grep -Fq -- "$capability_marker" "$entrypoint";
 fi
 
 # Source in the bootstrap shell so its EXIT lock cleanup also covers entrypoint preflight failures.
-# Once the rollback acquires the same PID-owned lock, its stricter cleanup trap takes ownership.
+# Once rollback validates the same inherited flock, its cleanup trap takes ownership.
 source "$entrypoint" "$@"
 BOOTSTRAP
 }
@@ -1078,7 +1124,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    maxim_topology_require_multibot_authority \
+    maxim_topology_require_legacy_dispositions \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1093,15 +1139,15 @@ rollback_release() {
   local remote_command
   local capability_marker=select_release_recovery_base
   local rollback_component
-  # FLAG: API rollback must restore tooling with the latest multibot authority floor;
-  # older minute-reader tooling cannot protect pending semantic and command journals.
+  # FLAG: API rollback must restore tooling with the permanent legacy hold floor;
+  # older tooling cannot preserve held sources after a no-replay recovery.
   # Static-only rollback keeps its existing image-only offline path.
   if [[ $# -eq 1 ]]; then
-    capability_marker=maxim_topology_require_multibot_authority
+    capability_marker=maxim_topology_require_legacy_dispositions
   else
     for rollback_component in "${@:2}"; do
       if [[ "$rollback_component" == api-shared ]]; then
-        capability_marker=maxim_topology_require_multibot_authority
+        capability_marker=maxim_topology_require_legacy_dispositions
         break
       fi
     done
@@ -1297,6 +1343,12 @@ case "$command" in
     ;;
   finalize-release-recovery)
     finalize_release_recovery "$@"
+    ;;
+  install-deploy-flock)
+    install_deploy_flock "$@"
+    ;;
+  legacy-cold-recovery)
+    legacy_cold_recovery "$@"
     ;;
   rollback-runtime)
     rollback_runtime "$@"

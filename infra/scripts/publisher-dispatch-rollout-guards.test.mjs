@@ -492,6 +492,8 @@ test('re-arms a guarded operator pause when post-enable stability fails', () => 
         '-c',
         `set -euo pipefail
 ${apply}
+ROOT_DIR=/fixture
+maxim_require_ordinary_effect_authority() { return 0; }
 events=()
 runtime_verifications=0
 arm_operator_pause() { events+=(arm); }
@@ -605,6 +607,8 @@ test('reconciles an already exact disabled runtime without recreating API roles'
         '-c',
         `set -euo pipefail
 ${apply}
+ROOT_DIR=/fixture
+maxim_require_ordinary_effect_authority() { return 0; }
 events=()
 runtime_calls=0
 heartbeat_calls=0

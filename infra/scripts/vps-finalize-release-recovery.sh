@@ -6,6 +6,8 @@ cd "$ROOT_DIR"
 
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 
@@ -514,6 +516,7 @@ wait_for_runtime_stability() {
 }
 
 commit_recovered_release() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local release_id
   local component
   local smoke
@@ -558,6 +561,7 @@ main() {
   validate_finalizer_environment
   acquire_deploy_lock
   trap finalizer_cleanup EXIT
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   verify_synchronized_checkout
   resolve_recovery_base_manifest
   resolve_target_images

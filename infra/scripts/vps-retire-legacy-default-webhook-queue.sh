@@ -7,6 +7,8 @@ cd "$ROOT_DIR"
 
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh" || exit $?
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 
@@ -481,6 +483,7 @@ stop_enqueue_service() {
 }
 
 restore_enqueue_service() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local deadline
   local remaining
   local start_timeout_sec
@@ -604,6 +607,7 @@ inspect_active_shards() {
 }
 
 apply_retirement() {
+  maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local remote_window_sec=$((COMMAND_TIMEOUT_SEC - REMOTE_APPLY_TIMEOUT_MARGIN_SEC))
   local output
   local status
@@ -650,6 +654,9 @@ main() {
   require_preconditions
   acquire_deploy_lock
   arm_cleanup_traps
+  if [[ "$ACTION" == "apply" ]]; then
+    maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
+  fi
   resolve_release_fence
   require_stateful_services_ready
   verify_exact_api_fleet
