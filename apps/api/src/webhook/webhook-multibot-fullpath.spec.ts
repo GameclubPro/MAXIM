@@ -19,6 +19,7 @@ import {
   BackgroundWebhookProcessor,
   JOIN_WEBHOOK_SHARD_PROCESSORS,
 } from '../moderation/moderation.service';
+import type { WebhookHotPathProfile } from '../moderation/moderation.service.support';
 import { Prisma } from '../prisma/prisma-client';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
@@ -60,6 +61,143 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       ),
     );
   }
+
+  it.each(['before', 'after'] as const)(
+    'completes an owner and mirror when an optional duplicate explanation fails %s its budget',
+    async (failureTiming) => {
+      const s = await fixture(2, 'on');
+      await s.pause();
+      const [chatId, independentChatId] = await s.seedCatalog(2, {
+        maxMessageLengthEnabled: false,
+      });
+      const messageId = randomUUID();
+      const at = Date.now();
+      const ownerId = await s.ingest({
+        chatId: chatId!,
+        messageId,
+        text: 'Fixture duplicate',
+        botId: s.bots[0]!.id,
+        at,
+      });
+      const mirrorId = await s.ingest({
+        chatId: chatId!,
+        messageId,
+        text: 'Fixture duplicate',
+        botId: s.bots[1]!.id,
+        at,
+      });
+      await s.ingress.preparePersistedWebhookEvent(ownerId);
+      const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { kind: 'EXECUTION', webhookEventId: ownerId },
+      });
+      const optionalError = new Error('Fixture duplicate explanation failure');
+      let rejectExplanation!: (error: Error) => void;
+      const pendingExplanation = new Promise<void>((_resolve, reject) => {
+        rejectExplanation = reject;
+      });
+      const explanation = jest.fn(() =>
+        failureTiming === 'before' ? Promise.reject(optionalError) : pendingExplanation,
+      );
+      const confirmedDeletion = jest.fn().mockResolvedValue({ success: true });
+      const helper = s.moderation as unknown as {
+        runWebhookFollowUpWithBudget(params: {
+          stage: string;
+          hotPathProfile: WebhookHotPathProfile;
+          chatId: string;
+          messageId: string;
+          maxWaitMs: number;
+          task: () => Promise<void>;
+        }): Promise<void>;
+      };
+      const handleUpdate = s.moderation.handleUpdate.bind(s.moderation);
+      const handler = jest
+        .spyOn(s.moderation, 'handleUpdate')
+        .mockImplementation(async (...args) => {
+          const [update, profile] = args;
+          if (update.message?.messageId !== messageId) return handleUpdate(...args);
+          // FLAG: This fixture isolates completion after confirmed core work. It invokes the
+          // real budget helper and canonical SQL path, without dispatching a live MAX action.
+          await confirmedDeletion();
+          expect(profile).toBeDefined();
+          profile!.successBoundaryReached = true;
+          profile!.successBoundaryStage = 'duplicate-delete';
+          await helper.runWebhookFollowUpWithBudget({
+            stage: 'duplicate-follow-up',
+            hotPathProfile: profile!,
+            chatId: chatId!,
+            messageId,
+            maxWaitMs: 5,
+            task: explanation,
+          });
+        });
+
+      try {
+        await expect(s.moderation.processWebhookEvent(ownerId)).resolves.toBeUndefined();
+        if (failureTiming === 'after') {
+          rejectExplanation(optionalError);
+          await pendingExplanation.catch(() => undefined);
+        }
+        await s.ingress.preparePersistedWebhookEvent(mirrorId);
+        await s.moderation.processWebhookEvent(mirrorId);
+        await s.moderation.processWebhookEvent(ownerId);
+        await s.moderation.processWebhookEvent(mirrorId);
+
+        expect(
+          await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } }),
+        ).toMatchObject({
+          status: 'PROCESSED',
+          errorMessage: null,
+          nextEnqueueAt: null,
+        });
+        expect(
+          await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirrorId } }),
+        ).toMatchObject({
+          status: 'DUPLICATE',
+          nextEnqueueAt: null,
+        });
+        expect(
+          await s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+        ).toMatchObject({
+          status: 'COMPLETED',
+          preparedAt: claim.preparedAt,
+          businessStartedAt: expect.any(Date),
+          completedAt: expect.any(Date),
+          leaseToken: null,
+          leaseExpiresAt: null,
+          commandResult: { kind: 'EXECUTION_FINISHED' },
+        });
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(confirmedDeletion).toHaveBeenCalledTimes(1);
+        expect(explanation).toHaveBeenCalledTimes(1);
+
+        for (const nextChatId of [chatId!, independentChatId!]) {
+          const nextId = await s.ingest({
+            chatId: nextChatId,
+            messageId: randomUUID(),
+            text: 'Next message',
+            at: at + 1,
+          });
+          await s.ingress.preparePersistedWebhookEvent(nextId);
+          await s.moderation.processWebhookEvent(nextId);
+          expect(
+            await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } }),
+          ).toMatchObject({
+            status: 'PROCESSED',
+          });
+        }
+        expect(handler).toHaveBeenCalledTimes(3);
+        expect(confirmedDeletion).toHaveBeenCalledTimes(1);
+        expect(explanation).toHaveBeenCalledTimes(1);
+        expect(s.effects).toEqual([]);
+      } finally {
+        if (failureTiming === 'after') {
+          rejectExplanation(optionalError);
+          await pendingExplanation.catch(() => undefined);
+        }
+        handler.mockRestore();
+      }
+    },
+  );
 
   async function adminCommandFixture(at = Date.now(), savedDeadlineMs?: number) {
     const s = await fixture(9);

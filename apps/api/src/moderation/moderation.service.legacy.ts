@@ -3101,14 +3101,39 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
 
     let timedOut = false;
-    await raceWithTimeout({
-      operation,
-      timeoutMs: waitMs,
-      onTimeout: () => {
-        timedOut = true;
-        detached = true;
-      },
-    });
+    try {
+      await raceWithTimeout({
+        operation,
+        timeoutMs: waitMs,
+        onTimeout: () => {
+          timedOut = true;
+          detached = true;
+        },
+      });
+    } catch (error: unknown) {
+      // FLAG: Only the optional duplicate explanation may fail after completed deletion.
+      // Violation follow-ups can still owe sanctions. Never retry this settled task or its effects.
+      if (
+        params.stage !== 'duplicate-follow-up' ||
+        params.hotPathProfile?.successBoundaryReached !== true
+      )
+        throw error;
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'follow_up_failed',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: `${params.stage}.failed`,
+        outcome: 'skip',
+        failOpen: true,
+      });
+      this.logger.warn(
+        { stage: params.stage, ...describeWebhookExecutionFailure(error) },
+        'Webhook follow-up failed after the user-facing success boundary',
+      );
+      return;
+    }
     if (!timedOut) {
       return;
     }
