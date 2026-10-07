@@ -1268,10 +1268,22 @@ describe('WebhookOutboxService', () => {
     ).toEqual(['finished-selector-unrelated']);
   });
 
-  function capacityFixture(count: number, prepare: (id: string) => Promise<void>) {
+  function capacityFixture(
+    count: number,
+    prepare: (id: string) => Promise<void>,
+    {
+      poolMax = 4,
+      enqueueConcurrency = 4,
+      systemMode = 'degrade',
+    }: {
+      poolMax?: number;
+      enqueueConcurrency?: number;
+      systemMode?: 'normal' | 'degrade';
+    } = {},
+  ) {
     const fixture = createService({
-      systemMode: 'degrade',
-      configOverrides: { ENQUEUE_POLL_INTERVAL_MS: 200, ENQUEUE_CONCURRENCY: 4 },
+      systemMode,
+      configOverrides: { ENQUEUE_POLL_INTERVAL_MS: 200, ENQUEUE_CONCURRENCY: enqueueConcurrency },
       findManyResult: Array.from({ length: count }, (_, index) => ({
         id: `capacity-${index}`,
         enqueueAttempts: 0,
@@ -1285,7 +1297,7 @@ describe('WebhookOutboxService', () => {
       })),
     });
     const metrics = jest.fn();
-    const admission = new WebhookPreparationAdmission(4, metrics);
+    const admission = new WebhookPreparationAdmission(poolMax, metrics);
     const boundary = Object.create(WebhookService.prototype) as WebhookService;
     const original = fixture.webhookService.preparePersistedWebhookEvent.getMockImplementation()!;
     Object.defineProperty(boundary, 'preparationAdmission', { value: admission });
@@ -1315,6 +1327,125 @@ describe('WebhookOutboxService', () => {
       );
     return { ...fixture, admission, metrics, run, capacityWrites };
   }
+
+  it.each([6, 32])(
+    'refills six preparation slots from carried owners at work-unit limit %i without another slow SQL selection',
+    async (enqueueConcurrency) => {
+      jest.useFakeTimers();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started: string[] = [];
+      const fixture = capacityFixture(
+        18,
+        async (id) => {
+          started.push(id);
+          if (Number(id.split('-')[1]) < 6) await held;
+        },
+        { poolMax: 12, enqueueConcurrency, systemMode: 'normal' },
+      );
+      fixture.prisma.webhookEvent.updateMany.mockImplementation(
+        createWebhookEventUpdateManyMock(fixture.webhookRows),
+      );
+      for (const [index, row] of fixture.webhookRows.entries()) {
+        (row.normalizedPayload as MaxUpdate).botId = `carried-bot-${index % 3}`;
+      }
+      const internal = fixture.service as unknown as {
+        selectEnqueueCandidates(...args: unknown[]): Promise<unknown[]>;
+        activeEnqueueUnits: Map<string, Promise<void>>;
+      };
+      const select = internal.selectEnqueueCandidates.bind(internal);
+      const selection = jest
+        .spyOn(internal, 'selectEnqueueCandidates')
+        .mockImplementation(async (...args) => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 400));
+          return select(...args);
+        });
+      try {
+        const first = fixture.run();
+        await jest.advanceTimersByTimeAsync(1_401);
+        await first;
+        expect(started).toHaveLength(6);
+        expect(fixture.admission.snapshot().inFlight).toBe(6);
+        const second = fixture.run();
+        await jest.advanceTimersByTimeAsync(450);
+        expect(started).toHaveLength(6);
+        release();
+        await jest.advanceTimersByTimeAsync(1);
+        await second;
+        expect(selection).toHaveBeenCalledTimes(2);
+        expect(new Set(started).size).toBe(18);
+        expect(started).toHaveLength(18);
+        fixture.admission.flush();
+        expect(fixture.metrics).toHaveBeenLastCalledWith(
+          expect.objectContaining({ peakInFlight: 6 }),
+        );
+        expect(fixture.capacityWrites()).toHaveLength(0);
+        expect(internal.activeEnqueueUnits.size).toBe(0);
+      } finally {
+        release();
+        await jest.runOnlyPendingTimersAsync();
+        await fixture.service.onModuleDestroy();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('amortizes slow selection with one bounded second of six-slot dispatch', async () => {
+    jest.useFakeTimers();
+    const started: Array<{ id: string; at: number }> = [];
+    const fixture = capacityFixture(
+      120,
+      async (id) => {
+        started.push({ id, at: Date.now() });
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      },
+      { poolMax: 12, enqueueConcurrency: 32, systemMode: 'normal' },
+    );
+    fixture.prisma.webhookEvent.updateMany.mockImplementation(
+      createWebhookEventUpdateManyMock(fixture.webhookRows),
+    );
+    for (const [index, row] of fixture.webhookRows.entries()) {
+      (row.normalizedPayload as MaxUpdate).botId = `pump-bot-${index % 3}`;
+    }
+    const internal = fixture.service as unknown as {
+      selectEnqueueCandidates(...args: unknown[]): Promise<unknown[]>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+      pendingEnqueueRepresentatives: Map<string, string>;
+    };
+    const select = internal.selectEnqueueCandidates.bind(internal);
+    const selection = jest
+      .spyOn(internal, 'selectEnqueueCandidates')
+      .mockImplementation(async (...args) => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 400));
+        return select(...args);
+      });
+    const began = Date.now();
+    let finishedAt: number | undefined;
+    try {
+      const work = fixture.run().then(() => {
+        finishedAt = Date.now();
+      });
+      await jest.advanceTimersByTimeAsync(1_401);
+      await work;
+      expect(selection).toHaveBeenCalledTimes(1);
+      expect(started.length).toBeGreaterThanOrEqual(54);
+      expect(started.some(({ at }) => at - began > 600)).toBe(true);
+      expect(finishedAt! - began).toBe(1_400);
+      fixture.admission.flush();
+      expect(fixture.metrics).toHaveBeenLastCalledWith(
+        expect.objectContaining({ peakInFlight: 6 }),
+      );
+      expect(internal.activeEnqueueUnits.size).toBeLessThanOrEqual(6);
+      expect(internal.pendingEnqueueRepresentatives.size).toBeLessThanOrEqual(100);
+      expect(fixture.capacityWrites()).toHaveLength(0);
+    } finally {
+      await jest.runOnlyPendingTimersAsync();
+      await fixture.service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
 
   it('dispatches scanned ordinary receipts during a sustained lifecycle stream at the real preparation cap', async () => {
     jest.useFakeTimers();
@@ -1379,7 +1510,7 @@ describe('WebhookOutboxService', () => {
           400,
         );
         const work = internals.enqueueCandidates(selected);
-        await jest.advanceTimersByTimeAsync(201);
+        await jest.advanceTimersByTimeAsync(1_001);
         sharedDeferrals += (await work).preparationSharedCapacityBlocked;
         expect(fixture.admission.snapshot().inFlight).toBeLessThanOrEqual(2);
         expect(internals.pendingEnqueueRepresentatives.size).toBeLessThanOrEqual(100);
@@ -1425,7 +1556,7 @@ describe('WebhookOutboxService', () => {
     );
   });
 
-  it('yields undispatched receipts after one poll interval of capacity contention without backoff churn', async () => {
+  it('yields undispatched receipts after one second of capacity contention without backoff churn', async () => {
     let now = Date.now();
     const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
     try {
@@ -3588,7 +3719,7 @@ describe('WebhookOutboxService', () => {
     const wallClock = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
     try {
       const first = internal.tick();
-      await jest.advanceTimersByTimeAsync(201);
+      await jest.advanceTimersByTimeAsync(1_001);
       await first;
       wallClock.mockRestore();
       expect(internal.activeEnqueueUnits.size).toBe(1);
@@ -3672,9 +3803,13 @@ describe('WebhookOutboxService', () => {
     };
     try {
       const first = internal.tick();
-      await jest.advanceTimersByTimeAsync(201);
+      await jest.advanceTimersByTimeAsync(1_001);
       await first;
-      for (let poll = 0; poll < 4; poll += 1) await internal.tick();
+      for (let poll = 0; poll < 4; poll += 1) {
+        const next = internal.tick();
+        await jest.advanceTimersByTimeAsync(1_001);
+        await next;
+      }
       expect(internal.activeEnqueueUnits.size).toBe(2);
       expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(2);
       release();

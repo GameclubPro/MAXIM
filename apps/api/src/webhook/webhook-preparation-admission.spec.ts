@@ -95,6 +95,7 @@ describe('Webhook durable preparation admission', () => {
       start('bot-d', 'ordinary');
       expect(admission.snapshot().inFlight).toBe(6);
       admission.stop();
+      expect(admission.schedulingState('bot-e', 'ordinary')).toBe('closed');
       await expect(admission.run('bot-e', 'ordinary', rejected)).rejects.toBeInstanceOf(
         WebhookPreparationDeferredError,
       );

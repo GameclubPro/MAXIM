@@ -32,17 +32,21 @@ SQL retry writes. Independent classes/bots can proceed; a released preparation s
 the next selected receipt even while an earlier queue handoff is finishing. These hints preserve
 eligible lifecycle reservations but grant no slot or permission: actual admission and exact-head
 checks remain mandatory. There are still no waiting task promises or new persistent/RAM queues.
-Only the existing worker-count bound of running units is retained. After capacity contention,
-additional dispatch is limited to one poll interval (capped at one second); already running work
-drains, and undispatched receipts remain unchanged in SQL for the next selection. External work
-or a reservation alone cannot keep an otherwise idle batch waiting. `preparationBlocked` also
-counts these undispatched units; admission `deferred` counts only actual rejected calls.
+Only the existing worker-count bound of running units is retained. Each dispatch pass has a
+one-second budget independent of the poll interval, so slow SQL selection does not force a new
+scan after only 200 ms of preparation refills. Selection, prioritization and ordered-head recovery
+precede this budget; a fresh receipt can wait for that work plus the remaining dispatch budget
+before its next selection. In-flight units retain their ownership across polls and wake the next
+pass when they finish, even if that pass has admitted no work yet. A selected snapshot never
+redispatches its carried owners. Undispatched receipts remain unchanged in SQL. External work
+or a reservation alone cannot keep an otherwise idle batch waiting. `preparationBlocked` counts
+units neither carried nor dispatched; admission `deferred` counts only actual rejected calls.
 
 The outbox rearms one poll timer after its active batch drains. The configured interval is a
 minimum between poll starts: a short batch waits the remainder, while an overdue batch yields
 to the event loop and starts the next selection without waiting for another fixed timer slot.
 Polls never overlap, and shutdown prevents an active batch from rearming the timer. Selection,
-preparation concurrency and the contention deadline above keep their existing bounds.
+preparation concurrency and the one-second dispatch deadline remain bounded.
 
 Before an event becomes prepared, the service waits for membership SQL/cache work, binding
 reconciliation, idempotent SQL read models, bootstrap cache completion, any required owner

@@ -67,6 +67,7 @@ const COMPLETED_TIMEOUT_REPAIR_RAW_ROWS = 200;
 const FINISHED_HEAD_RECOVERY_BUDGET_MS = 250;
 const FINISHED_HEAD_RECOVERY_INTERVAL_MS = 1_000;
 const SLOW_ENQUEUE_BATCH_MS = 1_000;
+const ENQUEUE_DISPATCH_BUDGET_MS = 1_000;
 const SLOW_ENQUEUE_BATCH_LOG_INTERVAL_MS = 30_000;
 const CANONICAL_PREPARATION_PENDING_RETRY_MS = 1_000;
 const RECEIVED_BATCH_SHARE = 0.75;
@@ -1587,11 +1588,18 @@ export class WebhookOutboxService
       orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
     }
     const workerCount = Math.max(1, enqueueConcurrency);
-    const dispatched = new Set<WebhookEnqueueWorkUnit>();
+    // FLAG: A carried owner already serves this selected snapshot. Its completion
+    // may wake other work, but must not redispatch that stale receipt snapshot.
+    const dispatched = new Set(
+      workUnits.filter((unit) => this.activeEnqueueUnits.has(workUnitKey(unit))),
+    );
+    for (const unit of dispatched) pending.delete(workUnitKey(unit));
     const sharedCapacityBlocked = new Set<WebhookEnqueueWorkUnit>();
     const scopeBlocked = new Set<WebhookEnqueueWorkUnit>();
     const active = new Set<Promise<void>>();
-    const deadlineMs = Date.now() + Math.max(1, Math.min(this.pollIntervalMs, 1_000));
+    // FLAG: Amortize SQL selection across a finite refill window even when the poll
+    // interval is shorter. Fresh selection waits at most this dispatch budget.
+    const deadlineMs = Date.now() + ENQUEUE_DISPATCH_BUDGET_MS;
     let timer: NodeJS.Timeout | undefined;
     let budgetExhausted = false;
     const budgetExpired = new Promise<void>((resolve) => {
@@ -1665,13 +1673,17 @@ export class WebhookOutboxService
           active.add(task);
           this.activeEnqueueUnits.set(key, task);
         }
-        if (active.size === 0) break;
+        if (dispatched.size === workUnits.length) break;
+        // FLAG: Prior-poll work still owns slots. Observe its completion as well as
+        // this pass's tasks; external preparation alone must not keep a poll waiting.
+        const owned = [...this.activeEnqueueUnits.values()];
+        if (owned.length === 0) break;
         const completion =
           this.activeEnqueueUnits.size < workerCount
             ? this.webhookService.nextPreparationCompletion()
             : null;
         await Promise.race(
-          completion ? [...active, completion, budgetExpired] : [...active, budgetExpired],
+          completion ? [...owned, completion, budgetExpired] : [...owned, budgetExpired],
         );
       }
       // A full selection may still contain a slow final task. Observe it only for
