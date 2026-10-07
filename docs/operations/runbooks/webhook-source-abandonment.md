@@ -51,12 +51,12 @@ censuses, each ending at cursor zero. Each pass caps database size at 12 million
 keys, uses advisory `COUNT 4096`, and caps pages at 4,096 and duration at 15 seconds
 inside the shared 30-second collection deadline. Structural census has separate
 4 MiB namespace-reply and 16 MiB returned measurement-metadata budgets. Each
-read performs one SCAN page, with every cursor accounted for. Atomic read-only
+read performs at most two SCAN pages, with every cursor accounted for. Atomic read-only
 transactions run three EVAL_RO commands: commandstats projection, page, projection.
 Each projection validates at most 64 KiB and 512 lines of internal INFO and returns
 at most 512 bytes of original counter text. Exactly two completed EVAL_RO calls
 must separate the snapshots; their reported time includes the first meter and
-the whole page. Above 50 ms refuses admission after execution, without retry or
+the whole read. Above 50 ms refuses admission after execution, without retry or
 preemption. The final meter is outside that delta; the 15-second wall deadline
 remains independent. This reduces returned metadata, not internal INFO work.
 Redis 7.2+ Lua TIME is frozen. Structural census has separate byte/key/work limits

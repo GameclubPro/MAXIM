@@ -186,7 +186,7 @@ native('modern full namespace census on Redis 7', () => {
     expect(await redis.dbsize()).toBe(0);
   });
 
-  it('stops on the first zero cursor and counts one underlying page', async () => {
+  it('stops a paired scan on its first zero cursor and counts one underlying page', async () => {
     expect(await inventorySourceAbandonmentNamespaces(reader(), deadline())).toMatchObject({
       complete: true,
       issue: null,
