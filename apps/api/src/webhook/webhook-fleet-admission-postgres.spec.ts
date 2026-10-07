@@ -29,6 +29,7 @@ native('fleet admission isolation from one unknown ordered scope', () => {
   jest.setTimeout(45_000);
   let prisma: PrismaClient;
   let redis: Redis;
+  let ownsRedis = false;
   let queue: Queue;
   let ingress: WebhookService;
   let outbox: WebhookOutboxService;
@@ -61,13 +62,24 @@ native('fleet admission isolation from one unknown ordered scope', () => {
       SELECT version(), current_setting('TimeZone') AS timezone`;
     expect(identity?.version).toMatch(/^PostgreSQL 16\./u);
     expect(identity?.timezone).toBe('UTC');
-    redis = new Redis(redisUrl, { maxRetriesPerRequest: null });
+    // FLAG: Queue names do not isolate global action-health or system-mode keys.
+    // Own an empty local database so other native suites cannot throttle this fixture.
+    const redisTarget = new URL(redisUrl);
+    redisTarget.pathname = '/11';
+    const fixtureRedisUrl = redisTarget.toString();
+    redis = new Redis(fixtureRedisUrl, {
+      maxRetriesPerRequest: null,
+      commandTimeout: 10_000,
+    });
+    expect(await redis.info('server')).toMatch(/^redis_version:7\./mu);
+    if (await redis.dbsize()) throw new Error('Disposable fleet Redis database is occupied');
+    ownsRedis = true;
     queue = new Queue(`fleet-admission-${randomUUID()}`, {
       connection: redis as unknown as ConnectionOptions,
     });
     await queue.waitUntilReady();
     const config = new ConfigService({
-      REDIS_URL: redisUrl,
+      REDIS_URL: fixtureRedisUrl,
       ENQUEUE_BATCH_SIZE: 400,
       ENQUEUE_CONCURRENCY: 32,
       READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS: 0,
@@ -112,6 +124,7 @@ native('fleet admission isolation from one unknown ordered scope', () => {
     await prisma?.chat.deleteMany({ where: { id: { in: chats } } });
     await queue?.obliterate({ force: false });
     await queue?.close();
+    if (ownsRedis) await redis.flushdb();
     await redis?.quit();
     await prisma?.$disconnect();
     expect(deniedMax).not.toHaveBeenCalled();
