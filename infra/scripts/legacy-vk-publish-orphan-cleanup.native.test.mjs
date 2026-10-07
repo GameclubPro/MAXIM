@@ -194,8 +194,9 @@ describe('native Redis exact retired VK orphan proof and byte CAS', { skip: !red
   });
   test('rejects duplicate JSON keys and invalid calendar text despite a parseable Lua shape', async () => {
     const row = await seed();
+    assert.equal(row.fields.data[0], '{');
     for (const data of [
-      row.fields.data.replace('{', '{"postId":"hidden-first-value",'),
+      `{"postId":"hidden-first-value",${row.fields.data.slice(1)}`,
       JSON.stringify({ ...JSON.parse(row.fields.data), createdAt: '2026-99-01T12:00:00.000Z' }),
     ]) {
       await redis.hset(row.key, 'data', data);
