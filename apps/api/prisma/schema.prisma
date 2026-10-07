@@ -2034,6 +2034,7 @@ model SpammerObservation {
   @@unique([userId, source, evidenceHash], map: "spammer_observations_user_source_evidence_key")
   @@index([userId, expiresAt], map: "spammer_observations_user_expires_at_idx")
   @@index([userId, observedAt(sort: Desc)], map: "spammer_observations_user_observed_at_idx")
+  @@index([chatId, messageId, id], map: "spammer_observations_chat_message_id_idx")
   @@index([chatId, observedAt(sort: Desc), source], map: "spammer_observations_chat_observed_source_idx")
   @@index([chatId, suppressedAt(sort: Desc), source], map: "spammer_observations_chat_suppressed_source_idx")
   @@index([observedAt(sort: Desc), source], map: "spammer_observations_observed_source_idx")
@@ -2473,6 +2474,10 @@ model WebhookEvent {
   timeoutQuarantineExpiresAt DateTime?     @map("timeout_quarantine_expires_at")
   createdAt                  DateTime      @default(now()) @map("created_at")
   processedAt                DateTime?     @map("processed_at")
+
+  sourceDispositionId String? @map("source_disposition_id")
+  sourceDispositionReceiptId String? @map("source_disposition_receipt_id")
+  sourceDisposition WebhookSourceReceiptDisposition? @relation(fields: [sourceDispositionReceiptId, sourceDispositionId], references: [receiptId, id], onDelete: Restrict, onUpdate: NoAction, map: "webhook_events_source_disposition_fkey")
 
   legacyDispositionId String? @map("legacy_disposition_id")
   legacyDispositionReceiptId String? @map("legacy_disposition_receipt_id")
@@ -4127,4 +4132,78 @@ model WebhookLegacyMaterializationCursor {
   complete Boolean @default(false)
   @@id([certificateId, chatId])
   @@map("webhook_legacy_materialization_cursors")
+}
+
+// FLAG: Modern abandonment excludes only an exact message family and attributed
+// children. These tables never grant member or global-user immunity or prove effects.
+model WebhookSourceAbandonmentCertificate {
+  id String @id
+  operation String @default("MODERN_SOURCE_ABANDONMENT_V1")
+  operationVersion Int @default(1) @map("operation_version")
+  sourceSha String @map("source_sha")
+  imageId String @map("image_id")
+  attestation Json
+  attestationDigest String @map("attestation_digest")
+  previewSha256 String @map("preview_sha256")
+  sourceClosureSha256 String @map("source_closure_sha256")
+  descendantsSha256 String @map("descendants_sha256")
+  abandonBefore DateTime @map("abandon_before")
+  expectedSourceCount Int @map("expected_source_count")
+  expectedChildCount Int @map("expected_child_count")
+  sealedAt DateTime? @map("sealed_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  sources WebhookSourceAbandonment[]
+  @@map("webhook_source_abandonment_certificates")
+}
+
+model WebhookSourceAbandonment {
+  id String @id
+  operationVersion Int @default(1) @map("operation_version")
+  certificateId String @map("certificate_id")
+  semanticKey String @unique(map: "webhook_source_abandonments_semantic_key") @map("semantic_key")
+  ownerWebhookEventId String @unique(map: "webhook_source_abandonments_owner_key") @map("owner_webhook_event_id")
+  claimId String @unique(map: "webhook_source_abandonments_claim_key") @map("claim_id")
+  chatId String @map("chat_id")
+  messageId String @map("message_id")
+  subjectUserId String @map("subject_user_id")
+  sourceAt DateTime @map("source_at")
+  rawPayloadDigest String @map("raw_payload_digest")
+  normalizedPayloadDigest String @map("normalized_payload_digest")
+  ownerSnapshot Json @map("owner_snapshot")
+  claimSnapshot Json @map("claim_snapshot")
+  createdAt DateTime @default(now()) @map("created_at")
+  certificate WebhookSourceAbandonmentCertificate @relation(fields: [certificateId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  children WebhookSourceChildHold[]
+  dispositions WebhookSourceReceiptDisposition[]
+  @@unique([chatId, messageId], map: "webhook_source_abandonments_chat_message_key")
+  @@index([certificateId], map: "webhook_source_abandonments_certificate_idx")
+  @@map("webhook_source_abandonments")
+}
+
+model WebhookSourceChildHold {
+  abandonmentId String @map("abandonment_id")
+  kind String
+  childKey String @map("child_key")
+  payloadDigest String @map("payload_digest")
+  createdAt DateTime @default(now()) @map("created_at")
+  abandonment WebhookSourceAbandonment @relation(fields: [abandonmentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  @@id([abandonmentId, kind, childKey])
+  @@index([kind, childKey], map: "webhook_source_child_holds_kind_key_idx")
+  @@map("webhook_source_child_holds")
+}
+
+model WebhookSourceReceiptDisposition {
+  id String @id
+  receiptId String @unique(map: "webhook_source_receipt_dispositions_receipt_key") @map("receipt_id")
+  abandonmentId String @map("abandonment_id")
+  sourceDigest String @map("source_digest")
+  originalStatus WebhookStatus @map("original_status")
+  originalSnapshot Json @map("original_snapshot")
+  scopeKind String @map("scope_kind")
+  createdAt DateTime @default(now()) @map("created_at")
+  abandonment WebhookSourceAbandonment @relation(fields: [abandonmentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  receipts WebhookEvent[]
+  @@unique([receiptId, id], map: "webhook_source_receipt_dispositions_receipt_id_id_key")
+  @@index([abandonmentId], map: "webhook_source_receipt_dispositions_abandonment_idx")
+  @@map("webhook_source_receipt_dispositions")
 }

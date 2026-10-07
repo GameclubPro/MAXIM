@@ -1,4 +1,5 @@
 import { describeWebhookPreparationFailure } from '../webhook/webhook-preparation-diagnostic';
+import { readDuplicateLookupFailure } from './message-duplicate/message-duplicate-lookup-diagnostic';
 
 export type WebhookExecutionFailureStage = 'handler' | 'completion' | 'ocr_activation';
 
@@ -104,6 +105,10 @@ export function describeWebhookExecutionFailure(error: unknown, hotPathStage?: u
         /\/moderation\/required-subscription-execution-guard\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
       guardCallbacks:
         /\/moderation\/moderation-execution-guard-callbacks\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
+      maxClient: /\/max\/max-client\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
+      actionLedger: /\/max\/max-action-ledger\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
+      deleteIntent:
+        /\/moderation\/moderation-delete-intent\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
     };
     for (const [name, pattern] of Object.entries(knownSources)) {
       const match = pattern.exec(stack);
@@ -137,6 +142,7 @@ export function describeWebhookExecutionFailure(error: unknown, hotPathStage?: u
   }
   return {
     ...basic,
+    ...readDuplicateLookupFailure(error),
     locations,
     requestOperation,
     requestTarget,

@@ -73,6 +73,7 @@ export async function readFreshHeldCommandReceipt(
     !event ||
     !event.botId ||
     event.legacyDispositionId ||
+    event.sourceDispositionId ||
     event.processedAt ||
     !['RECEIVED', 'QUEUED', 'FAILED'].includes(event.status) ||
     hasWebhookReplayFence(event)

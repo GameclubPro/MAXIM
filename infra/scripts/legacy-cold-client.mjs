@@ -38,6 +38,7 @@ function privateFile(path, maximum, uid) {
 // Never use Compose run, automatic retries, MAX credentials or a general shell in
 // this client. Its exact identity is removed and absence re-proven after any result.
 export function createLegacyColdClient({
+  protocol = 'legacy',
   sourceSha,
   imageId,
   networkId,
@@ -51,6 +52,7 @@ export function createLegacyColdClient({
   run = execute,
 }) {
   if (
+    !['legacy', 'source-abandonment-v1'].includes(protocol) ||
     !/^[0-9a-f]{40}$/u.test(sourceSha ?? '') ||
     !/^sha256:[0-9a-f]{64}$/u.test(imageId ?? '') ||
     !digest.test(networkId ?? '') ||
@@ -135,7 +137,14 @@ export function createLegacyColdClient({
         images[0].Config?.Labels?.['org.opencontainers.image.revision'] !== sourceSha
       )
         throw new Error('client_image_unproved');
-      const command = kind === 'store' ? 'legacy-recovery-store' : 'legacy-recovery-effect-collect';
+      const modern = protocol === 'source-abandonment-v1';
+      const command = modern
+        ? kind === 'store'
+          ? 'source-abandonment-store'
+          : 'source-abandonment-collect'
+        : kind === 'store'
+          ? 'legacy-recovery-store'
+          : 'legacy-recovery-effect-collect';
       const args = [
         'create',
         '--name',
@@ -167,20 +176,24 @@ export function createLegacyColdClient({
         '--env',
         `APP_SOURCE_SHA=${sourceSha}`,
         '--env',
-        `MAXIM_LEGACY_RECOVERY_IMAGE_ID=${imageId}`,
+        `${modern ? 'MAXIM_SOURCE_ABANDONMENT' : 'MAXIM_LEGACY_RECOVERY'}_IMAGE_ID=${imageId}`,
         '--env',
         'TZ=UTC',
         '--env',
-        'MAXIM_LEGACY_RECOVERY_OFFLINE=1',
+        `${modern ? 'MAXIM_SOURCE_ABANDONMENT' : 'MAXIM_LEGACY_RECOVERY'}_OFFLINE=1`,
       ];
+      if (modern && kind !== 'store')
+        args.push('--env', 'MAXIM_SOURCE_ABANDONMENT_PROTOCOL=source-abandonment-v1');
       if (kind === 'store')
         args.push(
           '--env',
-          'APP_SERVICE_NAME=legacy-recovery-store',
+          `APP_SERVICE_NAME=${modern ? 'source-abandonment' : 'legacy-recovery'}-store`,
           '--env',
-          'MAXIM_LEGACY_RECOVERY_STORE_PROTOCOL=host-offline-v1',
+          modern
+            ? 'MAXIM_SOURCE_ABANDONMENT_PROTOCOL=source-abandonment-v1'
+            : 'MAXIM_LEGACY_RECOVERY_STORE_PROTOCOL=host-offline-v1',
           '--env',
-          `MAXIM_LEGACY_RECOVERY_STORE_MODE=${request.operation === 'readback' ? 'readback' : 'writer'}`,
+          `${modern ? 'MAXIM_SOURCE_ABANDONMENT' : 'MAXIM_LEGACY_RECOVERY'}_STORE_MODE=${request.operation === 'readback' ? 'readback' : 'writer'}`,
           '--mount',
           `type=bind,source=${inventoryPath},target=/run/maxim-legacy-recovery/inventory.json,readonly`,
         );
@@ -193,7 +206,11 @@ export function createLegacyColdClient({
           '--mount',
           `type=bind,source=${queueControlPath},target=/app/legacy-recovery-queues.cjs,readonly`,
         );
-      else args.push('--env', 'APP_SERVICE_NAME=legacy-recovery-live');
+      else
+        args.push(
+          '--env',
+          `APP_SERVICE_NAME=${modern ? 'source-abandonment-collect' : 'legacy-recovery-live'}`,
+        );
       args.push(
         '--entrypoint',
         'node',

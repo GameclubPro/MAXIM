@@ -981,6 +981,8 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
     }
     if (await this.legacyHolds?.isGlobalUserHeld(userId))
       return this.emptyDecision('ignored', userId);
+    if (await this.isAbandonedSourceObservation(input))
+      return this.emptyDecision('ignored', userId);
     if (this.isKnownRuntimeBotUserId(userId)) {
       return this.emptyDecision('ignored', userId);
     }
@@ -1152,6 +1154,8 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
       observationId,
     } = ledger;
     if (await this.legacyHolds?.isGlobalUserHeld(userId))
+      return this.emptyDecision('ignored', userId);
+    if (await this.isAbandonedSourceObservation({ ...input, id: observationId }))
       return this.emptyDecision('ignored', userId);
     const finish = <TDecision extends GlobalSpammerObservationDecision>(
       decision: TDecision,
@@ -1336,6 +1340,21 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
       return;
     }
     if (await this.legacyHolds?.isGlobalUserHeld(userId)) return;
+    // FLAG: Old exact observation work cannot recreate descendants after source
+    // abandonment. Future observations from this participant remain independent.
+    if (
+      job.observationId &&
+      (await this.legacyHolds?.isSourceChildHeld?.('SPAMMER_OBSERVATION', job.observationId))
+    )
+      return;
+    const sourceForHold = this.normalizeObservationSource(job.source);
+    if (sourceForHold && this.shouldProcessObservationFastDenormJob(sourceForHold)) {
+      const snapshot = await this.resolveDenormObservationSnapshot({
+        userId,
+        observationId: job.observationId ?? null,
+      });
+      if (snapshot && (await this.isAbandonedSourceObservation(snapshot))) return;
+    }
 
     const startedAtMs = Date.now();
     try {
@@ -1424,6 +1443,8 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
       }
       return;
     }
+
+    if (await this.isAbandonedSourceObservation(latest)) return;
 
     const source = this.normalizeObservationSource(latest.source) ?? null;
     const latestInput: GlobalSpammerObservationInput = {
@@ -1516,6 +1537,20 @@ export class GlobalSpammerIntelligenceService implements OnModuleDestroy {
         detectedAt: latest.observedAt,
       });
     }
+  }
+
+  private async isAbandonedSourceObservation(input: {
+    id?: string | null;
+    chatId?: string | null;
+    messageId?: string | null;
+  }): Promise<boolean> {
+    if (input.id && (await this.legacyHolds?.isSourceChildHeld?.('SPAMMER_OBSERVATION', input.id)))
+      return true;
+    return Boolean(
+      input.chatId &&
+      input.messageId &&
+      (await this.legacyHolds?.isSourceAbandoned?.(input.chatId, input.messageId)),
+    );
   }
 
   private async resolveDenormObservationSnapshot(params: {

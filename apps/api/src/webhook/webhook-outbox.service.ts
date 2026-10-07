@@ -102,6 +102,7 @@ const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL = Prisma.raw(
 );
 const WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL = Prisma.raw(`
   "legacy_disposition_id",
+  "source_disposition_id",
   "id",
   "status",
   "bot_id",
@@ -357,12 +358,12 @@ function buildEnqueueEligibilitySql(now: Date, includeCompletedTimeoutRepair = t
 
   return {
     received: Prisma.sql`
-      "legacy_disposition_id" IS NULL
+      "legacy_disposition_id" IS NULL AND "source_disposition_id" IS NULL
       AND "status" = 'RECEIVED'::"WebhookStatus"
       AND ("next_enqueue_at" IS NULL OR "next_enqueue_at" <= ${now})
     `,
     failed: Prisma.sql`
-      "legacy_disposition_id" IS NULL
+      "legacy_disposition_id" IS NULL AND "source_disposition_id" IS NULL
       AND "status" = 'FAILED'::"WebhookStatus"
       AND (
         "next_enqueue_at" <= ${now}
@@ -395,7 +396,7 @@ function buildEnqueueEligibilitySql(now: Date, includeCompletedTimeoutRepair = t
       )
     `,
     staleUserFacingQueued: Prisma.sql`
-      "legacy_disposition_id" IS NULL
+      "legacy_disposition_id" IS NULL AND "source_disposition_id" IS NULL
       AND "status" = 'QUEUED'::"WebhookStatus"
       AND "processed_at" IS NULL
       AND ("queue_name" IS NULL OR "queue_name" <> ${WEBHOOK_QUEUE_BACKGROUND})
@@ -406,7 +407,7 @@ function buildEnqueueEligibilitySql(now: Date, includeCompletedTimeoutRepair = t
       AND ("next_enqueue_at" IS NULL OR "next_enqueue_at" <= ${now})
     `,
     staleBackgroundQueued: Prisma.sql`
-      "legacy_disposition_id" IS NULL
+      "legacy_disposition_id" IS NULL AND "source_disposition_id" IS NULL
       AND "status" = 'QUEUED'::"WebhookStatus"
       AND "processed_at" IS NULL
       AND "queue_name" = ${WEBHOOK_QUEUE_BACKGROUND}
@@ -835,6 +836,7 @@ export class WebhookOutboxService
         normalizedPayload: true,
         processedAt: true,
         legacyDispositionId: true,
+        sourceDispositionId: true,
       },
     });
     const byId = new Map(rows.map((row) => [row.id, row]));
@@ -845,6 +847,7 @@ export class WebhookOutboxService
         this.activeEnqueueUnits.has(key) ||
         !row ||
         row.legacyDispositionId !== null ||
+        row.sourceDispositionId != null ||
         row.processedAt !== null ||
         (row.nextEnqueueAt !== null && row.nextEnqueueAt > now) ||
         (row.status !== WebhookStatus.RECEIVED &&
@@ -939,7 +942,7 @@ export class WebhookOutboxService
     const failedCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
       columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
       workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
-      eligibility: Prisma.sql`"legacy_disposition_id" IS NULL AND "status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" <= ${now}`,
+      eligibility: Prisma.sql`"legacy_disposition_id" IS NULL AND "source_disposition_id" IS NULL AND "status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" <= ${now}`,
       rotation: rotation('failed'),
       scanDirection: 'ASC',
       resultDirection: 'ASC',
@@ -952,7 +955,7 @@ export class WebhookOutboxService
       ? buildBoundedEnqueueWorkUnitsSql({
           columns: WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL,
           workUnitKey: FAIR_WEBHOOK_WORK_UNIT_KEY_SQL,
-          sourceEligibility: Prisma.sql`"legacy_disposition_id" IS NULL AND "status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" IS NULL`,
+          sourceEligibility: Prisma.sql`"legacy_disposition_id" IS NULL AND "source_disposition_id" IS NULL AND "status" = 'FAILED'::"WebhookStatus" AND "next_enqueue_at" IS NULL`,
           eligibility: eligibility.failed,
           rotation: rotation('completedTimeout'),
           scanDirection: 'ASC',
@@ -3021,6 +3024,10 @@ export class WebhookOutboxService
     // mirror, action ambiguity, incomplete command result or lease pins the owner proof.
     return Prisma.sql`
       candidate."semantic_key" IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" original
+        WHERE original."owner_webhook_event_id" = candidate."id")
+      AND NOT EXISTS (SELECT 1 FROM "webhook_source_receipt_dispositions" proof
+        WHERE proof."receipt_id" = candidate."id")
       AND NOT EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" original
         WHERE original."owner_webhook_event_id" = candidate."id")
       AND candidate."timeout_quarantine_expires_at" IS NULL
@@ -3066,6 +3073,10 @@ export class WebhookOutboxService
     // positive post-seal declined work without a claim can release its retained body.
     return Prisma.sql`
       candidate."legacy_disposition_id" IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" original
+        WHERE original."owner_webhook_event_id" = candidate."id")
+      AND NOT EXISTS (SELECT 1 FROM "webhook_source_receipt_dispositions" proof
+        WHERE proof."receipt_id" = candidate."id")
       AND NOT EXISTS (SELECT 1 FROM "webhook_execution_claims" claim
         WHERE claim."webhook_event_id" = candidate."id")
       AND EXISTS (SELECT 1 FROM "webhook_legacy_receipt_dispositions" proof

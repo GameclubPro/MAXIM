@@ -271,7 +271,19 @@ function storeConnection(baseline) {
   };
 }
 
-export async function runLegacyColdHost(request) {
+export function assertColdProtocolContext(protocol, context) {
+  if (!['legacy', 'source-abandonment-v1'].includes(protocol))
+    throw new Error('unsupported_cold_protocol');
+  if ((context.protocol ?? 'legacy') !== protocol) throw new Error('cold_protocol_context_changed');
+  if ((context.selection?.protocol ?? 'legacy') !== protocol)
+    throw new Error('cold_protocol_selection_changed');
+}
+
+export async function runLegacyColdHost(request, { protocol = 'legacy' } = {}) {
+  // FLAG: Both controllers share one maintenance journal and lock. A modern exact-source
+  // operation must never resume a legacy installation or inherit its member-wide authority.
+  if (!['legacy', 'source-abandonment-v1'].includes(protocol))
+    throw new Error('unsupported_cold_protocol');
   assertInheritedDeployLock();
   const store = createLegacyColdJournalStore();
   const state = store.read();
@@ -306,10 +318,12 @@ export async function runLegacyColdHost(request) {
     bindings = state.journal.bindings;
     baseline = store.readProof('hostAdmission');
     context = JSON.parse(readPrivate(join(privateRoot, bindings.controllerNonce, 'context.json')));
+    assertColdProtocolContext(protocol, context);
     selection = context.selection;
   } else {
     assertNoActiveLegacyColdMaintenance();
     selection = request.selection;
+    assertColdProtocolContext(protocol, { protocol, selection });
     bindings = {
       clusterIdentity: state.marker?.clusterIdentity ?? randomUUID(),
       epoch: (state.marker?.epoch ?? 0) + 1,
@@ -337,6 +351,7 @@ export async function runLegacyColdHost(request) {
   const queueBytes = readFileSync(join(root, 'infra/scripts/webhook-queue-rollout-control.cjs'));
   const queueControlSha256 = legacyColdDigest(queueBytes.toString('utf8'));
   const topology = {
+    ...(protocol === 'legacy' ? {} : { protocol }),
     networkId: connection.networkId,
     queueControlSha256,
     publisherCatalogSha256: canonicalLegacyColdDigest({
@@ -375,6 +390,7 @@ export async function runLegacyColdHost(request) {
       writePrivate(queueControlPath, queueBytes);
       context = {
         version: 1,
+        ...(protocol === 'legacy' ? {} : { protocol }),
         selection,
         publisherBotId: connection.publisherBotId,
         networkId: connection.networkId,
@@ -385,6 +401,7 @@ export async function runLegacyColdHost(request) {
       throw new Error('queue_control_changed');
     const inventoryPath = join(operationDir, 'inventory.json');
     const client = createLegacyColdClient({
+      protocol,
       sourceSha: identity.sourceSha,
       imageId: identity.imageId,
       networkId: connection.networkId,
@@ -415,8 +432,9 @@ export async function runLegacyColdHost(request) {
     );
     if (!continuing) {
       const capacity = statfsSync('/var/lib/docker', { bigint: true });
-      if (capacity.bavail * capacity.bsize < 10n * 1024n ** 3n)
-        throw new Error('ten_gib_reserve_required');
+      const reserveGiB = protocol === 'source-abandonment-v1' ? 20n : 10n;
+      if (capacity.bavail * capacity.bsize < reserveGiB * 1024n ** 3n)
+        throw new Error('cold_disk_reserve_required');
       if (request.operation === 'prepare') await smokes.readNativeIdentity();
       const admissionStartedAt = Date.now();
       const admission = client.invoke('admission', {

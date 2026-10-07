@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { deployLockFixture, deployLockEnvironment } from './test-fixtures/deploy-lock.mjs';
 
-function fixture(t) {
+function fixture(t, modern = false) {
   const root = mkdtempSync(join(tmpdir(), 'maxim-cold-wrapper-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const scripts = join(root, 'infra/scripts');
@@ -16,11 +16,12 @@ function fixture(t) {
   mkdirSync(bin);
   const sha = 'a'.repeat(40);
   writeFileSync(join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' '${sha}'\n`, { mode: 0o700 });
-  const wrapper = join(scripts, 'vps-legacy-cold-recovery.sh');
-  writeFileSync(wrapper, readFileSync(new URL('./vps-legacy-cold-recovery.sh', import.meta.url)));
+  const wrapperName = modern ? 'vps-source-abandonment.sh' : 'vps-legacy-cold-recovery.sh';
+  const wrapper = join(scripts, wrapperName);
+  writeFileSync(wrapper, readFileSync(new URL(`./${wrapperName}`, import.meta.url)));
   const lock = deployLockFixture(root, join(scripts, 'lib/deploy-lock.sh'));
   writeFileSync(
-    join(scripts, 'legacy-cold-host.mjs'),
+    join(scripts, modern ? 'source-abandonment-host.mjs' : 'legacy-cold-host.mjs'),
     `
     import { fstatSync, readFileSync } from 'node:fs';
     const fd = Number(process.env.MAXIM_DEPLOY_LOCK_FD);
@@ -41,45 +42,47 @@ function fixture(t) {
   return { wrapper, lock, env };
 }
 
-test('real shell-to-Node exec keeps the protected flock through stdin and controller completion', async (t) => {
-  const h = fixture(t);
-  const child = spawn('bash', [h.wrapper], { env: h.env, stdio: ['pipe', 'pipe', 'pipe'] });
-  const done = once(child, 'close');
-  t.after(async () => {
-    if (child.exitCode === null) child.kill('SIGKILL');
-    await done;
+for (const modern of [false, true]) {
+  test(`${modern ? 'source' : 'legacy'} real shell-to-Node exec keeps the protected flock through stdin and controller completion`, async (t) => {
+    const h = fixture(t, modern);
+    const child = spawn('bash', [h.wrapper], { env: h.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const done = once(child, 'close');
+    t.after(async () => {
+      if (child.exitCode === null) child.kill('SIGKILL');
+      await done;
+    });
+    const first = await Promise.race([
+      once(child.stdout, 'data'),
+      done.then(([code]) => {
+        throw new Error(`controller exited early: ${code}`);
+      }),
+    ]);
+    assert.match(first[0].toString(), /LOCKED/u);
+    const observe = () =>
+      spawnSync('bash', ['-c', 'source "$1"; acquire_deploy_lock', 'fixture', h.lock.helper], {
+        env: h.env,
+        encoding: 'utf8',
+        timeout: 3000,
+      });
+    assert.notEqual(observe().status, 0);
+    child.stdin.end('{"version":1,"operation":"status"}\n');
+    assert.equal((await done)[0], 0);
+    assert.equal(observe().status, 0);
   });
-  const first = await Promise.race([
-    once(child.stdout, 'data'),
-    done.then(([code]) => {
-      throw new Error(`controller exited early: ${code}`);
-    }),
-  ]);
-  assert.match(first[0].toString(), /LOCKED/u);
-  const observe = () =>
-    spawnSync('bash', ['-c', 'source "$1"; acquire_deploy_lock', 'fixture', h.lock.helper], {
-      env: h.env,
-      encoding: 'utf8',
-      timeout: 3000,
-    });
-  assert.notEqual(observe().status, 0);
-  child.stdin.end('{"version":1,"operation":"status"}\n');
-  assert.equal((await done)[0], 0);
-  assert.equal(observe().status, 0);
-});
 
-test('source mismatch and extra arguments refuse before the controller starts', (t) => {
-  const h = fixture(t);
-  for (const [args, env] of [
-    [[], { ...h.env, MAXIM_EXPECTED_DEPLOY_SHA: 'b'.repeat(40) }],
-    [['--bypass'], h.env],
-  ]) {
-    const result = spawnSync('bash', [h.wrapper, ...args], {
-      env,
-      encoding: 'utf8',
-      timeout: 3000,
-    });
-    assert.equal(result.status, 2);
-    assert.equal(result.stdout.includes('LOCKED'), false);
-  }
-});
+  test(`${modern ? 'source' : 'legacy'} source mismatch and extra arguments refuse before the controller starts`, (t) => {
+    const h = fixture(t, modern);
+    for (const [args, env] of [
+      [[], { ...h.env, MAXIM_EXPECTED_DEPLOY_SHA: 'b'.repeat(40) }],
+      [['--bypass'], h.env],
+    ]) {
+      const result = spawnSync('bash', [h.wrapper, ...args], {
+        env,
+        encoding: 'utf8',
+        timeout: 3000,
+      });
+      assert.equal(result.status, 2);
+      assert.equal(result.stdout.includes('LOCKED'), false);
+    }
+  });
+}

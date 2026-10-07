@@ -353,9 +353,16 @@ export async function previewLegacyRecoveryMaterialization(
     const scopes = [...candidates]
       .sort((a, b) => a.owner.id.localeCompare(b.owner.id))
       .map((candidate) => {
+        // FLAG: Simulated legacy proofs use the same pre-modern snapshot as installed proofs.
         const ownerSnapshot = Object.fromEntries(
           Object.entries(candidate.owner).filter(
-            ([key]) => !['rawPayload', 'normalizedPayload'].includes(key),
+            ([key]) =>
+              ![
+                'rawPayload',
+                'normalizedPayload',
+                'sourceDispositionId',
+                'sourceDispositionReceiptId',
+              ].includes(key),
           ),
         );
         return {

@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { createHash } from 'node:crypto';
 import { createLegacyColdClient } from './legacy-cold-client.mjs';
 
-function fixture(t) {
+function fixture(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-cold-client-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const sourceSha = 'b'.repeat(40);
@@ -72,6 +72,7 @@ function fixture(t) {
     throw new Error('unexpected Docker call');
   };
   const client = createLegacyColdClient({
+    ...options,
     sourceSha,
     imageId,
     controllerNonce,
@@ -93,6 +94,40 @@ function fixture(t) {
     id,
   };
 }
+
+test('modern exact-source client uses only its fixed collector/store and separate environment domain', (t) => {
+  const h = fixture(t, { protocol: 'source-abandonment-v1' });
+  h.client.invoke('store', { version: 1, operation: 'readback' });
+  const create = h.calls.find((call) => call.args[0] === 'create').args;
+  assert.ok(create.includes('apps/api/dist/apps/api/src/scripts/source-abandonment-store.js'));
+  assert.ok(create.includes('APP_SERVICE_NAME=source-abandonment-store'));
+  assert.ok(create.includes('MAXIM_SOURCE_ABANDONMENT_OFFLINE=1'));
+  assert.ok(create.includes('MAXIM_SOURCE_ABANDONMENT_STORE_MODE=readback'));
+  assert.equal(
+    create.filter((arg) => arg === 'MAXIM_SOURCE_ABANDONMENT_PROTOCOL=source-abandonment-v1')
+      .length,
+    1,
+  );
+  assert.equal(
+    create.some((arg) => arg.startsWith('MAXIM_LEGACY_RECOVERY_')),
+    false,
+  );
+  assert.equal(h.exists(), false);
+  h.calls.length = 0;
+  h.state.response = { version: 1, decision: 'READY_FOR_COLD_REVIEW', activationAuthorized: false };
+  h.client.invoke('admission', { version: 1, operation: 'admission_preview' });
+  const collect = h.calls.find((call) => call.args[0] === 'create').args;
+  assert.ok(collect.includes('apps/api/dist/apps/api/src/scripts/source-abandonment-collect.js'));
+  assert.ok(collect.includes('APP_SERVICE_NAME=source-abandonment-collect'));
+  assert.equal(
+    collect.some((arg) => arg.includes('STORE_MODE=')),
+    false,
+  );
+});
+
+test('unknown controller protocol is refused before creating a client', (t) => {
+  assert.throws(() => fixture(t, { protocol: 'source-abandonment-v2' }), /invalid_client_binding/);
+});
 
 test('store uses an immutable bounded client with readonly inventory and exact cleanup', (t) => {
   const h = fixture(t);

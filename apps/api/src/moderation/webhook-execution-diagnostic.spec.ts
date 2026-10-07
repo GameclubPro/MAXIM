@@ -1,6 +1,26 @@
 import { describeWebhookExecutionFailure } from './webhook-execution-diagnostic';
+import { recordDuplicateLookupFailure } from './message-duplicate/message-duplicate-lookup-diagnostic';
 
 describe('webhook execution diagnostics', () => {
+  it('preserves frozen HTTP errors and their first bounded duplicate lookup provenance', () => {
+    const error = Object.freeze({ response: { status: 404 }, private: 'secret' });
+    const before = JSON.stringify(error);
+    recordDuplicateLookupFailure(error, 'delete_recheck', 'original');
+    recordDuplicateLookupFailure(error, 'notice', 'current');
+    const result = describeWebhookExecutionFailure(error);
+    expect(result).toMatchObject({
+      httpStatus: 404,
+      duplicateLookupPhase: 'delete_recheck',
+      duplicateLookupSource: 'original',
+    });
+    expect(JSON.stringify(error)).toBe(before);
+    expect(JSON.stringify(result)).not.toContain('secret');
+    expect(describeWebhookExecutionFailure({ response: { status: 404 } })).not.toHaveProperty(
+      'duplicateLookupPhase',
+    );
+    for (const value of [null, undefined, 0, 'secret'])
+      expect(() => recordDuplicateLookupFailure(value, 'qualification', 'current')).not.toThrow();
+  });
   it('retains HTTP and source evidence without private error data', () => {
     const error = Object.assign(new Error('secret message and token'), {
       response: { status: 404, data: { token: 'secret' } },
@@ -24,6 +44,21 @@ describe('webhook execution diagnostics', () => {
       errorKind: 'type_error',
       locations: {},
     });
+  });
+
+  it('retains only fixed dispatch source coordinates for local deletion errors', () => {
+    const error = new Error('private-id');
+    error.stack =
+      'private-id\n at x (/app/max/max-client.service.js:5249:13)\n' +
+      ' at y (/app/max/max-action-ledger.service.ts:22:4)\n' +
+      ' at z (/app/moderation/moderation-delete-intent.service.ts:2480:7)';
+    const result = describeWebhookExecutionFailure(error, 'violation-delete');
+    expect(result.locations).toEqual({
+      maxClient: { format: 'js', line: 5249, column: 13 },
+      actionLedger: { format: 'ts', line: 22, column: 4 },
+      deleteIntent: { format: 'ts', line: 2480, column: 7 },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/private-id|\/app/u);
   });
 
   it('tolerates hostile getters without replacing the original exception', () => {

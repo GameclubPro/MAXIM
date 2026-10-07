@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { assertSourceAbandonmentSource } from './assert-source-abandonment-source.mjs';
 
 export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
   [
@@ -27,7 +28,7 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'new Date(job.sendAutoDelete.sourceCreatedAt ?? NaN)',
       'exactMessageOnly: true',
       'materializeLegacyReceiptDisposition(',
-      'return Prisma.sql`${Prisma.raw(eventAlias)}."legacy_disposition_id" IS NOT NULL`',
+      '."legacy_disposition_id" IS NOT NULL',
     ],
   ],
   [
@@ -275,6 +276,7 @@ export function assertLegacyDispositionSource(
         `Rollback target lacks permanent legacy disposition readers or final effect guards: ${path}`,
       );
   }
+  assertSourceAbandonmentSource(commitSha, readSource);
 }
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   try {

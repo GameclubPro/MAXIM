@@ -53,6 +53,8 @@ Commands:
   install-deploy-flock <old-sha>  Install reviewed lock tooling under both protocols
   legacy-cold-recovery <private-request.json>
                               Inspect or apply an exact journal-bound legacy recovery
+  source-abandonment <private-request.json>
+                              Discard an exact modern source without member-wide holds
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS.
@@ -334,6 +336,43 @@ NODE
     *) echo 'Invalid emergency source admission.' >&2; return 2 ;;
   esac
   remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-legacy-cold-recovery.sh)" <"$request_file"
+}
+
+source_abandonment() {
+  if [[ $# != 1 ]]; then
+    echo 'Usage: source-abandonment <private-request.json>' >&2
+    return 2
+  fi
+  local request_file="$1" target_sha emergency_reason="${MAXIM_DEPLOY_EMERGENCY_REASON:-}"
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  node --input-type=module - "$ROOT_DIR" "$request_file" "$target_sha" <<'NODE'
+import { constants, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+const [root, path, sha] = process.argv.slice(2);
+const { parseSourceAbandonmentHostRequest } = await import(pathToFileURL(join(root, 'infra/scripts/source-abandonment-host.mjs')));
+const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+try {
+  const stat = fstatSync(fd);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() ||
+    (stat.mode & 0o777) !== 0o600 || stat.size > 65536) throw new Error('Private bounded request required');
+  const request = parseSourceAbandonmentHostRequest(readFileSync(fd, 'utf8'));
+  if (request.operation !== 'status' && request.targetSha !== sha)
+    throw new Error('Request must match the exact local source');
+} finally { closeSync(fd); }
+NODE
+  case "${MAXIM_DEPLOY_EMERGENCY_BYPASS:-0}" in
+    0|'') node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha" ;;
+    1)
+      if [[ -z "${emergency_reason//[[:space:]]/}" ]]; then
+        echo 'A reviewed emergency reason is required.' >&2
+        return 2
+      fi
+      echo "Emergency source admission: $emergency_reason" >&2
+      ;;
+    *) echo 'Invalid emergency source admission.' >&2; return 2 ;;
+  esac
+  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-source-abandonment.sh)" <"$request_file"
 }
 
 remote_from_args() {
@@ -1365,6 +1404,9 @@ case "$command" in
     ;;
   legacy-cold-recovery)
     legacy_cold_recovery "$@"
+    ;;
+  source-abandonment)
+    source_abandonment "$@"
     ;;
   rollback-runtime)
     rollback_runtime "$@"

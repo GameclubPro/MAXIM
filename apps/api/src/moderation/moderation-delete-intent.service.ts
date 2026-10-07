@@ -2115,6 +2115,13 @@ export class ModerationDeleteIntentService {
     if (!existing) {
       throw new Error(`Moderation delete intent ${intentId} does not exist`);
     }
+    // FLAG: Source abandonment never reclaims a lease, increments an attempt or
+    // fabricates a terminal/success outcome. A saved exact remote receipt may settle.
+    if (
+      !(existing.remoteDeleteSucceededAt && existing.remoteDeleteSucceededBotId) &&
+      (await this.legacyHolds?.isSourceAbandoned?.(existing.chatId, existing.messageId))
+    )
+      return this.toAttemptResult(existing);
     if (
       (options?.retentionOnly && !existing.retentionOwned) ||
       !this.isExecutionEnabledForIntent(existing)
@@ -2282,6 +2289,7 @@ export class ModerationDeleteIntentService {
 
   async enqueueCurrentIntentWakeupStrict(intentId: string): Promise<void> {
     const intent = await this.loadRequiredIntent(intentId);
+    if (await this.isAbandonedIntentWithoutReceipt(intent)) return;
     const eligibility = this.classifyIntentWakeupEligibility(intent);
     switch (eligibility) {
       case 'eligible':
@@ -2314,6 +2322,8 @@ export class ModerationDeleteIntentService {
     options?: { actorUserId: string },
   ): Promise<{ reopened: boolean; intent: ModerationDeleteIntentSnapshot }> {
     const existing = await this.loadRequiredIntent(intentId);
+    if (await this.legacyHolds?.isSourceAbandoned?.(existing.chatId, existing.messageId))
+      return { reopened: false, intent: this.toSnapshot(existing) };
     if (!this.isExecutionEnabledForIntent(existing)) {
       return { reopened: false, intent: this.toSnapshot(existing) };
     }
@@ -2398,6 +2408,9 @@ export class ModerationDeleteIntentService {
           "leased_from_status" = NULL,
           "updated_at" = CURRENT_TIMESTAMP
         WHERE "id" = ${intentId}
+          AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+            WHERE held."chat_id" = "moderation_delete_intents"."chat_id"
+              AND held."message_id" = "moderation_delete_intents"."message_id")
           AND "status" = CAST(${expectedStatus} AS "ModerationDeleteIntentStatus")
           AND "updated_at" = ${expectedVersion.updatedAt}
           AND "attempt_count" = ${expectedVersion.attemptCount}
@@ -2462,6 +2475,9 @@ export class ModerationDeleteIntentService {
     if (!intent) {
       throw new Error(`Moderation delete intent ${intentId} does not exist`);
     }
+    // FLAG: A retained queued lease cannot mutate the abandoned source journal.
+    // Only a complete saved remote-success receipt permits database settlement.
+    if (await this.isAbandonedIntentWithoutReceipt(intent)) return this.toAttemptResult(intent);
     if (
       intent.status !== 'IN_PROGRESS' ||
       intent.leaseToken !== leaseToken ||
@@ -3737,6 +3753,8 @@ export class ModerationDeleteIntentService {
           FROM "moderation_delete_intents" intent
           WHERE intent."updated_at" < ${cutoff}
             AND intent."retention_owned" = FALSE
+            AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+              WHERE held."chat_id" = intent."chat_id" AND held."message_id" = intent."message_id")
             AND intent."status" IN (
               CAST('OBSERVED' AS "ModerationDeleteIntentStatus"),
               CAST('SUCCEEDED' AS "ModerationDeleteIntentStatus"),
@@ -5072,6 +5090,15 @@ export class ModerationDeleteIntentService {
     enqueuePriority = DELETE_QUEUE_PRIORITY_INTERACTIVE,
   ): Promise<EnsureModerationDeleteIntentResult> {
     const normalized = this.normalizeInput(input);
+    // FLAG: A later ensure must not promote OBSERVED or extend this abandoned source.
+    if (
+      await this.legacyHolds?.isSourceAbandoned?.(
+        normalized.chatId,
+        normalized.messageId,
+        transactionClient,
+      )
+    )
+      throw new WebhookLegacyHoldRejectedError();
     const rollout = this.getRolloutForInput(input);
     if (rollout === 'off') {
       return { intentId: null, rollout, status: null };
@@ -5951,6 +5978,10 @@ export class ModerationDeleteIntentService {
         "updated_at" = CURRENT_TIMESTAMP
       WHERE "id" = ${intentId}
         AND "execute_at" <= ${now}
+        AND (("remote_delete_succeeded_at" IS NOT NULL AND "remote_delete_succeeded_bot_id" IS NOT NULL)
+          OR NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+            WHERE held."chat_id" = "moderation_delete_intents"."chat_id"
+              AND held."message_id" = "moderation_delete_intents"."message_id"))
         AND (${getAppRole() === 'all'} OR "retention_owned" = ${getAppRole() === 'message-retention'})
         AND (${!retentionOnly} OR "retention_owned" = TRUE)
         AND "next_attempt_at" <= ${now}
@@ -5997,6 +6028,9 @@ export class ModerationDeleteIntentService {
         SELECT intent."id", intent."next_attempt_at", intent."created_at"
         FROM "moderation_delete_intents" intent
         WHERE intent."status" = ${status}
+          AND ((intent."remote_delete_succeeded_at" IS NOT NULL AND intent."remote_delete_succeeded_bot_id" IS NOT NULL)
+            OR NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+              WHERE held."chat_id" = intent."chat_id" AND held."message_id" = intent."message_id"))
           AND intent."execute_at" <= ${now}
           AND intent."retention_owned" = FALSE
           AND intent."next_attempt_at" <= ${now}
@@ -6963,6 +6997,8 @@ export class ModerationDeleteIntentService {
         SELECT intent."id"
         FROM "moderation_delete_intents" intent
         WHERE intent."retry_until_at" <= CURRENT_TIMESTAMP
+          AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+            WHERE held."chat_id" = intent."chat_id" AND held."message_id" = intent."message_id")
           AND intent."retention_owned" = FALSE
           AND intent."remote_delete_succeeded_at" IS NULL
           AND intent."remote_delete_succeeded_bot_id" IS NULL
@@ -7009,6 +7045,9 @@ export class ModerationDeleteIntentService {
         "updated_at" = CURRENT_TIMESTAMP
       WHERE "id" = ${intentId}
         AND "retry_until_at" <= CURRENT_TIMESTAMP
+        AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+          WHERE held."chat_id" = "moderation_delete_intents"."chat_id"
+            AND held."message_id" = "moderation_delete_intents"."message_id")
         AND "retention_owned" = FALSE
         AND "remote_delete_succeeded_at" IS NULL
         AND "remote_delete_succeeded_bot_id" IS NULL
@@ -7037,7 +7076,7 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     priority = DELETE_QUEUE_PRIORITY_BACKGROUND,
   ): Promise<void> {
-    if (intent.retentionOwned) return;
+    if (intent.retentionOwned || (await this.isAbandonedIntentWithoutReceipt(intent))) return;
     if (this.classifyIntentWakeupEligibility(intent) !== 'eligible') {
       return;
     }
@@ -7052,6 +7091,13 @@ export class ModerationDeleteIntentService {
         'Failed to enqueue moderation delete intent wakeup; DB sweeper will recover it',
       );
     }
+  }
+
+  private async isAbandonedIntentWithoutReceipt(intent: IntentRow): Promise<boolean> {
+    return (
+      !(intent.remoteDeleteSucceededAt && intent.remoteDeleteSucceededBotId) &&
+      Boolean(await this.legacyHolds?.isSourceAbandoned?.(intent.chatId, intent.messageId))
+    );
   }
 
   private classifyIntentWakeupEligibility(

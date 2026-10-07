@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261006010000_add_positive_receipt_dispositions",
-  "baselineNamesSha256": "e8ff24020a908b1b82d725197e956287133f53b35b32b365e360613a67fc39f4",
-  "baselineContentsSha256": "e50e1a04540cffe9c6b4fb28ac1baba0ae9d8bc52ee405284c2ec37af4f81f4e",
+  "baselineThrough": "20261007070200_add_webhook_source_family_index",
+  "baselineNamesSha256": "a61763cbd4b8e4744792a9b5ca4ed8b3b1ee4351a8a2eaa0d5620042bd0a56f4",
+  "baselineContentsSha256": "7657650b760bbbe00c597cc6bb7763b05e3b9097beab86cb715afa8cac1894fc",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -106,6 +106,11 @@
       "reason": "Reviewed additive static guard functions and triggers; no dynamic SQL, DROP, deletion or existing-data backfill. The SQL parser conservatively flags trigger bodies.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Two nullable receipt pointer columns preserve existing writes without rewriting retained history. An additive enum value removes only positively proven held receipts from existing actionable status indexes. Immutable source snapshots preserve original evidence. Activation requires compatible readers on every stopped role, a reviewed host transition journal and exact source readback; original unknown owners remain FAILED. No runtime epoch framework or existing-table index build is introduced."
+    },
+    "20261007070000_add_webhook_source_abandonment": {
+      "reason": "Reviewed additive exact-source proof tables and static immutability/seal/projection triggers. The existing no-replay check is replaced atomically with an equivalent legacy branch plus a separately foreign-key-protected modern proof branch. No historical data, columns, or accepted legacy proof is removed; no dynamic SQL or backfill is present.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "New nullable webhook pointers remain null through migration and mixed-version rollout. Existing legacy proof hashes omit these additive fields. No modern source is installed until every API role runs the new exact-source readers and cold offline protocol, with the corresponding rollback source floor enforced. Legacy member/global-user holds are unchanged."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -174,6 +179,9 @@
     },
     "20261006010000_add_positive_receipt_dispositions": {
       "reason": "Only new empty disposition tables receive ordinary indexes. All existing webhook table indexes are in the separate concurrent migration."
+    },
+    "20261007070000_add_webhook_source_abandonment": {
+      "reason": "Every ordinary index belongs to a new empty immutable source/certificate/child/proof table. Existing webhook history gains only nullable columns and NOT VALID constraints; no historical scan or index build occurs."
     }
   }
 }

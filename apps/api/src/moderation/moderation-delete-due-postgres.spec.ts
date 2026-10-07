@@ -37,6 +37,7 @@ describePostgres('PostgreSQL delete due selection', () => {
     }
     await client.query(`CREATE TABLE moderation_delete_intents (
       id text PRIMARY KEY, chat_id text NOT NULL DEFAULT 'fixture',
+      message_id text NOT NULL DEFAULT 'fixture',
       status "ModerationDeleteIntentStatus" NOT NULL,
       next_attempt_at timestamp NOT NULL, execute_at timestamp NOT NULL DEFAULT '2026-01-01',
       created_at timestamp NOT NULL, retry_until_at timestamp NOT NULL DEFAULT '2099-01-01',

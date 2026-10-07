@@ -30,6 +30,7 @@ export function operatorDiscardedMirrorSourceSql(semanticKey: string, webhookEve
       AND source.queue_name IS NULL AND source.queued_at IS NULL
       AND source.next_enqueue_at IS NULL AND source.timeout_quarantine_expires_at IS NULL
       AND source.legacy_disposition_id IS NULL AND source.legacy_disposition_receipt_id IS NULL
+      AND source.source_disposition_id IS NULL AND source.source_disposition_receipt_id IS NULL
       AND source.raw_payload = '{}'::jsonb AND source.normalized_payload = '{}'::jsonb
     ORDER BY source.created_at, source.id LIMIT 1
   `;
@@ -46,6 +47,8 @@ type LockedMirror = {
   timeoutQuarantineExpiresAt: Date | null;
   legacyDispositionId: string | null;
   legacyDispositionReceiptId: string | null;
+  sourceDispositionId?: string | null;
+  sourceDispositionReceiptId?: string | null;
 };
 
 // FLAG: This records abandonment, never execution success or absence of old effects.
@@ -79,7 +82,9 @@ export async function settleOperatorDiscardedMirror(
           normalized_payload AS "normalizedPayload", error_message AS "errorMessage",
           processed_at AS "processedAt", timeout_quarantine_expires_at AS "timeoutQuarantineExpiresAt",
           legacy_disposition_id AS "legacyDispositionId",
-          legacy_disposition_receipt_id AS "legacyDispositionReceiptId"
+          legacy_disposition_receipt_id AS "legacyDispositionReceiptId",
+          source_disposition_id AS "sourceDispositionId",
+          source_disposition_receipt_id AS "sourceDispositionReceiptId"
         FROM webhook_events WHERE id IN (${source.id}, ${input.webhookEventId})
         ORDER BY id FOR UPDATE
       `);
@@ -91,6 +96,8 @@ export async function settleOperatorDiscardedMirror(
         mirror.processedAt !== null ||
         mirror.legacyDispositionId !== null ||
         mirror.legacyDispositionReceiptId !== null ||
+        mirror.sourceDispositionId != null ||
+        mirror.sourceDispositionReceiptId != null ||
         hasWebhookReplayFence(mirror) ||
         (mirror.semanticKey !== null && mirror.semanticKey !== semanticKey) ||
         buildWebhookSemanticEventKey(mirror.normalizedPayload) !== semanticKey
@@ -123,6 +130,9 @@ export async function settleOperatorDiscardedMirror(
           AND error_message IS NOT DISTINCT FROM ${mirror.errorMessage}
           AND processed_at IS NULL AND legacy_disposition_id IS NULL
           AND legacy_disposition_receipt_id IS NULL
+          AND source_disposition_id IS NULL AND source_disposition_receipt_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM webhook_source_receipt_dispositions
+            WHERE receipt_id = ${mirror.id} LIMIT 1 OFFSET 0)
           AND NOT EXISTS (SELECT 1 FROM webhook_legacy_receipt_dispositions
             WHERE receipt_id = ${mirror.id} LIMIT 1 OFFSET 0)
       `);

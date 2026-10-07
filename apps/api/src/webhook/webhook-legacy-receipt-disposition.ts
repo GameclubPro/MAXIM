@@ -101,7 +101,13 @@ export function legacyReceiptSourceDigest(
 ): string {
   const original = Object.fromEntries(
     Object.entries(event).filter(
-      ([key]) => !['legacyDispositionId', 'legacyDispositionReceiptId'].includes(key),
+      ([key]) =>
+        ![
+          'legacyDispositionId',
+          'legacyDispositionReceiptId',
+          'sourceDispositionId',
+          'sourceDispositionReceiptId',
+        ].includes(key),
     ),
   );
   return legacySnapshotDigest({ ...original, status: originalStatus });
@@ -152,6 +158,8 @@ export async function materializeLegacyReceiptDisposition(
   if (meta.payloadBytes > 256 * 1024) return refuse('receipt_payload_oversized');
   const event = await tx.webhookEvent.findUnique({ where: { id: receiptId } });
   if (!event) return refuse('receipt_missing');
+  if (event.sourceDispositionId || event.sourceDispositionReceiptId)
+    return refuse('receipt_pointer_unproved');
   const sourceDigest = legacyReceiptSourceDigest(event);
   if (hasProof) {
     if (!event.legacyDispositionId || event.legacyDispositionReceiptId !== event.id)
@@ -220,7 +228,19 @@ export async function materializeLegacyReceiptDisposition(
     return refuse('receipt_claim_effects_unproved');
   let scopeKind: 'EXACT_OWNER' | 'PRE_SEAL_SOURCE' | 'POST_SEAL_MEMBER';
   if (event.id === recovery.ownerWebhookEventId) {
-    const { rawPayload, normalizedPayload, ...ownerSnapshot } = event;
+    const { rawPayload, normalizedPayload } = event;
+    // FLAG: Additive modern pointers must not change previously certified legacy hashes.
+    const ownerSnapshot = Object.fromEntries(
+      Object.entries(event).filter(
+        ([key]) =>
+          ![
+            'rawPayload',
+            'normalizedPayload',
+            'sourceDispositionId',
+            'sourceDispositionReceiptId',
+          ].includes(key),
+      ),
+    );
     if (
       !options ||
       legacySnapshotDigest(ownerSnapshot) !== legacySnapshotDigest(recovery.ownerSnapshot) ||

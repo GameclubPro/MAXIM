@@ -302,10 +302,28 @@ native('read-only materialization preview on representative PostgreSQL history',
   );
   it('keeps digest stable across read-only snapshots while including changed source evidence', async () => {
     const event = await receipt();
+    expect(candidate.owner).toMatchObject({
+      sourceDispositionId: null,
+      sourceDispositionReceiptId: null,
+    });
     const first = await preview();
     const second = await preview();
     expect(first.decision).toBe('READY');
     expect(second.proofSha256).toBe(first.proofSha256);
+    const currentOwner = candidate.owner;
+    candidate = {
+      ...candidate,
+      owner: Object.fromEntries(
+        Object.entries(currentOwner).filter(
+          ([key]) => !['sourceDispositionId', 'sourceDispositionReceiptId'].includes(key),
+        ),
+      ) as typeof currentOwner,
+    };
+    try {
+      expect((await preview()).proofSha256).toBe(first.proofSha256);
+    } finally {
+      candidate = { ...candidate, owner: currentOwner };
+    }
     await db.webhookEvent.update({
       where: { id: event.id },
       data: { errorMessage: 'changed evidence' },

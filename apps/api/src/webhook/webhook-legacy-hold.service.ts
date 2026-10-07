@@ -12,6 +12,8 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { MaxActionJob } from '../max/max-client.service';
+import { materializeSourceAbandonmentReceipt } from './webhook-source-abandonment';
+import type { SourceAbandonmentChildKind } from './webhook-source-abandonment.contract';
 
 export type WebhookLegacyHoldDatabase = Pick<Prisma.TransactionClient, '$queryRaw' | '$executeRaw'>;
 export const WEBHOOK_LEGACY_DISPOSITION_VERSION = 1;
@@ -95,7 +97,33 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
   ): Promise<boolean> {
     return this.exists(
       Prisma.sql`SELECT EXISTS (SELECT 1 FROM "webhook_legacy_recoveries"
+      WHERE "chat_id" = ${chatId} AND "message_id" = ${messageId})
+      OR EXISTS (SELECT 1 FROM "webhook_source_abandonments"
       WHERE "chat_id" = ${chatId} AND "message_id" = ${messageId}) AS held`,
+      client,
+    );
+  }
+  // FLAG: Modern holds are exact-source only. Never include them in member,
+  // global-user, whole-chat or historical-chat-send readers below.
+  async isSourceAbandoned(
+    chatId: string,
+    messageId: string,
+    client?: WebhookLegacyHoldDatabase,
+  ): Promise<boolean> {
+    return this.exists(
+      Prisma.sql`SELECT EXISTS (SELECT 1 FROM "webhook_source_abandonments"
+        WHERE "chat_id" = ${chatId} AND "message_id" = ${messageId}) AS held`,
+      client,
+    );
+  }
+  async isSourceChildHeld(
+    kind: SourceAbandonmentChildKind,
+    childKey: string,
+    client?: WebhookLegacyHoldDatabase,
+  ): Promise<boolean> {
+    return this.exists(
+      Prisma.sql`SELECT EXISTS (SELECT 1 FROM "webhook_source_child_holds"
+        WHERE "kind" = ${kind} AND "child_key" = ${childKey}) AS held`,
       client,
     );
   }
@@ -145,6 +173,8 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
         WHERE "chat_id" = ${chatId} AND "message_id" IN (${Prisma.join(sources.map((source) => source.messageId))}))
       OR EXISTS (SELECT 1 FROM "webhook_legacy_recoveries"
         WHERE "user_id" IN (${Prisma.join(sources.map((source) => source.userId))}))
+      OR EXISTS (SELECT 1 FROM "webhook_source_abandonments"
+        WHERE "chat_id" = ${chatId} AND "message_id" IN (${Prisma.join(sources.map((source) => source.messageId))}))
     ) AS held`,
       client,
     );
@@ -152,7 +182,8 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
   async isOutboundJobHeld(jobKey: string, client?: WebhookLegacyHoldDatabase): Promise<boolean> {
     return this.exists(
       Prisma.sql`SELECT EXISTS (SELECT 1 FROM "webhook_legacy_child_holds"
-      WHERE "job_key" = ${jobKey}) AS held`,
+      WHERE "job_key" = ${jobKey}) OR EXISTS (SELECT 1 FROM "webhook_source_child_holds"
+      WHERE "kind" = 'MAX_ACTION' AND "child_key" = ${jobKey}) AS held`,
       client,
     );
   }
@@ -183,6 +214,7 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
       Prisma.sql`SELECT (
       EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" WHERE "chat_id" = ${message.chatId} AND "message_id" = ${message.messageId ?? ''})
       OR EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" WHERE "user_id" = ${message.senderId ?? ''})
+      OR EXISTS (SELECT 1 FROM "webhook_source_abandonments" WHERE "chat_id" = ${message.chatId} AND "message_id" = ${message.messageId ?? ''})
     ) AS held`,
       client,
     );
@@ -207,9 +239,13 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
     webhookEventId: string,
     client?: Prisma.TransactionClient,
   ): Promise<LegacyReceiptDispositionResult> {
-    return client
-      ? materializeLegacyReceiptDisposition(client, webhookEventId)
-      : this.prisma.$transaction((tx) => materializeLegacyReceiptDisposition(tx, webhookEventId));
+    const materialize = async (tx: Prisma.TransactionClient) => {
+      const modern = await materializeSourceAbandonmentReceipt(tx, webhookEventId);
+      return modern === 'NOT_HELD'
+        ? materializeLegacyReceiptDisposition(tx, webhookEventId)
+        : modern;
+    };
+    return client ? materialize(client) : this.prisma.$transaction(materialize);
   }
 
   async settleHeldReceipt(
@@ -363,11 +399,17 @@ export async function assertLegacyActionAllowed(
 // readers above deliberately do not depend on seal/version, so partial installation fails closed.
 export function legacyOrderReleasedSql(eventAlias: string): Prisma.Sql {
   if (!/^[a-z_]+$/u.test(eventAlias)) throw new Error('Invalid webhook SQL alias');
-  return Prisma.sql`${Prisma.raw(eventAlias)}."legacy_disposition_id" IS NOT NULL`;
+  return Prisma.sql`(${Prisma.raw(eventAlias)}."legacy_disposition_id" IS NOT NULL
+    OR ${Prisma.raw(eventAlias)}."source_disposition_id" IS NOT NULL)`;
 }
 
 export function legacyUpdateHeldSql(eventAlias: string): Prisma.Sql {
-  return legacyScopeSql(eventAlias, false);
+  if (!/^[a-z_]+$/u.test(eventAlias)) throw new Error('Invalid webhook SQL alias');
+  const event = Prisma.raw(eventAlias);
+  return Prisma.sql`(${legacyScopeSql(eventAlias, false)} OR EXISTS (
+    SELECT 1 FROM "webhook_source_abandonments" source
+    WHERE source."chat_id" = ${event}."normalized_payload"->'message'->>'chatId'
+      AND source."message_id" = ${event}."normalized_payload"->'message'->>'messageId'))`;
 }
 
 export function legacyReceiptBornAfterSealSql(eventAlias: string): Prisma.Sql {

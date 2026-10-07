@@ -824,6 +824,7 @@ export class WebhookCanonicalExecutionService {
         AND claim."semantic_key" = ${params.semanticKey}
         AND claim."webhook_event_id" = event."id" AND event."id" = ${params.webhookEventId}
         AND event."legacy_disposition_id" IS NULL
+        AND event."source_disposition_id" IS NULL
         AND (NOT ${legacyUpdateHeldSql('event')} OR ${freshHeldCommandTransitionSql('event', freshHeldCommand)})
         AND claim."status"::text = ${ready ? 'PENDING' : 'READY'}
         AND claim."completed_at" IS NULL AND claim."business_started_at" IS NULL

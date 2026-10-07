@@ -22,7 +22,7 @@ export function buildWebhookOperationalLagQuery(): Prisma.Sql {
   return Prisma.sql`
     WITH heads AS MATERIALIZED (
       SELECT "id", "created_at", "next_enqueue_at", "execution_deadline_at", "semantic_key",
-             "timeout_quarantine_expires_at", "error_message", "legacy_disposition_id",
+             "timeout_quarantine_expires_at", "error_message", "legacy_disposition_id", "source_disposition_id",
              "normalized_payload" ->> 'type' AS "event_type"
       FROM "webhook_events"
       WHERE "status" = 'RECEIVED'
@@ -48,6 +48,7 @@ export function buildWebhookOperationalLagQuery(): Prisma.Sql {
                  ELSE INTERVAL '10 minutes' END
         AND heads."timeout_quarantine_expires_at" IS NULL
         AND heads."legacy_disposition_id" IS NULL
+        AND heads."source_disposition_id" IS NULL
         AND COALESCE(heads."error_message", '') NOT LIKE ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX + '%'}
         AND COALESCE(heads."error_message", '') NOT LIKE ${WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX + '%'}
         AND POSITION('ambiguous' IN LOWER(COALESCE(heads."error_message", ''))) = 0

@@ -43,6 +43,10 @@ import {
   MessageDuplicateQualificationSourceUnavailableError,
 } from './message-duplicate-guard.contract';
 import type { ModerationDeletePreDispatchPhase } from '../moderation-delete-intent.types';
+import {
+  recordDuplicateLookupFailure,
+  type DuplicateLookupPhase,
+} from './message-duplicate-lookup-diagnostic';
 export { MessageDuplicateGuardRejectedError } from './message-duplicate-guard.contract';
 import {
   messageDuplicateNoticeSettingsDigest,
@@ -231,6 +235,17 @@ export class MessageDuplicateDeleteGuardService {
     )
       throw new MessageDuplicateGuardRejectedError('message_duplicate_notice_invalid');
     const receiptIntentId = notice?.intentId ?? params.sanctionIntentId;
+    const lookupPhase: DuplicateLookupPhase = initialQualification
+      ? 'qualification'
+      : notice
+        ? 'notice'
+        : params.sanctionIntentId
+          ? 'sanction'
+          : params.deletePhase === 'initial_unattempted'
+            ? 'initial_delete'
+            : params.deletePhase === 'recheck'
+              ? 'delete_recheck'
+              : 'unclassified_recheck';
     const noticeReceipt = notice
       ? await this.prisma.moderationDeleteIntent.findUnique({
           where: { id: notice.intentId },
@@ -300,6 +315,7 @@ export class MessageDuplicateDeleteGuardService {
       options,
       initialQualification,
       !receiptIntentId ? params.deletePhase : undefined,
+      lookupPhase,
     );
     if (!raw && !receiptIntentId) return 'absent';
     if (!raw) {
@@ -385,6 +401,7 @@ export class MessageDuplicateDeleteGuardService {
       options,
       initialQualification,
       !receiptIntentId ? params.deletePhase : undefined,
+      lookupPhase,
     );
     if (!originalRaw) {
       await this.history.remove(params.chatId, binding.original.messageId);
@@ -453,11 +470,13 @@ export class MessageDuplicateDeleteGuardService {
     options: Parameters<MaxClientService['getExactMessageRow']>[2],
     initialQualification: boolean,
     deletePhase?: ModerationDeletePreDispatchPhase,
+    lookupPhase: DuplicateLookupPhase = 'unclassified_recheck',
   ): Promise<Record<string, unknown> | null> {
     let row: Record<string, unknown> | null;
     try {
       row = await this.max.getExactMessageRow(chatId, messageId, options);
     } catch (error) {
+      recordDuplicateLookupFailure(error, lookupPhase, stage);
       // FLAG: Only a structured message-specific 404 proves absence. An unavailable
       // source preserves evidence: initial qualification requires an unused-claim CAS;
       // the explicit first delete boundary requires a persisted retry before declining

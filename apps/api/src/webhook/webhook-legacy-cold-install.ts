@@ -94,6 +94,18 @@ const LEGACY_ERROR =
 const ALL_API_ROLES = RUNTIME_SERVICE_NAMES.filter((name) => name !== 'api-all');
 const MAX_TARGETS = 200;
 
+// FLAG: Nullable modern proof columns do not change previously frozen legacy
+// source snapshots or preview hashes. Legacy eligibility remains separate.
+function legacyOwnerDigest(owner: WebhookEvent): string {
+  return legacySnapshotDigest(
+    Object.fromEntries(
+      Object.entries(owner).filter(
+        ([key]) => !['sourceDispositionId', 'sourceDispositionReceiptId'].includes(key),
+      ),
+    ),
+  );
+}
+
 function identity(value: unknown): string | null {
   if (typeof value === 'number') return Number.isSafeInteger(value) ? String(value) : null;
   return typeof value === 'string' && value.trim() && value === value.trim() ? value : null;
@@ -141,7 +153,7 @@ export function buildLegacyRecoveryPreviewDigest(
     candidates: [...candidates]
       .sort((a, b) => a.owner.id.localeCompare(b.owner.id))
       .map((candidate) => ({
-        ownerDigest: legacySnapshotDigest(candidate.owner),
+        ownerDigest: legacyOwnerDigest(candidate.owner),
         claimDigest: legacySnapshotDigest(candidate.claim),
         source: candidate.source,
         rawPayloadDigest: candidate.rawPayloadDigest,
@@ -368,7 +380,7 @@ async function installLegacyBatch(
         if (
           !owner ||
           !claim ||
-          legacySnapshotDigest(owner) !== legacySnapshotDigest(candidate.owner) ||
+          legacyOwnerDigest(owner) !== legacyOwnerDigest(candidate.owner) ||
           legacySnapshotDigest(claim) !== legacySnapshotDigest(candidate.claim) ||
           !eligible ||
           legacySnapshotDigest(eligible.source) !== legacySnapshotDigest(candidate.source) ||
@@ -410,7 +422,13 @@ async function installLegacyBatch(
         };
         const ownerSnapshot = Object.fromEntries(
           Object.entries(owner).filter(
-            ([key]) => key !== 'rawPayload' && key !== 'normalizedPayload',
+            ([key]) =>
+              ![
+                'rawPayload',
+                'normalizedPayload',
+                'sourceDispositionId',
+                'sourceDispositionReceiptId',
+              ].includes(key),
           ),
         );
         await tx.$executeRaw(Prisma.sql`INSERT INTO "webhook_legacy_recoveries"
