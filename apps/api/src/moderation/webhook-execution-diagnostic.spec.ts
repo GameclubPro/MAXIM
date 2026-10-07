@@ -71,6 +71,29 @@ describe('webhook execution diagnostics', () => {
     expect(JSON.stringify(describeWebhookExecutionFailure(error))).not.toContain('secret');
   });
 
+  it('locates rule-engine failures without exporting their message or stack', () => {
+    const error = Object.assign(new Error('private-id secret'), {
+      code: 'DUPLICATE_STATE_BUDGET_EXCEEDED',
+      stack:
+        'private-id secret\n at x (/app/moderation/rule-engine.service.impl.js:41:2)\n' +
+        ' at y (/app/moderation/rule-engine-message-limits.detector.ts:381:7)\n' +
+        ' at z (/app/moderation/rule-engine-duplicate-detector.ts:307:12)\n' +
+        ' at a (/app/moderation/redis-counter.service.js:121:3)',
+    });
+    const result = describeWebhookExecutionFailure(error, 'rule-engine.detect');
+    expect(result).toMatchObject({
+      failureReason: 'duplicate_state_budget',
+      hotPathStage: 'rule-engine.detect',
+      locations: {
+        ruleEngine: { format: 'js', line: 41, column: 2 },
+        messageLimits: { format: 'ts', line: 381, column: 7 },
+        duplicateState: { format: 'ts', line: 307, column: 12 },
+        redisCounter: { format: 'js', line: 121, column: 3 },
+      },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/private-id|secret|\/app/u);
+  });
+
   it.each([
     'violation-delete',
     'report-submission',
@@ -81,6 +104,7 @@ describe('webhook execution diagnostics', () => {
     'violation-rule-followup.complete',
     'required-subscription.initial-authority',
     'required-subscription.delete-authority',
+    'rule-engine.detect',
   ])('classifies HTTP routes and %s without retaining request configuration', (hotPathStage) => {
     const error = Object.assign(new Error('secret'), {
       config: {
@@ -128,6 +152,9 @@ describe('webhook execution diagnostics', () => {
     ['Required subscription fresh membership unavailable', 'subscription_membership_unavailable'],
     ['Required subscription author access unavailable', 'subscription_author_unavailable'],
     ['Required subscription execution guard unavailable', 'subscription_guard_unavailable'],
+    ['Message limit state deadline exceeded', 'message_limit_state_deadline'],
+    ['Media cooldown state deadline exceeded', 'media_cooldown_state_deadline'],
+    ['DUPLICATE_STATE_BUDGET_EXCEEDED', 'duplicate_state_budget'],
   ])('retains only the known reason %s', (message, failureReason) => {
     expect(describeWebhookExecutionFailure(new Error(message)).failureReason).toBe(failureReason);
     expect(describeWebhookExecutionFailure({ code: message }).failureReason).toBe(failureReason);

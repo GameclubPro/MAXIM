@@ -5,7 +5,10 @@ import {
   readMeasuredSourceCatalogScript,
   SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT,
 } from './source-abandonment-redis-catalog';
-import { inventorySourceAbandonmentRedis } from './source-abandonment-live-redis';
+import {
+  inventorySourceAbandonmentRedis,
+  type SourceAbandonmentRedisReader,
+} from './source-abandonment-live-redis';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
 import { isLegacyRecoveryWebhookQueue } from './legacy-recovery-queue-inventory';
@@ -374,5 +377,152 @@ native('modern full namespace census on Redis 7', () => {
     });
     expect(await redis.hgetall(key)).toEqual(before);
     expect(await redis.zcard('bull:max-actions-background:delayed')).toBe(1);
+  });
+});
+
+// FLAG: Queue mutations below belong only to an initially empty disposable local DB.
+// Inventory still executes the production EVAL_RO scripts and measured catalog reads.
+native('source abandonment inventory ordering on a live Redis queue', () => {
+  let redis: Redis;
+  let queue: Queue;
+  let ownsDatabase = false;
+  const queueName = 'max-actions-background';
+  const source = { chatId: 'chat-a', messageId: 'message-a', userId: 'user-a' };
+  const selection = {
+    protocol: 'source-abandonment-v1' as const,
+    abandonBefore: '2026-10-07T00:00:00.000Z',
+    ownerWebhookEventIds: ['selected-owner'],
+    majorBotIds: ['major-1'],
+  };
+
+  beforeAll(async () => {
+    const target = new URL(url);
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(target.hostname))
+      throw new Error('Disposable localhost Redis required');
+    target.pathname = '/11';
+    redis = new Redis(target.toString(), { maxRetriesPerRequest: 0, commandTimeout: 10_000 });
+    expect(await redis.info('server')).toMatch(/^redis_version:7\./mu);
+    if (await redis.dbsize()) throw new Error('Native ordering DB is already occupied');
+    ownsDatabase = true;
+    queue = new Queue(queueName, { connection: { url: target.toString() } });
+    await queue.waitUntilReady();
+  });
+  afterEach(async () => {
+    if (ownsDatabase) await redis.flushdb();
+  });
+  afterAll(async () => {
+    await queue?.close();
+    redis?.disconnect();
+  });
+
+  const addAction = (id: string) =>
+    queue.add(
+      'action',
+      { ...source, actionType: 'DELETE_MESSAGE', idempotencyKey: id },
+      { jobId: id, delay: 60_000 },
+    );
+  const fixtureReader = (
+    hooks: { duringCatalog?: () => Promise<unknown>; afterHeader?: () => Promise<unknown> } = {},
+  ): SourceAbandonmentRedisReader => {
+    let catalogHook = hooks.duringCatalog;
+    let headerHook = hooks.afterHeader;
+    return {
+      async eval_ro(script, keys, ...args) {
+        const result = await redis.eval_ro(script, keys, ...args);
+        if (script.startsWith('-- source-abandonment:headers') && headerHook) {
+          const run = headerHook;
+          headerHook = undefined;
+          await run();
+        }
+        return result;
+      },
+      multi() {
+        const transaction = redis.multi();
+        const measured = {
+          eval_ro(script: string, keys: number, ...args: string[]) {
+            transaction.eval_ro(script, keys, ...args);
+            return measured;
+          },
+          async exec() {
+            if (catalogHook) {
+              const run = catalogHook;
+              catalogHook = undefined;
+              await run();
+            }
+            return transaction.exec();
+          },
+        };
+        return measured;
+      },
+    };
+  };
+  const observe = (reader: SourceAbandonmentRedisReader, nonce?: string) =>
+    inventorySourceAbandonmentRedis(
+      reader,
+      selection,
+      [source],
+      { ...LEGACY_RECOVERY_LIVE_BUDGET, deadlineAtMs: Date.now() + 30_000 },
+      async () => ({
+        row: null,
+        digest: 'f'.repeat(64),
+        plans: [],
+        cost: { pages: 0, rows: 0, probes: 0, bytes: 0 },
+      }),
+      nonce,
+    );
+  const fence = async () => {
+    const pipeline = redis.pipeline();
+    for (const name of LEGACY_RECOVERY_LIVE_QUEUE_NAMES.filter(isLegacyRecoveryWebhookQueue))
+      pipeline.hset(`bull:${name}:meta`, 'paused', '1');
+    pipeline.set('maxim:webhook-rollout:pause-owner:v1', 'rollout:ordering-fence');
+    await pipeline.exec();
+  };
+
+  it('attributes the remaining action when the live queue shrinks during the full catalog', async () => {
+    const removed = await addAction('completed-during-catalog');
+    await addAction('remaining-child');
+    const result = await observe(fixtureReader({ duringCatalog: () => removed.remove() }));
+
+    expect(result.issues).toEqual([]);
+    expect(result.catalog?.complete).toBe(true);
+    expect(result.queueCounts.find((row) => row.queueName === queueName)?.states[3]).toBe(1);
+    expect(result.children).toMatchObject([{ jobKey: 'remaining-child', queueName, ...source }]);
+    expect(await queue.getJob('remaining-child')).not.toBeUndefined();
+  });
+
+  it('still refuses an action that disappears after the current headers were captured', async () => {
+    const removed = await addAction('missing-after-header');
+    const result = await observe(fixtureReader({ afterHeader: () => removed.remove() }));
+
+    expect(result.issues).toEqual([
+      { code: 'ACTION_PAGE_UNPROVED', descriptor: `redis:${queueName}` },
+    ]);
+    expect(result.catalog?.complete).toBe(true);
+    expect(result.children).toEqual([]);
+  });
+
+  it('checks the stopped-operation fence before spending the catalog budget', async () => {
+    const result = await observe(fixtureReader(), 'absent-fence');
+
+    expect(result.issues).toEqual([
+      { code: 'REDIS_REPLY_UNPROVED', descriptor: 'redis:inventory' },
+    ]);
+    expect(result.catalog).toBeNull();
+    expect(result.children).toEqual([]);
+  });
+
+  it('keeps offline headers around the catalog and refuses a changed generation', async () => {
+    await fence();
+    await addAction('frozen-child');
+    const result = await observe(
+      fixtureReader({ duringCatalog: () => redis.incr(`bull:${queueName}:id`) }),
+      'ordering-fence',
+    );
+
+    expect(result.issues).toEqual([
+      { code: 'QUEUE_HEADERS_CHANGED', descriptor: expect.any(String) },
+    ]);
+    expect(result.catalog?.complete).toBe(true);
+    expect(result.children).toMatchObject([{ jobKey: 'frozen-child', ...source }]);
   });
 });

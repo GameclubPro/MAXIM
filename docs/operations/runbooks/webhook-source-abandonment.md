@@ -109,6 +109,44 @@ journal and reviewed digests; do not repeat an uncertain installation or remove
 its journal. `retry-preview` is restricted to the same pre-installation context.
 The modern controller cannot resume a legacy operation, or vice versa.
 
+### Corrected controller for an admitted runtime
+
+When a host-controller defect blocks an already admitted operation, use the
+explicit corrective entrypoint only within its checked-in compatibility boundary.
+It currently pins runtime commit `9f06dff5d32d6f1bd61ee8fa92f103b043475452` and its
+immutable API image. The controller itself must be a distinct, clean, exact
+descendant commit. The command checks CI for that controller commit; the normal
+documented emergency exception requires both `MAXIM_DEPLOY_EMERGENCY_BYPASS=1`
+and a nonblank `MAXIM_DEPLOY_EMERGENCY_REASON`. It never bypasses source, image,
+journal, dependency, protocol, selection or queue-fence checks.
+
+Synchronize the reviewed controller source without deploying an API image or
+changing the stopped generations. Create a private `0600` envelope containing
+only `version: 1`, the full `controllerSha`, and `runtimeRequest`. The nested
+request is the unchanged reviewed `apply`, `reconcile` or `retry-preview` request;
+its `targetSha` still identifies the original runtime. New preparation, admission
+and status requests are unavailable through this path.
+
+```bash
+./infra/scripts/vps-connect.sh source-abandonment-corrective /absolute/private/envelope.json
+```
+
+The controller compares the complete source-tree delta against a narrow path
+allowlist and proves disposition readers for both source commits. Compose,
+journal, protocol, store client, writer, runtime and smoke dependencies retain
+their admitted versions. Before any inventory or writer call, it saves a separate
+immutable proof with both source identities, runtime image, current and expected
+journal digests, request and selection digests, and the actual adapter hash.
+The proof digest is emitted on stderr for private incident evidence. Original
+journal bindings and the frozen reviewed inventory are unchanged.
+
+Repeated catalog measurements may have different costs. Semantic comparison
+excludes only each catalog's direct `cost` field, while retaining namespace counts,
+version, completion, issue and all other fields. The fresh complete inventory is
+saved as a separate recheck proof, and writers consume the original reviewed
+artifact. A changed source, child, namespace or completeness result still refuses
+installation.
+
 Restart follows positive seal/materialization proof. Verify all fourteen API roles,
 both native auxiliaries, released queues and fresh database/Redis health. A finite
 operation may complete while other chats still have backlog; report that readiness

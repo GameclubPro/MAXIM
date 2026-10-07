@@ -33,6 +33,7 @@ function fixture(t, publisherBotId) {
     diagnostics: [],
     forever: false,
     diagnosticCost: 1,
+    catalogs: undefined,
     ownerChat: 'chat',
   };
   const journal = { proofs: {} };
@@ -58,6 +59,7 @@ function fixture(t, publisherBotId) {
           selectedOwners: [{ ownerWebhookEventId: 'owner', chatId: state.ownerChat }],
           children: [],
           sqlPlans: [],
+          ...(state.catalogs ? { redisCatalogs: structuredClone(state.catalogs) } : {}),
           issues: [],
           cost: { rows: 1, pages: 1, probes: 1, bytes: state.diagnosticCost },
         };
@@ -212,4 +214,98 @@ test('blocked or unbounded pages cannot become a completed seal', (t) => {
   h.state.pages = 0;
   assert.throws(() => h.adapter.materializeReceipts(h.bindings, pending), /materialization_budget/);
   assert.equal(h.state.pages, 200);
+});
+
+function catalog(cost = 1) {
+  return {
+    version: 2,
+    complete: true,
+    issue: null,
+    namespaceKeyCounts: { 'max-actions': 3 },
+    cost: {
+      pages: 2,
+      scanCountHints: 8192,
+      matchedKeys: 3,
+      keyBytes: 64,
+      bytes: 128,
+      measurementBytes: 64,
+      databaseKeysMax: 5000,
+      serverDurationUs: cost + 1,
+      maxCallDurationUs: cost,
+      durationMs: cost,
+    },
+  };
+}
+function reviewedCatalogFixture(t) {
+  const h = fixture(t, 'publisher');
+  h.state.catalogs = [catalog(1), catalog(2)];
+  h.state.pending = h.adapter.snapshotPending();
+  h.journal.proofs.pendingInventory = 'fixture';
+  return h;
+}
+test('equivalent stopped inventories retain original artifact and separately record changed catalog costs', (t) => {
+  const h = reviewedCatalogFixture(t);
+  const original = structuredClone(h.state.pending);
+  h.state.catalogs = [catalog(1300), catalog(2400)];
+  h.state.diagnosticCost = 999;
+  const { recheckProof, ...result } = h.adapter.snapshotPending();
+  assert.deepEqual(result, original);
+  assert.match(recheckProof, /^[a-f0-9]{64}$/u);
+  assert.notEqual(recheckProof, legacyColdDigest(`${JSON.stringify(original.inventory)}\n`));
+  assert.equal(result.inventory.redisCatalogs[0].cost.durationMs, 1);
+  assert.equal(h.state.calls.includes('certificate_create'), false);
+});
+for (const [label, mutate] of [
+  [
+    'changed namespace',
+    (proof) => {
+      proof.namespaceKeyCounts = { 'max-actions-new': 3 };
+    },
+  ],
+  [
+    'changed count',
+    (proof) => {
+      proof.namespaceKeyCounts['max-actions'] = 4;
+    },
+  ],
+  [
+    'incomplete census',
+    (proof) => {
+      proof.complete = false;
+    },
+  ],
+  [
+    'catalog issue',
+    (proof) => {
+      proof.issue = 'CATALOG_DEADLINE_EXCEEDED';
+    },
+  ],
+  [
+    'version changed',
+    (proof) => {
+      proof.version = 3;
+    },
+  ],
+  [
+    'unexpected field',
+    (proof) => {
+      proof.unreviewed = true;
+    },
+  ],
+])
+  test(`catalog cost projection still rejects ${label}`, (t) => {
+    const h = reviewedCatalogFixture(t);
+    mutate(h.state.catalogs[1]);
+    assert.throws(() => h.adapter.snapshotPending(), /reviewed_inventory_changed/);
+    assert.equal(h.state.calls.includes('certificate_create'), false);
+  });
+test('missing catalog pass is refused with stable effect and preview hashes', (t) => {
+  const h = reviewedCatalogFixture(t);
+  h.state.catalogs.pop();
+  assert.throws(() => h.adapter.snapshotPending(), /reviewed_inventory_changed/);
+});
+test('invalid fresh decision remains denied even when catalog structure agrees', (t) => {
+  const h = reviewedCatalogFixture(t);
+  h.state.deny = true;
+  assert.throws(() => h.adapter.snapshotPending(), /inventory_refused/);
 });

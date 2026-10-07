@@ -376,7 +376,15 @@ export async function inventorySourceAbandonmentRedis(
   allowance: SourceInventoryAllowance,
   resolve: SourceAbandonmentRedisResolver,
   queueFenceNonce?: string,
-) {
+): Promise<{
+  children: SourceAbandonmentChildEvidence[];
+  stableDigest: string;
+  cost: { pages: number; rows: number; probes: number; bytes: number };
+  issues: Array<{ code: string; descriptor: string }>;
+  sqlPlans: LegacyRecoveryLivePlanProof[];
+  queueCounts: Array<{ queueName: string; states: number[] }>;
+  catalog: SourceAbandonmentCatalogProof | null;
+}> {
   const cost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
   const children = new Map<string, SourceAbandonmentChildEvidence>();
   const proofs: unknown[] = [];
@@ -453,7 +461,19 @@ export async function inventorySourceAbandonmentRedis(
     children.set(key, child);
   };
   let queueCounts: Array<{ queueName: string; states: number[] }> = [];
+  const collectCatalog = async () => {
+    descriptor = 'redis:namespace-catalog';
+    catalog = await inventorySourceAbandonmentNamespaces(redis, allowance.deadlineAtMs);
+    if (!catalog.complete || catalog.issue)
+      throw new Refused(catalog.issue ?? 'QUEUE_CATALOG_UNPROVED');
+    check();
+    return catalog;
+  };
   try {
+    // FLAG: Live jobs can finish during the full census. Capture their current
+    // state counts afterwards; stopped inventories retain fence/header bracketing.
+    const onlineCatalog = queueFenceNonce ? null : await collectCatalog();
+    descriptor = 'redis:inventory';
     const headerArgs = [
       JSON.stringify(queueNames),
       queueFenceNonce ? `rollout:${queueFenceNonce}` : '',
@@ -479,14 +499,10 @@ export async function inventorySourceAbandonmentRedis(
         throw new Refused('ACTION_SCHEDULER_UNPROVED');
       return { queueName: row[0], states: row.slice(4, 12) as number[] };
     });
-    descriptor = 'redis:namespace-catalog';
-    catalog = await inventorySourceAbandonmentNamespaces(redis, allowance.deadlineAtMs);
-    if (!catalog.complete || catalog.issue)
-      throw new Refused(catalog.issue ?? 'QUEUE_CATALOG_UNPROVED');
-    check();
+    const completeCatalog = onlineCatalog ?? (await collectCatalog());
     // Full namespace coverage and per-namespace key counts repeat independently;
     // generation, exact owners and effect envelopes keep their detailed proofs.
-    proofs.push({ catalog: catalog.namespaceKeyCounts, headers });
+    proofs.push({ catalog: completeCatalog.namespaceKeyCounts, headers });
     const selectedFound = new Set<string>();
     for (const queue of queueCounts) {
       descriptor = `redis:${queue.queueName}`;

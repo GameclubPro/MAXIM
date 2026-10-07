@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   constants,
   openSync,
@@ -17,6 +17,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertLegacyDispositionSource } from './assert-legacy-disposition-source.mjs';
 import { createLegacyColdClient } from './legacy-cold-client.mjs';
+import { readSourceAbandonmentCorrectiveIdentity } from './source-abandonment-corrective-identity.mjs';
 import {
   assertInheritedDeployLock,
   assertNoActiveLegacyColdMaintenance,
@@ -279,11 +280,20 @@ export function assertColdProtocolContext(protocol, context) {
     throw new Error('cold_protocol_selection_changed');
 }
 
-export async function runLegacyColdHost(request, { protocol = 'legacy' } = {}) {
+export async function runLegacyColdHost(
+  request,
+  { protocol = 'legacy', controllerSha = null } = {},
+) {
   // FLAG: Both controllers share one maintenance journal and lock. A modern exact-source
   // operation must never resume a legacy installation or inherit its member-wide authority.
   if (!['legacy', 'source-abandonment-v1'].includes(protocol))
     throw new Error('unsupported_cold_protocol');
+  if (
+    controllerSha !== null &&
+    (protocol !== 'source-abandonment-v1' ||
+      !['apply', 'reconcile', 'retry-preview'].includes(request.operation))
+  )
+    throw new Error('corrective_continuation_required');
   assertInheritedDeployLock();
   const store = createLegacyColdJournalStore();
   const state = store.read();
@@ -295,7 +305,13 @@ export async function runLegacyColdHost(request, { protocol = 'legacy' } = {}) {
       blockedReason: state.journal?.blockedReason ?? null,
       journalDigest: state.journal ? legacyColdDigest(state.journal) : null,
     };
-  const identity = sourceIdentity(request.targetSha);
+  const identity =
+    controllerSha === null
+      ? sourceIdentity(request.targetSha)
+      : readSourceAbandonmentCorrectiveIdentity(
+          { controllerSha, targetSha: request.targetSha, protocol, operation: request.operation },
+          execute,
+        );
   const privateRoot = join(LEGACY_COLD_STATE_DIR, 'legacy-cold-private');
   directory(privateRoot);
   let bindings;
@@ -371,6 +387,40 @@ export async function runLegacyColdHost(request, { protocol = 'legacy' } = {}) {
   )
     throw new Error('operation_context_changed');
   bindings.topologyDigest = legacyColdDigest(topology);
+  if (controllerSha !== null) {
+    // FLAG: Attest the distinct controller before any collector or writer call.
+    // This immutable evidence never rewrites the original journal/runtime binding.
+    const controllerReceipt = {
+      version: 1,
+      kind: 'source-abandonment-corrective-controller',
+      protocol,
+      operation: request.operation,
+      controllerSha,
+      runtimeSha: identity.sourceSha,
+      runtimeImageId: identity.imageId,
+      expectedJournalDigest: request.expectedJournalDigest,
+      currentJournalDigest: legacyColdDigest(state.journal),
+      requestDigest: canonicalLegacyColdDigest({
+        version: 1,
+        controllerSha,
+        runtimeRequest: request,
+      }),
+      selectionDigest: bindings.selectionDigest,
+      adapterSha256: createHash('sha256')
+        .update(readFileSync(join(root, 'infra/scripts/legacy-cold-store-adapter.mjs')))
+        .digest('hex'),
+    };
+    const controllerReceiptSha256 = store.recordProof(controllerReceipt);
+    process.stderr.write(
+      `${JSON.stringify({
+        stage: 'correctiveController',
+        event: 'attested',
+        controllerSha,
+        runtimeSha: identity.sourceSha,
+        controllerReceiptSha256,
+      })}\n`,
+    );
+  }
   const environmentFile = join(operationDir, 'client.env');
   const queueControlPath = join(operationDir, 'queue-control.cjs');
   try {

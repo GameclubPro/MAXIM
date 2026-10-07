@@ -30,6 +30,7 @@ const HOT_PATH_STAGES = new Set([
   'required-subscription.initial-authority',
   'required-subscription.membership',
   'rule-engine',
+  'rule-engine.detect',
   'rule-engine.commercial-campaign',
   'system-mode',
   'violation-admin-recheck',
@@ -40,7 +41,10 @@ const HOT_PATH_STAGES = new Set([
   'violation-rule-followup.complete',
 ]);
 
-const REQUIRED_SUBSCRIPTION_FAILURES = new Map([
+const LOCAL_FAILURES = new Map([
+  ['Message limit state deadline exceeded', 'message_limit_state_deadline'],
+  ['Media cooldown state deadline exceeded', 'media_cooldown_state_deadline'],
+  ['DUPLICATE_STATE_BUDGET_EXCEEDED', 'duplicate_state_budget'],
   ['required_subscription_no_longer_authorized', 'subscription_authority_rejected'],
   ['required_subscription_notice_no_longer_authorized', 'subscription_authority_rejected'],
   ['Required subscription source no longer actionable', 'subscription_source_unavailable'],
@@ -77,8 +81,8 @@ export function describeWebhookExecutionFailure(error: unknown, hotPathStage?: u
       response?: { data?: { code?: unknown; error?: { code?: unknown } } };
     } | null;
     for (const value of [record?.code, record?.message]) {
-      if (typeof value === 'string' && REQUIRED_SUBSCRIPTION_FAILURES.has(value)) {
-        failureReason = REQUIRED_SUBSCRIPTION_FAILURES.get(value)!;
+      if (typeof value === 'string' && LOCAL_FAILURES.has(value)) {
+        failureReason = LOCAL_FAILURES.get(value)!;
         break;
       }
     }
@@ -105,6 +109,12 @@ export function describeWebhookExecutionFailure(error: unknown, hotPathStage?: u
         /\/moderation\/required-subscription-execution-guard\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
       guardCallbacks:
         /\/moderation\/moderation-execution-guard-callbacks\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
+      ruleEngine: /\/moderation\/rule-engine\.service\.impl\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
+      messageLimits:
+        /\/moderation\/rule-engine-message-limits\.detector\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
+      duplicateState:
+        /\/moderation\/rule-engine-duplicate-detector\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
+      redisCounter: /\/moderation\/redis-counter\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
       maxClient: /\/max\/max-client\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
       actionLedger: /\/max\/max-action-ledger\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
       deleteIntent:

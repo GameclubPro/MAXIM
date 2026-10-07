@@ -55,6 +55,8 @@ Commands:
                               Inspect or apply an exact journal-bound legacy recovery
   source-abandonment <private-request.json>
                               Discard an exact modern source without member-wide holds
+  source-abandonment-corrective <private-envelope.json>
+                              Continue reviewed recovery with an exact green controller
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS.
@@ -373,6 +375,48 @@ NODE
     *) echo 'Invalid emergency source admission.' >&2; return 2 ;;
   esac
   remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-source-abandonment.sh)" <"$request_file"
+}
+
+source_abandonment_corrective() {
+  if [[ $# != 1 ]]; then
+    echo 'Usage: source-abandonment-corrective <private-envelope.json>' >&2
+    return 2
+  fi
+  local request_file="$1" controller_sha emergency_reason="${MAXIM_DEPLOY_EMERGENCY_REASON:-}"
+  controller_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  node --input-type=module - "$ROOT_DIR" "$request_file" "$controller_sha" <<'NODE'
+import { constants, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+const [root, path, sha] = process.argv.slice(2);
+let fd;
+try {
+  const { parseSourceAbandonmentCorrectiveHostRequest } = await import(pathToFileURL(join(root, 'infra/scripts/source-abandonment-corrective-host.mjs')));
+  fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const stat = fstatSync(fd);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() ||
+    (stat.mode & 0o777) !== 0o600 || stat.size > 65536) throw new Error('Private bounded envelope required');
+  const envelope = parseSourceAbandonmentCorrectiveHostRequest(readFileSync(fd, 'utf8'));
+  if (envelope.controllerSha !== sha) throw new Error('Controller source mismatch');
+} catch {
+  process.stderr.write('Private corrective controller envelope refused.\n');
+  process.exitCode = 2;
+} finally { if (fd !== undefined) closeSync(fd); }
+NODE
+  # FLAG: An explicit emergency reason may bypass only CI admission. The exact
+  # controller identity, private envelope and runtime review hashes still bind.
+  case "${MAXIM_DEPLOY_EMERGENCY_BYPASS:-0}" in
+    0|'') node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$controller_sha" ;;
+    1)
+      if [[ -z "${emergency_reason//[[:space:]]/}" ]]; then
+        echo 'A reviewed emergency reason is required.' >&2
+        return 2
+      fi
+      echo "Emergency corrective controller admission: $emergency_reason" >&2
+      ;;
+    *) echo 'Invalid emergency corrective controller admission.' >&2; return 2 ;;
+  esac
+  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_CONTROLLER_SHA=$controller_sha" bash ./infra/scripts/vps-source-abandonment-corrective.sh)" <"$request_file"
 }
 
 remote_from_args() {
@@ -1406,6 +1450,9 @@ case "$command" in
     ;;
   source-abandonment)
     source_abandonment "$@"
+    ;;
+  source-abandonment-corrective)
+    source_abandonment_corrective "$@"
     ;;
   rollback-runtime)
     rollback_runtime "$@"

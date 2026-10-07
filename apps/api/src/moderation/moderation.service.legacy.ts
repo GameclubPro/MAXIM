@@ -2267,6 +2267,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const fullMessageDuplicates =
         settings.antiDuplicateEnabled &&
         (await this.messageDuplicateService?.isAuthoritative(chatId)) === true;
+      this.markWebhookHotPathStage(hotPathProfile, 'rule-engine.detect');
       const detection = await this.ruleEngine.detect({
         chatId,
         userId: senderId,

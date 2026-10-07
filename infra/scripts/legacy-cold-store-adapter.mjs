@@ -187,7 +187,18 @@ export function createLegacyColdStoreAdapter({
       if (prior) {
         const semantic = (value) =>
           Object.fromEntries(
-            Object.entries(value).filter(([key]) => !['sqlPlans', 'cost'].includes(key)),
+            Object.entries(value)
+              .filter(([key]) => !['sqlPlans', 'cost'].includes(key))
+              .map(([key, item]) => [
+                key,
+                key === 'redisCatalogs' && Array.isArray(item)
+                  ? item.map((catalog) =>
+                      Object.fromEntries(
+                        Object.entries(catalog).filter(([field]) => field !== 'cost'),
+                      ),
+                    )
+                  : item,
+              ]),
           );
         if (
           canonicalLegacyColdDigest(semantic(inventory)) !==
