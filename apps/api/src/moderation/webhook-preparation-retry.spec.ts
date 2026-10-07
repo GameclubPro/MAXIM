@@ -1,4 +1,5 @@
 import { DelayedError } from 'bullmq';
+import { Logger } from '@nestjs/common';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { DefaultWebhookLeaseManagerService } from './default-webhook-lease-manager.service';
 import { BackgroundWebhookProcessor, ModerationService } from './moderation.service';
@@ -87,6 +88,7 @@ describe('webhook preparation queue retry', () => {
     'keeps $kind $stage deferrals on the existing durable failure path',
     async ({ kind, stage }) => {
       const f = fixture();
+      const warning = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
       const error = new WebhookPreparationDeferredError('Handler delivery remains pending', 1_000);
       if (stage === 'handler') f.handler.mockRejectedValue(error);
       else f.canonical.completeExecution.mockRejectedValue(error);
@@ -101,6 +103,16 @@ describe('webhook preparation queue retry', () => {
         expect.objectContaining({ errorMessage: error.message, terminal: false }),
       );
       expect(job.moveToDelayed).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(
+        expect.objectContaining({ stage, errorKind: 'error' }),
+        'Webhook execution failed before recovery settlement',
+      );
+      expect(warning.mock.invocationCallOrder[0]).toBeLessThan(
+        f.canonical.failExecution.mock.invocationCallOrder[0],
+      );
+      expect(JSON.stringify(warning.mock.calls)).not.toMatch(
+        /event-a|business-token|remains pending/u,
+      );
     },
   );
 
