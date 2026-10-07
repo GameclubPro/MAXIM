@@ -10,16 +10,21 @@ export const DURABLE_RULE_FOLLOWUP_RULES = new Set([
   ...STOP_WORDS_DELETE_RULE_CODES,
 ]);
 
-export async function persistRuleFollowupBeforeDelete(
-  tx: Prisma.TransactionClient,
-  intentId: string,
+// FLAG: Expected source expiry is distinct from malformed authority and must roll back new work.
+export class ModerationRuleFollowupSourceExpiredError extends Error {}
+
+export function assertRuleFollowupSourceCurrent(
   input: EnsureModerationDeleteIntentInput,
   policySha256: string,
   envelope: ModerationRuleFollowupEnvelope,
-): Promise<string | null> {
+  nowMs = Date.now(),
+): Date {
   if (
     !DURABLE_RULE_FOLLOWUP_RULES.has(input.ruleCode ?? '') ||
-    !input.subjectUserId ||
+    !input.chatId.trim() ||
+    !input.messageId.trim() ||
+    !input.reasonKey.trim() ||
+    !input.subjectUserId?.trim() ||
     !input.sourceMessageAt
   )
     throw new Error('Durable rule follow-up requires guarded exact source');
@@ -27,12 +32,24 @@ export async function persistRuleFollowupBeforeDelete(
   if (
     !Number.isSafeInteger(sourceAt.getTime()) ||
     sourceAt.getTime() <= 0 ||
-    sourceAt.getTime() > Date.now() ||
-    Date.now() >= sourceAt.getTime() + 300_000 ||
+    sourceAt.getTime() > nowMs ||
     !/^[a-f0-9]{64}$/u.test(policySha256) ||
     !readRuleFollowupEnvelope(envelope)
   )
     throw new Error('Invalid durable rule follow-up binding');
+  if (nowMs >= sourceAt.getTime() + 300_000)
+    throw new ModerationRuleFollowupSourceExpiredError('Durable rule follow-up source expired');
+  return sourceAt;
+}
+
+export async function persistRuleFollowupBeforeDelete(
+  tx: Prisma.TransactionClient,
+  intentId: string,
+  input: EnsureModerationDeleteIntentInput,
+  policySha256: string,
+  envelope: ModerationRuleFollowupEnvelope,
+): Promise<string | null> {
+  const sourceAt = assertRuleFollowupSourceCurrent(input, policySha256, envelope);
   const id = `mrf-v1-${createHash('sha256')
     .update(JSON.stringify([intentId, input.reasonKey]))
     .digest('hex')}`;
@@ -54,6 +71,13 @@ export async function persistRuleFollowupBeforeDelete(
     ON CONFLICT ("intent_id", "reason_key") DO NOTHING
   `);
   if (inserted > 0) return id;
+  // FLAG: If expiry wins the SQL insert race, undo the new intent/reason in the caller's
+  // transaction. A null follow-up must never leave newly created expired action work behind.
+  const [clock] = await tx.$queryRaw<{ expired: boolean }[]>(Prisma.sql`
+    SELECT (clock_timestamp() AT TIME ZONE 'UTC') >= ${new Date(sourceAt.getTime() + 300_000)} AS expired
+  `);
+  if (clock?.expired)
+    throw new ModerationRuleFollowupSourceExpiredError('Durable rule follow-up source expired');
   const existing = await tx.moderationRuleFollowup.findUnique({
     where: { intentId_reasonKey: { intentId, reasonKey: input.reasonKey } },
   });

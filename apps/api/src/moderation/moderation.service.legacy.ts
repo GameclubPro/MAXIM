@@ -15,6 +15,7 @@ import {
 } from '../webhook/webhook-legacy-hold.service';
 import {
   DURABLE_RULE_FOLLOWUP_RULES,
+  ModerationRuleFollowupSourceExpiredError,
   readRuleFollowupEnvelope,
 } from './moderation-rule-followup-persistence';
 import {
@@ -37,6 +38,7 @@ import { ModerationStateDeleteGuardService } from './moderation-state-delete-gua
 import {
   RequiredSubscriptionExecutionGuardService,
   RequiredSubscriptionExecutionRejectedError,
+  RequiredSubscriptionInitialSourceUnavailableError,
 } from './required-subscription-execution-guard.service';
 import { MESSAGE_LIMITS_STATEFUL_RULES } from './message-limits-delete-guard.service';
 import {
@@ -2787,23 +2789,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           (updateType === 'message_created' || updateType === 'message_edited')
         ) {
           this.markWebhookHotPathStage(hotPathProfile, 'violation-rule-followup.persist');
-          const registered = await this.moderationDeleteIntentService.ensureIntentWithRuleFollowup(
-            {
-              ...violationDeleteIntent,
-              originBotId: update.botId ?? null,
-              routingPolicy: 'delete_capable',
-            },
-            moderationExecutionPolicySha256,
-            {
-              version: 1,
-              updateType,
-              originBotId: update.botId ?? null,
-              userLabel,
-              effectiveMessageLength,
-              rulesPublishedUrl,
-              rulesPublishedMessageId,
-            },
-          );
+          let registered: { followupId: string | null };
+          try {
+            registered = await this.moderationDeleteIntentService.ensureIntentWithRuleFollowup(
+              {
+                ...violationDeleteIntent,
+                originBotId: update.botId ?? null,
+                routingPolicy: 'delete_capable',
+              },
+              moderationExecutionPolicySha256,
+              {
+                version: 1,
+                updateType,
+                originBotId: update.botId ?? null,
+                userLabel,
+                effectiveMessageLength,
+                rulesPublishedUrl,
+                rulesPublishedMessageId,
+              },
+            );
+          } catch (error) {
+            // FLAG: This typed expiry is emitted inside the registration transaction before
+            // effects, or after rolling its new intent back. Invalid bindings remain failures.
+            if (error instanceof ModerationRuleFollowupSourceExpiredError) return;
+            throw error;
+          }
           this.markWebhookHotPathStage(hotPathProfile, 'violation-rule-followup.complete');
           durableRuleFollowupId = registered.followupId;
         } else await this.ensureModerationDeleteIntent(violationDeleteIntent, undefined, false);
@@ -10199,14 +10209,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       mediaNoticeScope,
       missingChannelTitles,
     );
+    const subscriptionAssertionParams = {
+      ...params,
+      reasonKey: deleteIntent.reasonKey,
+      metadata: requiredSubscriptionChannelMetadata,
+    };
     const assertRequiredSubscriptionCurrent = createRequiredSubscriptionAssertion(
       this.requiredSubscriptionExecutionGuard,
       () => this.maxBotContextService?.getActiveBotId() ?? undefined,
-      {
-        ...params,
-        reasonKey: deleteIntent.reasonKey,
-        metadata: requiredSubscriptionChannelMetadata,
-      },
+      subscriptionAssertionParams,
+    );
+    const assertRequiredSubscriptionInitiallyCurrent = createRequiredSubscriptionAssertion(
+      this.requiredSubscriptionExecutionGuard,
+      () => this.maxBotContextService?.getActiveBotId() ?? undefined,
+      subscriptionAssertionParams,
+      { initialQualification: true },
     );
     return this.requiredSubscriptionMediaNoticeCoordinator.run({
       chatId: params.chatId,
@@ -10228,6 +10245,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ),
       executeDelete: async (assertNoticeLeaseOwned) => {
         await assertNoticeLeaseOwned();
+        this.markWebhookHotPathStage(
+          params.hotPathProfile,
+          'required-subscription.delete-authority',
+        );
         await assertRequiredSubscriptionCurrent();
         await this.ensureModerationDeleteIntent(deleteIntent);
         await assertNoticeLeaseOwned();
@@ -10268,10 +10289,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await assertNoticeLeaseOwned();
         // FLAG: Only the initial leader authorization may stop this feature normally.
         // Return handled to prevent active-mute fallthrough; later guards retain failure fences.
+        this.markWebhookHotPathStage(
+          params.hotPathProfile,
+          'required-subscription.initial-authority',
+        );
         try {
-          await assertRequiredSubscriptionCurrent();
+          await assertRequiredSubscriptionInitiallyCurrent();
         } catch (error: unknown) {
-          if (error instanceof RequiredSubscriptionExecutionRejectedError) return true;
+          if (
+            error instanceof RequiredSubscriptionExecutionRejectedError ||
+            error instanceof RequiredSubscriptionInitialSourceUnavailableError
+          )
+            return true;
           throw error;
         }
         const claimed = await this.claimAndPersistMessageScopedModerationViolation({

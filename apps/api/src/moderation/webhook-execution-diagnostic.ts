@@ -18,9 +18,15 @@ const HOT_PATH_STAGES = new Set([
   'invitation-access',
   'invitation-access.delete',
   'known-spammer-check',
+  'message-duplicate.observe',
+  'message-duplicate.complete',
+  'report-submission',
+  'report-submission.complete',
   'required-subscription',
   'required-subscription.delete',
+  'required-subscription.delete-authority',
   'required-subscription.follow-up',
+  'required-subscription.initial-authority',
   'required-subscription.membership',
   'rule-engine',
   'rule-engine.commercial-campaign',
@@ -29,6 +35,8 @@ const HOT_PATH_STAGES = new Set([
   'violation-delete',
   'violation-follow-up',
   'violation-record',
+  'violation-rule-followup.persist',
+  'violation-rule-followup.complete',
 ]);
 
 const REQUIRED_SUBSCRIPTION_FAILURES = new Map([

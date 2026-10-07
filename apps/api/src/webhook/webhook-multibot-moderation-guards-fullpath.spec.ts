@@ -769,75 +769,137 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     expect(s.effects).toEqual([]);
   });
 
-  it('completes one canonical handler and its mirrors when initial subscription authority rejects', async () => {
-    const s = await fixture();
+  it.each(['authority-rejected', 'source-unavailable'] as const)(
+    'completes one canonical handler and its mirrors for initial subscription %s',
+    async (reason) => {
+      const s = await fixture();
+      const [chatId, targetId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
+      await s.prisma.chatSettings.update({
+        where: { chatId: chatId! },
+        data: { requiredSubscriptionEnabled: true, requiredSubscriptionChannelIds: [targetId!] },
+      });
+      // The initial observation says missing; the real final guard refreshes membership
+      // through the local MAX fixture and sees that the participant has now joined.
+      const membership = jest
+        .spyOn(s.membership, 'getMembershipResolution')
+        .mockResolvedValueOnce({ membership: false, fresh: true });
+      if (reason === 'source-unavailable') {
+        jest.spyOn(s.max, 'getExactMessageRow').mockRejectedValueOnce(
+          Object.assign(new Error('Fixture source unavailable'), {
+            response: { status: 404, data: {} },
+          }),
+        );
+      }
+      const authorize = jest.spyOn(s.subscriptionGuard, 'authorize');
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const activeMute = jest.spyOn(s.moderation as any, 'handleActiveMuteMessage');
+      const messageId = `subscription-rejected-${randomUUID()}`;
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            text: 'Subscription changed',
+          }),
+        ),
+      );
+      await s.drain();
+      expect(authorize).toHaveBeenCalledTimes(1);
+      expect(authorize).toHaveBeenCalledWith(
+        expect.objectContaining({ initialQualification: true }),
+      );
+      if (reason === 'authority-rejected') {
+        expect(membership).toHaveBeenCalledWith(
+          targetId,
+          'fixture-user',
+          'moderation_required_subscription',
+          { forceRefresh: true, allowStaleOnError: false },
+        );
+      }
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(activeMute).not.toHaveBeenCalled();
+      expect(s.failures).toEqual([]);
+      expect(s.effects).toEqual([]);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+      expect(await s.prisma.moderationEvent.count({ where: { chatId } })).toBe(0);
+      expect(
+        await s.prisma.moderationViolationMessageClaim.count({
+          where: { chatId, messageId, ruleCode: 'REQUIRED_SUBSCRIPTION' },
+        }),
+      ).toBe(0);
+      expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId } })).toBe(0);
+      const receipts = await s.prisma.webhookEvent.findMany({ where: { id: { in: ids } } });
+      expect(receipts.map((row) => row.status).sort()).toEqual([
+        'DUPLICATE',
+        'DUPLICATE',
+        'DUPLICATE',
+        'PROCESSED',
+      ]);
+      const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { kind: 'EXECUTION', webhookEventId: { in: ids } },
+      });
+      expect(claim).toMatchObject({
+        status: 'COMPLETED',
+        enforced: true,
+        businessStartedAt: expect.any(Date),
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+        leaseToken: null,
+        leaseExpiresAt: null,
+      });
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(s.effects).toEqual([]);
+    },
+  );
+
+  it('keeps a later subscription source failure fenced after feature evidence was persisted', async () => {
+    const s = await fixture(1);
     const [chatId, targetId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
     await s.prisma.chatSettings.update({
       where: { chatId: chatId! },
       data: { requiredSubscriptionEnabled: true, requiredSubscriptionChannelIds: [targetId!] },
     });
-    // The initial observation says missing; the real final guard refreshes membership
-    // through the local MAX fixture and sees that the participant has now joined.
-    const membership = jest
+    jest
       .spyOn(s.membership, 'getMembershipResolution')
-      .mockResolvedValueOnce({ membership: false, fresh: true });
-    const authorize = jest.spyOn(s.subscriptionGuard, 'authorize');
+      .mockResolvedValue({ membership: false, fresh: true });
+    const getSource = s.max.getExactMessageRow.bind(s.max);
+    const sourceError = Object.assign(new Error('Fixture later source unavailable'), {
+      response: { status: 404, data: {} },
+    });
+    jest
+      .spyOn(s.max, 'getExactMessageRow')
+      .mockImplementationOnce(getSource)
+      .mockRejectedValue(sourceError);
     const handler = jest.spyOn(s.moderation, 'handleUpdate');
-    const activeMute = jest.spyOn(s.moderation as any, 'handleActiveMuteMessage');
-    const messageId = `subscription-rejected-${randomUUID()}`;
-    const at = Date.now();
-    const ids = await Promise.all(
-      s.bots.map((bot) =>
-        s.ingest({
-          chatId: chatId!,
-          messageId,
-          botId: bot.id,
-          at,
-          text: 'Subscription changed',
-        }),
-      ),
-    );
-    await s.drain();
-    expect(authorize).toHaveBeenCalledTimes(1);
-    expect(membership).toHaveBeenCalledWith(
-      targetId,
-      'fixture-user',
-      'moderation_required_subscription',
-      { forceRefresh: true, allowStaleOnError: false },
-    );
+    const messageId = `subscription-later-unavailable-${randomUUID()}`;
+    const id = await s.ingest({
+      chatId: chatId!,
+      messageId,
+      botId: s.bots[0]!.id,
+      at: Date.now(),
+      text: 'Later source unavailable',
+    });
+    await expect(s.drain()).rejects.toBe(sourceError);
     expect(handler).toHaveBeenCalledTimes(1);
-    expect(activeMute).not.toHaveBeenCalled();
-    expect(s.failures).toEqual([]);
+    expect(s.failures).toHaveLength(1);
     expect(s.effects).toEqual([]);
-    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
-    expect(await s.prisma.moderationEvent.count({ where: { chatId } })).toBe(0);
     expect(
-      await s.prisma.moderationViolationMessageClaim.count({
-        where: { chatId, messageId, ruleCode: 'REQUIRED_SUBSCRIPTION' },
-      }),
-    ).toBe(0);
-    expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId } })).toBe(0);
-    const receipts = await s.prisma.webhookEvent.findMany({ where: { id: { in: ids } } });
-    expect(receipts.map((row) => row.status).sort()).toEqual([
-      'DUPLICATE',
-      'DUPLICATE',
-      'DUPLICATE',
-      'PROCESSED',
-    ]);
+      await s.prisma.violation.count({ where: { chatId, ruleCode: 'REQUIRED_SUBSCRIPTION' } }),
+    ).toBe(1);
+    const receipt = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    expect(receipt.status).toBe('FAILED');
     const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
-      where: { kind: 'EXECUTION', webhookEventId: { in: ids } },
+      where: { kind: 'EXECUTION', webhookEventId: id },
     });
-    expect(claim).toMatchObject({
-      status: 'COMPLETED',
-      enforced: true,
-      businessStartedAt: expect.any(Date),
-      commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
-      leaseToken: null,
-      leaseExpiresAt: null,
-    });
-    for (const id of ids) await s.moderation.processWebhookEvent(id);
-    expect(handler).toHaveBeenCalledTimes(1);
-    expect(s.effects).toEqual([]);
+    expect(claim.status).not.toBe('COMPLETED');
+    expect(claim.businessStartedAt).not.toBeNull();
+    expect(claim.completedAt).toBeNull();
+    expect(claim.commandResult).not.toEqual(
+      expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+    );
   });
 
   it('requires fresh missing membership for a queued subscription deletion', async () => {

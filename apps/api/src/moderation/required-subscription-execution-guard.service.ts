@@ -1,9 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS } from '@maxim/contracts';
+import { extractHttpStatusCode } from '../common/http-error.util';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
+import { wasMaxMemberMutationAttempted } from '../max/max-member-error.util';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
+import {
+  isMaxMutationOutcomeAmbiguous,
+  wasMaxMessageSendAttempted,
+} from '../max/max-mutation-outcome.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { fingerprintModerationSettings } from './message-limits-delete-guard.service';
@@ -17,6 +23,16 @@ import {
 export const REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE = 'REQUIRED_SUBSCRIPTION_DELETE';
 export class RequiredSubscriptionExecutionRejectedError extends Error {
   readonly code = 'required_subscription_no_longer_authorized';
+}
+
+// FLAG: Initial unavailable evidence is distinct from revoked execution authority or absence.
+export class RequiredSubscriptionInitialSourceUnavailableError extends Error {
+  readonly code = 'required_subscription_initial_source_unavailable';
+
+  constructor(cause: unknown) {
+    super('Required subscription initial source unavailable', { cause });
+    this.name = 'RequiredSubscriptionInitialSourceUnavailableError';
+  }
 }
 
 @Injectable()
@@ -77,6 +93,7 @@ export class RequiredSubscriptionExecutionGuardService {
     messageId: string;
     subjectUserId: string | null;
     botId?: string;
+    initialQualification?: boolean;
     beforeFinalAuthority?: () => Promise<void>;
     reasons: readonly { ruleCode: string; reasonKey: string; metadata: unknown }[];
   }): Promise<
@@ -151,7 +168,22 @@ export class RequiredSubscriptionExecutionGuardService {
     if (!access || access.isAdmin === true || access.isOwner === true) this.reject();
     if (access.userId !== userId || access.isAdmin !== false || access.isOwner !== false)
       throw new Error('Required subscription author access unavailable');
-    const row = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
+    let row: Record<string, unknown> | null;
+    try {
+      row = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
+    } catch (error) {
+      // FLAG: Only the initial source GET may report unavailable evidence separately.
+      // Later authorization and attempted mutations retain their original failure fences.
+      if (
+        params.initialQualification === true &&
+        extractHttpStatusCode(error) === 404 &&
+        !wasMaxMessageSendAttempted(error) &&
+        !wasMaxMemberMutationAttempted(error) &&
+        !isMaxMutationOutcomeAmbiguous(error)
+      )
+        throw new RequiredSubscriptionInitialSourceUnavailableError(error);
+      throw error;
+    }
     if (!row) return 'absent';
     const message = this.parser.parse({
       type: 'message_created',

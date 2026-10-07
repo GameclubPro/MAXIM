@@ -10,6 +10,109 @@ function gate() {
 }
 
 describe('Webhook durable preparation admission', () => {
+  it('shares the expanded preparation pool across bots without letting one class take a third slot', async () => {
+    const admission = new WebhookPreparationAdmission(12, jest.fn());
+    const gates: ReturnType<typeof gate>[] = [];
+    const tasks: Promise<void>[] = [];
+    const start = (botId: string) => {
+      const pending = gate();
+      gates.push(pending);
+      const task = admission.run(botId, 'ordinary', () => pending.promise);
+      tasks.push(task);
+      return { ...pending, task };
+    };
+    const rejected = jest.fn(async () => undefined);
+    try {
+      const first = start('bot-a');
+      start('bot-a');
+      await expect(admission.run('bot-a', 'ordinary', rejected)).rejects.toBeInstanceOf(
+        WebhookPreparationDeferredError,
+      );
+      expect(admission.schedulingState('bot-a', 'ordinary')).toBe('scope_capacity');
+      for (const bot of ['bot-b', 'bot-b', 'bot-c', 'bot-c']) start(bot);
+      expect(admission.snapshot()).toMatchObject({ inFlight: 6, ordinary: 6, pending: 0 });
+      await expect(admission.run('bot-d', 'ordinary', rejected)).rejects.toBeInstanceOf(
+        WebhookPreparationDeferredError,
+      );
+      const completion = admission.nextCompletion();
+      first.release();
+      await completion;
+      await first.task;
+      start('bot-d');
+      expect(admission.snapshot()).toMatchObject({ inFlight: 6, botScopes: 4, pending: 0 });
+      expect(rejected).not.toHaveBeenCalled();
+    } finally {
+      gates.forEach((pending) => pending.release());
+      await Promise.allSettled(tasks);
+      await admission.drain();
+    }
+    expect(admission.snapshot()).toMatchObject({ inFlight: 0, botScopes: 0, pending: 0 });
+  });
+
+  it('preserves class isolation, lifecycle reservation and draining in the expanded preparation pool', async () => {
+    const admission = new WebhookPreparationAdmission(12, jest.fn());
+    const gates: ReturnType<typeof gate>[] = [];
+    const tasks: Promise<void>[] = [];
+    const start = (botId: string, workClass: 'ordinary' | 'interactive' | 'lifecycle') => {
+      const pending = gate();
+      gates.push(pending);
+      const task = admission.run(botId, workClass, () => pending.promise);
+      tasks.push(task);
+      return { ...pending, task };
+    };
+    const rejected = jest.fn(async () => undefined);
+    let draining: Promise<void> | undefined;
+    try {
+      start('bot-a', 'ordinary');
+      start('bot-a', 'ordinary');
+      start('bot-a', 'lifecycle');
+      start('bot-a', 'lifecycle');
+      await expect(admission.run('bot-a', 'lifecycle', rejected)).rejects.toBeInstanceOf(
+        WebhookPreparationDeferredError,
+      );
+      start('bot-a', 'interactive');
+      await expect(admission.run('bot-b', 'interactive', rejected)).rejects.toBeInstanceOf(
+        WebhookPreparationDeferredError,
+      );
+      const ordinary = start('bot-b', 'ordinary');
+      expect(admission.snapshot()).toMatchObject({
+        inFlight: 6,
+        ordinary: 3,
+        lifecycle: 2,
+        interactive: 1,
+      });
+      await expect(admission.run('bot-c', 'lifecycle', rejected)).rejects.toBeInstanceOf(
+        WebhookPreparationDeferredError,
+      );
+      ordinary.release();
+      await ordinary.task;
+      await expect(admission.run('bot-d', 'ordinary', rejected)).rejects.toBeInstanceOf(
+        WebhookPreparationDeferredError,
+      );
+      const lifecycle = start('bot-c', 'lifecycle');
+      lifecycle.release();
+      await lifecycle.task;
+      start('bot-d', 'ordinary');
+      expect(admission.snapshot().inFlight).toBe(6);
+      admission.stop();
+      await expect(admission.run('bot-e', 'ordinary', rejected)).rejects.toBeInstanceOf(
+        WebhookPreparationDeferredError,
+      );
+      let drained = false;
+      draining = admission.drain().then(() => {
+        drained = true;
+      });
+      await Promise.resolve();
+      expect(drained).toBe(false);
+      expect(rejected).not.toHaveBeenCalled();
+    } finally {
+      gates.forEach((pending) => pending.release());
+      await Promise.allSettled(tasks);
+      await draining;
+    }
+    expect(admission.snapshot()).toMatchObject({ inFlight: 0, botScopes: 0, pending: 0 });
+  });
+
   it('distinguishes shared saturation from a poisoned bot behind a lifecycle reservation', async () => {
     const admission = new WebhookPreparationAdmission(4, jest.fn());
     const a = gate();

@@ -36,7 +36,17 @@ describe('webhook execution diagnostics', () => {
     expect(JSON.stringify(describeWebhookExecutionFailure(error))).not.toContain('secret');
   });
 
-  it('classifies HTTP routes and known stages without retaining request configuration', () => {
+  it.each([
+    'violation-delete',
+    'report-submission',
+    'report-submission.complete',
+    'message-duplicate.observe',
+    'message-duplicate.complete',
+    'violation-rule-followup.persist',
+    'violation-rule-followup.complete',
+    'required-subscription.initial-authority',
+    'required-subscription.delete-authority',
+  ])('classifies HTTP routes and %s without retaining request configuration', (hotPathStage) => {
     const error = Object.assign(new Error('secret'), {
       config: {
         method: 'delete',
@@ -44,13 +54,16 @@ describe('webhook execution diagnostics', () => {
         headers: { Authorization: 'secret' },
       },
     });
-    const result = describeWebhookExecutionFailure(error, 'violation-delete');
+    const result = describeWebhookExecutionFailure(error, hotPathStage);
     expect(result).toMatchObject({
       requestOperation: 'delete_messages',
       requestTarget: 'single',
-      hotPathStage: 'violation-delete',
+      hotPathStage,
     });
     expect(JSON.stringify(result)).not.toMatch(/secret|private-id|Authorization/u);
+    expect(describeWebhookExecutionFailure(error, `${hotPathStage}: private-id`).hotPathStage).toBe(
+      'unknown',
+    );
     expect(describeWebhookExecutionFailure(error, 'private-id').hotPathStage).toBe('unknown');
     error.config.url = '/private-id/secret';
     expect(describeWebhookExecutionFailure(error).requestOperation).toBe('unknown');

@@ -8,7 +8,9 @@ its capacity deferrals preserve the receipt and do not exhaust enqueue attempts.
 `WebhookPreparationAdmission` permits `max(1, min(8, floor(poolMax / 2)))` active preparations
 per process, using the same `PRISMA_PG_POOL_MAX`/legacy pool reader as Prisma (default pool 10).
 There is no pending RAM queue. Each bot/work-class pair gets at most half those slots, rounded
-down with a floor of one. Ordinary traffic, explicit Start and lifecycle transitions have separate
+down with a floor of one and a ceiling of two. Production enqueue has a pool of twelve and six
+preparation slots; the fourteen main API pools total sixty connections, plus the separate six
+admin read connections. These are maximum client budgets, not measured database availability. Ordinary traffic, explicit Start and lifecycle transitions have separate
 classes, so one slow Start does not occupy that bot's ordinary allowance. Only one Start runs at
 a time per process. A lifecycle event deferred only by global capacity reserves the next available slot for
 up to five seconds, until a lifecycle task is admitted; non-lifecycle work can continue in other

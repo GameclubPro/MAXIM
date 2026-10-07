@@ -30,7 +30,8 @@ export class WebhookPreparationAdmission {
   private availability(botId: string, workClass: WorkClass) {
     const botCounts = this.byBot.get(botId) ?? { ordinary: 0, interactive: 0, lifecycle: 0 };
     const botActive = botCounts[workClass];
-    const botClassLimit = Math.max(1, Math.floor(this.maxInFlight / 2));
+    // FLAG: A wider SQL pool grows shared capacity, not one bot/class's share beyond two.
+    const botClassLimit = Math.max(1, Math.min(2, Math.floor(this.maxInFlight / 2)));
     const globalFull = this.active.size >= this.maxInFlight;
     const reserved =
       workClass !== 'lifecycle' &&

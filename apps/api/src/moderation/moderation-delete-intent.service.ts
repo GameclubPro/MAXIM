@@ -1,6 +1,7 @@
 import {
   persistRuleFollowupBeforeDelete,
   activateOwnedRuleFollowups,
+  assertRuleFollowupSourceCurrent,
 } from './moderation-rule-followup-persistence';
 import { readLegacyBotCleanupSourceAt } from './legacy-bot-message-cleanup-source';
 import type { ModerationRuleFollowupEnvelope } from './moderation-rule-followup.contract';
@@ -1936,7 +1937,18 @@ export class ModerationDeleteIntentService {
     envelope: ModerationRuleFollowupEnvelope,
   ): Promise<{ followupId: string | null }> {
     return this.prisma.$transaction(async (tx) => {
-      const intent = await this.persistIntent(input, false, tx);
+      const now = new Date();
+      // FLAG: Explicitly malformed scheduling remains an error. Only a valid original
+      // source's elapsed five-minute authority window may stop initial registration normally.
+      this.toNullableDate(input.executeAt);
+      this.toNullableDate(input.retryUntilAt);
+      if (input.executeAt != null && input.retryUntilAt != null) this.normalizeInput(input);
+      assertRuleFollowupSourceCurrent(input, policySha256, envelope, now.getTime());
+      const intent = await this.persistIntent(
+        { ...input, executeAt: input.executeAt ?? now },
+        false,
+        tx,
+      );
       if (intent.rollout !== 'execute' || !intent.intentId) return { followupId: null };
       return {
         followupId: await persistRuleFollowupBeforeDelete(

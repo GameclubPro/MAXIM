@@ -1,6 +1,15 @@
 import { ConfigService } from '@nestjs/config';
 import { fingerprintModerationSettings } from './message-limits-delete-guard.service';
-import { RequiredSubscriptionExecutionGuardService } from './required-subscription-execution-guard.service';
+import {
+  RequiredSubscriptionExecutionGuardService,
+  RequiredSubscriptionExecutionRejectedError,
+  RequiredSubscriptionInitialSourceUnavailableError,
+} from './required-subscription-execution-guard.service';
+import {
+  markMaxMemberMutationAttempted,
+  markMaxMemberMutationConfirmed,
+} from '../max/max-member-error.util';
+import { markMaxMessageSendAttempted } from '../max/max-mutation-outcome.util';
 
 function fixture() {
   const settings = {
@@ -67,6 +76,80 @@ function fixture() {
 }
 
 describe('required subscription execution authorization', () => {
+  it.each([{ response: { status: 404, data: {} } }, { status: 404 }, { getStatus: () => 404 }])(
+    'distinguishes initial source GET 404 without granting authority or consuming immunity (%j)',
+    async (error) => {
+      const s = fixture();
+      const beforeFinalAuthority = jest.fn();
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      let failure: unknown;
+      try {
+        await s.service.authorize({ ...s.input, initialQualification: true, beforeFinalAuthority });
+      } catch (caught) {
+        failure = caught;
+      }
+      expect(failure).toBeInstanceOf(RequiredSubscriptionInitialSourceUnavailableError);
+      expect(failure).not.toBeInstanceOf(RequiredSubscriptionExecutionRejectedError);
+      expect((failure as Error).cause).toBe(error);
+      expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(beforeFinalAuthority).not.toHaveBeenCalled();
+      await expect(s.service.authorize(s.input)).rejects.toBe(error);
+      await expect(s.service.authorize({ ...s.input, initialQualification: false })).rejects.toBe(
+        error,
+      );
+    },
+  );
+
+  it.each(['member-access', 'target-membership'] as const)(
+    'preserves a %s GET 404 during initial qualification',
+    async (source) => {
+      const s = fixture();
+      const error = { response: { status: 404, data: {} } };
+      if (source === 'member-access') s.max.getChatMemberAccess.mockRejectedValue(error);
+      else s.membership.getMembershipResolution.mockRejectedValue(error);
+      await expect(s.service.authorize({ ...s.input, initialQualification: true })).rejects.toBe(
+        error,
+      );
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      if (source === 'member-access') expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { response: { status: 403, data: {} } },
+    { response: { status: 500, data: {} } },
+    new Error('source transport unavailable'),
+    Object.assign(new Error('ambiguous MAX mutation'), { response: { status: 404, data: {} } }),
+    markMaxMessageSendAttempted({ response: { status: 404, data: {} } }),
+    markMaxMemberMutationAttempted({ response: { status: 404, data: {} } }),
+    markMaxMemberMutationConfirmed({ response: { status: 404, data: {} } }),
+  ])(
+    'preserves initial non-404 and attempted or ambiguous mutation failures (%j)',
+    async (error) => {
+      const s = fixture();
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      await expect(s.service.authorize({ ...s.input, initialQualification: true })).rejects.toBe(
+        error,
+      );
+      expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, false, true])(
+    'retains confirmed null-source absence with initialQualification=%s',
+    async (initialQualification) => {
+      const s = fixture();
+      s.max.getExactMessageRow.mockResolvedValue(null as never);
+      await expect(s.service.authorize({ ...s.input, initialQualification })).resolves.toBe(
+        'absent',
+      );
+      expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it('checks the route after fresh membership before final settings and deadline', async () => {
     const s = fixture();
     const route = jest.fn(async () => {

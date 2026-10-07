@@ -368,6 +368,7 @@ export function createRequiredSubscriptionAssertion(
   guard: RequiredSubscriptionExecutionGuardService | undefined,
   readSelectedBotId: ReadBotId,
   params: Identity & { reasonKey: string; metadata: unknown },
+  options: { initialQualification?: true } = {},
 ): Guard {
   return async (beforeFinalAuthority) => {
     if (!guard) throw new Error('Required subscription execution guard unavailable');
@@ -377,6 +378,7 @@ export function createRequiredSubscriptionAssertion(
       subjectUserId: params.userId,
       botId: readSelectedBotId(),
       beforeFinalAuthority,
+      ...(options.initialQualification ? { initialQualification: true } : {}),
       reasons: [
         {
           ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE',

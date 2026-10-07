@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
+import { ModerationRuleFollowupSourceExpiredError } from '../moderation/moderation-rule-followup-persistence';
 import {
   bindMessageLimitEvidence,
   fingerprintModerationSettings,
@@ -110,6 +111,179 @@ describeStores('native durable moderation rule continuation across bot/process c
     expect(s.effects.filter((e) => e.method === 'delete')).toHaveLength(1);
     expect(s.effects.filter((e) => e.method === 'post' && e.path === '/messages')).toHaveLength(1);
   }
+
+  async function registration(s: MultibotHarness, chatId: string, sourceAt: Date) {
+    const settings = await s.prisma.chatSettings.findUniqueOrThrow({ where: { chatId } });
+    const ruleCode = 'MESSAGE_RATE_LIMIT_DELETE';
+    return {
+      input: {
+        chatId,
+        messageId: `stale-${randomUUID()}`,
+        subjectUserId: 'fixture-user',
+        sourceMessageAt: sourceAt,
+        originBotId: s.bots[0]!.id,
+        routingPolicy: 'delete_capable' as const,
+        entityType: 'CHAT' as const,
+        messageAuthorKind: 'user' as const,
+        reasonKey: 'MESSAGE_RATE_LIMIT:violation-delete',
+        ruleCode,
+        retryUntilAt: new Date(sourceAt.getTime() + 300_000),
+        event: {
+          userId: 'fixture-user',
+          eventType: 'MESSAGE' as const,
+          metadata: bindMessageLimitEvidence(settings, sourceAt.getTime(), ruleCode),
+        },
+      },
+      policy: fingerprintModerationSettings(settings, ruleCode),
+      envelope: {
+        version: 1 as const,
+        updateType: 'message_created',
+        originBotId: s.bots[0]!.id,
+        userLabel: 'Fixture user',
+        effectiveMessageLength: 30,
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      },
+    };
+  }
+
+  it('declines an expired valid stateful source before creating its intent, reason or followup', async () => {
+    const { s, chatId } = await fixture({}, 0);
+    const r = await registration(s, chatId, new Date(Date.now() - 360_000));
+    const deadline = r.input.retryUntilAt.getTime();
+    await expect(
+      s.intents.ensureIntentWithRuleFollowup(r.input, r.policy, r.envelope),
+    ).rejects.toBeInstanceOf(ModerationRuleFollowupSourceExpiredError);
+    expect(r.input.retryUntilAt.getTime()).toBe(deadline);
+    expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId } })).toBe(0);
+    expect(
+      await s.prisma.moderationDeleteIntentReason.count({ where: { intent: { chatId } } }),
+    ).toBe(0);
+    expect(await s.prisma.moderationRuleFollowup.count({ where: { chatId } })).toBe(0);
+    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+    expect(s.effects).toEqual([]);
+  });
+
+  it.each(['policy', 'future-source', 'explicit-window'] as const)(
+    'keeps malformed %s registration as an error',
+    async (kind) => {
+      const { s, chatId } = await fixture({}, 0);
+      const r = await registration(s, chatId, new Date(Date.now() - 360_000));
+      const input =
+        kind === 'future-source'
+          ? { ...r.input, sourceMessageAt: new Date(Date.now() + 60_000) }
+          : kind === 'explicit-window'
+            ? { ...r.input, executeAt: new Date() }
+            : r.input;
+      const result = s.intents.ensureIntentWithRuleFollowup(
+        input,
+        kind === 'policy' ? 'invalid' : r.policy,
+        r.envelope,
+      );
+      await expect(result).rejects.toBeInstanceOf(Error);
+      await expect(result).rejects.not.toBeInstanceOf(ModerationRuleFollowupSourceExpiredError);
+      expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId } })).toBe(0);
+      expect(s.effects).toEqual([]);
+    },
+  );
+
+  it('rolls back a new intent when the database deadline wins the followup insert race', async () => {
+    const { s, chatId } = await fixture({}, 0);
+    const r = await registration(s, chatId, new Date(Date.now() - 299_400));
+    const original = (s.intents as any).persistIntent.bind(s.intents);
+    let persistedInsideTransaction = false;
+    jest.spyOn(s.intents as any, 'persistIntent').mockImplementation(async (...args: any[]) => {
+      const result = await original(...args);
+      persistedInsideTransaction = Boolean(result.intentId);
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(1, r.input.retryUntilAt.getTime() - new Date().getTime() + 20),
+        ),
+      );
+      return result;
+    });
+    // Keep the local observation fresh while the real SQL clock crosses the immutable deadline.
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+    try {
+      await expect(
+        s.intents.ensureIntentWithRuleFollowup(r.input, r.policy, r.envelope),
+      ).rejects.toBeInstanceOf(ModerationRuleFollowupSourceExpiredError);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(persistedInsideTransaction).toBe(true);
+    expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId } })).toBe(0);
+    expect(
+      await s.prisma.moderationDeleteIntentReason.count({ where: { intent: { chatId } } }),
+    ).toBe(0);
+    expect(await s.prisma.moderationRuleFollowup.count({ where: { chatId } })).toBe(0);
+    expect(s.effects).toEqual([]);
+  });
+
+  it('completes mirrored old photo receipts without renewing the stricter rule deadline', async () => {
+    const { s, chatId } = await fixture(
+      { maxMessageLengthEnabled: false, photoMessagesEnabled: false },
+      0,
+    );
+    const messageId = `old-photo-${randomUUID()}`;
+    const at = Date.now() - 360_000;
+    const [migration] = await s.prisma.$queryRaw<Array<{ id: string; finishedAt: Date }>>`
+      SELECT id, finished_at AS "finishedAt" FROM _prisma_migrations
+      WHERE migration_name = '20261005020000_add_multibot_order_fences'
+        AND rolled_back_at IS NULL AND finished_at IS NOT NULL
+      ORDER BY finished_at DESC LIMIT 1
+    `;
+    if (!migration) throw new Error('Expected native fixture authority migration');
+    // FLAG: This disposable database was just migrated. Model a post-migration old source
+    // with an earlier fixture cutoff, then restore it; never bypass the runtime legacy reader.
+    await s.prisma.$executeRaw`
+      UPDATE _prisma_migrations SET finished_at = ${new Date(at - 60_000)} WHERE id = ${migration.id}
+    `;
+    try {
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId,
+            messageId,
+            botId: bot.id,
+            at,
+            text: '',
+            attachments: [
+              { type: 'image', payload: { url: 'https://fixture.invalid/stale-photo.jpg' } },
+            ],
+          }),
+        ),
+      );
+      await s.drain();
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(s.failures).toEqual([]);
+      expect(s.effects).toEqual([]);
+      expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId } })).toBe(0);
+      expect(await s.prisma.moderationRuleFollowup.count({ where: { chatId } })).toBe(0);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+      expect(await s.prisma.moderationEvent.count({ where: { chatId } })).toBe(0);
+      const receipts = await s.prisma.webhookEvent.findMany({ where: { id: { in: ids } } });
+      expect(receipts.filter((row) => row.status === 'PROCESSED')).toHaveLength(1);
+      expect(receipts.filter((row) => row.status === 'DUPLICATE')).toHaveLength(8);
+      expect(receipts.every((row) => row.executionDeadlineAt!.getTime() === at + 600_000)).toBe(
+        true,
+      );
+      expect(
+        await s.prisma.webhookExecutionClaim.findFirst({
+          where: { kind: 'EXECUTION', webhookEventId: { in: ids } },
+        }),
+      ).toMatchObject({
+        status: 'COMPLETED',
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+    } finally {
+      await s.prisma.$executeRaw`
+        UPDATE _prisma_migrations SET finished_at = ${migration.finishedAt} WHERE id = ${migration.id}
+      `;
+    }
+  });
 
   it('continues only its own followup when DELETE finishes after the inline observer has exited across nine bots', async () => {
     const { s, chatId } = await fixture();
