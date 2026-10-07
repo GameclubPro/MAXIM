@@ -34,6 +34,7 @@ import {
   type SourceAbandonmentLiveRequest,
 } from './source-abandonment-live-protocol';
 import { sourceAbandonmentSourceClosureDigest } from './source-abandonment-source-closure';
+import { assertSourceAbandonmentCatalogProofs } from './source-abandonment-redis-catalog';
 import {
   inventorySourceAbandonmentSql,
   SourceInventorySqlMeter,
@@ -152,6 +153,7 @@ export function verifySourceAbandonmentInventory(
     'cost',
     'sqlEvidenceSha256',
     'redisEvidenceSha256',
+    'redisCatalogs',
   ]);
   if (
     output.version !== 1 ||
@@ -176,6 +178,7 @@ export function verifySourceAbandonmentInventory(
     output.children.length > 10_000
   )
     throw new Error('Source inventory is not an exact reviewed permission');
+  assertSourceAbandonmentCatalogProofs(output.redisCatalogs);
   const owners = new Set<string>();
   for (const item of output.selectedOwners) {
     const row = sourceAbandonmentRecord(item);

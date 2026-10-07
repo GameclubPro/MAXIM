@@ -219,8 +219,13 @@ one-time Redis cleanup:
 ./infra/scripts/vps-connect.sh vk-parsing-retire-legacy-queue
 ```
 
-The preview is read-only and reports only fixed BullMQ counters plus the worker count. Apply only
-after the preview shows no legacy worker:
+The preview is read-only. It reports fixed BullMQ counters and worker counts; absent counters also
+require a complete bounded scan of every `bull:vk-parsing-publish:*` key. A clean exact source
+descending from the producer retirement, fourteen running API generations and both healthy native
+auxiliaries must match the immutable API image before and after the command. The shared deploy
+lock protects that source/fleet binding; this does not claim a green release manifest.
+
+For ordinary indexed queue state, apply only after the preview shows no legacy worker:
 
 ```bash
 ./infra/scripts/vps-connect.sh vk-parsing-retire-legacy-queue --apply
@@ -229,10 +234,36 @@ after the preview shows no legacy worker:
 Apply holds the shared deploy lock, refuses a live worker, pauses only `vk-parsing-publish`, then
 rechecks that worker and active counts are zero before calling BullMQ obliteration with `force`
 disabled. If active work remains, the command fails and deliberately leaves the legacy queue
-paused. An already absent queue is a successful no-op, so the same command is safe to repeat. It
+paused. A namespace proved completely absent is a successful no-op. It
 does not query or mutate Postgres and never touches `vk-parsing-sync` or `vk-parsing-publisher`.
 Obliteration uses batches of 1,000 with a 120-second wrapper deadline. A timeout can leave a
 partially removed queue paused; inspect it again and repeat the same apply command after review.
+
+If counters are absent but initial orphan job hashes remain, the preview reports
+`would_remove_never_started_orphans`, `orphanCount` and `previewDigest`. Review that evidence and
+use its exact digest:
+
+```bash
+read -r -p 'Reviewed preview digest: ' reviewed_digest
+./infra/scripts/vps-connect.sh vk-parsing-retire-legacy-queue --apply --reviewed-digest "$reviewed_digest"
+```
+
+This branch never pauses or obliterates a queue. It accepts only the exact six initial hash fields
+and historical producer envelope/options; attempts, results, unknown fields, expiration, locks,
+logs, flow/repeat dependencies or ordinary queue keys prevent admission. Hash shape proves only
+retained queue state; it never establishes a prior MAX outcome or modifies action journals.
+Two complete equal reads must match the reviewed source/fleet/content digest. Each batch of at
+most 32 fixed hashes then compares all six original field values atomically before deletion.
+Changing indexed state cannot fall back to ordinary obliteration. A final complete scan must
+prove absence; a lost acknowledgement or late key requires a fresh preview and digest review,
+because removal may be partial. Uncertain commands are never automatically resent.
+
+Every full namespace pass caps Redis at 12 million keys, `SCAN COUNT 4096` work hints at 16 million,
+4,096 pages, 10,000 matched keys, 4 MiB of returned key bytes and 32 MiB of hash values, under
+15 seconds. COUNT is advisory; every page and hash batch separately limits bytes and server work.
+A Redis script or observed call over 50 ms refuses acceptance. The caller's absolute deadline
+also gates each delete inside Redis and expires before the fixed 120-second host timeout.
+Missing, exceeded or incomplete evidence never authorizes partial-scope cleanup.
 Keep the legacy queue in `monitor-readonly` as a zero-count regression sentinel after cleanup.
 
 ## Legacy Default Webhook Queue Retirement

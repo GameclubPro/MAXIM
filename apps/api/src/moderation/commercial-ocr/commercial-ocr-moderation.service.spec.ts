@@ -104,6 +104,63 @@ type HarnessOptions = {
 };
 
 describe('CommercialOcrModerationService', () => {
+  it.each([WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE])(
+    'does not rebind or analyze an abandoned source with a retained %s receipt',
+    async (webhookStatus) => {
+      const harness = buildHarness({ webhookStatus, admissionStates: ['pending'] });
+      harness.legacyHolds.isUpdateHeld.mockResolvedValue(true);
+      await expect(
+        harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+      ).resolves.toMatchObject({ kind: 'completed', terminal: { outcome: 'LEGITIMATE_SKIP' } });
+      expect(harness.admissionStore.suppress).toHaveBeenCalledTimes(1);
+      expect(harness.admissionStore.activate).not.toHaveBeenCalled();
+      expect(harness.prisma.webhookExecutionClaim.findUnique).not.toHaveBeenCalled();
+      expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+      expect(harness.commercialReview.recordCandidate).not.toHaveBeenCalled();
+      expect(harness.participantImmunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(
+        harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+      ).not.toHaveBeenCalled();
+      expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not recreate an abandoned source as a technical review sample', async () => {
+    const harness = buildHarness();
+    harness.legacyHolds.isUpdateHeld.mockResolvedValue(true);
+    await harness.service.recordTechnicalIncomplete(job(), jobId, 'ocr_timeout');
+    expect(harness.legacyHolds.isUpdateHeld).toHaveBeenCalledWith(update());
+    expect(harness.prisma.chat.findUnique).not.toHaveBeenCalled();
+    expect(harness.commercialReview.recordCandidate).not.toHaveBeenCalled();
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it('keeps another outer message by the same participant eligible for OCR', async () => {
+    const harness = buildHarness();
+    harness.legacyHolds.isUpdateHeld.mockImplementation(
+      async (candidate: MaxUpdate) => candidate.message?.messageId === 'abandoned-other-message',
+    );
+    await harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs);
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed before OCR source reads when the source hold read is unavailable', async () => {
+    const harness = buildHarness();
+    harness.legacyHolds.isUpdateHeld.mockRejectedValue(new Error('source hold read unavailable'));
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).rejects.toThrow('source hold read unavailable');
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+  });
+
   it('settles a no-replay source and suppresses pending OCR without rebind or new effects', async () => {
     const harness = buildHarness({
       webhookStatus: 'NO_REPLAY_HELD' as WebhookStatus,
@@ -1807,6 +1864,7 @@ function buildHarness(options: HarnessOptions = {}) {
       ? jest.fn().mockRejectedValue(options.reviewError)
       : jest.fn().mockResolvedValue(undefined),
   };
+  const legacyHolds = { isUpdateHeld: jest.fn().mockResolvedValue(false) };
   const service = new CommercialOcrModerationService(
     prisma as never,
     analysisService as never,
@@ -1822,6 +1880,7 @@ function buildHarness(options: HarnessOptions = {}) {
     metrics as never,
     nativeOcr as never,
     commercialReview as never,
+    legacyHolds as never,
   );
 
   return {
@@ -1837,6 +1896,7 @@ function buildHarness(options: HarnessOptions = {}) {
     metrics,
     nativeOcr,
     commercialReview,
+    legacyHolds,
   };
 }
 

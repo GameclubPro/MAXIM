@@ -14,20 +14,13 @@ import {
 } from './source-abandonment-live-protocol';
 import type { SourceInventoryAllowance } from './source-abandonment-live-sql';
 import type { LegacyRecoveryLivePlanProof } from './legacy-recovery-live-protocol';
+import {
+  inventorySourceAbandonmentNamespaces,
+  type SourceAbandonmentCatalogProof,
+} from './source-abandonment-redis-catalog';
 
-// FLAG: These server-bounded EVAL_RO readers retain the reviewed legacy byte/probe
-// limits; modern source attribution below never matches a participant globally.
-const catalogScript = `-- source-abandonment:catalog
-local result = redis.call('SCAN', ARGV[1], 'MATCH', 'bull:*', 'COUNT', 128)
-if #result[2] > 200 then return {0, 'CATALOG_PAGE_OVERSIZED'} end
-local bytes = 0
-for _, key in ipairs(result[2]) do
-  bytes = bytes + string.len(key)
-  if string.len(key) > 1024 or bytes > 65536 then return {0, 'CATALOG_PAGE_OVERSIZED'} end
-end
-return {1, #result[2] + 1, result[1], result[2]}
-`;
-
+// FLAG: Owner/job EVAL_RO readers retain the reviewed legacy byte/probe limits.
+// The separately bounded full namespace census cannot spend this effect budget.
 const headerScript = `-- source-abandonment:headers
 local function kind(key) return redis.call('TYPE', key).ok end
 local fence = 'maxim:webhook-rollout:pause-owner:v1'
@@ -378,6 +371,7 @@ export async function inventorySourceAbandonmentRedis(
   const proofs: unknown[] = [];
   const sqlPlans: LegacyRecoveryLivePlanProof[] = [];
   const issues: Array<{ code: string; descriptor: string }> = [];
+  let catalog: SourceAbandonmentCatalogProof | null = null;
   let descriptor = 'redis:inventory';
   const check = () => {
     if (Date.now() >= allowance.deadlineAtMs) throw new Refused('REDIS_DEADLINE_EXCEEDED');
@@ -396,11 +390,9 @@ export async function inventorySourceAbandonmentRedis(
     const reserveProbes =
       script === headerScript
         ? queueNames.length * 45 + 3
-        : script === catalogScript
-          ? 201
-          : script === jobsScript
-            ? 16 * 48 + 1
-            : 64;
+        : script === jobsScript
+          ? 16 * 48 + 1
+          : 64;
     if (allowance.probes - cost.probes < reserveProbes) throw new Refused('REDIS_BUDGET_EXCEEDED');
     let timer: ReturnType<typeof setTimeout> | undefined;
     let reply: unknown;
@@ -476,30 +468,14 @@ export async function inventorySourceAbandonmentRedis(
         throw new Refused('ACTION_SCHEDULER_UNPROVED');
       return { queueName: row[0], states: row.slice(4, 12) as number[] };
     });
-    const catalog = new Set<string>();
-    const cursors = new Set<string>();
-    let cursor = '0';
-    do {
-      descriptor = 'redis:namespace-catalog';
-      const reply = await read(catalogScript, [cursor]);
-      if (
-        typeof reply[2] !== 'string' ||
-        !/^[0-9]{1,20}$/u.test(reply[2]) ||
-        !Array.isArray(reply[3])
-      )
-        throw new Refused('QUEUE_CATALOG_UNPROVED');
-      cursor = reply[2];
-      if (cursor !== '0' && cursors.has(cursor)) throw new Refused('QUEUE_CATALOG_CURSOR_REPEAT');
-      cursors.add(cursor);
-      for (const key of reply[3]) {
-        if (typeof key !== 'string') throw new Refused('QUEUE_NAMESPACE_UNPROVED');
-        const match = /^bull:([^:]+):(.+)$/u.exec(key);
-        if (!match || !queueNames.includes(match[1] as never))
-          throw new Refused('UNKNOWN_QUEUE_NAMESPACE');
-        catalog.add(key);
-      }
-    } while (cursor !== '0');
-    proofs.push({ catalog: sourceAbandonmentDigest([...catalog].sort()), headers });
+    descriptor = 'redis:namespace-catalog';
+    catalog = await inventorySourceAbandonmentNamespaces(redis, allowance.deadlineAtMs);
+    if (!catalog.complete || catalog.issue)
+      throw new Refused(catalog.issue ?? 'QUEUE_CATALOG_UNPROVED');
+    check();
+    // Full namespace coverage and per-namespace key counts repeat independently;
+    // generation, exact owners and effect envelopes keep their detailed proofs.
+    proofs.push({ catalog: catalog.namespaceKeyCounts, headers });
     const selectedFound = new Set<string>();
     for (const queue of queueCounts) {
       descriptor = `redis:${queue.queueName}`;
@@ -655,5 +631,6 @@ export async function inventorySourceAbandonmentRedis(
     issues,
     sqlPlans,
     queueCounts,
+    catalog,
   };
 }

@@ -581,212 +581,284 @@ native('native cold legacy installation and ordering', () => {
     ).toBeNull();
   });
 
-  it('retains marker-only bodies without positive receipt authority in bounded pages', async () => {
-    const { candidate, update, chatId } = await fixture();
-    const { cert } = await certificate(candidate);
-    await installAndSealLegacyRecoveryBatch(prisma, cert.id, [candidate], []);
-    const certificateRow = await prisma.webhookLegacyQuiescenceCertificate.findUniqueOrThrow({
-      where: { id: cert.id },
-    });
-    const bornAfterSeal = new Date(certificateRow.sealedAt!.getTime() + 1);
-    const prefix = `late-retain-${randomUUID()}`;
-    const ids = Array.from({ length: 12000 }, (_, index) => `${prefix}-${index + 1}`);
-    receipts.push(...ids);
-    // FLAG: Isolated post-seal declined delivery history, never execution success.
-    await prisma.$executeRaw(Prisma.sql`
+  it('restores the failed-retention planner setting on the same connection after commit and rollback', async () => {
+    const single = createPrismaClient(databaseUrl, { max: 1, statement_timeout: 7_000 });
+    const retention = Object.assign(Object.create(WebhookOutboxService.prototype), {
+      prisma: single,
+      webhookRetentionCursors: new Map(),
+    }) as ReturnType<typeof outbox>;
+    const inspectSession = () => single.$queryRaw<
+      Array<{
+        pid: number;
+        incrementalSort: string;
+        statementTimeout: string;
+      }>
+    >`SELECT pg_backend_pid() AS pid,
+      current_setting('enable_incremental_sort') AS "incrementalSort",
+      current_setting('statement_timeout') AS "statementTimeout"`;
+    try {
+      const before = await inspectSession();
+      expect(before[0]!.incrementalSort).toBe('on');
+      expect(before[0]!.statementTimeout).toBe('7s');
+      expect(await retention.deleteTerminalFailedWebhookBatch(new Date(0))).toEqual({
+        removed: 0,
+        scanned: 0,
+      });
+      expect(await inspectSession()).toEqual(before);
+      const originalQuery = single.$queryRaw.bind(single);
+      const injectedFailure = jest
+        .spyOn(single, '$queryRaw')
+        .mockImplementation(() => originalQuery(Prisma.sql`SELECT 1 / 0`));
+      try {
+        await expect(retention.deleteTerminalFailedWebhookBatch(new Date(0))).rejects.toThrow(
+          'division by zero',
+        );
+      } finally {
+        injectedFailure.mockRestore();
+      }
+      expect(await inspectSession()).toEqual(before);
+    } finally {
+      await single.$disconnect();
+    }
+  });
+
+  it.each(['first', 'cursor'] as const)(
+    'retains marker-only bodies without positive receipt authority in bounded pages (%s)',
+    async (page) => {
+      const { candidate, update, chatId } = await fixture();
+      const { cert } = await certificate(candidate);
+      await installAndSealLegacyRecoveryBatch(prisma, cert.id, [candidate], []);
+      const certificateRow = await prisma.webhookLegacyQuiescenceCertificate.findUniqueOrThrow({
+        where: { id: cert.id },
+      });
+      const bornAfterSeal = new Date(certificateRow.sealedAt!.getTime() + 1);
+      // FLAG: Varied older receipt times reproduce the competing incremental-sort plan;
+      // the retained peer group below must remain bounded with and without a page cursor.
+      const noisePrefix = `plan-noise-${randomUUID()}`;
+      receipts.push(...Array.from({ length: 5000 }, (_, index) => `${noisePrefix}-${index + 1}`));
+      await prisma.$executeRaw(Prisma.sql`
+      INSERT INTO webhook_events (id, dedup_key, semantic_key, status, raw_payload, normalized_payload, error_message, created_at)
+      SELECT ${noisePrefix} || '-' || g, ${noisePrefix} || ':dedup:' || g, ${noisePrefix} || ':semantic:' || g,
+        'FAILED'::"WebhookStatus", '{}'::jsonb, '{}'::jsonb,
+        'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED:UNKNOWN_PLAN_HISTORY',
+        ${bornAfterSeal}::timestamp - g * INTERVAL '1 millisecond' - INTERVAL '2 seconds'
+      FROM generate_series(1, 5000) g
+    `);
+      const prefix = `late-retain-${randomUUID()}`;
+      const ids = Array.from({ length: 12000 }, (_, index) => `${prefix}-${index + 1}`);
+      receipts.push(...ids);
+      // FLAG: Isolated post-seal declined delivery history, never execution success.
+      await prisma.$executeRaw(Prisma.sql`
       INSERT INTO webhook_events (id, dedup_key, semantic_key, status, raw_payload, normalized_payload, error_message, created_at)
       SELECT ${prefix} || '-' || g, ${prefix} || ':dedup:' || g, ${candidate.owner.semanticKey},
         'FAILED'::"WebhookStatus", '{}'::jsonb, ${JSON.stringify(update)}::jsonb, ${WEBHOOK_LEGACY_HELD_MARKER}, ${bornAfterSeal}
       FROM generate_series(1, 12000) g
     `);
-    const protectedRows = [];
-    for (const kind of [
-      'pre-seal',
-      'pre-seal-empty',
-      'leased',
-      'started',
-      'unknown',
-      'ambiguous',
-      'quarantined',
-    ]) {
-      const event = await prisma.webhookEvent.create({
-        data: {
-          dedupKey: randomUUID(),
-          semanticKey: candidate.owner.semanticKey,
-          status: kind === 'pre-seal-empty' ? 'QUEUED' : 'FAILED',
-          rawPayload: {},
-          normalizedPayload: update as unknown as Prisma.InputJsonValue,
-          errorMessage:
-            kind === 'pre-seal-empty'
-              ? null
-              : kind === 'unknown'
-                ? 'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED:UNKNOWN_ACTION'
-                : kind === 'ambiguous'
-                  ? 'Remote action outcome ambiguous'
-                  : kind === 'pre-seal'
-                    ? 'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED:PRE_SEAL_UNKNOWN'
-                    : WEBHOOK_LEGACY_HELD_MARKER,
-          ...(kind === 'quarantined'
-            ? { timeoutQuarantineExpiresAt: new Date(Date.now() + 60_000) }
-            : {}),
-          ...(kind === 'pre-seal-empty'
-            ? { nextEnqueueAt: new Date(Date.now() + 60_000), queueName: 'moderation' }
-            : {}),
-          createdAt: kind.startsWith('pre-seal') ? certificateRow.sealedAt! : bornAfterSeal,
-        },
-      });
-      receipts.push(event.id);
-      protectedRows.push(event);
-      if (kind === 'leased' || kind === 'started')
-        await prisma.webhookExecutionClaim.create({
+      const protectedRows = [];
+      for (const kind of [
+        'pre-seal',
+        'pre-seal-empty',
+        'leased',
+        'started',
+        'unknown',
+        'ambiguous',
+        'quarantined',
+      ]) {
+        const event = await prisma.webhookEvent.create({
           data: {
-            kind: 'EXECUTION',
-            semanticKey: randomUUID(),
-            webhookEventId: event.id,
-            enforced: true,
-            ...(kind === 'leased'
-              ? { leaseToken: 'retained-live-lease', leaseExpiresAt: new Date(Date.now() + 60_000) }
-              : { businessStartedAt: new Date() }),
+            dedupKey: randomUUID(),
+            semanticKey: candidate.owner.semanticKey,
+            status: kind === 'pre-seal-empty' ? 'QUEUED' : 'FAILED',
+            rawPayload: {},
+            normalizedPayload: update as unknown as Prisma.InputJsonValue,
+            errorMessage:
+              kind === 'pre-seal-empty'
+                ? null
+                : kind === 'unknown'
+                  ? 'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED:UNKNOWN_ACTION'
+                  : kind === 'ambiguous'
+                    ? 'Remote action outcome ambiguous'
+                    : kind === 'pre-seal'
+                      ? 'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED:PRE_SEAL_UNKNOWN'
+                      : WEBHOOK_LEGACY_HELD_MARKER,
+            ...(kind === 'quarantined'
+              ? { timeoutQuarantineExpiresAt: new Date(Date.now() + 60_000) }
+              : {}),
+            ...(kind === 'pre-seal-empty'
+              ? { nextEnqueueAt: new Date(Date.now() + 60_000), queueName: 'moderation' }
+              : {}),
+            createdAt: kind.startsWith('pre-seal') ? certificateRow.sealedAt! : bornAfterSeal,
           },
         });
-      expect(await holds.settleHeldReceipt(event.id, update)).toBe(false);
-      expect(await prisma.webhookEvent.findUnique({ where: { id: event.id } })).toEqual(event);
-    }
-    await prisma.$executeRaw`ANALYZE webhook_events`;
-    const reader = outbox();
-    reader.webhookRetentionCursors = new Map();
-    const capture = jest.spyOn(prisma, '$queryRaw');
-    const first = await reader.deleteTerminalFailedWebhookBatch(new Date(Date.now() + 60_000));
-    const query = capture.mock.calls[0]![0] as Prisma.Sql;
-    capture.mockRestore();
-    expect(first.scanned).toBe(500);
-    expect(first.removed).toBe(0);
-    type Plan = {
-      'Node Type': string;
-      'Relation Name'?: string;
-      'Actual Rows'?: number;
-      'Actual Loops'?: number;
-      'Rows Removed by Filter'?: number;
-      Plans?: Plan[];
-    };
-    let plan: Array<{ 'QUERY PLAN': Array<{ Plan: Plan }> }> = [];
-    const rollback = new Error(`isolated-retention-explain-${randomUUID()}`);
-    try {
-      await prisma.$transaction(async (tx) => {
-        plan = await tx.$queryRaw(Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`);
-        throw rollback;
-      });
-    } catch (error) {
-      if (error !== rollback) throw error;
-    }
-    const nodes: Plan[] = [];
-    const visit = (node: Plan) => {
-      nodes.push(node);
-      for (const child of node.Plans ?? []) visit(child);
-    };
-    visit(plan[0]!['QUERY PLAN'][0]!.Plan);
-    const source = nodes.find(
-      (node) =>
-        node['Relation Name'] === 'webhook_events' &&
-        node['Node Type'].includes('Index') &&
-        (node['Actual Rows'] ?? 0) === 500,
-    );
-    expect(source).toBeDefined();
-    const sourceRows =
-      (source!['Actual Rows']! + (source!['Rows Removed by Filter'] ?? 0)) *
-      source!['Actual Loops']!;
-    expect(sourceRows).toBeLessThanOrEqual(500);
-    expect(nodes.some((node) => node['Relation Name'] === 'max_action_ledger')).toBe(false);
-    for (const node of nodes.filter(
-      (entry) =>
-        entry['Relation Name'] === 'webhook_legacy_recoveries' && (entry['Actual Loops'] ?? 0) > 0,
-    )) {
-      expect(node['Node Type']).toMatch(/Index/);
-      expect(node['Actual Rows']).toBeLessThanOrEqual(1);
-      expect(node['Actual Loops']).toBeLessThanOrEqual(500);
-    }
-    // FLAG: Bound source reads before row locking. SKIP LOCKED must not bypass the
-    // finite ID page and scan the rest of a busy retained-history catalog.
-    reader.webhookRetentionCursors.clear();
-    let releaseLocks!: () => void;
-    const locksReleased = new Promise<void>((resolve) => {
-      releaseLocks = resolve;
-    });
-    let signalLocked!: () => void;
-    let failLocked!: (error: unknown) => void;
-    const rowsLocked = new Promise<void>((resolve, reject) => {
-      signalLocked = resolve;
-      failLocked = reject;
-    });
-    const lockedTask = prisma
-      .$transaction(
-        async (tx) => {
-          await tx.$queryRaw(Prisma.sql`
-            SELECT id FROM webhook_events WHERE status = 'FAILED'::"WebhookStatus"
-              AND created_at < ${new Date(Date.now() + 60_000)}
-            ORDER BY created_at, id LIMIT 600 FOR UPDATE`);
-          signalLocked();
-          await locksReleased;
-        },
-        { timeout: 15_000 },
-      )
-      .catch((error: unknown) => {
-        failLocked(error);
-        throw error;
-      });
-    let lockedSourceRows = 0;
-    try {
-      await rowsLocked;
-      const lockedCapture = jest.spyOn(prisma, '$queryRaw');
-      let lockedQuery: Prisma.Sql;
-      try {
-        expect(
-          await reader.deleteTerminalFailedWebhookBatch(new Date(Date.now() + 60_000)),
-        ).toEqual({ removed: 0, scanned: 0 });
-        lockedQuery = lockedCapture.mock.calls[0]![0] as Prisma.Sql;
-      } finally {
-        lockedCapture.mockRestore();
+        receipts.push(event.id);
+        protectedRows.push(event);
+        if (kind === 'leased' || kind === 'started')
+          await prisma.webhookExecutionClaim.create({
+            data: {
+              kind: 'EXECUTION',
+              semanticKey: randomUUID(),
+              webhookEventId: event.id,
+              enforced: true,
+              ...(kind === 'leased'
+                ? {
+                    leaseToken: 'retained-live-lease',
+                    leaseExpiresAt: new Date(Date.now() + 60_000),
+                  }
+                : { businessStartedAt: new Date() }),
+            },
+          });
+        expect(await holds.settleHeldReceipt(event.id, update)).toBe(false);
+        expect(await prisma.webhookEvent.findUnique({ where: { id: event.id } })).toEqual(event);
       }
-      const lockedPlan = await prisma.$queryRaw<Array<{ 'QUERY PLAN': Array<{ Plan: Plan }> }>>(
-        Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${lockedQuery!}`,
+      await prisma.$executeRaw`ANALYZE webhook_events`;
+      const reader = outbox();
+      const retentionStart = { createdAt: certificateRow.sealedAt!, id: '' };
+      reader.webhookRetentionCursors = new Map(
+        page === 'cursor' ? [['failed', retentionStart]] : [],
       );
-      const lockedNodes: Plan[] = [];
-      const visitLocked = (node: Plan) => {
-        lockedNodes.push(node);
-        for (const child of node.Plans ?? []) visitLocked(child);
+      const capture = jest.spyOn(prisma, '$queryRaw');
+      const first = await reader.deleteTerminalFailedWebhookBatch(new Date(Date.now() + 60_000));
+      const query = capture.mock.calls[0]![0] as Prisma.Sql;
+      capture.mockRestore();
+      expect(first.scanned).toBe(500);
+      expect(first.removed).toBe(0);
+      type Plan = {
+        'Node Type': string;
+        'Relation Name'?: string;
+        'Index Name'?: string;
+        'Actual Rows'?: number;
+        'Actual Loops'?: number;
+        'Rows Removed by Filter'?: number;
+        Plans?: Plan[];
       };
-      visitLocked(lockedPlan[0]!['QUERY PLAN'][0]!.Plan);
-      const lockedSource = lockedNodes.find(
+      let plan: Array<{ 'QUERY PLAN': Array<{ Plan: Plan }> }> = [];
+      const rollback = new Error(`isolated-retention-explain-${randomUUID()}`);
+      try {
+        await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL enable_incremental_sort = off`;
+          plan = await tx.$queryRaw(Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`);
+          throw rollback;
+        });
+      } catch (error) {
+        if (error !== rollback) throw error;
+      }
+      const nodes: Plan[] = [];
+      const visit = (node: Plan) => {
+        nodes.push(node);
+        for (const child of node.Plans ?? []) visit(child);
+      };
+      visit(plan[0]!['QUERY PLAN'][0]!.Plan);
+      const source = nodes.find(
         (node) =>
           node['Relation Name'] === 'webhook_events' &&
           node['Node Type'].includes('Index') &&
+          node['Index Name'] === 'webhook_events_status_created_at_id_idx' &&
           (node['Actual Rows'] ?? 0) === 500,
       );
-      expect(lockedSource).toBeDefined();
-      lockedSourceRows =
-        (lockedSource!['Actual Rows']! + (lockedSource!['Rows Removed by Filter'] ?? 0)) *
-        lockedSource!['Actual Loops']!;
-      expect(lockedSourceRows).toBeLessThanOrEqual(500);
-    } finally {
-      releaseLocks();
-      await lockedTask;
-    }
-    for (let batch = 0; batch < 25; batch++)
-      await reader.deleteTerminalFailedWebhookBatch(new Date(Date.now() + 60_000));
-    expect(await prisma.webhookEvent.count({ where: { id: { in: ids } } })).toBe(12000);
-    for (const event of protectedRows)
-      expect(await prisma.webhookEvent.findUnique({ where: { id: event.id } })).toEqual(event);
-    expect(await prisma.webhookEvent.findUnique({ where: { id: candidate.owner.id } })).toEqual({
-      ...candidate.owner,
-      legacyDispositionId: expect.any(String),
-      legacyDispositionReceiptId: candidate.owner.id,
-    });
-    expect(await holds.isMessageHeld(chatId, candidate.source.messageId)).toBe(true);
-    expect(await holds.isGlobalUserHeld(candidate.source.userId)).toBe(true);
-    process.stdout.write(
-      `LEGACY_HELD_RETENTION_NATIVE_EXPLAIN ${JSON.stringify({ history: 12000, sourceRows, lockedSourceRows, batch: first.scanned, maxActionProbes: 0 })}\n`,
-    );
-  });
+      expect(source).toBeDefined();
+      const sourceRows =
+        (source!['Actual Rows']! + (source!['Rows Removed by Filter'] ?? 0)) *
+        source!['Actual Loops']!;
+      expect(sourceRows).toBeLessThanOrEqual(500);
+      expect(nodes.some((node) => node['Relation Name'] === 'max_action_ledger')).toBe(false);
+      for (const node of nodes.filter(
+        (entry) =>
+          entry['Relation Name'] === 'webhook_legacy_recoveries' &&
+          (entry['Actual Loops'] ?? 0) > 0,
+      )) {
+        expect(node['Node Type']).toMatch(/Index/);
+        expect(node['Actual Rows']).toBeLessThanOrEqual(1);
+        expect(node['Actual Loops']).toBeLessThanOrEqual(500);
+      }
+      // FLAG: Bound source reads before row locking. SKIP LOCKED must not bypass the
+      // finite ID page and scan the rest of a busy retained-history catalog.
+      reader.webhookRetentionCursors.clear();
+      if (page === 'cursor') reader.webhookRetentionCursors.set('failed', retentionStart);
+      let releaseLocks!: () => void;
+      const locksReleased = new Promise<void>((resolve) => {
+        releaseLocks = resolve;
+      });
+      let signalLocked!: () => void;
+      let failLocked!: (error: unknown) => void;
+      const rowsLocked = new Promise<void>((resolve, reject) => {
+        signalLocked = resolve;
+        failLocked = reject;
+      });
+      const lockedTask = prisma
+        .$transaction(
+          async (tx) => {
+            await tx.$queryRaw(Prisma.sql`
+            SELECT id FROM webhook_events WHERE status = 'FAILED'::"WebhookStatus"
+              ${page === 'cursor' ? Prisma.sql`AND (created_at, id) > (${retentionStart.createdAt}, ${retentionStart.id})` : Prisma.empty}
+              AND created_at < ${new Date(Date.now() + 60_000)}
+            ORDER BY created_at, id LIMIT 600 FOR UPDATE`);
+            signalLocked();
+            await locksReleased;
+          },
+          { timeout: 15_000 },
+        )
+        .catch((error: unknown) => {
+          failLocked(error);
+          throw error;
+        });
+      let lockedSourceRows = 0;
+      try {
+        await rowsLocked;
+        const lockedCapture = jest.spyOn(prisma, '$queryRaw');
+        let lockedQuery: Prisma.Sql;
+        try {
+          expect(
+            await reader.deleteTerminalFailedWebhookBatch(new Date(Date.now() + 60_000)),
+          ).toEqual({ removed: 0, scanned: 0 });
+          lockedQuery = lockedCapture.mock.calls[0]![0] as Prisma.Sql;
+        } finally {
+          lockedCapture.mockRestore();
+        }
+        const [, lockedPlan] = await prisma.$transaction([
+          prisma.$executeRaw`SET LOCAL enable_incremental_sort = off`,
+          prisma.$queryRaw<Array<{ 'QUERY PLAN': Array<{ Plan: Plan }> }>>(
+            Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${lockedQuery!}`,
+          ),
+        ]);
+        const lockedNodes: Plan[] = [];
+        const visitLocked = (node: Plan) => {
+          lockedNodes.push(node);
+          for (const child of node.Plans ?? []) visitLocked(child);
+        };
+        visitLocked(lockedPlan[0]!['QUERY PLAN'][0]!.Plan);
+        const lockedSource = lockedNodes.find(
+          (node) =>
+            node['Relation Name'] === 'webhook_events' &&
+            node['Node Type'].includes('Index') &&
+            node['Index Name'] === 'webhook_events_status_created_at_id_idx' &&
+            (node['Actual Rows'] ?? 0) === 500,
+        );
+        expect(lockedSource).toBeDefined();
+        lockedSourceRows =
+          (lockedSource!['Actual Rows']! + (lockedSource!['Rows Removed by Filter'] ?? 0)) *
+          lockedSource!['Actual Loops']!;
+        expect(lockedSourceRows).toBeLessThanOrEqual(500);
+      } finally {
+        releaseLocks();
+        await lockedTask;
+      }
+      for (let batch = 0; batch < 35; batch++)
+        await reader.deleteTerminalFailedWebhookBatch(new Date(Date.now() + 60_000));
+      expect(await prisma.webhookEvent.count({ where: { id: { in: ids } } })).toBe(12000);
+      for (const event of protectedRows)
+        expect(await prisma.webhookEvent.findUnique({ where: { id: event.id } })).toEqual(event);
+      expect(await prisma.webhookEvent.findUnique({ where: { id: candidate.owner.id } })).toEqual({
+        ...candidate.owner,
+        legacyDispositionId: expect.any(String),
+        legacyDispositionReceiptId: candidate.owner.id,
+      });
+      expect(await holds.isMessageHeld(chatId, candidate.source.messageId)).toBe(true);
+      expect(await holds.isGlobalUserHeld(candidate.source.userId)).toBe(true);
+      process.stdout.write(
+        `LEGACY_HELD_RETENTION_NATIVE_EXPLAIN ${JSON.stringify({ page, history: 12000, variedHistory: 5000, sourceRows, lockedSourceRows, batch: first.scanned, maxActionProbes: 0 })}\n`,
+      );
+    },
+  );
 
   it('holds the final SQL business-start and validates indexed order-release predicates', async () => {
     const { candidate } = await fixture();

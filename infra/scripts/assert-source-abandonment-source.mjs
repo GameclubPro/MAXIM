@@ -21,6 +21,34 @@ export const SOURCE_ABANDONMENT_SOURCE_CHECKS = Object.freeze([
       'tx.webhookSourceReceiptDisposition.create(',
       'sourceDispositionId: proof.id',
       'sourceDispositionReceiptId: event.id',
+      'function plainTextOrStrictFlatForward(event: WebhookEvent)',
+      '!plainTextOrStrictFlatForward(owner)',
+      '!plainTextOrStrictFlatForward(event)',
+      'inspectLegacyForwardText(update) === null',
+    ],
+  ],
+  [
+    'apps/api/src/webhook/webhook-legacy-forward-source.ts',
+    [
+      'export function inspectLegacyForwardText(',
+      "link.type !== 'forward'",
+      'const direct = body(message?.body);',
+      'const linked = body(link?.message, true);',
+      'item.attachments.length <= 10',
+      'item.attachments.every(isLegacyImageAttachment)',
+      'legacyParsedTextMatches(update)',
+      '[direct.text, linked.text, normalized.text]',
+      'parseAdminForwardedModerationCommand(text, settings)',
+    ],
+  ],
+  [
+    'apps/api/src/webhook/webhook-legacy-source.ts',
+    [
+      'inspectLegacyForwardText(update, settings)',
+      'const chatId = identity(recipient.chat_id);',
+      'const messageId = identity(body.mid);',
+      'const userId = identity(sender.user_id);',
+      'return { chatId, messageId, userId, sourceAt: new Date(sourceAt) };',
     ],
   ],
   [
@@ -32,6 +60,10 @@ export const SOURCE_ABANDONMENT_SOURCE_CHECKS = Object.freeze([
       'FROM "webhook_source_child_holds"',
       'materializeSourceAbandonmentReceipt(tx, webhookEventId)',
       '."source_disposition_id" IS NOT NULL',
+      "'PhotoDuplicateModerationService'",
+      "'CommercialOcrModerationService'",
+      "'MessageDuplicateMediaService'",
+      "'MessageDuplicateDeleteGuardService'",
     ],
   ],
   [
@@ -42,6 +74,40 @@ export const SOURCE_ABANDONMENT_SOURCE_CHECKS = Object.freeze([
       'model WebhookSourceChildHold {',
       'model WebhookSourceReceiptDisposition {',
       'fields: [sourceDispositionReceiptId, sourceDispositionId], references: [receiptId, id]',
+    ],
+  ],
+  [
+    'apps/api/src/moderation/photo-duplicate/photo-duplicate-moderation.service.ts',
+    [
+      'private readonly legacyHolds?: WebhookLegacyHoldService',
+      'if (await this.legacyHolds?.isUpdateHeld(update)) return;',
+      'await this.legacyHolds?.isMessageHeld(album.chatId, observation.duplicateOfMessageId)',
+    ],
+  ],
+  [
+    'apps/api/src/moderation/commercial-ocr/commercial-ocr-moderation.service.ts',
+    [
+      'private readonly legacyHolds?: WebhookLegacyHoldService',
+      'if (await this.legacyHolds?.isUpdateHeld(update)) return;',
+      'await this.legacyHolds?.isUpdateHeld(webhookEvent.normalizedPayload as unknown as MaxUpdate)',
+    ],
+  ],
+  [
+    'apps/api/src/moderation/message-duplicate/message-duplicate-media.service.ts',
+    [
+      'private readonly legacyHolds?: WebhookLegacyHoldService',
+      'if (update?.message && (await this.legacyHolds?.isUpdateHeld(update))) return null;',
+    ],
+  ],
+  [
+    'apps/api/src/moderation/message-duplicate/message-duplicate-delete-guard.service.ts',
+    [
+      'private readonly legacyHolds?: WebhookLegacyHoldService',
+      'await this.assertLegacySourcesAllowed(chatId, binding);',
+      'await this.assertLegacySourcesAllowed(params.chatId, binding);',
+      'await this.legacyHolds?.isAnyMessageSourceHeld(chatId, [',
+      '{ messageId: binding.messageId, userId: binding.senderId }',
+      '{ messageId: binding.original.messageId, userId: binding.original.senderId }',
     ],
   ],
   [

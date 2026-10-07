@@ -1540,6 +1540,8 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       };
       Object.defineProperty(service, 'prisma', {
         value: {
+          $transaction: (queries: Promise<unknown>[]) => Promise.all(queries),
+          $executeRaw: async () => 0,
           $queryRaw: async (query: Prisma.Sql) => {
             captured = query;
             return [{ removed: 0, scanned: 0, lastId: null, lastCreatedAt: null }];
@@ -1565,6 +1567,7 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       await expect(
         prisma.$transaction(
           async (tx) => {
+            if (phase === 'failed') await tx.$executeRaw`SET LOCAL enable_incremental_sort = off`;
             plan = await tx.$queryRaw(
               Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${captured}`,
             );

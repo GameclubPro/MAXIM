@@ -17,6 +17,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
 import { buildWebhookSemanticEventKey } from '../../webhook/webhook-semantic-event-key';
+import { WebhookLegacyHoldService } from '../../webhook/webhook-legacy-hold.service';
 import { isPendingWebhookTimeoutQuarantineMessage } from '../../webhook/webhook-timeout-quarantine';
 import { buildMessageScopedModerationActionClaimKey } from '../moderation-message-action-claim';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
@@ -158,6 +159,7 @@ export class CommercialOcrModerationService {
     private readonly metrics: CommercialOcrMetricsService,
     @Optional() private readonly nativeOcr?: NativeTesseractOcrAdapter,
     @Optional() private readonly commercialReview?: CommercialReviewService,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
     this.admissionTombstoneTtlMs = resolveCommercialOcrReservationTtlMs(configService);
   }
@@ -681,6 +683,9 @@ export class CommercialOcrModerationService {
       });
       if (!receipt) return;
       const update = receipt.normalizedPayload as unknown as MaxUpdate;
+      // FLAG: Even technical review sampling must not recreate evidence from an
+      // abandoned source through a previously PROCESSED mirror.
+      if (await this.legacyHolds?.isUpdateHeld(update)) return;
       const extracted = extractLogicalPhotoAlbumResult(update);
       if (extracted.kind !== 'complete') return;
       const album = extracted.album;
@@ -844,6 +849,14 @@ export class CommercialOcrModerationService {
       };
     }
     let webhookEvent: CommercialOcrWebhookSource = initialWebhookEvent;
+    // FLAG: A retained PROCESSED receipt or completed semantic owner is historical
+    // evidence only; exact source holds apply before rebind, MAX reads and OCR work.
+    if (
+      await this.legacyHolds?.isUpdateHeld(webhookEvent.normalizedPayload as unknown as MaxUpdate)
+    ) {
+      this.metrics.recordCounter('source.receipt.no_replay_held');
+      return { kind: 'terminal' };
+    }
     // FLAG: A permanent no-replay disposition is terminal and cannot be rebound
     // through a semantic owner to manufacture new OCR action authority.
     if (String(webhookEvent.status) === 'NO_REPLAY_HELD') {

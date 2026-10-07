@@ -4,6 +4,8 @@ import { Prisma } from '../prisma/prisma-client';
 import { QueueMetricsService } from '../system/queue-metrics.service';
 import { buildWebhookOperationalLagQuery } from '../system/webhook-operational-lag';
 import { canonical, legacySnapshotDigest } from './webhook-legacy-source';
+import { WebhookParser } from './webhook.parser';
+import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { SOURCE_ABANDONMENT_OPERATION } from './webhook-source-abandonment.contract';
 import {
   createMultibotHarness,
@@ -18,6 +20,7 @@ import {
 } from './webhook-legacy-cold-install';
 import {
   inspectSourceAbandonmentCandidate,
+  inspectSourceAbandonmentReceiptCandidate,
   materializeSourceAbandonmentReceipt,
   sourceAbandonmentOwnerSnapshot,
 } from './webhook-source-abandonment';
@@ -75,7 +78,17 @@ native('exact-source modern abandonment preserves journals and independent moder
     h = undefined;
   });
 
-  async function fixture() {
+  async function storeRaw(s: MultibotHarness, raw: Record<string, unknown>, botId = s.bots[0]!.id) {
+    const update = new WebhookParser().parse(raw, { botId });
+    update.updateId = randomUUID();
+    s.messages.set(update.message!.messageId, raw.message as Record<string, unknown>);
+    const result = await s.ingress.storeReceipt(update, null);
+    expect(result.webhookEventId).toBeTruthy();
+    s.receiptIds.push(result.webhookEventId!);
+    return result.webhookEventId!;
+  }
+
+  async function fixture(forwardPhotos?: number) {
     h = await createMultibotHarness({
       databaseUrl,
       redisUrl,
@@ -103,13 +116,34 @@ native('exact-source modern abandonment preserves journals and independent moder
     const at = clock!.at.getTime();
     const messageId = `modern-source-${randomUUID()}`;
     const text = 'A reviewed old message with uncertain prior execution';
-    const ownerId = await h.ingest({
-      chatId: chatId!,
-      messageId,
-      text,
-      at,
-      botId: h.bots[0]!.id,
-    });
+    const raw = {
+      update_type: 'message_created',
+      timestamp: at,
+      message: {
+        sender: { user_id: 'fixture-user', name: 'Fixture user', is_bot: false },
+        recipient: { chat_id: chatId!, chat_type: 'chat' },
+        timestamp: at,
+        body: { mid: messageId, text },
+        ...(forwardPhotos === undefined
+          ? {}
+          : {
+              link: {
+                type: 'forward',
+                chat_id: independentChatId!,
+                sender: { user_id: 'linked-fixture-user', is_bot: false },
+                message: {
+                  mid: `linked-${randomUUID()}`,
+                  text: 'Original forwarded caption with two synthetic photographs',
+                  attachments: Array.from({ length: forwardPhotos }, (_, i) => ({
+                    type: i % 2 ? 'photo' : 'image',
+                    payload: { photo_id: i + 1, url: `https://i.oneme.ru/synthetic-${i}` },
+                  })),
+                },
+              },
+            }),
+      },
+    };
+    const ownerId = await storeRaw(h, raw);
     await h.ingress.preparePersistedWebhookEvent(ownerId);
     const started = await h.canonical.prepareExecution(ownerId, h.bots[0]!.id);
     expect(started).not.toBeNull();
@@ -174,6 +208,7 @@ native('exact-source modern abandonment preserves journals and independent moder
       at,
       messageId,
       text,
+      raw,
       ownerId,
       owner,
       claim,
@@ -437,6 +472,204 @@ native('exact-source modern abandonment preserves journals and independent moder
     const selected = await selector.selectEnqueueCandidates(new Date());
     expect(selected.some((row) => [f.ownerId, mirrorId, lateId].includes(row.id))).toBe(false);
     expect(s.failures).toEqual([]);
+  });
+
+  it.each([0, 2, 10])(
+    'holds a flat forward with %i photos while a new outer message and linked author progress',
+    async (photoCount) => {
+      const f = await fixture(photoCount);
+      const { s } = f;
+      const link = f.raw.message.link!;
+      expect(f.candidate.source).toEqual({
+        chatId: f.chatId,
+        messageId: f.messageId,
+        userId: 'fixture-user',
+        sourceAt: new Date(f.at),
+      });
+      // FLAG: This harness proves real ingress, SQL ordering and caption moderation.
+      // Native image/OCR consumers require their separate final-source guard coverage.
+      expect(s.mediaCoverage).toBe('ingress-and-caption-rules-without-native-photo-or-ocr');
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const mirrorId = await storeRaw(s, f.raw, s.bots[1]!.id);
+      expect(
+        await inspectSourceAbandonmentReceiptCandidate(s.prisma, mirrorId, f.candidate),
+      ).toMatchObject({ scopeKind: 'EXACT_SOURCE' });
+      await install(f);
+      expect(await materialize(s, f.ownerId)).toBe('APPLIED_WITH_PROOF');
+      expect(await materialize(s, mirrorId)).toBe('APPLIED_WITH_PROOF');
+      const lateId = await storeRaw(s, f.raw, s.bots[2]!.id);
+      await runReceipts(s, [lateId]);
+      await s.pause();
+      for (const id of [mirrorId, lateId])
+        expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: 'NO_REPLAY_HELD',
+          sourceDispositionId: expect.any(String),
+          sourceDispositionReceiptId: id,
+          processedAt: null,
+        });
+      expect(handler.mock.calls.some(([update]) => update.message?.messageId === f.messageId)).toBe(
+        false,
+      );
+      expect(s.effects).toEqual([]);
+      expect(await s.legacyHolds.isMessageHeld(f.chatId, f.messageId)).toBe(true);
+      expect(await s.legacyHolds.isMessageHeld(link.chat_id, link.message.mid)).toBe(false);
+      for (const userId of ['fixture-user', link.sender.user_id]) {
+        expect(await s.legacyHolds.isMemberHeld(f.chatId, userId)).toBe(false);
+        expect(await s.legacyHolds.isMemberHeld(link.chat_id, userId)).toBe(false);
+        expect(await s.legacyHolds.isGlobalUserHeld(userId)).toBe(false);
+      }
+      const next = structuredClone(f.raw);
+      next.message.body.mid = `new-outer-${randomUUID()}`;
+      next.timestamp = Date.now();
+      next.message.timestamp = next.timestamp;
+      expect(next.message.link).toEqual(link);
+      const nextId = await storeRaw(s, next);
+      expect(await materialize(s, nextId)).toBe('NOT_HELD');
+      const originalAuthorRaw = {
+        update_type: 'message_created',
+        timestamp: Date.now(),
+        message: {
+          sender: link.sender,
+          recipient: { chat_id: link.chat_id, chat_type: 'chat' },
+          timestamp: Date.now(),
+          body: {
+            mid: link.message.mid,
+            text: 'A linked author remains subject to normal moderation',
+          },
+        },
+      };
+      originalAuthorRaw.message.timestamp = originalAuthorRaw.timestamp;
+      const linkedId = await storeRaw(s, originalAuthorRaw);
+      expect(await materialize(s, linkedId)).toBe('NOT_HELD');
+      await runReceipts(s, [nextId, linkedId]);
+      expect(s.effects.filter((effect) => effect.method === 'delete')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: '/messages', messageId: next.message.body.mid }),
+          expect.objectContaining({ path: '/messages', messageId: link.message.mid }),
+        ]),
+      );
+      expect(s.effects).toHaveLength(2);
+      for (const id of [nextId, linkedId])
+        expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: 'PROCESSED',
+          sourceDispositionId: null,
+          sourceDispositionReceiptId: null,
+        });
+      await expect(
+        s.max.deleteMessage(f.chatId, f.messageId, { immediate: true, botId: s.bots[3]!.id }),
+      ).rejects.toThrow();
+      expect(s.effects).toHaveLength(2);
+      await assertHistory(f);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it('refuses unsupported owner shapes and never projects malformed exact-source mirrors', async () => {
+    const f = await fixture(2);
+    const { s } = f;
+    await s.prisma.chatSettings.update({
+      where: { chatId: f.chatId },
+      data: { adminBanCommandName: 'особое' },
+    });
+    const faults = [
+      'direct-image',
+      'direct-video',
+      'reply',
+      'nested',
+      'unknown-attachment',
+      'unknown-payload',
+      'linked-video',
+      'eleven-photos',
+      'direct-command',
+      'linked-command',
+      'configured-linked-command',
+      'forged-normalized-text',
+      'linked-author-as-outer',
+    ];
+    const invalid: Array<{ raw: Record<string, unknown>; normalized: Prisma.InputJsonValue }> = [];
+    for (const fault of faults) {
+      const raw = structuredClone(f.raw);
+      const link = raw.message.link!;
+      if (fault === 'direct-image' || fault === 'direct-video') {
+        delete raw.message.link;
+        Object.assign(raw.message.body, {
+          attachments: [
+            {
+              type: fault === 'direct-image' ? 'image' : 'video',
+              payload: {
+                photo_id: 1,
+                url: 'https://i.oneme.ru/direct-fixture',
+              },
+            },
+          ],
+        });
+      }
+      if (fault === 'reply') link.type = 'reply';
+      if (fault === 'nested') Object.assign(link.message, { link: { type: 'forward' } });
+      if (fault === 'unknown-attachment') link.message.attachments[0]!.type = 'share';
+      if (fault === 'unknown-payload')
+        Object.assign(link.message.attachments[0]!.payload, { hidden: 'unknown' });
+      if (fault === 'linked-video') link.message.attachments[0]!.type = 'video';
+      if (fault === 'eleven-photos')
+        link.message.attachments = Array.from({ length: 11 }, () => link.message.attachments[0]!);
+      if (fault === 'direct-command') raw.message.body.text = '/ban';
+      if (fault === 'linked-command') link.message.text = 'бан';
+      if (fault === 'configured-linked-command') link.message.text = 'особое';
+      const update = new WebhookParser().parse(raw, { botId: f.owner.botId! });
+      if (fault === 'forged-normalized-text') update.message!.text = 'forged caption';
+      if (fault === 'linked-author-as-outer') update.message!.senderId = link.sender.user_id;
+      const normalized = JSON.parse(JSON.stringify(update));
+      invalid.push({ raw, normalized });
+      await s.prisma.webhookEvent.update({
+        where: { id: f.ownerId },
+        data: { rawPayload: raw, normalizedPayload: normalized },
+      });
+      const reasons: string[] = [];
+      expect(
+        await inspectSourceAbandonmentCandidate(s.prisma, f.ownerId, f.selection, (reason) =>
+          reasons.push(reason),
+        ),
+      ).toBeNull();
+      expect(reasons.length).toBeGreaterThan(0);
+      expect(reasons).not.toContain('source_started_claim_unproved');
+      expect(
+        await inspectSourceAbandonmentReceiptCandidate(s.prisma, f.ownerId, f.candidate),
+      ).toBeNull();
+    }
+    await s.prisma.webhookEvent.update({
+      where: { id: f.ownerId },
+      data: {
+        rawPayload: f.owner.rawPayload as Prisma.InputJsonValue,
+        normalizedPayload: f.owner.normalizedPayload as Prisma.InputJsonValue,
+      },
+    });
+    await install(f);
+    expect(await materialize(s, f.ownerId)).toBe('APPLIED_WITH_PROOF');
+    for (const { raw, normalized } of invalid) {
+      // FLAG: Preserve malformed ingress as stored evidence; no recovery helper may
+      // repair its payload or infer a positive receipt from an outer identity match.
+      const id = randomUUID();
+      await s.prisma.webhookEvent.create({
+        data: {
+          id,
+          dedupKey: id,
+          botId: f.owner.botId,
+          semanticKey: buildWebhookSemanticEventKey(normalized),
+          rawPayload: raw as Prisma.InputJsonValue,
+          normalizedPayload: normalized,
+        },
+      });
+      s.receiptIds.push(id);
+      expect(await materialize(s, id)).toBe('BLOCKED_UNKNOWN');
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'RECEIVED',
+        processedAt: null,
+        sourceDispositionId: null,
+        sourceDispositionReceiptId: null,
+      });
+    }
+    expect(s.effects).toEqual([]);
+    await assertHistory(f);
   });
 
   it('contains an unsealed source while withholding ordering release', async () => {

@@ -6,6 +6,10 @@ import {
 } from './source-abandonment-live-redis';
 import { mergeSourceAbandonmentChildren } from './source-abandonment-collect';
 import {
+  assertSourceAbandonmentCatalogProofs,
+  inventorySourceAbandonmentNamespaces,
+} from './source-abandonment-redis-catalog';
+import {
   parseSourceAbandonmentSelection,
   SOURCE_ABANDONMENT_OBSERVATION_QUEUE,
 } from './source-abandonment-live-protocol';
@@ -52,7 +56,8 @@ function redisFixture(keys: string[] = []) {
             .sort()
             .map((name) => [name, '', '1', '', 0, 0, 0, 0, 0, 0, 0, 0, 0]),
         ];
-      if (script.startsWith('-- source-abandonment:catalog')) return [1, 1, '0', keys];
+      if (script.startsWith('-- source-abandonment:namespace-catalog-v2'))
+        return keys.length ? [0, 'UNKNOWN_QUEUE_NAMESPACE'] : [1, 0, '0', 0, 0, 0, []];
       if (script.startsWith('-- source-abandonment:owners'))
         return [1, 1, JSON.parse(args[1]).length, []];
       throw new Error('Unexpected read');
@@ -251,5 +256,89 @@ describe('exact source abandonment bounded evidence', () => {
     );
     expect(result.issues[0]?.code).toBe('REDIS_BUDGET_EXCEEDED');
     expect(redis.eval_ro).not.toHaveBeenCalled();
+  });
+
+  it('completes sparse namespace pages without spending the finite effect proof budget', async () => {
+    const base = redisFixture();
+    let pages = 0;
+    const redis = {
+      eval_ro: jest.fn(async (script: string, keyCount: number, ...args: string[]) => {
+        if (script.startsWith('-- source-abandonment:namespace-catalog-v2')) {
+          pages++;
+          return [1, 9_212_720, pages === 600 ? '0' : String(pages), 0, 0, 100, []];
+        }
+        return base.eval_ro(script, keyCount, ...args);
+      }),
+    };
+    const result = await inventorySourceAbandonmentRedis(
+      redis,
+      selection,
+      [source],
+      allowance(),
+      resolve,
+      'nonce',
+    );
+    expect(result.issues).toEqual([]);
+    expect(result.catalog).toMatchObject({ complete: true, cost: { pages: 600 } });
+    expect(result.cost.pages).toBeLessThan(100);
+    expect(result.cost.probes).toBeLessThan(50_000);
+  });
+
+  it.each([
+    { reply: [0, 'CATALOG_DATABASE_LIMIT'], code: 'CATALOG_DATABASE_LIMIT' },
+    { reply: [0, 'CATALOG_CALL_LATENCY_LIMIT'], code: 'CATALOG_CALL_LATENCY_LIMIT' },
+    { reply: [1, 10, '0', 2, 50, 1, [['moderation', 1]]], code: 'CATALOG_ACCOUNTING_UNPROVED' },
+    { reply: [1, 10, '0', 1, 50, 1, [['unknown', 1]]], code: 'CATALOG_NAMESPACE_UNPROVED' },
+  ])('refuses incomplete structural proof: $code', async ({ reply, code }) => {
+    const result = await inventorySourceAbandonmentNamespaces(
+      { eval_ro: jest.fn(async () => reply) },
+      Date.now() + 30_000,
+    );
+    expect(result).toMatchObject({ complete: false, issue: code });
+  });
+
+  it('refuses a repeated cursor and retains the common SQL/job deadline', async () => {
+    const redis = { eval_ro: jest.fn(async () => [1, 100, '12', 0, 0, 1, []]) };
+    expect(await inventorySourceAbandonmentNamespaces(redis, Date.now() + 30_000)).toMatchObject({
+      complete: false,
+      issue: 'CATALOG_CURSOR_REPEAT',
+    });
+    expect(redis.eval_ro).toHaveBeenCalledTimes(2);
+    redis.eval_ro.mockClear();
+    expect(await inventorySourceAbandonmentNamespaces(redis, Date.now() - 1)).toMatchObject({
+      complete: false,
+      issue: 'CATALOG_DEADLINE_EXCEEDED',
+    });
+    expect(redis.eval_ro).not.toHaveBeenCalled();
+  });
+
+  it('verifies both bounded catalog artifacts rather than trusting their completion labels', async () => {
+    const proof = await inventorySourceAbandonmentNamespaces(
+      {
+        eval_ro: jest.fn(async () => [1, 1, '0', 1, 32, 1, [['moderation', 1]]]),
+      },
+      Date.now() + 30_000,
+    );
+    expect(() => assertSourceAbandonmentCatalogProofs([proof, proof])).not.toThrow();
+    const invalid = [
+      { ...proof, complete: false },
+      { ...proof, issue: 'UNKNOWN_QUEUE_NAMESPACE' },
+      { ...proof, namespaceKeyCounts: { unknown: 1 } },
+      { ...proof, namespaceKeyCounts: { moderation: NaN } },
+      { ...proof, namespaceKeyCounts: { moderation: -1 } },
+      { ...proof, cost: { ...proof.cost, pages: 4097 } },
+      { ...proof, cost: { ...proof.cost, scanCountHints: 0 } },
+      { ...proof, cost: { ...proof.cost, matchedKeys: 300_001 } },
+      { ...proof, cost: { ...proof.cost, databaseKeysMax: 12_000_001 } },
+      { ...proof, cost: { ...proof.cost, durationMs: 15_001 } },
+      { ...proof, cost: { ...proof.cost, maxCallDurationUs: 50_001 } },
+      { ...proof, cost: { ...proof.cost, bytes: Infinity } },
+      { ...proof, cost: { ...proof.cost, keyBytes: 64 * 1024 * 1024 + 1 } },
+      { ...proof, namespaceKeyCounts: { moderation: 2 }, cost: { ...proof.cost, matchedKeys: 2 } },
+      { ...proof, extra: true },
+    ];
+    for (const other of invalid)
+      expect(() => assertSourceAbandonmentCatalogProofs([proof, other])).toThrow('catalog proof');
+    expect(() => assertSourceAbandonmentCatalogProofs([proof])).toThrow('catalog proof');
   });
 });

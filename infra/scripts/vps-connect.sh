@@ -101,7 +101,7 @@ Commands:
   publisher-dispatch-disable [--apply]
                               Preview or fail-closed disable Publik dispatch
   publisher-dispatch-status   Read privacy-safe Publik dispatch rollout status
-  vk-parsing-retire-legacy-queue [--apply]
+  vk-parsing-retire-legacy-queue [--apply [--reviewed-digest <sha256>]]
                               Preview or remove the retired vk-parsing-publish queue
   moderation-default-retire-legacy-queue [--apply]
                               Preview or remove the retired unsharded webhook queue
@@ -814,15 +814,14 @@ publisher_dispatch_command() {
 }
 
 vk_parsing_retire_legacy_queue() {
-  local apply="${1:-}"
-  if [[ -n "$apply" && "$apply" != "--apply" ]] || [[ $# -gt 1 ]]; then
-    echo "Usage: $0 vk-parsing-retire-legacy-queue [--apply]" >&2
+  if [[ $# -ne 0 ]] &&
+    ! [[ $# -eq 1 && "$1" == "--apply" ]] &&
+    ! [[ $# -eq 3 && "$1" == "--apply" && "$2" == "--reviewed-digest" && "$3" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Usage: $0 vk-parsing-retire-legacy-queue [--apply [--reviewed-digest <sha256>]]" >&2
     exit 2
   fi
   local remote_args=(./infra/scripts/vps-retire-legacy-vk-publish-queue.sh)
-  if [[ "$apply" == "--apply" ]]; then
-    remote_args+=(--apply)
-  fi
+  remote_args+=("$@")
   remote_exec "$(shell_quote_args "${remote_args[@]}")"
 }
 

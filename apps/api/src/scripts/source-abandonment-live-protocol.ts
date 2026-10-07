@@ -6,6 +6,7 @@ import {
   type LegacyRecoveryLiveOutput,
 } from './legacy-recovery-live-protocol';
 import { sourceAbandonmentOwnerSnapshot } from '../webhook/webhook-source-abandonment';
+import type { SourceAbandonmentCatalogProof } from './source-abandonment-redis-catalog';
 import {
   SOURCE_ABANDONMENT_OPERATION,
   type SourceAbandonmentCandidate,
@@ -44,6 +45,7 @@ export type SourceAbandonmentLiveOutput = LegacyRecoveryLiveOutput &
   Readonly<{
     sqlEvidenceSha256: string | null;
     redisEvidenceSha256: string | null;
+    redisCatalogs: readonly SourceAbandonmentCatalogProof[];
   }>;
 export type SourceAbandonmentChildEvidence = SourceAbandonmentLiveOutput['children'][number];
 

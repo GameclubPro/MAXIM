@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 import { Prisma, createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import type { LegacyRecoveryAdmissionOutput } from './legacy-recovery-admission-preview';
+import type { SourceAbandonmentCatalogProof } from './source-abandonment-redis-catalog';
 import type { LegacyRecoveryLiveIssue } from './legacy-recovery-live-protocol';
 import {
   SOURCE_ABANDONMENT_OUTPUT_MAX_BYTES,
@@ -145,6 +146,9 @@ async function gather(
     second,
     children,
     childSql,
+    redisCatalogs: [first?.catalog, second?.catalog].filter(
+      (catalog): catalog is SourceAbandonmentCatalogProof => catalog != null,
+    ),
     sqlPlans: [
       ...(sql?.plans ?? []),
       ...(first?.sqlPlans ?? []),
@@ -192,6 +196,7 @@ export async function collectSourceAbandonmentLiveEvidence(
           })
         : null,
     redisEvidenceSha256: evidence.first?.stableDigest ?? null,
+    redisCatalogs: evidence.redisCatalogs,
     selectedOwners: evidence.sql?.selectedOwners ?? [],
     children: evidence.children,
     sqlPlans: evidence.sqlPlans,
@@ -229,10 +234,14 @@ export async function collectSourceAbandonmentAdmission(
   tx: Prisma.TransactionClient,
   redis: SourceAbandonmentRedisReader,
   request: SourceAbandonmentAdmissionRequest,
-): Promise<LegacyRecoveryAdmissionOutput> {
+): Promise<
+  LegacyRecoveryAdmissionOutput & { redisCatalogs: readonly SourceAbandonmentCatalogProof[] }
+> {
   request = parseSourceAbandonmentAdmissionRequest(JSON.stringify(request));
   const evidence = await gather(tx, redis, request.selection);
-  const result: LegacyRecoveryAdmissionOutput = {
+  const result: LegacyRecoveryAdmissionOutput & {
+    redisCatalogs: readonly SourceAbandonmentCatalogProof[];
+  } = {
     version: 1,
     operation: 'admission_preview',
     applied: false,
@@ -258,6 +267,7 @@ export async function collectSourceAbandonmentAdmission(
       (evidence.first?.cost.rows ?? 0) + (evidence.second?.cost.rows ?? 0),
     issues: evidence.issues,
     cost: evidence.cost,
+    redisCatalogs: evidence.redisCatalogs,
   };
   if (Buffer.byteLength(JSON.stringify(result)) > SOURCE_ABANDONMENT_OUTPUT_MAX_BYTES)
     return {

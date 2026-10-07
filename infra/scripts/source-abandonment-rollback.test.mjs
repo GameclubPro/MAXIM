@@ -37,3 +37,19 @@ test('modern source rows cannot become a member-wide hold through rollback', () 
     /blanket participant/,
   );
 });
+test('rollback refuses the old original-text-only reader after strict forwards are supported', () => {
+  assert.throws(
+    () =>
+      assertSourceAbandonmentSource('a'.repeat(40), (path) =>
+        path.endsWith('webhook-source-abandonment.ts')
+          ? read(path)
+              .replaceAll('plainTextOrStrictFlatForward', 'plainOriginalText')
+              .replace(
+                '(message?.link === undefined || inspectLegacyForwardText(update) === null)',
+                'message?.link === undefined',
+              )
+          : read(path),
+      ),
+    /lacks permanent.*webhook-source-abandonment\.ts/u,
+  );
+});

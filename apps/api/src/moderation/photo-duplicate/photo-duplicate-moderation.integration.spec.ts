@@ -438,6 +438,10 @@ function buildHarness(
       ),
     executePhotoDuplicateAction: jest.fn().mockResolvedValue(undefined),
   };
+  const legacyHolds = {
+    isUpdateHeld: jest.fn().mockResolvedValue(false),
+    isMessageHeld: jest.fn().mockResolvedValue(false),
+  };
   const service = new PhotoDuplicateModerationService(
     prisma as never,
     analysisService as never,
@@ -448,6 +452,7 @@ function buildHarness(
     maxBotContextService as never,
     maxBotLinkService as never,
     actions,
+    legacyHolds as never,
   );
   const assertOwned = params.assertOwned ?? jest.fn();
   const resolveActionEligibility =
@@ -473,6 +478,7 @@ function buildHarness(
     runtimePolicy,
     committedViolations,
     actions,
+    legacyHolds,
   };
 }
 
@@ -493,6 +499,56 @@ function readDeleteAuthorization(harness: ReturnType<typeof buildHarness>) {
 }
 
 describe('PhotoDuplicateModerationService', () => {
+  it('does not rebuild photo evidence from a PROCESSED mirror of an abandoned source', async () => {
+    const harness = buildHarness();
+    harness.legacyHolds.isUpdateHeld.mockResolvedValue(true);
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+    expect(harness.legacyHolds.isUpdateHeld).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.objectContaining({ messageId: 'message-1' }) }),
+    );
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.analysisService.commitViolation).not.toHaveBeenCalled();
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
+    expect(harness.actions.claimPhotoDuplicateAction).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+    expect(harness.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('does not sanction a fresh message using a held original photo reference', async () => {
+    const harness = buildHarness();
+    harness.legacyHolds.isMessageHeld.mockResolvedValue(true);
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
+    expect(harness.legacyHolds.isMessageHeld).toHaveBeenCalledWith('chat-1', 'message-0');
+    expect(harness.analysisService.commitViolation).not.toHaveBeenCalled();
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
+    expect(harness.actions.claimPhotoDuplicateAction).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unrelated outer message from the same participant eligible', async () => {
+    const harness = buildHarness();
+    harness.legacyHolds.isUpdateHeld.mockImplementation(
+      async (candidate: MaxUpdate) => candidate.message?.messageId === 'abandoned-other-message',
+    );
+    harness.legacyHolds.isMessageHeld.mockImplementation(
+      async (_chatId: string, messageId: string) => messageId === 'abandoned-other-message',
+    );
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+    expect(harness.analysisService.commitViolation).toHaveBeenCalledTimes(1);
+    expect(harness.actions.executePhotoDuplicateAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed before photo analysis when the source hold read is unavailable', async () => {
+    const harness = buildHarness();
+    harness.legacyHolds.isUpdateHeld.mockRejectedValue(new Error('source hold read unavailable'));
+    await expect(
+      harness.service.processPhotoDuplicateJob(harness.job, harness.lease),
+    ).rejects.toThrow('source hold read unavailable');
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+  });
+
   it('settles a no-replay source without retries, photo analysis, immunity or action claims', async () => {
     const harness = buildHarness({ status: 'NO_REPLAY_HELD' as WebhookStatus });
     await expect(

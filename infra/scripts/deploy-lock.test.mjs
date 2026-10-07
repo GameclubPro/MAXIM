@@ -297,6 +297,10 @@ test('path overrides, symlinks, hardlinks and unsafe permissions fail closed', (
   assert.equal(observe(data), 1);
   rmSync(data.file);
   writeFileSync(data.file, '', { mode: 0o640 });
+  // FLAG: File creation applies the caller's umask; install the unsafe fixture
+  // explicitly so a private 0077 runner still exercises the permission refusal.
+  chmodSync(data.file, 0o640);
+  assert.equal(statSync(data.file).mode & 0o777, 0o640);
   assert.equal(observe(data), 1);
   chmodSync(data.file, 0o600);
   assert.equal(observe(data), 0);

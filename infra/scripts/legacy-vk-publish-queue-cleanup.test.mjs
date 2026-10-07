@@ -13,6 +13,7 @@ const {
   QUEUE_STATES,
   QueueCleanupPreconditionError,
   cleanupLegacyVkPublishQueue,
+  collectLegacyVkPublishOrphans,
 } = require('./legacy-vk-publish-queue-cleanup.cjs');
 
 function makeQueue({
@@ -31,6 +32,9 @@ function makeQueue({
   const calls = { close: 0, inspect: 0, obliterate: [], pause: 0, ready: 0 };
   const queue = {
     name: LEGACY_VK_PUBLISH_QUEUE,
+    client: Promise.resolve({
+      eval_ro: async () => ['ok', '0', [], 0],
+    }),
     close: async () => {
       calls.close += 1;
     },
@@ -160,6 +164,21 @@ test('fails closed on invalid or unbounded queue counters', async () => {
   await assert.rejects(cleanupLegacyVkPublishQueue(harness.queue), /invalid waiting count/u);
   assert.equal(harness.calls.pause, 0);
 });
+test('namespace proof refuses a nonterminating cursor and an oversized database', async () => {
+  let calls = 0;
+  const stalled = {
+    client: Promise.resolve({
+      eval_ro: async () => {
+        calls += 1;
+        return ['ok', '1', [], 0];
+      },
+    }),
+  };
+  await assert.rejects(collectLegacyVkPublishOrphans(stalled), /namespace_scan_budget/u);
+  assert.ok(calls < 4096);
+  const huge = { client: Promise.resolve({ eval_ro: async () => ['database_budget'] }) };
+  await assert.rejects(collectLegacyVkPublishOrphans(huge), /namespace_database_budget/u);
+});
 
 test('wires the guarded command through vps-connect and keeps the monitor sentinel', () => {
   const entrypointPath = resolve(root, 'infra/scripts/vps-retire-legacy-vk-publish-queue.sh');
@@ -178,17 +197,22 @@ test('wires the guarded command through vps-connect and keeps the monitor sentin
 
   assert.match(entrypoint, /source "\$ROOT_DIR\/infra\/scripts\/lib\/deploy-lock\.sh"/u);
   assert.match(entrypoint, /acquire_deploy_lock/u);
-  assert.match(
-    entrypoint,
-    /docker compose "\$\{COMPOSE_FILES\[@\]\}" exec -T api-admin node - "\$ACTION"/u,
-  );
+  assert.match(entrypoint, /api-admin node - "\$ACTION" "\$REVIEWED_DIGEST"/u);
   assert.match(entrypoint, /timeout --foreground --kill-after=5s/u);
+  assert.match(entrypoint, /before_proof="\$\(node "\$PROOF_HELPER"\)"/u);
+  assert.match(entrypoint, /after_proof="\$\(node "\$PROOF_HELPER"\)"/u);
+  assert.match(entrypoint, /MAXIM_LEGACY_VK_RETIRE_DEADLINE_MS/);
+  assert.match(helper, /autoResendUnfulfilledCommands: false/u);
+  assert.match(helper, /retryStrategy: null/u);
   assert.doesNotMatch(entrypoint, /psql|postgres|DATABASE_URL/u);
   assert.match(helper, /const LEGACY_VK_PUBLISH_QUEUE = 'vk-parsing-publish'/u);
   assert.match(helper, /skipMetasUpdate: true/u);
   assert.match(helper, /queue\.obliterate\(\{ force: false, count: OBLITERATE_BATCH_SIZE \}\)/u);
   assert.doesNotMatch(helper, /force: true/u);
-  assert.match(connect, /vk-parsing-retire-legacy-queue \[--apply\]/u);
+  assert.match(
+    connect,
+    /vk-parsing-retire-legacy-queue \[--apply \[--reviewed-digest <sha256>\]\]/u,
+  );
   assert.match(connect, /vps-retire-legacy-vk-publish-queue\.sh/u);
   assert.equal([...monitor.matchAll(/^ {2}vk-parsing-publish$/gmu)].length, 1);
   assert.doesNotMatch(queueMetrics, /VK_PARSING_PUBLISH_QUEUE/u);

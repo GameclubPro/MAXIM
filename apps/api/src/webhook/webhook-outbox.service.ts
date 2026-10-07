@@ -2960,9 +2960,19 @@ export class WebhookOutboxService
     cutoff: Date,
   ): Promise<{ removed: number; scanned: number }> {
     const cursor = this.webhookRetentionCursors.get('failed');
-    const result = await this.prisma.$queryRaw<
-      Array<{ removed: number; scanned: number; lastId: string | null; lastCreatedAt: Date | null }>
-    >(Prisma.sql`
+    // FLAG: A created-at-only index plus incremental sort can scan an entire tied
+    // timestamp group before LIMIT. Keep this one batch on the complete ordered index;
+    // the planner preference ends with the same transaction as the existing deletion.
+    const [, result] = await this.prisma.$transaction([
+      this.prisma.$executeRaw(Prisma.sql`SET LOCAL enable_incremental_sort = off`),
+      this.prisma.$queryRaw<
+        Array<{
+          removed: number;
+          scanned: number;
+          lastId: string | null;
+          lastCreatedAt: Date | null;
+        }>
+      >(Prisma.sql`
       WITH candidate_ids AS MATERIALIZED (
         SELECT "id"
         FROM "webhook_events"
@@ -3001,7 +3011,8 @@ export class WebhookOutboxService
         (SELECT COUNT(*)::int FROM candidates) AS "scanned",
         (SELECT "id" FROM candidates ORDER BY "created_at" DESC, "id" DESC LIMIT 1) AS "lastId",
         (SELECT "created_at" FROM candidates ORDER BY "created_at" DESC, "id" DESC LIMIT 1) AS "lastCreatedAt"
-    `);
+    `),
+    ]);
     return this.advanceWebhookRetentionCursor('failed', result[0]);
   }
 

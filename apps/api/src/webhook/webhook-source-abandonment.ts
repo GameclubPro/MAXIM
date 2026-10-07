@@ -3,6 +3,7 @@ import { Prisma, type WebhookEvent } from '../prisma/prisma-client';
 import { buildGroupCommandKey } from '../common/group-command-key';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { readLegacyReceiptClaims } from './webhook-legacy-claims';
+import { inspectLegacyForwardText } from './webhook-legacy-forward-source';
 import {
   canonical,
   inspectLegacyPostSealTextSource,
@@ -27,15 +28,19 @@ function object(value: unknown): Record<string, unknown> | null {
 function finite(value: Date | null | undefined): value is Date {
   return value instanceof Date && Number.isFinite(value.getTime());
 }
-function plainOriginalText(event: WebhookEvent): boolean {
-  const raw = object(object(event.normalizedPayload)?.raw);
+// FLAG: This is only a shape restriction after the full source inspector. A flat
+// forward reuses its strict text/image proof; linked identities never expand scope.
+function plainTextOrStrictFlatForward(event: WebhookEvent): boolean {
+  const update = object(event.normalizedPayload);
+  const raw = object(update?.raw);
   const message = object(raw?.message);
   const body = object(message?.body);
   return Boolean(
+    update &&
     body &&
-    message?.link === undefined &&
     (body.attachments === undefined ||
-      (Array.isArray(body.attachments) && body.attachments.length === 0)),
+      (Array.isArray(body.attachments) && body.attachments.length === 0)) &&
+    (message?.link === undefined || inspectLegacyForwardText(update) === null),
   );
 }
 
@@ -115,7 +120,8 @@ export async function inspectSourceAbandonmentCandidate(
   )
     return refuse('source_owner_unproved');
   const source = inspectLegacyRecoverySource(owner, onRefusal);
-  if (!source || !plainOriginalText(owner)) return refuse('source_plain_text_required');
+  if (!source || !plainTextOrStrictFlatForward(owner))
+    return refuse('source_text_or_flat_forward_required');
   const settings = await db.chatSettings.findUnique({ where: { chatId: source.chatId } });
   if (!inspectLegacyRecoverySource(owner, onRefusal, settings ?? undefined))
     return refuse('source_configured_command');
@@ -206,7 +212,7 @@ export async function inspectSourceAbandonmentReceiptCandidate(
   const semanticKey = buildWebhookSemanticEventKey(event.normalizedPayload as never);
   if (
     !provenance ||
-    !plainOriginalText(event) ||
+    !plainTextOrStrictFlatForward(event) ||
     !semanticKey ||
     semanticKey !== event.semanticKey ||
     provenance.chatId !== source.chatId ||

@@ -5,9 +5,16 @@ source without replay. It does not establish that previous remote effects succee
 or failed. A started execution claim and every existing action, sanction, DELETE and
 ambiguous member receipt remain unchanged.
 
-The scope is an exact original human text message in a moderated group, plus its
-proved descendants. A distinct new message from the same participant remains outside
-the hold. Publisher is a separate observer/publisher, never a moderation executor.
+The scope is an exact outer human message in a moderated group: original plain text
+or one strict flat forward with text and zero through ten validated image/photo
+attachments in the linked message, plus its proved descendants. The existing
+`inspectLegacyForwardText` validator must prove the parser-composed text and reject
+commands in the direct, linked and composed text, including configured triggers.
+Direct attachments, replies, nested forwards, video and unknown metadata/media are
+refused. Only the outer recipient chat, message ID and sender identify the source;
+linked identities never become held messages or people. A new outer message that
+forwards the same original, and any distinct message from either participant, remain
+outside the hold. Publisher is a separate observer/publisher, never a moderation executor.
 Legacy member/global-user holds remain independent and cannot be repurposed for this
 operation. Unsupported sources or unattributed actionable continuations are refused.
 
@@ -22,8 +29,8 @@ policy.
 
 Use a clean checkout at the exact reviewed runtime SHA with every API role and both
 native auxiliaries running that image. Deploy the additive schema and mandatory
-readers before any installation. Both rollback paths require these readers after
-this release. The controller requires a 20 GiB Docker filesystem reserve and uses
+readers before any installation. Both rollback paths require these readers and the
+strict forward provenance validator after this release. The controller requires a 20 GiB Docker filesystem reserve and uses
 the existing protected deploy lock and durable cold-operation journal.
 
 Create an owner-private `0600` JSON request. A `preflight` or `prepare` request has
@@ -38,6 +45,15 @@ The runtime, database clock, original source, migration boundary, exact claim,
 bounded index plans, descendant inventory and current bot catalog must all agree.
 Never derive settlement authority from age, a missing ledger row, arbitrary GET404
 or a queue count. Preserve the exact window and release identity in the incident.
+
+Redis structural admission performs two independent complete `SCAN MATCH bull:*`
+censuses, each ending at cursor zero. Each pass caps database size at 12 million
+keys, uses advisory `COUNT 4096`, and caps pages at 4,096 and duration at 15 seconds
+inside the shared 30-second collection deadline. Structural census has separate
+byte/key/work limits from the unchanged effect inventory limits of 512 pages,
+50,000 probes and 8 MiB. It never substitutes a `:meta`-only scan, omits an unknown
+namespace or deletes queue history to make admission pass. An unknown retired
+namespace requires its own reviewed retirement procedure before a fresh admission.
 
 Run the reviewed request through:
 

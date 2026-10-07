@@ -469,8 +469,8 @@ function buildReport(): CommercialOcrEvalReport {
       },
       runtime: {
         nodeVersion: 'v24.16.0',
-        sharpVersion: '0.35.4',
-        libvipsVersion: '8.18.6',
+        sharpVersion: '0.35.5',
+        libvipsVersion: '8.18.7',
         tesseractVersion: 'tesseract 5.5.2',
       },
       sourceImages: { allowedFormats: ['jpeg', 'png', 'webp', 'gif', 'avif', 'heif', 'tiff'] },
@@ -524,8 +524,8 @@ function buildVerifiedBehaviorIdentity(): CommercialOcrEvalReport['provenance'][
         nodeVersion: 'v24.16.0',
         platform: 'linux',
         architecture: 'x64',
-        sharpVersion: '0.35.4',
-        libvipsVersion: '8.18.6',
+        sharpVersion: '0.35.5',
+        libvipsVersion: '8.18.7',
       },
       tesseract: {
         version: 'tesseract 5.5.2',

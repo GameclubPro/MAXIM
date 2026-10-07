@@ -555,7 +555,8 @@ function createService(params?: {
 
   const prisma = {
     $transaction: jest.fn(
-      async (operation: (tx: unknown) => unknown): Promise<unknown> => operation(prisma),
+      async (operation: (tx: unknown) => unknown): Promise<unknown> =>
+        Array.isArray(operation) ? Promise.all(operation) : operation(prisma),
     ),
     $executeRaw: jest.fn().mockResolvedValue(0),
     $queryRaw: jest.fn().mockImplementation(async (query: SqlQuery) => {
@@ -3339,7 +3340,11 @@ describe('WebhookOutboxService', () => {
         values: (query as SqlQuery).values ?? [],
       }),
     );
-    expect(queries).toHaveLength(8);
+    expect(queries).toHaveLength(9);
+    const plannerSettings = queries.filter((query) => query.sql.startsWith('SET LOCAL'));
+    expect(plannerSettings.map((query) => query.sql)).toEqual([
+      'SET LOCAL enable_incremental_sort = off',
+    ]);
     const startExpiryRead = queries[0]!;
     expect(startExpiryRead.sql).toContain('candidate_ids AS MATERIALIZED');
     expect(startExpiryRead.sql).toContain('AS "commandId"');
@@ -3347,8 +3352,8 @@ describe('WebhookOutboxService', () => {
     expect(startExpiryRead.sql).toContain('LIMIT ?');
     expect(startExpiryRead.values).toContain(500);
     expect(startExpiryRead.sql).not.toContain('UPDATE "webhook_execution_claims"');
-    expect(prisma.$transaction).not.toHaveBeenCalled();
-    const deleteQueries = queries.slice(1);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    const deleteQueries = queries.slice(1).filter((query) => !query.sql.startsWith('SET LOCAL'));
     for (const query of deleteQueries) {
       expect(query.sql).toMatch(/expired AS(?: MATERIALIZED)? \(/u);
       expect(query.sql).toContain('ORDER BY');

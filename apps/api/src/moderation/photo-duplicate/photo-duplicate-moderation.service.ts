@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
 import { createHash } from 'node:crypto';
 import { MaxBotContextService } from '../../max/max-bot-context.service';
@@ -6,6 +6,7 @@ import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.service';
 import { ChatEntityType, WebhookStatus, type ChatSettings } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { WebhookLegacyHoldService } from '../../webhook/webhook-legacy-hold.service';
 import { isPendingWebhookTimeoutQuarantineMessage } from '../../webhook/webhook-timeout-quarantine';
 import {
   duplicateFlowConfigsEqual,
@@ -108,6 +109,7 @@ export class PhotoDuplicateModerationService {
     private readonly maxBotLinkService: MaxBotLinkService,
     @Inject(PHOTO_DUPLICATE_MODERATION_ACTIONS)
     private readonly actions: PhotoDuplicateModerationActions,
+    @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {}
 
   async processPhotoDuplicateJob(
@@ -151,6 +153,9 @@ export class PhotoDuplicateModerationService {
     }
 
     const update = webhookEvent.normalizedPayload as MaxUpdate;
+    // FLAG: A historical PROCESSED mirror does not waive an exact source abandonment.
+    // Read the outer source before native work, cached proof or a new history baseline.
+    if (await this.legacyHolds?.isUpdateHeld(update)) return;
     const extraction = extractLogicalPhotoAlbumResult(update);
     if (extraction.kind !== 'complete') {
       return;
@@ -281,6 +286,14 @@ export class PhotoDuplicateModerationService {
     }
 
     const observation = analysis.observation;
+    // FLAG: A retained original from another message cannot authorize fresh violations
+    // after its source is abandoned. The current participant remains independently eligible.
+    if (
+      observation.duplicateOfMessageId &&
+      (await this.legacyHolds?.isMessageHeld(album.chatId, observation.duplicateOfMessageId))
+    ) {
+      return;
+    }
     const observationLog = {
       chatId: album.chatId,
       messageId: album.messageId,

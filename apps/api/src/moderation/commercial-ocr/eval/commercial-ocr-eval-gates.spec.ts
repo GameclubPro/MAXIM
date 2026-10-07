@@ -218,12 +218,23 @@ describe('commercial OCR eval gates', () => {
     );
   });
 
-  it('rejects certification evidence from the vulnerable Sharp runtime', () => {
-    const report = buildReport(passingCases());
-    setProvenanceValue(report, ['runtime', 'sharpVersion'], '0.35.3');
+  it.each(['0.35.3', '0.35.4'])(
+    'rejects certification evidence from vulnerable Sharp %s',
+    (version) => {
+      const report = buildReport(passingCases());
+      setProvenanceValue(report, ['runtime', 'sharpVersion'], version);
 
+      expect(evaluateCommercialOcrEvalGates(report, SMALL_PROFILE).failures).toContain(
+        'Certification runtime must use the production Sharp version',
+      );
+    },
+  );
+
+  it('rejects evidence with the previous libvips even when Sharp matches the patched release', () => {
+    const report = buildReport(passingCases());
+    setProvenanceValue(report, ['runtime', 'libvipsVersion'], '8.18.6');
     expect(evaluateCommercialOcrEvalGates(report, SMALL_PROFILE).failures).toContain(
-      'Certification runtime must use the production Sharp version',
+      'Certification runtime must use the production libvips version',
     );
   });
 
@@ -929,8 +940,8 @@ function buildValidProvenance(): CommercialOcrEvalReport['provenance'] {
     },
     runtime: {
       nodeVersion: 'v24.16.0',
-      sharpVersion: '0.35.4',
-      libvipsVersion: '8.18.6',
+      sharpVersion: '0.35.5',
+      libvipsVersion: '8.18.7',
       tesseractVersion: 'tesseract 5.5.2',
     },
     sourceImages: {
@@ -1016,8 +1027,8 @@ function buildVerifiedBehaviorIdentity(): CommercialOcrEvalReport['provenance'][
         nodeVersion: 'v24.16.0',
         platform: 'linux',
         architecture: 'x64',
-        sharpVersion: '0.35.4',
-        libvipsVersion: '8.18.6',
+        sharpVersion: '0.35.5',
+        libvipsVersion: '8.18.7',
       },
       tesseract: {
         version: 'tesseract 5.5.2',

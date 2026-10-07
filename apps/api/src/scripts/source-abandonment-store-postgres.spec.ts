@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
+import { buildGroupCommandKey } from '../common/group-command-key';
 import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
 import { createPrismaClient, Prisma, type PrismaClient } from '../prisma/prisma-client';
 import { WebhookParser } from '../webhook/webhook.parser';
@@ -39,6 +40,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
   let redis: Redis;
   let fixtureRedisUrl: string;
   let ownsRedis = false;
+  let historyWebhookIds: string[] = [];
   const queues: Queue[] = [];
 
   beforeAll(async () => {
@@ -127,6 +129,53 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     });
     // FLAG: Own the representative distribution and statistics for every competing
     // chat-prefix index; prior suites' empty-table plans are not source-scope proof.
+    historyWebhookIds = Array.from({ length: 512 }, () => randomUUID());
+    await db.webhookEvent.createMany({
+      data: historyWebhookIds.map((id, index) => {
+        const historyUpdate = new WebhookParser().parse(
+          {
+            update_type: 'message_created',
+            update_id: id,
+            timestamp: at,
+            message: {
+              sender: { user_id: 'fixture-source-user', is_bot: false },
+              recipient: { chat_id: chatId, chat_type: 'chat' },
+              timestamp: at,
+              body: { mid: `unrelated-history-${index}`, text: 'Independent pending source' },
+            },
+          },
+          { botId: 'major-1' },
+        );
+        return {
+          id,
+          botId: 'major-1',
+          dedupKey: id,
+          semanticKey: buildWebhookSemanticEventKey(historyUpdate),
+          normalizedPayload: JSON.parse(JSON.stringify(historyUpdate)),
+          rawPayload: historyUpdate.raw!,
+          status: 'FAILED' as const,
+          errorMessage: 'NATIVE_UNRELATED_PREPARATION_FAILURE',
+          createdAt: owner.createdAt,
+          executionDeadlineAt: owner.executionDeadlineAt,
+        };
+      }),
+    });
+    // FLAG: Earlier suites can leave a tiny, bloated claims relation whose cheaper
+    // kind-only scan correctly fails the collector's full-identity plan proof.
+    // Own representative history for both common kinds and analyze it every time.
+    await db.webhookExecutionClaim.createMany({
+      data: historyWebhookIds.map((id, index) => ({
+        kind: index % 2 === 0 ? 'EXECUTION' : 'COMMAND',
+        semanticKey:
+          index % 2 === 0
+            ? `message:message_created:${chatId}:unrelated-history-${index}`
+            : buildGroupCommandKey(chatId, `unrelated-history-${index}`),
+        webhookEventId: id,
+        status: 'COMPLETED' as const,
+        createdAt: owner.createdAt,
+        completedAt: started!.at,
+      })),
+    });
     await db.moderationEvent.createMany({
       data: Array.from({ length: 512 }, (_, index) => ({
         chatId,
@@ -171,6 +220,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
       })),
     });
     await db.$executeRaw`ANALYZE webhook_events`;
+    await db.$executeRaw`ANALYZE webhook_execution_claims`;
     await db.$executeRaw`ANALYZE moderation_events`;
     await db.$executeRaw`ANALYZE moderation_violation_message_claims`;
     await db.$executeRaw`ANALYZE spammer_observations`;
@@ -230,6 +280,9 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
       await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: ownerId } });
       await db.webhookEvent.deleteMany({ where: { id: ownerId } });
     }
+    const historyIds = historyWebhookIds.splice(0);
+    await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: historyIds } } });
+    await db.webhookEvent.deleteMany({ where: { id: { in: historyIds } } });
     await db.spammerObservation.deleteMany({ where: { chatId } });
     await db.chat.deleteMany({ where: { id: chatId } });
     await db.maxActionLedgerEntry.deleteMany({ where: { chatId } });
@@ -299,6 +352,16 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     expect(result.plans.flatMap((plan) => plan.indexes)).toContain(
       'webhook_events_source_family_pending_idx',
     );
+    expect(
+      result.plans
+        .filter((plan) => plan.descriptor === 'sql:webhook_execution_claims')
+        .flatMap((plan) => plan.indexes),
+    ).toEqual(
+      expect.arrayContaining([
+        'webhook_execution_claims_event_kind_idx',
+        'webhook_execution_claims_kind_semantic_key',
+      ]),
+    );
     expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } })).toEqual(before);
     expect(await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } })).toEqual(
       claims,
@@ -326,48 +389,118 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     );
   });
 
-  it('installs once and reconciles immutable source proofs through a read-only SQL connection', async () => {
-    const before = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
-    const claims = await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } });
-    const { request, bytes } = await storeFixture();
-    expect(await executeSourceAbandonmentStore(db, request, bytes)).toMatchObject({
-      state: 'UNSEALED',
-      activationAuthorized: false,
-    });
-    expect(
-      await executeSourceAbandonmentStore(readonlyDb, { ...request, operation: 'readback' }, bytes),
-    ).toMatchObject({ state: 'UNSEALED' });
-    expect(
-      await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
-    ).toMatchObject({
-      state: 'MATERIALIZED',
-      completeChats: 1,
-      requiredChats: 1,
-      activationAuthorized: false,
-    });
-    expect(
-      await executeSourceAbandonmentStore(readonlyDb, { ...request, operation: 'readback' }, bytes),
-    ).toMatchObject({
-      state: 'MATERIALIZED',
-      completeChats: 1,
-      requiredChats: 1,
-    });
-    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } })).toEqual({
-      ...before,
-      sourceDispositionId: expect.any(String),
-      sourceDispositionReceiptId: ownerId,
-    });
-    expect(await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } })).toEqual(
-      claims,
-    );
-    expect(await db.webhookLegacyRecovery.count({ where: { chatId } })).toBe(0);
-    await expect(
-      executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
-    ).rejects.toThrow('cannot be replayed');
-    expect(
-      await executeSourceAbandonmentStore(readonlyDb, { ...request, operation: 'readback' }, bytes),
-    ).toMatchObject({ state: 'MATERIALIZED' });
-  });
+  it.each([false, true])(
+    'installs once and reconciles immutable source proofs through a read-only SQL connection (forward=%s)',
+    async (forward) => {
+      if (forward) {
+        const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+        const raw = structuredClone(owner.rawPayload) as Record<string, unknown>;
+        const message = raw.message as Record<string, unknown>;
+        message.link = {
+          type: 'forward',
+          chat_id: '-independent-linked-chat',
+          sender: { user_id: 'independent-linked-author', is_bot: false },
+          message: {
+            mid: 'independent-linked-message',
+            text: 'A strict flat forwarded photo caption',
+            attachments: [
+              {
+                type: 'image',
+                payload: { photo_id: 41, url: 'https://i.oneme.ru/native-forward-one' },
+              },
+              {
+                type: 'image',
+                payload: { photo_id: 42, url: 'https://i.oneme.ru/native-forward-two' },
+              },
+            ],
+          },
+        };
+        const update = new WebhookParser().parse(raw, { botId: owner.botId! });
+        await db.webhookEvent.update({
+          where: { id: ownerId },
+          data: {
+            rawPayload: raw as Prisma.InputJsonValue,
+            normalizedPayload: JSON.parse(JSON.stringify(update)),
+          },
+        });
+      }
+      const before = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+      const claims = await db.webhookExecutionClaim.findMany({
+        where: { webhookEventId: ownerId },
+      });
+      const { request, bytes } = await storeFixture();
+      expect(await executeSourceAbandonmentStore(db, request, bytes)).toMatchObject({
+        state: 'UNSEALED',
+        activationAuthorized: false,
+      });
+      expect(
+        await executeSourceAbandonmentStore(
+          readonlyDb,
+          { ...request, operation: 'readback' },
+          bytes,
+        ),
+      ).toMatchObject({ state: 'UNSEALED' });
+      expect(
+        await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
+      ).toMatchObject({
+        state: 'MATERIALIZED',
+        completeChats: 1,
+        requiredChats: 1,
+        activationAuthorized: false,
+      });
+      expect(
+        await executeSourceAbandonmentStore(
+          readonlyDb,
+          { ...request, operation: 'readback' },
+          bytes,
+        ),
+      ).toMatchObject({
+        state: 'MATERIALIZED',
+        completeChats: 1,
+        requiredChats: 1,
+      });
+      expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } })).toEqual({
+        ...before,
+        sourceDispositionId: expect.any(String),
+        sourceDispositionReceiptId: ownerId,
+      });
+      expect(
+        await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } }),
+      ).toEqual(claims);
+      expect(await db.webhookLegacyRecovery.count({ where: { chatId } })).toBe(0);
+      expect(
+        await db.webhookSourceAbandonment.findFirstOrThrow({
+          where: { ownerWebhookEventId: ownerId },
+        }),
+      ).toMatchObject({
+        chatId,
+        messageId: (before.normalizedPayload as { message: { messageId: string } }).message
+          .messageId,
+        subjectUserId: 'fixture-source-user',
+      });
+      expect(
+        await db.webhookEvent.count({
+          where: {
+            id: { in: historyWebhookIds },
+            status: 'FAILED',
+            processedAt: null,
+            sourceDispositionId: null,
+            sourceDispositionReceiptId: null,
+          },
+        }),
+      ).toBe(historyWebhookIds.length);
+      await expect(
+        executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
+      ).rejects.toThrow('cannot be replayed');
+      expect(
+        await executeSourceAbandonmentStore(
+          readonlyDb,
+          { ...request, operation: 'readback' },
+          bytes,
+        ),
+      ).toMatchObject({ state: 'MATERIALIZED' });
+    },
+  );
 
   it('denies settings drift between certificate creation and atomic installation', async () => {
     const { request, bytes } = await storeFixture();

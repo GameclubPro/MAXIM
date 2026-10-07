@@ -41,6 +41,8 @@ const protectedProviders = new Set([
   'ModerationStateDeleteGuardService',
   'MessageDuplicateDeleteGuardService',
   'MessageDuplicateMediaService',
+  'PhotoDuplicateModerationService',
+  'CommercialOcrModerationService',
   'ModerationRuleFollowupService',
   'GlobalSpammerIntelligenceService',
   'PrivateControlService',

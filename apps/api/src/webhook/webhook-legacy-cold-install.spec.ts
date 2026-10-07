@@ -397,15 +397,19 @@ describe('strict legacy cold recovery source', () => {
     expect(WebhookLegacyHoldService.forPrisma({})).toBeUndefined();
   });
 
-  it('requires the shared hold reader in the production private CHAT status provider', () => {
-    const PrivateControlService = class PrivateControlService {};
-    const provider = new PrivateControlService();
+  it.each([
+    'PrivateControlService',
+    'PhotoDuplicateModerationService',
+    'CommercialOcrModerationService',
+  ])('requires the shared hold reader in %s', (providerName) => {
+    const Provider = { [providerName]: class {} }[providerName]!;
+    const provider = new Provider();
     const modules = new Map([
       ['test', { providers: new Map([['private-control', { instance: provider }]]) }],
     ]);
     const holds = new WebhookLegacyHoldService({} as never, modules as never);
     expect(() => holds.onApplicationBootstrap()).toThrow(
-      'Mandatory legacy hold reader missing in PrivateControlService',
+      `Mandatory legacy hold reader missing in ${providerName}`,
     );
     Object.assign(provider, { legacyHolds: holds });
     expect(() => holds.onApplicationBootstrap()).not.toThrow();

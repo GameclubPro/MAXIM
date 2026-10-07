@@ -1,15 +1,21 @@
 import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
 
-// FLAG: This closure excludes one original human text source and exact children.
+// FLAG: This closure excludes one outer human text/flat-forward source and exact children.
 // It never grants participant immunity or proves earlier remote outcomes. Every
 // producer below must retain a final exact-source check when regenerating work.
 export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
   version: 1,
-  source: 'original-human-plain-text-major-group-message',
+  source: 'outer-human-plain-text-or-strict-flat-forward-major-group-message',
+  forward: {
+    validator: 'inspectLegacyForwardText',
+    content: 'parser-proved-text-and-zero-through-ten-strict-image-photo-attachments',
+    scope: 'outer-recipient-chat-body-mid-sender-user-only',
+    linkedIdentity: 'content-provenance-never-held-message-person-or-mutation-target',
+  },
   excluded: [
     'commands-and-configured-triggers',
     'private-channel-callback-membership',
-    'attachments-replies-forwards',
+    'direct-attachments-replies-nested-forwards-video-and-unknown-forward-shapes',
     'unknown-or-secondary-source',
   ],
   guards: {
@@ -21,6 +27,10 @@ export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
     sourceRegeneration: 'source-hold-before-new-evidence-or-child-production',
     spammerObservation: 'exact-source-and-exact-observation-child-before-denormalization',
     duplicateReference: 'current-and-original-source-holds-before-qualification-and-effect',
+    photoContinuation:
+      'held-current-before-native-work-and-baseline-held-reference-before-counter-claim-or-effect',
+    ocrContinuation:
+      'held-outer-receipt-before-owner-rebind-source-read-native-work-or-technical-review',
     automaticReplies: 'original-message-before-send-and-replacement-delete',
     retentionAndCleanup:
       'attributed-send-cleanup-checks-original-source-and-immutable-parent-child',
