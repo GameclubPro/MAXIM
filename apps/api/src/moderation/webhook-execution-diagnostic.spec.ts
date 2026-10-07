@@ -35,4 +35,23 @@ describe('webhook execution diagnostics', () => {
     expect(describeWebhookExecutionFailure(error)).toMatchObject({ locations: {} });
     expect(JSON.stringify(describeWebhookExecutionFailure(error))).not.toContain('secret');
   });
+
+  it('classifies HTTP routes and known stages without retaining request configuration', () => {
+    const error = Object.assign(new Error('secret'), {
+      config: {
+        method: 'delete',
+        url: '/messages/private-id?token=secret',
+        headers: { Authorization: 'secret' },
+      },
+    });
+    const result = describeWebhookExecutionFailure(error, 'violation-delete');
+    expect(result).toMatchObject({
+      requestOperation: 'delete_messages',
+      hotPathStage: 'violation-delete',
+    });
+    expect(JSON.stringify(result)).not.toMatch(/secret|private-id|Authorization/u);
+    expect(describeWebhookExecutionFailure(error, 'private-id').hotPathStage).toBe('unknown');
+    error.config.url = '/private-id/secret';
+    expect(describeWebhookExecutionFailure(error).requestOperation).toBe('unknown');
+  });
 });

@@ -1332,8 +1332,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const commercialOcrPendingActivations: CommercialOcrPendingActivation[] = [];
     let failureStage: WebhookExecutionFailureStage = 'handler';
+    let hotPathProfile: WebhookHotPathProfile | null = null;
     try {
-      let hotPathProfile: WebhookHotPathProfile | null = null;
       const guardResult = await this.executeWebhookUpdateWithGuard(
         webhookEvent.id,
         update,
@@ -1415,7 +1415,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.commercialOcrEnqueueService?.activatePendingBatch(commercialOcrPendingActivations);
     } catch (error: unknown) {
       this.logger.warn(
-        { stage: failureStage, ...describeWebhookExecutionFailure(error) },
+        {
+          stage: failureStage,
+          ...describeWebhookExecutionFailure(
+            error,
+            this.readWebhookHotPathProfileSnapshot(hotPathProfile)?.latestStage,
+          ),
+        },
         'Webhook execution failed before recovery settlement',
       );
       await recordGroupCommandNoticeRecovery(this.prisma, execution, error);
