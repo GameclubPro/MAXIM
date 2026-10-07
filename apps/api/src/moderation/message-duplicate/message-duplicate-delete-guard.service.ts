@@ -39,8 +39,10 @@ import {
 import { MessageDuplicateAuthorizationService } from './message-duplicate-authorization.service';
 import {
   MessageDuplicateGuardRejectedError,
+  MessageDuplicateInitialSourceUnavailableError,
   MessageDuplicateQualificationSourceUnavailableError,
 } from './message-duplicate-guard.contract';
+import type { ModerationDeletePreDispatchPhase } from '../moderation-delete-intent.types';
 export { MessageDuplicateGuardRejectedError } from './message-duplicate-guard.contract';
 import {
   messageDuplicateNoticeSettingsDigest,
@@ -57,6 +59,7 @@ type MessageDuplicateGuardInput = {
   sanctionIntentId?: string;
   notice?: MessageDuplicateNoticeProof;
   beforeFinalAuthority?: () => Promise<void>;
+  deletePhase?: ModerationDeletePreDispatchPhase;
 };
 
 @Injectable()
@@ -296,6 +299,7 @@ export class MessageDuplicateDeleteGuardService {
       params.messageId,
       options,
       initialQualification,
+      !receiptIntentId ? params.deletePhase : undefined,
     );
     if (!raw && !receiptIntentId) return 'absent';
     if (!raw) {
@@ -380,6 +384,7 @@ export class MessageDuplicateDeleteGuardService {
       binding.original.messageId,
       options,
       initialQualification,
+      !receiptIntentId ? params.deletePhase : undefined,
     );
     if (!originalRaw) {
       await this.history.remove(params.chatId, binding.original.messageId);
@@ -447,15 +452,16 @@ export class MessageDuplicateDeleteGuardService {
     messageId: string,
     options: Parameters<MaxClientService['getExactMessageRow']>[2],
     initialQualification: boolean,
+    deletePhase?: ModerationDeletePreDispatchPhase,
   ): Promise<Record<string, unknown> | null> {
     let row: Record<string, unknown> | null;
     try {
       row = await this.max.getExactMessageRow(chatId, messageId, options);
     } catch (error) {
-      // FLAG: Only a structured message-specific 404 proves absence. A bare 404,
-      // access denial, proxy text or failed transport must preserve evidence. Only initial
-      // qualification may decline an unavailable source after a separate unused-claim CAS;
-      // final deletion/sanction guards retain the original failure and retry fences.
+      // FLAG: Only a structured message-specific 404 proves absence. An unavailable
+      // source preserves evidence: initial qualification requires an unused-claim CAS;
+      // the explicit first delete boundary requires a persisted retry before declining
+      // only inline effects. Rechecks, sanctions and notices retain the original failure.
       if (!isConfirmedMessageAbsence(error)) {
         this.metrics?.record(
           stage === 'current'
@@ -463,13 +469,16 @@ export class MessageDuplicateDeleteGuardService {
             : 'guard.original_lookup_unavailable',
         );
         if (
-          initialQualification &&
           extractHttpStatusCode(error) === 404 &&
           !wasMaxMessageSendAttempted(error) &&
           !wasMaxMemberMutationAttempted(error) &&
           !isMaxMutationOutcomeAmbiguous(error)
-        )
-          throw new MessageDuplicateQualificationSourceUnavailableError(stage, error);
+        ) {
+          if (initialQualification)
+            throw new MessageDuplicateQualificationSourceUnavailableError(stage, error);
+          if (deletePhase === 'initial_unattempted')
+            throw new MessageDuplicateInitialSourceUnavailableError(stage, error);
+        }
         throw error;
       }
       row = null;

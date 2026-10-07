@@ -1,5 +1,8 @@
 import { ConfigService } from '@nestjs/config';
-import { MessageDuplicateQualificationSourceUnavailableError } from './message-duplicate-guard.contract';
+import {
+  MessageDuplicateInitialSourceUnavailableError,
+  MessageDuplicateQualificationSourceUnavailableError,
+} from './message-duplicate-guard.contract';
 import {
   markMaxMemberMutationAttempted,
   markMaxMemberMutationConfirmed,
@@ -225,6 +228,39 @@ describe('scheduled duplicate final action guard', () => {
 
 describe('message duplicate final delete guard', () => {
   it.each(['current', 'original'] as const)(
+    'distinguishes the explicit initial %s source deferral from final and sanction checks',
+    async (stage) => {
+      const s = setup();
+      const error = { response: { status: 404, data: {} } };
+      if (stage === 'current') s.max.getExactMessageRow.mockRejectedValue(error);
+      else s.originalLookup.mockRejectedValue(error);
+      const request = { ...s.params, binding: s.binding };
+      await expect(
+        s.service.assertMessageStillActionable({ ...request, deletePhase: 'initial_unattempted' }),
+      ).rejects.toMatchObject({
+        name: 'MessageDuplicateInitialSourceUnavailableError',
+        source: stage,
+        cause: error,
+      });
+      await expect(
+        s.service.assertMessageStillActionable({ ...request, deletePhase: 'recheck' }),
+      ).rejects.toBe(error);
+      await expect(s.service.assertMessageStillActionable(request)).rejects.toBe(error);
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.absent');
+      const sanction = full();
+      sanction.max.getExactMessageRow.mockRejectedValue(error);
+      await expect(
+        sanction.service.assertMessageStillActionable({
+          ...sanction.request,
+          deletePhase: 'initial_unattempted',
+        }),
+      ).rejects.toBe(error);
+    },
+  );
+  it.each(['current', 'original'] as const)(
     'classifies an unstructured initial %s GET 404 without changing source evidence or counters',
     async (stage) => {
       const s = setup();
@@ -270,9 +306,17 @@ describe('message duplicate final delete guard', () => {
       if (stage === 'current') s.max.getExactMessageRow.mockRejectedValue(error);
       else s.originalLookup.mockRejectedValue(error);
       await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toBe(error);
+      await expect(
+        s.service.assertMessageStillActionable({
+          ...s.params,
+          binding: s.binding,
+          deletePhase: 'initial_unattempted',
+        }),
+      ).rejects.toBe(error);
       expect(s.history.qualify).not.toHaveBeenCalled();
       expect(s.history.remove).not.toHaveBeenCalled();
       expect(error).not.toBeInstanceOf(MessageDuplicateQualificationSourceUnavailableError);
+      expect(error).not.toBeInstanceOf(MessageDuplicateInitialSourceUnavailableError);
     },
   );
 

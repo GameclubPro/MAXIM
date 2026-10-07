@@ -80,3 +80,10 @@ Local validation including native PostgreSQL plans:
 ```bash
 node scripts/agent/with-test-stores.mjs -- node --test infra/scripts/webhook-owner-proof-audit.test.mjs infra/scripts/vps-postgres-audit.test.mjs
 ```
+
+The audit role also grants 21 exact intent/reason proof columns for bounded, reviewed
+owner-intent diagnostics. Immediate DELETE execution does not create a MAX action ledger
+entry: zero DELETE ledger observations never proves that no delete was attempted. Inspect
+the exact message intent, dispatch and remote-success markers, and bounded bound reasons
+separately. Keep identities, lease tokens and reason metadata out of report output. Neither
+report authorizes claim completion, order release or replay.

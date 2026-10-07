@@ -175,7 +175,9 @@ maxim_topology_require_image_text_stop_list_delete_guard() {
       const guardStart = executor.indexOf("private async runDeletePreDispatchGuards(");
       const guardEnd = executor.indexOf("\n  private ", guardStart + 1);
       const callAt = executor.search(methodCall);
-      const dispatchAt = executor.indexOf("await options?.beforeDeleteMutation?.();", guardStart);
+      // FLAG: Both the legacy no-argument callback and the explicit dispatch-phase
+      // callback must follow the exact image guard and its absence rejection.
+      const dispatchAt = executor.indexOf("await options?.beforeDeleteMutation?.(", guardStart);
       const checked = [...executor.matchAll(checkedCall)];
       const resultHandled = checked.length === 1 && checked[0].index > guardStart &&
         checked[0].index + checked[0][0].length < dispatchAt;

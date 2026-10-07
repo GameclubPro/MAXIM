@@ -1067,6 +1067,46 @@ describe('ModerationService', () => {
   });
 
   it.each(['handleDuplicateDecision', 'handleDuplicateHit'])(
+    'stops %s after a committed initial source deferral without sanction, notice or DELETE proof',
+    async (method) => {
+      const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+      const internals = service as any;
+      internals.moderationDeleteIntentService = {
+        ensureIntent: jest.fn(),
+        getRolloutForInput: () => 'execute',
+        ensureAndAttempt: jest.fn().mockResolvedValue({
+          kind: 'inline_declined',
+          confirmed: false,
+          intentId: 'intent',
+          status: 'RETRYABLE',
+        }),
+      };
+      internals.applySanctionAction = jest.fn();
+      internals.createBotModerationEvent = jest.fn();
+      internals.sendBotMessageWithOptionalAutoDelete = jest.fn();
+      const hit = { count: 1, windowSec: 60, hash: 'hash', fingerprintType: 'exact' };
+      await expect(
+        internals[method]({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'message-1',
+          text: 'repeat',
+          createdAt: new Date().toISOString(),
+          userLabel: 'User',
+          hit,
+          decision: { ...hit, action: 'WARN', threshold: 1, nextAction: null },
+          actionClaimed: true,
+          authorizeDelete: jest.fn(),
+          duplicateBotMessageEnabled: true,
+        }),
+      ).resolves.toBeUndefined();
+      expect(internals.applySanctionAction).not.toHaveBeenCalled();
+      expect(internals.createBotModerationEvent).not.toHaveBeenCalled();
+      expect(internals.sendBotMessageWithOptionalAutoDelete).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['handleDuplicateDecision', 'handleDuplicateHit'])(
     'retries %s after a transient delete verification failure without sanctions or notices',
     async (method) => {
       const service = new ModerationService({} as never, {} as never, {} as never, {} as never);

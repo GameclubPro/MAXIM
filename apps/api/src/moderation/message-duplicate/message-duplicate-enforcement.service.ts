@@ -20,7 +20,10 @@ import {
 import { MessageDuplicateQualificationSourceUnavailableError } from './message-duplicate-guard.contract';
 import { resolveDuplicateFlowOutcome } from '../duplicate-flow-policy';
 import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
-import type { EnsureModerationDeleteIntentInput } from '../moderation-delete-intent.types';
+import type {
+  EnsureModerationDeleteIntentInput,
+  ModerationDeletePreDispatchPhase,
+} from '../moderation-delete-intent.types';
 import {
   MESSAGE_DUPLICATE_CLAIM_PREFIX,
   MESSAGE_DUPLICATE_SOURCE,
@@ -247,6 +250,7 @@ export class MessageDuplicateEnforcementService {
         sanction = false,
         beforeFinalAuthority?: () => Promise<void>,
         finalMember = false,
+        deletePhase?: ModerationDeletePreDispatchPhase,
       ): Promise<boolean> => {
         params.assertLease?.();
         try {
@@ -256,6 +260,7 @@ export class MessageDuplicateEnforcementService {
             subjectUserId: binding.senderId,
             botId: finalMember ? (params.readSelectedBotId?.() ?? params.botId) : params.botId,
             binding,
+            ...(deletePhase ? { deletePhase } : {}),
             beforeFinalAuthority: beforeFinalAuthority
               ? async () => {
                   params.assertLease?.();
@@ -289,7 +294,8 @@ export class MessageDuplicateEnforcementService {
         backgroundExecution: params.assertLease !== undefined,
         deleteIntent: intent,
         assertActiveLease: params.assertLease,
-        authorizeDelete: () => check(),
+        authorizeDelete: (phase?: ModerationDeletePreDispatchPhase) =>
+          check(false, undefined, false, phase),
       };
       await params.executeFullAction!(
         decision

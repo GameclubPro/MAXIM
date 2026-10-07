@@ -280,6 +280,16 @@ a new publication time. Confirmed current absence alone cannot authorize sanctio
 successful DELETE receipt and every existing binding/policy check remain required. These fixed
 labels disclose no message, chat, user, source or error payload.
 
+The first inline delete check has an explicit `initial_unattempted` phase only when its
+durable intent has one lease attempt and no dispatch or remote-success markers. An unavailable
+current/original HTTP 404 at this boundary may end the inline action after an exact live-lease
+SQL update commits the retry. This returns no DELETE proof and runs no sanction or notice;
+the intent, action claim, reasons and original deadline remain intact. Failed persistence,
+changed ownership, later checks and previously attempted intents retain the failure fence.
+Initial qualification uses its separate unused-claim revocation; neither path treats an
+unstructured 404 as confirmed absence. Immediate DELETE does not use the irreversible-action
+ledger, so zero DELETE ledger rows alone cannot prove that an intent has never executed.
+
 The closed dashboard reports the active `message-duplicates` queue rather than the retired photo
 queue. Missing registration or an unreadable Redis counter fails that snapshot as unavailable;
 it must not appear as an empty duplicate backlog. Lightweight readiness and operational governor

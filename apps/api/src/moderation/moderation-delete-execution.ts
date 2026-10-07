@@ -1,6 +1,9 @@
 import type { Logger } from '@nestjs/common';
 import type { ModerationDeleteIntentService } from './moderation-delete-intent.service';
-import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+import type {
+  EnsureModerationDeleteIntentInput,
+  ModerationDeletePreDispatchPhase,
+} from './moderation-delete-intent.types';
 import {
   executeProfanityGuardedLegacyDelete,
   type ModerationDeleteExecutionResult,
@@ -18,7 +21,7 @@ import { TRAFFIC_PROTECTION_DELETE_RULE_CODES } from './traffic-protection';
 export async function executeDurableModerationDelete(params: {
   input: EnsureModerationDeleteIntentInput;
   service?: Pick<ModerationDeleteIntentService, 'ensureAndAttempt' | 'getRolloutForInput'>;
-  beforeDeleteMutation?: () => Promise<void>;
+  beforeDeleteMutation?: (phase?: ModerationDeletePreDispatchPhase) => Promise<void>;
   legacy: () => Promise<ModerationDeleteExecutionResult>;
   logger: Pick<Logger, 'warn'>;
 }): Promise<ModerationDeleteExecutionResult> {
@@ -49,6 +52,7 @@ export async function executeDurableModerationDelete(params: {
           deleted: result.kind === 'confirmed',
           eventPersistedByIntent: result.kind === 'confirmed',
           botId: result.kind === 'confirmed' ? result.botId : null,
+          ...(result.kind === 'inline_declined' ? { inlineDeclined: true as const } : {}),
           ...(result.kind === 'confirmed' && result.verifiedReasonKeys?.includes(input.reasonKey)
             ? { ownReasonVerified: true as const }
             : {}),
@@ -90,7 +94,10 @@ export function executeGuardedModerationDelete(
     Parameters<typeof executeDurableModerationDelete>[0],
     'legacy' | 'beforeDeleteMutation'
   > & {
-    options?: { delayMs?: number; beforeImmediateDeleteMutation?: () => Promise<void> };
+    options?: {
+      delayMs?: number;
+      beforeImmediateDeleteMutation?: (phase?: ModerationDeletePreDispatchPhase) => Promise<void>;
+    };
     profanityGuard?: Pick<ProfanityDeleteGuardService, 'assertMessageStillActionable'>;
     commercialGuard?: Pick<CommercialDeleteGuardService, 'assertMessageStillActionable'>;
     legacyExecute(

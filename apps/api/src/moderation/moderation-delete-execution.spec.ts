@@ -4,6 +4,32 @@ import {
 } from './moderation-delete-execution';
 
 describe('commercial durable deletion proof', () => {
+  it('returns an inline duplicate decline without borrowing DELETE or event success', async () => {
+    const legacy = jest.fn();
+    const result = await executeDurableModerationDelete({
+      input: { chatId: 'chat', messageId: 'message', reasonKey: 'duplicate' },
+      service: {
+        getRolloutForInput: () => 'execute',
+        ensureAndAttempt: async () => ({
+          kind: 'inline_declined',
+          confirmed: false,
+          intentId: 'intent',
+          status: 'RETRYABLE',
+        }),
+      },
+      legacy,
+      logger: { warn: jest.fn() },
+    });
+    expect(result).toEqual({
+      accepted: true,
+      gone: false,
+      deleted: false,
+      eventPersistedByIntent: false,
+      botId: null,
+      inlineDeclined: true,
+    });
+    expect(legacy).not.toHaveBeenCalled();
+  });
   it('refuses delayed legacy dispatch even without an explicit executeAt', async () => {
     const legacyExecute = jest.fn();
     await expect(

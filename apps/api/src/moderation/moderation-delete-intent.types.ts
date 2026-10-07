@@ -15,6 +15,10 @@ export type ModerationDeleteIntentStatus = (typeof MODERATION_DELETE_INTENT_STAT
 export type ModerationDeleteIntentMode = 'off' | 'shadow' | 'canary' | 'on';
 export type ModerationDeleteIntentRollout = 'off' | 'observed' | 'execute';
 
+// FLAG: Only the durable owner may identify its first, still unattempted boundary.
+// An omitted phase is a recheck and cannot decline an unavailable source normally.
+export type ModerationDeletePreDispatchPhase = 'initial_unattempted' | 'recheck';
+
 export type ModerationDeleteEventInput = {
   reasonKey: string;
   ruleCode: string;
@@ -78,6 +82,12 @@ export type EnsureClaimedModerationDeleteIntentResult =
 
 export type ModerationDeleteAttemptResult =
   | { kind: 'off'; confirmed: false; intentId: null; status: null }
+  | {
+      kind: 'inline_declined';
+      confirmed: false;
+      intentId: string;
+      status: 'RETRYABLE' | 'EXPIRED';
+    }
   | {
       kind: 'observed';
       confirmed: false;

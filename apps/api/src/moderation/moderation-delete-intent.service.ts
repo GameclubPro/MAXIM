@@ -96,6 +96,7 @@ import type {
   ModerationDeleteIntentRollout,
   ModerationDeleteIntentSnapshot,
   ModerationDeleteIntentStatus,
+  ModerationDeletePreDispatchPhase,
 } from './moderation-delete-intent.types';
 import {
   BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
@@ -146,6 +147,7 @@ import {
   MessageDuplicateDeleteGuardService,
   MessageDuplicateGuardRejectedError,
 } from './message-duplicate/message-duplicate-delete-guard.service';
+import { MessageDuplicateInitialSourceUnavailableError } from './message-duplicate/message-duplicate-guard.contract';
 import {
   MESSAGE_DUPLICATE_CLAIM_PREFIX,
   messageDuplicateEnforcementScope,
@@ -520,7 +522,7 @@ export type BotMessageAutoDeleteAccessAmbiguousHandoffResult =
 
 export type ModerationDeleteIntentAttemptOptions = {
   /** Fences this inline attempt only; the persisted intent remains the durable recovery owner. */
-  beforeDeleteMutation?: () => Promise<void>;
+  beforeDeleteMutation?: (phase?: ModerationDeletePreDispatchPhase) => Promise<void>;
   /** Retention callers must not execute a concurrent ordinary-moderation takeover. */
   retentionOnly?: boolean;
 };
@@ -2887,6 +2889,38 @@ export class ModerationDeleteIntentService {
               error.guardError,
               'delete_pre_dispatch_guard_rejected',
             );
+            if (
+              error.guardError instanceof MessageDuplicateInitialSourceUnavailableError &&
+              !dispatchMarkerPersisted &&
+              !this.hasDeleteMutationEvidence(intent) &&
+              intent.attemptCount === 1
+            ) {
+              // FLAG: An unavailable first source read may end only this inline action.
+              // Commit the exact unattempted owner's retry before returning; preserve its
+              // claim, reasons and deadline. A lost lease or failed write still propagates.
+              try {
+                const deferred = await this.finishRetryableAttempt(
+                  intent,
+                  leaseToken,
+                  {
+                    ...details,
+                    status: 'RETRYABLE',
+                    retryDelayMs: this.retryDelayMs(intent.attemptCount),
+                  },
+                  true,
+                );
+                if (deferred.status !== 'RETRYABLE' && deferred.status !== 'EXPIRED')
+                  throw error.guardError;
+                return {
+                  kind: 'inline_declined',
+                  confirmed: false,
+                  intentId: intent.id,
+                  status: deferred.status,
+                };
+              } catch (persistenceError) {
+                throw new ModerationDeletePreDispatchGuardError(persistenceError);
+              }
+            }
             const terminalGuardRejection = this.isTerminalDeleteGuardRejection(error.guardError);
             // FLAG: A final read can reveal revoked bot access while its saved proof is
             // still fresh. No DELETE ran. Switch only after a fresh own-member probe
@@ -3882,7 +3916,13 @@ export class ModerationDeleteIntentService {
           throw new Error('Guarded link delete intent lost its required reason metadata');
         }
       }
-      await options?.beforeDeleteMutation?.();
+      await options?.beforeDeleteMutation?.(
+        !finalDispatchLeaseToken &&
+          intent.attemptCount === 1 &&
+          !this.hasDeleteMutationEvidence(intent)
+          ? 'initial_unattempted'
+          : 'recheck',
+      );
       if (finalDispatchLeaseToken) {
         // FLAG: Independent user rules share one DELETE, not each other's authorization.
         // A stale binding may yield only to a freshly verified reason on this exact attempt.
@@ -6009,6 +6049,7 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     leaseToken: string,
     details: DeleteErrorDetails,
+    requireInitialUnattempted = false,
   ): Promise<ModerationDeleteAttemptResult> {
     const retryLimitReached =
       details.status !== 'FAILED_TERMINAL' &&
@@ -6074,8 +6115,18 @@ export class ModerationDeleteIntentService {
       WHERE "id" = ${intent.id}
         AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
         AND "lease_token" = ${leaseToken}
+        AND (${!requireInitialUnattempted} OR (
+          "attempt_count" = 1
+          AND "lease_expires_at" > (clock_timestamp() AT TIME ZONE 'UTC')
+          AND "delete_dispatch_started_at" IS NULL
+          AND "delete_dispatch_started_bot_id" IS NULL
+          AND "remote_delete_succeeded_at" IS NULL
+          AND "remote_delete_succeeded_bot_id" IS NULL
+        ))
     `);
     if (changed === 0) {
+      if (requireInitialUnattempted)
+        throw new Error('Initial duplicate source deferral lost unattempted ownership');
       return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
     }
 

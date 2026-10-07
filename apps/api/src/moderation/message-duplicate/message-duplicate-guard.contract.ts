@@ -22,6 +22,20 @@ export class MessageDuplicateQualificationSourceUnavailableError extends Error {
   }
 }
 
+// FLAG: This read failure can end only the initial inline action after its durable
+// intent owner commits a retry. It proves neither absence nor completed effects.
+export class MessageDuplicateInitialSourceUnavailableError extends Error {
+  readonly code = 'message_duplicate_initial_source_unavailable';
+
+  constructor(
+    readonly source: 'current' | 'original',
+    cause: unknown,
+  ) {
+    super('Initial duplicate delete source unavailable', { cause });
+    this.name = 'MessageDuplicateInitialSourceUnavailableError';
+  }
+}
+
 export type MessageDuplicateNoticeAuthority = {
   assertMessageStillActionable(params: {
     chatId: string;

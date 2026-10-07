@@ -13,6 +13,7 @@ export type ModerationDeleteExecutionResult = {
   profanityVerified?: true;
   commercialVerified?: true;
   ownReasonVerified?: true;
+  inlineDeclined?: true;
 };
 
 export type ProfanityDeleteMutationHooks = {

@@ -1,6 +1,9 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import type { ChatSettings } from '../prisma/prisma-client';
-import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+import type {
+  EnsureModerationDeleteIntentInput,
+  ModerationDeletePreDispatchPhase,
+} from './moderation-delete-intent.types';
 import type { DuplicateDecision, DuplicateHit } from './rule-engine.contract';
 import { messageDuplicateNoticeSettingsDigest } from './message-duplicate/message-duplicate-notice-proof';
 
@@ -16,7 +19,7 @@ export type DuplicateModerationActionRequest = {
   backgroundExecution?: boolean;
   assertActiveLease?: () => void;
   deleteIntent?: EnsureModerationDeleteIntentInput;
-  authorizeDelete: () => Promise<boolean>;
+  authorizeDelete: (phase?: ModerationDeletePreDispatchPhase) => Promise<boolean>;
   beforeSanctionMutation?: (beforeFinalAuthority?: () => Promise<void>) => Promise<void>;
 } & (
   | { outcome: { kind: 'hit'; hit: DuplicateHit }; authorizeSanction?: never }

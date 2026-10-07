@@ -236,7 +236,10 @@ import {
   type ModerationDeleteExecutionResult,
   type ProfanityDeleteMutationHooks,
 } from './profanity/profanity-delete-execution';
-import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+import type {
+  EnsureModerationDeleteIntentInput,
+  ModerationDeletePreDispatchPhase,
+} from './moderation-delete-intent.types';
 import { resolveTrustedDuplicateStateRevision } from './duplicate-message-revision';
 import {
   CommercialOcrEnqueueService,
@@ -3233,7 +3236,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     backgroundExecution?: boolean;
     assertActiveLease?: () => void;
     trackAsGlobalSpammer?: boolean;
-    authorizeDelete?: () => Promise<boolean>;
+    authorizeDelete?: (phase?: ModerationDeletePreDispatchPhase) => Promise<boolean>;
     authorizeSanction?: () => Promise<boolean>;
     beforeSanctionMutation?: (beforeFinalAuthority?: () => Promise<void>) => Promise<void>;
     deleteIntent?: EnsureModerationDeleteIntentInput;
@@ -3320,7 +3323,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const deleteResult = await this.executeModerationDelete(deleteIntent, {
         beforeImmediateDeleteMutation: deleteAuthorization.beforeImmediateDeleteMutation,
       });
-      if (deleteAuthorization.wasRejected()) {
+      if (deleteResult.inlineDeclined || deleteAuthorization.wasRejected()) {
         return;
       }
       assertActiveLease?.();
@@ -3568,7 +3571,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     actionClaimed?: boolean;
     backgroundExecution?: boolean;
     assertActiveLease?: () => void;
-    authorizeDelete?: () => Promise<boolean>;
+    authorizeDelete?: (phase?: ModerationDeletePreDispatchPhase) => Promise<boolean>;
     deleteIntent?: EnsureModerationDeleteIntentInput;
     duplicateNoticePolicySha256?: string;
   }) {
@@ -3654,7 +3657,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const deleteResult = await this.executeModerationDelete(deleteIntent, {
         beforeImmediateDeleteMutation: deleteAuthorization.beforeImmediateDeleteMutation,
       });
-      if (deleteAuthorization.wasRejected()) {
+      if (deleteResult.inlineDeclined || deleteAuthorization.wasRejected()) {
         return;
       }
       assertActiveLease?.();

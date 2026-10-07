@@ -312,6 +312,7 @@ export class AdminManualMessageCleanupService {
             return 'confirmed';
           case 'pending':
           case 'ambiguous':
+          case 'inline_declined':
             return 'accepted';
           case 'waiting_capability':
             return persistBeforeAttempt ? 'waiting_capability' : 'accepted';

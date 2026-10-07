@@ -2,6 +2,7 @@ import {
   hasPersistedTerminalDuplicateSanction,
   type TerminalDuplicateSanctionEventModel,
 } from './moderation-message-action-claim';
+import type { ModerationDeletePreDispatchPhase } from './moderation-delete-intent.types';
 
 export function createDuplicateMemberMutationGuard(
   lease: { assertOwned(): Promise<void> } | undefined,
@@ -23,9 +24,9 @@ export function createDuplicateMemberMutationGuard(
 
 export function createDuplicateDeleteAuthorizationGuard(params: {
   assertActiveLease?: () => void;
-  authorizeDelete?: () => Promise<boolean>;
+  authorizeDelete?: (phase?: ModerationDeletePreDispatchPhase) => Promise<boolean>;
 }): {
-  beforeImmediateDeleteMutation?: () => Promise<void>;
+  beforeImmediateDeleteMutation?: (phase?: ModerationDeletePreDispatchPhase) => Promise<void>;
   wasRejected: () => boolean;
   verificationFailed: () => boolean;
 } {
@@ -35,13 +36,13 @@ export function createDuplicateDeleteAuthorizationGuard(params: {
     return { wasRejected: () => false, verificationFailed: () => false };
   }
   return {
-    beforeImmediateDeleteMutation: async () => {
+    beforeImmediateDeleteMutation: async (phase) => {
       params.assertActiveLease?.();
       if (params.authorizeDelete) {
         // FLAG: An unavailable guard is unfinished work, never a confirmed policy rejection.
         rejected = false;
         failed = true;
-        const allowed = await params.authorizeDelete();
+        const allowed = await params.authorizeDelete(phase);
         failed = false;
         if (!allowed) {
           rejected = true;

@@ -21,6 +21,8 @@ local Docker-socket access under the production pg_hba rules, with:
   - connection limit 1 and no password
   - table SELECT only on webhook_events/moderation_events
   - exact Antiduplicate column SELECT grants and pg_read_all_stats membership
+  - 21 additional delete-intent/verified-reason metadata columns for bounded owner proof;
+    identities, lease tokens and reason metadata are check-only and never report output
   - ten rules-publication metadata columns; no rules text, media, links, or settings
   - sixteen Publisher binding/comment metadata columns
   - forty-three publication/access metadata columns; IDs are join-only and never report output
@@ -172,7 +174,27 @@ GRANT SELECT (
 GRANT SELECT (
   id,
   status,
-  updated_at
+  updated_at,
+  chat_id,
+  message_id,
+  subject_user_id,
+  source_message_at,
+  attempt_count,
+  leased_from_status,
+  lease_token,
+  lease_expires_at,
+  delete_dispatch_started_at,
+  delete_dispatch_started_bot_id,
+  remote_delete_succeeded_at,
+  remote_delete_succeeded_bot_id,
+  completed_at,
+  absence_verified_at,
+  absence_verification_code,
+  retry_until_at,
+  next_attempt_at,
+  first_attempt_at,
+  last_attempt_at,
+  last_status_code
 ) ON TABLE public.moderation_delete_intents TO maxim_audit;
 GRANT SELECT (
   chat_id, published_message_id, published_bot_id, publish_operation_id,
@@ -182,7 +204,8 @@ GRANT SELECT (
 GRANT SELECT (
   intent_id,
   reason_key,
-  rule_code
+  rule_code,
+  metadata
 ) ON TABLE public.moderation_delete_intent_reasons TO maxim_audit;
 GRANT SELECT (id, actor_user_id, lifecycle, audience_mode, audience_selection, dispatch_profile, required_bot_id)
   ON TABLE public.publications TO maxim_audit;
@@ -337,7 +360,7 @@ BEGIN
     RAISE EXCEPTION 'maxim_audit has unexpected direct table privileges';
   END IF;
 
-  IF 17 <> (
+  IF 38 <> (
     SELECT count(DISTINCT (table_name, column_name, privilege_type))
     FROM information_schema.role_column_grants
     WHERE grantee = 'maxim_audit'
@@ -379,11 +402,11 @@ BEGIN
           )
           OR (
             table_name = 'moderation_delete_intents'
-            AND column_name IN ('id', 'status', 'updated_at')
+            AND column_name IN ('id', 'status', 'updated_at', 'chat_id', 'message_id', 'subject_user_id', 'source_message_at', 'attempt_count', 'leased_from_status', 'lease_token', 'lease_expires_at', 'delete_dispatch_started_at', 'delete_dispatch_started_bot_id', 'remote_delete_succeeded_at', 'remote_delete_succeeded_bot_id', 'completed_at', 'absence_verified_at', 'absence_verification_code', 'retry_until_at', 'next_attempt_at', 'first_attempt_at', 'last_attempt_at', 'last_status_code')
           )
           OR (
             table_name = 'moderation_delete_intent_reasons'
-            AND column_name IN ('intent_id', 'reason_key', 'rule_code')
+            AND column_name IN ('intent_id', 'reason_key', 'rule_code', 'metadata')
           )
         )
       )
@@ -431,11 +454,11 @@ BEGIN
         )
         OR (
           restricted_relation.relname = 'moderation_delete_intents'
-          AND restricted_attribute.attname IN ('id', 'status', 'updated_at')
+          AND restricted_attribute.attname IN ('id', 'status', 'updated_at', 'chat_id', 'message_id', 'subject_user_id', 'source_message_at', 'attempt_count', 'leased_from_status', 'lease_token', 'lease_expires_at', 'delete_dispatch_started_at', 'delete_dispatch_started_bot_id', 'remote_delete_succeeded_at', 'remote_delete_succeeded_bot_id', 'completed_at', 'absence_verified_at', 'absence_verification_code', 'retry_until_at', 'next_attempt_at', 'first_attempt_at', 'last_attempt_at', 'last_status_code')
         )
         OR (
           restricted_relation.relname = 'moderation_delete_intent_reasons'
-          AND restricted_attribute.attname IN ('intent_id', 'reason_key', 'rule_code')
+          AND restricted_attribute.attname IN ('intent_id', 'reason_key', 'rule_code', 'metadata')
         )
       )
   ) THEN

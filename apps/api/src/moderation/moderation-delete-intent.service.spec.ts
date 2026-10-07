@@ -49,6 +49,8 @@ import { CommercialDeleteGuardRejectedError } from './commercial/commercial-dele
 import { fingerprintCommercialDeleteReasons } from './commercial/commercial-delete-binding';
 import { MESSAGE_DUPLICATE_MEDIA_VERSION } from './message-duplicate/message-duplicate-state';
 import { MessageDuplicateGuardRejectedError } from './message-duplicate/message-duplicate-delete-guard.service';
+import { MessageDuplicateInitialSourceUnavailableError } from './message-duplicate/message-duplicate-guard.contract';
+import type { ModerationDeletePreDispatchPhase } from './moderation-delete-intent.types';
 
 const VERIFIED_RECEIPT_RULE_CODES = [
   'MESSAGE_TOO_LONG_DELETE',
@@ -833,6 +835,111 @@ function accessAmbiguousSourceSendRow() {
 }
 
 describe('ModerationDeleteIntentService', () => {
+  function initialDuplicateSourceFixture(attemptCount = 1) {
+    const fixture = createService({}, { $executeRaw: jest.fn().mockResolvedValue(1) });
+    const leased = {
+      ...baseIntent,
+      attemptCount,
+      messageDuplicateOwned: true,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    };
+    const deferred = { ...leased, status: 'RETRYABLE', leaseToken: null, leaseExpiresAt: null };
+    const remoteDelete = jest.fn();
+    fixture.maxClient.deleteMessage.mockImplementation(async (_chatId, _messageId, options) => {
+      await options?.beforeImmediateDeleteMutation?.();
+      remoteDelete();
+    });
+    const mark = jest.fn().mockResolvedValue(true);
+    const clear = jest.fn().mockResolvedValue(true);
+    Object.assign(fixture.service, {
+      loadIntent: jest.fn().mockResolvedValue(leased),
+      loadRequiredIntent: jest.fn().mockResolvedValue(deferred),
+      startLeaseHeartbeat: () => ({ ...ownedHeartbeat, hasRemainingBudget: () => true }),
+      assertLeaseForExternalCall: jest.fn(),
+      isLegacyIntentHeld: jest.fn().mockResolvedValue(false),
+      finishProtectedManagedBotMessageAutoDelete: jest.fn().mockResolvedValue(null),
+      resolveDeleteRouteWithRefresh: jest.fn().mockResolvedValue(confirmedRoute),
+      filterAndOrderRouteCandidates: () => ['bot-1'],
+      recordAttemptBot: jest.fn().mockResolvedValue(true),
+      markDeleteDispatchStarted: mark,
+      clearDeleteDispatchStarted: clear,
+      assertChannelAutoPostCleanupStillAuthorized: jest.fn(),
+      assertNightModeCloseNoticeCleanupStillAuthorized: jest.fn(),
+      resolveDeleteIntentCommercialOcrGuard: jest.fn().mockResolvedValue(false),
+      assertPhotoDuplicateDeleteIntentStillActionable: jest.fn(),
+      assertImageTextStopListDeleteIntentStillActionable: jest.fn(),
+      enqueueWakeup: jest.fn(),
+    });
+    return { ...fixture, leased, deferred, remoteDelete, mark, clear };
+  }
+
+  it('commits a first duplicate source retry before declining inline effects', async () => {
+    const s = initialDuplicateSourceFixture();
+    const sourceError = { response: { status: 404 } };
+    const guard = jest.fn(async (phase?: ModerationDeletePreDispatchPhase) => {
+      expect(phase).toBe('initial_unattempted');
+      throw new MessageDuplicateInitialSourceUnavailableError('current', sourceError);
+    });
+    await expect(
+      s.service.executeLeasedIntent(s.leased.id, 'lease-1', { beforeDeleteMutation: guard }),
+    ).resolves.toEqual({
+      kind: 'inline_declined',
+      confirmed: false,
+      intentId: s.leased.id,
+      status: 'RETRYABLE',
+    });
+    expect(s.remoteDelete).not.toHaveBeenCalled();
+    expect(s.mark).not.toHaveBeenCalled();
+    expect(s.clear).not.toHaveBeenCalled();
+    const retry = s.prisma.$executeRaw.mock.calls.at(-1)![0];
+    expect(retry.strings.join('?')).toContain('"attempt_count" = 1');
+    expect(retry.strings.join('?')).toContain('"remote_delete_succeeded_at" IS NULL');
+    expect(retry.strings.join('?')).not.toMatch(/SET\s+"retry_until_at"/u);
+    expect(s.leased.retryUntilAt).toBe(baseIntent.retryUntilAt);
+  });
+
+  it.each(['lease-cas', 'storage-error'] as const)(
+    'does not decline a duplicate when retry persistence fails: %s',
+    async (failure) => {
+      const s = initialDuplicateSourceFixture();
+      if (failure === 'lease-cas') s.prisma.$executeRaw.mockResolvedValue(0);
+      else s.prisma.$executeRaw.mockRejectedValue(new Error('retry storage unavailable'));
+      await expect(
+        s.service.executeLeasedIntent(s.leased.id, 'lease-1', {
+          beforeDeleteMutation: async () => {
+            throw new MessageDuplicateInitialSourceUnavailableError('current', {
+              response: { status: 404 },
+            });
+          },
+        }),
+      ).rejects.toThrow(failure === 'lease-cas' ? 'lost unattempted ownership' : 'retry storage');
+      expect(s.remoteDelete).not.toHaveBeenCalled();
+      expect(s.mark).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['second-check', 'previous-attempt'] as const)(
+    'keeps a duplicate source failure fenced during %s',
+    async (stage) => {
+      const s = initialDuplicateSourceFixture(stage === 'previous-attempt' ? 2 : 1);
+      const sourceError = { response: { status: 404 } };
+      const phases: Array<ModerationDeletePreDispatchPhase | undefined> = [];
+      await expect(
+        s.service.executeLeasedIntent(s.leased.id, 'lease-1', {
+          beforeDeleteMutation: async (phase) => {
+            phases.push(phase);
+            if (phase === 'recheck') throw sourceError;
+          },
+        }),
+      ).rejects.toBe(sourceError);
+      expect(phases).toEqual(
+        stage === 'second-check' ? ['initial_unattempted', 'recheck'] : ['recheck'],
+      );
+      expect(s.remoteDelete).not.toHaveBeenCalled();
+      expect(s.clear).toHaveBeenCalledTimes(stage === 'second-check' ? 1 : 0);
+    },
+  );
+
   it.each([
     ['expired active lease', { status: 'IN_PROGRESS', leaseExpiresAt: new Date(0) }, 'pending'],
     ['unknown effect', { status: 'AMBIGUOUS' }, 'ambiguous'],

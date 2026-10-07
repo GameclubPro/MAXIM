@@ -223,6 +223,14 @@ test('image-text rollback floor accepts the real executor and rejects lost absen
       1,
     ],
     [
+      'phase callback before absence check',
+      executor.replace(
+        absence,
+        (value) => `await options?.beforeDeleteMutation?.('initial_unattempted');\n      ${value}`,
+      ),
+      1,
+    ],
+    [
       'duplicate guard call',
       executor.replace(
         call,
