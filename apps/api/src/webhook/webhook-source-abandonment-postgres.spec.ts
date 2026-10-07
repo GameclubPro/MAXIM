@@ -88,7 +88,7 @@ native('exact-source modern abandonment preserves journals and independent moder
     return result.webhookEventId!;
   }
 
-  async function fixture(forwardPhotos?: number) {
+  async function fixture(forwardPhotos?: number, content?: 'share' | 'reply') {
     h = await createMultibotHarness({
       databaseUrl,
       redisUrl,
@@ -143,6 +143,38 @@ native('exact-source modern abandonment preserves journals and independent moder
             }),
       },
     };
+    if (content === 'share') {
+      Object.assign(raw.message.body, {
+        attachments: [
+          {
+            type: 'share',
+            payload: { url: 'https://example.com/source', token: 'fixture-preview-token' },
+            title: 'Source preview',
+            description: null,
+            image_url: 'https://example.com/preview.jpg',
+          },
+        ],
+        markup: [
+          { type: 'heading', from: 0, length: 1 },
+          { type: 'strong', from: 0, length: 1 },
+          { type: 'link', from: 0, length: 1, url: 'https://example.com/source' },
+        ],
+      });
+    }
+    if (content === 'reply') {
+      raw.message.link = {
+        type: 'reply',
+        chat_id: independentChatId!,
+        sender: { user_id: 'linked-fixture-user', is_bot: false },
+        message: {
+          mid: `linked-${randomUUID()}`,
+          text: '',
+          attachments: [
+            { type: 'image', payload: { photo_id: 1, url: 'https://i.oneme.ru/reply-fixture' } },
+          ],
+        },
+      };
+    }
     const ownerId = await storeRaw(h, raw);
     await h.ingress.preparePersistedWebhookEvent(ownerId);
     const started = await h.canonical.prepareExecution(ownerId, h.bots[0]!.id);
@@ -564,6 +596,59 @@ native('exact-source modern abandonment preserves journals and independent moder
     },
   );
 
+  it.each(['share', 'reply'] as const)(
+    'holds the exact modern %s source and edited mirrors while a distinct same-user message progresses',
+    async (content) => {
+      const f = await fixture(undefined, content);
+      const { s } = f;
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const mirrorId = await storeRaw(s, f.raw, s.bots[1]!.id);
+      expect(
+        await inspectSourceAbandonmentReceiptCandidate(s.prisma, mirrorId, f.candidate),
+      ).toMatchObject({ scopeKind: 'EXACT_SOURCE' });
+      const next = structuredClone(f.raw);
+      next.message.body.mid = `new-${content}-${randomUUID()}`;
+      next.timestamp = Date.now();
+      next.message.timestamp = next.timestamp;
+      const nextId = await storeRaw(s, next);
+      await install(f);
+      expect(await materialize(s, f.ownerId)).toBe('APPLIED_WITH_PROOF');
+      expect(await materialize(s, mirrorId)).toBe('APPLIED_WITH_PROOF');
+      const edited = structuredClone(f.raw);
+      edited.update_type = 'message_edited';
+      edited.timestamp = Date.now();
+      const editId = await storeRaw(s, edited, s.bots[2]!.id);
+      await runReceipts(s, [editId, nextId]);
+      await s.pause();
+      for (const id of [mirrorId, editId])
+        expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: 'NO_REPLAY_HELD',
+          sourceDispositionReceiptId: id,
+          processedAt: null,
+        });
+      expect(handler.mock.calls.some(([update]) => update.message?.messageId === f.messageId)).toBe(
+        false,
+      );
+      expect(s.effects).toEqual([
+        expect.objectContaining({
+          method: 'delete',
+          path: '/messages',
+          messageId: next.message.body.mid,
+        }),
+      ]);
+      expect(await s.legacyHolds.isMemberHeld(f.chatId, 'fixture-user')).toBe(false);
+      expect(await s.legacyHolds.isGlobalUserHeld('fixture-user')).toBe(false);
+      if (content === 'reply') {
+        const link = f.raw.message.link!;
+        expect(await s.legacyHolds.isMessageHeld(link.chat_id, link.message.mid)).toBe(false);
+        expect(await s.legacyHolds.isMemberHeld(link.chat_id, link.sender.user_id)).toBe(false);
+        expect(await s.legacyHolds.isGlobalUserHeld(link.sender.user_id)).toBe(false);
+      }
+      await assertHistory(f);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
   it('refuses unsupported owner shapes and never projects malformed exact-source mirrors', async () => {
     const f = await fixture(2);
     const { s } = f;
@@ -574,7 +659,7 @@ native('exact-source modern abandonment preserves journals and independent moder
     const faults = [
       'direct-image',
       'direct-video',
-      'reply',
+      'unknown-link-type',
       'nested',
       'unknown-attachment',
       'unknown-payload',
@@ -604,7 +689,7 @@ native('exact-source modern abandonment preserves journals and independent moder
           ],
         });
       }
-      if (fault === 'reply') link.type = 'reply';
+      if (fault === 'unknown-link-type') link.type = 'unknown';
       if (fault === 'nested') Object.assign(link.message, { link: { type: 'forward' } });
       if (fault === 'unknown-attachment') link.message.attachments[0]!.type = 'share';
       if (fault === 'unknown-payload')

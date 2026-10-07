@@ -15,6 +15,11 @@ import {
 import type { SourceInventoryAllowance } from './source-abandonment-live-sql';
 import type { LegacyRecoveryLivePlanProof } from './legacy-recovery-live-protocol';
 import {
+  readSourceAbandonmentCleanupScopes,
+  sourceAbandonmentCleanupParentKey,
+  type SourceAbandonmentCleanupParent,
+} from './source-abandonment-cleanup-proof';
+import {
   inventorySourceAbandonmentNamespaces,
   type SourceAbandonmentCatalogReader,
   type SourceAbandonmentCatalogProof,
@@ -297,6 +302,7 @@ function assertJobAncestry(job: JobRead): void {
 export function classifySourceAbandonmentAction(
   job: JobRead,
   sources: readonly SourceAbandonmentRedisSource[],
+  cleanupParent?: SourceAbandonmentCleanupParent,
 ): SourceAbandonmentChildEvidence | null {
   assertJobAncestry(job);
   const data = record(job.data);
@@ -318,17 +324,23 @@ export function classifySourceAbandonmentAction(
   const context = data.ledgerContext === undefined ? {} : record(data.ledgerContext);
   if (!context || Object.keys(context).some((key) => !contexts.has(key)))
     throw new Refused('ACTION_PRODUCER_UNPROVED');
+  let cleanupScopes: ReturnType<typeof readLegacyActionSourceScopes> | null = null;
   if (data.sendAutoDelete !== undefined) {
     const marker = record(data.sendAutoDelete);
+    if (marker?.sourceMessageId === null) {
+      cleanupScopes = readSourceAbandonmentCleanupScopes(data, cleanupParent, sources);
+      if (!cleanupScopes) throw new Refused('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+    }
     if (
-      !marker ||
-      !identity(marker.sourceSendJobId) ||
-      !identity(marker.sourceChatId) ||
-      !identity(marker.sourceMessageId)
+      !cleanupScopes &&
+      (!marker ||
+        !identity(marker.sourceSendJobId) ||
+        !identity(marker.sourceChatId) ||
+        !identity(marker.sourceMessageId))
     )
       throw new Refused('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
   }
-  const scopes = readLegacyActionSourceScopes(data as unknown as MaxActionJob);
+  const scopes = cleanupScopes ?? readLegacyActionSourceScopes(data as unknown as MaxActionJob);
   const bound = scopes.filter((scope) => identity(scope.chatId) && identity(scope.messageId));
   if (!bound.length) throw new Refused('ACTION_SOURCE_UNPROVED');
   const related = sources.filter((source) =>
@@ -572,7 +584,14 @@ export async function inventorySourceAbandonmentRedis(
                     (data.actionType !== 'SEND_MESSAGE' || ledger.remoteMessageId == null)))
               )
                 continue;
-              const child = classifySourceAbandonmentAction(job, sources);
+              const cleanupParentKey = sourceAbandonmentCleanupParentKey(data);
+              const cleanupParent = cleanupParentKey
+                ? {
+                    ledger: await resolveRow('action', cleanupParentKey),
+                    majorBotIds: selection.majorBotIds,
+                  }
+                : undefined;
+              const child = classifySourceAbandonmentAction(job, sources, cleanupParent);
               if (child) addChild({ ...child, queueName: queue.queueName });
             } else {
               if (!identity(data.observationId))

@@ -5,13 +5,17 @@ source without replay. It does not establish that previous remote effects succee
 or failed. A started execution claim and every existing action, sanction, DELETE and
 ambiguous member receipt remain unchanged.
 
-The scope is an exact outer human message in a moderated group: original plain text
-or one strict flat forward with text and zero through ten validated image/photo
-attachments in the linked message, plus its proved descendants. The existing
-`inspectLegacyForwardText` validator must prove the parser-composed text and reject
-commands in the direct, linked and composed text, including configured triggers.
-Direct attachments, replies, nested forwards, video and unknown metadata/media are
-refused. Only the outer recipient chat, message ID and sender identify the source;
+The scope is an exact outer human message in a moderated group, plus its proved
+descendants. The modern owner and late-receipt inspectors accept plain text, text
+with one strict official SHARE preview and no linked message, or a strict flat
+forward/reply whose linked text has zero through ten validated image/photo
+attachments. A reply requires outer text with no direct attachments. The original
+payload must match the real webhook parser; direct, linked and composed text must
+pass default and configured command checks. Bounded passive formatting and strict
+credential-free HTTPS link markup add no source identity. Nested links, direct
+images/video, mixed preview/media and unknown metadata are refused. These shapes
+do not change the legacy recovery profile.
+Only the outer recipient chat, message ID and sender identify the source;
 linked identities never become held messages or people. A new outer message that
 forwards the same original, and any distinct message from either participant, remain
 outside the hold. Publisher is a separate observer/publisher, never a moderation executor.
@@ -19,7 +23,14 @@ Legacy member/global-user holds remain independent and cannot be repurposed for 
 operation. Unsupported sources or unattributed actionable continuations are refused.
 
 `sendAutoDelete` consumes its parent SEND authority, so its exact original-source
-envelope and parent key remain part of the exclusion. `BOT_MESSAGE_AUTO_DELETE`
+envelope and parent key remain part of the exclusion. A nullable source message
+requires the exact retained successful, terminal, unambiguous moderation-notice
+SEND ledger row through the metered job-key resolver. Chat, bot, remote message,
+timestamps, delay and the complete copied supported context must agree. Missing
+parents, reply-link options, truncated option names or unknown contexts refuse
+admission. A compatibility notice marker cannot exclude a selected source in the
+same unresolved chat; a strict duplicate-notice context must prove its exact source.
+`BOT_MESSAGE_AUTO_DELETE`
 from a separately authenticated bot-message webhook has its own message-scoped
 claim, current chat policy and origin-only bot routing. It does not consume the
 abandoned human execution claim; this operation does not suppress that independent
@@ -29,8 +40,9 @@ policy.
 
 Use a clean checkout at the exact reviewed runtime SHA with every API role and both
 native auxiliaries running that image. Deploy the additive schema and mandatory
-readers before any installation. Both rollback paths require these readers and the
-strict forward provenance validator after this release. The controller requires a 20 GiB Docker filesystem reserve and uses
+readers before any installation. Both rollback paths require the modern owner and
+late-receipt profiles, including strict forward/reply/preview provenance, after
+this release. The controller requires a 20 GiB Docker filesystem reserve and uses
 the existing protected deploy lock and durable cold-operation journal.
 
 Create an owner-private `0600` JSON request. A `preflight` or `prepare` request has

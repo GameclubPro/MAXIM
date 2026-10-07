@@ -1,21 +1,33 @@
 import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
 
-// FLAG: This closure excludes one outer human text/flat-forward source and exact children.
+// FLAG: This closure excludes one validated outer human source and exact children.
 // It never grants participant immunity or proves earlier remote outcomes. Every
 // producer below must retain a final exact-source check when regenerating work.
 export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
-  version: 1,
-  source: 'outer-human-plain-text-or-strict-flat-forward-major-group-message',
+  version: 2,
+  source: 'outer-human-text-with-strict-share-preview-or-flat-forward-or-reply-major-group-message',
   forward: {
     validator: 'inspectLegacyForwardText',
     content: 'parser-proved-text-and-zero-through-ten-strict-image-photo-attachments',
     scope: 'outer-recipient-chat-body-mid-sender-user-only',
     linkedIdentity: 'content-provenance-never-held-message-person-or-mutation-target',
   },
+  share: {
+    validator: 'isSourceAbandonmentDirectMedia',
+    content: 'one-official-https-share-preview-with-bounded-passive-metadata-and-no-linked-message',
+    scope: 'outer-recipient-chat-body-mid-sender-user-only',
+  },
+  markup: 'bounded-passive-formatting-or-strict-https-link-with-original-utf16-text-bounds',
+  reply: {
+    validator: 'inspectSourceAbandonmentReplyText',
+    content: 'parser-proved-outer-text-and-flat-quoted-text-with-zero-through-ten-strict-images',
+    scope: 'outer-recipient-chat-body-mid-sender-user-only',
+    linkedIdentity: 'quoted-metadata-never-held-message-person-or-mutation-target',
+  },
   excluded: [
     'commands-and-configured-triggers',
     'private-channel-callback-membership',
-    'direct-attachments-replies-nested-forwards-video-and-unknown-forward-shapes',
+    'direct-images-video-mixed-share-media-nested-links-and-unknown-content-shapes',
     'unknown-or-secondary-source',
   ],
   guards: {
@@ -34,7 +46,8 @@ export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
     automaticReplies: 'original-message-before-send-and-replacement-delete',
     retentionAndCleanup:
       'attributed-send-cleanup-checks-original-source-and-immutable-parent-child',
-    unattributedCleanup: 'collector-refuses-partial-sendAutoDelete-original-source-markers',
+    unattributedCleanup:
+      'partial-markers-refused-null-original-requires-exact-completed-major-moderation-send-and-same-chat-producer-proof',
   },
   history: 'retain-intent-action-sanction-claim-and-ambiguous-member-fences-without-replay',
   independence: 'distinct-message-same-user-is-outside-source-exclusion',

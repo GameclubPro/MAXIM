@@ -8,6 +8,12 @@ import {
 import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
 import { isLegacyDirectMedia, isLegacyPassiveMarkup } from './webhook-legacy-direct-source';
 import {
+  inspectSourceAbandonmentReplyText,
+  isSourceAbandonmentDirectMedia,
+  isSourceAbandonmentMarkup,
+  type SourceAbandonmentReplyRefusal,
+} from './webhook-source-abandonment-content';
+import {
   inspectLegacyForwardText,
   isLegacyOpaqueSequence,
   legacyParsedTextMatches,
@@ -21,6 +27,7 @@ export type LegacyRecoverySource = {
 };
 export type LegacyRecoverySourceRefusal =
   | LegacyForwardRefusal
+  | SourceAbandonmentReplyRefusal
   | 'source_objects_missing'
   | 'source_receiver_unproved'
   | 'source_event_kind'
@@ -95,11 +102,32 @@ export function inspectLegacyPostSealTextSource(
   return inspectLegacyTextSource(owner, true, undefined, settings);
 }
 
+// FLAG: Modern started-source exclusion has its own closed content profile.
+// Legacy entry points retain their original default; no payload is rewritten to
+// pass a different validator, and this inspection alone grants no replay authority.
+export function inspectSourceAbandonmentSource(
+  owner: Pick<WebhookEvent, 'botId' | 'createdAt' | 'normalizedPayload' | 'rawPayload'>,
+  onRefusal?: (reason: LegacyRecoverySourceRefusal) => void,
+  settings?: AdminForwardedCommandSettings,
+): LegacyRecoverySource | null {
+  return inspectLegacyTextSource(owner, false, onRefusal, settings, 'source-abandonment');
+}
+
+// FLAG: Only an already-held modern receipt uses edit/future-clock provenance.
+// The same modern content profile is required before releasing receipt ordering.
+export function inspectSourceAbandonmentPostSealSource(
+  owner: Pick<WebhookEvent, 'botId' | 'createdAt' | 'normalizedPayload' | 'rawPayload'>,
+  settings?: AdminForwardedCommandSettings,
+): LegacyRecoverySource | null {
+  return inspectLegacyTextSource(owner, true, undefined, settings, 'source-abandonment');
+}
+
 function inspectLegacyTextSource(
   owner: Pick<WebhookEvent, 'botId' | 'createdAt' | 'normalizedPayload' | 'rawPayload'>,
   postSealForward: boolean,
   onRefusal?: (reason: LegacyRecoverySourceRefusal) => void,
   settings?: AdminForwardedCommandSettings,
+  profile: 'legacy' | 'source-abandonment' = 'legacy',
 ): LegacyRecoverySource | null {
   // FLAG: Emit one fixed code from the deciding guard. Never expose raw keys,
   // source text, identities or exception details through refusal diagnostics.
@@ -163,10 +191,23 @@ function inspectLegacyTextSource(
   if (!isLegacyOpaqueSequence(body.seq)) return refuse('source_sequence');
   if (raw.update_id !== undefined && identity(raw.update_id) === null)
     return refuse('source_update_identity');
-  if (!isLegacyDirectMedia(body.attachments)) return refuse('source_attachments');
-  if (!isLegacyPassiveMarkup(body.markup, body.text)) return refuse('source_markup');
+  if (
+    profile === 'source-abandonment'
+      ? !isSourceAbandonmentDirectMedia(body.attachments, message.link)
+      : !isLegacyDirectMedia(body.attachments)
+  )
+    return refuse('source_attachments');
+  if (
+    profile === 'source-abandonment'
+      ? !isSourceAbandonmentMarkup(body.markup, body.text)
+      : !isLegacyPassiveMarkup(body.markup, body.text)
+  )
+    return refuse('source_markup');
   if (message.link !== undefined) {
-    const forwardRefusal = inspectLegacyForwardText(update, settings);
+    const forwardRefusal =
+      profile === 'source-abandonment' && record(message.link)?.type === 'reply'
+        ? inspectSourceAbandonmentReplyText(update, settings)
+        : inspectLegacyForwardText(update, settings);
     if (forwardRefusal) return refuse(forwardRefusal);
   } else if (typeof body.text !== 'string' || !legacyParsedTextMatches(update))
     return refuse('source_text_mismatch');

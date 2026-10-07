@@ -9,6 +9,7 @@ import { inventorySourceAbandonmentRedis } from './source-abandonment-live-redis
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
 import { isLegacyRecoveryWebhookQueue } from './legacy-recovery-queue-inventory';
+import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
 
 const url = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const native = url ? describe : describe.skip;
@@ -285,5 +286,93 @@ native('modern full namespace census on Redis 7', () => {
     expect(changed.stableDigest).not.toBe(first.stableDigest);
     await redis.incr('bull:max-actions-background:id');
     expect((await observe()).stableDigest).not.toBe(changed.stableDigest);
+  });
+
+  it('retains real delayed cleanup bytes while requiring its separately resolved parent proof', async () => {
+    const context = { moderationNoticeEnvelope: { version: 1 } };
+    const marker = {
+      version: 2,
+      sourceSendJobId: 'completed-parent',
+      sourceChatId: '-200',
+      sourceMessageId: null,
+      sourceUserId: null,
+      sourceCreatedAt: '2026-10-01T00:00:00.000Z',
+      sourceSendCompletedAt: '2026-10-01T00:00:01.000Z',
+      requestedDelayMs: 60_000,
+      originBotId: 'major-1',
+    };
+    const parent = {
+      jobId: marker.sourceSendJobId,
+      actionType: 'SEND_MESSAGE',
+      chatId: marker.sourceChatId,
+      messageId: null,
+      userId: null,
+      sourceTag: 'moderation_notice',
+      status: 'SUCCEEDED',
+      terminal: true,
+      ambiguous: false,
+      remoteMessageId: 'confirmed-notice',
+      dispatchBotId: marker.originBotId,
+      completedAt: new Date(marker.sourceSendCompletedAt),
+      metadata: {
+        createdAt: marker.sourceCreatedAt,
+        autoDeleteDelayMs: marker.requestedDelayMs,
+        sendAutoDelete: null,
+        hasOptions: true,
+        optionKeys: ['textFormat'],
+        ledgerContext: context,
+      },
+    };
+    const queue = new Queue('max-actions-background', { connection: { url: fixtureUrl } });
+    queues.push(queue);
+    await queue.add(
+      'action',
+      {
+        actionType: 'DELETE_MESSAGE',
+        idempotencyKey: 'cleanup-delete',
+        chatId: marker.sourceChatId,
+        messageId: parent.remoteMessageId,
+        botId: marker.originBotId,
+        sourceTag: 'moderation_notice',
+        ledgerContext: context,
+        sendAutoDelete: marker,
+      },
+      { jobId: 'retained-cleanup', delay: 60_000 },
+    );
+    const key = 'bull:max-actions-background:retained-cleanup';
+    const before = await redis.hgetall(key);
+    let retainedParent: typeof parent | null = parent;
+    const resolver = jest.fn(async (_kind: string, jobId: string) => ({
+      row: jobId === parent.jobId ? retainedParent : null,
+      digest: sourceAbandonmentDigest(jobId === parent.jobId ? retainedParent : null),
+      plans: [],
+      cost: { pages: 2, rows: 1, probes: 2, bytes: 256 },
+    }));
+    const observe = () =>
+      inventorySourceAbandonmentRedis(
+        reader(),
+        selection,
+        [{ ...source, chatId: '-100' }],
+        { ...LEGACY_RECOVERY_LIVE_BUDGET, deadlineAtMs: deadline() },
+        resolver,
+      );
+    const first = await observe();
+    const second = await observe();
+    expect(first.issues).toEqual([]);
+    expect(first.children).toEqual([]);
+    expect(second.stableDigest).toBe(first.stableDigest);
+    expect(resolver.mock.calls.map(([, jobId]) => jobId)).toEqual([
+      'cleanup-delete',
+      'completed-parent',
+      'cleanup-delete',
+      'completed-parent',
+    ]);
+    retainedParent = null;
+    expect((await observe()).issues).toContainEqual({
+      code: 'CLEANUP_ORIGINAL_SOURCE_UNPROVED',
+      descriptor: 'redis:max-actions-background',
+    });
+    expect(await redis.hgetall(key)).toEqual(before);
+    expect(await redis.zcard('bull:max-actions-background:delayed')).toBe(1);
   });
 });
