@@ -1548,7 +1548,7 @@ describe('ModerationService', () => {
       );
     });
 
-    describe('initial subscription authority rejection', () => {
+    describe('subscription authority rejection boundaries', () => {
       function fixture() {
         const prisma = createPrismaForRequiredSubscription({
           requiredSubscriptionEnabled: true,
@@ -1556,6 +1556,7 @@ describe('ModerationService', () => {
         });
         const maxClient = createRequiredSubscriptionMaxClient();
         const ruleEngine = { detect: jest.fn().mockResolvedValue({ violations: [] }) };
+        const redisCounter = createRequiredSubscriptionRedisCounter();
         const service = createRequiredSubscriptionService(
           prisma as never,
           ruleEngine as never,
@@ -1564,12 +1565,25 @@ describe('ModerationService', () => {
           undefined,
           undefined,
           undefined,
-          createRequiredSubscriptionRedisCounter() as never,
+          redisCounter as never,
         );
         const guard = (service as any).requiredSubscriptionExecutionGuard;
         const claim = jest.spyOn(service as any, 'claimAndPersistMessageScopedModerationViolation');
         const activeMute = jest.spyOn(service as any, 'handleActiveMuteMessage');
-        return { service, prisma, maxClient, ruleEngine, guard, claim, activeMute };
+        const ensureIntent = jest.spyOn(service as any, 'ensureModerationDeleteIntent');
+        const executeDelete = jest.spyOn(service as any, 'executeModerationDelete');
+        return {
+          service,
+          prisma,
+          maxClient,
+          ruleEngine,
+          redisCounter,
+          guard,
+          claim,
+          activeMute,
+          ensureIntent,
+          executeDelete,
+        };
       }
 
       it.each([
@@ -1632,29 +1646,187 @@ describe('ModerationService', () => {
         expect(f.maxClient.deleteMessage).not.toHaveBeenCalled();
       });
 
-      it.each([
-        new RequiredSubscriptionExecutionRejectedError(),
-        new RequiredSubscriptionInitialSourceUnavailableError(
-          createMaxApiError(404, 'unavailable'),
-        ),
-      ])(
-        'preserves typed rejection after initial authorization and feature writes: %s',
-        async (error) => {
+      it.each([false, true])(
+        'stops a revoked deletion after notice handoff without fallthrough (muted=%s)',
+        async (muted) => {
           const f = fixture();
+          if (muted)
+            jest.spyOn(f.service as any, 'getActiveMute').mockResolvedValue({
+              ruleCode: 'REQUIRED_SUBSCRIPTION',
+              durationHours: 6,
+            });
           f.guard.authorize
             .mockReset()
             .mockResolvedValueOnce({ reasonKeys: ['REQUIRED_SUBSCRIPTION:message-delete'] })
-            .mockRejectedValue(error);
-          await expect(f.service.handleUpdate(createUpdate())).rejects.toBe(error);
+            .mockImplementation(async () => {
+              expect(f.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+              throw new RequiredSubscriptionExecutionRejectedError();
+            });
+
+          await expect(f.service.handleUpdate(createUpdate())).resolves.toBeUndefined();
+
           expect(f.guard.authorize).toHaveBeenCalledTimes(2);
           expect(f.guard.authorize.mock.calls[0][0].initialQualification).toBe(true);
           expect(f.guard.authorize.mock.calls[1][0].initialQualification).toBeUndefined();
           expect(f.claim).toHaveBeenCalledTimes(1);
           expect(f.prisma.violation.create).toHaveBeenCalledTimes(1);
+          expect(f.prisma.moderationEvent.upsert).toHaveBeenCalledTimes(1);
           expect(f.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+          expect(f.ensureIntent).not.toHaveBeenCalled();
+          expect(f.executeDelete).not.toHaveBeenCalled();
           expect(f.maxClient.deleteMessage).not.toHaveBeenCalled();
+          expect(f.maxClient.banMember).not.toHaveBeenCalled();
+          expect(f.activeMute).not.toHaveBeenCalled();
+          expect(f.ruleEngine.detect).not.toHaveBeenCalled();
+          expect(
+            f.prisma.moderationEvent.create.mock.calls.some(
+              ([args]) => args?.data?.action === SanctionAction.DELETE_MESSAGE,
+            ),
+          ).toBe(false);
         },
       );
+
+      it.each([
+        new RequiredSubscriptionInitialSourceUnavailableError(
+          createMaxApiError(404, 'unavailable'),
+        ),
+        createMaxApiError(404, 'Unknown exact message response'),
+        Object.assign(new Error('unverified'), {
+          code: 'required_subscription_no_longer_authorized',
+        }),
+        new Error('Required subscription fresh membership unavailable'),
+        new Error('Required subscription settings storage unavailable'),
+      ])('preserves unverified authority failure after notice handoff: %s', async (error) => {
+        const f = fixture();
+        f.guard.authorize
+          .mockReset()
+          .mockResolvedValueOnce({ reasonKeys: ['REQUIRED_SUBSCRIPTION:message-delete'] })
+          .mockRejectedValue(error);
+        await expect(f.service.handleUpdate(createUpdate())).rejects.toBe(error);
+        expect(f.guard.authorize).toHaveBeenCalledTimes(2);
+        expect(f.guard.authorize.mock.calls[0][0].initialQualification).toBe(true);
+        expect(f.guard.authorize.mock.calls[1][0].initialQualification).toBeUndefined();
+        expect(f.claim).toHaveBeenCalledTimes(1);
+        expect(f.prisma.violation.create).toHaveBeenCalledTimes(1);
+        expect(f.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+        expect(f.ensureIntent).not.toHaveBeenCalled();
+        expect(f.executeDelete).not.toHaveBeenCalled();
+        expect(f.maxClient.deleteMessage).not.toHaveBeenCalled();
+      });
+
+      it('stops a revoked deletion covered by durable media evidence without another notice', async () => {
+        const f = fixture();
+        const createdAt = new Date().toISOString();
+        const first = createRequiredSubscriptionMediaUpdate({
+          messageId: 'revoked-coverage-first',
+          createdAt,
+          mediaGroupId: 'revoked-coverage-album',
+        });
+        const second = createRequiredSubscriptionMediaUpdate({
+          messageId: 'revoked-coverage-second',
+          createdAt,
+          mediaGroupId: 'revoked-coverage-album',
+        });
+        await f.service.handleUpdate(first);
+        await f.service.handleUpdate(second);
+        expect(f.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+        expect(f.executeDelete).toHaveBeenCalledTimes(2);
+        expect(
+          f.prisma.moderationEvent.upsert.mock.calls.filter(
+            ([args]) => args.create.ruleCode === 'REQUIRED_SUBSCRIPTION_NOTICE_COVERAGE',
+          ),
+        ).toHaveLength(1);
+        for (const key of f.redisCounter.stringCache.keys()) {
+          if (key.includes('media-notice-state')) f.redisCounter.stringCache.delete(key);
+        }
+        f.guard.authorize.mockClear();
+        f.guard.authorize.mockRejectedValue(new RequiredSubscriptionExecutionRejectedError());
+        f.claim.mockClear();
+        f.ensureIntent.mockClear();
+        f.executeDelete.mockClear();
+        f.maxClient.sendMessage.mockClear();
+
+        await expect(f.service.handleUpdate(second)).resolves.toBeUndefined();
+
+        expect(f.guard.authorize).toHaveBeenCalledTimes(1);
+        expect(f.guard.authorize.mock.calls[0][0].initialQualification).toBeUndefined();
+        expect(f.claim).not.toHaveBeenCalled();
+        expect(f.ensureIntent).not.toHaveBeenCalled();
+        expect(f.executeDelete).not.toHaveBeenCalled();
+        expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
+        expect(f.activeMute).not.toHaveBeenCalled();
+        expect(f.ruleEngine.detect).not.toHaveBeenCalled();
+      });
+
+      it('preserves the notice lease failure before deletion authority', async () => {
+        const f = fixture();
+        const error = new Error('Required subscription notice lease was lost');
+        jest
+          .spyOn((f.service as any).requiredSubscriptionMediaNoticeCoordinator, 'run')
+          .mockImplementation(async (params: any) => {
+            await params.executeDelete(async () => {
+              throw error;
+            });
+            return true;
+          });
+
+        await expect(f.service.handleUpdate(createUpdate())).rejects.toBe(error);
+        expect(f.guard.authorize).not.toHaveBeenCalled();
+        expect(f.ensureIntent).not.toHaveBeenCalled();
+        expect(f.executeDelete).not.toHaveBeenCalled();
+      });
+
+      it('preserves a typed rejection from the earlier notice handoff guard', async () => {
+        const f = fixture();
+        const error = new RequiredSubscriptionExecutionRejectedError();
+        f.guard.assertNoticeAllowed.mockRejectedValue(error);
+
+        await expect(f.service.handleUpdate(createUpdate())).rejects.toBe(error);
+        expect(f.guard.authorize).toHaveBeenCalledTimes(1);
+        expect(f.ensureIntent).not.toHaveBeenCalled();
+        expect(f.executeDelete).not.toHaveBeenCalled();
+        expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
+      });
+
+      it.each(['ensure', 'execute', 'delete-event'] as const)(
+        'preserves a typed rejection after deletion authority at %s',
+        async (stage) => {
+          const f = fixture();
+          const error = new RequiredSubscriptionExecutionRejectedError();
+          if (stage === 'ensure') f.ensureIntent.mockRejectedValue(error);
+          else if (stage === 'execute') f.executeDelete.mockRejectedValue(error);
+          else
+            f.prisma.moderationEvent.create
+              .mockResolvedValueOnce(undefined)
+              .mockRejectedValue(error);
+
+          await expect(f.service.handleUpdate(createUpdate())).rejects.toBe(error);
+          expect(f.guard.authorize).toHaveBeenCalledTimes(2);
+          expect(f.ensureIntent).toHaveBeenCalledTimes(1);
+          expect(f.executeDelete).toHaveBeenCalledTimes(stage === 'ensure' ? 0 : 1);
+          expect(f.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+          expect(f.activeMute).not.toHaveBeenCalled();
+          expect(f.ruleEngine.detect).not.toHaveBeenCalled();
+        },
+      );
+
+      it('still awaits deferred action suppression after a revoked deletion', async () => {
+        const f = fixture();
+        const error = new Error('Deferred action suppression unavailable');
+        const revokeActions = jest.fn().mockRejectedValue(error);
+        Object.assign(f.service, { messageDuplicateService: { revokeActions } });
+        f.guard.authorize
+          .mockReset()
+          .mockResolvedValueOnce({ reasonKeys: ['REQUIRED_SUBSCRIPTION:message-delete'] })
+          .mockRejectedValue(new RequiredSubscriptionExecutionRejectedError());
+
+        await expect(f.service.handleUpdate(createUpdate())).rejects.toBe(error);
+        expect(revokeActions).toHaveBeenCalledTimes(1);
+        expect(f.ensureIntent).not.toHaveBeenCalled();
+        expect(f.executeDelete).not.toHaveBeenCalled();
+        expect(f.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+        expect(f.ruleEngine.detect).not.toHaveBeenCalled();
+      });
 
       it('keeps recovered deletion outside initial qualification', async () => {
         const f = fixture();

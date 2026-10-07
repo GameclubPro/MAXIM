@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { MaxActionJob } from '../max/max-client.service';
 import { Prisma } from '../prisma/prisma-client';
+import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
 import {
   createMultibotHarness,
   type MultibotHarness,
@@ -852,6 +853,163 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       for (const id of ids) await s.moderation.processWebhookEvent(id);
       expect(handler).toHaveBeenCalledTimes(1);
       expect(s.effects).toEqual([]);
+    },
+  );
+
+  it.each(['membership-restored', 'policy-disabled'] as const)(
+    'finishes canonical delivery when subscription %s after the notice handoff',
+    async (change) => {
+      const s = await fixture();
+      const [chatId, targetId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
+      await s.prisma.chatSettings.update({
+        where: { chatId: chatId! },
+        data: {
+          requiredSubscriptionEnabled: true,
+          requiredSubscriptionChannelIds: [targetId!],
+          requiredSubscriptionWarnEnabled: false,
+          requiredSubscriptionMuteEnabled: false,
+          requiredSubscriptionBanEnabled: false,
+          deleteBotMessagesEnabled: false,
+        },
+      });
+      let noticeDelivered = false;
+      jest.spyOn(s.membership, 'getMembershipResolution').mockImplementation(async () => ({
+        membership: change === 'membership-restored' && noticeDelivered,
+        fresh: true,
+      }));
+      const getMembers = s.max.getChatMembersAccess.bind(s.max);
+      jest.spyOn(s.max, 'getChatMembersAccess').mockImplementation(async (...args) => {
+        const members = await getMembers(...args);
+        // The transport guard reads target members independently of the lookup service.
+        if (args[0] === targetId && !(change === 'membership-restored' && noticeDelivered)) {
+          members.delete('fixture-user');
+        }
+        return members;
+      });
+      const sendMessage = s.max.sendMessage.bind(s.max);
+      jest.spyOn(s.max, 'sendMessage').mockImplementation(async (...args) => {
+        const result = await sendMessage(...args);
+        // Change current authority only after the real local MAX transport finishes.
+        // The coordinator must durably hand off its notice before the delete guard runs.
+        if (!noticeDelivered && args[0] === chatId) {
+          noticeDelivered = true;
+          if (change === 'policy-disabled') {
+            await s.prisma.chatSettings.update({
+              where: { chatId: chatId! },
+              data: { requiredSubscriptionEnabled: false },
+            });
+            await s.cache.invalidate(chatId!);
+          }
+        }
+        return result;
+      });
+      const messageId = `subscription-after-notice-${randomUUID()}`;
+      const snapshot = async () => ({
+        events: await s.prisma.moderationEvent.findMany({
+          where: { chatId, messageId },
+          orderBy: { id: 'asc' },
+        }),
+        claims: await s.prisma.moderationViolationMessageClaim.findMany({
+          where: { chatId, messageId, ruleCode: 'REQUIRED_SUBSCRIPTION' },
+          orderBy: { id: 'asc' },
+        }),
+        violations: await s.prisma.violation.findMany({
+          where: { chatId },
+          orderBy: { id: 'asc' },
+        }),
+        actions: await s.prisma.maxActionLedgerEntry.findMany({
+          where: { chatId },
+          orderBy: { id: 'asc' },
+        }),
+      });
+      let beforeRejection: Awaited<ReturnType<typeof snapshot>> | undefined;
+      const rejected: unknown[] = [];
+      const authorize = s.subscriptionGuard.authorize.bind(s.subscriptionGuard);
+      jest.spyOn(s.subscriptionGuard, 'authorize').mockImplementation(async (params) => {
+        if (noticeDelivered && params.messageId === messageId) {
+          beforeRejection = await snapshot();
+        }
+        try {
+          return await authorize(params);
+        } catch (error) {
+          rejected.push(error);
+          throw error;
+        }
+      });
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const activeMute = jest.spyOn(s.moderation as any, 'handleActiveMuteMessage');
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            text: 'Subscription authority changes after its notice',
+          }),
+        ),
+      );
+      await s.drain();
+      expect(noticeDelivered).toBe(true);
+      expect(rejected).toEqual([expect.any(RequiredSubscriptionExecutionRejectedError)]);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(activeMute).not.toHaveBeenCalled();
+      expect(s.failures).toEqual([]);
+      expect(s.effects).toEqual([expect.objectContaining({ method: 'post', path: '/messages' })]);
+      expect(beforeRejection?.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ ruleCode: 'REQUIRED_SUBSCRIPTION_NOTICE_PLAN' }),
+        ]),
+      );
+      expect(beforeRejection?.claims).toHaveLength(1);
+      expect(beforeRejection?.violations).toHaveLength(1);
+      expect(await snapshot()).toEqual(beforeRejection);
+      // Handling this feature also keeps duplicate authorization revoked for this source.
+      expect(
+        await s.prisma.moderationViolationMessageClaim.count({
+          where: { chatId, messageId, ruleCode: 'MESSAGE_DUPLICATE_AUTHORIZATION_REVOKED' },
+        }),
+      ).toBe(1);
+      expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId } })).toBe(0);
+      const receipts = await s.prisma.webhookEvent.findMany({ where: { id: { in: ids } } });
+      expect(receipts.map((row) => row.status).sort()).toEqual([
+        'DUPLICATE',
+        'DUPLICATE',
+        'DUPLICATE',
+        'PROCESSED',
+      ]);
+      const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { kind: 'EXECUTION', webhookEventId: { in: ids } },
+      });
+      expect(claim).toMatchObject({
+        status: 'COMPLETED',
+        enforced: true,
+        businessStartedAt: expect.any(Date),
+        completedAt: expect.any(Date),
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+        leaseToken: null,
+        leaseExpiresAt: null,
+      });
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(await snapshot()).toEqual(beforeRejection);
+      expect(s.effects).toHaveLength(1);
+      const nextId = await s.ingest({
+        chatId: chatId!,
+        messageId: `subscription-following-${randomUUID()}`,
+        botId: s.bots[0]!.id,
+        at: at + 1,
+        text: 'A later independent event in the same chat can progress',
+      });
+      await s.drain();
+      expect(
+        await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } }),
+      ).toMatchObject({
+        status: 'PROCESSED',
+      });
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(s.effects).toHaveLength(1);
     },
   );
 

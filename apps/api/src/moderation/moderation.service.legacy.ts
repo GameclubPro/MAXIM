@@ -10252,7 +10252,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           params.hotPathProfile,
           'required-subscription.delete-authority',
         );
-        await assertRequiredSubscriptionCurrent();
+        // FLAG: Prior notice handoff or coverage does not retain revoked delete authority.
+        // Only this pre-intent policy rejection ends deletion; later failures keep their fences.
+        try {
+          await assertRequiredSubscriptionCurrent();
+        } catch (error: unknown) {
+          if (error instanceof RequiredSubscriptionExecutionRejectedError) return;
+          throw error;
+        }
         await this.ensureModerationDeleteIntent(deleteIntent);
         await assertNoticeLeaseOwned();
         const deleteResult = await this.executeModerationDelete(deleteIntent);
@@ -10290,8 +10297,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         settleNoticePlan,
       }) => {
         await assertNoticeLeaseOwned();
-        // FLAG: Only the initial leader authorization may stop this feature normally.
-        // Return handled to prevent active-mute fallthrough; later guards retain failure fences.
+        // FLAG: Only initial leader authorization may treat unavailable source as handled.
+        // Return handled to prevent active-mute fallthrough; later source failures stay errors.
         this.markWebhookHotPathStage(
           params.hotPathProfile,
           'required-subscription.initial-authority',
