@@ -6,7 +6,11 @@ import {
 import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import type { MaxUpdate } from '@maxim/contracts';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
-import { WebhookLegacyHoldService, legacyOrderReleasedSql } from './webhook-legacy-hold.service';
+import {
+  WebhookLegacyHoldService,
+  legacyOrderReleasedSql,
+  legacyUpdateHeldSql,
+} from './webhook-legacy-hold.service';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 import { SanctionHistoryRetention } from '../moderation/sanction-history-retention';
@@ -41,6 +45,12 @@ import {
 import { WebhookRoutingService } from './webhook-routing.service';
 import { WebhookService } from './webhook.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { hasWebhookReplayFence } from './webhook-execution-deadline';
+import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
+import {
+  buildPublisherBotDescriptor,
+  isPublisherBotId,
+} from '../publisher/publisher-bot-descriptor';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 import { describeWebhookPreparationFailure } from './webhook-preparation-diagnostic';
 import {
@@ -66,6 +76,9 @@ const COMPLETED_TIMEOUT_REPAIR_INTERVAL_MS = 5_000;
 const COMPLETED_TIMEOUT_REPAIR_RAW_ROWS = 200;
 const FINISHED_HEAD_RECOVERY_BUDGET_MS = 250;
 const FINISHED_HEAD_RECOVERY_INTERVAL_MS = 1_000;
+const COMPLETED_HEAD_RECOVERY_BUDGET_MS = 250;
+const COMPLETED_HEAD_RECOVERY_INTERVAL_MS = 1_000;
+const COMPLETED_HEAD_RECOVERY_MAX_ROWS = 200;
 const SLOW_ENQUEUE_BATCH_MS = 1_000;
 const ENQUEUE_DISPATCH_BUDGET_MS = 1_000;
 const SLOW_ENQUEUE_BATCH_LOG_INTERVAL_MS = 30_000;
@@ -439,6 +452,7 @@ export class WebhookOutboxService
   private readonly batchSize: number;
   private readonly enqueueConcurrency: number;
   private readonly maxEnqueueAttempts: number;
+  private readonly publisherBotId: string;
   private readonly webhookCompletedRetentionEnabled: boolean;
   private readonly webhookFailedRetentionEnabled: boolean;
   private readonly webhookRetentionDays: number;
@@ -454,6 +468,9 @@ export class WebhookOutboxService
   private finishedHeadRecoveryOffset = 0;
   private finishedOwnerRecoveryOffset = 0;
   private nextFinishedHeadRecoveryAt = 0;
+  private completedHeadRecoveryOffset = 0;
+  private completedMirrorRecoveryOffset = 0;
+  private nextCompletedHeadRecoveryAt = 0;
   private poller: NodeJS.Timeout | null = null;
   private polling = false;
   private cleaner: NodeJS.Timeout | null = null;
@@ -501,6 +518,9 @@ export class WebhookOutboxService
     this.batchSize = this.configService.get<number>('ENQUEUE_BATCH_SIZE', 400);
     this.enqueueConcurrency = this.configService.get<number>('ENQUEUE_CONCURRENCY', 32);
     this.maxEnqueueAttempts = this.configService.get<number>('ENQUEUE_MAX_ATTEMPTS', 120);
+    this.publisherBotId = buildPublisherBotDescriptor({
+      id: this.configService.get<string>('MAX_PUBLISHER_BOT_ID'),
+    }).id;
     this.webhookCompletedRetentionEnabled = this.configService.get<boolean>(
       'WEBHOOK_COMPLETED_RETENTION_ENABLED',
       false,
@@ -1579,6 +1599,16 @@ export class WebhookOutboxService
     progress.workUnits = workUnits.length;
     const chatIds = workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : []));
     let orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
+    // FLAG: Completed mirrors need only exact SQL proof. Keep them outside shared
+    // preparation admission so saturated or unfinished preparation cannot strand a chat.
+    const completedMirrors = await this.recoverCompletedOrderedHeadMirrors(
+      orderedHeadsByChatId,
+      enqueueConcurrency,
+    );
+    if (completedMirrors > 0) {
+      progress.settled += completedMirrors;
+      orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
+    }
     // FLAG: The physical head may be an earlier mirror of a finished owner. Settle only
     // that owner's exact SQL checkpoint before ordering rejects the later receipt; never
     // invoke preparation, the moderation engine or a remote action from this recovery lane.
@@ -1703,6 +1733,215 @@ export class WebhookOutboxService
     progress.preparationSharedCapacityBlocked = sharedCapacityBlocked.size;
     progress.preparationScopeBlocked = scopeBlocked.size;
     return { ...progress };
+  }
+
+  private async recoverCompletedOrderedHeadMirrors(
+    heads: ReadonlyMap<string, OrderedWebhookHead>,
+    concurrency = this.enqueueConcurrency,
+  ): Promise<number> {
+    if (heads.size === 0 || !this.legacyHolds) return 0;
+    const startedAt = performance.now();
+    if (startedAt < (this.nextCompletedHeadRecoveryAt ?? 0)) return 0;
+    this.nextCompletedHeadRecoveryAt = startedAt + COMPLETED_HEAD_RECOVERY_INTERVAL_MS;
+    const deadline = startedAt + COMPLETED_HEAD_RECOVERY_BUDGET_MS;
+    // FLAG: A prior poll retains its same-chat authority until the operation really
+    // finishes. Settlement must never race that carried preparation or queue handoff.
+    const eligibleHeads = Array.from(heads)
+      .filter(([chatId]) => !this.activeEnqueueUnits.has(`chat:${chatId}`))
+      .map(([, head]) => head)
+      .sort((left, right) => this.compareCandidateSequence(left, right));
+    if (eligibleHeads.length === 0) return 0;
+    const take = Math.min(COMPLETED_HEAD_RECOVERY_MAX_ROWS, eligibleHeads.length);
+    const offset = this.completedHeadRecoveryOffset % eligibleHeads.length;
+    const selected = [...eligibleHeads.slice(offset), ...eligibleHeads.slice(0, offset)].slice(
+      0,
+      take,
+    );
+    this.completedHeadRecoveryOffset = (offset + take) % eligibleHeads.length;
+    let mirrors: Array<{ mirrorId: string }>;
+    try {
+      mirrors = await this.selectCompletedOrderedHeadMirrors(selected.map((head) => head.id));
+    } catch {
+      // FLAG: Unavailable proof leaves the existing ordering and replay fences intact.
+      return 0;
+    }
+    if (mirrors.length === 0) return 0;
+    mirrors.sort((left, right) => left.mirrorId.localeCompare(right.mirrorId));
+    const mirrorOffset = this.completedMirrorRecoveryOffset % mirrors.length;
+    const orderedMirrors = [...mirrors.slice(mirrorOffset), ...mirrors.slice(0, mirrorOffset)];
+    let next = 0;
+    let recovered = 0;
+    const workers = Array.from(
+      { length: Math.max(1, Math.min(concurrency, DEGRADED_ENQUEUE_CONCURRENCY, mirrors.length)) },
+      async () => {
+        while (next < orderedMirrors.length && performance.now() < deadline) {
+          const mirrorId = orderedMirrors[next++]!.mirrorId;
+          try {
+            const settled = await this.prisma.$transaction(
+              async (tx) => {
+                await tx.$executeRaw`SET LOCAL statement_timeout = '250ms'`;
+                const guarded = await tx.$queryRaw<Array<{ id: string }>>(
+                  this.completedOrderedHeadMirrorGuardQuery(mirrorId),
+                );
+                if (guarded.length !== 1) return false;
+                const mirror = await tx.webhookEvent.findUnique({ where: { id: mirrorId } });
+                if (
+                  !mirror ||
+                  hasWebhookReplayFence(mirror) ||
+                  !mirror.semanticKey ||
+                  buildWebhookSemanticEventKey(mirror.normalizedPayload) !== mirror.semanticKey ||
+                  buildWebhookReceiptSemanticKey(
+                    mirror.normalizedPayload as MaxUpdate,
+                    this.publisherBotId,
+                  ) !== mirror.semanticKey ||
+                  isPublisherBotId(mirror.botId, this.publisherBotId)
+                )
+                  return false;
+                // FLAG: Held receipts, including fresh command exceptions, stay on the
+                // established held-command path. Publisher observations are never authority
+                // for a moderation mirror, even if historical rows share its semantic key.
+                if (await this.legacyHolds!.isUpdateHeld(mirror.normalizedPayload as MaxUpdate, tx))
+                  return false;
+                const claim = await tx.webhookExecutionClaim.findUnique({
+                  where: {
+                    kind_semanticKey: { kind: 'EXECUTION', semanticKey: mirror.semanticKey },
+                  },
+                });
+                if (
+                  !claim?.enforced ||
+                  !claim.executionBotId ||
+                  isPublisherBotId(claim.executionBotId, this.publisherBotId)
+                )
+                  return false;
+                if (claim.webhookEventId !== null) {
+                  const owner = await tx.webhookEvent.findUnique({
+                    where: { id: claim.webhookEventId },
+                  });
+                  if (
+                    !owner ||
+                    owner.semanticKey !== mirror.semanticKey ||
+                    isPublisherBotId(owner.botId, this.publisherBotId) ||
+                    buildWebhookReceiptSemanticKey(
+                      owner.normalizedPayload as MaxUpdate,
+                      this.publisherBotId,
+                    ) !== mirror.semanticKey
+                  )
+                    return false;
+                }
+                const result =
+                  await WebhookCanonicalExecutionService.trySettleCompletedShadowMirrorWithClient(
+                    tx as unknown as Parameters<
+                      typeof WebhookCanonicalExecutionService.trySettleCompletedShadowMirrorWithClient
+                    >[0],
+                    {
+                      webhookEvent: mirror,
+                      update: mirror.normalizedPayload,
+                      businessLeaseToken: null,
+                    },
+                    {
+                      id: mirror.id,
+                      status: WebhookStatus.RECEIVED,
+                      semanticKey: mirror.semanticKey,
+                      legacyDispositionId: null,
+                      sourceDispositionId: null,
+                      enqueueAttempts: 0,
+                      queueName: null,
+                      queuedAt: null,
+                      processedAt: null,
+                      errorMessage: mirror.errorMessage,
+                      nextEnqueueAt: mirror.nextEnqueueAt,
+                      timeoutQuarantineExpiresAt: null,
+                    },
+                  );
+                return result === 'settled';
+              },
+              // FLAG: Namespace/hold checks and the existing proof helper must see one
+              // snapshot; concurrent authority changes abort instead of weakening a gate.
+              {
+                maxWait: 250,
+                timeout: 500,
+                isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+              },
+            );
+            if (settled) recovered += 1;
+          } catch {
+            // FLAG: A lost CAS or unavailable proof rolls back this mirror only. No
+            // preparation, claim creation, expiry or remote effects belong in this lane.
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+    this.completedMirrorRecoveryOffset = (mirrorOffset + next) % mirrors.length;
+    return recovered;
+  }
+
+  private async selectCompletedOrderedHeadMirrors(
+    headIds: readonly string[],
+  ): Promise<Array<{ mirrorId: string }>> {
+    if (headIds.length === 0) return [];
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET LOCAL statement_timeout = '250ms'`;
+        return tx.$queryRaw<Array<{ mirrorId: string }>>(
+          this.completedOrderedHeadMirrorsQuery(headIds),
+        );
+      },
+      { maxWait: 250, timeout: 500 },
+    );
+  }
+
+  private completedOrderedHeadMirrorsQuery(headIds: readonly string[]): Prisma.Sql {
+    const requested = Prisma.join(headIds.map((id) => Prisma.sql`(${id})`));
+    // FLAG: Bound discovery by supplied physical heads: one primary-key receipt and
+    // one unique EXECUTION probe each, never a scan of retained completed claims.
+    return Prisma.sql`
+      /* completed_ordered_head_mirrors */
+      WITH requested_heads("id") AS (VALUES ${requested})
+      SELECT head."id" AS "mirrorId"
+      FROM requested_heads
+      CROSS JOIN LATERAL (
+        SELECT "id", "semantic_key", "status", "enqueue_attempts", "queue_name", "queued_at",
+          "processed_at", "timeout_quarantine_expires_at", "legacy_disposition_id", "source_disposition_id"
+        FROM "webhook_events" WHERE "id" = requested_heads."id"
+        OFFSET 0
+      ) head
+      CROSS JOIN LATERAL (
+        SELECT "webhook_event_id", "status", "enforced", "prepared_at", "completed_at",
+          "lease_token", "lease_expires_at" FROM "webhook_execution_claims"
+        WHERE "kind" = 'EXECUTION' AND "semantic_key" = head."semantic_key"
+        OFFSET 0
+      ) proof
+      WHERE head."semantic_key" IS NOT NULL AND head."status" = 'RECEIVED'::"WebhookStatus"
+        AND head."enqueue_attempts" = 0 AND head."queue_name" IS NULL AND head."queued_at" IS NULL
+        AND head."processed_at" IS NULL AND head."timeout_quarantine_expires_at" IS NULL
+        AND head."legacy_disposition_id" IS NULL AND head."source_disposition_id" IS NULL
+        AND proof."status" = 'COMPLETED'::"WebhookExecutionClaimStatus" AND proof."enforced"
+        AND proof."webhook_event_id" IS DISTINCT FROM head."id"
+        AND proof."prepared_at" IS NOT NULL AND proof."completed_at" IS NOT NULL
+        AND proof."lease_token" IS NULL AND proof."lease_expires_at" IS NULL
+    `;
+  }
+
+  private completedOrderedHeadMirrorGuardQuery(mirrorId: string): Prisma.Sql {
+    // FLAG: Recheck permanent holds only after the exact PK bounds the receipt.
+    // Keep its row locked through the existing owner/claim/mirror CAS transaction.
+    return Prisma.sql`
+      /* completed_ordered_head_mirror_guard */
+      WITH locked_mirror AS MATERIALIZED (
+        SELECT "id", "semantic_key", "normalized_payload", "status", "enqueue_attempts",
+          "queue_name", "queued_at", "processed_at", "timeout_quarantine_expires_at",
+          "legacy_disposition_id", "source_disposition_id"
+        FROM "webhook_events" WHERE "id" = ${mirrorId}
+        FOR UPDATE SKIP LOCKED
+      )
+      SELECT "id" FROM locked_mirror mirror
+      WHERE "status" = 'RECEIVED'::"WebhookStatus"
+        AND "enqueue_attempts" = 0 AND "queue_name" IS NULL AND "queued_at" IS NULL
+        AND "processed_at" IS NULL AND "timeout_quarantine_expires_at" IS NULL
+        AND "legacy_disposition_id" IS NULL AND "source_disposition_id" IS NULL
+        AND NOT ${legacyUpdateHeldSql('mirror')}
+    `;
   }
 
   private async recoverFinishedOrderedHeads(

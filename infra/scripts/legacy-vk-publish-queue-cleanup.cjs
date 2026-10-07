@@ -12,6 +12,7 @@ const ORPHAN_LIMITS = Object.freeze({
   keys: 10_000,
   keyBytes: 4 * 1024 * 1024,
   hashBytes: 32 * 1024 * 1024,
+  measurementBytes: 16 * 1024 * 1024,
   passMs: 15_000,
   callMs: 50,
   batch: 32,
@@ -41,22 +42,36 @@ const EMPTY_QUEUE_SUFFIXES = Object.freeze([
 ]);
 
 // FLAG: SCAN must reach cursor zero over the entire keyspace. COUNT is only a work
-// hint; both returned bytes and actual Redis script time are bounded independently.
+// hint; returned bytes and commandstats execution time are bounded independently.
+// Redis 7.2+ freezes TIME inside scripts, so its delta is not elapsed-time proof.
+// Four COUNT steps share one measured read; aggregate reply caps remain unchanged.
+// Every underlying cursor is returned for complete page accounting and cycle checks.
 const ORPHAN_SCAN_LUA = `-- legacy-vk-orphan:scan
 local began = redis.call('TIME')
 if redis.call('DBSIZE') > 12000000 then return {'database_budget'} end
-local page = redis.call('SCAN', ARGV[1], 'MATCH', 'bull:vk-parsing-publish:*', 'COUNT', 4096)
-if #page[2] > 512 then return {'page_key_budget'} end
+local limit = tonumber(ARGV[2])
+if limit ~= 1 and limit ~= 2 and limit ~= 3 and limit ~= 4 then return {'page_budget'} end
+local cursor = ARGV[1]
+local keys = {}
+local cursors = {}
 local bytes = 0
-for _, key in ipairs(page[2]) do
-  if #key > 1024 then return {'key_budget'} end
-  bytes = bytes + #key
+for _ = 1, limit do
+  local page = redis.call('SCAN', cursor, 'MATCH', 'bull:vk-parsing-publish:*', 'COUNT', 4096)
+  for _, key in ipairs(page[2]) do
+    if #key > 1024 then return {'key_budget'} end
+    bytes = bytes + #key
+    if #keys >= 512 then return {'page_key_budget'} end
+    if bytes > 131072 then return {'page_byte_budget'} end
+    table.insert(keys, key)
+  end
+  cursor = page[1]
+  table.insert(cursors, cursor)
+  if cursor == '0' then break end
 end
-if bytes > 131072 then return {'page_byte_budget'} end
 local ended = redis.call('TIME')
 local micros = (tonumber(ended[1])-tonumber(began[1]))*1000000 + tonumber(ended[2])-tonumber(began[2])
 if micros > 50000 then return {'call_budget'} end
-return {'ok', page[1], page[2], micros}
+return {'ok', cursor, keys, micros, cursors}
 `;
 
 // FLAG: Only the exact initial hash emitted by the retired producer is eligible.
@@ -131,6 +146,9 @@ if micros > 50000 then return {'call_budget'} end
 return {'ok', rows, micros}
 `;
 const ORPHAN_DELETE_LUA = `-- legacy-vk-orphan:delete
+-- FLAG: Redis 7.2+ freezes TIME during this script. The entry deadline is real;
+-- the trailing check is not a hard elapsed-time guarantee. Fixed 32-key/byte
+-- bounds and exact byte CAS remain the mutation work boundary.
 local began = redis.call('TIME')
 local deadline = tonumber(ARGV[1])
 local currentMs = tonumber(began[1])*1000 + math.floor(tonumber(began[2])/1000)
@@ -166,18 +184,36 @@ function validateOrphanBinding(binding) {
 }
 async function collectLegacyVkPublishOrphans(queue) {
   const client = await queue.client;
-  if (typeof client?.eval_ro !== 'function')
+  if (typeof client?.multi !== 'function')
     throw new QueueCleanupPreconditionError('redis_readonly_required');
   const started = Date.now();
-  const cost = { pages: 0, workHints: 0, keys: 0, keyBytes: 0, hashBytes: 0, calls: 0 };
+  const cost = {
+    pages: 0,
+    workHints: 0,
+    keys: 0,
+    keyBytes: 0,
+    hashBytes: 0,
+    measurementBytes: 0,
+    calls: 0,
+  };
   const keys = new Set();
   const invoke = async (script, keyCount, ...args) => {
+    // FLAG: Cooperative pacing is outside measured server work but consumes the
+    // unchanged total pass deadline. INFO metadata has its own finite byte cap.
+    if (cost.calls) await new Promise((resolve) => setTimeout(resolve, 1));
+    if (cost.measurementBytes + 2 * 64 * 1024 > ORPHAN_LIMITS.measurementBytes)
+      throw new QueueCleanupPreconditionError('namespace_measurement_budget');
     if (Date.now() - started >= ORPHAN_LIMITS.passMs)
       throw new QueueCleanupPreconditionError('namespace_time_budget');
-    const before = Date.now();
-    const result = await client.eval_ro(script, keyCount, ...args);
+    const { reply: result, measurementBytes } = await readMeasuredOrphanScript(
+      client,
+      script,
+      keyCount,
+      ...args,
+    );
+    cost.measurementBytes += measurementBytes;
     cost.calls += 1;
-    if (Date.now() - before > ORPHAN_LIMITS.callMs || Date.now() - started >= ORPHAN_LIMITS.passMs)
+    if (Date.now() - started >= ORPHAN_LIMITS.passMs)
       throw new QueueCleanupPreconditionError('namespace_time_budget');
     if (
       Array.isArray(result) &&
@@ -197,12 +233,15 @@ async function collectLegacyVkPublishOrphans(queue) {
     return result;
   };
   let cursor = '0';
+  const cursors = new Set();
   do {
-    cost.pages += 1;
-    cost.workHints += ORPHAN_LIMITS.scanCount;
-    if (cost.pages > ORPHAN_LIMITS.scanPages || cost.workHints > ORPHAN_LIMITS.workHints)
-      throw new QueueCleanupPreconditionError('namespace_scan_budget');
-    const page = await invoke(ORPHAN_SCAN_LUA, 0, cursor);
+    const pageAllowance = Math.min(
+      4,
+      ORPHAN_LIMITS.scanPages - cost.pages,
+      Math.floor((ORPHAN_LIMITS.workHints - cost.workHints) / ORPHAN_LIMITS.scanCount),
+    );
+    if (pageAllowance < 1) throw new QueueCleanupPreconditionError('namespace_scan_budget');
+    const page = await invoke(ORPHAN_SCAN_LUA, 0, cursor, String(pageAllowance));
     if (
       typeof page[1] !== 'string' ||
       !/^[0-9]+$/u.test(page[1]) ||
@@ -210,9 +249,28 @@ async function collectLegacyVkPublishOrphans(queue) {
       page[2].length > 512 ||
       !Number.isSafeInteger(page[3]) ||
       page[3] < 0 ||
-      page[3] > 50_000
+      page[3] > 50_000 ||
+      page.length !== 5 ||
+      !Array.isArray(page[4]) ||
+      page[4].length < 1 ||
+      page[4].length > pageAllowance ||
+      (page[1] !== '0' && page[4].length !== pageAllowance) ||
+      page[4].at(-1) !== page[1] ||
+      page[4].some(
+        (value, index) =>
+          typeof value !== 'string' ||
+          !/^[0-9]{1,20}$/u.test(value) ||
+          (value === '0' && index !== page[4].length - 1),
+      )
     )
       throw new QueueCleanupPreconditionError('namespace_page_unproved');
+    for (const next of page[4]) {
+      if (next !== '0' && cursors.has(next))
+        throw new QueueCleanupPreconditionError('namespace_cursor_repeat');
+      cursors.add(next);
+    }
+    cost.pages += page[4].length;
+    cost.workHints += page[4].length * ORPHAN_LIMITS.scanCount;
     cursor = page[1];
     for (const key of page[2]) {
       if (
@@ -272,6 +330,81 @@ async function collectLegacyVkPublishOrphans(queue) {
     }
   }
   return { rows, cost };
+}
+
+function parseOrphanCommandstats(value) {
+  const fail = () => {
+    throw new QueueCleanupPreconditionError('namespace_server_cost_unproved');
+  };
+  if (
+    typeof value !== 'string' ||
+    Buffer.byteLength(value) > 64 * 1024 ||
+    !value.startsWith('# Commandstats\r\n')
+  )
+    return fail();
+  const lines = value.split('\r\n');
+  if (
+    lines.length > 512 ||
+    lines.at(-1) !== '' ||
+    lines
+      .slice(1, -1)
+      .some(
+        (line) =>
+          line !== '' &&
+          !/^cmdstat_[^:\s]{1,128}:calls=\d{1,20},usec=\d{1,20},usec_per_call=\d+(?:\.\d+)?,rejected_calls=\d{1,20},failed_calls=\d{1,20}$/u.test(
+            line,
+          ),
+      )
+  )
+    return fail();
+  const matching = lines.filter((line) => line.startsWith('cmdstat_eval_ro:'));
+  if (matching.length > 1) return fail();
+  if (!matching.length) return { calls: 0, usec: 0, rejected: 0, failed: 0 };
+  const match =
+    /^cmdstat_eval_ro:calls=(\d{1,16}),usec=(\d{1,16}),usec_per_call=\d+(?:\.\d+)?,rejected_calls=(\d{1,16}),failed_calls=(\d{1,16})$/u.exec(
+      matching[0],
+    );
+  if (!match) return fail();
+  const values = match.slice(1).map(Number);
+  if (values.some((n) => !Number.isSafeInteger(n) || n < 0)) return fail();
+  const [calls, usec, rejected, failed] = values;
+  return { calls, usec, rejected, failed };
+}
+
+async function readMeasuredOrphanScript(client, script, keyCount, ...args) {
+  // FLAG: This atomic transaction contains only INFO and EVAL_RO. Atomicity keeps
+  // another client's CONFIG RESETSTAT or scripts out of the measurement bracket.
+  // Commandstats measures execution after the script, unlike frozen Lua TIME or
+  // client scheduling/network delay. An exact one-call increment is mandatory.
+  const result = await client
+    .multi()
+    .info('commandstats')
+    .eval_ro(script, keyCount, ...args)
+    .info('commandstats')
+    .exec();
+  if (
+    !Array.isArray(result) ||
+    result.length !== 3 ||
+    result.some((row) => !Array.isArray(row) || row.length !== 2 || row[0] !== null)
+  )
+    throw new QueueCleanupPreconditionError('namespace_server_cost_unproved');
+  const before = parseOrphanCommandstats(result[0][1]);
+  const after = parseOrphanCommandstats(result[2][1]);
+  if (
+    after.calls - before.calls !== 1 ||
+    after.usec < before.usec ||
+    after.failed !== before.failed ||
+    after.rejected !== before.rejected
+  )
+    throw new QueueCleanupPreconditionError('namespace_server_cost_unproved');
+  const serverDurationUs = after.usec - before.usec;
+  if (serverDurationUs > ORPHAN_LIMITS.callMs * 1000)
+    throw new QueueCleanupPreconditionError('namespace_call_budget');
+  return {
+    reply: result[1][1],
+    serverDurationUs,
+    measurementBytes: Buffer.byteLength(result[0][1]) + Buffer.byteLength(result[2][1]),
+  };
 }
 
 async function cleanupLegacyVkPublishOrphans(
@@ -555,6 +688,8 @@ module.exports = {
   cleanupLegacyVkPublishQueue,
   inspectLegacyVkPublishQueue,
   collectLegacyVkPublishOrphans,
+  parseOrphanCommandstats,
+  readMeasuredOrphanScript,
   ORPHAN_LIMITS,
   ORPHAN_FIELDS,
   EMPTY_QUEUE_SUFFIXES,

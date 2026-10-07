@@ -50,7 +50,12 @@ Redis structural admission performs two independent complete `SCAN MATCH bull:*`
 censuses, each ending at cursor zero. Each pass caps database size at 12 million
 keys, uses advisory `COUNT 4096`, and caps pages at 4,096 and duration at 15 seconds
 inside the shared 30-second collection deadline. Structural census has separate
-byte/key/work limits from the unchanged effect inventory limits of 512 pages,
+4 MiB namespace-reply and 16 MiB INFO measurement-metadata budgets. Up to four
+underlying SCAN pages share one read, with unchanged aggregate reply caps and
+every cursor accounted for. Atomic read-only INFO/EVAL_RO/INFO transactions use
+commandstats to refuse admission above 50 ms of observed server execution;
+Redis 7.2+ Lua TIME is frozen. Structural census has separate byte/key/work limits
+from the unchanged effect inventory limits of 512 pages,
 50,000 probes and 8 MiB. It never substitutes a `:meta`-only scan, omits an unknown
 namespace or deletes queue history to make admission pass. An unknown retired
 namespace requires its own reviewed retirement procedure before a fresh admission.

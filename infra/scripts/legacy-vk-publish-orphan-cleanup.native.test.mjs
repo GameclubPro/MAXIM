@@ -7,6 +7,8 @@ const {
   cleanupLegacyVkPublishQueue,
   ORPHAN_READ_LUA,
   ORPHAN_DELETE_LUA,
+  readMeasuredOrphanScript,
+  collectLegacyVkPublishOrphans,
 } = require('./legacy-vk-publish-queue-cleanup.cjs');
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim();
 const binding = {
@@ -50,15 +52,19 @@ describe('native Redis exact retired VK orphan proof and byte CAS', { skip: !red
     await queue?.close();
   });
 
-  async function seed(index = 1) {
-    const postId = `fixture-post-${index}`;
-    const idempotencyKey = `fixture-key-${index}`;
+  async function seed(index = 1, widest = false) {
+    const postId = widest
+      ? `${'p'.repeat(510)}${String(index).padStart(2, '0')}`
+      : `fixture-post-${index}`;
+    const idempotencyKey = widest
+      ? 'i'.repeat(1024 - prefix.length - 'vk-parsing-publish__'.length - 2 - postId.length)
+      : `fixture-key-${index}`;
     const jobId = `vk-parsing-publish__${postId}__${idempotencyKey}`;
     const fields = {
       data: JSON.stringify({
         postId,
-        chatId: '-fixture-chat',
-        reason: 'autopublish',
+        chatId: widest ? `-${'c'.repeat(127)}` : '-fixture-chat',
+        reason: widest ? 'manual-schedule' : 'autopublish',
         idempotencyKey,
         retryPolicyName: 'vk-parsing-publish',
         createdAt: '2026-08-01T12:00:00.000Z',
@@ -85,8 +91,27 @@ describe('native Redis exact retired VK orphan proof and byte CAS', { skip: !red
     cleanupLegacyVkPublishQueue(handle, { apply: true, binding, reviewedDigest, ...extra });
   function intercept({ read, write } = {}) {
     const client = {
-      eval_ro: async (...args) =>
-        read ? read(args, () => redis.eval_ro(...args)) : redis.eval_ro(...args),
+      multi() {
+        const transaction = redis.multi();
+        let readArgs;
+        const originalRead = transaction.eval_ro.bind(transaction);
+        transaction.eval_ro = (...args) => {
+          readArgs = args;
+          return originalRead(...args);
+        };
+        const execute = transaction.exec.bind(transaction);
+        transaction.exec = async () => {
+          let result;
+          const run = async () => {
+            result = await execute();
+            return result[1][1];
+          };
+          const reply = read ? await read(readArgs, run) : await run();
+          result[1][1] = reply;
+          return result;
+        };
+        return transaction;
+      },
       eval: async (...args) =>
         write ? write(args, () => redis.eval(...args)) : redis.eval(...args),
     };
@@ -98,6 +123,49 @@ describe('native Redis exact retired VK orphan proof and byte CAS', { skip: !red
       },
     });
   }
+
+  test('atomic read cost uses commandstats even when Lua TIME is frozen and preserves data', async () => {
+    const row = await seed();
+    const script =
+      "local a=redis.call('TIME'); local n=0; for i=1,1000000 do n=n+i end; local b=redis.call('TIME'); return {(b[1]-a[1])*1000000+b[2]-a[2],n}";
+    const measured = await readMeasuredOrphanScript(redis, script, 0);
+    assert.ok(measured.serverDurationUs > 0);
+    assert.ok(measured.serverDurationUs <= 50_000);
+    const version = (await redis.info('server')).match(/^redis_version:7\.(\d+)/mu);
+    if (Number(version[1]) >= 2) assert.equal(measured.reply[0], 0);
+    assert.deepEqual(await redis.hgetall(row.key), row.fields);
+    assert.equal(await redis.dbsize(), 1);
+  });
+
+  test('paired SCAN stops on the first zero cursor without restarting the empty database', async () => {
+    const result = await collectLegacyVkPublishOrphans({ client: redis });
+    assert.deepEqual(
+      { ...result.cost, measurementBytes: 0 },
+      {
+        pages: 1,
+        workHints: 4096,
+        keys: 0,
+        keyBytes: 0,
+        hashBytes: 0,
+        measurementBytes: 0,
+        calls: 1,
+      },
+    );
+    assert.equal(await redis.dbsize(), 0);
+  });
+
+  test('maximum-width keys in a full 32-job batch retain exact CAS and outside data', async () => {
+    const rows = [];
+    for (let i = 0; i < 32; i++) rows.push(await seed(i, true));
+    assert.ok(rows.every((row) => Buffer.byteLength(row.key) === 1024));
+    await redis.set('unrelated:preserved', 'outside-bytes');
+    const result = await preview();
+    assert.equal(result.orphanCount, 32);
+    for (const row of rows) assert.deepEqual(await redis.hgetall(row.key), row.fields);
+    assert.equal((await apply(result.previewDigest)).removed, 32);
+    assert.equal(await redis.get('unrelated:preserved'), 'outside-bytes');
+    assert.equal(await redis.dbsize(), 1);
+  });
 
   test('preview finds orphan hashes beyond absent BullMQ state and removes only reviewed fixed keys', async () => {
     const rows = await Promise.all([seed(1), seed(2)]);

@@ -5,6 +5,8 @@ import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registr
 // COUNT is a work hint, not a hard bound on buckets visited by one Redis command.
 // Cardinality, page, reply, matched-key, wall-time and observed latency limits all
 // fail closed; they do not replace the independent owner/job/SQL proof budget.
+// Four COUNT steps share one measured read with the same aggregate reply limits;
+// the returned cursor trace charges every underlying page and detects cycles.
 export const SOURCE_ABANDONMENT_CATALOG_BUDGET = Object.freeze({
   databaseKeys: 12_000_000,
   scanCount: 4096,
@@ -12,6 +14,7 @@ export const SOURCE_ABANDONMENT_CATALOG_BUDGET = Object.freeze({
   matchedKeys: 300_000,
   keyBytes: 64 * 1024 * 1024,
   bytes: 4 * 1024 * 1024,
+  measurementBytes: 16 * 1024 * 1024,
   pageKeys: 8192,
   pageKeyBytes: 512 * 1024,
   pageReplyBytes: 16 * 1024,
@@ -21,21 +24,121 @@ export const SOURCE_ABANDONMENT_CATALOG_BUDGET = Object.freeze({
 });
 
 const budget = SOURCE_ABANDONMENT_CATALOG_BUDGET;
+type ReadOnlyCostTransaction = {
+  info(section: string): ReadOnlyCostTransaction;
+  eval_ro(script: string, keys: number, ...args: string[]): ReadOnlyCostTransaction;
+  exec(): Promise<unknown>;
+};
+export type SourceAbandonmentCatalogReader = {
+  eval_ro(script: string, keys: number, ...args: string[]): Promise<unknown>;
+  multi?(): ReadOnlyCostTransaction;
+};
+
+function parseCommandstats(value: unknown) {
+  const fail = (): never => {
+    throw new Error('CATALOG_SERVER_COST_UNPROVED');
+  };
+  if (
+    typeof value !== 'string' ||
+    Buffer.byteLength(value) > 64 * 1024 ||
+    !value.startsWith('# Commandstats\r\n')
+  )
+    return fail();
+  const lines = value.split('\r\n');
+  if (
+    lines.length > 512 ||
+    lines.at(-1) !== '' ||
+    lines
+      .slice(1, -1)
+      .some(
+        (line) =>
+          line !== '' &&
+          !/^cmdstat_[^:\s]{1,128}:calls=\d{1,20},usec=\d{1,20},usec_per_call=\d+(?:\.\d+)?,rejected_calls=\d{1,20},failed_calls=\d{1,20}$/u.test(
+            line,
+          ),
+      )
+  )
+    return fail();
+  const matching = lines.filter((line) => line.startsWith('cmdstat_eval_ro:'));
+  if (matching.length > 1) return fail();
+  if (!matching.length) return { calls: 0, usec: 0, rejected: 0, failed: 0 };
+  const match =
+    /^cmdstat_eval_ro:calls=(\d{1,16}),usec=(\d{1,16}),usec_per_call=\d+(?:\.\d+)?,rejected_calls=(\d{1,16}),failed_calls=(\d{1,16})$/u.exec(
+      matching[0],
+    );
+  if (!match) return fail();
+  const values = match.slice(1).map(Number);
+  if (values.some((n) => !Number.isSafeInteger(n) || n < 0)) return fail();
+  const [calls, usec, rejected, failed] = values;
+  return { calls, usec, rejected, failed };
+}
+
+export async function readMeasuredSourceCatalogScript(
+  redis: SourceAbandonmentCatalogReader,
+  script: string,
+  keys: number,
+  ...args: string[]
+): Promise<{ reply: unknown; serverDurationUs: number; measurementBytes: number }> {
+  if (typeof redis.multi !== 'function') throw new Error('CATALOG_SERVER_COST_UNPROVED');
+  // FLAG: MULTI/EXEC contains only INFO and EVAL_RO. It excludes interleaved
+  // scripts and CONFIG RESETSTAT, and commandstats must advance by exactly one.
+  // Redis 7.2+ freezes Lua TIME; client round-trip time includes unrelated delay.
+  const result = await redis
+    .multi()
+    .info('commandstats')
+    .eval_ro(script, keys, ...args)
+    .info('commandstats')
+    .exec();
+  if (
+    !Array.isArray(result) ||
+    result.length !== 3 ||
+    result.some((row: unknown) => !Array.isArray(row) || row.length !== 2 || row[0] !== null)
+  )
+    throw new Error('CATALOG_SERVER_COST_UNPROVED');
+  const before = parseCommandstats(result[0][1]);
+  const after = parseCommandstats(result[2][1]);
+  if (
+    after.calls - before.calls !== 1 ||
+    after.usec < before.usec ||
+    after.failed !== before.failed ||
+    after.rejected !== before.rejected
+  )
+    throw new Error('CATALOG_SERVER_COST_UNPROVED');
+  const serverDurationUs = after.usec - before.usec;
+  if (serverDurationUs > budget.callDurationUs) throw new Error('CATALOG_CALL_LATENCY_LIMIT');
+  return {
+    reply: result[1][1] as unknown,
+    serverDurationUs,
+    measurementBytes:
+      Buffer.byteLength(result[0][1] as string) + Buffer.byteLength(result[2][1] as string),
+  };
+}
+
 export const SOURCE_ABANDONMENT_NAMESPACE_CATALOG_SCRIPT = `-- source-abandonment:namespace-catalog-v2
 local started = redis.call('TIME')
 local size = redis.call('DBSIZE')
 if size > ${budget.databaseKeys} then return {0, 'CATALOG_DATABASE_LIMIT'} end
-local result = redis.call('SCAN', ARGV[1], 'MATCH', 'bull:*', 'COUNT', ${budget.scanCount})
-if #result[2] > ${budget.pageKeys} then return {0, 'CATALOG_PAGE_LIMIT'} end
+local limit = tonumber(ARGV[2])
+if limit ~= 1 and limit ~= 2 and limit ~= 3 and limit ~= 4 then return {0, 'CATALOG_PAGE_LIMIT'} end
+local cursor = ARGV[1]
+local cursors = {}
+local matched = 0
 local allowed = {${LEGACY_RECOVERY_LIVE_QUEUE_NAMES.map((name) => `['${name}']=true`).join(',')}}
 local counts = {}
 local bytes = 0
-for _, key in ipairs(result[2]) do
-  bytes = bytes + string.len(key)
-  if string.len(key) > 1024 or bytes > ${budget.pageKeyBytes} then return {0, 'CATALOG_PAGE_LIMIT'} end
-  local name, suffix = string.match(key, '^bull:([^:]+):(.+)$')
-  if not name or not suffix or not allowed[name] then return {0, 'UNKNOWN_QUEUE_NAMESPACE'} end
-  counts[name] = (counts[name] or 0) + 1
+for _ = 1, limit do
+  local result = redis.call('SCAN', cursor, 'MATCH', 'bull:*', 'COUNT', ${budget.scanCount})
+  for _, key in ipairs(result[2]) do
+    matched = matched + 1
+    bytes = bytes + string.len(key)
+    if matched > ${budget.pageKeys} or string.len(key) > 1024 or bytes > ${budget.pageKeyBytes} then return {0, 'CATALOG_PAGE_LIMIT'} end
+    local name, suffix = string.match(key, '^bull:([^:]+):(.+)$')
+    if not name or not suffix or not allowed[name] then return {0, 'UNKNOWN_QUEUE_NAMESPACE'} end
+    counts[name] = (counts[name] or 0) + 1
+  end
+  cursor = result[1]
+  table.insert(cursors, cursor)
+  if cursor == '0' then break end
 end
 local rows = {}
 for name, count in pairs(counts) do table.insert(rows, {name, count}) end
@@ -44,7 +147,7 @@ if size > ${budget.databaseKeys} then return {0, 'CATALOG_DATABASE_LIMIT'} end
 local ended = redis.call('TIME')
 local elapsed = (ended[1] - started[1]) * 1000000 + ended[2] - started[2]
 if elapsed < 0 or elapsed > ${budget.callDurationUs} then return {0, 'CATALOG_CALL_LATENCY_LIMIT'} end
-return {1, size, result[1], #result[2], bytes, elapsed, rows}
+return {1, size, cursor, matched, bytes, elapsed, rows, cursors}
 `;
 
 export type SourceAbandonmentCatalogProof = Readonly<{
@@ -57,6 +160,7 @@ export type SourceAbandonmentCatalogProof = Readonly<{
     matchedKeys: number;
     keyBytes: number;
     bytes: number;
+    measurementBytes: number;
     databaseKeysMax: number;
     serverDurationUs: number;
     maxCallDurationUs: number;
@@ -105,7 +209,7 @@ export function assertSourceAbandonmentCatalogProofs(
     const cost = proof.cost;
     if (
       Object.keys(cost).sort().join(',') !==
-        'bytes,databaseKeysMax,durationMs,keyBytes,matchedKeys,maxCallDurationUs,pages,scanCountHints,serverDurationUs' ||
+        'bytes,databaseKeysMax,durationMs,keyBytes,matchedKeys,maxCallDurationUs,measurementBytes,pages,scanCountHints,serverDurationUs' ||
       Object.values(cost).some((n) => !integer(n))
     )
       return reject();
@@ -120,6 +224,8 @@ export function assertSourceAbandonmentCatalogProofs(
       n.keyBytes > budget.keyBytes ||
       (n.keyBytes === 0) !== (n.matchedKeys === 0) ||
       n.bytes > budget.bytes ||
+      n.measurementBytes < 1 ||
+      n.measurementBytes > budget.measurementBytes ||
       n.bytes > n.pages * budget.pageReplyBytes ||
       n.durationMs > budget.durationMs ||
       n.maxCallDurationUs > budget.callDurationUs ||
@@ -133,7 +239,7 @@ export function assertSourceAbandonmentCatalogProofs(
 }
 
 export async function inventorySourceAbandonmentNamespaces(
-  redis: { eval_ro(script: string, keys: number, ...args: string[]): Promise<unknown> },
+  redis: SourceAbandonmentCatalogReader,
   sharedDeadlineAtMs: number,
 ): Promise<SourceAbandonmentCatalogProof> {
   const startedAt = Date.now();
@@ -146,6 +252,7 @@ export async function inventorySourceAbandonmentNamespaces(
     matchedKeys: 0,
     keyBytes: 0,
     bytes: 0,
+    measurementBytes: 0,
     databaseKeysMax: 0,
     serverDurationUs: 0,
     maxCallDurationUs: 0,
@@ -164,11 +271,23 @@ export async function inventorySourceAbandonmentNamespaces(
         cost.bytes + budget.pageReplyBytes > budget.bytes
       )
         throw new Error('CATALOG_BUDGET_EXCEEDED');
+      // FLAG: Namespace artifact bytes and INFO measurement bytes are separate
+      // bounded replies; reserve the maximum metadata pair before dispatch.
+      if (cost.measurementBytes + 2 * 64 * 1024 > budget.measurementBytes)
+        throw new Error('CATALOG_MEASUREMENT_BUDGET');
+      const pageAllowance = Math.min(4, budget.pages - cost.pages);
       let timer: ReturnType<typeof setTimeout> | undefined;
       let reply: unknown;
+      let serverDurationUs: number;
       try {
-        reply = await Promise.race([
-          redis.eval_ro(SOURCE_ABANDONMENT_NAMESPACE_CATALOG_SCRIPT, 0, cursor),
+        const measured = await Promise.race([
+          readMeasuredSourceCatalogScript(
+            redis,
+            SOURCE_ABANDONMENT_NAMESPACE_CATALOG_SCRIPT,
+            0,
+            cursor,
+            String(pageAllowance),
+          ),
           new Promise<never>((_, reject) => {
             timer = setTimeout(
               () => reject(new Error('CATALOG_DEADLINE_EXCEEDED')),
@@ -176,18 +295,19 @@ export async function inventorySourceAbandonmentNamespaces(
             );
           }),
         ]);
+        reply = measured.reply;
+        serverDurationUs = measured.serverDurationUs;
+        cost.measurementBytes += measured.measurementBytes;
       } finally {
         if (timer) clearTimeout(timer);
       }
-      cost.pages++;
-      cost.scanCountHints += budget.scanCount;
       const bytes = Buffer.byteLength(JSON.stringify(reply));
       cost.bytes += bytes;
       if (bytes > budget.pageReplyBytes || !Array.isArray(reply))
         throw new Error('CATALOG_REPLY_UNPROVED');
       if (reply[0] === 0 && refusalCodes.has(reply[1])) throw new Error(reply[1]);
       if (
-        reply.length !== 7 ||
+        reply.length !== 8 ||
         reply[0] !== 1 ||
         !integer(reply[1]) ||
         reply[1] > budget.databaseKeys ||
@@ -200,14 +320,27 @@ export async function inventorySourceAbandonmentNamespaces(
         !integer(reply[5]) ||
         reply[5] > budget.callDurationUs ||
         !Array.isArray(reply[6]) ||
-        reply[6].length > known.size
+        reply[6].length > known.size ||
+        !Array.isArray(reply[7]) ||
+        reply[7].length < 1 ||
+        reply[7].length > pageAllowance ||
+        (reply[2] !== '0' && reply[7].length !== pageAllowance) ||
+        reply[7].at(-1) !== reply[2] ||
+        reply[7].some(
+          (value: unknown, index: number) =>
+            typeof value !== 'string' ||
+            !/^[0-9]{1,20}$/u.test(value) ||
+            (value === '0' && index !== reply[7].length - 1),
+        )
       )
         throw new Error('CATALOG_REPLY_UNPROVED');
+      cost.pages += reply[7].length;
+      cost.scanCountHints += reply[7].length * budget.scanCount;
       cost.databaseKeysMax = Math.max(cost.databaseKeysMax, reply[1]);
       cost.matchedKeys += reply[3];
       cost.keyBytes += reply[4];
-      cost.serverDurationUs += reply[5];
-      cost.maxCallDurationUs = Math.max(cost.maxCallDurationUs, reply[5]);
+      cost.serverDurationUs += serverDurationUs;
+      cost.maxCallDurationUs = Math.max(cost.maxCallDurationUs, serverDurationUs);
       let matched = 0;
       const pageNames = new Set<string>();
       for (const row of reply[6]) {
@@ -227,8 +360,10 @@ export async function inventorySourceAbandonmentNamespaces(
       }
       if (matched !== reply[3]) throw new Error('CATALOG_ACCOUNTING_UNPROVED');
       cursor = reply[2];
-      if (cursor !== '0' && cursors.has(cursor)) throw new Error('CATALOG_CURSOR_REPEAT');
-      cursors.add(cursor);
+      for (const next of reply[7] as string[]) {
+        if (next !== '0' && cursors.has(next)) throw new Error('CATALOG_CURSOR_REPEAT');
+        cursors.add(next);
+      }
       if (Date.now() >= deadlineAt) throw new Error('CATALOG_DEADLINE_EXCEEDED');
       complete = cursor === '0';
       if (!complete) await new Promise((resolve) => setTimeout(resolve, budget.pagePauseMs));

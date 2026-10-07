@@ -11,7 +11,7 @@ const native = url ? describe : describe.skip;
 jest.setTimeout(60_000);
 
 // FLAG: Only this fixture's initially empty localhost Redis DB may be mutated.
-// Production readers receive EVAL_RO only; no Queue/Worker instance is passed in.
+// Production readers receive EVAL_RO and read-only cost transactions, no Queue/Worker.
 native('modern full namespace census on Redis 7', () => {
   let redis: Redis;
   let fixtureUrl: string;
@@ -35,6 +35,7 @@ native('modern full namespace census on Redis 7', () => {
   afterAll(() => redis?.disconnect());
 
   const reader = () => ({
+    multi: () => redis.multi(),
     eval_ro: jest.fn((script: string, keys: number, ...args: string[]) =>
       redis.eval_ro(script, keys, ...args),
     ),
@@ -52,6 +53,15 @@ native('modern full namespace census on Redis 7', () => {
     digest: 'f'.repeat(64),
     plans: [],
     cost: { pages: 0, rows: 0, probes: 0, bytes: 0 },
+  });
+
+  it('stops a paired scan on its first zero cursor and counts only that underlying page', async () => {
+    expect(await inventorySourceAbandonmentNamespaces(reader(), deadline())).toMatchObject({
+      complete: true,
+      issue: null,
+      cost: { pages: 1, scanCountHints: 4096, matchedKeys: 0 },
+    });
+    expect(await redis.dbsize()).toBe(0);
   });
 
   it('scans a sparse keyspace completely twice while retaining terminal history', async () => {
@@ -77,6 +87,8 @@ native('modern full namespace census on Redis 7', () => {
     expect(second.namespaceKeyCounts).toEqual(first.namespaceKeyCounts);
     expect(second.complete).toBe(true);
     expect(first.cost.pages).toBeGreaterThan(1);
+    expect(first.cost.serverDurationUs).toBeGreaterThan(0);
+    expect(first.cost.maxCallDurationUs).toBeGreaterThan(0);
     expect(first.cost.bytes).toBeLessThan(16 * 1024);
     expect(await redis.dbsize()).toBe(before);
     expect(await redis.hstrlen('bull:photo-duplicates:retained-hash', 'data')).toBe(128 * 1024);

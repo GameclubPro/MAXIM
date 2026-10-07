@@ -562,6 +562,7 @@ function createService(params?: {
     $queryRaw: jest.fn().mockImplementation(async (query: SqlQuery) => {
       const values = query.values ?? [];
       if (extractSql(query).includes('finished_ordered_head_proofs')) return [];
+      if (extractSql(query).includes('completed_ordered_head_mirrors')) return [];
       if (extractSql(query).includes('AS "commandId"')) return [];
       if (extractSql(query).includes('AS "scanned"'))
         return [{ removed: 0, scanned: 0, lastId: null, lastCreatedAt: null }];
@@ -1035,6 +1036,146 @@ function createCompletedSemanticOwnerFixture(options?: {
 }
 
 describe('WebhookOutboxService', () => {
+  type CompletedHeadInternals = {
+    recoverCompletedOrderedHeadMirrors: (
+      heads: ReadonlyMap<string, { id: string; createdAt: Date }>,
+      concurrency?: number,
+    ) => Promise<number>;
+    selectCompletedOrderedHeadMirrors: (
+      ids: readonly string[],
+    ) => Promise<Array<{ mirrorId: string }>>;
+    activeEnqueueUnits: Map<string, Promise<void>>;
+  };
+
+  function completedHeadFixture(options?: { casLoss?: SemanticMirrorCasLoss }) {
+    const fixture = createCompletedSemanticOwnerFixture(options);
+    const { mirror, owner, ownerClaim, prisma, service } = fixture;
+    const holds = { isUpdateHeld: jest.fn().mockResolvedValue(false) };
+    Object.assign(service, { legacyHolds: holds });
+    Object.assign(mirror, {
+      status: WebhookStatus.RECEIVED,
+      queueName: null,
+      queuedAt: null,
+      enqueueAttempts: 0,
+      errorMessage: null,
+      semanticKey: ownerClaim.semanticKey,
+      legacyDispositionId: null,
+      sourceDispositionId: null,
+    });
+    Object.assign(owner, { semanticKey: ownerClaim.semanticKey });
+    ownerClaim.enforced = true;
+    const originalQuery = prisma.$queryRaw.getMockImplementation()!;
+    prisma.$queryRaw.mockImplementation(async (query) => {
+      if (extractSql(query).includes('completed_ordered_head_mirrors'))
+        return [{ mirrorId: mirror.id }];
+      if (extractSql(query).includes('completed_ordered_head_mirror_guard'))
+        return [{ id: mirror.id }];
+      return originalQuery(query);
+    });
+    const heads = new Map([['chat-completed-semantic-owner', mirror]]);
+    const internals = service as unknown as CompletedHeadInternals;
+    return { ...fixture, holds, heads, internals };
+  }
+
+  it('settles a completed physical mirror before saturated shared preparation admission', async () => {
+    const f = completedHeadFixture();
+    f.webhookService.webhookPreparationSchedulingState.mockReturnValue('shared_capacity');
+    await (f.service as unknown as { enqueueBatch(): Promise<void> }).enqueueBatch();
+    expect(f.mirror).toMatchObject({
+      status: WebhookStatus.DUPLICATE,
+      processedAt: f.ownerCompletedAt,
+      enqueueAttempts: 0,
+    });
+    expect(f.holds.isUpdateHeld).toHaveBeenCalledWith(f.mirror.normalizedPayload, f.prisma);
+    expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+    expect(Object.values(f.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(0);
+  });
+
+  it.each(['owner', 'claim', 'mirror'] as const)(
+    'preserves an early completed mirror after its %s proof CAS is lost',
+    async (casLoss) => {
+      const f = completedHeadFixture({ casLoss });
+      const before = { ...f.mirror };
+      expect(await f.internals.recoverCompletedOrderedHeadMirrors(f.heads)).toBe(0);
+      expect(f.mirror).toEqual(before);
+      expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rotates a bounded completed-mirror probe window and excludes carried same-chat authority', async () => {
+    jest.useFakeTimers();
+    const { service } = createService();
+    Object.assign(service, { legacyHolds: { isUpdateHeld: jest.fn() } });
+    const internals = service as unknown as CompletedHeadInternals;
+    const heads = new Map(
+      Array.from({ length: 251 }, (_, index) => [
+        `completed-chat-${index}`,
+        { id: `completed-${index}`, createdAt: new Date(index) },
+      ]),
+    );
+    const carried = Promise.resolve();
+    internals.activeEnqueueUnits.set('chat:completed-chat-0', carried);
+    const selector = jest
+      .spyOn(internals, 'selectCompletedOrderedHeadMirrors')
+      .mockResolvedValue([]);
+    try {
+      await internals.recoverCompletedOrderedHeadMirrors(heads);
+      await internals.recoverCompletedOrderedHeadMirrors(heads);
+      expect(selector).toHaveBeenCalledTimes(1);
+      expect(selector.mock.calls[0]![0]).toHaveLength(200);
+      expect(selector.mock.calls[0]![0]).not.toContain('completed-0');
+      await jest.advanceTimersByTimeAsync(1_000);
+      await internals.recoverCompletedOrderedHeadMirrors(heads);
+      expect(selector.mock.calls[1]![0]).toHaveLength(200);
+      expect(new Set(selector.mock.calls.flatMap(([ids]) => ids)).size).toBe(250);
+      expect(internals.activeEnqueueUnits.get('chat:completed-chat-0')).toBe(carried);
+    } finally {
+      internals.activeEnqueueUnits.clear();
+      jest.useRealTimers();
+    }
+  });
+
+  it('retains bounded completed-mirror transactions until they finish after the scheduling budget', async () => {
+    jest.useFakeTimers();
+    const f = completedHeadFixture();
+    const selector = jest
+      .spyOn(f.internals, 'selectCompletedOrderedHeadMirrors')
+      .mockResolvedValue(
+        Array.from({ length: 10 }, (_, index) => ({ mirrorId: `bounded-${index}` })),
+      );
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let active = 0;
+    let peak = 0;
+    f.prisma.$transaction.mockImplementation(async () => {
+      peak = Math.max(peak, ++active);
+      await pending;
+      active -= 1;
+      return false;
+    });
+    let completed = false;
+    const run = f.internals.recoverCompletedOrderedHeadMirrors(f.heads, 32).then(() => {
+      completed = true;
+    });
+    try {
+      await jest.advanceTimersByTimeAsync(251);
+      expect(selector).toHaveBeenCalledTimes(1);
+      expect(peak).toBe(4);
+      expect(active).toBe(4);
+      expect(completed).toBe(false);
+      release();
+      await run;
+      expect(f.prisma.$transaction).toHaveBeenCalledTimes(4);
+      expect(active).toBe(0);
+    } finally {
+      release();
+      await run;
+      jest.useRealTimers();
+    }
+  });
+
   function finishedHeadSchedulingFixture(count: number) {
     const fixture = createService();
     const owners = Array.from({ length: count }, (_, index) => ({

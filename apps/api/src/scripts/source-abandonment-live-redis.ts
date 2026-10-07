@@ -16,6 +16,7 @@ import type { SourceInventoryAllowance } from './source-abandonment-live-sql';
 import type { LegacyRecoveryLivePlanProof } from './legacy-recovery-live-protocol';
 import {
   inventorySourceAbandonmentNamespaces,
+  type SourceAbandonmentCatalogReader,
   type SourceAbandonmentCatalogProof,
 } from './source-abandonment-redis-catalog';
 
@@ -262,9 +263,7 @@ function decodeJobs(value: unknown): JobRead[] {
   });
 }
 
-export type SourceAbandonmentRedisReader = {
-  eval_ro(script: string, keyCount: number, ...args: string[]): Promise<unknown>;
-};
+export type SourceAbandonmentRedisReader = SourceAbandonmentCatalogReader;
 export type SourceAbandonmentRedisSource = { chatId: string; messageId: string; userId: string };
 export type SourceAbandonmentRedisResolver = (
   kind: 'action' | 'observation',

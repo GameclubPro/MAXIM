@@ -653,6 +653,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     );
     let headers = 0;
     const reader: SourceAbandonmentRedisReader = {
+      multi: () => redis.multi(),
       async eval_ro(script, keyCount, ...args) {
         const result = await redis.eval_ro(script, keyCount, ...args);
         if (script.startsWith('-- source-abandonment:headers') && ++headers === 2)

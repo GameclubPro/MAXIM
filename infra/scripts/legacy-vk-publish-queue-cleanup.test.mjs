@@ -14,7 +14,42 @@ const {
   QueueCleanupPreconditionError,
   cleanupLegacyVkPublishQueue,
   collectLegacyVkPublishOrphans,
+  readMeasuredOrphanScript,
 } = require('./legacy-vk-publish-queue-cleanup.cjs');
+
+const stats = (calls = 10, usec = 100, rejected = 0, failed = 0) =>
+  `# Commandstats\r\ncmdstat_eval_ro:calls=${calls},usec=${usec},usec_per_call=10.00,rejected_calls=${rejected},failed_calls=${failed}\r\n`;
+function readOnlyClient(read = async () => ['ok', '0', [], 0, ['0']], transform = (rows) => rows) {
+  return {
+    multi() {
+      const commands = [];
+      const transaction = {
+        info(section) {
+          commands.push(['info', section]);
+          return transaction;
+        },
+        eval_ro(...args) {
+          commands.push(['eval_ro', ...args]);
+          return transaction;
+        },
+        async exec() {
+          assert.deepEqual(
+            commands.map((row) => row[0]),
+            ['info', 'eval_ro', 'info'],
+          );
+          assert.equal(commands[0][1], 'commandstats');
+          assert.equal(commands[2][1], 'commandstats');
+          return transform([
+            [null, stats()],
+            [null, await read(...commands[1].slice(1))],
+            [null, stats(11, 200)],
+          ]);
+        },
+      };
+      return transaction;
+    },
+  };
+}
 
 function makeQueue({
   present = true,
@@ -32,9 +67,7 @@ function makeQueue({
   const calls = { close: 0, inspect: 0, obliterate: [], pause: 0, ready: 0 };
   const queue = {
     name: LEGACY_VK_PUBLISH_QUEUE,
-    client: Promise.resolve({
-      eval_ro: async () => ['ok', '0', [], 0],
-    }),
+    client: Promise.resolve(readOnlyClient()),
     close: async () => {
       calls.close += 1;
     },
@@ -167,17 +200,119 @@ test('fails closed on invalid or unbounded queue counters', async () => {
 test('namespace proof refuses a nonterminating cursor and an oversized database', async () => {
   let calls = 0;
   const stalled = {
-    client: Promise.resolve({
-      eval_ro: async () => {
+    client: Promise.resolve(
+      readOnlyClient(async (_script, _keys, _cursor, allowance) => {
         calls += 1;
-        return ['ok', '1', [], 0];
-      },
-    }),
+        const cursors = Array.from({ length: Number(allowance) }, (_, i) =>
+          String((calls - 1) * 4 + i + 1),
+        );
+        return ['ok', cursors.at(-1), [], 0, cursors];
+      }),
+    ),
   };
   await assert.rejects(collectLegacyVkPublishOrphans(stalled), /namespace_scan_budget/u);
-  assert.ok(calls < 4096);
-  const huge = { client: Promise.resolve({ eval_ro: async () => ['database_budget'] }) };
+  assert.equal(calls, 977, 'reserve the unchanged 16M COUNT work budget before each paired read');
+  const huge = { client: Promise.resolve(readOnlyClient(async () => ['database_budget'])) };
   await assert.rejects(collectLegacyVkPublishOrphans(huge), /namespace_database_budget/u);
+});
+
+test('paired SCAN rejects repeated cursors and malformed underlying-page accounting', async () => {
+  const cycle = readOnlyClient(async () => ['ok', '4', [], 0, ['1', '2', '3', '4']]);
+  await assert.rejects(
+    collectLegacyVkPublishOrphans({ client: cycle }),
+    /namespace_cursor_repeat/u,
+  );
+  for (const cursors of [[], ['0', '2'], ['1'], ['1', '2', '3']]) {
+    const client = readOnlyClient(async () => ['ok', '2', [], 0, cursors]);
+    await assert.rejects(collectLegacyVkPublishOrphans({ client }), /namespace_page_unproved/u);
+  }
+});
+
+test('server execution cost permits delayed delivery and denies actual work above fifty milliseconds', async () => {
+  const client = readOnlyClient(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    return ['ok', '0', [], 0, ['0']];
+  });
+  assert.equal((await collectLegacyVkPublishOrphans({ client })).cost.calls, 1);
+  const slow = readOnlyClient(undefined, (rows) => {
+    rows[2][1] = stats(11, 50_101);
+    return rows;
+  });
+  await assert.rejects(readMeasuredOrphanScript(slow, 'read', 0), /namespace_call_budget/u);
+});
+
+test('server cost measurement cannot waive the fifteen second overall deadline', async () => {
+  const originalNow = Date.now;
+  let now = 1000;
+  try {
+    Date.now = () => now;
+    const client = readOnlyClient(async () => {
+      now += 15_000;
+      return ['ok', '0', [], 0, ['0']];
+    });
+    await assert.rejects(collectLegacyVkPublishOrphans({ client }), /namespace_time_budget/u);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('reserves a separate finite INFO metadata budget before another read', async () => {
+  let calls = 0;
+  const padding = Array.from(
+    { length: 480 },
+    (_, i) =>
+      `cmdstat_fixture${i}:calls=1,usec=1,usec_per_call=1.00,rejected_calls=0,failed_calls=0\r\n`,
+  ).join('');
+  const client = readOnlyClient(
+    async () => {
+      calls++;
+      const cursors = Array.from({ length: 4 }, (_, i) => String((calls - 1) * 4 + i + 1));
+      return ['ok', cursors.at(-1), [], 0, cursors];
+    },
+    (rows) => {
+      rows[0][1] += padding;
+      rows[2][1] += padding;
+      return rows;
+    },
+  );
+  await assert.rejects(collectLegacyVkPublishOrphans({ client }), /namespace_measurement_budget/u);
+  assert.ok(calls < 250);
+});
+
+test('server cost fails closed on reset, ambiguous counters, errors and malformed bounded replies', async () => {
+  for (const after of [
+    stats(0, 0),
+    stats(10, 100),
+    stats(12, 200),
+    stats(11, 99),
+    stats(11, 200, 1),
+    stats(11, 200, 0, 1),
+    stats(11, '9007199254740992'),
+    `${stats(11, 200)}${stats(11, 200)}`,
+    'secret-raw-error',
+    `${stats(11, 200)}${'x'.repeat(64 * 1024)}`,
+  ]) {
+    const client = readOnlyClient(undefined, (rows) => {
+      rows[2][1] = after;
+      return rows;
+    });
+    await assert.rejects(
+      readMeasuredOrphanScript(client, 'read', 0),
+      /namespace_server_cost_unproved/u,
+    );
+  }
+  for (const transform of [
+    () => null,
+    (rows) => rows.slice(1),
+    (rows) => {
+      rows[1][0] = new Error('secret');
+      return rows;
+    },
+  ])
+    await assert.rejects(
+      readMeasuredOrphanScript(readOnlyClient(undefined, transform), 'read', 0),
+      /namespace_server_cost_unproved/u,
+    );
 });
 
 test('wires the guarded command through vps-connect and keeps the monitor sentinel', () => {

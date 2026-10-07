@@ -8,6 +8,8 @@ import { mergeSourceAbandonmentChildren } from './source-abandonment-collect';
 import {
   assertSourceAbandonmentCatalogProofs,
   inventorySourceAbandonmentNamespaces,
+  readMeasuredSourceCatalogScript,
+  type SourceAbandonmentCatalogReader,
 } from './source-abandonment-redis-catalog';
 import {
   parseSourceAbandonmentSelection,
@@ -45,8 +47,63 @@ const resolve = jest.fn(async () => ({
   cost: { pages: 0, rows: 0, probes: 0, bytes: 0 },
   plans: [],
 }));
+const commandstats = (calls = 10, usec = 100, rejected = 0, failed = 0) =>
+  `# Commandstats\r\ncmdstat_eval_ro:calls=${calls},usec=${usec},usec_per_call=10.00,rejected_calls=${rejected},failed_calls=${failed}\r\n`;
+function measuredFixture<T extends SourceAbandonmentCatalogReader>(reader: T) {
+  return Object.assign(reader, {
+    multi() {
+      let script = '';
+      let keys = 0;
+      let args: string[] = [];
+      const commands: string[] = [];
+      const transaction = {
+        info(section: string) {
+          expect(section).toBe('commandstats');
+          commands.push('info');
+          return transaction;
+        },
+        eval_ro(nextScript: string, nextKeys: number, ...nextArgs: string[]) {
+          commands.push('eval_ro');
+          script = nextScript;
+          keys = nextKeys;
+          args = nextArgs;
+          return transaction;
+        },
+        async exec() {
+          expect(commands).toEqual(['info', 'eval_ro', 'info']);
+          let reply = await reader.eval_ro(script, keys, ...args);
+          if (
+            script.startsWith('-- source-abandonment:namespace-catalog') &&
+            Array.isArray(reply) &&
+            reply[0] === 1 &&
+            reply.length === 7
+          ) {
+            const cursor = reply[2] as string;
+            reply = [
+              ...reply,
+              cursor === '0'
+                ? ['0']
+                : [
+                    `90000000000${cursor}1`,
+                    `90000000000${cursor}2`,
+                    `90000000000${cursor}3`,
+                    cursor,
+                  ],
+            ];
+          }
+          return [
+            [null, commandstats()],
+            [null, reply],
+            [null, commandstats(11, 200)],
+          ];
+        },
+      };
+      return transaction;
+    },
+  });
+}
 function redisFixture(keys: string[] = []) {
-  return {
+  return measuredFixture({
     eval_ro: jest.fn(async (script: string, _keyCount: number, ...args: string[]) => {
       if (script.startsWith('-- source-abandonment:headers'))
         return [
@@ -62,10 +119,63 @@ function redisFixture(keys: string[] = []) {
         return [1, 1, JSON.parse(args[1]).length, []];
       throw new Error('Unexpected read');
     }),
-  };
+  });
 }
 
 describe('exact source abandonment bounded evidence', () => {
+  it('records actual server cost despite delayed delivery and frozen Lua TIME', async () => {
+    const reader = measuredFixture({
+      eval_ro: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 70));
+        return [1, 0, '0', 0, 0, 0, []];
+      },
+    });
+    const proof = await inventorySourceAbandonmentNamespaces(reader, Date.now() + 1000);
+    expect(proof).toMatchObject({
+      complete: true,
+      issue: null,
+      cost: { serverDurationUs: 100, maxCallDurationUs: 100 },
+    });
+  });
+  it.each([[], ['0', '2'], ['1'], ['1', '2', '3']])(
+    'rejects malformed paired page cursor accounting',
+    async (...cursors) => {
+      const reader = measuredFixture({ eval_ro: async () => [1, 0, '2', 0, 0, 0, [], cursors] });
+      expect(await inventorySourceAbandonmentNamespaces(reader, Date.now() + 1000)).toMatchObject({
+        complete: false,
+        issue: 'CATALOG_REPLY_UNPROVED',
+      });
+    },
+  );
+  it.each([
+    [commandstats(11, 50_101), 'CATALOG_CALL_LATENCY_LIMIT'],
+    [commandstats(0, 0), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(12, 200), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(11, 99), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(11, 200, 1), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(11, 200, 0, 1), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(11, Number.MAX_SAFE_INTEGER + 1), 'CATALOG_SERVER_COST_UNPROVED'],
+    [`${commandstats(11, 200)}${commandstats(11, 200)}`, 'CATALOG_SERVER_COST_UNPROVED'],
+    [`${commandstats(11, 200)}${'x'.repeat(64 * 1024)}`, 'CATALOG_SERVER_COST_UNPROVED'],
+    ['secret raw error', 'CATALOG_SERVER_COST_UNPROVED'],
+  ])(
+    'refuses invalid commandstats rather than accepting a zero Lua duration',
+    async (after, issue) => {
+      const reader = measuredFixture({ eval_ro: async () => [1, 0, '0', 0, 0, 0, []] });
+      const multi = reader.multi.bind(reader);
+      reader.multi = () => {
+        const transaction = multi();
+        const exec = transaction.exec.bind(transaction);
+        transaction.exec = async () => {
+          const rows = await exec();
+          rows[2][1] = after;
+          return rows;
+        };
+        return transaction;
+      };
+      await expect(readMeasuredSourceCatalogScript(reader, 'read', 0)).rejects.toThrow(issue);
+    },
+  );
   it('binds an exact original message and never a distinct message by the same member', () => {
     expect(classifySourceAbandonmentAction(action(), [source])).toMatchObject({
       ...source,
@@ -204,7 +314,7 @@ describe('exact source abandonment bounded evidence', () => {
         autoDeleteDelayMs: 1000,
       };
       const base = redisFixture();
-      const redis = {
+      const redis = measuredFixture({
         eval_ro: jest.fn(async (script: string, keyCount: number, ...args: string[]) => {
           if (script.startsWith('-- source-abandonment:jobs'))
             return [1, 1, 1, [['job-1', 'wait', ['data', JSON.stringify(data)], 0, '']]];
@@ -216,7 +326,7 @@ describe('exact source abandonment bounded evidence', () => {
           }
           return reply;
         }),
-      };
+      });
       const resolver = async () => ({
         row: {
           jobId: 'action-1',
@@ -261,15 +371,25 @@ describe('exact source abandonment bounded evidence', () => {
   it('completes sparse namespace pages without spending the finite effect proof budget', async () => {
     const base = redisFixture();
     let pages = 0;
-    const redis = {
+    const redis = measuredFixture({
       eval_ro: jest.fn(async (script: string, keyCount: number, ...args: string[]) => {
         if (script.startsWith('-- source-abandonment:namespace-catalog-v2')) {
-          pages++;
-          return [1, 9_212_720, pages === 600 ? '0' : String(pages), 0, 0, 100, []];
+          pages += 4;
+          const cursor = pages === 600 ? '0' : String(pages);
+          return [
+            1,
+            9_212_720,
+            cursor,
+            0,
+            0,
+            100,
+            [],
+            [String(pages - 3), String(pages - 2), String(pages - 1), cursor],
+          ];
         }
         return base.eval_ro(script, keyCount, ...args);
       }),
-    };
+    });
     const result = await inventorySourceAbandonmentRedis(
       redis,
       selection,
@@ -291,14 +411,14 @@ describe('exact source abandonment bounded evidence', () => {
     { reply: [1, 10, '0', 1, 50, 1, [['unknown', 1]]], code: 'CATALOG_NAMESPACE_UNPROVED' },
   ])('refuses incomplete structural proof: $code', async ({ reply, code }) => {
     const result = await inventorySourceAbandonmentNamespaces(
-      { eval_ro: jest.fn(async () => reply) },
+      measuredFixture({ eval_ro: jest.fn(async () => reply) }),
       Date.now() + 30_000,
     );
     expect(result).toMatchObject({ complete: false, issue: code });
   });
 
   it('refuses a repeated cursor and retains the common SQL/job deadline', async () => {
-    const redis = { eval_ro: jest.fn(async () => [1, 100, '12', 0, 0, 1, []]) };
+    const redis = measuredFixture({ eval_ro: jest.fn(async () => [1, 100, '12', 0, 0, 1, []]) });
     expect(await inventorySourceAbandonmentNamespaces(redis, Date.now() + 30_000)).toMatchObject({
       complete: false,
       issue: 'CATALOG_CURSOR_REPEAT',
@@ -314,9 +434,9 @@ describe('exact source abandonment bounded evidence', () => {
 
   it('verifies both bounded catalog artifacts rather than trusting their completion labels', async () => {
     const proof = await inventorySourceAbandonmentNamespaces(
-      {
+      measuredFixture({
         eval_ro: jest.fn(async () => [1, 1, '0', 1, 32, 1, [['moderation', 1]]]),
-      },
+      }),
       Date.now() + 30_000,
     );
     expect(() => assertSourceAbandonmentCatalogProofs([proof, proof])).not.toThrow();
@@ -332,6 +452,14 @@ describe('exact source abandonment bounded evidence', () => {
       { ...proof, cost: { ...proof.cost, databaseKeysMax: 12_000_001 } },
       { ...proof, cost: { ...proof.cost, durationMs: 15_001 } },
       { ...proof, cost: { ...proof.cost, maxCallDurationUs: 50_001 } },
+      { ...proof, cost: { ...proof.cost, measurementBytes: 16 * 1024 * 1024 + 1 } },
+      { ...proof, cost: { ...proof.cost, measurementBytes: 0 } },
+      {
+        ...proof,
+        cost: Object.fromEntries(
+          Object.entries(proof.cost).filter(([key]) => key !== 'measurementBytes'),
+        ),
+      },
       { ...proof, cost: { ...proof.cost, bytes: Infinity } },
       { ...proof, cost: { ...proof.cost, keyBytes: 64 * 1024 * 1024 + 1 } },
       { ...proof, namespaceKeyCounts: { moderation: 2 }, cost: { ...proof.cost, matchedKeys: 2 } },
