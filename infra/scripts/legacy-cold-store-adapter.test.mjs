@@ -9,10 +9,16 @@ import {
   canonicalLegacyColdDigest,
 } from './legacy-cold-store-adapter.mjs';
 
-function fixture(t, publisherBotId) {
+function fixture(t, publisherBotId, modern = false) {
   const dir = mkdtempSync(join(tmpdir(), 'maxim-cold-store-adapter-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const selection = { ownerWebhookEventIds: ['owner'], majorBotIds: ['major'] };
+  const selection = {
+    ownerWebhookEventIds: ['owner'],
+    majorBotIds: ['major'],
+    ...(modern
+      ? { protocol: 'source-abandonment-v1', abandonBefore: '2026-10-07T03:00:00.000Z' }
+      : {}),
+  };
   const bindings = {
     targetSha: 'a'.repeat(40),
     targetImageId: `sha256:${'b'.repeat(64)}`,
@@ -34,6 +40,8 @@ function fixture(t, publisherBotId) {
     forever: false,
     diagnosticCost: 1,
     catalogs: undefined,
+    inventoryPatch: {},
+    inventoryRequests: [],
     ownerChat: 'chat',
   };
   const journal = { proofs: {} };
@@ -44,6 +52,7 @@ function fixture(t, publisherBotId) {
     invoke(kind, request) {
       state.calls.push(request.operation);
       if (kind === 'inventory') {
+        state.inventoryRequests.push(structuredClone(request));
         assert.equal(request.binding.queueFenceNonce, legacyColdDigest(bindings.controllerNonce));
         return {
           version: 1,
@@ -56,12 +65,15 @@ function fixture(t, publisherBotId) {
           registrySha256: 'c'.repeat(64),
           inventorySha256: 'd'.repeat(64),
           previewSha256: 'e'.repeat(64),
+          redisEvidenceSha256: 'f'.repeat(64),
+          sqlEvidenceSha256: '1'.repeat(64),
           selectedOwners: [{ ownerWebhookEventId: 'owner', chatId: state.ownerChat }],
           children: [],
           sqlPlans: [],
           ...(state.catalogs ? { redisCatalogs: structuredClone(state.catalogs) } : {}),
           issues: [],
           cost: { rows: 1, pages: 1, probes: 1, bytes: state.diagnosticCost },
+          ...state.inventoryPatch,
         };
       }
       if (kind === 'queues')
@@ -126,7 +138,7 @@ function fixture(t, publisherBotId) {
     },
     runtime: { readStoppedRuntime: () => ({ services: [], auxiliaries: [] }) },
   });
-  return { adapter, state, bindings, journal };
+  return { adapter, state, bindings, journal, inventoryPath };
 }
 
 test('host adapter preserves actual artifact bytes through install and independent materialization proof', (t) => {
@@ -308,4 +320,115 @@ test('invalid fresh decision remains denied even when catalog structure agrees',
   const h = reviewedCatalogFixture(t);
   h.state.deny = true;
   assert.throws(() => h.adapter.snapshotPending(), /inventory_refused/);
+});
+
+function refreezeFixture(t) {
+  const h = fixture(t, 'publisher', true);
+  h.state.catalogs = [catalog(1), catalog(2)];
+  h.state.pending = h.adapter.snapshotPending();
+  h.journal.proofs.pendingInventory = 'fixture';
+  h.state.inventoryPatch = { inventorySha256: '2'.repeat(64), redisEvidenceSha256: '3'.repeat(64) };
+  h.state.catalogs = [catalog(3), catalog(4)];
+  for (const value of h.state.catalogs) value.namespaceKeyCounts['max-actions'] = 2;
+  return h;
+}
+
+test('explicit refreeze saves a versioned artifact and retains exact old bytes and source evidence', (t) => {
+  const h = refreezeFixture(t);
+  const old = readFileSync(h.inventoryPath, 'utf8');
+  assert.equal(h.adapter.readCertificateAbsent(h.bindings, h.state.pending).state, 'ABSENT');
+  const next = h.adapter.snapshotRefrozenPending(h.bindings, h.state.pending);
+  assert.equal(h.adapter.readCertificateAbsent(h.bindings, h.state.pending).state, 'ABSENT');
+  assert.equal(readFileSync(h.inventoryPath, 'utf8'), old);
+  assert.equal(next.inventoryArtifactName, `inventory-${next.inventoryArtifactSha256}.json`);
+  const nextPath = join(h.inventoryPath, '..', next.inventoryArtifactName);
+  assert.equal(legacyColdDigest(readFileSync(nextPath, 'utf8')), next.inventoryArtifactSha256);
+  assert.deepEqual(next.inventory.selectedOwners, h.state.pending.inventory.selectedOwners);
+  assert.equal(Object.hasOwn(h.state.inventoryRequests.at(-1), 'expectedInventorySha256'), false);
+  assert.equal(h.state.calls.includes('certificate_create'), false);
+  assert.equal(h.state.calls.includes('install'), false);
+  assert.throws(() => h.adapter.snapshotPending(), /reviewed_inventory_changed/);
+});
+
+for (const state of ['UNSEALED', 'SEALED', 'MATERIALIZED', 'UNKNOWN'])
+  test(`certificate ${state} forbids refreeze`, (t) => {
+    const h = refreezeFixture(t);
+    h.state.certificate = state;
+    assert.throws(
+      () => h.adapter.readCertificateAbsent(h.bindings, h.state.pending),
+      /refreeze_certificate_not_absent/,
+    );
+  });
+
+for (const [key, value] of [
+  ['sqlEvidenceSha256', '4'.repeat(64)],
+  ['registrySha256', '4'.repeat(64)],
+  ['previewSha256', '4'.repeat(64)],
+  ['selectionSha256', '4'.repeat(64)],
+  ['selectedOwners', [{ ownerWebhookEventId: 'different', chatId: 'chat' }]],
+  ['children', [{ id: 'new-effect' }]],
+  ['unexpected', true],
+  ['binding', {}],
+])
+  test(`refreeze refuses changed ${key} despite a valid new Redis census`, (t) => {
+    const h = refreezeFixture(t);
+    h.state.inventoryPatch[key] = value;
+    const original = readFileSync(h.inventoryPath, 'utf8');
+    assert.throws(
+      () => h.adapter.snapshotRefrozenPending(h.bindings, h.state.pending),
+      /refreeze_source_or_child_changed/,
+    );
+    assert.equal(readFileSync(h.inventoryPath, 'utf8'), original);
+  });
+
+for (const mutate of [
+  (value) => {
+    value[1].namespaceKeyCounts['max-actions'] = 1;
+  },
+  (value) => {
+    value[1].complete = false;
+  },
+  (value) => {
+    value[1].issue = 'UNPROVED';
+  },
+  (value) => {
+    value[1].version = 3;
+  },
+  (value) => {
+    value[1].unknownField = true;
+  },
+  (value) => {
+    value.pop();
+  },
+])
+  test('refreeze requires two complete equal catalog passes and unchanged catalog schema', (t) => {
+    const h = refreezeFixture(t);
+    mutate(h.state.catalogs);
+    assert.throws(
+      () => h.adapter.snapshotRefrozenPending(h.bindings, h.state.pending),
+      /refreeze_catalog_/,
+    );
+  });
+
+test('collector DENY cannot become a refrozen inventory', (t) => {
+  const h = refreezeFixture(t);
+  h.state.deny = true;
+  assert.throws(
+    () => h.adapter.snapshotRefrozenPending(h.bindings, h.state.pending),
+    /refreeze_inventory_refused/,
+  );
+});
+
+test('refreeze cannot add or rename a namespace even when both fresh passes agree', (t) => {
+  for (const replace of [false, true]) {
+    const h = refreezeFixture(t);
+    for (const catalog of h.state.catalogs) {
+      if (replace) delete catalog.namespaceKeyCounts['max-actions'];
+      catalog.namespaceKeyCounts['unreviewed-namespace'] = 2;
+    }
+    assert.throws(
+      () => h.adapter.snapshotRefrozenPending(h.bindings, h.state.pending),
+      /refreeze_catalog_identity_changed/,
+    );
+  }
 });

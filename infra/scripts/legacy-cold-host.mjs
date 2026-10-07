@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertLegacyDispositionSource } from './assert-legacy-disposition-source.mjs';
 import { createLegacyColdClient } from './legacy-cold-client.mjs';
 import { readSourceAbandonmentCorrectiveIdentity } from './source-abandonment-corrective-identity.mjs';
+import { refreezeSourceAbandonmentPreview } from './source-abandonment-refreeze.mjs';
 import {
   assertInheritedDeployLock,
   assertNoActiveLegacyColdMaintenance,
@@ -280,6 +281,17 @@ export function assertColdProtocolContext(protocol, context) {
     throw new Error('cold_protocol_selection_changed');
 }
 
+export function legacyColdInventoryArtifactName(pending, continuing = true) {
+  if (!continuing || !pending || !Object.hasOwn(pending, 'inventoryArtifactName'))
+    return 'inventory.json';
+  if (
+    !hash.test(pending.inventoryArtifactSha256 ?? '') ||
+    pending.inventoryArtifactName !== `inventory-${pending.inventoryArtifactSha256}.json`
+  )
+    throw new Error('inventory_artifact_name_unproved');
+  return pending.inventoryArtifactName;
+}
+
 export async function runLegacyColdHost(
   request,
   { protocol = 'legacy', controllerSha = null } = {},
@@ -288,10 +300,12 @@ export async function runLegacyColdHost(
   // operation must never resume a legacy installation or inherit its member-wide authority.
   if (!['legacy', 'source-abandonment-v1'].includes(protocol))
     throw new Error('unsupported_cold_protocol');
+  if (request.operation === 'refreeze-preview' && controllerSha === null)
+    throw new Error('corrective_continuation_required');
   if (
     controllerSha !== null &&
     (protocol !== 'source-abandonment-v1' ||
-      !['apply', 'reconcile', 'retry-preview'].includes(request.operation))
+      !['apply', 'reconcile', 'retry-preview', 'refreeze-preview'].includes(request.operation))
   )
     throw new Error('corrective_continuation_required');
   assertInheritedDeployLock();
@@ -318,14 +332,18 @@ export async function runLegacyColdHost(
   let baseline;
   let selection;
   let context;
-  const continuing = ['apply', 'reconcile', 'retry-preview'].includes(request.operation);
+  const continuing = ['apply', 'reconcile', 'retry-preview', 'refreeze-preview'].includes(
+    request.operation,
+  );
   if (continuing) {
     if (
-      (request.operation === 'retry-preview'
-        ? !['ADMITTED', 'STOPPING', 'STOPPED', 'INVENTORIED'].includes(state.journal?.phase)
-        : request.operation === 'reconcile'
-          ? !['INSTALLING', 'SEALED', 'RESUMING'].includes(state.journal?.phase)
-          : state.journal?.phase !== 'INVENTORIED' || state.journal.blockedReason) ||
+      (request.operation === 'refreeze-preview'
+        ? !['STOPPED', 'INVENTORIED'].includes(state.journal?.phase)
+        : request.operation === 'retry-preview'
+          ? !['ADMITTED', 'STOPPING', 'STOPPED', 'INVENTORIED'].includes(state.journal?.phase)
+          : request.operation === 'reconcile'
+            ? !['INSTALLING', 'SEALED', 'RESUMING'].includes(state.journal?.phase)
+            : state.journal?.phase !== 'INVENTORIED' || state.journal.blockedReason) ||
       state.journal.bindings.targetSha !== identity.sourceSha ||
       state.journal.bindings.targetImageId !== identity.imageId ||
       legacyColdDigest(state.journal) !== request.expectedJournalDigest
@@ -449,7 +467,14 @@ export async function runLegacyColdHost(
       writePrivate(join(operationDir, 'context.json'), `${JSON.stringify(context)}\n`);
     } else if (legacyColdDigest(readPrivate(queueControlPath)) !== queueControlSha256)
       throw new Error('queue_control_changed');
-    const inventoryPath = join(operationDir, 'inventory.json');
+    const existingPending =
+      continuing && state.journal?.proofs.pendingInventory
+        ? store.readProof('pendingInventory')
+        : null;
+    const inventoryPath = join(
+      operationDir,
+      legacyColdInventoryArtifactName(existingPending, continuing),
+    );
     const client = createLegacyColdClient({
       protocol,
       sourceSha: identity.sourceSha,
@@ -535,6 +560,8 @@ export async function runLegacyColdHost(
         });
       return await prepareLegacyColdRecovery({ store, bindings, adapters });
     }
+    if (request.operation === 'refreeze-preview')
+      return await refreezeSourceAbandonmentPreview({ store, adapters, request });
     if (request.operation === 'retry-preview')
       return await retryLegacyColdPreview({
         store,

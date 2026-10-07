@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { legacyColdDigest } from './legacy-cold-journal.mjs';
 import { emitLegacyColdDiagnostic } from './legacy-cold-protocol.mjs';
+import { dirname, join } from 'node:path';
 
 const hash = /^[0-9a-f]{64}$/u;
 export function canonicalLegacyColdDigest(value) {
@@ -130,6 +131,111 @@ export function createLegacyColdStoreAdapter({
       const readback = client.invoke('queues', { version: 1, operation: 'status' });
       if (readback.pausedCount !== 0 || readback.ownerPresent !== false)
         throw new Error('queue_resume_readback_unproved');
+    },
+    readCertificateAbsent(_bindings, value) {
+      const result = invoke('readback', value);
+      if (result.state !== 'ABSENT') throw new Error('refreeze_certificate_not_absent');
+      return result;
+    },
+    snapshotRefrozenPending(_bindings, prior) {
+      // FLAG: Only explicit pre-install refreeze may collect a new inventory digest.
+      // Preserve the complete source/claim/child evidence and both old artifact bytes
+      // and the old binding. Normal apply always retains exact comparison above.
+      runtime.readStoppedRuntime();
+      if (
+        selection.protocol !== 'source-abandonment-v1' ||
+        immutableInventory(inventoryPath, prior.inventory) !== prior.inventoryArtifactSha256 ||
+        prior.inventory.binding.publisherBotId !== publisherBotId
+      )
+        throw new Error('refreeze_original_inventory_unproved');
+      const inventory = client.invoke('inventory', {
+        version: 1,
+        operation: 'inventory_preview',
+        binding: prior.inventory.binding,
+        selection,
+      });
+      if (
+        inventory.version !== 1 ||
+        inventory.operation !== 'inventory_preview' ||
+        inventory.applied !== false ||
+        inventory.activationAuthorized !== false ||
+        inventory.decision !== 'READY_TO_INSTALL' ||
+        !hash.test(inventory.inventorySha256 ?? '') ||
+        !hash.test(inventory.redisEvidenceSha256 ?? '') ||
+        !Array.isArray(inventory.issues) ||
+        inventory.issues.length !== 0
+      )
+        throw new Error('refreeze_inventory_refused');
+      const stable = (value) =>
+        Object.fromEntries(
+          Object.entries(value).filter(
+            ([key]) =>
+              ![
+                'inventorySha256',
+                'redisEvidenceSha256',
+                'redisCatalogs',
+                'cost',
+                'sqlPlans',
+              ].includes(key),
+          ),
+        );
+      if (
+        canonicalLegacyColdDigest(stable(inventory)) !==
+        canonicalLegacyColdDigest(stable(prior.inventory))
+      )
+        throw new Error('refreeze_source_or_child_changed');
+      const catalogIdentity = (catalogs) => {
+        if (!Array.isArray(catalogs) || catalogs.length !== 2)
+          throw new Error('refreeze_catalog_unproved');
+        for (const catalog of catalogs) {
+          const counts = catalog?.namespaceKeyCounts;
+          if (
+            catalog?.version !== 2 ||
+            catalog.complete !== true ||
+            catalog.issue !== null ||
+            !counts ||
+            typeof counts !== 'object' ||
+            Array.isArray(counts) ||
+            Object.values(counts).some((count) => !Number.isSafeInteger(count) || count < 1)
+          )
+            throw new Error('refreeze_catalog_unproved');
+        }
+        if (
+          canonicalLegacyColdDigest(catalogs[0].namespaceKeyCounts) !==
+          canonicalLegacyColdDigest(catalogs[1].namespaceKeyCounts)
+        )
+          throw new Error('refreeze_catalog_changed_between_passes');
+        return catalogs.map((catalog) => ({
+          fields: Object.fromEntries(
+            Object.entries(catalog).filter(
+              ([key]) => !['cost', 'namespaceKeyCounts'].includes(key),
+            ),
+          ),
+          namespaceNames: Object.keys(catalog.namespaceKeyCounts).sort(),
+        }));
+      };
+      if (
+        canonicalLegacyColdDigest(catalogIdentity(inventory.redisCatalogs)) !==
+        canonicalLegacyColdDigest(catalogIdentity(prior.inventory.redisCatalogs))
+      )
+        throw new Error('refreeze_catalog_identity_changed');
+      const artifactSha256 = legacyColdDigest(`${JSON.stringify(inventory)}\n`);
+      const inventoryArtifactName = `inventory-${artifactSha256}.json`;
+      if (
+        immutableInventory(join(dirname(inventoryPath), inventoryArtifactName), inventory) !==
+        artifactSha256
+      )
+        throw new Error('refreeze_artifact_unproved');
+      return {
+        ...base,
+        inventoryDigest: inventory.inventorySha256,
+        previewDigest: inventory.previewSha256,
+        inventoryArtifactSha256: artifactSha256,
+        inventoryArtifactName,
+        unknownSources: 0,
+        saturated: false,
+        inventory,
+      };
     },
     snapshotPending() {
       const journal = store.read().journal;

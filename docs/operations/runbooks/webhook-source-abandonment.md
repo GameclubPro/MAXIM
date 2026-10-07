@@ -123,7 +123,8 @@ journal, dependency, protocol, selection or queue-fence checks.
 Synchronize the reviewed controller source without deploying an API image or
 changing the stopped generations. Create a private `0600` envelope containing
 only `version: 1`, the full `controllerSha`, and `runtimeRequest`. The nested
-request is the unchanged reviewed `apply`, `reconcile` or `retry-preview` request;
+request is the unchanged reviewed `apply`, `reconcile` or `retry-preview` request,
+or the explicit `refreeze-preview` operation described below;
 its `targetSha` still identifies the original runtime. New preparation, admission
 and status requests are unavailable through this path.
 
@@ -133,8 +134,9 @@ and status requests are unavailable through this path.
 
 The controller compares the complete source-tree delta against a narrow path
 allowlist and proves disposition readers for both source commits. Compose,
-journal, protocol, store client, writer, runtime and smoke dependencies retain
-their admitted versions. Before any inventory or writer call, it saves a separate
+protocol, store client, writer, runtime and smoke dependencies retain their
+admitted versions. The journal adds only the typed pre-install refreeze transition.
+Before any inventory or writer call, it saves a separate
 immutable proof with both source identities, runtime image, current and expected
 journal digests, request and selection digests, and the actual adapter hash.
 The proof digest is emitted on stderr for private incident evidence. Original
@@ -146,6 +148,31 @@ version, completion, issue and all other fields. The fresh complete inventory is
 saved as a separate recheck proof, and writers consume the original reviewed
 artifact. A changed source, child, namespace or completeness result still refuses
 installation.
+
+If a complete fresh inventory differs only in independently reviewed Redis census
+evidence before any installation, `refreeze-preview` creates one new review
+boundary. It uses the same six fields as `apply`, carrying the current journal
+digest and the original reviewed inventory/preview digests. It is available only
+through the corrective entrypoint in `STOPPED` or `INVENTORIED`, with an existing
+pending inventory, and only once per operation. It never ignores catalog drift
+during normal apply and cannot cross `INSTALLING` or an uncertain write.
+
+The fixed original store image must positively read the existing certificate as
+`ABSENT` both before and after a fresh full collector run. Both reads mount the
+original immutable inventory. All sixteen captured generations must remain stopped
+and all twenty-four queues must retain their owned fence. The fresh inventory must
+be ready with no issues and two complete matching namespace censuses; its binding,
+selection, registry, SQL evidence, preview, selected claims, sources and children
+must match the old review. No reason for changed counts is inferred from this test.
+
+The new inventory is written as `inventory-<artifact-sha256>.json` alongside the
+untouched original. A typed journal compare-and-swap saves a proof of the exact
+previous journal and proof references, retains the two absence readbacks, and
+replaces only the pending inventory and reviewed preview references. Later apply
+uses the validated versioned filename; a new operation starts with its own
+`inventory.json`. Review the returned new digests and full private evidence before
+issuing a separate ordinary corrective `apply`. Any further census drift requires
+new investigation; this operation is not a retry loop or an installation command.
 
 Restart follows positive seal/materialization proof. Verify all fourteen API roles,
 both native auxiliaries, released queues and fresh database/Redis health. A finite

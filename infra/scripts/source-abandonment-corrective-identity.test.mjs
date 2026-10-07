@@ -119,7 +119,6 @@ test('an unrelated controller history cannot resume the admitted runtime', () =>
 
 for (const path of [
   'infra/docker-compose.yml',
-  'infra/scripts/legacy-cold-journal.mjs',
   'infra/scripts/legacy-cold-protocol.mjs',
   'infra/scripts/legacy-cold-client.mjs',
   'infra/scripts/legacy-cold-runtime.mjs',

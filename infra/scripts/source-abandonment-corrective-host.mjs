@@ -12,10 +12,18 @@ export function parseSourceAbandonmentCorrectiveHostRequest(text) {
     Object.keys(value).sort().join(',') !== 'controllerSha,runtimeRequest,version' ||
     value.version !== 1 ||
     !/^[0-9a-f]{40}$/u.test(value.controllerSha ?? '') ||
-    !['apply', 'reconcile', 'retry-preview'].includes(value.runtimeRequest?.operation)
+    !['apply', 'reconcile', 'retry-preview', 'refreeze-preview'].includes(
+      value.runtimeRequest?.operation,
+    )
   )
     throw new Error('corrective_continuation_required');
-  const runtimeRequest = parseSourceAbandonmentHostRequest(JSON.stringify(value.runtimeRequest));
+  const refreeze = value.runtimeRequest.operation === 'refreeze-preview';
+  const runtimeRequest = parseSourceAbandonmentHostRequest(
+    JSON.stringify(
+      refreeze ? { ...value.runtimeRequest, operation: 'apply' } : value.runtimeRequest,
+    ),
+  );
+  if (refreeze) runtimeRequest.operation = 'refreeze-preview';
   if (value.controllerSha === runtimeRequest.targetSha)
     throw new Error('separate_controller_identity_required');
   return { version: 1, controllerSha: value.controllerSha, runtimeRequest };

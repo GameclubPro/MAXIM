@@ -9,6 +9,10 @@ const permittedControllerChanges = new Set([
   'infra/scripts/legacy-cold-host.mjs',
   'infra/scripts/legacy-cold-store-adapter.mjs',
   'infra/scripts/legacy-cold-store-adapter.test.mjs',
+  'infra/scripts/legacy-cold-journal.mjs',
+  'infra/scripts/legacy-cold-journal.test.mjs',
+  'infra/scripts/source-abandonment-refreeze.mjs',
+  'infra/scripts/source-abandonment-refreeze.test.mjs',
   'infra/scripts/source-abandonment-corrective-host.mjs',
   'infra/scripts/source-abandonment-corrective-host.test.mjs',
   'infra/scripts/source-abandonment-corrective-identity.mjs',
@@ -39,7 +43,7 @@ export function readSourceAbandonmentCorrectiveIdentity(
     controllerSha === targetSha ||
     targetSha !== CORRECTIVE_RUNTIME_SHA ||
     protocol !== 'source-abandonment-v1' ||
-    !['apply', 'reconcile', 'retry-preview'].includes(operation)
+    !['apply', 'reconcile', 'retry-preview', 'refreeze-preview'].includes(operation)
   )
     throw new Error('corrective_context_required');
   if (

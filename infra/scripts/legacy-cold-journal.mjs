@@ -47,6 +47,8 @@ const proofNames = new Set([
   'revocation',
   'repausedQueues',
   'restoppedInventory',
+  'supersededPreview',
+  'refreezeAbsence',
 ]);
 const requiredProofs = {
   ADMITTED: ['hostAdmission'],
@@ -63,6 +65,20 @@ export function legacyColdDigest(value) {
   return createHash('sha256')
     .update(typeof value === 'string' ? value : JSON.stringify(value))
     .digest('hex');
+}
+
+function canonicalEvidenceDigest(value) {
+  const canonical = (item) => {
+    if (Array.isArray(item)) return item.map(canonical);
+    if (item && typeof item === 'object')
+      return Object.fromEntries(
+        Object.entries(item)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, entry]) => [key, canonical(entry)]),
+      );
+    return item;
+  };
+  return legacyColdDigest(canonical(value));
 }
 
 function refuse(reason) {
@@ -488,6 +504,160 @@ export function createLegacyColdJournalStore({
         ...journal,
         revision: journal.revision + 1,
         phase: 'STOPPED',
+        updatedAt: now(),
+        blockedReason: null,
+        proofs: { ...journal.proofs, ...proofs },
+      });
+      atomicPrivateWrite(directory, LEGACY_COLD_JOURNAL, next);
+      return next;
+    },
+    refreezePreinstall(expectedDigest, proofs) {
+      mutation();
+      const { journal } = readLegacyColdState(directory);
+      const names = ['supersededPreview', 'refreezeAbsence', 'pendingInventory', 'reviewedPreview'];
+      if (
+        !journal ||
+        !['STOPPED', 'INVENTORIED'].includes(journal.phase) ||
+        legacyColdDigest(journal) !== expectedDigest ||
+        !journal.proofs.pendingInventory ||
+        !journal.proofs.reviewedPreview ||
+        [
+          'supersededPreview',
+          'refreezeAbsence',
+          'pendingRecheck',
+          'sealedReadback',
+          'runtimeIdentity',
+          'nativeIdentity',
+          'strictSmokes',
+          'releaseManifest',
+          'restoppedInventory',
+        ].some((name) => journal.proofs[name]) ||
+        !keysExactly(proofs, names) ||
+        Object.values(proofs).some((hash) => !digest.test(hash ?? ''))
+      )
+        refuse('preinstall refreeze CAS failed');
+      const readEvidence = (hash) => {
+        const bytes = readPrivateBytes(
+          join(directory, 'legacy-cold-evidence'),
+          `${hash}.json`,
+          8 * 1024 * 1024,
+        );
+        if (!bytes || legacyColdDigest(bytes.toString('utf8')) !== hash)
+          refuse('refreeze proof is absent or changed');
+        return JSON.parse(bytes.toString('utf8'));
+      };
+      const previous = readEvidence(journal.proofs.pendingInventory);
+      const previousReview = readEvidence(journal.proofs.reviewedPreview);
+      const pending = readEvidence(proofs.pendingInventory);
+      const reviewed = readEvidence(proofs.reviewedPreview);
+      const history = readEvidence(proofs.supersededPreview);
+      const absence = readEvidence(proofs.refreezeAbsence);
+      const binding = journal.bindings;
+      const validPending = (value) =>
+        value?.version === 1 &&
+        value.complete === true &&
+        value.sourceSha === binding.targetSha &&
+        value.imageId === binding.targetImageId &&
+        value.controllerNonce === binding.controllerNonce &&
+        value.selectionDigest === binding.selectionDigest &&
+        value.unknownSources === 0 &&
+        value.saturated === false &&
+        [value.inventoryDigest, value.previewDigest, value.inventoryArtifactSha256].every((hash) =>
+          digest.test(hash ?? ''),
+        ) &&
+        value.inventory?.inventorySha256 === value.inventoryDigest &&
+        value.inventory.previewSha256 === value.previewDigest &&
+        digest.test(value.inventory.selectionSha256 ?? '') &&
+        value.inventory.binding &&
+        typeof value.inventory.binding === 'object' &&
+        !Array.isArray(value.inventory.binding) &&
+        legacyColdDigest(`${JSON.stringify(value.inventory)}\n`) === value.inventoryArtifactSha256;
+      const validReview = (value, inventory) =>
+        keysExactly(value, ['version', 'previewDigest', 'inventoryDigest', 'selectionDigest']) &&
+        value.version === 1 &&
+        value.previewDigest === inventory.previewDigest &&
+        value.inventoryDigest === inventory.inventoryDigest &&
+        value.selectionDigest === binding.selectionDigest;
+      if (
+        !validPending(previous) ||
+        !validPending(pending) ||
+        !validReview(previousReview, previous) ||
+        !validReview(reviewed, pending) ||
+        pending.previewDigest !== previous.previewDigest ||
+        pending.inventory.selectionSha256 !== previous.inventory.selectionSha256 ||
+        canonicalEvidenceDigest(pending.inventory.binding) !==
+          canonicalEvidenceDigest(previous.inventory.binding) ||
+        pending.inventoryArtifactName !== `inventory-${pending.inventoryArtifactSha256}.json`
+      )
+        refuse('refreeze replacement binding unproved');
+      if (
+        !keysExactly(history, [
+          'version',
+          'operation',
+          'previousJournal',
+          'previousJournalDigest',
+          'previousPendingInventory',
+          'previousReviewedPreview',
+          'previousArtifactSha256',
+          'replacementPendingInventory',
+          'replacementReviewedPreview',
+          'absenceProof',
+        ]) ||
+        history.version !== 1 ||
+        history.operation !== 'refreeze-preview' ||
+        history.previousJournalDigest !== expectedDigest ||
+        legacyColdDigest(history.previousJournal) !== expectedDigest ||
+        history.previousPendingInventory !== journal.proofs.pendingInventory ||
+        history.previousReviewedPreview !== journal.proofs.reviewedPreview ||
+        history.previousArtifactSha256 !== previous.inventoryArtifactSha256 ||
+        history.replacementPendingInventory !== proofs.pendingInventory ||
+        history.replacementReviewedPreview !== proofs.reviewedPreview ||
+        history.absenceProof !== proofs.refreezeAbsence
+      )
+        refuse('refreeze superseded review unproved');
+      const validReadback = (value) =>
+        value?.version === 1 &&
+        value.operation === 'readback' &&
+        value.state === 'ABSENT' &&
+        value.certificateId === binding.certificateId &&
+        value.activationAuthorized === false &&
+        value.inventorySha256 === previous.inventoryDigest &&
+        value.previewSha256 === previous.previewDigest &&
+        value.bindingSha256 === canonicalEvidenceDigest(previous.inventory.binding);
+      if (
+        !keysExactly(absence, [
+          'version',
+          'operation',
+          'certificateId',
+          'sourceSha',
+          'imageId',
+          'controllerNonce',
+          'selectionDigest',
+          'inventoryDigest',
+          'previewDigest',
+          'before',
+          'after',
+        ]) ||
+        absence.version !== 1 ||
+        absence.operation !== 'refreeze-certificate-absence' ||
+        absence.certificateId !== binding.certificateId ||
+        absence.sourceSha !== binding.targetSha ||
+        absence.imageId !== binding.targetImageId ||
+        absence.controllerNonce !== binding.controllerNonce ||
+        absence.selectionDigest !== binding.selectionDigest ||
+        absence.inventoryDigest !== previous.inventoryDigest ||
+        absence.previewDigest !== previous.previewDigest ||
+        !validReadback(absence.before) ||
+        !validReadback(absence.after)
+      )
+        refuse('refreeze positive certificate absence unproved');
+      // FLAG: Only this typed, one-time pre-install CAS can replace a reviewed
+      // preview. The full old journal and immutable proof files remain evidence;
+      // both bound ABSENT reads precede a separate review of the new inventory.
+      const next = validateLegacyColdJournal({
+        ...journal,
+        revision: journal.revision + 1,
+        phase: 'INVENTORIED',
         updatedAt: now(),
         blockedReason: null,
         proofs: { ...journal.proofs, ...proofs },

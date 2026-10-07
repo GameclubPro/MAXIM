@@ -11,6 +11,7 @@ import {
   LEGACY_COLD_MARKER,
   readLegacyColdState,
 } from './legacy-cold-journal.mjs';
+import { canonicalLegacyColdDigest } from './legacy-cold-store-adapter.mjs';
 
 const proof = { test: true };
 const hash = legacyColdDigest(`${JSON.stringify(proof)}\n`);
@@ -203,4 +204,291 @@ test('bounded inventory proofs larger than the journal limit remain readable and
   assert.deepEqual(store.readProof('pendingInventory'), value);
   assert.equal(store.recordProof(value), proof);
   assert.throws(() => store.recordProof({ data: 'x'.repeat(8 * 1024 * 1024) }), /budget/);
+});
+
+function refreezeFixture(t, { stopped = false, blocked = true } = {}) {
+  const h = fixture(t);
+  const inventoryBinding = {
+    sourceSha: bindings.targetSha,
+    imageId: bindings.targetImageId,
+    maintenanceId: nonce,
+    queueFenceNonce: '1'.repeat(64),
+    stoppedGenerations: [{ sourceSha: bindings.targetSha, stopped: true }],
+  };
+  const inventory = {
+    version: 1,
+    binding: inventoryBinding,
+    selectionSha256: '8'.repeat(64),
+    inventorySha256: '1'.repeat(64),
+    previewSha256: '2'.repeat(64),
+  };
+  const previous = {
+    version: 1,
+    complete: true,
+    sourceSha: bindings.targetSha,
+    imageId: bindings.targetImageId,
+    controllerNonce: nonce,
+    selectionDigest: bindings.selectionDigest,
+    inventoryDigest: inventory.inventorySha256,
+    previewDigest: inventory.previewSha256,
+    inventoryArtifactSha256: legacyColdDigest(`${JSON.stringify(inventory)}\n`),
+    unknownSources: 0,
+    saturated: false,
+    inventory,
+  };
+  const review = (pending) => ({
+    version: 1,
+    previewDigest: pending.previewDigest,
+    inventoryDigest: pending.inventoryDigest,
+    selectionDigest: bindings.selectionDigest,
+  });
+  let journal = h.store.admit(bindings, hash);
+  journal = h.store.advance(legacyColdDigest(journal), 'STOPPING');
+  journal = h.store.advance(legacyColdDigest(journal), 'STOPPED', { stoppedInventory: hash });
+  journal = h.store.advance(legacyColdDigest(journal), 'INVENTORIED', {
+    pendingInventory: h.store.recordProof(previous),
+    reviewedPreview: h.store.recordProof(review(previous)),
+  });
+  if (stopped)
+    journal = h.store.retryPreinstall(legacyColdDigest(journal), {
+      stoppedInventory: hash,
+      repausedQueues: hash,
+    });
+  if (blocked)
+    journal = h.store.block(legacyColdDigest(journal), 'reviewed_inventory_changed', {
+      revocation: hash,
+    });
+  const replacement = structuredClone(previous);
+  replacement.inventoryDigest = '3'.repeat(64);
+  replacement.inventory.inventorySha256 = replacement.inventoryDigest;
+  replacement.inventoryArtifactSha256 = legacyColdDigest(
+    `${JSON.stringify(replacement.inventory)}\n`,
+  );
+  replacement.inventoryArtifactName = `inventory-${replacement.inventoryArtifactSha256}.json`;
+  const readback = {
+    version: 1,
+    operation: 'readback',
+    state: 'ABSENT',
+    certificateId: bindings.certificateId,
+    activationAuthorized: false,
+    inventorySha256: previous.inventoryDigest,
+    previewSha256: previous.previewDigest,
+    bindingSha256: canonicalLegacyColdDigest(inventoryBinding),
+    completeChats: 0,
+    requiredChats: 0,
+  };
+  const absence = {
+    version: 1,
+    operation: 'refreeze-certificate-absence',
+    certificateId: bindings.certificateId,
+    sourceSha: bindings.targetSha,
+    imageId: bindings.targetImageId,
+    controllerNonce: nonce,
+    selectionDigest: bindings.selectionDigest,
+    inventoryDigest: previous.inventoryDigest,
+    previewDigest: previous.previewDigest,
+    before: readback,
+    after: structuredClone(readback),
+  };
+  const artifact = join(h.directory, 'inventory.json');
+  writeFileSync(artifact, `${JSON.stringify(previous.inventory)}\n`, { mode: 0o600 });
+  return { ...h, journal, previous, replacement, absence, review, artifact };
+}
+
+function refreezeProofs(h, overrides = {}) {
+  const pending = overrides.pending ?? h.replacement;
+  const pendingInventory = h.store.recordProof(pending);
+  const reviewedPreview = h.store.recordProof(overrides.review ?? h.review(pending));
+  const refreezeAbsence = h.store.recordProof(overrides.absence ?? h.absence);
+  const supersededPreview = h.store.recordProof({
+    version: 1,
+    operation: 'refreeze-preview',
+    previousJournal: h.journal,
+    previousJournalDigest: legacyColdDigest(h.journal),
+    previousPendingInventory: h.journal.proofs.pendingInventory,
+    previousReviewedPreview: h.journal.proofs.reviewedPreview,
+    previousArtifactSha256: h.previous.inventoryArtifactSha256,
+    replacementPendingInventory: pendingInventory,
+    replacementReviewedPreview: reviewedPreview,
+    absenceProof: refreezeAbsence,
+    ...overrides.history,
+  });
+  return { supersededPreview, refreezeAbsence, pendingInventory, reviewedPreview };
+}
+
+test('one typed preinstall refreeze retains original evidence and changes only the reviewed preview', (t) => {
+  for (const stopped of [false, true]) {
+    const h = refreezeFixture(t, { stopped });
+    const oldBytes = readFileSync(h.artifact);
+    const oldProofs = new Map(
+      Object.values(h.journal.proofs).map((id) => [
+        id,
+        readFileSync(join(h.directory, 'legacy-cold-evidence', `${id}.json`)),
+      ]),
+    );
+    const proofs = refreezeProofs(h);
+    const next = h.store.refreezePreinstall(legacyColdDigest(h.journal), proofs);
+    assert.deepEqual(next, {
+      ...h.journal,
+      phase: 'INVENTORIED',
+      revision: h.journal.revision + 1,
+      blockedReason: null,
+      proofs: { ...h.journal.proofs, ...proofs },
+    });
+    assert.deepEqual(h.store.readProof('supersededPreview').previousJournal, h.journal);
+    assert.deepEqual(h.store.readProof('pendingInventory'), h.replacement);
+    assert.deepEqual(readFileSync(h.artifact), oldBytes);
+    for (const [id, bytes] of oldProofs)
+      assert.deepEqual(
+        readFileSync(join(h.directory, 'legacy-cold-evidence', `${id}.json`)),
+        bytes,
+      );
+    assert.throws(() => h.store.refreezePreinstall(legacyColdDigest(next), proofs), /refreeze CAS/);
+    assert.throws(
+      () => h.store.block(legacyColdDigest(next), 'refused', { pendingInventory: hash }),
+      /immutable proof/,
+    );
+    assert.throws(() => assertNoActiveLegacyColdMaintenance(h.directory), /active cold epoch/);
+  }
+});
+
+test('refreeze rejects stale revisions, broad proof changes and installation boundaries', (t) => {
+  const h = refreezeFixture(t);
+  const proofs = refreezeProofs(h);
+  for (const [expected, input] of [
+    ['f'.repeat(64), proofs],
+    [legacyColdDigest(h.journal), { ...proofs, hostAdmission: hash }],
+    [legacyColdDigest(h.journal), { ...proofs, refreezeAbsence: undefined }],
+  ])
+    assert.throws(() => h.store.refreezePreinstall(expected, input), /refreeze CAS/);
+  assert.deepEqual(h.store.read().journal, h.journal);
+  for (const name of [
+    'pendingRecheck',
+    'sealedReadback',
+    'runtimeIdentity',
+    'nativeIdentity',
+    'strictSmokes',
+    'releaseManifest',
+    'restoppedInventory',
+  ]) {
+    const guarded = refreezeFixture(t);
+    guarded.journal = guarded.store.block(legacyColdDigest(guarded.journal), 'refused', {
+      [name]: hash,
+    });
+    assert.throws(
+      () =>
+        guarded.store.refreezePreinstall(
+          legacyColdDigest(guarded.journal),
+          refreezeProofs(guarded),
+        ),
+      /refreeze CAS/,
+    );
+  }
+  const started = refreezeFixture(t, { blocked: false });
+  for (const [phase, additions] of steps.slice(3)) {
+    started.journal = started.store.advance(legacyColdDigest(started.journal), phase, additions);
+    assert.throws(
+      () =>
+        started.store.refreezePreinstall(
+          legacyColdDigest(started.journal),
+          refreezeProofs(started),
+        ),
+      /refreeze CAS/,
+    );
+  }
+});
+
+test('refreeze requires exact historical links and immutable original journal', (t) => {
+  for (const field of [
+    'previousJournalDigest',
+    'previousPendingInventory',
+    'previousReviewedPreview',
+    'previousArtifactSha256',
+    'replacementPendingInventory',
+    'replacementReviewedPreview',
+    'absenceProof',
+  ]) {
+    const h = refreezeFixture(t);
+    const proofs = refreezeProofs(h, { history: { [field]: 'f'.repeat(64) } });
+    assert.throws(
+      () => h.store.refreezePreinstall(legacyColdDigest(h.journal), proofs),
+      /superseded/,
+    );
+    assert.deepEqual(h.store.read().journal, h.journal);
+  }
+  const h = refreezeFixture(t);
+  const proofs = refreezeProofs(h, {
+    history: { previousJournal: { ...h.journal, revision: h.journal.revision + 1 } },
+  });
+  assert.throws(
+    () => h.store.refreezePreinstall(legacyColdDigest(h.journal), proofs),
+    /superseded/,
+  );
+});
+
+test('both bound certificate reads must positively prove absence for the old review', (t) => {
+  for (const side of ['before', 'after']) {
+    for (const [field, value] of [
+      ['state', 'UNSEALED'],
+      ['state', 'SEALED'],
+      ['state', 'UNKNOWN'],
+      ['operation', 'install'],
+      ['version', 2],
+      ['certificateId', nonce],
+      ['activationAuthorized', true],
+      ['inventorySha256', 'f'.repeat(64)],
+      ['previewSha256', 'f'.repeat(64)],
+      ['bindingSha256', 'f'.repeat(64)],
+    ]) {
+      const h = refreezeFixture(t);
+      const absence = structuredClone(h.absence);
+      absence[side][field] = value;
+      const proofs = refreezeProofs(h, { absence });
+      assert.throws(
+        () => h.store.refreezePreinstall(legacyColdDigest(h.journal), proofs),
+        /absence/,
+      );
+      assert.deepEqual(h.store.read().journal, h.journal);
+    }
+  }
+});
+
+test('refreeze rejects replacement identity, artifact and review drift', (t) => {
+  for (const [field, value] of [
+    ['sourceSha', 'f'.repeat(40)],
+    ['imageId', `sha256:${'f'.repeat(64)}`],
+    ['controllerNonce', clusterIdentity],
+    ['selectionDigest', 'f'.repeat(64)],
+    ['previewDigest', 'f'.repeat(64)],
+    ['inventoryArtifactSha256', 'f'.repeat(64)],
+    ['inventoryArtifactName', '../inventory.json'],
+    ['complete', false],
+    ['unknownSources', 1],
+    ['saturated', true],
+  ]) {
+    const h = refreezeFixture(t);
+    const proofs = refreezeProofs(h, { pending: { ...h.replacement, [field]: value } });
+    assert.throws(() => h.store.refreezePreinstall(legacyColdDigest(h.journal), proofs), /binding/);
+    assert.deepEqual(h.store.read().journal, h.journal);
+  }
+  const h = refreezeFixture(t);
+  const proofs = refreezeProofs(h, {
+    review: { ...h.review(h.replacement), inventoryDigest: 'f'.repeat(64) },
+  });
+  assert.throws(() => h.store.refreezePreinstall(legacyColdDigest(h.journal), proofs), /binding/);
+});
+
+test('new proof hashes do not authorize absent or modified evidence files', (t) => {
+  for (const remove of [false, true]) {
+    const h = refreezeFixture(t);
+    const proofs = refreezeProofs(h);
+    const path = join(h.directory, 'legacy-cold-evidence', `${proofs.refreezeAbsence}.json`);
+    if (remove) rmSync(path);
+    else writeFileSync(path, '{"forged":true}\n');
+    assert.throws(
+      () => h.store.refreezePreinstall(legacyColdDigest(h.journal), proofs),
+      /absent or changed/,
+    );
+    assert.deepEqual(h.store.read().journal, h.journal);
+  }
 });

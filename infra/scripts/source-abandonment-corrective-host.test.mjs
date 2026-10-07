@@ -20,7 +20,7 @@ const request = () => ({
 const parse = (value) => parseSourceAbandonmentCorrectiveHostRequest(JSON.stringify(value));
 
 test('corrective envelope preserves the exact existing reviewed runtime request', () => {
-  for (const operation of ['apply', 'reconcile', 'retry-preview']) {
+  for (const operation of ['apply', 'reconcile', 'retry-preview', 'refreeze-preview']) {
     const value = request();
     value.runtimeRequest.operation = operation;
     if (operation === 'retry-preview') {

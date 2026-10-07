@@ -105,7 +105,7 @@ source_abandonment_corrective "$@"
 }
 
 test('connector admits green exact controller while forwarding the unchanged older runtime request', (t) => {
-  for (const operation of ['apply', 'reconcile', 'retry-preview']) {
+  for (const operation of ['apply', 'reconcile', 'retry-preview', 'refreeze-preview']) {
     const result = localCall(t, { envelope: envelope(operation) });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.forwarded, result.text);
