@@ -5,7 +5,7 @@ import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registr
 // COUNT is a work hint, not a hard bound on buckets visited by one Redis command.
 // Cardinality, page, reply, matched-key, wall-time and observed latency limits all
 // fail closed; they do not replace the independent owner/job/SQL proof budget.
-// Four COUNT steps share one measured read with the same aggregate reply limits;
+// One COUNT step per measured read limits each uninterrupted server operation;
 // the returned cursor trace charges every underlying page and detects cycles.
 export const SOURCE_ABANDONMENT_CATALOG_BUDGET = Object.freeze({
   databaseKeys: 12_000_000,
@@ -24,8 +24,8 @@ export const SOURCE_ABANDONMENT_CATALOG_BUDGET = Object.freeze({
 });
 
 const budget = SOURCE_ABANDONMENT_CATALOG_BUDGET;
+const commandstatsProjectionBytes = 512;
 type ReadOnlyCostTransaction = {
-  info(section: string): ReadOnlyCostTransaction;
   eval_ro(script: string, keys: number, ...args: string[]): ReadOnlyCostTransaction;
   exec(): Promise<unknown>;
 };
@@ -34,37 +34,53 @@ export type SourceAbandonmentCatalogReader = {
   multi?(): ReadOnlyCostTransaction;
 };
 
+// FLAG: Bound and validate the full internal INFO before projecting its original
+// decimal text. Lua numbers must never round the lifetime command counters.
+// The 16 MiB measurement budget counts returned metadata, not internal INFO work.
+export const SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT = `-- source-abandonment:commandstats-projection-v1
+local raw = redis.call('INFO', 'commandstats')
+local header = '# Commandstats\\r\\n'
+local function fail() return redis.error_reply('CATALOG_SERVER_COST_UNPROVED') end
+if type(raw) ~= 'string' or #raw > 65536 or string.sub(raw, 1, #header) ~= header or string.sub(raw, -2) ~= '\\r\\n' then return fail() end
+local offset = #header + 1
+local lines = 2
+local selected = nil
+while offset <= #raw do
+  local finish = string.find(raw, '\\r\\n', offset, true)
+  if not finish then return fail() end
+  local line = string.sub(raw, offset, finish - 1)
+  offset = finish + 2
+  lines = lines + 1
+  if lines > 512 then return fail() end
+  if line ~= '' then
+    local name, calls, usec, average, rejected, failed = string.match(line, '^cmdstat_([^:%s]+):calls=(%d+),usec=(%d+),usec_per_call=([%d%.]+),rejected_calls=(%d+),failed_calls=(%d+)$')
+    if not name or #name > 128 or #calls > 20 or #usec > 20 or #rejected > 20 or #failed > 20 or not (string.match(average, '^%d+$') or string.match(average, '^%d+%.%d+$')) then return fail() end
+    if name == 'eval_ro' then
+      if selected then return fail() end
+      selected = line
+    end
+  end
+end
+local projected = header .. (selected and (selected .. '\\r\\n') or '')
+if #projected > ${commandstatsProjectionBytes} then return fail() end
+return projected`;
+
 function parseCommandstats(value: unknown) {
   const fail = (): never => {
     throw new Error('CATALOG_SERVER_COST_UNPROVED');
   };
   if (
     typeof value !== 'string' ||
-    Buffer.byteLength(value) > 64 * 1024 ||
+    Buffer.byteLength(value) > commandstatsProjectionBytes ||
     !value.startsWith('# Commandstats\r\n')
   )
     return fail();
+  if (value === '# Commandstats\r\n') return { calls: 0, usec: 0, rejected: 0, failed: 0 };
   const lines = value.split('\r\n');
-  if (
-    lines.length > 512 ||
-    lines.at(-1) !== '' ||
-    lines
-      .slice(1, -1)
-      .some(
-        (line) =>
-          line !== '' &&
-          !/^cmdstat_[^:\s]{1,128}:calls=\d{1,20},usec=\d{1,20},usec_per_call=\d+(?:\.\d+)?,rejected_calls=\d{1,20},failed_calls=\d{1,20}$/u.test(
-            line,
-          ),
-      )
-  )
-    return fail();
-  const matching = lines.filter((line) => line.startsWith('cmdstat_eval_ro:'));
-  if (matching.length > 1) return fail();
-  if (!matching.length) return { calls: 0, usec: 0, rejected: 0, failed: 0 };
+  if (lines.length !== 3 || lines[2] !== '') return fail();
   const match =
     /^cmdstat_eval_ro:calls=(\d{1,16}),usec=(\d{1,16}),usec_per_call=\d+(?:\.\d+)?,rejected_calls=(\d{1,16}),failed_calls=(\d{1,16})$/u.exec(
-      matching[0],
+      lines[1],
     );
   if (!match) return fail();
   const values = match.slice(1).map(Number);
@@ -80,14 +96,16 @@ export async function readMeasuredSourceCatalogScript(
   ...args: string[]
 ): Promise<{ reply: unknown; serverDurationUs: number; measurementBytes: number }> {
   if (typeof redis.multi !== 'function') throw new Error('CATALOG_SERVER_COST_UNPROVED');
-  // FLAG: MULTI/EXEC contains only INFO and EVAL_RO. It excludes interleaved
-  // scripts and CONFIG RESETSTAT, and commandstats must advance by exactly one.
-  // Redis 7.2+ freezes Lua TIME; client round-trip time includes unrelated delay.
+  // FLAG: MULTI/EXEC excludes interleaved scripts and CONFIG RESETSTAT. The final
+  // projection sees the completed first meter plus target: exactly two EVAL_ROs.
+  // Their reported cost conservatively includes the whole target; the final
+  // meter is outside that delta. This is an observed limit, not preemption or a
+  // hard wall-clock bound. Redis 7.2+ freezes Lua TIME; client RTT adds delay.
   const result = await redis
     .multi()
-    .info('commandstats')
+    .eval_ro(SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT, 0)
     .eval_ro(script, keys, ...args)
-    .info('commandstats')
+    .eval_ro(SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT, 0)
     .exec();
   if (
     !Array.isArray(result) ||
@@ -98,7 +116,7 @@ export async function readMeasuredSourceCatalogScript(
   const before = parseCommandstats(result[0][1]);
   const after = parseCommandstats(result[2][1]);
   if (
-    after.calls - before.calls !== 1 ||
+    after.calls - before.calls !== 2 ||
     after.usec < before.usec ||
     after.failed !== before.failed ||
     after.rejected !== before.rejected
@@ -271,11 +289,11 @@ export async function inventorySourceAbandonmentNamespaces(
         cost.bytes + budget.pageReplyBytes > budget.bytes
       )
         throw new Error('CATALOG_BUDGET_EXCEEDED');
-      // FLAG: Namespace artifact bytes and INFO measurement bytes are separate
-      // bounded replies; reserve the maximum metadata pair before dispatch.
-      if (cost.measurementBytes + 2 * 64 * 1024 > budget.measurementBytes)
+      // FLAG: Namespace artifact bytes and projected measurement bytes are
+      // separate bounded replies; reserve the maximum pair before dispatch.
+      if (cost.measurementBytes + 2 * commandstatsProjectionBytes > budget.measurementBytes)
         throw new Error('CATALOG_MEASUREMENT_BUDGET');
-      const pageAllowance = Math.min(4, budget.pages - cost.pages);
+      const pageAllowance = 1;
       let timer: ReturnType<typeof setTimeout> | undefined;
       let reply: unknown;
       let serverDurationUs: number;

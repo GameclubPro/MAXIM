@@ -1968,7 +1968,6 @@ export class WebhookOutboxService
     const startedAt = performance.now();
     if (startedAt < (this.nextCompletedHeadRecoveryAt ?? 0)) return 0;
     this.nextCompletedHeadRecoveryAt = startedAt + COMPLETED_HEAD_RECOVERY_INTERVAL_MS;
-    const deadline = startedAt + COMPLETED_HEAD_RECOVERY_BUDGET_MS;
     // FLAG: A prior poll retains its same-chat authority until the operation really
     // finishes. Settlement must never race that carried preparation or queue handoff.
     const eligibleHeads = Array.from(heads)
@@ -1991,6 +1990,10 @@ export class WebhookOutboxService
       return 0;
     }
     if (mirrors.length === 0) return 0;
+    // FLAG: Discovery has its own 250ms pool wait and 500ms transaction bounds.
+    // Start the guard budget afterward so successful discovery cannot consume it.
+    // Started guards keep those same per-transaction bounds and are always awaited.
+    const deadline = performance.now() + COMPLETED_HEAD_RECOVERY_BUDGET_MS;
     mirrors.sort((left, right) => left.mirrorId.localeCompare(right.mirrorId));
     const mirrorOffset = this.completedMirrorRecoveryOffset % mirrors.length;
     const orderedMirrors = [...mirrors.slice(mirrorOffset), ...mirrors.slice(0, mirrorOffset)];

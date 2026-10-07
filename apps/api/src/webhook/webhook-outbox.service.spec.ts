@@ -1124,6 +1124,110 @@ describe('WebhookOutboxService', () => {
     },
   );
 
+  it.each([true, false])(
+    'attempts a guarded settlement after slow successful discovery (guard passes=%s)',
+    async (guardPasses) => {
+      jest.useFakeTimers();
+      const f = completedHeadFixture();
+      const before = { ...f.mirror };
+      const transaction = f.transaction.getMockImplementation()!;
+      f.transaction.mockImplementationOnce(async (operation) => {
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        return transaction(operation);
+      });
+      const originalQuery = f.prisma.$queryRaw.getMockImplementation()!;
+      const guarded = jest.fn();
+      f.prisma.$queryRaw.mockImplementation(async (query) => {
+        const sql = extractSql(query);
+        if (sql.includes('completed_ordered_head_mirrors'))
+          await new Promise((resolve) => setTimeout(resolve, 110));
+        if (sql.includes('completed_ordered_head_mirror_guard')) {
+          guarded();
+          if (!guardPasses) return [];
+        }
+        return originalQuery(query);
+      });
+      try {
+        const run = f.internals.recoverCompletedOrderedHeadMirrors(f.heads);
+        await jest.advanceTimersByTimeAsync(290);
+        expect(await run).toBe(guardPasses ? 1 : 0);
+        expect(guarded).toHaveBeenCalledTimes(1);
+        expect(f.prisma.$transaction).toHaveBeenCalledTimes(2);
+        if (guardPasses) {
+          expect(f.mirror).toMatchObject({
+            status: WebhookStatus.DUPLICATE,
+            processedAt: f.ownerCompletedAt,
+            enqueueAttempts: 0,
+          });
+          expect(f.holds.isUpdateHeld).toHaveBeenCalledWith(f.mirror.normalizedPayload, f.prisma);
+        } else {
+          expect(f.mirror).toEqual(before);
+          expect(f.holds.isUpdateHeld).not.toHaveBeenCalled();
+        }
+        expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+        expect(Object.values(f.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(0);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('does not attempt settlement when completed-mirror discovery fails', async () => {
+    const f = completedHeadFixture();
+    const before = { ...f.mirror };
+    f.prisma.$transaction.mockRejectedValueOnce(new Error('Discovery unavailable'));
+    expect(await f.internals.recoverCompletedOrderedHeadMirrors(f.heads)).toBe(0);
+    expect(f.prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(f.mirror).toEqual(before);
+    expect(f.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(f.holds.isUpdateHeld).not.toHaveBeenCalled();
+    expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+  });
+
+  it('rotates guarded attempts within each fresh budget after slow mirror discovery', async () => {
+    jest.useFakeTimers();
+    const f = completedHeadFixture();
+    const mirrors = Array.from({ length: 6 }, (_, index) => ({ mirrorId: `bounded-${index}` }));
+    jest.spyOn(f.internals, 'selectCompletedOrderedHeadMirrors').mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 290));
+      return [...mirrors];
+    });
+    const transaction = f.transaction.getMockImplementation()!;
+    f.transaction.mockImplementation(async (operation) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return transaction(operation);
+    });
+    const attempted: string[] = [];
+    let active = 0;
+    let peak = 0;
+    f.prisma.$queryRaw.mockImplementation(async (query) => {
+      expect(extractSql(query)).toContain('completed_ordered_head_mirror_guard');
+      attempted.push((query as { values: string[] }).values[0]!);
+      peak = Math.max(peak, ++active);
+      await new Promise((resolve) => setTimeout(resolve, 240));
+      active -= 1;
+      return [];
+    });
+    const before = { ...f.mirror };
+    try {
+      for (let poll = 0; poll < 3; poll += 1) {
+        const run = f.internals.recoverCompletedOrderedHeadMirrors(f.heads, 2);
+        await jest.advanceTimersByTimeAsync(550);
+        expect(await run).toBe(0);
+        expect(attempted).toHaveLength((poll + 1) * 2);
+        expect(active).toBe(0);
+        await jest.advanceTimersByTimeAsync(450);
+      }
+      expect(attempted).toEqual(mirrors.map(({ mirrorId }) => mirrorId));
+      expect(peak).toBe(2);
+      expect(f.mirror).toEqual(before);
+      expect(f.holds.isUpdateHeld).not.toHaveBeenCalled();
+      expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('rotates a bounded completed-mirror probe window and excludes carried same-chat authority', async () => {
     jest.useFakeTimers();
     const { service } = createService();

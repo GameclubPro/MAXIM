@@ -9,6 +9,7 @@ import {
   assertSourceAbandonmentCatalogProofs,
   inventorySourceAbandonmentNamespaces,
   readMeasuredSourceCatalogScript,
+  SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT,
   type SourceAbandonmentCatalogReader,
 } from './source-abandonment-redis-catalog';
 import {
@@ -52,25 +53,22 @@ const commandstats = (calls = 10, usec = 100, rejected = 0, failed = 0) =>
 function measuredFixture<T extends SourceAbandonmentCatalogReader>(reader: T) {
   return Object.assign(reader, {
     multi() {
-      let script = '';
-      let keys = 0;
-      let args: string[] = [];
-      const commands: string[] = [];
+      const commands: Array<{ script: string; keys: number; args: string[] }> = [];
       const transaction = {
-        info(section: string) {
-          expect(section).toBe('commandstats');
-          commands.push('info');
-          return transaction;
-        },
         eval_ro(nextScript: string, nextKeys: number, ...nextArgs: string[]) {
-          commands.push('eval_ro');
-          script = nextScript;
-          keys = nextKeys;
-          args = nextArgs;
+          commands.push({ script: nextScript, keys: nextKeys, args: nextArgs });
           return transaction;
         },
         async exec() {
-          expect(commands).toEqual(['info', 'eval_ro', 'info']);
+          expect(commands).toHaveLength(3);
+          const projection = {
+            script: SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT,
+            keys: 0,
+            args: [],
+          };
+          expect(commands[0]).toEqual(projection);
+          expect(commands[2]).toEqual(projection);
+          const { script, keys, args } = commands[1];
           let reply = await reader.eval_ro(script, keys, ...args);
           if (
             script.startsWith('-- source-abandonment:namespace-catalog') &&
@@ -79,22 +77,12 @@ function measuredFixture<T extends SourceAbandonmentCatalogReader>(reader: T) {
             reply.length === 7
           ) {
             const cursor = reply[2] as string;
-            reply = [
-              ...reply,
-              cursor === '0'
-                ? ['0']
-                : [
-                    `90000000000${cursor}1`,
-                    `90000000000${cursor}2`,
-                    `90000000000${cursor}3`,
-                    cursor,
-                  ],
-            ];
+            reply = [...reply, [cursor]];
           }
           return [
             [null, commandstats()],
             [null, reply],
-            [null, commandstats(11, 200)],
+            [null, commandstats(12, 200)],
           ];
         },
       };
@@ -138,7 +126,7 @@ describe('exact source abandonment bounded evidence', () => {
     });
   });
   it.each([[], ['0', '2'], ['1'], ['1', '2', '3']])(
-    'rejects malformed paired page cursor accounting',
+    'rejects malformed single page cursor accounting',
     async (...cursors) => {
       const reader = measuredFixture({ eval_ro: async () => [1, 0, '2', 0, 0, 0, [], cursors] });
       expect(await inventorySourceAbandonmentNamespaces(reader, Date.now() + 1000)).toMatchObject({
@@ -148,15 +136,17 @@ describe('exact source abandonment bounded evidence', () => {
     },
   );
   it.each([
-    [commandstats(11, 50_101), 'CATALOG_CALL_LATENCY_LIMIT'],
+    [commandstats(12, 50_101), 'CATALOG_CALL_LATENCY_LIMIT'],
     [commandstats(0, 0), 'CATALOG_SERVER_COST_UNPROVED'],
-    [commandstats(12, 200), 'CATALOG_SERVER_COST_UNPROVED'],
-    [commandstats(11, 99), 'CATALOG_SERVER_COST_UNPROVED'],
-    [commandstats(11, 200, 1), 'CATALOG_SERVER_COST_UNPROVED'],
-    [commandstats(11, 200, 0, 1), 'CATALOG_SERVER_COST_UNPROVED'],
-    [commandstats(11, Number.MAX_SAFE_INTEGER + 1), 'CATALOG_SERVER_COST_UNPROVED'],
-    [`${commandstats(11, 200)}${commandstats(11, 200)}`, 'CATALOG_SERVER_COST_UNPROVED'],
-    [`${commandstats(11, 200)}${'x'.repeat(64 * 1024)}`, 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(11, 200), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(13, 200), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(12, 99), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(12, 200, 1), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(12, 200, 0, 1), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(12, Number.MAX_SAFE_INTEGER + 1), 'CATALOG_SERVER_COST_UNPROVED'],
+    [commandstats(Number.MAX_SAFE_INTEGER + 1, 200), 'CATALOG_SERVER_COST_UNPROVED'],
+    [`${commandstats(12, 200)}${commandstats(12, 200)}`, 'CATALOG_SERVER_COST_UNPROVED'],
+    [`${commandstats(12, 200)}${'x'.repeat(512)}`, 'CATALOG_SERVER_COST_UNPROVED'],
     ['secret raw error', 'CATALOG_SERVER_COST_UNPROVED'],
   ])(
     'refuses invalid commandstats rather than accepting a zero Lua duration',
@@ -176,6 +166,45 @@ describe('exact source abandonment bounded evidence', () => {
       await expect(readMeasuredSourceCatalogScript(reader, 'read', 0)).rejects.toThrow(issue);
     },
   );
+  it.each([0, 1, 2])('refuses an error in measured transaction command %i', async (index) => {
+    const reader = measuredFixture({ eval_ro: async () => 'target reply' });
+    const multi = reader.multi.bind(reader);
+    reader.multi = () => {
+      const transaction = multi();
+      const exec = transaction.exec.bind(transaction);
+      transaction.exec = async () => {
+        const rows = await exec();
+        rows[index][0] = new Error('private Redis error');
+        return rows;
+      };
+      return transaction;
+    };
+    await expect(readMeasuredSourceCatalogScript(reader, 'read', 0)).rejects.toThrow(
+      'CATALOG_SERVER_COST_UNPROVED',
+    );
+  });
+  it('accepts a canonical absent baseline and charges only the bounded projections', async () => {
+    const reader = measuredFixture({ eval_ro: async () => 'target reply' });
+    const multi = reader.multi.bind(reader);
+    const before = '# Commandstats\r\n';
+    const after = commandstats(2, 50_000);
+    reader.multi = () => {
+      const transaction = multi();
+      const exec = transaction.exec.bind(transaction);
+      transaction.exec = async () => {
+        const rows = await exec();
+        rows[0][1] = before;
+        rows[2][1] = after;
+        return rows;
+      };
+      return transaction;
+    };
+    await expect(readMeasuredSourceCatalogScript(reader, 'read', 0)).resolves.toEqual({
+      reply: 'target reply',
+      serverDurationUs: 50_000,
+      measurementBytes: Buffer.byteLength(before) + Buffer.byteLength(after),
+    });
+  });
   it('binds an exact original message and never a distinct message by the same member', () => {
     expect(classifySourceAbandonmentAction(action(), [source])).toMatchObject({
       ...source,
@@ -374,18 +403,10 @@ describe('exact source abandonment bounded evidence', () => {
     const redis = measuredFixture({
       eval_ro: jest.fn(async (script: string, keyCount: number, ...args: string[]) => {
         if (script.startsWith('-- source-abandonment:namespace-catalog-v2')) {
-          pages += 4;
+          expect(args[1]).toBe('1');
+          pages += 1;
           const cursor = pages === 600 ? '0' : String(pages);
-          return [
-            1,
-            9_212_720,
-            cursor,
-            0,
-            0,
-            100,
-            [],
-            [String(pages - 3), String(pages - 2), String(pages - 1), cursor],
-          ];
+          return [1, 9_212_720, cursor, 0, 0, 100, [], [cursor]];
         }
         return base.eval_ro(script, keyCount, ...args);
       }),
@@ -400,6 +421,9 @@ describe('exact source abandonment bounded evidence', () => {
     );
     expect(result.issues).toEqual([]);
     expect(result.catalog).toMatchObject({ complete: true, cost: { pages: 600 } });
+    expect(result.catalog?.cost.measurementBytes).toBe(
+      600 * (Buffer.byteLength(commandstats()) + Buffer.byteLength(commandstats(12, 200))),
+    );
     expect(result.cost.pages).toBeLessThan(100);
     expect(result.cost.probes).toBeLessThan(50_000);
   });

@@ -1,6 +1,10 @@
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
-import { inventorySourceAbandonmentNamespaces } from './source-abandonment-redis-catalog';
+import {
+  inventorySourceAbandonmentNamespaces,
+  readMeasuredSourceCatalogScript,
+  SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT,
+} from './source-abandonment-redis-catalog';
 import { inventorySourceAbandonmentRedis } from './source-abandonment-live-redis';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
@@ -54,8 +58,135 @@ native('modern full namespace census on Redis 7', () => {
     plans: [],
     cost: { pages: 0, rows: 0, probes: 0, bytes: 0 },
   });
+  const fixtureStats = (calls: string) =>
+    `# Commandstats\r\ncmdstat_eval_ro:calls=${calls},usec=100,usec_per_call=10.00,rejected_calls=0,failed_calls=0\r\n`;
 
-  it('stops a paired scan on its first zero cursor and counts only that underlying page', async () => {
+  it.each([
+    { name: 'absent counter', raw: '# Commandstats\r\n', expected: '# Commandstats\r\n' },
+    {
+      name: 'counter above Lua safe integer precision',
+      raw: fixtureStats('9007199254740993'),
+      expected: fixtureStats('9007199254740993'),
+    },
+    {
+      name: 'duplicate counter',
+      raw: fixtureStats('10') + fixtureStats('10').replace('# Commandstats\r\n', ''),
+      expected: null,
+    },
+    {
+      name: 'malformed fields',
+      raw: fixtureStats('10').replace(',failed_calls=0', ''),
+      expected: null,
+    },
+    {
+      name: 'internal INFO byte limit',
+      raw: `# Commandstats\r\ncmdstat_ping:calls=1,usec=1,usec_per_call=${'1'.repeat(65536)}.00,rejected_calls=0,failed_calls=0\r\n`,
+      expected: null,
+    },
+    {
+      name: 'internal INFO line limit',
+      raw: '# Commandstats\r\n' + '\r\n'.repeat(511),
+      expected: null,
+    },
+  ])('validates the actual Lua projection: $name', async ({ name, raw, expected }) => {
+    // FLAG: Only the INFO input is substituted; execute the exported parser on
+    // disposable Redis so Lua escaping, text precision and refusals are real.
+    const script = SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT.replace(
+      "redis.call('INFO', 'commandstats')",
+      JSON.stringify(raw),
+    );
+    expect(script).not.toBe(SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT);
+    if (expected === null) {
+      await expect(redis.eval_ro(script, 0)).rejects.toThrow('CATALOG_SERVER_COST_UNPROVED');
+      return;
+    }
+    const projected = await redis.eval_ro(script, 0);
+    expect(projected).toBe(expected);
+    if (name === 'counter above Lua safe integer precision') {
+      const unsafeReader = {
+        ...reader(),
+        multi() {
+          const measurement = {
+            eval_ro() {
+              return measurement;
+            },
+            async exec() {
+              return [
+                [null, fixtureStats('10')],
+                [null, 1],
+                [null, projected],
+              ];
+            },
+          };
+          return measurement;
+        },
+      };
+      await expect(readMeasuredSourceCatalogScript(unsafeReader, 'return 1', 0)).rejects.toThrow(
+        'CATALOG_SERVER_COST_UNPROVED',
+      );
+    }
+  });
+
+  it('projects real commandstats and measures the complete outer script without Redis calls', async () => {
+    const projection = await redis.eval_ro(SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT, 0);
+    expect(typeof projection).toBe('string');
+    expect(Buffer.byteLength(projection as string)).toBeLessThanOrEqual(512);
+    expect(projection).toMatch(
+      /^# Commandstats\r\n(?:cmdstat_eval_ro:calls=\d+,usec=\d+,usec_per_call=\d+(?:\.\d+)?,rejected_calls=\d+,failed_calls=\d+\r\n)?$/u,
+    );
+    // FLAG: Pure Lua work is invisible to nested Redis-command timings. The
+    // projected two-call delta must include this complete outer EVAL_RO.
+    let targetDurationUs = 0;
+    const independentlyMeasuredReader = {
+      ...reader(),
+      multi() {
+        const commands: Array<[string, number, ...string[]]> = [];
+        const measurement = {
+          eval_ro(script: string, keys: number, ...args: string[]) {
+            commands.push([script, keys, ...args]);
+            return measurement;
+          },
+          async exec() {
+            expect(commands).toHaveLength(3);
+            const rows = await redis
+              .multi()
+              .eval_ro(...commands[0])
+              .info('commandstats')
+              .eval_ro(...commands[1])
+              .info('commandstats')
+              .eval_ro(...commands[2])
+              .exec();
+            expect(rows).toHaveLength(5);
+            expect(rows?.every(([error]) => error === null)).toBe(true);
+            const targetStats = [rows![1][1], rows![3][1]].map((raw) => {
+              expect(typeof raw).toBe('string');
+              const match = /^cmdstat_eval_ro:calls=(\d+),usec=(\d+),/mu.exec(raw as string);
+              expect(match).not.toBeNull();
+              return { calls: Number(match![1]), usec: Number(match![2]) };
+            });
+            expect(targetStats[1].calls - targetStats[0].calls).toBe(1);
+            targetDurationUs = targetStats[1].usec - targetStats[0].usec;
+            expect(targetDurationUs).toBeGreaterThan(0);
+            return [rows![0], rows![2], rows![4]];
+          },
+        };
+        return measurement;
+      },
+    };
+    const measured = await readMeasuredSourceCatalogScript(
+      independentlyMeasuredReader,
+      'local sum = 0; for i = 1, 20000 do sum = sum + i end; return sum',
+      0,
+    );
+    expect(measured.reply).toBe(200_010_000);
+    expect(measured.serverDurationUs).toBeGreaterThanOrEqual(targetDurationUs);
+    expect(measured.serverDurationUs).toBeLessThanOrEqual(50_000);
+    expect(measured.measurementBytes).toBeGreaterThan(0);
+    expect(measured.measurementBytes).toBeLessThanOrEqual(2 * 512);
+    expect(await redis.dbsize()).toBe(0);
+  });
+
+  it('stops on the first zero cursor and counts one underlying page', async () => {
     expect(await inventorySourceAbandonmentNamespaces(reader(), deadline())).toMatchObject({
       complete: true,
       issue: null,
