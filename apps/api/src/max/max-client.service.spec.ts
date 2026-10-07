@@ -6977,7 +6977,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
       .catch((caught: unknown) => caught);
 
     expect(beforeSend).not.toHaveBeenCalled();
-    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+    expect(httpService.request.mock.calls.map(([request]) => request.method)).toEqual([
+      'get',
+      'get',
+    ]);
     expect(wasMaxMessageSendAttempted(error)).toBe(false);
     await service.onModuleDestroy();
   });
@@ -11766,6 +11770,98 @@ describe('MaxClientService inline keyboard guardrails', () => {
     },
   );
 
+  it.each([{}, { code: 'message.not.found' }])(
+    'recovers an exact raw message through its direct path after list-route 404 (%j)',
+    async (data) => {
+      const message = {
+        body: { mid: 'mid-list-fallback', text: 'test' },
+        recipient: { chat_id: 'chat-1' },
+      };
+      const httpService = {
+        request: jest
+          .fn()
+          .mockReturnValueOnce(throwError(() => ({ response: { status: 404, data } })))
+          .mockReturnValueOnce(of({ data: { message } })),
+      };
+      const service = createService(httpService);
+
+      await expect(
+        service.getExactMessageRow('chat-1', 'mid-list-fallback', {
+          botId: '777000_bot',
+          timeoutMs: 1250,
+          trafficClass: 'critical',
+        }),
+      ).resolves.toBe(message);
+      expect(httpService.request).toHaveBeenCalledTimes(2);
+      expect(httpService.request.mock.calls.map(([request]) => request.url)).toEqual([
+        'https://platform-api2.max.ru/messages',
+        'https://platform-api2.max.ru/messages/mid-list-fallback',
+      ]);
+      for (const [request] of httpService.request.mock.calls) {
+        expect(request).toEqual(
+          expect.objectContaining({
+            method: 'get',
+            timeout: 1250,
+            headers: expect.objectContaining({ Authorization: 'test-token' }),
+          }),
+        );
+      }
+      await service.onModuleDestroy();
+    },
+  );
+
+  it.each([
+    { response: { status: 404, data: {} } },
+    { response: { status: 404, data: { code: 'message.not.found' } } },
+    { response: { status: 403, data: { code: 'access.denied' } } },
+    { response: { status: 503, data: {} } },
+    { code: 'ETIMEDOUT' },
+  ])('preserves the exact direct lookup failure after list-route 404 (%j)', async (error) => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(throwError(() => ({ response: { status: 404 } })))
+        .mockReturnValueOnce(throwError(() => error)),
+    };
+    const service = createService(httpService);
+
+    await expect(service.getExactMessageRow('chat-1', 'mid-unavailable')).rejects.toBe(error);
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+    expect(httpService.request.mock.calls.map(([request]) => request.method)).toEqual([
+      'get',
+      'get',
+    ]);
+    await service.onModuleDestroy();
+  });
+
+  it.each([
+    { body: { mid: 'another-message' }, recipient: { chat_id: 'chat-1' } },
+    { body: { mid: 'mid-list-fallback' }, recipient: { chat_id: 'another-chat' } },
+    { body: { mid: 'mid-list-fallback' } },
+  ])('rejects unverified direct identity after list-route 404 (%j)', async (message) => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(throwError(() => ({ response: { status: 404 } })))
+        .mockReturnValueOnce(of({ data: { message } })),
+    };
+    const service = createService(httpService);
+
+    await expect(service.getExactMessageRow('chat-1', 'mid-list-fallback')).rejects.toThrow();
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+    await service.onModuleDestroy();
+  });
+
+  it('does not fall back to another route after a list lookup transport failure', async () => {
+    const error = { code: 'ETIMEDOUT' };
+    const httpService = { request: jest.fn().mockReturnValueOnce(throwError(() => error)) };
+    const service = createService(httpService);
+
+    await expect(service.getExactMessageRow('chat-1', 'mid-timeout')).rejects.toBe(error);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    await service.onModuleDestroy();
+  });
+
   it.each([403, 404, 429, 503])(
     'keeps a failed moderation pre-delete lookup HTTP %s fail-closed without false global pressure',
     async (status) => {
@@ -11773,7 +11869,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         response: { status, data: { code: status === 404 ? 'not.found' : 'lookup.failed' } },
       };
       const httpService = {
-        request: jest.fn().mockReturnValueOnce(throwError(() => error)),
+        request: jest.fn().mockReturnValue(throwError(() => error)),
       };
       const service = createService(httpService);
       const health = (
@@ -11798,7 +11894,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
           },
         }),
       ).rejects.toBe(error);
-      expect(httpService.request).toHaveBeenCalledTimes(1);
+      expect(httpService.request).toHaveBeenCalledTimes(status === 404 ? 2 : 1);
       expect(httpService.request).toHaveBeenCalledWith(expect.objectContaining({ method: 'get' }));
       if (status === 403 || status === 404) {
         expect(health.recordFailureForLane).not.toHaveBeenCalled();

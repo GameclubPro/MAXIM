@@ -47,11 +47,64 @@ describe('webhook execution diagnostics', () => {
     const result = describeWebhookExecutionFailure(error, 'violation-delete');
     expect(result).toMatchObject({
       requestOperation: 'delete_messages',
+      requestTarget: 'single',
       hotPathStage: 'violation-delete',
     });
     expect(JSON.stringify(result)).not.toMatch(/secret|private-id|Authorization/u);
     expect(describeWebhookExecutionFailure(error, 'private-id').hotPathStage).toBe('unknown');
     error.config.url = '/private-id/secret';
     expect(describeWebhookExecutionFailure(error).requestOperation).toBe('unknown');
+  });
+
+  it('distinguishes collection lookup failures from exact lookups without identifiers', () => {
+    for (const [url, requestTarget] of [
+      ['/messages?message_ids=private-id', 'collection'],
+      ['/messages/private-id?token=secret', 'single'],
+    ]) {
+      const result = describeWebhookExecutionFailure({
+        config: { method: 'get', url },
+        response: { status: 404, data: { error: { code: 'message.not.found', secret: 'secret' } } },
+      });
+      expect(result).toMatchObject({
+        requestOperation: 'get_messages',
+        requestTarget,
+        maxFailureCode: 'message_not_found',
+      });
+      expect(JSON.stringify(result)).not.toMatch(/private-id|secret|message_ids/u);
+    }
+  });
+
+  it.each([
+    ['required_subscription_no_longer_authorized', 'subscription_authority_rejected'],
+    ['Required subscription source no longer actionable', 'subscription_source_unavailable'],
+    ['Required subscription fresh membership unavailable', 'subscription_membership_unavailable'],
+    ['Required subscription author access unavailable', 'subscription_author_unavailable'],
+    ['Required subscription execution guard unavailable', 'subscription_guard_unavailable'],
+  ])('retains only the known reason %s', (message, failureReason) => {
+    expect(describeWebhookExecutionFailure(new Error(message)).failureReason).toBe(failureReason);
+    expect(describeWebhookExecutionFailure({ code: message }).failureReason).toBe(failureReason);
+    const result = describeWebhookExecutionFailure(new Error(`${message}: private-id`));
+    expect(result.failureReason).toBe('unknown');
+    expect(JSON.stringify(result)).not.toContain('private-id');
+  });
+
+  it('ignores unknown upstream codes, malformed bodies and hostile response getters', () => {
+    for (const data of [
+      { code: 'private-id', message: 'secret' },
+      [{ code: 'message.not.found' }],
+    ]) {
+      expect(describeWebhookExecutionFailure({ response: { data } }).maxFailureCode).toBe(
+        'unknown',
+      );
+    }
+    const error = Object.defineProperty(new Error('private-id'), 'response', {
+      get() {
+        throw new Error('secret');
+      },
+    });
+    expect(() => describeWebhookExecutionFailure(error)).not.toThrow();
+    expect(JSON.stringify(describeWebhookExecutionFailure(error))).not.toMatch(
+      /private-id|secret/u,
+    );
   });
 });

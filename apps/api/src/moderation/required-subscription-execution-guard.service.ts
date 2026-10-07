@@ -49,11 +49,13 @@ export class RequiredSubscriptionExecutionGuardService {
       getMemberAccess: () => this.max.getChatMemberAccess(proof.chatId, proof.userId, options),
       getSource: () => this.max.getExactMessageRow(proof.chatId, proof.messageId, options),
       getMembership: async (targetId) => {
+        // FLAG: The selected executor proves the source chat. Each subscription target
+        // has its own read route; retain fresh evidence without forcing the source bot there.
         const result = await this.membership.getMembershipResolution(
           targetId,
           proof.userId,
           'moderation_required_subscription',
-          { forceRefresh: true, allowStaleOnError: false, botId },
+          { forceRefresh: true, allowStaleOnError: false },
         );
         if (!result.fresh || result.membership === null) {
           if (
@@ -166,6 +168,7 @@ export class RequiredSubscriptionExecutionGuardService {
       this.reject();
     // FLAG: Fresh negative membership is required at the mutation boundary. Never reuse
     // stale missing snapshots, retry counters, or a notice lease as subscription authority.
+    // Resolve each target's own read route independently of the source executor's route.
     let missing = false;
     for (let offset = 0; offset < targets.length; offset += 2) {
       const results = await Promise.all(
@@ -174,7 +177,7 @@ export class RequiredSubscriptionExecutionGuardService {
             target,
             userId,
             'moderation_required_subscription',
-            { forceRefresh: true, allowStaleOnError: false, botId: params.botId },
+            { forceRefresh: true, allowStaleOnError: false },
           );
           if (!result.fresh || result.membership === null) {
             if (

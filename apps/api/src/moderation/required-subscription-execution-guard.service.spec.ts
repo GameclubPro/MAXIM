@@ -100,7 +100,7 @@ describe('required subscription execution authorization', () => {
       clock?.mockRestore();
     }
   });
-  it('checks all targets fresh through the selected peer with at most two concurrent probes', async () => {
+  it('checks all targets fresh through their own routes with at most two concurrent probes', async () => {
     const s = fixture();
     await expect(s.service.authorize(s.input)).resolves.toMatchObject({
       reasonKeys: ['subscription'],
@@ -117,7 +117,7 @@ describe('required subscription execution authorization', () => {
       'target-1',
       'user-1',
       'moderation_required_subscription',
-      { botId: 'selected-peer', forceRefresh: true, allowStaleOnError: false },
+      { forceRefresh: true, allowStaleOnError: false },
     );
   });
 

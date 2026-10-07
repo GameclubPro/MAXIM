@@ -4182,16 +4182,24 @@ export class MaxClientService implements OnModuleDestroy {
     }
     const timeoutMs = this.normalizeReadRequestOptions(requestOptions).timeoutMs;
 
-    const data = await this.executeGlobalRequest(
-      () =>
-        this.request<Record<string, unknown>>('get', '/messages', {
-          params: {
-            message_ids: normalizedMessageId,
-          },
-          ...(timeoutMs ? { timeout: timeoutMs } : {}),
-        }),
-      requestOptions,
-    );
+    let data: Record<string, unknown>;
+    try {
+      data = await this.executeGlobalRequest(
+        () =>
+          this.request<Record<string, unknown>>('get', '/messages', {
+            params: {
+              message_ids: normalizedMessageId,
+            },
+            ...(timeoutMs ? { timeout: timeoutMs } : {}),
+          }),
+        requestOptions,
+      );
+    } catch (error: unknown) {
+      if (this.extractStatusCode(error) !== 404) throw error;
+      // FLAG: A list-route 404 proves neither absence nor a successful deletion.
+      // Verify the exact message, as presence lookups do; preserve direct-path failures.
+      return this.getMessageByPath(normalizedMessageId, requestOptions);
+    }
     const messages = Array.isArray(data.messages) ? data.messages : [];
     const matchedMessage = messages.find((message) => {
       if (!message || typeof message !== 'object' || Array.isArray(message)) {
