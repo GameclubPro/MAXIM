@@ -138,6 +138,31 @@ function createDecisionSnapshotForTest() {
 }
 
 describe('BackgroundRuntimeGovernorService', () => {
+  it.each([
+    { operationalLagSec: 0, action: 'run' },
+    { operationalLagSec: 32, action: 'pause' },
+  ])(
+    'uses operational queue lag $operationalLagSec while raw readiness waits remain visible',
+    async ({ operationalLagSec, action }) => {
+      const base = createDecisionSnapshotForTest();
+      const snapshot = {
+        ...base,
+        mode: { ...base.mode, queueLagSec: 290, operationalQueueLagSec: operationalLagSec },
+        queues: { ...base.queues, effectiveLagSec: 290, operationalLagSec },
+      };
+      const service = new BackgroundRuntimeGovernorService(
+        {} as never,
+        { getEffectiveSnapshot: jest.fn().mockResolvedValue(snapshot.mode) } as never,
+        {} as never,
+        createConfigMock(),
+      );
+      jest.spyOn(service as any, 'getPressureSnapshot').mockResolvedValue(snapshot);
+      await expect(
+        service.decide({ component: 'publication-materializer', sourceTag: 'managed_broadcast' }),
+      ).resolves.toMatchObject({ action });
+    },
+  );
+
   it('allows bounded publication preparation during an automatic webhook backlog', async () => {
     const snapshot = createDecisionSnapshotForTest();
     snapshot.mode = {

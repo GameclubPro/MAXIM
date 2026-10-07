@@ -68,6 +68,7 @@ export type ReadinessSnapshot = {
     queueLag: {
       ok: boolean;
       rawOk: boolean;
+      operationalOk: boolean;
       softWarning: boolean;
       softWarningCode: string | null;
       softWarningDetail: string | null;
@@ -75,6 +76,9 @@ export type ReadinessSnapshot = {
       sustainSec: number;
       severeThresholdSec: number;
       effectiveLagSec: number;
+      operationalLagSec: number;
+      readinessWaitingCount?: number;
+      readinessHeadLimitReached?: boolean;
       sampleGeneratedAt: string;
       breachStartedAt: string | null;
       breachDurationSec: number;
@@ -693,6 +697,11 @@ export class HealthService implements OnModuleDestroy {
     const runtimeDiagnostics = await this.tryGetRuntimeReadinessSnapshot();
 
     const effectiveLagSec = queueLag?.effectiveLagSec ?? systemMode.queueLagSec ?? 0;
+    // FLAG: Only the bounded queue reader may discount proven waits, retaining deadline lateness.
+    // Keep raw lag visible and fall back to it when the operational sample is absent.
+    const operationalLagSec = queueLag
+      ? (queueLag.operationalLagSec ?? effectiveLagSec)
+      : (systemMode.operationalQueueLagSec ?? effectiveLagSec);
     const oldestQueuedEventId = queueLag?.oldestQueuedEventId ?? null;
     const oldestQueuedCreatedAt = queueLag?.oldestQueuedCreatedAt ?? null;
     const oldestQueuedLagSec = queueLag?.oldestQueuedLagSec ?? 0;
@@ -701,14 +710,15 @@ export class HealthService implements OnModuleDestroy {
     const oldestReceivedLagSec = queueLag?.oldestReceivedLagSec ?? 0;
     const evaluatedAtMs = Date.now();
     const rawQueueLagOk = effectiveLagSec <= this.queueLagThresholdSec;
-    const severeQueueLag = effectiveLagSec > this.queueLagSevereSec;
-    const breachStartedAtMs = this.updateQueueLagBreachState(rawQueueLagOk, evaluatedAtMs);
+    const operationalQueueLagOk = operationalLagSec <= this.queueLagThresholdSec;
+    const severeQueueLag = operationalLagSec > this.queueLagSevereSec;
+    const breachStartedAtMs = this.updateQueueLagBreachState(operationalQueueLagOk, evaluatedAtMs);
     const breachDurationSec = breachStartedAtMs
       ? Math.max(0, (evaluatedAtMs - breachStartedAtMs) / 1_000)
       : 0;
     const queueLagOk =
-      !severeQueueLag && (rawQueueLagOk || breachDurationSec < this.queueLagSustainSec);
-    const hysteresisSoftWarning = !rawQueueLagOk && queueLagOk;
+      !severeQueueLag && (operationalQueueLagOk || breachDurationSec < this.queueLagSustainSec);
+    const hysteresisSoftWarning = !operationalQueueLagOk && queueLagOk;
     const softWarning = hysteresisSoftWarning || Boolean(queueMetricsFallbackDetail);
     const softWarningCode = queueMetricsFallbackDetail
       ? STALE_READY_SOFT_WARNING_CODE
@@ -717,10 +727,10 @@ export class HealthService implements OnModuleDestroy {
         : null;
     const softWarningDetail = queueMetricsFallbackDetail
       ? hysteresisSoftWarning
-        ? `Raw queue lag ${effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded. ${queueMetricsFallbackDetail}`
+        ? `Operational queue lag ${operationalLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded. ${queueMetricsFallbackDetail}`
         : queueMetricsFallbackDetail
       : hysteresisSoftWarning
-        ? `Raw queue lag ${effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded.`
+        ? `Operational queue lag ${operationalLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded.`
         : null;
 
     return {
@@ -731,6 +741,7 @@ export class HealthService implements OnModuleDestroy {
       systemMode: {
         ...systemMode,
         queueLagSec: effectiveLagSec,
+        operationalQueueLagSec: operationalLagSec,
         action: systemMode.action,
         degraded: systemMode.mode === 'degrade',
       },
@@ -740,6 +751,7 @@ export class HealthService implements OnModuleDestroy {
         queueLag: {
           ok: queueLagOk,
           rawOk: rawQueueLagOk,
+          operationalOk: operationalQueueLagOk,
           softWarning,
           softWarningCode,
           softWarningDetail,
@@ -747,6 +759,9 @@ export class HealthService implements OnModuleDestroy {
           sustainSec: this.queueLagSustainSec,
           severeThresholdSec: this.queueLagSevereSec,
           effectiveLagSec,
+          operationalLagSec,
+          readinessWaitingCount: queueLag?.readinessWaitingCount,
+          readinessHeadLimitReached: queueLag?.readinessHeadLimitReached,
           sampleGeneratedAt: queueLag?.generatedAt ?? systemMode.updatedAt,
           breachStartedAt: breachStartedAtMs ? new Date(breachStartedAtMs).toISOString() : null,
           breachDurationSec,
@@ -854,8 +869,11 @@ export class HealthService implements OnModuleDestroy {
     return nextGeneratedAtMs > previousGeneratedAtMs;
   }
 
-  private updateQueueLagBreachState(rawQueueLagOk: boolean, evaluatedAtMs: number): number | null {
-    if (rawQueueLagOk) {
+  private updateQueueLagBreachState(
+    operationalQueueLagOk: boolean,
+    evaluatedAtMs: number,
+  ): number | null {
+    if (operationalQueueLagOk) {
       this.queueLagBreachStartedAtMs = null;
       return null;
     }
@@ -934,15 +952,17 @@ export class HealthService implements OnModuleDestroy {
     ]);
 
     const effectiveLagSec = systemMode.queueLagSec ?? 0;
+    const operationalLagSec = systemMode.operationalQueueLagSec ?? effectiveLagSec;
     const evaluatedAtMs = Date.now();
     const rawQueueLagOk = effectiveLagSec <= this.queueLagThresholdSec;
-    const severeQueueLag = effectiveLagSec > this.queueLagSevereSec;
-    const breachStartedAtMs = this.updateQueueLagBreachState(rawQueueLagOk, evaluatedAtMs);
+    const operationalQueueLagOk = operationalLagSec <= this.queueLagThresholdSec;
+    const severeQueueLag = operationalLagSec > this.queueLagSevereSec;
+    const breachStartedAtMs = this.updateQueueLagBreachState(operationalQueueLagOk, evaluatedAtMs);
     const breachDurationSec = breachStartedAtMs
       ? Math.max(0, (evaluatedAtMs - breachStartedAtMs) / 1_000)
       : 0;
     const queueLagOk =
-      !severeQueueLag && (rawQueueLagOk || breachDurationSec < this.queueLagSustainSec);
+      !severeQueueLag && (operationalQueueLagOk || breachDurationSec < this.queueLagSustainSec);
     const cachedQueueSnapshot =
       this.queueMetricsService.peekCachedSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ?? null;
     const maxApiBotSnapshots = await this.tryGetMaxApiBotSnapshots(
@@ -965,6 +985,7 @@ export class HealthService implements OnModuleDestroy {
         queueLag: {
           ok: queueLagOk,
           rawOk: rawQueueLagOk,
+          operationalOk: operationalQueueLagOk,
           softWarning: true,
           softWarningCode: STALE_READY_SOFT_WARNING_CODE,
           softWarningDetail: fallbackDetail,
@@ -972,6 +993,7 @@ export class HealthService implements OnModuleDestroy {
           sustainSec: this.queueLagSustainSec,
           severeThresholdSec: this.queueLagSevereSec,
           effectiveLagSec,
+          operationalLagSec,
           sampleGeneratedAt: systemMode.updatedAt,
           breachStartedAt: breachStartedAtMs ? new Date(breachStartedAtMs).toISOString() : null,
           breachDurationSec,
@@ -1020,6 +1042,7 @@ export class HealthService implements OnModuleDestroy {
         queueLag: {
           ok: false,
           rawOk: false,
+          operationalOk: false,
           softWarning: true,
           softWarningCode: STALE_READY_SOFT_WARNING_CODE,
           softWarningDetail: fallbackDetail,
@@ -1027,6 +1050,7 @@ export class HealthService implements OnModuleDestroy {
           sustainSec: this.queueLagSustainSec,
           severeThresholdSec: this.queueLagSevereSec,
           effectiveLagSec: 0,
+          operationalLagSec: 0,
           sampleGeneratedAt: timestamp,
           breachStartedAt: null,
           breachDurationSec: 0,

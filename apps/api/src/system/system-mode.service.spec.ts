@@ -57,6 +57,96 @@ describe('SystemModeService', () => {
     jest.useRealTimers();
   });
 
+  it.each([
+    { operationalLagSec: 0, mode: 'normal', condition: 'healthy' },
+    { operationalLagSec: 32, mode: 'degrade', condition: 'queue_backlog' },
+  ])(
+    'persists both raw and operational lag and evaluates $operationalLagSec seconds of pressure',
+    async ({ operationalLagSec, mode, condition }) => {
+      process.env.APP_ROLE = 'ingress';
+      const action = {
+        windowSec: 60,
+        total: 10,
+        success: 10,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      };
+      const actionHealth = {
+        refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+        getSnapshot: jest.fn().mockReturnValue(action),
+      };
+      const service = new SystemModeService(
+        createConfigMock() as never,
+        {
+          getLagSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 290, operationalLagSec }),
+        } as never,
+        actionHealth as never,
+      );
+
+      await service.evaluateAutoMode();
+      const expected = {
+        mode,
+        condition,
+        queueLagSec: 290,
+        operationalQueueLagSec: operationalLagSec,
+      };
+      expect(service.getSnapshot()).toMatchObject(expected);
+      const serialized = redisInstances[0].eval.mock.calls[0].at(-1) as string;
+      expect(JSON.parse(serialized)).toMatchObject(expected);
+
+      process.env.APP_ROLE = 'moderation';
+      const reader = new SystemModeService(
+        createConfigMock() as never,
+        { getLagSnapshot: jest.fn() } as never,
+        actionHealth as never,
+      );
+      redisInstances[1].get.mockResolvedValue(serialized);
+      expect(await reader.getEffectiveSnapshot()).toMatchObject(expected);
+      expect(reader.peekCachedSnapshot()).toMatchObject(expected);
+      await service.onModuleDestroy();
+      await reader.onModuleDestroy();
+    },
+  );
+
+  it('uses operational lag to infer an automatic cause from a shared snapshot', async () => {
+    process.env.APP_ROLE = 'moderation';
+    const action = {
+      windowSec: 60,
+      total: 200,
+      success: 190,
+      failure: 10,
+      critical: 0,
+      errorRate: 0.05,
+      criticalRate: 0,
+    };
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      { getLagSnapshot: jest.fn() } as never,
+      { getSnapshot: jest.fn().mockReturnValue(action) } as never,
+    );
+    redisInstances[0].get.mockResolvedValue(
+      JSON.stringify({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'user-facing action error rate 5.00%',
+        updatedAt: '2026-10-07T02:00:00.000Z',
+        manualMode: null,
+        queueLagSec: 290,
+        operationalQueueLagSec: 0,
+        action,
+      }),
+    );
+    expect(await service.getEffectiveSnapshot()).toMatchObject({
+      mode: 'degrade',
+      condition: 'max_api',
+      queueLagSec: 290,
+      operationalQueueLagSec: 0,
+    });
+    await service.onModuleDestroy();
+  });
+
   it('persists manual mode changes into the shared Redis snapshot', async () => {
     process.env.APP_ROLE = 'ingress';
 

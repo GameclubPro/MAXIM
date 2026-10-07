@@ -314,7 +314,9 @@ export class DefaultWebhookLeaseManagerService
     const systemModeSnapshot =
       this.systemModeService.peekCachedSnapshot?.(this.heartbeatMs * 2) ??
       (await this.systemModeService.getEffectiveSnapshot());
-    const suppressRebalance = systemModeSnapshot.queueLagSec >= this.suppressRebalanceQueueLagSec;
+    const suppressRebalance =
+      (systemModeSnapshot.operationalQueueLagSec ?? systemModeSnapshot.queueLagSec) >=
+      this.suppressRebalanceQueueLagSec;
     const plan = buildDefaultWebhookLeasePlan({
       mode: this.mode,
       canaryQueues: this.canaryQueues,
@@ -405,7 +407,9 @@ export class DefaultWebhookLeaseManagerService
     const systemModeSnapshot =
       this.systemModeService.peekCachedSnapshot?.(this.heartbeatMs * 2) ??
       (await this.systemModeService.getEffectiveSnapshot());
-    const suppressRebalance = systemModeSnapshot.queueLagSec >= this.suppressRebalanceQueueLagSec;
+    const suppressRebalance =
+      (systemModeSnapshot.operationalQueueLagSec ?? systemModeSnapshot.queueLagSec) >=
+      this.suppressRebalanceQueueLagSec;
     const plan = buildDefaultWebhookLeasePlan({
       mode: this.mode,
       canaryQueues: this.canaryQueues,

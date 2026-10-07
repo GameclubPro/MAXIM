@@ -101,6 +101,124 @@ describe('HealthService', () => {
     redisInstances.length = 0;
   });
 
+  it.each([
+    { operationalLagSec: 0, expectedOk: true },
+    { operationalLagSec: 32, expectedOk: false },
+  ])(
+    'keeps raw readiness waits visible while evaluating operational lag $operationalLagSec',
+    async ({ operationalLagSec, expectedOk }) => {
+      const queue = {
+        ...healthyQueueSnapshot(),
+        effectiveLagSec: 290,
+        operationalLagSec,
+        oldestReceivedEventId: 'waiting-for-executor',
+        oldestReceivedLagSec: 290,
+        readinessWaitingCount: 1,
+        readinessHeadLimitReached: false,
+      };
+      const service = new HealthService(
+        { $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]) } as never,
+        { getLagSnapshot: jest.fn().mockResolvedValue(queue) } as never,
+        { getEffectiveSnapshot: jest.fn().mockResolvedValue(healthySystemModeSnapshot()) } as never,
+        createConfigMock() as never,
+      );
+
+      const snapshot = await service.ready();
+      expect(snapshot).toMatchObject({
+        ok: expectedOk,
+        systemMode: { queueLagSec: 290, operationalQueueLagSec: operationalLagSec },
+        checks: {
+          queueLag: {
+            ok: expectedOk,
+            rawOk: false,
+            operationalOk: expectedOk,
+            effectiveLagSec: 290,
+            operationalLagSec,
+            oldestReceivedEventId: 'waiting-for-executor',
+            oldestReceivedLagSec: 290,
+            readinessWaitingCount: 1,
+            readinessHeadLimitReached: false,
+          },
+        },
+      });
+      await service.onModuleDestroy();
+    },
+  );
+
+  it.each([
+    { operationalQueueLagSec: 0, expectedOk: true },
+    { operationalQueueLagSec: 32, expectedOk: false },
+    { operationalQueueLagSec: undefined, expectedOk: false },
+  ])(
+    'uses the system-mode operational lag $operationalQueueLagSec when queue metrics fail',
+    async ({ operationalQueueLagSec, expectedOk }) => {
+      const mode = {
+        ...healthySystemModeSnapshot(),
+        queueLagSec: 290,
+        operationalQueueLagSec,
+      };
+      const service = new HealthService(
+        { $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]) } as never,
+        { getLagSnapshot: jest.fn().mockRejectedValue(new Error('metrics unavailable')) } as never,
+        { getEffectiveSnapshot: jest.fn().mockResolvedValue(mode) } as never,
+        createConfigMock() as never,
+      );
+
+      expect(await service.ready()).toMatchObject({
+        ok: expectedOk,
+        checks: {
+          queueLag: {
+            ok: expectedOk,
+            rawOk: false,
+            operationalOk: expectedOk,
+            effectiveLagSec: 290,
+            operationalLagSec: operationalQueueLagSec ?? 290,
+            softWarningCode: 'stale-ready-fallback',
+          },
+        },
+      });
+      await service.onModuleDestroy();
+    },
+  );
+
+  it('uses cached operational lag for the bounded readiness build fallback', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-07T02:00:00.000Z'));
+    const mode = {
+      ...healthySystemModeSnapshot(),
+      queueLagSec: 290,
+      operationalQueueLagSec: 0,
+    };
+    const service = new HealthService(
+      { $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]) } as never,
+      { getLagSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)) } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+        peekCachedSnapshot: jest.fn().mockReturnValue(mode),
+      } as never,
+      createConfigMock() as never,
+    );
+    try {
+      const pending = service.ready();
+      await jest.advanceTimersByTimeAsync(60);
+      expect(await pending).toMatchObject({
+        ok: true,
+        checks: {
+          queueLag: {
+            ok: true,
+            rawOk: false,
+            operationalOk: true,
+            effectiveLagSec: 290,
+            operationalLagSec: 0,
+            softWarningCode: 'stale-ready-fallback',
+          },
+        },
+      });
+    } finally {
+      await service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
   it('returns a cached readiness snapshot and keeps queue-derived fields consistent', async () => {
     const prisma = {
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
@@ -2154,7 +2272,7 @@ describe('HealthService', () => {
         breachDurationSec: 0,
       }),
     );
-    expect(first.checks.queueLag.softWarningDetail).toContain('Raw queue lag 12.0s');
+    expect(first.checks.queueLag.softWarningDetail).toContain('Operational queue lag 12.0s');
 
     jest.setSystemTime(new Date('2026-03-29T10:00:21.000Z'));
 

@@ -1,7 +1,13 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { extractHttpStatusCode } from '../../common/http-error.util';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.service';
+import {
+  isMaxMutationOutcomeAmbiguous,
+  wasMaxMessageSendAttempted,
+} from '../../max/max-mutation-outcome.util';
+import { wasMaxMemberMutationAttempted } from '../../max/max-member-error.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookParser } from '../../webhook/webhook.parser';
 import { WebhookLegacyHoldService } from '../../webhook/webhook-legacy-hold.service';
@@ -31,7 +37,10 @@ import {
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
 import { MessageDuplicateAuthorizationService } from './message-duplicate-authorization.service';
-import { MessageDuplicateGuardRejectedError } from './message-duplicate-guard.contract';
+import {
+  MessageDuplicateGuardRejectedError,
+  MessageDuplicateQualificationSourceUnavailableError,
+} from './message-duplicate-guard.contract';
 export { MessageDuplicateGuardRejectedError } from './message-duplicate-guard.contract';
 import {
   messageDuplicateNoticeSettingsDigest,
@@ -123,8 +132,15 @@ export class MessageDuplicateDeleteGuardService {
   async assertMessageStillActionable(
     params: MessageDuplicateGuardInput,
   ): Promise<'allowed' | 'absent'> {
+    return this.assertSourceActionable(params, false);
+  }
+
+  private async assertSourceActionable(
+    params: MessageDuplicateGuardInput,
+    initialQualification: boolean,
+  ): Promise<'allowed' | 'absent'> {
     try {
-      const result = await this.checkMessage(params);
+      const result = await this.checkMessage(params, initialQualification);
       this.metrics?.record(result === 'allowed' ? 'guard.allowed' : 'guard.absent');
       return result;
     } catch (error) {
@@ -146,7 +162,7 @@ export class MessageDuplicateDeleteGuardService {
       await this.assertAuthorization(params.chatId, params.binding);
       return qualified;
     }
-    if ((await this.assertMessageStillActionable(params)) !== 'allowed') return null;
+    if ((await this.assertSourceActionable(params, true)) !== 'allowed') return null;
     await this.assertAuthorization(params.chatId, params.binding);
     return this.history.qualify(params.chatId, params.binding);
   }
@@ -192,7 +208,10 @@ export class MessageDuplicateDeleteGuardService {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_source_held');
   }
 
-  private async checkMessage(params: MessageDuplicateGuardInput): Promise<'allowed' | 'absent'> {
+  private async checkMessage(
+    params: MessageDuplicateGuardInput,
+    initialQualification: boolean,
+  ): Promise<'allowed' | 'absent'> {
     const { binding } = params;
     const notice = params.notice;
     const canonicalBinding = parseMessageDuplicateBinding({
@@ -271,7 +290,13 @@ export class MessageDuplicateDeleteGuardService {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
     if (access.isAdmin !== false || access.isOwner !== false)
       throw new Error('Message duplicate author access unavailable');
-    const raw = await this.lookupMessage('current', params.chatId, params.messageId, options);
+    const raw = await this.lookupMessage(
+      'current',
+      params.chatId,
+      params.messageId,
+      options,
+      initialQualification,
+    );
     if (!raw && !receiptIntentId) return 'absent';
     if (!raw) {
       // FLAG: Absence alone cannot authorize a sanction. Require our exact successful DELETE
@@ -354,6 +379,7 @@ export class MessageDuplicateDeleteGuardService {
       params.chatId,
       binding.original.messageId,
       options,
+      initialQualification,
     );
     if (!originalRaw) {
       await this.history.remove(params.chatId, binding.original.messageId);
@@ -420,19 +446,30 @@ export class MessageDuplicateDeleteGuardService {
     chatId: string,
     messageId: string,
     options: Parameters<MaxClientService['getExactMessageRow']>[2],
+    initialQualification: boolean,
   ): Promise<Record<string, unknown> | null> {
     let row: Record<string, unknown> | null;
     try {
       row = await this.max.getExactMessageRow(chatId, messageId, options);
     } catch (error) {
       // FLAG: Only a structured message-specific 404 proves absence. A bare 404,
-      // access denial, proxy text or failed transport must preserve evidence and retry.
+      // access denial, proxy text or failed transport must preserve evidence. Only initial
+      // qualification may decline an unavailable source after a separate unused-claim CAS;
+      // final deletion/sanction guards retain the original failure and retry fences.
       if (!isConfirmedMessageAbsence(error)) {
         this.metrics?.record(
           stage === 'current'
             ? 'guard.current_lookup_unavailable'
             : 'guard.original_lookup_unavailable',
         );
+        if (
+          initialQualification &&
+          extractHttpStatusCode(error) === 404 &&
+          !wasMaxMessageSendAttempted(error) &&
+          !wasMaxMemberMutationAttempted(error) &&
+          !isMaxMutationOutcomeAmbiguous(error)
+        )
+          throw new MessageDuplicateQualificationSourceUnavailableError(stage, error);
         throw error;
       }
       row = null;

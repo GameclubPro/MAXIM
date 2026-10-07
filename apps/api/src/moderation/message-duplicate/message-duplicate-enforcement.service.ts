@@ -17,6 +17,7 @@ import {
   MessageDuplicateDeleteGuardService,
   MessageDuplicateGuardRejectedError,
 } from './message-duplicate-delete-guard.service';
+import { MessageDuplicateQualificationSourceUnavailableError } from './message-duplicate-guard.contract';
 import { resolveDuplicateFlowOutcome } from '../duplicate-flow-policy';
 import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
 import type { EnsureModerationDeleteIntentInput } from '../moderation-delete-intent.types';
@@ -30,7 +31,12 @@ import {
 export type DuplicateEnforcementResult =
   | {
       kind: 'rejected';
-      reason: 'binding_invalid' | 'policy_changed' | 'qualification_rejected' | 'claim_blocked';
+      reason:
+        | 'binding_invalid'
+        | 'policy_changed'
+        | 'qualification_rejected'
+        | 'qualification_source_unavailable'
+        | 'claim_blocked';
     }
   | { kind: 'intent_accepted'; intentId: string };
 
@@ -43,6 +49,8 @@ export function duplicateEnforcementObservation(
       return 'POLICY_CHANGED';
     case 'qualification_rejected':
       return 'MATCHED_QUALIFICATION_REJECTED';
+    case 'qualification_source_unavailable':
+      return 'SOURCE_UNAVAILABLE';
     case 'claim_blocked':
       return 'MATCHED_CLAIM_BLOCKED';
     case 'binding_invalid':
@@ -134,6 +142,18 @@ export class MessageDuplicateEnforcementService {
         }),
       );
     } catch (error) {
+      // FLAG: Only the initial source read may stop without action, and only after SQL
+      // proves this exact claim unused and durably revokes it. Existing effects stay fenced.
+      if (error instanceof MessageDuplicateQualificationSourceUnavailableError) {
+        let released: boolean;
+        try {
+          released = await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
+        } catch {
+          throw error.cause;
+        }
+        if (released) return { kind: 'rejected', reason: 'qualification_source_unavailable' };
+        throw error.cause;
+      }
       if (error instanceof MessageDuplicateGuardRejectedError) {
         await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
         this.metrics?.record('enforcement.qualification_rejected');

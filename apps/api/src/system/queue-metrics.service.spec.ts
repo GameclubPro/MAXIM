@@ -127,6 +127,9 @@ describe('QueueMetricsService', () => {
         oldestReceivedCreatedAt: '2026-09-02T11:59:48.000Z',
         oldestReceivedLagSec: 12,
         effectiveLagSec: 25,
+        operationalLagSec: 25,
+        readinessWaitingCount: 0,
+        readinessHeadLimitReached: false,
         generatedAt: '2026-09-02T12:00:00.000Z',
       });
       await expect(overlappingSnapshot).resolves.toEqual(await firstSnapshot);
@@ -139,14 +142,14 @@ describe('QueueMetricsService', () => {
           {
             where: { status: WebhookStatus.RECEIVED },
             orderBy: { createdAt: 'asc' },
-            select: { id: true, createdAt: true },
+            select: { id: true, createdAt: true, nextEnqueueAt: true, executionDeadlineAt: true },
           },
         ],
         [
           {
             where: { status: WebhookStatus.QUEUED },
             orderBy: { createdAt: 'asc' },
-            select: { id: true, createdAt: true },
+            select: { id: true, createdAt: true, nextEnqueueAt: true, executionDeadlineAt: true },
           },
         ],
       ]);
@@ -158,6 +161,38 @@ describe('QueueMetricsService', () => {
       expect(actionHealthService.getSnapshot).not.toHaveBeenCalled();
       expect(maxBotRegistry.getOperationalBots).not.toHaveBeenCalled();
       expect(maxBotRegistry.getAllBots).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('preserves raw waiting age and queued pressure when inspecting bounded readiness heads', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T12:00:00.000Z'));
+    try {
+      const received = {
+        id: 'waiting',
+        createdAt: new Date('2026-09-02T11:55:10.000Z'),
+        nextEnqueueAt: new Date('2026-09-02T12:00:05.000Z'),
+        executionDeadlineAt: new Date('2026-09-02T12:00:10.000Z'),
+      };
+      const queued = { id: 'queued', createdAt: new Date('2026-09-02T11:59:28.000Z') };
+      const findFirst = jest
+        .fn()
+        .mockImplementation(async ({ where }) =>
+          where.status === WebhookStatus.RECEIVED ? received : queued,
+        );
+      const queryRaw = jest.fn().mockResolvedValue([{ ...received, readinessWaiting: true }]);
+      const service = Object.create(QueueMetricsService.prototype) as QueueMetricsService;
+      Object.assign(service, { prisma: { webhookEvent: { findFirst }, $queryRaw: queryRaw } });
+      const snapshot = await service.getLagSnapshot();
+      expect(snapshot).toMatchObject({
+        effectiveLagSec: 290,
+        oldestReceivedLagSec: 290,
+        operationalLagSec: 32,
+        readinessWaitingCount: 1,
+        readinessHeadLimitReached: false,
+      });
+      expect(queryRaw).toHaveBeenCalledTimes(1);
     } finally {
       jest.useRealTimers();
     }
@@ -291,14 +326,14 @@ describe('QueueMetricsService', () => {
           {
             where: { status: WebhookStatus.RECEIVED },
             orderBy: { createdAt: 'asc' },
-            select: { id: true, createdAt: true },
+            select: { id: true, createdAt: true, nextEnqueueAt: true, executionDeadlineAt: true },
           },
         ],
         [
           {
             where: { status: WebhookStatus.QUEUED },
             orderBy: { createdAt: 'asc' },
-            select: { id: true, createdAt: true },
+            select: { id: true, createdAt: true, nextEnqueueAt: true, executionDeadlineAt: true },
           },
         ],
       ]);

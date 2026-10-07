@@ -224,6 +224,10 @@ function withCanonicalWebhookFixture(prisma: CanonicalWebhookPrismaFixture) {
   );
   const claimFindFirst = claimModel.findFirst;
   claimModel.findFirst = jest.fn(async (args: { where: Row }) => {
+    // FLAG: Joined completion proof must be explicit in a fixture. A missing joined
+    // result must never be normalized into a fabricated READY authority.
+    if (args.where.webhookEvent !== undefined)
+      return claimFindFirst ? claimFindFirst(args) : null;
     const raw = claimFindFirst
       ? await claimFindFirst(args)
       : [...claims.values()].find((claim) => claim.webhookEventId === args.where.webhookEventId);

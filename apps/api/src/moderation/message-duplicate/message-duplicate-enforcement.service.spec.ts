@@ -1,4 +1,8 @@
-import { MessageDuplicateEnforcementService } from './message-duplicate-enforcement.service';
+import {
+  duplicateEnforcementObservation,
+  MessageDuplicateEnforcementService,
+} from './message-duplicate-enforcement.service';
+import { MessageDuplicateQualificationSourceUnavailableError } from './message-duplicate-guard.contract';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
 import { extractDuplicateMessageContent } from './message-duplicate-content';
 import { duplicateSettings, duplicateUpdate } from './message-duplicate-test-fixtures';
@@ -108,6 +112,99 @@ async function enforcementCase() {
 }
 
 describe('message duplicate delete-only action claims', () => {
+  it('reports source unavailable only after the unused-claim release commits', async () => {
+    const s = await enforcementCase();
+    const sourceError = { response: { status: 404, data: {} } };
+    s.guard.qualify.mockRejectedValue(
+      new MessageDuplicateQualificationSourceUnavailableError('current', sourceError),
+    );
+    let release!: (released: boolean) => void;
+    let releaseStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    s.intents.releaseUnmaterializedMessageAction.mockImplementation(() => {
+      releaseStarted();
+      return new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+    });
+    let settled = false;
+    const result = s.service.enqueue(s.params).then((value) => {
+      settled = true;
+      return value;
+    });
+    await started;
+    expect(settled).toBe(false);
+    expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+    expect(s.executeFullAction).not.toHaveBeenCalled();
+    release(true);
+    const outcome = await result;
+    expect(outcome).toEqual({ kind: 'rejected', reason: 'qualification_source_unavailable' });
+    expect(duplicateEnforcementObservation(outcome)).toBe('SOURCE_UNAVAILABLE');
+    expect(s.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledWith({
+      claim: expect.objectContaining({
+        messageActionKey: buildMessageScopedModerationActionClaimKey('-123', 'repeat'),
+        ruleCode: 'DUPLICATE_MESSAGE_ACTION',
+      }),
+      binding: expect.objectContaining({
+        messageId: 'repeat',
+        authorization: s.params.binding.authorization,
+      }),
+    });
+    expect(s.executeFullAction).not.toHaveBeenCalled();
+  });
+
+  it.each(['current', 'original'] as const)(
+    'preserves the original %s source failure when SQL cannot prove the claim unused',
+    async (source) => {
+      const s = await enforcementCase();
+      const sourceError = { response: { status: 404, data: {} } };
+      s.guard.qualify.mockRejectedValue(
+        new MessageDuplicateQualificationSourceUnavailableError(source, sourceError),
+      );
+      s.intents.releaseUnmaterializedMessageAction.mockResolvedValue(false);
+      await expect(s.service.enqueue(s.params)).rejects.toBe(sourceError);
+      expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+      expect(s.executeFullAction).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves the original source failure when the unused-claim release throws', async () => {
+    const s = await enforcementCase();
+    const databaseError = new Error('claim release failed');
+    const sourceError = { response: { status: 404 } };
+    s.guard.qualify.mockRejectedValue(
+      new MessageDuplicateQualificationSourceUnavailableError('original', sourceError),
+    );
+    s.intents.releaseUnmaterializedMessageAction.mockRejectedValue(databaseError);
+    await expect(s.service.enqueue(s.params)).rejects.toBe(sourceError);
+    expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+    expect(s.executeFullAction).not.toHaveBeenCalled();
+  });
+
+  it.each(['before-qualification', 'after-qualification', 'final-delete', 'full-action'] as const)(
+    'does not convert a source-unavailable error outside initial qualification at %s',
+    async (stage) => {
+      const s = await enforcementCase();
+      const error = new MessageDuplicateQualificationSourceUnavailableError('current', {
+        response: { status: 404 },
+      });
+      if (stage === 'before-qualification')
+        s.guard.assertQualificationAuthority.mockRejectedValue(error);
+      else if (stage === 'after-qualification')
+        s.guard.assertQualificationAuthority
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(error);
+      else if (stage === 'final-delete') {
+        s.guard.assertMessageStillActionable.mockRejectedValue(error);
+        s.executeFullAction.mockImplementation(async (request) => request.authorizeDelete());
+      } else s.executeFullAction.mockRejectedValue(error);
+      await expect(s.service.enqueue(s.params)).rejects.toBe(error);
+      expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+    },
+  );
+
   it('releases an interrupted unused owner when runtime policy rejects the retry', async () => {
     const s = await enforcementCase();
     s.policy.resolve.mockResolvedValue({ mode: 'off' });

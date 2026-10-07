@@ -531,7 +531,7 @@ export class BackgroundRuntimeGovernorService {
       ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
     } = {},
   ): BackgroundRuntimeGovernorDecision {
-    const queueLagSec = snapshot.queues.effectiveLagSec;
+    const queueLagSec = snapshot.queues.operationalLagSec ?? snapshot.queues.effectiveLagSec;
     const allowRecoveryWindowRun =
       options.allowRecoveryWindowRun === true && queueLagSec < this.softQueueLagSec;
     const allowQueueLagSlowPath =

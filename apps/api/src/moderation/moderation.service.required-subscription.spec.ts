@@ -19,6 +19,7 @@ import {
   createModerationServiceWithSanctionStateLock,
   type MaxUpdate,
 } from './moderation.service.spec-support';
+import { RequiredSubscriptionExecutionRejectedError } from './required-subscription-execution-guard.service';
 
 // FLAG: This suite verifies orchestration with an explicit successful deletion boundary.
 // Real current-policy, lease, receipt and selected-token guards run in the native fullpath suite.
@@ -1542,6 +1543,88 @@ describe('ModerationService', () => {
         'user-1',
         'moderation_required_subscription',
       );
+    });
+
+    describe('initial subscription authority rejection', () => {
+      function fixture() {
+        const prisma = createPrismaForRequiredSubscription({
+          requiredSubscriptionEnabled: true,
+          requiredSubscriptionChannelIds: ['channel-1'],
+        });
+        const maxClient = createRequiredSubscriptionMaxClient();
+        const ruleEngine = { detect: jest.fn().mockResolvedValue({ violations: [] }) };
+        const service = createRequiredSubscriptionService(
+          prisma as never,
+          ruleEngine as never,
+          { resolveAction: jest.fn() } as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          createRequiredSubscriptionRedisCounter() as never,
+        );
+        const guard = (service as any).requiredSubscriptionExecutionGuard;
+        const claim = jest.spyOn(service as any, 'claimAndPersistMessageScopedModerationViolation');
+        const activeMute = jest.spyOn(service as any, 'handleActiveMuteMessage');
+        return { service, prisma, maxClient, ruleEngine, guard, claim, activeMute };
+      }
+
+      it.each([false, true])(
+        'stops the feature before writes without active-mute fallthrough (muted=%s)',
+        async (muted) => {
+          const f = fixture();
+          if (muted)
+            jest.spyOn(f.service as any, 'getActiveMute').mockResolvedValue({
+              ruleCode: 'REQUIRED_SUBSCRIPTION',
+              durationHours: 6,
+            });
+          f.guard.authorize.mockRejectedValue(new RequiredSubscriptionExecutionRejectedError());
+          await expect(f.service.handleUpdate(createUpdate())).resolves.toBeUndefined();
+          expect(f.guard.authorize).toHaveBeenCalledTimes(1);
+          expect(f.claim).not.toHaveBeenCalled();
+          expect(f.prisma.violation.create).not.toHaveBeenCalled();
+          expect(f.prisma.moderationEvent.create).not.toHaveBeenCalled();
+          expect(f.prisma.moderationEvent.upsert).not.toHaveBeenCalled();
+          expect(f.activeMute).not.toHaveBeenCalled();
+          expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
+          expect(f.maxClient.deleteMessage).not.toHaveBeenCalled();
+          expect(f.maxClient.banMember).not.toHaveBeenCalled();
+          expect(f.ruleEngine.detect).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([
+        ['HTTP 404', createMaxApiError(404, 'Unknown exact message response')],
+        [
+          'matching code without the error type',
+          Object.assign(new Error('unverified'), {
+            code: 'required_subscription_no_longer_authorized',
+          }),
+        ],
+        ['transient lookup', new Error('Required subscription fresh membership unavailable')],
+      ])('preserves %s as a failure', async (_label, error) => {
+        const f = fixture();
+        f.guard.authorize.mockRejectedValue(error);
+        await expect(f.service.handleUpdate(createUpdate())).rejects.toBe(error);
+        expect(f.claim).not.toHaveBeenCalled();
+        expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
+        expect(f.maxClient.deleteMessage).not.toHaveBeenCalled();
+      });
+
+      it('preserves the same typed rejection after initial authorization and feature writes', async () => {
+        const f = fixture();
+        const error = new RequiredSubscriptionExecutionRejectedError();
+        f.guard.authorize
+          .mockReset()
+          .mockResolvedValueOnce({ reasonKeys: ['REQUIRED_SUBSCRIPTION:message-delete'] })
+          .mockRejectedValue(error);
+        await expect(f.service.handleUpdate(createUpdate())).rejects.toBe(error);
+        expect(f.guard.authorize).toHaveBeenCalledTimes(2);
+        expect(f.claim).toHaveBeenCalledTimes(1);
+        expect(f.prisma.violation.create).toHaveBeenCalledTimes(1);
+        expect(f.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+        expect(f.maxClient.deleteMessage).not.toHaveBeenCalled();
+      });
     });
 
     it('deletes the message, records violation, and sends buttons only for missing channels', async () => {
@@ -5186,34 +5269,42 @@ describe('ModerationService', () => {
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
     });
   });
-  it('uses lightweight operational queue metrics in the background-pressure fallback', async () => {
-    const getOperationalSnapshot = jest.fn().mockResolvedValue({
-      effectiveLagSec: 0,
-      webhookDefaultWorkerGroups: {},
-    });
-    const getSnapshot = jest.fn().mockRejectedValue(new Error('full snapshot must not run'));
-    const service = createRequiredSubscriptionService(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { getOperationalSnapshot, getSnapshot } as never,
-    );
+  it.each([
+    { operationalLagSec: 0, expected: null },
+    { operationalLagSec: 32, expected: 'queue lag 32.0s' },
+    { operationalLagSec: undefined, expected: 'queue lag 290.0s' },
+  ])(
+    'uses operational lag $operationalLagSec in the background-pressure fallback',
+    async ({ operationalLagSec, expected }) => {
+      const getOperationalSnapshot = jest.fn().mockResolvedValue({
+        effectiveLagSec: 290,
+        operationalLagSec,
+        webhookDefaultWorkerGroups: {},
+      });
+      const getSnapshot = jest.fn().mockRejectedValue(new Error('full snapshot must not run'));
+      const service = createRequiredSubscriptionService(
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { getOperationalSnapshot, getSnapshot } as never,
+      );
 
-    await expect((service as any).resolveBackgroundPressurePauseReason()).resolves.toBeNull();
+      await expect((service as any).resolveBackgroundPressurePauseReason()).resolves.toBe(expected);
 
-    expect(getOperationalSnapshot).toHaveBeenCalledWith({ maxAgeMs: 1_500 });
-    expect(getSnapshot).not.toHaveBeenCalled();
-  });
+      expect(getOperationalSnapshot).toHaveBeenCalledWith({ maxAgeMs: 1_500 });
+      expect(getSnapshot).not.toHaveBeenCalled();
+    },
+  );
 
   it('counts prioritized-only backlog in the background-pressure fallback', async () => {
     const getOperationalSnapshot = jest.fn().mockResolvedValue({

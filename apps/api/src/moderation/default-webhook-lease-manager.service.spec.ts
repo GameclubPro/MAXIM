@@ -265,6 +265,78 @@ describe('DefaultWebhookLeaseManagerService', () => {
     jest.useRealTimers();
   });
 
+  it.each([
+    { operationalQueueLagSec: 0, expectedHandoff: true },
+    { operationalQueueLagSec: 32, expectedHandoff: false },
+    { operationalQueueLagSec: undefined, expectedHandoff: false },
+  ])(
+    'uses operational lag $operationalQueueLagSec for rebalance planning and execution',
+    async ({ operationalQueueLagSec, expectedHandoff }) => {
+      const queues = createQueueMetricsMock();
+      const queueSnapshot = await queues.getWebhookDefaultShardSnapshot();
+      queueSnapshot.webhookDefaultShards['moderation-default-0'].waiting = 8;
+      queueSnapshot.webhookDefaultShards['moderation-default-1'].waiting = 4;
+      const mode = createSystemModeMock();
+      mode.peekCachedSnapshot.mockReturnValue({
+        ...mode.peekCachedSnapshot(),
+        queueLagSec: 290,
+        operationalQueueLagSec,
+      });
+      const service = new DefaultWebhookLeaseManagerService(
+        createConfigMock() as never,
+        { processWebhookEvent: jest.fn() } as never,
+        queues as never,
+        mode as never,
+      );
+      const claims = Object.fromEntries(
+        ['moderation-default-0', 'moderation-default-1'].map((queueName) => [
+          queueName,
+          {
+            queueName,
+            ownerId: 'api-moderation',
+            fencingToken: 1,
+            claimedAtMs: Date.now() - 5_000,
+            updatedAtMs: Date.now() - 5_000,
+            leaseUntilMs: Date.now() + 60_000,
+          },
+        ]),
+      );
+      jest.spyOn(service as any, 'loadClaims').mockResolvedValue(claims);
+      jest.spyOn(service as any, 'loadHandoffs').mockResolvedValue({});
+      jest
+        .spyOn(service as any, 'loadAliveWorkerGroups')
+        .mockResolvedValue(new Set(['api-moderation', 'api-moderation-realtime-b']));
+      jest.spyOn(service as any, 'closeWorker').mockResolvedValue('closed');
+      jest.spyOn(service as any, 'closeWorkersExcept').mockResolvedValue(undefined);
+      jest.spyOn(service as any, 'ensureWorkerRunning').mockResolvedValue(undefined);
+      const handoff = jest.spyOn(service as any, 'issueHandoff').mockResolvedValue(undefined);
+      const release = jest.spyOn(service as any, 'releaseClaim').mockResolvedValue(undefined);
+      (service as any).localClaimFencingTokens.set('moderation-default-0', 1);
+      try {
+        const summary = await (service as any).buildSummary();
+        expect(summary.queues['moderation-default-0']).toMatchObject({
+          desiredOwner: expectedHandoff ? 'api-moderation-realtime-b' : 'api-moderation',
+          handoffPending: expectedHandoff,
+          reason: expectedHandoff ? 'rebalance-least-loaded' : 'keep-pressure-owner',
+        });
+        await (service as any).applyDynamicPlan();
+        if (expectedHandoff) {
+          expect(handoff).toHaveBeenCalledWith(
+            'moderation-default-0',
+            'api-moderation',
+            'api-moderation-realtime-b',
+          );
+          expect(release).toHaveBeenCalledWith('moderation-default-0');
+        } else {
+          expect(handoff).not.toHaveBeenCalled();
+          expect(release).not.toHaveBeenCalled();
+        }
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
   it.each(['off', 'shadow', 'canary', 'on'])(
     'drains manually owned shard workers before closing dependencies in %s mode',
     async (mode) => {

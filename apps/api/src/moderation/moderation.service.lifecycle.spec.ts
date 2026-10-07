@@ -246,6 +246,57 @@ describe('ModerationService', () => {
     }
   });
 
+  it.each([
+    { mode: 'normal', operationalQueueLagSec: 0, pressure: false },
+    { mode: 'normal', operationalQueueLagSec: 32, pressure: true },
+    { mode: 'normal', operationalQueueLagSec: undefined, pressure: true },
+    { mode: 'degrade', operationalQueueLagSec: 0, pressure: true },
+  ])(
+    'uses operational lag $operationalQueueLagSec for optional hot stages in $mode mode',
+    ({ mode, operationalQueueLagSec, pressure }) => {
+      const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+      const systemMode = {
+        mode,
+        source: mode === 'degrade' ? 'manual' : 'auto',
+        reason: mode === 'degrade' ? 'manual override' : 'system healthy',
+        queueLagSec: 290,
+        operationalQueueLagSec,
+      };
+      const dateNowSpy = jest.spyOn(Date, 'now');
+      dateNowSpy.mockReturnValue(10_000);
+      try {
+        const profile = (service as any).createWebhookHotPathProfile();
+        dateNowSpy.mockReturnValue(19_400);
+        expect((service as any).shouldSkipOptionalHotChatStages(systemMode, true)).toBe(pressure);
+        expect(
+          (service as any).resolveWebhookHotPathStageWaitBudgetMs({
+            hotPathProfile: profile,
+            systemMode,
+            defaultWaitMs: 500,
+            reserveMs: 250,
+          }),
+        ).toBe(pressure ? 350 : 500);
+        const skipReason = (service as any).resolveOptionalWebhookStageSkipReason({
+          stage: 'cross-chat tracking',
+          hotPathProfile: profile,
+          systemMode,
+          minRemainingMs: 700,
+        });
+        if (pressure) {
+          expect(skipReason).toContain('cross-chat tracking skipped with 600ms remaining');
+          if (mode === 'normal')
+            expect(skipReason).toContain(
+              `queue lag ${(operationalQueueLagSec ?? 290).toFixed(1)}s`,
+            );
+        } else {
+          expect(skipReason).toBeNull();
+        }
+      } finally {
+        dateNowSpy.mockRestore();
+      }
+    },
+  );
+
   it('ignores bot-authored messages when delete-bot toggle is disabled', async () => {
     const prisma = {
       chat: {

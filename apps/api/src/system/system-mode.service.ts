@@ -24,6 +24,7 @@ export type SystemModeSnapshot = {
   updatedAt: string;
   manualMode: SystemMode | null;
   queueLagSec: number;
+  operationalQueueLagSec?: number;
   action: ActionHealthSnapshot;
 };
 
@@ -91,6 +92,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   private manualMode: SystemMode | null = null;
   private healthySinceMs: number | null = Date.now();
   private lastQueueLagSec = 0;
+  private lastOperationalQueueLagSec: number | undefined;
   private sharedSnapshotCache: SystemModeSnapshot | null = null;
   private sharedSnapshotCacheAtMs = 0;
 
@@ -217,20 +219,23 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
       });
       const queueLagSec = queue.effectiveLagSec ?? 0;
       this.lastQueueLagSec = queueLagSec;
+      // FLAG: Proven readiness waits remain visible in raw lag but do not throttle other chats.
+      const operationalQueueLagSec = queue.operationalLagSec ?? queueLagSec;
+      this.lastOperationalQueueLagSec = operationalQueueLagSec;
       await this.actionHealthService.refreshSnapshots(60);
       const action = this.getUserFacingActionSnapshot();
       const actionErrorRateDegraded = this.shouldDegradeForActionErrorRate(action);
       const actionCriticalRateDegraded = this.shouldDegradeForActionCriticalRate(action);
       const shouldDegrade =
-        queueLagSec > this.queueLagThresholdSec ||
+        operationalQueueLagSec > this.queueLagThresholdSec ||
         actionErrorRateDegraded ||
         actionCriticalRateDegraded;
 
       if (shouldDegrade) {
         this.healthySinceMs = null;
         const reasons: string[] = [];
-        if (queueLagSec > this.queueLagThresholdSec) {
-          reasons.push(`queue lag ${queueLagSec.toFixed(1)}s`);
+        if (operationalQueueLagSec > this.queueLagThresholdSec) {
+          reasons.push(`queue lag ${operationalQueueLagSec.toFixed(1)}s`);
         }
         if (actionErrorRateDegraded) {
           reasons.push(`user-facing action error rate ${(action.errorRate * 100).toFixed(2)}%`);
@@ -242,7 +247,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
           'degrade',
           reasons.join('; '),
           this.resolveAutomaticDegradeCondition(
-            queueLagSec > this.queueLagThresholdSec,
+            operationalQueueLagSec > this.queueLagThresholdSec,
             actionErrorRateDegraded || actionCriticalRateDegraded,
           ),
         );
@@ -328,6 +333,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
       updatedAt: this.updatedAt.toISOString(),
       manualMode: this.manualMode,
       queueLagSec: this.lastQueueLagSec,
+      operationalQueueLagSec: this.lastOperationalQueueLagSec,
       action,
     };
   }
@@ -463,6 +469,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     this.updatedAt = new Date(snapshot.updatedAt);
     this.manualMode = snapshot.manualMode;
     this.lastQueueLagSec = snapshot.queueLagSec;
+    this.lastOperationalQueueLagSec = snapshot.operationalQueueLagSec;
     this.sharedSnapshotCache = snapshot;
     this.sharedSnapshotCacheAtMs = Date.now();
 
@@ -533,6 +540,12 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
         typeof parsed.queueLagSec === 'number' && Number.isFinite(parsed.queueLagSec)
           ? parsed.queueLagSec
           : 0;
+      const operationalQueueLagSec =
+        typeof parsed.operationalQueueLagSec === 'number' &&
+        Number.isFinite(parsed.operationalQueueLagSec) &&
+        parsed.operationalQueueLagSec >= 0
+          ? parsed.operationalQueueLagSec
+          : undefined;
       const reason = typeof parsed.reason === 'string' ? parsed.reason : 'unknown';
 
       return {
@@ -544,12 +557,14 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
           source: parsed.source,
           reason,
           queueLagSec,
+          operationalQueueLagSec,
           action: normalizedAction,
         }),
         reason,
         updatedAt,
         manualMode: parsed.manualMode ?? null,
         queueLagSec,
+        operationalQueueLagSec,
         action: normalizedAction,
       };
     } catch {
@@ -563,6 +578,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     source: SystemModeSource;
     reason: string;
     queueLagSec: number;
+    operationalQueueLagSec?: number;
     action: ActionHealthSnapshot;
   }): SystemModeCondition {
     if (
@@ -582,7 +598,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     }
 
     return this.resolveAutomaticDegradeCondition(
-      params.queueLagSec > this.queueLagThresholdSec,
+      (params.operationalQueueLagSec ?? params.queueLagSec) > this.queueLagThresholdSec,
       this.shouldDegradeForActionErrorRate(params.action) ||
         this.shouldDegradeForActionCriticalRate(params.action),
     );

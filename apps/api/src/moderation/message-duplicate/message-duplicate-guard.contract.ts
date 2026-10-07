@@ -9,6 +9,19 @@ export class MessageDuplicateGuardRejectedError extends Error {
   }
 }
 
+// FLAG: This is unavailable evidence during initial qualification, never terminal delete authority.
+export class MessageDuplicateQualificationSourceUnavailableError extends Error {
+  readonly code = 'message_duplicate_qualification_source_unavailable';
+
+  constructor(
+    readonly source: 'current' | 'original',
+    cause: unknown,
+  ) {
+    super('Message duplicate qualification source unavailable', { cause });
+    this.name = 'MessageDuplicateQualificationSourceUnavailableError';
+  }
+}
+
 export type MessageDuplicateNoticeAuthority = {
   assertMessageStillActionable(params: {
     chatId: string;

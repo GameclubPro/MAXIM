@@ -1,4 +1,10 @@
 import { ConfigService } from '@nestjs/config';
+import { MessageDuplicateQualificationSourceUnavailableError } from './message-duplicate-guard.contract';
+import {
+  markMaxMemberMutationAttempted,
+  markMaxMemberMutationConfirmed,
+} from '../../max/max-member-error.util';
+import { markMaxMessageSendAttempted } from '../../max/max-mutation-outcome.util';
 import {
   MessageDuplicateDeleteGuardService,
   MessageDuplicateGuardRejectedError,
@@ -218,6 +224,80 @@ describe('scheduled duplicate final action guard', () => {
 });
 
 describe('message duplicate final delete guard', () => {
+  it.each(['current', 'original'] as const)(
+    'classifies an unstructured initial %s GET 404 without changing source evidence or counters',
+    async (stage) => {
+      const s = setup();
+      const error = { response: { status: 404, data: {} } };
+      if (stage === 'current') s.max.getExactMessageRow.mockRejectedValue(error);
+      else s.originalLookup.mockRejectedValue(error);
+      await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toMatchObject({
+        name: 'MessageDuplicateQualificationSourceUnavailableError',
+        source: stage,
+        cause: error,
+      });
+      expect(s.history.qualify).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
+      expect(s.history.observeLifecycle).not.toHaveBeenCalled();
+      expect(s.metrics.record).toHaveBeenCalledWith(`guard.${stage}_lookup_unavailable`);
+      expect(s.metrics.record).toHaveBeenCalledWith('guard.unavailable');
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.absent');
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.allowed');
+      expect(s.metrics.recordGuardRejection).not.toHaveBeenCalled();
+      await expect(
+        s.service.assertMessageStillActionable({ ...s.params, binding: s.binding }),
+      ).rejects.toBe(error);
+      await expect(s.service.assertIntentStillActionable(s.params)).rejects.toBe(error);
+    },
+  );
+
+  it.each(
+    [
+      { response: { status: 403, data: {} } },
+      { response: { status: 500, data: {} } },
+      new Error('transport unavailable'),
+      Object.assign(new Error('ambiguous MAX mutation'), { response: { status: 404, data: {} } }),
+      markMaxMemberMutationConfirmed({ response: { status: 404, data: {} } }),
+      markMaxMemberMutationAttempted({ response: { status: 404, data: {} } }),
+      markMaxMessageSendAttempted({ response: { status: 404, data: {} } }),
+    ].flatMap((error) => (['current', 'original'] as const).map((stage) => ({ error, stage }))),
+  )(
+    'preserves initial $stage non-source or ambiguous failures ($error)',
+    async ({ error, stage }) => {
+      const s = setup();
+      if (stage === 'current') s.max.getExactMessageRow.mockRejectedValue(error);
+      else s.originalLookup.mockRejectedValue(error);
+      await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toBe(error);
+      expect(s.history.qualify).not.toHaveBeenCalled();
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(error).not.toBeInstanceOf(MessageDuplicateQualificationSourceUnavailableError);
+    },
+  );
+
+  it.each(['current', 'original'] as const)(
+    'preserves structured confirmed absence semantics for initial %s lookup',
+    async (stage) => {
+      const s = setup();
+      const error = { response: { status: 404, data: { code: 'message.not.found' } } };
+      if (stage === 'current') {
+        s.max.getExactMessageRow.mockRejectedValue(error);
+        await expect(s.service.qualify({ ...s.params, binding: s.binding })).resolves.toBeNull();
+        expect(s.history.remove).not.toHaveBeenCalled();
+      } else {
+        s.originalLookup.mockRejectedValue(error);
+        await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toMatchObject({
+          code: 'message_duplicate_original_missing',
+        });
+        expect(s.history.remove).toHaveBeenCalledWith('-123', 'm1');
+      }
+      expect(s.history.qualify).not.toHaveBeenCalled();
+      expect(s.metrics.record).toHaveBeenCalledWith(`guard.${stage}_lookup_confirmed_absent`);
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.unavailable');
+    },
+  );
+
   it.each(['qualification', 'qualification-retry', 'queued-delete', 'final-mutation'] as const)(
     'rejects a held original belonging to another participant at %s',
     async (stage) => {

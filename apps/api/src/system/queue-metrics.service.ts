@@ -42,6 +42,11 @@ import { ActionHealthService, type ActionHealthSnapshot } from './action-health.
 import { MaxActionLedgerWatchdogService } from './max-action-ledger-watchdog.service';
 import { WebhookDynamicLeaseStatusService } from './webhook-dynamic-lease-status.service';
 import {
+  buildWebhookOperationalLagQuery,
+  resolveWebhookOperationalLag,
+  type WebhookOperationalLagHead,
+} from './webhook-operational-lag';
+import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   type DefaultWebhookQueueName,
   JOIN_WEBHOOK_QUEUE_NAMES,
@@ -207,6 +212,9 @@ export type QueueLagSnapshot = {
   oldestReceivedCreatedAt: string | null;
   oldestReceivedLagSec: number;
   effectiveLagSec: number;
+  operationalLagSec?: number;
+  readinessWaitingCount?: number;
+  readinessHeadLimitReached?: boolean;
   generatedAt: string;
 };
 
@@ -672,7 +680,15 @@ export class QueueMetricsService {
       this.readOldestWebhookEvent(WebhookStatus.RECEIVED),
       this.readOldestWebhookEvent(WebhookStatus.QUEUED),
     ]);
-    const now = new Date();
+    let now = new Date();
+    let operationalReceivedLag: ReturnType<typeof resolveWebhookOperationalLag> | null = null;
+    if (received?.nextEnqueueAt && received.executionDeadlineAt) {
+      const heads = await this.prisma.$queryRaw<WebhookOperationalLagHead[]>(
+        buildWebhookOperationalLagQuery(),
+      );
+      now = new Date();
+      operationalReceivedLag = resolveWebhookOperationalLag(heads, now);
+    }
     const oldestReceivedLagSec = received
       ? Math.max(0, (now.getTime() - received.createdAt.getTime()) / 1_000)
       : 0;
@@ -688,17 +704,26 @@ export class QueueMetricsService {
       oldestReceivedCreatedAt: received?.createdAt.toISOString() ?? null,
       oldestReceivedLagSec,
       effectiveLagSec: Math.max(oldestQueuedLagSec, oldestReceivedLagSec),
+      operationalLagSec: Math.max(
+        oldestQueuedLagSec,
+        operationalReceivedLag?.lagSec ?? oldestReceivedLagSec,
+      ),
+      readinessWaitingCount: operationalReceivedLag?.readinessWaitingCount ?? 0,
+      readinessHeadLimitReached: operationalReceivedLag?.readinessHeadLimitReached ?? false,
       generatedAt: now.toISOString(),
     };
   }
 
-  private readOldestWebhookEvent(
-    status: WebhookStatus,
-  ): Promise<{ id: string; createdAt: Date } | null> {
+  private readOldestWebhookEvent(status: WebhookStatus): Promise<{
+    id: string;
+    createdAt: Date;
+    nextEnqueueAt: Date | null;
+    executionDeadlineAt: Date | null;
+  } | null> {
     return this.prisma.webhookEvent.findFirst({
       where: { status },
       orderBy: { createdAt: 'asc' },
-      select: { id: true, createdAt: true },
+      select: { id: true, createdAt: true, nextEnqueueAt: true, executionDeadlineAt: true },
     });
   }
 

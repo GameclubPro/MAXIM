@@ -34,7 +34,10 @@ import { executeModerationRuleFollowUp } from './moderation-rule-followup-execut
 import type { RuleFollowupExecutionContext } from './moderation-rule-followup.contract';
 import { ModerationRuleSanctionGuardService } from './moderation-rule-sanction-guard.service';
 import { ModerationStateDeleteGuardService } from './moderation-state-delete-guard.service';
-import { RequiredSubscriptionExecutionGuardService } from './required-subscription-execution-guard.service';
+import {
+  RequiredSubscriptionExecutionGuardService,
+  RequiredSubscriptionExecutionRejectedError,
+} from './required-subscription-execution-guard.service';
 import { MESSAGE_LIMITS_STATEFUL_RULES } from './message-limits-delete-guard.service';
 import {
   bindModerationExecutionPolicy,
@@ -2291,12 +2294,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
       this.markWebhookHotPathStage(hotPathProfile, 'rule-engine');
 
-      if (
-        detection.violations.length === 0 &&
-        (await this.reportSubmission?.handle(update, settings))
-      ) {
-        await suppressDeferredPhotoAnalysisActions();
-        return;
+      if (detection.violations.length === 0 && this.reportSubmission) {
+        this.markWebhookHotPathStage(hotPathProfile, 'report-submission');
+        const reportHandled = await this.reportSubmission.handle(update, settings);
+        this.markWebhookHotPathStage(hotPathProfile, 'report-submission.complete');
+        if (reportHandled) {
+          await suppressDeferredPhotoAnalysisActions();
+          return;
+        }
       }
 
       const violations = (
@@ -2470,6 +2475,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           this.maxBotLinkService?.getDefaultBotId?.())
         : null;
       if (messageDuplicateBotId) {
+        this.markWebhookHotPathStage(hotPathProfile, 'message-duplicate.observe');
         await this.messageDuplicateService?.observe({
           update,
           webhookEventId,
@@ -2484,6 +2490,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           executeFullAction: (request) =>
             this.executeDuplicateAction({ ...request, rulesPublishedUrl, rulesPublishedMessageId }),
         });
+        this.markWebhookHotPathStage(hotPathProfile, 'message-duplicate.complete');
       }
       const commercialOcrActionEligible =
         !hasActionableCompetingViolation(violations) && !hasUnsuppressedDuplicateOutcome;
@@ -2779,6 +2786,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           DURABLE_RULE_FOLLOWUP_RULES.has(violationDeleteIntent.ruleCode ?? '') &&
           (updateType === 'message_created' || updateType === 'message_edited')
         ) {
+          this.markWebhookHotPathStage(hotPathProfile, 'violation-rule-followup.persist');
           const registered = await this.moderationDeleteIntentService.ensureIntentWithRuleFollowup(
             {
               ...violationDeleteIntent,
@@ -2796,6 +2804,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               rulesPublishedMessageId,
             },
           );
+          this.markWebhookHotPathStage(hotPathProfile, 'violation-rule-followup.complete');
           durableRuleFollowupId = registered.followupId;
         } else await this.ensureModerationDeleteIntent(violationDeleteIntent, undefined, false);
       }
@@ -10257,7 +10266,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         settleNoticePlan,
       }) => {
         await assertNoticeLeaseOwned();
-        await assertRequiredSubscriptionCurrent();
+        // FLAG: Only the initial leader authorization may stop this feature normally.
+        // Return handled to prevent active-mute fallthrough; later guards retain failure fences.
+        try {
+          await assertRequiredSubscriptionCurrent();
+        } catch (error: unknown) {
+          if (error instanceof RequiredSubscriptionExecutionRejectedError) return true;
+          throw error;
+        }
         const claimed = await this.claimAndPersistMessageScopedModerationViolation({
           chatId: params.chatId,
           userId: params.userId,
@@ -17128,7 +17144,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
-    return mode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC;
+    return (
+      (mode.operationalQueueLagSec ?? mode.queueLagSec) >=
+      REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC
+    );
   }
 
   private logOptionalHotChatStageSkip(
@@ -17296,7 +17315,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (params.systemMode.mode === 'degrade') {
       return `${params.stage} skipped with ${remainingMs}ms remaining during ${params.systemMode.reason || 'degrade'}`;
     }
-    return `${params.stage} skipped with ${remainingMs}ms remaining at queue lag ${params.systemMode.queueLagSec.toFixed(1)}s`;
+    const queueLagSec = params.systemMode.operationalQueueLagSec ?? params.systemMode.queueLagSec;
+    return `${params.stage} skipped with ${remainingMs}ms remaining at queue lag ${queueLagSec.toFixed(1)}s`;
   }
 
   private isWebhookHotPathPressureActive(
@@ -17306,7 +17326,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return (
       hotChatBackoffActive ||
       systemMode.mode === 'degrade' ||
-      systemMode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC / 2
+      (systemMode.operationalQueueLagSec ?? systemMode.queueLagSec) >=
+        REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC / 2
     );
   }
 
@@ -18428,8 +18449,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     try {
       const snapshot = await this.queueMetricsService.getOperationalSnapshot({ maxAgeMs: 1_500 });
-      if (snapshot.effectiveLagSec >= this.backgroundWorkSoftPauseQueueLagSec) {
-        return `queue lag ${snapshot.effectiveLagSec.toFixed(1)}s`;
+      const queueLagSec = snapshot.operationalLagSec ?? snapshot.effectiveLagSec;
+      if (queueLagSec >= this.backgroundWorkSoftPauseQueueLagSec) {
+        return `queue lag ${queueLagSec.toFixed(1)}s`;
       }
 
       const workerGroups = Object.entries(snapshot.webhookDefaultWorkerGroups).map(

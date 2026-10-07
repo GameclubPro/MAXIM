@@ -4,13 +4,25 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { RedisCounterService } from '../redis-counter.service';
 import { MessageDuplicateDeleteGuardService } from './message-duplicate-delete-guard.service';
-import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
+import {
+  duplicateEnforcementObservation,
+  MessageDuplicateEnforcementService,
+} from './message-duplicate-enforcement.service';
+import {
+  duplicateSourceDigest,
+  MessageDuplicateHistoryService,
+} from './message-duplicate-history.service';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
 import { createPrismaClient, Prisma, type PrismaClient } from '../../prisma/prisma-client';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from '../moderation-delete-intent.types';
 import { MessageDuplicateAdmissionService } from './message-duplicate-admission.service';
-import { digestDuplicateContent } from './message-duplicate-content';
+import {
+  buildMessageDuplicateIdentity,
+  digestDuplicateContent,
+  extractDuplicateMessageContent,
+} from './message-duplicate-content';
+import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
 import {
   buildMessageDuplicateJobId,
   MessageDuplicateOrderingStore,
@@ -29,6 +41,7 @@ import {
   MESSAGE_DUPLICATE_CLAIM_PREFIX,
   MESSAGE_DUPLICATE_MEDIA_VERSION,
   MESSAGE_DUPLICATE_SOURCE,
+  messageDuplicateSettingsDigest,
   parseMessageDuplicateBinding,
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
@@ -234,6 +247,111 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       };
     };
 
+    const unavailableSourceCase = async (
+      messageId: string,
+      source: 'current' | 'original',
+      intentService = serviceFor(),
+    ) => {
+      const own = canonicalClaim(messageId);
+      const binding = bindingFor(own, Date.now() - 1000);
+      const settings = await prisma.chatSettings.upsert({
+        where: { chatId },
+        create: { chatId, antiDuplicateEnabled: true, duplicateCompareMode: 'TEXT' },
+        update: { antiDuplicateEnabled: true, duplicateCompareMode: 'TEXT' },
+      });
+      const raw = {
+        sender: { user_id: own.userId },
+        recipient: { chat_id: chatId, chat_type: 'chat' },
+        timestamp: binding.eventTimestampMs,
+        body: { mid: messageId, text: 'same source content' },
+      };
+      const content = extractDuplicateMessageContent(raw, false);
+      const flow = resolveDuplicateFlowConfig(settings);
+      binding.settingsDigest = messageDuplicateSettingsDigest(settings);
+      binding.policyRevision = settings.duplicatePolicyRevision;
+      binding.requiredCount = flow.allowedCount + 2;
+      binding.windowSeconds = flow.windowSec;
+      binding.sourceDigest = duplicateSourceDigest(content, binding.compareMode);
+      binding.contentDigest = buildMessageDuplicateIdentity(content, binding.compareMode)!;
+      binding.original!.sourceDigest = binding.sourceDigest;
+      binding.original!.contentDigest = binding.contentDigest;
+      const sourceError = { response: { status: 404, data: {} } };
+      const max = {
+        getChatMemberAccess: jest
+          .fn()
+          .mockResolvedValue({ userId: own.userId, isAdmin: false, isOwner: false }),
+        getExactMessageRow: jest.fn(async (_chatId: string, lookupId: string) => {
+          if (lookupId === (source === 'current' ? messageId : binding.original!.messageId))
+            throw sourceError;
+          return raw;
+        }),
+      };
+      const history = {
+        qualified: jest.fn().mockResolvedValue(null),
+        qualify: jest.fn().mockResolvedValue(1),
+        stillMatches: jest.fn().mockResolvedValue(true),
+        remove: jest.fn(),
+        observeLifecycle: jest.fn(),
+        invalidateLifecycle: jest.fn(),
+      };
+      const policy = {
+        resolve: jest
+          .fn()
+          .mockResolvedValue({
+            mode: 'delete_only',
+            revision: 1,
+            effectiveAtMs: binding.eventTimestampMs - 10_000,
+            expiresAtMs: binding.authorization!.deadlineAtMs,
+          }),
+      };
+      const authorization = new MessageDuplicateAuthorizationService(prisma as never, {} as never);
+      const immunity = { consumeForMessage: jest.fn().mockResolvedValue('not_granted') };
+      const metrics = { record: jest.fn(), recordGuardRejection: jest.fn() };
+      const guard = new MessageDuplicateDeleteGuardService(
+        prisma as never,
+        max as never,
+        { isKnownBotUserId: () => false } as never,
+        immunity as never,
+        policy as never,
+        history as never,
+        new ConfigService(),
+        authorization,
+        metrics as never,
+        { isAnyMessageSourceHeld: async () => false } as never,
+      );
+      const handoff = jest.spyOn(intentService, 'ensureIntentWithMessageActionClaim');
+      const executeFullAction = jest.fn();
+      const service = new MessageDuplicateEnforcementService(intentService, policy as never, guard);
+      const enqueue = () =>
+        service.enqueue({
+          chatId,
+          botId: 'bot',
+          sourceCreatedAt: new Date(binding.eventTimestampMs).toISOString(),
+          text: raw.body.text,
+          settings,
+          hit: {
+            count: binding.requiredCount,
+            windowSec: binding.windowSeconds,
+            hash: binding.fingerprint,
+            fingerprintType: 'exact',
+          },
+          binding,
+          executeFullAction,
+        });
+      return {
+        own,
+        binding,
+        sourceError,
+        history,
+        immunity,
+        metrics,
+        authorization,
+        handoff,
+        executeFullAction,
+        enqueue,
+      };
+    };
+
     beforeAll(async () => {
       const url = new URL(databaseUrl);
       if (
@@ -253,6 +371,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
     afterAll(async () => {
       jest.restoreAllMocks();
       if (!prisma) return;
+      await prisma.maxActionLedgerEntry.deleteMany({ where: { chatId } });
       await prisma.chat.deleteMany({ where: { id: chatId } });
       await prisma.$disconnect();
     });
@@ -408,6 +527,163 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       expect(
         await intents.releaseUnmaterializedMessageAction({ claim: own, binding: binding as never }),
       ).toBe(false);
+    });
+
+    it.each(['current', 'original'] as const)(
+      'settles an initial %s GET 404 only after durable unused-claim revocation',
+      async (source) => {
+        const s = await unavailableSourceCase(`unavailable-${source}`, source);
+        const outcome = await s.enqueue();
+        expect(outcome).toEqual({ kind: 'rejected', reason: 'qualification_source_unavailable' });
+        expect(duplicateEnforcementObservation(outcome)).toBe('SOURCE_UNAVAILABLE');
+        const owner = await prisma.moderationViolationMessageClaim.findUniqueOrThrow({
+          where: { dedupeKey: s.own.dedupeKey },
+        });
+        expect(owner.messageActionKey).toBeNull();
+        expect(await s.authorization.isAllowed(chatId, s.binding)).toBe(false);
+        expect(await preclaim(intents, s.own)).toBe('blocked');
+        expect(
+          await prisma.messageDuplicateClaimCleanup.findUnique({ where: { claimId: owner.id } }),
+        ).toBeNull();
+        expect(
+          await prisma.moderationDeleteIntent.count({
+            where: { chatId, messageId: s.own.messageId },
+          }),
+        ).toBe(0);
+        expect(
+          await prisma.moderationEvent.count({ where: { chatId, messageId: s.own.messageId } }),
+        ).toBe(0);
+        expect(
+          await prisma.maxActionLedgerEntry.count({
+            where: { chatId, messageId: s.own.messageId },
+          }),
+        ).toBe(0);
+        expect(s.handoff).not.toHaveBeenCalled();
+        expect(s.executeFullAction).not.toHaveBeenCalled();
+        expect(s.history.qualify).not.toHaveBeenCalled();
+        expect(s.history.remove).not.toHaveBeenCalled();
+        expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
+        expect(s.history.observeLifecycle).not.toHaveBeenCalled();
+        expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+        expect(s.metrics.record).not.toHaveBeenCalledWith('guard.absent');
+        expect(s.metrics.record).not.toHaveBeenCalledWith('guard.allowed');
+      },
+    );
+
+    it.each(
+      (['intent', 'event', 'receipt'] as const).flatMap((effect) =>
+        (['current', 'original'] as const).map((source) => ({ effect, source })),
+      ),
+    )(
+      'preserves $source GET 404 and its action fence when an existing $effect blocks release',
+      async ({ effect, source }) => {
+        const s = await unavailableSourceCase(`unavailable-${source}-${effect}`, source);
+        if (effect === 'intent')
+          await prisma.moderationDeleteIntent.create({
+            data: {
+              id: s.own.dedupeKey,
+              chatId,
+              messageId: s.own.messageId,
+              retryUntilAt: new Date(s.binding.authorization!.deadlineAtMs),
+            },
+          });
+        if (effect === 'event')
+          await prisma.moderationEvent.create({
+            data: {
+              chatId,
+              userId: s.own.userId,
+              messageId: s.own.messageId,
+              eventType: 'MESSAGE',
+              ruleCode: 'DUPLICATE_WARN',
+              action: 'WARN',
+            },
+          });
+        if (effect === 'receipt')
+          await prisma.maxActionLedgerEntry.create({
+            data: {
+              jobId: s.own.dedupeKey,
+              chatId,
+              messageId: s.own.messageId,
+              actionType: 'DELETE_MESSAGE',
+              status: 'SUCCEEDED',
+              terminal: true,
+            },
+          });
+        await expect(s.enqueue()).rejects.toBe(s.sourceError);
+        const owner = await prisma.moderationViolationMessageClaim.findUniqueOrThrow({
+          where: { dedupeKey: s.own.dedupeKey },
+        });
+        expect(owner.messageActionKey).toBe(s.own.messageActionKey);
+        expect(await s.authorization.isAllowed(chatId, s.binding)).toBe(true);
+        expect(
+          await prisma.moderationViolationMessageClaim.findUnique({
+            where: {
+              dedupeKey: duplicateRevocationKey(
+                chatId,
+                s.own.messageId,
+                s.binding.eventTimestampMs,
+              ),
+            },
+          }),
+        ).toBeNull();
+        expect(
+          await prisma.moderationDeleteIntent.count({
+            where: { chatId, messageId: s.own.messageId },
+          }),
+        ).toBe(effect === 'intent' ? 1 : 0);
+        expect(
+          await prisma.moderationEvent.count({ where: { chatId, messageId: s.own.messageId } }),
+        ).toBe(effect === 'event' ? 1 : 0);
+        expect(
+          await prisma.maxActionLedgerEntry.count({
+            where: { chatId, messageId: s.own.messageId },
+          }),
+        ).toBe(effect === 'receipt' ? 1 : 0);
+        expect(s.handoff).not.toHaveBeenCalled();
+        expect(s.executeFullAction).not.toHaveBeenCalled();
+        expect(s.history.qualify).not.toHaveBeenCalled();
+        expect(s.history.remove).not.toHaveBeenCalled();
+        expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      },
+    );
+
+    it('retries source-unavailable cleanup against a concurrent handoff and preserves the winning intent', async () => {
+      const pause = pauseFirstTransactionRead('moderationEvent');
+      const s = await unavailableSourceCase(
+        'unavailable-concurrent-handoff',
+        'original',
+        serviceFor(pause.database),
+      );
+      const pending = s.enqueue().then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await pause.reached;
+      try {
+        expect(
+          await serviceFor().ensureIntentWithMessageActionClaim(handoffFor(s.own, s.binding)),
+        ).toMatchObject({ claim: 'resumed' });
+      } finally {
+        pause.proceed();
+      }
+      expect(await pending).toEqual({ error: s.sourceError });
+      expect(pause.attempts()).toBeGreaterThanOrEqual(3);
+      expect(
+        (
+          await prisma.moderationViolationMessageClaim.findUniqueOrThrow({
+            where: { dedupeKey: s.own.dedupeKey },
+          })
+        ).messageActionKey,
+      ).toBe(s.own.messageActionKey);
+      expect(
+        await prisma.moderationDeleteIntent.count({
+          where: { chatId, messageId: s.own.messageId },
+        }),
+      ).toBe(1);
+      expect(await s.authorization.isAllowed(chatId, s.binding)).toBe(true);
+      expect(s.handoff).not.toHaveBeenCalled();
+      expect(s.executeFullAction).not.toHaveBeenCalled();
+      expect(s.history.qualify).not.toHaveBeenCalled();
     });
 
     it('reconciles a terminated worker without releasing a newer reservation', async () => {
