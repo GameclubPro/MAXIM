@@ -7,6 +7,7 @@ import {
   WebhookPreparationAdmission,
   type WebhookPreparationSchedulingState,
 } from './webhook-preparation-admission';
+import { webhookPreparationScope } from './webhook-preparation-scope';
 import { readPrismaPoolConfig } from '../prisma/prisma-client';
 import { RuntimeWorkerOwner, type RuntimeWorker } from '../runtime/runtime-worker-shutdown';
 import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
@@ -558,20 +559,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
   }
 
   private preparationClass(update?: MaxUpdate): 'ordinary' | 'interactive' | 'lifecycle' {
-    if (
-      update &&
-      [
-        'bot_added',
-        'bot_removed',
-        'user_added',
-        'user_removed',
-        'bot_stopped',
-        'dialog_removed',
-      ].includes(update.type.trim().toLowerCase())
-    )
-      return 'lifecycle';
-    if (update && isManagedEntityHandshakeStartCommand(update)) return 'interactive';
-    return 'ordinary';
+    return webhookPreparationScope(update).workClass;
   }
 
   private async preparePersistedWebhookEventAdmitted(

@@ -8,6 +8,7 @@ import {
 import { getQueueToken } from '@nestjs/bullmq';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { WebhookOutboxService } from './webhook-outbox.service';
+import { DeferredWebhookScopes } from './webhook-outbox-deferred-scopes';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import {
   isPendingWebhookTimeoutQuarantineMessage,
@@ -80,6 +81,8 @@ function extractSql(query: unknown): string {
 }
 
 type MockWebhookEventRow = {
+  legacyDispositionId?: string | null;
+  sourceDispositionId?: string | null;
   id: string;
   dedupKey: string | null;
   status: WebhookStatus;
@@ -343,8 +346,8 @@ function createWebhookEventUpdateManyMock(rows: MockWebhookEventRow[]) {
 }
 
 function compareMockWebhookRows(
-  left: MockWebhookEventRow,
-  right: MockWebhookEventRow,
+  left: Pick<MockWebhookEventRow, 'id' | 'createdAt'>,
+  right: Pick<MockWebhookEventRow, 'id' | 'createdAt'>,
   direction: 'asc' | 'desc' = 'asc',
 ): number {
   const createdAtDiff = left.createdAt.getTime() - right.createdAt.getTime();
@@ -537,6 +540,8 @@ function createService(params?: {
 }) {
   const webhookRows: MockWebhookEventRow[] = (params?.findManyResult ?? []).map((item) => ({
     ...item,
+    legacyDispositionId: null,
+    sourceDispositionId: null,
     dedupKey:
       item.dedupKey ??
       resolveTestWebhookDedupKey(item.normalizedPayload, item.botId ?? null) ??
@@ -566,6 +571,23 @@ function createService(params?: {
       if (extractSql(query).includes('AS "commandId"')) return [];
       if (extractSql(query).includes('AS "scanned"'))
         return [{ removed: 0, scanned: 0, lastId: null, lastCreatedAt: null }];
+      if (extractSql(query).includes('deferred_scope_raw_page')) {
+        const first = { createdAt: values[0] as Date, id: values[1] as string };
+        const last = { createdAt: values[2] as Date, id: values[3] as string };
+        const after =
+          values[4] instanceof Date ? { createdAt: values[4], id: values[5] as string } : null;
+        return webhookRows
+          .filter(
+            (row) =>
+              ['RECEIVED', 'FAILED', 'QUEUED'].includes(row.status) &&
+              compareMockWebhookRows(row, first) >= 0 &&
+              compareMockWebhookRows(row, last) <= 0 &&
+              (!after || compareMockWebhookRows(row, after) > 0),
+          )
+          .sort(compareMockWebhookRows)
+          .slice(0, 65)
+          .map((row) => ({ ...row }));
+      }
       if (extractSql(query).includes('fair_enqueue_candidates')) {
         return selectFairEnqueueCandidatesForTest(
           webhookRows,
@@ -1823,6 +1845,378 @@ describe('WebhookOutboxService', () => {
     await internals.selectEnqueueCandidates(new Date(), pressure);
     expect(extractSql(fixture.prisma.$queryRaw.mock.calls[1]![0])).toContain('page_pool');
   });
+
+  it('retains scope overflow until admission while an independent bot keeps progressing', async () => {
+    const started: string[] = [];
+    const fixture = capacityFixture(
+      8,
+      async (id) => {
+        started.push(id);
+      },
+      { poolMax: 12 },
+    );
+    fixture.prisma.webhookEvent.updateMany.mockImplementation(
+      createWebhookEventUpdateManyMock(fixture.webhookRows),
+    );
+    (fixture.webhookRows[7]!.normalizedPayload as MaxUpdate).botId = 'independent-bot';
+    const internal = fixture.service as unknown as {
+      enqueueCandidates(candidates: unknown[]): Promise<unknown>;
+      readDeferredEnqueueRepresentatives(now: Date, take: number): Promise<unknown[]>;
+      deferredEnqueueScopes: DeferredWebhookScopes;
+      pendingEnqueueRepresentatives: Map<string, string>;
+    };
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const owners = [0, 1].map(() => fixture.admission.run('same-bot', 'ordinary', () => held));
+    try {
+      await internal.enqueueCandidates(
+        fixture.webhookRows.map((row) => ({ ...row, priority: 5, isBacklogScan: true })),
+      );
+      expect(started).toEqual(['capacity-7']);
+      expect(internal.pendingEnqueueRepresentatives.size).toBe(0);
+      expect(internal.deferredEnqueueScopes.snapshot()).toEqual({
+        scopes: 1,
+        identities: 0,
+        intervals: 2,
+      });
+      // Loading the first debt does not consume the shared discovery FIFO.
+      await internal.readDeferredEnqueueRepresentatives(new Date(), 100);
+      expect(internal.deferredEnqueueScopes.snapshot().identities).toBeLessThanOrEqual(2);
+      release();
+      await Promise.all(owners);
+      for (let pass = 0; pass < 12 && started.length < 8; pass++) {
+        const deferred = await internal.readDeferredEnqueueRepresentatives(new Date(), 100);
+        await internal.enqueueCandidates(
+          deferred.map((row) => ({ ...(row as object), priority: 5 })),
+        );
+        expect(internal.deferredEnqueueScopes.snapshot().identities).toBeLessThanOrEqual(2);
+      }
+      expect(new Set(started)).toEqual(new Set(fixture.webhookRows.map((row) => row.id)));
+      expect(started).toHaveLength(8);
+      expect(fixture.capacityWrites()).toHaveLength(0);
+    } finally {
+      release();
+      await Promise.all(owners);
+    }
+  });
+
+  it.each(['committed', 'thrown', 'cas-lost'] as const)(
+    'preserves admission debt when a positive hint loses capacity (retry storage=%s)',
+    async (storage) => {
+      const fixture = capacityFixture(1, async () => undefined, { poolMax: 12 });
+      fixture.webhookService.webhookPreparationSchedulingState.mockReturnValue('available');
+      if (storage === 'thrown')
+        fixture.prisma.webhookEvent.updateMany.mockRejectedValue(
+          new Error('local retry storage unavailable'),
+        );
+      else if (storage === 'cas-lost')
+        fixture.prisma.webhookEvent.updateMany.mockResolvedValue({ count: 0 });
+      else
+        fixture.prisma.webhookEvent.updateMany.mockImplementation(
+          createWebhookEventUpdateManyMock(fixture.webhookRows),
+        );
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const owners = [0, 1].map(() => fixture.admission.run('same-bot', 'ordinary', () => held));
+      const internal = fixture.service as unknown as {
+        enqueueCandidates(rows: unknown[]): Promise<unknown>;
+        deferredEnqueueScopes: DeferredWebhookScopes;
+      };
+      try {
+        await internal.enqueueCandidates(
+          fixture.webhookRows.map((row) => ({ ...row, isBacklogScan: true, priority: 5 })),
+        );
+        if (storage !== 'committed') {
+          expect(internal.deferredEnqueueScopes.snapshot()).toEqual({
+            scopes: 1,
+            identities: 0,
+            intervals: 1,
+          });
+          expect(fixture.webhookRows[0]!.nextEnqueueAt).toBeNull();
+        } else {
+          expect(fixture.webhookRows[0]).toMatchObject({
+            status: WebhookStatus.RECEIVED,
+            enqueueAttempts: 0,
+          });
+          expect(fixture.webhookRows[0]!.nextEnqueueAt!.getTime()).toBeGreaterThan(Date.now());
+          expect(fixture.capacityWrites()).toHaveLength(1);
+          expect(internal.deferredEnqueueScopes.snapshot().scopes).toBe(0);
+        }
+      } finally {
+        release();
+        await Promise.all(owners);
+      }
+    },
+  );
+
+  it('retains exact debt when malformed preparation fails before admission and its retry CAS is lost', async () => {
+    const fixture = capacityFixture(1, async () => undefined, { poolMax: 12 });
+    Object.assign(fixture.webhookRows[0]!.normalizedPayload as object, { botId: 7 });
+    fixture.prisma.webhookEvent.updateMany.mockImplementation(async () => {
+      fixture.webhookRows[0]!.errorMessage = 'concurrent receipt metadata update';
+      return { count: 0 };
+    });
+    const admission = jest.spyOn(fixture.admission, 'run');
+    const internal = fixture.service as unknown as {
+      enqueueCandidates(rows: unknown[]): Promise<unknown>;
+      readDeferredEnqueueRepresentatives(now: Date, take: number): Promise<Array<{ id: string }>>;
+      deferredEnqueueScopes: DeferredWebhookScopes;
+    };
+    await internal.enqueueCandidates(
+      fixture.webhookRows.map((row) => ({ ...row, isBacklogScan: true, priority: 5 })),
+    );
+    expect(admission).not.toHaveBeenCalled();
+    expect(fixture.webhookRows[0]).toMatchObject({
+      status: WebhookStatus.RECEIVED,
+      nextEnqueueAt: null,
+      enqueueAttempts: 0,
+    });
+    expect(internal.deferredEnqueueScopes.snapshot()).toEqual({
+      scopes: 1,
+      identities: 0,
+      intervals: 1,
+    });
+    expect(
+      (await internal.readDeferredEnqueueRepresentatives(new Date(), 10)).map(({ id }) => id),
+    ).toEqual([fixture.webhookRows[0]!.id]);
+  });
+
+  it.each(['admitted', 'terminal', 'held', 'future', 'active'] as const)(
+    'preserves another bot receipt in the same chat when the earlier retained receipt is %s',
+    async (earlierState) => {
+      const fixture = createService({
+        systemMode: 'degrade',
+        findManyResult: [0, 1, 2].map((index) => ({
+          id: `cross-scope-${index}`,
+          enqueueAttempts: 0,
+          createdAt: new Date(1_770_000_000_000 + index),
+          normalizedPayload: {
+            type: 'message_created',
+            botId: index === 1 ? 'bot-b' : 'bot-a',
+            message: {
+              chatId: index === 2 ? 'interval-anchor' : 'cross-scope-chat',
+              messageId: `message-${index}`,
+            },
+          },
+        })),
+      });
+      fixture.prisma.webhookEvent.updateMany.mockImplementation(
+        createWebhookEventUpdateManyMock(fixture.webhookRows),
+      );
+      const internal = fixture.service as unknown as {
+        enqueueBatch(): Promise<void>;
+        deferredEnqueueScopes: DeferredWebhookScopes;
+        readDeferredEnqueueRepresentatives(now: Date, take: number): Promise<unknown[]>;
+        selectEnqueueCandidates(): Promise<unknown[]>;
+        activeEnqueueUnits: Map<string, Promise<void>>;
+      };
+      jest.spyOn(internal, 'selectEnqueueCandidates').mockResolvedValue([]);
+      const scope = { botId: 'bot-a', workClass: 'ordinary' as const };
+      internal.deferredEnqueueScopes.capture(scope, 'event:absent', {
+        id: 'absent',
+        createdAt: new Date(1_769_999_999_999),
+      });
+      internal.deferredEnqueueScopes.capture(
+        scope,
+        'chat:cross-scope-chat',
+        fixture.webhookRows[0]!,
+      );
+      internal.deferredEnqueueScopes.capture(
+        scope,
+        'chat:interval-anchor',
+        fixture.webhookRows[2]!,
+      );
+      // The broad fixed interval discovers bot B between its two bot A endpoints.
+      for (let pass = 0; pass < 3; pass++)
+        await internal.readDeferredEnqueueRepresentatives(new Date(), 10);
+      expect(internal.deferredEnqueueScopes.snapshot()).toEqual({
+        scopes: 2,
+        identities: 3,
+        intervals: 0,
+      });
+      const earlier = fixture.webhookRows[0]!;
+      if (earlierState === 'terminal') earlier.status = WebhookStatus.PROCESSED;
+      if (earlierState === 'held') earlier.legacyDispositionId = 'exact-held-proof';
+      if (earlierState === 'future') earlier.nextEnqueueAt = new Date(Date.now() + 60_000);
+      if (earlierState === 'active')
+        internal.activeEnqueueUnits.set('chat:cross-scope-chat', Promise.resolve());
+      if (earlierState === 'admitted') await internal.enqueueBatch();
+      else await internal.readDeferredEnqueueRepresentatives(new Date(), 10);
+      expect(internal.deferredEnqueueScopes.identities(10).map(({ id }) => id)).toContain(
+        'cross-scope-1',
+      );
+      internal.activeEnqueueUnits.clear();
+      earlier.status = WebhookStatus.PROCESSED;
+      earlier.legacyDispositionId = null;
+      earlier.nextEnqueueAt = null;
+      for (let pass = 0; pass < 3; pass++) await internal.enqueueBatch();
+      expect(
+        fixture.webhookService.preparePersistedWebhookEvent.mock.calls.map(([id]) => id),
+      ).toContain('cross-scope-1');
+    },
+  );
+
+  it.each(['message_callback', 'bot_added', 'bot_started', 'user_removed'])(
+    'keeps nonordered %s with a chat ID independent of ordered head debt',
+    async (type) => {
+      const fixture = createService({
+        findManyResult: [
+          {
+            id: 'nonordered-scope-event',
+            enqueueAttempts: 0,
+            normalizedPayload: {
+              type,
+              botId: 'bot-a',
+              message: { chatId: 'ordered-chat', messageId: 'event-message' },
+            },
+          },
+        ],
+      });
+      const internal = fixture.service as unknown as {
+        enqueueCandidates(rows: unknown[]): Promise<unknown>;
+        deferredEnqueueScopes: DeferredWebhookScopes;
+      };
+      await internal.enqueueCandidates(
+        fixture.webhookRows.map((row) => ({ ...row, priority: 5, isBacklogScan: true })),
+      );
+      expect(
+        fixture.webhookService.preparePersistedWebhookEvent.mock.calls.map(([id]) => id),
+      ).toEqual(['nonordered-scope-event']);
+      expect(internal.deferredEnqueueScopes.snapshot().scopes).toBe(0);
+    },
+  );
+
+  it('transfers a changed scheduling identity before its interval becomes an exact retained row', async () => {
+    const fixture = createService({
+      findManyResult: [
+        {
+          id: 'changed-before-read',
+          enqueueAttempts: 0,
+          normalizedPayload: {
+            type: 'message_created',
+            botId: 'old-bot',
+            message: { chatId: 'changed-before-chat', messageId: 'changed-before-message' },
+          },
+        },
+      ],
+    });
+    const internal = fixture.service as unknown as {
+      deferredEnqueueScopes: DeferredWebhookScopes;
+      readDeferredEnqueueRepresentatives(now: Date, take: number): Promise<unknown[]>;
+    };
+    const row = fixture.webhookRows[0]!;
+    internal.deferredEnqueueScopes.capture(
+      { botId: 'old-bot', workClass: 'ordinary' },
+      'chat:changed-before-chat',
+      row,
+    );
+    Object.assign(row.normalizedPayload as object, { type: 'bot_added', botId: 'new-bot' });
+    expect(await internal.readDeferredEnqueueRepresentatives(new Date(), 10)).toEqual([]);
+    expect(await internal.readDeferredEnqueueRepresentatives(new Date(), 10)).toHaveLength(1);
+    expect(internal.deferredEnqueueScopes.snapshot()).toEqual({
+      scopes: 1,
+      identities: 1,
+      intervals: 0,
+    });
+  });
+
+  it.each(['terminal', 'held', 'future', 'deleted', 'changed-class', 'malformed'] as const)(
+    'rechecks a deferred exact identity that becomes %s without unbounded retained state',
+    async (change) => {
+      const fixture = createService({
+        findManyResult: [
+          {
+            id: 'deferred-change',
+            enqueueAttempts: 0,
+            normalizedPayload: {
+              type: 'message_created',
+              botId: 'old-bot',
+              message: { chatId: 'change-chat', messageId: 'change-message' },
+            },
+          },
+        ],
+      });
+      const internal = fixture.service as unknown as {
+        deferredEnqueueScopes: DeferredWebhookScopes;
+        readDeferredEnqueueRepresentatives(
+          now: Date,
+          take: number,
+        ): Promise<Array<{ id: string; normalizedPayload: unknown }>>;
+      };
+      const row = fixture.webhookRows[0]!;
+      internal.deferredEnqueueScopes.capture(
+        { botId: 'old-bot', workClass: 'ordinary' },
+        'chat:change-chat',
+        row,
+      );
+      expect(await internal.readDeferredEnqueueRepresentatives(new Date(), 10)).toHaveLength(1);
+      if (change === 'terminal') row.status = WebhookStatus.PROCESSED;
+      if (change === 'held') row.legacyDispositionId = 'positive-held-proof';
+      if (change === 'future') row.nextEnqueueAt = new Date(Date.now() + 60_000);
+      if (change === 'deleted') fixture.webhookRows.splice(0, 1);
+      if (change === 'changed-class')
+        Object.assign(row.normalizedPayload as object, { type: 'bot_added', botId: 'new-bot' });
+      if (change === 'malformed') row.normalizedPayload = { type: 7, botId: 12 };
+      expect(await internal.readDeferredEnqueueRepresentatives(new Date(), 10)).toEqual([]);
+      if (change === 'changed-class' || change === 'malformed') {
+        expect(await internal.readDeferredEnqueueRepresentatives(new Date(), 10)).toHaveLength(1);
+        expect(internal.deferredEnqueueScopes.snapshot().identities).toBe(1);
+      } else
+        expect(internal.deferredEnqueueScopes.snapshot()).toEqual({
+          scopes: 0,
+          identities: 0,
+          intervals: 0,
+        });
+    },
+  );
+
+  it.each(['disabled', 'failed'] as const)(
+    'retains an exact missing head when selected-chat expansion is %s',
+    async (mode) => {
+      const fixture = createService({
+        systemMode: mode === 'disabled' ? 'degrade' : 'normal',
+        selectedChatQueryError:
+          mode === 'failed' ? new Error('bounded expansion timeout') : undefined,
+        findManyResult: [0, 1].map((index) => ({
+          id: `deferred-head-${index}`,
+          enqueueAttempts: 0,
+          createdAt: new Date(1_770_000_000_000 + index),
+          normalizedPayload: {
+            type: 'message_created',
+            botId: 'same-bot',
+            message: { chatId: 'deferred-head-chat', messageId: `message-${index}` },
+          },
+        })),
+      });
+      const internal = fixture.service as unknown as {
+        enqueueBatch(): Promise<void>;
+        deferredEnqueueScopes: DeferredWebhookScopes;
+        pendingEnqueueRepresentatives: Map<string, string>;
+      };
+      const original = fixture.prisma.$queryRaw.getMockImplementation()!;
+      fixture.prisma.$queryRaw.mockImplementation(async (query) => {
+        if (extractSql(query).includes('fair_enqueue_candidates'))
+          return [{ ...fixture.webhookRows[1]!, isBacklogScan: true }];
+        return original(query);
+      });
+      await internal.enqueueBatch();
+      expect(fixture.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+      expect(internal.pendingEnqueueRepresentatives.size).toBe(0);
+      expect(internal.deferredEnqueueScopes.snapshot()).toEqual({
+        scopes: 1,
+        identities: 0,
+        intervals: 1,
+      });
+      await internal.enqueueBatch();
+      expect(fixture.webhookService.preparePersistedWebhookEvent.mock.calls[0]?.[0]).toBe(
+        'deferred-head-0',
+      );
+    },
+  );
 
   it.each([
     ['another bot', 'bot-b', 'message_created', 'ordinary'],

@@ -3,6 +3,8 @@ import {
   type OutboxScanState,
   type OutboxScanProgress,
 } from './webhook-outbox-scan';
+import { DeferredWebhookScopes, type DeferredScopeState } from './webhook-outbox-deferred-scopes';
+import { webhookPreparationScope, webhookPreparationScopeKey } from './webhook-preparation-scope';
 import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import type { MaxUpdate } from '@maxim/contracts';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
@@ -83,6 +85,8 @@ const SLOW_ENQUEUE_BATCH_MS = 1_000;
 const ENQUEUE_DISPATCH_BUDGET_MS = 1_000;
 const SLOW_ENQUEUE_BATCH_LOG_INTERVAL_MS = 30_000;
 const CANONICAL_PREPARATION_PENDING_RETRY_MS = 1_000;
+const DEFERRED_SCOPE_RAW_PAGE_SIZE = 64;
+const DEFERRED_SCOPE_PAGES_PER_POLL = 2;
 const RECEIVED_BATCH_SHARE = 0.75;
 const RECENT_RECEIPT_BATCH_SHARE = 0.25;
 const AGED_RECEIPT_RESERVE_SHARE = 0.25;
@@ -270,7 +274,15 @@ type WebhookEnqueueCandidate = {
   normalizedPayload: unknown;
   isRecentReceipt?: boolean;
   isBacklogScan?: boolean;
+  isDeferredScopeScan?: boolean;
+  deferredScopeOrder?: number;
   scanProgress?: OutboxScanProgress | null;
+};
+
+type CurrentEnqueueRepresentative = WebhookEnqueueCandidate & {
+  processedAt: Date | null;
+  legacyDispositionId: string | null;
+  sourceDispositionId: string | null;
 };
 
 type WebhookEnqueueStateSnapshot = Pick<
@@ -465,6 +477,7 @@ export class WebhookOutboxService
   private enqueueScans?: Map<string, OutboxScanState>;
   private enqueueScanReserveOffset = 0;
   private pendingEnqueueRepresentatives?: Map<string, string>;
+  private readonly deferredEnqueueScopes = new DeferredWebhookScopes();
   private finishedHeadRecoveryOffset = 0;
   private finishedOwnerRecoveryOffset = 0;
   private nextFinishedHeadRecoveryAt = 0;
@@ -673,15 +686,23 @@ export class WebhookOutboxService
   private async enqueueBatch() {
     const now = new Date();
     const admission = await this.resolveEnqueueAdmission(now);
+    const scopedCandidates = await this.readDeferredEnqueueRepresentatives(
+      now,
+      Math.max(1, Math.floor(admission.batchSize / 4)),
+    );
     const pendingCandidates = await this.readPendingEnqueueRepresentatives(
       now,
-      admission.batchSize,
+      admission.batchSize - scopedCandidates.length,
     );
     const admissionFinishedAtMs = Date.now();
     let candidates: WebhookEnqueueCandidate[];
     try {
       candidates = this.mergeEnqueueCandidates(
-        [...pendingCandidates, ...(await this.selectEnqueueCandidates(now, admission))],
+        [
+          ...scopedCandidates,
+          ...pendingCandidates,
+          ...(await this.selectEnqueueCandidates(now, admission, scopedCandidates.length)),
+        ],
         this.resolvePrioritySelectionWindowSize(admission.batchSize),
       );
     } finally {
@@ -830,6 +851,160 @@ export class WebhookOutboxService
     };
   }
 
+  private currentEnqueueRepresentative(row: CurrentEnqueueRepresentative, now: Date): boolean {
+    return (
+      row.legacyDispositionId === null &&
+      row.sourceDispositionId == null &&
+      row.processedAt === null &&
+      (row.nextEnqueueAt === null || row.nextEnqueueAt <= now) &&
+      (row.status === WebhookStatus.RECEIVED ||
+        row.status === WebhookStatus.FAILED ||
+        row.status === WebhookStatus.QUEUED) &&
+      !(
+        row.status === WebhookStatus.FAILED &&
+        row.nextEnqueueAt === null &&
+        !isPendingWebhookTimeoutQuarantineMessage(row.errorMessage)
+      ) &&
+      this.shouldEnqueueCandidate(row, now)
+    );
+  }
+
+  private candidateWorkUnitKey(candidate: WebhookEnqueueCandidate): string {
+    const chatId = this.extractPriorityChatId(candidate.normalizedPayload);
+    return chatId ? `chat:${chatId}` : `event:${candidate.id}`;
+  }
+
+  private deferredScopePageQuery(state: DeferredScopeState): Prisma.Sql {
+    const interval = state.current!;
+    const after = state.after
+      ? Prisma.sql`AND ("created_at", "id") > (${state.after.createdAt}, ${state.after.id})`
+      : Prisma.empty;
+    // FLAG: Bound raw status/time IDs before any bot/class, JSON, hold or eligibility
+    // predicate. The exact PK body probe and TS classifier touch at most 65 rows.
+    const sources = ['RECEIVED', 'FAILED', 'QUEUED'].map(
+      (status) => Prisma.sql`(
+      SELECT "id", "created_at" FROM "webhook_events"
+      WHERE "status" = ${Prisma.raw(`'${status}'::"WebhookStatus"`)}
+        AND ("created_at", "id") >= (${interval.first.createdAt}, ${interval.first.id})
+        AND ("created_at", "id") <= (${interval.last.createdAt}, ${interval.last.id})
+        ${after}
+      ORDER BY "created_at", "id" LIMIT ${DEFERRED_SCOPE_RAW_PAGE_SIZE + 1}
+    )`,
+    );
+    return Prisma.sql`
+      /* deferred_scope_raw_page */
+      WITH raw_ids AS MATERIALIZED (${Prisma.join(sources, ' UNION ALL ')}),
+      page_ids AS MATERIALIZED (
+        SELECT "id", "created_at" FROM raw_ids ORDER BY "created_at", "id"
+        LIMIT ${DEFERRED_SCOPE_RAW_PAGE_SIZE + 1}
+      )
+      SELECT row."id", row."status", row."bot_id" AS "botId", row."queue_name" AS "queueName",
+        row."enqueue_attempts" AS "enqueueAttempts", row."created_at" AS "createdAt",
+        row."queued_at" AS "queuedAt", row."next_enqueue_at" AS "nextEnqueueAt",
+        row."timeout_quarantine_expires_at" AS "timeoutQuarantineExpiresAt",
+        row."error_message" AS "errorMessage", row."normalized_payload" AS "normalizedPayload",
+        row."processed_at" AS "processedAt", row."legacy_disposition_id" AS "legacyDispositionId",
+        row."source_disposition_id" AS "sourceDispositionId"
+      FROM page_ids CROSS JOIN LATERAL (
+        SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL} FROM "webhook_events"
+        WHERE "id" = page_ids."id" OFFSET 0
+      ) row ORDER BY row."created_at", row."id"
+    `;
+  }
+
+  private async readDeferredEnqueueRepresentatives(
+    now: Date,
+    take: number,
+  ): Promise<WebhookEnqueueCandidate[]> {
+    const deferred = this.deferredEnqueueScopes;
+    for (const state of deferred.selectReaders(DEFERRED_SCOPE_PAGES_PER_POLL)) {
+      let rows: CurrentEnqueueRepresentative[];
+      try {
+        rows = await this.prisma.$transaction(
+          async (tx) => {
+            await tx.$executeRaw`SET LOCAL statement_timeout = '250ms'`;
+            return tx.$queryRaw<CurrentEnqueueRepresentative[]>(this.deferredScopePageQuery(state));
+          },
+          { maxWait: 250, timeout: 500 },
+        );
+      } catch {
+        // A failed read retains its entire interval for a later poll.
+        continue;
+      }
+      let after = state.after;
+      let capped = false;
+      for (const row of rows.slice(0, DEFERRED_SCOPE_RAW_PAGE_SIZE)) {
+        const key = this.candidateWorkUnitKey(row);
+        const scope = webhookPreparationScope(row.normalizedPayload as MaxUpdate);
+        if (this.currentEnqueueRepresentative(row, now)) {
+          const cursor = { id: row.id, createdAt: row.createdAt };
+          if (state.scope && webhookPreparationScopeKey(scope) !== state.key) {
+            // FLAG: A receipt can change scheduling identity before its exact reload.
+            // Transfer such rows before advancing; interval gaps may create harmless
+            // extra discovery, but never an unowned skipped receipt or new authority.
+            deferred.capture(scope, key, cursor);
+          } else if (!deferred.retain(state, key, cursor)) {
+            capped = true;
+            break;
+          }
+        }
+        after = { id: row.id, createdAt: row.createdAt };
+      }
+      deferred.advance(state, after, !capped && rows.length <= DEFERRED_SCOPE_RAW_PAGE_SIZE);
+    }
+    const identities = deferred.identities(take);
+    if (!identities.length) return [];
+    const rows = await this.prisma.webhookEvent.findMany({
+      where: { id: { in: identities.map((item) => item.id) } },
+      select: {
+        id: true,
+        status: true,
+        botId: true,
+        queueName: true,
+        enqueueAttempts: true,
+        createdAt: true,
+        queuedAt: true,
+        nextEnqueueAt: true,
+        timeoutQuarantineExpiresAt: true,
+        errorMessage: true,
+        normalizedPayload: true,
+        processedAt: true,
+        legacyDispositionId: true,
+        sourceDispositionId: true,
+      },
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const result: WebhookEnqueueCandidate[] = [];
+    for (const identity of identities) {
+      const row = byId.get(identity.id);
+      if (!row || !this.currentEnqueueRepresentative(row, now)) {
+        deferred.release(identity.key, identity.id);
+        continue;
+      }
+      // FLAG: A chat owner need not own this exact retained receipt. Preserve it
+      // until the task finishes, then re-read its current eligibility next poll.
+      if (this.activeEnqueueUnits.has(identity.key)) continue;
+      const key = this.candidateWorkUnitKey(row);
+      const scope = webhookPreparationScope(row.normalizedPayload as MaxUpdate);
+      if (
+        key !== identity.key ||
+        (identity.scope &&
+          webhookPreparationScopeKey(scope) !== webhookPreparationScopeKey(identity.scope))
+      ) {
+        deferred.release(identity.key, identity.id);
+        deferred.capture(scope, key, { id: row.id, createdAt: row.createdAt });
+        continue;
+      }
+      result.push({
+        ...row,
+        isBacklogScan: true,
+        isDeferredScopeScan: true,
+        deferredScopeOrder: result.length,
+      });
+    }
+    return result;
+  }
+
   private async readPendingEnqueueRepresentatives(
     now: Date,
     take: number,
@@ -866,17 +1041,7 @@ export class WebhookOutboxService
       if (
         this.activeEnqueueUnits.has(key) ||
         !row ||
-        row.legacyDispositionId !== null ||
-        row.sourceDispositionId != null ||
-        row.processedAt !== null ||
-        (row.nextEnqueueAt !== null && row.nextEnqueueAt > now) ||
-        (row.status !== WebhookStatus.RECEIVED &&
-          row.status !== WebhookStatus.FAILED &&
-          row.status !== WebhookStatus.QUEUED) ||
-        (row.status === WebhookStatus.FAILED &&
-          row.nextEnqueueAt === null &&
-          !isPendingWebhookTimeoutQuarantineMessage(row.errorMessage)) ||
-        !this.shouldEnqueueCandidate(row, now)
+        !this.currentEnqueueRepresentative(row, now)
       ) {
         pending.delete(key);
         continue;
@@ -889,6 +1054,7 @@ export class WebhookOutboxService
   private async selectEnqueueCandidates(
     now: Date,
     admission: WebhookEnqueueAdmission = this.defaultEnqueueAdmission(),
+    additionalReserved = 0,
   ): Promise<WebhookEnqueueCandidate[]> {
     const selectionWindowSize = this.resolvePrioritySelectionWindowSize(admission.batchSize);
     const recentReceiptTake = this.resolveRecentReceiptTake(selectionWindowSize);
@@ -926,7 +1092,7 @@ export class WebhookOutboxService
         Math.max(1, Math.floor(admission.batchSize / 4)),
         Math.max(1, Math.floor(this.batchSize / 4)) -
           (this.pendingEnqueueRepresentatives?.size ?? 0),
-        admission.batchSize - (this.pendingEnqueueRepresentatives?.size ?? 0),
+        admission.batchSize - (this.pendingEnqueueRepresentatives?.size ?? 0) - additionalReserved,
       ),
     );
     const scanTakes = new Map<string, number>();
@@ -1105,9 +1271,15 @@ export class WebhookOutboxService
         uniqueById.set(candidate.id, {
           ...candidate,
           isBacklogScan: candidate.isBacklogScan || existing?.isBacklogScan,
+          isDeferredScopeScan: candidate.isDeferredScopeScan || existing?.isDeferredScopeScan,
+          deferredScopeOrder: candidate.deferredScopeOrder ?? existing?.deferredScopeOrder,
         });
       } else if (candidate.isBacklogScan) {
         existing.isBacklogScan = true;
+        if (candidate.isDeferredScopeScan) {
+          existing.isDeferredScopeScan = true;
+          existing.deferredScopeOrder = candidate.deferredScopeOrder;
+        }
       }
     }
 
@@ -1120,9 +1292,15 @@ export class WebhookOutboxService
         uniqueWorkUnits.set(workUnitKey, {
           ...candidate,
           isBacklogScan: candidate.isBacklogScan || existing?.isBacklogScan,
+          isDeferredScopeScan: candidate.isDeferredScopeScan || existing?.isDeferredScopeScan,
+          deferredScopeOrder: candidate.deferredScopeOrder ?? existing?.deferredScopeOrder,
         });
       } else if (candidate.isBacklogScan) {
         existing.isBacklogScan = true;
+        if (candidate.isDeferredScopeScan) {
+          existing.isDeferredScopeScan = true;
+          existing.deferredScopeOrder = candidate.deferredScopeOrder;
+        }
       }
     }
 
@@ -1577,7 +1755,9 @@ export class WebhookOutboxService
     const workUnitKey = (unit: WebhookEnqueueWorkUnit) =>
       unit.chatId ? `chat:${unit.chatId}` : `event:${unit.candidates[0]!.id}`;
     for (const unit of workUnits) {
-      const representative = unit.candidates.find((candidate) => candidate.isBacklogScan);
+      const representative = unit.candidates.find(
+        (candidate) => candidate.isBacklogScan && !candidate.isDeferredScopeScan,
+      );
       const key = workUnitKey(unit);
       if (
         representative &&
@@ -1591,10 +1771,12 @@ export class WebhookOutboxService
     // unsent scan representatives first next time; repeated slow queue repairs must
     // not retake every free slot. In-flight work keeps its separate owner until done.
     const pendingOrder = new Map(Array.from(pending.keys(), (key, index) => [key, index]));
+    const deferredOrder = (unit: WebhookEnqueueWorkUnit) =>
+      unit.candidates.find((candidate) => candidate.isDeferredScopeScan)?.deferredScopeOrder;
     workUnits.sort(
       (left, right) =>
-        (pendingOrder.get(workUnitKey(left)) ?? Number.MAX_SAFE_INTEGER) -
-        (pendingOrder.get(workUnitKey(right)) ?? Number.MAX_SAFE_INTEGER),
+        (deferredOrder(left) ?? 1_000_000 + (pendingOrder.get(workUnitKey(left)) ?? 1_000_000)) -
+        (deferredOrder(right) ?? 1_000_000 + (pendingOrder.get(workUnitKey(right)) ?? 1_000_000)),
     );
     progress.workUnits = workUnits.length;
     const chatIds = workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : []));
@@ -1626,9 +1808,12 @@ export class WebhookOutboxService
     const dispatched = new Set(
       workUnits.filter((unit) => this.activeEnqueueUnits.has(workUnitKey(unit))),
     );
-    for (const unit of dispatched) pending.delete(workUnitKey(unit));
+    for (const unit of dispatched) {
+      pending.delete(workUnitKey(unit));
+    }
     const sharedCapacityBlocked = new Set<WebhookEnqueueWorkUnit>();
     const scopeBlocked = new Set<WebhookEnqueueWorkUnit>();
+    const deferredHeadUnits = new Set<WebhookEnqueueWorkUnit>();
     const active = new Set<Promise<void>>();
     // FLAG: Amortize SQL selection across a finite refill window even when the poll
     // interval is shorter. Fresh selection waits at most this dispatch budget.
@@ -1644,7 +1829,7 @@ export class WebhookOutboxService
         Math.max(1, deadlineMs - Date.now()),
       );
     });
-    const runUnit = async (workUnit: WebhookEnqueueWorkUnit) => {
+    const runUnit = async (workUnit: WebhookEnqueueWorkUnit, retainedResponsibility: boolean) => {
       try {
         await this.enqueueCandidateSequence(
           workUnit,
@@ -1654,6 +1839,16 @@ export class WebhookOutboxService
       } catch {
         // FLAG: Isolate a failed unit without dropping its durable receipt or logging
         // payloads. This task stays owned until its entire SQL/queue handoff settles.
+        if (retainedResponsibility) {
+          const head = workUnit.chatId ? orderedHeadsByChatId.get(workUnit.chatId) : null;
+          const cursor = head ?? workUnit.candidates[0]!;
+          // FLAG: Failure before a durable retry handoff keeps the exact head for
+          // current-state revalidation; a scheduling hint never consumes that debt.
+          this.deferredEnqueueScopes.capture(null, workUnitKey(workUnit), {
+            id: cursor.id,
+            createdAt: cursor.createdAt,
+          });
+        }
         progress.workUnitErrors += 1;
       }
     };
@@ -1666,7 +1861,7 @@ export class WebhookOutboxService
         if (Date.now() >= deadlineMs) break;
         for (const workUnit of workUnits) {
           if (this.activeEnqueueUnits.size >= workerCount) break;
-          if (dispatched.has(workUnit)) continue;
+          if (dispatched.has(workUnit) || deferredHeadUnits.has(workUnit)) continue;
           const key = workUnitKey(workUnit);
           if (this.activeEnqueueUnits.has(key)) {
             pending.delete(key);
@@ -1680,6 +1875,20 @@ export class WebhookOutboxService
                 (event) => orderedHead && this.compareCandidateSequence(orderedHead, event) === 0,
               )
             : workUnit.candidates[0];
+          if (
+            orderedHead &&
+            !first &&
+            (pending.has(key) ||
+              workUnit.candidates.some((candidate) => candidate.isDeferredScopeScan))
+          ) {
+            // FLAG: Expansion can fail or be disabled. The physical head identity
+            // still carries this chat's scan responsibility; never pretend that a
+            // later receipt was admitted. Its body/eligibility is re-read next poll.
+            this.deferredEnqueueScopes.capture(null, key, orderedHead);
+            pending.delete(key);
+            deferredHeadUnits.add(workUnit);
+            continue;
+          }
           const preparationState =
             first && !isPendingWebhookTimeoutQuarantineMessage(first.errorMessage)
               ? this.webhookService.webhookPreparationSchedulingState(
@@ -1687,19 +1896,34 @@ export class WebhookOutboxService
                 )
               : 'available';
           if (preparationState !== 'available') {
-            // FLAG: Shared saturation is temporary; retain scanned FIFO positions so
-            // a lifecycle stream cannot repeatedly overtake ordinary receipts. Release
-            // bot/class-local holds with spare shared capacity to keep other scopes discoverable.
+            // FLAG: Shared saturation retains the main FIFO. Scope-local saturation
+            // transfers cursor responsibility before freeing its discovery slot; one
+            // bot must neither lose scanned receipts nor pin every other bot's scan.
             if (preparationState === 'shared_capacity') sharedCapacityBlocked.add(workUnit);
             else {
               scopeBlocked.add(workUnit);
+              if (
+                first &&
+                (pending.has(key) ||
+                  workUnit.candidates.some((candidate) => candidate.isDeferredScopeScan))
+              ) {
+                this.deferredEnqueueScopes.capture(
+                  webhookPreparationScope(first.normalizedPayload as MaxUpdate),
+                  key,
+                  { id: first.id, createdAt: first.createdAt },
+                );
+              }
               pending.delete(key);
             }
             continue;
           }
           dispatched.add(workUnit);
+          const retainedResponsibility =
+            pending.has(key) ||
+            workUnit.candidates.some((candidate) => candidate.isDeferredScopeScan);
           pending.delete(key);
-          const task = runUnit(workUnit).finally(() => {
+          if (first) this.deferredEnqueueScopes.release(key, first.id);
+          const task = runUnit(workUnit, retainedResponsibility).finally(() => {
             active.delete(task);
             this.activeEnqueueUnits.delete(key);
           });
@@ -1728,6 +1952,7 @@ export class WebhookOutboxService
       if (timer) clearTimeout(timer);
     }
     progress.preparationBlocked += workUnits.length - dispatched.size;
+    progress.orderedHeadBlocked += deferredHeadUnits.size;
     // FLAG: These count observed waits, not exclusive final outcomes; a unit may
     // encounter both limits and later dispatch within this same poll.
     progress.preparationSharedCapacityBlocked = sharedCapacityBlocked.size;
@@ -2590,7 +2815,7 @@ export class WebhookOutboxService
   }
 
   private async markFailedWithBackoff(
-    event: WebhookEnqueueStateSnapshot,
+    event: WebhookEnqueueCandidate,
     message: string,
     diagnostic?: { preparationError: unknown },
   ): Promise<CandidateEnqueueOutcome> {
@@ -2626,11 +2851,13 @@ export class WebhookOutboxService
       ? exhausted
         ? 'terminal'
         : 'block'
-      : this.resolveCurrentCandidateOutcome(event.id);
+      : diagnostic
+        ? this.resolveUncommittedPreparationRetry(event)
+        : this.resolveCurrentCandidateOutcome(event.id);
   }
 
   private async deferPreparationWithoutExhaustion(
-    event: WebhookEnqueueStateSnapshot,
+    event: WebhookEnqueueCandidate,
     error: WebhookPreparationDeferredError,
   ): Promise<CandidateEnqueueOutcome> {
     // FLAG: RECEIVED keeps the persisted envelope outside terminal-failure retention and attempt caps.
@@ -2645,7 +2872,22 @@ export class WebhookOutboxService
         timeoutQuarantineExpiresAt: null,
       },
     });
-    return result.count === 1 ? 'block' : this.resolveCurrentCandidateOutcome(event.id);
+    return result.count === 1 ? 'block' : this.resolveUncommittedPreparationRetry(event);
+  }
+
+  private async resolveUncommittedPreparationRetry(
+    event: WebhookEnqueueCandidate,
+  ): Promise<CandidateEnqueueOutcome> {
+    const outcome = await this.resolveCurrentCandidateOutcome(event.id);
+    if (outcome !== 'terminal') {
+      // FLAG: A lost retry CAS is not proof of actual admission or a durable future
+      // retry. Keep this exact receipt until current-state revalidation owns it again.
+      this.deferredEnqueueScopes.capture(null, this.candidateWorkUnitKey(event), {
+        id: event.id,
+        createdAt: event.createdAt,
+      });
+    }
+    return outcome;
   }
 
   private async markClaimedQueueActivationFailed(

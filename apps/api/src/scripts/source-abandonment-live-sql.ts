@@ -9,6 +9,12 @@ import type {
 } from '../webhook/webhook-source-abandonment.contract';
 import type { LegacyRecoveryLivePlanProof } from './legacy-recovery-live-protocol';
 import {
+  SOURCE_INVENTORY_DATE_COLUMNS,
+  SourceInventoryRefused,
+  sourceInventoryPrismaRow,
+} from './source-abandonment-sql-row';
+export { SourceInventoryRefused } from './source-abandonment-sql-row';
+import {
   SOURCE_ABANDONMENT_OBSERVATION_QUEUE,
   sourceAbandonmentDigest,
   sourceAbandonmentSelectedOwner,
@@ -23,39 +29,11 @@ export type SourceInventoryAllowance = Readonly<{
   bytes: number;
   deadlineAtMs: number;
 }>;
-export class SourceInventoryRefused extends Error {
-  constructor(readonly code: string) {
-    super(code);
-  }
-}
-const tables = new Set([
-  'webhook_events',
-  'webhook_execution_claims',
-  'chat_settings',
-  'moderation_delete_intents',
-  'moderation_delete_intent_reasons',
-  'moderation_rule_followups',
-  'moderation_events',
-  'moderation_violation_message_claims',
-  'spammer_observations',
-  'max_action_ledger',
-]);
+const tables = new Set(Object.keys(SOURCE_INVENTORY_DATE_COLUMNS));
 const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
-const camel = (key: string) =>
-  key.replace(/_([a-z])/gu, (_, letter: string) => letter.toUpperCase());
-function prismaRow(row: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(row).map(([key, value]) => [
-      camel(key),
-      key.endsWith('_at') && typeof value === 'string'
-        ? new Date(/[zZ]|[+-]\d\d:\d\d$/u.test(value) ? value : `${value}Z`)
-        : value,
-    ]),
-  );
-}
 
 // FLAG: A result limit is not a scan bound. Admit only an index condition covering
 // every selected identity before execution; transfer each JSON page under a SQL byte cap.
@@ -214,7 +192,7 @@ export class SourceInventorySqlMeter {
     this.cost.rows += page.count;
     this.check();
     const result = page.rows
-      .map(prismaRow)
+      .map((row) => sourceInventoryPrismaRow(table, row))
       .sort((a, b) => String(a.id ?? '').localeCompare(String(b.id ?? '')));
     this.snapshots.push({ table, digest: sourceAbandonmentDigest(result) });
     return result as T[];

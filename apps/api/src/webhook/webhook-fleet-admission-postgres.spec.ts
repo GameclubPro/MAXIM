@@ -16,6 +16,8 @@ import { WEBHOOK_QUEUE_CRITICAL } from './webhook-queues';
 import { WebhookService } from './webhook.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
+import { DeferredWebhookScopes, type DeferredScopeState } from './webhook-outbox-deferred-scopes';
+import { WebhookPreparationAdmission } from './webhook-preparation-admission';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
@@ -428,6 +430,295 @@ native('fleet admission isolation from one unknown ordered scope', () => {
     } finally {
       await Promise.all(internals.activeEnqueueUnits.values());
       admission.mockRestore();
+    }
+  });
+
+  it('preserves scope overflow through native bounded pages without stopping independent bot discovery', async () => {
+    await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
+    const count = 1200;
+    const independentIndex = 600;
+    const base = Date.now() - 120_000;
+    const rows = Array.from({ length: count }, (_, index) => {
+      const id = randomUUID();
+      receipts.push(id);
+      const payload = update(`-scope-native-${id}`, randomUUID(), base + index);
+      payload.botId = index === independentIndex ? 'independent-bot' : 'major-1';
+      return {
+        id,
+        dedupKey: id,
+        botId: payload.botId,
+        status: 'RECEIVED' as const,
+        createdAt: new Date(base + index),
+        rawPayload: {},
+        normalizedPayload: JSON.parse(JSON.stringify(payload)),
+      };
+    });
+    await prisma.webhookEvent.createMany({ data: rows });
+    const state = new DeferredWebhookScopes();
+    const preparation = new WebhookPreparationAdmission(12, () => {});
+    const previousPreparation = (
+      ingress as unknown as { preparationAdmission: WebhookPreparationAdmission }
+    ).preparationAdmission;
+    Object.assign(ingress, { preparationAdmission: preparation });
+    Object.assign(outbox, {
+      deferredEnqueueScopes: state,
+      pendingEnqueueRepresentatives: new Map(),
+      enqueueScans: new Map(),
+    });
+    const internal = outbox as unknown as {
+      enqueueBatch(): Promise<void>;
+      selectEnqueueCandidates(): Promise<unknown[]>;
+      deferredScopePageQuery(state: DeferredScopeState): Prisma.Sql;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    const admitted: string[] = [];
+    const body = jest
+      .spyOn(
+        ingress as unknown as {
+          preparePersistedWebhookEventAdmitted(id: string): Promise<unknown>;
+        },
+        'preparePersistedWebhookEventAdmitted',
+      )
+      .mockImplementation(async (id) => {
+        admitted.push(id);
+        await prisma.webhookEvent.updateMany({
+          where: { id, status: 'RECEIVED' },
+          data: { status: 'PROCESSED', processedAt: new Date() },
+        });
+        return { canonical: false, prepared: false, normalizedPayload: null, executionBotId: null };
+      });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const owners = [0, 1].map(() => preparation.run('major-1', 'ordinary', () => held));
+    let selection: jest.SpyInstance | undefined;
+    try {
+      for (let pass = 0; pass < 30 && !admitted.includes(rows[independentIndex]!.id); pass++) {
+        await internal.enqueueBatch();
+        expect(state.snapshot().identities).toBeLessThanOrEqual(2);
+        expect(state.snapshot().scopes).toBeLessThanOrEqual(1);
+      }
+      expect(admitted).toEqual([rows[independentIndex]!.id]);
+      expect(state.snapshot().intervals).toBeGreaterThan(0);
+
+      const planState: DeferredScopeState = {
+        key: 'native-plan',
+        scope: null,
+        current: { first: rows[0]!, last: rows.at(-1)! },
+        next: null,
+        after: null,
+        retained: new Map(),
+      };
+      const planRows = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+        Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${internal.deferredScopePageQuery(planState)}`,
+      );
+      const accesses: Record<string, unknown>[] = [];
+      const visit = (value: unknown) => {
+        if (Array.isArray(value)) for (const item of value) visit(item);
+        else if (value && typeof value === 'object') {
+          const node = value as Record<string, unknown>;
+          if (node['Relation Name'] === 'webhook_events') accesses.push(node);
+          for (const child of Object.values(node)) visit(child);
+        }
+      };
+      visit(planRows[0]?.['QUERY PLAN']);
+      expect(accesses.length).toBeGreaterThanOrEqual(4);
+      expect(
+        accesses.every((node) =>
+          ['Index Scan', 'Index Only Scan'].includes(String(node['Node Type'])),
+        ),
+      ).toBe(true);
+      expect(
+        accesses.every((node) => !String(node.Filter ?? '').includes('normalized_payload')),
+      ).toBe(true);
+      expect(
+        accesses.reduce(
+          (sum, node) => sum + Number(node['Actual Rows']) * Number(node['Actual Loops']),
+          0,
+        ),
+      ).toBeLessThanOrEqual(260);
+
+      // No normal selector may rescue these skipped representatives in this phase.
+      // Only the retained scope intervals can reach the overflow chat after A frees.
+      selection = jest.spyOn(internal, 'selectEnqueueCandidates').mockResolvedValue([]);
+      release();
+      await Promise.all(owners);
+      for (let pass = 0; pass < 80 && !admitted.includes(rows[40]!.id); pass++) {
+        await internal.enqueueBatch();
+        expect(state.snapshot().identities).toBeLessThanOrEqual(2);
+      }
+      expect(admitted).toContain(rows[40]!.id);
+      expect(new Set(admitted).size).toBe(admitted.length);
+    } finally {
+      release();
+      await Promise.all(owners);
+      await Promise.all(internal.activeEnqueueUnits.values());
+      selection?.mockRestore();
+      body.mockRestore();
+      Object.assign(ingress, { preparationAdmission: previousPreparation });
+      Object.assign(outbox, {
+        deferredEnqueueScopes: new DeferredWebhookScopes(),
+        pendingEnqueueRepresentatives: new Map(),
+      });
+    }
+  });
+
+  it.each(['admitted', 'terminal'] as const)(
+    'preserves native cross-bot same-chat debt after an earlier retained receipt is %s',
+    async (earlierState) => {
+      await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
+      const base = Date.now() - 60_000;
+      const chatId = `-native-cross-scope-${randomUUID()}`;
+      const source = [0, 1, 2].map((index) => {
+        const id = randomUUID();
+        receipts.push(id);
+        const payload = update(
+          index === 2 ? `${chatId}-anchor` : chatId,
+          randomUUID(),
+          base + index,
+        );
+        payload.botId = index === 1 ? 'independent-bot' : 'major-1';
+        return {
+          id,
+          dedupKey: id,
+          botId: payload.botId,
+          status: 'RECEIVED' as const,
+          createdAt: new Date(base + index),
+          rawPayload: {},
+          normalizedPayload: JSON.parse(JSON.stringify(payload)),
+        };
+      });
+      await prisma.webhookEvent.createMany({ data: source });
+      const state = new DeferredWebhookScopes();
+      Object.assign(outbox, {
+        deferredEnqueueScopes: state,
+        pendingEnqueueRepresentatives: new Map(),
+      });
+      const internal = outbox as unknown as {
+        enqueueCandidates(rows: unknown[]): Promise<unknown>;
+        readDeferredEnqueueRepresentatives(now: Date, take: number): Promise<object[]>;
+        mergeEnqueueCandidates(rows: object[], take: number): object[];
+        activeEnqueueUnits: Map<string, Promise<void>>;
+      };
+      const preparation = jest
+        .spyOn(ingress, 'preparePersistedWebhookEvent')
+        .mockImplementation(async (id) => {
+          await prisma.webhookEvent.updateMany({
+            where: { id, status: 'RECEIVED' },
+            data: { status: 'PROCESSED', processedAt: new Date() },
+          });
+          return {
+            canonical: false,
+            prepared: false,
+            normalizedPayload: null,
+            executionBotId: null,
+          } as never;
+        });
+      try {
+        const scope = { botId: 'major-1', workClass: 'ordinary' as const };
+        state.capture(scope, 'event:absent', { id: 'absent', createdAt: new Date(base - 1) });
+        state.capture(scope, `chat:${chatId}`, source[0]!);
+        state.capture(scope, `chat:${chatId}-anchor`, source[2]!);
+        for (let pass = 0; pass < 3; pass++)
+          await internal.readDeferredEnqueueRepresentatives(new Date(), 100);
+        expect(state.snapshot()).toEqual({ scopes: 2, identities: 3, intervals: 0 });
+        if (earlierState === 'terminal')
+          await prisma.webhookEvent.update({
+            where: { id: source[0]!.id },
+            data: { status: 'PROCESSED', processedAt: new Date() },
+          });
+        const first = await internal.readDeferredEnqueueRepresentatives(new Date(), 100);
+        if (earlierState === 'admitted') {
+          // Actual merge coalesces A/B to A. No chat expansion or normal discovery
+          // supplies B later; only B's independent exact responsibility remains.
+          await internal.enqueueCandidates(
+            internal.mergeEnqueueCandidates(first, 100).map((row) => ({ ...row, priority: 5 })),
+          );
+        }
+        expect(state.identities(100).map(({ id }) => id)).toContain(source[1]!.id);
+        const second = await internal.readDeferredEnqueueRepresentatives(new Date(), 100);
+        await internal.enqueueCandidates(
+          internal.mergeEnqueueCandidates(second, 100).map((row) => ({ ...row, priority: 5 })),
+        );
+        expect(preparation.mock.calls.map(([id]) => id)).toContain(source[1]!.id);
+      } finally {
+        await Promise.all(internal.activeEnqueueUnits.values());
+        preparation.mockRestore();
+        Object.assign(outbox, {
+          deferredEnqueueScopes: new DeferredWebhookScopes(),
+          pendingEnqueueRepresentatives: new Map(),
+        });
+      }
+    },
+  );
+
+  it('reloads a missing physical head from native scope debt and leaves nonordered events independent', async () => {
+    await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
+    const base = Date.now() - 60_000;
+    const chatId = `-native-missing-head-${randomUUID()}`;
+    const source = [0, 1, 2].map((index) => {
+      const id = randomUUID();
+      receipts.push(id);
+      const payload = update(chatId, randomUUID(), base + index);
+      if (index === 2) payload.type = 'message_callback';
+      return {
+        id,
+        dedupKey: id,
+        botId: 'major-1',
+        status: 'RECEIVED' as const,
+        createdAt: new Date(base + index),
+        rawPayload: {},
+        normalizedPayload: JSON.parse(JSON.stringify(payload)),
+      };
+    });
+    await prisma.webhookEvent.createMany({ data: source });
+    const rows = await prisma.webhookEvent.findMany({
+      where: { id: { in: source.map((row) => row.id) } },
+      orderBy: { createdAt: 'asc' },
+    });
+    Object.assign(outbox, {
+      deferredEnqueueScopes: new DeferredWebhookScopes(),
+      pendingEnqueueRepresentatives: new Map(),
+    });
+    const internal = outbox as unknown as {
+      enqueueCandidates(rows: unknown[]): Promise<unknown>;
+      readDeferredEnqueueRepresentatives(now: Date, take: number): Promise<object[]>;
+      deferredEnqueueScopes: DeferredWebhookScopes;
+    };
+    const preparation = jest
+      .spyOn(ingress, 'preparePersistedWebhookEvent')
+      .mockImplementation(async (id) => {
+        await prisma.webhookEvent.updateMany({
+          where: { id, status: 'RECEIVED' },
+          data: { status: 'PROCESSED', processedAt: new Date() },
+        });
+        return {
+          canonical: false,
+          prepared: false,
+          normalizedPayload: null,
+          executionBotId: null,
+        } as never;
+      });
+    try {
+      await internal.enqueueCandidates(
+        [rows[1], rows[2]].map((row) => ({ ...row, isBacklogScan: true, priority: 5 })),
+      );
+      expect(preparation.mock.calls.map(([id]) => id)).toEqual([rows[2]!.id]);
+      expect(internal.deferredEnqueueScopes.snapshot().intervals).toBe(1);
+      const heads = await internal.readDeferredEnqueueRepresentatives(new Date(), 100);
+      await internal.enqueueCandidates(heads.map((row) => ({ ...row, priority: 5 })));
+      expect(preparation.mock.calls.map(([id]) => id)).toEqual([rows[2]!.id, rows[0]!.id]);
+      expect(await prisma.webhookEvent.findUnique({ where: { id: rows[1]!.id } })).toMatchObject({
+        status: 'RECEIVED',
+        enqueueAttempts: 0,
+      });
+    } finally {
+      preparation.mockRestore();
+      Object.assign(outbox, {
+        deferredEnqueueScopes: new DeferredWebhookScopes(),
+        pendingEnqueueRepresentatives: new Map(),
+      });
     }
   });
 

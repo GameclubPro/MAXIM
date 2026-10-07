@@ -12,11 +12,17 @@ import {
   parseSourceAbandonmentStoreRequest,
   sourceAbandonmentStorePoolConfig,
 } from './source-abandonment-store';
-import { collectSourceAbandonmentLiveEvidence } from './source-abandonment-collect';
+import {
+  collectSourceAbandonmentAdmission,
+  collectSourceAbandonmentLiveEvidence,
+} from './source-abandonment-collect';
 import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
 import { isLegacyRecoveryWebhookQueue } from './legacy-recovery-queue-inventory';
 import type { SourceAbandonmentRedisReader } from './source-abandonment-live-redis';
-import { inventorySourceAbandonmentSql } from './source-abandonment-live-sql';
+import {
+  inventorySourceAbandonmentSql,
+  SourceInventorySqlMeter,
+} from './source-abandonment-live-sql';
 import {
   SOURCE_ABANDONMENT_PROTOCOL,
   sourceAbandonmentDigest,
@@ -78,6 +84,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     await db.chat.create({
       data: { id: chatId, title: 'Native source inventory', entityType: 'CHAT' },
     });
+    await db.chatSettings.create({ data: { chatId } });
     const [clock] = await db.$queryRaw<Array<{ at: Date; migrationAt: Date }>>`
       SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at, finished_at AS "migrationAt"
       FROM _prisma_migrations WHERE migration_name = '20261005020000_add_multibot_order_fences'
@@ -309,6 +316,44 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     });
   }
 
+  it.each(['', '2027-01-02T03:04:05.000Z'])(
+    'preserves the full settings row and admits a source with string expiry %j',
+    async (requiredSubscriptionExpiresAt) => {
+      const settings = await db.chatSettings.update({
+        where: { chatId },
+        data: { requiredSubscriptionExpiresAt },
+      });
+      const restored = await db.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL enable_seqscan = off`;
+        await tx.$executeRaw`SET LOCAL enable_bitmapscan = off`;
+        const meter = new SourceInventorySqlMeter(tx, {
+          pages: 4,
+          rows: 4,
+          probes: 4,
+          bytes: 2 * 1024 * 1024,
+          deadlineAtMs: Date.now() + 10_000,
+        });
+        return meter.candidateReader().chatSettings.findUnique({ where: { chatId } });
+      });
+      expect(restored).toMatchObject(settings);
+      const evidence = await db.$transaction(
+        (tx) =>
+          collectSourceAbandonmentAdmission(tx, redis, {
+            version: 1,
+            operation: 'admission_preview',
+            sourceSha: liveRequest.binding.sourceSha,
+            imageId: liveRequest.binding.imageId,
+            selection,
+          }),
+        { timeout: 30_000, isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+      );
+      expect(evidence.issues).toEqual([]);
+      expect(evidence.decision).toBe('READY_FOR_COLD_REVIEW');
+      expect(evidence.sourceCoverageComplete).toBe(true);
+      expect(evidence.selectedOwners).toHaveLength(1);
+    },
+  );
+
   async function actionQueue() {
     const queue = new Queue('max-actions-background', { connection: { url: fixtureRedisUrl } });
     queues.push(queue);
@@ -505,8 +550,9 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
   it('denies settings drift between certificate creation and atomic installation', async () => {
     const { request, bytes } = await storeFixture();
     await executeSourceAbandonmentStore(db, request, bytes);
-    await db.chatSettings.create({
-      data: { chatId, maxMessageLengthEnabled: true, maxMessageLength: 15 },
+    await db.chatSettings.update({
+      where: { chatId },
+      data: { maxMessageLengthEnabled: true, maxMessageLength: 15 },
     });
     await expect(
       executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
