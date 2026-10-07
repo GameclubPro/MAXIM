@@ -10,6 +10,103 @@ function gate() {
 }
 
 describe('Webhook durable preparation admission', () => {
+  it.each(['interactive', 'lifecycle'] as const)(
+    'admits both priority classes under repeated ordinary refill attempts (%s waits first)',
+    async (firstClass) => {
+      const admission = new WebhookPreparationAdmission(12, jest.fn());
+      const gates: ReturnType<typeof gate>[] = [];
+      const tasks: Promise<void>[] = [];
+      const start = (bot: string, workClass: 'ordinary' | 'interactive' | 'lifecycle') => {
+        const pending = gate();
+        gates.push(pending);
+        const task = admission.run(bot, workClass, () => pending.promise);
+        tasks.push(task);
+        return { ...pending, task };
+      };
+      const secondClass = firstClass === 'interactive' ? 'lifecycle' : 'interactive';
+      const rejected = jest.fn(async () => undefined);
+      try {
+        for (const bot of ['a', 'a', 'b', 'b', 'c']) start(bot, 'ordinary');
+        let finishing = start('c', 'ordinary');
+        for (let cycle = 0; cycle < 25; cycle++) {
+          expect(admission.schedulingState('priority', firstClass)).toBe('shared_capacity');
+          expect(admission.schedulingState('priority', secondClass)).toBe('shared_capacity');
+          finishing.release();
+          await finishing.task;
+          for (const workClass of [firstClass, secondClass] as const) {
+            await expect(admission.run('d', 'ordinary', rejected)).rejects.toBeInstanceOf(
+              WebhookPreparationDeferredError,
+            );
+            // The most recently served class cannot replace the other class's hint.
+            const competingClass = workClass === 'interactive' ? 'lifecycle' : 'interactive';
+            await expect(
+              admission.run('priority', competingClass, rejected),
+            ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+            const priority = start('priority', workClass);
+            expect(admission.snapshot()).toMatchObject({ inFlight: 6, ordinary: 5, pending: 0 });
+            priority.release();
+            await priority.task;
+          }
+          // The rejected first class has retained its turn after the second admission.
+          await admission.run('priority', firstClass, async () => undefined);
+          finishing = start('c', 'ordinary');
+        }
+        expect(rejected).not.toHaveBeenCalled();
+      } finally {
+        gates.forEach((pending) => pending.release());
+        await Promise.allSettled(tasks);
+        await admission.drain();
+      }
+      expect(admission.snapshot()).toMatchObject({ inFlight: 0, botScopes: 0 });
+    },
+  );
+
+  it('does not reserve idle capacity for a second interactive task while one still owns its slot', async () => {
+    const admission = new WebhookPreparationAdmission(4, jest.fn());
+    const commandGate = gate();
+    const ordinaryGate = gate();
+    const command = admission.run('a', 'interactive', () => commandGate.promise);
+    const ordinary = admission.run('a', 'ordinary', () => ordinaryGate.promise);
+    try {
+      expect(admission.schedulingState('b', 'interactive')).toBe('shared_capacity');
+      ordinaryGate.release();
+      await ordinary;
+      expect(admission.schedulingState('b', 'interactive')).toBe('scope_capacity');
+      await admission.run('b', 'ordinary', async () => undefined);
+      expect(admission.snapshot()).toMatchObject({ inFlight: 1, interactive: 1 });
+    } finally {
+      commandGate.release();
+      ordinaryGate.release();
+      await Promise.all([command, ordinary]);
+    }
+  });
+
+  it.each([2, 12])(
+    'expires an abandoned command hint without releasing unfinished work (pool=%s)',
+    async (pool) => {
+      const admission = new WebhookPreparationAdmission(pool, jest.fn());
+      const gates = Array.from({ length: admission.maxInFlight }, () => gate());
+      const tasks = gates.map((pending, index) =>
+        admission.run(`bot-${index}`, 'ordinary', () => pending.promise),
+      );
+      const now = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        expect(admission.schedulingState('command', 'interactive')).toBe('shared_capacity');
+        gates[0]!.release();
+        await tasks[0];
+        expect(admission.schedulingState('ordinary', 'ordinary')).toBe('shared_capacity');
+        clock.mockReturnValue(now + 5_001);
+        expect(admission.snapshot().inFlight).toBe(admission.maxInFlight - 1);
+        await admission.run('ordinary', 'ordinary', async () => undefined);
+      } finally {
+        clock.mockRestore();
+        gates.forEach((pending) => pending.release());
+        await Promise.all(tasks);
+      }
+    },
+  );
+
   it('shares the expanded preparation pool across bots without letting one class take a third slot', async () => {
     const admission = new WebhookPreparationAdmission(12, jest.fn());
     const gates: ReturnType<typeof gate>[] = [];

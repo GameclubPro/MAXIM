@@ -1,6 +1,7 @@
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 
 type WorkClass = 'ordinary' | 'interactive' | 'lifecycle';
+type ReservedWorkClass = Exclude<WorkClass, 'ordinary'>;
 export type WebhookPreparationSchedulingState =
   | 'available'
   | 'shared_capacity'
@@ -14,7 +15,7 @@ export class WebhookPreparationAdmission {
   private readonly active = new Set<Promise<void>>();
   private readonly byClass = { ordinary: 0, interactive: 0, lifecycle: 0 };
   private closed = false;
-  private reserveLifecycleUntil = 0;
+  private readonly reservations = new Map<ReservedWorkClass, number>();
   private windowStartedAt = Date.now();
   private metrics = this.emptyMetrics();
 
@@ -33,10 +34,13 @@ export class WebhookPreparationAdmission {
     // FLAG: A wider SQL pool grows shared capacity, not one bot/class's share beyond two.
     const botClassLimit = Math.max(1, Math.min(2, Math.floor(this.maxInFlight / 2)));
     const globalFull = this.active.size >= this.maxInFlight;
+    const now = Date.now();
+    for (const [reservedClass, until] of this.reservations)
+      if (until <= now) this.reservations.delete(reservedClass);
+    const nextClass = this.reservations.keys().next().value;
     const reserved =
-      workClass !== 'lifecycle' &&
-      this.maxInFlight > 1 &&
-      this.reserveLifecycleUntil > Date.now() &&
+      nextClass !== undefined &&
+      workClass !== nextClass &&
       this.active.size >= this.maxInFlight - 1;
     const limited =
       this.closed ||
@@ -53,7 +57,7 @@ export class WebhookPreparationAdmission {
 
   schedulingState(botId: string, workClass: WorkClass): WebhookPreparationSchedulingState {
     const availability = this.availability(botId, workClass);
-    this.reserveLifecycle(workClass, availability);
+    this.reserveNextSlot(workClass, availability);
     if (this.closed) return 'closed';
     // FLAG: Shared saturation/reservation must not erase a scanned receipt's FIFO
     // position. Only a scope-specific limit with spare shared capacity releases it.
@@ -70,19 +74,21 @@ export class WebhookPreparationAdmission {
     return this.active.size > 0 ? Promise.race(this.active) : null;
   }
 
-  private reserveLifecycle(
+  private reserveNextSlot(
     workClass: WorkClass,
     availability: ReturnType<WebhookPreparationAdmission['availability']>,
   ) {
-    // FLAG: Scheduling hints must preserve the same eligible lifecycle next-slot reserve
-    // as actual rejected admission, without retaining a task or counting an attempt.
+    // FLAG: Only eligible priority classes reserve the last free slot. Keep at most
+    // two expiring class hints, in first-wait order: repeated lifecycle or command
+    // traffic must not overtake the other class. Payloads stay in the durable outbox.
     if (
-      workClass === 'lifecycle' &&
+      workClass !== 'ordinary' &&
       !this.closed &&
-      availability.globalFull &&
-      availability.botActive < availability.botClassLimit
+      (availability.globalFull || availability.reserved) &&
+      availability.botActive < availability.botClassLimit &&
+      (workClass !== 'interactive' || this.byClass.interactive < 1)
     )
-      this.reserveLifecycleUntil = Date.now() + 5_000;
+      this.reservations.set(workClass, Date.now() + 5_000);
   }
 
   run<T>(botId: string, workClass: WorkClass, task: () => Promise<T>): Promise<T> {
@@ -91,9 +97,8 @@ export class WebhookPreparationAdmission {
     const availability = this.availability(botId, workClass);
     const { botCounts, limited } = availability;
     if (limited) {
-      // FLAG: A bot already using its lifecycle quota cannot consume another slot.
-      // Its excess work must not reserve idle global capacity away from other classes/bots.
-      this.reserveLifecycle(workClass, availability);
+      // FLAG: Work blocked by its own bot/class quota cannot reserve idle shared capacity.
+      this.reserveNextSlot(workClass, availability);
       this.metrics.deferred[workClass] += 1;
       this.flushIfDue();
       return Promise.reject(
@@ -101,8 +106,8 @@ export class WebhookPreparationAdmission {
       );
     }
     // FLAG: Admission consumes the next-slot reservation. Never clear it on completion,
-    // which could erase a newer reservation created while this lifecycle task was running.
-    if (workClass === 'lifecycle') this.reserveLifecycleUntil = 0;
+    // which could erase a newer reservation created while this task was running.
+    if (workClass !== 'ordinary') this.reservations.delete(workClass);
     botCounts[workClass] += 1;
     this.byBot.set(botId, botCounts);
     this.byClass[workClass] += 1;

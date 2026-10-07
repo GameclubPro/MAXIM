@@ -354,6 +354,163 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     },
   );
 
+  it.each([
+    ['missing', Prisma.TransactionIsolationLevel.RepeatableRead, 'DENY'],
+    ['pending', Prisma.TransactionIsolationLevel.RepeatableRead, 'DENY'],
+    ['missing', Prisma.TransactionIsolationLevel.ReadCommitted, 'READY_FOR_COLD_REVIEW'],
+    ['pending', Prisma.TransactionIsolationLevel.ReadCommitted, 'READY_FOR_COLD_REVIEW'],
+  ] as const)(
+    'reproduces a post-snapshot cleanup parent %s under %s as %s',
+    async (initialParent, isolationLevel, decision) => {
+      const suffix = randomUUID();
+      const parentKey = `snapshot-parent-${suffix}`;
+      const childKey = `snapshot-cleanup-${suffix}`;
+      const cleanupChat = '-200';
+      const createdAt = new Date(Date.now() - 1000).toISOString();
+      const completedAt = new Date().toISOString();
+      const context = { moderationNoticeEnvelope: { version: 1 } };
+      const metadata = {
+        createdAt,
+        autoDeleteDelayMs: 60_000,
+        sendAutoDelete: null,
+        hasOptions: true,
+        optionKeys: ['textFormat'],
+        ledgerContext: context,
+      };
+      const parent = {
+        jobId: parentKey,
+        chatId: cleanupChat,
+        actionType: 'SEND_MESSAGE',
+        messageId: null,
+        userId: null,
+        sourceTag: 'moderation_notice',
+        status: 'SUCCEEDED' as const,
+        terminal: true,
+        ambiguous: false,
+        remoteMessageId: `confirmed-${suffix}`,
+        dispatchBotId: 'major-1',
+        completedAt: new Date(completedAt),
+        metadata,
+      };
+      const historyKeys = Array.from({ length: 512 }, (_, index) => `snapshot-${suffix}-${index}`);
+      const queue = await actionQueue();
+      try {
+        // FLAG: Representative committed history keeps the actual metered resolver's
+        // exact unique-index proof valid without changing production planner flags.
+        await db.maxActionLedgerEntry.createMany({
+          data: historyKeys.map((jobId) => ({ ...parent, jobId })),
+        });
+        if (initialParent === 'pending')
+          await db.maxActionLedgerEntry.create({
+            data: {
+              ...parent,
+              status: 'IN_PROGRESS',
+              terminal: false,
+              remoteMessageId: null,
+              completedAt: null,
+            },
+          });
+        await db.$executeRaw`ANALYZE max_action_ledger`;
+        let interleaved = false;
+        const reader: SourceAbandonmentRedisReader = {
+          eval_ro: (script, keys, ...args) => redis.eval_ro(script, keys, ...args),
+          multi() {
+            const transaction = redis.multi();
+            const measured = {
+              eval_ro(script: string, keys: number, ...args: string[]) {
+                transaction.eval_ro(script, keys, ...args);
+                return measured;
+              },
+              async exec() {
+                if (!interleaved) {
+                  interleaved = true;
+                  // FLAG: The actual collector has completed its initial SQL inventory here.
+                  // Commit on an independent connection before publishing the cleanup.
+                  if (initialParent === 'missing')
+                    await db.maxActionLedgerEntry.create({ data: parent });
+                  else
+                    await db.maxActionLedgerEntry.update({
+                      where: { jobId: parentKey },
+                      data: parent,
+                    });
+                  await queue.add(
+                    'action',
+                    {
+                      actionType: 'DELETE_MESSAGE',
+                      idempotencyKey: childKey,
+                      chatId: cleanupChat,
+                      messageId: parent.remoteMessageId,
+                      botId: 'major-1',
+                      sourceTag: 'moderation_notice',
+                      ledgerContext: context,
+                      sendAutoDelete: {
+                        version: 2,
+                        sourceSendJobId: parentKey,
+                        sourceChatId: cleanupChat,
+                        sourceMessageId: null,
+                        sourceUserId: null,
+                        sourceCreatedAt: createdAt,
+                        sourceSendCompletedAt: completedAt,
+                        requestedDelayMs: 60_000,
+                        originBotId: 'major-1',
+                      },
+                    },
+                    { jobId: childKey, delay: 60_000 },
+                  );
+                }
+                return transaction.exec();
+              },
+            };
+            return measured;
+          },
+        };
+        const result = await readonlyDb.$transaction(
+          async (tx) => {
+            await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+            return collectSourceAbandonmentAdmission(tx, reader, {
+              version: 1,
+              operation: 'admission_preview',
+              sourceSha: liveRequest.binding.sourceSha,
+              imageId: liveRequest.binding.imageId,
+              selection,
+            });
+          },
+          { timeout: 30_000, isolationLevel },
+        );
+        expect(interleaved).toBe(true);
+        expect(result.selectedOwners).toHaveLength(1);
+        expect(result.redisCatalogs).toHaveLength(2);
+        expect(result.redisCatalogs.every((catalog) => catalog.complete && !catalog.issue)).toBe(
+          true,
+        );
+        expect(result.decision).toBe(decision);
+        expect(result.issues).toEqual(
+          decision === 'DENY'
+            ? [
+                {
+                  code: 'CLEANUP_ORIGINAL_SOURCE_UNPROVED',
+                  descriptor: 'redis:max-actions-background',
+                },
+              ]
+            : [],
+        );
+        expect(result.stoppingAuthorized).toBe(false);
+        expect(result.activationAuthorized).toBe(false);
+        expect(
+          await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: parentKey } }),
+        ).toMatchObject(parent);
+        expect(await redis.zcard('bull:max-actions-background:delayed')).toBe(1);
+        expect(
+          await db.webhookSourceAbandonment.findUnique({ where: { ownerWebhookEventId: ownerId } }),
+        ).toBeNull();
+      } finally {
+        await db.maxActionLedgerEntry.deleteMany({
+          where: { jobId: { in: [parentKey, ...historyKeys] } },
+        });
+      }
+    },
+  );
+
   async function actionQueue() {
     const queue = new Queue('max-actions-background', { connection: { url: fixtureRedisUrl } });
     queues.push(queue);

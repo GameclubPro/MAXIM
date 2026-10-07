@@ -379,6 +379,111 @@ native('fleet admission isolation from one unknown ordered scope', () => {
     }
   });
 
+  it('retains a waiting Start across saturated polls and admits it before older ordinary refills', async () => {
+    await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
+    const base = Date.now() - 10_000;
+    const rows = ['ordinary', 'interactive'].map((workClass, index) => {
+      const id = randomUUID();
+      receipts.push(id);
+      const payload = update(`-priority-native-${id}`, randomUUID(), base + index);
+      payload.botId = `waiting-${workClass}`;
+      if (workClass === 'interactive') payload.message!.text = 'Старт';
+      return {
+        id,
+        dedupKey: id,
+        botId: payload.botId,
+        status: 'RECEIVED' as const,
+        createdAt: new Date(base + index),
+        rawPayload: {},
+        normalizedPayload: JSON.parse(JSON.stringify(payload)),
+      };
+    });
+    await prisma.webhookEvent.create({ data: rows[0]! });
+    const preparation = new WebhookPreparationAdmission(12, () => {});
+    const previousPreparation = (
+      ingress as unknown as { preparationAdmission: WebhookPreparationAdmission }
+    ).preparationAdmission;
+    Object.assign(ingress, { preparationAdmission: preparation });
+    Object.assign(outbox, {
+      deferredEnqueueScopes: new DeferredWebhookScopes(),
+      pendingEnqueueRepresentatives: new Map(),
+      enqueueScans: new Map(),
+    });
+    const internal = outbox as unknown as {
+      enqueueBatch(): Promise<void>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+      pendingEnqueueRepresentatives: Map<string, string>;
+    };
+    const releases: Array<() => void> = [];
+    const hold = () =>
+      new Promise<void>((resolve) => {
+        releases.push(resolve);
+      });
+    const owners = ['a', 'a', 'b', 'b', 'c', 'c'].map((bot) => {
+      const held = hold();
+      return preparation.run(bot, 'ordinary', () => held);
+    });
+    const commandHold = hold();
+    const admitted: string[] = [];
+    const body = jest
+      .spyOn(
+        ingress as unknown as {
+          preparePersistedWebhookEventAdmitted(id: string): Promise<unknown>;
+        },
+        'preparePersistedWebhookEventAdmitted',
+      )
+      .mockImplementation(async (id) => {
+        admitted.push(id);
+        if (id === rows[1]!.id) await commandHold;
+        await prisma.webhookEvent.updateMany({
+          where: { id, status: 'RECEIVED' },
+          data: { status: 'PROCESSED', processedAt: new Date() },
+        });
+        return { canonical: false, prepared: false, normalizedPayload: null, executionBotId: null };
+      });
+    try {
+      await internal.enqueueBatch();
+      expect(admitted).toEqual([]);
+      expect([...internal.pendingEnqueueRepresentatives.values()]).toEqual([rows[0]!.id]);
+      await prisma.webhookEvent.create({ data: rows[1]! });
+      await internal.enqueueBatch();
+      expect(admitted).toEqual([]);
+      expect([...internal.pendingEnqueueRepresentatives.values()]).toEqual([
+        rows[0]!.id,
+        rows[1]!.id,
+      ]);
+      releases[5]!();
+      await owners[5];
+      await internal.enqueueBatch();
+      expect(admitted).toEqual([rows[1]!.id]);
+      expect(preparation.snapshot()).toMatchObject({ inFlight: 6, ordinary: 5, interactive: 1 });
+      expect(internal.activeEnqueueUnits.size).toBe(1);
+      await internal.enqueueBatch();
+      expect(admitted).toEqual([rows[1]!.id]);
+      expect(internal.activeEnqueueUnits.size).toBe(1);
+      expect(await prisma.webhookEvent.findUnique({ where: { id: rows[0]!.id } })).toMatchObject({
+        status: 'RECEIVED',
+        enqueueAttempts: 0,
+        nextEnqueueAt: null,
+      });
+      releases[6]!();
+      await Promise.all(internal.activeEnqueueUnits.values());
+      await internal.enqueueBatch();
+      expect(admitted).toEqual([rows[1]!.id, rows[0]!.id]);
+      expect(preparation.snapshot()).toMatchObject({ inFlight: 5, ordinary: 5, interactive: 0 });
+    } finally {
+      releases.forEach((release) => release());
+      await Promise.all(owners);
+      await Promise.all(internal.activeEnqueueUnits.values());
+      body.mockRestore();
+      Object.assign(ingress, { preparationAdmission: previousPreparation });
+      Object.assign(outbox, {
+        deferredEnqueueScopes: new DeferredWebhookScopes(),
+        pendingEnqueueRepresentatives: new Map(),
+      });
+    }
+  });
+
   it('admits a middle chat across capped rotating pages with permanently blocked neighboring heads', async () => {
     await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
     const catalogue = Array.from({ length: 1500 }, () => `-scan-fleet-${randomUUID()}`);

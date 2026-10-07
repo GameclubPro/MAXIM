@@ -77,6 +77,12 @@ from the unchanged effect inventory limits of 512 pages,
 namespace or deletes queue history to make admission pass. An unknown retired
 namespace requires its own reviewed retirement procedure before a fresh admission.
 
+Online admission uses a read-only PostgreSQL `ReadCommitted` transaction so a newly
+observed Redis cleanup job can resolve its parent SEND committed after the initial
+SQL inventory. Admission never authorizes stopping services or installing holds.
+The frozen inventory independently repeats the full check under `RepeatableRead`
+after producers stop; source selection, cutoff and equality checks remain unchanged.
+
 Run the reviewed request through:
 
 ```bash

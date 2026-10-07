@@ -360,7 +360,12 @@ export async function runSourceAbandonmentLiveCli(
           : collectSourceAbandonmentLiveEvidence(tx, reader, request);
       },
       {
-        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+        // FLAG: Online admission must see parents committed before newly observed Redis
+        // cleanup jobs; frozen inventory keeps one repeatable SQL snapshot.
+        isolationLevel:
+          request.operation === 'admission_preview'
+            ? Prisma.TransactionIsolationLevel.ReadCommitted
+            : Prisma.TransactionIsolationLevel.RepeatableRead,
         maxWait: 3000,
         timeout: 35000,
       },
