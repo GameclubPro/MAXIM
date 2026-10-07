@@ -1074,8 +1074,44 @@ export class WebhookCanonicalExecutionService {
             leaseExpiresAt: null,
           },
         });
-        if (completed.count !== 1)
+        if (completed.count !== 1) {
+          // FLAG: Recovery can settle this exact checkpoint between our read and CAS.
+          // Accept only its jointly proven claim and receipt; never repeat business or loosen CAS.
+          const recovered = await tx.webhookExecutionClaim.findFirst({
+            where: {
+              id: claim.id,
+              kind: 'EXECUTION',
+              webhookEventId: context.webhookEvent.id,
+              semanticKey: claim.semanticKey,
+              enforced: true,
+              executionBotId: claim.executionBotId,
+              preparedAt: claim.preparedAt,
+              businessStartedAt: claim.businessStartedAt,
+              status: 'COMPLETED',
+              completedAt: new Date(journal.finishedAt as string),
+              leaseToken: null,
+              leaseExpiresAt: null,
+              commandResult: { equals: journal as Prisma.InputJsonValue },
+              webhookEvent: {
+                is: {
+                  id: context.webhookEvent.id,
+                  status: WebhookStatus.PROCESSED,
+                  processedAt: new Date(journal.finishedAt as string),
+                  normalizedPayload: {
+                    equals: context.webhookEvent.normalizedPayload as Prisma.InputJsonValue,
+                  },
+                  errorMessage: null,
+                  queueName: null,
+                  nextEnqueueAt: null,
+                  timeoutQuarantineExpiresAt: null,
+                },
+              },
+            },
+            select: { id: true },
+          });
+          if (recovered) return;
           throw new WebhookPreparationDeferredError('Handler completion claim changed', 1_000);
+        }
         const settled = await tx.webhookEvent.updateMany({
           where: {
             id: context.webhookEvent.id,

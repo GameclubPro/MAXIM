@@ -961,47 +961,122 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     },
   );
 
-  it('converges concurrent original completion and finished recovery without regressing on late failure', async () => {
-    const source = await semanticReceipt({
-      chatId: `-${randomUUID()}`,
-      messageId: 'completion-race',
-      createdAt: new Date(),
-    });
-    const claim = await readyClaim(source);
-    const worker = new WebhookCanonicalExecutionService(prisma as never);
-    const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
-    await (
-      worker as unknown as {
-        markExecutionHandlerFinished: (
-          context: NonNullable<
-            Awaited<ReturnType<WebhookCanonicalExecutionService['prepareExecution']>>
-          >,
-        ) => Promise<void>;
+  it.each(['exact', 'changed journal', 'changed receipt', 'unsettled receipt'] as const)(
+    'accepts concurrent finished recovery only with an %s checkpoint without regressing on late failure',
+    async (proofState) => {
+      const source = await semanticReceipt({
+        chatId: `-${randomUUID()}`,
+        messageId: 'completion-race',
+        createdAt: new Date(),
+      });
+      const claim = await readyClaim(source);
+      const worker = new WebhookCanonicalExecutionService(prisma as never);
+      const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
+      await (
+        worker as unknown as {
+          markExecutionHandlerFinished: (
+            context: NonNullable<
+              Awaited<ReturnType<WebhookCanonicalExecutionService['prepareExecution']>>
+            >,
+          ) => Promise<void>;
+        }
+      ).markExecutionHandlerFinished(context!);
+      let release!: () => void;
+      let reached!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const atCas = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      const pausedCompletion = prisma.$extends({
+        query: {
+          webhookExecutionClaim: {
+            async updateMany({ args, query }) {
+              if (args.data.status === 'COMPLETED') {
+                reached();
+                await waiting;
+              }
+              return query(args);
+            },
+          },
+        },
+      });
+      // FLAG: Make recovery win after the original completion reads READY and before its CAS.
+      // Both paths settle the saved handler checkpoint; neither may run business again.
+      const completing = new WebhookCanonicalExecutionService(pausedCompletion as never)
+        .completeExecution(context!)
+        .then(
+          () => ({ error: null }),
+          (error: unknown) => ({ error }),
+        );
+      try {
+        expect(
+          await Promise.race([atCas.then(() => 'at-cas'), completing.then(() => 'settled')]),
+        ).toBe('at-cas');
+        expect(
+          await new WebhookCanonicalExecutionService(prisma as never).prepareExecution(
+            source.event.id,
+            'other-bot',
+          ),
+        ).toBeNull();
+        if (proofState === 'changed journal') {
+          const recovered = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+            where: { id: claim.id },
+          });
+          await prisma.webhookExecutionClaim.update({
+            where: { id: claim.id },
+            data: {
+              commandResult: {
+                ...(recovered.commandResult as Prisma.JsonObject),
+                changedProof: true,
+              },
+            },
+          });
+        } else if (proofState === 'changed receipt') {
+          await prisma.webhookEvent.update({
+            where: { id: source.event.id },
+            data: {
+              normalizedPayload: {
+                ...(context!.webhookEvent.normalizedPayload as Prisma.JsonObject),
+                changedAfterRecovery: true,
+              },
+            },
+          });
+        } else if (proofState === 'unsettled receipt') {
+          await prisma.webhookEvent.update({
+            where: { id: source.event.id },
+            data: { status: 'FAILED', processedAt: null },
+          });
+        }
+      } finally {
+        release();
       }
-    ).markExecutionHandlerFinished(context!);
-    const results = await Promise.allSettled([
-      worker.completeExecution(context!),
-      new WebhookCanonicalExecutionService(prisma as never).prepareExecution(
-        source.event.id,
-        'other-bot',
-      ),
-    ]);
-    expect(results[0]!.status).toBe('fulfilled');
-    const after = await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } });
-    expect(after).toMatchObject({
-      status: 'COMPLETED',
-      executionBotId: 'preparation-bot',
-      leaseToken: null,
-      leaseExpiresAt: null,
-    });
-    await worker.failExecution(context!, { errorMessage: 'late failing worker', terminal: false });
-    expect((await prisma.webhookEvent.findUnique({ where: { id: source.event.id } }))!.status).toBe(
-      'PROCESSED',
-    );
-    expect(
-      (await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }))!.commandResult,
-    ).toMatchObject({ kind: 'EXECUTION_FINISHED' });
-  });
+      const completion = await completing;
+      const after = await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } });
+      expect(after).toMatchObject({
+        status: 'COMPLETED',
+        executionBotId: 'preparation-bot',
+        leaseToken: null,
+        leaseExpiresAt: null,
+      });
+      await worker.failExecution(context!, {
+        errorMessage: 'late failing worker',
+        terminal: false,
+      });
+      expect(
+        (await prisma.webhookEvent.findUnique({ where: { id: source.event.id } }))!.status,
+      ).toBe(proofState === 'unsettled receipt' ? 'FAILED' : 'PROCESSED');
+      expect(
+        (await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }))!.commandResult,
+      ).toMatchObject({ kind: 'EXECUTION_FINISHED' });
+      if (proofState === 'exact') expect(completion).toEqual({ error: null });
+      else {
+        expect(completion.error).toBeInstanceOf(WebhookPreparationDeferredError);
+        expect((completion.error as Error).message).toBe('Handler completion claim changed');
+      }
+    },
+  );
 
   it.each([
     ['PENDING', new Date(Date.UTC(2020, 0, 1))],

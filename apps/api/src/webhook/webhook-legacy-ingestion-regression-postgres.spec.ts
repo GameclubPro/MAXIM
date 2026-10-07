@@ -1069,7 +1069,9 @@ native('legacy disposition production ingestion activation regressions', () => {
       WHERE proof.receipt_id = event.id AND proof.authority_id = ${certificateId}
         AND event.legacy_disposition_id IS NULL`;
     const independent = await store(update(source.chatId, randomUUID()));
-    await prisma.$executeRaw`ANALYZE webhook_events`;
+    // FLAG: Shared native suites leave dead index entries. Normalize this disposable fixture
+    // so the live held-history work bound does not depend on autovacuum timing.
+    await prisma.$executeRaw`VACUUM (ANALYZE) webhook_events`;
     type Plan = {
       'Node Type': string;
       'Index Name'?: string;
