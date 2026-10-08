@@ -77,7 +77,7 @@ function measuredFixture<T extends SourceAbandonmentCatalogReader>(reader: T) {
             reply.length === 7
           ) {
             const cursor = reply[2] as string;
-            reply = [...reply, cursor === '0' ? ['0'] : [`90000000000${cursor}1`, cursor]];
+            reply = [...reply, [cursor]];
           }
           return [
             [null, commandstats()],
@@ -125,8 +125,8 @@ describe('exact source abandonment bounded evidence', () => {
       cost: { serverDurationUs: 100, maxCallDurationUs: 100 },
     });
   });
-  it.each([[], ['0', '2'], ['1'], ['1', '2', '3']])(
-    'rejects malformed paired page cursor accounting',
+  it.each([[], ['0', '2'], ['1'], ['1', '2'], ['1', '2', '3']])(
+    'rejects malformed or multiple page cursor accounting',
     async (...cursors) => {
       const reader = measuredFixture({ eval_ro: async () => [1, 0, '2', 0, 0, 0, [], cursors] });
       expect(await inventorySourceAbandonmentNamespaces(reader, Date.now() + 1000)).toMatchObject({
@@ -490,10 +490,10 @@ describe('exact source abandonment bounded evidence', () => {
     const redis = measuredFixture({
       eval_ro: jest.fn(async (script: string, keyCount: number, ...args: string[]) => {
         if (script.startsWith('-- source-abandonment:namespace-catalog-v2')) {
-          expect(args[1]).toBe('2');
-          pages += 2;
+          expect(args[1]).toBe('1');
+          pages += 1;
           const cursor = pages === 600 ? '0' : String(pages);
-          return [1, 9_212_720, cursor, 0, 0, 100, [], [String(pages - 1), cursor]];
+          return [1, 9_212_720, cursor, 0, 0, 100, [], [cursor]];
         }
         return base.eval_ro(script, keyCount, ...args);
       }),
@@ -512,9 +512,9 @@ describe('exact source abandonment bounded evidence', () => {
       redis.eval_ro.mock.calls.filter(([script]) =>
         script.startsWith('-- source-abandonment:namespace-catalog-v2'),
       ),
-    ).toHaveLength(300);
+    ).toHaveLength(600);
     expect(result.catalog?.cost.measurementBytes).toBe(
-      300 * (Buffer.byteLength(commandstats()) + Buffer.byteLength(commandstats(12, 200))),
+      600 * (Buffer.byteLength(commandstats()) + Buffer.byteLength(commandstats(12, 200))),
     );
     expect(result.cost.pages).toBeLessThan(100);
     expect(result.cost.probes).toBeLessThan(50_000);

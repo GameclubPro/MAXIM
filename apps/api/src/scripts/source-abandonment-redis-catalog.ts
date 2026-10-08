@@ -5,8 +5,8 @@ import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registr
 // COUNT is a work hint, not a hard bound on buckets visited by one Redis command.
 // Cardinality, page, reply, matched-key, wall-time and observed latency limits all
 // fail closed; they do not replace the independent owner/job/SQL proof budget.
-// At most two COUNT steps per measured read bound uninterrupted server work;
-// the returned cursor trace charges every underlying page and detects cycles.
+// One COUNT step per measured read reduces uninterrupted server work;
+// its returned cursor is charged as one page and checked for cycles.
 export const SOURCE_ABANDONMENT_CATALOG_BUDGET = Object.freeze({
   databaseKeys: 12_000_000,
   scanCount: 4096,
@@ -293,7 +293,7 @@ export async function inventorySourceAbandonmentNamespaces(
       // separate bounded replies; reserve the maximum pair before dispatch.
       if (cost.measurementBytes + 2 * commandstatsProjectionBytes > budget.measurementBytes)
         throw new Error('CATALOG_MEASUREMENT_BUDGET');
-      const pageAllowance = Math.min(2, budget.pages - cost.pages);
+      const pageAllowance = Math.min(1, budget.pages - cost.pages);
       let timer: ReturnType<typeof setTimeout> | undefined;
       let reply: unknown;
       let serverDurationUs: number;

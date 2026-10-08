@@ -69,7 +69,7 @@ inside the collector-specific shared 45-second deadline. The read-only collector
 transaction has a 50-second timeout; legacy collection and SQL-only store budgets
 remain unchanged. Structural census has separate
 4 MiB namespace-reply and 16 MiB returned measurement-metadata budgets. Each
-read performs at most two SCAN pages, with every cursor accounted for. Atomic read-only
+read performs one SCAN page, with every cursor accounted for. Atomic read-only
 transactions run three EVAL_RO commands: commandstats projection, page, projection.
 Each projection validates at most 64 KiB and 512 lines of internal INFO and returns
 at most 512 bytes of original counter text. Exactly two completed EVAL_RO calls

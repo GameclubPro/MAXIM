@@ -4,6 +4,7 @@ import {
   inventorySourceAbandonmentNamespaces,
   readMeasuredSourceCatalogScript,
   SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT,
+  SOURCE_ABANDONMENT_NAMESPACE_CATALOG_SCRIPT,
 } from './source-abandonment-redis-catalog';
 import {
   inventorySourceAbandonmentRedis,
@@ -190,7 +191,7 @@ native('modern full namespace census on Redis 7', () => {
     expect(await redis.dbsize()).toBe(0);
   });
 
-  it('stops a paired scan on its first zero cursor and counts one underlying page', async () => {
+  it('finishes a single-step scan at its zero cursor and counts one underlying page', async () => {
     expect(await inventorySourceAbandonmentNamespaces(reader(), deadline())).toMatchObject({
       complete: true,
       issue: null,
@@ -212,8 +213,54 @@ native('modern full namespace census on Redis 7', () => {
     // The terminal hash contains a large payload; the namespace reader must never fetch it.
     await redis.hset('bull:photo-duplicates:retained-hash', 'data', 'x'.repeat(128 * 1024));
     const before = await redis.dbsize();
-    const first = await inventorySourceAbandonmentNamespaces(reader(), deadline());
-    const second = await inventorySourceAbandonmentNamespaces(reader(), deadline());
+    const readScanCalls = async () => {
+      const stats = await redis.info('commandstats');
+      const calls = /^cmdstat_scan:calls=(\d+),/mu.exec(stats)?.[1];
+      return calls === undefined ? 0n : BigInt(calls);
+    };
+    const census = async () => {
+      const targets: Array<[string, number, ...string[]]> = [];
+      const observedReader = {
+        ...reader(),
+        multi() {
+          const commands: Array<[string, number, ...string[]]> = [];
+          const transaction = redis.multi();
+          const measurement = {
+            eval_ro(script: string, keys: number, ...args: string[]) {
+              commands.push([script, keys, ...args]);
+              transaction.eval_ro(script, keys, ...args);
+              return measurement;
+            },
+            async exec() {
+              // FLAG: Observe the unchanged atomic meter/target/meter transaction.
+              // INFO outside each complete pass independently counts real SCAN calls.
+              expect(commands).toHaveLength(3);
+              expect(commands[0]).toEqual([SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT, 0]);
+              expect(commands[2]).toEqual([SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT, 0]);
+              expect(commands[1]).toEqual([
+                SOURCE_ABANDONMENT_NAMESPACE_CATALOG_SCRIPT,
+                0,
+                expect.stringMatching(/^\d+$/u),
+                '1',
+              ]);
+              targets.push(commands[1]);
+              return transaction.exec();
+            },
+          };
+          return measurement;
+        },
+      };
+      const scansBefore = await readScanCalls();
+      const proof = await inventorySourceAbandonmentNamespaces(observedReader, deadline());
+      const scansAfter = await readScanCalls();
+      expect(proof.complete).toBe(true);
+      expect(proof.issue).toBeNull();
+      expect(targets).toHaveLength(proof.cost.pages);
+      expect(scansAfter - scansBefore).toBe(BigInt(proof.cost.pages));
+      return proof;
+    };
+    const first = await census();
+    const second = await census();
     expect(first).toMatchObject({
       complete: true,
       issue: null,
@@ -226,6 +273,7 @@ native('modern full namespace census on Redis 7', () => {
     expect(first.cost.maxCallDurationUs).toBeGreaterThan(0);
     expect(first.cost.bytes).toBeLessThan(16 * 1024);
     expect(await redis.dbsize()).toBe(before);
+    expect(await redis.get('bull:photo-duplicates:retained-0')).toBe('kept');
     expect(await redis.hstrlen('bull:photo-duplicates:retained-hash', 'data')).toBe(128 * 1024);
   });
 
