@@ -130,7 +130,10 @@ function setup() {
         ? originalLookup()
         : (targetLookup as (...args: unknown[]) => Promise<unknown>)(chatId, messageId, options),
   };
-  const bots = { isKnownBotUserId: jest.fn().mockReturnValue(false) };
+  const bots = {
+    isKnownBotUserId: jest.fn().mockReturnValue(false),
+    isRegisteredModerationBotId: jest.fn((id: string) => ['bot', 'peer'].includes(id)),
+  };
   const immunity = { consumeForMessage: jest.fn().mockResolvedValue('not_granted') };
   const photos = {
     resolveEffectivePolicy: jest.fn().mockResolvedValue({
@@ -993,6 +996,146 @@ describe('message duplicate final delete guard', () => {
     s.binding.settingsDigest = messageDuplicateSettingsDigest(s.settings);
     return { ...s, request: { ...s.params, binding: s.binding, sanctionIntentId: 'intent' } };
   }
+  function ownDeleteReceipt(s: ReturnType<typeof full>) {
+    return {
+      id: 'intent',
+      status: 'SUCCEEDED',
+      chatId: s.params.chatId,
+      messageId: s.params.messageId,
+      subjectUserId: s.binding.senderId,
+      succeededBotId: 'peer',
+      remoteDeleteSucceededBotId: 'peer',
+      remoteDeleteSucceededAt: new Date(),
+      reasons: [
+        {
+          reasonKey: `MESSAGE_DUPLICATE:v1:${s.binding.eventTimestampMs}`,
+          ruleCode: 'DUPLICATE_DELETE',
+          userId: s.binding.senderId,
+          createdAt: new Date(Date.now() - 500),
+          metadata: {
+            duplicateSource: 'message_v1',
+            messageDuplicate: structuredClone(s.binding),
+            moderationDeleteVerified: true,
+          },
+        },
+      ],
+    };
+  }
+
+  it('uses an exact own DELETE receipt after a bare current GET 404 without claiming absence', async () => {
+    const s = full();
+    const error = { response: { status: 404, data: {} } };
+    s.max.getExactMessageRow.mockRejectedValue(error);
+    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
+    const finalAuthority = jest.fn();
+    await expect(
+      s.service.assertMessageStillActionable({
+        ...s.request,
+        beforeFinalAuthority: finalAuthority,
+      }),
+    ).resolves.toBe('allowed');
+    expect(s.originalLookup).toHaveBeenCalledTimes(1);
+    expect(finalAuthority).toHaveBeenCalledTimes(1);
+    expect(s.history.stillMatches).toHaveBeenCalledWith(s.params.chatId, s.binding, true);
+    expect(s.metrics.record).not.toHaveBeenCalledWith('guard.current_lookup_confirmed_absent');
+    expect(s.metrics.record).not.toHaveBeenCalledWith('guard.absent');
+    expect(s.history.remove).not.toHaveBeenCalled();
+    expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'id',
+    'status',
+    'bot',
+    'unknown_bot',
+    'publisher_bot',
+    'reason_key',
+    'rule',
+    'verified',
+    'late_reason',
+    'source_digest',
+    'fingerprint',
+    'compare_mode',
+    'media_hashes',
+  ])('preserves the bare current 404 when own DELETE receipt has changed %s', async (change) => {
+    const s = full();
+    const error = { response: { status: 404, data: {} } };
+    const receipt = ownDeleteReceipt(s);
+    const reason = receipt.reasons[0]!;
+    if (change === 'id') receipt.id = 'another';
+    if (change === 'status') receipt.status = 'AMBIGUOUS';
+    if (change === 'bot') receipt.succeededBotId = 'bot';
+    if (change === 'unknown_bot')
+      receipt.succeededBotId = receipt.remoteDeleteSucceededBotId = 'unknown';
+    if (change === 'publisher_bot')
+      receipt.succeededBotId = receipt.remoteDeleteSucceededBotId = 'id613002203036_2_bot';
+    if (change === 'reason_key') reason.reasonKey = 'another';
+    if (change === 'rule') reason.ruleCode = 'OTHER_DELETE';
+    if (change === 'verified') reason.metadata.moderationDeleteVerified = false;
+    if (change === 'late_reason') reason.createdAt = new Date(Date.now() + 1000);
+    if (change === 'source_digest') reason.metadata.messageDuplicate.sourceDigest = '1'.repeat(64);
+    if (change === 'fingerprint') reason.metadata.messageDuplicate.fingerprint = '2'.repeat(64);
+    if (change === 'compare_mode') reason.metadata.messageDuplicate.compareMode = 'TEXT';
+    if (change === 'media_hashes') reason.metadata.messageDuplicate.mediaHashes = ['3'.repeat(64)];
+    s.max.getExactMessageRow.mockRejectedValue(error);
+    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(receipt);
+    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(error);
+    expect(s.originalLookup).not.toHaveBeenCalled();
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { response: { status: 403, data: {} } },
+    { response: { status: 404, data: { code: 'chat.denied' } } },
+    { response: { status: 404, data: { error: { code: 'chat.not.found' } } } },
+    { response: { status: 500, data: {} } },
+  ])(
+    'does not use a DELETE receipt to mask an explicit access/transport failure (%j)',
+    async (error) => {
+      const s = full();
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
+      await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(error);
+      expect(s.prisma.moderationDeleteIntent.findUnique).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not use an own DELETE receipt to bypass a changed returned current message', async () => {
+    const s = full();
+    const changed = duplicateUpdate('m2');
+    (changed.raw as { message: { body: { text: string } } }).message.body.text = 'changed';
+    s.max.getExactMessageRow.mockResolvedValue((changed.raw as { message: unknown }).message);
+    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
+    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toMatchObject({
+      code: 'message_duplicate_content_changed',
+    });
+    expect(s.prisma.moderationDeleteIntent.findUnique).not.toHaveBeenCalled();
+  });
+
+  it.each(['send', 'member'] as const)(
+    'does not use a DELETE receipt for a %s mutation-marked 404',
+    async (kind) => {
+      const s = full();
+      const error = { response: { status: 404, data: {} } };
+      if (kind === 'send') markMaxMessageSendAttempted(error);
+      else markMaxMemberMutationAttempted(error);
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
+      await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(error);
+      expect(s.prisma.moderationDeleteIntent.findUnique).not.toHaveBeenCalled();
+    },
+  );
+
+  it('retains a bare original GET failure after proving the current DELETE receipt', async () => {
+    const s = full();
+    s.max.getExactMessageRow.mockRejectedValue({ response: { status: 404, data: {} } });
+    const originalError = { response: { status: 404, data: {} } };
+    s.originalLookup.mockRejectedValue(originalError);
+    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
+    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(originalError);
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(s.history.remove).not.toHaveBeenCalled();
+  });
   it('allows configured full sanctions only after fresh source and policy checks', async () => {
     const s = full();
     await expect(s.service.assertMessageStillActionable(s.request)).resolves.toBe('allowed');

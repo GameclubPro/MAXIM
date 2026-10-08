@@ -19,6 +19,7 @@ import {
   collectSourceAbandonmentLiveEvidence,
 } from './source-abandonment-collect';
 import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
+import * as sourceSql from './source-abandonment-live-sql';
 import { isLegacyRecoveryWebhookQueue } from './legacy-recovery-queue-inventory';
 import type { SourceAbandonmentRedisReader } from './source-abandonment-live-redis';
 import {
@@ -318,6 +319,88 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     });
   }
 
+  it.each([
+    [14_000, 0, 'READY_FOR_COLD_REVIEW'],
+    [14_000, 14_000, 'DENY'],
+    [15_001, 0, 'DENY'],
+  ] as const)(
+    'bounds two catalog passes at %i ms and final SQL at %i ms: %s',
+    async (catalogMs, childSqlMs, decision) => {
+      const startedAt = Date.now();
+      let elapsed = 0;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => startedAt + elapsed);
+      const originalSql = sourceSql.inventorySourceAbandonmentSql;
+      const originalChildSql = sourceSql.inventorySourceAbandonmentChildSql;
+      const sql = jest
+        .spyOn(sourceSql, 'inventorySourceAbandonmentSql')
+        .mockImplementation(async (...args) => {
+          const result = await originalSql(...args);
+          elapsed += 3_000;
+          return result;
+        });
+      const childSql = jest
+        .spyOn(sourceSql, 'inventorySourceAbandonmentChildSql')
+        .mockImplementation(async (...args) => {
+          const result = await originalChildSql(...args);
+          elapsed += childSqlMs;
+          return result;
+        });
+      let catalogReads = 0;
+      const reader: SourceAbandonmentRedisReader = {
+        eval_ro: redis.eval_ro.bind(redis),
+        multi() {
+          const transaction = redis.multi();
+          const exec = transaction.exec.bind(transaction);
+          transaction.exec = async () => {
+            const result = await exec();
+            // FLAG: Only the collector wall clock is virtual. Native SQL, Redis
+            // EVAL_RO, commandstats measurements and proof parsing stay real.
+            elapsed += catalogMs;
+            catalogReads++;
+            return result;
+          };
+          return transaction;
+        },
+      };
+      try {
+        const evidence = await db.$transaction(
+          (tx) =>
+            collectSourceAbandonmentAdmission(tx, reader, {
+              version: 1,
+              operation: 'admission_preview',
+              sourceSha: liveRequest.binding.sourceSha,
+              imageId: liveRequest.binding.imageId,
+              selection,
+            }),
+          { timeout: 50_000, isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        );
+        expect(evidence.decision).toBe(decision);
+        expect(catalogReads).toBe(2);
+        expect(evidence.redisCatalogs).toHaveLength(2);
+        if (catalogMs > 15_000) {
+          expect(evidence.redisCatalogs.every((proof) => !proof.complete)).toBe(true);
+          expect(evidence.issues).toContainEqual({
+            code: 'CATALOG_DEADLINE_EXCEEDED',
+            descriptor: 'redis:namespace-catalog',
+          });
+        } else {
+          expect(evidence.redisCatalogs.every((proof) => proof.complete)).toBe(true);
+          expect(elapsed).toBe(31_000 + childSqlMs);
+          expect(childSql).toHaveBeenCalledTimes(1);
+          expect(evidence.issues).toEqual(
+            childSqlMs
+              ? [{ code: 'inventory_store_or_budget_refused', descriptor: 'inventory' }]
+              : [],
+          );
+        }
+      } finally {
+        childSql.mockRestore();
+        sql.mockRestore();
+        clock.mockRestore();
+      }
+    },
+  );
+
   it.each(['', '2027-01-02T03:04:05.000Z'])(
     'preserves the full settings row and admits a source with string expiry %j',
     async (requiredSubscriptionExpiresAt) => {
@@ -520,11 +603,16 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     ['publisher', 'inventory_preview'],
     ['publisher-missing-catalog', 'admission_preview'],
     ['publisher-missing-catalog', 'inventory_preview'],
+    ['required-subscription', 'admission_preview'],
+    ['required-subscription', 'inventory_preview'],
+    ['required-subscription-invalid', 'admission_preview'],
+    ['required-subscription-invalid', 'inventory_preview'],
   ] as const)(
-    'proves exact completed %s Start cleanup through %s without changing it',
+    'proves exact completed %s notice cleanup through %s without changing it',
     async (origin, operation) => {
       const suffix = randomUUID();
-      const publisher = origin !== 'major';
+      const publisher = origin.startsWith('publisher');
+      const requiredSubscription = origin.startsWith('required-subscription');
       const botId = publisher ? 'publisher-1' : 'major-1';
       const publisherBotId = origin === 'publisher' ? botId : undefined;
       const cleanupChat = '-200';
@@ -538,6 +626,22 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
       const childKey = `handshake-cleanup-${suffix}`;
       const createdAt = new Date(Date.now() - 1000).toISOString();
       const completedAt = new Date().toISOString();
+      const sourceTag = requiredSubscription ? 'moderation_notice' : 'managed_handshake';
+      const context = requiredSubscription
+        ? {
+            moderationNoticeEnvelope: { version: 1 },
+            requiredSubscriptionNotice: {
+              version: origin === 'required-subscription-invalid' ? 2 : 1,
+              chatId: cleanupChat,
+              messageId: `original-${suffix}`,
+              userId: 'original-user',
+              reasonKey: 'REQUIRED_SUBSCRIPTION:message-delete',
+              policySha256: 'a'.repeat(64),
+              sourceAtMs: Date.parse(createdAt) - 1_000,
+              deadlineAtMs: Date.parse(createdAt) - 1_000 + 5 * 60_000,
+            },
+          }
+        : null;
       const delay = MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS;
       const metadata = {
         createdAt,
@@ -547,7 +651,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         sendAutoDelete: null,
         hasOptions: true,
         optionKeys: ['buttons'],
-        ledgerContext: null,
+        ledgerContext: context,
       };
       const parent = {
         jobId: parentKey,
@@ -555,7 +659,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         actionType: 'SEND_MESSAGE',
         messageId: null,
         userId: null,
-        sourceTag: 'managed_handshake',
+        sourceTag,
         status: 'SUCCEEDED' as const,
         terminal: true,
         ambiguous: false,
@@ -586,7 +690,8 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
             chatId: cleanupChat,
             messageId: parent.remoteMessageId,
             botId,
-            sourceTag: 'managed_handshake',
+            sourceTag,
+            ...(context ? { ledgerContext: context } : {}),
             sendAutoDelete: {
               version: 2,
               sourceSendJobId: parentKey,
@@ -641,7 +746,8 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
                 : Prisma.TransactionIsolationLevel.RepeatableRead,
           },
         );
-        const denied = origin === 'publisher-missing-catalog';
+        const denied =
+          origin === 'publisher-missing-catalog' || origin === 'required-subscription-invalid';
         expect(result.decision).toBe(
           denied
             ? 'DENY'

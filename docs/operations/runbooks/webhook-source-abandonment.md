@@ -61,7 +61,9 @@ or a queue count. Preserve the exact window and release identity in the incident
 Redis structural admission performs two independent complete `SCAN MATCH bull:*`
 censuses, each ending at cursor zero. Each pass caps database size at 12 million
 keys, uses advisory `COUNT 4096`, and caps pages at 4,096 and duration at 15 seconds
-inside the shared 30-second collection deadline. Structural census has separate
+inside the collector-specific shared 45-second deadline. The read-only collector
+transaction has a 50-second timeout; legacy collection and SQL-only store budgets
+remain unchanged. Structural census has separate
 4 MiB namespace-reply and 16 MiB returned measurement-metadata budgets. Each
 read performs at most two SCAN pages, with every cursor accounted for. Atomic read-only
 transactions run three EVAL_RO commands: commandstats projection, page, projection.
@@ -79,7 +81,11 @@ namespace requires its own reviewed retirement procedure before a fresh admissio
 
 Online admission uses a read-only PostgreSQL `ReadCommitted` transaction so a newly
 observed Redis cleanup job can resolve its parent SEND committed after the initial
-SQL inventory. Admission never authorizes stopping services or installing holds.
+SQL inventory. A required-subscription cleanup job must retain its exact successful parent SEND,
+equal canonical notice context and same-chat source proof. It is admissible only
+when disjoint from every selected chat, including numeric aliases; mixed or
+unproved contexts still refuse admission.
+Admission never authorizes stopping services or installing holds.
 The frozen inventory independently repeats the full check under `RepeatableRead`
 after producers stop; source selection, cutoff and equality checks remain unchanged.
 

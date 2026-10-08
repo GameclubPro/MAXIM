@@ -250,13 +250,23 @@ export class MessageDuplicateDeleteGuardService {
       ? await this.prisma.moderationDeleteIntent.findUnique({
           where: { id: notice.intentId },
           select: {
+            id: true,
+            status: true,
             chatId: true,
             messageId: true,
             subjectUserId: true,
             remoteDeleteSucceededAt: true,
+            remoteDeleteSucceededBotId: true,
+            succeededBotId: true,
             reasons: {
               where: { reasonKey: notice.reasonKey },
-              select: { ruleCode: true, metadata: true, createdAt: true },
+              select: {
+                reasonKey: true,
+                ruleCode: true,
+                userId: true,
+                metadata: true,
+                createdAt: true,
+              },
               take: 1,
             },
           },
@@ -308,15 +318,26 @@ export class MessageDuplicateDeleteGuardService {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
     if (access.isAdmin !== false || access.isOwner !== false)
       throw new Error('Message duplicate author access unavailable');
-    const raw = await this.lookupMessage(
-      'current',
-      params.chatId,
-      params.messageId,
-      options,
-      initialQualification,
-      !receiptIntentId ? params.deletePhase : undefined,
-      lookupPhase,
-    );
+    let raw: Record<string, unknown> | null;
+    let currentReadFailure: unknown = null;
+    try {
+      raw = await this.lookupMessage(
+        'current',
+        params.chatId,
+        params.messageId,
+        options,
+        initialQualification,
+        !receiptIntentId ? params.deletePhase : undefined,
+        lookupPhase,
+      );
+    } catch (error) {
+      // FLAG: A bare GET 404 is still unavailable evidence. Only this sanction's
+      // independently proven successful DELETE may replace that current-source read;
+      // healthy returned content, original reads, notices and initial deletes stay strict.
+      if (lookupPhase !== 'sanction' || !isUnstructuredMessageLookup404(error)) throw error;
+      currentReadFailure = error;
+      raw = null;
+    }
     if (!raw && !receiptIntentId) return 'absent';
     if (!raw) {
       // FLAG: Absence alone cannot authorize a sanction. Require our exact successful DELETE
@@ -326,13 +347,23 @@ export class MessageDuplicateDeleteGuardService {
         (await this.prisma.moderationDeleteIntent.findUnique({
           where: { id: receiptIntentId },
           select: {
+            id: true,
+            status: true,
             chatId: true,
             messageId: true,
             subjectUserId: true,
             remoteDeleteSucceededAt: true,
+            remoteDeleteSucceededBotId: true,
+            succeededBotId: true,
             reasons: {
               where: { reasonKey: `MESSAGE_DUPLICATE:v1:${binding.eventTimestampMs}` },
-              select: { metadata: true, createdAt: true },
+              select: {
+                reasonKey: true,
+                ruleCode: true,
+                userId: true,
+                metadata: true,
+                createdAt: true,
+              },
               take: 1,
             },
           },
@@ -361,7 +392,32 @@ export class MessageDuplicateDeleteGuardService {
         JSON.stringify(recorded.original) !==
           JSON.stringify(messageDuplicateOriginalSchema.parse(binding.original))
       ) {
+        if (currentReadFailure !== null) throw currentReadFailure;
         throw new MessageDuplicateGuardRejectedError('message_duplicate_unproven_absence');
+      }
+      if (currentReadFailure !== null) {
+        // FLAG: Preserve the original failure unless the retained receipt proves this
+        // exact v3 binding and its own confirmed executor. A healthy peer may continue;
+        // this historical bot identity never grants today's route or mutation authority.
+        const reason = receipt.reasons[0];
+        const receiptBotId = receipt.remoteDeleteSucceededBotId;
+        if (
+          canonicalBinding?.version !== 3 ||
+          canonicalBinding.enforcementScope !== 'full' ||
+          receipt.id !== params.sanctionIntentId ||
+          receipt.status !== 'SUCCEEDED' ||
+          !receiptBotId ||
+          receipt.succeededBotId !== receiptBotId ||
+          !this.bots.isRegisteredModerationBotId(receiptBotId) ||
+          reason.reasonKey !== `MESSAGE_DUPLICATE:v1:${binding.eventTimestampMs}` ||
+          reason.ruleCode !== 'DUPLICATE_DELETE' ||
+          reason.userId !== binding.senderId ||
+          !Number.isFinite(receipt.remoteDeleteSucceededAt.getTime()) ||
+          !Number.isFinite(reason.createdAt.getTime()) ||
+          receipt.remoteDeleteSucceededAt.getTime() > Date.now() ||
+          JSON.stringify(recorded) !== JSON.stringify(canonicalBinding)
+        )
+          throw currentReadFailure;
       }
     } else {
       const message = this.parser.parse({
@@ -646,5 +702,28 @@ function isConfirmedMessageAbsence(error: unknown): boolean {
     ['message.not.found', 'message_not_found', 'message.not_found'].includes(
       code.trim().toLowerCase(),
     )
+  );
+}
+
+function isUnstructuredMessageLookup404(error: unknown): boolean {
+  const response = (error as { response?: { status?: unknown; data?: unknown } } | null)?.response;
+  if (
+    response?.status !== 404 ||
+    wasMaxMessageSendAttempted(error) ||
+    wasMaxMemberMutationAttempted(error) ||
+    isMaxMutationOutcomeAmbiguous(error)
+  )
+    return false;
+  const body = response.data;
+  if (!body || typeof body !== 'object') return true;
+  if (Array.isArray(body)) return false;
+  const row = body as Record<string, unknown>;
+  const nested = row.error;
+  return (
+    row.code == null &&
+    (nested == null ||
+      (typeof nested === 'object' &&
+        !Array.isArray(nested) &&
+        (nested as Record<string, unknown>).code == null))
   );
 }

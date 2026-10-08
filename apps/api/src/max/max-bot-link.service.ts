@@ -545,6 +545,15 @@ export class MaxBotLinkService implements OnModuleDestroy {
     return bot && canExecuteActionsForBotState(bot.state) ? bot : null;
   }
 
+  isRegisteredModerationBotId(botId: string): boolean {
+    // FLAG: Historical receipts need exact Major identity, independent of today's
+    // execution state. User-id aliases and the Publisher descriptor grant no ownership.
+    return (
+      this.botRegistry.getBotById(botId)?.id === botId &&
+      this.botRegistry.getPublisherBotDescriptor().id !== botId
+    );
+  }
+
   resolveBotIdFromUserId(userId: string | number | null | undefined): string | null {
     return this.botRegistry.resolveBotIdFromUserId(userId);
   }

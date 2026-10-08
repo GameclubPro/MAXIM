@@ -4,6 +4,7 @@ import { MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS } from '../max/mana
 import type { MaxActionJob } from '../max/max-client.service';
 import { isMaxSendAutoDeleteMarker } from '../max/max-send-auto-delete-marker';
 import { readMessageDuplicateNoticeProof } from '../moderation/message-duplicate/message-duplicate-notice-proof';
+import { readRequiredSubscriptionNoticeAuthority } from '../moderation/required-subscription-notice-authority';
 import {
   readLegacyActionSourceScopes,
   type LegacyActionSourceScope,
@@ -112,18 +113,37 @@ export function readSourceAbandonmentCleanupScopes(
   )
     return null;
 
-  // FLAG: Only these two context shapes from the same-chat moderation notice
-  // producers are supported here. Other known feature contexts keep refusing.
+  // FLAG: Only the explicitly parsed same-chat notice proofs below are supported.
+  // Unknown contexts and mixed feature proofs cannot borrow the retained SEND receipt.
   const envelope = record(context.moderationNoticeEnvelope);
   if (
     !envelope ||
     Object.keys(envelope).length !== 1 ||
     envelope.version !== 1 ||
     Object.keys(context).some(
-      (key) => key !== 'moderationNoticeEnvelope' && key !== 'duplicateNotice',
+      (key) =>
+        key !== 'moderationNoticeEnvelope' &&
+        key !== 'duplicateNotice' &&
+        key !== 'requiredSubscriptionNotice',
     )
   )
     return null;
+  if (Object.hasOwn(context, 'requiredSubscriptionNotice')) {
+    const required = readRequiredSubscriptionNoticeAuthority(context.requiredSubscriptionNotice);
+    // FLAG: This proves only an unrelated completed notice cleanup. Even a typed
+    // source in a selected chat cannot use this exception to acquire source authority.
+    if (
+      !required ||
+      Object.hasOwn(context, 'duplicateNotice') ||
+      ![required.chatId, required.messageId, required.userId].every(identity) ||
+      required.chatId !== ledger.chatId ||
+      selectedSources.some(
+        (source) =>
+          source.chatId === ledger.chatId || parseChatIdAsBigInt(source.chatId) === groupChatId,
+      )
+    )
+      return null;
+  }
   const duplicate = Object.hasOwn(context, 'duplicateNotice')
     ? readMessageDuplicateNoticeProof(context.duplicateNotice)
     : null;

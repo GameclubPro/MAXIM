@@ -33,6 +33,11 @@ import {
   type SourceAbandonmentRedisReader,
 } from './source-abandonment-live-redis';
 
+// FLAG: Two independent catalogs each retain their 15-second cap. This collector
+// also budgets SQL and exact-job proof; legacy collection and store writes stay unchanged.
+const sourceCollectionDurationMs = 45_000;
+const sourceCollectionTransactionTimeoutMs = 50_000;
+
 type Cost = { pages: number; rows: number; probes: number; bytes: number };
 const costFields = ['pages', 'rows', 'probes', 'bytes'] as const;
 function remaining(cost: Cost, deadlineAtMs: number): SourceInventoryAllowance {
@@ -85,7 +90,7 @@ async function gather(
   publisherBotId?: string,
 ) {
   const cost: Cost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
-  const deadlineAtMs = Date.now() + LEGACY_RECOVERY_LIVE_BUDGET.durationMs;
+  const deadlineAtMs = Date.now() + sourceCollectionDurationMs;
   const issues: LegacyRecoveryLiveIssue[] = [];
   let sql: Awaited<ReturnType<typeof inventorySourceAbandonmentSql>> | undefined;
   let first: Awaited<ReturnType<typeof inventorySourceAbandonmentRedis>> | undefined;
@@ -363,7 +368,7 @@ export async function runSourceAbandonmentLiveCli(
         await tx.$executeRaw`SET LOCAL max_parallel_workers_per_gather = 0`;
         await tx.$executeRaw`SET LOCAL lock_timeout = '1s'`;
         await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
-        await tx.$executeRaw`SET LOCAL idle_in_transaction_session_timeout = '35s'`;
+        await tx.$executeRaw`SET LOCAL idle_in_transaction_session_timeout = '50s'`;
         return request.operation === 'admission_preview'
           ? collectSourceAbandonmentAdmission(tx, reader, request)
           : collectSourceAbandonmentLiveEvidence(tx, reader, request);
@@ -376,7 +381,7 @@ export async function runSourceAbandonmentLiveCli(
             ? Prisma.TransactionIsolationLevel.ReadCommitted
             : Prisma.TransactionIsolationLevel.RepeatableRead,
         maxWait: 3000,
-        timeout: 35000,
+        timeout: sourceCollectionTransactionTimeoutMs,
       },
     );
     output.write(`${JSON.stringify(result)}\n`);

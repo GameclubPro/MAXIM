@@ -364,6 +364,86 @@ describe('nullable cleanup source requires exact retained SEND provenance', () =
   });
 });
 
+function requiredSubscriptionFixture(chatId = otherChat) {
+  const proof: Record<string, unknown> = {
+    version: 1,
+    chatId,
+    messageId: 'original-subscription-message',
+    userId: 'original-subscription-user',
+    reasonKey: 'REQUIRED_SUBSCRIPTION:message-delete',
+    policySha256: 'a'.repeat(64),
+    sourceAtMs: Date.parse(createdAt) - 1_000,
+    deadlineAtMs: Date.parse(createdAt) - 1_000 + 5 * 60_000,
+  };
+  const s = fixture(chatId, { requiredSubscriptionNotice: proof });
+  return { ...s, proof };
+}
+
+describe('required subscription cleanup proves unrelated completed notice lineage only', () => {
+  it('excludes the exact retained same-chat notice despite an expired source deadline', () => {
+    const s = requiredSubscriptionFixture();
+    expect(s.proof.deadlineAtMs as number).toBeLessThan(Date.now());
+    expect(s.classify()).toBeNull();
+  });
+
+  it.each([source.chatId, '-0100'])(
+    'does not admit a typed source in selected chat %s',
+    (selectedChatId) => {
+      const s = requiredSubscriptionFixture(source.chatId);
+      expect(() =>
+        classifySourceAbandonmentAction(s.job(), [{ ...source, chatId: selectedChatId }], s.parent),
+      ).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+    },
+  );
+
+  it.each([
+    ['unknown version', { version: 2 }],
+    ['unknown reason', { reasonKey: 'UNKNOWN' }],
+    ['invalid policy', { policySha256: 'unknown' }],
+    ['missing message', { messageId: null }],
+    ['noncanonical user', { userId: ' original-user' }],
+    ['noncanonical chat', { chatId: ' -200' }],
+    ['wrong source chat', { chatId: '-300' }],
+    ['numeric-only chat equivalence', { chatId: '-0200' }],
+    ['invalid source clock', { sourceAtMs: 0 }],
+    ['renewed deadline', { deadlineAtMs: Date.parse(createdAt) + 600_000 }],
+    ['extra source field', { anotherSource: source }],
+  ])('refuses %s even when parent and child repeat it', (_label, changes) => {
+    const s = requiredSubscriptionFixture();
+    Object.assign(s.proof, changes);
+    s.metadata.ledgerContext = structuredClone(s.data.ledgerContext);
+    expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+  });
+
+  it.each([
+    ['mixed duplicate', { duplicateNotice: duplicateProof(otherChat) }],
+    ['other known context', { moderationRuleNotice: { version: 1 } }],
+    ['unknown context', { unknownProof: { chatId: otherChat } }],
+  ])('refuses %s beside the typed subscription source', (label, extra) => {
+    const s = requiredSubscriptionFixture();
+    Object.assign(s.data.ledgerContext as Record<string, unknown>, extra);
+    s.metadata.ledgerContext = structuredClone(s.data.ledgerContext);
+    expect(s.classify).toThrow(
+      label === 'unknown context' ? 'ACTION_PRODUCER_UNPROVED' : 'CLEANUP_ORIGINAL_SOURCE_UNPROVED',
+    );
+  });
+
+  it('refuses a modified child proof against the retained parent context', () => {
+    const s = requiredSubscriptionFixture();
+    s.proof.messageId = 'changed-source';
+    expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+  });
+
+  it('retains the mandatory parent receipt and lost reply-link refusals', () => {
+    const s = requiredSubscriptionFixture();
+    expect(() => classifySourceAbandonmentAction(s.job(), [source])).toThrow(
+      'CLEANUP_ORIGINAL_SOURCE_UNPROVED',
+    );
+    s.metadata.optionKeys = ['textFormat', 'messageLink'];
+    expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+  });
+});
+
 function redisFixture(s: ReturnType<typeof fixture>) {
   const reader = {
     eval_ro: jest.fn(async (script: string) => {
