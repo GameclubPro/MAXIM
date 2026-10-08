@@ -28,6 +28,7 @@ const PREVIEW_CERTIFICATE = 'preview-only-never-persisted';
 const READY_BOUNDARY = Symbol('preview-proof-write-boundary');
 type Tx = Pick<Prisma.TransactionClient, '$queryRaw'>;
 type ObjectRow = Record<string, unknown>;
+type RequiredIndex = string | readonly string[];
 type PrefixRow = {
   id: string;
   createdAt: Date;
@@ -114,7 +115,7 @@ export async function previewLegacyRecoveryMaterialization(
   const read = async <T>(
     statement: Prisma.Sql,
     table: string,
-    index: string,
+    index: RequiredIndex,
     bounds: string[],
     maximum: number,
     batchInputs = 0,
@@ -160,7 +161,7 @@ export async function previewLegacyRecoveryMaterialization(
         ? 'shape'
         : scan['Relation Name'] !== table || scan.Schema !== 'public'
           ? 'relation'
-          : scan['Index Name'] !== index ||
+          : !(typeof index === 'string' ? [index] : index).includes(String(scan['Index Name'])) ||
               !['Index Scan', 'Index Only Scan'].includes(String(scan['Node Type']))
             ? 'index'
             : scan.Filter !== undefined
@@ -181,7 +182,7 @@ export async function previewLegacyRecoveryMaterialization(
       planFailure = {
         reason: failure,
         table,
-        expectedIndex: index,
+        expectedIndex: typeof index === 'string' ? index : index.join('|'),
         indexes: nodes
           .map((node) => String(node['Index Name'] ?? ''))
           .filter((name) => /^[a-z][a-z0-9_]{0,127}$/u.test(name)),
@@ -197,7 +198,7 @@ export async function previewLegacyRecoveryMaterialization(
       descriptor: `sql:materialization-preview:${table}`,
       querySha256: legacySnapshotDigest({ sql: statement.sql, values: statement.values }),
       planSha256: legacySnapshotDigest(document),
-      indexes: [index],
+      indexes: [String(scan['Index Name'])],
       returnedRows: result.length,
       examinedRows: Number(scan['Plan Rows'] ?? 0),
       probes: 2 + batchInputs,
@@ -208,7 +209,7 @@ export async function previewLegacyRecoveryMaterialization(
   const eq = (column: string, value: string) => `${column} = ${literal(value)}`;
   const fullRow = async <T>(
     table: string,
-    index: string,
+    index: RequiredIndex,
     where: Prisma.Sql,
     bounds: string[],
     maximum = 1,
@@ -231,7 +232,7 @@ export async function previewLegacyRecoveryMaterialization(
   // Charge every input probe, including absent claims, to the original total budget.
   const batchFullRow = async <T>(
     table: string,
-    index: string,
+    index: RequiredIndex,
     columns: readonly string[],
     keys: readonly string[][],
     perKey = 1,
@@ -264,7 +265,7 @@ export async function previewLegacyRecoveryMaterialization(
         ) found LIMIT ${keys.length * perKey}`,
       table,
       index,
-      [...columns],
+      columns.map((column) => `t.${column} =`),
       keys.length * perKey,
       keys.length,
     );
@@ -449,19 +450,17 @@ export async function previewLegacyRecoveryMaterialization(
         )
           throw new Error('materialization_preview_receipt');
         // FLAG: Existing pointers require the same positive proof classifier as the
-        // writer, including prior certificates. Exact batched PK probes retain the
-        // original page/byte budget; pointers alone never skip receipt validation.
+        // writer, including prior certificates. Probe the unique leading receipt key,
+        // never the nonleading id of (receipt_id, id). The classifier still checks the
+        // pointed proof id, source digest and authority within the original budget.
         const proofs = await batchFullRow<WebhookLegacyReceiptDisposition>(
           'webhook_legacy_receipt_dispositions',
-          'webhook_legacy_receipt_dispositions_pkey',
-          ['id'],
           [
-            ...new Set(
-              sourceMetas
-                .map((meta) => meta.legacyDispositionId)
-                .filter((id): id is string => id !== null),
-            ),
-          ].map((id) => [id]),
+            'webhook_legacy_receipt_dispositions_receipt_id_key',
+            'webhook_legacy_receipt_dispositions_receipt_id_id_key',
+          ],
+          ['receipt_id'],
+          sourceMetas.filter((meta) => meta.legacyDispositionId !== null).map(({ id }) => [id]),
         );
         const priorAuthorities = await batchFullRow<WebhookLegacySealedAuthority>(
           'webhook_legacy_sealed_authorities',
