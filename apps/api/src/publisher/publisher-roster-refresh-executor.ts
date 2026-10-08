@@ -1,3 +1,4 @@
+import { isPublisherManagedEntityActivationRequired } from './publisher-entity-connection.util';
 import { ChatBotAccessState, ChatBotMembershipStatus } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { MaxClientService } from '../max/max-client.service';
@@ -78,6 +79,7 @@ export class PublisherRosterRefreshExecutor {
     if (
       !source ||
       !binding ||
+      isPublisherManagedEntityActivationRequired(binding) ||
       binding.publisherBotId !== this.publisherBotId ||
       binding.status !== ChatBotMembershipStatus.ACTIVE
     )

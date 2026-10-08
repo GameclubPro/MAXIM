@@ -1,11 +1,22 @@
 import { ChatBotMembershipRole, ChatBotMembershipStatus } from '../prisma/prisma-client';
 
+export const MANAGED_ENTITY_EXECUTION_PURPOSES = [
+  'moderation',
+  'send_message',
+  'delete_message',
+  'edit_message',
+  'moderate_member',
+] as const;
+export type ManagedEntityExecutionPurpose = (typeof MANAGED_ENTITY_EXECUTION_PURPOSES)[number];
+
 export type MembershipAccessSnapshot = {
   checkedAt: string | null;
   isAdmin: boolean;
   isOwner: boolean;
   permissions: string[];
   permissionsKnown?: boolean;
+  activationCapabilityCeiling?: readonly string[];
+  explicitActivationSourceAt?: string | null;
 };
 
 export type PrimaryBotMembershipCandidate = {
@@ -94,6 +105,25 @@ export function normalizeMembershipAccessSnapshot(value: unknown): MembershipAcc
     isOwner: row.isOwner === true,
     permissions,
     permissionsKnown: row.permissionsKnown === true,
+    ...(Object.hasOwn(row, 'explicitActivationSourceAt')
+      ? {
+          explicitActivationSourceAt:
+            typeof row.explicitActivationSourceAt === 'string' &&
+            row.explicitActivationSourceAt.length <= 64 &&
+            Number.isFinite(Date.parse(row.explicitActivationSourceAt))
+              ? row.explicitActivationSourceAt
+              : null,
+        }
+      : {}),
+    ...(Object.hasOwn(row, 'activationCapabilityCeiling')
+      ? {
+          activationCapabilityCeiling: MANAGED_ENTITY_EXECUTION_PURPOSES.filter(
+            (purpose) =>
+              Array.isArray(row.activationCapabilityCeiling) &&
+              row.activationCapabilityCeiling.includes(purpose),
+          ),
+        }
+      : {}),
   };
 }
 

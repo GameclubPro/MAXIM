@@ -6,6 +6,7 @@ import { WebhookExecutionOwnerUnavailableError } from '../common/webhook-executi
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { normalizeMembershipAccessSnapshot } from './max-bot-access-policy.util';
+import { isMajorManagedEntityActivationRequired } from './managed-entity-activation.util';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from './max-client.service';
 import {
   executionRouteProof,
@@ -118,6 +119,31 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
         if (!state) return null;
         const membership = state.candidates.find((candidate) => candidate.botId === botId);
         if (!membership) continue;
+        if (isMajorManagedEntityActivationRequired(membership, state.entityType)) {
+          // FLAG: A dormant owner is never re-probed, but its exact negative epoch still
+          // fences peer promotion against a concurrent explicit administrator activation.
+          if (botId === owner && membership.botAccessCheckedAt && membership.botAccessSource)
+            previousOwner = {
+              botId,
+              accessEpoch: {
+                checkedAt: membership.botAccessCheckedAt,
+                source: membership.botAccessSource,
+              },
+              purpose: params.purpose,
+            };
+          continue;
+        }
+        const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        // FLAG: A known missing optional capability waits for explicit activation. An
+        // omitted channel read proof is unknown, so the exact channel GET remains allowed.
+        if (
+          !(params.purpose === 'moderation' && state.entityType === ChatEntityType.CHANNEL) &&
+          ((snapshot?.activationCapabilityCeiling &&
+            !snapshot.activationCapabilityCeiling.includes(params.purpose)) ||
+            (snapshot?.permissionsKnown === true &&
+              !hasExecutionCapability(membership, state.entityType, params.purpose)))
+        )
+          continue;
         const proofMissing = !executionRouteProof(state, botId, params.purpose);
         const permissionsUnknown =
           normalizeMembershipAccessSnapshot(membership.permissionsSnapshot)?.permissionsKnown !==

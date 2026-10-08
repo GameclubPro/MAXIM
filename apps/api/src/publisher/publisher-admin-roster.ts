@@ -1,3 +1,4 @@
+import { isPublisherManagedEntityActivationRequired } from './publisher-entity-connection.util';
 import type { MaxChatMemberAccess, MaxClientService } from '../max/max-client.service';
 import { ChatBotMembershipStatus, Prisma, type ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -89,6 +90,7 @@ export async function syncPublisherAdminRoster(
     const binding = await tx.publisherEntityBinding.findUnique({ where: { chatId } });
     if (
       !binding ||
+      isPublisherManagedEntityActivationRequired(binding) ||
       binding.publisherBotId !== publisherBotId ||
       binding.status !== ChatBotMembershipStatus.ACTIVE ||
       publisherAccessProbeLifecycleSuperseded(binding, probeStartedAt) ||

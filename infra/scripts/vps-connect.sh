@@ -1222,7 +1222,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    maxim_topology_require_legacy_dispositions \
+    maxim_topology_require_managed_entity_activation \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1237,15 +1237,15 @@ rollback_release() {
   local remote_command
   local capability_marker=select_release_recovery_base
   local rollback_component
-  # FLAG: API rollback must restore tooling with the permanent legacy hold floor;
-  # older tooling cannot preserve held sources after a no-replay recovery.
+  # FLAG: API rollback must restore tooling with the explicit bot activation floor;
+  # older tooling cannot preserve dormant receipts, denied rights and permanent holds.
   # Static-only rollback keeps its existing image-only offline path.
   if [[ $# -eq 1 ]]; then
-    capability_marker=maxim_topology_require_legacy_dispositions
+    capability_marker=maxim_topology_require_managed_entity_activation
   else
     for rollback_component in "${@:2}"; do
       if [[ "$rollback_component" == api-shared ]]; then
-        capability_marker=maxim_topology_require_legacy_dispositions
+        capability_marker=maxim_topology_require_managed_entity_activation
         break
       fi
     done

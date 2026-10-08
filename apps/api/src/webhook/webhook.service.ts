@@ -59,6 +59,10 @@ import {
 } from './webhook-semantic-event-key';
 import { webhookPayloadChange } from './webhook-payload-write';
 import {
+  DORMANT_BOT_OBSERVATION_MARKER,
+  settleDormantWebhookObservation,
+} from './webhook-dormant-observation';
+import {
   buildWebhookExecutionDeadlineAt,
   hasExpiredWebhookReadinessWait,
   hasWebhookReplayFence,
@@ -674,6 +678,31 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
 
     const semanticKey =
       buildWebhookSemanticEventKey(update) ?? `receipt:${event.dedupKey || webhookEventId}`;
+    if (
+      await settleDormantWebhookObservation(
+        this.prisma,
+        this.maxBotLinkService,
+        webhookEventId,
+        update,
+        event.errorMessage,
+        event.createdAt,
+      )
+    ) {
+      return {
+        canonical: false,
+        prepared: true,
+        normalizedPayload: update,
+        executionBotId: null,
+        enforced: true,
+      };
+    }
+    // FLAG: Each exact receiving bot may activate from Start before shared semantic
+    // preparation. Its independent confirmation authority still permits one publication.
+    if (
+      isManagedEntityHandshakeStartCommand(update) &&
+      (!freshHeldCommand || freshHeldCommand.deadlineAt.getTime() > Date.now())
+    )
+      await this.completeManagedEntityHandshake(update);
     // FLAG: Rollout modes may compare mirrors, but supported semantic events always have one
     // mutation owner. Disabling telemetry must never reopen full rule/command replay.
     const enforceCanonicalExecution =
@@ -730,17 +759,36 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
       };
     }
 
-    await claimModel.createMany({
-      data: [
-        {
-          kind: EXECUTION_CLAIM_KIND,
-          semanticKey,
-          webhookEventId,
-          enforced: enforceCanonicalExecution,
-        },
-      ],
-      skipDuplicates: true,
+    const executionAdmitted = await this.prisma.$transaction(async (tx) => {
+      // FLAG: Serialize claim creation with receipt-only dormant settlement. A task
+      // holding an older receipt snapshot must never execute an observed-only message.
+      const receipts = await tx.$queryRaw<Array<{ errorMessage: string | null }>>`
+        SELECT error_message AS "errorMessage" FROM webhook_events
+        WHERE id = ${webhookEventId} FOR UPDATE
+      `;
+      if (receipts.some((receipt) => receipt.errorMessage === DORMANT_BOT_OBSERVATION_MARKER))
+        return false;
+      await tx.webhookExecutionClaim.createMany({
+        data: [
+          {
+            kind: EXECUTION_CLAIM_KIND,
+            semanticKey,
+            webhookEventId,
+            enforced: enforceCanonicalExecution,
+          },
+        ],
+        skipDuplicates: true,
+      });
+      return true;
     });
+    if (!executionAdmitted)
+      return {
+        canonical: false,
+        prepared: true,
+        normalizedPayload: update,
+        executionBotId: null,
+        enforced: true,
+      };
     let claim = await claimModel.findUnique({
       where: {
         kind_semanticKey: {
@@ -1641,7 +1689,10 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     // not publish Start before the command-only execution checks its original deadline.
     if (heldForCommand && !heldCommand)
       throw new WebhookPreparationDeferredError('Fresh command source proof changed', 1_000);
-    if (!heldCommand || heldCommand.deadlineAt.getTime() > Date.now())
+    if (
+      !isManagedEntityHandshakeStartCommand(update) &&
+      (!heldCommand || heldCommand.deadlineAt.getTime() > Date.now())
+    )
       await this.completeManagedEntityHandshake(update);
 
     await this.prisma.webhookEvent.updateMany(
@@ -1847,6 +1898,19 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     }
     const normalizedType = update.type.trim().toLowerCase();
     const trustedLifecycleEventAt = readWebhookEventTimestamp(update);
+    if (isManagedEntityHandshakeStartCommand(update)) {
+      return this.buildChatBotBindingSyncResult(
+        await this.maxBotLinkService.getStoredChatPrimaryBotId(chatId, { bypassCache: true }),
+      );
+    }
+    if (
+      update.botId &&
+      this.maxBotLinkService.resolveDormantReceiptPeer &&
+      !this.isBotRemovalUpdate(update)
+    ) {
+      const route = await this.maxBotLinkService.resolveDormantReceiptPeer(chatId, update.botId);
+      if (route.dormant) return this.buildChatBotBindingSyncResult(route.peerBotId);
+    }
     let pendingExecutionOwnerRecheck: ExecutionOwnerFailoverRecheckParams | null = null;
     try {
       if (

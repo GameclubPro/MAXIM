@@ -186,3 +186,9 @@ operation may complete while other chats still have backlog; report that readine
 result honestly. Final deployment acceptance still requires strict release smokes,
 fresh completed receipt cohorts and independent progress. Never hand-write a release
 manifest or replay an abandoned source to make readiness green.
+
+### Completed Start-confirmation cleanup
+
+A nullable-source `managed_handshake` cleanup can be proved unrelated only from its retained exact completed `SEND_MESSAGE` parent. The child and parent must agree on chat, bot, remote message, completion, immutable creation time and the three-minute confirmation delay; parent source message/user must be explicit null. The parent must retain explicit null context and only its buttons or absent options, and the child must have no context or reply. Its canonical action key must match the routed Major Start producer or exact-bot Publisher Start producer. The target group must differ from every selected source chat. Any missing, truncated or unknown proof remains denied.
+
+Publisher identity is the separately host-attested admission `publisherBotId` or stopped `binding.publisherBotId`, carried through both Redis inventories. It never enters `selection.majorBotIds`, changes owner selection/cutoff, or creates a child hold. No new queries, queue reads, mutations or MAX calls are introduced. A later diagnostic sample proves only its observation window; an older admission refusal cannot be attributed to a vanished job without contemporaneous evidence.

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   createMultibotHarness,
+  activateHarnessBotByExplicitStart,
   type MultibotHarness,
 } from './webhook-multibot-fullpath.spec-support';
 
@@ -235,20 +236,7 @@ describeStores('native multibot absent rights webhook and independently stale ro
         });
       }
 
-      s.allowBot(oldBot);
-      await s.links.recordBotAccessProbe({
-        chatId: chatId!,
-        botId: oldBot,
-        access: {
-          isAdmin: true,
-          isOwner: false,
-          permissionsKnown: true,
-          permissions: ['read_all_messages', 'write', 'add_remove_members'],
-        },
-        checkedAt: new Date(),
-        source: 'restored-remote-rights',
-        allowMembershipRecovery: false,
-      });
+      await activateHarnessBotByExplicitStart(s, chatId!, oldBot);
       await Promise.all(
         s.bots.map((bot) => s.ingest({ chatId: chatId!, messageId, text, botId: bot.id, at })),
       );

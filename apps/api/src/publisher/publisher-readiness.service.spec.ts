@@ -69,6 +69,22 @@ function readySource(overrides: Partial<PublisherReadinessSource> = {}): Publish
 }
 
 describe('PublisherReadinessService', () => {
+  it('keeps known missing write dormant after snapshot expiry without nominating renewal', async () => {
+    const source = readySource();
+    source.publisherBinding!.permissionsSnapshot = {
+      isAdmin: true,
+      isOwner: false,
+      permissionsKnown: true,
+      permissions: ['read_all_messages'],
+    };
+    source.publisherBinding!.botAccessExpiresAt = new Date(Date.now() - 60_000);
+    const enqueue = jest.fn();
+    const service = createService({ source, enqueue });
+    const result = await service.getEntityReadiness(source.id);
+    expect(result.readiness.blockerCode).toBe('write_permission_missing');
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it('nominates one exact-bot refresh while an expired positive snapshot still blocks send', async () => {
     const source = readySource();
     source.publisherBinding!.botAccessExpiresAt = new Date(Date.now() - 1);

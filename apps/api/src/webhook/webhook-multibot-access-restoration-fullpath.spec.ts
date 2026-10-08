@@ -3,6 +3,7 @@ import { WebhookExecutionOwnerUnavailableError } from '../common/webhook-executi
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 import {
   createMultibotHarness,
+  activateHarnessBotByExplicitStart,
   type MultibotHarness,
 } from './webhook-multibot-fullpath.spec-support';
 
@@ -41,14 +42,8 @@ describeStores('native multibot access restoration retains the original waiting 
 
   async function restoreRemoteAccess(s: MultibotHarness, chatId: string, botId: string) {
     s.allowBot(botId);
-    // FLAG: Age only a negative proof in disposable SQL to make the existing 15s
-    // recheck due. The grant still requires the actual governed simulated MAX GET.
-    const aged = await s.prisma.chatBotMembership.updateMany({
-      where: { chatId, botId, botAccessState: { in: ['DENIED', 'CONFIRMED_MEMBER'] } },
-      data: { botAccessCheckedAt: new Date(Date.now() - 16_000) },
-    });
-    expect(aged.count).toBe(1);
-    await s.cache.invalidate(chatId);
+    expect(await s.links.isChatBotActivationRequired(chatId, botId)).toBe(true);
+    await activateHarnessBotByExplicitStart(s, chatId, botId);
   }
 
   async function expectMessageEffects(
@@ -192,7 +187,7 @@ describeStores('native multibot access restoration retains the original waiting 
         }),
       ).toMatchObject({
         botAccessState: 'CONFIRMED_ADMIN',
-        botAccessSource: 'moderation_executor_readiness',
+        botAccessSource: 'native-explicit-start',
       });
       const settled = await s.prisma.webhookExecutionClaim.findUniqueOrThrow({
         where: { id: original.id },
@@ -230,7 +225,7 @@ describeStores('native multibot access restoration retains the original waiting 
       expect(await s.prisma.violation.count({ where: { chatId } })).toBe(expectedOriginalEffects);
       await expectMessageEffects(s, chatId!, messageId, expectedOriginalEffects);
 
-      s.allowBot(formerPrimary);
+      await activateHarnessBotByExplicitStart(s, chatId!, formerPrimary);
       expect(
         await s.readiness.ensureReady({
           chatId: chatId!,

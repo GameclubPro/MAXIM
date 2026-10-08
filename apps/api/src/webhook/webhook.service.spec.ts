@@ -292,6 +292,13 @@ function coherentSemanticClaims(service: object) {
       };
       const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
       if (sql.includes('WITH authority_ids AS MATERIALIZED')) return [];
+      // Receipt admission uses its own lock before domain membership projection.
+      if (
+        sql.includes('SELECT error_message AS') &&
+        sql.includes('FROM webhook_events') &&
+        sql.includes('FOR UPDATE')
+      )
+        return [];
       if (sql.includes("migration_name = '20261005020000_add_multibot_order_fences'"))
         return [{ finishedAt: new Date(0) }];
       if (
@@ -2240,6 +2247,8 @@ describe('WebhookService', () => {
 
     expect(fixture.operations).toEqual([
       'transaction:start',
+      'transaction:commit',
+      'transaction:start',
       'chat:create',
       'chat:lock',
       'activity:upsert',
@@ -2962,6 +2971,8 @@ describe('WebhookService', () => {
     );
 
     expect(fixture.operations).toEqual([
+      'transaction:start',
+      'transaction:commit',
       'transaction:start',
       'chat:create',
       'chat:lock',

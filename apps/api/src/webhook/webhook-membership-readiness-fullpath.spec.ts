@@ -1,4 +1,17 @@
+import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import { ManagedEntityHandshakeService } from '../max/managed-entity-handshake.service';
+import { ManagedEntityAccessWriter } from '../max/managed-entity-access-writer.service';
+import { ManagedEntityHandshakeOutcomeService } from '../max/managed-entity-handshake-outcome.service';
 import { randomUUID } from 'node:crypto';
+import type { MaxUpdate } from '@maxim/contracts';
+import {
+  DORMANT_BOT_OBSERVATION_MARKER,
+  settleDormantWebhookObservation,
+} from './webhook-dormant-observation';
+import {
+  ManagedEntityActivationRequiredError,
+  type ManagedEntityExplicitActivation,
+} from '../max/managed-entity-activation.util';
 import { WebhookExecutionOwnerUnavailableError } from '../common/webhook-execution-owner-unavailable.error';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 import { WebhookParser } from './webhook.parser';
@@ -11,6 +24,72 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const describeStores = databaseUrl && redisUrl ? describe : describe.skip;
 jest.setTimeout(60_000);
+
+async function explicitActivation(
+  s: MultibotHarness,
+  chatId: string,
+  botId: string,
+  newerPeerVerdict?: 'BOT_DENIED' | 'USER_DENIED',
+) {
+  s.allowBot(botId);
+  s.allowAdminUser('fixture-user');
+  const sourceAt = new Date();
+  const receiptId = await s.ingest({
+    chatId,
+    botId,
+    messageId: randomUUID(),
+    text: 'Старт',
+    at: sourceAt.getTime(),
+  });
+  const receipt = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receiptId } });
+  const update = receipt.normalizedPayload as MaxUpdate;
+  const proof: ManagedEntityExplicitActivation = {
+    kind: 'start_in_chat',
+    sourceAt,
+    updateId: update.updateId,
+    actorUserId: 'fixture-user',
+    botId,
+    chatId,
+  };
+  const checkedAt = new Date();
+  const access = await s.max.getCurrentChatMemberAccess(chatId, {
+    botId,
+    bypassCache: true,
+    explicitActivation: proof,
+  });
+  const actor = await s.max.getChatMemberAccess(chatId, 'fixture-user', {
+    botId,
+    bypassCache: true,
+  });
+  if (newerPeerVerdict) {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await s.prisma.managedEntityAccessEdge.create({
+      data: {
+        chatId,
+        botId: s.bots[1]!.id,
+        userId: 'fixture-user',
+        state: newerPeerVerdict,
+        userRole: 'ADMIN',
+        botRole: 'MEMBER',
+        checkedAt: new Date(),
+      },
+    });
+  }
+  expect(
+    await s.links.recordBotAccessProbe({
+      chatId,
+      botId,
+      access,
+      checkedAt,
+      source: 'native-explicit-start',
+      explicitActivation: proof,
+      activationActorAccess: actor ?? undefined,
+      allowMembershipRecovery: true,
+    }),
+  ).toBe(newerPeerVerdict !== 'USER_DENIED');
+  await s.cache.invalidate(chatId);
+  return proof;
+}
 
 describeStores('native user_added finite executor readiness', () => {
   let h: MultibotHarness | undefined;
@@ -132,6 +211,8 @@ describeStores('native user_added finite executor readiness', () => {
         data: { botAccessCheckedAt: new Date(Date.now() - 16_000) },
       });
       await s.cache.invalidate(chatId!);
+      expect(await s.readiness.ensureReady({ chatId: chatId! })).toBeNull();
+      await explicitActivation(s, chatId!, botId);
       if (outcome === 'expires')
         expect(await s.readiness.ensureReady({ chatId: chatId! })).toMatchObject({ botId });
       await s.moderation.processWebhookEvent(id);
@@ -167,4 +248,561 @@ describeStores('native user_added finite executor readiness', () => {
       expect(s.failures).toEqual([]);
     },
   );
+});
+
+describeStores('native dormant receipt and explicit activation isolation', () => {
+  let h: MultibotHarness | undefined;
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await h?.dispose();
+    h = undefined;
+  });
+  async function setup(bots = 1) {
+    const s = (h = await createMultibotHarness({ databaseUrl, redisUrl, bots, mode: 'on' }));
+    await s.pause();
+    const [chatId] = await s.seedCatalog(1);
+    return { s, chatId: chatId!, botId: s.bots[0]!.id };
+  }
+
+  async function setupUnbound() {
+    const s = (h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 1, mode: 'on' }));
+    await s.pause();
+    const chatId = `-${BigInt(`0x${randomUUID().replaceAll('-', '').slice(0, 14)}`)}`;
+    s.chatIds.push(chatId);
+    const botId = s.bots[0]!.id;
+    s.allowBot(botId);
+    s.allowAdminUser('fixture-user');
+    const handshake = new ManagedEntityHandshakeService(
+      new ManagedEntityAccessWriter(s.prisma as never, s.links, s.cache),
+      s.max,
+      s.links,
+      {
+        getBotById: (id: string) => s.bots.find((bot) => bot.id === id) ?? null,
+        getAllBots: () => s.bots,
+        isKnownBotUserId: (id: string) => s.bots.some((bot) => bot.id === id),
+      } as never,
+      { processJob: async () => true, scheduleChatAdminRosterSync: async () => undefined } as never,
+      new ManagedEntityHandshakeOutcomeService(s.prisma as never),
+      s.groupCommands,
+    );
+    Object.assign(s.ingress, { managedEntityHandshakeService: handshake });
+    expect(await s.prisma.chat.findUnique({ where: { id: chatId } })).toBeNull();
+    expect(await s.prisma.chatBotMembership.count({ where: { chatId } })).toBe(0);
+    return { s, chatId, botId };
+  }
+
+  it.each(['observation_first', 'activation_first', 'future_source'] as const)(
+    'never admits a first pre-activation receipt without any Chat or membership: %s',
+    async (order) => {
+      const { s, chatId, botId } = await setupUnbound();
+      const id = await s.ingest({
+        chatId,
+        botId,
+        messageId: randomUUID(),
+        text: 'old message which must not become moderation work',
+        at: Date.now() + (order === 'future_source' ? 60_000 : 0),
+      });
+      const received = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+      expect(await s.prisma.chat.findUnique({ where: { id: chatId } })).toBeNull();
+      expect(await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: id } })).toBe(0);
+      const requestsBefore = s.requests.length;
+      if (order === 'observation_first') {
+        expect(await s.ingress.preparePersistedWebhookEvent(id)).toMatchObject({
+          canonical: false,
+        });
+        expect(s.requests).toHaveLength(requestsBefore);
+        expect(await s.prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).toMatchObject({
+          botId: null,
+          primaryBotId: null,
+          catalogKind: 'CONTEXT_ONLY',
+          routingState: 'NO_ELIGIBLE_BOT',
+        });
+        expect(await s.prisma.chatBotMembership.count({ where: { chatId } })).toBe(0);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      const activationAt = Date.now();
+      expect(activationAt).toBeGreaterThan(received.createdAt.getTime());
+      const startId = await s.ingest({
+        chatId,
+        botId,
+        messageId: randomUUID(),
+        text: 'Старт',
+        at: activationAt,
+      });
+      await s.ingress.preparePersistedWebhookEvent(startId);
+      const member = await s.prisma.chatBotMembership.findUniqueOrThrow({
+        where: { chatId_botId: { chatId, botId } },
+      });
+      expect(member).toMatchObject({
+        botAccessState: 'CONFIRMED_ADMIN',
+        permissionsSnapshot: { explicitActivationSourceAt: new Date(activationAt).toISOString() },
+      });
+      const afterActivationRequests = s.requests.length;
+      expect(await s.ingress.preparePersistedWebhookEvent(id)).toMatchObject({
+        canonical: false,
+        prepared: true,
+      });
+      await s.moderation.processWebhookEvent(id);
+      expect(s.requests).toHaveLength(afterActivationRequests);
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'PROCESSED',
+        errorMessage: DORMANT_BOT_OBSERVATION_MARKER,
+      });
+      expect(await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: id } })).toBe(0);
+      const freshId = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'fresh' });
+      expect(await s.ingress.preparePersistedWebhookEvent(freshId)).toMatchObject({
+        canonical: true,
+      });
+      await s.moderation.processWebhookEvent(startId);
+      await s.moderation.processWebhookEvent(freshId);
+      expect(
+        await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+          where: { webhookEventId: freshId, kind: 'EXECUTION' },
+        }),
+      ).toMatchObject({ status: 'COMPLETED' });
+      expect(
+        s.effects.filter(
+          (effect) =>
+            effect.method === 'delete' &&
+            effect.messageId === (received.normalizedPayload as MaxUpdate).message?.messageId,
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it('serializes initial Chat insertion with concurrent first Start and retains the observed receipt', async () => {
+    const { s, chatId, botId } = await setupUnbound();
+    const id = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'old' });
+    let release!: () => void;
+    let entered!: () => void;
+    let bindingEntered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const binding = new Promise<void>((resolve) => {
+      bindingEntered = resolve;
+    });
+    const original = s.links.resolveDormantReceiptPeer.bind(s.links);
+    jest.spyOn(s.links, 'resolveDormantReceiptPeer').mockImplementationOnce(async (...args) => {
+      const result = await original(...args);
+      entered();
+      await gate;
+      return result;
+    });
+    const bind = s.links.bindDiscoveredChatBots.bind(s.links);
+    jest.spyOn(s.links, 'bindDiscoveredChatBots').mockImplementationOnce(async (...args) => {
+      bindingEntered();
+      return bind(...args);
+    });
+    const observation = s.ingress.preparePersistedWebhookEvent(id);
+    await locked;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const startId = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'Старт' });
+    const activation = s.ingress.preparePersistedWebhookEvent(startId);
+    try {
+      await binding;
+      expect(await s.prisma.chat.findUnique({ where: { id: chatId } })).toBeNull();
+      expect(await s.prisma.chatBotMembership.count({ where: { chatId } })).toBe(0);
+    } finally {
+      release();
+    }
+    expect(await observation).toMatchObject({ canonical: false, prepared: true });
+    await activation;
+    const observed = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    expect(observed).toMatchObject({
+      status: 'PROCESSED',
+      errorMessage: DORMANT_BOT_OBSERVATION_MARKER,
+    });
+    await s.ingress.preparePersistedWebhookEvent(id);
+    await s.moderation.processWebhookEvent(id);
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(observed);
+    expect(await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: id } })).toBe(0);
+  });
+
+  it('does not classify an unbound private forward as a dormant group observation', async () => {
+    const { s, botId } = await setupUnbound();
+    const chatId = '100500';
+    const id = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'private forward' });
+    const receipt = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    expect(
+      await settleDormantWebhookObservation(
+        s.prisma as never,
+        s.links,
+        id,
+        receipt.normalizedPayload as MaxUpdate,
+        null,
+        receipt.createdAt,
+      ),
+    ).toBe(false);
+    expect(await s.prisma.chat.findUnique({ where: { id: chatId } })).toBeNull();
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(receipt);
+  });
+
+  it('settles concurrent dormant observations without claims, MAX probes or replay after activation', async () => {
+    const { s, chatId, botId } = await setup();
+    await s.demote(chatId, botId);
+    const id = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'ordinary' });
+    const requestsBefore = s.requests.length;
+    const prepared = await Promise.all([
+      s.ingress.preparePersistedWebhookEvent(id),
+      s.ingress.preparePersistedWebhookEvent(id),
+    ]);
+    expect(prepared).toEqual([
+      expect.objectContaining({ canonical: false, prepared: true }),
+      expect.objectContaining({ canonical: false, prepared: true }),
+    ]);
+    expect(await s.readiness.ensureReady({ chatId, force: true })).toBeNull();
+    await expect(
+      s.max.getCurrentChatMemberAccess(chatId, { botId, bypassCache: true }),
+    ).rejects.toBeInstanceOf(ManagedEntityActivationRequiredError);
+    expect(s.requests).toHaveLength(requestsBefore);
+    const before = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    expect(before).toMatchObject({
+      status: 'PROCESSED',
+      errorMessage: DORMANT_BOT_OBSERVATION_MARKER,
+      queueName: null,
+      nextEnqueueAt: null,
+    });
+    expect(await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: id } })).toBe(0);
+    await explicitActivation(s, chatId, botId);
+    expect((await s.readiness.ensureReady({ chatId }))?.botId).toBe(botId);
+    await s.ingress.preparePersistedWebhookEvent(id);
+    await s.moderation.processWebhookEvent(id);
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(before);
+    expect(await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: id } })).toBe(0);
+    expect(s.effects).toEqual([]);
+  });
+
+  it.each(['BOT_DENIED', 'USER_DENIED'] as const)(
+    'distinguishes a newer peer %s from the independently checked actor',
+    async (verdict) => {
+      const { s, chatId, botId } = await setup(2);
+      await s.demote(chatId, botId);
+      await explicitActivation(s, chatId, botId, verdict);
+      expect(await s.links.isChatBotActivationRequired(chatId, botId)).toBe(
+        verdict === 'USER_DENIED',
+      );
+      expect(s.effects).toEqual([]);
+    },
+  );
+
+  it.each(['dormant', 'unbound'] as const)(
+    'serves a sole %s-origin receipt through an already proven healthy peer',
+    async (origin) => {
+      const { s, chatId, botId } = await setup(2);
+      if (origin === 'dormant') await s.demote(chatId, botId);
+      else await s.prisma.chatBotMembership.delete({ where: { chatId_botId: { chatId, botId } } });
+      const id = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'hello' });
+      const prepared = await s.ingress.preparePersistedWebhookEvent(id);
+      expect(prepared).toMatchObject({
+        canonical: true,
+        prepared: true,
+        executionBotId: s.bots[1]!.id,
+      });
+      await s.moderation.processWebhookEvent(id);
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'PROCESSED',
+        errorMessage: null,
+      });
+      expect(
+        await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+          where: { webhookEventId: id, kind: 'EXECUTION' },
+        }),
+      ).toMatchObject({ status: 'COMPLETED', executionBotId: s.bots[1]!.id });
+      expect(s.requests.filter((request) => request.botId === botId)).toEqual([]);
+    },
+  );
+
+  it('does not admit an old dormant receipt through a peer activated only afterward', async () => {
+    const { s, chatId, botId } = await setup(2);
+    const peerBotId = s.bots[1]!.id;
+    await s.demote(chatId, botId);
+    await s.demote(chatId, peerBotId);
+    const id = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'old' });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await explicitActivation(s, chatId, peerBotId);
+    const before = s.requests.length;
+    expect(await s.ingress.preparePersistedWebhookEvent(id)).toMatchObject({
+      canonical: false,
+      prepared: true,
+    });
+    expect(s.requests).toHaveLength(before);
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      status: 'PROCESSED',
+      errorMessage: DORMANT_BOT_OBSERVATION_MARKER,
+    });
+    expect(await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: id } })).toBe(0);
+  });
+
+  it('retains the activation source through passive positive, unknown, denied and repeated healthy Start', async () => {
+    const { s, chatId, botId } = await setup();
+    await s.demote(chatId, botId);
+    const proof = await explicitActivation(s, chatId, botId);
+    const sourceAt = proof.sourceAt.toISOString();
+    const membership = () =>
+      s.prisma.chatBotMembership.findUniqueOrThrow({
+        where: { chatId_botId: { chatId, botId } },
+      });
+    const assertSource = async () =>
+      expect((await membership()).permissionsSnapshot).toMatchObject({
+        explicitActivationSourceAt: sourceAt,
+      });
+    await assertSource();
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await explicitActivation(s, chatId, botId);
+    await assertSource();
+    for (const access of [
+      {
+        isAdmin: true,
+        isOwner: false,
+        permissionsKnown: true,
+        permissions: ['read_all_messages', 'write'],
+      },
+      { isAdmin: true, isOwner: false, permissionsKnown: false, permissions: [] },
+      null,
+    ]) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      expect(
+        await s.links.recordBotAccessProbe({
+          chatId,
+          botId,
+          access,
+          checkedAt: new Date(),
+          source: 'native-passive-refresh',
+        }),
+      ).toBe(true);
+      await assertSource();
+    }
+  });
+
+  it('activates both exact Start receivers when the slower bot finishes after a healthy peer grant', async () => {
+    const { s, chatId, botId } = await setup(2);
+    const peerBotId = s.bots[1]!.id;
+    await s.demote(chatId, botId);
+    await s.demote(chatId, peerBotId);
+    s.allowBot(botId);
+    s.allowBot(peerBotId);
+    s.allowAdminUser('fixture-user');
+    const registry = {
+      getBotById: (id: string) => s.bots.find((bot) => bot.id === id) ?? null,
+      getAllBots: () => s.bots,
+      isKnownBotUserId: (id: string) => s.bots.some((bot) => bot.id === id),
+    };
+    const handshake = new ManagedEntityHandshakeService(
+      new ManagedEntityAccessWriter(s.prisma as never, s.links, s.cache),
+      s.max,
+      s.links,
+      registry as never,
+      { processJob: async () => true, scheduleChatAdminRosterSync: async () => undefined } as never,
+      new ManagedEntityHandshakeOutcomeService(s.prisma as never),
+      s.groupCommands,
+    );
+    const warnings: unknown[] = [];
+    Object.assign(handshake, {
+      logger: {
+        log: () => undefined,
+        debug: () => undefined,
+        warn: (message: unknown) => warnings.push(message),
+      },
+    });
+    Object.assign(s.ingress, { managedEntityHandshakeService: handshake });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const at = Date.now();
+    const messageId = randomUUID();
+    const ids = await Promise.all(
+      [botId, peerBotId].map((receivingBotId) =>
+        s.ingest({ chatId, botId: receivingBotId, messageId, text: 'Старт', at }),
+      ),
+    );
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slowEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const original = s.max.getCurrentChatMemberAccess.bind(s.max);
+    jest.spyOn(s.max, 'getCurrentChatMemberAccess').mockImplementation(async (id, options) => {
+      const access = await original(id, options);
+      if (options?.botId === botId && options.explicitActivation) {
+        entered();
+        await gate;
+      }
+      return access;
+    });
+    const slow = s.ingress.preparePersistedWebhookEvent(ids[0]!);
+    await slowEntered;
+    try {
+      await s.ingress.preparePersistedWebhookEvent(ids[1]!);
+    } catch (error) {
+      release();
+      await slow.catch(() => undefined);
+      throw new Error(`${String(error)} ${JSON.stringify(warnings)}`);
+    }
+    release();
+    await slow.catch((error: unknown) => {
+      throw new Error(`${String(error)} ${JSON.stringify(warnings)}`);
+    });
+    const memberships = await s.prisma.chatBotMembership.findMany({
+      where: { chatId },
+      orderBy: { botId: 'asc' },
+    });
+    expect(memberships).toHaveLength(2);
+    for (const row of memberships)
+      expect(row).toMatchObject({ status: 'ACTIVE', botAccessState: 'CONFIRMED_ADMIN' });
+    expect(
+      s.effects.filter((effect) => effect.method === 'post' && effect.path === '/messages'),
+    ).toHaveLength(1);
+  });
+
+  it.each(['dormant', 'unbound'] as const)(
+    'preserves an existing started claim when its exact receiver becomes %s',
+    async (origin) => {
+      const { s, chatId, botId } = await setup();
+      const id = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'hello' });
+      await s.ingress.preparePersistedWebhookEvent(id);
+      const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: id, kind: 'EXECUTION' },
+      });
+      const started = await s.prisma.webhookExecutionClaim.update({
+        where: { id: claim.id },
+        data: { businessStartedAt: new Date() },
+      });
+      if (origin === 'dormant') await s.demote(chatId, botId);
+      else await s.prisma.chatBotMembership.delete({ where: { chatId_botId: { chatId, botId } } });
+      const event = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+      expect(
+        await settleDormantWebhookObservation(
+          s.prisma as never,
+          s.links,
+          id,
+          event.normalizedPayload as MaxUpdate,
+          null,
+          event.createdAt,
+        ),
+      ).toBe(false);
+      expect(
+        await s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+      ).toEqual(started);
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(event);
+      expect(s.effects).toEqual([]);
+    },
+  );
+
+  it('rejects stale healthy preparation after dormant settlement wins the receipt lock', async () => {
+    const { s, chatId, botId } = await setup();
+    const id = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'hello' });
+    const receipt = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const original = s.links.isChatBotActivationRequired.bind(s.links);
+    jest
+      .spyOn(s.links, 'isChatBotActivationRequired')
+      .mockImplementationOnce(async (entityId, receivingBot) => {
+        const captured = await original(entityId, receivingBot);
+        entered();
+        await gate;
+        return captured;
+      });
+    const stale = s.ingress.preparePersistedWebhookEvent(id);
+    await ready;
+    await s.demote(chatId, botId);
+    expect(
+      await settleDormantWebhookObservation(
+        s.prisma as never,
+        s.links,
+        id,
+        receipt.normalizedPayload as MaxUpdate,
+        null,
+        receipt.createdAt,
+      ),
+    ).toBe(true);
+    const observed = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    release();
+    expect(await stale).toMatchObject({ canonical: false, prepared: true });
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(observed);
+    expect(await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: id } })).toBe(0);
+    expect(s.effects).toEqual([]);
+  });
+
+  it.each(['granted', 'user_denied', 'bot_denied'] as const)(
+    'keeps the newer %s Redis epoch immutable during an older verified grant',
+    async (state) => {
+      const { s, chatId } = await setup();
+      const userId = 'fixture-cache-admin';
+      const at = new Date();
+      expect(
+        await s.cache.applyAdminAccessEpochMutation({ chatId, userId, state, eventAt: at }),
+      ).toBe(true);
+      const keys = [
+        ChatContextCacheService.adminAccessEpochKey(chatId, userId),
+        ChatContextCacheService.adminAccessKey(chatId, userId),
+      ];
+      const before = await s.redis.mget(...keys);
+      const ttlBefore = await s.redis.pttl(keys[0]!);
+      expect(
+        await s.cache.applyAdminAccessEpochMutation(
+          { chatId, userId, state: 'granted', eventAt: new Date(at.getTime() - 100) },
+          { acceptNewerGrantedEpoch: true },
+        ),
+      ).toBe(state === 'granted');
+      expect(await s.redis.mget(...keys)).toEqual(before);
+      expect(await s.redis.pttl(keys[0]!)).toBeLessThanOrEqual(ttlBefore);
+    },
+  );
+
+  it('preserves claim admission that wins the receipt lock before dormant settlement', async () => {
+    const { s, chatId, botId } = await setup();
+    await s.demote(chatId, botId);
+    const id = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'hello' });
+    const event = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      acquired = resolve;
+    });
+    const admission = s.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM webhook_events WHERE id = ${id} FOR UPDATE`;
+      const claim = await tx.webhookExecutionClaim.create({
+        data: {
+          kind: 'EXECUTION',
+          semanticKey: event.semanticKey!,
+          webhookEventId: id,
+          enforced: true,
+        },
+      });
+      acquired();
+      await gate;
+      return claim;
+    });
+    await ready;
+    const observation = settleDormantWebhookObservation(
+      s.prisma as never,
+      s.links,
+      id,
+      event.normalizedPayload as MaxUpdate,
+      null,
+      event.createdAt,
+    );
+    release();
+    const [claim, settled] = await Promise.all([admission, observation]);
+    expect(settled).toBe(false);
+    expect(
+      await s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+    ).toEqual(claim);
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(event);
+  });
 });

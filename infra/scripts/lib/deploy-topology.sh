@@ -329,6 +329,13 @@ maxim_topology_require_legacy_dispositions() {
   node "$(dirname "${BASH_SOURCE[0]}")/../assert-legacy-disposition-source.mjs" "$commit_sha"
 }
 
+maxim_topology_require_managed_entity_activation() {
+  local commit_sha="$1"
+  # FLAG: Known denials, pending activation, capability ceilings and receipt-only
+  # dormancy remain enforced even after an image rollback.
+  node "$(dirname "${BASH_SOURCE[0]}")/../assert-managed-entity-activation-source.mjs" "$commit_sha"
+}
+
 maxim_topology_require_bot_publisher_reliability() {
   local commit_sha="$1" path source
   local sources=()

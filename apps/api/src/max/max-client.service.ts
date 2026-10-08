@@ -14,6 +14,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { MaxExecutionPurpose, MaxExecutionRouteProof } from './max-execution-route-proof';
 import { isDeepStrictEqual } from 'node:util';
 import { readMaxMemberActivity } from './max-member-activity.util';
+import {
+  hasExplicitManagedEntityPrivilege,
+  type ManagedEntityExplicitActivation,
+} from './managed-entity-activation.util';
 import { MarketplaceStateService } from '../integrations/marketplace/marketplace-state.service';
 import {
   appendMarketplacePublicationButton,
@@ -240,6 +244,8 @@ export type MaxChatMemberAccess = {
   isOwner: boolean;
   permissions: string[];
   permissionsKnown?: boolean;
+  explicitPrivilegeEvidence?: boolean;
+  activationCapabilityCeiling?: readonly string[];
 };
 
 /** The narrow admin roster shape used by recipient selection paths. */
@@ -590,6 +596,7 @@ type MaxActionExecutionOptions = {
 };
 
 type MaxApiRequestOptions = {
+  explicitActivation?: ManagedEntityExplicitActivation;
   trafficClass?: MaxApiTrafficClass;
   actionHealthLane?: ActionHealthLane;
   sourceTag?: string;
@@ -3484,40 +3491,55 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<MaxChatMemberAccess> {
     const normalizedChatId = chatId.trim();
     const botId = this.resolveBot(options.botId).id;
+    const bypassCache = options.bypassCache || options.explicitActivation !== undefined;
+    const activationState = this.maxBotLinkService?.assertChatBotAccessProbeAllowed
+      ? await this.maxBotLinkService.assertChatBotAccessProbeAllowed(
+          normalizedChatId,
+          botId,
+          options.explicitActivation,
+        )
+      : null;
+    const effectiveAccess = (access: MaxChatMemberAccess) =>
+      options.explicitActivation || !this.maxBotLinkService?.restrictPassiveBotAccess
+        ? access
+        : this.maxBotLinkService.restrictPassiveBotAccess(botId, access, activationState);
+    // FLAG: A cached/live positive probe cannot wake a bot with confirmed lost rights.
+    // Only the exact persisted administrator activation receipt permits this fresh read.
     const cacheKey = this.buildCurrentChatMemberAccessCacheKey(botId, normalizedChatId);
-    if (!options.bypassCache) {
+    if (!bypassCache) {
       const cachedAccess = await this.readJsonCache(
         cacheKey,
         (value): value is MaxChatMemberAccess => this.isMaxChatMemberAccess(value),
       );
       if (cachedAccess) {
-        return { ...cachedAccess, permissions: [...cachedAccess.permissions] };
+        return effectiveAccess({ ...cachedAccess, permissions: [...cachedAccess.permissions] });
       }
 
       const existingInFlight = this.currentChatMemberAccessInFlight.get(cacheKey);
       if (existingInFlight) {
         const access = await existingInFlight;
-        return { ...access, permissions: [...access.permissions] };
+        return effectiveAccess({ ...access, permissions: [...access.permissions] });
       }
     }
 
     const pending = this.fetchCurrentChatMemberAccessUncached(normalizedChatId, botId, options)
       .then(async (access) => {
-        if (!options.bypassCache) {
+        const effective = effectiveAccess(access);
+        if (!bypassCache) {
           await this.writeJsonCache(
             cacheKey,
-            access,
-            this.resolveChatMemberAccessCacheTtlSec(access),
+            effective,
+            this.resolveChatMemberAccessCacheTtlSec(effective),
           );
         }
-        return access;
+        return effective;
       })
       .finally(() => {
         if (this.currentChatMemberAccessInFlight.get(cacheKey) === pending) {
           this.currentChatMemberAccessInFlight.delete(cacheKey);
         }
       });
-    if (!options.bypassCache) {
+    if (!bypassCache) {
       this.currentChatMemberAccessInFlight.set(cacheKey, pending);
     }
 
@@ -4344,6 +4366,7 @@ export class MaxClientService implements OnModuleDestroy {
       isOwner,
       permissions: row ? this.readChatAdminPermissions(row) : [],
       permissionsKnown: row ? this.hasExplicitChatAdminPermissions(row) : false,
+      explicitPrivilegeEvidence: row ? hasExplicitManagedEntityPrivilege(row) : false,
     };
   }
 
@@ -7179,6 +7202,12 @@ export class MaxClientService implements OnModuleDestroy {
     const maxAgeMs = purpose === 'send_message' ? 15 * 60_000 : 5 * 60_000;
     let proof = await link.getFreshChatBotExecutionProof({ chatId, botId, purpose, maxAgeMs });
     if (!proof) {
+      // FLAG: Missing known action rights wait for administrator activation; a final
+      // mutation preflight must not repeatedly re-probe a denied optional capability.
+      if (await link.isChatBotExecutionActivationRequired?.(chatId, botId, purpose))
+        throw Object.assign(new Error('MAX action capability requires explicit activation'), {
+          code: 'max_action_executor_proof_rejected',
+        });
       const checkedAt = new Date();
       let access: MaxChatMemberAccess;
       try {

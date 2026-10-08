@@ -29,7 +29,7 @@ function createUpdate(overrides: Record<string, unknown> = {}) {
       entityType: 'chat',
       senderId: 'admin-1',
       text: 'Старт',
-      createdAt: '2026-06-20T12:00:00.000Z',
+      createdAt: new Date().toISOString(),
       ...messageOverrides,
     },
     ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'message')),
@@ -87,7 +87,7 @@ function createForwardedUpdate(options: ForwardedUpdateOptions = {}) {
       chatId: options.normalizedChatId ?? privateChatId,
       senderId: options.normalizedSenderId ?? forwarderUserId,
       text: 'Пересланная публикация',
-      createdAt: '2026-08-01T10:00:00.000Z',
+      createdAt: new Date().toISOString(),
     },
     raw: {
       update_type: 'message_created',
@@ -141,8 +141,8 @@ function createFixture() {
     callback(prisma),
   );
   const maxClient = {
-    getChatSnapshot: jest.fn().mockResolvedValue({
-      chatId: FORWARDED_SOURCE_CHAT_ID,
+    getChatSnapshot: jest.fn().mockImplementation(async (chatId = FORWARDED_SOURCE_CHAT_ID) => ({
+      chatId,
       title: 'Новости MAX',
       participantsCount: 10,
       status: 'active',
@@ -151,12 +151,14 @@ function createFixture() {
       lastEventAt: null,
       entityType: 'channel',
       avatarUrl: FORWARDED_SOURCE_AVATAR_URL,
-    }),
+    })),
     getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
       userId: 'bot-1',
       isAdmin: true,
       isOwner: false,
-      permissions: ['read_all_messages', 'write'],
+      explicitPrivilegeEvidence: true,
+      permissionsKnown: true,
+      permissions: ['read_all_messages', 'write', 'delete'],
     }),
     getChatMembersAccess: jest.fn().mockResolvedValue(
       new Map([
@@ -164,8 +166,11 @@ function createFixture() {
           'admin-1',
           {
             userId: 'admin-1',
+            isBot: false,
             isAdmin: true,
             isOwner: false,
+            explicitPrivilegeEvidence: true,
+            permissionsKnown: true,
             permissions: ['change_chat_info'],
           },
         ],
@@ -173,8 +178,11 @@ function createFixture() {
           FORWARDED_USER_ID,
           {
             userId: FORWARDED_USER_ID,
+            isBot: false,
             isAdmin: true,
             isOwner: false,
+            explicitPrivilegeEvidence: true,
+            permissionsKnown: true,
             permissions: ['change_chat_info'],
           },
         ],
@@ -303,18 +311,149 @@ describe('ManagedEntityHandshakeService', () => {
             count + fixture.prisma.managedEntityAccessEdge.upsert.mock.calls.length,
           0,
         ),
-      ).toBe(1);
+      ).toBe(botCount);
       expect(authority.complete).toHaveBeenCalledTimes(1);
-      for (const fixture of fixtures) {
+      for (const [index, fixture] of fixtures.entries()) {
         expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
           '-100',
-          expect.objectContaining({ bypassCache: true }),
+          expect.objectContaining({ botId: bots[index]!.id, bypassCache: true }),
+        );
+        expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+          expect.objectContaining({
+            botId: bots[index]!.id,
+            explicitActivation: expect.objectContaining({
+              kind: 'start_in_chat',
+              botId: bots[index]!.id,
+              chatId: '-100',
+              actorUserId: 'admin-1',
+              updateId: `mirrored-start-${index}`,
+            }),
+          }),
         );
         expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
           '-100',
           ['admin-1'],
           expect.objectContaining({ bypassCache: true }),
         );
+      }
+    },
+  );
+
+  it('activates only the receiving bot when another bot owns the pending Start confirmation', async () => {
+    const fixture = createFixture();
+    const update = createUpdate();
+    const other = await fixture.groupCommandAuthority.claim(update, 'bot-2');
+    await fixture.groupCommandAuthority.release(other!);
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      '-100',
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(fixture.groupCommandAuthority.complete).not.toHaveBeenCalled();
+  });
+
+  it.each(['bot_role', 'actor_role', 'actor_bot', 'actor_unknown'] as const)(
+    'refuses activation when the live proof has %s uncertainty',
+    async (uncertainty) => {
+      const fixture = createFixture();
+      if (uncertainty === 'bot_role') {
+        fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+          userId: 'bot-1',
+          isAdmin: true,
+          isOwner: false,
+          explicitPrivilegeEvidence: false,
+          permissionsKnown: true,
+          permissions: ['read_all_messages', 'write'],
+        });
+      } else {
+        fixture.maxClient.getChatMembersAccess.mockResolvedValueOnce(
+          new Map([
+            [
+              'admin-1',
+              {
+                userId: 'admin-1',
+                isAdmin: true,
+                isOwner: false,
+                isBot: uncertainty === 'actor_unknown' ? undefined : uncertainty === 'actor_bot',
+                explicitPrivilegeEvidence: uncertainty !== 'actor_role',
+                permissions: [],
+              },
+            ],
+          ]),
+        );
+      }
+      await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('denied');
+      expect(fixture.maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+      expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not turn a legacy callback into activation of a dormant membership', async () => {
+    const fixture = createFixture();
+    fixture.maxBotLinkService.recordBotAccessProbe.mockResolvedValueOnce(false);
+    const update = createUpdate({
+      type: 'message_callback',
+      raw: {
+        callback: {
+          payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+          user: { user_id: 'admin-1' },
+        },
+      },
+    });
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('failed');
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      '-100',
+      expect.objectContaining({ explicitActivation: undefined }),
+    );
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+      expect.objectContaining({ explicitActivation: undefined }),
+    );
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+  });
+
+  it.each(['start', 'forward'] as const)(
+    'rejects malformed %s activation before any remote probe or reply',
+    async (kind) => {
+      for (const defect of [
+        'timestamp_missing',
+        'timestamp_old',
+        'timestamp_future',
+        'origin_mismatch',
+        'update_missing',
+      ]) {
+        const fixture = createFixture();
+        const update = kind === 'start' ? createUpdate() : createForwardedUpdate();
+        const payload = update as unknown as { updateId: string; message: { createdAt?: string } };
+        if (defect === 'timestamp_missing') delete payload.message.createdAt;
+        if (defect === 'timestamp_old')
+          payload.message.createdAt = new Date(Date.now() - 300_001).toISOString();
+        if (defect === 'timestamp_future')
+          payload.message.createdAt = new Date(Date.now() + 1_000).toISOString();
+        if (defect === 'update_missing') payload.updateId = '';
+        if (defect === 'origin_mismatch')
+          fixture.maxBotRegistry.getBotById.mockReturnValue({
+            id: 'bot-2',
+            label: 'Бот',
+            state: 'active',
+          });
+        await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('denied');
+        expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+        expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+        expect(fixture.maxClient.getChatSnapshot).not.toHaveBeenCalled();
+        expect(fixture.maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+        expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+        expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+        expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
       }
     },
   );
@@ -333,6 +472,8 @@ describe('ManagedEntityHandshakeService', () => {
       userId: 'bot-1',
       isAdmin: false,
       isOwner: false,
+      explicitPrivilegeEvidence: true,
+      permissionsKnown: true,
       permissions: [],
     });
     expect(await weak.service.handleWebhookUpdate(createUpdate())).toBe('denied');
@@ -360,7 +501,7 @@ describe('ManagedEntityHandshakeService', () => {
       expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
       expect(fixture.groupCommandAuthority.complete).toHaveBeenCalledTimes(1);
       if (state === 'hold') {
-        expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+        expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
         expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
       }
     },
@@ -470,6 +611,7 @@ describe('ManagedEntityHandshakeService', () => {
           entityType: 'chat',
         }),
       }),
+      { acceptNewerGrantedEpoch: true },
     );
     expect(fixture.prisma.$queryRaw.mock.invocationCallOrder[3]).toBeLessThan(
       fixture.chatContextCache.applyAdminAccessEpochMutation.mock.invocationCallOrder[0],
@@ -584,7 +726,9 @@ describe('ManagedEntityHandshakeService', () => {
         userId: 'bot-1',
         isAdmin: true,
         isOwner: false,
-        permissions: ['read_all_messages', 'write'],
+        explicitPrivilegeEvidence: true,
+        permissionsKnown: true,
+        permissions: ['read_all_messages', 'write', 'delete'],
       };
     });
 
@@ -664,8 +808,11 @@ describe('ManagedEntityHandshakeService', () => {
             '123',
             {
               userId: '123',
+              isBot: false,
               isAdmin: true,
               isOwner: false,
+              explicitPrivilegeEvidence: true,
+              permissionsKnown: true,
               permissions: ['change_chat_info'],
             },
           ],
@@ -679,6 +826,11 @@ describe('ManagedEntityHandshakeService', () => {
           chatId: '-100',
           userId: { in: ['123', 'id123'] },
           checkedAt: { gt: probeStartedAt },
+          OR: [
+            { botId: 'bot-1' },
+            { state: 'USER_DENIED' },
+            { userRole: { notIn: ['ADMIN', 'OWNER'] } },
+          ],
         },
         select: { checkedAt: true },
       });
@@ -807,7 +959,7 @@ describe('ManagedEntityHandshakeService', () => {
     const update = new WebhookParser().parse(
       {
         update_type: 'message_created',
-        timestamp: '2026-08-01T10:00:00.000Z',
+        timestamp: new Date().toISOString(),
         message: {
           sender: { user_id: Number(FORWARDED_USER_ID), first_name: 'Иван' },
           recipient: {
@@ -857,6 +1009,7 @@ describe('ManagedEntityHandshakeService', () => {
           entityType: 'channel',
         }),
       }),
+      { acceptNewerGrantedEpoch: true },
     );
     expect(fixture.rosterSync.processJob).not.toHaveBeenCalled();
     expect(fixture.rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
@@ -1019,6 +1172,7 @@ describe('ManagedEntityHandshakeService', () => {
           entityType: 'chat',
         }),
       }),
+      { acceptNewerGrantedEpoch: true },
     );
     expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       '-100',
@@ -1060,8 +1214,11 @@ describe('ManagedEntityHandshakeService', () => {
           'admin-1',
           {
             userId: 'admin-1',
+            isBot: false,
             isAdmin: false,
             isOwner: false,
+            explicitPrivilegeEvidence: true,
+            permissionsKnown: true,
             permissions: [],
           },
         ],
@@ -1101,8 +1258,11 @@ describe('ManagedEntityHandshakeService', () => {
           'admin-1',
           {
             userId: 'admin-1',
+            isBot: false,
             isAdmin: false,
             isOwner: false,
+            explicitPrivilegeEvidence: true,
+            permissionsKnown: true,
             permissions: [],
           },
         ],
@@ -1189,13 +1349,17 @@ describe('ManagedEntityHandshakeService', () => {
         userId: 'bot-1',
         isAdmin: false,
         isOwner: false,
+        explicitPrivilegeEvidence: true,
+        permissionsKnown: true,
         permissions: [],
       })
       .mockResolvedValueOnce({
         userId: 'bot-1',
         isAdmin: true,
         isOwner: false,
-        permissions: ['change_chat_info'],
+        explicitPrivilegeEvidence: true,
+        permissionsKnown: true,
+        permissions: ['read_all_messages', 'write'],
       });
 
     await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('denied');
@@ -1301,7 +1465,7 @@ describe('ManagedEntityHandshakeService', () => {
             entityType: 'channel',
             senderId: 'bot-1',
             text: 'Старт',
-            createdAt: '2026-06-20T12:00:00.000Z',
+            createdAt: new Date().toISOString(),
           },
         }),
       ),
@@ -1331,7 +1495,7 @@ describe('ManagedEntityHandshakeService', () => {
             entityType: 'channel',
             senderId: 'bot-1',
             text: 'Старт',
-            createdAt: '2026-06-20T12:00:00.000Z',
+            createdAt: new Date().toISOString(),
           },
         }),
       ),
@@ -1344,76 +1508,30 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.handshakeOutcomes.recordOutcome).not.toHaveBeenCalled();
   });
 
-  it('connects but leaves the Старт message when the bot lacks delete permission', async () => {
-    const fixture = createFixture();
-    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
-      userId: 'bot-1',
-      isAdmin: true,
-      isOwner: false,
-      permissions: ['change_chat_info'],
-    });
-
-    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
-
-    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          state: ManagedEntityAccessState.GRANTED,
-          source: 'handshake_start',
-        }),
-      }),
-    );
-    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chatId: '-100',
-        userId: 'admin-1',
-        state: 'granted',
-        publishedSummary: expect.objectContaining({
-          id: '-100',
-          title: 'Команда MAX',
-          entityType: 'chat',
-        }),
-      }),
-    );
-    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
-  });
-
-  it('uses chat write permission to delete a Старт message without requiring read-all', async () => {
-    const fixture = createFixture();
-    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
-      userId: 'bot-1',
-      isAdmin: true,
-      isOwner: false,
-      permissions: ['write'],
-    });
-
-    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
-
-    expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
-      '-100',
-      'm-start-1',
-      expect.objectContaining({
-        immediate: true,
-        botId: 'bot-1',
-        sourceTag: 'managed_handshake',
-      }),
-    );
-  });
-
-  it('does not delete when an owner snapshot has no confirmed permissions', async () => {
-    const fixture = createFixture();
-    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
-      userId: 'bot-1',
-      isAdmin: false,
-      isOwner: true,
-      permissions: [],
-    });
-
-    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
-
-    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
-  });
+  it.each([
+    ['missing read-all', ['write'], true],
+    ['missing delete', ['read_all_messages'], true],
+    ['unknown permissions', ['read_all_messages', 'write'], false],
+    ['owner without permissions', [], true],
+  ] as const)(
+    'keeps public Start silent and inactive with %s',
+    async (reason, permissions, permissionsKnown) => {
+      const fixture = createFixture();
+      fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: reason === 'owner without permissions',
+        explicitPrivilegeEvidence: true,
+        permissionsKnown,
+        permissions: [...permissions],
+      });
+      await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('denied');
+      expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not treat channel write as delete capability', async () => {
     const fixture = createFixture();
@@ -1421,6 +1539,8 @@ describe('ManagedEntityHandshakeService', () => {
       userId: 'bot-1',
       isAdmin: true,
       isOwner: false,
+      explicitPrivilegeEvidence: true,
+      permissionsKnown: true,
       permissions: ['read_all_messages', 'write'],
     });
 
@@ -1437,7 +1557,7 @@ describe('ManagedEntityHandshakeService', () => {
           },
         }),
       ),
-    ).resolves.toBe('connected');
+    ).resolves.toBe('denied');
 
     expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
   });
@@ -1448,6 +1568,8 @@ describe('ManagedEntityHandshakeService', () => {
       userId: 'bot-1',
       isAdmin: true,
       isOwner: false,
+      explicitPrivilegeEvidence: true,
+      permissionsKnown: true,
       permissions: ['delete'],
     });
 
@@ -1593,6 +1715,7 @@ describe('ManagedEntityHandshakeService', () => {
           avatarUrl: FORWARDED_SOURCE_AVATAR_URL,
         }),
       }),
+      { acceptNewerGrantedEpoch: true },
     );
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       FORWARDED_PRIVATE_CHAT_ID,
@@ -1614,7 +1737,7 @@ describe('ManagedEntityHandshakeService', () => {
   });
 
   it.each(['snapshot_denied', 'not_admin', 'member_denied', 'timeout'])(
-    'recovers through a known source bot after %s and replies through the private-dialog bot',
+    'never substitutes another configured bot when the receiving DM bot has %s',
     async (failure) => {
       const fixture = createFixture();
       const denied = { response: { status: 403, data: { code: 'chat.denied' } } };
@@ -1639,38 +1762,20 @@ describe('ManagedEntityHandshakeService', () => {
           permissions: [],
         });
       }
-
       await expect(fixture.service.handleWebhookUpdate(createForwardedUpdate())).resolves.toBe(
-        'connected',
+        failure === 'timeout' ? 'failed' : 'denied',
       );
-      expect(fixture.maxClient.getChatSnapshot).toHaveBeenLastCalledWith(
-        FORWARDED_SOURCE_CHAT_ID,
-        expect.objectContaining({ botId: 'bot-2', bypassCache: true }),
-      );
-      expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
-        FORWARDED_SOURCE_CHAT_ID,
-        [FORWARDED_USER_ID],
-        expect.objectContaining({ botId: 'bot-2', bypassCache: true }),
-      );
-      expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: {
-            chatId_userId_botId: {
-              chatId: FORWARDED_SOURCE_CHAT_ID,
-              userId: FORWARDED_USER_ID,
-              botId: 'bot-2',
-            },
-          },
-        }),
-      );
-      expect(fixture.rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith(
-        expect.objectContaining({ botIds: ['bot-2'] }),
-      );
+      expect(
+        fixture.maxClient.getChatSnapshot.mock.calls.map(([, options]) => options.botId),
+      ).toEqual(['bot-1']);
+      expect(fixture.maxBotLinkService.getChatExecutionBinding).not.toHaveBeenCalled();
+      expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+      expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
       expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
       expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
         FORWARDED_PRIVATE_CHAT_ID,
-        'Готово, канал подключен.',
-        expect.anything(),
+        expect.any(String),
+        undefined,
         expect.objectContaining({ botId: 'bot-1' }),
       );
       expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -1683,6 +1788,8 @@ describe('ManagedEntityHandshakeService', () => {
       userId: 'bot-1',
       isAdmin: true,
       isOwner: false,
+      explicitPrivilegeEvidence: true,
+      permissionsKnown: true,
       permissions: ['write', 'edit', 'delete'],
     });
     await expect(fixture.service.handleWebhookUpdate(createForwardedUpdate())).resolves.toBe(
@@ -1692,72 +1799,20 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.maxBotLinkService.getChatExecutionBinding).not.toHaveBeenCalled();
   });
 
-  it('does not grant access to a non-admin through an alternate source bot', async () => {
+  it('checks only the exact receiving bot even when many other bots are assigned', async () => {
     const fixture = createFixture();
-    fixture.maxBotRegistry.getBotById.mockImplementation((id) =>
-      id ? { id, label: 'Бот', state: 'active' as const } : null,
-    );
-    fixture.maxBotLinkService.getChatExecutionBinding.mockResolvedValue({
-      primaryBotId: 'bot-2',
-      assignedBotIds: ['bot-2'],
-    });
-    fixture.maxClient.getChatSnapshot.mockRejectedValueOnce({ response: { status: 404 } });
-    fixture.maxClient.getChatMembersAccess.mockResolvedValueOnce(new Map());
-    await expect(fixture.service.handleWebhookUpdate(createForwardedUpdate())).resolves.toBe(
-      'denied',
-    );
-    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
-    expect(fixture.maxBotLinkService.bindDiscoveredChatBots).not.toHaveBeenCalled();
-    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
-    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
-      FORWARDED_PRIVATE_CHAT_ID,
-      'Подключить канал может только владелец или администратор.',
-      undefined,
-      expect.objectContaining({ botId: 'bot-1' }),
-    );
-  });
-
-  it('reports an incomplete check after a denied bot and a transient alternate failure', async () => {
-    const fixture = createFixture();
-    fixture.maxBotRegistry.getBotById.mockImplementation((id) =>
-      id ? { id, label: 'Бот', state: 'active' as const } : null,
-    );
-    fixture.maxBotLinkService.getChatExecutionBinding.mockResolvedValue({
-      primaryBotId: 'bot-2',
-      assignedBotIds: ['bot-2'],
-    });
-    fixture.maxClient.getChatSnapshot
-      .mockRejectedValueOnce({ response: { status: 403 } })
-      .mockRejectedValueOnce(new Error('timeout'));
-    await expect(fixture.service.handleWebhookUpdate(createForwardedUpdate())).resolves.toBe(
-      'failed',
-    );
-    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
-    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
-      FORWARDED_PRIVATE_CHAT_ID,
-      'Не удалось проверить доступ. Перешлите сообщение еще раз позже.',
-      undefined,
-      expect.objectContaining({ botId: 'bot-1' }),
-    );
-  });
-
-  it('bounds remote fallback probes to four known source bots', async () => {
-    const fixture = createFixture();
-    fixture.maxBotRegistry.getBotById.mockImplementation((id) =>
-      id ? { id, label: 'Бот', state: 'active' as const } : null,
-    );
     fixture.maxBotLinkService.getChatExecutionBinding.mockResolvedValue({
       primaryBotId: 'bot-2',
       assignedBotIds: ['bot-1', 'bot-2', 'bot-3', 'bot-4', 'bot-5'],
     });
     fixture.maxClient.getChatSnapshot.mockRejectedValue({ response: { status: 403 } });
     await expect(fixture.service.handleWebhookUpdate(createForwardedUpdate())).resolves.toBe(
-      'failed',
+      'denied',
     );
     expect(
       fixture.maxClient.getChatSnapshot.mock.calls.map(([, options]) => options.botId),
-    ).toEqual(['bot-1', 'bot-2', 'bot-3', 'bot-4']);
-    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    ).toEqual(['bot-1']);
+    expect(fixture.maxBotLinkService.getChatExecutionBinding).not.toHaveBeenCalled();
     expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
   });
 
@@ -1790,6 +1845,8 @@ describe('ManagedEntityHandshakeService', () => {
             userId: 'bot-1',
             isAdmin: false,
             isOwner: false,
+            explicitPrivilegeEvidence: true,
+            permissionsKnown: true,
             permissions: [],
           });
         if (result === 'user_denied')
@@ -1877,6 +1934,7 @@ describe('ManagedEntityHandshakeService', () => {
           entityType: 'chat',
         }),
       }),
+      { acceptNewerGrantedEpoch: true },
     );
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       FORWARDED_PRIVATE_CHAT_ID,
@@ -1897,8 +1955,11 @@ describe('ManagedEntityHandshakeService', () => {
           FORWARDED_USER_ID,
           {
             userId: FORWARDED_USER_ID,
+            isBot: false,
             isAdmin: false,
             isOwner: false,
+            explicitPrivilegeEvidence: true,
+            permissionsKnown: true,
             permissions: [],
           },
         ],
@@ -1955,6 +2016,8 @@ describe('ManagedEntityHandshakeService', () => {
       userId: 'bot-1',
       isAdmin: false,
       isOwner: false,
+      explicitPrivilegeEvidence: true,
+      permissionsKnown: true,
       permissions: [],
     });
 
@@ -1993,6 +2056,8 @@ describe('ManagedEntityHandshakeService', () => {
       userId: 'bot-1',
       isAdmin: true,
       isOwner: false,
+      explicitPrivilegeEvidence: true,
+      permissionsKnown: true,
       permissions: ['write'],
     });
 
@@ -2023,21 +2088,23 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
   });
 
-  it('allows a forwarded recovery bot owner without read_all_messages', async () => {
+  it('does not activate a forwarded recovery owner without confirmed channel delete permission', async () => {
     const fixture = createFixture();
     fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
       userId: 'bot-1',
       isAdmin: false,
       isOwner: true,
+      explicitPrivilegeEvidence: true,
+      permissionsKnown: true,
       permissions: [],
     });
 
     await expect(fixture.service.handleWebhookUpdate(createForwardedUpdate())).resolves.toBe(
-      'connected',
+      'denied',
     );
 
-    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
-    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
   });
 
   it('releases forwarding throttle after a terminal source lookup denial', async () => {
@@ -2206,7 +2273,7 @@ describe('ManagedEntityHandshakeService', () => {
         chatId: FORWARDED_PRIVATE_CHAT_ID,
         senderId: FORWARDED_USER_ID,
         text: 'Пересланная публикация',
-        createdAt: '2026-08-01T10:05:00.000Z',
+        createdAt: new Date().toISOString(),
       },
       raw: {
         update_type: 'message_created',

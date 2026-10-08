@@ -1,3 +1,6 @@
+import { ManagedEntityActivationRequiredError } from './managed-entity-activation.util';
+import { restrictPassiveManagedEntityAccess } from './managed-entity-passive-access.util';
+import { ChatEntityType } from '../prisma/prisma-client';
 import { maxApiMinuteCounterAddress } from './max-api-counter-storage';
 import { WebhookLegacyHoldRejectedError } from '../webhook/webhook-legacy-hold.service';
 import { isMaxMutationOutcomeAmbiguous } from './max-mutation-outcome.util';
@@ -12551,6 +12554,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       isOwner: false,
       permissions: ['add_remove_members', 'change_chat_info'],
       permissionsKnown: true,
+      explicitPrivilegeEvidence: true,
     });
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -12559,6 +12563,87 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }),
     );
 
+    await service.onModuleDestroy();
+  });
+
+  it('checks dormant authority before a cached self access response or forced probe', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValue(
+        of({
+          status: 200,
+          data: {
+            user_id: '777000_bot',
+            is_bot: true,
+            is_admin: true,
+            permissions: ['read_all_messages', 'write'],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    await service.getCurrentChatMemberAccess('chat-dormant');
+    const gate = jest.fn().mockRejectedValue(new ManagedEntityActivationRequiredError());
+    Object.assign(service, { maxBotLinkService: { assertChatBotAccessProbeAllowed: gate } });
+    for (const bypassCache of [false, true])
+      await expect(
+        service.getCurrentChatMemberAccess('chat-dormant', { bypassCache }),
+      ).rejects.toBeInstanceOf(ManagedEntityActivationRequiredError);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(gate).toHaveBeenCalledTimes(2);
+    await service.onModuleDestroy();
+  });
+
+  it('isolates explicit raw self evidence from passive cache and preserves a denied optional purpose', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValue(
+        of({
+          status: 200,
+          data: {
+            user_id: '777000_bot',
+            is_bot: true,
+            is_admin: true,
+            is_owner: true,
+            permissions: ['can_read_all_messages', 'can_write', 'can_ban_members'],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const previous = {
+      isAdmin: true,
+      isOwner: false,
+      permissionsKnown: true,
+      permissions: ['read_all_messages', 'write'],
+    };
+    const gate = jest.fn().mockResolvedValue({ permissionsSnapshot: previous });
+    Object.assign(service, {
+      maxBotLinkService: {
+        assertChatBotAccessProbeAllowed: gate,
+        restrictPassiveBotAccess: (
+          _botId: string,
+          access: Parameters<typeof restrictPassiveManagedEntityAccess>[0],
+        ) => restrictPassiveManagedEntityAccess(access, previous, ChatEntityType.CHAT),
+      },
+    });
+    const proof = {
+      kind: 'start_in_chat' as const,
+      sourceAt: new Date(),
+      updateId: 'fixture-start',
+      actorUserId: 'human',
+      botId: '777000_bot',
+      chatId: 'chat-explicit',
+    };
+    expect(
+      (await service.getCurrentChatMemberAccess('chat-explicit', { explicitActivation: proof }))
+        .permissions,
+    ).toContain('can_ban_members');
+    const passive = await service.getCurrentChatMemberAccess('chat-explicit');
+    expect(passive.permissions).not.toContain('can_ban_members');
+    expect(passive.activationCapabilityCeiling).not.toContain('moderate_member');
+    expect(passive.permissions).toEqual(expect.arrayContaining(['read_all_messages', 'write']));
+    await service.getCurrentChatMemberAccess('chat-explicit');
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+    expect(gate).toHaveBeenCalledWith('chat-explicit', '777000_bot', proof);
     await service.onModuleDestroy();
   });
 

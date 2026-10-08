@@ -1,3 +1,5 @@
+import { buildMaxActionIdempotencyKey } from '../max/max-action-idempotency';
+import { MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS } from '../max/managed-handshake-confirmation';
 import { createHash, randomUUID } from 'node:crypto';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
@@ -500,6 +502,169 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
           await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: parentKey } }),
         ).toMatchObject(parent);
         expect(await redis.zcard('bull:max-actions-background:delayed')).toBe(1);
+        expect(
+          await db.webhookSourceAbandonment.findUnique({ where: { ownerWebhookEventId: ownerId } }),
+        ).toBeNull();
+      } finally {
+        await db.maxActionLedgerEntry.deleteMany({
+          where: { jobId: { in: [parentKey, ...historyKeys] } },
+        });
+      }
+    },
+  );
+
+  it.each([
+    ['major', 'admission_preview'],
+    ['major', 'inventory_preview'],
+    ['publisher', 'admission_preview'],
+    ['publisher', 'inventory_preview'],
+    ['publisher-missing-catalog', 'admission_preview'],
+    ['publisher-missing-catalog', 'inventory_preview'],
+  ] as const)(
+    'proves exact completed %s Start cleanup through %s without changing it',
+    async (origin, operation) => {
+      const suffix = randomUUID();
+      const publisher = origin !== 'major';
+      const botId = publisher ? 'publisher-1' : 'major-1';
+      const publisherBotId = origin === 'publisher' ? botId : undefined;
+      const cleanupChat = '-200';
+      const parentKey = buildMaxActionIdempotencyKey('explicit', [
+        ...(publisher ? [botId] : []),
+        'SEND_MESSAGE',
+        publisher
+          ? `publisher-handshake-start:${cleanupChat}:${suffix}`
+          : `managed-handshake-start:groupcmd:v1:${suffix}`,
+      ]);
+      const childKey = `handshake-cleanup-${suffix}`;
+      const createdAt = new Date(Date.now() - 1000).toISOString();
+      const completedAt = new Date().toISOString();
+      const delay = MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS;
+      const metadata = {
+        createdAt,
+        hasText: true,
+        textLength: 42,
+        autoDeleteDelayMs: delay,
+        sendAutoDelete: null,
+        hasOptions: true,
+        optionKeys: ['buttons'],
+        ledgerContext: null,
+      };
+      const parent = {
+        jobId: parentKey,
+        chatId: cleanupChat,
+        actionType: 'SEND_MESSAGE',
+        messageId: null,
+        userId: null,
+        sourceTag: 'managed_handshake',
+        status: 'SUCCEEDED' as const,
+        terminal: true,
+        ambiguous: false,
+        remoteMessageId: `confirmed-${suffix}`,
+        dispatchBotId: botId,
+        completedAt: new Date(completedAt),
+        metadata,
+      };
+      const historyKeys = Array.from(
+        { length: 512 },
+        (_, index) => `handshake-history-${suffix}-${index}`,
+      );
+      const queue = new Queue('max-actions-interactive', { connection: { url: fixtureRedisUrl } });
+      queues.push(queue);
+      await queue.pause();
+      try {
+        // FLAG: The fixture owns these exact rows and an empty disposable queue only.
+        // Retained history exercises the unchanged exact-index parent resolver.
+        await db.maxActionLedgerEntry.createMany({
+          data: [parent, ...historyKeys.map((jobId) => ({ ...parent, jobId }))],
+        });
+        await db.$executeRaw`ANALYZE max_action_ledger`;
+        await queue.add(
+          'action',
+          {
+            actionType: 'DELETE_MESSAGE',
+            idempotencyKey: childKey,
+            chatId: cleanupChat,
+            messageId: parent.remoteMessageId,
+            botId,
+            sourceTag: 'managed_handshake',
+            sendAutoDelete: {
+              version: 2,
+              sourceSendJobId: parentKey,
+              sourceChatId: cleanupChat,
+              sourceMessageId: null,
+              sourceUserId: null,
+              sourceCreatedAt: createdAt,
+              sourceSendCompletedAt: completedAt,
+              requestedDelayMs: delay,
+              originBotId: botId,
+            },
+          },
+          { jobId: childKey, delay },
+        );
+        const queueBefore = await redis.dump(`bull:max-actions-interactive:${childKey}`);
+        const parentBefore = await db.maxActionLedgerEntry.findUniqueOrThrow({
+          where: { jobId: parentKey },
+        });
+        const result = await readonlyDb.$transaction(
+          async (tx) => {
+            await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+            return operation === 'admission_preview'
+              ? collectSourceAbandonmentAdmission(tx, redis, {
+                  version: 1,
+                  operation,
+                  sourceSha: liveRequest.binding.sourceSha,
+                  imageId: liveRequest.binding.imageId,
+                  selection,
+                  ...(publisherBotId ? { publisherBotId } : {}),
+                })
+              : collectSourceAbandonmentLiveEvidence(tx, redis, {
+                  ...liveRequest,
+                  binding: {
+                    ...liveRequest.binding,
+                    ...(publisherBotId ? { publisherBotId } : {}),
+                  },
+                });
+          },
+          {
+            timeout: 30_000,
+            isolationLevel:
+              operation === 'admission_preview'
+                ? Prisma.TransactionIsolationLevel.ReadCommitted
+                : Prisma.TransactionIsolationLevel.RepeatableRead,
+          },
+        );
+        const denied = origin === 'publisher-missing-catalog';
+        expect(result.decision).toBe(
+          denied
+            ? 'DENY'
+            : operation === 'admission_preview'
+              ? 'READY_FOR_COLD_REVIEW'
+              : 'READY_TO_INSTALL',
+        );
+        expect(result.issues).toEqual(
+          denied
+            ? [
+                {
+                  code: 'CLEANUP_ORIGINAL_SOURCE_UNPROVED',
+                  descriptor: 'redis:max-actions-interactive',
+                },
+              ]
+            : [],
+        );
+        expect(result.selectedOwners).toHaveLength(1);
+        expect(result.activationAuthorized).toBe(false);
+        expect(result.applied).toBe(false);
+        expect(result.selectionSha256).toBe(sourceAbandonmentDigest(selection));
+        expect(result.redisCatalogs).toHaveLength(2);
+        if ('children' in result) {
+          expect(result.children).toEqual([]);
+          expect(result.binding.publisherBotId).toBe(publisherBotId);
+        }
+        expect(
+          await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: parentKey } }),
+        ).toEqual(parentBefore);
+        expect(await redis.dump(`bull:max-actions-interactive:${childKey}`)).toEqual(queueBefore);
+        expect(await redis.zcard('bull:max-actions-interactive:delayed')).toBe(1);
         expect(
           await db.webhookSourceAbandonment.findUnique({ where: { ownerWebhookEventId: ownerId } }),
         ).toBeNull();

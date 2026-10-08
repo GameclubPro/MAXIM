@@ -1,4 +1,6 @@
 import { parseChatIdAsBigInt } from '../common/chat-id.util';
+import { normalizeMaxActionIdempotencyKeyPart } from '../max/max-action-idempotency';
+import { MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS } from '../max/managed-handshake-confirmation';
 import type { MaxActionJob } from '../max/max-client.service';
 import { isMaxSendAutoDeleteMarker } from '../max/max-send-auto-delete-marker';
 import { readMessageDuplicateNoticeProof } from '../moderation/message-duplicate/message-duplicate-notice-proof';
@@ -11,6 +13,7 @@ import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
 export type SourceAbandonmentCleanupParent = {
   ledger: Record<string, unknown> | null;
   majorBotIds: readonly string[];
+  publisherBotId?: string;
 };
 
 const record = (value: unknown): Record<string, unknown> | null =>
@@ -37,6 +40,8 @@ export function readSourceAbandonmentCleanupScopes(
   parent: SourceAbandonmentCleanupParent | undefined,
   selectedSources: readonly { chatId: string }[],
 ): LegacyActionSourceScope[] | null {
+  if (data.sourceTag === 'managed_handshake')
+    return readManagedHandshakeCleanupScopes(data, parent, selectedSources);
   const marker = record(data.sendAutoDelete);
   const ledger = parent?.ledger;
   const metadata = record(ledger?.metadata);
@@ -145,4 +150,144 @@ export function readSourceAbandonmentCleanupScopes(
   } catch {
     return null;
   }
+}
+
+// FLAG: This exception proves only an unrelated completed Start-confirmation SEND.
+// It does not attribute an original command, admit another bot, or release a hold.
+function readManagedHandshakeCleanupScopes(
+  data: Record<string, unknown>,
+  parent: SourceAbandonmentCleanupParent | undefined,
+  selectedSources: readonly { chatId: string }[],
+): LegacyActionSourceScope[] | null {
+  const marker = record(data.sendAutoDelete);
+  const ledger = parent?.ledger;
+  const metadata = record(ledger?.metadata);
+  const chatId = typeof data.chatId === 'string' ? parseChatIdAsBigInt(data.chatId) : null;
+  if (
+    !marker ||
+    !isMaxSendAutoDeleteMarker(marker) ||
+    !['sourceChatId', 'sourceMessageId', 'sourceUserId', 'sourceCreatedAt'].every((key) =>
+      Object.hasOwn(marker, key),
+    ) ||
+    marker.sourceMessageId !== null ||
+    marker.sourceUserId !== null ||
+    !identity(marker.sourceSendJobId) ||
+    !identity(marker.sourceChatId) ||
+    !validDate(marker.sourceCreatedAt) ||
+    !validDate(marker.sourceSendCompletedAt) ||
+    !identity(marker.originBotId) ||
+    !parent ||
+    chatId === null ||
+    chatId >= 0n ||
+    data.chatId !== marker.sourceChatId ||
+    selectedSources.some(
+      (source) => source.chatId === data.chatId || parseChatIdAsBigInt(source.chatId) === chatId,
+    ) ||
+    data.actionType !== 'DELETE_MESSAGE' ||
+    !identity(data.messageId) ||
+    (data.userId !== undefined && data.userId !== null) ||
+    data.botId !== marker.originBotId ||
+    data.sourceTag !== 'managed_handshake' ||
+    marker.sourceSendJobId === data.idempotencyKey ||
+    data.ledgerContext !== undefined ||
+    !ledger ||
+    ledger.jobId !== marker.sourceSendJobId ||
+    ledger.actionType !== 'SEND_MESSAGE' ||
+    ledger.chatId !== marker.sourceChatId ||
+    ledger.messageId !== null ||
+    ledger.userId !== null ||
+    ledger.sourceTag !== 'managed_handshake' ||
+    ledger.status !== 'SUCCEEDED' ||
+    ledger.terminal !== true ||
+    ledger.ambiguous !== false ||
+    ledger.remoteMessageId !== data.messageId ||
+    ledger.dispatchBotId !== marker.originBotId ||
+    !(ledger.completedAt instanceof Date) ||
+    !Number.isFinite(ledger.completedAt.getTime()) ||
+    ledger.completedAt.getTime() !== Date.parse(marker.sourceSendCompletedAt) ||
+    !metadata ||
+    metadata.createdAt !== marker.sourceCreatedAt ||
+    metadata.sendAutoDelete !== null ||
+    metadata.autoDeleteDelayMs !== MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS ||
+    metadata.autoDeleteDelayMs !== marker.requestedDelayMs ||
+    metadata.ledgerContext !== null ||
+    !Object.hasOwn(metadata, 'ledgerContext') ||
+    metadata.hasText !== true ||
+    !Number.isSafeInteger(metadata.textLength) ||
+    (metadata.textLength as number) <= 0
+  )
+    return null;
+
+  if (
+    parent.publisherBotId !== undefined &&
+    (!identity(parent.publisherBotId) || parent.majorBotIds.includes(parent.publisherBotId))
+  )
+    return null;
+  const isMajor = parent.majorBotIds.includes(marker.originBotId);
+  const isPublisher =
+    identity(parent.publisherBotId) &&
+    !parent.majorBotIds.includes(parent.publisherBotId) &&
+    marker.originBotId === parent.publisherBotId;
+  if (!isMajor && !isPublisher) return null;
+  const options = record(data.options);
+  const keys = metadata.optionKeys;
+  // FLAG: The original option values were not retained. Only the two exact Start
+  // producers' buttons-only/absent options exclude an undisclosed reply source.
+  if (
+    (data.options !== undefined && (!options || Object.keys(options).length !== 0)) ||
+    !Array.isArray(keys) ||
+    !(
+      (metadata.hasOptions === false && keys.length === 0) ||
+      (metadata.hasOptions === true && keys.length === 1 && keys[0] === 'buttons')
+    ) ||
+    !hasManagedHandshakeParentKey(
+      ledger.jobId as string,
+      marker.sourceChatId,
+      marker.originBotId,
+      isPublisher,
+    )
+  )
+    return null;
+
+  try {
+    const scopes = [
+      ...readLegacyActionSourceScopes({
+        actionType: 'SEND_MESSAGE',
+        chatId: ledger.chatId,
+        messageId: ledger.messageId,
+        userId: ledger.userId,
+      } as unknown as MaxActionJob),
+      ...readLegacyActionSourceScopes(data as unknown as MaxActionJob),
+    ];
+    return scopes.every((scope) => scope.chatId === ledger.chatId) ? scopes : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasManagedHandshakeParentKey(
+  key: string,
+  chatId: string,
+  botId: string,
+  publisher: boolean,
+): boolean {
+  if (!/__[a-zA-Z0-9_-]{24}$/u.test(key)) return false;
+  const readable = key.slice(0, -26);
+  const producer = publisher ? `publisher-handshake-start:${chatId}` : 'managed-handshake-start';
+  const normalizedProducer = normalizeMaxActionIdempotencyKeyPart(producer);
+  // FLAG: A truncated producer/chat prefix cannot prove its exact scope. No fallback
+  // to tag-only matching or an arbitrary bot is accepted.
+  if (normalizedProducer.length >= 48) return false;
+  const parts = ['explicit', ...(publisher ? [botId] : []), 'SEND_MESSAGE'].map(
+    normalizeMaxActionIdempotencyKeyPart,
+  );
+  const prefix = `max-action__${parts.join('__')}__${normalizedProducer}_`;
+  const suffix = readable.slice(prefix.length);
+  return (
+    readable.startsWith(prefix) &&
+    suffix.length > 0 &&
+    normalizedProducer.length + 1 + suffix.length <= 48 &&
+    !suffix.includes('__') &&
+    /^[a-z0-9_-]+$/u.test(suffix)
+  );
 }

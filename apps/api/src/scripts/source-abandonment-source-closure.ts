@@ -4,7 +4,7 @@ import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
 // It never grants participant immunity or proves earlier remote outcomes. Every
 // producer below must retain a final exact-source check when regenerating work.
 export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
-  version: 2,
+  version: 3,
   source: 'outer-human-text-with-strict-share-preview-or-flat-forward-or-reply-major-group-message',
   forward: {
     validator: 'inspectLegacyForwardText',
@@ -48,6 +48,8 @@ export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
       'attributed-send-cleanup-checks-original-source-and-immutable-parent-child',
     unattributedCleanup:
       'partial-markers-refused-null-original-requires-exact-completed-major-moderation-send-and-same-chat-producer-proof',
+    managedHandshakeCleanup:
+      'exact-completed-major-or-separate-attested-publisher-start-send-no-context-or-reply-and-disjoint-from-every-selected-chat',
   },
   history: 'retain-intent-action-sanction-claim-and-ambiguous-member-fences-without-replay',
   independence: 'distinct-message-same-user-is-outside-source-exclusion',

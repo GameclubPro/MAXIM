@@ -1,3 +1,5 @@
+import type { MaxUpdate } from '@maxim/contracts';
+import type { ManagedEntityExplicitActivation } from '../max/managed-entity-activation.util';
 import { ModerationRuleFollowupService } from '../moderation/moderation-rule-followup.service';
 import { ClosedChatDeleteGuardService } from '../moderation/closed-chat-delete-guard.service';
 import { ModerationStateDeleteGuardService } from '../moderation/moderation-state-delete-guard.service';
@@ -928,3 +930,75 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
 }
 
 export type MultibotHarness = Awaited<ReturnType<typeof createMultibotHarness>>;
+
+export async function activateHarnessBotByExplicitStart(
+  s: MultibotHarness,
+  chatId: string,
+  botId: string,
+): Promise<void> {
+  // FLAG: This disposable fixture certifies fresh exact receipt/actor/bot proofs at the
+  // central writer; it never publishes Start or grants shared message execution authority.
+  s.allowBot(botId);
+  s.allowAdminUser('fixture-activation-admin');
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const sourceAt = new Date();
+  const parsed = new WebhookParser().parse(
+    {
+      update_id: randomUUID(),
+      update_type: 'message_created',
+      timestamp: sourceAt.getTime(),
+      message: {
+        sender: { user_id: 'fixture-activation-admin', is_bot: false },
+        recipient: { chat_id: chatId, chat_type: 'chat' },
+        timestamp: sourceAt.getTime(),
+        body: { mid: randomUUID(), text: 'Старт' },
+      },
+    },
+    { botId },
+  );
+  const stored = await s.ingress.storeReceipt(parsed, null);
+  const id = stored.webhookEventId!;
+  s.receiptIds.push(id);
+  const receipt = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+  const update = receipt.normalizedPayload as MaxUpdate;
+  const proof: ManagedEntityExplicitActivation = {
+    kind: 'start_in_chat',
+    sourceAt,
+    updateId: update.updateId,
+    actorUserId: 'fixture-activation-admin',
+    botId,
+    chatId,
+  };
+  const checkedAt = new Date();
+  const access = await s.max.getCurrentChatMemberAccess(chatId, {
+    botId,
+    bypassCache: true,
+    explicitActivation: proof,
+  });
+  const actor = await s.max.getChatMemberAccess(chatId, proof.actorUserId, {
+    botId,
+    bypassCache: true,
+  });
+  if (
+    !(await s.links.recordBotAccessProbe({
+      chatId,
+      botId,
+      access,
+      checkedAt,
+      source: 'native-explicit-start',
+      explicitActivation: proof,
+      activationActorAccess: actor ?? undefined,
+      allowMembershipRecovery: true,
+    }))
+  )
+    throw new Error('Native explicit activation was rejected');
+  await s.prisma.webhookEvent.update({
+    where: { id },
+    data: {
+      status: 'PROCESSED',
+      processedAt: new Date(),
+      errorMessage: 'native_fixture_activation',
+    },
+  });
+  await s.cache.invalidate(chatId);
+}

@@ -37,6 +37,7 @@ export type PublisherBindingRefreshJob = {
   publisherBotId: string;
   candidateUserId?: string;
   candidateVersion?: string;
+  activationSourceAt?: string;
   replyChatId?: string;
   replyToStartCommand?: boolean;
   requiresReadAccess?: boolean;
@@ -272,6 +273,16 @@ export class PublisherBindingRefreshQueueService {
     const candidateUserId = params.candidateUserId?.trim() || null;
     const candidateVersion = params.candidateVersion?.trim() || null;
     const replyChatId = params.replyChatId?.trim() || null;
+    // FLAG: Preserve the authenticated event time, never the enqueue/retry time.
+    const activationSourceAt =
+      candidateUserId &&
+      candidateVersion &&
+      (params.reason === 'forwarded_private' ||
+        (params.reason === 'webhook_observed' && params.replyToStartCommand)) &&
+      params.eventAt instanceof Date &&
+      Number.isFinite(params.eventAt.getTime())
+        ? params.eventAt.toISOString()
+        : undefined;
     const interactiveRecheck =
       params.reason === 'manual_recheck' || params.reason === 'policy_enablement_recheck';
     const coalescedWebhookObservation =
@@ -317,6 +328,7 @@ export class PublisherBindingRefreshQueueService {
         publisherBotId,
         ...(candidateUserId ? { candidateUserId } : {}),
         ...(candidateVersion ? { candidateVersion } : {}),
+        ...(activationSourceAt ? { activationSourceAt } : {}),
         ...(replyChatId ? { replyChatId } : {}),
         ...(params.replyToStartCommand ? { replyToStartCommand: true } : {}),
         ...(params.requiresReadAccess ? { requiresReadAccess: true } : {}),

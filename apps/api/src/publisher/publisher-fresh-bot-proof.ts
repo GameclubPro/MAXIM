@@ -1,3 +1,4 @@
+import { isPublisherManagedEntityActivationRequired } from './publisher-entity-connection.util';
 import type { MaxChatMemberAccess } from '../max/max-client.service';
 import { ChatBotAccessState, ChatBotMembershipStatus } from '../prisma/prisma-client';
 import { publisherAccessProbeLifecycleSuperseded } from './publisher-access-probe-fence';
@@ -12,12 +13,14 @@ export function readPublisherFreshBotProof(
     lifecycleEventAt: Date | null;
     lifecycleEventType?: string | null;
     permissionsSnapshot: unknown;
+    botAccessSource?: string | null;
   } | null,
   botId: string,
   now: Date,
 ): MaxChatMemberAccess | null {
   if (
     !binding ||
+    isPublisherManagedEntityActivationRequired(binding) ||
     binding.publisherBotId !== botId ||
     binding.status !== ChatBotMembershipStatus.ACTIVE ||
     !binding.botAccessCheckedAt ||

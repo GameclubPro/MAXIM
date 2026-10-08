@@ -11,6 +11,10 @@ import {
   hasConfirmedDeleteMessageAccess,
   hasConfirmedEditMessageAccess,
 } from './max-delete-message-access.util';
+import {
+  isManagedEntityActivationRequired,
+  isMajorManagedEntityActivationRequired,
+} from './managed-entity-activation.util';
 
 export type MaxExecutionPurpose =
   | 'moderation'
@@ -67,6 +71,11 @@ export function hasExecutionCapability(
 ): boolean {
   const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
   if (entityType === null) return false;
+  if (
+    snapshot?.activationCapabilityCeiling &&
+    !snapshot.activationCapabilityCeiling.includes(purpose)
+  )
+    return false;
   if (!snapshot || (!snapshot.isAdmin && !snapshot.isOwner) || snapshot.permissionsKnown !== true)
     return false;
   if (purpose === 'delete_message') return hasConfirmedDeleteMessageAccess(snapshot, entityType);
@@ -110,6 +119,7 @@ export function hasFreshExecutionAccess(
   const expiresAt = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
   return (
     membership.status === ChatBotMembershipStatus.ACTIVE &&
+    !isManagedEntityActivationRequired(membership) &&
     Number.isFinite(checkedAt) &&
     checkedAt <= nowMs &&
     checkedAt + maxAgeMs > nowMs &&
@@ -128,6 +138,7 @@ export function executionRouteProof(
   const membership = state.candidates.find((candidate) => candidate.botId === botId);
   if (
     !membership ||
+    isMajorManagedEntityActivationRequired(membership, state.entityType) ||
     !hasFreshExecutionAccess(membership, Date.now(), maxAgeMs) ||
     (membership.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
       membership.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER) ||

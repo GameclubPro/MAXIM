@@ -1,6 +1,11 @@
+import {
+  hasPublisherKnownWriteDenial,
+  PUBLISHER_EXPLICIT_ACTIVATION_PENDING_SOURCE,
+} from './publisher-entity-connection.util';
 import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
 import type { MaxClientService } from '../max/max-client.service';
-import { ChatBotMembershipStatus } from '../prisma/prisma-client';
+import { ChatBotAccessState, ChatBotMembershipStatus } from '../prisma/prisma-client';
+import type { ManagedEntityExplicitActivation } from '../max/managed-entity-activation.util';
 import type { PrismaService } from '../prisma/prisma.service';
 import { publisherAccessProbeLifecycleWhere } from './publisher-access-probe-fence';
 import type { PublisherBindingRefreshReason } from './publisher-binding-refresh.queue';
@@ -23,6 +28,7 @@ export class PublisherBotAccessExecutor {
     reason: PublisherBindingRefreshReason;
     probeStartedAt: Date;
     materializeForwarded: boolean;
+    explicitActivation?: ManagedEntityExplicitActivation;
     previous?: PublisherRefreshProof;
   }) {
     const botAccess = await this.maxClient.getCurrentChatMemberAccess(params.chatId, {
@@ -34,6 +40,7 @@ export class PublisherBotAccessExecutor {
       sourceTag: 'publisher_readiness',
       bypassCache: true,
       timeoutMs: 5_000,
+      ...(params.explicitActivation ? { explicitActivation: params.explicitActivation } : {}),
     });
     const checkedAt = new Date();
     const snapshot = buildBotAccessSnapshotPersistence(botAccess, {
@@ -41,6 +48,10 @@ export class PublisherBotAccessExecutor {
       now: checkedAt,
       ttlMs: PUBLISHER_ACCESS_SNAPSHOT_TTL_MS,
     });
+    if (hasPublisherKnownWriteDenial(botAccess)) {
+      snapshot.botAccessState = ChatBotAccessState.DENIED;
+      snapshot.botAccessLastErrorCode = 'WRITE_PERMISSION_MISSING';
+    }
     let committedAt: Date | null = null;
     if (!params.materializeForwarded) {
       const committed = await this.prisma.publisherEntityBinding.updateMany({
@@ -58,6 +69,23 @@ export class PublisherBotAccessExecutor {
               }
             : {}),
           AND: [
+            {
+              OR: [
+                { botAccessSource: null },
+                { botAccessSource: { not: PUBLISHER_EXPLICIT_ACTIVATION_PENDING_SOURCE } },
+              ],
+            },
+            // FLAG: Passive renewals cannot clear a confirmed loss, including a loss
+            // committed after this request started. Explicit activation commits both proofs.
+            {
+              botAccessState: {
+                notIn: [
+                  ChatBotAccessState.DENIED,
+                  ChatBotAccessState.LOST,
+                  ChatBotAccessState.CONFIRMED_MEMBER,
+                ],
+              },
+            },
             publisherAccessProbeLifecycleWhere(params.probeStartedAt),
             {
               OR: [

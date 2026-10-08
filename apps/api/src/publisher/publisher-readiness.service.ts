@@ -13,15 +13,17 @@ import {
   ManagedEntityAccessState,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
-import {
-  normalizeMembershipAccessSnapshot,
-  normalizePermissionName,
-} from '../max/max-bot-access-policy.util';
+import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
 import { resolveConfiguredPublisherBotId } from './publisher-route';
 import { PublisherSetupRequiredException } from './publisher-errors';
 import { PublisherRuntimeHeartbeatReaderService } from './publisher-runtime-heartbeat.service';
 import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh.queue';
-import { publisherRefreshEvidenceWhere } from './publisher-entity-connection.util';
+import {
+  publisherRefreshEvidenceWhere,
+  hasPublisherKnownWriteDenial,
+  hasPublisherWriteAccess,
+  isPublisherManagedEntityActivationRequired,
+} from './publisher-entity-connection.util';
 import { stageMissingPublicationActor } from './publisher-publication-actor-candidate';
 
 export type PublisherFeature =
@@ -50,6 +52,7 @@ type PublisherBindingRow = {
   status: ChatBotMembershipStatus;
   lastWebhookAt: Date | null;
   permissionsSnapshot: unknown;
+  botAccessSource?: string | null;
   botAccessState: ChatBotAccessState;
   botAccessCheckedAt: Date | null;
   botAccessExpiresAt: Date | null;
@@ -70,15 +73,6 @@ export type PublisherReadyRoute = {
   requiredBotId: string;
   policyRevision: number;
 };
-
-const WRITE_PERMISSIONS = new Set([
-  'write',
-  'can_write',
-  'post_edit_delete_message',
-  'post_edit_delete_messages',
-  'can_post_edit_delete_message',
-  'can_post_edit_delete_messages',
-]);
 
 export const PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS = 15 * 60_000;
 
@@ -266,6 +260,7 @@ export class PublisherReadinessService {
       !this.bindingRefreshQueue ||
       source.publicationPolicy?.publikEnabled === false ||
       !binding ||
+      isPublisherManagedEntityActivationRequired(binding) ||
       binding.publisherBotId !== this.publisherBotId ||
       binding.status !== ChatBotMembershipStatus.ACTIVE ||
       (binding.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
@@ -345,15 +340,15 @@ export class PublisherReadinessService {
         retryAt: binding.sendRouteQuarantinedUntil.toISOString(),
       });
     }
-    if (
-      binding.botAccessState === ChatBotAccessState.DENIED ||
-      binding.botAccessState === ChatBotAccessState.LOST ||
-      binding.botAccessState === ChatBotAccessState.CONFIRMED_MEMBER
-    ) {
+    if (isPublisherManagedEntityActivationRequired(binding)) {
       return publisherEntityReadinessSchema.parse({
         ...base,
         state: 'setup_required',
-        blockerCode: 'bot_not_admin',
+        blockerCode: hasPublisherKnownWriteDenial(
+          normalizeMembershipAccessSnapshot(binding.permissionsSnapshot),
+        )
+          ? 'write_permission_missing'
+          : 'bot_not_admin',
       });
     }
     if (
@@ -419,10 +414,7 @@ export class PublisherReadinessService {
         blockerCode: 'bot_access_unconfirmed',
       });
     }
-    const permissions = new Set(
-      (snapshot?.permissions ?? []).map((permission) => normalizePermissionName(permission)),
-    );
-    if (!isOwner && ![...WRITE_PERMISSIONS].some((permission) => permissions.has(permission))) {
+    if (!isOwner && !hasPublisherWriteAccess(snapshot)) {
       return publisherEntityReadinessSchema.parse({
         ...base,
         state: 'setup_required',

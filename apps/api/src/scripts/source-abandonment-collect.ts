@@ -82,6 +82,7 @@ async function gather(
   redis: SourceAbandonmentRedisReader,
   selection: SourceAbandonmentLiveSelection,
   queueFenceNonce?: string,
+  publisherBotId?: string,
 ) {
   const cost: Cost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
   const deadlineAtMs = Date.now() + LEGACY_RECOVERY_LIVE_BUDGET.durationMs;
@@ -109,6 +110,7 @@ async function gather(
       remaining(cost, deadlineAtMs),
       resolve,
       queueFenceNonce,
+      publisherBotId,
     );
     charge(cost, first.cost);
     issues.push(...first.issues);
@@ -119,6 +121,7 @@ async function gather(
       remaining(cost, deadlineAtMs),
       resolve,
       queueFenceNonce,
+      publisherBotId,
     );
     charge(cost, second.cost);
     issues.push(...second.issues);
@@ -164,7 +167,13 @@ export async function collectSourceAbandonmentLiveEvidence(
   request: SourceAbandonmentLiveRequest,
 ): Promise<SourceAbandonmentLiveOutput> {
   request = parseSourceAbandonmentLiveRequest(JSON.stringify(request));
-  const evidence = await gather(tx, redis, request.selection, request.binding.queueFenceNonce);
+  const evidence = await gather(
+    tx,
+    redis,
+    request.selection,
+    request.binding.queueFenceNonce,
+    request.binding.publisherBotId,
+  );
   const registrySha256 = sourceAbandonmentSourceClosureDigest(
     request.binding.sourceSha,
     request.binding.imageId,
@@ -238,7 +247,7 @@ export async function collectSourceAbandonmentAdmission(
   LegacyRecoveryAdmissionOutput & { redisCatalogs: readonly SourceAbandonmentCatalogProof[] }
 > {
   request = parseSourceAbandonmentAdmissionRequest(JSON.stringify(request));
-  const evidence = await gather(tx, redis, request.selection);
+  const evidence = await gather(tx, redis, request.selection, undefined, request.publisherBotId);
   const result: LegacyRecoveryAdmissionOutput & {
     redisCatalogs: readonly SourceAbandonmentCatalogProof[];
   } = {

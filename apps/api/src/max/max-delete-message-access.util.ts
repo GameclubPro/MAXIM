@@ -82,6 +82,11 @@ function hasEntityMessageMutationPermission(
   if (entityType === null) {
     return false;
   }
+  if (
+    snapshot.activationCapabilityCeiling &&
+    !snapshot.activationCapabilityCeiling.includes(action)
+  )
+    return false;
   const permissions = new Set(snapshot.permissions.map(normalizePermissionName));
   const requiredPermissions =
     entityType === ChatEntityType.CHANNEL

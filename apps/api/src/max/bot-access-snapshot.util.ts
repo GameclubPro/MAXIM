@@ -8,6 +8,8 @@ export type BotAccessSnapshotInput = {
   isOwner: boolean;
   permissions?: readonly string[];
   permissionsKnown?: boolean;
+  explicitPrivilegeEvidence?: boolean;
+  activationCapabilityCeiling?: readonly string[];
 } | null;
 
 export type BotAccessSnapshotPersistence = {
@@ -28,6 +30,7 @@ export function buildBotAccessSnapshotPersistence(
     ttlMs?: number;
     lastErrorCode?: string | null;
     channelReadVerified?: boolean;
+    explicitActivationSourceAt?: string | null;
   },
 ): BotAccessSnapshotPersistence {
   const now = options.now ?? new Date();
@@ -38,6 +41,12 @@ export function buildBotAccessSnapshotPersistence(
     isOwner: access?.isOwner === true,
     permissions,
     permissionsKnown: access?.permissionsKnown === true,
+    ...(options.explicitActivationSourceAt !== undefined
+      ? { explicitActivationSourceAt: options.explicitActivationSourceAt }
+      : {}),
+    ...(access?.activationCapabilityCeiling
+      ? { activationCapabilityCeiling: [...access.activationCapabilityCeiling] }
+      : {}),
     ...(options.channelReadVerified && access && (access.isAdmin || access.isOwner)
       ? {
           channelReadProof: {

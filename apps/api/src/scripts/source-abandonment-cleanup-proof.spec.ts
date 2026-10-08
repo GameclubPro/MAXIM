@@ -1,3 +1,5 @@
+import { buildMaxActionIdempotencyKey } from '../max/max-action-idempotency';
+import { MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS } from '../max/managed-handshake-confirmation';
 import type { MessageDuplicateNoticeProof } from '../moderation/message-duplicate/message-duplicate-notice-proof';
 import { MESSAGE_DUPLICATE_MEDIA_VERSION } from '../moderation/message-duplicate/message-duplicate-state';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
@@ -506,5 +508,267 @@ describe('cleanup parent evidence participates in bounded repeated inventory', (
       descriptor: 'redis:max-actions-background',
     });
     expect(result.children).toEqual([]);
+  });
+});
+
+function handshakeFixture(publisher = false) {
+  const s = fixture();
+  const botId = publisher ? 'publisher-1' : 'major-1';
+  const key = buildMaxActionIdempotencyKey('explicit', [
+    ...(publisher ? [botId] : []),
+    'SEND_MESSAGE',
+    publisher
+      ? `publisher-handshake-start:${otherChat}:update-1`
+      : 'managed-handshake-start:groupcmd:v1:command-1',
+  ]);
+  Object.assign(s.data, { sourceTag: 'managed_handshake', botId });
+  delete s.data.ledgerContext;
+  Object.assign(s.marker, {
+    sourceSendJobId: key,
+    originBotId: botId,
+    requestedDelayMs: MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS,
+  });
+  Object.assign(s.metadata, {
+    autoDeleteDelayMs: MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS,
+    ledgerContext: null,
+    optionKeys: ['buttons'],
+    hasText: true,
+    textLength: 42,
+  });
+  Object.assign(s.ledger, { jobId: key, sourceTag: 'managed_handshake', dispatchBotId: botId });
+  const parent = {
+    ...s.parent,
+    publisherBotId: publisher ? botId : (undefined as string | undefined),
+  };
+  return {
+    ...s,
+    parent,
+    classify: (sources = [source]) => classifySourceAbandonmentAction(s.job(), sources, parent),
+  };
+}
+
+describe('completed Start confirmation cleanup has a separate finite producer proof', () => {
+  it.each([false, true])(
+    'excludes an exact %s Publisher handshake in another group',
+    (publisher) => {
+      const s = handshakeFixture(publisher);
+      expect(s.classify()).toBeNull();
+      s.metadata.hasOptions = false;
+      s.metadata.optionKeys = [];
+      expect(s.classify()).toBeNull();
+    },
+  );
+  it.each([false, true])('refuses any selected-chat overlap for Publisher=%s', (publisher) => {
+    const s = handshakeFixture(publisher);
+    expect(() => s.classify([source, { ...source, chatId: otherChat }])).toThrow(
+      'CLEANUP_ORIGINAL_SOURCE_UNPROVED',
+    );
+    expect(() => s.classify([source, { ...source, chatId: '-0200' }])).toThrow(
+      'CLEANUP_ORIGINAL_SOURCE_UNPROVED',
+    );
+  });
+  it.each([
+    [
+      'missing Publisher catalog',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.parent.publisherBotId = undefined;
+      },
+    ],
+    [
+      'wrong Publisher catalog',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.parent.publisherBotId = 'other-publisher';
+      },
+    ],
+    [
+      'Publisher copied into Major catalog',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.parent.majorBotIds = ['publisher-1'];
+      },
+    ],
+    [
+      'unknown origin',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.marker.originBotId = 'unknown';
+        s.data.botId = 'unknown';
+        s.ledger.dispatchBotId = 'unknown';
+      },
+    ],
+    [
+      'missing parent context evidence',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        delete s.metadata.ledgerContext;
+      },
+    ],
+    [
+      'empty parent context object',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.metadata.ledgerContext = {};
+      },
+    ],
+    [
+      'copied child context',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.data.ledgerContext = {};
+      },
+    ],
+    [
+      'parent reply option',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.metadata.optionKeys = ['messageLink'];
+      },
+    ],
+    [
+      'unrelated parent option',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.metadata.optionKeys = ['textFormat'];
+      },
+    ],
+    [
+      'truncated parent options',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.metadata.optionKeys = Array(20).fill('buttons');
+      },
+    ],
+    [
+      'child reply option',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.data.options = { messageLink: { type: 'reply', mid: 'elsewhere' } };
+      },
+    ],
+    [
+      'parent user source',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.marker.sourceUserId = 'user';
+        s.ledger.userId = 'user';
+      },
+    ],
+    [
+      'child user source',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.data.userId = 'user';
+      },
+    ],
+    [
+      'unknown parent tag',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.sourceTag = 'other';
+      },
+    ],
+    [
+      'parent not succeeded',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.status = 'IN_PROGRESS';
+      },
+    ],
+    [
+      'parent not terminal',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.terminal = false;
+      },
+    ],
+    [
+      'ambiguous parent',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.ambiguous = true;
+      },
+    ],
+    [
+      'wrong remote receipt',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.remoteMessageId = 'wrong';
+      },
+    ],
+    [
+      'wrong dispatcher',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.dispatchBotId = 'major-1';
+      },
+    ],
+    [
+      'wrong completion',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.completedAt = new Date(createdAt);
+      },
+    ],
+    [
+      'wrong source clock',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.metadata.createdAt = completedAt;
+      },
+    ],
+    [
+      'parent cleanup ancestry',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.metadata.sendAutoDelete = s.marker;
+      },
+    ],
+    [
+      'nonconfirmation delay',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.metadata.autoDeleteDelayMs = 10000;
+        s.marker.requestedDelayMs = 10000;
+      },
+    ],
+    [
+      'missing retained text flag',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        delete s.metadata.hasText;
+      },
+    ],
+    [
+      'unknown producer key',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.jobId = s.marker.sourceSendJobId =
+          'max-action__explicit__publisher-1__send_message__other__' + 'a'.repeat(24);
+      },
+    ],
+    [
+      'wrong key chat',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.jobId = s.marker.sourceSendJobId = buildMaxActionIdempotencyKey('explicit', [
+          'publisher-1',
+          'SEND_MESSAGE',
+          'publisher-handshake-start:-999:update-1',
+        ]);
+      },
+    ],
+    [
+      'wrong key bot',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.jobId = s.marker.sourceSendJobId = buildMaxActionIdempotencyKey('explicit', [
+          'major-1',
+          'SEND_MESSAGE',
+          'publisher-handshake-start:-200:update-1',
+        ]);
+      },
+    ],
+    [
+      'missing key digest',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        s.ledger.jobId = s.marker.sourceSendJobId = String(s.ledger.jobId).slice(0, -26);
+      },
+    ],
+    [
+      'unknown key part',
+      (s: ReturnType<typeof handshakeFixture>) => {
+        const key = String(s.ledger.jobId);
+        s.ledger.jobId = s.marker.sourceSendJobId = key.slice(0, -26) + '__other' + key.slice(-26);
+      },
+    ],
+  ] as const)('refuses %s without widening source or bot scope', (_name, mutate) => {
+    const s = handshakeFixture(true);
+    mutate(s);
+    expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+  });
+  it('retains the earlier BullMQ ancestry refusal', () => {
+    const s = handshakeFixture(true);
+    expect(() =>
+      classifySourceAbandonmentAction(
+        { ...s.job(), hash: { ...s.job().hash, parentKey: 'unproved' } },
+        [source],
+        s.parent,
+      ),
+    ).toThrow('JOB_PARENT_UNPROVED');
   });
 });

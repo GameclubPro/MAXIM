@@ -32,8 +32,7 @@ const PUBLISHER_BINDING_ACCESS_REFRESH_AHEAD_MS = PUBLISHER_ACCESS_REFRESH_AHEAD
 // At 25 actor edges per minute, the scheduler can nominate 18k unique edges in this window.
 const PUBLISHER_USER_ACCESS_REFRESH_AHEAD_MS = 12 * 60 * 60_000;
 const PUBLISHER_UNKNOWN_REPROBE_COOLDOWN_MS = 5 * 60_000;
-const PUBLISHER_NON_ADMIN_REPROBE_COOLDOWN_MS = 15 * 60_000;
-const PUBLISHER_LOST_REPROBE_COOLDOWN_MS = 6 * 60 * 60_000;
+const PUBLISHER_STALE_REPROBE_COOLDOWN_MS = 15 * 60_000;
 const PUBLISHER_USER_ACCESS_REFRESH_BATCH_SIZE = 25;
 const PUBLISHER_PENDING_CANDIDATE_RETRY_MS = 60_000;
 const PUBLISHER_DENIED_USER_ACCESS_REPROBE_COOLDOWN_MS = 6 * 60 * 60_000;
@@ -350,8 +349,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
     now: Date,
   ): Promise<PublisherBindingRefreshCandidate[]> {
     const unknownRetryBefore = new Date(now.getTime() - PUBLISHER_UNKNOWN_REPROBE_COOLDOWN_MS);
-    const nonAdminRetryBefore = new Date(now.getTime() - PUBLISHER_NON_ADMIN_REPROBE_COOLDOWN_MS);
-    const lostRetryBefore = new Date(now.getTime() - PUBLISHER_LOST_REPROBE_COOLDOWN_MS);
+    const staleRetryBefore = new Date(now.getTime() - PUBLISHER_STALE_REPROBE_COOLDOWN_MS);
     const refreshBefore = new Date(now.getTime() + PUBLISHER_BINDING_ACCESS_REFRESH_AHEAD_MS);
     const catalogRows = await this.prisma.managedBotChatCatalog.findMany({
       where: {
@@ -375,6 +373,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         ...publisherRefreshEvidenceWhere(this.publisherBotId),
         chatId: { in: catalogRows.map((row) => row.chatId) },
         AND: [
+          publisherRefreshEvidenceWhere(this.publisherBotId),
           {
             OR: [
               {
@@ -388,29 +387,17 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
                 ],
               },
               {
-                botAccessState: {
-                  in: [ChatBotAccessState.CONFIRMED_MEMBER, ChatBotAccessState.STALE],
-                },
+                botAccessState: ChatBotAccessState.STALE,
                 OR: [
                   { botAccessExpiresAt: { lte: refreshBefore } },
                   {
                     botAccessExpiresAt: null,
-                    botAccessCheckedAt: { lte: nonAdminRetryBefore },
+                    botAccessCheckedAt: { lte: staleRetryBefore },
                   },
                   {
                     botAccessExpiresAt: null,
                     botAccessCheckedAt: null,
-                    updatedAt: { lte: nonAdminRetryBefore },
-                  },
-                ],
-              },
-              {
-                botAccessState: { in: [ChatBotAccessState.DENIED, ChatBotAccessState.LOST] },
-                OR: [
-                  { botAccessCheckedAt: { lte: lostRetryBefore } },
-                  {
-                    botAccessCheckedAt: null,
-                    updatedAt: { lte: unknownRetryBefore },
+                    updatedAt: { lte: staleRetryBefore },
                   },
                 ],
               },

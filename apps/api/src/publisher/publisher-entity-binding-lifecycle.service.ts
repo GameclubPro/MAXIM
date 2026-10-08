@@ -18,6 +18,10 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import {
+  isPublisherManagedEntityActivationRequired,
+  PUBLISHER_EXPLICIT_ACTIVATION_PENDING_SOURCE,
+} from './publisher-entity-connection.util';
 import { readWebhookEventTimestamp } from '../webhook/webhook-semantic-event-key';
 import { buildPublisherBotDescriptor } from './publisher-bot-descriptor';
 import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh.queue';
@@ -190,6 +194,7 @@ export class PublisherEntityBindingLifecycleService {
     const title =
       update.message?.chatTitle?.trim() ||
       (entityType === ChatEntityType.CHANNEL ? `Channel ${chatId}` : `Chat ${chatId}`);
+    let dormantPassiveObservation = false;
     const result = await this.prisma.$transaction(async (tx) => {
       const existingChat = await tx.chat.findUnique({
         where: { id: chatId },
@@ -278,6 +283,11 @@ export class PublisherEntityBindingLifecycleService {
           lifecycleEventAt: true,
           lifecycleEventType: true,
           status: true,
+          publisherBotId: true,
+          botAccessState: true,
+          permissionsSnapshot: true,
+          botAccessSource: true,
+          botAccessCheckedAt: true,
         },
       });
       if (
@@ -296,6 +306,25 @@ export class PublisherEntityBindingLifecycleService {
           data: { lastWebhookAt: receivedAt },
         });
         return 'stale' as const;
+      }
+
+      // FLAG: A webhook is not renewed Publisher authority. Preserve a confirmed
+      // denial/removal until the exact explicit command proves both bot and actor.
+      if (
+        current &&
+        isPublisherManagedEntityActivationRequired(current) &&
+        kind !== 'bot_removed'
+      ) {
+        await tx.publisherEntityBinding.updateMany({
+          where: { chatId, publisherBotId: this.publisherBotId },
+          data: { lastWebhookAt: receivedAt },
+        });
+        if (isManagedEntityHandshakeStartCommand(update) && candidateUserId && eventAt) {
+          await persistActorCandidate();
+        } else {
+          dormantPassiveObservation = true;
+        }
+        return 'applied' as const;
       }
 
       const preservesRemovedLifecycleFence =
@@ -328,7 +357,10 @@ export class PublisherEntityBindingLifecycleService {
             botAccessState:
               kind === 'bot_removed' ? ChatBotAccessState.LOST : ChatBotAccessState.UNKNOWN,
             botAccessCheckedAt: kind === 'bot_removed' || kind === 'bot_added' ? eventAt : null,
-            botAccessSource: `webhook_${normalizedType}`,
+            botAccessSource:
+              kind === 'bot_removed'
+                ? `webhook_${normalizedType}`
+                : PUBLISHER_EXPLICIT_ACTIVATION_PENDING_SOURCE,
             botAccessLastErrorCode: kind === 'bot_removed' ? 'BOT_REMOVED' : null,
             ...observation,
           },
@@ -413,7 +445,7 @@ export class PublisherEntityBindingLifecycleService {
       return 'applied' as const;
     });
 
-    if (result === 'applied' && kind !== 'bot_removed') {
+    if (result === 'applied' && kind !== 'bot_removed' && !dormantPassiveObservation) {
       await this.refreshQueue.enqueue({
         chatId,
         publisherBotId: this.publisherBotId,
@@ -444,6 +476,8 @@ export class PublisherEntityBindingLifecycleService {
           publisherBotId: true,
           status: true,
           botAccessState: true,
+          permissionsSnapshot: true,
+          botAccessSource: true,
           botAccessCheckedAt: true,
           botAccessExpiresAt: true,
           sendRouteQuarantinedUntil: true,
@@ -465,6 +499,7 @@ export class PublisherEntityBindingLifecycleService {
     if (
       binding?.publisherBotId !== this.publisherBotId ||
       binding.status !== ChatBotMembershipStatus.ACTIVE ||
+      isPublisherManagedEntityActivationRequired(binding) ||
       (binding.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
         binding.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER) ||
       !binding.botAccessExpiresAt ||
@@ -688,6 +723,7 @@ export class PublisherEntityBindingLifecycleService {
         if (
           !chat ||
           !binding ||
+          isPublisherManagedEntityActivationRequired(binding) ||
           binding.publisherBotId !== this.publisherBotId ||
           binding.status !== ChatBotMembershipStatus.ACTIVE ||
           !catalog ||

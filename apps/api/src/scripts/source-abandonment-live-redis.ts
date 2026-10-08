@@ -376,6 +376,7 @@ export async function inventorySourceAbandonmentRedis(
   allowance: SourceInventoryAllowance,
   resolve: SourceAbandonmentRedisResolver,
   queueFenceNonce?: string,
+  publisherBotId?: string,
 ): Promise<{
   children: SourceAbandonmentChildEvidence[];
   stableDigest: string;
@@ -605,6 +606,7 @@ export async function inventorySourceAbandonmentRedis(
                 ? {
                     ledger: await resolveRow('action', cleanupParentKey),
                     majorBotIds: selection.majorBotIds,
+                    ...(publisherBotId ? { publisherBotId } : {}),
                   }
                 : undefined;
               const child = classifySourceAbandonmentAction(job, sources, cleanupParent);

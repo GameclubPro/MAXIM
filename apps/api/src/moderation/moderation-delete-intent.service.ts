@@ -7443,6 +7443,16 @@ export class ModerationDeleteIntentService {
     try {
       await this.assertLeaseForExternalCall(heartbeat);
       if (canRead && !(await canRead())) return 'unknown';
+      // FLAG: A persisted exact-bot denial already proves no execution authority.
+      // Retain that epoch for peer continuation without spending another MAX probe.
+      if (
+        await this.maxBotLinkService.isChatBotExecutionActivationRequired?.(
+          intent.chatId,
+          botId,
+          'delete_message',
+        )
+      )
+        return 'denied';
       accessProbeStartedAt = new Date();
       const access = await this.maxClient.getCurrentChatMemberAccess(intent.chatId, {
         botId,

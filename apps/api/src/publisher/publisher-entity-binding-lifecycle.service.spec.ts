@@ -4,7 +4,10 @@ import {
   ChatEntityType,
   ManagedEntityAccessState,
 } from '../prisma/prisma-client';
-import { isPublisherBindingConnected } from './publisher-entity-connection.util';
+import {
+  isPublisherBindingConnected,
+  PUBLISHER_EXPLICIT_ACTIVATION_PENDING_SOURCE,
+} from './publisher-entity-connection.util';
 import {
   PUBLISHER_ACCESS_CANDIDATE_PENDING_REASON,
   PublisherEntityBindingLifecycleService,
@@ -75,6 +78,89 @@ function createHistoricalRecoveryTransaction() {
 }
 
 describe('PublisherEntityBindingLifecycleService', () => {
+  it.each([
+    ChatBotAccessState.DENIED,
+    ChatBotAccessState.LOST,
+    ChatBotAccessState.CONFIRMED_MEMBER,
+    ChatBotAccessState.CONFIRMED_ADMIN,
+    ChatBotAccessState.UNKNOWN,
+  ])(
+    'keeps expired %s rights loss latched through ordinary activity and bot_added',
+    async (state) => {
+      const binding = {
+        publisherBotId: 'publik_bot',
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: state,
+        botAccessSource:
+          state === ChatBotAccessState.UNKNOWN
+            ? PUBLISHER_EXPLICIT_ACTIVATION_PENDING_SOURCE
+            : 'publisher_targeted_access_probe',
+        botAccessCheckedAt: new Date('2026-08-26T10:00:00Z'),
+        botAccessExpiresAt: new Date('2026-08-26T10:15:00Z'),
+        lifecycleEventAt: new Date('2026-08-26T10:00:00Z'),
+        lifecycleEventType: 'bot_added',
+        permissionsSnapshot: {
+          isAdmin: true,
+          isOwner: false,
+          permissionsKnown: true,
+          permissions: ['read_all_messages'],
+        },
+      };
+      const tx = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: '-100' }]),
+        chat: { findUnique: jest.fn().mockResolvedValue({ id: '-100' }), upsert: jest.fn() },
+        publisherEntityBinding: {
+          findUnique: jest.fn().mockResolvedValue(binding),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          update: jest.fn(),
+          upsert: jest.fn(),
+        },
+        managedBotChatCatalog: {
+          findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHAT, title: null }),
+          upsert: jest.fn(),
+        },
+        managedEntityAccessEdge: {
+          upsert: jest.fn(),
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
+      };
+      const refreshQueue = { enqueue: jest.fn() };
+      const service = new PublisherEntityBindingLifecycleService(
+        {
+          publisherEntityBinding: tx.publisherEntityBinding,
+          managedBotChatCatalog: tx.managedBotChatCatalog,
+          $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+        } as never,
+        refreshQueue as never,
+        { get: () => 'publik_bot' } as never,
+        createBotRegistry() as never,
+      );
+      for (const type of ['message_created', 'bot_added']) {
+        await expect(
+          service.observeWebhook({
+            updateId: `passive-${type}`,
+            botId: 'publik_bot',
+            type,
+            eventTimestampSource: 'payload',
+            message: {
+              messageId: 'm1',
+              chatId: '-100',
+              senderId: '202',
+              text: 'сообщение',
+              createdAt: '2026-08-27T12:00:00Z',
+            },
+            raw: {},
+          } as never),
+        ).resolves.toBe('applied');
+      }
+      expect(tx.publisherEntityBinding.update).not.toHaveBeenCalled();
+      expect(tx.publisherEntityBinding.upsert).not.toHaveBeenCalled();
+      expect(tx.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+      expect(tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      expect(refreshQueue.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
   it('orders equal-time terminal observations deterministically', () => {
     const at = new Date('2026-08-26T12:00:00.000Z');
     expect(
@@ -463,6 +549,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
     } as Record<string, unknown>;
     const publisherEntityBinding = {
       findUnique: jest.fn(async () => binding),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       update: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
         binding = { ...binding, ...data };
         return binding;
@@ -523,17 +610,9 @@ describe('PublisherEntityBindingLifecycleService', () => {
       } as never),
     ).resolves.toBe('applied');
 
-    expect(publisherEntityBinding.update).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
-      data: expect.not.objectContaining({ status: ChatBotMembershipStatus.ACTIVE }),
-    });
-    expect(transactionClient.managedBotChatCatalog.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { botId_chatId: { botId: 'publik_bot', chatId: 'chat-1' } },
-        create: expect.objectContaining({ status: 'MISSING' }),
-        update: expect.objectContaining({ status: 'MISSING' }),
-      }),
-    );
+    expect(publisherEntityBinding.update).not.toHaveBeenCalled();
+    expect(transactionClient.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+    expect(refreshQueue.enqueue).not.toHaveBeenCalled();
     expect(binding).toEqual(
       expect.objectContaining({
         status: ChatBotMembershipStatus.REMOVED,
@@ -560,16 +639,13 @@ describe('PublisherEntityBindingLifecycleService', () => {
     ).resolves.toBe('applied');
     expect(binding).toEqual(
       expect.objectContaining({
-        status: ChatBotMembershipStatus.ACTIVE,
-        lifecycleEventAt: new Date('2026-08-26T12:00:30.000Z'),
-        lifecycleEventType: 'bot_added',
+        status: ChatBotMembershipStatus.REMOVED,
+        lifecycleEventAt: removedAt,
+        lifecycleEventType: 'bot_removed',
       }),
     );
-    expect(transactionClient.managedBotChatCatalog.upsert).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({ status: 'ACTIVE' }),
-      }),
-    );
+    expect(transactionClient.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+    expect(refreshQueue.enqueue).not.toHaveBeenCalled();
   });
 
   it('does not onboard a positive private dialog or an unknown ordinary observation', async () => {
@@ -621,7 +697,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
           messageId: 'private-slash-start',
           chatId: '12345',
           senderId: 'admin-1',
-          text: '/start',
+          text: 'Старт',
           createdAt: '2026-08-26T12:00:00.000Z',
         },
       } as never),
@@ -801,7 +877,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
     jest.useRealTimers();
   });
 
-  it('accepts /start only in the source entity and keeps a removed binding hidden until live probe', async () => {
+  it('stages Старт in the source entity without reactivating a removed binding', async () => {
     const removedBinding = {
       publisherBotId: 'publik_bot',
       status: ChatBotMembershipStatus.REMOVED,
@@ -860,17 +936,15 @@ describe('PublisherEntityBindingLifecycleService', () => {
           messageId: 'start-message-1',
           chatId: '-90001',
           senderId: '30003',
-          text: '/start',
+          text: 'Старт',
           createdAt: '2026-08-27T12:00:00.000Z',
         },
         raw: {},
       } as never),
     ).resolves.toBe('applied');
 
-    expect(bindingUpdate).toEqual(
-      expect.objectContaining({ status: ChatBotMembershipStatus.ACTIVE }),
-    );
-    expect(bindingUpdate).not.toHaveProperty('botAccessState');
+    expect(bindingUpdate).toBeNull();
+    expect(tx.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
     expect(edgeCreate).toEqual(
       expect.objectContaining({
         state: ManagedEntityAccessState.BOT_DENIED,

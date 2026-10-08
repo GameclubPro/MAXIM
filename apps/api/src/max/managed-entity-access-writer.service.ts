@@ -13,6 +13,13 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import type { MaxChatMemberAccess } from './max-client.service';
+import {
+  isExplicitManagedEntityActivationCurrent,
+  hasMajorActivationCapabilities,
+  hasExplicitHumanAdministrator,
+  newerManagedEntityActorConflictWhere,
+  type ManagedEntityExplicitActivation,
+} from './managed-entity-activation.util';
 
 export const MANAGED_ENTITY_HANDSHAKE_SOURCE = 'handshake_start';
 
@@ -141,7 +148,27 @@ export class ManagedEntityAccessWriter {
     botAccess: MaxChatMemberAccess,
     userAccess: MaxChatMemberAccess,
     probeStartedAt: Date,
+    options: {
+      explicitActivation?: ManagedEntityExplicitActivation;
+      channelReadVerified?: boolean;
+    } = {},
   ): Promise<boolean | null> {
+    const activation = options.explicitActivation;
+    if (activation) {
+      // FLAG: Activation belongs to this exact bot and actor, with fresh explicit rights.
+      // A channel metadata response supplies read evidence only for this same bot.
+      if (
+        !isExplicitManagedEntityActivationCurrent(activation, context.chatId, context.botId) ||
+        activation.actorUserId !== context.senderId ||
+        !hasExplicitHumanAdministrator(userAccess, context.senderId) ||
+        !hasMajorActivationCapabilities(
+          botAccess,
+          context.prismaEntityType,
+          options.channelReadVerified,
+        )
+      )
+        return null;
+    }
     await this.ensureChatBinding(context);
     const accessPersisted = await this.maxBotLinkService.recordBotAccessProbe({
       chatId: context.chatId,
@@ -150,6 +177,9 @@ export class ManagedEntityAccessWriter {
       source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
       checkedAt: probeStartedAt,
       allowMembershipRecovery: true,
+      channelReadVerified: options.channelReadVerified,
+      explicitActivation: activation,
+      activationActorAccess: activation ? userAccess : undefined,
     });
     if (!accessPersisted) {
       return null;
@@ -310,16 +340,19 @@ export class ManagedEntityAccessWriter {
       return false;
     }
 
-    return this.chatContextCache.applyAdminAccessEpochMutation({
-      chatId: context.chatId,
-      userId: context.senderId,
-      state: 'granted',
-      eventAt: probeStartedAt,
-      publishedSummary: this.buildPublishedSnapshotUpsert(context),
-      publishedSnapshotTtlSec: HANDSHAKE_PUBLISHED_SNAPSHOT_TTL_SEC,
-      recentBootstrapSummary: this.buildChatSummary(context),
-      recentBootstrapTtlSec: HANDSHAKE_BOOTSTRAP_TTL_SEC,
-    });
+    return this.chatContextCache.applyAdminAccessEpochMutation(
+      {
+        chatId: context.chatId,
+        userId: context.senderId,
+        state: 'granted',
+        eventAt: probeStartedAt,
+        publishedSummary: this.buildPublishedSnapshotUpsert(context),
+        publishedSnapshotTtlSec: HANDSHAKE_PUBLISHED_SNAPSHOT_TTL_SEC,
+        recentBootstrapSummary: this.buildChatSummary(context),
+        recentBootstrapTtlSec: HANDSHAKE_BOOTSTRAP_TTL_SEC,
+      },
+      { acceptNewerGrantedEpoch: true },
+    );
   }
 
   private async lockCurrentProbe(
@@ -382,13 +415,15 @@ export class ManagedEntityAccessWriter {
       return true;
     }
 
-    // FLAG: Any newer verdict for the same MAX identity supersedes this handshake probe.
+    // FLAG: Preserve exact-bot and negative/unknown actor fences. A different bot's
+    // concurrent verified admin grant does not invalidate this independently checked bot.
     const newerAccessEdge = await tx.managedEntityAccessEdge.findFirst({
-      where: {
-        chatId: context.chatId,
-        userId: { in: userIdVariants },
-        checkedAt: { gt: probeStartedAt },
-      },
+      where: newerManagedEntityActorConflictWhere(
+        context.chatId,
+        userIdVariants,
+        context.botId,
+        probeStartedAt,
+      ),
       select: { checkedAt: true },
     });
     return newerAccessEdge === null;

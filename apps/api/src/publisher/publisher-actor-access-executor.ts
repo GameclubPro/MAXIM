@@ -1,3 +1,4 @@
+import { isPublisherManagedEntityActivationRequired } from './publisher-entity-connection.util';
 import type { MaxChatMemberAccess, MaxClientService } from '../max/max-client.service';
 import {
   ChatBotAccessState,
@@ -112,10 +113,13 @@ export class PublisherActorAccessExecutor {
           botAccessCheckedAt: true,
           botAccessExpiresAt: true,
           botAccessState: true,
+          permissionsSnapshot: true,
+          botAccessSource: true,
         },
       });
       if (
         !binding ||
+        isPublisherManagedEntityActivationRequired(binding) ||
         binding.publisherBotId !== this.publisherBotId ||
         binding.status !== ChatBotMembershipStatus.ACTIVE ||
         publisherAccessProbeLifecycleSuperseded(binding, params.probeStartedAt)

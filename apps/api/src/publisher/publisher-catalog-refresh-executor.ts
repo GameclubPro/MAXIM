@@ -1,3 +1,4 @@
+import { isPublisherManagedEntityActivationRequired } from './publisher-entity-connection.util';
 import { Logger } from '@nestjs/common';
 import type { MaxClientService } from '../max/max-client.service';
 import {
@@ -56,10 +57,13 @@ export class PublisherCatalogRefreshExecutor {
             lifecycleEventType: true,
             botAccessCheckedAt: true,
             botAccessState: true,
+            permissionsSnapshot: true,
+            botAccessSource: true,
           },
         });
         if (
           !binding ||
+          isPublisherManagedEntityActivationRequired(binding) ||
           binding.publisherBotId !== this.publisherBotId ||
           binding.status !== ChatBotMembershipStatus.ACTIVE ||
           publisherAccessProbeLifecycleSuperseded(binding, probeStartedAt) ||

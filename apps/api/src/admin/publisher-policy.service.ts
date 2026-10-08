@@ -75,6 +75,8 @@ type PublisherRefreshCandidateRow = {
   publisherBotId: string;
   status: ChatBotMembershipStatus;
   botAccessState: ChatBotAccessState;
+  botAccessSource: string | null;
+  permissionsSnapshot: unknown;
   lastSeenAt: Date | null;
   lastWebhookAt: Date | null;
   chat: {
@@ -284,6 +286,7 @@ export class PublisherPolicyService {
         ...commonWhere,
         ...(normalizedExclusions.length > 0 ? { chatId: { notIn: normalizedExclusions } } : {}),
         AND: [
+          publisherRefreshEvidenceWhere(publisherBotId),
           {
             OR: [
               {
@@ -357,6 +360,8 @@ export class PublisherPolicyService {
             publisherBotId: true,
             status: true,
             botAccessState: true,
+            botAccessSource: true,
+            permissionsSnapshot: true,
             lastSeenAt: true,
             lastWebhookAt: true,
             chat: {

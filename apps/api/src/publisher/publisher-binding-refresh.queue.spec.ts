@@ -11,6 +11,7 @@ describe('PublisherBindingRefreshQueueService', () => {
       candidateUserId: 'admin-1',
       candidateVersion: 'start-update-1',
       replyToStartCommand: true,
+      eventAt: new Date('2026-08-27T12:00:00.000Z'),
     });
     expect(queue.add).toHaveBeenCalledWith(
       'refresh',
@@ -19,10 +20,33 @@ describe('PublisherBindingRefreshQueueService', () => {
         candidateUserId: 'admin-1',
         candidateVersion: 'start-update-1',
         replyToStartCommand: true,
+        activationSourceAt: '2026-08-27T12:00:00.000Z',
       }),
       expect.anything(),
     );
   });
+
+  it.each([
+    'manual_recheck',
+    'stale_user_access',
+    'historical_actor_recovery',
+    'bot_added',
+  ] as const)(
+    'never turns %s into explicit activation from an old actor version',
+    async (reason) => {
+      const queue = { add: jest.fn().mockResolvedValue(undefined) };
+      const service = new PublisherBindingRefreshQueueService(queue as never);
+      await service.enqueue({
+        chatId: '-100',
+        publisherBotId: 'publik-bot',
+        reason,
+        candidateUserId: '201',
+        candidateVersion: 'forwarded:old-update',
+        eventAt: new Date(),
+      });
+      expect(queue.add.mock.calls[0][1]).not.toHaveProperty('activationSourceAt');
+    },
+  );
 
   it('prioritizes manual rechecks and deduplicates until the in-flight job finishes', async () => {
     const queue = { add: jest.fn().mockResolvedValue(undefined) };
@@ -417,6 +441,7 @@ describe('PublisherBindingRefreshQueueService', () => {
         publisherBotId: 'publik-bot',
         candidateUserId: '20002',
         candidateVersion: 'forwarded:update-1',
+        activationSourceAt: '2026-08-27T12:00:00.000Z',
         replyChatId: '10001',
         requiresReadAccess: true,
         reason: 'forwarded_private',

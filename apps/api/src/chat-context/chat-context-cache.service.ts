@@ -89,6 +89,7 @@ export type AdminAccessEpochMutationMetric =
       durationMs?: number;
     };
 export type AdminAccessEpochMutationOptions = {
+  acceptNewerGrantedEpoch?: boolean;
   precheckSupersededEpoch?: boolean;
   recordMetric?: (metric: AdminAccessEpochMutationMetric) => void;
 };
@@ -212,6 +213,13 @@ if current_epoch then
     exact_epoch_and_state = current_timestamp == incoming_timestamp and
       current_priority == incoming_priority and
       redis.call('GET', KEYS[2]) == ARGV[4]
+    -- FLAG: A separately verified bot may reuse a newer human grant without
+    -- overwriting its caches or extending its lifetime. Negative epochs never qualify.
+    if ARGV[48] == '1' and incoming_priority == 0 and current_priority == 0 and
+       current_timestamp and current_timestamp > incoming_timestamp and
+       redis.call('GET', KEYS[2]) == 'granted' then
+      return 3
+    end
     if current_timestamp and current_priority and
        (current_timestamp > incoming_timestamp or
         (current_timestamp == incoming_timestamp and current_priority > incoming_priority)) then
@@ -853,6 +861,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
             String(recentBootstrapTtlSec),
             recentEntityType,
             String(ChatContextCacheService.ACCESS_EPOCH_TTL_SEC),
+            options.acceptNewerGrantedEpoch === true ? '1' : '0',
           ),
         );
       } catch (error: unknown) {
@@ -863,7 +872,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
         });
         throw error;
       }
-      if (result === 1) {
+      if (result === 1 || result === 3) {
         this.recordAdminAccessEpochMutationMetric(options, {
           phase: 'lua',
           outcome: 'applied',

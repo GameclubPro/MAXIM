@@ -18,6 +18,25 @@ import { isValidMaxBotStartPayload, isValidMaxMiniappStartPayload } from './max-
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 import {
+  isPublisherManagedEntityActivationRequired,
+  isPublisherActivationSourceAfterEpoch,
+} from '../publisher/publisher-entity-connection.util';
+import { restrictPassiveManagedEntityAccess } from './managed-entity-passive-access.util';
+import {
+  hasPersistedManagedEntityActivationSource,
+  newerManagedEntityActorConflictWhere,
+  hasMajorActivationCapabilities,
+  hasExplicitHumanAdministrator,
+  isExplicitManagedEntityActivationCurrent,
+  isManagedEntityActivationRequired,
+  isMajorManagedEntityActivationRequired,
+  isManagedEntityReceiptAfterActivation,
+  MANAGED_ENTITY_DORMANT_ACCESS_STATES,
+  MAJOR_EXPLICIT_ACTIVATION_PENDING_SOURCE,
+  ManagedEntityActivationRequiredError,
+  type ManagedEntityExplicitActivation,
+} from './managed-entity-activation.util';
+import {
   executionRouteProof,
   hasExecutionCapability,
   type MaxExecutionAccessEpoch,
@@ -114,6 +133,14 @@ type BotAccessProbeParams = {
   lastErrorCode?: string | null;
   allowMembershipRecovery?: boolean;
   channelReadVerified?: boolean;
+  explicitActivation?: ManagedEntityExplicitActivation;
+  activationActorAccess?: {
+    userId?: string | null;
+    isAdmin: boolean;
+    isOwner: boolean;
+    isBot?: boolean | null;
+    explicitPrivilegeEvidence?: boolean;
+  };
 };
 
 export type ChatBotExecutionBinding = {
@@ -908,6 +935,84 @@ export class MaxBotLinkService implements OnModuleDestroy {
     return true;
   }
 
+  async getChatBotActivationState(chatId: string, botId: string) {
+    const select = {
+      status: true,
+      botAccessState: true,
+      botAccessCheckedAt: true,
+      botAccessSource: true,
+      lifecycleEventAt: true,
+      permissionsSnapshot: true,
+      chat: { select: { entityType: true } },
+    } as const;
+    if (botId === this.botRegistry.getPublisherBotDescriptor?.().id) {
+      return this.prisma.publisherEntityBinding.findFirst({
+        where: { chatId, publisherBotId: botId },
+        select,
+      });
+    }
+    return this.prisma.chatBotMembership.findUnique({
+      where: { chatId_botId: { chatId, botId } },
+      select,
+    });
+  }
+
+  async isChatBotActivationRequired(
+    chatId: string,
+    botId: string,
+    receiptSourceAt?: Date,
+  ): Promise<boolean> {
+    const row = await this.getChatBotActivationState(chatId, botId);
+    return botId === this.botRegistry.getPublisherBotDescriptor?.().id
+      ? isPublisherManagedEntityActivationRequired(row)
+      : Boolean(
+          receiptSourceAt &&
+          (!row ||
+            !isManagedEntityReceiptAfterActivation(row.permissionsSnapshot, receiptSourceAt)),
+        ) || isMajorManagedEntityActivationRequired(row, row?.chat?.entityType);
+  }
+
+  async assertChatBotAccessProbeAllowed(
+    chatId: string,
+    botId: string,
+    activation?: ManagedEntityExplicitActivation,
+  ) {
+    const current = await this.getChatBotActivationState(chatId, botId);
+    const required =
+      botId === this.botRegistry.getPublisherBotDescriptor?.().id
+        ? isPublisherManagedEntityActivationRequired(current)
+        : isMajorManagedEntityActivationRequired(current, current?.chat?.entityType);
+    if (!required && !activation) return current;
+    const priorAt = Math.max(
+      current?.botAccessCheckedAt?.getTime() ?? 0,
+      current?.lifecycleEventAt?.getTime() ?? 0,
+    );
+    if (
+      !isExplicitManagedEntityActivationCurrent(activation, chatId, botId) ||
+      (required &&
+        (botId === this.botRegistry.getPublisherBotDescriptor?.().id
+          ? !isPublisherActivationSourceAfterEpoch(current, activation.sourceAt)
+          : activation.sourceAt.getTime() <= priorAt)) ||
+      !(await hasPersistedManagedEntityActivationSource(this.prisma, activation))
+    )
+      throw new ManagedEntityActivationRequiredError();
+    return current;
+  }
+
+  restrictPassiveBotAccess<T extends NonNullable<BotAccessSnapshotInput>>(
+    botId: string,
+    access: T,
+    current: Awaited<ReturnType<MaxBotLinkService['getChatBotActivationState']>>,
+  ): T {
+    return botId === this.botRegistry.getPublisherBotDescriptor?.().id
+      ? access
+      : restrictPassiveManagedEntityAccess(
+          access,
+          current?.permissionsSnapshot,
+          current?.chat?.entityType,
+        );
+  }
+
   async recordBotAccessProbe(params: BotAccessProbeParams): Promise<boolean> {
     const chatId = params.chatId.trim();
     const botId = this.resolveOperationalBotId(params.botId);
@@ -945,9 +1050,93 @@ export class MaxBotLinkService implements OnModuleDestroy {
                 botAccessState: true,
                 botAccessCheckedAt: true,
                 botAccessExpiresAt: true,
+                botAccessSource: true,
                 permissionsSnapshot: true,
+                lifecycleEventAt: true,
               },
             });
+            // FLAG: A terminal denial survives positive background probes and bot_added.
+            // Recovery needs a newer authenticated explicit action and both fresh privileges.
+            if (
+              params.access &&
+              (params.access.isAdmin || params.access.isOwner) &&
+              (params.explicitActivation ||
+                !previous ||
+                isMajorManagedEntityActivationRequired(previous, locked[0]!.entityType))
+            ) {
+              const proof = params.explicitActivation;
+              const previousSnapshot = normalizeMembershipAccessSnapshot(
+                previous?.permissionsSnapshot,
+              );
+              const requiresNewerAction =
+                isMajorManagedEntityActivationRequired(previous, locked[0]!.entityType) ||
+                Boolean(
+                  previousSnapshot?.activationCapabilityCeiling &&
+                  previousSnapshot.activationCapabilityCeiling.length < 5,
+                );
+              const priorAt = requiresNewerAction
+                ? Math.max(
+                    previous?.botAccessCheckedAt?.getTime() ?? 0,
+                    previous?.lifecycleEventAt?.getTime() ?? 0,
+                  )
+                : 0;
+              if (
+                !isExplicitManagedEntityActivationCurrent(proof, chatId, botId) ||
+                proof.sourceAt.getTime() <= priorAt ||
+                proof.sourceAt.getTime() > params.checkedAt.getTime() ||
+                params.checkedAt.getTime() > Date.now() ||
+                params.checkedAt.getTime() + 5 * 60_000 <= Date.now() ||
+                !hasMajorActivationCapabilities(
+                  params.access,
+                  locked[0]!.entityType,
+                  params.channelReadVerified,
+                ) ||
+                !hasExplicitHumanAdministrator(params.activationActorAccess, proof.actorUserId) ||
+                !(await hasPersistedManagedEntityActivationSource(tx, proof))
+              )
+                return {
+                  persisted: false,
+                  wake: null,
+                  nightModeAccessActivated: false,
+                  accessChanged: false,
+                };
+              const actorId = proof.actorUserId.trim();
+              const bareActorId = actorId.replace(/^id(?=\d)/iu, '');
+              const actorIds = [
+                ...new Set([
+                  actorId,
+                  bareActorId,
+                  ...(/^\d+$/u.test(bareActorId) ? [`id${bareActorId}`] : []),
+                ]),
+              ];
+              // FLAG: A user removal/re-add or newer access verdict committed while MAX
+              // was being queried invalidates that actor proof before bot activation commits.
+              const activity = await tx.chatMembershipActivityEvent.findFirst({
+                where: {
+                  chatId,
+                  userId: { in: actorIds },
+                  eventType: { in: ['user_added', 'user_removed'] },
+                  eventAt: { gte: params.checkedAt },
+                },
+                select: { id: true },
+              });
+              const actorVerdict = await tx.managedEntityAccessEdge.findFirst({
+                where: newerManagedEntityActorConflictWhere(
+                  chatId,
+                  actorIds,
+                  botId,
+                  params.checkedAt,
+                ),
+                select: { checkedAt: true },
+              });
+              if (activity || actorVerdict)
+                return {
+                  persisted: false,
+                  wake: null,
+                  nightModeAccessActivated: false,
+                  accessChanged: false,
+                };
+            }
             const previousAccess: PreviousBotDeleteAccess = previous
               ? {
                   status: previous.status,
@@ -957,11 +1146,32 @@ export class MaxBotLinkService implements OnModuleDestroy {
                   permissionsSnapshot: previous.permissionsSnapshot,
                 }
               : null;
+            const effectiveParams = {
+              ...params,
+              access:
+                params.access && !params.explicitActivation
+                  ? restrictPassiveManagedEntityAccess(
+                      params.access,
+                      previous?.permissionsSnapshot,
+                      locked[0]!.entityType,
+                    )
+                  : params.access,
+            };
             const persisted = await this.persistBotAccessProbeInTransaction(
               tx,
-              params,
+              effectiveParams,
               chatId,
               botId,
+              // FLAG: Only validated initial activation/reactivation advances the receipt
+              // cutline. Passive results and repeated Start on a healthy bot retain it.
+              params.explicitActivation &&
+                params.access &&
+                (params.access.isAdmin || params.access.isOwner) &&
+                (!previous ||
+                  isMajorManagedEntityActivationRequired(previous, locked[0]!.entityType))
+                ? params.explicitActivation.sourceAt.toISOString()
+                : normalizeMembershipAccessSnapshot(previous?.permissionsSnapshot)
+                    ?.explicitActivationSourceAt,
             );
             const current = persisted
               ? await tx.chatBotMembership.findUnique({
@@ -999,7 +1209,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
                     entityType: locked[0]!.entityType,
                     source: params.source,
                     checkedAt: params.checkedAt,
-                    access: params.access,
+                    access: effectiveParams.access,
                     previousAccess,
                   }
                 : null,
@@ -1047,6 +1257,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       isOwner: snapshot?.isOwner === true,
       permissionsKnown: snapshot?.permissionsKnown === true,
       permissions: snapshot?.permissions.slice().sort() ?? [],
+      activationCapabilityCeiling: snapshot?.activationCapabilityCeiling ?? null,
       channelRead: raw?.channelReadProof?.kind === 'MAX_CHANNEL_GET',
     });
   }
@@ -1186,6 +1397,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     params: BotAccessProbeParams,
     chatId: string,
     botId: string,
+    explicitActivationSourceAt?: string | null,
   ): Promise<boolean> {
     const checkedAt = params.checkedAt;
     const snapshot = {
@@ -1194,6 +1406,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
         now: checkedAt,
         lastErrorCode: params.lastErrorCode,
         channelReadVerified: params.channelReadVerified,
+        explicitActivationSourceAt,
       }),
       lastSeenAt: checkedAt,
     };
@@ -1241,8 +1454,12 @@ export class MaxBotLinkService implements OnModuleDestroy {
       return true;
     }
 
-    if (params.allowMembershipRecovery !== true || !params.access) {
-      if (params.access) {
+    if (
+      params.allowMembershipRecovery !== true ||
+      !params.access ||
+      (!params.access.isAdmin && !params.access.isOwner)
+    ) {
+      if (params.access && (params.access.isAdmin || params.access.isOwner)) {
         return false;
       }
       const removedAccessEvidence: Partial<typeof snapshot> = { ...snapshot };
@@ -1634,12 +1851,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
           entityType,
         });
       }
-      if (membershipResult.active) {
-        this.rememberChatBotBinding(chatId, botId);
-        return botId;
-      }
-      this.forgetChatBotBinding(chatId);
-      return null;
+      return this.reconcileChatPrimaryByAccess({ chatId, title, entityType });
     }
 
     const existing = await this.prisma.chat.findUnique({
@@ -1740,6 +1952,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       where: { id: chatId },
       select: {
         routingState: true,
+        entityType: true,
         primaryBotId: true,
         botId: true,
         botMemberships: {
@@ -1750,6 +1963,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
             status: true,
             botAccessState: true,
             botAccessCheckedAt: true,
+            botAccessSource: true,
             permissionsSnapshot: true,
           },
         },
@@ -1759,6 +1973,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     const activeKnownMemberships = (chat?.botMemberships ?? []).filter(
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE &&
+        !isMajorManagedEntityActivationRequired(membership, chat?.entityType) &&
         Boolean(this.resolveOperationalBotId(membership.botId)),
     );
     const activeExecutableMemberships = activeKnownMemberships.filter(
@@ -1911,7 +2126,14 @@ export class MaxBotLinkService implements OnModuleDestroy {
     const actionableBotIds = new Set(
       state.activeActionableMemberships.map((membership) => membership.botId),
     );
-    const candidateCapabilities = state.activeKnownMemberships
+    // FLAG: Keep exact negative epochs in diagnostics so an unattempted DELETE can
+    // move to a healthy peer. Dormant evidence never becomes an executable route.
+    const candidateCapabilities = state.allMemberships
+      .filter(
+        (membership) =>
+          membership.status === ChatBotMembershipStatus.ACTIVE &&
+          Boolean(this.resolveOperationalBotId(membership.botId)),
+      )
       .map((membership) =>
         this.assessDeleteMessageCandidateCapability(
           membership,
@@ -2047,14 +2269,17 @@ export class MaxBotLinkService implements OnModuleDestroy {
         ) {
           return result('stale_or_unknown');
         }
+        const purpose = capability === 'member' ? 'moderate_member' : 'delete_message';
         const explicitlyCapable =
-          snapshot.isOwner ||
-          (snapshot.isAdmin && capability === 'write'
-            ? hasConfirmedDeleteMessageAccess(snapshot, ChatEntityType.CHAT)
-            : snapshot.isAdmin &&
-              snapshot.permissions.some((permission) =>
-                MODERATE_MEMBER_PERMISSION_ALIASES.has(normalizePermissionName(permission)),
-              ));
+          (!snapshot.activationCapabilityCeiling ||
+            snapshot.activationCapabilityCeiling.includes(purpose)) &&
+          (snapshot.isOwner ||
+            (snapshot.isAdmin && capability === 'write'
+              ? hasConfirmedDeleteMessageAccess(snapshot, ChatEntityType.CHAT)
+              : snapshot.isAdmin &&
+                snapshot.permissions.some((permission) =>
+                  MODERATE_MEMBER_PERMISSION_ALIASES.has(normalizePermissionName(permission)),
+                )));
         return result(explicitlyCapable ? 'confirmed_capable' : 'explicitly_incapable');
       });
     const selected =
@@ -2427,12 +2652,18 @@ export class MaxBotLinkService implements OnModuleDestroy {
           if (
             !previous ||
             !previousAccess ||
-            ((previousAccess.isAdmin || previousAccess.isOwner) &&
+            (!isMajorManagedEntityActivationRequired(previous, state.entityType) &&
+              (previousAccess.isAdmin || previousAccess.isOwner) &&
               previousAccess.permissionsKnown !== true) ||
             previous.botAccessCheckedAt?.getTime() !==
               params.expectedPreviousOwner.accessEpoch.checkedAt.getTime() ||
             previous.botAccessSource !== params.expectedPreviousOwner.accessEpoch.source ||
-            hasExecutionCapability(previous, state.entityType, params.expectedPreviousOwner.purpose)
+            (!isMajorManagedEntityActivationRequired(previous, state.entityType) &&
+              hasExecutionCapability(
+                previous,
+                state.entityType,
+                params.expectedPreviousOwner.purpose,
+              ))
           )
             return null;
         }
@@ -2988,10 +3219,70 @@ export class MaxBotLinkService implements OnModuleDestroy {
       entityType: state.entityType,
       primaryBotId: state.storedPrimaryBotId ?? state.storedBotId,
       routingVersion: state.routingVersion,
-      candidates: state.activeKnownMemberships.filter((membership) =>
-        Boolean(this.resolveExecutableBotId(membership.botId)),
+      candidates: state.allMemberships.filter(
+        (membership) =>
+          membership.status === ChatBotMembershipStatus.ACTIVE &&
+          Boolean(this.resolveExecutableBotId(membership.botId)),
       ),
     };
+  }
+
+  async resolveDormantReceiptPeer(
+    chatId: string,
+    botId: string,
+    client: Pick<Prisma.TransactionClient, 'chat'> = this.prisma,
+    receiptSourceAt?: Date,
+  ): Promise<{ dormant: boolean; peerBotId: string | null }> {
+    const state = await this.loadChatRouteState(chatId, client);
+    const membership = state?.allMemberships.find((row) => row.botId === botId);
+    const dormant =
+      Boolean(
+        receiptSourceAt &&
+        (!membership ||
+          !isManagedEntityReceiptAfterActivation(membership.permissionsSnapshot, receiptSourceAt)),
+      ) || isMajorManagedEntityActivationRequired(membership, state?.entityType);
+    if (!state || !dormant) return { dormant, peerBotId: null };
+    const ownerState: MaxExecutionOwnerState = {
+      chatId,
+      entityType: state.entityType,
+      primaryBotId: state.primaryBotId,
+      routingVersion: state.routingVersion,
+      candidates: state.activeActionableMemberships,
+    };
+    const peer = [
+      state.primaryBotId,
+      ...state.activeActionableMemberships.map((row) => row.botId),
+    ].find(
+      (candidate) =>
+        candidate &&
+        executionRouteProof(ownerState, candidate) &&
+        (!receiptSourceAt ||
+          isManagedEntityReceiptAfterActivation(
+            state.allMemberships.find((row) => row.botId === candidate)?.permissionsSnapshot,
+            receiptSourceAt,
+          )),
+    );
+    return { dormant, peerBotId: peer ?? null };
+  }
+
+  async isChatBotExecutionActivationRequired(
+    chatId: string,
+    botId: string,
+    purpose: MaxExecutionPurpose,
+  ): Promise<boolean> {
+    const state = await this.loadChatExecutionOwnerState(chatId);
+    const membership = state?.candidates.find((candidate) => candidate.botId === botId);
+    if (!state || !membership) return false;
+    if (isMajorManagedEntityActivationRequired(membership, state.entityType)) return true;
+    if (purpose === 'moderation' && state.entityType === ChatEntityType.CHANNEL) return false;
+    const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+    return Boolean(
+      snapshot &&
+      ((snapshot.activationCapabilityCeiling &&
+        !snapshot.activationCapabilityCeiling.includes(purpose)) ||
+        (snapshot.permissionsKnown === true &&
+          !hasExecutionCapability(membership, state.entityType, purpose))),
+    );
   }
 
   async getFreshChatBotExecutionProof(params: {
@@ -3128,6 +3419,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     const activeKnownMemberships = memberships.filter(
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE &&
+        !isMajorManagedEntityActivationRequired(membership, chat.entityType) &&
         Boolean(this.resolveOperationalBotId(membership.botId)),
     );
     const activeOperationalMemberships = activeKnownMemberships.filter((membership) => {
@@ -3802,6 +4094,14 @@ export class MaxBotLinkService implements OnModuleDestroy {
       return false;
     }
 
+    const purpose =
+      action === 'delete_message' || action === 'edit_message' ? action : 'moderate_member';
+    if (
+      snapshot.activationCapabilityCeiling &&
+      !snapshot.activationCapabilityCeiling.includes(purpose)
+    )
+      return false;
+
     if (action === 'delete_message') {
       return hasConfirmedDeleteMessageAccess(snapshot, entityType);
     }
@@ -3850,10 +4150,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       routeEligible,
     });
 
-    if (
-      membership.botAccessState === ChatBotAccessState.DENIED ||
-      membership.botAccessState === ChatBotAccessState.LOST
-    ) {
+    if (isMajorManagedEntityActivationRequired(membership, entityType)) {
       return result('explicitly_incapable', 'access_denied');
     }
     if (!snapshot) {
@@ -3918,7 +4215,11 @@ export class MaxBotLinkService implements OnModuleDestroy {
     snapshot: MembershipAccessSnapshot | null,
     entityType: ChatEntityType | null,
   ): boolean {
-    if (!snapshot) {
+    if (
+      !snapshot ||
+      (snapshot.activationCapabilityCeiling &&
+        !snapshot.activationCapabilityCeiling.includes('send_message'))
+    ) {
       return false;
     }
     if (snapshot.isOwner) {
@@ -4131,6 +4432,9 @@ export class MaxBotLinkService implements OnModuleDestroy {
       const reactivationWhere = {
         chatId,
         botId,
+        // FLAG: A lifecycle observation never clears administrator activation intent.
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: { notIn: [...MANAGED_ENTITY_DORMANT_ACCESS_STATES] },
         AND: [
           {
             OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lt: lifecycleEventAt } }],
@@ -4144,12 +4448,9 @@ export class MaxBotLinkService implements OnModuleDestroy {
         ...(lifecycleSource === 'live_probe'
           ? {}
           : {
-              permissionsSnapshot: Prisma.JsonNull,
-              botAccessState: ChatBotAccessState.UNKNOWN,
-              botAccessCheckedAt: null,
-              botAccessExpiresAt: null,
-              botAccessSource: lifecycleSource,
-              botAccessLastErrorCode: null,
+              // FLAG: bot_added invalidates freshness, never known loss or the
+              // retained purpose ceiling. Only an authenticated action clears those.
+              botAccessExpiresAt: lifecycleEventAt,
             }),
         lastSeenAt: params.lastSeenAt ?? lifecycleEventAt,
         lastWebhookAt: params.lastWebhookAt ?? lifecycleEventAt,
@@ -4173,6 +4474,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
               chatId,
               botId,
               ...reactivationData,
+              botAccessSource: MAJOR_EXPLICIT_ACTIVATION_PENDING_SOURCE,
             },
             skipDuplicates: true,
           }),
@@ -4232,6 +4534,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
           botId,
           role: nextRole,
           status: ChatBotMembershipStatus.ACTIVE,
+          botAccessSource: MAJOR_EXPLICIT_ACTIVATION_PENDING_SOURCE,
           ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
           ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
         },
@@ -4255,6 +4558,9 @@ export class MaxBotLinkService implements OnModuleDestroy {
         botId,
         role: nextRole,
         status: nextStatus,
+        ...(nextStatus === ChatBotMembershipStatus.ACTIVE
+          ? { botAccessSource: MAJOR_EXPLICIT_ACTIVATION_PENDING_SOURCE }
+          : {}),
         ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
         ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
         ...(lifecycleEventAt ? { lifecycleEventAt } : {}),
@@ -4297,6 +4603,10 @@ export class MaxBotLinkService implements OnModuleDestroy {
           some: {
             botId: params.botId,
             status: ChatBotMembershipStatus.ACTIVE,
+            OR: [
+              { botAccessSource: null },
+              { botAccessSource: { not: MAJOR_EXPLICIT_ACTIVATION_PENDING_SOURCE } },
+            ],
             lifecycleEventAt: params.lifecycleEventAt,
             lifecycleEventType: params.lifecycleEventType,
             botAccessState: liveProbe
@@ -4329,11 +4639,13 @@ export class MaxBotLinkService implements OnModuleDestroy {
   }
 
   private isMembershipRouteAccessEligible(
-    membership: Pick<ResolvedChatRouteMembership, 'botAccessState' | 'permissionsSnapshot'>,
+    membership: Pick<
+      ResolvedChatRouteMembership,
+      'botAccessState' | 'botAccessSource' | 'permissionsSnapshot'
+    >,
   ): boolean {
     return (
-      membership.botAccessState !== ChatBotAccessState.DENIED &&
-      membership.botAccessState !== ChatBotAccessState.LOST &&
+      !isManagedEntityActivationRequired(membership) &&
       !membershipExplicitlyLacksAccess(membership.permissionsSnapshot)
     );
   }

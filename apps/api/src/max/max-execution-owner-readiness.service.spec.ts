@@ -134,6 +134,40 @@ describe('MaxExecutionOwnerReadinessService', () => {
     },
   );
 
+  it.each([
+    'moderation',
+    'delete_message',
+    'edit_message',
+    'send_message',
+    'moderate_member',
+  ] as const)(
+    'rejects fast-path %s for known baseline dormancy without probing',
+    async (purpose) => {
+      const f = fixture(1);
+      f.state.candidates[0]!.permissionsSnapshot = {
+        ...ADMIN,
+        permissions: ['write', 'add_remove_members'],
+      };
+      expect(executionRouteProof(f.state, 'bot-00', purpose)).toBeNull();
+      expect(await f.service.ensureReady({ chatId: '-100', purpose, force: true })).toBeNull();
+      expect(f.max.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    },
+  );
+
+  it('never probes a known missing optional member capability and uses a healthy peer', async () => {
+    const f = fixture(2);
+    f.state.candidates[1]!.permissionsSnapshot = {
+      ...ADMIN,
+      permissions: [...ADMIN.permissions, 'add_remove_members'],
+    };
+    expect(
+      (await f.service.ensureReady({ chatId: '-100', purpose: 'moderate_member', force: true }))
+        ?.botId,
+    ).toBe('bot-01');
+    expect(f.max.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(f.links.selectChatPrimaryBot).not.toHaveBeenCalled();
+  });
+
   it('refreshes missing permissions even when the incoming receiver is the stored primary', async () => {
     const f = fixture(4);
     f.state.candidates[0]!.permissionsSnapshot = {
@@ -194,7 +228,7 @@ describe('MaxExecutionOwnerReadinessService', () => {
     expect(f.state.primaryBotId).toBe('bot-00');
   });
 
-  it('rechecks a known negative epoch before the pending readiness deadline', async () => {
+  it('keeps a known negative epoch dormant without probing after its recheck deadline', async () => {
     const f = fixture(1);
     Object.assign(
       f.state.candidates[0]!,
@@ -203,8 +237,9 @@ describe('MaxExecutionOwnerReadinessService', () => {
         now: new Date(NOW.getTime() - 16_000),
       }),
     );
-    expect((await f.service.ensureReady({ chatId: '-100' }))?.botId).toBe('bot-00');
-    expect(f.max.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(await f.service.ensureReady({ chatId: '-100' })).toBeNull();
+    expect(f.max.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(f.links.recordBotAccessProbe).not.toHaveBeenCalled();
   });
 
   it('uses a delete-capable peer without replacing the healthy read owner', async () => {
@@ -235,6 +270,14 @@ describe('MaxExecutionOwnerReadinessService', () => {
   it('records channel read evidence without adding a synthetic MAX permission', async () => {
     const f = fixture(1);
     f.state.entityType = ChatEntityType.CHANNEL;
+    f.state.candidates[0]!.permissionsSnapshot = {
+      ...ADMIN,
+      permissions: ['write', 'delete_message'],
+    };
+    f.max.getCurrentChatMemberAccess.mockResolvedValue({
+      ...ADMIN,
+      permissions: ['write', 'delete_message'],
+    });
     const proof = await f.service.ensureReady({ chatId: '-100' });
     expect(proof?.botId).toBe('bot-00');
     expect(f.max.getChatSnapshot).toHaveBeenCalledWith(
@@ -245,7 +288,7 @@ describe('MaxExecutionOwnerReadinessService', () => {
       permissions: string[];
       channelReadProof: { kind: string };
     };
-    expect(snapshot.permissions).toEqual(ADMIN.permissions);
+    expect(snapshot.permissions).toEqual(['write', 'delete_message']);
     expect(snapshot.channelReadProof.kind).toBe('MAX_CHANNEL_GET');
   });
 

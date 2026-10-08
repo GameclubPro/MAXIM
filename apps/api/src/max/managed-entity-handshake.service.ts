@@ -24,7 +24,6 @@ import { normalizePermissionName } from './max-bot-access-policy.util';
 import { hasConfirmedDeleteMessageAccess } from './max-delete-message-access.util';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
-import { canDiscoverChatsForBotState } from './max-bot-state.util';
 import { MaxChatAdminRosterSyncService } from './max-chat-admin-roster-sync.service';
 import type { MaxChatAdminRosterSyncJob } from './max-chat-admin-roster-sync.queue';
 import {
@@ -33,6 +32,11 @@ import {
   type ManagedEntityAccessWriteContext,
 } from './managed-entity-access-writer.service';
 import { ManagedEntityHandshakeOutcomeService } from './managed-entity-handshake-outcome.service';
+import {
+  isExplicitManagedEntityActivationCurrent,
+  type ManagedEntityExplicitActivation,
+} from './managed-entity-activation.util';
+import { readWebhookEventTimestamp } from '../webhook/webhook-semantic-event-key';
 
 export const MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD =
   'managed_entity_handshake:start_hint';
@@ -42,7 +46,6 @@ const HANDSHAKE_FORWARDED_ACTOR_BURST_LIMIT_MS = 5_000;
 const HANDSHAKE_ACCESS_TIMEOUT_MS = 1_500;
 const HANDSHAKE_SEND_TIMEOUT_MS = 1_500;
 const HANDSHAKE_DELETE_TIMEOUT_MS = 1_500;
-const HANDSHAKE_MAX_SOURCE_BOTS = 4;
 const HANDSHAKE_SOURCE = MANAGED_ENTITY_HANDSHAKE_SOURCE;
 
 export type ManagedEntityHandshakeResult =
@@ -75,6 +78,7 @@ type ManagedEntityHandshakeContext = {
 type HandshakeBotProbe = {
   access: MaxChatMemberAccess;
   startedAt: Date;
+  channelReadVerified: boolean;
 };
 
 @Injectable()
@@ -115,10 +119,21 @@ export class ManagedEntityHandshakeService {
     if (!resolvedBot || this.maxBotRegistry.isKnownBotUserId(candidate.forwarderUserId)) {
       return 'ignored';
     }
+    if (
+      !this.buildExplicitActivation(
+        update,
+        'forwarded_message',
+        candidate.sourceChatId,
+        resolvedBot.id,
+        candidate.forwarderUserId,
+      )
+    )
+      return 'denied';
 
     const rateLimitKey = this.buildForwardedRateLimitKey(
       candidate.sourceChatId,
       candidate.forwarderUserId,
+      resolvedBot.id,
     );
     if (
       this.isRateLimitKeyBlocked(this.rateLimitUntilMs, rateLimitKey) ||
@@ -177,86 +192,54 @@ export class ManagedEntityHandshakeService {
     candidate: ManagedEntityForwardedRecoveryCandidate,
     replyBotId: string,
   ): Promise<{ context: ManagedEntityHandshakeContext; probe: HandshakeBotProbe }> {
-    const botIds = [replyBotId];
-    let rejectedProbe: { context: ManagedEntityHandshakeContext; probe: HandshakeBotProbe } | null =
-      null;
-    let sourceError: unknown;
-    let transientError: unknown;
-
-    for (let index = 0; index < botIds.length; index += 1) {
-      const botId = botIds[index]!;
-      const options = {
-        botId,
-        trafficClass: 'interactive',
-        actionHealthLane: 'background',
-        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
-        timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
-        bypassCache: true,
-        ignoreFailureMetricStatuses: [403, 404],
-      } as const;
-      try {
-        // FLAG: Probe only the exact forwarded source; catalog membership selects candidates,
-        // but fresh MAX bot AND user checks remain mandatory before granting access.
-        const startedAt = new Date();
-        const snapshot = await this.maxClient.getChatSnapshot(candidate.sourceChatId, options);
-        const access = await this.maxClient.getCurrentChatMemberAccess(
-          candidate.sourceChatId,
-          options,
-        );
-        const entityType = snapshot.entityType;
-        const context: ManagedEntityHandshakeContext = {
-          update,
-          chatId: candidate.sourceChatId,
-          replyChatId: candidate.privateChatId,
-          botId,
-          replyBotId,
-          senderId: candidate.forwarderUserId,
-          title:
-            snapshot.title?.trim() ||
-            (entityType === 'channel'
-              ? `Channel ${candidate.sourceChatId}`
-              : `Chat ${candidate.sourceChatId}`),
-          link: snapshot.link,
-          avatarUrl: snapshot.avatarUrl,
-          entityType,
-          prismaEntityType: entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
-          createdAt: update.message?.createdAt?.trim() || null,
-          commandMessageId: null,
-          interactionMessageId: candidate.incomingMessageId,
-          interaction: 'forwarded_private',
-        };
-
-        const result = { context, probe: { access, startedAt } };
-        if (this.isAdminOrOwner(access) && this.hasRequiredBotReadAccess(context, access)) {
-          return result;
-        }
-        rejectedProbe ??= result;
-      } catch (error: unknown) {
-        sourceError = error;
-        if (!this.isBotAccessDeniedError(error)) transientError = error;
-      }
-
-      if (index === 0) {
-        const binding = await this.maxBotLinkService.getChatExecutionBinding({
-          chatId: candidate.sourceChatId,
-          activeBotId: replyBotId,
-        });
-        const candidates = [...new Set([binding.primaryBotId, ...binding.assignedBotIds])].filter(
-          (id): id is string => {
-            const bot = id && id !== replyBotId ? this.maxBotRegistry.getBotById(id) : null;
-            return Boolean(bot && canDiscoverChatsForBotState(bot.state));
-          },
-        );
-        if (candidates.length >= HANDSHAKE_MAX_SOURCE_BOTS) {
-          transientError ??= new Error('Forwarded source candidate budget exceeded');
-        }
-        botIds.push(...candidates.slice(0, HANDSHAKE_MAX_SOURCE_BOTS - 1));
-      }
-    }
-
-    if (transientError) throw transientError;
-    if (rejectedProbe) return rejectedProbe;
-    throw sourceError;
+    // FLAG: A forward activates only the bot that received the administrator's DM.
+    // Membership of another bot never authorizes probing or reactivating it here.
+    const botId = replyBotId;
+    const explicitActivation = this.buildExplicitActivation(
+      update,
+      'forwarded_message',
+      candidate.sourceChatId,
+      botId,
+      candidate.forwarderUserId,
+    );
+    const options = {
+      botId,
+      explicitActivation,
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
+      timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
+      bypassCache: true,
+      ignoreFailureMetricStatuses: [403, 404],
+    } as const;
+    const startedAt = new Date();
+    const snapshot = await this.maxClient.getChatSnapshot(candidate.sourceChatId, options);
+    if (snapshot.chatId !== candidate.sourceChatId)
+      throw new Error('Forwarded source identity changed');
+    const access = await this.maxClient.getCurrentChatMemberAccess(candidate.sourceChatId, options);
+    const entityType = snapshot.entityType;
+    const context: ManagedEntityHandshakeContext = {
+      update,
+      chatId: candidate.sourceChatId,
+      replyChatId: candidate.privateChatId,
+      botId,
+      replyBotId,
+      senderId: candidate.forwarderUserId,
+      title:
+        snapshot.title?.trim() ||
+        (entityType === 'channel'
+          ? `Channel ${candidate.sourceChatId}`
+          : `Chat ${candidate.sourceChatId}`),
+      link: snapshot.link,
+      avatarUrl: snapshot.avatarUrl,
+      entityType,
+      prismaEntityType: entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
+      createdAt: update.message?.createdAt?.trim() || null,
+      commandMessageId: null,
+      interactionMessageId: candidate.incomingMessageId,
+      interaction: 'forwarded_private',
+    };
+    return { context, probe: { access, startedAt, channelReadVerified: entityType === 'channel' } };
   }
 
   private async processContext(
@@ -266,6 +249,20 @@ export class ManagedEntityHandshakeService {
   ): Promise<ManagedEntityHandshakeResult> {
     const groupStart =
       context.interaction === 'in_chat' && isManagedEntityHandshakeStartCommand(context.update);
+    const explicitActivation =
+      context.senderId && (groupStart || context.interaction === 'forwarded_private')
+        ? this.buildExplicitActivation(
+            context.update,
+            groupStart ? 'start_in_chat' : 'forwarded_message',
+            context.chatId,
+            context.botId,
+            context.senderId,
+          )
+        : undefined;
+    // FLAG: A malformed explicit request must not fall back to passive persistence
+    // or spend remote probe capacity. Legacy navigation has no activation authority.
+    if ((groupStart || context.interaction === 'forwarded_private') && !explicitActivation)
+      return 'denied';
     const rateLimitAllowed =
       rateLimitReserved ||
       (groupStart
@@ -291,11 +288,12 @@ export class ManagedEntityHandshakeService {
         if (!this.groupCommandAuthority) throw new Error('Group Start authority is unavailable');
         await this.groupCommandAuthority.observeStart(context.update);
       }
-      let probeStartedAt = verifiedProbe?.startedAt ?? new Date();
-      let botAccess =
+      const probeStartedAt = verifiedProbe?.startedAt ?? new Date();
+      const botAccess =
         verifiedProbe?.access ??
         (await this.maxClient.getCurrentChatMemberAccess(context.chatId, {
           botId: context.botId,
+          explicitActivation,
           trafficClass: 'interactive',
           actionHealthLane: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
@@ -304,7 +302,10 @@ export class ManagedEntityHandshakeService {
           ignoreFailureMetricStatuses: [403, 404],
         }));
       checkingBotAccess = false;
-      if (!this.isAdminOrOwner(botAccess)) {
+      if (
+        !this.isAdminOrOwner(botAccess) ||
+        (explicitActivation && botAccess.explicitPrivilegeEvidence !== true)
+      ) {
         await this.recordOutcome(
           context,
           ManagedEntityHandshakeOutcomeStatus.BOT_DENIED,
@@ -325,6 +326,23 @@ export class ManagedEntityHandshakeService {
         this.logOutcome(context, 'bot_missing_read_all_messages');
         this.releaseForwardedRateLimitSlot(context);
         await this.replyToForwardedDenial(context, 'bot_read');
+        return 'denied';
+      }
+
+      if (
+        explicitActivation &&
+        !hasConfirmedDeleteMessageAccess(
+          { ...botAccess, checkedAt: probeStartedAt.toISOString() },
+          context.prismaEntityType,
+        )
+      ) {
+        await this.recordOutcome(
+          context,
+          ManagedEntityHandshakeOutcomeStatus.BOT_DENIED,
+          'bot_missing_delete_permission',
+        );
+        this.releaseForwardedRateLimitSlot(context);
+        await this.replyToForwardedDenial(context, 'bot_permissions');
         return 'denied';
       }
 
@@ -352,6 +370,7 @@ export class ManagedEntityHandshakeService {
         [context.senderId],
         {
           botId: context.botId,
+          explicitActivation,
           trafficClass: 'interactive',
           actionHealthLane: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
@@ -360,8 +379,13 @@ export class ManagedEntityHandshakeService {
           ignoreFailureMetricStatuses: [403, 404],
         },
       );
-      let userAccess = accessByUser.get(context.senderId) ?? null;
-      if (!userAccess || !this.isAdminOrOwner(userAccess)) {
+      const userAccess = accessByUser.get(context.senderId) ?? null;
+      if (
+        !userAccess ||
+        !this.isAdminOrOwner(userAccess) ||
+        (explicitActivation &&
+          (userAccess.explicitPrivilegeEvidence !== true || userAccess.isBot !== false))
+      ) {
         await this.recordOutcome(
           context,
           ManagedEntityHandshakeOutcomeStatus.USER_DENIED,
@@ -373,48 +397,48 @@ export class ManagedEntityHandshakeService {
         return 'denied';
       }
 
+      let channelReadVerified = verifiedProbe?.channelReadVerified === true;
+      if (explicitActivation && context.entityType === 'channel' && !channelReadVerified) {
+        const snapshot = await this.maxClient.getChatSnapshot(context.chatId, {
+          botId: context.botId,
+          explicitActivation,
+          bypassCache: true,
+          timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
+          ignoreFailureMetricStatuses: [403, 404],
+        });
+        if (snapshot.chatId !== context.chatId || snapshot.entityType !== 'channel')
+          return 'denied';
+        channelReadVerified = true;
+      }
+
+      // FLAG: An explicit command activates only this freshly verified receiving bot.
+      // Shared confirmation ownership below must neither substitute another bot nor
+      // suppress a healthy observer's silent activation. Every send keeps its authority.
+      const wasConnected = await this.accessWriter.persistGrantedAccess(
+        this.toWriteContextWithSender(context),
+        botAccess,
+        userAccess,
+        probeStartedAt,
+        { explicitActivation, channelReadVerified },
+      );
+      if (wasConnected === null) return this.handleSupersededProbe(context);
+      await this.refreshRosterSync(context);
+
       if (groupStart) {
         if (!this.groupCommandAuthority) throw new Error('Group Start authority is unavailable');
         commandPermit = await this.groupCommandAuthority.claim(context.update, context.botId);
-        if (!commandPermit) return 'rate_limited';
+        if (!commandPermit) return this.completeGrantedContext(context, wasConnected);
         if (!commandPermit.result)
           legacyStart = await this.groupCommandAuthority.inspectLegacyStart(
             commandPermit,
             this.maxBotRegistry.getAllBots().map((bot) => bot.id),
           );
         if (commandPermit.executionBotId !== context.botId) {
-          context = {
-            ...context,
-            botId: commandPermit.executionBotId,
-            replyBotId: commandPermit.executionBotId,
-          };
-          probeStartedAt = new Date();
-          botAccess = await this.maxClient.getCurrentChatMemberAccess(context.chatId, {
-            botId: context.botId,
-            bypassCache: true,
-            timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
-            trafficClass: 'interactive',
-            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
-          });
-          userAccess =
-            (
-              await this.maxClient.getChatMembersAccess(context.chatId, [context.senderId!], {
-                botId: context.botId,
-                bypassCache: true,
-                timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
-                trafficClass: 'interactive',
-                sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
-              })
-            ).get(context.senderId!) ?? null;
-          if (
-            !this.isAdminOrOwner(botAccess) ||
-            !this.hasRequiredBotReadAccess(context, botAccess) ||
-            !userAccess ||
-            !this.isAdminOrOwner(userAccess)
-          ) {
-            await this.groupCommandAuthority.release(commandPermit);
-            return 'denied';
-          }
+          await this.groupCommandAuthority.release(commandPermit);
+          return this.completeGrantedContext(context, wasConnected);
         }
         await this.groupCommandAuthority.assertOwned(commandPermit);
         if (commandPermit.result) {
@@ -431,18 +455,6 @@ export class ManagedEntityHandshakeService {
           return 'rate_limited';
         }
       }
-      const writeContext = this.toWriteContextWithSender(context);
-      const wasConnected = await this.accessWriter.persistGrantedAccess(
-        writeContext,
-        botAccess,
-        userAccess,
-        probeStartedAt,
-      );
-      if (wasConnected === null) {
-        if (commandPermit) await this.groupCommandAuthority!.release(commandPermit);
-        return this.handleSupersededProbe(context);
-      }
-      await this.refreshRosterSync(context);
       await this.deleteCommandMessageSafely(context, botAccess);
       if (context.interaction === 'forwarded_private') {
         await this.replySafely(
@@ -462,14 +474,7 @@ export class ManagedEntityHandshakeService {
           });
         await this.groupCommandAuthority!.complete(commandPermit);
       }
-      await this.recordSuccessfulOutcomeSafely(
-        context,
-        wasConnected
-          ? ManagedEntityHandshakeOutcomeStatus.ALREADY_CONNECTED
-          : ManagedEntityHandshakeOutcomeStatus.CONNECTED,
-      );
-      this.logOutcome(context, wasConnected ? 'already_connected' : 'connected');
-      return wasConnected ? 'already_connected' : 'connected';
+      return this.completeGrantedContext(context, wasConnected);
     } catch (error: unknown) {
       if (commandPermit) await this.groupCommandAuthority!.release(commandPermit);
       if (checkingBotAccess && this.isBotAccessDeniedError(error)) {
@@ -500,6 +505,33 @@ export class ManagedEntityHandshakeService {
       );
       return 'failed';
     }
+  }
+
+  private buildExplicitActivation(
+    update: MaxUpdate,
+    kind: ManagedEntityExplicitActivation['kind'],
+    chatId: string,
+    botId: string,
+    actorUserId: string,
+  ): ManagedEntityExplicitActivation | undefined {
+    const sourceAt = readWebhookEventTimestamp(update);
+    if (!sourceAt || update.botId !== botId || !update.updateId) return undefined;
+    const proof = { kind, sourceAt, updateId: update.updateId, actorUserId, botId, chatId };
+    return isExplicitManagedEntityActivationCurrent(proof, chatId, botId) ? proof : undefined;
+  }
+
+  private async completeGrantedContext(
+    context: ManagedEntityHandshakeContext,
+    wasConnected: boolean,
+  ): Promise<ManagedEntityHandshakeResult> {
+    await this.recordSuccessfulOutcomeSafely(
+      context,
+      wasConnected
+        ? ManagedEntityHandshakeOutcomeStatus.ALREADY_CONNECTED
+        : ManagedEntityHandshakeOutcomeStatus.CONNECTED,
+    );
+    this.logOutcome(context, wasConnected ? 'already_connected' : 'connected');
+    return wasConnected ? 'already_connected' : 'connected';
   }
 
   private async handleSupersededProbe(
@@ -682,13 +714,17 @@ export class ManagedEntityHandshakeService {
   private buildRateLimitKey(context: ManagedEntityHandshakeContext): string {
     const actorId = context.senderId ?? context.botId;
     if (context.interaction === 'forwarded_private') {
-      return this.buildForwardedRateLimitKey(context.chatId, actorId);
+      return this.buildForwardedRateLimitKey(context.chatId, actorId, context.botId);
     }
     return this.buildRateLimitKeyFromValues(context.chatId, actorId, context.interactionMessageId);
   }
 
-  private buildForwardedRateLimitKey(sourceChatId: string, forwarderId: string): string {
-    return `forwarded:${sourceChatId}:${forwarderId}`;
+  private buildForwardedRateLimitKey(
+    sourceChatId: string,
+    forwarderId: string,
+    botId: string,
+  ): string {
+    return `forwarded:${botId}:${sourceChatId}:${forwarderId}`;
   }
 
   private buildRateLimitKeyFromValues(
@@ -761,12 +797,12 @@ export class ManagedEntityHandshakeService {
     access: MaxChatMemberAccess,
   ): boolean {
     if (
-      context.interaction !== 'forwarded_private' ||
-      context.entityType === 'channel' ||
-      access.isOwner
-    ) {
+      context.interaction !== 'forwarded_private' &&
+      !isManagedEntityHandshakeStartCommand(context.update)
+    )
       return true;
-    }
+    if (access.permissionsKnown !== true) return false;
+    if (context.entityType === 'channel') return true;
 
     return access.permissions.some((permission) => {
       const normalized = normalizePermissionName(permission);
@@ -1027,7 +1063,7 @@ export class ManagedEntityHandshakeService {
 
   private async replyToForwardedDenial(
     context: ManagedEntityHandshakeContext,
-    actor: 'bot' | 'bot_read' | 'user',
+    actor: 'bot' | 'bot_read' | 'bot_permissions' | 'user',
   ): Promise<void> {
     if (context.interaction !== 'forwarded_private') {
       return;
@@ -1040,7 +1076,9 @@ export class ManagedEntityHandshakeService {
         ? `Бот не администратор ${entityLabel}. Назначьте бота администратором и перешлите сообщение еще раз.`
         : actor === 'bot_read'
           ? `У бота нет доступа ко всем сообщениям ${entityLabel}. Включите это право и перешлите сообщение еще раз.`
-          : `Подключить ${entityAccusative} может только владелец или администратор.`;
+          : actor === 'bot_permissions'
+            ? `У бота нет права удалять сообщения ${entityLabel}. Включите это право и перешлите сообщение еще раз.`
+            : `Подключить ${entityAccusative} может только владелец или администратор.`;
     await this.replySafely(context, text);
   }
 

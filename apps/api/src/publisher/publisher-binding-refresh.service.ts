@@ -1,3 +1,10 @@
+import {
+  hasPersistedManagedEntityActivationSource,
+  hasExplicitHumanAdministrator,
+  isExplicitManagedEntityActivationCurrent,
+  newerManagedEntityActorConflictWhere,
+  type ManagedEntityExplicitActivation,
+} from '../max/managed-entity-activation.util';
 import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
 import {
   readPublisherFreshBotProof,
@@ -32,7 +39,6 @@ import {
   type MaxChatMemberAccess,
 } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
-import { normalizePermissionName } from '../max/max-bot-access-policy.util';
 import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
@@ -46,7 +52,14 @@ import { PublisherActionCredentialService } from './publisher-action-credential.
 import { probePublisherAdminRoster, syncPublisherAdminRoster } from './publisher-admin-roster';
 import { publisherAccessProbeLifecycleWhere } from './publisher-access-probe-fence';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
-import { hasPublisherRefreshEvidence } from './publisher-entity-connection.util';
+import {
+  hasPublisherRefreshEvidence,
+  hasPublisherKnownWriteDenial,
+  hasPublisherWriteAccess,
+  isPublisherManagedEntityActivationRequired,
+  isPublisherExplicitActivationPending,
+  isPublisherActivationSourceAfterEpoch,
+} from './publisher-entity-connection.util';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 import { PUBLISHER_ACCESS_CANDIDATE_SOURCE } from './publisher-entity-binding-lifecycle.service';
 import {
@@ -90,6 +103,7 @@ type RefreshMetricBucket = {
   unknownAge: number;
   queueAgeHistogram: number[];
 };
+const PUBLISHER_START_CANDIDATE_SOURCE = `${PUBLISHER_ACCESS_CANDIDATE_SOURCE}_direct_start`;
 const PUBLISHER_FORWARDED_CANDIDATE_SOURCE = `${PUBLISHER_ACCESS_CANDIDATE_SOURCE}_forwarded`;
 const PUBLISHER_HOME_START_PARAM = `mr-${Buffer.from(
   JSON.stringify({ v: 1, k: 'route', r: '/' }),
@@ -504,10 +518,32 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       candidateEdge?.source === PUBLISHER_FORWARDED_CANDIDATE_SOURCE &&
       candidateEdge.sourceVersion === job.candidateVersion,
     );
+    const explicitActivation = this.readExplicitActivation(job, candidateEdge);
+    const activationRequired = isPublisherManagedEntityActivationRequired(
+      candidate?.publisherBinding,
+    );
+    const confirmedDenialLatched =
+      activationRequired && !isPublisherExplicitActivationPending(candidate?.publisherBinding);
     const forwardedCandidateFlow = hasExactStagedForwardedCandidate;
+    // FLAG: A staged actor or expired denial cannot authorize a passive self probe.
+    // The exact authenticated source is required before every dormant activation attempt.
+    if (
+      (activationRequired || !bindingHasRefreshEvidence || explicitActivation !== null) &&
+      (!explicitActivation ||
+        !(await hasPersistedManagedEntityActivationSource(this.prisma, explicitActivation)))
+    )
+      return;
+    if (job.replyToStartCommand && !explicitActivation) return;
+    const explicitCandidateNeedsMaterialization = Boolean(explicitActivation);
+    if (
+      !bindingHasRefreshEvidence &&
+      !explicitCandidateNeedsMaterialization &&
+      hasExactStagedForwardedCandidate
+    )
+      return;
     // FLAG: Access refresh never enables publishing. A new binding still requires an exact
     // Publisher-staged candidate, including while the publication policy is disabled.
-    if (!candidate || (!bindingHasRefreshEvidence && !hasExactStagedForwardedCandidate)) {
+    if (!candidate || (!bindingHasRefreshEvidence && !explicitCandidateNeedsMaterialization)) {
       if (candidateJob) {
         await this.terminalizeUnverifiedForwardedConnection(job, new Date(), {
           reason: 'publisher_binding_unavailable',
@@ -537,8 +573,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     let botAccess: MaxChatMemberAccess;
     let committedBotAccessCheckedAt = probeStartedAt;
     let committedBotAccessState: ChatBotAccessState = ChatBotAccessState.UNKNOWN;
-    const forwardedCandidateNeedsMaterialization =
-      hasExactStagedForwardedCandidate && !bindingHasRefreshEvidence;
+    const forwardedCandidateNeedsMaterialization = explicitCandidateNeedsMaterialization;
     try {
       const reusable =
         candidateJob && job.reason === 'publication_actor_due'
@@ -560,6 +595,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
             reason: job.reason,
             probeStartedAt,
             materializeForwarded: forwardedCandidateNeedsMaterialization,
+            explicitActivation: explicitActivation ?? undefined,
             previous: candidate.publisherBinding ?? undefined,
           }),
         );
@@ -586,11 +622,27 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       ) {
         outcomes.bot = 'denied';
         if (candidateJob) {
+          if (
+            explicitActivation &&
+            !confirmedDenialLatched &&
+            classification === 'setup_required'
+          ) {
+            await this.recordExplicitBotDenial(
+              job,
+              explicitActivation,
+              candidate.publisherBinding,
+              ChatBotAccessState.LOST,
+            );
+          }
           await this.terminalizeUnverifiedForwardedConnection(job, probeStartedAt, {
             reason: 'publisher_bot_access_lost',
             statusCode: extractPublisherMaxStatusCode(error),
           });
-          if (classification === 'setup_required' && bindingHasRefreshEvidence) {
+          if (
+            classification === 'setup_required' &&
+            bindingHasRefreshEvidence &&
+            !explicitActivation
+          ) {
             await this.recordAccessLost(chatId, probeStartedAt, error);
           }
           await this.completeCandidateTerminal(job, {
@@ -606,11 +658,27 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       throw error;
     }
 
+    if (
+      explicitActivation &&
+      !confirmedDenialLatched &&
+      (!this.isAdminOrOwner(botAccess) || hasPublisherKnownWriteDenial(botAccess))
+    ) {
+      await this.recordExplicitBotDenial(
+        job,
+        explicitActivation,
+        candidate.publisherBinding,
+        hasPublisherKnownWriteDenial(botAccess)
+          ? ChatBotAccessState.DENIED
+          : ChatBotAccessState.CONFIRMED_MEMBER,
+      );
+    }
+
     // FLAG: Catalog and actor verification remain available while publishing is disabled.
 
     if (lightweightBotRefresh && this.refreshQueue) {
       if (
         this.isAdminOrOwner(botAccess) &&
+        !hasPublisherKnownWriteDenial(botAccess) &&
         !this.refreshPolicy.separatesMaintenance(this.publisherBotId, chatId)
       )
         await this.enqueueBindingMaintenance(chatId, committedBotAccessCheckedAt);
@@ -618,26 +686,38 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     }
 
     if (
-      forwardedCandidateFlow &&
-      (!this.isAdminOrOwner(botAccess) || !this.hasForwardedRecoveryReadAccess(botAccess))
+      (forwardedCandidateFlow || forwardedCandidateNeedsMaterialization) &&
+      (!this.isAdminOrOwner(botAccess) ||
+        (forwardedCandidateNeedsMaterialization &&
+          (botAccess.explicitPrivilegeEvidence !== true || !hasPublisherWriteAccess(botAccess))))
     ) {
-      await this.terminalizeUnverifiedForwardedConnection(job, probeStartedAt, {
-        reason: this.isAdminOrOwner(botAccess)
-          ? 'publisher_bot_missing_read_all_messages'
-          : 'publisher_bot_not_admin',
-      });
-      await this.completeCandidateTerminal(job, {
-        reason: this.isAdminOrOwner(botAccess)
-          ? 'publisher_bot_missing_read_all_messages'
-          : 'publisher_bot_not_admin',
-      });
+      const reason = !this.isAdminOrOwner(botAccess)
+        ? 'publisher_bot_not_admin'
+        : !hasPublisherWriteAccess(botAccess)
+          ? 'publisher_bot_write_permission_missing'
+          : 'publisher_bot_privilege_unverified';
+      await this.terminalizeUnverifiedForwardedConnection(job, probeStartedAt, { reason });
+      await this.completeCandidateTerminal(job, { reason });
       await this.replyForwardedCandidate(job, 'bot_denied');
+      return;
+    }
+
+    if (!this.isAdminOrOwner(botAccess) || hasPublisherKnownWriteDenial(botAccess)) {
+      if (candidateJob) {
+        await this.completeCandidateTerminal(job, {
+          reason: hasPublisherKnownWriteDenial(botAccess)
+            ? 'publisher_bot_write_permission_missing'
+            : 'publisher_bot_not_admin',
+        });
+        await this.replyForwardedCandidate(job, 'bot_denied');
+      }
       return;
     }
 
     if (forwardedCandidateNeedsMaterialization) {
       await this.materializeForwardedCandidate({
         job,
+        explicitActivation: explicitActivation!,
         evidence,
         botAccess,
         probeStartedAt,
@@ -782,6 +862,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
 
   private async materializeForwardedCandidate(params: {
     job: PublisherBindingRefreshJob;
+    explicitActivation: ManagedEntityExplicitActivation;
     evidence: RefreshProofEvidence;
     botAccess: MaxChatMemberAccess;
     probeStartedAt: Date;
@@ -800,7 +881,16 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     const chatId = params.job.chatId.trim();
     const userId = params.job.candidateUserId?.trim() ?? '';
     const candidateVersion = params.job.candidateVersion?.trim() ?? '';
-    if (!chatId || !userId || !candidateVersion) {
+    if (
+      !chatId ||
+      !userId ||
+      !candidateVersion ||
+      !isExplicitManagedEntityActivationCurrent(
+        params.explicitActivation,
+        chatId,
+        this.publisherBotId,
+      )
+    ) {
       throw new PublisherCandidateRefreshSupersededError();
     }
 
@@ -808,7 +898,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     try {
       userAccess = await this.maxClient.getChatMemberAccess(chatId, userId, {
         botId: this.publisherBotId,
-        trafficClass: params.job.reason === 'forwarded_private' ? 'interactive' : 'background',
+        trafficClass: 'interactive',
         sourceTag: 'publisher_user_access',
         bypassCache: true,
         timeoutMs: 5_000,
@@ -833,8 +923,10 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     const userIsBot = userAccess?.isBot === true;
     const userHasUnverifiedBotType =
       userAccess?.isBot !== false && (userAccess?.isAdmin === true || userAccess?.isOwner === true);
-    const userHasAdminAccess =
-      userAccess?.isBot === false && (userAccess.isAdmin === true || userAccess.isOwner === true);
+    const userHasAdminAccess = hasExplicitHumanAdministrator(
+      userAccess ?? undefined,
+      params.explicitActivation.actorUserId,
+    );
     if (!userHasAdminAccess) {
       await this.terminalizeUnverifiedForwardedConnection(params.job, params.probeStartedAt, {
         reason: 'publisher_user_not_admin',
@@ -883,8 +975,13 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
           ? ChatEntityType.CHAT
           : params.fallbackEntityType;
     const checkedAt = new Date();
+    const activationSource = `publisher_refresh_${params.job.reason}`;
+    const candidateSource =
+      params.explicitActivation.kind === 'forwarded_message'
+        ? PUBLISHER_FORWARDED_CANDIDATE_SOURCE
+        : PUBLISHER_START_CANDIDATE_SOURCE;
     const botSnapshot = buildBotAccessSnapshotPersistence(params.botAccess, {
-      source: 'publisher_refresh_forwarded_private',
+      source: activationSource,
       now: params.botAccessCheckedAt,
       ttlMs: PUBLISHER_ACCESS_SNAPSHOT_TTL_MS,
     });
@@ -911,6 +1008,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
             publisherBotId: true,
             status: true,
             botAccessState: true,
+            permissionsSnapshot: true,
             botAccessSource: true,
             lifecycleEventAt: true,
             botAccessCheckedAt: true,
@@ -927,17 +1025,58 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       if (
         !chat ||
         !this.matchesExpectedForwardedBinding(binding, params.expectedBinding) ||
-        edge?.source !== PUBLISHER_FORWARDED_CANDIDATE_SOURCE ||
-        edge.sourceVersion !== candidateVersion
+        edge?.source !== candidateSource ||
+        edge.sourceVersion !== candidateVersion ||
+        !isExplicitManagedEntityActivationCurrent(
+          params.explicitActivation,
+          chatId,
+          this.publisherBotId,
+        ) ||
+        !(await hasPersistedManagedEntityActivationSource(tx, params.explicitActivation)) ||
+        (isPublisherManagedEntityActivationRequired(binding) &&
+          !isPublisherActivationSourceAfterEpoch(binding, params.explicitActivation.sourceAt))
       ) {
         return false;
       }
+      const actorId = params.explicitActivation.actorUserId.trim();
+      const bareActorId = actorId.replace(/^id(?=\d)/iu, '');
+      const actorIds = [
+        ...new Set([
+          actorId,
+          bareActorId,
+          ...(/^\d+$/u.test(bareActorId) ? [`id${bareActorId}`] : []),
+        ]),
+      ];
+      // FLAG: The chat lock serializes the commit but cannot make an earlier MAX
+      // actor response current. Preserve removals and negative/unknown actor verdicts
+      // committed during this probe, including another bot's verdict for the same human.
+      const [actorActivity, actorVerdict] = await Promise.all([
+        tx.chatMembershipActivityEvent.findFirst({
+          where: {
+            chatId,
+            userId: { in: actorIds },
+            eventType: { in: ['user_added', 'user_removed'] },
+            eventAt: { gte: params.probeStartedAt },
+          },
+          select: { id: true },
+        }),
+        tx.managedEntityAccessEdge.findFirst({
+          where: newerManagedEntityActorConflictWhere(
+            chatId,
+            actorIds,
+            this.publisherBotId,
+            params.probeStartedAt,
+          ),
+          select: { checkedAt: true },
+        }),
+      ]);
+      if (actorActivity || actorVerdict) return false;
       const claimed = await tx.managedEntityAccessEdge.updateMany({
         where: {
           chatId,
           userId,
           botId: this.publisherBotId,
-          source: PUBLISHER_FORWARDED_CANDIDATE_SOURCE,
+          source: candidateSource,
           sourceVersion: candidateVersion,
         },
         data: {
@@ -976,7 +1115,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
           status: ChatBotMembershipStatus.ACTIVE,
           capabilities: params.botAccess.permissions,
           ...botSnapshot,
-          botAccessSource: 'publisher_refresh_forwarded_private',
+          botAccessSource: activationSource,
           lastSeenAt: params.botAccessCheckedAt,
         },
         update: {
@@ -984,7 +1123,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
           status: ChatBotMembershipStatus.ACTIVE,
           capabilities: params.botAccess.permissions,
           ...botSnapshot,
-          botAccessSource: 'publisher_refresh_forwarded_private',
+          botAccessSource: activationSource,
           lastSeenAt: params.botAccessCheckedAt,
           sendRouteFailureCount: 0,
           sendRouteQuarantinedUntil: null,
@@ -1022,6 +1161,94 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     }
     params.evidence.botCommittedAt = new Date();
     await this.replyForwardedCandidate(params.job, 'granted');
+    if (params.job.replyToStartCommand) await this.replyToStartCommandSafely(params.job);
+  }
+
+  private async recordExplicitBotDenial(
+    job: PublisherBindingRefreshJob,
+    proof: ManagedEntityExplicitActivation,
+    expectedBinding: Parameters<
+      PublisherBindingRefreshService['matchesExpectedForwardedBinding']
+    >[1],
+    state: ChatBotAccessState,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      // FLAG: A confirmed failed explicit probe must leave a durable latch even for
+      // a new forward. Only negative state is written before actor verification.
+      const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT chat."id" FROM "chats" AS chat WHERE chat."id" = ${job.chatId} FOR UPDATE OF chat
+      `);
+      if (locked.length !== 1) return;
+      const [binding, edge] = await Promise.all([
+        tx.publisherEntityBinding.findUnique({ where: { chatId: job.chatId } }),
+        tx.managedEntityAccessEdge.findUnique({
+          where: {
+            chatId_userId_botId: {
+              chatId: job.chatId,
+              userId: proof.actorUserId,
+              botId: this.publisherBotId,
+            },
+          },
+        }),
+      ]);
+      if (
+        !this.matchesExpectedForwardedBinding(binding, expectedBinding) ||
+        !edge ||
+        edge.sourceVersion !== job.candidateVersion ||
+        edge.source !==
+          (proof.kind === 'forwarded_message'
+            ? PUBLISHER_FORWARDED_CANDIDATE_SOURCE
+            : PUBLISHER_START_CANDIDATE_SOURCE)
+      )
+        return;
+      const checkedAt = new Date();
+      const negative = {
+        botAccessState: state,
+        botAccessCheckedAt: checkedAt,
+        botAccessExpiresAt: null,
+        botAccessSource: 'publisher_explicit_access_denied',
+        permissionsSnapshot: Prisma.JsonNull,
+        permissionsHash: null,
+      };
+      await tx.publisherEntityBinding.upsert({
+        where: { chatId: job.chatId },
+        create: {
+          chatId: job.chatId,
+          publisherBotId: this.publisherBotId,
+          status: ChatBotMembershipStatus.REMOVED,
+          ...negative,
+        },
+        update: negative,
+      });
+    });
+  }
+
+  private readExplicitActivation(
+    job: PublisherBindingRefreshJob,
+    edge: { source: string; sourceVersion: string | null } | null,
+  ): ManagedEntityExplicitActivation | null {
+    const version = job.candidateVersion?.trim() ?? '';
+    const forwarded = job.reason === 'forwarded_private' && version.startsWith('forwarded:');
+    const start = job.reason === 'webhook_observed' && job.replyToStartCommand === true;
+    if (
+      (!forwarded && !start) ||
+      edge?.source !==
+        (forwarded ? PUBLISHER_FORWARDED_CANDIDATE_SOURCE : PUBLISHER_START_CANDIDATE_SOURCE) ||
+      edge.sourceVersion !== version ||
+      !job.activationSourceAt
+    )
+      return null;
+    const proof: ManagedEntityExplicitActivation = {
+      kind: forwarded ? 'forwarded_message' : 'start_in_chat',
+      sourceAt: new Date(job.activationSourceAt),
+      updateId: forwarded ? version.slice('forwarded:'.length) : version,
+      actorUserId: job.candidateUserId?.trim() ?? '',
+      botId: this.publisherBotId,
+      chatId: job.chatId.trim(),
+    };
+    return isExplicitManagedEntityActivationCurrent(proof, proof.chatId, this.publisherBotId)
+      ? proof
+      : null;
   }
 
   private isScheduledRefreshSuperseded(
@@ -1154,7 +1381,13 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
         source: { startsWith: `${PUBLISHER_ACCESS_CANDIDATE_SOURCE}_` },
       },
       data: {
-        state: ManagedEntityAccessState.BOT_DENIED,
+        state: [
+          'publisher_user_not_admin',
+          'publisher_actor_is_bot',
+          'publisher_actor_type_unverified',
+        ].includes(outcome.reason)
+          ? ManagedEntityAccessState.USER_DENIED
+          : ManagedEntityAccessState.BOT_DENIED,
         userRole: ManagedEntityAccessRole.UNKNOWN,
         botRole: ManagedEntityAccessRole.UNKNOWN,
         checkedAt,
@@ -1283,7 +1516,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
         ? 'Готово. Чат или канал подключен к Публику и появился в мини-приложении.'
         : outcome === 'user_denied'
           ? 'Подключить чат или канал может только его владелец или администратор.'
-          : 'Публик не может открыть этот чат или канал. Назначьте его администратором с доступом ко всем сообщениям и повторите отправку.';
+          : 'Публик не может открыть этот чат или канал. Назначьте его администратором с правом публикации и повторите отправку.';
     const miniappUrl =
       outcome === 'granted'
         ? this.maxBotLinkService.buildMiniappStartUrlSync(
@@ -1327,16 +1560,6 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
 
   private isAdminOrOwner(access: MaxChatMemberAccess): boolean {
     return access.isAdmin || access.isOwner;
-  }
-
-  private hasForwardedRecoveryReadAccess(access: MaxChatMemberAccess): boolean {
-    if (access.isOwner) {
-      return true;
-    }
-    return access.permissions.some((permission) => {
-      const normalized = normalizePermissionName(permission);
-      return normalized === 'read_all_messages' || normalized === 'can_read_all_messages';
-    });
   }
 
   private async recordAccessLost(

@@ -1,3 +1,4 @@
+import { PUBLISHER_EXPLICIT_ACTIVATION_PENDING_SOURCE } from '../publisher/publisher-entity-connection.util';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import {
   ChatBotAccessState,
@@ -71,6 +72,8 @@ function createConnectedPublisherBinding(
     publisherBotId: string;
     status: ChatBotMembershipStatus;
     botAccessState: ChatBotAccessState;
+    botAccessSource: string | null;
+    permissionsSnapshot: unknown;
     lastWebhookAt: Date | null;
   }> = {},
 ) {
@@ -79,6 +82,8 @@ function createConnectedPublisherBinding(
     status: ChatBotMembershipStatus.ACTIVE,
     botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
     lastWebhookAt: null,
+    botAccessSource: null,
+    permissionsSnapshot: null as unknown,
     ...overrides,
   };
 }
@@ -474,14 +479,18 @@ describe('PublisherPolicyService', () => {
               is: {
                 publisherBotId: 'publik-bot',
                 status: ChatBotMembershipStatus.ACTIVE,
+                AND: [
+                  {
+                    OR: [
+                      { botAccessSource: null },
+                      { botAccessSource: { not: PUBLISHER_EXPLICIT_ACTIVATION_PENDING_SOURCE } },
+                    ],
+                  },
+                ],
                 OR: [
                   {
                     botAccessState: {
-                      in: [
-                        ChatBotAccessState.CONFIRMED_MEMBER,
-                        ChatBotAccessState.CONFIRMED_ADMIN,
-                        ChatBotAccessState.CONFIRMED_OWNER,
-                      ],
+                      in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
                     },
                   },
                   {
@@ -561,9 +570,34 @@ describe('PublisherPolicyService', () => {
         updatedAt: new Date('2026-08-26T11:00:00.000Z'),
       },
     };
+    const pending = createListEntity(
+      'pending',
+      'Pending',
+      ChatEntityType.CHAT,
+      createConnectedPublisherBinding({
+        botAccessState: ChatBotAccessState.UNKNOWN,
+        lastWebhookAt: new Date(),
+        botAccessSource: PUBLISHER_EXPLICIT_ACTIVATION_PENDING_SOURCE,
+      }),
+    );
+    const writeDenied = createListEntity(
+      'write-denied',
+      'Write denied',
+      ChatEntityType.CHAT,
+      createConnectedPublisherBinding({
+        permissionsSnapshot: {
+          isAdmin: true,
+          isOwner: false,
+          permissionsKnown: true,
+          permissions: ['read_all_messages'],
+        },
+      }),
+    );
     const fixture = createListFixture([
       confirmedAdmin,
       confirmedMember,
+      pending,
+      writeDenied,
       webhookObserved,
       bootstrapOnly,
       denied,
@@ -575,7 +609,7 @@ describe('PublisherPolicyService', () => {
 
     const listed = await fixture.service.listEntities(user);
     expect(listed.items.map((entity) => entity.id).sort()).toEqual(
-      [confirmedAdmin.id, confirmedMember.id, webhookObserved.id, disabled.id].sort(),
+      [confirmedAdmin.id, webhookObserved.id, disabled.id].sort(),
     );
 
     await expect(
@@ -606,6 +640,8 @@ describe('PublisherPolicyService', () => {
         publisherBotId: string;
         status: ChatBotMembershipStatus;
         botAccessState: ChatBotAccessState;
+        botAccessSource: string | null;
+        permissionsSnapshot: unknown;
         lastSeenAt: Date | null;
         lastWebhookAt: Date | null;
         accessBotId: string;
@@ -616,6 +652,8 @@ describe('PublisherPolicyService', () => {
       publisherBotId: overrides.publisherBotId ?? 'publik-bot',
       status: overrides.status ?? ChatBotMembershipStatus.ACTIVE,
       botAccessState: overrides.botAccessState ?? ChatBotAccessState.CONFIRMED_ADMIN,
+      botAccessSource: overrides.botAccessSource ?? null,
+      permissionsSnapshot: overrides.permissionsSnapshot ?? null,
       lastSeenAt: overrides.lastSeenAt ?? null,
       lastWebhookAt: overrides.lastWebhookAt ?? null,
       chat: {
@@ -639,6 +677,19 @@ describe('PublisherPolicyService', () => {
         refreshRow('stale-evidenced', {
           botAccessState: ChatBotAccessState.STALE,
           lastWebhookAt: new Date('2026-08-26T10:00:00.000Z'),
+        }),
+        refreshRow('pending-explicit-activation', {
+          botAccessState: ChatBotAccessState.UNKNOWN,
+          botAccessSource: PUBLISHER_EXPLICIT_ACTIVATION_PENDING_SOURCE,
+          lastWebhookAt: new Date(),
+        }),
+        refreshRow('known-write-denied', {
+          permissionsSnapshot: {
+            isAdmin: true,
+            isOwner: false,
+            permissionsKnown: true,
+            permissions: [],
+          },
         }),
         refreshRow('unknown-no-evidence', { botAccessState: ChatBotAccessState.UNKNOWN }),
         refreshRow('lost-no-evidence', { botAccessState: ChatBotAccessState.LOST }),
@@ -702,23 +753,19 @@ describe('PublisherPolicyService', () => {
           OR: expect.arrayContaining([
             {
               botAccessState: {
-                in: [
-                  ChatBotAccessState.CONFIRMED_MEMBER,
-                  ChatBotAccessState.CONFIRMED_ADMIN,
-                  ChatBotAccessState.CONFIRMED_OWNER,
-                ],
+                in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
               },
             },
             { lastWebhookAt: { not: null } },
           ]),
-          AND: [
+          AND: expect.arrayContaining([
             {
               OR: expect.arrayContaining([
                 { botAccessExpiresAt: null },
                 { botAccessExpiresAt: { lte: expect.any(Date) } },
               ]),
             },
-          ],
+          ]),
           chat: expect.objectContaining({
             AND: expect.arrayContaining([
               {

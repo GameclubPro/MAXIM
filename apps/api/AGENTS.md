@@ -46,6 +46,8 @@
 
 ## MAX Transport
 
+- Major and Publisher activation is exact-bot and administrator-initiated. Confirmed denial/removal or known missing baseline capabilities remain dormant beyond TTL; passive lifecycle, cache refresh and owner promotion cannot restore them. Genuinely new bindings carry their profile's pending-activation source until an authenticated fresh `Старт` or exact-bot private forward proves explicit human and bot admin/owner privileges. Existing transient/unknown refresh evidence is not a new pending connection. Major requires chat read-all plus write-based deletion, or channel deletion plus exact channel GET; Publisher uses its own publication rights. Retained Major purpose ceilings cannot gain known-absent optional rights passively. Dormant ordinary receipts without an already proven healthy peer or owned claim settle only their exact observation marker; never touch shared execution authority or replay them after activation. Both rollback paths must preserve these readers.
+
 - Verify MAX Bot API, Mini Apps, `init_data`, webhooks, and deep links against current docs, in this order:
   1. `https://dev.max.ru/docs/`
   2. `https://dev.max.ru/docs-api/`
@@ -165,7 +167,7 @@
 - Keep `BOT_DENIED` bot-scoped. Do not block an entity or mass-mark edges when another runtime bot has fresh confirmed owner/admin access.
 - Home access is based on fresh `GRANTED` `managed_entity_access_edges` plus active bot membership. Transient/bot-scoped 403 must not prune access before checking that edge.
 - Missing-edge repair is allowlist-backed, preserves fresh denied state, and queues roster validation. Legacy allowlist rows missing bot ownership fields remain repair candidates.
-- Fresh `bot_added` candidates appear only after MAX confirms both user and runtime-bot admin rights. Settings links come after the `Старт` handshake, not directly from onboarding.
+- Fresh `bot_added` observations create only pending connection evidence. They cannot initiate a rights probe or activate service; an explicit administrator `Старт` or private forward to that exact bot must prove both human and bot privileges first. Settings links come after a successful handshake.
 - A successful handshake keeps the access edge, `ChatBotMembership`, `chat:admin-access` cache, and user snapshot aligned.
 - Membership event time is the durable access epoch in SQL. Capture remote probe start before the MAX lookup, serialize grants against that epoch under the parent `Chat` lock, commit SQL before publishing Redis epoch/CAS mutations, and never await Redis while holding a PostgreSQL lock.
 - Discovery uses `bot_added`, recent bootstrap/activity, allowlist, published snapshots, and targeted checks; never restore `GET /chats`, full bot-chat scans, or launch-context assumptions.
