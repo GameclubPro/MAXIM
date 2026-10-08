@@ -4,7 +4,10 @@ import Redis from 'ioredis';
 import { Prisma, createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import type { LegacyRecoveryAdmissionOutput } from './legacy-recovery-admission-preview';
-import type { SourceAbandonmentCatalogProof } from './source-abandonment-redis-catalog';
+import {
+  assertSourceAbandonmentCatalogProofs,
+  type SourceAbandonmentCatalogProof,
+} from './source-abandonment-redis-catalog';
 import type { LegacyRecoveryLiveIssue } from './legacy-recovery-live-protocol';
 import {
   SOURCE_ABANDONMENT_OUTPUT_MAX_BYTES,
@@ -130,10 +133,20 @@ async function gather(
     );
     charge(cost, second.cost);
     issues.push(...second.issues);
-    // Cold evidence must repeat exactly; active online queues can change but both
-    // complete reads must independently satisfy source and accounting invariants.
-    if (queueFenceNonce && first.stableDigest !== second.stableDigest)
-      issues.push({ code: 'redis_inventory_changed', descriptor: 'redis:all' });
+    // FLAG: Stable effect identity excludes only two independent Publisher counts
+    // across inventories. Within one cold inventory, both complete raw catalogs
+    // must still match exactly and independently satisfy every original budget.
+    // Active online queues retain their existing independent-admission behavior.
+    if (queueFenceNonce) {
+      let catalogsStable = true;
+      try {
+        assertSourceAbandonmentCatalogProofs([first.catalog, second.catalog]);
+      } catch {
+        catalogsStable = false;
+      }
+      if (!catalogsStable || first.stableDigest !== second.stableDigest)
+        issues.push({ code: 'redis_inventory_changed', descriptor: 'redis:all' });
+    }
     children = mergeSourceAbandonmentChildren([sql.children, first.children, second.children]);
     childSql = await inventorySourceAbandonmentChildSql(
       tx,

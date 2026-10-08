@@ -291,19 +291,59 @@ export function createLegacyColdStoreAdapter({
       // snapshots. Keep the reviewed artifact immutable and independently bind
       // the fresh diagnostic proof; all decision/source/child fields must agree.
       if (prior) {
+        const independentPublisherNamespaces = new Set([
+          'publisher-start',
+          'publisher-binding-refresh',
+        ]);
+        const projectCatalogs = (catalogs) => {
+          if (selection.protocol === 'source-abandonment-v1') {
+            // FLAG: Tolerance applies only between separately stable inventories.
+            // Never hide a disappearing namespace, invalid count or drift between
+            // this inventory's two complete censuses behind the semantic projection.
+            if (
+              catalogs.length !== 2 ||
+              catalogs.some(
+                (catalog) =>
+                  catalog?.version !== 2 ||
+                  catalog.complete !== true ||
+                  catalog.issue !== null ||
+                  !catalog.namespaceKeyCounts ||
+                  typeof catalog.namespaceKeyCounts !== 'object' ||
+                  Array.isArray(catalog.namespaceKeyCounts) ||
+                  Object.values(catalog.namespaceKeyCounts).some(
+                    (count) => !Number.isSafeInteger(count) || count < 1,
+                  ),
+              ) ||
+              canonicalLegacyColdDigest(catalogs[0].namespaceKeyCounts) !==
+                canonicalLegacyColdDigest(catalogs[1].namespaceKeyCounts)
+            )
+              throw new Error('reviewed_inventory_catalog_changed');
+          }
+          return catalogs.map((catalog) =>
+            Object.fromEntries(
+              Object.entries(catalog)
+                .filter(([field]) => field !== 'cost')
+                .map(([field, value]) => [
+                  field,
+                  field === 'namespaceKeyCounts' && selection.protocol === 'source-abandonment-v1'
+                    ? Object.fromEntries(
+                        Object.entries(value).map(([name, count]) => [
+                          name,
+                          independentPublisherNamespaces.has(name) ? null : count,
+                        ]),
+                      )
+                    : value,
+                ]),
+            ),
+          );
+        };
         const semantic = (value) =>
           Object.fromEntries(
             Object.entries(value)
               .filter(([key]) => !['sqlPlans', 'cost'].includes(key))
               .map(([key, item]) => [
                 key,
-                key === 'redisCatalogs' && Array.isArray(item)
-                  ? item.map((catalog) =>
-                      Object.fromEntries(
-                        Object.entries(catalog).filter(([field]) => field !== 'cost'),
-                      ),
-                    )
-                  : item,
+                key === 'redisCatalogs' && Array.isArray(item) ? projectCatalogs(item) : item,
               ]),
           );
         if (

@@ -1474,6 +1474,70 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     expect(await queue.getJobCounts('paused')).toEqual({ paused: 1 });
   });
 
+  it('accepts Publisher auxiliary TTL expiry only between independently stable cold inventories', async () => {
+    const names = ['publisher-start', 'publisher-binding-refresh'];
+    for (const name of names) {
+      await redis.hset(`bull:${name}:meta`, 'version', 'fixture');
+      await redis.set(`bull:${name}:stalled-check`, '1', 'PX', 60_000);
+    }
+    const reviewed = await collect();
+    expect(reviewed.issues).toEqual([]);
+    expect(reviewed.decision).toBe('READY_TO_INSTALL');
+    for (const name of names) await redis.pexpire(`bull:${name}:stalled-check`, 1);
+    await new Promise((done) => setTimeout(done, 20));
+    for (const name of names) expect(await redis.exists(`bull:${name}:stalled-check`)).toBe(0);
+    const rechecked = await collect();
+    expect(rechecked.issues).toEqual([]);
+    expect(rechecked.decision).toBe('READY_TO_INSTALL');
+    expect(rechecked.redisEvidenceSha256).toBe(reviewed.redisEvidenceSha256);
+    expect(rechecked.inventorySha256).toBe(reviewed.inventorySha256);
+    for (const name of names) {
+      expect(reviewed.redisCatalogs[0]!.namespaceKeyCounts[name]).toBe(2);
+      expect(rechecked.redisCatalogs[0]!.namespaceKeyCounts[name]).toBe(1);
+    }
+    for (const inventory of [reviewed, rechecked]) {
+      expect(inventory.redisCatalogs).toHaveLength(2);
+      expect(inventory.redisCatalogs.every((catalog) => catalog.complete && !catalog.issue)).toBe(
+        true,
+      );
+      expect(inventory.redisCatalogs[0]!.namespaceKeyCounts).toEqual(
+        inventory.redisCatalogs[1]!.namespaceKeyCounts,
+      );
+    }
+    expect(
+      await db.webhookSourceAbandonment.findUnique({ where: { ownerWebhookEventId: ownerId } }),
+    ).toBeNull();
+  });
+
+  it('denies Publisher auxiliary expiry between the two complete reads of one cold inventory', async () => {
+    const key = 'bull:publisher-binding-refresh:stalled-check';
+    await redis.hset('bull:publisher-binding-refresh:meta', 'version', 'fixture');
+    await redis.set(key, '1', 'PX', 60_000);
+    let headers = 0;
+    const reader: SourceAbandonmentRedisReader = {
+      multi: () => redis.multi(),
+      async eval_ro(script, keyCount, ...args) {
+        const result = await redis.eval_ro(script, keyCount, ...args);
+        if (script.startsWith('-- source-abandonment:headers') && ++headers === 2) {
+          await redis.pexpire(key, 1);
+          await new Promise((done) => setTimeout(done, 20));
+          expect(await redis.exists(key)).toBe(0);
+        }
+        return result;
+      },
+    };
+    const result = await collect(reader);
+    expect(headers).toBe(4);
+    expect(result.redisCatalogs).toHaveLength(2);
+    expect(result.redisCatalogs.every((catalog) => catalog.complete && !catalog.issue)).toBe(true);
+    expect(result.decision).toBe('DENY');
+    expect(result.issues).toContainEqual({
+      code: 'redis_inventory_changed',
+      descriptor: 'redis:all',
+    });
+    expect(result.inventorySha256).toBeNull();
+  });
+
   it('denies a cold inventory when a real Redis job changes between the two complete reads', async () => {
     const sql = await inventory();
     expect(sql.issues).toEqual([]);

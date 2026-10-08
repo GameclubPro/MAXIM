@@ -22,6 +22,7 @@ import {
 } from './source-abandonment-cleanup-proof';
 import {
   inventorySourceAbandonmentNamespaces,
+  projectSourceAbandonmentNamespaceCounts,
   type SourceAbandonmentCatalogReader,
   type SourceAbandonmentCatalogProof,
 } from './source-abandonment-redis-catalog';
@@ -551,9 +552,13 @@ export async function inventorySourceAbandonmentRedis(
       return { queueName: row[0], states: row.slice(4, 12) as number[] };
     });
     const completeCatalog = onlineCatalog ?? (await collectCatalog());
-    // Full namespace coverage and per-namespace key counts repeat independently;
-    // generation, exact owners and effect envelopes keep their detailed proofs.
-    proofs.push({ catalog: completeCatalog.namespaceKeyCounts, headers });
+    // FLAG: The collector separately requires both complete raw catalogs to match
+    // within this inventory. Only the two independent Publisher auxiliary counts
+    // may differ across reviewed inventories; every header/owner/effect stays exact.
+    proofs.push({
+      catalog: projectSourceAbandonmentNamespaceCounts(completeCatalog.namespaceKeyCounts),
+      headers,
+    });
     const selectedFound = new Set<string>();
     for (const queue of queueCounts) {
       descriptor = `redis:${queue.queueName}`;

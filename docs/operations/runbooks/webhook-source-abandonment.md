@@ -168,9 +168,19 @@ journal digests, request and selection digests, and the actual adapter hash.
 The proof digest is emitted on stderr for private incident evidence. Original
 journal bindings and the frozen reviewed inventory are unchanged.
 
-Repeated catalog measurements may have different costs. Semantic comparison
-excludes only each catalog's direct `cost` field, while retaining namespace counts,
-version, completion, issue and all other fields. The fresh complete inventory is
+Repeated catalog measurements may have different costs. Modern semantic comparison
+excludes each catalog's direct `cost` field and only the numeric key counts of
+`publisher-start` and `publisher-binding-refresh` between independently stable
+inventories. These separate Publisher private-start and binding-refresh queues
+cannot consume the selected non-command Major group source; their auxiliary TTLs
+may expire while workers are stopped. Namespace presence, every other namespace
+count, version, completion, issue, all queue headers and exact source/owner/action
+evidence remain bound. Both complete raw namespace censuses within each cold
+inventory must still match exactly, including both Publisher counts; the collector
+and installer enforce the original census budgets independently. A disappearing
+namespace, changed relevant orphan count, queue generation, membership, owner
+payload or effect still refuses ordinary apply. This tolerance does not diagnose
+the cause of an observed count change or authorize a refreeze. The fresh complete inventory is
 saved as a separate recheck proof, and writers consume the original reviewed
 artifact. A changed source, child, namespace or completeness result still refuses
 installation.

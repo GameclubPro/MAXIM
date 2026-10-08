@@ -8,6 +8,7 @@ import { mergeSourceAbandonmentChildren } from './source-abandonment-collect';
 import {
   assertSourceAbandonmentCatalogProofs,
   inventorySourceAbandonmentNamespaces,
+  projectSourceAbandonmentNamespaceCounts,
   readMeasuredSourceCatalogScript,
   SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT,
   type SourceAbandonmentCatalogReader,
@@ -111,6 +112,32 @@ function redisFixture(keys: string[] = []) {
 }
 
 describe('exact source abandonment bounded evidence', () => {
+  it('preserves namespace presence and every count outside the two independent Publisher queues', () => {
+    const first = {
+      'publisher-start': 5,
+      'publisher-binding-refresh': 7,
+      'max-actions-background': 9,
+    };
+    const stable = projectSourceAbandonmentNamespaceCounts(first);
+    expect(stable).toEqual({
+      'publisher-start': null,
+      'publisher-binding-refresh': null,
+      'max-actions-background': 9,
+    });
+    expect(projectSourceAbandonmentNamespaceCounts({ ...first, 'publisher-start': 3 })).toEqual(
+      stable,
+    );
+    expect(
+      projectSourceAbandonmentNamespaceCounts({ ...first, 'max-actions-background': 8 }),
+    ).not.toEqual(stable);
+    expect(
+      projectSourceAbandonmentNamespaceCounts({
+        'publisher-start': 5,
+        'max-actions-background': 9,
+      }),
+    ).not.toEqual(stable);
+  });
+
   it('records actual server cost despite delayed delivery and frozen Lua TIME', async () => {
     const reader = measuredFixture({
       eval_ro: async () => {

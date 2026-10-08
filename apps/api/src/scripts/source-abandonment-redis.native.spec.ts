@@ -362,6 +362,20 @@ native('modern full namespace census on Redis 7', () => {
     expect(changed.stableDigest).not.toBe(first.stableDigest);
     await redis.incr('bull:max-actions-background:id');
     expect((await observe()).stableDigest).not.toBe(changed.stableDigest);
+    const beforeOwner = await observe();
+    await redis.hset('bull:moderation-default-0:selected-owner', 'progress', '1');
+    expect((await observe()).stableDigest).not.toBe(beforeOwner.stableDigest);
+    for (const name of ['max-actions-background', 'moderation-default-0', 'photo-duplicates']) {
+      const beforeOrphan = await observe();
+      await redis.hset(`bull:${name}:orphan-fixture`, 'data', '{}');
+      expect((await observe()).stableDigest).not.toBe(beforeOrphan.stableDigest);
+    }
+    for (const name of ['publisher-start', 'publisher-binding-refresh']) {
+      await redis.hset(`bull:${name}:meta`, 'version', 'fixture');
+      const beforeHeader = await observe();
+      await redis.incr(`bull:${name}:id`);
+      expect((await observe()).stableDigest).not.toBe(beforeHeader.stableDigest);
+    }
   });
 
   it('retains real delayed cleanup bytes while requiring its separately resolved parent proof', async () => {

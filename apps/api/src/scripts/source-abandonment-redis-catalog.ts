@@ -189,6 +189,23 @@ export type SourceAbandonmentCatalogProof = Readonly<{
 const integer = (value: unknown): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0;
 const known = new Set<string>(LEGACY_RECOVERY_LIVE_QUEUE_NAMES);
+const independentPublisherNamespaces = new Set(['publisher-start', 'publisher-binding-refresh']);
+
+// FLAG: Separate Publisher private starts and binding refreshes cannot consume
+// the selected Major group source. Their auxiliary TTLs may expire between two
+// independently stable inventories. Preserve namespace presence and every other
+// count; full census proofs, all queue headers and exact effect evidence remain.
+// This projection must never replace equality of both raw counts in one inventory.
+export function projectSourceAbandonmentNamespaceCounts(
+  counts: Readonly<Record<string, number>>,
+): Record<string, number | null> {
+  return Object.fromEntries(
+    Object.entries(counts)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, count]) => [name, independentPublisherNamespaces.has(name) ? null : count]),
+  );
+}
+
 const refusalCodes = new Set([
   'CATALOG_DATABASE_LIMIT',
   'CATALOG_PAGE_LIMIT',
