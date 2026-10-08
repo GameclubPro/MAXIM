@@ -18,6 +18,12 @@ import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
 import { DeferredWebhookScopes, type DeferredScopeState } from './webhook-outbox-deferred-scopes';
 import { WebhookPreparationAdmission } from './webhook-preparation-admission';
+import { priorWebhookExecutionProofQuery } from './webhook-prior-execution-proof';
+import { DORMANT_BOT_OBSERVATION_MARKER } from './webhook-dormant-observation';
+import {
+  WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
+  WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX,
+} from './webhook-timeout-quarantine';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
@@ -1079,6 +1085,103 @@ native('fleet admission isolation from one unknown ordered scope', () => {
       await Promise.all(internals.activeEnqueueUnits.values());
       admission.mockRestore();
       routing.mockRestore();
+    }
+  });
+
+  it('keeps prior execution claim probes correlated across retained history and semantic skew', async () => {
+    const prefix = `prior-proof-${randomUUID()}:`;
+    const semanticKey = `${prefix}target`;
+    const ownerId = `${prefix}observation:2002`;
+    try {
+      await prisma.$executeRaw`
+        INSERT INTO webhook_events
+          (id, dedup_key, semantic_key, status, raw_payload, normalized_payload, created_at, processed_at)
+        SELECT ${prefix} || 'history:' || n, ${prefix} || 'dedup:' || n,
+          ${prefix} || 'semantic:' || n, 'PROCESSED', '{}', '{}',
+          '2025-01-01'::timestamp + n * interval '1 second', '2025-01-01'::timestamp
+        FROM generate_series(1, 20000) n`;
+      await prisma.$executeRaw`
+        INSERT INTO webhook_execution_claims
+          (id, kind, semantic_key, webhook_event_id, status, created_at, updated_at)
+        SELECT ${prefix} || 'claim:' || n, 'EXECUTION', ${prefix} || 'semantic:' || n,
+          CASE WHEN n <= 20000 THEN ${prefix} || 'history:' || n ELSE NULL END,
+          'COMPLETED', '2025-01-01', '2025-01-01'
+        FROM generate_series(1, 50000) n`;
+      await prisma.$executeRaw`
+        INSERT INTO webhook_events
+          (id, dedup_key, semantic_key, status, raw_payload, normalized_payload,
+           error_message, created_at, processed_at)
+        SELECT ${prefix} || 'observation:' || n, ${prefix} || 'observation-dedup:' || n,
+          ${semanticKey}, 'PROCESSED', '{}', '{}', ${DORMANT_BOT_OBSERVATION_MARKER},
+          '2026-01-01'::timestamp + n * interval '1 second', '2026-01-01'::timestamp
+        FROM generate_series(1, 2002) n`;
+      await prisma.$executeRaw`ANALYZE webhook_events`;
+      await prisma.$executeRaw`ANALYZE webhook_execution_claims`;
+      const query = priorWebhookExecutionProofQuery(semanticKey, ownerId);
+      const explained = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+        Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`,
+      );
+      const nodes: Array<Record<string, unknown>> = [];
+      const visit = (value: unknown) => {
+        if (Array.isArray(value)) return value.forEach(visit);
+        if (!value || typeof value !== 'object') return;
+        const row = value as Record<string, unknown>;
+        if (typeof row['Node Type'] === 'string') nodes.push(row);
+        Object.values(row).forEach(visit);
+      };
+      visit(explained);
+      const claims = nodes.filter((node) => node['Relation Name'] === 'webhook_execution_claims');
+      expect(claims).toHaveLength(1);
+      expect(claims[0]).toMatchObject({
+        'Index Name': 'webhook_execution_claims_event_kind_idx',
+        'Actual Rows': 0,
+        'Actual Loops': 2001,
+      });
+      expect(String(claims[0]!['Node Type'])).toContain('Index');
+      expect(String(claims[0]!['Index Cond'])).toContain('webhook_event_id = prior.id');
+      expect(JSON.stringify(explained)).not.toMatch(/hashed SubPlan/u);
+      const events = nodes.filter((node) => node['Relation Name'] === 'webhook_events');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        'Index Name': 'webhook_events_semantic_order_idx',
+        'Actual Rows': 0,
+        'Rows Removed by Filter': 2002,
+        'Actual Loops': 1,
+      });
+      expect(String(events[0]!['Index Cond'])).toContain('semantic_key =');
+      expect(await prisma.$queryRaw(query)).toEqual([]);
+      const proofId = `${prefix}observation:1`;
+      await prisma.webhookExecutionClaim.create({
+        data: {
+          id: `${prefix}positive`,
+          kind: 'RETAINED_UNKNOWN_EFFECT',
+          semanticKey,
+          webhookEventId: proofId,
+        },
+      });
+      expect(await prisma.$queryRaw(query)).toEqual([{ id: proofId }]);
+      await prisma.webhookExecutionClaim.delete({ where: { id: `${prefix}positive` } });
+      for (const timeoutPrefix of [
+        WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
+        WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX,
+      ]) {
+        await prisma.webhookEvent.update({
+          where: { id: proofId },
+          data: {
+            status: 'FAILED',
+            errorMessage: `${timeoutPrefix.replaceAll('_', 'x')}: fixture`,
+          },
+        });
+        expect(await prisma.$queryRaw(query)).toEqual([]);
+        await prisma.webhookEvent.update({
+          where: { id: proofId },
+          data: { errorMessage: `${timeoutPrefix}: fixture` },
+        });
+        expect(await prisma.$queryRaw(query)).toEqual([{ id: proofId }]);
+      }
+    } finally {
+      await prisma.webhookExecutionClaim.deleteMany({ where: { id: { startsWith: prefix } } });
+      await prisma.webhookEvent.deleteMany({ where: { id: { startsWith: prefix } } });
     }
   });
 

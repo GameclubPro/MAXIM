@@ -257,8 +257,8 @@ const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'user_removed',
 ]);
 const MEMBERSHIP_ACTIVITY_UPDATE_TYPES = new Set(['user_added', 'user_removed']);
+// FLAG: bot_added records pending activation only; it cannot require or probe a live executor.
 const INLINE_EXECUTION_OWNER_REFRESH_UPDATE_TYPES = new Set([
-  'bot_added',
   'bot_started',
   'chat_title_changed',
   'user_added',

@@ -35,6 +35,25 @@ At 07:29:59 the host reported 8 vCPU, about 24 GiB RAM with 10.2 GiB available,
 to 6,991 seconds. These are capacity observations, not proof that doubling
 concurrency will double throughput.
 
+At 08:33:39 both readiness endpoints still returned 503 with healthy database and
+Redis probes; raw operational lag reached 10,810 seconds. All 24 webhook queues
+remained unpaused and unowned. A later exact-image enqueue sample, 08:41:03–08:43:03,
+contained two complete admission reporting intervals with 1,351 and 1,309
+admissions respectively. The six-slot cap was reached in both. Four rate-limited
+batch samples showed 933–1,147 ms selection and 286–304 preparation-blocked work
+units out of 400. No allowlisted SQL or preparation error signal appeared in that
+bounded tail; neither these logs nor action-health counters prove recovery.
+
+A separate bounded read-only SQL/Redis probe at 08:20:26–08:20:27 selected the
+oldest eight QUEUED receipts by their status/creation index, then read each row by
+primary key and its exact BullMQ job. All eight jobs were delayed, unlocked and
+still retained their receipt; none had a legacy or modern source-release pointer.
+Four message receipts had 5,036–6,065 started attempts, and four `bot_added`
+receipts had 1,522–1,664. Their SQL enqueue count was one with no saved error.
+SQL and Redis observations were not atomic. These retries require a separate
+execution-path diagnosis from preparation throughput. The older predecessor
+catalog omitted released-owner filtering and cannot establish a current blocker.
+
 ## Reproduced defect and correction
 
 Outbox dispatch replenished preparation slots for one second, then stopped
@@ -56,6 +75,67 @@ process limit. Fleet Prisma pools total 72 plus six dedicated admin read
 connections; no other role pool, MAX limit or native-worker budget is raised.
 The expanded admission regression also checks priority reservation, rejection
 without a memory-only waiting queue, and shutdown drain.
+
+## Repeated preparation and observation fences
+
+The indexed canonical/ordering probe at 08:53:38 found that the four oldest
+message jobs owned pristine READY claims: preparation existed, but business
+execution had not started, and there was no lease or command journal. Each had
+an earlier PROCESSED semantic mirror and no physical predecessor before its
+semantic anchor. One semantic group also contained a separate replay fence.
+The four `bot_added` jobs likewise owned pristine READY claims, with null
+executors and no execution deadline. This single bounded snapshot does not
+establish all remaining fleet blockers.
+
+The follow-up at 09:14:52 confirmed exact dormant completion envelopes without
+any linked claim for all other semantic receipts of three message jobs. All
+four bot-addition payloads matched their persisted receiving bot and sole added
+member. The fourth message group additionally contained three later, scrubbed
+`OPERATOR_DISCARDED` receipts without claims. Those receipts were neither the
+semantic anchor nor the canonical owner. They are not eligible authority for
+the existing operator-discard propagation helper, and the current prepared,
+unstarted owner is outside the started-source abandonment protocol. The valid
+observation correction deliberately retains this independent replay fence.
+
+The corresponding indexed RECEIVED sample at 09:27:46 selected eight receipts
+from 06:21:28–06:21:44. All were unprepared and had a complete, unsaturated
+predecessor window. Three waited behind the known 05:37 QUEUED owner. The other
+five waited behind four distinct started owners from 7 October (11:25:18.265,
+11:25:18.267, 14:04:41.023 and 18:36:58.285). These FAILED owners retained their
+READY prepared, business-started claims, with no completion checkpoint or lease,
+and neither release pointer. This newer probe positively establishes unreleased
+started owners; the earlier catalog alone could not. They need the supported
+exact-source recovery protocol, not execution replay or the dormant-reader fix.
+
+Native PostgreSQL/Redis regressions reproduced two additional runtime defects.
+First, `bot_added` requested a live moderation executor during both preparation
+and worker entry, although new connections must remain pending until explicit
+administrator activation. No execution deadline exists for this lifecycle
+event, so the failed requirement could retry indefinitely. Bot addition now
+retains exact receiving-bot, semantic, lease and hold proofs while allowing only
+its explicit join-denylist handler. It performs no ordinary moderation,
+callback, passive rights probe or automatic activation. Thirteen new native
+cases cover malformed identity and preparation, replay/lease fences, and the
+silent ordinary and denylist paths.
+
+Second, the worker treated every other PROCESSED semantic receipt as previous
+business execution. A receipt-only `DORMANT_BOT_OBSERVATION_V1` could therefore
+block the independent healthy owner forever. The regression failed with
+`Legacy mirror retains business execution proof` before the correction. The
+worker now excludes only the exact dormant marker with a processed timestamp,
+no queue or retry, no timeout quarantine and no linked claim of any kind. It
+retains the earliest semantic order anchor and every other completion or replay
+fence. Focused native PostgreSQL/Redis regressions cover interleaved
+messages, unchanged observed receipts, repeated owner delivery, malformed
+observation proofs and a separate later replay-fenced mirror.
+
+The prior-execution proof uses the exact semantic index and a receipt-correlated
+claim lookup. During review, the equivalent Prisma relation filter produced a
+hashed subplan scanning all 50,000 retained claims in the skew fixture. An explicit
+correlated `EXISTS` with `OFFSET 0` preserves indexed receipt probes; exact prefix
+equality also avoids interpreting marker underscores as SQL wildcards. The native
+plan regression includes 20,000 retained receipts, 50,000 claims and a 2,002-receipt
+semantic group. Missing raw-query capability fails closed.
 
 ## Acceptance
 

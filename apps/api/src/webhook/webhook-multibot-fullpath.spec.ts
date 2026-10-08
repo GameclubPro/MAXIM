@@ -787,6 +787,217 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
     },
   );
 
+  async function botAddedObservationFixture() {
+    const s = await fixture(2, 'on');
+    await s.pause();
+    const chatId = (await s.seedCatalog(1))[0]!;
+    const botId = s.bots[1]!.id;
+    await s.prisma.chatBotMembership.deleteMany({ where: { chatId } });
+    await s.prisma.chat.update({
+      where: { id: chatId },
+      data: { primaryBotId: null, botId: null, routingState: 'NO_ELIGIBLE_BOT' },
+    });
+    const update = new WebhookParser().parse(
+      {
+        update_id: randomUUID(),
+        update_type: 'bot_added',
+        chat_id: chatId,
+        timestamp: Date.now(),
+        user: { user_id: 'fixture-user', first_name: 'Fixture administrator' },
+        callback: { callback_id: randomUUID(), payload: 'injected-poll-callback' },
+        new_members: [{ user_id: 'injected-member', is_bot: false }],
+      },
+      { botId },
+    );
+    const id = (await s.ingress.storeReceipt(update, null)).webhookEventId!;
+    s.receiptIds.push(id);
+    const readiness = jest.spyOn(s.readiness, 'ensureReady');
+    await s.ingress.preparePersistedWebhookEvent(id);
+    expect(readiness).not.toHaveBeenCalled();
+    expect(s.requests).toEqual([]);
+    await s.prisma.webhookEvent.update({ where: { id }, data: { status: 'QUEUED' } });
+    expect(await s.readiness.ensureReady({ chatId })).toBeNull();
+    readiness.mockClear();
+    const handler = jest.spyOn(s.moderation, 'handleUpdate');
+    const poll = { tryHandleCallback: jest.fn().mockResolvedValue(false) };
+    Object.assign(s.moderation, { managedPollService: poll });
+    return { s, id, chatId, botId, readiness, handler, poll };
+  }
+
+  it.each(['receiving', 'null', 'peer'] as const)(
+    'settles prepared bot_added without activating its dormant receiving bot, executor=%s',
+    async (executor) => {
+      const f = await botAddedObservationFixture();
+      const claim = await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: f.id, kind: 'EXECUTION' },
+      });
+      await f.s.prisma.webhookExecutionClaim.update({
+        where: { id: claim.id },
+        data: {
+          executionBotId:
+            executor === 'receiving' ? f.botId : executor === 'peer' ? f.s.bots[0]!.id : null,
+        },
+      });
+      const membership = await f.s.prisma.chatBotMembership.findMany({
+        where: { chatId: f.chatId },
+      });
+      const requests = f.s.requests.length;
+      await f.s.moderation.processWebhookEvent(f.id);
+      await f.s.moderation.processWebhookEvent(f.id);
+      expect(
+        await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } }),
+      ).toMatchObject({ status: 'PROCESSED', executionDeadlineAt: null });
+      expect(
+        await f.s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+      ).toMatchObject({
+        status: 'COMPLETED',
+        executionBotId: f.botId,
+        preparedAt: claim.preparedAt,
+        businessStartedAt: expect.any(Date),
+        leaseToken: null,
+        leaseExpiresAt: null,
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+      expect(await f.s.prisma.chatBotMembership.findMany({ where: { chatId: f.chatId } })).toEqual(
+        membership,
+      );
+      expect(f.handler).toHaveBeenCalledTimes(1);
+      expect(f.readiness).not.toHaveBeenCalled();
+      expect(f.poll.tryHandleCallback).not.toHaveBeenCalled();
+      expect(f.s.requests).toHaveLength(requests);
+      expect(f.s.effects).toEqual([]);
+    },
+  );
+
+  it('preserves the explicit bot_added join denylist on the exact receiving bot', async () => {
+    const f = await botAddedObservationFixture();
+    const leave = jest.spyOn(f.s.max, 'leaveCurrentChat').mockResolvedValue(undefined);
+    Object.assign(f.s.moderation, { blockedJoinChatIds: new Set([f.chatId]) });
+    await f.s.prisma.webhookExecutionClaim.updateMany({
+      where: { webhookEventId: f.id, kind: 'EXECUTION' },
+      data: { executionBotId: f.s.bots[0]!.id },
+    });
+    await f.s.moderation.processWebhookEvent(f.id);
+    await f.s.moderation.processWebhookEvent(f.id);
+    expect(leave).toHaveBeenCalledTimes(1);
+    expect(leave).toHaveBeenCalledWith(f.chatId, { botId: f.botId });
+    expect(await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } })).toMatchObject({
+      status: 'PROCESSED',
+    });
+    expect(f.readiness).not.toHaveBeenCalled();
+    expect(f.poll.tryHandleCallback).not.toHaveBeenCalled();
+  });
+
+  it.each(['unprepared', 'result', 'identity', 'subject', 'started', 'quarantined'] as const)(
+    'retains bot_added observation fences for %s authority',
+    async (caseName) => {
+      const f = await botAddedObservationFixture();
+      const claim = await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: f.id },
+      });
+      if (caseName === 'unprepared')
+        await f.s.prisma.webhookExecutionClaim.update({
+          where: { id: claim.id },
+          data: { preparedAt: null },
+        });
+      if (caseName === 'result')
+        await f.s.prisma.webhookExecutionClaim.update({
+          where: { id: claim.id },
+          data: { commandResult: { kind: 'UNVERIFIED_EFFECT' } },
+        });
+      if (caseName === 'identity')
+        await f.s.prisma.webhookEvent.update({
+          where: { id: f.id },
+          data: { botId: f.s.bots[0]!.id },
+        });
+      if (caseName === 'subject') {
+        const event = await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } });
+        const update = {
+          ...(event.normalizedPayload as unknown as MaxUpdate),
+          membership: { action: 'added' as const, memberUserIds: ['unrelated-member'] },
+        };
+        const semanticKey = buildWebhookSemanticEventKey(update)!;
+        await f.s.prisma.webhookEvent.update({
+          where: { id: f.id },
+          data: { normalizedPayload: update as unknown as Prisma.InputJsonValue, semanticKey },
+        });
+        await f.s.prisma.webhookExecutionClaim.update({
+          where: { id: claim.id },
+          data: { semanticKey },
+        });
+      }
+      if (caseName === 'started')
+        await f.s.prisma.webhookExecutionClaim.update({
+          where: { id: claim.id },
+          data: { businessStartedAt: new Date() },
+        });
+      if (caseName === 'quarantined')
+        await f.s.prisma.webhookEvent.update({
+          where: { id: f.id },
+          data: {
+            status: 'FAILED',
+            errorMessage: 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:fixture: retained',
+          },
+        });
+      if (caseName === 'started' || caseName === 'quarantined')
+        await expect(f.s.moderation.processWebhookEvent(f.id)).resolves.toBeUndefined();
+      else
+        await expect(f.s.moderation.processWebhookEvent(f.id)).rejects.toThrow(
+          'Bot addition observation preparation proof incomplete',
+        );
+      expect(
+        (await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } })).status,
+      ).not.toBe('PROCESSED');
+      expect(
+        (await f.s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }))
+          .status,
+      ).not.toBe('COMPLETED');
+      expect(f.handler).not.toHaveBeenCalled();
+      expect(f.readiness).not.toHaveBeenCalled();
+      expect(f.poll.tryHandleCallback).not.toHaveBeenCalled();
+      expect(f.s.effects).toEqual([]);
+    },
+  );
+
+  it.each(['executor', 'preparation', 'receipt'] as const)(
+    'denies prepared bot_added observation %s races at the start CAS',
+    async (changed) => {
+      const f = await botAddedObservationFixture();
+      const claim = await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: f.id },
+      });
+      await f.s.prisma.webhookExecutionClaim.update({
+        where: { id: claim.id },
+        data: { executionBotId: null },
+      });
+      const originalTransaction = f.s.prisma.$transaction.bind(f.s.prisma);
+      const transaction = jest
+        .spyOn(f.s.prisma, '$transaction')
+        .mockImplementationOnce(async (...args: unknown[]) => {
+          if (changed === 'receipt')
+            await f.s.prisma.webhookEvent.update({
+              where: { id: f.id },
+              data: { botId: f.s.bots[0]!.id },
+            });
+          else
+            await f.s.prisma.webhookExecutionClaim.update({
+              where: { id: claim.id },
+              data:
+                changed === 'executor' ? { executionBotId: f.s.bots[0]!.id } : { preparedAt: null },
+            });
+          return originalTransaction(...(args as Parameters<typeof originalTransaction>));
+        });
+      await expect(f.s.canonical.prepareExecution(f.id, f.s.bots[0]!.id)).rejects.toThrow(
+        'Canonical business-start fence changed',
+      );
+      transaction.mockRestore();
+      expect(
+        await f.s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+      ).toMatchObject({ businessStartedAt: null, completedAt: null, leaseToken: null });
+      expect(f.s.effects).toEqual([]);
+    },
+  );
+
   async function messageRemovalObservationFixture(clearPrimary = false) {
     const s = await fixture(2, 'on');
     await s.pause();

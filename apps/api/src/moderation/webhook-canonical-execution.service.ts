@@ -4,6 +4,7 @@ import {
 } from '../webhook/webhook-legacy-fresh-command';
 import { holdUnverifiedLegacyExecution } from '../webhook/webhook-legacy-authority';
 import { settleOperatorDiscardedMirror } from '../webhook/webhook-operator-discard-mirror';
+import { priorWebhookExecutionProofQuery } from '../webhook/webhook-prior-execution-proof';
 import {
   WebhookLegacyHoldService,
   legacyOrderReleasedSql,
@@ -226,10 +227,11 @@ export class WebhookCanonicalExecutionService {
     }
 
     const normalizedUpdateType = update.type.trim().toLowerCase();
+    const botAddedObservation = normalizedUpdateType === 'bot_added';
     const preparedObservationOnly =
       normalizedUpdateType === 'user_removed' || normalizedUpdateType === 'bot_removed';
     const localObservationOnly =
-      preparedObservationOnly || normalizedUpdateType === 'message_removed';
+      preparedObservationOnly || botAddedObservation || normalizedUpdateType === 'message_removed';
     const executionClaimModel = this.executionClaimModel;
     const semanticKey = buildWebhookSemanticEventKey(update);
     if (semanticKey && !webhookEvent.semanticKey) {
@@ -489,8 +491,9 @@ export class WebhookCanonicalExecutionService {
 
     const receivingBotId = this.normalizeBotId(webhookEvent.botId);
     const privateDialogBotId = privateDirectDialog ? receivingBotId : null;
-    // FLAG: Local removals require exact pristine preparation and authenticated receipt
-    // identity. Message removal still owes its duplicate-history tombstone in the handler.
+    // FLAG: Local lifecycle work requires exact pristine preparation and authenticated
+    // receipt identity. Bot addition only owes its explicit join-denylist check; message
+    // removal still owes its duplicate-history tombstone in the handler.
     if (
       localObservationOnly &&
       (!executionClaim ||
@@ -504,14 +507,22 @@ export class WebhookCanonicalExecutionService {
         !semanticKey ||
         webhookEvent.semanticKey !== semanticKey ||
         !receivingBotId ||
+        (botAddedObservation &&
+          (!update.message?.chatId ||
+            update.membership?.action !== 'added' ||
+            !Array.isArray(update.membership.memberUserIds) ||
+            update.membership.memberUserIds.length !== 1 ||
+            update.membership.memberUserIds[0] !== receivingBotId)) ||
         (normalizedUpdateType === 'message_removed' &&
           (!update.message?.chatId || !update.message.messageId)) ||
         this.normalizeBotId(update.botId) !== receivingBotId)
     )
       throw new WebhookPreparationDeferredError(
-        preparedObservationOnly
-          ? 'Membership removal observation preparation proof incomplete'
-          : 'Message removal observation preparation proof incomplete',
+        botAddedObservation
+          ? 'Bot addition observation preparation proof incomplete'
+          : preparedObservationOnly
+            ? 'Membership removal observation preparation proof incomplete'
+            : 'Message removal observation preparation proof incomplete',
         1_000,
       );
     // FLAG: A private dialog cannot fail over to another bot's credentials. Old null
@@ -541,6 +552,7 @@ export class WebhookCanonicalExecutionService {
       webhookEvent,
       update,
       activeBotId:
+        (botAddedObservation ? receivingBotId : null) ??
         privateDialogBotId ??
         this.normalizeBotId(executionClaim?.executionBotId) ??
         this.normalizeBotId(webhookEvent.botId) ??
@@ -2537,20 +2549,14 @@ export class WebhookCanonicalExecutionService {
         hasWebhookReplayFence(anchor)
       )
         throw new WebhookPreparationDeferredError('Semantic order anchor proof pending', 1_000);
-      const priorExecution = await this.prisma.webhookEvent.findFirst({
-        where: {
-          semanticKey,
-          id: { not: webhookEvent.id },
-          OR: [
-            { status: WebhookStatus.PROCESSED },
-            { timeoutQuarantineExpiresAt: { not: null } },
-            { errorMessage: { contains: 'AMBIGUOUS', mode: 'insensitive' } },
-            { errorMessage: { startsWith: WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } },
-            { errorMessage: { startsWith: 'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED' } },
-          ],
-        },
-        select: { id: true },
-      });
+      if (typeof this.prisma.$queryRaw !== 'function')
+        throw new WebhookPreparationDeferredError(
+          'Prior semantic execution proof unavailable',
+          1_000,
+        );
+      const [priorExecution] = await this.prisma.$queryRaw<Array<{ id: string }>>(
+        priorWebhookExecutionProofQuery(semanticKey, webhookEvent.id),
+      );
       if (priorExecution)
         throw new WebhookPreparationDeferredError(
           'Legacy mirror retains business execution proof',

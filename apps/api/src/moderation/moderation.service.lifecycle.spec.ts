@@ -3960,6 +3960,38 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('never treats bot_added callback or service-member fields as moderation work', async () => {
+    const ruleEngine = { detect: jest.fn() };
+    const maxClient = { sendMessage: jest.fn(), leaveCurrentChat: jest.fn() };
+    const poll = { tryHandleCallback: jest.fn().mockResolvedValue(true) };
+    const duplicate = { observeLifecycle: jest.fn() };
+    const service = new ModerationService(
+      {} as never,
+      ruleEngine as never,
+      {} as never,
+      maxClient as never,
+    );
+    Object.assign(service, { managedPollService: poll, messageDuplicateService: duplicate });
+    const update = new WebhookParser().parse(
+      {
+        update_id: 'fixture-bot-added-injected-effects',
+        update_type: 'bot_added',
+        chat_id: '-100-fixture',
+        timestamp: Date.now(),
+        user: { user_id: 'fixture-actor' },
+        callback: { callback_id: 'fixture-callback', payload: 'injected' },
+        new_members: [{ user_id: 'fixture-member' }],
+      },
+      { botId: 'fixture-bot' },
+    );
+    await service.handleUpdate(update);
+    expect(duplicate.observeLifecycle).not.toHaveBeenCalled();
+    expect(poll.tryHandleCallback).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.leaveCurrentChat).not.toHaveBeenCalled();
+  });
+
   it('does not treat the human bot_added actor as a joined service member', async () => {
     const prisma = {
       chat: {
