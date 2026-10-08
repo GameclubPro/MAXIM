@@ -768,6 +768,14 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
       `;
       if (receipts.some((receipt) => receipt.errorMessage === DORMANT_BOT_OBSERVATION_MARKER))
         return false;
+      // FLAG: Completion locks an existing claim before settling its receipt. Read its
+      // committed identity without a row lock; an INSERT conflict here would invert
+      // that order while admission holds the receipt and deadlock the two paths.
+      const existingClaim = await tx.webhookExecutionClaim.findUnique({
+        where: { kind_semanticKey: { kind: EXECUTION_CLAIM_KIND, semanticKey } },
+        select: { id: true },
+      });
+      if (existingClaim) return true;
       await tx.webhookExecutionClaim.createMany({
         data: [
           {

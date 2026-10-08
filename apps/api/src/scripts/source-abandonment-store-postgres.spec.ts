@@ -601,7 +601,15 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
           },
           { jobId: childKey, delay },
         );
-        const queueBefore = await redis.dump(`bull:max-actions-interactive:${childKey}`);
+        // FLAG: Redis may serialize identical hash fields in a different RDB order.
+        // Compare every BullMQ job field and its delayed score, not DUMP encoding bytes.
+        const queueBefore = await redis.hgetall(`bull:max-actions-interactive:${childKey}`);
+        const delayedScoreBefore = await redis.zscore(
+          'bull:max-actions-interactive:delayed',
+          childKey,
+        );
+        expect(Object.keys(queueBefore).length).toBeGreaterThan(0);
+        expect(delayedScoreBefore).not.toBeNull();
         const parentBefore = await db.maxActionLedgerEntry.findUniqueOrThrow({
           where: { jobId: parentKey },
         });
@@ -663,7 +671,12 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         expect(
           await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: parentKey } }),
         ).toEqual(parentBefore);
-        expect(await redis.dump(`bull:max-actions-interactive:${childKey}`)).toEqual(queueBefore);
+        expect(await redis.hgetall(`bull:max-actions-interactive:${childKey}`)).toEqual(
+          queueBefore,
+        );
+        expect(await redis.zscore('bull:max-actions-interactive:delayed', childKey)).toBe(
+          delayedScoreBefore,
+        );
         expect(await redis.zcard('bull:max-actions-interactive:delayed')).toBe(1);
         expect(
           await db.webhookSourceAbandonment.findUnique({ where: { ownerWebhookEventId: ownerId } }),

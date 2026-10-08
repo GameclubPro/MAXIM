@@ -23,6 +23,7 @@ import type { WebhookHotPathProfile } from '../moderation/moderation.service.sup
 import { Prisma } from '../prisma/prisma-client';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { DORMANT_BOT_OBSERVATION_MARKER } from './webhook-dormant-observation';
 import { WebhookParser } from './webhook.parser';
 import type { ProcessWebhookJob } from './webhook-queues';
 
@@ -664,7 +665,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
   }
 
   it.each([false, true])(
-    'prepares actual user_removed with no eligible route before admission, stored owner=%s',
+    'persists user_removed denial without probing a dormant sole bot, stored owner=%s',
     async (keepStoredOwner) => {
       const s = await fixture(1, 'on');
       await s.pause();
@@ -700,10 +701,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       const handler = jest.spyOn(s.moderation, 'handleUpdate');
       const cachePublication = jest.spyOn(s.cache, 'applyAdminAccessEpochMutation');
       const roster = {
-        scheduleChatAdminRosterSync: jest
-          .fn()
-          .mockRejectedValueOnce(new Error('Fixture roster handoff pending'))
-          .mockResolvedValue(undefined),
+        scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(undefined),
       };
       const poll = { tryHandleCallback: jest.fn() };
       Object.assign(s.ingress, {
@@ -713,15 +711,21 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       });
       Object.assign(s.moderation, { managedPollService: poll });
       const requestCount = s.requests.length;
-      await expect(s.ingress.preparePersistedWebhookEvent(id)).rejects.toThrow(
-        'Chat admin roster handoff pending',
-      );
+      const dormantMembership = await s.prisma.chatBotMembership.findUniqueOrThrow({
+        where: { chatId_botId: { chatId, botId } },
+      });
+      await expect(s.ingress.preparePersistedWebhookEvent(id)).resolves.toMatchObject({
+        canonical: true,
+        prepared: true,
+        executionBotId: null,
+      });
       expect(
         await s.prisma.webhookExecutionClaim.findFirstOrThrow({ where: { webhookEventId: id } }),
-      ).toMatchObject({ status: 'PENDING', preparedAt: null, businessStartedAt: null });
-      await expect(s.moderation.processWebhookEvent(id)).rejects.toThrow(
-        'Canonical webhook claim is not ready',
-      );
+      ).toMatchObject({
+        status: 'READY',
+        preparedAt: expect.any(Date),
+        businessStartedAt: null,
+      });
       expect(
         await s.prisma.managedEntityAccessEdge.findUniqueOrThrow({
           where: { chatId_userId_botId: { chatId, userId: 'fixture-user', botId } },
@@ -740,7 +744,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       await expect(s.ingress.preparePersistedWebhookEvent(id)).resolves.toMatchObject({
         canonical: true,
         prepared: true,
-        executionBotId: keepStoredOwner ? botId : null,
+        executionBotId: null,
       });
       expect(
         await s.prisma.chatMembershipActivityEvent.count({
@@ -755,7 +759,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       const membership = await s.prisma.chatBotMembership.findUniqueOrThrow({
         where: { chatId_botId: { chatId, botId } },
       });
-      expect(membership).toMatchObject({ botAccessState: 'CONFIRMED_MEMBER' });
+      expect(membership).toEqual(dormantMembership);
       await s.moderation.processWebhookEvent(id);
       await s.moderation.processWebhookEvent(id);
       expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
@@ -774,7 +778,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
           where: { chatId_botId: { chatId, botId } },
         }),
       ).toEqual(membership);
-      expect(roster.scheduleChatAdminRosterSync).toHaveBeenCalledTimes(2);
+      expect(roster.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
       expect(readiness).not.toHaveBeenCalled();
       expect(handler).not.toHaveBeenCalled();
       expect(poll.tryHandleCallback).not.toHaveBeenCalled();
@@ -2174,34 +2178,118 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
   });
 
   it.each([3, 6, 9, 12])(
-    'retains the capable read owner and uses only the last write-capable peer among %i bots',
+    'observes read-only and write-only receipts without authority or MAX calls among %i bots',
     async (bots) => {
       const s = await fixture(bots);
       for (const bot of s.bots) s.setBotPermissions(bot.id, ['read_all_messages']);
       s.setBotPermissions(s.bots.at(-1)!.id, ['write']);
       const [chatId] = await s.seedCatalog(1);
+      const memberships = await s.prisma.chatBotMembership.findMany({
+        where: { chatId },
+        orderBy: { botId: 'asc' },
+      });
+      const requestCount = s.requests.length;
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
       const messageId = `split-permissions-${randomUUID()}`;
-      await mirrors(
+      const receipts = await mirrors(
         s,
         chatId!,
         messageId,
-        'The read owner remains healthy but only the final peer may delete this long message',
+        'No bot has both mandatory chat capabilities to moderate this long message',
       );
       await s.drain();
-      expect(await s.prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).toMatchObject({
-        primaryBotId: s.bots[0]!.id,
-      });
       expect(
-        await s.prisma.webhookExecutionClaim.findFirstOrThrow({
-          where: {
-            kind: 'EXECUTION',
-            webhookEventId: { in: s.receiptIds },
-          },
+        await s.prisma.webhookEvent.findMany({
+          where: { id: { in: receipts } },
+          select: { status: true, errorMessage: true },
         }),
-      ).toMatchObject({ executionBotId: s.bots[0]!.id, status: 'COMPLETED' });
+      ).toEqual(
+        Array.from({ length: bots }, () => ({
+          status: 'PROCESSED',
+          errorMessage: DORMANT_BOT_OBSERVATION_MARKER,
+        })),
+      );
+      expect(
+        await s.prisma.webhookExecutionClaim.count({
+          where: { webhookEventId: { in: receipts } },
+        }),
+      ).toBe(0);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+      expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId } })).toBe(0);
+      expect(
+        await s.prisma.chatBotMembership.findMany({
+          where: { chatId },
+          orderBy: { botId: 'asc' },
+        }),
+      ).toEqual(memberships);
+      expect(handler).not.toHaveBeenCalled();
+      expect(s.requests).toHaveLength(requestCount);
+      expect(s.effects).toEqual([]);
+    },
+  );
+
+  it.each([3, 6, 9, 12])(
+    'executes through the last full-baseline peer after dormant candidates among %i bots',
+    async (bots) => {
+      const s = await fixture(bots);
+      for (const [index, bot] of s.bots.entries())
+        s.setBotPermissions(bot.id, index % 2 ? ['write'] : ['read_all_messages']);
+      const healthyBotId = s.bots.at(-1)!.id;
+      s.setBotPermissions(healthyBotId, ['read_all_messages', 'write']);
+      const [chatId] = await s.seedCatalog(1);
+      const dormantBotIds = s.bots.slice(0, -1).map((bot) => bot.id);
+      const readDormantAccess = () =>
+        s.prisma.chatBotMembership.findMany({
+          where: { chatId, botId: { in: dormantBotIds } },
+          orderBy: { botId: 'asc' },
+          select: {
+            botId: true,
+            status: true,
+            capabilities: true,
+            botAccessState: true,
+            botAccessCheckedAt: true,
+            botAccessExpiresAt: true,
+            botAccessSource: true,
+            permissionsSnapshot: true,
+            permissionsHash: true,
+            lifecycleEventAt: true,
+            lifecycleEventType: true,
+            lifecycleSource: true,
+          },
+        });
+      const dormantAccess = await readDormantAccess();
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const requestCount = s.requests.length;
+      const messageId = `healthy-last-peer-${randomUUID()}`;
+      const receipts = await mirrors(
+        s,
+        chatId!,
+        messageId,
+        'Only the final peer has both mandatory chat capabilities to moderate this long message',
+      );
+      await s.drain();
+      const claims = await s.prisma.webhookExecutionClaim.findMany({
+        where: {
+          kind: 'EXECUTION',
+          webhookEventId: { in: receipts },
+        },
+      });
+      expect(claims).toHaveLength(1);
+      expect(claims[0]).toMatchObject({
+        executionBotId: healthyBotId,
+        status: 'COMPLETED',
+      });
+      expect(await s.prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).toMatchObject({
+        primaryBotId: healthyBotId,
+      });
+      expect(await readDormantAccess()).toEqual(dormantAccess);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(
+        s.requests.slice(requestCount).every((request) => request.botId === healthyBotId),
+      ).toBe(true);
       expect(
         s.effects.filter((effect) => effect.method === 'delete' && effect.messageId === messageId),
-      ).toMatchObject([{ botId: s.bots.at(-1)!.id }]);
+      ).toMatchObject([{ botId: healthyBotId }]);
       expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
     },
   );

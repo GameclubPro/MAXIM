@@ -194,13 +194,18 @@ integration('Publisher catalog SQL pages and shared cursors', () => {
   });
 
   it.each([
-    { permissionsKnown: true, permissions: [' \tCaN\tWrItE\n '] },
-    { permissionsKnown: true, permissions: ['Post-Edit-Delete-Messages'] },
-    { permissionsKnown: true, permissions: [null, {}, 1, 'read'] },
-    { permissionsKnown: 'true', permissions: ['write'] },
-    { permissionsKnown: true, permissions: 'write' },
-    [],
-  ])('matches readiness permission normalization for %j', async (snapshot) => {
+    { snapshot: { permissionsKnown: true, permissions: ['write'] }, canPublish: true },
+    { snapshot: { permissionsKnown: true, permissions: [' \tCaN\tWrItE\n '] }, canPublish: true },
+    {
+      snapshot: { permissionsKnown: true, permissions: ['Post-Edit-Delete-Messages'] },
+      canPublish: true,
+    },
+    { snapshot: { permissionsKnown: true, permissions: ['read_all_messages'] }, canPublish: false },
+    { snapshot: { permissionsKnown: true, permissions: [null, {}, 1, 'read'] }, canPublish: false },
+    { snapshot: { permissionsKnown: 'true', permissions: ['write'] }, canPublish: false },
+    { snapshot: { permissionsKnown: true, permissions: 'write' }, canPublish: false },
+    { snapshot: [], canPublish: false },
+  ])('matches readiness permission normalization for %j', async ({ snapshot, canPublish }) => {
     const id = `${prefix}09998`;
     const binding = await db.publisherEntityBinding.update({
       where: { chatId: id },
@@ -234,6 +239,7 @@ integration('Publisher catalog SQL pages and shared cursors', () => {
       }),
       true,
     );
-    expect(page.ids.includes(id)).toBe(expected);
+    expect(expected).toBe(canPublish);
+    expect(page.ids.includes(id)).toBe(canPublish);
   });
 });

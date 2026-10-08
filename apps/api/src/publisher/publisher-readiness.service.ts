@@ -414,7 +414,16 @@ export class PublisherReadinessService {
         blockerCode: 'bot_access_unconfirmed',
       });
     }
-    if (!isOwner && !hasPublisherWriteAccess(snapshot)) {
+    // FLAG: The confirmed binding owns the role; legacy permission snapshots may omit role flags.
+    if (
+      !isOwner &&
+      !hasPublisherWriteAccess({
+        isAdmin: binding.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN,
+        isOwner,
+        permissionsKnown,
+        permissions: snapshot?.permissions,
+      })
+    ) {
       return publisherEntityReadinessSchema.parse({
         ...base,
         state: 'setup_required',

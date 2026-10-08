@@ -69,6 +69,35 @@ function readySource(overrides: Partial<PublisherReadinessSource> = {}): Publish
 }
 
 describe('PublisherReadinessService', () => {
+  it.each(['write', ' \tCaN\tWrItE\n ', 'Post-Edit-Delete-Messages'])(
+    'accepts confirmed Publisher admin write permission %j without legacy snapshot role flags',
+    (permission) => {
+      const source = readySource();
+      source.publisherBinding!.permissionsSnapshot = {
+        permissionsKnown: true,
+        permissions: [permission],
+      };
+      expect(createService().resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
+        state: 'ready',
+        canPublish: true,
+      });
+    },
+  );
+
+  it('does not let a write-only legacy snapshot promote a confirmed member', () => {
+    const source = readySource();
+    source.publisherBinding!.botAccessState = ChatBotAccessState.CONFIRMED_MEMBER;
+    source.publisherBinding!.permissionsSnapshot = {
+      permissionsKnown: true,
+      permissions: ['write'],
+    };
+    expect(createService().resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
+      state: 'setup_required',
+      canPublish: false,
+      blockerCode: 'bot_not_admin',
+    });
+  });
+
   it('keeps known missing write dormant after snapshot expiry without nominating renewal', async () => {
     const source = readySource();
     source.publisherBinding!.permissionsSnapshot = {

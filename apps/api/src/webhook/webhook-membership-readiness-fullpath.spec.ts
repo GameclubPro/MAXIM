@@ -15,6 +15,7 @@ import {
 import { WebhookExecutionOwnerUnavailableError } from '../common/webhook-execution-owner-unavailable.error';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 import { WebhookParser } from './webhook.parser';
+import { WebhookCanonicalExecutionService } from '../moderation/webhook-canonical-execution.service';
 import {
   createMultibotHarness,
   type MultibotHarness,
@@ -758,6 +759,140 @@ describeStores('native dormant receipt and explicit activation isolation', () =>
       ).toBe(state === 'granted');
       expect(await s.redis.mget(...keys)).toEqual(before);
       expect(await s.redis.pttl(keys[0]!)).toBeLessThanOrEqual(ttlBefore);
+    },
+  );
+
+  it.each(['handler completion', 'finished checkpoint recovery'] as const)(
+    'admits an existing owner without deadlocking concurrent %s',
+    async (path) => {
+      const { s, chatId, botId } = await setup();
+      const id = await s.ingest({ chatId, botId, messageId: randomUUID(), text: 'hello' });
+      await s.ingress.preparePersistedWebhookEvent(id);
+      const context = await s.canonical.prepareExecution(id, botId);
+      expect(context?.businessLeaseToken).toEqual(expect.any(String));
+      await (
+        s.canonical as unknown as {
+          markExecutionHandlerFinished: (value: NonNullable<typeof context>) => Promise<void>;
+        }
+      ).markExecutionHandlerFinished(context!);
+      const before = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: id, kind: 'EXECUTION' },
+      });
+      const receiptBefore = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+      let claimAcquired!: () => void;
+      let receiptAcquired!: () => void;
+      let receiptWriteStarted!: () => void;
+      const claimLocked = new Promise<void>((resolve) => {
+        claimAcquired = resolve;
+      });
+      const receiptLocked = new Promise<void>((resolve) => {
+        receiptAcquired = resolve;
+      });
+      const receiptWriting = new Promise<void>((resolve) => {
+        receiptWriteStarted = resolve;
+      });
+      const waitForLock = async (gate: Promise<void>, name: string) => {
+        let timer!: ReturnType<typeof setTimeout>;
+        try {
+          await Promise.race([
+            gate,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error(`Missing ${name} barrier`)), 4_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+      const settlingClient = s.prisma.$extends({
+        query: {
+          webhookExecutionClaim: {
+            async updateMany({ args, query }) {
+              const result = await query(args);
+              if (args.where?.id === before.id && args.data.status === 'COMPLETED') {
+                expect(result.count).toBe(1);
+                claimAcquired();
+                await waitForLock(receiptLocked, 'receipt lock');
+              }
+              return result;
+            },
+          },
+          webhookEvent: {
+            async updateMany({ args, query }) {
+              if (args.where?.id === id && args.data.status === 'PROCESSED') receiptWriteStarted();
+              return query(args);
+            },
+          },
+        },
+      });
+      const admissionClient = s.prisma.$extends({
+        query: {
+          async $queryRaw({ args, query }) {
+            const result = await query(args);
+            const sql = JSON.stringify(args);
+            if (sql.includes('FROM webhook_events') && sql.includes('FOR UPDATE')) {
+              receiptAcquired();
+              await waitForLock(receiptWriting, 'receipt write');
+            }
+            return result;
+          },
+        },
+      });
+      // FLAG: Keep real PostgreSQL locks in the historical inverse order: settlement
+      // owns the claim, admission owns the receipt. Existing authority must be read
+      // through MVCC here, never retried with an INSERT that waits on its unique row.
+      Object.assign(s.ingress, { prisma: admissionClient });
+      const settlingWorker = new WebhookCanonicalExecutionService(settlingClient as never);
+      const settlement = (
+        path === 'handler completion'
+          ? settlingWorker.completeExecution(context!)
+          : settlingWorker.prepareExecution(id, botId)
+      ).then(
+        (value) => ({ value, error: null }),
+        (error: unknown) => ({ value: undefined, error }),
+      );
+      let admission: ReturnType<typeof s.ingress.preparePersistedWebhookEvent> | undefined;
+      try {
+        expect(
+          await Promise.race([
+            claimLocked.then(() => 'claim-locked'),
+            settlement.then(() => 'settled'),
+          ]),
+        ).toBe('claim-locked');
+        admission = s.ingress.preparePersistedWebhookEvent(id);
+        const [result, prepared] = await Promise.all([settlement, admission]);
+        expect(result.error).toBeNull();
+        if (path === 'finished checkpoint recovery') expect(result.value).toBeNull();
+        expect(prepared).toMatchObject({ prepared: true, executionBotId: botId, enforced: true });
+      } finally {
+        receiptAcquired();
+        receiptWriteStarted();
+        await Promise.allSettled([settlement, ...(admission ? [admission] : [])]);
+        Object.assign(s.ingress, { prisma: s.prisma });
+      }
+      const after = await s.prisma.webhookExecutionClaim.findUniqueOrThrow({
+        where: { id: before.id },
+      });
+      expect(after).toMatchObject({
+        webhookEventId: id,
+        semanticKey: before.semanticKey,
+        executionBotId: before.executionBotId,
+        preparedAt: before.preparedAt,
+        businessStartedAt: before.businessStartedAt,
+        commandResult: before.commandResult,
+        status: 'COMPLETED',
+        leaseToken: null,
+        leaseExpiresAt: null,
+      });
+      expect(await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: id } })).toBe(1);
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'PROCESSED',
+        processedAt: after.completedAt,
+        normalizedPayload: receiptBefore.normalizedPayload,
+        executionDeadlineAt: receiptBefore.executionDeadlineAt,
+        errorMessage: null,
+      });
+      expect(s.effects).toEqual([]);
     },
   );
 

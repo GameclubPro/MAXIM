@@ -1245,7 +1245,7 @@ describe('WebhookService', () => {
           }),
         }),
       );
-      expect(prisma.webhookExecutionClaim.createMany).toHaveBeenCalledTimes(1);
+      expect(prisma.webhookExecutionClaim.createMany).not.toHaveBeenCalled();
       expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
@@ -1300,7 +1300,16 @@ describe('WebhookService', () => {
       ],
       skipDuplicates: true,
     });
-    await expect(model.findUnique.mock.results[0]!.value).resolves.toMatchObject({
+    await expect(
+      model.findUnique({
+        where: {
+          kind_semanticKey: {
+            kind: 'EXECUTION',
+            semanticKey: 'receipt:bot-1:fresh-keyless-shadow',
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
       status: 'READY',
       enforced: false,
       businessStartedAt: null,
