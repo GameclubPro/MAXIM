@@ -292,6 +292,7 @@ function coherentSemanticClaims(service: object) {
       };
       const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
       if (sql.includes('WITH authority_ids AS MATERIALIZED')) return [];
+      if (sql.includes('SELECT claim.id, claim.webhook_event_id AS "ownerId"')) return [];
       // Receipt admission uses its own lock before domain membership projection.
       if (
         sql.includes('SELECT error_message AS') &&
