@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { execFileSync } from 'node:child_process';
+import { assertLegacyDispositionSource } from './assert-legacy-disposition-source.mjs';
 import {
   ABORT_RUNTIME_SHA,
   ABORT_RUNTIME_IMAGE,
@@ -66,4 +68,51 @@ test('abort refuses a drifted immutable image', () => {
   const h = fixture();
   h.state.image = `sha256:${'f'.repeat(64)}`;
   assert.throws(h.read, /immutable_abort_runtime_required/);
+});
+
+test('actual pinned runtime source may predate the current recovery profile without granting installation', (t) => {
+  const git = (args) =>
+    execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    git(['cat-file', '-e', `${ABORT_RUNTIME_SHA}^{commit}`]);
+  } catch {
+    t.skip('Pinned runtime history is unavailable in this checkout');
+    return;
+  }
+  const controllerSha = git(['rev-parse', 'HEAD']);
+  const checked = [];
+  assert.throws(
+    () =>
+      assertLegacyDispositionSource(ABORT_RUNTIME_SHA, (path) =>
+        git(['show', `${ABORT_RUNTIME_SHA}:${path}`]),
+      ),
+    /permanent exact-source abandonment readers/,
+  );
+  const result = readSourceAbandonmentAbortIdentity(
+    {
+      controllerSha,
+      targetSha: ABORT_RUNTIME_SHA,
+      protocol: 'source-abandonment-v1',
+      operation: 'abort-before-install',
+    },
+    (command, args) => {
+      if (command === 'docker')
+        return JSON.stringify([
+          {
+            Id: ABORT_RUNTIME_IMAGE,
+            Config: { Labels: { 'org.opencontainers.image.revision': ABORT_RUNTIME_SHA } },
+          },
+        ]);
+      // The fixture owns uncommitted test edits; all commit/source checks remain real.
+      if (args[0] === 'status') return '';
+      return git(args);
+    },
+    (sha, read) => {
+      checked.push(sha);
+      return assertLegacyDispositionSource(sha, read);
+    },
+  );
+  assert.deepEqual(checked, [controllerSha]);
+  assert.equal(result.sourceSha, ABORT_RUNTIME_SHA);
+  assert.equal(result.imageId, ABORT_RUNTIME_IMAGE);
 });

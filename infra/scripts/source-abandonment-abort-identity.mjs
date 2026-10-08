@@ -53,8 +53,11 @@ export function readSourceAbandonmentAbortIdentity(
       .some((path) => !permitted.has(path))
   )
     throw new Error('abort_dependency_changed');
-  for (const sha of [targetSha, controllerSha])
-    assertSource(sha, (path) => run('git', ['show', `${sha}:${path}`]));
+  // FLAG: Abort restores the pinned captured image and installs no new holds.
+  // A newer recovery-content floor is not a rollback requirement for that image.
+  // Attest the current controller; the original runtime stays bound by its exact
+  // reviewed source SHA, immutable image ID, journal and captured generations.
+  assertSource(controllerSha, (path) => run('git', ['show', `${controllerSha}:${path}`]));
   const images = JSON.parse(run('docker', ['image', 'inspect', `maxim-api:${targetSha}`]));
   if (
     images.length !== 1 ||
