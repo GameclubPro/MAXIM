@@ -47,7 +47,10 @@ export async function abortSourceAbandonmentPreinstall({ store, adapters, expect
   const retained = ['pendingInventory', 'reviewedPreview', 'supersededPreview', 'refreezeAbsence'];
   if (
     (original.phase === 'STOPPED' && retained.some((name) => original.proofs[name])) ||
-    (original.phase === 'INVENTORIED' && retained.some((name) => !original.proofs[name]))
+    (original.phase === 'INVENTORIED' &&
+      (!original.proofs.pendingInventory ||
+        !original.proofs.reviewedPreview ||
+        Boolean(original.proofs.supersededPreview) !== Boolean(original.proofs.refreezeAbsence)))
   )
     throw new Error('abort_preinstall_journal_unproved');
   const bindings = original.bindings;
