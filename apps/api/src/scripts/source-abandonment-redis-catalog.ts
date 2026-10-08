@@ -20,7 +20,6 @@ export const SOURCE_ABANDONMENT_CATALOG_BUDGET = Object.freeze({
   pageReplyBytes: 16 * 1024,
   durationMs: 20_000,
   callDurationUs: 50_000,
-  pagePauseMs: 1,
 });
 
 const budget = SOURCE_ABANDONMENT_CATALOG_BUDGET;
@@ -384,7 +383,10 @@ export async function inventorySourceAbandonmentNamespaces(
       }
       if (Date.now() >= deadlineAt) throw new Error('CATALOG_DEADLINE_EXCEEDED');
       complete = cursor === '0';
-      if (!complete) await new Promise((resolve) => setTimeout(resolve, budget.pagePauseMs));
+      // FLAG: Yield after each completed one-SCAN transaction so other clients
+      // can progress without adding a minimum timer delay to every cursor page.
+      // The next iteration rechecks the unchanged catalog and shared deadlines.
+      if (!complete) await new Promise<void>((resolve) => setImmediate(resolve));
     } while (!complete);
   } catch (error) {
     issue =

@@ -548,6 +548,29 @@ describe('exact source abandonment bounded evidence', () => {
     expect(redis.eval_ro).not.toHaveBeenCalled();
   });
 
+  it('refuses an unfinished catalog when its deadline expires during the page yield', async () => {
+    let now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const redis = measuredFixture({
+      eval_ro: jest.fn(async () => {
+        setImmediate(() => {
+          now += 20_000;
+        });
+        return [1, 100, '12', 0, 0, 1, []];
+      }),
+    });
+    try {
+      expect(await inventorySourceAbandonmentNamespaces(redis, now + 45_000)).toMatchObject({
+        complete: false,
+        issue: 'CATALOG_DEADLINE_EXCEEDED',
+        cost: { pages: 1, durationMs: 20_000 },
+      });
+      expect(redis.eval_ro).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('verifies both bounded catalog artifacts rather than trusting their completion labels', async () => {
     const proof = await inventorySourceAbandonmentNamespaces(
       measuredFixture({

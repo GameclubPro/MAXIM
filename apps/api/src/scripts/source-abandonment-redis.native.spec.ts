@@ -213,6 +213,7 @@ native('modern full namespace census on Redis 7', () => {
     // The terminal hash contains a large payload; the namespace reader must never fetch it.
     await redis.hset('bull:photo-duplicates:retained-hash', 'data', 'x'.repeat(128 * 1024));
     const before = await redis.dbsize();
+    let completedPages = 0;
     const readScanCalls = async () => {
       const stats = await redis.info('commandstats');
       const calls = /^cmdstat_scan:calls=(\d+),/mu.exec(stats)?.[1];
@@ -244,7 +245,9 @@ native('modern full namespace census on Redis 7', () => {
                 '1',
               ]);
               targets.push(commands[1]);
-              return transaction.exec();
+              const rows = await transaction.exec();
+              completedPages++;
+              return rows;
             },
           };
           return measurement;
@@ -259,8 +262,30 @@ native('modern full namespace census on Redis 7', () => {
       expect(scansAfter - scansBefore).toBe(BigInt(proof.cost.pages));
       return proof;
     };
-    const first = await census();
-    const second = await census();
+    const contender = new Redis(fixtureUrl, { maxRetriesPerRequest: 0, commandTimeout: 1000 });
+    let scanning = true;
+    const servicedPages = new Set<number>();
+    const independentReads = (async () => {
+      while (scanning) {
+        expect(await contender.ping()).toBe('PONG');
+        servicedPages.add(completedPages);
+        await new Promise<void>((done) => setImmediate(done));
+      }
+    })();
+    let first: Awaited<ReturnType<typeof census>>;
+    let second: Awaited<ReturnType<typeof census>>;
+    try {
+      first = await census();
+      second = await census();
+    } finally {
+      scanning = false;
+      await independentReads.finally(() => contender.disconnect());
+    }
+    // FLAG: An independent Redis connection must make progress between catalog
+    // pages, while each measured SCAN retains its server-cost and deadline guards.
+    expect(
+      [...servicedPages].filter((page) => page > 0 && page < completedPages).length,
+    ).toBeGreaterThan(1);
     expect(first).toMatchObject({
       complete: true,
       issue: null,
