@@ -70,16 +70,17 @@ test('abort refuses a drifted immutable image', () => {
   assert.throws(h.read, /immutable_abort_runtime_required/);
 });
 
-test('actual pinned runtime source may predate the current recovery profile without granting installation', (t) => {
+test('actual pinned runtime source may predate the reviewed controller profile without granting installation', (t) => {
+  const controllerSha = '98b48dbd15a6d9c19ed466101b0cb934b27e364d';
   const git = (args) =>
     execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   try {
     git(['cat-file', '-e', `${ABORT_RUNTIME_SHA}^{commit}`]);
+    git(['cat-file', '-e', `${controllerSha}^{commit}`]);
   } catch {
-    t.skip('Pinned runtime history is unavailable in this checkout');
+    t.skip('Pinned runtime or reviewed controller history is unavailable in this checkout');
     return;
   }
-  const controllerSha = git(['rev-parse', 'HEAD']);
   const checked = [];
   assert.throws(
     () =>
@@ -103,7 +104,9 @@ test('actual pinned runtime source may predate the current recovery profile with
             Config: { Labels: { 'org.opencontainers.image.revision': ABORT_RUNTIME_SHA } },
           },
         ]);
-      // The fixture owns uncommitted test edits; all commit/source checks remain real.
+      // FLAG: Model the reviewed controller checkout, not future runtime changes at HEAD.
+      // Ancestry, dependency differences and source checks still read the real pinned commits.
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') return controllerSha;
       if (args[0] === 'status') return '';
       return git(args);
     },
@@ -113,6 +116,7 @@ test('actual pinned runtime source may predate the current recovery profile with
     },
   );
   assert.deepEqual(checked, [controllerSha]);
+  assert.equal(result.controllerSha, controllerSha);
   assert.equal(result.sourceSha, ABORT_RUNTIME_SHA);
   assert.equal(result.imageId, ABORT_RUNTIME_IMAGE);
 });

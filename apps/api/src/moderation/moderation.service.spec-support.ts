@@ -226,8 +226,7 @@ function withCanonicalWebhookFixture(prisma: CanonicalWebhookPrismaFixture) {
   claimModel.findFirst = jest.fn(async (args: { where: Row }) => {
     // FLAG: Joined completion proof must be explicit in a fixture. A missing joined
     // result must never be normalized into a fabricated READY authority.
-    if (args.where.webhookEvent !== undefined)
-      return claimFindFirst ? claimFindFirst(args) : null;
+    if (args.where.webhookEvent !== undefined) return claimFindFirst ? claimFindFirst(args) : null;
     const raw = claimFindFirst
       ? await claimFindFirst(args)
       : [...claims.values()].find((claim) => claim.webhookEventId === args.where.webhookEventId);
@@ -250,9 +249,24 @@ function withCanonicalWebhookFixture(prisma: CanonicalWebhookPrismaFixture) {
   });
   const queryRaw = prisma.$queryRaw;
   prisma.$queryRaw = jest.fn(async (...args: unknown[]) => {
-    const query = args[0] as { join?: (separator: string) => string; strings?: readonly string[] };
+    const query = args[0] as {
+      join?: (separator: string) => string;
+      strings?: readonly string[];
+      values?: readonly unknown[];
+    };
     const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
     if (sql.includes('WITH authority_ids AS MATERIALIZED')) return [];
+    if (sql.includes('FROM "webhook_events" AS "prior"')) {
+      const prior = await prisma.webhookEvent.findFirst!({
+        where: {
+          semanticKey: query.values?.[0],
+          id: { not: query.values?.[1] },
+          OR: [{ status: 'PROCESSED' }],
+        },
+        select: { id: true },
+      });
+      return prior ? [prior] : [];
+    }
     if (sql.includes("migration_name = '20261005020000_add_multibot_order_fences'"))
       return [{ finishedAt: new Date(0) }];
     if (/SELECT "id" FROM .* FOR UPDATE/u.test(sql.replace(/\s+/gu, ' '))) return [];

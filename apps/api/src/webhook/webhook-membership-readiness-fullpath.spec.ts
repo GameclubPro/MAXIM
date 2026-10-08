@@ -292,6 +292,168 @@ describeStores('native dormant receipt and explicit activation isolation', () =>
     return { s, chatId, botId };
   }
 
+  it.each([
+    'observation',
+    'interleaved',
+    'ordinary_completion',
+    'marker_suffix',
+    'missing_processed_at',
+    'queued',
+    'retry',
+    'claim',
+    'quarantine',
+    'later_replay',
+  ] as const)(
+    'retains the independent healthy owner behind a dormant receipt: %s',
+    async (proof) => {
+      const { s, chatId, botId } = await setup(2);
+      const peerBotId = s.bots[1]!.id;
+      await s.demote(chatId, botId);
+      // FLAG: Simulate temporary peer loss without changing its original activation
+      // epoch. A new peer receipt may execute after recovery; the dormant receipt cannot.
+      await s.prisma.chatBotMembership.update({
+        where: { chatId_botId: { chatId, botId: peerBotId } },
+        data: { status: 'REMOVED' },
+      });
+      await s.cache.invalidate(chatId);
+      const messageId = randomUUID();
+      const at = Date.now();
+      const observedId = await s.ingest({ chatId, botId, messageId, text: 'ordinary', at });
+      expect(await s.ingress.preparePersistedWebhookEvent(observedId)).toMatchObject({
+        canonical: false,
+        prepared: true,
+      });
+      const observed = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: observedId } });
+      expect(observed).toMatchObject({
+        status: 'PROCESSED',
+        errorMessage: DORMANT_BOT_OBSERVATION_MARKER,
+      });
+      expect(
+        await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: observedId } }),
+      ).toBe(0);
+      await s.prisma.chatBotMembership.update({
+        where: { chatId_botId: { chatId, botId: peerBotId } },
+        data: { status: 'ACTIVE' },
+      });
+      await s.cache.invalidate(chatId);
+      let interleavedId: string | undefined;
+      if (proof === 'interleaved')
+        interleavedId = await s.ingest({
+          chatId,
+          botId: peerBotId,
+          messageId: randomUUID(),
+          text: 'interleaved ordinary',
+        });
+      const ownerId = await s.ingest({ chatId, botId: peerBotId, messageId, text: 'ordinary', at });
+      expect(await s.ingress.preparePersistedWebhookEvent(ownerId)).toMatchObject({
+        canonical: true,
+        prepared: true,
+      });
+      const initialClaim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: ownerId, kind: 'EXECUTION' },
+      });
+      expect(initialClaim).toMatchObject({ status: 'READY', businessStartedAt: null });
+      if (proof === 'ordinary_completion')
+        await s.prisma.webhookEvent.update({
+          where: { id: observedId },
+          data: { errorMessage: null },
+        });
+      if (proof === 'marker_suffix')
+        await s.prisma.webhookEvent.update({
+          where: { id: observedId },
+          data: { errorMessage: `${DORMANT_BOT_OBSERVATION_MARKER}:unverified` },
+        });
+      if (proof === 'missing_processed_at')
+        await s.prisma.webhookEvent.update({
+          where: { id: observedId },
+          data: { processedAt: null },
+        });
+      if (proof === 'queued')
+        await s.prisma.webhookEvent.update({
+          where: { id: observedId },
+          data: { queueName: 'moderation-default-0' },
+        });
+      if (proof === 'retry')
+        await s.prisma.webhookEvent.update({
+          where: { id: observedId },
+          data: { nextEnqueueAt: new Date() },
+        });
+      if (proof === 'quarantine')
+        await s.prisma.webhookEvent.update({
+          where: { id: observedId },
+          data: { timeoutQuarantineExpiresAt: new Date() },
+        });
+      if (proof === 'claim')
+        await s.prisma.webhookExecutionClaim.create({
+          data: {
+            kind: 'OBSERVATION_PROOF_FIXTURE',
+            semanticKey: observed.semanticKey!,
+            webhookEventId: observedId,
+          },
+        });
+      if (proof === 'later_replay') {
+        const replayId = await s.ingest({ chatId, botId, messageId, text: 'ordinary', at: at + 1 });
+        expect(replayId).not.toBe(observedId);
+        await s.prisma.webhookEvent.update({
+          where: { id: replayId },
+          data: {
+            status: 'FAILED',
+            errorMessage:
+              'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED:OPERATOR_DISCARDED:fixture_scope',
+            nextEnqueueAt: null,
+          },
+        });
+      }
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      if (proof === 'observation' || proof === 'interleaved') {
+        await s.moderation.processWebhookEvent(ownerId);
+        await s.moderation.processWebhookEvent(ownerId);
+        await s.moderation.processWebhookEvent(observedId);
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(
+          await s.prisma.webhookExecutionClaim.findUniqueOrThrow({
+            where: { id: initialClaim.id },
+          }),
+        ).toMatchObject({
+          status: 'COMPLETED',
+          webhookEventId: ownerId,
+          executionBotId: peerBotId,
+        });
+        expect(
+          await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: observedId } }),
+        ).toEqual(observed);
+        expect(
+          await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: observedId } }),
+        ).toBe(0);
+        if (interleavedId) {
+          await s.ingress.preparePersistedWebhookEvent(interleavedId);
+          await s.moderation.processWebhookEvent(interleavedId);
+          expect(handler).toHaveBeenCalledTimes(2);
+        }
+        const freshId = await s.ingest({
+          chatId,
+          botId: peerBotId,
+          messageId: randomUUID(),
+          text: 'next ordinary',
+        });
+        await s.ingress.preparePersistedWebhookEvent(freshId);
+        await s.moderation.processWebhookEvent(freshId);
+        expect(
+          await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: freshId } }),
+        ).toMatchObject({ status: 'PROCESSED' });
+      } else {
+        await expect(s.moderation.processWebhookEvent(ownerId)).rejects.toThrow();
+        expect(handler).not.toHaveBeenCalled();
+        expect(
+          await s.prisma.webhookExecutionClaim.findUniqueOrThrow({
+            where: { id: initialClaim.id },
+          }),
+        ).toEqual(initialClaim);
+        expect(s.effects).toEqual([]);
+      }
+    },
+  );
+
   it.each(['observation_first', 'activation_first', 'future_source'] as const)(
     'never admits a first pre-activation receipt without any Chat or membership: %s',
     async (order) => {

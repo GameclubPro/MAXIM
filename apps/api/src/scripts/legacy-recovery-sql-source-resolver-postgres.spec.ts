@@ -30,7 +30,8 @@ const selected: LegacyRecoverySqlSourceScope[] = [
 ];
 native('exact queue source resolver on PostgreSQL', () => {
   jest.setTimeout(40_000);
-  let db: PrismaClient, reader: PrismaClient;
+  let db: PrismaClient, reader: PrismaClient, setup: PrismaClient;
+  const schema = `source_resolver_${randomUUID().replaceAll('-', '')}`;
   const historyPrefix = `resolver-history-${randomUUID()}`;
   const owned: string[] = [];
   beforeAll(async () => {
@@ -40,11 +41,30 @@ native('exact queue source resolver on PostgreSQL', () => {
       !parsed.pathname.includes('race_test')
     )
       throw new Error('Disposable local database required');
-    db = createPrismaClient(url, { max: 1, statement_timeout: 5000, options: '-c timezone=UTC' });
-    reader = createPrismaClient(url, {
+    setup = createPrismaClient(url, {
       max: 1,
       statement_timeout: 5000,
-      options: '-c timezone=UTC -c default_transaction_read_only=on',
+      options: '-c timezone=UTC',
+    });
+    // FLAG: This planner fixture owns its physical table and statistics. Earlier
+    // suites must not donate heap/index churn to the exact PK admission assertion.
+    await setup.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);
+    // Prisma qualifies enum parameter casts with its configured schema. A domain
+    // preserves the migrated enum while the cloned column keeps its original type.
+    await setup.$executeRawUnsafe(
+      `CREATE DOMAIN "${schema}"."WebhookStatus" AS public."WebhookStatus"`,
+    );
+    await setup.$executeRawUnsafe(
+      `CREATE TABLE "${schema}".webhook_events (LIKE public.webhook_events INCLUDING ALL)`,
+    );
+    parsed.searchParams.set('schema', schema);
+    const scopedUrl = parsed.toString();
+    const options = `-c timezone=UTC -c search_path=${schema},public`;
+    db = createPrismaClient(scopedUrl, { max: 1, statement_timeout: 5000, options });
+    reader = createPrismaClient(scopedUrl, {
+      max: 1,
+      statement_timeout: 5000,
+      options: `${options} -c default_transaction_read_only=on`,
     });
     for (let page = 0; page < 10; page++)
       await db.webhookEvent.createMany({
@@ -67,9 +87,12 @@ native('exact queue source resolver on PostgreSQL', () => {
     await db.webhookEvent.deleteMany({ where: { id: { in: owned.splice(0) } } });
   });
   afterAll(async () => {
-    await db?.webhookEvent.deleteMany({ where: { id: { startsWith: historyPrefix } } });
     await reader?.$disconnect();
     await db?.$disconnect();
+    if (setup) {
+      await setup.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      await setup.$disconnect();
+    }
   });
   async function fixture(
     queueName: LegacyRecoverySqlSourceInput['queueName'] = 'message-duplicates',

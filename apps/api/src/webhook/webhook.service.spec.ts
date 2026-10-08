@@ -5593,7 +5593,7 @@ describe('WebhookService', () => {
     );
   });
 
-  it('completes execution owner live refresh on bot lifecycle updates', async () => {
+  it('prepares bot_added binding without probing or promoting a moderation executor', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-6b' }),
@@ -5609,22 +5609,9 @@ describe('WebhookService', () => {
     const maxClient = {
       getCurrentChatMemberAccess: jest
         .fn()
-        .mockResolvedValueOnce({
-          userId: 'id613002203036_bot',
-          isAdmin: true,
-          isOwner: false,
-          permissions: ['can_call'],
-        })
-        .mockResolvedValueOnce({
-          userId: 'id613002203036_4_bot',
-          isAdmin: true,
-          isOwner: false,
-          permissions: ['delete_messages'],
-        }),
+        .mockRejectedValue(new Error('bot_added cannot probe moderation rights')),
     };
-    maxBotLinkService.bindChatToBot
-      .mockResolvedValueOnce('id613002203036_bot')
-      .mockResolvedValueOnce('id613002203036_4_bot');
+    maxBotLinkService.bindChatToBot.mockResolvedValueOnce('id613002203036_bot');
 
     const service = new WebhookService(
       prisma as never,
@@ -5655,14 +5642,14 @@ describe('WebhookService', () => {
     ).resolves.toEqual({ accepted: true, duplicate: false });
 
     expect(prisma.webhookEvent.create.mock.invocationCallOrder[0]).toBeLessThan(
-      maxClient.getCurrentChatMemberAccess.mock.invocationCallOrder[0]!,
+      maxBotLinkService.bindChatToBot.mock.invocationCallOrder[0]!,
     );
-    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledTimes(1);
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           normalizedPayload: expect.objectContaining({
-            executionOwnerBotId: 'id613002203036_4_bot',
+            executionOwnerBotId: 'id613002203036_bot',
           }),
         }),
       }),
@@ -5670,14 +5657,17 @@ describe('WebhookService', () => {
 
     await flushDeferredWebhookWork();
 
-    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
     expect(maxBotLinkService.bindChatToBot).toHaveBeenNthCalledWith(
-      2,
+      1,
       expect.objectContaining({
         chatId: '-100140',
         botId: 'id613002203036_4_bot',
-        allowReassign: true,
+        lifecycleEventType: 'bot_added',
       }),
+    );
+    expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalledWith(
+      expect.objectContaining({ allowReassign: true }),
     );
   });
 

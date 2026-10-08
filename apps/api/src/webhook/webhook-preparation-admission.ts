@@ -25,14 +25,18 @@ export class WebhookPreparationAdmission {
   ) {
     if (!Number.isSafeInteger(poolMax) || poolMax < 1)
       throw new Error('Invalid webhook preparation pool budget');
-    this.maxInFlight = Math.max(1, Math.min(8, Math.floor(poolMax / 2)));
+    this.maxInFlight = Math.max(1, Math.min(12, Math.floor(poolMax / 2)));
   }
 
   private availability(botId: string, workClass: WorkClass) {
     const botCounts = this.byBot.get(botId) ?? { ordinary: 0, interactive: 0, lifecycle: 0 };
     const botActive = botCounts[workClass];
-    // FLAG: A wider SQL pool grows shared capacity, not one bot/class's share beyond two.
-    const botClassLimit = Math.max(1, Math.min(2, Math.floor(this.maxInFlight / 2)));
+    // FLAG: Keep half the SQL pool outside preparation and at least three bot/class
+    // shares in expanded pools. Interactive work still has its independent one-slot cap.
+    const botClassLimit =
+      this.maxInFlight <= 8
+        ? Math.max(1, Math.min(2, Math.floor(this.maxInFlight / 2)))
+        : Math.floor(this.maxInFlight / 3);
     const globalFull = this.active.size >= this.maxInFlight;
     const now = Date.now();
     for (const [reservedClass, until] of this.reservations)

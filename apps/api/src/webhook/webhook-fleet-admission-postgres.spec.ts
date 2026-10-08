@@ -18,6 +18,12 @@ import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
 import { DeferredWebhookScopes, type DeferredScopeState } from './webhook-outbox-deferred-scopes';
 import { WebhookPreparationAdmission } from './webhook-preparation-admission';
+import { priorWebhookExecutionProofQuery } from './webhook-prior-execution-proof';
+import { DORMANT_BOT_OBSERVATION_MARKER } from './webhook-dormant-observation';
+import {
+  WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
+  WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX,
+} from './webhook-timeout-quarantine';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
@@ -376,6 +382,124 @@ native('fleet admission isolation from one unknown ordered scope', () => {
       release();
       await Promise.all(internals.activeEnqueueUnits.values());
       admission.mockRestore();
+    }
+  });
+
+  it('refills during native selection and preserves a scanned same-chat successor after completion', async () => {
+    await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
+    const chatId = `-overlap-native-${randomUUID()}`;
+    const base = Date.now() - 10_000;
+    const rows = [0, 1].map((index) => {
+      const id = randomUUID();
+      receipts.push(id);
+      const payload = update(chatId, randomUUID(), base + index);
+      return {
+        id,
+        dedupKey: id,
+        botId: payload.botId,
+        status: 'RECEIVED' as const,
+        createdAt: new Date(base + index),
+        rawPayload: {},
+        normalizedPayload: JSON.parse(JSON.stringify(payload)),
+      };
+    });
+    await prisma.webhookEvent.createMany({ data: rows });
+    const debt = new DeferredWebhookScopes();
+    Object.assign(outbox, {
+      deferredEnqueueScopes: debt,
+      pendingEnqueueRepresentatives: new Map([[`chat:${chatId}`, rows[0]!.id]]),
+      enqueueScans: new Map(),
+    });
+    const internal = outbox as unknown as {
+      enqueueBatch(): Promise<void>;
+      selectEnqueueCandidates(
+        ...args: unknown[]
+      ): Promise<Array<{ id: string; isBacklogScan?: boolean }>>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    let release!: () => void;
+    let reached!: () => void;
+    let finished!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const preparing = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const completed = new Promise<void>((resolve) => {
+      finished = resolve;
+    });
+    const admitted: string[] = [];
+    const body = jest
+      .spyOn(
+        ingress as unknown as {
+          preparePersistedWebhookEventAdmitted(id: string): Promise<unknown>;
+        },
+        'preparePersistedWebhookEventAdmitted',
+      )
+      .mockImplementation(async (id) => {
+        admitted.push(id);
+        if (id === rows[0]!.id) {
+          reached();
+          await held;
+        }
+        await prisma.webhookEvent.updateMany({
+          where: { id, status: 'RECEIVED' },
+          data: { status: 'PROCESSED', processedAt: new Date() },
+        });
+        if (id === rows[0]!.id) finished();
+        return { canonical: false, prepared: false, normalizedPayload: null, executionBotId: null };
+      });
+    const select = internal.selectEnqueueCandidates.bind(internal);
+    let timer: NodeJS.Timeout | undefined;
+    const selection = jest
+      .spyOn(internal, 'selectEnqueueCandidates')
+      .mockImplementationOnce(async (...args) => {
+        const refilled = await Promise.race([
+          preparing.then(() => true),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), 1_000);
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+        expect(refilled).toBe(true);
+        release();
+        await completed;
+        // The real SQL cursor advances over B after the retained A completes, while
+        // this poll still owns A's earlier snapshot. B must survive their chat merge.
+        const selected = await select(...args);
+        expect(selected).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: rows[1]!.id, isBacklogScan: true }),
+          ]),
+        );
+        return selected;
+      });
+    try {
+      await internal.enqueueBatch();
+      expect(admitted).toEqual([rows[0]!.id]);
+      expect(debt.snapshot().intervals).toBeGreaterThan(0);
+      // Future ordinary discovery cannot rescue B; only retained scan responsibility can.
+      selection.mockResolvedValue([]);
+      for (let pass = 0; pass < 5 && !admitted.includes(rows[1]!.id); pass++) {
+        await internal.enqueueBatch();
+      }
+      expect(admitted).toEqual(rows.map((row) => row.id));
+      expect(
+        await prisma.webhookEvent.count({
+          where: { id: { in: rows.map((row) => row.id) }, status: 'PROCESSED' },
+        }),
+      ).toBe(2);
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      await Promise.all(internal.activeEnqueueUnits.values());
+      selection.mockRestore();
+      body.mockRestore();
+      Object.assign(outbox, {
+        deferredEnqueueScopes: new DeferredWebhookScopes(),
+        pendingEnqueueRepresentatives: new Map(),
+      });
     }
   });
 
@@ -961,6 +1085,103 @@ native('fleet admission isolation from one unknown ordered scope', () => {
       await Promise.all(internals.activeEnqueueUnits.values());
       admission.mockRestore();
       routing.mockRestore();
+    }
+  });
+
+  it('keeps prior execution claim probes correlated across retained history and semantic skew', async () => {
+    const prefix = `prior-proof-${randomUUID()}:`;
+    const semanticKey = `${prefix}target`;
+    const ownerId = `${prefix}observation:2002`;
+    try {
+      await prisma.$executeRaw`
+        INSERT INTO webhook_events
+          (id, dedup_key, semantic_key, status, raw_payload, normalized_payload, created_at, processed_at)
+        SELECT ${prefix} || 'history:' || n, ${prefix} || 'dedup:' || n,
+          ${prefix} || 'semantic:' || n, 'PROCESSED', '{}', '{}',
+          '2025-01-01'::timestamp + n * interval '1 second', '2025-01-01'::timestamp
+        FROM generate_series(1, 20000) n`;
+      await prisma.$executeRaw`
+        INSERT INTO webhook_execution_claims
+          (id, kind, semantic_key, webhook_event_id, status, created_at, updated_at)
+        SELECT ${prefix} || 'claim:' || n, 'EXECUTION', ${prefix} || 'semantic:' || n,
+          CASE WHEN n <= 20000 THEN ${prefix} || 'history:' || n ELSE NULL END,
+          'COMPLETED', '2025-01-01', '2025-01-01'
+        FROM generate_series(1, 50000) n`;
+      await prisma.$executeRaw`
+        INSERT INTO webhook_events
+          (id, dedup_key, semantic_key, status, raw_payload, normalized_payload,
+           error_message, created_at, processed_at)
+        SELECT ${prefix} || 'observation:' || n, ${prefix} || 'observation-dedup:' || n,
+          ${semanticKey}, 'PROCESSED', '{}', '{}', ${DORMANT_BOT_OBSERVATION_MARKER},
+          '2026-01-01'::timestamp + n * interval '1 second', '2026-01-01'::timestamp
+        FROM generate_series(1, 2002) n`;
+      await prisma.$executeRaw`ANALYZE webhook_events`;
+      await prisma.$executeRaw`ANALYZE webhook_execution_claims`;
+      const query = priorWebhookExecutionProofQuery(semanticKey, ownerId);
+      const explained = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+        Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`,
+      );
+      const nodes: Array<Record<string, unknown>> = [];
+      const visit = (value: unknown) => {
+        if (Array.isArray(value)) return value.forEach(visit);
+        if (!value || typeof value !== 'object') return;
+        const row = value as Record<string, unknown>;
+        if (typeof row['Node Type'] === 'string') nodes.push(row);
+        Object.values(row).forEach(visit);
+      };
+      visit(explained);
+      const claims = nodes.filter((node) => node['Relation Name'] === 'webhook_execution_claims');
+      expect(claims).toHaveLength(1);
+      expect(claims[0]).toMatchObject({
+        'Index Name': 'webhook_execution_claims_event_kind_idx',
+        'Actual Rows': 0,
+        'Actual Loops': 2001,
+      });
+      expect(String(claims[0]!['Node Type'])).toContain('Index');
+      expect(String(claims[0]!['Index Cond'])).toContain('webhook_event_id = prior.id');
+      expect(JSON.stringify(explained)).not.toMatch(/hashed SubPlan/u);
+      const events = nodes.filter((node) => node['Relation Name'] === 'webhook_events');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        'Index Name': 'webhook_events_semantic_order_idx',
+        'Actual Rows': 0,
+        'Rows Removed by Filter': 2002,
+        'Actual Loops': 1,
+      });
+      expect(String(events[0]!['Index Cond'])).toContain('semantic_key =');
+      expect(await prisma.$queryRaw(query)).toEqual([]);
+      const proofId = `${prefix}observation:1`;
+      await prisma.webhookExecutionClaim.create({
+        data: {
+          id: `${prefix}positive`,
+          kind: 'RETAINED_UNKNOWN_EFFECT',
+          semanticKey,
+          webhookEventId: proofId,
+        },
+      });
+      expect(await prisma.$queryRaw(query)).toEqual([{ id: proofId }]);
+      await prisma.webhookExecutionClaim.delete({ where: { id: `${prefix}positive` } });
+      for (const timeoutPrefix of [
+        WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
+        WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX,
+      ]) {
+        await prisma.webhookEvent.update({
+          where: { id: proofId },
+          data: {
+            status: 'FAILED',
+            errorMessage: `${timeoutPrefix.replaceAll('_', 'x')}: fixture`,
+          },
+        });
+        expect(await prisma.$queryRaw(query)).toEqual([]);
+        await prisma.webhookEvent.update({
+          where: { id: proofId },
+          data: { errorMessage: `${timeoutPrefix}: fixture` },
+        });
+        expect(await prisma.$queryRaw(query)).toEqual([{ id: proofId }]);
+      }
+    } finally {
+      await prisma.webhookExecutionClaim.deleteMany({ where: { id: { startsWith: prefix } } });
+      await prisma.webhookEvent.deleteMany({ where: { id: { startsWith: prefix } } });
     }
   });
 

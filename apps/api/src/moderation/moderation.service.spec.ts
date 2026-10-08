@@ -504,7 +504,8 @@ describe('ModerationService', () => {
     const predecessorCalls = prisma.$queryRaw.mock.calls.filter(
       (call) =>
         call[0]?.strings &&
-        !call[0].strings.join(' ').includes('WITH authority_ids AS MATERIALIZED'),
+        !call[0].strings.join(' ').includes('WITH authority_ids AS MATERIALIZED') &&
+        !call[0].strings.join(' ').includes('FROM "webhook_events" AS "prior"'),
     );
     expect(predecessorCalls).toHaveLength(1);
     const predecessorQuery = predecessorCalls[0]?.[0] as

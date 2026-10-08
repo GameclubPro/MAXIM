@@ -93,6 +93,19 @@ function fixture(type: 'user_removed' | 'message_created', mirrorIsEarlier: bool
 }
 
 describe('WebhookCanonicalExecutionService preparation fence', () => {
+  it('defers when the prior semantic execution proof reader is unavailable', async () => {
+    const f = fixture('message_created', false);
+    const event = await f.prisma.webhookEvent.findUnique({ where: { id: 'mirror' } });
+    f.prisma.webhookEvent.findFirst.mockResolvedValue(event);
+    Object.assign(f.prisma, { $queryRaw: undefined });
+    const guard = f.service as unknown as {
+      assertNoOutstandingOrderedPredecessor(event: unknown, update: MaxUpdate): Promise<void>;
+    };
+    await expect(
+      guard.assertNoOutstandingOrderedPredecessor(event, event.normalizedPayload),
+    ).rejects.toThrow('Prior semantic execution proof unavailable');
+  });
+
   it('defers a queued shadow membership mirror while its owner is unprepared', async () => {
     const f = fixture('user_removed', false);
     await expect(f.service.prepareExecution('mirror', 'bot-default')).rejects.toBeInstanceOf(

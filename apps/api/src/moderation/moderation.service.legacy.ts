@@ -1534,6 +1534,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // FLAG: bot_added is pending connection evidence, never a moderation or callback
+    // source. Its prepared receiving-bot authority permits only the explicit join denylist.
+    if (this.isBotAddedUpdate(update)) {
+      await this.handleBlockedBotJoin(update, update.message.chatId);
+      return;
+    }
+
     // FLAG: Edits/removals revoke duplicate evidence even when later moderation exits early.
     await this.messageDuplicateService?.observeLifecycle?.(update);
 
@@ -1600,16 +1607,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (this.isBotStartedUpdate(update)) {
         await this.handleBotStartedInstruction(update, chatId);
         return;
-      }
-
-      if (await this.handleBlockedBotJoin(update, chatId)) {
-        return;
-      }
-
-      if (this.isBotAddedUpdate(update)) {
-        if (!serviceAuthored && !serviceMembersEvent) {
-          return;
-        }
       }
 
       if (this.isMembershipLeaveUpdate(update)) {

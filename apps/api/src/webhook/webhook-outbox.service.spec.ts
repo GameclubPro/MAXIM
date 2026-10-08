@@ -1660,6 +1660,162 @@ describe('WebhookOutboxService', () => {
     },
   );
 
+  it('refills preparation from reloaded representatives while SQL selection is still running', async () => {
+    jest.useFakeTimers();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started: string[] = [];
+    const fixture = capacityFixture(
+      18,
+      async (id) => {
+        started.push(id);
+        if (Number(id.split('-')[1]) < 6) await held;
+      },
+      { poolMax: 12, enqueueConcurrency: 32, systemMode: 'normal' },
+    );
+    fixture.prisma.webhookEvent.updateMany.mockImplementation(
+      createWebhookEventUpdateManyMock(fixture.webhookRows),
+    );
+    for (const [index, row] of fixture.webhookRows.entries()) {
+      (row.normalizedPayload as MaxUpdate).botId = `overlap-bot-${index % 3}`;
+    }
+    const internal = fixture.service as unknown as {
+      selectEnqueueCandidates(...args: unknown[]): Promise<unknown[]>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+      pendingEnqueueRepresentatives: Map<string, string>;
+    };
+    const select = internal.selectEnqueueCandidates.bind(internal);
+    let selecting = 0;
+    let peakSelecting = 0;
+    const selection = jest
+      .spyOn(internal, 'selectEnqueueCandidates')
+      .mockImplementation(async (...args) => {
+        selecting += 1;
+        peakSelecting = Math.max(peakSelecting, selecting);
+        try {
+          const selected = (await select(...args)).map((candidate) => ({
+            ...(candidate as Record<string, unknown>),
+            isBacklogScan: true,
+          }));
+          await new Promise<void>((resolve) => setTimeout(resolve, 800));
+          return selected;
+        } finally {
+          selecting -= 1;
+        }
+      });
+    let second: Promise<void> | undefined;
+    try {
+      const first = fixture.run();
+      await jest.advanceTimersByTimeAsync(1_801);
+      await first;
+      expect(started).toHaveLength(6);
+      expect(fixture.admission.snapshot().inFlight).toBe(6);
+      second = fixture.run();
+      await jest.advanceTimersByTimeAsync(50);
+      expect(selecting).toBe(1);
+      release();
+      await jest.advanceTimersByTimeAsync(50);
+      expect(selecting).toBe(1);
+      expect(started).toHaveLength(18);
+      await jest.advanceTimersByTimeAsync(1_801);
+      await second;
+      expect(selection).toHaveBeenCalledTimes(2);
+      expect(peakSelecting).toBe(1);
+      expect(new Set(started).size).toBe(18);
+      expect(internal.activeEnqueueUnits.size).toBe(0);
+      expect(internal.pendingEnqueueRepresentatives.size).toBeLessThanOrEqual(100);
+      fixture.admission.flush();
+      expect(fixture.metrics).toHaveBeenLastCalledWith(
+        expect.objectContaining({ peakInFlight: 6 }),
+      );
+      expect(fixture.capacityWrites()).toHaveLength(0);
+    } finally {
+      release();
+      await jest.runOnlyPendingTimersAsync();
+      await second;
+      await fixture.service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('dispatches a successful selection when the concurrent retained refill fails', async () => {
+    const fixture = capacityFixture(2, async () => undefined, {
+      poolMax: 12,
+      enqueueConcurrency: 32,
+      systemMode: 'normal',
+    });
+    const internal = fixture.service as unknown as {
+      findOrderedWebhookHeadsForChats(ids: string[]): Promise<unknown>;
+      pendingEnqueueRepresentatives: Map<string, string>;
+    };
+    internal.pendingEnqueueRepresentatives = new Map([['chat:capacity-chat-0', 'capacity-0']]);
+    jest
+      .spyOn(internal, 'findOrderedWebhookHeadsForChats')
+      .mockRejectedValueOnce(new Error('retained head lookup unavailable'));
+    await fixture.run();
+    expect(
+      new Set(fixture.webhookService.preparePersistedWebhookEvent.mock.calls.map(([id]) => id)),
+    ).toEqual(new Set(['capacity-0', 'capacity-1']));
+    await fixture.service.onModuleDestroy();
+  });
+
+  it('drains retained preparation after SQL selection fails during shutdown', async () => {
+    jest.useFakeTimers();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started: string[] = [];
+    const fixture = capacityFixture(
+      2,
+      async (id) => {
+        started.push(id);
+        await held;
+      },
+      { poolMax: 12, enqueueConcurrency: 32, systemMode: 'normal' },
+    );
+    const internal = fixture.service as unknown as {
+      tick(): Promise<void>;
+      selectEnqueueCandidates(): Promise<unknown[]>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+      pendingEnqueueRepresentatives: Map<string, string>;
+    };
+    internal.pendingEnqueueRepresentatives = new Map([['chat:capacity-chat-0', 'capacity-0']]);
+    jest.spyOn(internal, 'selectEnqueueCandidates').mockImplementation(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      throw new Error('selection unavailable');
+    });
+    let drain: Promise<void> | undefined;
+    try {
+      const tick = internal.tick();
+      await jest.advanceTimersByTimeAsync(100);
+      expect(started).toEqual(['capacity-0']);
+      let drained = false;
+      const [worker] = fixture.service.stopWorkerAdmission();
+      drain = worker!.pause().then(() => {
+        drained = true;
+      });
+      await jest.advanceTimersByTimeAsync(1_001);
+      await tick;
+      await internal.tick();
+      expect(drained).toBe(false);
+      expect(started).toEqual(['capacity-0']);
+      expect(internal.activeEnqueueUnits.size).toBe(1);
+      release();
+      await drain;
+      expect(drained).toBe(true);
+      expect(internal.activeEnqueueUnits.size).toBe(0);
+    } finally {
+      release();
+      await jest.runOnlyPendingTimersAsync();
+      await drain;
+      await fixture.service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
   it('amortizes slow selection with one bounded second of six-slot dispatch', async () => {
     jest.useFakeTimers();
     const started: Array<{ id: string; at: number }> = [];
