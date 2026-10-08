@@ -1,5 +1,12 @@
 import { parseChatIdAsBigInt } from '../common/chat-id.util';
-import { normalizeMaxActionIdempotencyKeyPart } from '../max/max-action-idempotency';
+import {
+  buildMaxActionIdempotencyKey,
+  normalizeMaxActionIdempotencyKeyPart,
+} from '../max/max-action-idempotency';
+import {
+  readMaxModerationRuleNoticeProof,
+  readMaxModerationRuleFollowupProof,
+} from '../max/max-moderation-rule-notice-proof';
 import { MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS } from '../max/managed-handshake-confirmation';
 import type { MaxActionJob } from '../max/max-client.service';
 import { isMaxSendAutoDeleteMarker } from '../max/max-send-auto-delete-marker';
@@ -113,34 +120,95 @@ export function readSourceAbandonmentCleanupScopes(
   )
     return null;
 
-  // FLAG: Only the explicitly parsed same-chat notice proofs below are supported.
-  // Unknown contexts and mixed feature proofs cannot borrow the retained SEND receipt.
+  // FLAG: Only finite producer combinations may borrow this exact completed SEND.
+  // A follow-up id/time alone never proves a source; rule and source identities
+  // must agree, and all new contexts remain disjoint from every selected chat.
   const envelope = record(context.moderationNoticeEnvelope);
+  const featureKeys = ['duplicateNotice', 'requiredSubscriptionNotice', 'moderationRuleNotice'];
+  const presentFeatures = featureKeys.filter((key) => Object.hasOwn(context, key));
+  const hasSource = Object.hasOwn(context, 'moderationSource');
+  const hasFollowup = Object.hasOwn(context, 'moderationRuleFollowup');
   if (
     !envelope ||
     Object.keys(envelope).length !== 1 ||
     envelope.version !== 1 ||
     Object.keys(context).some(
       (key) =>
-        key !== 'moderationNoticeEnvelope' &&
-        key !== 'duplicateNotice' &&
-        key !== 'requiredSubscriptionNotice',
-    )
+        ![
+          'moderationNoticeEnvelope',
+          'moderationSource',
+          'moderationRuleFollowup',
+          ...featureKeys,
+        ].includes(key),
+    ) ||
+    presentFeatures.length > 1 ||
+    (hasSource && presentFeatures.some((key) => key !== 'moderationRuleNotice')) ||
+    (hasFollowup && !Object.hasOwn(context, 'moderationRuleNotice'))
   )
     return null;
+  const selectedChat = selectedSources.some(
+    (source) =>
+      source.chatId === ledger.chatId || parseChatIdAsBigInt(source.chatId) === groupChatId,
+  );
   if (Object.hasOwn(context, 'requiredSubscriptionNotice')) {
     const required = readRequiredSubscriptionNoticeAuthority(context.requiredSubscriptionNotice);
-    // FLAG: This proves only an unrelated completed notice cleanup. Even a typed
-    // source in a selected chat cannot use this exception to acquire source authority.
     if (
       !required ||
-      Object.hasOwn(context, 'duplicateNotice') ||
       ![required.chatId, required.messageId, required.userId].every(identity) ||
       required.chatId !== ledger.chatId ||
-      selectedSources.some(
-        (source) =>
-          source.chatId === ledger.chatId || parseChatIdAsBigInt(source.chatId) === groupChatId,
-      )
+      selectedChat
+    )
+      return null;
+  }
+  const rule = Object.hasOwn(context, 'moderationRuleNotice')
+    ? readMaxModerationRuleNoticeProof(context.moderationRuleNotice)
+    : null;
+  if (
+    Object.hasOwn(context, 'moderationRuleNotice') &&
+    (!rule ||
+      ![rule.chatId, rule.messageId, rule.userId, rule.reasonKey, rule.ruleCode].every(identity) ||
+      rule.chatId !== ledger.chatId ||
+      (marker.sourceUserId !== null && marker.sourceUserId !== rule.userId) ||
+      rule.deadlineAtMs <= 300_000 ||
+      rule.deadlineAtMs - 300_000 > ledger.completedAt.getTime() ||
+      selectedChat)
+  )
+    return null;
+  if (hasSource) {
+    const source = record(context.moderationSource);
+    if (
+      !source ||
+      Object.keys(source).length !== 4 ||
+      source.version !== 1 ||
+      ![source.chatId, source.messageId, source.userId].every(identity) ||
+      source.chatId !== ledger.chatId ||
+      (marker.sourceUserId !== null && marker.sourceUserId !== source.userId) ||
+      selectedChat ||
+      (rule && (source.messageId !== rule.messageId || source.userId !== rule.userId))
+    )
+      return null;
+  }
+  if (hasFollowup) {
+    const followup = readMaxModerationRuleFollowupProof(context.moderationRuleFollowup);
+    if (
+      !rule ||
+      !followup ||
+      !identity(followup.id) ||
+      followup.issuedAtMs < rule.deadlineAtMs - 300_000 ||
+      followup.issuedAtMs >= rule.deadlineAtMs ||
+      followup.issuedAtMs > ledger.completedAt.getTime() ||
+      !['explanation', 'sanction-notice'].some((kind) => {
+        const key = `${followup.id}:${kind}`;
+        return [
+          key,
+          buildMaxActionIdempotencyKey('explicit', ['SEND_MESSAGE', key]),
+          buildMaxActionIdempotencyKey('explicit', [
+            marker.originBotId as string,
+            'SEND_MESSAGE',
+            key,
+          ]),
+        ].includes(marker.sourceSendJobId as string);
+      })
     )
       return null;
   }
@@ -150,7 +218,7 @@ export function readSourceAbandonmentCleanupScopes(
   if (
     (Object.hasOwn(context, 'duplicateNotice') && !duplicate) ||
     (duplicate && duplicate.chatId !== ledger.chatId) ||
-    (!duplicate && selectedSources.some((source) => source.chatId === ledger.chatId))
+    (!duplicate && selectedChat)
   )
     return null;
 

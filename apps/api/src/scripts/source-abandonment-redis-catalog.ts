@@ -18,7 +18,7 @@ export const SOURCE_ABANDONMENT_CATALOG_BUDGET = Object.freeze({
   pageKeys: 8192,
   pageKeyBytes: 512 * 1024,
   pageReplyBytes: 16 * 1024,
-  durationMs: 15_000,
+  durationMs: 20_000,
   callDurationUs: 50_000,
   pagePauseMs: 1,
 });

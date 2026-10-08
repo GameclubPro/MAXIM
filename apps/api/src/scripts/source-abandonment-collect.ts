@@ -33,7 +33,7 @@ import {
   type SourceAbandonmentRedisReader,
 } from './source-abandonment-live-redis';
 
-// FLAG: Two independent catalogs each retain their 15-second cap. This collector
+// FLAG: Two independent catalogs each retain their 20-second cap. This collector
 // also budgets SQL and exact-job proof; legacy collection and store writes stay unchanged.
 const sourceCollectionDurationMs = 45_000;
 const sourceCollectionTransactionTimeoutMs = 50_000;

@@ -7,13 +7,18 @@ import {
   assertModerationRuleSanctionAuthority,
   ModerationRuleSanctionRejectedError,
   type ModerationRuleMemberAccess,
-  type ModerationRuleSanctionAuthority,
 } from '../moderation/moderation-rule-sanction-authority';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { buildMaxActionIdempotencyKey } from './max-action-idempotency';
 import type { MaxActionJob } from './max-client.service';
 
-export type MaxModerationRuleNoticeProof = ModerationRuleSanctionAuthority & { version: 1 };
+import {
+  readMaxModerationRuleNoticeProof,
+  readMaxModerationRuleFollowupProof,
+  type MaxModerationRuleNoticeProof,
+  type MaxModerationRuleFollowupProof,
+} from './max-moderation-rule-notice-proof';
+export type { MaxModerationRuleNoticeProof } from './max-moderation-rule-notice-proof';
 export type MaxModerationRuleNoticeMemberAccessReader = (params: {
   chatId: string;
   userId: string;
@@ -38,51 +43,21 @@ export function hasMaxModerationRuleNoticeProof(
   );
 }
 
-type DurableFollowupNoticeProof = { version: 1; id: string; issuedAtMs: number };
-
-function readDurableFollowupProof(action: MaxActionJob): DurableFollowupNoticeProof | undefined {
+function readDurableFollowupProof(
+  action: MaxActionJob,
+): MaxModerationRuleFollowupProof | undefined {
   if (!action.ledgerContext || !Object.hasOwn(action.ledgerContext, 'moderationRuleFollowup'))
     return undefined;
-  const value = action.ledgerContext.moderationRuleFollowup;
-  if (
-    !value ||
-    typeof value !== 'object' ||
-    Array.isArray(value) ||
-    Object.keys(value).length !== 3 ||
-    Object.keys(value).some((key) => !['version', 'id', 'issuedAtMs'].includes(key)) ||
-    value.version !== 1 ||
-    typeof value.id !== 'string' ||
-    !value.id.trim() ||
-    value.id.length > 256 ||
-    !Number.isSafeInteger(value.issuedAtMs) ||
-    (value.issuedAtMs as number) <= 0
-  )
-    throw new MaxModerationRuleNoticeRejectedError();
-  return value as DurableFollowupNoticeProof;
+  const proof = readMaxModerationRuleFollowupProof(action.ledgerContext.moderationRuleFollowup);
+  if (!proof) throw new MaxModerationRuleNoticeRejectedError();
+  return proof;
 }
 
 function readProof(action: MaxActionJob): MaxModerationRuleNoticeProof {
-  const value = action.ledgerContext?.moderationRuleNotice;
-  if (!value || typeof value !== 'object' || Array.isArray(value))
+  const proof = readMaxModerationRuleNoticeProof(action.ledgerContext?.moderationRuleNotice);
+  if (!proof || action.actionType !== 'SEND_MESSAGE' || proof.chatId !== action.chatId)
     throw new MaxModerationRuleNoticeRejectedError();
-  const keys = ['chatId', 'messageId', 'userId', 'reasonKey', 'ruleCode', 'policySha256'];
-  if (
-    value.version !== 1 ||
-    Object.keys(value).length !== keys.length + 2 ||
-    keys.some(
-      (key) =>
-        typeof value[key] !== 'string' ||
-        !(value[key] as string).trim() ||
-        (value[key] as string).length > 1_024,
-    ) ||
-    typeof value.policySha256 !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(value.policySha256) ||
-    !Number.isSafeInteger(value.deadlineAtMs) ||
-    action.actionType !== 'SEND_MESSAGE' ||
-    value.chatId !== action.chatId
-  )
-    throw new MaxModerationRuleNoticeRejectedError();
-  return value as MaxModerationRuleNoticeProof;
+  return proof;
 }
 
 @Injectable()
@@ -137,7 +112,7 @@ export class MaxModerationRuleNoticeGuardService {
   private async assertDurableFollowupNotice(
     action: MaxActionJob,
     proof: MaxModerationRuleNoticeProof,
-    followup: DurableFollowupNoticeProof,
+    followup: MaxModerationRuleFollowupProof,
   ): Promise<void> {
     const row = await this.prisma.moderationRuleFollowup.findUnique({
       where: { id: followup.id },

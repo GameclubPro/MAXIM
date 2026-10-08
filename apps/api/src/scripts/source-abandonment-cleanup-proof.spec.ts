@@ -379,6 +379,332 @@ function requiredSubscriptionFixture(chatId = otherChat) {
   return { ...s, proof };
 }
 
+const noticeShapes = ['E', 'E+S', 'E+R', 'E+R+F', 'E+S+R', 'E+S+R+F', 'E+Q', 'E+D'] as const;
+type NoticeShape = (typeof noticeShapes)[number];
+const newNoticeShapes: readonly NoticeShape[] = ['E+S', 'E+R', 'E+R+F', 'E+S+R', 'E+S+R+F'];
+
+function finiteNoticeFixture(shape: NoticeShape, chatId = otherChat) {
+  const sourceProof: Record<string, unknown> = {
+    version: 1,
+    chatId,
+    messageId: 'original-rule-message',
+    userId: 'original-rule-user',
+  };
+  const rule: Record<string, unknown> = {
+    ...sourceProof,
+    reasonKey: 'LINK_BLOCKED:message-delete',
+    ruleCode: 'LINK_BLOCKED_DELETE',
+    policySha256: 'a'.repeat(64),
+    deadlineAtMs: Date.parse(createdAt) - 1_000 + 300_000,
+  };
+  const followup: Record<string, unknown> = {
+    version: 1,
+    id: 'followup-1',
+    issuedAtMs: Date.parse(createdAt),
+  };
+  const context: Record<string, unknown> = {};
+  const features = shape.split('+');
+  if (features.includes('S')) context.moderationSource = sourceProof;
+  if (features.includes('R')) context.moderationRuleNotice = rule;
+  if (features.includes('F')) context.moderationRuleFollowup = followup;
+  if (features.includes('Q'))
+    context.requiredSubscriptionNotice = requiredSubscriptionFixture(chatId).proof;
+  if (features.includes('D')) context.duplicateNotice = duplicateProof(chatId);
+  const s = fixture(chatId, context);
+  const setParentKey = (key: string) => {
+    s.marker.sourceSendJobId = key;
+    s.ledger.jobId = key;
+  };
+  if (features.includes('F'))
+    setParentKey(
+      buildMaxActionIdempotencyKey('explicit', ['SEND_MESSAGE', 'followup-1:explanation']),
+    );
+  const syncParentContext = () => {
+    s.metadata.ledgerContext = structuredClone(s.data.ledgerContext);
+  };
+  return { ...s, sourceProof, rule, followup, setParentKey, syncParentContext };
+}
+
+describe('finite moderation notice cleanup contexts retain exact unrelated SEND provenance', () => {
+  it.each(noticeShapes)(
+    'accepts producer shape %s in an unrelated group without changing evidence',
+    (shape) => {
+      const s = finiteNoticeFixture(shape);
+      const before = structuredClone({ data: s.data, ledger: s.ledger });
+      expect(s.rule.deadlineAtMs).toBeLessThan(Date.now());
+      expect(s.classify()).toBeNull();
+      expect({ data: s.data, ledger: s.ledger }).toEqual(before);
+    },
+  );
+
+  it.each(newNoticeShapes)(
+    'refuses %s in any selected group, including numeric chat aliases',
+    (shape) => {
+      const s = finiteNoticeFixture(shape);
+      for (const chatId of [otherChat, '-0200']) {
+        const selected = [source, { ...source, chatId, messageId: 'another-message' }];
+        expect(() => classifySourceAbandonmentAction(s.job(), selected, s.parent)).toThrow(
+          'CLEANUP_ORIGINAL_SOURCE_UNPROVED',
+        );
+      }
+      const aliased = finiteNoticeFixture(shape, '-0200');
+      expect(() =>
+        classifySourceAbandonmentAction(
+          aliased.job(),
+          [source, { ...source, chatId: otherChat }],
+          aliased.parent,
+        ),
+      ).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+    },
+  );
+
+  it.each(newNoticeShapes)('retains every parent receipt boundary for %s', (shape) => {
+    const changes: Array<(s: ReturnType<typeof finiteNoticeFixture>) => void> = [
+      (s) => {
+        s.parent.ledger = null as never;
+      },
+      (s) => {
+        s.ledger.jobId = 'another-parent';
+      },
+      (s) => {
+        s.ledger.chatId = '-300';
+      },
+      (s) => {
+        s.ledger.messageId = 'hidden-original';
+      },
+      (s) => {
+        s.ledger.remoteMessageId = 'another-target';
+      },
+      (s) => {
+        s.ledger.status = 'IN_PROGRESS';
+      },
+      (s) => {
+        s.ledger.terminal = false;
+      },
+      (s) => {
+        s.ledger.ambiguous = true;
+      },
+      (s) => {
+        s.ledger.dispatchBotId = 'another-bot';
+      },
+      (s) => {
+        s.ledger.completedAt = new Date(createdAt);
+      },
+      (s) => {
+        s.metadata.createdAt = completedAt;
+      },
+      (s) => {
+        s.metadata.ledgerContext = { moderationNoticeEnvelope: { version: 1 } };
+      },
+      (s) => {
+        s.metadata.optionKeys = ['textFormat', 'messageLink'];
+      },
+      (s) => {
+        s.data.options = { messageLink: { type: 'reply', mid: source.messageId } };
+      },
+    ];
+    for (const change of changes) {
+      const s = finiteNoticeFixture(shape);
+      change(s);
+      const before = structuredClone({ data: s.data, ledger: s.ledger });
+      expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+      expect({ data: s.data, ledger: s.ledger }).toEqual(before);
+    }
+  });
+
+  it.each(newNoticeShapes)('requires a retained original user to agree with %s', (shape) => {
+    const s = finiteNoticeFixture(shape);
+    s.marker.sourceUserId = s.sourceProof.userId;
+    s.ledger.userId = s.sourceProof.userId;
+    expect(s.classify()).toBeNull();
+    s.marker.sourceUserId = 'different-original-user';
+    s.ledger.userId = 'different-original-user';
+    expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+  });
+
+  it.each([
+    ['missing user', { userId: null }],
+    ['missing message', { messageId: null }],
+    ['noncanonical chat', { chatId: ' -200' }],
+    ['noncanonical user', { userId: ' original-rule-user' }],
+    ['noncanonical message', { messageId: 'original-rule-message ' }],
+    ['oversized user', { userId: 'u'.repeat(513) }],
+    ['oversized message', { messageId: 'm'.repeat(513) }],
+    ['different chat', { chatId: '-300' }],
+    ['numeric-only chat match', { chatId: '-0200' }],
+    ['unknown version', { version: 2 }],
+    ['extra field', { anotherSource: source }],
+  ])('refuses %s in both strict source and rule proofs', (_label, changes) => {
+    for (const shape of ['E+S', 'E+R'] as const) {
+      const s = finiteNoticeFixture(shape);
+      Object.assign(shape === 'E+S' ? s.sourceProof : s.rule, changes);
+      s.syncParentContext();
+      expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+    }
+  });
+
+  it.each([
+    ['missing reason', { reasonKey: null }],
+    ['noncanonical reason', { reasonKey: ' LINK_BLOCKED:message-delete' }],
+    ['oversized reason', { reasonKey: 'r'.repeat(1_025) }],
+    ['missing rule', { ruleCode: null }],
+    ['noncanonical rule', { ruleCode: 'LINK_BLOCKED_DELETE ' }],
+    ['oversized rule', { ruleCode: 'r'.repeat(1_025) }],
+    ['invalid policy', { policySha256: 'bad' }],
+    ['noninteger deadline', { deadlineAtMs: 1.5 }],
+    ['unsafe deadline', { deadlineAtMs: Number.MAX_SAFE_INTEGER + 1 }],
+    ['nonpositive original source time', { deadlineAtMs: 300_000 }],
+    ['source after parent completion', { deadlineAtMs: Date.parse(completedAt) + 300_001 }],
+  ])('refuses a retained rule with %s', (_label, changes) => {
+    const s = finiteNoticeFixture('E+R');
+    Object.assign(s.rule, changes);
+    s.syncParentContext();
+    expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+  });
+
+  it.each(['chatId', 'messageId', 'userId'])(
+    'refuses a contradictory sanction source %s',
+    (key) => {
+      for (const shape of ['E+S+R', 'E+S+R+F'] as const) {
+        const s = finiteNoticeFixture(shape);
+        s.sourceProof[key] = key === 'chatId' ? '-300' : `different-${key}`;
+        s.syncParentContext();
+        expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+      }
+    },
+  );
+
+  it.each(['F-only', 'S+F', 'S+Q', 'S+D', 'R+Q', 'R+D', 'Q+D', 'F+D', 'unknown'])(
+    'refuses the unsupported composition %s even with matching parent context',
+    (shape) => {
+      const s = finiteNoticeFixture('E');
+      const context = s.data.ledgerContext as Record<string, unknown>;
+      const keys: Record<string, string> = {
+        S: 'moderationSource',
+        R: 'moderationRuleNotice',
+        F: 'moderationRuleFollowup',
+        Q: 'requiredSubscriptionNotice',
+        D: 'duplicateNotice',
+      };
+      const values: Record<string, unknown> = {
+        S: s.sourceProof,
+        R: s.rule,
+        F: s.followup,
+        Q: requiredSubscriptionFixture().proof,
+        D: duplicateProof(otherChat),
+      };
+      if (shape === 'unknown') context.unknownProof = { ...source, chatId: otherChat };
+      else
+        for (const key of (shape === 'F-only' ? 'F' : shape).split('+'))
+          context[keys[key]] = values[key];
+      s.syncParentContext();
+      expect(s.classify).toThrow(
+        shape === 'unknown' ? 'ACTION_PRODUCER_UNPROVED' : 'CLEANUP_ORIGINAL_SOURCE_UNPROVED',
+      );
+    },
+  );
+
+  it.each(['explanation', 'sanction-notice'])(
+    'retains exact historical followup %s producer keys',
+    (kind) => {
+      const logical = `followup-1:${kind}`;
+      const keys = [
+        logical,
+        buildMaxActionIdempotencyKey('explicit', ['SEND_MESSAGE', logical]),
+        buildMaxActionIdempotencyKey('explicit', ['major-1', 'SEND_MESSAGE', logical]),
+      ];
+      for (const key of keys) {
+        const s = finiteNoticeFixture(kind === 'explanation' ? 'E+R+F' : 'E+S+R+F');
+        s.setParentKey(key);
+        expect(s.classify()).toBeNull();
+      }
+    },
+  );
+
+  it('matches the complete producer key for a followup id beyond the readable prefix limit', () => {
+    const s = finiteNoticeFixture('E+R+F');
+    s.followup.id = 'f'.repeat(200);
+    s.syncParentContext();
+    s.setParentKey(
+      buildMaxActionIdempotencyKey('explicit', ['SEND_MESSAGE', `${s.followup.id}:explanation`]),
+    );
+    expect(s.classify()).toBeNull();
+    s.setParentKey(
+      buildMaxActionIdempotencyKey('explicit', ['SEND_MESSAGE', `${'f'.repeat(199)}g:explanation`]),
+    );
+    expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+  });
+
+  it.each(['fresh SEND', 'missing cleanup marker', 'non-null cleanup source'])(
+    'does not expand the followup exception to %s',
+    (change) => {
+      const s = finiteNoticeFixture('E+R+F');
+      if (change === 'fresh SEND') s.data.actionType = 'SEND_MESSAGE';
+      if (change === 'missing cleanup marker') delete s.data.sendAutoDelete;
+      if (change === 'non-null cleanup source') s.marker.sourceMessageId = 'original-rule-message';
+      expect(s.classify).toThrow('ACTION_PRODUCER_UNPROVED');
+    },
+  );
+
+  it.each([
+    ['unrelated parent', 'other-parent'],
+    ['different followup', 'followup-2:explanation'],
+    ['unknown effect', 'followup-1:another-effect'],
+    [
+      'different action',
+      buildMaxActionIdempotencyKey('explicit', ['DELETE_MESSAGE', 'followup-1:explanation']),
+    ],
+    [
+      'different bot',
+      buildMaxActionIdempotencyKey('explicit', [
+        'major-2',
+        'SEND_MESSAGE',
+        'followup-1:explanation',
+      ]),
+    ],
+    [
+      'different namespace',
+      buildMaxActionIdempotencyKey('routed', ['SEND_MESSAGE', 'followup-1:explanation']),
+    ],
+  ])(
+    'refuses the followup with %s key despite an exact successful parent receipt',
+    (_label, key) => {
+      const s = finiteNoticeFixture('E+R+F');
+      s.setParentKey(key);
+      expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+    },
+  );
+
+  it.each([
+    ['unknown version', { version: 2 }],
+    ['missing id', { id: null }],
+    ['noncanonical id', { id: ' followup-1' }],
+    ['oversized id', { id: 'f'.repeat(257) }],
+    ['extra field', { anotherSource: source }],
+    ['zero issued time', { issuedAtMs: 0 }],
+    ['fractional issued time', { issuedAtMs: 1.5 }],
+    ['unsafe issued time', { issuedAtMs: Number.MAX_SAFE_INTEGER + 1 }],
+    ['before source time', { issuedAtMs: Date.parse(createdAt) - 1_001 }],
+    ['at original deadline', { issuedAtMs: Date.parse(createdAt) - 1_000 + 300_000 }],
+    ['after parent completion', { issuedAtMs: Date.parse(completedAt) + 1 }],
+  ])('refuses %s in a retained durable followup', (_label, changes) => {
+    const s = finiteNoticeFixture('E+R+F');
+    Object.assign(s.followup, changes);
+    s.syncParentContext();
+    expect(s.classify).toThrow('CLEANUP_ORIGINAL_SOURCE_UNPROVED');
+  });
+
+  it.each([Date.parse(createdAt) - 1_000, Date.parse(completedAt)])(
+    'accepts historical issued time %s on the allowed inclusive source/completion boundary',
+    (issuedAtMs) => {
+      const s = finiteNoticeFixture('E+R+F');
+      s.followup.issuedAtMs = issuedAtMs;
+      s.syncParentContext();
+      expect(s.classify()).toBeNull();
+    },
+  );
+});
+
 describe('required subscription cleanup proves unrelated completed notice lineage only', () => {
   it('excludes the exact retained same-chat notice despite an expired source deadline', () => {
     const s = requiredSubscriptionFixture();

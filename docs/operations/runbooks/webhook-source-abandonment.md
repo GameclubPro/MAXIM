@@ -60,7 +60,7 @@ or a queue count. Preserve the exact window and release identity in the incident
 
 Redis structural admission performs two independent complete `SCAN MATCH bull:*`
 censuses, each ending at cursor zero. Each pass caps database size at 12 million
-keys, uses advisory `COUNT 4096`, and caps pages at 4,096 and duration at 15 seconds
+keys, uses advisory `COUNT 4096`, and caps pages at 4,096 and duration at 20 seconds
 inside the collector-specific shared 45-second deadline. The read-only collector
 transaction has a 50-second timeout; legacy collection and SQL-only store budgets
 remain unchanged. Structural census has separate
@@ -71,7 +71,7 @@ Each projection validates at most 64 KiB and 512 lines of internal INFO and retu
 at most 512 bytes of original counter text. Exactly two completed EVAL_RO calls
 must separate the snapshots; their reported time includes the first meter and
 the whole read. Above 50 ms refuses admission after execution, without retry or
-preemption. The final meter is outside that delta; the 15-second wall deadline
+preemption. The final meter is outside that delta; the 20-second wall deadline
 remains independent. This reduces returned metadata, not internal INFO work.
 Redis 7.2+ Lua TIME is frozen. Structural census has separate byte/key/work limits
 from the unchanged effect inventory limits of 512 pages,
@@ -85,6 +85,15 @@ SQL inventory. A required-subscription cleanup job must retain its exact success
 equal canonical notice context and same-chat source proof. It is admissible only
 when disjoint from every selected chat, including numeric aliases; mixed or
 unproved contexts still refuse admission.
+Other supported completed moderation notice cleanups use the exact versioned
+`moderationSource` or `moderationRuleNotice` producer proofs. A durable
+`moderationRuleFollowup` must accompany its rule proof with a matching historical
+issue time and exact explanation/sanction SEND key; it cannot prove a source alone.
+Combined rule/source proofs must name the same original message and user. Every
+new combination remains disjoint from all selected chats, including numeric aliases;
+unknown or mixed feature contexts remain refused. These checks prove retained
+cleanup lineage only and do not renew an expired source deadline or permit replay.
+
 Admission never authorizes stopping services or installing holds.
 The frozen inventory independently repeats the full check under `RepeatableRead`
 after producers stop; source selection, cutoff and equality checks remain unchanged.

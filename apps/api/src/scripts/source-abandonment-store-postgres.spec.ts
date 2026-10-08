@@ -320,9 +320,9 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
   }
 
   it.each([
-    [14_000, 0, 'READY_FOR_COLD_REVIEW'],
-    [14_000, 14_000, 'DENY'],
-    [15_001, 0, 'DENY'],
+    [19_000, 0, 'READY_FOR_COLD_REVIEW'],
+    [19_000, 4_000, 'DENY'],
+    [20_001, 0, 'DENY'],
   ] as const)(
     'bounds two catalog passes at %i ms and final SQL at %i ms: %s',
     async (catalogMs, childSqlMs, decision) => {
@@ -377,7 +377,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         expect(evidence.decision).toBe(decision);
         expect(catalogReads).toBe(2);
         expect(evidence.redisCatalogs).toHaveLength(2);
-        if (catalogMs > 15_000) {
+        if (catalogMs > 20_000) {
           expect(evidence.redisCatalogs.every((proof) => !proof.complete)).toBe(true);
           expect(evidence.issues).toContainEqual({
             code: 'CATALOG_DEADLINE_EXCEEDED',
@@ -385,7 +385,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
           });
         } else {
           expect(evidence.redisCatalogs.every((proof) => proof.complete)).toBe(true);
-          expect(elapsed).toBe(31_000 + childSqlMs);
+          expect(elapsed).toBe(41_000 + childSqlMs);
           expect(childSql).toHaveBeenCalledTimes(1);
           expect(evidence.issues).toEqual(
             childSqlMs
@@ -607,27 +607,46 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     ['required-subscription', 'inventory_preview'],
     ['required-subscription-invalid', 'admission_preview'],
     ['required-subscription-invalid', 'inventory_preview'],
+    ['notice-source', 'admission_preview'],
+    ['notice-source', 'inventory_preview'],
+    ['notice-rule', 'admission_preview'],
+    ['notice-rule', 'inventory_preview'],
+    ['notice-rule-source', 'admission_preview'],
+    ['notice-rule-source', 'inventory_preview'],
+    ['notice-rule-followup', 'admission_preview'],
+    ['notice-rule-followup', 'inventory_preview'],
+    ['notice-rule-followup-source', 'admission_preview'],
+    ['notice-rule-followup-source', 'inventory_preview'],
+    ['notice-rule-source-conflict', 'admission_preview'],
+    ['notice-rule-source-conflict', 'inventory_preview'],
+    ['notice-followup-only', 'admission_preview'],
+    ['notice-followup-only', 'inventory_preview'],
   ] as const)(
     'proves exact completed %s notice cleanup through %s without changing it',
     async (origin, operation) => {
       const suffix = randomUUID();
       const publisher = origin.startsWith('publisher');
       const requiredSubscription = origin.startsWith('required-subscription');
+      const finiteNotice = origin.startsWith('notice-');
       const botId = publisher ? 'publisher-1' : 'major-1';
+      const followupId = `notice-followup-${suffix}`;
       const publisherBotId = origin === 'publisher' ? botId : undefined;
       const cleanupChat = '-200';
       const parentKey = buildMaxActionIdempotencyKey('explicit', [
         ...(publisher ? [botId] : []),
         'SEND_MESSAGE',
-        publisher
-          ? `publisher-handshake-start:${cleanupChat}:${suffix}`
-          : `managed-handshake-start:groupcmd:v1:${suffix}`,
+        origin.includes('followup')
+          ? `${followupId}:explanation`
+          : publisher
+            ? `publisher-handshake-start:${cleanupChat}:${suffix}`
+            : `managed-handshake-start:groupcmd:v1:${suffix}`,
       ]);
       const childKey = `handshake-cleanup-${suffix}`;
       const createdAt = new Date(Date.now() - 1000).toISOString();
       const completedAt = new Date().toISOString();
-      const sourceTag = requiredSubscription ? 'moderation_notice' : 'managed_handshake';
-      const context = requiredSubscription
+      const sourceTag =
+        requiredSubscription || finiteNotice ? 'moderation_notice' : 'managed_handshake';
+      let context: Record<string, Prisma.InputJsonValue> | null = requiredSubscription
         ? {
             moderationNoticeEnvelope: { version: 1 },
             requiredSubscriptionNotice: {
@@ -642,6 +661,34 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
             },
           }
         : null;
+      if (finiteNotice) {
+        context = { moderationNoticeEnvelope: { version: 1 } };
+        const sourceAtMs = Date.parse(createdAt) - 1_000;
+        if (origin.includes('rule'))
+          context.moderationRuleNotice = {
+            version: 1,
+            chatId: cleanupChat,
+            messageId: `original-${suffix}`,
+            userId: 'original-user',
+            reasonKey: 'LINK_BLOCKED:message-delete',
+            ruleCode: 'LINK_BLOCKED',
+            policySha256: 'a'.repeat(64),
+            deadlineAtMs: sourceAtMs + 300_000,
+          };
+        if (origin.includes('source'))
+          context.moderationSource = {
+            version: 1,
+            chatId: cleanupChat,
+            userId: 'original-user',
+            messageId: origin.endsWith('conflict') ? 'conflicting-original' : `original-${suffix}`,
+          };
+        if (origin.includes('followup'))
+          context.moderationRuleFollowup = {
+            version: 1,
+            id: followupId,
+            issuedAtMs: sourceAtMs + 500,
+          };
+      }
       const delay = MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS;
       const metadata = {
         createdAt,
@@ -672,7 +719,8 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         { length: 512 },
         (_, index) => `handshake-history-${suffix}-${index}`,
       );
-      const queue = new Queue('max-actions-interactive', { connection: { url: fixtureRedisUrl } });
+      const queueName = finiteNotice ? 'max-actions-background' : 'max-actions-interactive';
+      const queue = new Queue(queueName, { connection: { url: fixtureRedisUrl } });
       queues.push(queue);
       await queue.pause();
       try {
@@ -708,11 +756,8 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         );
         // FLAG: Redis may serialize identical hash fields in a different RDB order.
         // Compare every BullMQ job field and its delayed score, not DUMP encoding bytes.
-        const queueBefore = await redis.hgetall(`bull:max-actions-interactive:${childKey}`);
-        const delayedScoreBefore = await redis.zscore(
-          'bull:max-actions-interactive:delayed',
-          childKey,
-        );
+        const queueBefore = await redis.hgetall(`bull:${queueName}:${childKey}`);
+        const delayedScoreBefore = await redis.zscore(`bull:${queueName}:delayed`, childKey);
         expect(Object.keys(queueBefore).length).toBeGreaterThan(0);
         expect(delayedScoreBefore).not.toBeNull();
         const parentBefore = await db.maxActionLedgerEntry.findUniqueOrThrow({
@@ -747,7 +792,10 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
           },
         );
         const denied =
-          origin === 'publisher-missing-catalog' || origin === 'required-subscription-invalid';
+          origin === 'publisher-missing-catalog' ||
+          origin === 'required-subscription-invalid' ||
+          origin === 'notice-rule-source-conflict' ||
+          origin === 'notice-followup-only';
         expect(result.decision).toBe(
           denied
             ? 'DENY'
@@ -760,7 +808,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
             ? [
                 {
                   code: 'CLEANUP_ORIGINAL_SOURCE_UNPROVED',
-                  descriptor: 'redis:max-actions-interactive',
+                  descriptor: `redis:${queueName}`,
                 },
               ]
             : [],
@@ -777,13 +825,9 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         expect(
           await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: parentKey } }),
         ).toEqual(parentBefore);
-        expect(await redis.hgetall(`bull:max-actions-interactive:${childKey}`)).toEqual(
-          queueBefore,
-        );
-        expect(await redis.zscore('bull:max-actions-interactive:delayed', childKey)).toBe(
-          delayedScoreBefore,
-        );
-        expect(await redis.zcard('bull:max-actions-interactive:delayed')).toBe(1);
+        expect(await redis.hgetall(`bull:${queueName}:${childKey}`)).toEqual(queueBefore);
+        expect(await redis.zscore(`bull:${queueName}:delayed`, childKey)).toBe(delayedScoreBefore);
+        expect(await redis.zcard(`bull:${queueName}:delayed`)).toBe(1);
         expect(
           await db.webhookSourceAbandonment.findUnique({ where: { ownerWebhookEventId: ownerId } }),
         ).toBeNull();

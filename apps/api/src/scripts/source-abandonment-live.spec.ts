@@ -479,7 +479,7 @@ describe('exact source abandonment bounded evidence', () => {
       { ...proof, cost: { ...proof.cost, scanCountHints: 0 } },
       { ...proof, cost: { ...proof.cost, matchedKeys: 300_001 } },
       { ...proof, cost: { ...proof.cost, databaseKeysMax: 12_000_001 } },
-      { ...proof, cost: { ...proof.cost, durationMs: 15_001 } },
+      { ...proof, cost: { ...proof.cost, durationMs: 20_001 } },
       { ...proof, cost: { ...proof.cost, maxCallDurationUs: 50_001 } },
       { ...proof, cost: { ...proof.cost, measurementBytes: 16 * 1024 * 1024 + 1 } },
       { ...proof, cost: { ...proof.cost, measurementBytes: 0 } },

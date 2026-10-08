@@ -322,7 +322,16 @@ export function classifySourceAbandonmentAction(
   )
     throw new Refused('ACTION_ENVELOPE_UNPROVED');
   const context = data.ledgerContext === undefined ? {} : record(data.ledgerContext);
-  if (!context || Object.keys(context).some((key) => !contexts.has(key)))
+  // FLAG: This extra key belongs only to a retained completed rule SEND cleanup.
+  // Its exact typed lineage is checked below; it cannot admit an arbitrary action.
+  const possibleRuleCleanup =
+    data.actionType === 'DELETE_MESSAGE' && record(data.sendAutoDelete)?.sourceMessageId === null;
+  if (
+    !context ||
+    Object.keys(context).some(
+      (key) => !contexts.has(key) && !(key === 'moderationRuleFollowup' && possibleRuleCleanup),
+    )
+  )
     throw new Refused('ACTION_PRODUCER_UNPROVED');
   let cleanupScopes: ReturnType<typeof readLegacyActionSourceScopes> | null = null;
   if (data.sendAutoDelete !== undefined) {
