@@ -1,8 +1,8 @@
 import { assertLegacyDispositionSource } from './assert-legacy-disposition-source.mjs';
 
-export const CORRECTIVE_RUNTIME_SHA = '9f06dff5d32d6f1bd61ee8fa92f103b043475452';
+export const CORRECTIVE_RUNTIME_SHA = 'e7e0066ac724726b42c5cba00bfd8f930673b645';
 export const CORRECTIVE_RUNTIME_IMAGE =
-  'sha256:39fd36dfc4cd49dd30bceb7cfaf0bd2ad068b96392762afc4c9fe413191dd306';
+  'sha256:c3e6540fa88d5695fb5c875a2baf7a7b7bf0b6c7c2a6907288f5217755727c45';
 const source = /^[0-9a-f]{40}$/u;
 const permittedControllerChanges = new Set([
   'infra/AGENTS.md',

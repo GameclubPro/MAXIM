@@ -138,8 +138,9 @@ The modern controller cannot resume a legacy operation, or vice versa.
 
 When a host-controller defect blocks an already admitted operation, use the
 explicit corrective entrypoint only within its checked-in compatibility boundary.
-It currently pins runtime commit `9f06dff5d32d6f1bd61ee8fa92f103b043475452` and its
-immutable API image. The controller itself must be a distinct, clean, exact
+It currently pins runtime commit `e7e0066ac724726b42c5cba00bfd8f930673b645` and API
+image `sha256:c3e6540fa88d5695fb5c875a2baf7a7b7bf0b6c7c2a6907288f5217755727c45`.
+The controller itself must be a distinct, clean, exact
 descendant commit. The command checks CI for that controller commit; the normal
 documented emergency exception requires both `MAXIM_DEPLOY_EMERGENCY_BYPASS=1`
 and a nonblank `MAXIM_DEPLOY_EMERGENCY_REASON`. It never bypasses source, image,
