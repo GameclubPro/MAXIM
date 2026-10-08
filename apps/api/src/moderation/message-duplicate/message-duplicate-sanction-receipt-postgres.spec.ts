@@ -292,6 +292,38 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       expect(await snapshot()).toEqual(before);
     });
 
+    it.each(['missing success', 'unfinished receipt'] as const)(
+      'declines initial sanction on %s without rewriting durable evidence or permitting a late recheck',
+      async (kind) => {
+        const s = await fixture();
+        await prisma.moderationDeleteIntent.update({
+          where: { id: s.intentId },
+          data:
+            kind === 'missing success'
+              ? { remoteDeleteSucceededAt: null, remoteDeleteSucceededBotId: null }
+              : { status: 'AMBIGUOUS' },
+        });
+        const before = await snapshot();
+        await expect(
+          s.service.assertMessageStillActionable({
+            ...s.request,
+            sanctionPhase: 'initial_unattempted',
+          }),
+        ).rejects.toMatchObject({
+          name: 'MessageDuplicateGuardRejectedError',
+          code: 'message_duplicate_sanction_source_unavailable',
+        });
+        expect(s.originalLookup).not.toHaveBeenCalled();
+        expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+        expect(s.beforeFinalAuthority).not.toHaveBeenCalled();
+        expect(s.metrics.record).not.toHaveBeenCalledWith('guard.current_lookup_confirmed_absent');
+        expectNoEffects(s);
+        expect(await snapshot()).toEqual(before);
+        await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(s.sourceError);
+        expect(await snapshot()).toEqual(before);
+      },
+    );
+
     it.each([
       'missing intent',
       'wrong chat',

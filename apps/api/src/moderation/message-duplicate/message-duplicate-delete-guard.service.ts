@@ -61,6 +61,7 @@ type MessageDuplicateGuardInput = {
   botId: string;
   binding: MessageDuplicateBinding;
   sanctionIntentId?: string;
+  sanctionPhase?: 'initial_unattempted';
   notice?: MessageDuplicateNoticeProof;
   beforeFinalAuthority?: () => Promise<void>;
   deletePhase?: ModerationDeletePreDispatchPhase;
@@ -338,6 +339,16 @@ export class MessageDuplicateDeleteGuardService {
       currentReadFailure = error;
       raw = null;
     }
+    const rejectUnavailableCurrentSource = (): never => {
+      // FLAG: Only the initial sanction authorization may decline unavailable evidence
+      // before any sanction state or remote mutation. This grants no absence, DELETE
+      // receipt, retry or claim reset; final member/notice rechecks retain the failure.
+      if (params.sanctionPhase === 'initial_unattempted')
+        throw new MessageDuplicateGuardRejectedError(
+          'message_duplicate_sanction_source_unavailable',
+        );
+      throw currentReadFailure;
+    };
     if (!raw && !receiptIntentId) return 'absent';
     if (!raw) {
       // FLAG: Absence alone cannot authorize a sanction. Require our exact successful DELETE
@@ -392,7 +403,7 @@ export class MessageDuplicateDeleteGuardService {
         JSON.stringify(recorded.original) !==
           JSON.stringify(messageDuplicateOriginalSchema.parse(binding.original))
       ) {
-        if (currentReadFailure !== null) throw currentReadFailure;
+        if (currentReadFailure !== null) rejectUnavailableCurrentSource();
         throw new MessageDuplicateGuardRejectedError('message_duplicate_unproven_absence');
       }
       if (currentReadFailure !== null) {
@@ -417,7 +428,7 @@ export class MessageDuplicateDeleteGuardService {
           receipt.remoteDeleteSucceededAt.getTime() > Date.now() ||
           JSON.stringify(recorded) !== JSON.stringify(canonicalBinding)
         )
-          throw currentReadFailure;
+          rejectUnavailableCurrentSource();
       }
     } else {
       const message = this.parser.parse({

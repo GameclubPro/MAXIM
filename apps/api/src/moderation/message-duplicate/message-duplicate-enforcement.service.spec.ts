@@ -355,11 +355,38 @@ describe('message duplicate delete-only action claims', () => {
     const finalInput = s.guard.assertMessageStillActionable.mock.calls.at(-1)![0];
     expect(finalInput.botId).toBe('surviving-peer');
     expect(finalInput.sanctionIntentId).toBe('intent');
+    expect(finalInput.sanctionPhase).toBeUndefined();
     expect(route).not.toHaveBeenCalled();
     await finalInput.beforeFinalAuthority();
     expect(route).toHaveBeenCalledTimes(1);
     await request.authorizeSanction();
     expect(s.guard.assertMessageStillActionable.mock.calls.at(-1)![0].botId).toBe('bot');
+    expect(s.guard.assertMessageStillActionable.mock.calls.at(-1)![0].sanctionPhase).toBe(
+      'initial_unattempted',
+    );
+  });
+
+  it('finishes an unavailable initial sanction without resetting its materialized claim', async () => {
+    const s = await enforcementCase();
+    const sourceError = { response: { status: 404, data: {} } };
+    s.guard.assertMessageStillActionable.mockImplementation(async (input) => {
+      if (input.sanctionPhase === 'initial_unattempted')
+        throw new MessageDuplicateGuardRejectedError(
+          'message_duplicate_sanction_source_unavailable',
+        );
+      throw sourceError;
+    });
+    s.executeFullAction.mockImplementation(async (request) => {
+      expect(await request.authorizeSanction()).toBe(false);
+    });
+    await expect(s.service.enqueue(s.params)).resolves.toEqual({
+      kind: 'intent_accepted',
+      intentId: 'intent',
+    });
+    expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+    const request = s.executeFullAction.mock.calls[0]![0];
+    await expect(request.beforeSanctionMutation()).rejects.toBe(sourceError);
+    await expect(request.authorizeDelete()).rejects.toBe(sourceError);
   });
 
   it.each(

@@ -1043,6 +1043,80 @@ describe('message duplicate final delete guard', () => {
     expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
   });
 
+  it.each(['missing', 'unfinished', 'unverified'] as const)(
+    'declines only the initial sanction on unavailable current source and a %s receipt',
+    async (kind) => {
+      const s = full();
+      const error = { response: { status: 404, data: {} } };
+      const receipt = ownDeleteReceipt(s);
+      if (kind === 'unfinished') receipt.status = 'AMBIGUOUS';
+      if (kind === 'unverified') receipt.reasons[0]!.metadata.moderationDeleteVerified = false;
+      const before = structuredClone(receipt);
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(
+        kind === 'missing' ? null : receipt,
+      );
+      await expect(
+        s.service.assertMessageStillActionable({
+          ...s.request,
+          sanctionPhase: 'initial_unattempted',
+        }),
+      ).rejects.toMatchObject({
+        name: 'MessageDuplicateGuardRejectedError',
+        code: 'message_duplicate_sanction_source_unavailable',
+      });
+      expect(s.originalLookup).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.current_lookup_confirmed_absent');
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.absent');
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
+      expect(receipt).toEqual(before);
+      await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(error);
+    },
+  );
+
+  it('retains exact successful DELETE authority at the initial sanction boundary', async () => {
+    const s = full();
+    s.max.getExactMessageRow.mockRejectedValue({ response: { status: 404, data: {} } });
+    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
+    await expect(
+      s.service.assertMessageStillActionable({
+        ...s.request,
+        sanctionPhase: 'initial_unattempted',
+      }),
+    ).resolves.toBe('allowed');
+    expect(s.originalLookup).toHaveBeenCalledTimes(1);
+    expect(s.history.stillMatches).toHaveBeenCalled();
+  });
+
+  it.each(['original', 'access', 'server', 'send', 'member'] as const)(
+    'preserves %s failures even at initial sanction authorization',
+    async (kind) => {
+      const s = full();
+      const error = {
+        response: {
+          status: kind === 'server' ? 500 : 404,
+          data: kind === 'access' ? { code: 'chat.denied' } : {},
+        },
+      };
+      if (kind === 'send') markMaxMessageSendAttempted(error);
+      if (kind === 'member') markMaxMemberMutationAttempted(error);
+      s.max.getExactMessageRow.mockRejectedValue(
+        kind === 'original' ? { response: { status: 404, data: {} } } : error,
+      );
+      if (kind === 'original') s.originalLookup.mockRejectedValue(error);
+      s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
+      await expect(
+        s.service.assertMessageStillActionable({
+          ...s.request,
+          sanctionPhase: 'initial_unattempted',
+        }),
+      ).rejects.toBe(error);
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     'id',
     'status',

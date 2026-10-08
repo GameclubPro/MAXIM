@@ -268,6 +268,7 @@ export class MessageDuplicateEnforcementService {
                 }
               : undefined,
             ...(sanction ? { sanctionIntentId: result.intent!.intentId! } : {}),
+            ...(sanction && !finalMember ? { sanctionPhase: 'initial_unattempted' as const } : {}),
           });
           params.assertLease?.();
           return allowed === 'allowed';
