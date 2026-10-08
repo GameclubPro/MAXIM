@@ -350,16 +350,103 @@ function validateRefrozenReview(journal, proofs, readEvidence) {
     refuse('refreeze positive certificate absence unproved');
 }
 
-// FLAG: Retained previews are evidence only. Abort may preserve a completed,
-// one-time refreeze, but never installation/recheck or post-writer evidence.
+// FLAG: An ordinary reviewed preview grants no installation authority to abort.
+// Authenticate its immutable bytes and exact operation binding before preserving
+// them through the same two-ABSENT, same-generation restart path.
+function validateOrdinaryAbortPreview(original, readEvidence) {
+  const binding = original.bindings;
+  const pending = readEvidence(original.proofs.pendingInventory);
+  const reviewed = readEvidence(original.proofs.reviewedPreview);
+  const inventory = pending?.inventory;
+  const stopped = readEvidence(original.proofs.stoppedInventory);
+  const generations = [...(stopped?.services ?? []), ...(stopped?.auxiliaries ?? [])]
+    .map(({ serviceName, containerId, imageId, sourceSha }) => ({
+      serviceName,
+      containerId,
+      imageId,
+      sourceSha,
+      stopped: true,
+    }))
+    .sort((a, b) => a.serviceName.localeCompare(b.serviceName));
+  if (
+    !keysExactly(pending, [
+      'version',
+      'complete',
+      'sourceSha',
+      'imageId',
+      'controllerNonce',
+      'selectionDigest',
+      'inventoryDigest',
+      'previewDigest',
+      'inventoryArtifactSha256',
+      'unknownSources',
+      'saturated',
+      'inventory',
+    ]) ||
+    pending.version !== 1 ||
+    pending.complete !== true ||
+    pending.sourceSha !== binding.targetSha ||
+    pending.imageId !== binding.targetImageId ||
+    pending.controllerNonce !== binding.controllerNonce ||
+    pending.selectionDigest !== binding.selectionDigest ||
+    pending.unknownSources !== 0 ||
+    pending.saturated !== false ||
+    ![pending.inventoryDigest, pending.previewDigest, pending.inventoryArtifactSha256].every(
+      (value) => digest.test(value ?? ''),
+    ) ||
+    inventory?.version !== 1 ||
+    inventory.operation !== 'inventory_preview' ||
+    inventory.applied !== false ||
+    inventory.activationAuthorized !== false ||
+    inventory.decision !== 'READY_TO_INSTALL' ||
+    !Array.isArray(inventory.issues) ||
+    inventory.issues.length !== 0 ||
+    inventory.inventorySha256 !== pending.inventoryDigest ||
+    inventory.previewSha256 !== pending.previewDigest ||
+    !digest.test(inventory.selectionSha256 ?? '') ||
+    legacyColdDigest(`${JSON.stringify(inventory)}\n`) !== pending.inventoryArtifactSha256 ||
+    inventory.binding?.sourceSha !== binding.targetSha ||
+    inventory.binding?.imageId !== binding.targetImageId ||
+    inventory.binding?.maintenanceId !== binding.controllerNonce ||
+    inventory.binding?.queueFenceNonce !== legacyColdDigest(binding.controllerNonce) ||
+    !digest.test(inventory.binding?.transitionJournalSha256 ?? '') ||
+    generations.length !== 16 ||
+    generations.some(
+      (row) =>
+        !digest.test(row.containerId ?? '') ||
+        row.imageId !== binding.targetImageId ||
+        row.sourceSha !== binding.targetSha,
+    ) ||
+    canonicalEvidenceDigest(inventory.binding?.stoppedGenerations) !==
+      canonicalEvidenceDigest(generations) ||
+    !keysExactly(reviewed, ['version', 'previewDigest', 'inventoryDigest', 'selectionDigest']) ||
+    reviewed.version !== 1 ||
+    reviewed.previewDigest !== pending.previewDigest ||
+    reviewed.inventoryDigest !== pending.inventoryDigest ||
+    reviewed.selectionDigest !== binding.selectionDigest
+  )
+    refuse('abort ordinary preview unproved');
+}
+
+// FLAG: Retained previews are evidence only. Abort preserves an ordinary complete
+// review or a complete one-time refreeze, never recheck or post-writer evidence.
 function validateRetainedAbortPreview(original, readEvidence) {
   const present = retainedAbortPreviewNames.filter((name) => original.proofs[name]);
   if (!present.length) {
     if (original.phase !== 'STOPPED') refuse('preinstall abort CAS failed');
     return;
   }
-  if (original.phase !== 'INVENTORIED' || present.length !== retainedAbortPreviewNames.length)
+  if (
+    original.phase !== 'INVENTORIED' ||
+    !original.proofs.pendingInventory ||
+    !original.proofs.reviewedPreview
+  )
     refuse('preinstall abort CAS failed');
+  if (present.length === 2) {
+    validateOrdinaryAbortPreview(original, readEvidence);
+    return;
+  }
+  if (present.length !== retainedAbortPreviewNames.length) refuse('preinstall abort CAS failed');
   const history = readEvidence(original.proofs.supersededPreview);
   const previous = validateLegacyColdJournal(history.previousJournal);
   if (

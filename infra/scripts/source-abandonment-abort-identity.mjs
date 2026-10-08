@@ -1,9 +1,9 @@
 import { assertLegacyDispositionSource } from './assert-legacy-disposition-source.mjs';
 
-export const ABORT_RUNTIME_SHA = 'e7e0066ac724726b42c5cba00bfd8f930673b645';
+export const ABORT_RUNTIME_SHA = '678c2786625b0630898eaa387273f3276859e6b7';
 export const ABORT_RUNTIME_IMAGE =
-  'sha256:c3e6540fa88d5695fb5c875a2baf7a7b7bf0b6c7c2a6907288f5217755727c45';
-const reviewedBase = '8b48a9702de516022bc22a8e195f983dbf116cc9';
+  'sha256:e2fcf4e631cb6676128b41d819d9373eb1b9a88aeb696e5320f6901a659a1dfb';
+const reviewedBase = '678c2786625b0630898eaa387273f3276859e6b7';
 const permitted = new Set([
   'infra/AGENTS.md',
   'docs/operations/runbooks/webhook-source-abandonment.md',
@@ -17,8 +17,8 @@ const permitted = new Set([
   'infra/scripts/source-abandonment-abort.test.mjs',
 ]);
 
-// FLAG: The reviewed base includes only previously reviewed companion changes.
-// This continuation always uses the frozen e7 runtime and only aborts an
+// FLAG: The reviewed base is the immutable runtime source. Only the permitted
+// controller paths may differ above it. This continuation only aborts an
 // operation that never reached its writer boundary; no inventory is installed.
 export function readSourceAbandonmentAbortIdentity(
   { controllerSha, targetSha, protocol, operation },
@@ -47,7 +47,7 @@ export function readSourceAbandonmentAbortIdentity(
       .some((path) => !permitted.has(path))
   )
     throw new Error('abort_dependency_changed');
-  // FLAG: Both reviewed e7 runtime and descendant controller retain the source
+  // FLAG: Both reviewed runtime and descendant controller retain the source
   // floor. Abort installs no holds and restores only the exact captured image.
   for (const sha of [targetSha, controllerSha])
     assertSource(sha, (path) => run('git', ['show', `${sha}:${path}`]));
