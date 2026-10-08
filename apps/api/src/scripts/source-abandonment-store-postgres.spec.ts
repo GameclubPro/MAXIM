@@ -319,6 +319,316 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     });
   }
 
+  async function candidateMeter(tx: Prisma.TransactionClient, pages = 512) {
+    await tx.$executeRaw`SET LOCAL enable_seqscan = off`;
+    await tx.$executeRaw`SET LOCAL enable_bitmapscan = off`;
+    return new SourceInventorySqlMeter(tx, {
+      pages,
+      rows: 10_000,
+      probes: 50_000,
+      bytes: 8 * 1024 * 1024,
+      deadlineAtMs: Date.now() + 30_000,
+    });
+  }
+
+  it('proves every mirror while reading shared claim and settings evidence only twice', async () => {
+    const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const mirrorIds = Array.from({ length: 6 }, () => randomUUID());
+    try {
+      await db.webhookEvent.createMany({
+        data: mirrorIds.map((id) => ({
+          id,
+          botId: owner.botId,
+          dedupKey: id,
+          semanticKey: owner.semanticKey,
+          rawPayload: owner.rawPayload as Prisma.InputJsonValue,
+          normalizedPayload: owner.normalizedPayload as Prisma.InputJsonValue,
+          status: 'RECEIVED' as const,
+        })),
+      });
+      const result = await inventory();
+      expect(result.issues).toEqual([]);
+      expect(result.selectedOwners).toHaveLength(1);
+      expect(
+        result.plans.filter((plan) => plan.descriptor === 'sql:exact-source-family'),
+      ).toHaveLength(1);
+      // FLAG: Every distinct receipt still pays for its own size and exact PK proof.
+      // Shared settings and all kind-prefix sentinels get one independent final reread.
+      expect(result.plans.filter((plan) => plan.descriptor === 'sql:source-size')).toHaveLength(
+        mirrorIds.length + 2,
+      );
+      expect(result.plans.filter((plan) => plan.descriptor === 'sql:webhook_events')).toHaveLength(
+        mirrorIds.length + 2,
+      );
+      expect(result.plans.filter((plan) => plan.descriptor === 'sql:chat_settings')).toHaveLength(
+        2,
+      );
+      const prefixes = result.plans.filter((plan) => plan.descriptor === 'sql:claim-kind-prefix');
+      expect(prefixes.length).toBeGreaterThan(0);
+      for (const digest of new Set(prefixes.map((plan) => plan.querySha256)))
+        expect(prefixes.filter((plan) => plan.querySha256 === digest)).toHaveLength(2);
+      const claims = result.plans.filter(
+        (plan) => plan.descriptor === 'sql:webhook_execution_claims',
+      );
+      expect(claims.length).toBeGreaterThan(mirrorIds.length);
+      for (const digest of new Set(claims.map((plan) => plan.querySha256)))
+        expect(claims.filter((plan) => plan.querySha256 === digest).length).toBeLessThanOrEqual(2);
+      expect(result.cost.pages).toBe(result.plans.length * 2 + 2);
+      expect(result.cost.probes).toBe(result.cost.pages);
+      expect((await inventory()).stableDigest).toBe(result.stableDigest);
+    } finally {
+      await db.webhookEvent.deleteMany({ where: { id: { in: mirrorIds } } });
+    }
+  });
+
+  it('keeps cached evidence detached from caller mutations, including Date and claim arrays', async () => {
+    await db.$transaction(async (tx) => {
+      const meter = await candidateMeter(tx);
+      const first = await meter
+        .candidateReader()
+        .webhookEvent.findUnique({ where: { id: ownerId } });
+      const original = structuredClone(first);
+      expect(first!.createdAt).toBeInstanceOf(Date);
+      first!.createdAt.setTime(0);
+      (first!.normalizedPayload as Prisma.JsonObject).type = 'forged';
+      const claims = await meter.candidateReader().webhookExecutionClaim.findMany({
+        where: { webhookEventId: ownerId },
+      });
+      const originalClaims = structuredClone(claims);
+      claims[0]!.kind = 'FORGED';
+      claims.push({ ...claims[0]! });
+      expect(
+        await meter.candidateReader().webhookEvent.findUnique({ where: { id: ownerId } }),
+      ).toEqual(original);
+      expect(
+        await meter.candidateReader().webhookExecutionClaim.findMany({
+          where: { webhookEventId: ownerId },
+        }),
+      ).toEqual(originalClaims);
+      await expect(meter.verifyCandidateReads()).resolves.toBeUndefined();
+      expect(meter.plans.filter((plan) => plan.descriptor === 'sql:webhook_events')).toHaveLength(
+        2,
+      );
+      expect(
+        meter.plans.filter((plan) => plan.descriptor === 'sql:webhook_execution_claims'),
+      ).toHaveLength(2);
+    });
+  });
+
+  it('fits eight selected owners with two mirrors each inside the unchanged SQL budget', async () => {
+    const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const claim = await db.webhookExecutionClaim.findFirstOrThrow({
+      where: { webhookEventId: ownerId, kind: 'EXECUTION' },
+    });
+    const addedIds: string[] = [];
+    const selectedIds = [ownerId];
+    try {
+      for (let index = 0; index < 8; index++) {
+        let sourceOwner = owner;
+        if (index > 0) {
+          const id = randomUUID();
+          const raw = structuredClone(owner.rawPayload) as {
+            update_id: string;
+            message: { body: { mid: string } };
+          };
+          raw.update_id = id;
+          raw.message.body.mid = `batch-source-${id}`;
+          const update = new WebhookParser().parse(raw, { botId: owner.botId! });
+          sourceOwner = await db.webhookEvent.create({
+            data: {
+              id,
+              botId: owner.botId,
+              dedupKey: id,
+              semanticKey: buildWebhookSemanticEventKey(update),
+              rawPayload: raw,
+              normalizedPayload: JSON.parse(JSON.stringify(update)),
+              status: 'FAILED',
+              errorMessage: owner.errorMessage,
+              executionDeadlineAt: owner.executionDeadlineAt,
+              createdAt: owner.createdAt,
+            },
+          });
+          addedIds.push(id);
+          selectedIds.push(id);
+          await db.webhookExecutionClaim.create({
+            data: {
+              kind: 'EXECUTION',
+              semanticKey: sourceOwner.semanticKey!,
+              webhookEventId: id,
+              enforced: true,
+              executionBotId: owner.botId,
+              status: 'READY',
+              createdAt: claim.createdAt,
+              preparedAt: claim.preparedAt,
+              businessStartedAt: claim.businessStartedAt,
+            },
+          });
+        }
+        const mirrorIds = [randomUUID(), randomUUID()];
+        await db.webhookEvent.createMany({
+          data: mirrorIds.map((id) => ({
+            id,
+            botId: sourceOwner.botId,
+            dedupKey: id,
+            semanticKey: sourceOwner.semanticKey,
+            rawPayload: sourceOwner.rawPayload as Prisma.InputJsonValue,
+            normalizedPayload: sourceOwner.normalizedPayload as Prisma.InputJsonValue,
+            status: 'RECEIVED' as const,
+          })),
+        });
+        addedIds.push(...mirrorIds);
+      }
+      selection = { ...selection, ownerWebhookEventIds: selectedIds };
+      const result = await inventory();
+      expect(result.issues).toEqual([]);
+      expect(result.selectedOwners).toHaveLength(8);
+      expect(result.cost.pages).toBeLessThanOrEqual(512);
+      expect(
+        result.plans.filter((plan) => plan.descriptor === 'sql:exact-source-family'),
+      ).toHaveLength(8);
+      expect(result.plans.filter((plan) => plan.descriptor === 'sql:source-size')).toHaveLength(32);
+      expect((await inventory()).stableDigest).toBe(result.stableDigest);
+    } finally {
+      await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: addedIds } } });
+      await db.webhookEvent.deleteMany({ where: { id: { in: addedIds } } });
+    }
+  });
+
+  it('keeps the complete-family saturation sentinel outside memoization', async () => {
+    const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const mirrorIds = Array.from({ length: 200 }, () => randomUUID());
+    try {
+      await db.webhookEvent.createMany({
+        data: mirrorIds.map((id) => ({
+          id,
+          botId: owner.botId,
+          dedupKey: id,
+          semanticKey: owner.semanticKey,
+          rawPayload: owner.rawPayload as Prisma.InputJsonValue,
+          normalizedPayload: owner.normalizedPayload as Prisma.InputJsonValue,
+          status: 'RECEIVED' as const,
+        })),
+      });
+      const result = await inventory();
+      expect(result.issues).toContainEqual({
+        code: 'source_family_saturated_or_missing',
+        descriptor: 'sql:exact-source-family',
+      });
+      expect(result.plans.filter((plan) => plan.descriptor === 'sql:exact-source-family')).toEqual([
+        expect.objectContaining({ returnedRows: 201 }),
+      ]);
+    } finally {
+      await db.webhookEvent.deleteMany({ where: { id: { in: mirrorIds } } });
+    }
+  });
+
+  it.each(['settings', 'owner', 'command', 'kind'] as const)(
+    'refuses a concurrent %s change before accepting reused READ COMMITTED proof',
+    async (changed) => {
+      const addedClaimIds: string[] = [];
+      try {
+        await db.$transaction(
+          async (tx) => {
+            const meter = await candidateMeter(tx);
+            const reader = meter.candidateReader();
+            if (changed === 'settings') {
+              await reader.chatSettings.findUnique({ where: { chatId } });
+              await reader.chatSettings.findUnique({ where: { chatId } });
+              await db.chatSettings.update({
+                where: { chatId },
+                data: { adminBanCommandName: 'особое' },
+              });
+            } else if (changed === 'owner') {
+              await reader.webhookEvent.findUnique({ where: { id: ownerId } });
+              await reader.webhookEvent.findUnique({ where: { id: ownerId } });
+              await db.webhookEvent.update({
+                where: { id: ownerId },
+                data: { errorMessage: 'Changed source evidence' },
+              });
+            } else {
+              const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+              let kind = 'COMMAND';
+              let semanticKey = buildGroupCommandKey(
+                chatId,
+                (
+                  owner.normalizedPayload as {
+                    message: { messageId: string };
+                  }
+                ).message.messageId,
+              );
+              if (changed === 'kind') {
+                const last = await db.webhookExecutionClaim.findFirstOrThrow({
+                  orderBy: { kind: 'desc' },
+                });
+                const where = { kind: { gt: last.kind } };
+                expect(await reader.webhookExecutionClaim.findFirst({ where })).toBeNull();
+                expect(await reader.webhookExecutionClaim.findFirst({ where })).toBeNull();
+                kind = `${last.kind}~memo-${randomUUID()}`;
+                semanticKey = owner.semanticKey!;
+              } else {
+                const where = { kind_semanticKey: { kind, semanticKey } };
+                expect(await reader.webhookExecutionClaim.findUnique({ where })).toBeNull();
+                expect(await reader.webhookExecutionClaim.findUnique({ where })).toBeNull();
+              }
+              const claim = await db.webhookExecutionClaim.create({
+                data: { kind, semanticKey, webhookEventId: ownerId },
+              });
+              addedClaimIds.push(claim.id);
+            }
+            await expect(meter.verifyCandidateReads()).rejects.toMatchObject({
+              code: 'sql_candidate_proof_changed',
+            });
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 30_000 },
+        );
+      } finally {
+        await db.webhookExecutionClaim.deleteMany({ where: { id: { in: addedClaimIds } } });
+      }
+    },
+  );
+
+  it('never reuses proof across inventory calls within the same transaction', async () => {
+    await db.$transaction(
+      async (tx) => {
+        const meter = await candidateMeter(tx);
+        const first = await inventorySourceAbandonmentSql(tx, selection, meter.allowance);
+        expect(first.issues).toEqual([]);
+        const claim = await tx.webhookExecutionClaim.create({
+          data: {
+            kind: `INDEPENDENT-${randomUUID()}`,
+            semanticKey: first.candidates[0]!.claim.semanticKey,
+            webhookEventId: ownerId,
+          },
+        });
+        try {
+          const second = await inventorySourceAbandonmentSql(tx, selection, meter.allowance);
+          expect(second.issues).toContainEqual({
+            code: 'source_started_claim_unproved',
+            descriptor: 'sql:selected-source',
+          });
+          expect(second.candidates).toEqual([]);
+        } finally {
+          await tx.webhookExecutionClaim.delete({ where: { id: claim.id } });
+        }
+      },
+      { timeout: 30_000 },
+    );
+  });
+
+  it('charges the independent verification against the original page cap', async () => {
+    await db.$transaction(async (tx) => {
+      const meter = await candidateMeter(tx, 2);
+      const reader = meter.candidateReader();
+      await reader.chatSettings.findUnique({ where: { chatId } });
+      await reader.chatSettings.findUnique({ where: { chatId } });
+      expect(meter.cost.pages).toBe(2);
+      await expect(meter.verifyCandidateReads()).rejects.toMatchObject({
+        code: 'sql_budget_exceeded',
+      });
+      expect(meter.cost.pages).toBe(2);
+    });
+  });
+
   it.each([
     [19_000, 0, 'READY_FOR_COLD_REVIEW'],
     [19_000, 4_000, 'DENY'],

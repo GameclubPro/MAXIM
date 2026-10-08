@@ -1,4 +1,5 @@
 import type { MaxActionJob } from '../max/max-client.service';
+import { parseChatIdAsBigInt } from '../common/chat-id.util';
 import { MAX_ACTION_ALL_QUEUE_NAMES } from '../max/max-action.queue';
 import { readLegacyActionSourceScopes } from '../webhook/webhook-legacy-hold.service';
 import {
@@ -270,6 +271,46 @@ function decodeJobs(value: unknown): JobRead[] {
 
 export type SourceAbandonmentRedisReader = SourceAbandonmentCatalogReader;
 export type SourceAbandonmentRedisSource = { chatId: string; messageId: string; userId: string };
+
+function canonicalFanoutIdentity(value: unknown, chat: boolean): value is string {
+  if (!identity(value)) return false;
+  const numeric = parseChatIdAsBigInt(value);
+  return numeric !== null && numeric.toString() === value && (chat ? numeric < 0n : numeric > 0n);
+}
+
+// FLAG: A retained FANOUT_HIGH observation can legitimately have no message.
+// Prove its persisted identity and complete user/chat disjointness before
+// excluding it from this source inventory. This never installs a child hold,
+// retries a job, or treats its failure as success. Clocks cannot prove independence:
+// the observation producer can update observedAt on the same persisted row.
+export function isUnrelatedSourceAbandonmentFanoutObservation(
+  data: Record<string, unknown>,
+  observation: Record<string, unknown> | null,
+  sources: readonly SourceAbandonmentRedisSource[],
+): boolean {
+  return Boolean(
+    observation &&
+    identity(data.observationId) &&
+    observation.id === data.observationId &&
+    canonicalFanoutIdentity(data.userId, false) &&
+    observation.userId === data.userId &&
+    canonicalFanoutIdentity(data.chatId, true) &&
+    observation.chatId === data.chatId &&
+    observation.messageId === null &&
+    data.source === 'FANOUT_HIGH' &&
+    observation.source === data.source &&
+    data.fastPath === false &&
+    sources.length > 0 &&
+    sources.every(
+      (source) =>
+        canonicalFanoutIdentity(source.userId, false) &&
+        canonicalFanoutIdentity(source.chatId, true) &&
+        source.userId !== observation.userId &&
+        source.chatId !== observation.chatId,
+    ),
+  );
+}
+
 export type SourceAbandonmentRedisResolver = (
   kind: 'action' | 'observation',
   key: string,
@@ -624,6 +665,8 @@ export async function inventorySourceAbandonmentRedis(
               if (!identity(data.observationId))
                 throw new Refused('OBSERVATION_JOB_SOURCE_UNPROVED');
               const observation = await resolveRow('observation', data.observationId);
+              if (isUnrelatedSourceAbandonmentFanoutObservation(data, observation, sources))
+                continue;
               if (
                 !observation ||
                 !identity(observation.chatId) ||

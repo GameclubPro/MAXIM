@@ -291,6 +291,93 @@ describe('exact source abandonment bounded evidence', () => {
     });
   });
 
+  it.each<{ name: string; change: Record<string, unknown> | null; allowed: boolean }>([
+    { name: 'independent non-message fanout', change: {}, allowed: true },
+    { name: 'missing persisted row', change: null, allowed: false },
+    { name: 'stale row identity', change: { id: 'other-observation' }, allowed: false },
+    { name: 'conflicting source kind', change: { source: 'FANOUT_REPEAT' }, allowed: false },
+    { name: 'missing message field', change: { messageId: undefined }, allowed: false },
+    { name: 'same member in another chat', change: { userId: '100' }, allowed: false },
+    { name: 'another member in same chat', change: { chatId: '-100' }, allowed: false },
+  ])('retains observation evidence and refuses unproved independence: $name', async (testCase) => {
+    const data = {
+      observationId: 'observation-1',
+      userId: '300',
+      chatId: '-300',
+      source: 'FANOUT_HIGH',
+      fastPath: false,
+      ...(testCase.change?.userId ? { userId: testCase.change.userId } : {}),
+      ...(testCase.change?.chatId ? { chatId: testCase.change.chatId } : {}),
+    };
+    const persisted =
+      testCase.change === null
+        ? null
+        : {
+            id: data.observationId,
+            userId: data.userId,
+            chatId: data.chatId,
+            source: data.source,
+            messageId: null,
+            ...testCase.change,
+          };
+    const base = redisFixture();
+    const redis = measuredFixture({
+      eval_ro: jest.fn(async (script: string, keyCount: number, ...args: string[]) => {
+        if (script.startsWith('-- source-abandonment:jobs'))
+          return [
+            1,
+            1,
+            1,
+            [['delayed-fanout-job', 'delayed', ['data', JSON.stringify(data)], 0, '1']],
+          ];
+        const reply = await base.eval_ro(script, keyCount, ...args);
+        if (script.startsWith('-- source-abandonment:headers')) {
+          const rows = reply[2] as unknown as Array<Array<string | number>>;
+          rows.find((row) => row[0] === 'global-spammer-denorm')![7] = 1;
+        }
+        return reply;
+      }),
+    });
+    const resolver = jest.fn(async () => ({
+      row: persisted,
+      digest: 'a'.repeat(64),
+      cost: { pages: 2, rows: 2, probes: 2, bytes: 100 },
+      plans: [],
+    }));
+    const result = await inventorySourceAbandonmentRedis(
+      redis,
+      selection,
+      [{ ...source, userId: '100', chatId: '-100' }],
+      allowance(),
+      resolver,
+      'nonce',
+    );
+    expect(resolver).toHaveBeenCalledWith('observation', data.observationId, expect.any(Object));
+    expect(result.children).toEqual([]);
+    if (!testCase.allowed) {
+      expect(result.issues[0]?.code).toBe('OBSERVATION_SOURCE_UNPROVED');
+      return;
+    }
+    expect(result.issues).toEqual([]);
+    expect(result.cost.rows).toBeGreaterThanOrEqual(2);
+    resolver.mockResolvedValue({
+      row: persisted,
+      digest: 'b'.repeat(64),
+      cost: { pages: 2, rows: 2, probes: 2, bytes: 100 },
+      plans: [],
+    });
+    const changed = await inventorySourceAbandonmentRedis(
+      redis,
+      selection,
+      [{ ...source, userId: '100', chatId: '-100' }],
+      allowance(),
+      resolver,
+      'nonce',
+    );
+    expect(changed.issues).toEqual([]);
+    expect(changed.stableDigest).not.toBe(result.stableDigest);
+  });
+
   it.each([
     {
       actionType: 'SEND_MESSAGE',

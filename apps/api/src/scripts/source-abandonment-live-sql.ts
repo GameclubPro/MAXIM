@@ -35,12 +35,34 @@ const record = (value: unknown): Record<string, unknown> | null =>
     ? (value as Record<string, unknown>)
     : null;
 
+// FLAG: Metered SQL evidence is JSON plus decoded schema DateTime columns.
+// Preserve Date identity in this realm for the existing strict authority readers.
+function cloneCandidateEvidence<T>(value: T): T {
+  if (value instanceof Date) return new Date(value.getTime()) as T;
+  if (Array.isArray(value)) return value.map(cloneCandidateEvidence) as T;
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, cloneCandidateEvidence(item)]),
+    ) as T;
+  return value;
+}
+
 // FLAG: A result limit is not a scan bound. Admit only an index condition covering
 // every selected identity before execution; transfer each JSON page under a SQL byte cap.
 export class SourceInventorySqlMeter {
   readonly cost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
   readonly plans: LegacyRecoveryLivePlanProof[] = [];
   readonly snapshots: unknown[] = [];
+  private readonly candidateReads = new Map<
+    string,
+    {
+      value: unknown;
+      digest: string;
+      descriptor: string;
+      read: () => Promise<unknown>;
+      reused: boolean;
+    }
+  >();
   lastDescriptor = 'sql:inventory';
   constructor(
     readonly tx: Prisma.TransactionClient,
@@ -197,6 +219,49 @@ export class SourceInventorySqlMeter {
     this.snapshots.push({ table, digest: sourceAbandonmentDigest(result) });
     return result as T[];
   }
+  // FLAG: Reuse only detached candidate evidence within this meter invocation.
+  // Claim readers append to returned arrays, so even the first result is cloned.
+  // No source clock, family census, child resolver or write uses this memo.
+  private async candidateRead<T>(key: readonly (string | undefined)[], read: () => Promise<T>) {
+    const identity = JSON.stringify(key);
+    let proof = this.candidateReads.get(identity);
+    if (proof) {
+      this.lastDescriptor = proof.descriptor;
+      this.check();
+      proof.reused = true;
+    } else {
+      const value = await read();
+      proof = {
+        value,
+        digest: sourceAbandonmentDigest(value),
+        descriptor: this.lastDescriptor,
+        read,
+        reused: false,
+      };
+      this.candidateReads.set(identity, proof);
+    }
+    return cloneCandidateEvidence(proof.value) as T;
+  }
+
+  // FLAG: Online admission is READ COMMITTED. Every reused fact, including a
+  // missing claim and the end of the kind census, must be independently reread
+  // with the original index/row/byte budgets before this inventory can succeed.
+  // Never carry evidence into another inventory or a later store operation.
+  async verifyCandidateReads(): Promise<void> {
+    try {
+      for (const proof of this.candidateReads.values()) {
+        if (!proof.reused) continue;
+        this.lastDescriptor = proof.descriptor;
+        this.check();
+        const fresh = await proof.read();
+        if (sourceAbandonmentDigest(fresh) !== proof.digest)
+          throw new SourceInventoryRefused('sql_candidate_proof_changed');
+      }
+    } finally {
+      this.candidateReads.clear();
+    }
+  }
+
   candidateReader(): SourceAbandonmentDatabase {
     const rows = this.rows.bind(this);
     return {
@@ -226,21 +291,31 @@ export class SourceInventorySqlMeter {
       },
       webhookEvent: {
         findUnique: async ({ where }: { where: { id: string } }) =>
-          (await rows('webhook_events', Prisma.sql`t.id = ${where.id}`, ['id'], 1))[0] ?? null,
+          this.candidateRead(
+            ['event', where.id],
+            async () =>
+              (await rows('webhook_events', Prisma.sql`t.id = ${where.id}`, ['id'], 1))[0] ?? null,
+          ),
       },
       chatSettings: {
         findUnique: async ({ where }: { where: { chatId: string } }) =>
-          (
-            await rows('chat_settings', Prisma.sql`t.chat_id = ${where.chatId}`, ['chat_id'], 1)
-          )[0] ?? null,
+          this.candidateRead(
+            ['settings', where.chatId],
+            async () =>
+              (
+                await rows('chat_settings', Prisma.sql`t.chat_id = ${where.chatId}`, ['chat_id'], 1)
+              )[0] ?? null,
+          ),
       },
       webhookExecutionClaim: {
         findMany: async ({ where }: { where: { webhookEventId: string } }) =>
-          rows(
-            'webhook_execution_claims',
-            Prisma.sql`t.webhook_event_id = ${where.webhookEventId}`,
-            ['webhook_event_id'],
-            32,
+          this.candidateRead(['event-claims', where.webhookEventId], () =>
+            rows(
+              'webhook_execution_claims',
+              Prisma.sql`t.webhook_event_id = ${where.webhookEventId}`,
+              ['webhook_event_id'],
+              32,
+            ),
           ),
         findUnique: async ({
           where,
@@ -248,28 +323,32 @@ export class SourceInventorySqlMeter {
           where: { kind_semanticKey: { kind: string; semanticKey: string } };
         }) => {
           const key = where.kind_semanticKey;
-          return (
-            (
-              await rows(
-                'webhook_execution_claims',
-                Prisma.sql`t.kind = ${key.kind} AND t.semantic_key = ${key.semanticKey}`,
-                ['kind', 'semantic_key'],
-                1,
-              )
-            )[0] ?? null
+          return this.candidateRead(
+            ['semantic-claim', key.kind, key.semanticKey],
+            async () =>
+              (
+                await rows(
+                  'webhook_execution_claims',
+                  Prisma.sql`t.kind = ${key.kind} AND t.semantic_key = ${key.semanticKey}`,
+                  ['kind', 'semantic_key'],
+                  1,
+                )
+              )[0] ?? null,
           );
         },
         findFirst: async ({ where }: { where: { kind?: { gt: string } } }) => {
           const after = where.kind?.gt;
-          const result = await this.read<{ kind: string }>(
-            'sql:claim-kind-prefix',
-            Prisma.sql`SELECT kind FROM webhook_execution_claims
+          return this.candidateRead(['kind-prefix', after], async () => {
+            const result = await this.read<{ kind: string }>(
+              'sql:claim-kind-prefix',
+              Prisma.sql`SELECT kind FROM webhook_execution_claims
               ${after === undefined ? Prisma.empty : Prisma.sql`WHERE kind > ${after}`}
               ORDER BY kind ASC LIMIT 1`,
-            { webhook_execution_claims: [] },
-            1,
-          );
-          return result[0] ?? null;
+              { webhook_execution_claims: [] },
+              1,
+            );
+            return result[0] ?? null;
+          });
         },
       },
     } as unknown as SourceAbandonmentDatabase;
@@ -402,6 +481,7 @@ export async function inventorySourceAbandonmentSql(
         digest: sourceAbandonmentDigest(observations),
       });
     }
+    await meter.verifyCandidateReads();
   } catch (error) {
     issues.push({
       code: error instanceof SourceInventoryRefused ? error.code : 'sql_store_refused',
