@@ -10,6 +10,11 @@ import { wasMaxMessageSendAttempted } from './max-mutation-outcome.util';
 import { CommercialDeleteGuardService } from '../moderation/commercial/commercial-delete-guard.service';
 import { buildCommercialTextDeleteBinding } from '../moderation/commercial/commercial-delete-binding';
 import { createCommercialNoticeDispatchOptions } from '../moderation/moderation-execution-guard-callbacks';
+import * as ruleAuthority from '../moderation/moderation-rule-sanction-authority';
+import {
+  readMaxModerationRuleFollowupProof,
+  readMaxModerationRuleNoticeProof,
+} from './max-moderation-rule-notice-proof';
 
 jest.mock('ioredis', () => jest.fn().mockImplementation(() => ({ quit: jest.fn() })));
 
@@ -181,6 +186,199 @@ describe('durable ordinary moderation notice authority', () => {
     ).rejects.toMatchObject({ code: 'moderation_rule_notice_no_longer_authorized' });
     expect(revalidateRoute).toHaveBeenCalledTimes(1);
     expect(s.prisma.chatSettings.findUnique).toHaveBeenCalledTimes(2);
+  });
+});
+
+type ProofGrammarCase = {
+  name: string;
+  accepted: boolean;
+  value: (proof: Record<string, unknown>) => unknown;
+};
+
+const ruleGrammarCases: ProofGrammarCase[] = [
+  { name: 'valid original proof', accepted: true, value: (proof) => proof },
+  ...[null, undefined, [], 'proof', 1, true].map((value) => ({
+    name: `invalid container ${JSON.stringify(value)}`,
+    accepted: false,
+    value: () => value,
+  })),
+  ...[0, 2, '1', null].map((version) => ({
+    name: `invalid version ${JSON.stringify(version)}`,
+    accepted: false,
+    value: (proof: Record<string, unknown>) => ({ ...proof, version }),
+  })),
+  {
+    name: 'unknown extra source',
+    accepted: false,
+    value: (proof) => ({ ...proof, otherSource: { chatId: '-456' } }),
+  },
+  ...['chatId', 'messageId', 'userId', 'reasonKey', 'ruleCode'].flatMap((key) => [
+    {
+      name: `${key} missing`,
+      accepted: false,
+      value: (proof: Record<string, unknown>) => {
+        const changed = { ...proof };
+        delete changed[key];
+        return changed;
+      },
+    },
+    ...[null, 1, [], {}, '', ' \t ', 'x'.repeat(1_025)].map((value) => ({
+      name: `${key} invalid ${typeof value === 'string' && value.length > 40 ? 'length 1025' : JSON.stringify(value)}`,
+      accepted: false,
+      value: (proof: Record<string, unknown>) => ({ ...proof, [key]: value }),
+    })),
+    ...['x'.repeat(1_024), ' padded identity '].map((value) => ({
+      name: `${key} retained ${value.length === 1_024 ? 'length 1024' : 'whitespace grammar'}`,
+      accepted: true,
+      value: (proof: Record<string, unknown>) => ({ ...proof, [key]: value }),
+    })),
+  ]),
+  ...['A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), 'g'.repeat(64), null, 1].map(
+    (policySha256) => ({
+      name: `invalid policy ${JSON.stringify(policySha256)}`,
+      accepted: false,
+      value: (proof: Record<string, unknown>) => ({ ...proof, policySha256 }),
+    }),
+  ),
+  ...[0, -1, Number.MAX_SAFE_INTEGER].map((deadlineAtMs) => ({
+    name: `integer deadline grammar ${deadlineAtMs}`,
+    accepted: true,
+    value: (proof: Record<string, unknown>) => ({ ...proof, deadlineAtMs }),
+  })),
+  ...[null, '1', 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1].map((deadlineAtMs) => ({
+    name: `invalid deadline ${String(deadlineAtMs)}`,
+    accepted: false,
+    value: (proof: Record<string, unknown>) => ({ ...proof, deadlineAtMs }),
+  })),
+  ...['version', 'policySha256', 'deadlineAtMs'].map((key) => ({
+    name: `missing ${key} replaced by unknown field`,
+    accepted: false,
+    value: (proof: Record<string, unknown>) => {
+      const changed: Record<string, unknown> = { ...proof, unknownField: 1 };
+      delete changed[key];
+      return changed;
+    },
+  })),
+];
+
+const followupGrammarCases: ProofGrammarCase[] = [
+  { name: 'valid original proof', accepted: true, value: (proof) => proof },
+  ...[null, undefined, [], 'proof', 1, true].map((value) => ({
+    name: `invalid container ${JSON.stringify(value)}`,
+    accepted: false,
+    value: () => value,
+  })),
+  ...[0, 2, '1', null].map((version) => ({
+    name: `invalid version ${JSON.stringify(version)}`,
+    accepted: false,
+    value: (proof: Record<string, unknown>) => ({ ...proof, version }),
+  })),
+  ...[null, 1, [], {}, '', ' \t ', 'f'.repeat(257)].map((id) => ({
+    name: `invalid id ${typeof id === 'string' && id.length > 40 ? 'length 257' : JSON.stringify(id)}`,
+    accepted: false,
+    value: (proof: Record<string, unknown>) => ({ ...proof, id }),
+  })),
+  ...['f'.repeat(256), ' padded id '].map((id) => ({
+    name: `retained id ${id.length === 256 ? 'length 256' : 'whitespace grammar'}`,
+    accepted: true,
+    value: (proof: Record<string, unknown>) => ({ ...proof, id }),
+  })),
+  ...[1, Number.MAX_SAFE_INTEGER].map((issuedAtMs) => ({
+    name: `positive integer issued time grammar ${issuedAtMs}`,
+    accepted: true,
+    value: (proof: Record<string, unknown>) => ({ ...proof, issuedAtMs }),
+  })),
+  ...[null, '1', 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1].map((issuedAtMs) => ({
+    name: `invalid issued time ${String(issuedAtMs)}`,
+    accepted: false,
+    value: (proof: Record<string, unknown>) => ({ ...proof, issuedAtMs }),
+  })),
+  {
+    name: 'unknown extra source',
+    accepted: false,
+    value: (proof) => ({ ...proof, otherSource: { chatId: '-456' } }),
+  },
+  ...['version', 'id', 'issuedAtMs'].map((key) => ({
+    name: `missing ${key} replaced by unknown field`,
+    accepted: false,
+    value: (proof: Record<string, unknown>) => {
+      const changed: Record<string, unknown> = { ...proof, unknownField: 1 };
+      delete changed[key];
+      return changed;
+    },
+  })),
+];
+
+describe('historical proof readers preserve the transport guard proof grammar', () => {
+  let authority: jest.SpyInstance;
+
+  beforeEach(() => {
+    // FLAG: Isolate the two real transport parsers from fresh authority and effects.
+    // Historical parsing must not silently replace the guard's independent live checks.
+    authority = jest
+      .spyOn(ruleAuthority, 'assertModerationRuleSanctionAuthority')
+      .mockResolvedValue(undefined);
+  });
+
+  afterEach(() => authority.mockRestore());
+
+  async function assertTransportParity(
+    s: ReturnType<typeof fixture>,
+    value: unknown,
+    parsed: unknown,
+    accepted: boolean,
+  ) {
+    const before = structuredClone(value);
+    expect(Boolean(parsed)).toBe(accepted);
+    if (accepted) {
+      expect(parsed).toBe(value);
+      await expect(
+        s.guard.assertAllowed(s.action, 'peer-2', s.memberAccess),
+      ).resolves.toBeUndefined();
+      expect(authority).toHaveBeenCalledTimes(1);
+      expect(authority.mock.calls[0][1]).toBe(s.action.ledgerContext!.moderationRuleNotice);
+    } else {
+      await expect(s.guard.assertAllowed(s.action, 'peer-2', s.memberAccess)).rejects.toMatchObject(
+        {
+          code: 'moderation_rule_notice_no_longer_authorized',
+        },
+      );
+      expect(authority).not.toHaveBeenCalled();
+    }
+    expect(value).toEqual(before);
+    expect(s.memberAccess).not.toHaveBeenCalled();
+    expect(s.prisma.chatSettings.findUnique).not.toHaveBeenCalled();
+    expect(s.prisma.moderationDeleteIntent.findUnique).not.toHaveBeenCalled();
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+  }
+
+  it.each(ruleGrammarCases)('agrees on rule shape: $name', async (candidate) => {
+    const s = fixture();
+    const value = candidate.value(s.proof);
+    s.action.ledgerContext!.moderationRuleNotice = value as never;
+    // Keep action-level chat equality independent of the proof's shape grammar.
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const chatId = (value as Record<string, unknown>).chatId;
+      if (typeof chatId === 'string') s.action = { ...s.action, chatId };
+    }
+    await assertTransportParity(
+      s,
+      value,
+      readMaxModerationRuleNoticeProof(value),
+      candidate.accepted,
+    );
+  });
+
+  it.each(followupGrammarCases)('agrees on followup shape: $name', async (candidate) => {
+    const s = fixture();
+    const value = candidate.value({ version: 1, id: 'followup-1', issuedAtMs: Date.now() - 1_000 });
+    s.action.ledgerContext!.moderationRuleFollowup = value as never;
+    await assertTransportParity(
+      s,
+      value,
+      readMaxModerationRuleFollowupProof(value),
+      candidate.accepted,
+    );
   });
 });
 

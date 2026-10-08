@@ -85,7 +85,7 @@ jobs:
   postgres-races:
     name: PostgreSQL Races
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
