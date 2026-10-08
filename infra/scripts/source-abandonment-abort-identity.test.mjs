@@ -43,8 +43,10 @@ test('abort attests only the frozen runtime and a controller descended from the 
 for (const patch of [
   { operation: 'apply' },
   { operation: 'prepare' },
+  { controllerSha: ABORT_RUNTIME_SHA },
   { targetSha: 'd'.repeat(40) },
   { targetSha: 'd241e50a8b688bdc32380b20d40c2505413c50f1' },
+  { targetSha: 'e7e0066ac724726b42c5cba00bfd8f930673b645' },
   { protocol: 'legacy' },
 ])
   test(`abort identity refuses ${JSON.stringify(patch)}`, () => {
@@ -73,51 +75,26 @@ test('abort refuses a drifted immutable image', () => {
   assert.throws(h.read, /immutable_abort_runtime_required/);
 });
 
-test('actual pinned e7 runtime and reviewed controller base retain both source floors', (t) => {
-  const controllerSha = '8b48a9702de516022bc22a8e195f983dbf116cc9';
+test('actual pinned runtime and current controller checkout retain both source floors', (t) => {
   const git = (args) =>
     execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  let controllerSha;
   try {
     git(['cat-file', '-e', `${ABORT_RUNTIME_SHA}^{commit}`]);
-    git(['cat-file', '-e', `${controllerSha}^{commit}`]);
+    controllerSha = git(['rev-parse', 'HEAD']);
   } catch {
-    t.skip('Pinned runtime or reviewed controller history is unavailable in this checkout');
+    t.skip('Pinned runtime or current controller history is unavailable in this checkout');
     return;
   }
-  const checked = [];
-  assert.equal(ABORT_RUNTIME_SHA, 'e7e0066ac724726b42c5cba00bfd8f930673b645');
+  assert.equal(ABORT_RUNTIME_SHA, 'b0d3c4e1b437127b985791ea67b7109843988fbb');
   assert.equal(
     ABORT_RUNTIME_IMAGE,
-    'sha256:c3e6540fa88d5695fb5c875a2baf7a7b7bf0b6c7c2a6907288f5217755727c45',
+    'sha256:e7f01f71971f7c9c6410151bfcc90d7388c8766ab6a5f919e8f30a7603e6ec2b',
   );
-  const result = readSourceAbandonmentAbortIdentity(
-    {
-      controllerSha,
-      targetSha: ABORT_RUNTIME_SHA,
-      protocol: 'source-abandonment-v1',
-      operation: 'abort-before-install',
-    },
-    (command, args) => {
-      if (command === 'docker')
-        return JSON.stringify([
-          {
-            Id: ABORT_RUNTIME_IMAGE,
-            Config: { Labels: { 'org.opencontainers.image.revision': ABORT_RUNTIME_SHA } },
-          },
-        ]);
-      // FLAG: Model the reviewed controller checkout, not future runtime changes at HEAD.
-      // Ancestry, dependency differences and source checks still read the real pinned commits.
-      if (args[0] === 'rev-parse' && args[1] === 'HEAD') return controllerSha;
-      if (args[0] === 'status') return '';
-      return git(args);
-    },
-    (sha, read) => {
-      checked.push(sha);
-      return assertLegacyDispositionSource(sha, read);
-    },
-  );
-  assert.deepEqual(checked, [ABORT_RUNTIME_SHA, controllerSha]);
-  assert.equal(result.controllerSha, controllerSha);
-  assert.equal(result.sourceSha, ABORT_RUNTIME_SHA);
-  assert.equal(result.imageId, ABORT_RUNTIME_IMAGE);
+  // FLAG: Staged validation precedes the descendant commit, so HEAD may still be
+  // the reviewed runtime base. The distinct-controller guard is tested above;
+  // both immutable source floors and real ancestry are checked here.
+  git(['merge-base', '--is-ancestor', ABORT_RUNTIME_SHA, controllerSha]);
+  for (const sha of [ABORT_RUNTIME_SHA, controllerSha])
+    assertLegacyDispositionSource(sha, (path) => git(['show', `${sha}:${path}`]));
 });

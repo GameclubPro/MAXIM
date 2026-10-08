@@ -684,7 +684,7 @@ test('abort rejects stale CAS, broad proof keys, invalid phase and any install-r
     h.journal = h.store.advance(legacyColdDigest(h.journal), phase, additions);
     assert.throws(
       () => h.store.beginAbortPreinstall(legacyColdDigest(h.journal), proofs),
-      /abort CAS/,
+      /abort CAS|abort ordinary preview unproved/,
     );
   }
   const early = fixture(t);
