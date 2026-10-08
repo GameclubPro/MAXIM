@@ -256,6 +256,7 @@ function withCanonicalWebhookFixture(prisma: CanonicalWebhookPrismaFixture) {
     };
     const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
     if (sql.includes('WITH authority_ids AS MATERIALIZED')) return [];
+    if (sql.includes('SELECT claim.id, claim.webhook_event_id AS "ownerId"')) return [];
     if (sql.includes('FROM "webhook_events" AS "prior"')) {
       const prior = await prisma.webhookEvent.findFirst!({
         where: {

@@ -3,6 +3,7 @@ import { Prisma } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { hasWebhookReplayFence } from './webhook-execution-deadline';
+import { settlePristineOperatorDiscard } from './webhook-pristine-discard';
 
 const OPERATOR_DISCARD_MARKER =
   '^WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED:OPERATOR_DISCARDED:[A-Za-z0-9_-]{8,100}$';
@@ -69,7 +70,7 @@ export async function settleOperatorDiscardedMirror(
     return false;
   const query = operatorDiscardedMirrorSourceSql(semanticKey, input.webhookEventId);
   const source = (await prisma.$queryRaw<DiscardSource[]>(query))[0];
-  if (!source) return false;
+  if (!source) return settlePristineOperatorDiscard(prisma, input);
 
   return prisma.$transaction(
     async (tx) => {

@@ -75,6 +75,9 @@ function fixture() {
 
 test('a distinct exact controller attests the original runtime image and both source guard floors', () => {
   const h = fixture();
+  h.context.targetSha = 'e7e0066ac724726b42c5cba00bfd8f930673b645';
+  h.state.revision = h.context.targetSha;
+  h.state.image = 'sha256:c3e6540fa88d5695fb5c875a2baf7a7b7bf0b6c7c2a6907288f5217755727c45';
   assert.deepEqual(h.read(), {
     controllerSha: h.context.controllerSha,
     sourceSha: CORRECTIVE_RUNTIME_SHA,
@@ -89,6 +92,7 @@ for (const patch of [
   { operation: 'status' },
   { protocol: 'legacy' },
   { targetSha: 'b'.repeat(40) },
+  { targetSha: '9f06dff5d32d6f1bd61ee8fa92f103b043475452' },
   { controllerSha: CORRECTIVE_RUNTIME_SHA },
   { controllerSha: 'main' },
 ])
@@ -140,6 +144,7 @@ for (const path of [
 
 for (const [field, value] of [
   ['image', `sha256:${'e'.repeat(64)}`],
+  ['image', 'sha256:39fd36dfc4cd49dd30bceb7cfaf0bd2ad068b96392762afc4c9fe413191dd306'],
   ['revision', 'f'.repeat(40)],
 ])
   test(`corrective runtime ${field} drift is refused`, () => {

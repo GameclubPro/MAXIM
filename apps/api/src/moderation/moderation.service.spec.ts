@@ -231,7 +231,7 @@ describe('ModerationService', () => {
       await expect(service.processWebhookEvent('event-completed-owner-1')).resolves.toBeUndefined();
 
       expect(handleUpdate).not.toHaveBeenCalled();
-      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
       expect(prisma.$queryRaw.mock.calls[0]?.[0]?.strings.join(' ')).toContain(
         'WITH authority_ids AS MATERIALIZED',
       );
@@ -505,6 +505,9 @@ describe('ModerationService', () => {
       (call) =>
         call[0]?.strings &&
         !call[0].strings.join(' ').includes('WITH authority_ids AS MATERIALIZED') &&
+        !call[0].strings
+          .join(' ')
+          .includes('SELECT claim.id, claim.webhook_event_id AS "ownerId"') &&
         !call[0].strings.join(' ').includes('FROM "webhook_events" AS "prior"'),
     );
     expect(predecessorCalls).toHaveLength(1);
