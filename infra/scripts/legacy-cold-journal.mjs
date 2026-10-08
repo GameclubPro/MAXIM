@@ -23,7 +23,7 @@ const digest = /^[0-9a-f]{64}$/u;
 const source = /^[0-9a-f]{40}$/u;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const image = /^sha256:[0-9a-f]{64}$/u;
-const phases = Object.freeze([
+const ordinaryPhases = Object.freeze([
   'ADMITTED',
   'STOPPING',
   'STOPPED',
@@ -33,6 +33,35 @@ const phases = Object.freeze([
   'RESUMING',
   'COMPLETE',
 ]);
+const abortPhases = ['ABORTING', 'ABORTED'];
+const phases = [...ordinaryPhases, ...abortPhases];
+const preinstallProofNames = [
+  'hostAdmission',
+  'stoppedInventory',
+  'revocation',
+  'repausedQueues',
+  'restoppedInventory',
+];
+const abortBeginProofNames = ['abortOrigin', 'abortAbsence', 'stoppedInventory', 'repausedQueues'];
+const abortFinishProofNames = ['runtimeIdentity', 'nativeIdentity', 'strictSmokes'];
+// FLAG: Keep this bootstrap sentinel self-contained. Abort checks the complete
+// service set also enforced by the cold protocol before any generation restarts.
+const abortApiServices = [
+  'api-ingress',
+  'api-admin',
+  'api-enqueue',
+  'api-moderation',
+  'api-moderation-critical',
+  'api-moderation-join',
+  'api-moderation-realtime-b',
+  'api-moderation-realtime-c',
+  'api-moderation-realtime-d',
+  'api-moderation-background',
+  'api-media-analysis',
+  'api-action',
+  'api-publisher',
+  'api-message-retention',
+];
 const proofNames = new Set([
   'hostAdmission',
   'stoppedInventory',
@@ -49,6 +78,8 @@ const proofNames = new Set([
   'restoppedInventory',
   'supersededPreview',
   'refreezeAbsence',
+  'abortOrigin',
+  'abortAbsence',
 ]);
 const requiredProofs = {
   ADMITTED: ['hostAdmission'],
@@ -59,6 +90,8 @@ const requiredProofs = {
   SEALED: ['sealedReadback'],
   RESUMING: ['sealedReadback'],
   COMPLETE: ['runtimeIdentity', 'nativeIdentity', 'strictSmokes'],
+  ABORTING: ['hostAdmission', ...abortBeginProofNames],
+  ABORTED: ['hostAdmission', ...abortBeginProofNames, ...abortFinishProofNames],
 };
 
 export function legacyColdDigest(value) {
@@ -184,10 +217,143 @@ export function validateLegacyColdJournal(value) {
     ) ||
     requiredProofs[value.phase].some((name) => !value.proofs[name]) ||
     (value.blockedReason !== null && !/^[a-z][a-z0-9_]{0,79}$/u.test(value.blockedReason ?? '')) ||
-    (value.phase === 'COMPLETE' && value.blockedReason !== null)
+    (['COMPLETE', 'ABORTED'].includes(value.phase) && value.blockedReason !== null)
   )
     refuse('missing positive phase proof');
+  if (abortPhases.includes(value.phase)) {
+    const allowed = [
+      ...preinstallProofNames,
+      ...abortBeginProofNames,
+      ...(value.phase === 'ABORTED' ? abortFinishProofNames : []),
+    ];
+    if (Object.keys(value.proofs).some((name) => !allowed.includes(name)))
+      refuse('abort phase contains installation or release evidence');
+  } else if (value.proofs.abortOrigin || value.proofs.abortAbsence) {
+    refuse('abort proof outside typed abort phase');
+  }
   return value;
+}
+
+function validateAbortEvidence(journal, readEvidence) {
+  const binding = journal.bindings;
+  const bound = (value) =>
+    value?.version === 1 &&
+    value.complete === true &&
+    value.sourceSha === binding.targetSha &&
+    value.imageId === binding.targetImageId &&
+    value.controllerNonce === binding.controllerNonce &&
+    value.selectionDigest === binding.selectionDigest;
+  const origin = readEvidence(journal.proofs.abortOrigin);
+  if (
+    !keysExactly(origin, ['version', 'operation', 'journal', 'journalDigest']) ||
+    origin.version !== 1 ||
+    origin.operation !== 'abort-before-install' ||
+    origin.journalDigest !== legacyColdDigest(origin.journal) ||
+    origin.journal?.phase !== 'STOPPED'
+  )
+    refuse('abort original journal unproved');
+  const original = validateLegacyColdJournal(origin.journal);
+  if (
+    Object.keys(original.proofs).some((name) => !preinstallProofNames.includes(name)) ||
+    canonicalEvidenceDigest(original.bindings) !== canonicalEvidenceDigest(binding) ||
+    original.operationId !== journal.operationId ||
+    original.createdAt !== journal.createdAt ||
+    original.revision >= journal.revision ||
+    Object.entries(original.proofs).some(([name, hash]) => journal.proofs[name] !== hash)
+  )
+    refuse('abort original journal binding unproved');
+  const absence = readEvidence(journal.proofs.abortAbsence);
+  if (
+    !keysExactly(absence, [
+      'version',
+      'operation',
+      'complete',
+      'sourceSha',
+      'imageId',
+      'controllerNonce',
+      'selectionDigest',
+      'certificateId',
+      'reads',
+    ]) ||
+    !bound(absence) ||
+    absence.operation !== 'abort-before-install' ||
+    absence.certificateId !== binding.certificateId ||
+    !Array.isArray(absence.reads) ||
+    absence.reads.length !== 2 ||
+    absence.reads.some(
+      (value) =>
+        !keysExactly(value, [
+          'version',
+          'state',
+          'certificateId',
+          'sourceSha',
+          'imageId',
+          'readOnly',
+        ]) ||
+        value.version !== 1 ||
+        value.state !== 'ABSENT' ||
+        value.readOnly !== true ||
+        value.certificateId !== binding.certificateId ||
+        value.sourceSha !== binding.targetSha ||
+        value.imageId !== binding.targetImageId,
+    )
+  )
+    refuse('abort positive certificate absence unproved');
+  const stopped = readEvidence(journal.proofs.stoppedInventory);
+  const exactStopped = (rows, names) =>
+    Array.isArray(rows) &&
+    rows.length === names.length &&
+    names.every(
+      (name) =>
+        rows.filter(
+          (row) =>
+            row?.serviceName === name &&
+            row.stopped === true &&
+            row.exactGeneration === true &&
+            row.restartPolicy === 'unless-stopped',
+        ).length === 1,
+    );
+  if (
+    !bound(stopped) ||
+    stopped.unreviewedProducers !== 0 ||
+    !exactStopped(stopped.services, abortApiServices) ||
+    !exactStopped(stopped.auxiliaries, ['ocr-native-sandbox', 'photo-native-sandbox'])
+  )
+    refuse('abort stopped inventory unproved');
+  const fence = readEvidence(journal.proofs.repausedQueues);
+  if (
+    !bound(fence) ||
+    fence.queueCount !== 24 ||
+    fence.pausedCount !== 24 ||
+    fence.activeCount !== 0 ||
+    fence.ownerNonce !== binding.controllerNonce
+  )
+    refuse('abort queue fence unproved');
+  if (journal.phase === 'ABORTED') {
+    const runtime = readEvidence(journal.proofs.runtimeIdentity);
+    const native = readEvidence(journal.proofs.nativeIdentity);
+    const smokes = readEvidence(journal.proofs.strictSmokes);
+    if (
+      !bound(runtime) ||
+      runtime.exactGenerationCount !== 14 ||
+      runtime.unreviewedProducers !== 0 ||
+      !bound(native) ||
+      native.exactGenerationCount !== 2
+    )
+      refuse('abort restarted identity unproved');
+    const fleetReady =
+      smokes?.ingressReady === true &&
+      smokes.adminReady === true &&
+      smokes.actionableLagSeconds <= 10;
+    if (
+      !bound(smokes) ||
+      (!fleetReady && !(smokes.dependenciesReady === true && smokes.queueBacklogOnly === true)) ||
+      smokes.queuesResumed !== true ||
+      !Number.isFinite(smokes.actionableLagSeconds) ||
+      smokes.actionableLagSeconds < 0
+    )
+      refuse('abort strict smokes unproved');
+  }
 }
 
 function protectedDirectory(directory) {
@@ -228,6 +394,18 @@ function readPrivateJson(directory, name, maximum) {
   return bytes === null ? null : JSON.parse(bytes.toString('utf8'));
 }
 
+function readProofEvidence(directory, hash) {
+  if (!digest.test(hash ?? '')) refuse('invalid proof digest');
+  const bytes = readPrivateBytes(
+    join(directory, 'legacy-cold-evidence'),
+    `${hash}.json`,
+    8 * 1024 * 1024,
+  );
+  if (!bytes || createHash('sha256').update(bytes).digest('hex') !== hash)
+    refuse('referenced proof is absent or changed');
+  return JSON.parse(bytes.toString('utf8'));
+}
+
 // FLAG: The separate monotonic marker is written before admission. Losing the
 // journal or crashing between writes cannot reopen ordinary start paths. SQL
 // ordering exclusions remain independently bound to immutable permanent holds.
@@ -262,13 +440,15 @@ export function readLegacyColdState(directory = LEGACY_COLD_STATE_DIR) {
       if (!bytes || createHash('sha256').update(bytes).digest('hex') !== hash)
         refuse('referenced proof is absent or changed');
     }
+    if (abortPhases.includes(journal.phase))
+      validateAbortEvidence(journal, (hash) => readProofEvidence(directory, hash));
   }
   return { marker, journal };
 }
 
 export function assertNoActiveLegacyColdMaintenance(directory = LEGACY_COLD_STATE_DIR) {
   const state = readLegacyColdState(directory);
-  if (state.journal && state.journal.phase !== 'COMPLETE')
+  if (state.journal && !['COMPLETE', 'ABORTED'].includes(state.journal.phase))
     refuse('active cold epoch blocks ordinary mutation');
   return state;
 }
@@ -440,7 +620,9 @@ export function createLegacyColdJournalStore({
         !journal ||
         legacyColdDigest(journal) !== expectedDigest ||
         journal.blockedReason ||
-        phases.indexOf(phase) !== phases.indexOf(journal.phase) + 1
+        !ordinaryPhases.includes(phase) ||
+        !ordinaryPhases.includes(journal.phase) ||
+        ordinaryPhases.indexOf(phase) !== ordinaryPhases.indexOf(journal.phase) + 1
       )
         refuse('journal phase CAS failed');
       for (const [name, hash] of Object.entries(proofs)) {
@@ -508,6 +690,71 @@ export function createLegacyColdJournalStore({
         blockedReason: null,
         proofs: { ...journal.proofs, ...proofs },
       });
+      atomicPrivateWrite(directory, LEGACY_COLD_JOURNAL, next);
+      return next;
+    },
+    beginAbortPreinstall(expectedDigest, proofs) {
+      mutation();
+      const { journal } = readLegacyColdState(directory);
+      if (
+        !journal ||
+        !['STOPPED', 'ABORTING'].includes(journal.phase) ||
+        legacyColdDigest(journal) !== expectedDigest ||
+        !keysExactly(proofs, abortBeginProofNames) ||
+        Object.keys(journal.proofs).some(
+          (name) =>
+            ![
+              ...preinstallProofNames,
+              ...(journal.phase === 'ABORTING' ? abortBeginProofNames : []),
+            ].includes(name),
+        )
+      )
+        refuse('preinstall abort CAS failed');
+      for (const [name, hash] of Object.entries(proofs)) {
+        if (journal.proofs[name] && journal.proofs[name] !== hash)
+          refuse('immutable proof changed');
+      }
+      const origin = readProofEvidence(directory, proofs.abortOrigin);
+      if (
+        journal.phase === 'STOPPED' &&
+        (origin.journalDigest !== expectedDigest ||
+          legacyColdDigest(origin.journal) !== expectedDigest)
+      )
+        refuse('abort original journal unproved');
+      const next = validateLegacyColdJournal({
+        ...journal,
+        revision: journal.revision + 1,
+        phase: 'ABORTING',
+        updatedAt: now(),
+        blockedReason: null,
+        proofs: { ...journal.proofs, ...proofs },
+      });
+      validateAbortEvidence(next, (hash) => readProofEvidence(directory, hash));
+      // FLAG: The complete STOPPED journal and every original evidence file remain
+      // immutable. Only this no-install branch may authorize a same-generation restart.
+      atomicPrivateWrite(directory, LEGACY_COLD_JOURNAL, next);
+      return next;
+    },
+    finishAbortPreinstall(expectedDigest, proofs) {
+      mutation();
+      const { journal } = readLegacyColdState(directory);
+      if (
+        !journal ||
+        journal.phase !== 'ABORTING' ||
+        journal.blockedReason ||
+        legacyColdDigest(journal) !== expectedDigest ||
+        !keysExactly(proofs, abortFinishProofNames)
+      )
+        refuse('preinstall abort finish CAS failed');
+      const next = validateLegacyColdJournal({
+        ...journal,
+        revision: journal.revision + 1,
+        phase: 'ABORTED',
+        updatedAt: now(),
+        blockedReason: null,
+        proofs: { ...journal.proofs, ...proofs },
+      });
+      validateAbortEvidence(next, (hash) => readProofEvidence(directory, hash));
       atomicPrivateWrite(directory, LEGACY_COLD_JOURNAL, next);
       return next;
     },
@@ -668,7 +915,11 @@ export function createLegacyColdJournalStore({
     block(expectedDigest, reason, proofs = {}) {
       mutation();
       const { journal } = readLegacyColdState(directory);
-      if (!journal || journal.phase === 'COMPLETE' || legacyColdDigest(journal) !== expectedDigest)
+      if (
+        !journal ||
+        ['COMPLETE', 'ABORTED'].includes(journal.phase) ||
+        legacyColdDigest(journal) !== expectedDigest
+      )
         refuse('blocked journal CAS failed');
       for (const [name, hash] of Object.entries(proofs)) {
         if (journal.proofs[name] && journal.proofs[name] !== hash)

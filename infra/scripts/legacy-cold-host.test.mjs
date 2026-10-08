@@ -24,6 +24,10 @@ test('host selection is finite and canonical, with distinct online and exact app
     expectedJournalDigest: 'b'.repeat(64),
   };
   assert.deepEqual(parseLegacyColdHostRequest(JSON.stringify(retry)), retry);
+  assert.deepEqual(
+    parseLegacyColdHostRequest(JSON.stringify({ ...retry, operation: 'abort-before-install' })),
+    { ...retry, operation: 'abort-before-install' },
+  );
   assert.throws(
     () => parseLegacyColdHostRequest(JSON.stringify({ ...retry, selection: request.selection })),
     /unknown_request_field/,

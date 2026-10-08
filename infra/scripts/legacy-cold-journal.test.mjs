@@ -12,6 +12,7 @@ import {
   readLegacyColdState,
 } from './legacy-cold-journal.mjs';
 import { canonicalLegacyColdDigest } from './legacy-cold-store-adapter.mjs';
+import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
 
 const proof = { test: true };
 const hash = legacyColdDigest(`${JSON.stringify(proof)}\n`);
@@ -491,4 +492,394 @@ test('new proof hashes do not authorize absent or modified evidence files', (t) 
     );
     assert.deepEqual(h.store.read().journal, h.journal);
   }
+});
+
+function abortFixture(t, { stoppedOverrides = {}, blocked = true, existingFence = false } = {}) {
+  const h = fixture(t);
+  const base = {
+    version: 1,
+    complete: true,
+    sourceSha: bindings.targetSha,
+    imageId: bindings.targetImageId,
+    controllerNonce: bindings.controllerNonce,
+    selectionDigest: bindings.selectionDigest,
+  };
+  const stoppedRow = (serviceName) => ({
+    serviceName,
+    stopped: true,
+    exactGeneration: true,
+    restartPolicy: 'unless-stopped',
+  });
+  const stopped = {
+    ...base,
+    unreviewedProducers: 0,
+    services: LEGACY_COLD_API_SERVICES.map(stoppedRow),
+    auxiliaries: ['ocr-native-sandbox', 'photo-native-sandbox'].map(stoppedRow),
+    ...stoppedOverrides,
+  };
+  const fence = {
+    ...base,
+    queueCount: 24,
+    pausedCount: 24,
+    activeCount: 0,
+    ownerNonce: nonce,
+  };
+  let journal = h.store.admit(bindings, hash);
+  journal = h.store.advance(legacyColdDigest(journal), 'STOPPING');
+  journal = h.store.advance(legacyColdDigest(journal), 'STOPPED', {
+    stoppedInventory: h.store.recordProof(stopped),
+  });
+  if (blocked)
+    journal = h.store.block(legacyColdDigest(journal), 'inventory_refused', {
+      revocation: hash,
+      restoppedInventory: h.store.recordProof(stopped),
+      ...(existingFence ? { repausedQueues: h.store.recordProof(fence) } : {}),
+    });
+  const read = {
+    version: 1,
+    state: 'ABSENT',
+    certificateId: bindings.certificateId,
+    sourceSha: bindings.targetSha,
+    imageId: bindings.targetImageId,
+    readOnly: true,
+  };
+  const absence = {
+    ...base,
+    operation: 'abort-before-install',
+    certificateId: bindings.certificateId,
+    reads: [read, structuredClone(read)],
+  };
+  const origin = {
+    version: 1,
+    operation: 'abort-before-install',
+    journal,
+    journalDigest: legacyColdDigest(journal),
+  };
+  const runtime = { ...base, exactGenerationCount: 14, unreviewedProducers: 0 };
+  const native = { ...base, exactGenerationCount: 2 };
+  const smokes = {
+    ...base,
+    ingressReady: true,
+    adminReady: true,
+    queuesResumed: true,
+    actionableLagSeconds: 0,
+  };
+  return { ...h, journal, origin, absence, stopped, fence, runtime, native, smokes };
+}
+
+function abortBeginProofs(h, overrides = {}) {
+  return Object.fromEntries(
+    Object.entries({
+      abortOrigin: h.origin,
+      abortAbsence: h.absence,
+      stoppedInventory: h.stopped,
+      repausedQueues: h.fence,
+      ...overrides,
+    }).map(([name, value]) => [name, h.store.recordProof(value)]),
+  );
+}
+
+function abortFinishProofs(h, overrides = {}) {
+  return Object.fromEntries(
+    Object.entries({
+      runtimeIdentity: h.runtime,
+      nativeIdentity: h.native,
+      strictSmokes: h.smokes,
+      ...overrides,
+    }).map(([name, value]) => [name, h.store.recordProof(value)]),
+  );
+}
+
+test('typed abort retains the original stopped journal and evidence through retry and completion', (t) => {
+  const h = abortFixture(t, { existingFence: true });
+  const oldBytes = new Map(
+    Object.values(h.journal.proofs).map((id) => [
+      id,
+      readFileSync(join(h.directory, 'legacy-cold-evidence', `${id}.json`)),
+    ]),
+  );
+  const marker = readFileSync(join(h.directory, LEGACY_COLD_MARKER));
+  const begin = abortBeginProofs(h);
+  for (const name of ['stoppedInventory', 'repausedQueues'])
+    assert.throws(
+      () => h.store.beginAbortPreinstall(legacyColdDigest(h.journal), { ...begin, [name]: hash }),
+      /immutable proof/,
+    );
+  let next = h.store.beginAbortPreinstall(legacyColdDigest(h.journal), begin);
+  assert.equal(next.phase, 'ABORTING');
+  assert.equal(next.blockedReason, null);
+  assert.deepEqual(h.store.readProof('abortOrigin'), h.origin);
+  assert.throws(() => assertNoActiveLegacyColdMaintenance(h.directory), /active cold epoch/);
+  next = h.store.block(legacyColdDigest(next), 'restart_refused');
+  assert.throws(
+    () => h.store.finishAbortPreinstall(legacyColdDigest(next), abortFinishProofs(h)),
+    /finish CAS/,
+  );
+  next = h.store.beginAbortPreinstall(legacyColdDigest(next), begin);
+  next = h.store.finishAbortPreinstall(legacyColdDigest(next), abortFinishProofs(h));
+  assert.equal(next.phase, 'ABORTED');
+  assert.deepEqual(assertNoActiveLegacyColdMaintenance(h.directory).journal, next);
+  assert.deepEqual(h.store.readProof('abortOrigin').journal, h.journal);
+  assert.deepEqual(readFileSync(join(h.directory, LEGACY_COLD_MARKER)), marker);
+  for (const [id, bytes] of oldBytes)
+    assert.deepEqual(readFileSync(join(h.directory, 'legacy-cold-evidence', `${id}.json`)), bytes);
+  for (const phase of ['ABORTING', 'ABORTED', 'ADMITTED', 'COMPLETE'])
+    assert.throws(() => h.store.advance(legacyColdDigest(next), phase), /phase CAS/);
+  assert.throws(() => h.store.block(legacyColdDigest(next), 'refused'), /blocked journal CAS/);
+  assert.throws(() => h.store.beginAbortPreinstall(legacyColdDigest(next), begin), /abort CAS/);
+  assert.throws(
+    () => h.store.finishAbortPreinstall(legacyColdDigest(next), abortFinishProofs(h)),
+    /finish CAS/,
+  );
+  assert.throws(() => h.store.seed(seed), /cannot be reseeded/);
+  assert.equal(h.store.admit({ ...bindings, epoch: 2 }, hash).bindings.epoch, 2);
+});
+
+test('abort rejects stale CAS, broad proof keys, invalid phase and any install-related evidence', (t) => {
+  const h = abortFixture(t, { blocked: false });
+  const proofs = abortBeginProofs(h);
+  assert.throws(() => h.store.beginAbortPreinstall('f'.repeat(64), proofs), /abort CAS/);
+  assert.throws(
+    () =>
+      h.store.beginAbortPreinstall(legacyColdDigest(h.journal), {
+        ...proofs,
+        releaseManifest: hash,
+      }),
+    /abort CAS/,
+  );
+  const incomplete = { ...proofs };
+  delete incomplete.abortAbsence;
+  assert.throws(
+    () => h.store.beginAbortPreinstall(legacyColdDigest(h.journal), incomplete),
+    /abort CAS/,
+  );
+  for (const phase of ['ABORTING', 'ABORTED'])
+    assert.throws(() => h.store.advance(legacyColdDigest(h.journal), phase, proofs), /phase CAS/);
+  for (const name of [
+    'pendingInventory',
+    'reviewedPreview',
+    'pendingRecheck',
+    'sealedReadback',
+    'releaseManifest',
+    'runtimeIdentity',
+    'nativeIdentity',
+    'strictSmokes',
+    'supersededPreview',
+    'refreezeAbsence',
+  ]) {
+    const guarded = abortFixture(t);
+    guarded.journal = guarded.store.block(legacyColdDigest(guarded.journal), 'refused', {
+      [name]: hash,
+    });
+    assert.throws(
+      () =>
+        guarded.store.beginAbortPreinstall(
+          legacyColdDigest(guarded.journal),
+          abortBeginProofs(guarded),
+        ),
+      /abort CAS/,
+    );
+  }
+  for (const [phase, additions] of steps.slice(2)) {
+    h.journal = h.store.advance(legacyColdDigest(h.journal), phase, additions);
+    assert.throws(
+      () => h.store.beginAbortPreinstall(legacyColdDigest(h.journal), proofs),
+      /abort CAS/,
+    );
+  }
+  const early = fixture(t);
+  let initial = early.store.admit(bindings, hash);
+  for (const phase of ['ADMITTED', 'STOPPING']) {
+    if (phase === 'STOPPING') initial = early.store.advance(legacyColdDigest(initial), phase);
+    assert.throws(
+      () => early.store.beginAbortPreinstall(legacyColdDigest(initial), proofs),
+      /abort CAS/,
+    );
+  }
+});
+
+test('abort requires exact immutable origin and both bound read-only ABSENT proofs', (t) => {
+  for (const side of [0, 1]) {
+    for (const [field, value] of [
+      ['state', 'SEALED'],
+      ['state', 'UNSEALED'],
+      ['state', 'UNKNOWN'],
+      ['version', 2],
+      ['certificateId', nonce],
+      ['sourceSha', bindings.sourceSha],
+      ['imageId', `sha256:${'f'.repeat(64)}`],
+      ['readOnly', false],
+      ['unknown', true],
+    ]) {
+      const h = abortFixture(t);
+      const absence = structuredClone(h.absence);
+      absence.reads[side][field] = value;
+      assert.throws(
+        () =>
+          h.store.beginAbortPreinstall(
+            legacyColdDigest(h.journal),
+            abortBeginProofs(h, { abortAbsence: absence }),
+          ),
+        /absence/,
+      );
+      assert.deepEqual(h.store.read().journal, h.journal);
+    }
+  }
+  for (const [field, value] of [
+    ['operation', 'install'],
+    ['complete', false],
+    ['controllerNonce', clusterIdentity],
+    ['selectionDigest', 'f'.repeat(64)],
+    ['certificateId', nonce],
+    ['reads', []],
+    ['reads', [{ version: 1, state: 'ABSENT' }]],
+  ]) {
+    const h = abortFixture(t);
+    assert.throws(
+      () =>
+        h.store.beginAbortPreinstall(
+          legacyColdDigest(h.journal),
+          abortBeginProofs(h, {
+            abortAbsence: { ...h.absence, [field]: value },
+          }),
+        ),
+      /absence/,
+    );
+  }
+  for (const [field, value] of [
+    ['version', 2],
+    ['operation', 'install'],
+    ['journalDigest', 'f'.repeat(64)],
+    ['journal', {}],
+  ]) {
+    const h = abortFixture(t);
+    assert.throws(
+      () =>
+        h.store.beginAbortPreinstall(
+          legacyColdDigest(h.journal),
+          abortBeginProofs(h, {
+            abortOrigin: { ...h.origin, [field]: value },
+          }),
+        ),
+      /original journal/,
+    );
+  }
+  const h = abortFixture(t);
+  const proofs = abortBeginProofs(h);
+  const next = h.store.beginAbortPreinstall(legacyColdDigest(h.journal), proofs);
+  for (const name of Object.keys(proofs))
+    assert.throws(
+      () => h.store.beginAbortPreinstall(legacyColdDigest(next), { ...proofs, [name]: hash }),
+      /immutable proof/,
+    );
+});
+
+test('abort proves every stopped role and the owned paused queue fence', (t) => {
+  for (const stoppedOverrides of [
+    { complete: false },
+    { sourceSha: bindings.sourceSha },
+    { services: [] },
+    { auxiliaries: [] },
+    { unreviewedProducers: 1 },
+  ]) {
+    const h = abortFixture(t, { stoppedOverrides });
+    assert.throws(
+      () => h.store.beginAbortPreinstall(legacyColdDigest(h.journal), abortBeginProofs(h)),
+      /stopped inventory/,
+    );
+  }
+  for (const [field, value] of [
+    ['queueCount', 23],
+    ['pausedCount', 23],
+    ['activeCount', 1],
+    ['ownerNonce', clusterIdentity],
+    ['complete', false],
+    ['controllerNonce', clusterIdentity],
+  ]) {
+    const h = abortFixture(t);
+    assert.throws(
+      () =>
+        h.store.beginAbortPreinstall(
+          legacyColdDigest(h.journal),
+          abortBeginProofs(h, {
+            repausedQueues: { ...h.fence, [field]: value },
+          }),
+        ),
+      /queue fence/,
+    );
+  }
+});
+
+test('abort completion requires exact restarted identities and positive dependency smokes', (t) => {
+  for (const [name, field, value] of [
+    ['runtimeIdentity', 'exactGenerationCount', 13],
+    ['runtimeIdentity', 'unreviewedProducers', 1],
+    ['runtimeIdentity', 'sourceSha', bindings.sourceSha],
+    ['nativeIdentity', 'exactGenerationCount', 1],
+    ['nativeIdentity', 'imageId', `sha256:${'f'.repeat(64)}`],
+    ['strictSmokes', 'ingressReady', false],
+    ['strictSmokes', 'queuesResumed', false],
+    ['strictSmokes', 'actionableLagSeconds', -1],
+    ['strictSmokes', 'actionableLagSeconds', 11],
+    ['strictSmokes', 'actionableLagSeconds', null],
+    ['strictSmokes', 'complete', false],
+  ]) {
+    const h = abortFixture(t);
+    const next = h.store.beginAbortPreinstall(legacyColdDigest(h.journal), abortBeginProofs(h));
+    const values = { runtimeIdentity: h.runtime, nativeIdentity: h.native, strictSmokes: h.smokes };
+    assert.throws(
+      () =>
+        h.store.finishAbortPreinstall(
+          legacyColdDigest(next),
+          abortFinishProofs(h, {
+            [name]: { ...values[name], [field]: value },
+          }),
+        ),
+      /identity unproved|smokes unproved/,
+    );
+    assert.deepEqual(h.store.read().journal, next);
+    assert.throws(() => assertNoActiveLegacyColdMaintenance(h.directory), /active cold epoch/);
+  }
+  const h = abortFixture(t);
+  const next = h.store.beginAbortPreinstall(legacyColdDigest(h.journal), abortBeginProofs(h));
+  const proofs = abortFinishProofs(h, {
+    strictSmokes: {
+      ...h.smokes,
+      ingressReady: false,
+      actionableLagSeconds: 90,
+      dependenciesReady: true,
+      queueBacklogOnly: true,
+    },
+  });
+  assert.throws(() => h.store.finishAbortPreinstall('f'.repeat(64), proofs), /finish CAS/);
+  assert.throws(
+    () =>
+      h.store.finishAbortPreinstall(legacyColdDigest(next), { ...proofs, releaseManifest: hash }),
+    /finish CAS/,
+  );
+  assert.equal(h.store.finishAbortPreinstall(legacyColdDigest(next), proofs).phase, 'ABORTED');
+});
+
+test('abort evidence must exist unchanged and terminal reload checks its contents', (t) => {
+  for (const remove of [false, true]) {
+    const h = abortFixture(t);
+    const proofs = abortBeginProofs(h);
+    const path = join(h.directory, 'legacy-cold-evidence', `${proofs.abortAbsence}.json`);
+    if (remove) rmSync(path);
+    else writeFileSync(path, '{"changed":true}\n');
+    assert.throws(
+      () => h.store.beginAbortPreinstall(legacyColdDigest(h.journal), proofs),
+      /absent or changed/,
+    );
+    assert.deepEqual(h.store.read().journal, h.journal);
+  }
+  const h = abortFixture(t);
+  let next = h.store.beginAbortPreinstall(legacyColdDigest(h.journal), abortBeginProofs(h));
+  next = h.store.finishAbortPreinstall(legacyColdDigest(next), abortFinishProofs(h));
+  const forged = { ...next, proofs: { ...next.proofs, runtimeIdentity: hash } };
+  writeFileSync(join(h.directory, LEGACY_COLD_JOURNAL), `${JSON.stringify(forged)}\n`);
+  assert.throws(() => assertNoActiveLegacyColdMaintenance(h.directory), /restarted identity/);
+  writeFileSync(join(h.directory, LEGACY_COLD_JOURNAL), `${JSON.stringify(next)}\n`);
+  rmSync(join(h.directory, 'legacy-cold-evidence', `${next.proofs.abortOrigin}.json`));
+  assert.throws(() => assertNoActiveLegacyColdMaintenance(h.directory), /absent or changed/);
 });

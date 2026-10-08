@@ -12,7 +12,7 @@ export function parseSourceAbandonmentCorrectiveHostRequest(text) {
     Object.keys(value).sort().join(',') !== 'controllerSha,runtimeRequest,version' ||
     value.version !== 1 ||
     !/^[0-9a-f]{40}$/u.test(value.controllerSha ?? '') ||
-    !['apply', 'reconcile', 'retry-preview', 'refreeze-preview'].includes(
+    !['apply', 'reconcile', 'retry-preview', 'refreeze-preview', 'abort-before-install'].includes(
       value.runtimeRequest?.operation,
     )
   )

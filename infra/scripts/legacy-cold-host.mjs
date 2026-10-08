@@ -19,6 +19,8 @@ import { assertLegacyDispositionSource } from './assert-legacy-disposition-sourc
 import { createLegacyColdClient } from './legacy-cold-client.mjs';
 import { readSourceAbandonmentCorrectiveIdentity } from './source-abandonment-corrective-identity.mjs';
 import { refreezeSourceAbandonmentPreview } from './source-abandonment-refreeze.mjs';
+import { readSourceAbandonmentAbortIdentity } from './source-abandonment-abort-identity.mjs';
+import { abortSourceAbandonmentPreinstall } from './source-abandonment-abort.mjs';
 import {
   assertInheritedDeployLock,
   assertNoActiveLegacyColdMaintenance,
@@ -66,9 +68,15 @@ export function parseLegacyColdHostRequest(text) {
   const value = object(JSON.parse(text));
   if (
     value.version !== 1 ||
-    !['status', 'preflight', 'prepare', 'apply', 'reconcile', 'retry-preview'].includes(
-      value.operation,
-    )
+    ![
+      'status',
+      'preflight',
+      'prepare',
+      'apply',
+      'reconcile',
+      'retry-preview',
+      'abort-before-install',
+    ].includes(value.operation)
   )
     throw new Error('host_operation_required');
   if (value.operation === 'status') {
@@ -76,7 +84,7 @@ export function parseLegacyColdHostRequest(text) {
     return value;
   }
   if (!source.test(value.targetSha ?? '')) throw new Error('exact_target_required');
-  if (value.operation === 'retry-preview') {
+  if (['retry-preview', 'abort-before-install'].includes(value.operation)) {
     keys(value, ['version', 'operation', 'targetSha', 'expectedJournalDigest']);
     if (!hash.test(value.expectedJournalDigest ?? '')) throw new Error('exact_review_required');
     return value;
@@ -303,9 +311,16 @@ export async function runLegacyColdHost(
   if (request.operation === 'refreeze-preview' && controllerSha === null)
     throw new Error('corrective_continuation_required');
   if (
+    request.operation === 'abort-before-install' &&
+    (controllerSha === null || protocol !== 'source-abandonment-v1')
+  )
+    throw new Error('corrective_continuation_required');
+  if (
     controllerSha !== null &&
     (protocol !== 'source-abandonment-v1' ||
-      !['apply', 'reconcile', 'retry-preview', 'refreeze-preview'].includes(request.operation))
+      !['apply', 'reconcile', 'retry-preview', 'refreeze-preview', 'abort-before-install'].includes(
+        request.operation,
+      ))
   )
     throw new Error('corrective_continuation_required');
   assertInheritedDeployLock();
@@ -322,7 +337,9 @@ export async function runLegacyColdHost(
   const identity =
     controllerSha === null
       ? sourceIdentity(request.targetSha)
-      : readSourceAbandonmentCorrectiveIdentity(
+      : (request.operation === 'abort-before-install'
+          ? readSourceAbandonmentAbortIdentity
+          : readSourceAbandonmentCorrectiveIdentity)(
           { controllerSha, targetSha: request.targetSha, protocol, operation: request.operation },
           execute,
         );
@@ -332,18 +349,24 @@ export async function runLegacyColdHost(
   let baseline;
   let selection;
   let context;
-  const continuing = ['apply', 'reconcile', 'retry-preview', 'refreeze-preview'].includes(
-    request.operation,
-  );
+  const continuing = [
+    'apply',
+    'reconcile',
+    'retry-preview',
+    'refreeze-preview',
+    'abort-before-install',
+  ].includes(request.operation);
   if (continuing) {
     if (
-      (request.operation === 'refreeze-preview'
-        ? !['STOPPED', 'INVENTORIED'].includes(state.journal?.phase)
-        : request.operation === 'retry-preview'
-          ? !['ADMITTED', 'STOPPING', 'STOPPED', 'INVENTORIED'].includes(state.journal?.phase)
-          : request.operation === 'reconcile'
-            ? !['INSTALLING', 'SEALED', 'RESUMING'].includes(state.journal?.phase)
-            : state.journal?.phase !== 'INVENTORIED' || state.journal.blockedReason) ||
+      (request.operation === 'abort-before-install'
+        ? !['STOPPED', 'ABORTING'].includes(state.journal?.phase)
+        : request.operation === 'refreeze-preview'
+          ? !['STOPPED', 'INVENTORIED'].includes(state.journal?.phase)
+          : request.operation === 'retry-preview'
+            ? !['ADMITTED', 'STOPPING', 'STOPPED', 'INVENTORIED'].includes(state.journal?.phase)
+            : request.operation === 'reconcile'
+              ? !['INSTALLING', 'SEALED', 'RESUMING'].includes(state.journal?.phase)
+              : state.journal?.phase !== 'INVENTORIED' || state.journal.blockedReason) ||
       state.journal.bindings.targetSha !== identity.sourceSha ||
       state.journal.bindings.targetImageId !== identity.imageId ||
       legacyColdDigest(state.journal) !== request.expectedJournalDigest
@@ -475,6 +498,19 @@ export async function runLegacyColdHost(
       operationDir,
       legacyColdInventoryArtifactName(existingPending, continuing),
     );
+    let absenceProbePath;
+    let absenceProbeSha256;
+    if (request.operation === 'abort-before-install') {
+      const bytes = readFileSync(join(root, 'infra/scripts/source-abandonment-absence.cjs'));
+      absenceProbeSha256 = createHash('sha256').update(bytes).digest('hex');
+      absenceProbePath = join(operationDir, `absence-${absenceProbeSha256}.cjs`);
+      try {
+        writePrivate(absenceProbePath, bytes);
+      } catch (error) {
+        if (error.code !== 'EEXIST' || readPrivate(absenceProbePath) !== bytes.toString('utf8'))
+          throw error;
+      }
+    }
     const client = createLegacyColdClient({
       protocol,
       sourceSha: identity.sourceSha,
@@ -485,6 +521,8 @@ export async function runLegacyColdHost(
       inventoryPath,
       queueControlPath,
       queueControlSha256,
+      absenceProbePath,
+      absenceProbeSha256,
     });
     const smokes = createLegacyColdSmokes({ bindings, runtime, client });
     const report = (value) => process.stderr.write(`${JSON.stringify(value)}\n`);
@@ -502,6 +540,8 @@ export async function runLegacyColdHost(
           report,
         }),
         ...smokes,
+        readAbortCertificateAbsent: () =>
+          client.invoke('absence', { version: 1, certificateId: bindings.certificateId }),
       },
       report,
     );
@@ -560,6 +600,12 @@ export async function runLegacyColdHost(
         });
       return await prepareLegacyColdRecovery({ store, bindings, adapters });
     }
+    if (request.operation === 'abort-before-install')
+      return await abortSourceAbandonmentPreinstall({
+        store,
+        adapters,
+        expectedJournalDigest: request.expectedJournalDigest,
+      });
     if (request.operation === 'refreeze-preview')
       return await refreezeSourceAbandonmentPreview({ store, adapters, request });
     if (request.operation === 'retry-preview')

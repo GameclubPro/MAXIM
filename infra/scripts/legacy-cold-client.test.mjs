@@ -17,6 +17,9 @@ function fixture(t, options = {}) {
   const inventoryPath = join(directory, 'inventory.json');
   const queueControlPath = join(directory, 'queue-control.cjs');
   const queueControlBytes = 'reviewed fixture queue controller';
+  const absenceProbePath = join(directory, 'absence.cjs');
+  const absenceBytes = 'reviewed fixture absence probe';
+  writeFileSync(absenceProbePath, absenceBytes, { mode: 0o600 });
   writeFileSync(queueControlPath, queueControlBytes, { mode: 0o600 });
   writeFileSync(
     environmentFile,
@@ -81,6 +84,8 @@ function fixture(t, options = {}) {
     inventoryPath,
     queueControlPath,
     queueControlSha256: createHash('sha256').update(queueControlBytes).digest('hex'),
+    absenceProbePath,
+    absenceProbeSha256: createHash('sha256').update(absenceBytes).digest('hex'),
     run,
   });
   return {
@@ -90,6 +95,7 @@ function fixture(t, options = {}) {
     environmentFile,
     inventoryPath,
     queueControlPath,
+    absenceProbePath,
     exists: () => exists,
     id,
   };
@@ -127,6 +133,33 @@ test('modern exact-source client uses only its fixed collector/store and separat
 
 test('unknown controller protocol is refused before creating a client', (t) => {
   assert.throws(() => fixture(t, { protocol: 'source-abandonment-v2' }), /invalid_client_binding/);
+});
+
+test('preinstall absence uses only the hash-bound readonly probe in the frozen image', (t) => {
+  const h = fixture(t, { protocol: 'source-abandonment-v1' });
+  h.state.response = { version: 1, state: 'ABSENT' };
+  h.client.invoke('absence', { version: 1, certificateId: '33333333-3333-4333-8333-333333333333' });
+  const args = h.calls.find((call) => call.args[0] === 'create').args;
+  assert(args.includes('--read-only'));
+  assert(
+    args.includes(
+      `type=bind,source=${h.absenceProbePath},target=/app/source-abandonment-absence.cjs,readonly`,
+    ),
+  );
+  assert.equal(args.at(-1), '/app/source-abandonment-absence.cjs');
+  assert(!args.some((arg) => arg.includes('STORE_MODE=') || arg.includes('inventory.json')));
+  assert.equal(h.exists(), false);
+  writeFileSync(h.absenceProbePath, 'changed');
+  h.calls.length = 0;
+  assert.throws(
+    () =>
+      h.client.invoke('absence', {
+        version: 1,
+        certificateId: '33333333-3333-4333-8333-333333333333',
+      }),
+    /absence_probe_binding_unproved/,
+  );
+  assert.equal(h.calls.length, 0);
 });
 
 test('store uses an immutable bounded client with readonly inventory and exact cleanup', (t) => {

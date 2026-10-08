@@ -47,6 +47,8 @@ export function createLegacyColdClient({
   inventoryPath,
   queueControlPath,
   queueControlSha256,
+  absenceProbePath,
+  absenceProbeSha256,
   uid = process.getuid(),
   gid = process.getgid(),
   run = execute,
@@ -103,7 +105,7 @@ export function createLegacyColdClient({
   return {
     remove,
     invoke(kind, request) {
-      if (!['store', 'inventory', 'admission', 'queues'].includes(kind))
+      if (!['store', 'inventory', 'admission', 'queues', 'absence'].includes(kind))
         throw new Error('invalid_client_kind');
       const input = JSON.stringify(request);
       if (Buffer.byteLength(input) > 64 * 1024 || request?.version !== 1)
@@ -119,6 +121,18 @@ export function createLegacyColdClient({
       )
         throw new Error('client_environment_not_allowlisted');
       if (kind === 'store') privateFile(inventoryPath, 8 * 1024 * 1024, uid);
+      if (kind === 'absence') {
+        privateFile(absenceProbePath, 16 * 1024, uid);
+        if (
+          protocol !== 'source-abandonment-v1' ||
+          !digest.test(absenceProbeSha256 ?? '') ||
+          createHash('sha256').update(readFileSync(absenceProbePath)).digest('hex') !==
+            absenceProbeSha256 ||
+          Object.keys(request).sort().join(',') !== 'certificateId,version' ||
+          !uuid.test(request.certificateId ?? '')
+        )
+          throw new Error('absence_probe_binding_unproved');
+      }
       if (kind === 'queues') {
         privateFile(queueControlPath, 64 * 1024, uid);
         if (
@@ -197,6 +211,11 @@ export function createLegacyColdClient({
           '--mount',
           `type=bind,source=${inventoryPath},target=/run/maxim-legacy-recovery/inventory.json,readonly`,
         );
+      else if (kind === 'absence')
+        args.push(
+          '--mount',
+          `type=bind,source=${absenceProbePath},target=/app/source-abandonment-absence.cjs,readonly`,
+        );
       else if (kind === 'queues')
         args.push(
           '--env',
@@ -215,9 +234,11 @@ export function createLegacyColdClient({
         '--entrypoint',
         'node',
         imageId,
-        kind === 'queues'
-          ? '/app/legacy-recovery-queues.cjs'
-          : `apps/api/dist/apps/api/src/scripts/${command}.js`,
+        kind === 'absence'
+          ? '/app/source-abandonment-absence.cjs'
+          : kind === 'queues'
+            ? '/app/legacy-recovery-queues.cjs'
+            : `apps/api/dist/apps/api/src/scripts/${command}.js`,
       );
       if (kind === 'queues') args.push(request.operation);
       let output;
