@@ -359,7 +359,7 @@ export async function runLegacyColdHost(
   if (continuing) {
     if (
       (request.operation === 'abort-before-install'
-        ? !['STOPPED', 'ABORTING'].includes(state.journal?.phase)
+        ? !['STOPPED', 'INVENTORIED', 'ABORTING'].includes(state.journal?.phase)
         : request.operation === 'refreeze-preview'
           ? !['STOPPED', 'INVENTORIED'].includes(state.journal?.phase)
           : request.operation === 'retry-preview'

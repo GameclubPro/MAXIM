@@ -44,6 +44,7 @@ for (const patch of [
   { operation: 'apply' },
   { operation: 'prepare' },
   { targetSha: 'd'.repeat(40) },
+  { targetSha: 'd241e50a8b688bdc32380b20d40c2505413c50f1' },
   { protocol: 'legacy' },
 ])
   test(`abort identity refuses ${JSON.stringify(patch)}`, () => {
@@ -54,6 +55,8 @@ for (const patch of [
   });
 for (const path of [
   'infra/scripts/legacy-cold-runtime.mjs',
+  'infra/scripts/legacy-cold-client.mjs',
+  'infra/scripts/source-abandonment-absence.cjs',
   'infra/scripts/webhook-queue-rollout-control.cjs',
   'apps/api/src/scripts/source-abandonment-store.ts',
   'package-lock.json',
@@ -70,8 +73,8 @@ test('abort refuses a drifted immutable image', () => {
   assert.throws(h.read, /immutable_abort_runtime_required/);
 });
 
-test('actual pinned runtime source may predate the reviewed controller profile without granting installation', (t) => {
-  const controllerSha = '98b48dbd15a6d9c19ed466101b0cb934b27e364d';
+test('actual pinned e7 runtime and reviewed controller base retain both source floors', (t) => {
+  const controllerSha = '8b48a9702de516022bc22a8e195f983dbf116cc9';
   const git = (args) =>
     execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   try {
@@ -82,12 +85,10 @@ test('actual pinned runtime source may predate the reviewed controller profile w
     return;
   }
   const checked = [];
-  assert.throws(
-    () =>
-      assertLegacyDispositionSource(ABORT_RUNTIME_SHA, (path) =>
-        git(['show', `${ABORT_RUNTIME_SHA}:${path}`]),
-      ),
-    /permanent exact-source abandonment readers/,
+  assert.equal(ABORT_RUNTIME_SHA, 'e7e0066ac724726b42c5cba00bfd8f930673b645');
+  assert.equal(
+    ABORT_RUNTIME_IMAGE,
+    'sha256:c3e6540fa88d5695fb5c875a2baf7a7b7bf0b6c7c2a6907288f5217755727c45',
   );
   const result = readSourceAbandonmentAbortIdentity(
     {
@@ -115,7 +116,7 @@ test('actual pinned runtime source may predate the reviewed controller profile w
       return assertLegacyDispositionSource(sha, read);
     },
   );
-  assert.deepEqual(checked, [controllerSha]);
+  assert.deepEqual(checked, [ABORT_RUNTIME_SHA, controllerSha]);
   assert.equal(result.controllerSha, controllerSha);
   assert.equal(result.sourceSha, ABORT_RUNTIME_SHA);
   assert.equal(result.imageId, ABORT_RUNTIME_IMAGE);
