@@ -17,21 +17,6 @@ const FAMILY_LIMIT = 64;
 const ROW_BYTE_LIMIT = 256 * 1024;
 const FAMILY_BYTE_LIMIT = 1024 * 1024;
 
-function plainSource(event: WebhookEvent): boolean {
-  const payload = event.normalizedPayload as unknown as MaxUpdate;
-  const raw = payload?.raw as
-    | { message?: { link?: unknown; body?: { attachments?: unknown } } }
-    | undefined;
-  const attachments = raw?.message?.body?.attachments;
-  return Boolean(
-    raw?.message &&
-    raw.message.link === undefined &&
-    (attachments === undefined ||
-      attachments === null ||
-      (Array.isArray(attachments) && attachments.length === 0)),
-  );
-}
-
 export function pristineDiscardCandidateSql(semanticKey: string) {
   return Prisma.sql`SELECT claim.id, claim.webhook_event_id AS "ownerId"
     FROM (
@@ -197,10 +182,12 @@ export async function settlePristineOperatorDiscard(
       const settings = await tx.chatSettings.findUnique({
         where: { chatId: input.update.message?.chatId ?? '' },
       });
+      // FLAG: Use the strict modern source profile for text, media and linked messages.
+      // Enforced pristine claims cannot enter moderation/OCR before the business-start CAS;
+      // preparation metadata and independent ingress retention remain untouched by settlement.
       const source = inspectSourceAbandonmentSource(owner, undefined, settings ?? undefined);
       if (
         !source ||
-        !plainSource(owner) ||
         source.sourceAt <= clock.cutoff ||
         buildWebhookSemanticEventKey(owner.normalizedPayload) !== semanticKey
       )
@@ -262,7 +249,6 @@ export async function settlePristineOperatorDiscard(
         const provenance = inspectSourceAbandonmentSource(event, undefined, settings ?? undefined);
         if (
           !provenance ||
-          !plainSource(event) ||
           provenance.chatId !== source.chatId ||
           provenance.messageId !== source.messageId ||
           provenance.userId !== source.userId ||

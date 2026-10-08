@@ -26,6 +26,16 @@ outside the hold. Publisher is a separate observer/publisher, never a moderation
 Legacy member/global-user holds remain independent and cannot be repurposed for this
 operation. Unsupported sources or unattributed actionable continuations are refused.
 
+The automatic `PRISTINE_OPERATOR_DISCARD_V1` path accepts this same strict source
+profile only for an expired, enforced, prepared owner that has never started and
+has no lease, completion or command result. It requires the complete bounded
+receipt family, a prior dormant observation, later scrubbed operator-discard
+witnesses, exact claim ownership, current command checks and no existing hold.
+The business-start fence prevents moderation and media handlers from running
+before the retained claim starts. Settlement preserves the source and claim; it
+does not cancel independent ingress retention or invent an execution result.
+Started or uncertain owners still require the cold protocol below.
+
 `sendAutoDelete` consumes its parent SEND authority, so its exact original-source
 envelope and parent key remain part of the exclusion. A nullable source message
 requires the exact retained successful, terminal, unambiguous moderation-notice
