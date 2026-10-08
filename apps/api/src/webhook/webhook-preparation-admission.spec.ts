@@ -10,6 +10,49 @@ function gate() {
 }
 
 describe('Webhook durable preparation admission', () => {
+  it('uses twelve preparation slots while keeping each bot class to one third of capacity', async () => {
+    const admission = new WebhookPreparationAdmission(24, jest.fn());
+    const gates: ReturnType<typeof gate>[] = [];
+    const tasks: Promise<void>[] = [];
+    const start = (bot: string) => {
+      const pending = gate();
+      gates.push(pending);
+      const task = admission.run(bot, 'ordinary', () => pending.promise);
+      tasks.push(task);
+      return { ...pending, task };
+    };
+    const rejected = jest.fn(async () => undefined);
+    try {
+      expect(admission.maxInFlight).toBe(12);
+      const first = start('a');
+      for (let index = 0; index < 3; index++) start('a');
+      await expect(admission.run('a', 'ordinary', rejected)).rejects.toBeInstanceOf(
+        WebhookPreparationDeferredError,
+      );
+      expect(admission.schedulingState('a', 'ordinary')).toBe('scope_capacity');
+      for (const bot of ['b', 'c']) for (let index = 0; index < 4; index++) start(bot);
+      expect(admission.snapshot()).toMatchObject({ inFlight: 12, ordinary: 12, pending: 0 });
+      expect(admission.schedulingState('command', 'interactive')).toBe('shared_capacity');
+      first.release();
+      await first.task;
+      await expect(admission.run('d', 'ordinary', rejected)).rejects.toBeInstanceOf(
+        WebhookPreparationDeferredError,
+      );
+      const commandGate = gate();
+      gates.push(commandGate);
+      tasks.push(admission.run('command', 'interactive', () => commandGate.promise));
+      expect(admission.snapshot()).toMatchObject({ inFlight: 12, interactive: 1 });
+      admission.stop();
+      expect(admission.schedulingState('d', 'ordinary')).toBe('closed');
+      expect(rejected).not.toHaveBeenCalled();
+    } finally {
+      gates.forEach((pending) => pending.release());
+      await Promise.allSettled(tasks);
+      await admission.drain();
+    }
+    expect(admission.snapshot()).toMatchObject({ inFlight: 0, botScopes: 0 });
+  });
+
   it.each(['interactive', 'lifecycle'] as const)(
     'admits both priority classes under repeated ordinary refill attempts (%s waits first)',
     async (firstClass) => {

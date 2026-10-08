@@ -379,6 +379,124 @@ native('fleet admission isolation from one unknown ordered scope', () => {
     }
   });
 
+  it('refills during native selection and preserves a scanned same-chat successor after completion', async () => {
+    await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
+    const chatId = `-overlap-native-${randomUUID()}`;
+    const base = Date.now() - 10_000;
+    const rows = [0, 1].map((index) => {
+      const id = randomUUID();
+      receipts.push(id);
+      const payload = update(chatId, randomUUID(), base + index);
+      return {
+        id,
+        dedupKey: id,
+        botId: payload.botId,
+        status: 'RECEIVED' as const,
+        createdAt: new Date(base + index),
+        rawPayload: {},
+        normalizedPayload: JSON.parse(JSON.stringify(payload)),
+      };
+    });
+    await prisma.webhookEvent.createMany({ data: rows });
+    const debt = new DeferredWebhookScopes();
+    Object.assign(outbox, {
+      deferredEnqueueScopes: debt,
+      pendingEnqueueRepresentatives: new Map([[`chat:${chatId}`, rows[0]!.id]]),
+      enqueueScans: new Map(),
+    });
+    const internal = outbox as unknown as {
+      enqueueBatch(): Promise<void>;
+      selectEnqueueCandidates(
+        ...args: unknown[]
+      ): Promise<Array<{ id: string; isBacklogScan?: boolean }>>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    let release!: () => void;
+    let reached!: () => void;
+    let finished!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const preparing = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const completed = new Promise<void>((resolve) => {
+      finished = resolve;
+    });
+    const admitted: string[] = [];
+    const body = jest
+      .spyOn(
+        ingress as unknown as {
+          preparePersistedWebhookEventAdmitted(id: string): Promise<unknown>;
+        },
+        'preparePersistedWebhookEventAdmitted',
+      )
+      .mockImplementation(async (id) => {
+        admitted.push(id);
+        if (id === rows[0]!.id) {
+          reached();
+          await held;
+        }
+        await prisma.webhookEvent.updateMany({
+          where: { id, status: 'RECEIVED' },
+          data: { status: 'PROCESSED', processedAt: new Date() },
+        });
+        if (id === rows[0]!.id) finished();
+        return { canonical: false, prepared: false, normalizedPayload: null, executionBotId: null };
+      });
+    const select = internal.selectEnqueueCandidates.bind(internal);
+    let timer: NodeJS.Timeout | undefined;
+    const selection = jest
+      .spyOn(internal, 'selectEnqueueCandidates')
+      .mockImplementationOnce(async (...args) => {
+        const refilled = await Promise.race([
+          preparing.then(() => true),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), 1_000);
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+        expect(refilled).toBe(true);
+        release();
+        await completed;
+        // The real SQL cursor advances over B after the retained A completes, while
+        // this poll still owns A's earlier snapshot. B must survive their chat merge.
+        const selected = await select(...args);
+        expect(selected).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: rows[1]!.id, isBacklogScan: true }),
+          ]),
+        );
+        return selected;
+      });
+    try {
+      await internal.enqueueBatch();
+      expect(admitted).toEqual([rows[0]!.id]);
+      expect(debt.snapshot().intervals).toBeGreaterThan(0);
+      // Future ordinary discovery cannot rescue B; only retained scan responsibility can.
+      selection.mockResolvedValue([]);
+      for (let pass = 0; pass < 5 && !admitted.includes(rows[1]!.id); pass++) {
+        await internal.enqueueBatch();
+      }
+      expect(admitted).toEqual(rows.map((row) => row.id));
+      expect(
+        await prisma.webhookEvent.count({
+          where: { id: { in: rows.map((row) => row.id) }, status: 'PROCESSED' },
+        }),
+      ).toBe(2);
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      await Promise.all(internal.activeEnqueueUnits.values());
+      selection.mockRestore();
+      body.mockRestore();
+      Object.assign(outbox, {
+        deferredEnqueueScopes: new DeferredWebhookScopes(),
+        pendingEnqueueRepresentatives: new Map(),
+      });
+    }
+  });
+
   it('retains a waiting Start across saturated polls and admits it before older ordinary refills', async () => {
     await prisma.webhookEvent.deleteMany({ where: { id: { in: receipts } } });
     const base = Date.now() - 10_000;

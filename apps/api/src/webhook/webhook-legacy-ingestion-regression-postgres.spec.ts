@@ -143,16 +143,25 @@ native('legacy disposition production ingestion activation regressions', () => {
     await ingress?.onModuleDestroy();
     jest.restoreAllMocks();
     expect(deniedMax).not.toHaveBeenCalled();
-    const ids = receipts.splice(0);
-    await prisma.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: ids } } });
-    await prisma.webhookEvent.deleteMany({ where: { id: { in: ids } } });
-    await prisma.webhookLegacyReceiptDisposition.deleteMany({ where: { receiptId: { in: ids } } });
-    for (const certificateId of certificates.splice(0)) {
+    // FLAG: Bound foreign-key checks for the 5,000-row fixture and retain owned
+    // identities after a failed cleanup so the next hook can finish their removal.
+    while (receipts.length > 0) {
+      const ids = receipts.slice(0, 200);
+      await prisma.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: ids } } });
+      await prisma.webhookEvent.deleteMany({ where: { id: { in: ids } } });
+      await prisma.webhookLegacyReceiptDisposition.deleteMany({
+        where: { receiptId: { in: ids } },
+      });
+      receipts.splice(0, ids.length);
+    }
+    while (certificates.length > 0) {
+      const certificateId = certificates[0]!;
       await prisma.webhookLegacyMaterializationCursor.deleteMany({ where: { certificateId } });
       await prisma.webhookLegacySealedAuthority.deleteMany({ where: { certificateId } });
       await prisma.webhookLegacyChildHold.deleteMany({ where: { certificateId } });
       await prisma.webhookLegacyRecovery.deleteMany({ where: { certificateId } });
       await prisma.webhookLegacyQuiescenceCertificate.deleteMany({ where: { id: certificateId } });
+      certificates.shift();
     }
     await prisma.chat.deleteMany({ where: { id: { in: chats.splice(0) } } });
   });

@@ -695,24 +695,65 @@ export class WebhookOutboxService
       admission.batchSize - scopedCandidates.length,
     );
     const admissionFinishedAtMs = Date.now();
-    let candidates: WebhookEnqueueCandidate[];
-    try {
-      candidates = this.mergeEnqueueCandidates(
-        [
-          ...scopedCandidates,
-          ...pendingCandidates,
-          ...(await this.selectEnqueueCandidates(now, admission, scopedCandidates.length)),
-        ],
-        this.resolvePrioritySelectionWindowSize(admission.batchSize),
-      );
-    } finally {
-      // FLAG: Leave live/due-only polls after slow or failed recovery scans too.
-      // Scheduling only from the start can make a >5s scan run on every poll.
-      if (admission.includeCompletedTimeoutRepair) {
-        this.nextCompletedTimeoutRepairAtMs = Date.now() + COMPLETED_TIMEOUT_REPAIR_INTERVAL_MS;
-      }
+    const retainedCandidates = this.mergeEnqueueCandidates(
+      [...scopedCandidates, ...pendingCandidates],
+      admission.batchSize,
+    );
+    const refilledUnits = new Set(this.activeEnqueueUnits.keys());
+    let selectionFinishedAtMs = admissionFinishedAtMs;
+    // FLAG: Re-read bounded retained identities before using them. Refill from that
+    // current snapshot while the single SQL selector runs; carried preparations can
+    // otherwise finish and leave every slot idle throughout a slow history scan.
+    // Await both operations even on failure, and finish this dispatcher before the
+    // fresh selection starts dispatching. No previous payload queue is retained.
+    const [selection, refill] = await Promise.allSettled([
+      (async () => {
+        try {
+          return await this.selectEnqueueCandidates(now, admission, scopedCandidates.length);
+        } finally {
+          selectionFinishedAtMs = Date.now();
+          // FLAG: Leave live/due-only polls after slow or failed recovery scans too.
+          if (admission.includeCompletedTimeoutRepair) {
+            this.nextCompletedTimeoutRepairAtMs = Date.now() + COMPLETED_TIMEOUT_REPAIR_INTERVAL_MS;
+          }
+        }
+      })(),
+      (async () => {
+        if (!retainedCandidates.length) return createEnqueueProgress();
+        const prioritized = await this.prioritizeCandidates(
+          retainedCandidates,
+          now,
+          admission.batchSize,
+        );
+        return this.enqueueCandidates(prioritized, admission.enqueueConcurrency, refilledUnits);
+      })(),
+    ]);
+    if (selection.status === 'rejected') throw selection.reason;
+    if (refill.status === 'rejected') {
+      // FLAG: Successful selection has already advanced scan cursors. Its current
+      // representatives must still reach normal dispatch if the optional refill fails.
+      this.logger.warn('Failed to refill retained webhook preparations; using current selection');
     }
-    const selectionFinishedAtMs = Date.now();
+    const undispatchedCandidates = [...retainedCandidates, ...selection.value].filter(
+      (candidate) => {
+        const key = this.candidateWorkUnitKey(candidate);
+        if (!refilledUnits.has(key)) return true;
+        // FLAG: A completed early dispatch has already released its active map entry.
+        // Never redispatch this poll's stale same-chat snapshot. Preserve any scanned
+        // successor as scalar debt so advancing the SQL cursor cannot lose that work.
+        if (candidate.isBacklogScan || candidate.isDeferredScopeScan) {
+          this.deferredEnqueueScopes.capture(null, key, {
+            id: candidate.id,
+            createdAt: candidate.createdAt,
+          });
+        }
+        return false;
+      },
+    );
+    const candidates = this.mergeEnqueueCandidates(
+      undispatchedCandidates,
+      this.resolvePrioritySelectionWindowSize(admission.batchSize),
+    );
 
     const prioritizedCandidates = await this.prioritizeCandidates(
       candidates,
@@ -746,6 +787,11 @@ export class WebhookOutboxService
 
     const prioritizationFinishedAtMs = Date.now();
     const progress = await this.enqueueCandidates(expandedCandidates, admission.enqueueConcurrency);
+    if (refill.status === 'fulfilled') {
+      for (const key of Object.keys(progress) as Array<keyof EnqueueProgress>) {
+        progress[key] += refill.value[key];
+      }
+    }
     const finishedAtMs = Date.now();
     const durationMs = finishedAtMs - now.getTime();
     if (
@@ -1743,6 +1789,7 @@ export class WebhookOutboxService
   private async enqueueCandidates(
     candidates: PrioritizedWebhookEnqueueCandidate[],
     enqueueConcurrency = this.enqueueConcurrency,
+    dispatchedUnitKeys?: Set<string>,
   ): Promise<EnqueueProgress> {
     const progress = createEnqueueProgress();
     if (candidates.length === 0) {
@@ -1918,6 +1965,7 @@ export class WebhookOutboxService
             continue;
           }
           dispatched.add(workUnit);
+          dispatchedUnitKeys?.add(key);
           const retainedResponsibility =
             pending.has(key) ||
             workUnit.candidates.some((candidate) => candidate.isDeferredScopeScan);

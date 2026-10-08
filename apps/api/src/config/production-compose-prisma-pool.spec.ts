@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 const API_SERVICE_POOL_CAPS = {
   'api-ingress': 6,
   'api-admin': 10,
-  'api-enqueue': 12,
+  'api-enqueue': 24,
   'api-moderation': 3,
   'api-moderation-critical': 4,
   'api-moderation-join': 4,
@@ -48,7 +48,7 @@ describe('production compose Prisma pool caps', () => {
         total += cap;
       }
 
-      expect(total).toBe(60);
+      expect(total).toBe(72);
     });
 
     it('caps the dedicated managed-entities read client separately', () => {
