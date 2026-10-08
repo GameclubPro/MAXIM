@@ -1,6 +1,9 @@
 import { buildMaxActionIdempotencyKey } from '../max/max-action-idempotency';
 import { MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS } from '../max/managed-handshake-confirmation';
 import { createHash, randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { buildGroupCommandKey } from '../common/group-command-key';
@@ -1474,7 +1477,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     expect(await queue.getJobCounts('paused')).toEqual({ paused: 1 });
   });
 
-  it('accepts Publisher auxiliary TTL expiry only between independently stable cold inventories', async () => {
+  it('rechecks and installs the original offline artifact after independent Publisher auxiliary TTL expiry', async () => {
     const names = ['publisher-start', 'publisher-binding-refresh'];
     for (const name of names) {
       await redis.hset(`bull:${name}:meta`, 'version', 'fixture');
@@ -1486,7 +1489,14 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     for (const name of names) await redis.pexpire(`bull:${name}:stalled-check`, 1);
     await new Promise((done) => setTimeout(done, 20));
     for (const name of names) expect(await redis.exists(`bull:${name}:stalled-check`)).toBe(0);
-    const rechecked = await collect();
+    const rechecked = await db.$transaction(
+      (tx) =>
+        collectSourceAbandonmentLiveEvidence(tx, redis, {
+          ...liveRequest,
+          expectedInventorySha256: reviewed.inventorySha256!,
+        }),
+      { timeout: 30_000, isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
     expect(rechecked.issues).toEqual([]);
     expect(rechecked.decision).toBe('READY_TO_INSTALL');
     expect(rechecked.redisEvidenceSha256).toBe(reviewed.redisEvidenceSha256);
@@ -1504,9 +1514,145 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         inventory.redisCatalogs[1]!.namespaceKeyCounts,
       );
     }
+    // FLAG: Exercise the actual host recheck against native store evidence. The
+    // local child only writes temporary artifacts; PostgreSQL apply uses the
+    // reviewed artifact bytes returned unchanged by that adapter below.
+    const bridge = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `
+            import assert from 'node:assert/strict';
+            import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+            import { join } from 'node:path';
+            import { tmpdir } from 'node:os';
+            import { randomUUID } from 'node:crypto';
+            const { createLegacyColdStoreAdapter } = await import(process.argv[1]);
+            const { legacyColdDigest } = await import(new URL('./legacy-cold-journal.mjs', process.argv[1]));
+            const { reviewed, rechecked, selection } = JSON.parse(readFileSync(0, 'utf8'));
+            const dir = mkdtempSync(join(tmpdir(), 'maxim-source-native-recheck-'));
+            try {
+              const inventoryPath = join(dir, 'inventory.json');
+              const originalBytes = JSON.stringify(reviewed) + '\\n';
+              writeFileSync(inventoryPath, originalBytes, { mode: 0o600, flag: 'wx' });
+              const bindings = {
+                targetSha: reviewed.binding.sourceSha,
+                targetImageId: reviewed.binding.imageId,
+                controllerNonce: reviewed.binding.maintenanceId,
+                certificateId: randomUUID(),
+                selectionDigest: legacyColdDigest(selection),
+              };
+              const prior = {
+                version: 1, complete: true,
+                sourceSha: bindings.targetSha, imageId: bindings.targetImageId,
+                controllerNonce: bindings.controllerNonce, selectionDigest: bindings.selectionDigest,
+                inventoryDigest: reviewed.inventorySha256, previewDigest: reviewed.previewSha256,
+                inventoryArtifactSha256: legacyColdDigest(originalBytes),
+                unknownSources: 0, saturated: false, inventory: reviewed,
+              };
+              let freshProof;
+              let inventories = 0;
+              const adapter = createLegacyColdStoreAdapter({
+                bindings, selection, inventoryPath, publisherBotId: reviewed.binding.publisherBotId,
+                runtime: { readStoppedRuntime: () => ({ services: [], auxiliaries: [] }) },
+                store: {
+                  read: () => ({ journal: { proofs: { pendingInventory: legacyColdDigest(prior) } } }),
+                  readProof: (name) => { assert.equal(name, 'pendingInventory'); return prior; },
+                  recordProof: (value) => {
+                    assert.deepEqual(value, rechecked);
+                    freshProof = JSON.stringify(value) + '\\n';
+                    writeFileSync(join(dir, 'recheck.json'), freshProof, { mode: 0o600, flag: 'wx' });
+                    return legacyColdDigest(freshProof);
+                  },
+                },
+                client: {
+                  invoke: (kind, request) => {
+                    assert.equal(kind, 'inventory');
+                    assert.equal(request.operation, 'inventory_preview');
+                    assert.equal(request.expectedInventorySha256, reviewed.inventorySha256);
+                    assert.deepEqual(request.binding, reviewed.binding);
+                    assert.deepEqual(request.selection, selection);
+                    inventories += 1;
+                    return rechecked;
+                  },
+                },
+              });
+              const { recheckProof, ...retained } = adapter.snapshotPending();
+              assert.equal(inventories, 1);
+              assert.deepEqual(retained, prior);
+              assert.equal(readFileSync(inventoryPath, 'utf8'), originalBytes);
+              assert.equal(readFileSync(join(dir, 'recheck.json'), 'utf8'), freshProof);
+              assert.equal(recheckProof, legacyColdDigest(freshProof));
+              assert.notEqual(recheckProof, prior.inventoryArtifactSha256);
+              process.stdout.write(JSON.stringify({
+                bytes: readFileSync(inventoryPath).toString('base64'),
+                recheckProof,
+                request: {
+                  version: 1, operation: 'certificate_create', certificateId: bindings.certificateId,
+                  binding: retained.inventory.binding, selection,
+                  expected: {
+                    inventorySha256: retained.inventoryDigest,
+                    previewSha256: retained.previewDigest,
+                    inventoryArtifactSha256: retained.inventoryArtifactSha256,
+                  },
+                },
+              }));
+            } finally { rmSync(dir, { recursive: true, force: true }); }
+          `,
+          pathToFileURL(
+            resolve(__dirname, '../../../../infra/scripts/legacy-cold-store-adapter.mjs'),
+          ).href,
+        ],
+        {
+          input: JSON.stringify({ reviewed, rechecked, selection }),
+          encoding: 'utf8',
+          timeout: 15_000,
+          maxBuffer: 8 * 1024 * 1024,
+        },
+      ),
+    ) as { bytes: string; recheckProof: string; request: unknown };
+    const bytes = Buffer.from(bridge.bytes, 'base64');
+    expect(bytes.toString('utf8')).toBe(`${JSON.stringify(reviewed)}\n`);
+    expect(bridge.recheckProof).toBe(
+      createHash('sha256')
+        .update(`${JSON.stringify(rechecked)}\n`)
+        .digest('hex'),
+    );
+    const request = parseSourceAbandonmentStoreRequest(JSON.stringify(bridge.request));
+    expect(request.expected.inventoryArtifactSha256).toBe(
+      createHash('sha256').update(bytes).digest('hex'),
+    );
+    const before = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const claims = await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } });
     expect(
-      await db.webhookSourceAbandonment.findUnique({ where: { ownerWebhookEventId: ownerId } }),
-    ).toBeNull();
+      await executeSourceAbandonmentStore(readonlyDb, { ...request, operation: 'readback' }, bytes),
+    ).toMatchObject({ state: 'ABSENT', activationAuthorized: false });
+    expect(await executeSourceAbandonmentStore(db, request, bytes)).toMatchObject({
+      state: 'UNSEALED',
+      activationAuthorized: false,
+    });
+    expect(
+      await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
+    ).toMatchObject({
+      state: 'MATERIALIZED',
+      completeChats: 1,
+      requiredChats: 1,
+      activationAuthorized: false,
+    });
+    expect(
+      await executeSourceAbandonmentStore(readonlyDb, { ...request, operation: 'readback' }, bytes),
+    ).toMatchObject({ state: 'MATERIALIZED', completeChats: 1, requiredChats: 1 });
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } })).toEqual({
+      ...before,
+      sourceDispositionId: expect.any(String),
+      sourceDispositionReceiptId: ownerId,
+    });
+    expect(await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } })).toEqual(
+      claims,
+    );
+    expect(bytes.toString('utf8')).toBe(`${JSON.stringify(reviewed)}\n`);
   });
 
   it('denies Publisher auxiliary expiry between the two complete reads of one cold inventory', async () => {
