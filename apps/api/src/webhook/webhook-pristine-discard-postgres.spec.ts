@@ -12,10 +12,14 @@ import {
   settlePristineOperatorDiscard,
 } from './webhook-pristine-discard';
 import { hasWebhookReplayFence } from './webhook-execution-deadline';
+import { inspectSourceAbandonmentSource } from './webhook-legacy-source';
+import { DEFAULT_MAX_PUBLISHER_BOT_ID } from '../publisher/publisher-bot-descriptor';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const native = databaseUrl ? describe : describe.skip;
 const migration = '20261005020000_add_multibot_order_fences';
+const sourceShapes = ['plain', 'image', 'photo', 'video', 'share', 'forward', 'reply'] as const;
+type SourceShape = (typeof sourceShapes)[number];
 
 native('pristine operator-discard owner native PostgreSQL', () => {
   jest.setTimeout(30_000);
@@ -23,6 +27,8 @@ native('pristine operator-discard owner native PostgreSQL', () => {
   let cutoff: Date;
   const receiptIds: string[] = [];
   const claimIds: string[] = [];
+  const chatIds: string[] = [];
+  const holdIds: string[] = [];
   beforeAll(async () => {
     const url = new URL(databaseUrl);
     if (
@@ -43,8 +49,12 @@ native('pristine operator-discard owner native PostgreSQL', () => {
       WHERE migration_name = ${migration}`;
   });
   afterEach(async () => {
+    const holds = holdIds.splice(0);
+    await db.webhookLegacyRecovery.deleteMany({ where: { id: { in: holds } } });
+    await db.webhookLegacyQuiescenceCertificate.deleteMany({ where: { id: { in: holds } } });
     await db.webhookExecutionClaim.deleteMany({ where: { id: { in: claimIds.splice(0) } } });
     await db.webhookEvent.deleteMany({ where: { id: { in: receiptIds.splice(0) } } });
+    await db.chat.deleteMany({ where: { id: { in: chatIds.splice(0) } } });
   });
   afterAll(async () => {
     if (cutoff)
@@ -52,7 +62,7 @@ native('pristine operator-discard owner native PostgreSQL', () => {
       WHERE migration_name = ${migration}`;
     await db?.$disconnect();
   });
-  async function fixture() {
+  async function fixture(shape: SourceShape = 'plain') {
     const at = Date.now() - 600_000;
     const raw = {
       update_type: 'message_created',
@@ -65,6 +75,40 @@ native('pristine operator-discard owner native PostgreSQL', () => {
         body: { mid: randomUUID(), text: 'ordinary untouched source' },
       },
     };
+    const photo = {
+      type: 'image',
+      payload: { photo_id: 'fixture-photo', url: 'https://example.org/photo.jpg' },
+    };
+    if (shape === 'image' || shape === 'photo')
+      Object.assign(raw.message.body, { attachments: [{ ...photo, type: shape }] });
+    if (shape === 'video')
+      Object.assign(raw.message.body, {
+        attachments: [
+          {
+            type: 'video',
+            payload: { id: 123, token: 'fixture-video', url: 'https://example.org/video.mp4' },
+          },
+        ],
+      });
+    if (shape === 'share')
+      Object.assign(raw.message.body, {
+        attachments: [
+          {
+            type: 'share',
+            payload: { url: 'https://example.org/article', token: 'fixture-preview' },
+            title: 'Fixture preview',
+          },
+        ],
+      });
+    if (shape === 'forward' || shape === 'reply')
+      Object.assign(raw.message, {
+        link: {
+          type: shape,
+          chat_id: '-linked-fixture',
+          sender: { user_id: 'linked-person', is_bot: false },
+          message: { mid: 'linked-message', text: 'ordinary linked text', attachments: [photo] },
+        },
+      });
     const update = new WebhookParser().parse(raw, { botId: 'fixture-bot' });
     const semanticKey = buildWebhookSemanticEventKey(update)!;
     const create = async (
@@ -136,72 +180,79 @@ native('pristine operator-discard owner native PostgreSQL', () => {
   const settle = (f: Awaited<ReturnType<typeof fixture>>, id = f.owner.id) =>
     settlePristineOperatorDiscard(db as never, { webhookEventId: id, update: f.update });
 
-  it.each(['worker', 'preparation'] as const)(
-    'settles via %s without preparation/effects or claim/body changes',
-    async (entry) => {
-      const f = await fixture();
-      const before = await db.webhookEvent.findMany({
-        where: { id: { in: receiptIds } },
+  it.each(
+    sourceShapes.flatMap((shape) =>
+      (['worker', 'preparation'] as const).map((entry) => [shape, entry] as const),
+    ),
+  )('settles %s via %s without preparation/effects or claim/body changes', async (shape, entry) => {
+    const f = await fixture(shape);
+    expect(inspectSourceAbandonmentSource(f.owner)).not.toBeNull();
+    expect(inspectSourceAbandonmentSource(f.observation)).not.toBeNull();
+    const before = await db.webhookEvent.findMany({
+      where: { id: { in: receiptIds } },
+      orderBy: { id: 'asc' },
+    });
+    if (entry === 'worker') {
+      const worker = new WebhookCanonicalExecutionService(db as never);
+      await expect(worker.prepareExecution(f.owner.id, 'fixture-bot')).resolves.toBeNull();
+    } else {
+      const ingress = new WebhookService(db as never, new ConfigService(), {} as never);
+      const prepare = jest.fn(async () => {
+        throw new Error('must never prepare discarded source');
+      });
+      Object.assign(ingress, { prepareWebhookEventCore: prepare });
+      await expect(
+        ingress.preparePersistedWebhookEvent(f.owner.id, f.update),
+      ).resolves.toMatchObject({ canonical: false });
+      expect(prepare).not.toHaveBeenCalled();
+      await ingress.onModuleDestroy();
+    }
+    const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: f.owner.id } });
+    expect(owner).toEqual({
+      ...f.owner,
+      status: 'FAILED',
+      queueName: null,
+      queuedAt: null,
+      errorMessage: f.marker.replace(':OPERATOR_DISCARDED:', ':PRISTINE_OPERATOR_DISCARD_V1:'),
+    });
+    expect(hasWebhookReplayFence(owner)).toBe(true);
+    expect(await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: f.claim.id } })).toEqual(
+      f.claim,
+    );
+    expect(
+      await db.webhookEvent.findMany({
+        where: { id: { in: receiptIds.filter((id) => id !== owner.id) } },
         orderBy: { id: 'asc' },
-      });
-      if (entry === 'worker') {
-        const worker = new WebhookCanonicalExecutionService(db as never);
-        await expect(worker.prepareExecution(f.owner.id, 'fixture-bot')).resolves.toBeNull();
-      } else {
-        const ingress = new WebhookService(db as never, new ConfigService(), {} as never);
-        const prepare = jest.fn(async () => {
-          throw new Error('must never prepare discarded source');
-        });
-        Object.assign(ingress, { prepareWebhookEventCore: prepare });
-        await expect(
-          ingress.preparePersistedWebhookEvent(f.owner.id, f.update),
-        ).resolves.toMatchObject({ canonical: false });
-        expect(prepare).not.toHaveBeenCalled();
-        await ingress.onModuleDestroy();
-      }
-      const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: f.owner.id } });
-      expect(owner).toEqual({
-        ...f.owner,
-        status: 'FAILED',
-        queueName: null,
-        queuedAt: null,
-        errorMessage: f.marker.replace(':OPERATOR_DISCARDED:', ':PRISTINE_OPERATOR_DISCARD_V1:'),
-      });
-      expect(hasWebhookReplayFence(owner)).toBe(true);
-      expect(
-        await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: f.claim.id } }),
-      ).toEqual(f.claim);
-      expect(
-        await db.webhookEvent.findMany({
-          where: { id: { in: receiptIds.filter((id) => id !== owner.id) } },
-          orderBy: { id: 'asc' },
-        }),
-      ).toEqual(before.filter((row) => row.id !== owner.id));
-      expect(await settle(f)).toBe(true);
-      const late = await f.create(500);
-      expect(await settle(f, late.id)).toBe(true);
-      expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: late.id } })).toMatchObject({
-        status: 'FAILED',
-        processedAt: null,
-        errorMessage: owner.errorMessage,
-        normalizedPayload: late.normalizedPayload,
-        rawPayload: late.rawPayload,
-      });
-    },
-  );
+      }),
+    ).toEqual(before.filter((row) => row.id !== owner.id));
+    expect(await settle(f)).toBe(true);
+    const late = await f.create(500);
+    expect(await settle(f, late.id)).toBe(true);
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: late.id } })).toMatchObject({
+      status: 'FAILED',
+      processedAt: null,
+      errorMessage: owner.errorMessage,
+      normalizedPayload: late.normalizedPayload,
+      rawPayload: late.rawPayload,
+    });
+  });
 
-  it.each([
-    { businessStartedAt: new Date() },
-    { completedAt: new Date() },
-    { enforced: false },
-    { commandResult: { kind: 'unknown' } },
-    { leaseToken: randomUUID(), leaseExpiresAt: new Date(Date.now() + 60_000) },
-    { leaseToken: randomUUID(), leaseExpiresAt: new Date(Date.now() - 60_000) },
-    { createdAt: new Date(0) },
-    { preparedAt: null },
-    { status: 'COMPLETED' as const },
-  ])('refuses non-pristine claim %j', async (change) => {
-    const f = await fixture();
+  it.each(
+    [
+      { businessStartedAt: new Date() },
+      { completedAt: new Date() },
+      { enforced: false },
+      { commandResult: { kind: 'unknown' } },
+      { leaseToken: randomUUID(), leaseExpiresAt: new Date(Date.now() + 60_000) },
+      { leaseToken: randomUUID(), leaseExpiresAt: new Date(Date.now() - 60_000) },
+      { createdAt: new Date(0) },
+      { preparedAt: null },
+      { status: 'COMPLETED' as const },
+    ].flatMap((change) =>
+      (['plain', 'image', 'forward'] as const).map((shape) => [shape, change] as const),
+    ),
+  )('refuses %s non-pristine claim %j', async (shape, change) => {
+    const f = await fixture(shape);
     const claim = await db.webhookExecutionClaim.update({
       where: { id: f.claim.id },
       data: change,
@@ -213,25 +264,98 @@ native('pristine operator-discard owner native PostgreSQL', () => {
     );
   });
 
-  it.each([
-    'unknown_authority',
-    'extra_receipt',
-    'bad_marker',
-    'unscrubbed',
-    'old_source',
-    'wrong_sender',
-    'command',
-    'media',
-    'future_deadline',
-    'oversized',
-    'saturated',
-  ] as const)('refuses incomplete family/source proof: %s', async (change) => {
-    const f = await fixture();
+  it.each(
+    (
+      [
+        'unknown_authority',
+        'extra_receipt',
+        'bad_marker',
+        'unscrubbed',
+        'old_source',
+        'wrong_sender',
+        'command',
+        'unsupported_media',
+        'configured_command',
+        'unknown_source_metadata',
+        'ambiguous_owner',
+        'publisher_shared_history',
+        'existing_hold',
+        'future_deadline',
+        'oversized',
+        'saturated',
+      ] as const
+    ).flatMap((change) =>
+      (['plain', 'image', 'forward'] as const).map((shape) => [shape, change] as const),
+    ),
+  )('refuses %s incomplete family/source proof: %s', async (shape, change) => {
+    const f = await fixture(shape);
     if (change === 'unknown_authority') {
       const claim = await db.webhookExecutionClaim.create({
         data: { kind: 'UNKNOWN_EFFECT', semanticKey: f.semanticKey },
       });
       claimIds.push(claim.id);
+    }
+    if (change === 'publisher_shared_history') {
+      const update = new WebhookParser().parse(f.raw, { botId: DEFAULT_MAX_PUBLISHER_BOT_ID });
+      const observed = await db.webhookEvent.update({
+        where: { id: f.observation.id },
+        data: {
+          botId: DEFAULT_MAX_PUBLISHER_BOT_ID,
+          normalizedPayload: JSON.parse(JSON.stringify(update)),
+          errorMessage: null,
+        },
+      });
+      expect(inspectSourceAbandonmentSource(observed)).not.toBeNull();
+    }
+    if (change === 'existing_hold') {
+      const id = randomUUID();
+      holdIds.push(id);
+      // FLAG: Disposable fixture only: retain an independent pre-existing hold unchanged.
+      await db.webhookLegacyQuiescenceCertificate.create({
+        data: {
+          id,
+          sourceSha: 'a'.repeat(40),
+          imageId: 'sha256:' + 'b'.repeat(64),
+          attestation: {},
+          attestationDigest: 'c'.repeat(64),
+          previewSha256: 'd'.repeat(64),
+        },
+      });
+      await db.webhookLegacyRecovery.create({
+        data: {
+          id,
+          certificateId: id,
+          semanticKey: f.semanticKey,
+          ownerWebhookEventId: f.owner.id,
+          claimId: f.claim.id,
+          chatId: f.update.message!.chatId,
+          messageId: f.update.message!.messageId,
+          userId: f.update.message!.senderId!,
+          sourceAt: new Date(f.at),
+          rawPayloadDigest: 'e'.repeat(64),
+          normalizedPayloadDigest: 'f'.repeat(64),
+          ownerSnapshot: {},
+          claimSnapshot: {},
+          settingsSnapshot: {},
+        },
+      });
+    }
+    if (change === 'ambiguous_owner')
+      await db.webhookEvent.update({
+        where: { id: f.owner.id },
+        data: { errorMessage: 'Unknown action outcome ambiguous' },
+      });
+    if (change === 'configured_command') {
+      const chatId = f.update.message!.chatId;
+      await db.chat.create({
+        data: {
+          id: chatId,
+          entityType: 'CHAT',
+          title: 'Disposable pristine source',
+          settings: { create: { adminBanCommandName: 'блокируй' } },
+        },
+      });
+      chatIds.push(chatId);
     }
     if (change === 'extra_receipt') await f.create(300);
     if (change === 'saturated') for (let i = 0; i < 60; i++) await f.create(300 + i);
@@ -249,15 +373,28 @@ native('pristine operator-discard owner native PostgreSQL', () => {
         where: { id: f.owner.id },
         data: { executionDeadlineAt: new Date(Date.now() + 60_000) },
       });
-    if (['old_source', 'wrong_sender', 'command', 'media', 'oversized'].includes(change)) {
+    if (
+      [
+        'old_source',
+        'wrong_sender',
+        'command',
+        'configured_command',
+        'unsupported_media',
+        'unknown_source_metadata',
+        'oversized',
+      ].includes(change)
+    ) {
       const raw = structuredClone(f.raw);
       if (change === 'old_source') raw.message.timestamp = 1;
       if (change === 'wrong_sender') raw.message.sender.user_id = 'different-person';
       if (change === 'command') raw.message.body.text = 'Старт';
+      if (change === 'configured_command') raw.message.body.text = 'блокируй';
+      if (change === 'unknown_source_metadata')
+        Object.assign(raw.message, { unknown_effect: true });
       if (change === 'oversized') raw.message.body.text = 'x'.repeat(300_000);
-      if (change === 'media')
+      if (change === 'unsupported_media')
         Object.assign(raw.message.body, {
-          attachments: [{ type: 'image', payload: { url: 'https://example.org/image.jpg' } }],
+          attachments: [{ type: 'audio', payload: { url: 'https://example.org/audio.mp3' } }],
         });
       const update = new WebhookParser().parse(raw, { botId: 'fixture-bot' });
       const target = change === 'wrong_sender' ? f.observation : f.owner;
