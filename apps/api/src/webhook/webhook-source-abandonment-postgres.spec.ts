@@ -88,7 +88,10 @@ native('exact-source modern abandonment preserves journals and independent moder
     return result.webhookEventId!;
   }
 
-  async function fixture(forwardPhotos?: number, content?: 'share' | 'reply') {
+  async function fixture(
+    forwardPhotos?: number,
+    content?: 'share' | 'reply' | 'image' | 'video' | 'forward-without-sender',
+  ) {
     h = await createMultibotHarness({
       databaseUrl,
       redisUrl,
@@ -143,6 +146,38 @@ native('exact-source modern abandonment preserves journals and independent moder
             }),
       },
     };
+    if (content === 'forward-without-sender') {
+      raw.message.link = {
+        type: 'forward',
+        chat_id: independentChatId!,
+        sender: { user_id: 'unused-fixture-author', is_bot: false },
+        message: {
+          mid: `linked-${randomUUID()}`,
+          text: 'A strict flat forward with omitted original author',
+          attachments: Array.from({ length: 10 }, (_, i) => ({
+            type: 'image',
+            payload: { photo_id: i + 1, url: `https://i.oneme.ru/omitted-sender-${i}` },
+          })),
+        },
+      };
+      delete (raw.message.link as { sender?: unknown }).sender;
+    }
+    if (content === 'image' || content === 'video') {
+      Object.assign(raw.message.body, {
+        attachments: [
+          content === 'image'
+            ? {
+                type: 'image',
+                payload: { photo_id: 42, token: 'fixture-photo', url: 'https://i.oneme.ru/photo' },
+              }
+            : {
+                type: 'video',
+                payload: { id: 42, token: 'fixture-video', url: 'https://i.oneme.ru/video' },
+                thumbnail: { url: 'https://i.oneme.ru/thumbnail' },
+              },
+        ],
+      });
+    }
     if (content === 'share') {
       Object.assign(raw.message.body, {
         attachments: [
@@ -596,7 +631,7 @@ native('exact-source modern abandonment preserves journals and independent moder
     },
   );
 
-  it.each(['share', 'reply'] as const)(
+  it.each(['share', 'reply', 'image', 'video', 'forward-without-sender'] as const)(
     'holds the exact modern %s source and edited mirrors while a distinct same-user message progresses',
     async (content) => {
       const f = await fixture(undefined, content);
@@ -638,11 +673,13 @@ native('exact-source modern abandonment preserves journals and independent moder
       ]);
       expect(await s.legacyHolds.isMemberHeld(f.chatId, 'fixture-user')).toBe(false);
       expect(await s.legacyHolds.isGlobalUserHeld('fixture-user')).toBe(false);
-      if (content === 'reply') {
+      if (content === 'reply' || content === 'forward-without-sender') {
         const link = f.raw.message.link!;
         expect(await s.legacyHolds.isMessageHeld(link.chat_id, link.message.mid)).toBe(false);
-        expect(await s.legacyHolds.isMemberHeld(link.chat_id, link.sender.user_id)).toBe(false);
-        expect(await s.legacyHolds.isGlobalUserHeld(link.sender.user_id)).toBe(false);
+        if (content === 'reply') {
+          expect(await s.legacyHolds.isMemberHeld(link.chat_id, link.sender.user_id)).toBe(false);
+          expect(await s.legacyHolds.isGlobalUserHeld(link.sender.user_id)).toBe(false);
+        } else expect(link).not.toHaveProperty('sender');
       }
       await assertHistory(f);
       expect(s.failures).toEqual([]);
@@ -657,8 +694,8 @@ native('exact-source modern abandonment preserves journals and independent moder
       data: { adminBanCommandName: 'особое' },
     });
     const faults = [
-      'direct-image',
-      'direct-video',
+      'direct-image-with-link',
+      'direct-video-malformed',
       'unknown-link-type',
       'nested',
       'unknown-attachment',
@@ -675,12 +712,12 @@ native('exact-source modern abandonment preserves journals and independent moder
     for (const fault of faults) {
       const raw = structuredClone(f.raw);
       const link = raw.message.link!;
-      if (fault === 'direct-image' || fault === 'direct-video') {
-        delete raw.message.link;
+      if (fault === 'direct-image-with-link' || fault === 'direct-video-malformed') {
+        if (fault === 'direct-video-malformed') delete raw.message.link;
         Object.assign(raw.message.body, {
           attachments: [
             {
-              type: fault === 'direct-image' ? 'image' : 'video',
+              type: fault === 'direct-image-with-link' ? 'image' : 'video',
               payload: {
                 photo_id: 1,
                 url: 'https://i.oneme.ru/direct-fixture',

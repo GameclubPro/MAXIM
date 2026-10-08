@@ -2,7 +2,7 @@ import {
   parseAdminForwardedModerationCommand,
   type AdminForwardedCommandSettings,
 } from '../moderation/admin-forwarded-command.util';
-import { isLegacyPassiveMarkup } from './webhook-legacy-direct-source';
+import { isLegacyDirectMedia, isLegacyPassiveMarkup } from './webhook-legacy-direct-source';
 import {
   isLegacyImageAttachment,
   isLegacyOpaqueSequence,
@@ -77,12 +77,14 @@ export function isSourceAbandonmentMarkup(value: unknown, text: unknown): boolea
   });
 }
 
-// FLAG: Only the modern exact-source exclusion profile accepts one official
-// ShareAttachment preview. Its metadata adds no message, person or effect target;
-// no URL is fetched, and unknown fields/media or combinations remain unproved.
+// FLAG: Direct media reuses the finite legacy image/video validator without a
+// linked message. Only the modern profile additionally accepts one official share
+// preview. Neither family adds a target or fetch; mixed previews remain unproved.
 export function isSourceAbandonmentDirectMedia(value: unknown, link: unknown): boolean {
   if (value === undefined || (Array.isArray(value) && value.length === 0)) return true;
-  if (link !== undefined || !Array.isArray(value) || value.length !== 1) return false;
+  if (link !== undefined || !Array.isArray(value)) return false;
+  if (isLegacyDirectMedia(value)) return true;
+  if (value.length !== 1) return false;
   const item = record(value[0]);
   const payload = record(item?.payload);
   return Boolean(

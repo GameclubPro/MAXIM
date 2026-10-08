@@ -4,13 +4,20 @@ import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
 // It never grants participant immunity or proves earlier remote outcomes. Every
 // producer below must retain a final exact-source check when regenerating work.
 export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
-  version: 3,
-  source: 'outer-human-text-with-strict-share-preview-or-flat-forward-or-reply-major-group-message',
+  version: 4,
+  source:
+    'outer-human-text-direct-photos-or-videos-strict-share-preview-or-flat-forward-or-reply-major-group-message',
+  directMedia: {
+    validator: 'isLegacyDirectMedia-without-linked-message',
+    content: 'zero-through-ten-strict-image-photo-video-attachments-with-passive-metadata',
+    scope: 'outer-recipient-chat-body-mid-sender-user-only',
+  },
   forward: {
-    validator: 'inspectLegacyForwardText',
+    validator: 'inspectSourceAbandonmentForwardText',
     content: 'parser-proved-text-and-zero-through-ten-strict-image-photo-attachments',
     scope: 'outer-recipient-chat-body-mid-sender-user-only',
     linkedIdentity: 'content-provenance-never-held-message-person-or-mutation-target',
+    linkedSender: 'absent-or-strict-passive-sender-never-inferred-from-outer-human',
   },
   share: {
     validator: 'isSourceAbandonmentDirectMedia',
@@ -27,7 +34,7 @@ export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
   excluded: [
     'commands-and-configured-triggers',
     'private-channel-callback-membership',
-    'direct-images-video-mixed-share-media-nested-links-and-unknown-content-shapes',
+    'non-image-or-video-direct-media-mixed-share-media-nested-links-and-unknown-content-shapes',
     'unknown-or-secondary-source',
   ],
   guards: {

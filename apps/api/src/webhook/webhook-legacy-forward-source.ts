@@ -79,6 +79,24 @@ export function inspectLegacyForwardText(
   update: Record<string, unknown>,
   settings?: AdminForwardedCommandSettings,
 ): LegacyForwardRefusal | null {
+  return inspectForwardText(update, settings, 'legacy');
+}
+
+// FLAG: Only modern exact-source holds may accept an omitted linked sender.
+// The outer human remains mandatory; no quoted author is inferred or held, and
+// an explicitly malformed/null sender never becomes missing metadata.
+export function inspectSourceAbandonmentForwardText(
+  update: Record<string, unknown>,
+  settings?: AdminForwardedCommandSettings,
+): LegacyForwardRefusal | null {
+  return inspectForwardText(update, settings, 'source-abandonment');
+}
+
+function inspectForwardText(
+  update: Record<string, unknown>,
+  settings: AdminForwardedCommandSettings | undefined,
+  profile: 'legacy' | 'source-abandonment',
+): LegacyForwardRefusal | null {
   const raw = record(update.raw);
   const message = record(raw?.message);
   const normalized = record(update.message);
@@ -86,6 +104,7 @@ export function inspectLegacyForwardText(
   const link = record(message?.link);
   const linked = body(link?.message, true);
   const sender = record(link?.sender);
+  const omittedSender = profile === 'source-abandonment' && link?.sender === undefined;
   if (
     !raw ||
     !message ||
@@ -93,30 +112,32 @@ export function inspectLegacyForwardText(
     !direct ||
     !link ||
     !linked ||
-    !sender ||
+    (!sender && !omittedSender) ||
     !onlyKeys(message, ['sender', 'recipient', 'timestamp', 'body', 'link']) ||
     !onlyKeys(link, ['type', 'sender', 'chat_id', 'message']) ||
     link.type !== 'forward' ||
     !identity(link.chat_id) ||
-    !identity(sender.user_id) ||
-    !onlyKeys(sender, [
-      'user_id',
-      'name',
-      'first_name',
-      'last_name',
-      'username',
-      'is_bot',
-      'avatar_url',
-      'last_activity_time',
-    ]) ||
-    typeof sender.is_bot !== 'boolean' ||
-    ['name', 'first_name', 'last_name', 'username', 'avatar_url'].some(
-      (key) => sender[key] !== undefined && sender[key] !== null && typeof sender[key] !== 'string',
-    ) ||
-    (sender.last_activity_time !== undefined &&
-      sender.last_activity_time !== null &&
-      (typeof sender.last_activity_time !== 'number' ||
-        !Number.isSafeInteger(sender.last_activity_time))) ||
+    (sender &&
+      (!identity(sender.user_id) ||
+        !onlyKeys(sender, [
+          'user_id',
+          'name',
+          'first_name',
+          'last_name',
+          'username',
+          'is_bot',
+          'avatar_url',
+          'last_activity_time',
+        ]) ||
+        typeof sender.is_bot !== 'boolean' ||
+        ['name', 'first_name', 'last_name', 'username', 'avatar_url'].some(
+          (key) =>
+            sender[key] !== undefined && sender[key] !== null && typeof sender[key] !== 'string',
+        ) ||
+        (sender.last_activity_time !== undefined &&
+          sender.last_activity_time !== null &&
+          (typeof sender.last_activity_time !== 'number' ||
+            !Number.isSafeInteger(sender.last_activity_time))))) ||
     typeof normalized.text !== 'string' ||
     typeof update.botId !== 'string'
   )

@@ -30,6 +30,8 @@ export const SOURCE_ABANDONMENT_SOURCE_CHECKS = Object.freeze([
     'apps/api/src/webhook/webhook-legacy-forward-source.ts',
     [
       'export function inspectLegacyForwardText(',
+      'export function inspectSourceAbandonmentForwardText(',
+      "const omittedSender = profile === 'source-abandonment' && link?.sender === undefined;",
       "link.type !== 'forward'",
       'const direct = body(message?.body);',
       'const linked = body(link?.message, true);',
@@ -44,6 +46,8 @@ export const SOURCE_ABANDONMENT_SOURCE_CHECKS = Object.freeze([
     'apps/api/src/webhook/webhook-source-abandonment-content.ts',
     [
       'export function isSourceAbandonmentDirectMedia(',
+      'if (link !== undefined || !Array.isArray(value)) return false;',
+      'if (isLegacyDirectMedia(value)) return true;',
       "item.type === 'share'",
       "onlyKeys(item, ['type', 'payload', 'title', 'description', 'image_url'])",
       'export function isSourceAbandonmentMarkup(',
@@ -57,9 +61,22 @@ export const SOURCE_ABANDONMENT_SOURCE_CHECKS = Object.freeze([
     ],
   ],
   [
+    'apps/api/src/webhook/webhook-legacy-direct-source.ts',
+    [
+      'export function isLegacyDirectMedia(',
+      'value.length <= 10',
+      'value.every((item) => isLegacyImageAttachment(item) || video(item))',
+      "item.type === 'video'",
+      "onlyKeys(payload, ['url', 'token', 'id'])",
+      'httpsUrl(payload.url)',
+      'videoThumbnail(item.thumbnail)',
+    ],
+  ],
+  [
     'apps/api/src/webhook/webhook-legacy-source.ts',
     [
       'inspectLegacyForwardText(update, settings)',
+      'inspectSourceAbandonmentForwardText(update, settings)',
       'export function inspectSourceAbandonmentSource(',
       'export function inspectSourceAbandonmentPostSealSource(',
       "profile: 'legacy' | 'source-abandonment' = 'legacy'",

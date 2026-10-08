@@ -15,6 +15,7 @@ import {
 } from './webhook-source-abandonment-content';
 import {
   inspectLegacyForwardText,
+  inspectSourceAbandonmentForwardText,
   isLegacyOpaqueSequence,
   legacyParsedTextMatches,
   type LegacyForwardRefusal,
@@ -207,7 +208,9 @@ function inspectLegacyTextSource(
     const forwardRefusal =
       profile === 'source-abandonment' && record(message.link)?.type === 'reply'
         ? inspectSourceAbandonmentReplyText(update, settings)
-        : inspectLegacyForwardText(update, settings);
+        : profile === 'source-abandonment'
+          ? inspectSourceAbandonmentForwardText(update, settings)
+          : inspectLegacyForwardText(update, settings);
     if (forwardRefusal) return refuse(forwardRefusal);
   } else if (typeof body.text !== 'string' || !legacyParsedTextMatches(update))
     return refuse('source_text_mismatch');

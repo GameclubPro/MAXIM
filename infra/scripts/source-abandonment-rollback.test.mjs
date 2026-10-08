@@ -53,3 +53,14 @@ test('rollback refuses a legacy content reader after modern previews and replies
     /lacks permanent.*webhook-source-abandonment\.ts/u,
   );
 });
+test('rollback retains direct media recognition in the modern owner and late mirror profile', () => {
+  assert.throws(
+    () =>
+      assertSourceAbandonmentSource('a'.repeat(40), (path) =>
+        path.endsWith('webhook-source-abandonment-content.ts')
+          ? read(path).replace('if (isLegacyDirectMedia(value)) return true;', '')
+          : read(path),
+      ),
+    /lacks permanent.*webhook-source-abandonment-content\.ts/u,
+  );
+});

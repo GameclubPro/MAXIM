@@ -6,14 +6,18 @@ or failed. A started execution claim and every existing action, sanction, DELETE
 ambiguous member receipt remain unchanged.
 
 The scope is an exact outer human message in a moderated group, plus its proved
-descendants. The modern owner and late-receipt inspectors accept plain text, text
+descendants. The modern owner and late-receipt inspectors accept plain text,
+zero through ten strict direct image/photo/video attachments without a linked message, text
 with one strict official SHARE preview and no linked message, or a strict flat
 forward/reply whose linked text has zero through ten validated image/photo
-attachments. A reply requires outer text with no direct attachments. The original
+attachments. A modern forward may omit its linked sender; any supplied sender
+must retain the strict passive shape. The outer human sender is always required.
+A reply requires outer text with no direct attachments. The original
 payload must match the real webhook parser; direct, linked and composed text must
 pass default and configured command checks. Bounded passive formatting and strict
-credential-free HTTPS link markup add no source identity. Nested links, direct
-images/video, mixed preview/media and unknown metadata are refused. These shapes
+credential-free HTTPS link markup add no source identity. Direct media reuses the
+existing legacy validator and never fetches its URLs. Nested links, other direct
+media, mixed preview/media and unknown metadata are refused. These shapes
 do not change the legacy recovery profile.
 Only the outer recipient chat, message ID and sender identify the source;
 linked identities never become held messages or people. A new outer message that
@@ -41,7 +45,7 @@ policy.
 Use a clean checkout at the exact reviewed runtime SHA with every API role and both
 native auxiliaries running that image. Deploy the additive schema and mandatory
 readers before any installation. Both rollback paths require the modern owner and
-late-receipt profiles, including strict forward/reply/preview provenance, after
+late-receipt profiles, including strict direct-media/forward/reply/preview provenance, after
 this release. The controller requires a 20 GiB Docker filesystem reserve and uses
 the existing protected deploy lock and durable cold-operation journal.
 
