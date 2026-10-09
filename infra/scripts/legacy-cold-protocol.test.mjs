@@ -472,3 +472,122 @@ test('diagnostics discard unknown fields, malformed counters and unreviewed stag
   assert.equal(events[0].scanned, 200);
   assert.doesNotMatch(JSON.stringify(events), /private-|token|cursor|chatId/u);
 });
+
+test('failed diagnostics retain only allowlisted runtime and process metadata', async () => {
+  const events = [];
+  const failure = Object.assign(new Error('native_startup_deadline'), {
+    status: 137,
+    code: 'ETIMEDOUT',
+    signal: 'SIGKILL',
+    stdout: 'private-output',
+    stderr: 'private-stderr',
+    path: '/private/executable',
+    spawnargs: ['private-argument'],
+    cause: new Error('private-cause'),
+  });
+  emitLegacyColdDiagnostic((event) => events.push(event), {
+    stage: 'startBoundRuntime',
+    event: 'failed',
+    runtimePhase: 'wait_native_health',
+    command: 'inspect',
+    error: failure,
+  });
+  assert.deepEqual(events[0], {
+    version: 1,
+    diagnostic: 'legacy_cold_progress',
+    stage: 'startBoundRuntime',
+    event: 'failed',
+    code: 'native_startup_deadline',
+    runtimePhase: 'wait_native_health',
+    command: 'inspect',
+    exitCode: 137,
+    spawnCode: 'ETIMEDOUT',
+    signal: 'SIGKILL',
+  });
+  const observed = observeLegacyColdAdapters(
+    {
+      readRuntimeIdentity() {
+        throw failure;
+      },
+    },
+    (event) => events.push(event),
+  );
+  await assert.rejects(observed.readRuntimeIdentity(), (error) => error === failure);
+  assert.equal(events[2].spawnCode, 'ETIMEDOUT');
+  assert.doesNotMatch(JSON.stringify(events), /private-|stdout|stderr|spawnargs|cause|path/u);
+
+  for (const status of [-1, 256, 1.5, '137']) {
+    emitLegacyColdDiagnostic((event) => events.push(event), {
+      stage: 'startBoundRuntime',
+      event: 'failed',
+      runtimePhase: 'private-phase',
+      command: 'private-command',
+      error: { message: 'private-message', status, code: 'private-code', signal: 'private-signal' },
+    });
+    assert.deepEqual(events.at(-1), {
+      version: 1,
+      diagnostic: 'legacy_cold_progress',
+      stage: 'startBoundRuntime',
+      event: 'failed',
+      code: 'unclassified_failure',
+    });
+  }
+});
+
+test('throwing diagnostic getters and transport cannot replace the operation failure', async () => {
+  const failure = new Error();
+  for (const key of ['message', 'status', 'code', 'signal', 'cause']) {
+    Object.defineProperty(failure, key, {
+      get() {
+        throw new Error('private-getter');
+      },
+    });
+  }
+  for (const report of [
+    () => {},
+    () => {
+      throw new Error('private-transport');
+    },
+  ]) {
+    const observed = observeLegacyColdAdapters(
+      {
+        startBoundRuntime() {
+          throw failure;
+        },
+      },
+      report,
+    );
+    await assert.rejects(observed.startBoundRuntime(), (error) => error === failure);
+    assert.doesNotThrow(() =>
+      emitLegacyColdDiagnostic(report, {
+        get stage() {
+          throw new Error('private-stage-getter');
+        },
+      }),
+    );
+  }
+});
+
+test('diagnostic fields are read once before their allowlist checks', () => {
+  const value = {};
+  const expected = {
+    stage: 'startBoundRuntime',
+    event: 'failed',
+    code: 'native_startup_unproved',
+    runtimePhase: 'wait_native_health',
+    command: 'inspect',
+    elapsedMs: 12,
+    complete: false,
+  };
+  for (const [key, first] of Object.entries(expected)) {
+    let reads = 0;
+    Object.defineProperty(value, key, {
+      get() {
+        return ++reads === 1 ? first : 'private-changed-value';
+      },
+    });
+  }
+  const events = [];
+  emitLegacyColdDiagnostic((event) => events.push(event), value);
+  assert.deepEqual(events, [{ version: 1, diagnostic: 'legacy_cold_progress', ...expected }]);
+});
