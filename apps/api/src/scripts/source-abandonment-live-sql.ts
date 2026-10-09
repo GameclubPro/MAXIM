@@ -15,6 +15,7 @@ import {
 } from './source-abandonment-sql-row';
 export { SourceInventoryRefused } from './source-abandonment-sql-row';
 import {
+  SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
   SOURCE_ABANDONMENT_OBSERVATION_QUEUE,
   sourceAbandonmentDigest,
   sourceAbandonmentSelectedOwner,
@@ -185,6 +186,23 @@ export class SourceInventorySqlMeter {
   ): Promise<T[]> {
     if (!tables.has(table) || maximum > 200 || maximum < 1)
       throw new SourceInventoryRefused('sql_descriptor_invalid');
+    // FLAG: Source eligibility consumes only these configured command names.
+    // Do not serialize unrelated image/base64 settings into the bounded evidence
+    // page. PostgreSQL's tuple version also fences changes to omitted settings;
+    // it is read under the same indexed row lock and independently rechecked.
+    const rowValue =
+      table === 'chat_settings'
+        ? Prisma.sql`jsonb_build_object(
+            'chat_id', t.chat_id,
+            'source_inventory_row_version', t.xmin::text || ':' || t.ctid::text,
+            'admin_ban_command_name', t.admin_ban_command_name,
+            'admin_ban_all_command_name', t.admin_ban_all_command_name,
+            'admin_mute_command_name', t.admin_mute_command_name,
+            'admin_permanent_mute_command_name', t.admin_permanent_mute_command_name,
+            'admin_rules_command_name', t.admin_rules_command_name,
+            'admin_silence_command_name', t.admin_silence_command_name,
+            'admin_open_chat_command_name', t.admin_open_chat_command_name)`
+        : Prisma.sql`to_jsonb(t)`;
     const rows = await this.read<{
       count: number;
       bytes: number;
@@ -192,7 +210,7 @@ export class SourceInventorySqlMeter {
     }>(
       `sql:${table}`,
       Prisma.sql`WITH picked AS MATERIALIZED (
-        SELECT to_jsonb(t) AS value FROM ${Prisma.raw(`"${table}"`)} t
+        SELECT ${rowValue} AS value FROM ${Prisma.raw(`"${table}"`)} t
         WHERE ${predicate} ${order} LIMIT ${maximum + 1} ${this.lockRows ? Prisma.sql`FOR SHARE` : Prisma.empty}
       ) SELECT count(*)::int AS count,
         coalesce(sum(octet_length(value::text)), 0)::int AS bytes,
@@ -432,6 +450,30 @@ export async function inventorySourceAbandonmentSql(
         });
       }
       const exact = Prisma.sql`t.chat_id = ${chatId} AND t.message_id = ${messageId}`;
+      if ('sourceProfile' in candidate.source) {
+        const markers = await meter.rows<{ id: string }>(
+          'channel_auto_post_attach_markers',
+          exact,
+          ['chat_id', 'message_id'],
+          1,
+        );
+        // FLAG: A missing channel author is never a participant identity. The
+        // exact marker keeps its existing state, including unknown edit/send
+        // outcomes, and contributes only its immutable child key to the hold.
+        for (const marker of markers)
+          children.push({
+            jobKey: marker.id,
+            queueName: SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
+            jobPayloadDigest: sourceAbandonmentDigest(marker),
+            chatId,
+            messageId,
+          });
+        evidence.push({
+          table: 'channel_auto_post_attach_markers',
+          ownerId,
+          digest: sourceAbandonmentDigest(markers),
+        });
+      }
       for (const table of ['moderation_events', 'moderation_violation_message_claims']) {
         const rows = await meter.rows(table, exact, ['chat_id', 'message_id'], 64);
         evidence.push({ table, ownerId, digest: sourceAbandonmentDigest(rows) });
@@ -542,6 +584,23 @@ export async function inventorySourceAbandonmentChildSql(
       (a, b) => a.queueName.localeCompare(b.queueName) || a.jobKey.localeCompare(b.jobKey),
     )) {
       if (child.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE) continue;
+      if (child.queueName === SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE) {
+        const markers = await meter.rows<Record<string, unknown>>(
+          'channel_auto_post_attach_markers',
+          Prisma.sql`t.id = ${child.jobKey}`,
+          ['id'],
+          1,
+        );
+        if (
+          markers.length !== 1 ||
+          markers[0]!.chatId !== child.chatId ||
+          markers[0]!.messageId !== child.messageId ||
+          child.userId !== undefined ||
+          sourceAbandonmentDigest(markers[0]) !== child.jobPayloadDigest
+        )
+          throw new SourceInventoryRefused('channel_marker_source_changed');
+        continue;
+      }
       await meter.rows('max_action_ledger', Prisma.sql`t.job_id = ${child.jobKey}`, ['job_id'], 1);
     }
   } catch (error) {

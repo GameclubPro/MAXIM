@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { assertLegacyDispositionSource } from './assert-legacy-disposition-source.mjs';
 import {
   ABORT_RUNTIME_SHA,
@@ -84,7 +86,7 @@ test('abort refuses a drifted immutable image', () => {
   assert.throws(h.read, /immutable_abort_runtime_required/);
 });
 
-test('actual pinned runtime and current controller checkout retain both source floors', (t) => {
+test('retired abort runtime is rejected by the current source floor', (t) => {
   const git = (args) =>
     execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   let controllerSha;
@@ -100,10 +102,24 @@ test('actual pinned runtime and current controller checkout retain both source f
     ABORT_RUNTIME_IMAGE,
     'sha256:e7f01f71971f7c9c6410151bfcc90d7388c8766ab6a5f919e8f30a7603e6ec2b',
   );
-  // FLAG: Staged validation precedes the descendant commit, so HEAD may still be
-  // the reviewed runtime base. The distinct-controller guard is tested above;
-  // both immutable source floors and real ancestry are checked here.
+  // FLAG: This historical abort is bound to its original image and must fail
+  // closed once installed source profiles require newer readers. Never lower
+  // the floor or repin its runtime just to preserve an obsolete abort path.
   git(['merge-base', '--is-ancestor', ABORT_RUNTIME_SHA, controllerSha]);
-  for (const sha of [ABORT_RUNTIME_SHA, controllerSha])
-    assertLegacyDispositionSource(sha, (path) => git(['show', `${sha}:${path}`]));
+  assert.throws(
+    () =>
+      assertLegacyDispositionSource(ABORT_RUNTIME_SHA, (path) =>
+        git(['show', `${ABORT_RUNTIME_SHA}:${path}`]),
+      ),
+    /Rollback target lacks permanent (?:exact-source abandonment readers|legacy disposition readers or final effect guards):/,
+  );
+});
+
+test('current controller source retains the complete rollback floor before commit', () => {
+  const root = resolve(import.meta.dirname, '../..');
+  assert.doesNotThrow(() =>
+    assertLegacyDispositionSource('a'.repeat(40), (path) =>
+      readFileSync(resolve(root, path), 'utf8'),
+    ),
+  );
 });

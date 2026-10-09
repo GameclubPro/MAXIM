@@ -59,6 +59,7 @@ function createHarness(options: {
   const attach = jest.fn().mockResolvedValue('attached');
   const resolveUnifiedLookupBotId = jest.fn().mockResolvedValue('scan-bot');
   const logger = { warn: jest.fn() };
+  const isMessageHeld = jest.fn().mockResolvedValue(false);
   const runner = new ChannelAutoPostLegacyRecovery({
     prisma: { channelSettings: { findMany } } as never,
     markerStore: {
@@ -66,6 +67,7 @@ function createHarness(options: {
       claimChannelAutoPost,
       completeChannelAutoPost,
     },
+    isMessageHeld,
     lookupExactButtonIdentities: lookup,
     resolveUnifiedLookupBotId,
     attach,
@@ -75,6 +77,7 @@ function createHarness(options: {
 
   return {
     runner,
+    isMessageHeld,
     listCandidates,
     claimChannelAutoPost,
     completeChannelAutoPost,
@@ -562,3 +565,22 @@ describe('ChannelAutoPostLegacyRecovery', () => {
     );
   });
 });
+
+// FLAG: Held candidates preserve ambiguous evidence even when no current channel context exists.
+it.each(['marker', 'retryable_edit_marker', 'predispatch_marker'] as const)(
+  'does not claim or terminalize a held %s source',
+  async (evidence) => {
+    const h = createHarness({ candidates: [candidate('-held', 'original-mid', evidence)] });
+    h.isMessageHeld.mockResolvedValue(true);
+    expect(await h.runner.runIfDue()).toMatchObject({
+      status: 'completed',
+      mutationAttempts: 0,
+      terminalizedCandidates: 0,
+    });
+    expect(h.isMessageHeld).toHaveBeenCalledWith('-held', 'original-mid');
+    expect(h.claimChannelAutoPost).not.toHaveBeenCalled();
+    expect(h.completeChannelAutoPost).not.toHaveBeenCalled();
+    expect(h.lookup).not.toHaveBeenCalled();
+    expect(h.attach).not.toHaveBeenCalled();
+  },
+);

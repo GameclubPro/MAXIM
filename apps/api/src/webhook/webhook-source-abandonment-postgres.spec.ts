@@ -1,12 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
-import { Prisma } from '../prisma/prisma-client';
+import { Prisma, createPrismaClient } from '../prisma/prisma-client';
+import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
 import { QueueMetricsService } from '../system/queue-metrics.service';
 import { buildWebhookOperationalLagQuery } from '../system/webhook-operational-lag';
 import { canonical, legacySnapshotDigest } from './webhook-legacy-source';
 import { WebhookParser } from './webhook.parser';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
-import { SOURCE_ABANDONMENT_OPERATION } from './webhook-source-abandonment.contract';
+import {
+  SOURCE_ABANDONMENT_OPERATION,
+  SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+} from './webhook-source-abandonment.contract';
 import {
   createMultibotHarness,
   type MultibotHarness,
@@ -29,6 +33,280 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const native = databaseUrl && redisUrl ? describe : describe.skip;
 jest.setTimeout(60_000);
+
+native('authorless channel exact-source database profile', () => {
+  let db: ReturnType<typeof createPrismaClient>;
+  beforeAll(() => {
+    const url = new URL(databaseUrl);
+    if (
+      !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
+      !url.pathname.includes('race_test')
+    )
+      throw new Error('Disposable loopback PostgreSQL required');
+    db = createPrismaClient(databaseUrl, { max: 2, statement_timeout: 15_000 });
+  });
+  afterAll(async () => {
+    await db?.$disconnect();
+  });
+
+  it.each(['message_created', 'message_edited'])(
+    'holds %s with null author, freezes ambiguous markers and projects late mirrors/edits',
+    async (type) => {
+      const chatId = `-channel-source-${randomUUID()}`,
+        messageId = randomUUID();
+      await db.chat.create({
+        data: { id: chatId, title: 'Synthetic channel fixture', entityType: 'CHANNEL' },
+      });
+      await db.chatSettings.create({ data: { chatId } });
+      const [clock] = await db.$queryRaw<
+        Array<{ at: Date }>
+      >`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at`;
+      const at = clock!.at.getTime();
+      const raw = {
+        update_type: type,
+        timestamp: at,
+        message: {
+          recipient: { chat_id: chatId, chat_type: 'channel' },
+          timestamp: at,
+          body: { mid: messageId, text: 'Synthetic channel content' },
+        },
+      };
+      const parser = new WebhookParser();
+      const update = parser.parse(raw, { botId: 'fixture-major-channel' });
+      const owner = await db.webhookEvent.create({
+        data: {
+          dedupKey: randomUUID(),
+          botId: 'fixture-major-channel',
+          semanticKey: buildWebhookSemanticEventKey(update),
+          rawPayload: raw,
+          normalizedPayload: JSON.parse(JSON.stringify(update)),
+          status: 'FAILED',
+          errorMessage: 'CANONICAL_BUSINESS_ALREADY_STARTED',
+          executionDeadlineAt: new Date(at + 300_000),
+        },
+      });
+      const claim = await db.webhookExecutionClaim.create({
+        data: {
+          kind: 'EXECUTION',
+          semanticKey: owner.semanticKey!,
+          webhookEventId: owner.id,
+          enforced: true,
+          executionBotId: owner.botId,
+          status: 'READY',
+          createdAt: owner.createdAt,
+          preparedAt: owner.createdAt,
+          businessStartedAt: owner.createdAt,
+        },
+      });
+      const marker = await db.channelAutoPostAttachMarker.create({
+        data: {
+          chatId,
+          messageId,
+          source: 'webhook',
+          botId: owner.botId,
+          status: 'IN_PROGRESS',
+          lockToken: 'retained-uncertain-token',
+          lockedAt: new Date(at),
+          replacementSendStartedAt: new Date(at),
+          lastError: 'Synthetic ambiguous send marker',
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 3));
+      const [cutoff] = await db.$queryRaw<
+        Array<{ at: Date }>
+      >`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at`;
+      const selection = { majorBotIds: ['fixture-major-channel'], abandonBefore: cutoff!.at };
+      const refusals: string[] = [];
+      const candidate = await inspectSourceAbandonmentCandidate(db, owner.id, selection, (reason) =>
+        refusals.push(reason),
+      );
+      expect(refusals).toEqual([]);
+      expect(candidate?.source).toEqual({
+        sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+        chatId,
+        messageId,
+        userId: null,
+        sourceAt: new Date(at),
+      });
+      const certificateId = randomUUID(),
+        sourceId = randomUUID(),
+        sourceSha = 'a'.repeat(40),
+        imageId = `sha256:${'b'.repeat(64)}`;
+      const sourceClosureSha256 = legacySnapshotDigest({ fixture: 'channel-profile' }),
+        descendantsSha256 = legacySnapshotDigest(marker);
+      const attestation = {
+        operation: SOURCE_ABANDONMENT_OPERATION,
+        sourceSha,
+        imageId,
+        abandonBefore: selection.abandonBefore.toISOString(),
+        sourceClosureSha256,
+        descendantsSha256,
+      };
+      await db.webhookSourceAbandonmentCertificate.create({
+        data: {
+          id: certificateId,
+          sourceSha,
+          imageId,
+          attestation,
+          attestationDigest: legacySnapshotDigest(attestation),
+          previewSha256: legacySnapshotDigest(candidate),
+          sourceClosureSha256,
+          descendantsSha256,
+          abandonBefore: selection.abandonBefore,
+          expectedSourceCount: 1,
+          expectedChildCount: 1,
+        },
+      });
+      const data = {
+        id: sourceId,
+        certificateId,
+        semanticKey: owner.semanticKey!,
+        ownerWebhookEventId: owner.id,
+        claimId: claim.id,
+        chatId,
+        messageId,
+        sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+        subjectUserId: null,
+        sourceAt: new Date(at),
+        rawPayloadDigest: candidate!.rawPayloadDigest,
+        normalizedPayloadDigest: candidate!.normalizedPayloadDigest,
+        ownerSnapshot: sourceAbandonmentOwnerSnapshot(owner),
+        claimSnapshot: canonical(claim) as Prisma.InputJsonValue,
+      };
+      await expect(
+        db.webhookSourceAbandonment.create({ data: { ...data, sourceProfile: 'HUMAN_CHAT_V1' } }),
+      ).rejects.toThrow();
+      await expect(
+        db.webhookSourceAbandonment.create({ data: { ...data, subjectUserId: 'invented-author' } }),
+      ).rejects.toThrow();
+      await db.webhookSourceAbandonment.create({ data });
+      const holds = new WebhookLegacyHoldService(db as never);
+      expect(await holds.isMessageHeld(chatId, messageId)).toBe(true);
+      expect(await db.$transaction((tx) => materializeSourceAbandonmentReceipt(tx, owner.id))).toBe(
+        'BLOCKED_UNKNOWN',
+      );
+      await expect(
+        db.channelAutoPostAttachMarker.update({
+          where: { id: marker.id },
+          data: { status: 'SUCCEEDED', lockToken: null },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        db.webhookSourceChildHold.create({
+          data: {
+            abandonmentId: sourceId,
+            kind: 'CHANNEL_AUTO_POST',
+            childKey: 'unrelated-marker',
+            payloadDigest: legacySnapshotDigest(marker),
+          },
+        }),
+      ).rejects.toThrow();
+      await db.webhookSourceChildHold.create({
+        data: {
+          abandonmentId: sourceId,
+          kind: 'CHANNEL_AUTO_POST',
+          childKey: marker.id,
+          payloadDigest: legacySnapshotDigest(marker),
+        },
+      });
+      await db.$executeRaw`UPDATE webhook_source_abandonment_certificates SET sealed_at = clock_timestamp() AT TIME ZONE 'UTC' WHERE id = ${certificateId}`;
+      expect(await db.$transaction((tx) => materializeSourceAbandonmentReceipt(tx, owner.id))).toBe(
+        'APPLIED_WITH_PROOF',
+      );
+      for (const edit of [false, true]) {
+        const nextRaw = structuredClone(raw);
+        if (edit) {
+          nextRaw.update_type = 'message_edited';
+          nextRaw.timestamp = Date.now();
+          nextRaw.message.body.text = 'Later passive edit of held source';
+        }
+        const next = parser.parse(nextRaw, { botId: 'fixture-major-peer' });
+        const receipt = await db.webhookEvent.create({
+          data: {
+            dedupKey: randomUUID(),
+            botId: 'fixture-major-peer',
+            semanticKey: buildWebhookSemanticEventKey(next),
+            rawPayload: nextRaw,
+            normalizedPayload: JSON.parse(JSON.stringify(next)),
+            status: 'RECEIVED',
+          },
+        });
+        expect(
+          await db.$transaction((tx) => materializeSourceAbandonmentReceipt(tx, receipt.id)),
+        ).toBe('APPLIED_WITH_PROOF');
+        expect(await db.webhookEvent.findUnique({ where: { id: receipt.id } })).toMatchObject({
+          status: 'NO_REPLAY_HELD',
+          sourceDispositionId: expect.any(String),
+        });
+      }
+      expect(await db.webhookEvent.findUnique({ where: { id: owner.id } })).toEqual({
+        ...owner,
+        sourceDispositionId: expect.any(String),
+        sourceDispositionReceiptId: owner.id,
+      });
+      expect(await db.webhookExecutionClaim.findUnique({ where: { id: claim.id } })).toEqual(claim);
+      const conflictRaw = structuredClone(raw);
+      conflictRaw.update_type = 'message_edited';
+      conflictRaw.timestamp = Date.now();
+      conflictRaw.message.body.text = 'Independent started execution for the held channel source';
+      const conflictUpdate = parser.parse(conflictRaw, { botId: 'fixture-major-peer' });
+      const conflictReceipt = await db.webhookEvent.create({
+        data: {
+          dedupKey: randomUUID(),
+          botId: 'fixture-major-peer',
+          semanticKey: buildWebhookSemanticEventKey(conflictUpdate),
+          rawPayload: conflictRaw,
+          normalizedPayload: JSON.parse(JSON.stringify(conflictUpdate)),
+          status: 'FAILED',
+          errorMessage: 'CANONICAL_BUSINESS_ALREADY_STARTED',
+        },
+      });
+      const conflictClaim = await db.webhookExecutionClaim.create({
+        data: {
+          kind: 'EXECUTION',
+          semanticKey: conflictReceipt.semanticKey!,
+          webhookEventId: conflictReceipt.id,
+          enforced: true,
+          status: 'READY',
+          preparedAt: conflictReceipt.createdAt,
+          businessStartedAt: conflictReceipt.createdAt,
+          executionBotId: 'fixture-major-peer',
+        },
+      });
+      expect(
+        await db.$transaction((tx) => materializeSourceAbandonmentReceipt(tx, conflictReceipt.id)),
+      ).toBe('BLOCKED_UNKNOWN');
+      expect(await db.webhookEvent.findUnique({ where: { id: conflictReceipt.id } })).toEqual(
+        conflictReceipt,
+      );
+      expect(
+        await db.webhookExecutionClaim.findUnique({ where: { id: conflictClaim.id } }),
+      ).toEqual(conflictClaim);
+      await expect(holds.assertUpdateAllowed(conflictUpdate)).rejects.toThrow();
+      expect(await db.channelAutoPostAttachMarker.findUnique({ where: { id: marker.id } })).toEqual(
+        marker,
+      );
+      await expect(
+        db.channelAutoPostAttachMarker.delete({ where: { id: marker.id } }),
+      ).rejects.toThrow();
+      await expect(
+        db.channelAutoPostAttachMarker.create({ data: { chatId, messageId, source: 'poll' } }),
+      ).rejects.toThrow('Held channel source');
+      await expect(
+        db.webhookSourceAbandonment.update({
+          where: { id: sourceId },
+          data: { sourceProfile: 'HUMAN_CHAT_V1', subjectUserId: 'invented-author' },
+        }),
+      ).rejects.toThrow();
+      expect(await holds.isMessageHeld(chatId, 'independent-message')).toBe(false);
+      await expect(
+        db.channelAutoPostAttachMarker.create({
+          data: { chatId, messageId: 'independent-message', source: 'poll' },
+        }),
+      ).resolves.toMatchObject({ messageId: 'independent-message' });
+    },
+  );
+});
 
 native('exact-source modern abandonment preserves journals and independent moderation', () => {
   let h: MultibotHarness | undefined;

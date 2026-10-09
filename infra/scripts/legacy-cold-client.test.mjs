@@ -19,6 +19,9 @@ function fixture(t, options = {}) {
   const queueControlBytes = 'reviewed fixture queue controller';
   const absenceProbePath = join(directory, 'absence.cjs');
   const absenceBytes = 'reviewed fixture absence probe';
+  const sourceBatchPath = join(directory, 'source-batch.cjs');
+  const sourceBatchBytes = 'reviewed finite store harness';
+  writeFileSync(sourceBatchPath, sourceBatchBytes, { mode: 0o600 });
   writeFileSync(absenceProbePath, absenceBytes, { mode: 0o600 });
   writeFileSync(queueControlPath, queueControlBytes, { mode: 0o600 });
   writeFileSync(
@@ -86,6 +89,9 @@ function fixture(t, options = {}) {
     queueControlSha256: createHash('sha256').update(queueControlBytes).digest('hex'),
     absenceProbePath,
     absenceProbeSha256: createHash('sha256').update(absenceBytes).digest('hex'),
+    sourceBatchPath,
+    sourceBatchSha256: createHash('sha256').update(sourceBatchBytes).digest('hex'),
+    sourceBatchInventoryPaths: [inventoryPath],
     run,
   });
   return {
@@ -96,6 +102,7 @@ function fixture(t, options = {}) {
     inventoryPath,
     queueControlPath,
     absenceProbePath,
+    sourceBatchPath,
     exists: () => exists,
     id,
   };
@@ -130,6 +137,77 @@ test('modern exact-source client uses only its fixed collector/store and separat
     false,
   );
 });
+
+function batchRequest(phase = 'install') {
+  return {
+    version: 1,
+    kind: 'source_abandonment_session_store_batch',
+    phase,
+    deadlineAtMs: Date.now() + 60_000,
+    items: [{ inventoryIndex: 0, request: { operation: 'readback' } }],
+  };
+}
+test('finite source writer batch mounts only the hash-bound harness and indexed inventory then removes the writer', (t) => {
+  const h = fixture(t, { protocol: 'source-abandonment-v1' });
+  h.state.response = {
+    version: 1,
+    kind: 'source_abandonment_session_store_batch_result',
+    phase: 'install',
+    results: [{}],
+  };
+  h.client.invoke('source-store-batch', batchRequest());
+  const create = h.calls.find((call) => call.args[0] === 'create').args;
+  assert(
+    create.includes(
+      `type=bind,source=${h.sourceBatchPath},target=/app/source-abandonment-session-store-batch.cjs,readonly`,
+    ),
+  );
+  assert(
+    create.includes(
+      `type=bind,source=${h.inventoryPath},target=/run/maxim-source-session/inventory-0.json,readonly`,
+    ),
+  );
+  assert(create.includes('APP_SERVICE_NAME=source-abandonment-store'));
+  assert(create.includes('MAXIM_SOURCE_ABANDONMENT_STORE_MODE=writer'));
+  assert.equal(create.at(-1), '/app/source-abandonment-session-store-batch.cjs');
+  assert.equal(h.exists(), false);
+  assert.equal(h.calls.filter((call) => call.args[0] === 'start').length, 1);
+});
+test('source batch readback uses a separate read-only store pool and lost writer output never retries', (t) => {
+  const h = fixture(t, { protocol: 'source-abandonment-v1' });
+  h.state.response = {
+    version: 1,
+    kind: 'source_abandonment_session_store_batch_result',
+    phase: 'readback',
+    results: [{}],
+  };
+  h.client.invoke('source-store-batch', batchRequest('readback'));
+  assert(
+    h.calls
+      .find((call) => call.args[0] === 'create')
+      .args.includes('MAXIM_SOURCE_ABANDONMENT_STORE_MODE=readback'),
+  );
+  h.calls.length = 0;
+  h.state.failStart = true;
+  assert.throws(
+    () => h.client.invoke('source-store-batch', batchRequest()),
+    (error) => error.outcomeUnknown === true && error.message === 'client_result_unknown',
+  );
+  assert.equal(h.calls.filter((call) => call.args[0] === 'start').length, 1);
+  assert.equal(h.exists(), false);
+});
+for (const change of ['harness', 'inventory', 'index', 'deadline', 'phase', 'protocol'])
+  test(`source batch refuses changed ${change} before creating a container`, (t) => {
+    const h = fixture(t, { protocol: change === 'protocol' ? 'legacy' : 'source-abandonment-v1' });
+    const request = batchRequest();
+    if (change === 'harness') writeFileSync(h.sourceBatchPath, 'changed');
+    if (change === 'inventory') chmodSync(h.inventoryPath, 0o644);
+    if (change === 'index') request.items[0].inventoryIndex = 1;
+    if (change === 'deadline') request.deadlineAtMs = Date.now() + 300_001;
+    if (change === 'phase') request.phase = 'shell';
+    assert.throws(() => h.client.invoke('source-store-batch', request));
+    assert.equal(h.calls.length, 0);
+  });
 
 test('unknown controller protocol is refused before creating a client', (t) => {
   assert.throws(() => fixture(t, { protocol: 'source-abandonment-v2' }), /invalid_client_binding/);

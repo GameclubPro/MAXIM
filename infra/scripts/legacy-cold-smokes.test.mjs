@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createLegacyColdSmokes } from './legacy-cold-smokes.mjs';
 
-function fixture() {
+function fixture(asyncQueues = false) {
   let time = Date.parse('2026-10-06T02:00:00Z');
   const state = {
     lag: 0,
@@ -28,7 +28,10 @@ function fixture() {
     },
     runtime: { readRuntimeIdentity: () => ({ auxiliaries: [{}, {}] }) },
     client: {
-      invoke: () => ({ queueCount: 24, pausedCount: state.paused, ownerPresent: state.owner }),
+      invoke: () => {
+        const value = { queueCount: 24, pausedCount: state.paused, ownerPresent: state.owner };
+        return asyncQueues ? Promise.resolve(value) : value;
+      },
     },
     run: async () => {
       if (state.nativeFails) throw new Error('fixture failure');
@@ -64,6 +67,13 @@ test('three fresh ready samples and released queues positively prove recovery', 
   assert.equal(result.ingressReady, true);
   assert.equal(result.actionableLagSeconds, 0);
   assert.equal(h.state.reads, 6);
+});
+
+test('session FIFO queue status is awaited before readiness can pass', async () => {
+  const h = fixture(true);
+  assert.equal((await h.smokes.strictSmokes()).queuesResumed, true);
+  h.state.owner = true;
+  await assert.rejects(h.smokes.strictSmokes(), /strict_smoke_deadline/);
 });
 
 for (const [field, value] of [

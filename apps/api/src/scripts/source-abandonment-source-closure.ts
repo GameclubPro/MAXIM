@@ -1,20 +1,22 @@
 import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
 
-// FLAG: This closure excludes one validated outer human source and exact children.
+// FLAG: This closure excludes one validated original source and exact children.
 // It never grants participant immunity or proves earlier remote outcomes. Every
 // producer below must retain a final exact-source check when regenerating work.
 export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
-  version: 4,
+  version: 5,
   source:
-    'outer-human-text-direct-photos-or-videos-strict-share-preview-or-flat-forward-or-reply-major-group-message',
+    'validated-human-chat-or-explicit-authorless-channel-exact-original-message-created-or-edited',
   directMedia: {
     validator: 'isLegacyDirectMedia-without-linked-message',
-    content: 'zero-through-ten-strict-image-photo-video-attachments-with-passive-metadata',
+    content:
+      'zero-through-ten-strict-image-photo-video-attachments-or-one-strict-audio-with-passive-metadata',
     scope: 'outer-recipient-chat-body-mid-sender-user-only',
   },
   forward: {
     validator: 'inspectSourceAbandonmentForwardText',
-    content: 'parser-proved-text-and-zero-through-ten-strict-image-photo-attachments',
+    content:
+      'parser-proved-flat-text-with-zero-through-ten-images-or-one-video-or-one-official-share',
     scope: 'outer-recipient-chat-body-mid-sender-user-only',
     linkedIdentity: 'content-provenance-never-held-message-person-or-mutation-target',
     linkedSender: 'absent-or-strict-passive-sender-never-inferred-from-outer-human',
@@ -24,17 +26,32 @@ export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
     content: 'one-official-https-share-preview-with-bounded-passive-metadata-and-no-linked-message',
     scope: 'outer-recipient-chat-body-mid-sender-user-only',
   },
-  markup: 'bounded-passive-formatting-or-strict-https-link-with-original-utf16-text-bounds',
+  markup:
+    'bounded-passive-formatting-strict-https-link-or-positive-numeric-user-mention-with-original-utf16-bounds-including-identical-linked-markup-on-empty-forward',
+  channel: {
+    profile: 'CHANNEL_AUTHORLESS_V1',
+    validator: 'inspectChannelAuthorlessSource',
+    author: 'positive-absence-in-original-and-parser-output-real-null-never-inferred',
+    scope: 'original-recipient-channel-body-mid-only',
+    marker:
+      'exact-channel-auto-post-marker-snapshot-child-and-permanent-sql-update-delete-insert-guard',
+    independentClaims: 'exact-source-family-refuses-any-second-unfinished-execution',
+    passiveMetadata:
+      'strict-original-https-message-url-and-bounded-schemeless-relative-direct-markup-never-identity-or-network-authority',
+    keyboard:
+      'one-passive-inline-keyboard-with-bounded-official-https-link-or-open-app-buttons-and-strict-direct-image-photo-video-media',
+  },
   reply: {
     validator: 'inspectSourceAbandonmentReplyText',
-    content: 'parser-proved-outer-text-and-flat-quoted-text-with-zero-through-ten-strict-images',
+    content:
+      'parser-proved-nonempty-outer-text-and-flat-quoted-text-with-zero-through-ten-images-or-one-video-or-one-official-sticker',
     scope: 'outer-recipient-chat-body-mid-sender-user-only',
     linkedIdentity: 'quoted-metadata-never-held-message-person-or-mutation-target',
   },
   excluded: [
     'commands-and-configured-triggers',
-    'private-channel-callback-membership',
-    'non-image-or-video-direct-media-mixed-share-media-nested-links-and-unknown-content-shapes',
+    'private-callback-membership-and-channels-outside-explicit-authorless-profile',
+    'unknown-direct-media-mixed-share-media-nested-links-and-unknown-content-shapes',
     'unknown-or-secondary-source',
   ],
   guards: {
@@ -58,6 +75,8 @@ export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
     managedHandshakeCleanup:
       'exact-completed-major-or-separate-attested-publisher-start-send-no-context-or-reply-and-disjoint-from-every-selected-chat',
   },
+  checkpoint:
+    'null-or-exact-current-version-execution-waiting-bound-to-owner-semantic-immutable-deadline-and-predeadline-business-start-retained-without-replay',
   history: 'retain-intent-action-sanction-claim-and-ambiguous-member-fences-without-replay',
   independence: 'distinct-message-same-user-is-outside-source-exclusion',
   // FLAG: A separate authenticated bot-message receipt and current cleanup policy

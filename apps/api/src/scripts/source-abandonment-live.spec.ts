@@ -3,7 +3,10 @@ import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import {
   classifySourceAbandonmentAction,
   inventorySourceAbandonmentRedis,
+  isUnrelatedSourceAbandonmentFanoutObservation,
+  type SourceAbandonmentRedisSource,
 } from './source-abandonment-live-redis';
+import { SOURCE_ABANDONMENT_CHANNEL_PROFILE } from '../webhook/webhook-source-abandonment.contract';
 import { mergeSourceAbandonmentChildren } from './source-abandonment-collect';
 import {
   assertSourceAbandonmentCatalogProofs,
@@ -16,6 +19,7 @@ import {
 import {
   parseSourceAbandonmentSelection,
   SOURCE_ABANDONMENT_OBSERVATION_QUEUE,
+  SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
 } from './source-abandonment-live-protocol';
 
 const source = { chatId: 'chat-1', messageId: 'message-1', userId: 'user-1' };
@@ -241,6 +245,73 @@ describe('exact source abandonment bounded evidence', () => {
       classifySourceAbandonmentAction(action({ messageId: 'other-message' }), [source]),
     ).toBeNull();
   });
+  it('binds an explicitly proven authorless channel source without inventing a user', () => {
+    const channel: SourceAbandonmentRedisSource = {
+      chatId: source.chatId,
+      messageId: source.messageId,
+      userId: null,
+      sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+    };
+    const child = classifySourceAbandonmentAction(action({ userId: null }), [channel]);
+    expect(child).toMatchObject({
+      chatId: channel.chatId,
+      messageId: channel.messageId,
+      jobKey: 'action-1',
+    });
+    expect(child).not.toHaveProperty('userId');
+    expect(() => classifySourceAbandonmentAction(action(), [channel])).toThrow(
+      'ACTION_SUBJECT_CONFLICT',
+    );
+    expect(
+      classifySourceAbandonmentAction(action({ messageId: 'other-message' }), [channel]),
+    ).toBeNull();
+  });
+  it.each([
+    { userId: null },
+    { userId: 'invented', sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE },
+    { userId: null, sourceProfile: 'unknown' },
+  ])('refuses incomplete authorless source metadata before Redis I/O: %j', async (changed) => {
+    const invalid = { ...source, ...changed } as unknown as SourceAbandonmentRedisSource;
+    expect(() => classifySourceAbandonmentAction(action(), [invalid])).toThrow(
+      'SOURCE_PROFILE_UNPROVED',
+    );
+    const redis = redisFixture();
+    const result = await inventorySourceAbandonmentRedis(
+      redis,
+      selection,
+      [invalid],
+      allowance(),
+      resolve,
+      'nonce',
+    );
+    expect(result.issues).toContainEqual({
+      code: 'SOURCE_PROFILE_UNPROVED',
+      descriptor: 'redis:inventory',
+    });
+    expect(redis.eval_ro).not.toHaveBeenCalled();
+  });
+  it('does not infer global FANOUT disjointness from an authorless channel', () => {
+    const data = {
+      observationId: 'observation-1',
+      userId: '300',
+      chatId: '-300',
+      source: 'FANOUT_HIGH',
+      fastPath: false,
+    };
+    const observation = { ...data, id: data.observationId, messageId: null };
+    const human = { ...source, userId: '100', chatId: '-100' };
+    const channel: SourceAbandonmentRedisSource = {
+      chatId: '-200',
+      messageId: 'channel-message',
+      userId: null,
+      sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+    };
+    expect(isUnrelatedSourceAbandonmentFanoutObservation(data, observation, [human])).toBe(true);
+    expect(isUnrelatedSourceAbandonmentFanoutObservation(data, observation, [channel])).toBe(false);
+    expect(isUnrelatedSourceAbandonmentFanoutObservation(data, observation, [human, channel])).toBe(
+      false,
+    );
+  });
   it('binds an explicit notice original source even when action target differs', () => {
     expect(
       classifySourceAbandonmentAction(
@@ -281,6 +352,23 @@ describe('exact source abandonment bounded evidence', () => {
     expect(() =>
       mergeSourceAbandonmentChildren([[child], [{ ...child, jobPayloadDigest: 'b'.repeat(64) }]]),
     ).toThrow();
+  });
+  it('keeps channel marker keys separate from action and observation keys', () => {
+    const marker = {
+      chatId: source.chatId,
+      messageId: source.messageId,
+      jobKey: 'same-key',
+      queueName: SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
+      jobPayloadDigest: 'a'.repeat(64),
+    };
+    const actionChild = { ...marker, queueName: 'max-actions-background' };
+    const observation = { ...marker, queueName: SOURCE_ABANDONMENT_OBSERVATION_QUEUE };
+    expect(
+      mergeSourceAbandonmentChildren([[marker, actionChild, observation], [marker]]),
+    ).toHaveLength(3);
+    expect(() =>
+      mergeSourceAbandonmentChildren([[marker], [{ ...marker, jobPayloadDigest: 'b'.repeat(64) }]]),
+    ).toThrow('Exact child conflict');
   });
   it('rejects a noncanonical cutoff and a source selection beyond eight owners', () => {
     expect(() =>

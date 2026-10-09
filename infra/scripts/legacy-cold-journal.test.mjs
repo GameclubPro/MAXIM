@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -882,4 +890,13 @@ test('abort evidence must exist unchanged and terminal reload checks its content
   writeFileSync(join(h.directory, LEGACY_COLD_JOURNAL), `${JSON.stringify(next)}\n`);
   rmSync(join(h.directory, 'legacy-cold-evidence', `${next.proofs.abortOrigin}.json`));
   assert.throws(() => assertNoActiveLegacyColdMaintenance(h.directory), /absent or changed/);
+});
+
+test('ordinary host mutation also refuses an interrupted mass-session journal', (t) => {
+  const { directory } = fixture(t);
+  assert.doesNotThrow(() => assertNoActiveLegacyColdMaintenance(directory));
+  const session = join(directory, 'source-abandonment-session');
+  mkdirSync(session, { mode: 0o700 });
+  writeFileSync(join(session, 'marker.json'), '{', { mode: 0o600 });
+  assert.throws(() => assertNoActiveLegacyColdMaintenance(directory));
 });

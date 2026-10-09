@@ -3,16 +3,15 @@ import { Prisma, type WebhookEvent } from '../prisma/prisma-client';
 import { buildGroupCommandKey } from '../common/group-command-key';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { readLegacyReceiptClaims } from './webhook-legacy-claims';
-import {
-  canonical,
-  inspectSourceAbandonmentPostSealSource,
-  inspectSourceAbandonmentSource,
-  legacySnapshotDigest,
-} from './webhook-legacy-source';
+import { canonical, legacySnapshotDigest } from './webhook-legacy-source';
+import { inspectSourceAbandonmentAnySource } from './webhook-source-abandonment-channel';
+import { isSourceAbandonmentCheckpointSupported } from './webhook-source-abandonment-checkpoint';
 import type { LegacyReceiptDispositionResult } from './webhook-legacy-receipt-disposition';
 import {
   SOURCE_ABANDONMENT_OPERATION,
   SOURCE_ABANDONMENT_VERSION,
+  SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+  SOURCE_ABANDONMENT_HUMAN_PROFILE,
   type SourceAbandonmentCandidate,
   type SourceAbandonmentDatabase,
   type SourceAbandonmentSelection,
@@ -102,10 +101,10 @@ export async function inspectSourceAbandonmentCandidate(
     !selection.majorBotIds.includes(owner.botId)
   )
     return refuse('source_owner_unproved');
-  const source = inspectSourceAbandonmentSource(owner, onRefusal);
+  const source = inspectSourceAbandonmentAnySource(owner, onRefusal);
   if (!source) return refuse('source_content_unproved');
   const settings = await db.chatSettings.findUnique({ where: { chatId: source.chatId } });
-  if (!inspectSourceAbandonmentSource(owner, onRefusal, settings ?? undefined))
+  if (!inspectSourceAbandonmentAnySource(owner, onRefusal, settings ?? undefined))
     return refuse('source_configured_command');
   const semanticKey = buildWebhookSemanticEventKey(owner.normalizedPayload as never);
   if (!semanticKey || semanticKey !== owner.semanticKey) return refuse('source_semantic_unproved');
@@ -128,7 +127,7 @@ export async function inspectSourceAbandonmentCandidate(
     !claim.executionBotId ||
     !selection.majorBotIds.includes(claim.executionBotId) ||
     claim.completedAt ||
-    claim.commandResult !== null ||
+    !isSourceAbandonmentCheckpointSupported(owner, claim) ||
     claim.leaseToken ||
     claim.leaseExpiresAt
   )
@@ -190,7 +189,12 @@ export async function inspectSourceAbandonmentReceiptCandidate(
     return refuse('source_receipt_state_unproved');
   const source = candidate.source;
   const settings = await db.chatSettings.findUnique({ where: { chatId: source.chatId } });
-  const provenance = inspectSourceAbandonmentPostSealSource(event, settings ?? undefined);
+  const provenance = inspectSourceAbandonmentAnySource(
+    event,
+    undefined,
+    settings ?? undefined,
+    true,
+  );
   const semanticKey = buildWebhookSemanticEventKey(event.normalizedPayload as never);
   if (
     !provenance ||
@@ -268,9 +272,16 @@ export async function materializeSourceAbandonmentReceipt(
   )
     return refuse('source_receipt_scope_unproved');
   const certificate = source.certificate;
+  const sourceProfile =
+    source.sourceProfile === undefined ? SOURCE_ABANDONMENT_HUMAN_PROFILE : source.sourceProfile;
   const attestation = object(certificate.attestation);
   if (
     source.operationVersion !== SOURCE_ABANDONMENT_VERSION ||
+    (sourceProfile !== SOURCE_ABANDONMENT_HUMAN_PROFILE &&
+      sourceProfile !== SOURCE_ABANDONMENT_CHANNEL_PROFILE) ||
+    (sourceProfile === SOURCE_ABANDONMENT_CHANNEL_PROFILE
+      ? source.subjectUserId !== null
+      : typeof source.subjectUserId !== 'string' || source.subjectUserId.length === 0) ||
     certificate.operation !== SOURCE_ABANDONMENT_OPERATION ||
     certificate.operationVersion !== SOURCE_ABANDONMENT_VERSION ||
     !finite(certificate.sealedAt) ||
@@ -341,7 +352,7 @@ export async function materializeSourceAbandonmentReceipt(
     !ownerClaim.enforced ||
     !ownerClaim.businessStartedAt ||
     ownerClaim.completedAt ||
-    ownerClaim.commandResult !== null ||
+    !isSourceAbandonmentCheckpointSupported(owner, ownerClaim) ||
     ownerClaim.leaseToken ||
     ownerClaim.leaseExpiresAt
   )
@@ -352,8 +363,10 @@ export async function materializeSourceAbandonmentReceipt(
     source: {
       chatId: source.chatId,
       messageId: source.messageId,
-      userId: source.subjectUserId,
       sourceAt: source.sourceAt,
+      ...(sourceProfile === SOURCE_ABANDONMENT_CHANNEL_PROFILE
+        ? { sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE, userId: null }
+        : { userId: source.subjectUserId! }),
     },
     rawPayloadDigest: source.rawPayloadDigest,
     normalizedPayloadDigest: source.normalizedPayloadDigest,

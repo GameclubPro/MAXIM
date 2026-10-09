@@ -29,38 +29,80 @@ const diagnosticFailures = new Set([
   'certificate_creation_unproved',
   'inventory_refused',
   'reviewed_inventory_changed',
+  'native_startup_unproved',
+  'native_startup_deadline',
+  'runtime_generation_unproved',
+  'native_boundary_changed',
+  'unreviewed_runtime_producer',
+  'runtime_baseline_missing',
+  'runtime_baseline_invalid',
+  'role_identity_unproved',
+  'runtime_inventory_budget',
+  'stopped_baseline_missing',
 ]);
+
+const runtimePhases = new Set([
+  'stopped_inventory',
+  'start_native',
+  'wait_native_health',
+  'start_api',
+]);
+const spawnCodes = new Set(['ETIMEDOUT', 'ENOBUFS', 'ENOENT', 'EACCES', 'ENOSPC']);
+const processSignals = new Set(['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGHUP', 'SIGABRT', 'SIGPIPE']);
+const diagnosticProperty = (value, key) => {
+  try {
+    return value?.[key];
+  } catch {
+    return undefined;
+  }
+};
 
 // FLAG: Diagnostics carry no identities, arguments, exception text, stderr or
 // inventory. They cannot grant authority or alter fail-closed protocol behavior.
 export function emitLegacyColdDiagnostic(report, value) {
-  if (
-    typeof report !== 'function' ||
-    !stages.includes(value?.stage) ||
-    !['begin', 'complete', 'failed', 'page'].includes(value?.event)
-  )
-    return;
-  const safe = {
-    version: 1,
-    diagnostic: 'legacy_cold_progress',
-    stage: value.stage,
-    event: value.event,
-  };
-  if (value.event === 'failed')
-    safe.code = diagnosticFailures.has(value.code) ? value.code : 'unclassified_failure';
-  for (const [key, maximum] of Object.entries({
-    elapsedMs: 86_400_000,
-    page: 200,
-    chatOrdinal: 200,
-    chatCount: 200,
-    scanned: 200,
-    applied: 200,
-  })) {
-    if (Number.isSafeInteger(value[key]) && value[key] >= 0 && value[key] <= maximum)
-      safe[key] = value[key];
-  }
-  if (typeof value.complete === 'boolean') safe.complete = value.complete;
   try {
+    const stage = diagnosticProperty(value, 'stage');
+    const event = diagnosticProperty(value, 'event');
+    if (
+      typeof report !== 'function' ||
+      !stages.includes(stage) ||
+      !['begin', 'complete', 'failed', 'page'].includes(event)
+    )
+      return;
+    const safe = {
+      version: 1,
+      diagnostic: 'legacy_cold_progress',
+      stage,
+      event,
+    };
+    if (event === 'failed') {
+      const error = diagnosticProperty(value, 'error');
+      const code = diagnosticProperty(value, 'code') ?? diagnosticProperty(error, 'message');
+      safe.code = diagnosticFailures.has(code) ? code : 'unclassified_failure';
+      const runtimePhase = diagnosticProperty(value, 'runtimePhase');
+      const command = diagnosticProperty(value, 'command');
+      if (runtimePhases.has(runtimePhase)) safe.runtimePhase = runtimePhase;
+      if (['ps', 'inspect', 'start', 'stop'].includes(command)) safe.command = command;
+      const exitCode = diagnosticProperty(error, 'status');
+      const spawnCode = diagnosticProperty(error, 'code');
+      const signal = diagnosticProperty(error, 'signal');
+      if (Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255) safe.exitCode = exitCode;
+      if (spawnCodes.has(spawnCode)) safe.spawnCode = spawnCode;
+      if (processSignals.has(signal)) safe.signal = signal;
+    }
+    for (const [key, maximum] of Object.entries({
+      elapsedMs: 86_400_000,
+      page: 200,
+      chatOrdinal: 200,
+      chatCount: 200,
+      scanned: 200,
+      applied: 200,
+    })) {
+      const count = diagnosticProperty(value, key);
+      if (Number.isSafeInteger(count) && count >= 0 && count <= maximum) safe[key] = count;
+    }
+    const complete = diagnosticProperty(value, 'complete');
+    if (typeof complete === 'boolean') safe.complete = complete;
     report(safe);
   } catch {
     // Diagnostic transport is independent from the durable recovery protocol.
@@ -88,7 +130,7 @@ export function observeLegacyColdAdapters(adapters, report, now = Date.now) {
                 stage,
                 event: 'failed',
                 elapsedMs: now() - startedAt,
-                code: error?.message,
+                error,
               });
               throw error;
             }

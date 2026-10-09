@@ -79,7 +79,7 @@ export function createLegacyColdSmokes({
       while (now() < deadline) {
         try {
           runtime.readRuntimeIdentity();
-          const queues = client.invoke('queues', { version: 1, operation: 'status' });
+          const queues = await client.invoke('queues', { version: 1, operation: 'status' });
           if (queues.ownerPresent !== false || queues.pausedCount !== 0 || queues.queueCount !== 24)
             throw new Error('queue_resume_unproved');
           const values = await Promise.all([readReady(3001), readReady(3002)]);

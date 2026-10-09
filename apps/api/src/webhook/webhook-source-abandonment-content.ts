@@ -2,12 +2,15 @@ import {
   parseAdminForwardedModerationCommand,
   type AdminForwardedCommandSettings,
 } from '../moderation/admin-forwarded-command.util';
-import { isLegacyDirectMedia, isLegacyPassiveMarkup } from './webhook-legacy-direct-source';
-import {
-  isLegacyImageAttachment,
-  isLegacyOpaqueSequence,
-  legacyParsedTextMatches,
-} from './webhook-legacy-forward-source';
+import { isSourceAbandonmentMarkup } from './webhook-source-abandonment-markup';
+import { isSourceAbandonmentLinkedMedia } from './webhook-source-abandonment-media';
+export {
+  isSourceAbandonmentLinkedMedia,
+  isSourceAbandonmentDirectMedia,
+} from './webhook-source-abandonment-media';
+export { isSourceAbandonmentMarkup } from './webhook-source-abandonment-markup';
+import { isLegacyOpaqueSequence } from './webhook-legacy-content-primitives';
+import { legacyParsedTextMatches } from './webhook-legacy-forward-source';
 
 export type SourceAbandonmentReplyRefusal =
   | 'source_reply_shape'
@@ -30,96 +33,18 @@ function identity(value: unknown): boolean {
     : typeof value === 'string' && value.length > 0 && value === value.trim();
 }
 
-function httpsUrl(value: unknown): boolean {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > 8192 ||
-    value !== value.trim() ||
-    Array.from(value).some((character) => {
-      const code = character.charCodeAt(0);
-      return code <= 32 || code === 127;
-    })
-  )
-    return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && !url.username && !url.password;
-  } catch {
-    return false;
-  }
-}
-
-// FLAG: Modern link formatting decorates only the original bounded text. Its
-// URL never supplies a secondary mutation target; mentions and unknown metadata
-// remain refused. Bounds use JavaScript UTF-16 offsets, as the runtime text does.
-export function isSourceAbandonmentMarkup(value: unknown, text: unknown): boolean {
-  if (value === undefined) return true;
-  if (!Array.isArray(value) || value.length > 64 || typeof text !== 'string') return false;
-  return value.every((entry) => {
-    if (isLegacyPassiveMarkup([entry], text)) return true;
-    const item = record(entry);
-    return Boolean(
-      item &&
-      item.type === 'link' &&
-      onlyKeys(item, ['type', 'from', 'length', 'url']) &&
-      typeof item.from === 'number' &&
-      Number.isSafeInteger(item.from) &&
-      item.from >= 0 &&
-      typeof item.length === 'number' &&
-      Number.isSafeInteger(item.length) &&
-      item.length > 0 &&
-      item.from + item.length <= text.length &&
-      typeof item.url === 'string' &&
-      item.url.length <= 2048 &&
-      httpsUrl(item.url),
-    );
-  });
-}
-
-// FLAG: Direct media reuses the finite legacy image/video validator without a
-// linked message. Only the modern profile additionally accepts one official share
-// preview. Neither family adds a target or fetch; mixed previews remain unproved.
-export function isSourceAbandonmentDirectMedia(value: unknown, link: unknown): boolean {
-  if (value === undefined || (Array.isArray(value) && value.length === 0)) return true;
-  if (link !== undefined || !Array.isArray(value)) return false;
-  if (isLegacyDirectMedia(value)) return true;
-  if (value.length !== 1) return false;
-  const item = record(value[0]);
-  const payload = record(item?.payload);
-  return Boolean(
-    item &&
-    item.type === 'share' &&
-    onlyKeys(item, ['type', 'payload', 'title', 'description', 'image_url']) &&
-    payload &&
-    onlyKeys(payload, ['url', 'token']) &&
-    httpsUrl(payload.url) &&
-    (payload.token === undefined ||
-      payload.token === null ||
-      (typeof payload.token === 'string' && payload.token.length <= 32768)) &&
-    ['title', 'description'].every(
-      (key) =>
-        item[key] === undefined ||
-        item[key] === null ||
-        (typeof item[key] === 'string' && item[key].length <= 32768),
-    ) &&
-    (item.image_url === undefined || item.image_url === null || httpsUrl(item.image_url)),
-  );
-}
-
-function body(value: unknown, images: boolean): Record<string, unknown> | null {
+function body(value: unknown, linked: boolean): Record<string, unknown> | null {
   const item = record(value);
   return item &&
-    onlyKeys(item, ['mid', 'seq', 'text', 'attachments']) &&
+    onlyKeys(item, ['mid', 'seq', 'text', 'attachments', 'markup']) &&
     identity(item.mid) &&
     isLegacyOpaqueSequence(item.seq) &&
     typeof item.text === 'string' &&
-    (item.attachments === undefined ||
-      (Array.isArray(item.attachments) &&
-        (item.attachments.length === 0 ||
-          (images &&
-            item.attachments.length <= 10 &&
-            item.attachments.every(isLegacyImageAttachment)))))
+    isSourceAbandonmentMarkup(item.markup, item.text) &&
+    (linked
+      ? isSourceAbandonmentLinkedMedia(item.attachments, 'reply')
+      : item.attachments === undefined ||
+        (Array.isArray(item.attachments) && item.attachments.length === 0))
     ? item
     : null;
 }

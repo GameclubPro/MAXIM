@@ -49,6 +49,9 @@ export function createLegacyColdClient({
   queueControlSha256,
   absenceProbePath,
   absenceProbeSha256,
+  sourceBatchPath,
+  sourceBatchSha256,
+  sourceBatchInventoryPaths,
   uid = process.getuid(),
   gid = process.getgid(),
   run = execute,
@@ -105,10 +108,15 @@ export function createLegacyColdClient({
   return {
     remove,
     invoke(kind, request) {
-      if (!['store', 'inventory', 'admission', 'queues', 'absence'].includes(kind))
+      if (
+        !['store', 'inventory', 'admission', 'queues', 'absence', 'source-store-batch'].includes(
+          kind,
+        )
+      )
         throw new Error('invalid_client_kind');
+      const batch = kind === 'source-store-batch';
       const input = JSON.stringify(request);
-      if (Buffer.byteLength(input) > 64 * 1024 || request?.version !== 1)
+      if (Buffer.byteLength(input) > (batch ? 256 : 64) * 1024 || request?.version !== 1)
         throw new Error('client_request_budget');
       privateFile(environmentFile, 16 * 1024, uid);
       const environment = readFileSync(environmentFile, 'utf8').trimEnd().split('\n');
@@ -121,6 +129,33 @@ export function createLegacyColdClient({
       )
         throw new Error('client_environment_not_allowlisted');
       if (kind === 'store') privateFile(inventoryPath, 8 * 1024 * 1024, uid);
+      let batchTimeout;
+      if (batch) {
+        privateFile(sourceBatchPath, 128 * 1024, uid);
+        if (
+          protocol !== 'source-abandonment-v1' ||
+          !digest.test(sourceBatchSha256 ?? '') ||
+          createHash('sha256').update(readFileSync(sourceBatchPath)).digest('hex') !==
+            sourceBatchSha256 ||
+          request.kind !== 'source_abandonment_session_store_batch' ||
+          !['install', 'materialize', 'readback'].includes(request.phase) ||
+          !Array.isArray(request.items) ||
+          !Array.isArray(sourceBatchInventoryPaths) ||
+          request.items.length < 1 ||
+          request.items.length > (request.phase === 'readback' ? 32 : 1) ||
+          request.items.length !== sourceBatchInventoryPaths.length ||
+          request.items.some((item, index) => item?.inventoryIndex !== index) ||
+          !Number.isSafeInteger(request.deadlineAtMs)
+        )
+          throw new Error('source_batch_binding_unproved');
+        batchTimeout = request.deadlineAtMs - Date.now();
+        if (
+          batchTimeout <= 0 ||
+          batchTimeout > { install: 90_000, materialize: 120_000, readback: 300_000 }[request.phase]
+        )
+          throw new Error('source_batch_deadline_refused');
+        for (const path of sourceBatchInventoryPaths) privateFile(path, 8 * 1024 * 1024, uid);
+      }
       if (kind === 'absence') {
         privateFile(absenceProbePath, 16 * 1024, uid);
         if (
@@ -196,9 +231,9 @@ export function createLegacyColdClient({
         '--env',
         `${modern ? 'MAXIM_SOURCE_ABANDONMENT' : 'MAXIM_LEGACY_RECOVERY'}_OFFLINE=1`,
       ];
-      if (modern && kind !== 'store')
+      if (modern && kind !== 'store' && !batch)
         args.push('--env', 'MAXIM_SOURCE_ABANDONMENT_PROTOCOL=source-abandonment-v1');
-      if (kind === 'store')
+      if (kind === 'store' || batch)
         args.push(
           '--env',
           `APP_SERVICE_NAME=${modern ? 'source-abandonment' : 'legacy-recovery'}-store`,
@@ -207,7 +242,20 @@ export function createLegacyColdClient({
             ? 'MAXIM_SOURCE_ABANDONMENT_PROTOCOL=source-abandonment-v1'
             : 'MAXIM_LEGACY_RECOVERY_STORE_PROTOCOL=host-offline-v1',
           '--env',
-          `${modern ? 'MAXIM_SOURCE_ABANDONMENT' : 'MAXIM_LEGACY_RECOVERY'}_STORE_MODE=${request.operation === 'readback' ? 'readback' : 'writer'}`,
+          `${modern ? 'MAXIM_SOURCE_ABANDONMENT' : 'MAXIM_LEGACY_RECOVERY'}_STORE_MODE=${(batch ? request.phase : request.operation) === 'readback' ? 'readback' : 'writer'}`,
+        );
+      if (batch) {
+        args.push(
+          '--mount',
+          `type=bind,source=${sourceBatchPath},target=/app/source-abandonment-session-store-batch.cjs,readonly`,
+        );
+        for (const [index, path] of sourceBatchInventoryPaths.entries())
+          args.push(
+            '--mount',
+            `type=bind,source=${path},target=/run/maxim-source-session/inventory-${index}.json,readonly`,
+          );
+      } else if (kind === 'store')
+        args.push(
           '--mount',
           `type=bind,source=${inventoryPath},target=/run/maxim-legacy-recovery/inventory.json,readonly`,
         );
@@ -234,11 +282,13 @@ export function createLegacyColdClient({
         '--entrypoint',
         'node',
         imageId,
-        kind === 'absence'
-          ? '/app/source-abandonment-absence.cjs'
-          : kind === 'queues'
-            ? '/app/legacy-recovery-queues.cjs'
-            : `apps/api/dist/apps/api/src/scripts/${command}.js`,
+        batch
+          ? '/app/source-abandonment-session-store-batch.cjs'
+          : kind === 'absence'
+            ? '/app/source-abandonment-absence.cjs'
+            : kind === 'queues'
+              ? '/app/legacy-recovery-queues.cjs'
+              : `apps/api/dist/apps/api/src/scripts/${command}.js`,
       );
       if (kind === 'queues') args.push(request.operation);
       let output;
@@ -249,7 +299,10 @@ export function createLegacyColdClient({
         ownedId = id;
         inspectOwned(id);
         try {
-          output = run(['start', '-ai', id], { input, timeout: 55_000 });
+          output = run(['start', '-ai', id], {
+            input,
+            timeout: batch ? Math.max(1, request.deadlineAtMs - Date.now()) : 55_000,
+          });
         } catch (error) {
           // FLAG: A read-only collector uses exit 1 for a structured refusal. Preserve
           // its bounded evidence, never Docker stderr or an unverified writer result.
@@ -284,6 +337,14 @@ export function createLegacyColdClient({
             throw new Error('queue_response_unproved');
           output = { version: 1, ...output };
         } else if (!output || output.version !== 1) throw new Error('client_response_unproved');
+        if (
+          batch &&
+          (output.kind !== 'source_abandonment_session_store_batch_result' ||
+            output.phase !== request.phase ||
+            !Array.isArray(output.results) ||
+            output.results.length !== request.items.length)
+        )
+          throw new Error('source_batch_response_unproved');
       } catch {
         // Do not surface Docker errors: they may contain private inventory bytes.
         failed = true;

@@ -9,6 +9,7 @@ import { sourceAbandonmentOwnerSnapshot } from '../webhook/webhook-source-abando
 import type { SourceAbandonmentCatalogProof } from './source-abandonment-redis-catalog';
 import {
   SOURCE_ABANDONMENT_OPERATION,
+  SOURCE_ABANDONMENT_CHANNEL_PROFILE,
   type SourceAbandonmentCandidate,
   type SourceAbandonmentChild,
 } from '../webhook/webhook-source-abandonment.contract';
@@ -18,6 +19,7 @@ export const SOURCE_ABANDONMENT_REQUEST_MAX_BYTES = 64 * 1024;
 export const SOURCE_ABANDONMENT_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
 export const SOURCE_ABANDONMENT_MAX_OWNERS = 8;
 export const SOURCE_ABANDONMENT_OBSERVATION_QUEUE = 'sql:spammer-observation';
+export const SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE = 'sql:channel-auto-post';
 export const sourceAbandonmentDigest = legacyRecoveryLiveDigest;
 
 export type SourceAbandonmentLiveSelection = Readonly<{
@@ -41,8 +43,13 @@ export type SourceAbandonmentAdmissionRequest = Readonly<{
   selection: SourceAbandonmentLiveSelection;
   publisherBotId?: string;
 }>;
-export type SourceAbandonmentLiveOutput = LegacyRecoveryLiveOutput &
+export type SourceAbandonmentLiveOutput = Omit<LegacyRecoveryLiveOutput, 'selectedOwners'> &
   Readonly<{
+    selectedOwners: readonly (Omit<LegacyRecoveryLiveOutput['selectedOwners'][number], 'userId'> &
+      (
+        | { userId: string; sourceProfile?: never }
+        | { userId: null; sourceProfile: 'CHANNEL_AUTHORLESS_V1' }
+      ))[];
     sqlEvidenceSha256: string | null;
     redisEvidenceSha256: string | null;
     redisCatalogs: readonly SourceAbandonmentCatalogProof[];
@@ -217,13 +224,22 @@ export function sourceAbandonmentChildInputs(
         candidate.source.messageId === child.messageId &&
         (child.userId === undefined || child.userId === candidate.source.userId),
     );
-    if (owners.length !== 1) throw new Error('Child exact source attribution is unavailable');
+    if (
+      owners.length !== 1 ||
+      (child.queueName === SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE &&
+        (!('sourceProfile' in owners[0]!.source) ||
+          owners[0]!.source.sourceProfile !== SOURCE_ABANDONMENT_CHANNEL_PROFILE ||
+          child.userId !== undefined))
+    )
+      throw new Error('Child exact source attribution is unavailable');
     return {
       ownerWebhookEventId: owners[0]!.owner.id,
       kind:
         child.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE
           ? 'SPAMMER_OBSERVATION'
-          : 'MAX_ACTION',
+          : child.queueName === SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE
+            ? 'CHANNEL_AUTO_POST'
+            : 'MAX_ACTION',
       childKey: child.jobKey,
       payloadDigest: child.jobPayloadDigest,
     };
