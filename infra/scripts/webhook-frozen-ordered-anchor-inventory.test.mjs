@@ -21,7 +21,7 @@ const request = {
   imageId: `sha256:${'b'.repeat(64)}`,
   cutoff: '2026-10-09T16:10:00.000Z',
 };
-const parameters = { cutoff: request.cutoff, pageSize: 1000, after: null };
+const parameters = { cutoff: request.cutoff, pageSize: 200, after: null };
 function row(n) {
   return {
     orderChatId: '-1',
@@ -72,7 +72,7 @@ function page(input = parameters, count = 0, hasMore = false, start = 0) {
     mutationAuthorized: false,
   };
 }
-const refused = (size = 1000) => ({
+const refused = (size = 200) => ({
   version: 3,
   kind: 'frozen_ordered_anchor_page_refused',
   reason: 'output_budget',
@@ -159,9 +159,10 @@ function reader(t, answer) {
   return { read, calls };
 }
 
-test('frozen schema is explicit and online200 readers still refuse scope widening', () => {
-  assert.throws(() => buildOrderedAnchorPageSql(parameters));
-  const frozen = page(parameters, 1000, true);
+test('retained frozen1000 schema stays valid and online200 still refuses scope widening', () => {
+  const historicalParameters = { ...parameters, pageSize: 1000 };
+  assert.throws(() => buildOrderedAnchorPageSql(historicalParameters));
+  const frozen = page(historicalParameters, 1000, true);
   validateFrozenOrderedAnchorPage(frozen, request);
   assert.throws(() => validateOrderedAnchorPage(frozen, request));
   for (const size of [0, 201, 999, 1001])
@@ -170,10 +171,12 @@ test('frozen schema is explicit and online200 readers still refuse scope widenin
   assert.throws(() => validateFrozenOrderedAnchorPage({ ...frozen, rawCount: 1002 }, request));
 });
 
-test('mixed1000/200 pages retain complete cursor continuity and explicit EOF', () => {
+test('new walks preselect200 at every cursor and require explicit EOF', () => {
   const acc = createFrozenOrderedAnchorAccumulator(request);
-  acc.addPage(page({ ...acc.nextRequest(), pageSize: 200 }, 200, true));
-  assert.equal(acc.nextRequest().pageSize, 1000);
+  assert.equal(acc.nextRequest().pageSize, 200);
+  acc.addPage(page(acc.nextRequest(), 200, true));
+  assert.equal(acc.report().complete, false);
+  assert.equal(acc.nextRequest().pageSize, 200);
   const next = acc.nextRequest();
   assert.equal(next.after.id, 'event_200');
   acc.addPage(page(next, 3, false, 200));
@@ -184,35 +187,31 @@ test('mixed1000/200 pages retain complete cursor continuity and explicit EOF', (
   assert.equal(acc.report().mutationAuthorized, false);
 });
 
-test('typed output refusal retries once at samecursor200 and charges both physical attempts', (t) => {
-  const h = reader(t, (size) =>
-    size === 1000 ? refused() : page({ ...parameters, pageSize: 200 }, 200, true),
-  );
+test('successful preselected200 page has exactly two SQL calls and one charged attempt', (t) => {
+  const h = reader(t, () => page(parameters, 200, true));
   const result = h.read(parameters);
-  assert.deepEqual(
-    h.calls.map((call) => call.size),
-    [1000, 1000, 200, 200],
-  );
+  assert.deepEqual(h.calls, [
+    { size: 200, explain: true },
+    { size: 200, explain: false },
+  ]);
   assert.equal(result.page.pageSize, 200);
-  assert.equal(result.cost.inventoryPages, 2);
-  assert.equal(result.cost.inventoryRows, 1200);
-  assert.equal(result.cost.inventoryProbes, 2 * 2 + 4 * (1001 + 201));
+  assert.equal(result.cost.inventoryPages, 1);
+  assert.equal(result.cost.inventoryRows, 200);
+  assert.equal(result.cost.inventoryProbes, 2 + 4 * 201);
   assert.equal(
     result.cost.inventoryBytes,
     result.attempts.reduce((sum, attempt) => sum + attempt.outputBytes, 0),
   );
-  assert.equal(result.attempts[0].refusal, 'output_budget');
-  assert.equal(result.attempts[1].refusal, null);
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].refusal, null);
   assert(result.cost.inventoryBytes > Buffer.byteLength(JSON.stringify(result.page)));
 });
 
-test('successful1000 page has one accounted attempt and no fallback', (t) => {
-  const h = reader(t, () => page(parameters, 1000, true));
-  const result = h.read(parameters);
-  assert.equal(h.calls.length, 2);
-  assert.equal(result.cost.inventoryPages, 1);
-  assert.equal(result.cost.inventoryRows, 1000);
-  assert.equal(result.attempts.length, 1);
+test('new reader refuses caller page-size overrides before issuing SQL', (t) => {
+  const h = reader(t, () => page(parameters, 200, true));
+  for (const pageSize of [0, 199, 201, 1000])
+    assert.throws(() => h.read({ ...parameters, pageSize }));
+  assert.equal(h.calls.length, 0);
 });
 
 test('deadline, statement timeout and unknown transport outcomes never trigger retry', (t) => {
@@ -227,14 +226,15 @@ test('deadline, statement timeout and unknown transport outcomes never trigger r
   }
 });
 
-test('malformed refusal, changedcursor and second refusal cannot produce a page', (t) => {
+test('output refusal, malformed refusal and changedcursor never trigger another query', (t) => {
   for (const answer of [
+    () => refused(),
     () => ({ ...refused(), reason: 'timeout' }),
     () => ({ ...refused(), after: { id: 'other' } }),
-    (size) => refused(size),
+    () => page({ ...parameters, after: { id: 'other' } }, 200, true),
   ]) {
     const h = reader(t, answer);
     assert.throws(() => h.read(parameters));
-    assert(h.calls.length <= 4);
+    assert.equal(h.calls.length, 2);
   }
 });

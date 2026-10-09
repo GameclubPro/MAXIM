@@ -343,6 +343,24 @@ test('planner creates exact finite children in sequential stock admission calls'
   assert.ok(result.admissionDurationMs >= 0);
 });
 
+test('planner retains exact online admission proofs when active namespace counts move', async (t) => {
+  const enumeration = writeWalk(t, [row(1)]).read();
+  const h = planner(enumeration, (value) => {
+    value.redisCatalogs[1].namespaceKeyCounts['moderation-actions'] = 2;
+    value.redisCatalogs[1].cost.matchedKeys = 2;
+    return value;
+  });
+  const result = await planSourceAbandonmentSessionChildren(h.options);
+  assert.equal(result.feasible, true);
+  assert.equal(result.children.length, 1);
+  assert.deepEqual(result.admissionProofs, [proofDigest(h.proofs[0])]);
+  assert.equal(result.children[0].admissionDigest, proofDigest(h.proofs[0]));
+  assert.notDeepEqual(
+    h.proofs[0].redisCatalogs[0].namespaceKeyCounts,
+    h.proofs[0].redisCatalogs[1].namespaceKeyCounts,
+  );
+});
+
 test('DENY group splits to individuals without losing the supported subset', async (t) => {
   const enumeration = writeWalk(t, [row(1), row(2), row(3), unresolvedRow(4)]).read();
   const rejectedOwner = row(2).claim.ownerId;
@@ -699,42 +717,55 @@ test('frozen complete index walk binds the same sixteen stopped generations and 
   assert.equal(h.proofs.length, 2);
   assert.equal(proofDigest(h.proofs.at(-1)), result.rawInventoryProof);
 });
-test('frozen1000 covers the full ordered universe and charges discarded fallback work', async (t) => {
+test('preselected200 covers the complete ordered universe with one charged attempt per page', async (t) => {
   const rows = [row(1), ...Array.from({ length: 1000 }, (_, index) => unresolvedRow(index + 2))];
   const h = await frozenFixture(t, rows);
   h.options.readPage = (parameters) => {
     const start = parameters.after
       ? rows.findIndex((row) => row.id === parameters.after.id) + 1
       : 0;
-    const size = start === 0 ? 200 : 1000;
+    assert.equal(parameters.pageSize, 200);
+    const size = parameters.pageSize;
     const selected = rows.slice(start, start + size);
     const value = page({ ...parameters, pageSize: size }, selected, start + size < rows.length, {
       version: 3,
       kind: 'frozen_ordered_anchor_inventory_page',
       coverage: 'STOPPED_METADATA',
     });
-    const refusal =
-      start === 0
-        ? [
-            {
-              pageSize: 1000,
-              rawCount: 1001,
-              returnedRows: 0,
-              refusal: 'output_budget',
-              outputBytes: 128,
-              plan: { index: 'ordered' },
-            },
-          ]
-        : [];
-    return frozenResult(value, refusal);
+    return frozenResult(value);
   };
   const result = await h.run();
   assert.equal(result.frozenEnumerationDigest, h.enumeration.enumerationDigest);
-  assert.equal(result.cost.inventoryPages, 3);
-  assert.equal(result.cost.inventoryRows, 2001);
+  assert.equal(result.cost.inventoryPages, 6);
+  assert.equal(result.cost.inventoryRows, 1001);
+  assert.equal(result.cost.inventoryProbes, 2 * 6 + 4 * (1001 + 5));
   const first = h.proofs.find((row) => row.kind === 'source_abandonment_frozen_page');
-  assert.equal(first.attempts.length, 2);
-  assert.equal(first.attempts[0].refusal, 'output_budget');
+  assert.equal(first.attempts.length, 1);
+  assert.equal(first.attempts[0].pageSize, 200);
+  assert.equal(first.attempts[0].refusal, null);
+});
+test('frozen session rejects a legacy-sized or repeated attempt before saving a page', async (t) => {
+  for (const mutate of [
+    (value) => {
+      value.attempts[0].pageSize = 1000;
+    },
+    (value) => {
+      value.attempts.push(structuredClone(value.attempts[0]));
+    },
+    (value) => {
+      value.attempts[0].refusal = 'output_budget';
+    },
+  ]) {
+    const h = await frozenFixture(t);
+    const read = h.options.readPage;
+    h.options.readPage = (...args) => {
+      const value = read(...args);
+      mutate(value);
+      return value;
+    };
+    await assert.rejects(h.run(), /attempts_unproved/);
+    assert.equal(h.proofs.length, 0);
+  }
 });
 test('frozen inventory rejects omitted or understated physical-attempt costs', async (t) => {
   for (const field of ['attempts', 'inventoryRows', 'inventoryProbes', 'inventoryBytes']) {

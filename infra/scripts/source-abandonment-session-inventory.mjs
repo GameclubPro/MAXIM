@@ -18,6 +18,7 @@ import {
 import { sourceAbandonmentSessionRuntimeBindings } from './source-abandonment-session-protocol.mjs';
 import { validateSourceAbandonmentSessionAdmission } from './source-abandonment-session-host.mjs';
 import {
+  FROZEN_ORDERED_ANCHOR_INITIAL_PAGE_SIZE,
   createFrozenOrderedAnchorAccumulator,
   validateFrozenOrderedAnchorPage,
 } from './webhook-frozen-ordered-anchor-inventory.mjs';
@@ -521,7 +522,7 @@ export function createSourceAbandonmentSessionFrozenInventory({
       const page = validateFrozenOrderedAnchorPage(result.page, enumeration.request);
       exact(result.cost, Object.keys(maximum));
       fact(
-        Array.isArray(result.attempts) && [1, 2].includes(result.attempts.length),
+        Array.isArray(result.attempts) && result.attempts.length === 1,
         'session_inventory_frozen_attempts_unproved',
       );
       const observedCost = {
@@ -530,23 +531,21 @@ export function createSourceAbandonmentSessionFrozenInventory({
         inventoryProbes: 0,
         inventoryBytes: 0,
       };
-      for (const [index, attempt] of result.attempts.entries()) {
+      for (const attempt of result.attempts) {
         exact(attempt, ['pageSize', 'rawCount', 'returnedRows', 'refusal', 'outputBytes', 'plan']);
-        const last = index === result.attempts.length - 1;
         fact(
-          attempt.pageSize === (index === 0 ? 1000 : 200) &&
+          parameters.pageSize === FROZEN_ORDERED_ANCHOR_INITIAL_PAGE_SIZE &&
+            attempt.pageSize === parameters.pageSize &&
             integer(attempt.rawCount, attempt.pageSize + 1) &&
             integer(attempt.returnedRows, attempt.pageSize) &&
             integer(attempt.outputBytes, maximum.inventoryBytes, 1) &&
             attempt.plan &&
             typeof attempt.plan === 'object' &&
-            (last
-              ? attempt.refusal === null &&
-                attempt.pageSize === page.pageSize &&
-                attempt.rawCount === page.rawCount &&
-                attempt.returnedRows === page.rows.length &&
-                canonical(attempt.plan) === canonical(result.plan)
-              : attempt.refusal === 'output_budget' && attempt.returnedRows === 0),
+            attempt.refusal === null &&
+            attempt.pageSize === page.pageSize &&
+            attempt.rawCount === page.rawCount &&
+            attempt.returnedRows === page.rows.length &&
+            canonical(attempt.plan) === canonical(result.plan),
           'session_inventory_frozen_attempts_unproved',
         );
         observedCost.inventoryPages++;
@@ -558,8 +557,8 @@ export function createSourceAbandonmentSessionFrozenInventory({
         canonical(observedCost) === canonical(result.cost),
         'session_inventory_frozen_cost_unproved',
       );
-      // FLAG: Both the refused 1000-row attempt and its sole 200-row fallback
-      // consume the original finite budgets. No discarded SQL work is free.
+      // FLAG: The preselected 200-row page has exactly one accounted attempt.
+      // No refused query permits fallback, discarded work or a cursor advance.
       for (const key of Object.keys(maximum)) cost[key] += result.cost[key];
       fact(
         Object.keys(maximum).every((key) => cost[key] <= limits[key]),
