@@ -708,6 +708,17 @@ native('legacy disposition production ingestion activation regressions', () => {
       deleteLegacyHeldWebhookBatch(cutoff: Date): Promise<{ removed: number; scanned: number }>;
     };
     const expiry = new Date(Date.now() + 1000);
+    // FLAG: Earlier native suites retain permanent modern source proofs in this
+    // disposable store. Retention scans them but must preserve every original byte.
+    const retainedModernReceipts = await prisma.webhookEvent.findMany({
+      where: {
+        status: 'NO_REPLAY_HELD',
+        createdAt: { lt: expiry },
+        sourceDispositionId: { not: null },
+      },
+      orderBy: { id: 'asc' },
+    });
+    expect(retainedModernReceipts.length).toBeLessThan(496);
     await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM webhook_events WHERE status = 'NO_REPLAY_HELD' ORDER BY created_at, id LIMIT 500 FOR UPDATE`;
       expect(await internals.deleteLegacyHeldWebhookBatch(expiry)).toEqual({
@@ -718,8 +729,14 @@ native('legacy disposition production ingestion activation regressions', () => {
     const first = await internals.deleteLegacyHeldWebhookBatch(expiry);
     const second = await internals.deleteLegacyHeldWebhookBatch(expiry);
     expect(first.scanned).toBe(500);
-    expect(second.scanned).toBe(4);
+    expect(second.scanned).toBe(4 + retainedModernReceipts.length);
     expect(first.removed + second.removed).toBe(502);
+    expect(
+      await prisma.webhookEvent.findMany({
+        where: { id: { in: retainedModernReceipts.map((receipt) => receipt.id) } },
+        orderBy: { id: 'asc' },
+      }),
+    ).toEqual(retainedModernReceipts);
     expect(
       await prisma.webhookEvent.count({
         where: { id: { in: [source.candidate.owner.id, preSeal.id, template.id] } },

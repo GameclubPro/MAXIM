@@ -298,6 +298,24 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: historyIds } } });
     await db.webhookEvent.deleteMany({ where: { id: { in: historyIds } } });
     await db.spammerObservation.deleteMany({ where: { chatId } });
+    // FLAG: An immutable channel marker retains its chat, so chat cascade cleanup
+    // cannot own unrelated planner history. Remove only this fixture's history.
+    const historyMessageIds = Array.from(
+      { length: 512 },
+      (_, index) => `unrelated-history-${index}`,
+    );
+    await db.moderationDeleteIntent.deleteMany({
+      where: { chatId, id: { startsWith: `history-${ownerId}-` } },
+    });
+    await db.moderationEvent.deleteMany({
+      where: { chatId, messageId: { in: historyMessageIds } },
+    });
+    await db.moderationViolationMessageClaim.deleteMany({
+      where: { chatId, messageId: { in: historyMessageIds } },
+    });
+    await db.channelAutoPostAttachMarker.deleteMany({
+      where: { chatId, messageId: { startsWith: `marker-history-${ownerId}-` } },
+    });
     // FLAG: Authorless source markers remain immutable, including their chat FK.
     // Disposable-store teardown owns these retained fixture rows after readback.
     if (held?.sourceProfile !== 'CHANNEL_AUTHORLESS_V1')
