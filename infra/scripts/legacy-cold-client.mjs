@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
+import { assertLegacyColdStopped } from './legacy-cold-protocol.mjs';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const digest = /^[0-9a-f]{64}$/u;
@@ -52,6 +53,7 @@ export function createLegacyColdClient({
   sourceBatchPath,
   sourceBatchSha256,
   sourceBatchInventoryPaths,
+  sourceSessionCold = null,
   uid = process.getuid(),
   gid = process.getgid(),
   run = execute,
@@ -68,6 +70,21 @@ export function createLegacyColdClient({
     gid < 0
   )
     throw new Error('invalid_client_binding');
+  if (
+    sourceSessionCold !== null &&
+    (protocol !== 'source-abandonment-v1' ||
+      typeof sourceSessionCold.readStoppedRuntime !== 'function' ||
+      sourceSessionCold.bindings?.targetSha !== sourceSha ||
+      sourceSessionCold.bindings?.targetImageId !== imageId ||
+      sourceSessionCold.bindings?.controllerNonce !== controllerNonce)
+  )
+    throw new Error('source_session_cold_client_binding_unproved');
+  // FLAG: Only the session host selects this fixed profile. Re-read all captured
+  // generations immediately before each create/start; construction is not proof.
+  const attestColdSession = () => {
+    if (sourceSessionCold !== null)
+      assertLegacyColdStopped(sourceSessionCold.readStoppedRuntime(), sourceSessionCold.bindings);
+  };
   const name = `maxim-legacy-recovery-${controllerNonce}`;
   const label = `com.maxim.legacy-recovery-client=${controllerNonce}`;
   let ownedId = null;
@@ -114,6 +131,11 @@ export function createLegacyColdClient({
         )
       )
         throw new Error('invalid_client_kind');
+      if (
+        sourceSessionCold !== null &&
+        !['store', 'inventory', 'source-store-batch'].includes(kind)
+      )
+        throw new Error('source_session_cold_client_kind_refused');
       const batch = kind === 'source-store-batch';
       const input = JSON.stringify(request);
       if (Buffer.byteLength(input) > (batch ? 256 : 64) * 1024 || request?.version !== 1)
@@ -215,7 +237,7 @@ export function createLegacyColdClient({
         '--memory-swap',
         '384m',
         '--cpus',
-        '0.5',
+        sourceSessionCold === null ? '0.5' : '1',
         '--user',
         `${uid}:${gid}`,
         '--tmpfs',
@@ -294,11 +316,20 @@ export function createLegacyColdClient({
       let output;
       let failed = false;
       try {
+        attestColdSession();
         const id = run(args);
         if (!digest.test(id)) throw new Error('client_create_identity_unproved');
         ownedId = id;
-        inspectOwned(id);
+        const created = inspectOwned(id);
+        if (
+          sourceSessionCold !== null &&
+          (created.HostConfig?.NanoCpus !== 1_000_000_000 ||
+            created.HostConfig?.Memory !== 384 * 1024 * 1024 ||
+            created.HostConfig?.MemorySwap !== 384 * 1024 * 1024)
+        )
+          throw new Error('source_session_cold_client_resources_unproved');
         try {
+          attestColdSession();
           output = run(['start', '-ai', id], {
             input,
             timeout: batch ? Math.max(1, request.deadlineAtMs - Date.now()) : 55_000,
