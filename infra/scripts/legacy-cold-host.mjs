@@ -408,7 +408,8 @@ export async function runLegacyColdHost(
   }
   const operationDir = join(privateRoot, bindings.controllerNonce);
   directory(operationDir);
-  const runtime = createLegacyColdRuntime({ bindings, baseline });
+  const report = (value) => process.stderr.write(`${JSON.stringify(value)}\n`);
+  const runtime = createLegacyColdRuntime({ bindings, baseline, report });
   baseline ??= runtime.inspectRuntime();
   bindings.baselineDigest = legacyColdDigest(baseline);
   const connection = storeConnection(baseline);
@@ -537,7 +538,6 @@ export async function runLegacyColdHost(
       absenceProbeSha256,
     });
     const smokes = createLegacyColdSmokes({ bindings, runtime, client });
-    const report = (value) => process.stderr.write(`${JSON.stringify(value)}\n`);
     const adapters = observeLegacyColdAdapters(
       {
         ...runtime,
