@@ -4,6 +4,7 @@ import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS } from '@maxim/contracts';
 import { extractHttpStatusCode } from '../common/http-error.util';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
+import { isMaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { wasMaxMemberMutationAttempted } from '../max/max-member-error.util';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import {
@@ -172,11 +173,12 @@ export class RequiredSubscriptionExecutionGuardService {
     try {
       row = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
     } catch (error) {
-      // FLAG: Only the initial source GET may report unavailable evidence separately.
+      // FLAG: Only the initial source GET may classify 404 or locally proven missing-ID
+      // responses as unavailable evidence, never as confirmed absence.
       // Later authorization and attempted mutations retain their original failure fences.
       if (
         params.initialQualification === true &&
-        extractHttpStatusCode(error) === 404 &&
+        (extractHttpStatusCode(error) === 404 || isMaxExactMessageLookupMissingIdError(error)) &&
         !wasMaxMessageSendAttempted(error) &&
         !wasMaxMemberMutationAttempted(error) &&
         !isMaxMutationOutcomeAmbiguous(error)

@@ -1,4 +1,6 @@
 import { ConfigService } from '@nestjs/config';
+import { MaxClientService } from '../max/max-client.service';
+import { isMaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { fingerprintModerationSettings } from './message-limits-delete-guard.service';
 import {
   RequiredSubscriptionExecutionGuardService,
@@ -10,6 +12,25 @@ import {
   markMaxMemberMutationConfirmed,
 } from '../max/max-member-error.util';
 import { markMaxMessageSendAttempted } from '../max/max-mutation-outcome.util';
+
+async function exactLookupFailure(data: Record<string, unknown>): Promise<unknown> {
+  const request = jest.fn().mockResolvedValueOnce({ messages: [] }).mockResolvedValueOnce(data);
+  const client: MaxClientService = Object.assign(Object.create(MaxClientService.prototype), {
+    normalizeReadRequestOptions: () => ({}),
+    executeGlobalRequest: (operation: () => Promise<unknown>) => operation(),
+    request,
+  });
+  try {
+    await client.getExactMessageRow('-123', 'm1');
+  } catch (error) {
+    expect(request.mock.calls.map(([method, path]) => [method, path])).toEqual([
+      ['get', '/messages'],
+      ['get', '/messages/m1'],
+    ]);
+    return error;
+  }
+  throw new Error('Expected the exact MAX lookup to reject the supplied response');
+}
 
 function fixture() {
   const settings = {
@@ -76,6 +97,104 @@ function fixture() {
 }
 
 describe('required subscription execution authorization', () => {
+  it.each([{}, { message: { body: { text: 'hello' } } }, { body: { mid: 'another-message' } }])(
+    'distinguishes genuine initial source GET missing requested ID (%j)',
+    async (data) => {
+      const s = fixture();
+      const error = await exactLookupFailure(data);
+      expect(isMaxExactMessageLookupMissingIdError(error)).toBe(true);
+      const beforeFinalAuthority = jest.fn();
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      await expect(
+        s.service.authorize({ ...s.input, initialQualification: true, beforeFinalAuthority }),
+      ).rejects.toMatchObject({
+        constructor: RequiredSubscriptionInitialSourceUnavailableError,
+        cause: error,
+      });
+      expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(beforeFinalAuthority).not.toHaveBeenCalled();
+      await expect(s.service.authorize(s.input)).rejects.toBe(error);
+      await expect(s.service.authorize({ ...s.input, initialQualification: false })).rejects.toBe(
+        error,
+      );
+    },
+  );
+
+  it.each([{ body: { mid: 'm1' }, recipient: { chat_id: '-456' } }, { body: { mid: 'm1' } }])(
+    'preserves other initial source identity failures (%j)',
+    async (message) => {
+      const s = fixture();
+      const error = await exactLookupFailure({ message });
+      expect(isMaxExactMessageLookupMissingIdError(error)).toBe(false);
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      await expect(s.service.authorize({ ...s.input, initialQualification: true })).rejects.toBe(
+        error,
+      );
+      expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not accept copied missing-ID error text, name, properties or prototype as provenance', async () => {
+    const genuine = (await exactLookupFailure({})) as Error;
+    const errors = [
+      new Error(genuine.message),
+      Object.assign(new Error(genuine.message), genuine),
+      Object.assign(Object.create(Object.getPrototypeOf(genuine)), genuine),
+      new Error('wrapped lookup failure', { cause: genuine }),
+    ];
+    for (const error of errors) {
+      const s = fixture();
+      expect(isMaxExactMessageLookupMissingIdError(error)).toBe(false);
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      await expect(s.service.authorize({ ...s.input, initialQualification: true })).rejects.toBe(
+        error,
+      );
+      expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(['member-access', 'target-membership'] as const)(
+    'preserves a genuine missing-ID failure from %s during initial qualification',
+    async (source) => {
+      const s = fixture();
+      const error = await exactLookupFailure({});
+      if (source === 'member-access') s.max.getChatMemberAccess.mockRejectedValue(error);
+      else s.membership.getMembershipResolution.mockRejectedValue(error);
+      await expect(s.service.authorize({ ...s.input, initialQualification: true })).rejects.toBe(
+        error,
+      );
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      if (source === 'member-access') expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['send attempted', markMaxMessageSendAttempted],
+    ['member attempted', markMaxMemberMutationAttempted],
+    ['member confirmed', markMaxMemberMutationConfirmed],
+    [
+      'ambiguous status',
+      (error: unknown) => Object.assign(error as object, { response: { status: 503 } }),
+    ],
+    [
+      'ambiguous mutation',
+      (error: unknown) => Object.assign(error as object, { message: 'ambiguous MAX mutation' }),
+    ],
+  ] as const)('preserves genuine missing-ID error with %s', async (_label, mark) => {
+    const s = fixture();
+    const error = mark(await exactLookupFailure({}));
+    expect(isMaxExactMessageLookupMissingIdError(error)).toBe(true);
+    s.max.getExactMessageRow.mockRejectedValue(error);
+    await expect(s.service.authorize({ ...s.input, initialQualification: true })).rejects.toBe(
+      error,
+    );
+    expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
+
   it.each([{ response: { status: 404, data: {} } }, { status: 404 }, { getStatus: () => 404 }])(
     'distinguishes initial source GET 404 without granting authority or consuming immunity (%j)',
     async (error) => {
