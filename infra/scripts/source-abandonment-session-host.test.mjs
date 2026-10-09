@@ -894,6 +894,20 @@ test('real host uses one queue FIFO, exact per-child runtime and private environ
   assert.equal(h.storeAdapters[0].store.read().journal.kind, 'source_abandonment_session_child');
   assert.equal(h.clientOptions[0].controllerNonce, h.clientOptions[1].controllerNonce);
   assert.notEqual(h.clientOptions[0].inventoryPath, h.clientOptions[1].inventoryPath);
+  assert.deepEqual(
+    h.clientOptions[0].sourceSessionCold.bindings,
+    sourceAbandonmentSessionRuntimeBindings(h.manifest),
+  );
+  assert.deepEqual(
+    h.clientOptions[1].sourceSessionCold.bindings,
+    sourceAbandonmentSessionRuntimeBindings(h.manifest),
+  );
+  const priorStoppedReads = h.calls.filter(([name]) => name === 'readStoppedRuntime').length;
+  h.clientOptions[1].sourceSessionCold.readStoppedRuntime();
+  assert.equal(
+    h.calls.filter(([name]) => name === 'readStoppedRuntime').length,
+    priorStoppedReads + 1,
+  );
   assert.equal((await child.readQueueFence()).ownerNonce, h.manifest.controllerNonce);
   await host.adapters.resumeQueues();
   await host.adapters.strictSmokes();

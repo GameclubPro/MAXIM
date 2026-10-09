@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
 import { createLegacyColdClient } from './legacy-cold-client.mjs';
+import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
 
 function fixture(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-cold-client-'));
@@ -39,6 +40,7 @@ function fixture(t, options = {}) {
     foreign: false,
     response: { version: 1, activationAuthorized: false, state: 'SEALED' },
     responseExit: false,
+    hostConfig: { NanoCpus: 1_000_000_000, Memory: 402_653_184, MemorySwap: 402_653_184 },
   };
   const run = (args, options) => {
     calls.push({ args, options });
@@ -59,6 +61,7 @@ function fixture(t, options = {}) {
           Image: imageId,
           Name: `/maxim-legacy-recovery-${state.foreign ? 'foreign' : controllerNonce}`,
           Config: { Labels: { 'com.maxim.legacy-recovery-client': controllerNonce } },
+          HostConfig: state.hostConfig,
         },
       ]);
     if (args[0] === 'start') {
@@ -107,6 +110,152 @@ function fixture(t, options = {}) {
     id,
   };
 }
+
+function coldSessionFixture(t) {
+  const bindings = {
+    targetSha: 'b'.repeat(40),
+    targetImageId: `sha256:${'a'.repeat(64)}`,
+    controllerNonce: '11111111-1111-4111-8111-111111111111',
+    selectionDigest: 'f'.repeat(64),
+  };
+  const stopped = {
+    version: 1,
+    complete: true,
+    sourceSha: bindings.targetSha,
+    imageId: bindings.targetImageId,
+    selectionDigest: bindings.selectionDigest,
+    controllerNonce: bindings.controllerNonce,
+    services: LEGACY_COLD_API_SERVICES.map((serviceName) => ({
+      serviceName,
+      stopped: true,
+      exactGeneration: true,
+      restartPolicy: 'unless-stopped',
+    })),
+    auxiliaries: ['ocr-native-sandbox', 'photo-native-sandbox'].map((serviceName) => ({
+      serviceName,
+      stopped: true,
+      exactGeneration: true,
+      restartPolicy: 'unless-stopped',
+    })),
+    unreviewedProducers: 0,
+  };
+  const observations = [];
+  let reads = 0;
+  const state = { mutate: () => {} };
+  const h = fixture(t, {
+    protocol: 'source-abandonment-v1',
+    sourceSessionCold: {
+      bindings,
+      readStoppedRuntime: () => {
+        reads += 1;
+        observations.push(h.calls.at(-1)?.args?.[0]);
+        state.mutate(stopped, reads);
+        return stopped;
+      },
+    },
+  });
+  return { ...h, stopped, guardState: state, observations, reads: () => reads };
+}
+
+test('cold session uses fixed one CPU only after two fresh stopped fleet proofs', (t) => {
+  const h = coldSessionFixture(t);
+  assert.equal(h.reads(), 0);
+  h.client.invoke('inventory', { version: 1, operation: 'inventory_preview' });
+  const create = h.calls.find(({ args }) => args[0] === 'create').args;
+  assert.equal(create[create.indexOf('--cpus') + 1], '1');
+  assert.equal(create[create.indexOf('--memory') + 1], '384m');
+  assert.equal(create[create.indexOf('--memory-swap') + 1], '384m');
+  assert.equal(h.reads(), 2);
+  assert.deepEqual(h.observations, ['image', 'inspect']);
+  assert.equal(h.exists(), false);
+});
+
+for (const phase of [1, 2])
+  for (const [name, change] of [
+    [
+      'running API',
+      (proof) => {
+        proof.services[0].stopped = false;
+      },
+    ],
+    [
+      'running native',
+      (proof) => {
+        proof.auxiliaries[0].stopped = false;
+      },
+    ],
+    [
+      'missing native',
+      (proof) => {
+        proof.auxiliaries.pop();
+      },
+    ],
+    [
+      'changed generation',
+      (proof) => {
+        proof.services[0].exactGeneration = false;
+      },
+    ],
+    [
+      'wrong source',
+      (proof) => {
+        proof.sourceSha = 'e'.repeat(40);
+      },
+    ],
+    [
+      'extra producer',
+      (proof) => {
+        proof.unreviewedProducers = 1;
+      },
+    ],
+  ])
+    test(`cold session refuses ${name} before ${phase === 1 ? 'create' : 'start'}`, (t) => {
+      const h = coldSessionFixture(t);
+      h.guardState.mutate = (proof, read) => {
+        if (read === phase) change(proof);
+      };
+      assert.throws(
+        () => h.client.invoke('store', { version: 1, operation: 'readback' }),
+        /client_result_unknown/,
+      );
+      assert.equal(
+        h.calls.some(({ args }) => args[0] === 'start'),
+        false,
+      );
+      assert.equal(h.calls.filter(({ args }) => args[0] === 'create').length, phase - 1);
+      assert.equal(h.exists(), false);
+    });
+
+for (const key of ['NanoCpus', 'Memory', 'MemorySwap'])
+  test(`cold session refuses actual ${key} mismatch and cleans owned client`, (t) => {
+    const h = coldSessionFixture(t);
+    h.state.hostConfig[key] = 1;
+    assert.throws(
+      () => h.client.invoke('store', { version: 1, operation: 'readback' }),
+      /client_result_unknown/,
+    );
+    assert.equal(
+      h.calls.some(({ args }) => args[0] === 'start'),
+      false,
+    );
+    assert.equal(h.exists(), false);
+  });
+
+for (const kind of ['admission', 'queues', 'absence'])
+  test(`cold session refuses ${kind} without any Docker call`, (t) => {
+    const h = coldSessionFixture(t);
+    assert.throws(() => h.client.invoke(kind, { version: 1 }), /cold_client_kind_refused/);
+    assert.equal(h.calls.length, 0);
+  });
+
+test('default legacy and modern online clients keep half CPU without stopped proof', (t) => {
+  for (const protocol of ['legacy', 'source-abandonment-v1']) {
+    const h = fixture(t, { protocol });
+    h.client.invoke('admission', { version: 1, operation: 'admission_preview' });
+    const create = h.calls.find(({ args }) => args[0] === 'create').args;
+    assert.equal(create[create.indexOf('--cpus') + 1], '0.5');
+  }
+});
 
 test('modern exact-source client uses only its fixed collector/store and separate environment domain', (t) => {
   const h = fixture(t, { protocol: 'source-abandonment-v1' });

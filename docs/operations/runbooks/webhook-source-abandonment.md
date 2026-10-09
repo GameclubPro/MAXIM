@@ -232,6 +232,17 @@ The reviewed runtime-restoration reserve remains unavailable to those readbacks.
 Batching removes process startup overhead; it does not share or skip the four
 complete Redis namespace scans performed for each child's two inventories.
 
+Only the session's stopped inventory, store and batch clients use the fixed
+1 CPU/384 MiB resource profile. Online admission and ordinary legacy clients
+retain 0.5 CPU. The host binds the profile to the captured runtime and re-attests
+all fourteen API plus two native generations immediately before each client
+create and start. Actual utility CPU, memory and swap limits are inspected before
+start; a failed attestation prevents that command and preserves normal cleanup.
+Each fleet attestation uses one Docker inventory call plus one batched inspection,
+so the reviewed feasibility estimate must include two attestations per utility
+process as additional host work. A faster import-only benchmark is not a measured
+collector, writer or complete session cost, and does not change any deadline.
+
 The global journal lives in `/var/lib/maxim-deploy/source-abandonment-session`.
 Its marker, immutable evidence and CAS transitions survive a lost response. An
 `ATTEMPTED` child requires `reconcile` of that same certificate before any new

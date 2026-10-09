@@ -860,13 +860,17 @@ export async function createSourceAbandonmentSessionHostContext({
         sourceBatchPath,
         sourceBatchSha256,
         sourceBatchInventoryPaths,
+        sourceSessionCold: {
+          bindings,
+          readStoppedRuntime: () => runtime.readStoppedRuntime(),
+        },
         run: clientRun,
       });
       return {
         remove: () => raw.remove(),
         invoke(kind, request) {
           requireFact(
-            ['store', 'inventory', 'admission', 'source-store-batch'].includes(kind),
+            ['store', 'inventory', 'source-store-batch'].includes(kind),
             'session_host_old_queue_transport_refused',
           );
           requireFact(activeDeadline === null, 'session_host_concurrent_store_client_refused');
