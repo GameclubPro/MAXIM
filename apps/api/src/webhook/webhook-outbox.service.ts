@@ -2228,7 +2228,6 @@ export class WebhookOutboxService
     const startedAt = performance.now();
     if (startedAt < (this.nextFinishedHeadRecoveryAt ?? 0)) return 0;
     this.nextFinishedHeadRecoveryAt = startedAt + FINISHED_HEAD_RECOVERY_INTERVAL_MS;
-    const deadline = startedAt + FINISHED_HEAD_RECOVERY_BUDGET_MS;
     const uniqueHeads = Array.from(
       new Map(Array.from(heads.values(), (head) => [head.id, head])).values(),
     ).sort((left, right) => this.compareCandidateSequence(left, right));
@@ -2245,6 +2244,10 @@ export class WebhookOutboxService
       return 0;
     }
     if (owners.length === 0) return 0;
+    // FLAG: Discovery has independent pool/transaction bounds. Start the owner
+    // dispatch budget after it succeeds so slow SQL cannot starve proven recovery.
+    // Started transactions retain their own bounds and are always awaited.
+    const deadline = performance.now() + FINISHED_HEAD_RECOVERY_BUDGET_MS;
     owners.sort((left, right) => left.ownerId.localeCompare(right.ownerId));
     const ownerOffset = (this.finishedOwnerRecoveryOffset ?? 0) % owners.length;
     const orderedOwners = [...owners.slice(ownerOffset), ...owners.slice(0, ownerOffset)];

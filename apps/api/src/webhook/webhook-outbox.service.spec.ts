@@ -1412,7 +1412,7 @@ describe('WebhookOutboxService', () => {
     }
   });
 
-  it('charges proof selection to the same recovery budget before admitting owner transactions', async () => {
+  it('admits guarded owner recovery after slow successful proof discovery', async () => {
     const f = finishedHeadSchedulingFixture(3);
     let now = 0;
     const monotonic = jest.spyOn(performance, 'now').mockImplementation(() => now);
@@ -1422,12 +1422,63 @@ describe('WebhookOutboxService', () => {
     });
     try {
       await expect(f.internals.recoverFinishedOrderedHeads(f.heads, 1)).resolves.toBe(0);
-      expect(f.prisma.$transaction).not.toHaveBeenCalled();
+      expect(f.prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(f.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+        maxWait: 1_000,
+        timeout: 2_000,
+      });
+      expect(f.prisma.webhookEvent.findUnique).toHaveBeenCalledWith({
+        where: { id: 'finished-scheduling-0' },
+      });
       expect(f.prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
       expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+      expect(Object.values(f.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(0);
     } finally {
       monotonic.mockRestore();
       f.selector.mockRestore();
+    }
+  });
+
+  it('rotates guarded owners within a fresh bounded budget after each slow discovery', async () => {
+    jest.useFakeTimers();
+    const f = finishedHeadSchedulingFixture(6);
+    const owners = Array.from({ length: 6 }, (_, index) => ({
+      ownerId: `finished-scheduling-${index}`,
+    }));
+    f.selector.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 290));
+      return [...owners];
+    });
+    let active = 0;
+    let peak = 0;
+    f.prisma.$transaction.mockImplementation(async (operation) => {
+      peak = Math.max(peak, ++active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 260));
+        return await operation(f.prisma);
+      } finally {
+        active -= 1;
+      }
+    });
+    try {
+      for (let poll = 0; poll < 3; poll += 1) {
+        const recovery = f.internals.recoverFinishedOrderedHeads(f.heads, 2);
+        await jest.advanceTimersByTimeAsync(550);
+        expect(await recovery).toBe(0);
+        expect(f.prisma.webhookEvent.findUnique).toHaveBeenCalledTimes((poll + 1) * 2);
+        expect(active).toBe(0);
+        await jest.advanceTimersByTimeAsync(450);
+      }
+      expect(f.prisma.webhookEvent.findUnique.mock.calls.map(([query]) => query.where.id)).toEqual(
+        owners.map(({ ownerId }) => ownerId),
+      );
+      expect(peak).toBe(2);
+      expect(f.prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+      expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+      expect(Object.values(f.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(0);
+    } finally {
+      f.selector.mockRestore();
+      jest.useRealTimers();
     }
   });
 
