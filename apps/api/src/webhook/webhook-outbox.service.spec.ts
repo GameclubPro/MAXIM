@@ -2215,6 +2215,106 @@ describe('WebhookOutboxService', () => {
     }
   });
 
+  it('admits a selected fresh independent receipt while old scan debt continuously fills the dispatch budget', async () => {
+    jest.useFakeTimers();
+    const started: string[] = [];
+    const fixture = capacityFixture(
+      401,
+      async (id) => {
+        started.push(id);
+        await new Promise<void>((resolve) => setTimeout(resolve, 350));
+      },
+      { poolMax: 24, enqueueConcurrency: 32, systemMode: 'normal' },
+    );
+    fixture.prisma.webhookEvent.updateMany.mockImplementation(
+      createWebhookEventUpdateManyMock(fixture.webhookRows),
+    );
+    for (const [index, row] of fixture.webhookRows.entries()) {
+      (row.normalizedPayload as MaxUpdate).botId = `reserve-bot-${index % 3}`;
+    }
+    const fresh = fixture.webhookRows[400]!;
+    fresh.createdAt = new Date();
+    type Candidate = MockWebhookEventRow & {
+      isBacklogScan?: boolean;
+      isRecentReceipt?: boolean;
+      priority?: number;
+    };
+    const internal = fixture.service as unknown as {
+      enqueueCandidates(candidates: Candidate[]): Promise<unknown>;
+      pendingEnqueueRepresentatives: Map<string, string>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    try {
+      for (let pass = 0; pass < 3; pass++) {
+        const old = fixture.webhookRows
+          .slice(0, 400)
+          .filter((row) => row.status === WebhookStatus.RECEIVED)
+          .slice(0, 100)
+          .map((row) => ({ ...row, priority: 5, isBacklogScan: true }));
+        expect(old).toHaveLength(100);
+        const selected = [
+          ...old,
+          ...(fresh.status === WebhookStatus.RECEIVED
+            ? [{ ...fresh, priority: 5, isRecentReceipt: true }]
+            : []),
+        ];
+        const work = internal.enqueueCandidates(selected);
+        await jest.advanceTimersByTimeAsync(1_001);
+        await work;
+        await jest.advanceTimersByTimeAsync(350);
+        await Promise.all(internal.activeEnqueueUnits.values());
+        expect(started).toContain(fresh.id);
+      }
+      expect(started).toContain(fresh.id);
+      expect(started.filter((id) => id !== fresh.id).length).toBeGreaterThan(30);
+      expect(fixture.admission.snapshot().inFlight).toBe(0);
+      expect(internal.pendingEnqueueRepresentatives.size).toBeLessThanOrEqual(100);
+      expect(fixture.capacityWrites()).toHaveLength(0);
+      expect(fresh.status).toBe(WebhookStatus.QUEUED);
+    } finally {
+      await jest.runOnlyPendingTimersAsync();
+      await fixture.service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps an earlier same-chat head fenced while reserving dispatch for an independent fresh receipt', async () => {
+    const fixture = capacityFixture(6, async () => undefined, {
+      poolMax: 24,
+      enqueueConcurrency: 32,
+      systemMode: 'normal',
+    });
+    const blocked = fixture.webhookRows[4]!;
+    (blocked.normalizedPayload as MaxUpdate).message!.chatId = 'capacity-chat-3';
+    const internal = fixture.service as unknown as {
+      enqueueCandidates(candidates: unknown[]): Promise<unknown>;
+    };
+    await internal.enqueueCandidates([
+      ...fixture.webhookRows.slice(0, 3).map((row) => ({
+        ...row,
+        priority: 5,
+        isBacklogScan: true,
+      })),
+      ...fixture.webhookRows.slice(4).map((row) => ({
+        ...row,
+        priority: 5,
+        isRecentReceipt: true,
+      })),
+    ]);
+    const started = fixture.webhookService.preparePersistedWebhookEvent.mock.calls.map(
+      ([id]) => id,
+    );
+    expect(started).toEqual(
+      expect.arrayContaining(['capacity-0', 'capacity-1', 'capacity-2', 'capacity-5']),
+    );
+    expect(started).not.toContain('capacity-3');
+    expect(started).not.toContain(blocked.id);
+    expect(started.indexOf('capacity-0')).toBeLessThan(started.indexOf('capacity-1'));
+    expect(started.indexOf('capacity-1')).toBeLessThan(started.indexOf('capacity-2'));
+    expect(blocked.status).toBe(WebhookStatus.RECEIVED);
+    expect(fixture.capacityWrites()).toHaveLength(0);
+  });
+
   it('dispatches scanned ordinary receipts during a sustained lifecycle stream at the real preparation cap', async () => {
     jest.useFakeTimers();
     const started: string[] = [];

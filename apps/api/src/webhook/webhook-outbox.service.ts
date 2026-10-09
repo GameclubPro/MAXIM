@@ -2042,7 +2042,7 @@ export class WebhookOutboxService
       return progress;
     }
 
-    const workUnits = this.buildEnqueueWorkUnits(candidates);
+    let workUnits = this.buildEnqueueWorkUnits(candidates);
     const pending = (this.pendingEnqueueRepresentatives ??= new Map<string, string>());
     const pendingLimit = Math.max(1, Math.floor(this.batchSize / 4));
     const workUnitKey = (unit: WebhookEnqueueWorkUnit) =>
@@ -2071,6 +2071,38 @@ export class WebhookOutboxService
         (deferredOrder(left) ?? 1_000_000 + (pendingOrder.get(workUnitKey(left)) ?? 1_000_000)) -
         (deferredOrder(right) ?? 1_000_000 + (pendingOrder.get(workUnitKey(right)) ?? 1_000_000)),
     );
+    // FLAG: The SQL recent-receipt reserve must survive actual dispatch. A finite
+    // poll can otherwise spend every preparation slot on replenished scan debt,
+    // repeatedly selecting a fresh independent head without ever admitting it.
+    // Keep debt FIFO and its retained identities; share one of four positions with
+    // recent unreserved heads. All slot, current-head and activation checks still apply.
+    if (
+      workUnits.some((unit) => pendingOrder.has(workUnitKey(unit)) || deferredOrder(unit) != null)
+    ) {
+      const recent = new Set(
+        workUnits.filter((unit) => {
+          const first = unit.candidates[0]!;
+          return (
+            !pendingOrder.has(workUnitKey(unit)) &&
+            deferredOrder(unit) == null &&
+            first.status === WebhookStatus.RECEIVED &&
+            first.isRecentReceipt
+          );
+        }),
+      );
+      if (recent.size) {
+        const rest = workUnits.filter((unit) => !recent.has(unit));
+        const ordered: WebhookEnqueueWorkUnit[] = [];
+        const ordinaryShare = Math.max(1, Math.round(1 / RECENT_RECEIPT_BATCH_SHARE) - 1);
+        let next = 0;
+        for (const unit of recent) {
+          ordered.push(...rest.slice(next, next + ordinaryShare), unit);
+          next += ordinaryShare;
+        }
+        ordered.push(...rest.slice(next));
+        workUnits = ordered;
+      }
+    }
     progress.workUnits = workUnits.length;
     const chatIds = workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : []));
     let orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
