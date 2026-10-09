@@ -10,7 +10,11 @@ import {
   sourceAbandonmentOwnerSnapshot,
   sourceAbandonmentReceiptSourceDigest,
 } from '../webhook/webhook-source-abandonment';
-import { SOURCE_ABANDONMENT_OPERATION } from '../webhook/webhook-source-abandonment.contract';
+import {
+  SOURCE_ABANDONMENT_OPERATION,
+  SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+  SOURCE_ABANDONMENT_HUMAN_PROFILE,
+} from '../webhook/webhook-source-abandonment.contract';
 import { MAX_ACTION_ALL_QUEUE_NAMES } from '../max/max-action.queue';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import {
@@ -22,6 +26,7 @@ import {
   SOURCE_ABANDONMENT_OUTPUT_MAX_BYTES,
   SOURCE_ABANDONMENT_REQUEST_MAX_BYTES,
   SOURCE_ABANDONMENT_OBSERVATION_QUEUE,
+  SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
   sourceAbandonmentRecord,
   assertSourceAbandonmentKeys,
   isSourceAbandonmentIdentity,
@@ -189,6 +194,7 @@ export function verifySourceAbandonmentInventory(
       'chatId',
       'messageId',
       'userId',
+      'sourceProfile',
       'sourceAt',
       'rawPayloadSha256',
       'normalizedPayloadSha256',
@@ -196,9 +202,12 @@ export function verifySourceAbandonmentInventory(
       'claimSnapshotSha256',
     ]);
     if (
-      ['ownerWebhookEventId', 'semanticKey', 'claimId', 'chatId', 'messageId', 'userId'].some(
+      ['ownerWebhookEventId', 'semanticKey', 'claimId', 'chatId', 'messageId'].some(
         (key) => !isSourceAbandonmentIdentity(row[key]),
       ) ||
+      (row.sourceProfile === SOURCE_ABANDONMENT_CHANNEL_PROFILE
+        ? row.userId !== null
+        : row.sourceProfile !== undefined || !isSourceAbandonmentIdentity(row.userId)) ||
       [
         'rawPayloadSha256',
         'normalizedPayloadSha256',
@@ -232,16 +241,32 @@ export function verifySourceAbandonmentInventory(
       (row.userId !== undefined && !isSourceAbandonmentIdentity(row.userId)) ||
       typeof row.jobPayloadDigest !== 'string' ||
       !sha.test(row.jobPayloadDigest) ||
-      ![...MAX_ACTION_ALL_QUEUE_NAMES, SOURCE_ABANDONMENT_OBSERVATION_QUEUE].includes(
-        row.queueName as string,
-      ) ||
+      ![
+        ...MAX_ACTION_ALL_QUEUE_NAMES,
+        SOURCE_ABANDONMENT_OBSERVATION_QUEUE,
+        SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
+      ].includes(row.queueName as string) ||
       children.has(
-        `${row.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE ? 'observation' : 'action'}:${row.jobKey}`,
+        `${row.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE ? 'observation' : row.queueName === SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE ? 'channel-marker' : 'action'}:${row.jobKey}`,
       )
     )
       throw new Error('Invalid exact child evidence');
+    if (
+      row.queueName === SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE &&
+      (row.userId !== undefined ||
+        !output.selectedOwners.some((owner) => {
+          const source = sourceAbandonmentRecord(owner);
+          return (
+            source.sourceProfile === SOURCE_ABANDONMENT_CHANNEL_PROFILE &&
+            source.userId === null &&
+            source.chatId === row.chatId &&
+            source.messageId === row.messageId
+          );
+        }))
+    )
+      throw new Error('Channel marker requires exact authorless source');
     children.add(
-      `${row.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE ? 'observation' : 'action'}:${row.jobKey}`,
+      `${row.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE ? 'observation' : row.queueName === SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE ? 'channel-marker' : 'action'}:${row.jobKey}`,
     );
   }
   const inventory = output as unknown as SourceAbandonmentLiveOutput;
@@ -422,6 +447,10 @@ export async function executeSourceAbandonmentStore(
               chatId: candidate.source.chatId,
               messageId: candidate.source.messageId,
               subjectUserId: candidate.source.userId,
+              sourceProfile:
+                'sourceProfile' in candidate.source
+                  ? candidate.source.sourceProfile
+                  : SOURCE_ABANDONMENT_HUMAN_PROFILE,
               sourceAt: candidate.source.sourceAt,
               rawPayloadDigest: candidate.rawPayloadDigest,
               normalizedPayloadDigest: candidate.normalizedPayloadDigest,
@@ -495,6 +524,7 @@ export async function executeSourceAbandonmentStore(
           source.chatId !== reviewed.chatId ||
           source.messageId !== reviewed.messageId ||
           source.subjectUserId !== reviewed.userId ||
+          source.sourceProfile !== (reviewed.sourceProfile ?? SOURCE_ABANDONMENT_HUMAN_PROFILE) ||
           source.sourceAt.toISOString() !== reviewed.sourceAt ||
           source.rawPayloadDigest !== reviewed.rawPayloadSha256 ||
           source.normalizedPayloadDigest !== reviewed.normalizedPayloadSha256 ||
@@ -547,7 +577,9 @@ export async function executeSourceAbandonmentStore(
           kind:
             child.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE
               ? 'SPAMMER_OBSERVATION'
-              : 'MAX_ACTION',
+              : child.queueName === SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE
+                ? 'CHANNEL_AUTO_POST'
+                : 'MAX_ACTION',
           childKey: child.jobKey,
           payloadDigest: child.jobPayloadDigest,
         };

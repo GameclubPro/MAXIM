@@ -932,6 +932,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.channelAutoPostLegacyRecovery = new ChannelAutoPostLegacyRecovery({
       prisma,
       markerStore: this.replacementAttachMarkerStore,
+      isMessageHeld: async (chatId, messageId) =>
+        (await this.legacyHolds?.isMessageHeld(chatId, messageId)) ?? false,
       lookupExactButtonIdentities: (chatId, messageId, options) =>
         maxClient.getExactChannelDialogButtonIdentities(chatId, messageId, options),
       resolveUnifiedLookupBotId: ({ chatId }) => this.resolveAutoAttachBotId(chatId, 'poll'),
@@ -15275,6 +15277,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       senderAdminVerified,
       sourceMessageAt,
     } = params;
+    // FLAG: Polling and legacy recovery bypass webhook admission. Check the exact
+    // source before claiming or changing any persistent channel marker.
+    if (await this.legacyHolds?.isMessageHeld(chatId, messageId)) return 'skipped';
     const normalizedSenderId = senderId?.trim() || null;
     const editForwardInPlace =
       linkType === 'forward' &&

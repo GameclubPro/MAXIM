@@ -13,6 +13,7 @@ import {
   SOURCE_ABANDONMENT_OUTPUT_MAX_BYTES,
   SOURCE_ABANDONMENT_REQUEST_MAX_BYTES,
   SOURCE_ABANDONMENT_OBSERVATION_QUEUE,
+  SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
   sourceAbandonmentDigest,
   parseSourceAbandonmentLiveRequest,
   parseSourceAbandonmentAdmissionRequest,
@@ -42,6 +43,10 @@ const sourceCollectionDurationMs = 45_000;
 const sourceCollectionTransactionTimeoutMs = 50_000;
 
 type Cost = { pages: number; rows: number; probes: number; bytes: number };
+type SourceAbandonmentAdmissionOutput = Omit<LegacyRecoveryAdmissionOutput, 'selectedOwners'> & {
+  selectedOwners: SourceAbandonmentLiveOutput['selectedOwners'];
+  redisCatalogs: readonly SourceAbandonmentCatalogProof[];
+};
 const costFields = ['pages', 'rows', 'probes', 'bytes'] as const;
 function remaining(cost: Cost, deadlineAtMs: number): SourceInventoryAllowance {
   if (Date.now() >= deadlineAtMs) throw new Error('Source inventory deadline');
@@ -72,7 +77,13 @@ export function mergeSourceAbandonmentChildren(
   const result = new Map<string, SourceAbandonmentChildEvidence>();
   for (const group of groups)
     for (const child of group) {
-      const key = `${child.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE ? 'observation' : 'action'}:${child.jobKey}`;
+      const kind =
+        child.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE
+          ? 'observation'
+          : child.queueName === SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE
+            ? 'channel-auto-post'
+            : 'action';
+      const key = `${kind}:${child.jobKey}`;
       const prior = result.get(key);
       if (prior && sourceAbandonmentDigest(prior) !== sourceAbandonmentDigest(child))
         throw new Error('Exact child conflict');
@@ -261,14 +272,10 @@ export async function collectSourceAbandonmentAdmission(
   tx: Prisma.TransactionClient,
   redis: SourceAbandonmentRedisReader,
   request: SourceAbandonmentAdmissionRequest,
-): Promise<
-  LegacyRecoveryAdmissionOutput & { redisCatalogs: readonly SourceAbandonmentCatalogProof[] }
-> {
+): Promise<SourceAbandonmentAdmissionOutput> {
   request = parseSourceAbandonmentAdmissionRequest(JSON.stringify(request));
   const evidence = await gather(tx, redis, request.selection, undefined, request.publisherBotId);
-  const result: LegacyRecoveryAdmissionOutput & {
-    redisCatalogs: readonly SourceAbandonmentCatalogProof[];
-  } = {
+  const result: SourceAbandonmentAdmissionOutput = {
     version: 1,
     operation: 'admission_preview',
     applied: false,

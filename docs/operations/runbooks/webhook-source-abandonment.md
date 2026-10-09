@@ -5,28 +5,45 @@ source without replay. It does not establish that previous remote effects succee
 or failed. A started execution claim and every existing action, sanction, DELETE and
 ambiguous member receipt remain unchanged.
 
-The scope is an exact outer human message in a moderated group, plus its proved
-descendants. The modern owner and late-receipt inspectors accept plain text,
-zero through ten strict direct image/photo/video attachments without a linked message, text
-with one strict official SHARE preview and no linked message, or a strict flat
-forward/reply whose linked text has zero through ten validated image/photo
-attachments. A modern forward may omit its linked sender; any supplied sender
-must retain the strict passive shape. The outer human sender is always required.
-A reply requires outer text with no direct attachments. The original
-payload must match the real webhook parser; direct, linked and composed text must
-pass default and configured command checks. Bounded passive formatting and strict
-credential-free HTTPS link markup add no source identity. Direct media reuses the
-existing legacy validator and never fetches its URLs. Nested links, other direct
-media, mixed preview/media and unknown metadata are refused. These shapes
-do not change the legacy recovery profile.
-Only the outer recipient chat, message ID and sender identify the source;
-linked identities never become held messages or people. A new outer message that
-forwards the same original, and any distinct message from either participant, remain
-outside the hold. Publisher is a separate observer/publisher, never a moderation executor.
-Legacy member/global-user holds remain independent and cannot be repurposed for this
-operation. Unsupported sources or unattributed actionable continuations are refused.
+The source is an exact original message and its proved descendants. Human group
+messages use `HUMAN_CHAT_V1`; channel messages with positively absent authors use
+`CHANNEL_AUTHORLESS_V1` with a real null author. Never infer an author from a linked
+message or substitute a synthetic user ID. Both profiles verify the original
+payload against the real webhook parser and reject default or configured commands.
 
-The automatic `PRISTINE_OPERATOR_DISCARD_V1` path accepts this same strict source
+The human profile supports plain text, up to ten strict direct image/photo/video
+attachments, one direct audio attachment, or one official SHARE preview. Flat
+forwards and replies may contain linked text, up to ten images, or one video;
+a forward may contain one SHARE preview and a reply may contain one sticker.
+An absent linked sender is allowed only for a forward; supplied sender metadata
+remains validated. Initial human message edits retain the same exact identity and
+clock checks. A reply requires nonempty outer text and no direct attachments.
+Nested links, linked audio, mixed preview/media and unknown metadata are refused.
+
+Bounded formatting, credential-free HTTPS links and numeric user mentions are
+passive metadata with offsets in the original UTF-16 text. Identical linked
+formatting copied onto an empty outer forward is accepted only after separately
+validating its linked text. Media is inspected without downloading, decoding or
+transcribing it. The channel profile uses the same bounded direct media checks;
+its finite passive keyboard profile supports validated HTTPS links and app-open
+buttons without invoking them. Channel-only passive metadata also permits a strict
+original HTTPS message URL and bounded scheme-less relative markup links without
+whitespace, controls, colons, backslashes or a protocol-relative prefix. The original
+parser comparison and stored payload remain unchanged; linked validation may omit
+only the separately validated message URL. Existing legacy recovery retains its
+own profile.
+
+Only the original recipient chat, message ID and validated human sender, or explicit
+channel author absence, identify the source. Linked identities never become held
+messages or people. A distinct message remains outside the hold. Channel auto-post
+markers are real effect evidence: inventory them by exact chat/message, retain
+ambiguous receipts, and enforce source holds before marker claims and at final MAX
+calls. SQL guards prevent inserting, updating or deleting a held source marker.
+Publisher remains a separate observer/publisher, never a moderation executor.
+Legacy member/global-user holds are independent. Unsupported sources, independent
+unfinished edited claims and unattributed actionable continuations are refused.
+
+The automatic `PRISTINE_OPERATOR_DISCARD_V1` path accepts the strict human source
 profile only for an expired, enforced, prepared owner that has never started and
 has no lease, completion or command result. It requires the complete bounded
 receipt family, a prior dormant observation, later scrubbed operator-discard
@@ -65,8 +82,11 @@ policy.
 Use a clean checkout at the exact reviewed runtime SHA with every API role and both
 native auxiliaries running that image. Deploy the additive schema and mandatory
 readers before any installation. Both rollback paths require the modern owner and
-late-receipt profiles, including strict direct-media/forward/reply/preview provenance, after
-this release. The controller requires a 20 GiB Docker filesystem reserve and uses
+late-receipt profiles, including strict direct-media/forward/reply/preview provenance,
+audio and link markup. Authorless channel holds additionally require the explicit
+`CHANNEL_AUTHORLESS_V1` profile with a null author, channel receipt materialization
+and source checks before polling or legacy-recovery marker claims. Existing human
+v1 certificates retain their original meaning. The controller requires a 20 GiB Docker filesystem reserve and uses
 the existing protected deploy lock and durable cold-operation journal.
 
 Create an owner-private `0600` JSON request. A `preflight` or `prepare` request has
@@ -134,7 +154,93 @@ roles and both auxiliaries, fences all twenty-four webhook queues, and captures 
 bounded stable inventory. It does not install dispositions. A refused cold preview
 leaves the operation fenced; inspect the journal and use its exact recovery path.
 
+## Several certificates in one maintenance session
+
+`infra/scripts/source-abandonment-session-cli.mjs` coordinates a complete finite
+plan under the inherited deploy lock. Its bounded stdin request has an explicit
+`preview`, `run`, `status`, `continue`, `reconcile`, `finish`, `partial`, or `abort`
+operation. Use a clean reviewed controller commit with green exact-SHA CI. The
+controller source and the running API image have distinct identities; child SQL
+collectors and writers always execute in the captured immutable runtime image.
+
+Before preview, complete the read-only ordered-anchor inventory. It walks
+`webhook_events_ordered_chat_head_idx` through every non-null chat key before one
+fixed cutoff, including later blockers in the same chat. A checkpoint binds the
+request, exact running generations, immutable pages and actual end of range.
+Historical failures outside the runtime ordering predicate do not belong to this
+scope. An online end-of-range result nominates candidates only; it never proves
+source eligibility, absence of remote effects or fleet recovery.
+
+Preview authenticates that complete journal, attests the current bot catalog and
+captures actual stock admission proofs for every selected child. Freeze the
+queue-client bundle and its hash in private storage. A separate private feasibility
+artifact binds the inventory digest, measured phase evidence, startup/readback
+reserve, child count and aggregate work allowance. The checked-in limits are hard
+ceilings, not a promise that every plan fits. Refuse an incomplete or infeasible
+plan before pausing anything; never truncate the candidate set to fit a ceiling.
+The CLI returns a private plan path and SHA-256 for a subsequent `run` request.
+The parent ceiling is 32 certificates of at most eight owners each, 480 admission
+calls, 2,048 proof files and 60 minutes. These independent ceilings do not establish
+feasibility for every combination; each plan retains its actual phase estimates,
+128 MiB evidence limit and reserved restoration time. The online admission deadline
+is separate from the maintenance clock and remains explicitly bounded.
+
+One durable session preserves all 53 original queue pause states, drains work and
+stops the exact fourteen API and two native generations once. A full frozen
+inventory repeats the ordered scope before any child installation. Every child
+keeps its own certificate, selection, actual admission and stopped inventory;
+source, claim, semantic and chat/message authority cannot overlap between children.
+The existing per-certificate owner, SQL and Redis limits remain independent of
+the full-inventory and session totals. `MATERIALIZED` is a child state and never
+authorizes an intermediate restart.
+The stopped inventory uses its distinct 1,000-row page format. Only a typed bounded
+output refusal permits one 200-row retry at the identical cursor. Both attempts,
+their plans and their actual transport costs are retained and charged; failed
+larger reads do not become free work. The online inventory remains capped at 200.
+
+The controller copies its reviewed finite store harness into private storage and
+binds its hash in the immutable host context. One writer process executes a child's
+certificate creation and installation as separate unchanged stock transactions;
+a second process materializes at most 200 pages within the existing 120-second
+window. Each writer is removed and absence is proved before independent read-only
+seals. Lost acknowledgements never permit another installation attempt. The final
+aggregate uses two separate read-only processes, each running one stock transaction
+per certificate, and retains their raw results and child-bound proof references.
+The reviewed runtime-restoration reserve remains unavailable to those readbacks.
+Batching removes process startup overhead; it does not share or skip the four
+complete Redis namespace scans performed for each child's two inventories.
+
+The global journal lives in `/var/lib/maxim-deploy/source-abandonment-session`.
+Its marker, immutable evidence and CAS transitions survive a lost response. An
+`ATTEMPTED` child requires `reconcile` of that same certificate before any new
+child; never replay an uncertain installation. Continuations require the exact
+plan hash and current journal digest. Before the single native-first restart,
+independently refresh every attempted child's positive seal and materialization
+proof, remove store clients, and prove the same stopped fleet and queue fence.
+Restore the original auxiliary pauses as well as the owned webhook fence.
+
+`partial` requires every attempted child positively materialized and leaves all
+unattempted and excluded sources explicit. `abort` cannot cross an unresolved
+attempt. These are truthful terminal states, not complete backlog recovery.
+If the runtime and final readbacks are already proved but the terminal journal
+acknowledgement is lost, inspect the journal independently; do not blindly stop
+the proved fleet or repeat writes. Ordinary deploy and rollback remain blocked by
+every active, missing or malformed session journal.
+
+Successful session completion is separate from release acceptance. Observe fresh
+receipt cohorts including still-pending receipts, real outcomes, strict readiness
+and queue trends after restart. Neither a finite set of installed holds nor an
+HTTP success alone proves that all bots have recovered. Never-started backlog
+requires its own reviewed cancellation authority or measured normal draining;
+the session does not silently discard it.
+
 ## Installation and recovery
+
+A started owner may retain a strict `EXECUTION_WAITING` checkpoint only when its
+five fields match the current authority version, exact owner and semantic key, and
+canonical immutable execution deadline. Business start must precede that deadline.
+The original checkpoint remains unchanged: it records earlier readiness waiting,
+not proof that remote effects were absent. Other non-null checkpoints are refused.
 
 An `apply` request contains only `version`, `operation`, `targetSha`,
 `expectedJournalDigest`, `reviewedPreviewDigest` and `reviewedInventoryDigest`.

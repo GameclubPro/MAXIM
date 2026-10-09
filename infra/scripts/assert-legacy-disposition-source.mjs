@@ -74,7 +74,15 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
   ],
   [
     'apps/api/src/webhook/webhook-legacy-forward-source.ts',
-    ['export function isLegacyOpaqueSequence(', 'Math.abs(value) <= 2 ** 63', 'identity(item.mid)'],
+    [
+      "} from './webhook-legacy-content-primitives';",
+      'isLegacyOpaqueSequence(item.seq)',
+      'identity(item.mid)',
+    ],
+  ],
+  [
+    'apps/api/src/webhook/webhook-legacy-content-primitives.ts',
+    ['export function isLegacyOpaqueSequence(', 'Math.abs(value) <= 2 ** 63'],
   ],
   [
     'apps/api/src/common/group-command-authority.service.ts',

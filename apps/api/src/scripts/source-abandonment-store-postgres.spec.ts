@@ -31,6 +31,7 @@ import {
 } from './source-abandonment-live-sql';
 import {
   SOURCE_ABANDONMENT_PROTOCOL,
+  SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
   sourceAbandonmentDigest,
   type SourceAbandonmentLiveOutput,
   type SourceAbandonmentLiveRequest,
@@ -297,7 +298,10 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: historyIds } } });
     await db.webhookEvent.deleteMany({ where: { id: { in: historyIds } } });
     await db.spammerObservation.deleteMany({ where: { chatId } });
-    await db.chat.deleteMany({ where: { id: chatId } });
+    // FLAG: Authorless source markers remain immutable, including their chat FK.
+    // Disposable-store teardown owns these retained fixture rows after readback.
+    if (held?.sourceProfile !== 'CHANNEL_AUTHORLESS_V1')
+      await db.chat.deleteMany({ where: { id: chatId } });
     await db.maxActionLedgerEntry.deleteMany({ where: { chatId } });
   });
 
@@ -715,11 +719,14 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
   );
 
   it.each(['', '2027-01-02T03:04:05.000Z'])(
-    'preserves the full settings row and admits a source with string expiry %j',
+    'reads only command settings despite large unrelated media and string expiry %j',
     async (requiredSubscriptionExpiresAt) => {
       const settings = await db.chatSettings.update({
         where: { chatId },
-        data: { requiredSubscriptionExpiresAt },
+        data: {
+          requiredSubscriptionExpiresAt,
+          botSpeechMedia: { fixture: 'x'.repeat(600_000) },
+        },
       });
       const restored = await db.$transaction(async (tx) => {
         await tx.$executeRaw`SET LOCAL enable_seqscan = off`;
@@ -733,7 +740,17 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         });
         return meter.candidateReader().chatSettings.findUnique({ where: { chatId } });
       });
-      expect(restored).toMatchObject(settings);
+      expect(restored).toEqual({
+        chatId,
+        sourceInventoryRowVersion: expect.stringMatching(/^\d+:\(\d+,\d+\)$/u),
+        adminBanCommandName: settings.adminBanCommandName,
+        adminBanAllCommandName: settings.adminBanAllCommandName,
+        adminMuteCommandName: settings.adminMuteCommandName,
+        adminPermanentMuteCommandName: settings.adminPermanentMuteCommandName,
+        adminRulesCommandName: settings.adminRulesCommandName,
+        adminSilenceCommandName: settings.adminSilenceCommandName,
+        adminOpenChatCommandName: settings.adminOpenChatCommandName,
+      });
       const evidence = await db.$transaction(
         (tx) =>
           collectSourceAbandonmentAdmission(tx, redis, {
@@ -1344,6 +1361,222 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
       ).toMatchObject({ state: 'MATERIALIZED' });
     },
   );
+
+  it.each(['message_created', 'message_edited'])(
+    'installs and positively reads back an authorless %s source with exact marker and userless action children',
+    async (type) => {
+      const old = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+      const raw = structuredClone(old.rawPayload) as Record<string, unknown>;
+      const message = raw.message as Record<string, unknown>;
+      delete message.sender;
+      (message.recipient as Record<string, unknown>).chat_type = 'channel';
+      raw.update_type = type;
+      (message.body as Record<string, unknown>).attachments = [
+        type === 'message_edited'
+          ? { type: 'image', payload: { photo_id: 42, url: 'https://example.com/native-image' } }
+          : {
+              type: 'video',
+              payload: {
+                id: 42,
+                token: 'synthetic-video-token',
+                url: 'https://example.com/native-video',
+              },
+            },
+        {
+          type: 'inline_keyboard',
+          payload: {
+            buttons:
+              type === 'message_edited'
+                ? [
+                    [{ type: 'link', text: 'First', url: 'https://example.com/a' }],
+                    [{ type: 'link', text: 'Second', url: 'https://example.com/b' }],
+                  ]
+                : [
+                    [
+                      {
+                        type: 'open_app',
+                        text: 'App',
+                        contact_id: 12345,
+                        web_app: 'https://example.com/app',
+                        payload: 'opaque-start',
+                      },
+                    ],
+                  ],
+          },
+        },
+      ];
+      const update = new WebhookParser().parse(raw, { botId: old.botId! });
+      const semanticKey = buildWebhookSemanticEventKey(update)!;
+      await db.webhookExecutionClaim.updateMany({
+        where: { webhookEventId: ownerId },
+        data: { semanticKey },
+      });
+      const before = await db.webhookEvent.update({
+        where: { id: ownerId },
+        data: {
+          semanticKey,
+          rawPayload: raw as Prisma.InputJsonValue,
+          normalizedPayload: JSON.parse(JSON.stringify(update)),
+        },
+      });
+      await db.chat.update({ where: { id: chatId }, data: { entityType: 'CHANNEL' } });
+      const messageId = update.message!.messageId;
+      const marker = await db.channelAutoPostAttachMarker.create({
+        data: {
+          chatId,
+          messageId,
+          source: 'webhook',
+          botId: old.botId,
+          lockedAt: old.createdAt,
+          lockToken: 'retained-ambiguous-marker-lock',
+          replacementSendStartedAt: old.createdAt,
+          lastError: 'Synthetic uncertain dispatch',
+        },
+      });
+      // FLAG: Exact marker and PK child resolvers must prove bounded indexed reads
+      // against representative same-chat history, not an empty-table mock plan.
+      await db.channelAutoPostAttachMarker.createMany({
+        data: Array.from({ length: 512 }, (_, index) => ({
+          chatId,
+          messageId: `marker-history-${ownerId}-${index}`,
+          source: 'poll',
+          status: 'SKIPPED' as const,
+        })),
+      });
+      await db.$executeRaw`ANALYZE channel_auto_post_attach_markers`;
+      const queue = await actionQueue();
+      const action = {
+        actionType: 'DELETE_MESSAGE',
+        idempotencyKey: `channel-action-${randomUUID()}`,
+        chatId,
+        messageId,
+        attempt: 0,
+      };
+      await queue.add('action', action, { jobId: action.idempotencyKey });
+      const actionBefore = await redis.hgetall(
+        `bull:max-actions-background:${action.idempotencyKey}`,
+      );
+      const claims = await db.webhookExecutionClaim.findMany({
+        where: { webhookEventId: ownerId },
+      });
+      const output = await collect();
+      expect(output.issues).toEqual([]);
+      expect(output.selectedOwners).toEqual([
+        expect.objectContaining({
+          ownerWebhookEventId: ownerId,
+          sourceProfile: 'CHANNEL_AUTHORLESS_V1',
+          userId: null,
+          chatId,
+          messageId,
+        }),
+      ]);
+      expect(output.children).toHaveLength(2);
+      expect(output.children).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            queueName: SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
+            jobKey: marker.id,
+            chatId,
+            messageId,
+            jobPayloadDigest: sourceAbandonmentDigest(marker),
+          }),
+          expect.objectContaining({
+            queueName: 'max-actions-background',
+            jobKey: action.idempotencyKey,
+            chatId,
+            messageId,
+          }),
+        ]),
+      );
+      for (const child of output.children) expect(child).not.toHaveProperty('userId');
+      const { request, bytes } = await storeFixture(output);
+      expect(await executeSourceAbandonmentStore(db, request, bytes)).toMatchObject({
+        state: 'UNSEALED',
+      });
+      expect(
+        await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
+      ).toMatchObject({
+        state: 'MATERIALIZED',
+        completeChats: 1,
+        requiredChats: 1,
+        activationAuthorized: false,
+      });
+      for (let i = 0; i < 2; i += 1)
+        expect(
+          await executeSourceAbandonmentStore(
+            readonlyDb,
+            { ...request, operation: 'readback' },
+            bytes,
+          ),
+        ).toMatchObject({ state: 'MATERIALIZED', completeChats: 1, requiredChats: 1 });
+      expect(
+        await db.webhookSourceAbandonment.findUnique({ where: { ownerWebhookEventId: ownerId } }),
+      ).toMatchObject({
+        sourceProfile: 'CHANNEL_AUTHORLESS_V1',
+        subjectUserId: null,
+        chatId,
+        messageId,
+      });
+      expect(
+        await db.webhookSourceChildHold.findMany({
+          where: { abandonment: { certificateId: request.certificateId } },
+        }),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'CHANNEL_AUTO_POST', childKey: marker.id }),
+          expect.objectContaining({ kind: 'MAX_ACTION', childKey: action.idempotencyKey }),
+        ]),
+      );
+      expect(await db.webhookEvent.findUnique({ where: { id: ownerId } })).toEqual({
+        ...before,
+        sourceDispositionId: expect.any(String),
+        sourceDispositionReceiptId: ownerId,
+      });
+      expect(
+        await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } }),
+      ).toEqual(claims);
+      expect(await db.channelAutoPostAttachMarker.findUnique({ where: { id: marker.id } })).toEqual(
+        marker,
+      );
+      expect(await redis.hgetall(`bull:max-actions-background:${action.idempotencyKey}`)).toEqual(
+        actionBefore,
+      );
+      expect(await db.webhookLegacyRecovery.count({ where: { chatId } })).toBe(0);
+    },
+  );
+
+  it('installs a strictly bound EXECUTION_WAITING checkpoint without changing the started claim', async () => {
+    const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const originalClaim = await db.webhookExecutionClaim.findFirstOrThrow({
+      where: { webhookEventId: ownerId, kind: 'EXECUTION' },
+    });
+    const claim = await db.webhookExecutionClaim.update({
+      where: { id: originalClaim.id },
+      data: {
+        commandResult: {
+          kind: 'EXECUTION_WAITING',
+          authorityVersion: 'semantic-owner-lease-v1',
+          webhookEventId: owner.id,
+          semanticKey: owner.semanticKey!,
+          deadlineAt: owner.executionDeadlineAt!.toISOString(),
+        },
+      },
+    });
+    const { request, bytes } = await storeFixture();
+    await executeSourceAbandonmentStore(db, request, bytes);
+    expect(
+      await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
+    ).toMatchObject({ state: 'MATERIALIZED', completeChats: 1, requiredChats: 1 });
+    expect(
+      await executeSourceAbandonmentStore(readonlyDb, { ...request, operation: 'readback' }, bytes),
+    ).toMatchObject({ state: 'MATERIALIZED' });
+    expect(await db.webhookExecutionClaim.findUnique({ where: { id: claim.id } })).toEqual(claim);
+    expect(await db.webhookEvent.findUnique({ where: { id: owner.id } })).toEqual({
+      ...owner,
+      sourceDispositionId: expect.any(String),
+      sourceDispositionReceiptId: owner.id,
+    });
+  });
 
   it('denies settings drift between certificate creation and atomic installation', async () => {
     const { request, bytes } = await storeFixture();

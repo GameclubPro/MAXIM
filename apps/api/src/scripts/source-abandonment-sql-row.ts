@@ -69,6 +69,12 @@ export const SOURCE_INVENTORY_DATE_COLUMNS: Readonly<Record<string, readonly str
     'created_at',
     'updated_at',
   ],
+  channel_auto_post_attach_markers: [
+    'locked_at',
+    'replacement_send_started_at',
+    'created_at',
+    'updated_at',
+  ],
 };
 
 export class SourceInventoryRefused extends Error {

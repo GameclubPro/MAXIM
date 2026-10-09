@@ -9,11 +9,13 @@ import {
 import {
   inventorySourceAbandonmentRedis,
   type SourceAbandonmentRedisReader,
+  type SourceAbandonmentRedisSource,
 } from './source-abandonment-live-redis';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
 import { isLegacyRecoveryWebhookQueue } from './legacy-recovery-queue-inventory';
 import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
+import { SOURCE_ABANDONMENT_CHANNEL_PROFILE } from '../webhook/webhook-source-abandonment.contract';
 
 const url = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const native = url ? describe : describe.skip;
@@ -376,6 +378,84 @@ native('modern full namespace census on Redis 7', () => {
       await redis.incr(`bull:${name}:id`);
       expect((await observe()).stableDigest).not.toBe(beforeHeader.stableDigest);
     }
+  });
+
+  it('authorless channel actions retain exact message proof and reject an attributed user', async () => {
+    const channel: SourceAbandonmentRedisSource = {
+      chatId: '-200',
+      messageId: 'channel-message',
+      userId: null,
+      sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+    };
+    const queue = new Queue('max-actions-background', { connection: { url: fixtureUrl } });
+    queues.push(queue);
+    const data = {
+      chatId: channel.chatId,
+      messageId: channel.messageId,
+      userId: null as string | null,
+      actionType: 'DELETE_MESSAGE',
+      idempotencyKey: 'channel-action',
+    };
+    const job = await queue.add('action', data, { jobId: 'channel-job', delay: 60_000 });
+    const observe = () =>
+      inventorySourceAbandonmentRedis(
+        reader(),
+        selection,
+        [channel],
+        { ...LEGACY_RECOVERY_LIVE_BUDGET, deadlineAtMs: deadline() },
+        resolve,
+      );
+    const first = await observe();
+    expect(first.issues).toEqual([]);
+    expect(first.children).toEqual([
+      {
+        jobKey: 'channel-action',
+        queueName: queue.name,
+        jobPayloadDigest: sourceAbandonmentDigest(data),
+        chatId: channel.chatId,
+        messageId: channel.messageId,
+      },
+    ]);
+    expect(await job.getState()).toBe('delayed');
+    await job.updateData({ ...data, userId: '123' });
+    const conflict = await observe();
+    expect(conflict.issues[0]?.code).toBe('ACTION_SUBJECT_CONFLICT');
+    expect(conflict.children).toEqual([]);
+    expect(await job.getState()).toBe('delayed');
+  });
+
+  it('authorless channel never proves unrelated FANOUT from a missing user', async () => {
+    const channel: SourceAbandonmentRedisSource = {
+      chatId: '-200',
+      messageId: 'channel-message',
+      userId: null,
+      sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+    };
+    const queue = new Queue('global-spammer-denorm', { connection: { url: fixtureUrl } });
+    queues.push(queue);
+    const data = {
+      observationId: 'fanout-observation',
+      chatId: '-300',
+      userId: '300',
+      source: 'FANOUT_HIGH',
+      fastPath: false,
+    };
+    const job = await queue.add('observation', data, { jobId: 'fanout-job', delay: 60_000 });
+    const result = await inventorySourceAbandonmentRedis(
+      reader(),
+      selection,
+      [channel],
+      { ...LEGACY_RECOVERY_LIVE_BUDGET, deadlineAtMs: deadline() },
+      async () => ({
+        row: { ...data, id: data.observationId, messageId: null },
+        digest: 'a'.repeat(64),
+        cost: { pages: 1, rows: 1, probes: 1, bytes: 128 },
+        plans: [],
+      }),
+    );
+    expect(result.issues[0]?.code).toBe('OBSERVATION_SOURCE_UNPROVED');
+    expect(result.children).toEqual([]);
+    expect(await job.getState()).toBe('delayed');
   });
 
   it('retains real delayed cleanup bytes while requiring its separately resolved parent proof', async () => {

@@ -218,7 +218,7 @@ export function readLegacyColdPublisherCatalog(
 // FLAG: Credentials are copied only from the exact captured admin generation, into
 // a private file consumed by an immutable, isolated store client. They are never
 // part of an output, journal, command argument, or lasting operation context.
-function storeConnection(baseline) {
+export function readLegacyColdStoreConnection(baseline) {
   const admin = baseline.services.find((row) => row.serviceName === 'api-admin');
   const rows = JSON.parse(execute('docker', ['inspect', admin.containerId]));
   const row = rows[0];
@@ -412,7 +412,7 @@ export async function runLegacyColdHost(
   const runtime = createLegacyColdRuntime({ bindings, baseline, report });
   baseline ??= runtime.inspectRuntime();
   bindings.baselineDigest = legacyColdDigest(baseline);
-  const connection = storeConnection(baseline);
+  const connection = readLegacyColdStoreConnection(baseline);
   if (
     canonicalLegacyColdDigest(selection.majorBotIds) !==
     canonicalLegacyColdDigest(connection.majorBotIds)
