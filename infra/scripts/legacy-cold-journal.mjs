@@ -15,6 +15,11 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  archiveEmptyInstallClosure,
+  assertNoInterruptedEmptyInstallArchive,
+  readEmptyInstallClosure,
+} from './legacy-cold-empty-install-closure.mjs';
 
 export const LEGACY_COLD_STATE_DIR = '/var/lib/maxim-deploy';
 export const LEGACY_COLD_JOURNAL = 'legacy-cold-maintenance.json';
@@ -652,6 +657,7 @@ function readProofEvidence(directory, hash) {
 // ordering exclusions remain independently bound to immutable permanent holds.
 export function readLegacyColdState(directory = LEGACY_COLD_STATE_DIR) {
   protectedDirectory(directory);
+  assertNoInterruptedEmptyInstallArchive(directory);
   const pendingWrites = readdirSync(directory).filter(
     (name) =>
       name.startsWith(`.${LEGACY_COLD_JOURNAL}.`) || name.startsWith(`.${LEGACY_COLD_MARKER}.`),
@@ -684,12 +690,19 @@ export function readLegacyColdState(directory = LEGACY_COLD_STATE_DIR) {
     if (abortPhases.includes(journal.phase))
       validateAbortEvidence(journal, (hash) => readProofEvidence(directory, hash));
   }
-  return { marker, journal };
+  const state = { marker, journal };
+  const closure = readEmptyInstallClosure(directory, state);
+  if (closure) state.emptyInstallAbort = closure.metadata;
+  return state;
 }
 
 export function assertNoActiveLegacyColdMaintenance(directory = LEGACY_COLD_STATE_DIR) {
   const state = readLegacyColdState(directory);
-  if (state.journal && !['COMPLETE', 'ABORTED'].includes(state.journal.phase))
+  if (
+    state.journal &&
+    !['COMPLETE', 'ABORTED'].includes(state.journal.phase) &&
+    state.emptyInstallAbort?.phase !== 'EMPTY_INSTALL_ABORTED'
+  )
     refuse('active cold epoch blocks ordinary mutation');
   return state;
 }
@@ -755,9 +768,13 @@ export function createLegacyColdJournalStore({
   assertLock = () => assertInheritedDeployLock(directory),
   now = () => new Date().toISOString(),
 } = {}) {
-  function mutation() {
+  function mutation({ allowEmptyClosure = false } = {}) {
     protectedDirectory(directory);
     assertLock();
+    // FLAG: Containment after a failed next admission must not overwrite the
+    // closed origin, even when the protocol has already set its admitted flag.
+    if (!allowEmptyClosure && readLegacyColdState(directory).emptyInstallAbort)
+      refuse('closed empty-install origin is immutable');
   }
   return {
     read() {
@@ -773,7 +790,7 @@ export function createLegacyColdJournalStore({
       );
     },
     recordProof(value) {
-      mutation();
+      mutation({ allowEmptyClosure: true });
       const bytes = `${JSON.stringify(value)}\n`;
       if (Buffer.byteLength(bytes) > 8 * 1024 * 1024) refuse('proof transfer budget exceeded');
       const hash = legacyColdDigest(bytes);
@@ -822,7 +839,7 @@ export function createLegacyColdJournalStore({
       return marker;
     },
     admit(bindings, hostAdmissionDigest) {
-      mutation();
+      mutation({ allowEmptyClosure: true });
       const state = assertNoActiveLegacyColdMaintenance(directory);
       if (
         !state.marker ||
@@ -842,6 +859,9 @@ export function createLegacyColdJournalStore({
         proofs: { hostAdmission: hostAdmissionDigest },
         blockedReason: null,
       });
+      if (state.emptyInstallAbort) {
+        archiveEmptyInstallClosure({ directory, state, bindings, hostAdmissionDigest, assertLock });
+      }
       atomicPrivateWrite(
         directory,
         LEGACY_COLD_MARKER,

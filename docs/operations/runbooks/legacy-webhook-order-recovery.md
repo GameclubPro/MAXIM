@@ -184,7 +184,31 @@ Any failure after cold admission attempts to stop the captured runtime first,
 remove its exact client, pause its queues and persist the blocked state. It never
 starts old images or automatically restores the baseline after a refusal.
 Every ordinary deploy, rollback, reclaim and supported topology mutation refuses
-while this journal is incomplete; missing/corrupt evidence also refuses.
+while this journal is incomplete, except for the verified empty-install closure
+described below; missing/corrupt evidence also refuses.
+
+A separately reviewed empty-install abort may leave the original journal truthfully
+at `INSTALLING` and write `legacy-cold-private/<controllerNonce>/empty-install-abort.json`.
+The ordinary guard accepts only its final `EMPTY_INSTALL_ABORTED` phase after checking
+the exact original journal, all referenced immutable proofs, the same full UNSEALED
+certificate snapshot in two empty witnesses, inventory/attestation bindings, the
+same stopped and restored 14 API plus two native generations, the owned 24-queue
+fence and restart smokes. Backlog-only `fleetReady: false` remains visible and is
+not fleet recovery or release acceptance. `EMPTY_INSTALL_ABORTING`, missing proof,
+interrupted writes and changed generations remain blocked.
+
+Reading this closure never rewrites the original journal or certificate. All original
+journal mutations refuse, including failure containment after a rejected next
+admission. A new cold admission first fsyncs an immutable archive containing the raw
+journal, marker, sidecar, context, referenced proofs and next admission bindings under
+`empty-install-closure-archives/`, then advances the normal monotonic marker. A pending
+archive write requires diagnosis and must never be deleted to clear the guard.
+
+When the installed tooling predates closure recognition, synchronize the reviewed
+exact-green-CI commit with the normal `vps-connect.sh deploy main --plan` path first.
+Plan mode holds the deploy lock and synchronizes tooling without application effects;
+the subsequent normal deploy still runs the ordinary guard and its other checks.
+This does not authorize installation, certificate edits or a generic journal reset.
 
 A process interruption after installation can be reconciled with the same request
 shape and `operation: "reconcile"`, using the current reviewed journal digest.
