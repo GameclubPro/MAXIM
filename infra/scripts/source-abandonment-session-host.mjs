@@ -236,7 +236,9 @@ export function resolveSourceAbandonmentSessionRedisUrl(connection, run = execut
 
 // FLAG: A complete census authenticates both namespace coverage and measured cost.
 // This mirrors the fixed source-v1 installer limits; a digest alone grants no scope.
-function catalogs(value, queueNames) {
+// Online admission permits active counts to move within the same known namespaces;
+// cold inventory still requires identical raw counts before any installation.
+function catalogs(value, queueNames, { online = false } = {}) {
   requireFact(Array.isArray(value) && value.length === 2, 'session_host_catalog_unproved');
   for (const proof of value) {
     exact(
@@ -292,8 +294,10 @@ function catalogs(value, queueNames) {
       'session_host_catalog_cost_unproved',
     );
   }
+  const identity = (proof) =>
+    online ? Object.keys(proof.namespaceKeyCounts).sort() : proof.namespaceKeyCounts;
   requireFact(
-    canonical(value[0].namespaceKeyCounts) === canonical(value[1].namespaceKeyCounts),
+    canonical(identity(value[0])) === canonical(identity(value[1])),
     'session_host_catalog_changed',
   );
 }
@@ -432,7 +436,7 @@ export function validateSourceAbandonmentSessionAdmission({
     'session_host_admission_unproved',
   );
   owners(admission.selectedOwners, authorities, selection.abandonBefore);
-  catalogs(admission.redisCatalogs, queueNames);
+  catalogs(admission.redisCatalogs, queueNames, { online: true });
   effectCost(admission.cost);
   return admission;
 }

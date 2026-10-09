@@ -190,6 +190,10 @@ reserve, child count and aggregate work allowance. The checked-in limits are har
 ceilings, not a promise that every plan fits. Refuse an incomplete or infeasible
 plan before pausing anything; never truncate the candidate set to fit a ceiling.
 The CLI returns a private plan path and SHA-256 for a subsequent `run` request.
+Online admission requires two complete, individually bounded namespace censuses
+with the same known namespace names; active key counts may differ between them.
+Preserve both raw proofs. This tolerance applies only to online admission:
+each stopped inventory still requires exact equality of its two raw count maps.
 The parent ceiling is 32 certificates of at most eight owners each, 480 admission
 calls, 2,048 proof files and 60 minutes. These independent ceilings do not establish
 feasibility for every combination; each plan retains its actual phase estimates,

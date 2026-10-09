@@ -26,6 +26,7 @@ import {
   sourceAbandonmentSessionHostTopology,
   reviewSourceAbandonmentSessionPending,
   resolveSourceAbandonmentSessionRedisUrl,
+  validateSourceAbandonmentSessionAdmission,
 } from './source-abandonment-session-host.mjs';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -463,6 +464,108 @@ test('exact stock source inventory and full catalogs grant a finite review', (t)
   assert.equal(h.review().sourceSelectionComplete, true);
   assert.equal(h.review().descendantsComplete, true);
 });
+function reviewAdmission(h) {
+  return validateSourceAbandonmentSessionAdmission({
+    admission: h.admission,
+    selection: h.child.selection,
+    authorities: h.manifest.children[0].authorities,
+    sourceSha,
+    imageId,
+    registryDigest: h.manifest.registryDigest,
+    publisherCatalogDigest: h.manifest.botCatalogDigest,
+    queueNames: registry.queueNames,
+  });
+}
+test('online admission retains changing active counts while cold review stays strict', (t) => {
+  const h = fixture(t);
+  const second = h.admission.redisCatalogs[1];
+  second.namespaceKeyCounts['moderation-actions'] = 2;
+  second.cost.matchedKeys = 2;
+  const original = JSON.stringify(h.admission);
+  assert.equal(reviewAdmission(h), h.admission);
+  assert.equal(JSON.stringify(h.admission), original);
+  h.manifest.children[0].admissionDigest = sha256(`${original}\n`);
+  h.child.manifestDigest = digest(h.manifest);
+  h.inv.binding.transitionJournalSha256 = digest(h.child);
+  h.save();
+  assert.equal(h.review().sourceSelectionComplete, true);
+  h.inv.redisCatalogs = clone(h.admission.redisCatalogs);
+  h.save();
+  assert.throws(h.review, /session_host_catalog_changed/);
+});
+for (const [name, mutate, pattern] of [
+  ['missing pass', (proofs) => proofs.pop(), /catalog_unproved/],
+  [
+    'incomplete pass',
+    (proofs) => {
+      proofs[1].complete = false;
+    },
+    /catalog_unproved/,
+  ],
+  [
+    'reported issue',
+    (proofs) => {
+      proofs[1].issue = 'CATALOG_PAGE_LIMIT';
+    },
+    /catalog_unproved/,
+  ],
+  [
+    'unknown namespace',
+    (proofs) => {
+      proofs[1].namespaceKeyCounts = { unknown: 1 };
+    },
+    /catalog_unproved/,
+  ],
+  [
+    'changed known namespace',
+    (proofs) => {
+      proofs[1].namespaceKeyCounts = { 'publisher-start': 1 };
+    },
+    /catalog_changed/,
+  ],
+  [
+    'disappearing namespace',
+    (proofs) => {
+      proofs[1].namespaceKeyCounts = {};
+      proofs[1].cost.matchedKeys = 0;
+      proofs[1].cost.keyBytes = 0;
+    },
+    /catalog_changed/,
+  ],
+  [
+    'zero count',
+    (proofs) => {
+      proofs[1].namespaceKeyCounts['moderation-actions'] = 0;
+    },
+    /catalog_unproved/,
+  ],
+  [
+    'forged count accounting',
+    (proofs) => {
+      proofs[1].cost.matchedKeys = 2;
+    },
+    /catalog_cost_unproved/,
+  ],
+  [
+    'page budget',
+    (proofs) => {
+      proofs[1].cost.pages = 4097;
+    },
+    /catalog_cost_unproved/,
+  ],
+  [
+    'time budget',
+    (proofs) => {
+      proofs[1].cost.durationMs = 20001;
+    },
+    /catalog_cost_unproved/,
+  ],
+])
+  test(`online admission refuses ${name}`, (t) => {
+    const h = fixture(t);
+    mutate(h.admission.redisCatalogs);
+    assert.throws(() => reviewAdmission(h), pattern);
+  });
 function channelFixture(t) {
   const h = fixture(t);
   for (const owner of [h.inv.selectedOwners[0], h.admission.selectedOwners[0]])

@@ -343,6 +343,24 @@ test('planner creates exact finite children in sequential stock admission calls'
   assert.ok(result.admissionDurationMs >= 0);
 });
 
+test('planner retains exact online admission proofs when active namespace counts move', async (t) => {
+  const enumeration = writeWalk(t, [row(1)]).read();
+  const h = planner(enumeration, (value) => {
+    value.redisCatalogs[1].namespaceKeyCounts['moderation-actions'] = 2;
+    value.redisCatalogs[1].cost.matchedKeys = 2;
+    return value;
+  });
+  const result = await planSourceAbandonmentSessionChildren(h.options);
+  assert.equal(result.feasible, true);
+  assert.equal(result.children.length, 1);
+  assert.deepEqual(result.admissionProofs, [proofDigest(h.proofs[0])]);
+  assert.equal(result.children[0].admissionDigest, proofDigest(h.proofs[0]));
+  assert.notDeepEqual(
+    h.proofs[0].redisCatalogs[0].namespaceKeyCounts,
+    h.proofs[0].redisCatalogs[1].namespaceKeyCounts,
+  );
+});
+
 test('DENY group splits to individuals without losing the supported subset', async (t) => {
   const enumeration = writeWalk(t, [row(1), row(2), row(3), unresolvedRow(4)]).read();
   const rejectedOwner = row(2).claim.ownerId;
