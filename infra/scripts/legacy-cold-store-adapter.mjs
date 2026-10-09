@@ -88,6 +88,32 @@ export function createLegacyColdStoreAdapter({
   };
   if (legacyColdDigest(selection) !== bindings.selectionDigest)
     throw new Error('selection_binding_unproved');
+  const refuseInventory = (inventory, stage, code) => {
+    // FLAG: Keep refusal bytes outside authoritative journal evidence: a partial
+    // diagnostic write must not poison journal loading or the preinstall abort.
+    // Saving or reporting a refusal cannot grant authority or replace its error.
+    let evidenceSha256 = null;
+    try {
+      const digest = legacyColdDigest(`${JSON.stringify(inventory)}\n`);
+      evidenceSha256 = immutableInventory(
+        join(dirname(inventoryPath), `refused-inventory-${digest}.json`),
+        inventory,
+      );
+    } catch {
+      // The original inventory refusal remains authoritative if capture fails.
+    }
+    try {
+      report?.({
+        version: 1,
+        diagnostic: 'legacy_cold_refusal_evidence',
+        stage,
+        evidenceSha256,
+      });
+    } catch {
+      // Diagnostic transport cannot replace the original refusal either.
+    }
+    throw new Error(code);
+  };
   let currentPending = null;
   const pending = () => currentPending ?? store.readProof('pendingInventory');
   const request = (operation, value = pending(), page) => ({
@@ -165,7 +191,7 @@ export function createLegacyColdStoreAdapter({
         !Array.isArray(inventory.issues) ||
         inventory.issues.length !== 0
       )
-        throw new Error('refreeze_inventory_refused');
+        refuseInventory(inventory, 'snapshotRefrozenPending', 'refreeze_inventory_refused');
       const stable = (value) =>
         Object.fromEntries(
           Object.entries(value).filter(
@@ -286,7 +312,7 @@ export function createLegacyColdStoreAdapter({
           (row) => !selection.ownerWebhookEventIds.includes(row.ownerWebhookEventId),
         )
       )
-        throw new Error('inventory_refused');
+        refuseInventory(inventory, 'snapshotPending', 'inventory_refused');
       // FLAG: Query plans and cache costs can change between equivalent read-only
       // snapshots. Keep the reviewed artifact immutable and independently bind
       // the fresh diagnostic proof; all decision/source/child fields must agree.

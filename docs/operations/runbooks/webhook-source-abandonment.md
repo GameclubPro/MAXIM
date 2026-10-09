@@ -124,6 +124,17 @@ roles and both auxiliaries, fences all twenty-four webhook queues, and captures 
 bounded stable inventory. It does not install dispositions. A refused cold preview
 leaves the operation fenced; inspect the journal and use its exact recovery path.
 
+An `inventory_refused` or `refreeze_inventory_refused` response retains the original
+collector response as `refused-inventory-<evidenceSha256>.json` in the original
+operation's directory under `/var/lib/maxim-deploy/legacy-cold-private`, limited
+to 8 MiB and mode `0600`. It stays outside authoritative journal evidence, so a
+partial diagnostic write cannot prevent reading the journal or aborting. The
+`legacy_cold_refusal_evidence` diagnostic contains only the
+fixed stage and file digest; a null digest means capture failed. Inspect that
+original evidence before another cold attempt. Neither capture nor a capture or
+logging failure changes the original refusal, journal phase, proof references or
+installation authority.
+
 ## Installation and recovery
 
 An `apply` request contains only `version`, `operation`, `targetSha`,
