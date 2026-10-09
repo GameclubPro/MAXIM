@@ -331,7 +331,9 @@ export class RuleEngineMessageLimitsDetector {
       timeoutMs: MESSAGE_LIMIT_STATE_TIMEOUT_MS,
       onTimeout: () => 'deadline_exceeded' as const,
     });
-    if (result === 'deadline_exceeded') throw new Error('Media cooldown state deadline exceeded');
+    // FLAG: Unknown cooldown state cannot prove a violation or strand the started engine.
+    // Keep the Redis absolute deadline; a late response never authorizes a sanction.
+    if (result === 'deadline_exceeded') return false;
     return result === 'blocked';
   }
 
@@ -377,8 +379,9 @@ export class RuleEngineMessageLimitsDetector {
       timeoutMs: params.timeoutMs,
       onTimeout: () => ({ kind: 'deadline_exceeded' as const }),
     });
-    if (result.kind === 'deadline_exceeded')
-      throw new Error('Message limit state deadline exceeded');
+    // FLAG: An unavailable count skips only this rule, without replaying the started engine.
+    // Redis still owns the absolute write deadline, including after the local wait expires.
+    if (result.kind === 'deadline_exceeded') return null;
     return result.kind === 'stale' ? null : (result.counts[0] ?? 0);
   }
 }

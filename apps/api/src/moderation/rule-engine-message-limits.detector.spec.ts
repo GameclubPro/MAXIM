@@ -86,6 +86,80 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
 }
 
 describe('RuleEngineMessageLimitsDetector', () => {
+  it.each(['burst', 'count', 'cooldown'] as const)(
+    'skips only an unknown %s decision on Redis or local deadline expiry',
+    async (kind) => {
+      const redisCounter = new MockRedisCounterService();
+      const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);
+      const input = {
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        eventTimestampMs: Date.now(),
+        settings: buildSettings({
+          messageCountLimitEnabled: true,
+          stickerMessageCooldownEnabled: true,
+        }),
+        hasStickerAttachment: true,
+      };
+      const call = () =>
+        kind === 'burst'
+          ? detector.detectAntiSpamBurstLimit(input)
+          : kind === 'count'
+            ? detector.detectMessageCountLimit(input)
+            : detector.detectMediaCooldownLimits(input);
+      const method =
+        kind === 'cooldown'
+          ? 'claimEventCooldown'
+          : 'replaceRevisionedSetMembershipsBeforeDeadline';
+      const expired = kind === 'cooldown' ? 'deadline_exceeded' : { kind: 'deadline_exceeded' };
+      const state = jest.spyOn(redisCounter, method).mockResolvedValue(expired as never);
+      const expected = kind === 'cooldown' ? [] : null;
+      try {
+        await expect(call()).resolves.toEqual(expected);
+        state.mockImplementationOnce(() => new Promise<never>(() => {}));
+        jest.useFakeTimers();
+        const pending = call();
+        await jest.advanceTimersByTimeAsync(kind === 'burst' ? 120 : 250);
+        await expect(pending).resolves.toEqual(expected);
+        expect(state).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+        state.mockRestore();
+      }
+    },
+  );
+
+  it.each(['count', 'cooldown'] as const)('preserves nondeadline %s errors', async (kind) => {
+    const redisCounter = new MockRedisCounterService();
+    const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);
+    const error = new Error('Redis response failed');
+    const method =
+      kind === 'cooldown' ? 'claimEventCooldown' : 'replaceRevisionedSetMembershipsBeforeDeadline';
+    const state = jest.spyOn(redisCounter, method).mockRejectedValue(error);
+    const input = {
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'message-1',
+      eventTimestampMs: Date.now(),
+      settings: buildSettings({
+        messageCountLimitEnabled: true,
+        stickerMessageCooldownEnabled: true,
+      }),
+      hasStickerAttachment: true,
+    };
+    try {
+      await expect(
+        kind === 'cooldown'
+          ? detector.detectMediaCooldownLimits(input)
+          : detector.detectMessageCountLimit(input),
+      ).rejects.toBe(error);
+      expect(state).toHaveBeenCalledTimes(1);
+    } finally {
+      state.mockRestore();
+    }
+  });
+
   it('strips recognized phones while preserving adjacent labels and non-phone numbers', () => {
     const numeric = 'Available 22.09.2026, price 123456789, packages 100-200-300';
     expect(stripDetectedPhoneNumbers(numeric)).toBe(numeric);
