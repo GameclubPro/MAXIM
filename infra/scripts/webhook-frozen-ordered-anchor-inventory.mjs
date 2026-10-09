@@ -3,6 +3,7 @@ import { INVENTORY_LIMITS, classifyInventoryRow } from './webhook-order-blocker-
 import { parseOrderedAnchorRequest } from './webhook-ordered-anchor-inventory.mjs';
 
 export const FROZEN_ORDERED_ANCHOR_PAGE_SIZE = 1000;
+export const FROZEN_ORDERED_ANCHOR_INITIAL_PAGE_SIZE = 200;
 export const FROZEN_ORDERED_ANCHOR_LIMITS = Object.freeze({
   maxPages: INVENTORY_LIMITS.maxPages,
   maxRowObservations: INVENTORY_LIMITS.maxRowObservations,
@@ -55,9 +56,9 @@ function cursor(value, cutoff) {
       timeKey(value.createdAt) < timeKey(cutoff),
   );
 }
-// FLAG: This separate page format covers the same exact ordered index in up to
-// 1000 rows. A typed output refusal alone may reduce a query to 200 rows. Caller
-// attestation must establish stopped generations; metadata never authorizes writes.
+// FLAG: Retained pages may contain up to 1000 rows. New walks select 200 before
+// issuing SQL; errors never authorize another attempt. Caller attestation must
+// establish stopped generations; metadata never authorizes writes.
 // SQL owns equal-time ID and chat collation; successful cursor EOF remains mandatory.
 export function validateFrozenOrderedAnchorPage(value, rawRequest) {
   const request = parseOrderedAnchorRequest(rawRequest);
@@ -226,7 +227,11 @@ export function createFrozenOrderedAnchorAccumulator(rawRequest, options = {}) {
     nextRequest: () =>
       complete
         ? null
-        : { cutoff: request.cutoff, pageSize: FROZEN_ORDERED_ANCHOR_PAGE_SIZE, after: copy(after) },
+        : {
+            cutoff: request.cutoff,
+            pageSize: FROZEN_ORDERED_ANCHOR_INITIAL_PAGE_SIZE,
+            after: copy(after),
+          },
     report: () => ({
       version: 3,
       kind: 'frozen_ordered_anchor_inventory_report',

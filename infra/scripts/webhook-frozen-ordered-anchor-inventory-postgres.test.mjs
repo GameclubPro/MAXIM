@@ -32,7 +32,7 @@ const request = {
   cutoff,
 };
 test(
-  'native PG16 frozen1000 exact traversal, skew, payload ceiling and bounded refusal',
+  'native PG16 frozen200 traversal and retained1000 schema under unchanged SQL limits',
   { skip: !process.env.MAXIM_TEST_POSTGRES_URL, timeout: 180000 },
   async (t) => {
     const url = new URL(process.env.MAXIM_TEST_POSTGRES_URL);
@@ -148,7 +148,7 @@ test(
         }
       };
       await t.test(
-        '43,919 ordered anchors across184chats/161owners match online200 without gaps',
+        '43,919 anchors across184chats/161owners match online200 and retained1000 without gaps',
         async () => {
           await db.query(`INSERT INTO webhook_events(id,status,created_at,normalized_payload,error_message,bot_id,semantic_key)
         SELECT 'anchor_'||lpad(n::text,6,'0'),(ARRAY['FAILED','QUEUED','RECEIVED']::"WebhookStatus"[])[1+(n%3)],'2026-10-08T00:00:00.123456',
@@ -158,7 +158,11 @@ test(
         SELECT 'selected_claim_'||n,'EXECUTION','semantic_'||n,'anchor_'||lpad(n::text,6,'0'),'READY',true,'2026-10-08','2026-10-08' FROM generate_series(1,161)n;
         ANALYZE webhook_events; ANALYZE webhook_execution_claims;`);
           const traversals = [];
-          for (const frozen of [false, true]) {
+          for (const { frozen, pageSize } of [
+            { frozen: false, pageSize: 200 },
+            { frozen: true, pageSize: 200 },
+            { frozen: true, pageSize: 1000 },
+          ]) {
             const accumulator = (
                 frozen ? createFrozenOrderedAnchorAccumulator : createOrderedAnchorAccumulator
               )(request),
@@ -166,7 +170,8 @@ test(
             const begin = performance.now(),
               obs = observations.length;
             while (accumulator.nextRequest()) {
-              const { value } = await page(accumulator.nextRequest(), frozen);
+              assert.equal(accumulator.nextRequest().pageSize, 200);
+              const { value } = await page({ ...accumulator.nextRequest(), pageSize }, frozen);
               accumulator.addPage(value);
               ids.push(...value.rows.map((row) => row.id));
             }
@@ -176,9 +181,10 @@ test(
             assert.equal(new Set(ids).size, 43919);
             assert.equal(report.uniqueChats, 184);
             assert.equal(report.nominatedOwners, 161);
-            assert.equal(report.pages, frozen ? 44 : 220);
+            assert.equal(report.pages, pageSize === 1000 ? 44 : 220);
             traversals.push({
-              pageSize: frozen ? 1000 : 200,
+              frozen,
+              pageSize,
               elapsedMs: performance.now() - begin,
               report,
               ids,
@@ -186,11 +192,13 @@ test(
             });
           }
           assert.deepEqual(traversals[1].ids, traversals[0].ids);
+          assert.deepEqual(traversals[2].ids, traversals[0].ids);
           for (const row of traversals)
             t.diagnostic(
               JSON.stringify({
                 profile: 'normal_43919',
                 pageSize: row.pageSize,
+                frozen: row.frozen,
                 pages: row.report.pages,
                 rows: row.ids.length,
                 totalMs: row.elapsedMs,
@@ -218,7 +226,7 @@ test(
           ids.push(...value.rows.map((r) => r.id));
           accumulator.addPage(value);
         }
-        assert.deepEqual(counts, [1001, 1]);
+        assert.deepEqual(counts, [201, 201, 201, 201, 201, 1]);
         assert.equal(new Set(ids).size, 1001);
         assert.equal(ids.includes('at_cutoff'), false);
         await db.query("DELETE FROM webhook_events WHERE id LIKE 'tie_%' OR id='at_cutoff'");
@@ -230,7 +238,7 @@ test(
         SELECT 'large_'||lpad(n::text,6,'0'),'QUEUED','2026-10-08',jsonb_build_object('type','message_created','message',jsonb_build_object('chatId','large','messageId','m_'||n,'text',repeat(md5(n::text),8100))),'major-test' FROM generate_series(1,1000)n; ANALYZE webhook_events;`);
           for (const size of [200, 1000]) {
             const before = observations.length,
-              { value, raw } = await page({ cutoff, pageSize: size, after: null }, size === 1000);
+              { value, raw } = await page({ cutoff, pageSize: size, after: null }, true);
             assert.equal(value.rows.length, size);
             assert(value.rows.every((r) => r.normalizedBounded === true));
             assert.doesNotMatch(raw, /PRIVATE_BODY|"text"/u);
@@ -242,7 +250,7 @@ test(
         },
       );
       await t.test(
-        'maximum projected fields emit a small typed refusal then complete samecursor200',
+        'retained1000 output refusal does not prevent a separately preselected200 traversal',
         async () => {
           await db.query(`INSERT INTO webhook_events(id,status,created_at,normalized_payload,bot_id,semantic_key)
         SELECT 'meta_'||lpad(n::text,6,'0')||repeat('e',117),'QUEUED','2026-10-08',jsonb_build_object('type','message_created','message',jsonb_build_object('chatId',repeat('c',4096),'messageId',repeat('m',1024))),repeat('b',128),repeat('s',1024) FROM generate_series(1,1000)n;

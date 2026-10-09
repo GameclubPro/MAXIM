@@ -204,10 +204,17 @@ source, claim, semantic and chat/message authority cannot overlap between childr
 The existing per-certificate owner, SQL and Redis limits remain independent of
 the full-inventory and session totals. `MATERIALIZED` is a child state and never
 authorizes an intermediate restart.
-The stopped inventory uses its distinct 1,000-row page format. Only a typed bounded
-output refusal permits one 200-row retry at the identical cursor. Both attempts,
-their plans and their actual transport costs are retained and charged; failed
-larger reads do not become free work. The online inventory remains capped at 200.
+The stopped inventory selects 200 rows before its first query and at every later
+cursor. This policy is fixed by the reviewed controller source, with one plain
+EXPLAIN and one SELECT per page. Output refusals, timeouts, invalid plans and
+unknown outcomes stop the walk without retry or cursor advancement. The page
+validator still reads retained 1,000-row evidence; that historical format does not
+authorize a larger query in a new session. Each successful page retains its plan
+and actual transport costs, and the complete ordered scope and EOF remain required.
+Reserve the full 200-row page count, evidence files and measured work before run;
+an online timing sample is not proof of stopped speed or whole-session feasibility.
+Changing this policy requires a new controller commit and newly reviewed plan,
+never an edited admitted journal. The online inventory remains capped at 200.
 
 The controller copies its reviewed finite store harness into private storage and
 binds its hash in the immutable host context. One writer process executes a child's
