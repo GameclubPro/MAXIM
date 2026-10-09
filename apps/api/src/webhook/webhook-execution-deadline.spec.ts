@@ -52,7 +52,23 @@ describe('webhook executor readiness source deadlines', () => {
     },
   );
 
-  it.each(['user_removed', 'bot_added', 'bot_removed', 'bot_started', 'message_callback'])(
+  it.each([
+    ['payload', '2025-01-01T00:00:00.000Z'],
+    ['payload', '2026-10-06T22:00:00.000Z'],
+    ['ingress', earlierAt.toISOString()],
+  ] as const)(
+    'bounds callbacks from the original receipt regardless of %s message time %s',
+    (timestampSource, messageAt) => {
+      expect(
+        buildWebhookExecutionDeadlineAt(
+          update('message_callback', messageAt, timestampSource),
+          receivedAt,
+        ),
+      ).toEqual(new Date('2026-10-06T21:05:00.000Z'));
+    },
+  );
+
+  it.each(['user_removed', 'bot_added', 'bot_removed', 'bot_started'])(
     'does not introduce a readiness deadline for %s',
     (type) => {
       expect(
