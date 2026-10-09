@@ -170,10 +170,13 @@ holds; it has only SQL/Redis credentials, no MAX tokens. The exact client must b
 removed before independent positive SQL readback. Lost writer output never
 permits replay. Finite indexed materialization then writes positive held receipt
 pointers (200 rows/page, at most 200 pages/120 seconds), with another readback.
-Only complete protection and chat cursors permit starting captured native
-containers, then the 14 captured API containers. Wait for the captured native
-healthchecks after Docker start; `starting` is not a changed generation. Native
-checks precede queue resume. Three fresh samples must prove healthy DB/Redis,
+Only complete protection and chat cursors permit starting the two captured native
+containers. Both must report `healthy` within the following 60 seconds, retaining
+their captured identities and isolation boundaries, before the 14 captured API
+containers start. Inventory commands and polling share that deadline; a healthy
+readback finishing at or after expiry refuses startup. Early `starting` or
+`unhealthy` probes may recover within the budget but never authorize API startup.
+Strict native attestation still precedes queue resume. Three fresh samples must prove healthy DB/Redis,
 exact runtime identities and released queues. A purely automatic queue-backlog
 failure may remain visible while this positively proved scope completes with
 `fleetReady: false`; it cannot stop unrelated chats. Other failures remain contained.
@@ -212,8 +215,15 @@ This does not authorize installation, certificate edits or a generic journal res
 
 A process interruption after installation can be reconciled with the same request
 shape and `operation: "reconcile"`, using the current reviewed journal digest.
-The host reports fixed stage names, page counts and elapsed times on stderr. These
-diagnostics contain no source identities and never substitute for durable proof.
+The host reports fixed stage names, page counts and elapsed times on stderr.
+Startup failures additionally identify `stopped_inventory`, `start_native`,
+`wait_native_health` or `start_api`. A failed Docker call may include only its fixed
+command name (`ps`, `inspect`, `start` or `stop`), an exit code from 0 to 255,
+allowlisted spawn code or signal. Semantic failures retain their allowlisted
+failure code; unknown errors remain `unclassified_failure`. These diagnostics
+contain no source identities, arguments, raw errors, stdout, stderr or inventory
+and never substitute for durable proof. Diagnostic failures preserve the original
+operation failure and its containment path.
 Only `INSTALLING`, `SEALED` or `RESUMING` are eligible. Reconciliation first stops
 producers/removes the old client/pauses queues, then reads the existing certificate
 independently. It **never creates or installs a certificate again**. An absent,

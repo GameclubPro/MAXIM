@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
 import { classifyCommercialOcrApiContainerInventory } from './commercial-ocr-runtime-inventory.mjs';
+import { emitLegacyColdDiagnostic } from './legacy-cold-protocol.mjs';
 
 const nativeServices = ['ocr-native-sandbox', 'photo-native-sandbox'];
 const idPattern = /^[0-9a-f]{64}$/u;
@@ -132,14 +133,24 @@ export function createLegacyColdRuntime({
   run = execute,
   now = Date.now,
   wait = delay,
+  report,
 }) {
   let captured = baseline;
-  const inventory = () => {
-    const raw = run('docker', ['ps', '-aq', '--no-trunc']);
+  const remaining = (deadline) => {
+    const budget = deadline - now();
+    if (budget <= 0) throw new Error('native_startup_deadline');
+    return budget;
+  };
+  const inventory = (invoke = run, deadline) => {
+    const options = () =>
+      deadline === undefined ? {} : { timeout: Math.min(30_000, remaining(deadline)) };
+    const raw = invoke('docker', ['ps', '-aq', '--no-trunc'], options());
     const ids = raw ? raw.split('\n') : [];
     if (!ids.length || ids.length > 256 || ids.some((id) => !idPattern.test(id)))
       throw new Error('runtime_inventory_budget');
-    return JSON.parse(run('docker', ['inspect', ...ids]));
+    const rows = JSON.parse(invoke('docker', ['inspect', ...ids], options()));
+    if (deadline !== undefined) remaining(deadline);
+    return rows;
   };
   return {
     inspectRuntime() {
@@ -174,32 +185,72 @@ export function createLegacyColdRuntime({
         });
     },
     async startBoundRuntime() {
-      if (!captured) throw new Error('runtime_baseline_missing');
-      const stopped = inspectLegacyColdGenerations(inventory(), bindings, captured, true);
-      run('docker', ['start', ...stopped.auxiliaries.map((row) => row.containerId)], {
-        timeout: 60_000,
-      });
-      run('docker', ['start', ...stopped.services.map((row) => row.containerId)], {
-        timeout: 120_000,
-      });
-      // FLAG: Docker start precedes the first healthcheck. Attest the same native
-      // generations after bounded startup; a starting probe is not a foreign producer.
-      const deadline = now() + 60_000;
-      for (;;) {
-        const rows = inventory();
-        const native = stopped.auxiliaries.map(({ containerId, imageId }) => {
-          const row = rows.find((value) => value.Id === containerId);
-          if (
-            !row?.State?.Running ||
-            row.Image !== imageId ||
-            !['starting', 'healthy'].includes(row.State.Health?.Status)
-          )
-            throw new Error('native_startup_unproved');
-          return row;
+      let runtimePhase = 'stopped_inventory';
+      let command;
+      const startupRun = (executable, args, options) => {
+        command = args[0];
+        const result = run(executable, args, options);
+        command = undefined;
+        return result;
+      };
+      try {
+        if (!captured) throw new Error('runtime_baseline_missing');
+        const stopped = inspectLegacyColdGenerations(
+          inventory(startupRun),
+          bindings,
+          captured,
+          true,
+        );
+        runtimePhase = 'start_native';
+        startupRun('docker', ['start', ...stopped.auxiliaries.map((row) => row.containerId)], {
+          timeout: 60_000,
         });
-        if (native.every((row) => row.State.Health.Status === 'healthy')) break;
-        if (now() >= deadline) throw new Error('native_startup_deadline');
-        await wait(1000);
+        // FLAG: Start API consumers only after both captured native generations are
+        // positively healthy within the budget, with the same isolation boundary.
+        // A failed early probe may recover; it never authorizes startup on its own.
+        runtimePhase = 'wait_native_health';
+        const deadline = now() + 60_000;
+        for (;;) {
+          const rows = inventory(startupRun, deadline);
+          const native = stopped.auxiliaries.map(
+            ({ containerId, imageId, nativeBoundaryDigest }) => {
+              const row = rows.find((value) => value.Id === containerId);
+              if (
+                row?.State?.Running !== true ||
+                row.State.Status !== 'running' ||
+                row.State.Paused !== false ||
+                row.State.Restarting !== false ||
+                row.State.Dead !== false ||
+                row.Image !== imageId ||
+                !['starting', 'unhealthy', 'healthy'].includes(row.State.Health?.Status)
+              )
+                throw new Error('native_startup_unproved');
+              const digest = createHash('sha256')
+                .update(
+                  JSON.stringify({ config: row.Config, host: row.HostConfig, mounts: row.Mounts }),
+                )
+                .digest('hex');
+              if (digest !== nativeBoundaryDigest) throw new Error('native_boundary_changed');
+              return row;
+            },
+          );
+          const budget = remaining(deadline);
+          if (native.every((row) => row.State.Health.Status === 'healthy')) break;
+          await wait(Math.min(1000, budget));
+        }
+        runtimePhase = 'start_api';
+        startupRun('docker', ['start', ...stopped.services.map((row) => row.containerId)], {
+          timeout: 120_000,
+        });
+      } catch (error) {
+        emitLegacyColdDiagnostic(report, {
+          stage: 'startBoundRuntime',
+          event: 'failed',
+          runtimePhase,
+          command,
+          error,
+        });
+        throw error;
       }
     },
     readRuntimeIdentity() {
