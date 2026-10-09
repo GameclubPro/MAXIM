@@ -340,6 +340,7 @@ export async function executeSourceAbandonmentStore(
           request.selection,
           sharedAllowance,
           true,
+          request.binding.publisherBotId,
         );
         const childSql = await inventorySourceAbandonmentChildSql(
           tx,

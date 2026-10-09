@@ -112,7 +112,13 @@ async function gather(
   let childSql: Awaited<ReturnType<typeof inventorySourceAbandonmentChildSql>> | undefined;
   let children: SourceAbandonmentChildEvidence[] = [];
   try {
-    sql = await inventorySourceAbandonmentSql(tx, selection, remaining(cost, deadlineAtMs));
+    sql = await inventorySourceAbandonmentSql(
+      tx,
+      selection,
+      remaining(cost, deadlineAtMs),
+      false,
+      publisherBotId,
+    );
     charge(cost, sql.cost);
     issues.push(...sql.issues);
     if (

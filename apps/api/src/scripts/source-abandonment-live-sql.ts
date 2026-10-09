@@ -406,6 +406,7 @@ export async function inventorySourceAbandonmentSql(
   selection: SourceAbandonmentLiveSelection,
   allowance: SourceInventoryAllowance,
   lockRows = false,
+  publisherBotId?: string,
 ) {
   const meter = new SourceInventorySqlMeter(tx, allowance, lockRows);
   const candidates: SourceAbandonmentCandidate[] = [];
@@ -439,6 +440,7 @@ export async function inventorySourceAbandonmentSql(
           receipt.id,
           candidate,
           (code) => issues.push({ code, descriptor: 'sql:source-family' }),
+          publisherBotId,
         );
         if (!proof) throw new SourceInventoryRefused('source_family_provenance_unproved');
         evidence.push({

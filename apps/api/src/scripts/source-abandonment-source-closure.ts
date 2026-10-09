@@ -4,7 +4,7 @@ import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
 // It never grants participant immunity or proves earlier remote outcomes. Every
 // producer below must retain a final exact-source check when regenerating work.
 export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
-  version: 5,
+  version: 6,
   source:
     'validated-human-chat-or-explicit-authorless-channel-exact-original-message-created-or-edited',
   directMedia: {
@@ -40,6 +40,8 @@ export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
       'strict-original-https-message-url-and-bounded-schemeless-relative-direct-markup-never-identity-or-network-authority',
     keyboard:
       'one-passive-inline-keyboard-with-bounded-official-https-link-or-open-app-buttons-and-strict-direct-image-photo-video-media',
+    retainedRaw:
+      'owner-exact-retained-original-receipts-exact-sampled-object-or-empty-ingress-sentinel-with-unchanged-strict-normalized-original-provenance',
   },
   reply: {
     validator: 'inspectSourceAbandonmentReplyText',
@@ -77,6 +79,8 @@ export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
   },
   checkpoint:
     'null-or-exact-current-version-execution-waiting-bound-to-owner-semantic-immutable-deadline-and-predeadline-business-start-retained-without-replay',
+  receiptSemantics:
+    'exact-original-canonical-key-or-separate-attested-publisher-receipt-key-with-both-canonical-and-independent-namespace-claims-proved-without-renaming',
   history: 'retain-intent-action-sanction-claim-and-ambiguous-member-fences-without-replay',
   independence: 'distinct-message-same-user-is-outside-source-exclusion',
   // FLAG: A separate authenticated bot-message receipt and current cleanup policy

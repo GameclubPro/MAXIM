@@ -11,6 +11,12 @@ import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
 import { createPrismaClient, Prisma, type PrismaClient } from '../prisma/prisma-client';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
+import { buildWebhookReceiptSemanticKey } from '../webhook/webhook-receipt-semantic-key';
+import {
+  inspectSourceAbandonmentCandidate,
+  inspectSourceAbandonmentReceiptCandidate,
+  materializeSourceAbandonmentReceipt,
+} from '../webhook/webhook-source-abandonment';
 import {
   buildSourceAbandonmentInventoryDigest,
   executeSourceAbandonmentStore,
@@ -54,6 +60,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
   let fixtureRedisUrl: string;
   let ownsRedis = false;
   let historyWebhookIds: string[] = [];
+  const publisherReceiptIds: string[] = [];
   const queues: Queue[] = [];
 
   beforeAll(async () => {
@@ -287,6 +294,13 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
   afterEach(async () => {
     for (const queue of queues.splice(0)) await queue.close();
     if (ownsRedis) await redis.flushdb();
+    // FLAG: Sealed receipt proofs stay immutable until disposable-store teardown.
+    // Remove only this test's unheld Publisher fixtures and their claim aliases.
+    const receiptIds = publisherReceiptIds.splice(0);
+    await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: receiptIds } } });
+    await db.webhookEvent.deleteMany({
+      where: { id: { in: receiptIds }, sourceDispositionId: null },
+    });
     const held = await db.webhookSourceAbandonment.findUnique({
       where: { ownerWebhookEventId: ownerId },
     });
@@ -1217,6 +1231,371 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     );
     return { request, bytes };
   }
+
+  const publisherBotId = 'fixture-source-publisher';
+  async function publisherReceipt(keepRaw = true, botId = publisherBotId) {
+    const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const update = new WebhookParser().parse(
+      (owner.normalizedPayload as { raw: Record<string, unknown> }).raw,
+      { botId },
+    );
+    const receipt = await db.webhookEvent.create({
+      data: {
+        botId,
+        dedupKey: randomUUID(),
+        semanticKey: buildWebhookReceiptSemanticKey(update, publisherBotId),
+        rawPayload: keepRaw ? (update.raw as Prisma.InputJsonValue) : {},
+        normalizedPayload: JSON.parse(JSON.stringify(update)),
+        status: 'RECEIVED',
+      },
+    });
+    publisherReceiptIds.push(receipt.id);
+    return receipt;
+  }
+
+  it.each([
+    ['CHAT', true],
+    ['CHAT', false],
+    ['CHANNEL', true],
+    ['CHANNEL', false],
+  ] as const)(
+    'proves separate Publisher and moderation receipts through %s inventory, store and late materialization (raw sample: %s)',
+    async (entityType, keepRaw) => {
+      if (entityType === 'CHANNEL') {
+        const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+        const raw = JSON.parse(JSON.stringify(owner.rawPayload));
+        delete raw.message.sender;
+        raw.message.recipient.chat_type = 'channel';
+        const update = new WebhookParser().parse(raw, { botId: owner.botId! });
+        await db.webhookEvent.update({
+          where: { id: ownerId },
+          data: { rawPayload: raw, normalizedPayload: JSON.parse(JSON.stringify(update)) },
+        });
+        await db.chat.update({ where: { id: chatId }, data: { entityType } });
+        // FLAG: Preserve the stock exact-index guard with representative same-chat
+        // retained marker history, as in the existing channel store fixtures.
+        await db.channelAutoPostAttachMarker.createMany({
+          data: Array.from({ length: 512 }, (_, index) => ({
+            chatId,
+            messageId: `marker-history-${ownerId}-${index}`,
+            source: 'poll',
+            status: 'SKIPPED' as const,
+          })),
+        });
+        await db.$executeRaw`ANALYZE channel_auto_post_attach_markers`;
+      }
+      // FLAG: Initial channel owners retain the original under the immutable SQL
+      // seal guard. Unsampled initial/late mirrors exercise the ingress contract.
+      if (!keepRaw && entityType === 'CHAT')
+        await db.webhookEvent.update({ where: { id: ownerId }, data: { rawPayload: {} } });
+      const receipt = await publisherReceipt(keepRaw);
+      const mirror = await publisherReceipt(keepRaw, 'major-1');
+      const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+      const claims = await db.webhookExecutionClaim.findMany({
+        where: { webhookEventId: ownerId },
+      });
+      expect(receipt.semanticKey).not.toBe(owner.semanticKey);
+      expect((await collect()).decision).toBe('DENY');
+      liveRequest = { ...liveRequest, binding: { ...liveRequest.binding, publisherBotId } };
+      const admission = await db.$transaction(
+        (tx) =>
+          collectSourceAbandonmentAdmission(tx, redis, {
+            version: 1,
+            operation: 'admission_preview',
+            selection,
+            publisherBotId,
+            sourceSha: liveRequest.binding.sourceSha,
+            imageId: liveRequest.binding.imageId,
+          }),
+        { timeout: 30_000 },
+      );
+      expect(admission.issues).toEqual([]);
+      expect(admission.decision).toBe('READY_FOR_COLD_REVIEW');
+      const { request, bytes } = await storeFixture();
+      await executeSourceAbandonmentStore(db, request, bytes);
+      expect(
+        await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
+      ).toMatchObject({ state: 'SEALED', completeChats: 0, requiredChats: 1 });
+      expect(
+        await executeSourceAbandonmentStore(
+          db,
+          {
+            ...request,
+            operation: 'materialize',
+            page: { chatId, pageSize: 10 },
+          },
+          bytes,
+        ),
+      ).toMatchObject({ page: { complete: true, applied: 2, blocked: false } });
+      expect(
+        await executeSourceAbandonmentStore(
+          readonlyDb,
+          { ...request, operation: 'readback' },
+          bytes,
+        ),
+      ).toMatchObject({ state: 'MATERIALIZED', completeChats: 1, requiredChats: 1 });
+      const late = await publisherReceipt(keepRaw);
+      const lateMirror = await publisherReceipt(keepRaw, 'major-1');
+      expect(await db.$transaction((tx) => materializeSourceAbandonmentReceipt(tx, late.id))).toBe(
+        'APPLIED_WITH_PROOF',
+      );
+      expect(
+        await db.$transaction((tx) => materializeSourceAbandonmentReceipt(tx, lateMirror.id)),
+      ).toBe('APPLIED_WITH_PROOF');
+      for (const before of [receipt, mirror, late, lateMirror]) {
+        expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: before.id } })).toEqual({
+          ...before,
+          status: 'NO_REPLAY_HELD',
+          sourceDispositionId: expect.any(String),
+          sourceDispositionReceiptId: before.id,
+        });
+      }
+      expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } })).toEqual({
+        ...owner,
+        sourceDispositionId: expect.any(String),
+        sourceDispositionReceiptId: ownerId,
+      });
+      expect(
+        await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } }),
+      ).toEqual(claims);
+      expect(
+        await db.webhookExecutionClaim.count({
+          where: { webhookEventId: { in: [receipt.id, late.id] } },
+        }),
+      ).toBe(0);
+    },
+  );
+
+  it.each([
+    'null-key',
+    'shared-key',
+    'wrong-prefix',
+    'wrong-bot',
+    'wrong-catalog',
+    'different-source',
+  ])('refuses Publisher %s without rewriting the receipt or canonical claim', async (fault) => {
+    const receipt = await publisherReceipt();
+    const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    if (fault === 'null-key' || fault === 'shared-key' || fault === 'wrong-prefix')
+      await db.webhookEvent.update({
+        where: { id: receipt.id },
+        data: {
+          semanticKey:
+            fault === 'null-key'
+              ? null
+              : fault === 'shared-key'
+                ? owner.semanticKey
+                : `publisher-observation:v1:other-publisher:${owner.semanticKey}`,
+        },
+      });
+    if (fault === 'wrong-bot')
+      await db.webhookEvent.update({
+        where: { id: receipt.id },
+        data: { botId: 'other-publisher' },
+      });
+    if (fault === 'different-source') {
+      const raw = JSON.parse(JSON.stringify(receipt.rawPayload));
+      raw.message.timestamp += 1;
+      const update = new WebhookParser().parse(raw, { botId: publisherBotId });
+      await db.webhookEvent.update({
+        where: { id: receipt.id },
+        data: {
+          rawPayload: raw,
+          normalizedPayload: JSON.parse(JSON.stringify(update)),
+        },
+      });
+    }
+    const before = await db.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } });
+    const candidate = await inspectSourceAbandonmentCandidate(db, ownerId, {
+      majorBotIds: selection.majorBotIds,
+      abandonBefore: new Date(selection.abandonBefore),
+    });
+    expect(candidate).not.toBeNull();
+    const reasons: string[] = [];
+    expect(
+      await inspectSourceAbandonmentReceiptCandidate(
+        db,
+        receipt.id,
+        candidate!,
+        (reason) => reasons.push(reason),
+        fault === 'wrong-catalog' ? 'other-publisher' : publisherBotId,
+      ),
+    ).toBeNull();
+    expect(reasons).toContain('source_receipt_provenance_unproved');
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } })).toEqual(before);
+    expect(await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } })).toEqual(
+      [candidate!.claim],
+    );
+  });
+
+  it.each(['publisher-key', 'canonical-key', 'linked-event', 'command'])(
+    'retains every independent Publisher %s claim fence',
+    async (scope) => {
+      const receipt = await publisherReceipt();
+      const candidate = await inspectSourceAbandonmentCandidate(db, ownerId, {
+        majorBotIds: selection.majorBotIds,
+        abandonBefore: new Date(selection.abandonBefore),
+      });
+      expect(candidate).not.toBeNull();
+      const alias = await db.webhookExecutionClaim.create({
+        data: {
+          kind: scope === 'command' ? 'COMMAND' : 'NATIVE_PUBLISHER_UNKNOWN',
+          semanticKey:
+            scope === 'publisher-key'
+              ? receipt.semanticKey!
+              : scope === 'canonical-key'
+                ? candidate!.claim.semanticKey
+                : scope === 'command'
+                  ? buildGroupCommandKey(candidate!.source.chatId, candidate!.source.messageId)
+                  : randomUUID(),
+          webhookEventId: scope === 'linked-event' ? receipt.id : ownerId,
+        },
+      });
+      try {
+        const reasons: string[] = [];
+        expect(
+          await inspectSourceAbandonmentReceiptCandidate(
+            db,
+            receipt.id,
+            candidate!,
+            (reason) => reasons.push(reason),
+            publisherBotId,
+          ),
+        ).toBeNull();
+        expect(reasons).toContain('source_receipt_independent_claim');
+        expect(
+          await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: alias.id } }),
+        ).toEqual(alias);
+        expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } })).toEqual(
+          receipt,
+        );
+      } finally {
+        await db.webhookExecutionClaim.delete({ where: { id: alias.id } });
+      }
+    },
+  );
+
+  it('does not infer Publisher authority for a late receipt from an older certificate', async () => {
+    const { request, bytes } = await storeFixture();
+    await executeSourceAbandonmentStore(db, request, bytes);
+    await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes);
+    const late = await publisherReceipt();
+    expect(await db.$transaction((tx) => materializeSourceAbandonmentReceipt(tx, late.id))).toBe(
+      'BLOCKED_UNKNOWN',
+    );
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: late.id } })).toEqual(late);
+  });
+
+  it('rechecks an absent independent Publisher alias after a concurrent detached claim appears', async () => {
+    const receipt = await publisherReceipt();
+    const kind = 'NATIVE_PUBLISHER_DETACHED';
+    const ids: string[] = [];
+    try {
+      ids.push(
+        (
+          await db.webhookExecutionClaim.create({
+            data: {
+              kind,
+              semanticKey: randomUUID(),
+              webhookEventId: historyWebhookIds[0]!,
+            },
+          })
+        ).id,
+      );
+      await db.$transaction(
+        async (tx) => {
+          const meter = await candidateMeter(tx);
+          const reader = meter.candidateReader();
+          const candidate = await inspectSourceAbandonmentCandidate(reader, ownerId, {
+            majorBotIds: selection.majorBotIds,
+            abandonBefore: new Date(selection.abandonBefore),
+          });
+          expect(candidate).not.toBeNull();
+          for (let pass = 0; pass < 2; pass++)
+            expect(
+              await inspectSourceAbandonmentReceiptCandidate(
+                reader,
+                receipt.id,
+                candidate!,
+                undefined,
+                publisherBotId,
+              ),
+            ).not.toBeNull();
+          ids.push(
+            (
+              await db.webhookExecutionClaim.create({
+                data: {
+                  kind,
+                  semanticKey: receipt.semanticKey!,
+                  webhookEventId: historyWebhookIds[0]!,
+                },
+              })
+            ).id,
+          );
+          await expect(meter.verifyCandidateReads()).rejects.toMatchObject({
+            code: 'sql_candidate_proof_changed',
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 30_000 },
+      );
+    } finally {
+      await db.webhookExecutionClaim.deleteMany({ where: { id: { in: ids } } });
+    }
+  });
+
+  it.each(['publisher', 'catalog', 'source', 'image', 'cutoff'] as const)(
+    'rejects inconsistent sealed Publisher %s provenance even with a matching attestation digest',
+    async (fault) => {
+      liveRequest = { ...liveRequest, binding: { ...liveRequest.binding, publisherBotId } };
+      const { request, bytes } = await storeFixture();
+      await executeSourceAbandonmentStore(db, request, bytes);
+      await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes);
+      const late = await publisherReceipt();
+      const reasons: string[] = [];
+      // FLAG: Database immutability prevents editing real certificates. Substitute
+      // only this read result to prove semantic binding checks beyond its digest;
+      // all receipt/owner/claim reads and transaction behavior remain native.
+      const result = await db.$transaction(async (tx) => {
+        const guarded = new Proxy(tx, {
+          get(target, key) {
+            if (key !== 'webhookSourceAbandonment') return Reflect.get(target, key);
+            return {
+              findUnique: async (
+                args: Parameters<typeof tx.webhookSourceAbandonment.findUnique>[0],
+              ) => {
+                const row = await tx.webhookSourceAbandonment.findUnique({
+                  ...args,
+                  include: { certificate: true },
+                });
+                if (!row) return row;
+                const attestation = JSON.parse(JSON.stringify(row.certificate.attestation));
+                if (fault === 'publisher') attestation.binding.publisherBotId = 'invalid publisher';
+                if (fault === 'catalog') attestation.selection.majorBotIds.push(publisherBotId);
+                if (fault === 'source') attestation.binding.sourceSha = 'c'.repeat(40);
+                if (fault === 'image') attestation.binding.imageId = `sha256:${'d'.repeat(64)}`;
+                if (fault === 'cutoff')
+                  attestation.selection.abandonBefore = '2026-10-01T00:00:00.000Z';
+                return {
+                  ...row,
+                  certificate: {
+                    ...row.certificate,
+                    attestation,
+                    attestationDigest: sourceAbandonmentDigest(attestation),
+                  },
+                };
+              },
+            };
+          },
+        });
+        return materializeSourceAbandonmentReceipt(guarded, late.id, {
+          onRefusal: (reason) => reasons.push(reason),
+        });
+      });
+      expect(result).toBe('BLOCKED_UNKNOWN');
+      expect(reasons).toContain('source_receipt_publisher_unproved');
+      expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: late.id } })).toEqual(late);
+    },
+  );
 
   it('inspects the actual indexed source family without rewriting started evidence', async () => {
     const before = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });

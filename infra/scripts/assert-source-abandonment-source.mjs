@@ -31,6 +31,20 @@ export const SOURCE_ABANDONMENT_SOURCE_CHECKS = Object.freeze([
       '{ sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE, userId: null }',
       '!isSourceAbandonmentCheckpointSupported(owner, claim)',
       '!isSourceAbandonmentCheckpointSupported(owner, ownerClaim)',
+      'buildWebhookReceiptSemanticKey(event.normalizedPayload as never, publisherBotId)',
+      'receiptSemanticKey !== event.semanticKey',
+      'const independentClaims = await readLegacyReceiptClaims(',
+      'if (independentClaims.length)',
+      'const publisherBotId = binding?.publisherBotId;',
+      'majorBotIds.includes(publisherBotId)',
+    ],
+  ],
+  [
+    'apps/api/src/webhook/webhook-receipt-semantic-key.ts',
+    [
+      'export function buildWebhookReceiptSemanticKey(',
+      'update.botId?.trim() !== publisherBotId',
+      'publisher-observation:v1:${publisherBotId}:${key}',
     ],
   ],
   [
@@ -70,6 +84,7 @@ export const SOURCE_ABANDONMENT_SOURCE_CHECKS = Object.freeze([
       "recipient.chat_type !== 'channel' || normalized.entityType !== 'channel'",
       "message.sender !== undefined || normalized.senderId !== ''",
       'legacySnapshotDigest(storedRaw) !== legacySnapshotDigest(raw)',
+      '(!postSeal || Object.keys(storedRaw).length)',
       'sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE',
       'userId: null',
       'inspectChannelAuthorlessSource(owner, onRefusal, settings, postSeal)',
