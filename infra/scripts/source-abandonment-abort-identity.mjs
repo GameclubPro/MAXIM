@@ -11,6 +11,8 @@ const permitted = new Set([
   'infra/scripts/legacy-cold-journal.test.mjs',
   'infra/scripts/legacy-cold-host.mjs',
   'infra/scripts/legacy-cold-host.test.mjs',
+  'infra/scripts/lib/legacy-cold-maintenance.sh',
+  'infra/scripts/legacy-cold-entrypoint-guards.test.mjs',
   'infra/scripts/source-abandonment-abort-identity.mjs',
   'infra/scripts/source-abandonment-abort-identity.test.mjs',
   'infra/scripts/source-abandonment-abort.mjs',
