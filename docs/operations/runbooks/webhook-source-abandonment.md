@@ -40,6 +40,17 @@ markers are real effect evidence: inventory them by exact chat/message, retain
 ambiguous receipts, and enforce source holds before marker claims and at final MAX
 calls. SQL guards prevent inserting, updating or deleting a held source marker.
 Publisher remains a separate observer/publisher, never a moderation executor.
+Its exact configured `publisher-observation:v1` receipt key stays unchanged during
+recovery. Inventory proves both the ordinary source claim and the absence of any
+independent Publisher, linked-event, command or unknown-kind claim. Late receipt
+materialization takes Publisher identity only from the sealed certificate's
+original separate bot catalog; a missing catalog never authorizes that namespace.
+Receipts of both profiles accept ingress's empty-object raw sampling sentinel only
+while the original `normalizedPayload.raw` still passes every source/parser check.
+Nonempty retained raw copies must match it; null, arrays and mismatched data refuse.
+Initial channel owners still require a retained original under the SQL seal guard.
+Source closure version 6 binds these receipt rules, and rollback must retain both
+readers. Existing owner claims, receipt keys and raw evidence are never rewritten.
 Legacy member/global-user holds are independent. Unsupported sources, independent
 unfinished edited claims and unattributed actionable continuations are refused.
 

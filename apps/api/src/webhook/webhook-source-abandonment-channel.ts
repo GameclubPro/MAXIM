@@ -237,7 +237,13 @@ export function inspectChannelAuthorlessSource(
     Date.parse(normalized.createdAt) !== eventAt
   )
     return refuse('channel_source_clock_unproved');
-  if (legacySnapshotDigest(storedRaw) !== legacySnapshotDigest(raw))
+  // FLAG: A receipt may carry ingress's empty raw sampling sentinel; its original
+  // remains in normalizedPayload.raw and passes every strict check above. Initial
+  // channel owners still require the retained original, matching the SQL seal guard.
+  if (
+    (!postSeal || Object.keys(storedRaw).length) &&
+    legacySnapshotDigest(storedRaw) !== legacySnapshotDigest(raw)
+  )
     return refuse('channel_source_raw_mismatch');
   try {
     if (

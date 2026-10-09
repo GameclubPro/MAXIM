@@ -30,6 +30,46 @@ function fixture(type = 'message_created') {
 
 describe('separate immutable authorless channel source profile', () => {
   it.each(['message_created', 'message_edited'])(
+    'accepts the ingress empty %s receipt sample while retaining the stricter owner proof',
+    (type) => {
+      const owner = fixture(type).owner();
+      const expected = inspectChannelAuthorlessSource(owner);
+      expect(expected).not.toBeNull();
+      owner.rawPayload = {};
+      const before = structuredClone(owner);
+      expect(inspectChannelAuthorlessSource(owner)).toBeNull();
+      expect(inspectChannelAuthorlessSource(owner, undefined, undefined, true)).toEqual(expected);
+      expect(owner).toEqual(before);
+    },
+  );
+
+  it.each([null, [], 'invalid', { unexpected: true }])(
+    'refuses a malformed or conflicting retained raw sample %j',
+    (rawPayload) => {
+      const owner = fixture().owner();
+      owner.rawPayload = rawPayload as never;
+      expect(inspectChannelAuthorlessSource(owner, undefined, undefined, true)).toBeNull();
+    },
+  );
+
+  it.each(['missing-raw', 'sender', 'identity', 'clock', 'command', 'unknown-shape'])(
+    'keeps normalized source proof mandatory with an empty raw sample: %s',
+    (fault) => {
+      const owner = fixture().owner();
+      owner.rawPayload = {};
+      const update = JSON.parse(JSON.stringify(owner.normalizedPayload));
+      if (fault === 'missing-raw') delete update.raw;
+      if (fault === 'sender') update.raw.message.sender = { user_id: 'invented' };
+      if (fault === 'identity') update.message.messageId = 'other';
+      if (fault === 'clock') update.raw.message.timestamp += 1;
+      if (fault === 'command') update.raw.message.body.text = '/ban';
+      if (fault === 'unknown-shape') update.raw.message.unproved = true;
+      owner.normalizedPayload = update;
+      expect(inspectChannelAuthorlessSource(owner, undefined, undefined, true)).toBeNull();
+    },
+  );
+
+  it.each(['message_created', 'message_edited'])(
     'retains bounded official keyboards with %s source media without granting another target',
     (type) => {
       const f = fixture(type);
@@ -366,7 +406,7 @@ describe('separate immutable authorless channel source profile', () => {
         ).botId = 'other';
       },
       (owner: Source) => {
-        owner.rawPayload = {};
+        owner.rawPayload = { conflicting: true };
       },
       (owner: Source) => {
         (

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Prisma, type WebhookEvent } from '../prisma/prisma-client';
 import { buildGroupCommandKey } from '../common/group-command-key';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
 import { readLegacyReceiptClaims } from './webhook-legacy-claims';
 import { canonical, legacySnapshotDigest } from './webhook-legacy-source';
 import { inspectSourceAbandonmentAnySource } from './webhook-source-abandonment-channel';
@@ -166,11 +167,19 @@ export async function inspectSourceAbandonmentReceiptCandidate(
   receiptId: string,
   candidate: SourceAbandonmentCandidate,
   onRefusal?: (reason: string) => void,
+  publisherBotId?: string,
 ) {
   const refuse = (reason: string) => {
     onRefusal?.(reason);
     return null;
   };
+  if (
+    publisherBotId !== undefined &&
+    (!/^[a-zA-Z0-9_-]{1,128}$/u.test(publisherBotId) ||
+      publisherBotId === candidate.owner.botId ||
+      publisherBotId === candidate.claim.executionBotId)
+  )
+    return refuse('source_receipt_publisher_unproved');
   const sizes = await db.$queryRaw<Array<{ bytes: number }>>(Prisma.sql`
     SELECT octet_length("raw_payload"::text) + octet_length("normalized_payload"::text) AS bytes
     FROM "webhook_events" WHERE "id" = ${receiptId}`);
@@ -196,10 +205,15 @@ export async function inspectSourceAbandonmentReceiptCandidate(
     true,
   );
   const semanticKey = buildWebhookSemanticEventKey(event.normalizedPayload as never);
+  // FLAG: The configured Publisher keeps its observation identity. Never strip
+  // a prefix, rename the canonical claim, or infer the Publisher from a receipt.
+  const receiptSemanticKey = publisherBotId
+    ? buildWebhookReceiptSemanticKey(event.normalizedPayload as never, publisherBotId)
+    : semanticKey;
   if (
     !provenance ||
     !semanticKey ||
-    semanticKey !== event.semanticKey ||
+    receiptSemanticKey !== event.semanticKey ||
     provenance.chatId !== source.chatId ||
     provenance.messageId !== source.messageId ||
     provenance.userId !== source.userId ||
@@ -219,6 +233,19 @@ export async function inspectSourceAbandonmentReceiptCandidate(
     legacySnapshotDigest(claims[0]) === legacySnapshotDigest(candidate.claim);
   if (semanticKey === candidate.claim.semanticKey ? !exactClaim : claims.length !== 0)
     return refuse('source_receipt_independent_claim');
+  // FLAG: Preserve the original canonical/command/linked-event/unknown-kind
+  // proof above, and independently prove the Publisher namespace has no claim.
+  // Both indexed lookups participate in the inventory's final stable reread.
+  if (receiptSemanticKey !== semanticKey) {
+    const independentClaims = await readLegacyReceiptClaims(
+      db as Prisma.TransactionClient,
+      event.id,
+      receiptSemanticKey,
+      buildGroupCommandKey(source.chatId, source.messageId),
+    );
+    if (!independentClaims) return refuse('source_receipt_claims_unproved');
+    if (independentClaims.length) return refuse('source_receipt_independent_claim');
+  }
   return {
     event,
     claims,
@@ -371,11 +398,37 @@ export async function materializeSourceAbandonmentReceipt(
     rawPayloadDigest: source.rawPayloadDigest,
     normalizedPayloadDigest: source.normalizedPayloadDigest,
   };
+  // FLAG: Runtime has no authority to invent a Publisher catalog. Only the
+  // sealed, digest-checked certificate's original separate catalog can authorize
+  // its receipt namespace; older certificates retain their original behavior.
+  const binding = object(attestation?.binding);
+  const publisherBotId = binding?.publisherBotId;
+  if (publisherBotId !== undefined) {
+    const selection = object(attestation?.selection);
+    const majorBotIds = selection?.majorBotIds;
+    if (
+      typeof publisherBotId !== 'string' ||
+      !/^[a-zA-Z0-9_-]{1,128}$/u.test(publisherBotId) ||
+      binding?.sourceSha !== certificate.sourceSha ||
+      binding?.imageId !== certificate.imageId ||
+      selection?.abandonBefore !== certificate.abandonBefore.toISOString() ||
+      !Array.isArray(majorBotIds) ||
+      !majorBotIds.length ||
+      majorBotIds.some(
+        (botId) => typeof botId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/u.test(botId),
+      ) ||
+      majorBotIds.includes(publisherBotId) ||
+      !majorBotIds.includes(owner.botId) ||
+      !majorBotIds.includes(ownerClaim.executionBotId)
+    )
+      return refuse('source_receipt_publisher_unproved');
+  }
   const inspected = await inspectSourceAbandonmentReceiptCandidate(
     tx,
     event.id,
     candidate,
     options?.onRefusal,
+    publisherBotId as string | undefined,
   );
   if (!inspected) return 'BLOCKED_UNKNOWN';
   for (const claim of inspected.claims)
@@ -387,6 +440,7 @@ export async function materializeSourceAbandonmentReceipt(
     event.id,
     candidate,
     options?.onRefusal,
+    publisherBotId as string | undefined,
   );
   if (!rechecked || legacySnapshotDigest(rechecked) !== legacySnapshotDigest(inspected))
     return refuse('source_receipt_claims_changed');
