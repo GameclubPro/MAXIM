@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
-import { legacyColdDigest } from './legacy-cold-journal.mjs';
+import {
+  createLegacyColdJournalStore,
+  legacyColdDigest,
+  readLegacyColdState,
+} from './legacy-cold-journal.mjs';
 import {
   createLegacyColdStoreAdapter,
   canonicalLegacyColdDigest,
@@ -42,8 +47,12 @@ function fixture(t, publisherBotId, modern = false) {
     catalogs: undefined,
     inventoryPatch: {},
     inventoryRequests: [],
+    inventoryResponses: [],
     ownerChat: 'chat',
+    captureFailure: false,
+    reportFailure: false,
   };
+  const proofStore = createLegacyColdJournalStore({ directory: dir, assertLock: () => {} });
   const journal = { proofs: {} };
   const client = {
     remove() {
@@ -54,7 +63,7 @@ function fixture(t, publisherBotId, modern = false) {
       if (kind === 'inventory') {
         state.inventoryRequests.push(structuredClone(request));
         assert.equal(request.binding.queueFenceNonce, legacyColdDigest(bindings.controllerNonce));
-        return {
+        const inventory = {
           version: 1,
           operation: 'inventory_preview',
           applied: false,
@@ -75,6 +84,17 @@ function fixture(t, publisherBotId, modern = false) {
           cost: { rows: 1, pages: 1, probes: 1, bytes: state.diagnosticCost },
           ...state.inventoryPatch,
         };
+        state.inventoryResponses.push(structuredClone(inventory));
+        if (state.captureFailure)
+          fs.writeFileSync(
+            join(
+              dir,
+              `refused-inventory-${legacyColdDigest(`${JSON.stringify(inventory)}\n`)}.json`,
+            ),
+            'private incomplete artifact',
+            { mode: 0o600 },
+          );
+        return inventory;
       }
       if (kind === 'queues')
         return {
@@ -129,16 +149,19 @@ function fixture(t, publisherBotId, modern = false) {
     selection,
     ...(publisherBotId ? { publisherBotId } : {}),
     inventoryPath,
-    report: (event) => state.diagnostics.push(event),
+    report: (event) => {
+      if (state.reportFailure) throw new Error('private diagnostic transport detail');
+      state.diagnostics.push(event);
+    },
     client,
     store: {
       read: () => ({ journal }),
       readProof: () => state.pending,
-      recordProof: (value) => legacyColdDigest(`${JSON.stringify(value)}\n`),
+      recordProof: (value) => proofStore.recordProof(value),
     },
     runtime: { readStoppedRuntime: () => ({ services: [], auxiliaries: [] }) },
   });
-  return { adapter, state, bindings, journal, inventoryPath };
+  return { adapter, state, bindings, journal, inventoryPath, dir, proofStore };
 }
 
 test('host adapter preserves actual artifact bytes through install and independent materialization proof', (t) => {
@@ -214,6 +237,164 @@ test('denied preview and mismatched readback never grant installation or restart
   h.state.wrongBinding = true;
   assert.throws(() => h.adapter.installDispositions(h.bindings, pending), /binding_unproved/);
   assert.equal(h.state.calls.includes('certificate_create'), false);
+});
+
+test('refused inventory retains original private bytes without admitting a proof', (t) => {
+  const h = fixture(t, 'publisher', true);
+  h.state.deny = true;
+  h.state.inventoryPatch = {
+    issues: [{ code: 'original_issue', detail: 'private issue detail' }],
+    selectedOwners: [{ ownerWebhookEventId: 'private-owner', chatId: 'private-chat' }],
+  };
+  const journalBefore = structuredClone(h.journal);
+  assert.throws(() => h.adapter.snapshotPending(), /^Error: inventory_refused$/u);
+  const original = h.state.inventoryResponses[0];
+  const bytes = `${JSON.stringify(original)}\n`;
+  const digest = legacyColdDigest(bytes);
+  const directory = h.dir;
+  const artifact = join(directory, `refused-inventory-${digest}.json`);
+  assert.equal(readFileSync(artifact, 'utf8'), bytes);
+  assert.equal(statSync(directory).mode & 0o777, 0o700);
+  assert.equal(statSync(artifact).mode & 0o777, 0o600);
+  assert.equal(statSync(artifact).nlink, 1);
+  assert.equal(statSync(artifact).uid, process.getuid());
+  assert.deepEqual(readdirSync(directory), [`refused-inventory-${digest}.json`]);
+  assert.deepEqual(h.journal, journalBefore);
+  assert.equal(existsSync(h.inventoryPath), false);
+  assert.deepEqual(h.state.calls, ['inventory_preview']);
+  assert.deepEqual(h.state.diagnostics, [
+    {
+      version: 1,
+      diagnostic: 'legacy_cold_refusal_evidence',
+      stage: 'snapshotPending',
+      evidenceSha256: digest,
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(h.state.diagnostics), /private|publisher|original_issue/u);
+  assert.equal(original.decision, 'DENY');
+  assert.equal(original.binding.publisherBotId, 'publisher');
+});
+
+test('ready response with mismatched binding is retained unchanged and still refused', (t) => {
+  const h = fixture(t, 'publisher', true);
+  h.state.inventoryPatch = { binding: { privateOriginalBinding: 'untrusted-binding' } };
+  assert.throws(() => h.adapter.snapshotPending(), /^Error: inventory_refused$/u);
+  const original = h.state.inventoryResponses[0];
+  const artifact = join(h.dir, `refused-inventory-${h.state.diagnostics[0].evidenceSha256}.json`);
+  assert.equal(readFileSync(artifact, 'utf8'), `${JSON.stringify(original)}\n`);
+  assert.equal(original.decision, 'READY_TO_INSTALL');
+  assert.deepEqual(original.binding, h.state.inventoryPatch.binding);
+  assert.deepEqual(h.journal.proofs, {});
+  assert.equal(existsSync(h.inventoryPath), false);
+});
+
+test('capture and diagnostic failures preserve the original refusal and never install', (t) => {
+  for (const [captureFailure, reportFailure] of [
+    [true, false],
+    [false, true],
+    [true, true],
+  ]) {
+    const h = fixture(t);
+    Object.assign(h.state, { deny: true, captureFailure, reportFailure });
+    assert.throws(() => h.adapter.snapshotPending(), /^Error: inventory_refused$/u);
+    assert.deepEqual(h.journal.proofs, {});
+    assert.deepEqual(h.state.calls, ['inventory_preview']);
+    assert.equal(existsSync(h.inventoryPath), false);
+    if (!reportFailure) assert.equal(h.state.diagnostics[0].evidenceSha256, null);
+    assert.doesNotMatch(JSON.stringify(h.state.diagnostics), /private|failure detail/u);
+  }
+});
+
+test('oversized refused inventory cannot exceed the private artifact budget', (t) => {
+  const h = fixture(t);
+  h.state.deny = true;
+  h.state.inventoryPatch = { issues: ['x'.repeat(8 * 1024 * 1024)] };
+  assert.throws(() => h.adapter.snapshotPending(), /^Error: inventory_refused$/u);
+  assert.deepEqual(readdirSync(h.dir), []);
+  assert.equal(existsSync(h.inventoryPath), false);
+  assert.deepEqual(h.journal.proofs, {});
+  assert.equal(h.state.diagnostics[0].evidenceSha256, null);
+});
+
+test('refreeze refusal preserves both the original pending artifact and the new refused response', (t) => {
+  const h = fixture(t, 'publisher', true);
+  const prior = h.adapter.snapshotPending();
+  h.state.pending = prior;
+  h.journal.proofs.pendingInventory = 'fixture';
+  const journalBefore = structuredClone(h.journal);
+  const originalBytes = readFileSync(h.inventoryPath, 'utf8');
+  h.state.deny = true;
+  h.state.inventoryPatch = { issues: ['private refreeze issue'] };
+  assert.throws(
+    () => h.adapter.snapshotRefrozenPending(h.bindings, prior),
+    /^Error: refreeze_inventory_refused$/u,
+  );
+  const refusal = h.state.inventoryResponses[1];
+  const diagnostic = h.state.diagnostics[0];
+  assert.equal(diagnostic.stage, 'snapshotRefrozenPending');
+  assert.equal(
+    readFileSync(join(h.dir, `refused-inventory-${diagnostic.evidenceSha256}.json`), 'utf8'),
+    `${JSON.stringify(refusal)}\n`,
+  );
+  assert.equal(readFileSync(h.inventoryPath, 'utf8'), originalBytes);
+  assert.deepEqual(h.journal, journalBefore);
+  assert.deepEqual(h.state.calls, ['inventory_preview', 'inventory_preview']);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /private|publisher/u);
+});
+
+test('partial refusal write cannot poison an existing stopped journal or its proof references', (t) => {
+  const h = fixture(t, 'publisher', true);
+  const clusterIdentity = '33333333-3333-4333-8333-333333333333';
+  const proof = h.proofStore.recordProof({ fixture: true });
+  h.proofStore.seed({
+    version: 1,
+    clusterIdentity,
+    epoch: 0,
+    phase: 'NEVER_ADMITTED',
+    complete: true,
+  });
+  let stopped = h.proofStore.admit(
+    {
+      ...h.bindings,
+      clusterIdentity,
+      epoch: 1,
+      sourceSha: h.bindings.targetSha,
+      baselineDigest: proof,
+      topologyDigest: proof,
+    },
+    proof,
+  );
+  stopped = h.proofStore.advance(legacyColdDigest(stopped), 'STOPPING');
+  stopped = h.proofStore.advance(legacyColdDigest(stopped), 'STOPPED', { stoppedInventory: proof });
+  const before = readLegacyColdState(h.dir);
+  assert.deepEqual(before.journal, stopped);
+  const proofBytes = readFileSync(join(h.dir, 'legacy-cold-evidence', `${proof}.json`), 'utf8');
+  h.state.deny = true;
+  const originalWrite = fs.writeFileSync;
+  const write = t.mock.method(fs, 'writeFileSync', (fd, bytes, ...args) => {
+    originalWrite(fd, String(bytes).slice(0, 12), ...args);
+    throw new Error('private simulated disk write failure');
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => h.adapter.snapshotPending(), /^Error: inventory_refused$/u);
+  } finally {
+    write.mock.restore();
+    syncBuiltinESMExports();
+  }
+  const refusalFiles = readdirSync(h.dir).filter((name) => name.startsWith('refused-inventory-'));
+  assert.equal(refusalFiles.length, 1);
+  assert.equal(statSync(join(h.dir, refusalFiles[0])).size, 12);
+  assert.equal(statSync(join(h.dir, refusalFiles[0])).mode & 0o777, 0o600);
+  assert.deepEqual(readLegacyColdState(h.dir), before);
+  assert.equal(readLegacyColdState(h.dir).journal.phase, 'STOPPED');
+  assert.equal(
+    readFileSync(join(h.dir, 'legacy-cold-evidence', `${proof}.json`), 'utf8'),
+    proofBytes,
+  );
+  assert.deepEqual(readdirSync(join(h.dir, 'legacy-cold-evidence')), [`${proof}.json`]);
+  assert.equal(h.state.diagnostics[0].evidenceSha256, null);
+  assert.equal(existsSync(h.inventoryPath), false);
 });
 
 test('blocked or unbounded pages cannot become a completed seal', (t) => {
