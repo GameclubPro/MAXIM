@@ -323,6 +323,18 @@ export async function runLegacyColdHost(
       ))
   )
     throw new Error('corrective_continuation_required');
+  // FLAG: A pre-drain can precede the cold journal. Stock continuations must
+  // wait for its bound controller to restore auxiliary queues and clear the fence.
+  if (request.operation !== 'status') {
+    let pending = false;
+    try {
+      lstatSync('/var/lib/maxim-deploy/queue-predrain-pending.json');
+      pending = true;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    if (pending) throw new Error('queue_predrain_restoration_required');
+  }
   assertInheritedDeployLock();
   const store = createLegacyColdJournalStore();
   const state = store.read();

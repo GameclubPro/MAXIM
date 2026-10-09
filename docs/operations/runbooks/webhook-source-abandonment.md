@@ -36,6 +36,16 @@ before the retained claim starts. Settlement preserves the source and claim; it
 does not cancel independent ingress retention or invent an execution result.
 Started or uncertain owners still require the cold protocol below.
 
+An interrupted queue pre-drain leaves the protected host sentinel
+`/var/lib/maxim-deploy/queue-predrain-pending.json`. Ordinary deploy, rollback,
+rollout and cleanup authority refuses while any entry exists at that path, even
+when the preceding cold journal is complete. Queue-pause adoption does not bypass
+this guard. Stock cold entrypoints also refuse while it exists; their read-only
+`status` remains available under the deploy lock. Only the bound pre-drain recovery
+controller may remove its matching
+sentinel after proving the original auxiliary queue pause states restored; never
+delete it manually to unblock a deploy.
+
 `sendAutoDelete` consumes its parent SEND authority, so its exact original-source
 envelope and parent key remain part of the exclusion. A nullable source message
 requires the exact retained successful, terminal, unambiguous moderation-notice

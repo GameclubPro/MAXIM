@@ -40,6 +40,14 @@ test('abort attests only the frozen runtime and a controller descended from the 
   assert.equal(h.read().imageId, ABORT_RUNTIME_IMAGE);
   assert.equal(h.state.calls.filter(([cmd, op]) => cmd === 'git' && op === 'merge-base').length, 2);
 });
+test('abort permits the reviewed host pending guard and its focused entrypoint tests', () => {
+  const h = fixture();
+  h.state.changes = [
+    'infra/scripts/lib/legacy-cold-maintenance.sh',
+    'infra/scripts/legacy-cold-entrypoint-guards.test.mjs',
+  ].join('\n');
+  assert.equal(h.read().imageId, ABORT_RUNTIME_IMAGE);
+});
 for (const patch of [
   { operation: 'apply' },
   { operation: 'prepare' },
@@ -60,12 +68,13 @@ for (const path of [
   'infra/scripts/legacy-cold-client.mjs',
   'infra/scripts/source-abandonment-absence.cjs',
   'infra/scripts/webhook-queue-rollout-control.cjs',
+  'infra/scripts/lib/deploy-lock.sh',
   'apps/api/src/scripts/source-abandonment-store.ts',
   'package-lock.json',
 ])
   test(`abort rejects changed runtime dependency ${path}`, () => {
     const h = fixture();
-    h.state.changes = path;
+    h.state.changes = `infra/scripts/lib/legacy-cold-maintenance.sh\n${path}`;
     assert.throws(h.read, /abort_dependency_changed/);
     assert(!h.state.calls.some(([cmd]) => cmd === 'docker'));
   });
