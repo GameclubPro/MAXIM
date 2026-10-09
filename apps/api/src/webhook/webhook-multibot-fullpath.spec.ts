@@ -390,6 +390,149 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
     });
   });
 
+  it.each([false, true])(
+    'expires a queued callback without an executor with existing waiting checkpoint=%s',
+    async (checkpoint) => {
+      const f = await privateDialogFixture('message_callback', {
+        chatId: '-10104',
+        entityType: 'chat',
+        prepare: false,
+      });
+      const receivedAt = new Date(Date.now() - 10 * 60_000);
+      const deadline = new Date(receivedAt.getTime() + (checkpoint ? 4 : 5) * 60_000);
+      const [migration] = await f.s.prisma.$queryRaw<Array<{ id: string; finishedAt: Date }>>`
+        SELECT id, finished_at AS "finishedAt" FROM _prisma_migrations
+        WHERE migration_name = '20261005020000_add_multibot_order_fences'
+          AND rolled_back_at IS NULL AND finished_at IS NOT NULL
+        ORDER BY finished_at DESC LIMIT 1
+      `;
+      if (!migration) throw new Error('Expected native fixture authority migration');
+      // FLAG: Model an old post-migration receipt in the disposable database, then restore
+      // its migration cutoff. The real legacy authority reader and SQL clocks stay active.
+      await f.s.prisma.$executeRaw`
+        UPDATE _prisma_migrations SET finished_at = ${new Date(receivedAt.getTime() - 60_000)}
+        WHERE id = ${migration.id}
+      `;
+      try {
+        const stored = await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } });
+        const payload = stored.normalizedPayload as unknown as MaxUpdate;
+        const raw = {
+          ...(payload.raw as Record<string, unknown>),
+          timestamp: receivedAt.getTime(),
+        };
+        await f.s.prisma.webhookEvent.update({
+          where: { id: f.id },
+          data: {
+            createdAt: receivedAt,
+            executionDeadlineAt: checkpoint ? deadline : null,
+            rawPayload: raw as Prisma.InputJsonValue,
+            normalizedPayload: { ...payload, raw } as unknown as Prisma.InputJsonValue,
+          },
+        });
+        await f.s.prisma.webhookExecutionClaim.updateMany({
+          where: { webhookEventId: f.id },
+          data: {
+            executionBotId: null,
+            ...(checkpoint
+              ? {
+                  commandResult: {
+                    kind: 'EXECUTION_WAITING',
+                    authorityVersion: MULTIBOT_EXECUTION_AUTHORITY_VERSION,
+                    webhookEventId: f.id,
+                    semanticKey: f.semanticKey,
+                    deadlineAt: deadline.toISOString(),
+                  },
+                }
+              : {}),
+          },
+        });
+        const readiness = jest.spyOn(f.s.readiness, 'ensureReady').mockResolvedValue(null);
+        const handler = jest.spyOn(f.s.moderation, 'handleUpdate');
+
+        await expect(f.s.moderation.processWebhookEvent(f.id)).resolves.toBeUndefined();
+        const event = await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } });
+        expect(event).toMatchObject({
+          executionDeadlineAt: deadline,
+          status: 'PROCESSED',
+          queueName: null,
+          nextEnqueueAt: null,
+          normalizedPayload: {
+            executionOutcome: { code: 'NO_EXECUTABLE_OWNER', deadlineAt: deadline.toISOString() },
+          },
+        });
+        expect(
+          await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+            where: { webhookEventId: f.id },
+          }),
+        ).toMatchObject({
+          status: 'COMPLETED',
+          businessStartedAt: null,
+          executionBotId: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        });
+        await expect(f.s.moderation.processWebhookEvent(f.id)).resolves.toBeUndefined();
+        expect(readiness).toHaveBeenCalledTimes(checkpoint ? 0 : 1);
+        if (!checkpoint)
+          expect(readiness).toHaveBeenCalledWith({ chatId: f.chatId, preferredBotId: f.botId });
+        expect(handler).not.toHaveBeenCalled();
+        expect(f.s.effects).toEqual([]);
+      } finally {
+        await f.s.prisma.$executeRaw`
+          UPDATE _prisma_migrations SET finished_at = ${migration.finishedAt} WHERE id = ${migration.id}
+        `;
+      }
+    },
+  );
+
+  it('persists the original callback deadline across readiness retries', async () => {
+    const f = await privateDialogFixture('message_callback', {
+      chatId: '-10105',
+      entityType: 'chat',
+      prepare: false,
+    });
+    const before = await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } });
+    const deadline = new Date(before.createdAt.getTime() + 5 * 60_000);
+    await f.s.prisma.webhookExecutionClaim.updateMany({
+      where: { webhookEventId: f.id },
+      data: { executionBotId: null },
+    });
+    const readiness = jest.spyOn(f.s.readiness, 'ensureReady').mockResolvedValue(null);
+    const handler = jest.spyOn(f.s.moderation, 'handleUpdate');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(f.s.moderation.processWebhookEvent(f.id)).rejects.toThrow(
+        'No eligible moderation executor',
+      );
+      expect(
+        await f.s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: f.id } }),
+      ).toMatchObject({
+        status: 'QUEUED',
+        executionDeadlineAt: deadline,
+      });
+      expect(
+        await f.s.prisma.webhookExecutionClaim.findFirstOrThrow({
+          where: { webhookEventId: f.id },
+        }),
+      ).toMatchObject({
+        status: 'READY',
+        businessStartedAt: null,
+        executionBotId: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        commandResult: {
+          kind: 'EXECUTION_WAITING',
+          authorityVersion: MULTIBOT_EXECUTION_AUTHORITY_VERSION,
+          webhookEventId: f.id,
+          semanticKey: f.semanticKey,
+          deadlineAt: deadline.toISOString(),
+        },
+      });
+    }
+    expect(readiness).toHaveBeenCalledTimes(2);
+    expect(handler).not.toHaveBeenCalled();
+    expect(f.s.effects).toEqual([]);
+  });
+
   it.each(['receipt', 'claim'] as const)(
     'refuses private dialog %s identity mismatches before execution',
     async (changed) => {

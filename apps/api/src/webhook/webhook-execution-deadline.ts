@@ -20,8 +20,13 @@ export function buildWebhookExecutionDeadlineAt(
 ): Date | null {
   const eventType = update.type.trim().toLowerCase();
   const messageEvent = eventType === 'message_created' || eventType === 'message_edited';
-  if (!messageEvent && eventType !== 'user_added') return null;
-  const source = readWebhookEventTimestamp(update) ?? receiptCreatedAt;
+  const callbackEvent = eventType === 'message_callback';
+  if (!messageEvent && !callbackEvent && eventType !== 'user_added') return null;
+  // FLAG: A callback can reference an old button message. Its readiness budget starts
+  // at the immutable receipt time, never the original message's creation time.
+  const source = callbackEvent
+    ? receiptCreatedAt
+    : (readWebhookEventTimestamp(update) ?? receiptCreatedAt);
   const sourceMs = Math.min(source.getTime(), receiptCreatedAt.getTime());
   if (!Number.isFinite(sourceMs)) return null;
   // FLAG: This bounds only unstarted executor readiness. Rule-specific source deadlines
