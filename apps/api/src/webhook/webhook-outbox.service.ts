@@ -83,6 +83,13 @@ const COMPLETED_HEAD_RECOVERY_INTERVAL_MS = 1_000;
 const COMPLETED_HEAD_RECOVERY_MAX_ROWS = 200;
 const SLOW_ENQUEUE_BATCH_MS = 1_000;
 const ENQUEUE_DISPATCH_BUDGET_MS = 1_000;
+const CONTINUATION_SLICE_MS = 200;
+const CONTINUATION_CHECK_INTERVAL_MS = 100;
+const CONTINUATION_HINT_TTL_MS = 30_000;
+const CONTINUATION_HINT_LIMIT = 100;
+const CONTINUATION_MAX_PER_CHAT = 4;
+const CONTINUATION_MAX_PER_POLL = 16;
+const CONTINUATION_READ_PASSES = 4;
 const SLOW_ENQUEUE_BATCH_LOG_INTERVAL_MS = 30_000;
 const CANONICAL_PREPARATION_PENDING_RETRY_MS = 1_000;
 const DEFERRED_SCOPE_RAW_PAGE_SIZE = 64;
@@ -218,7 +225,7 @@ const COMPLETED_MESSAGE_CREATED_SEMANTIC_OWNER_SQL = Prisma.sql`
       ) = ${ORDERED_WEBHOOK_MESSAGE_ID_SQL}
   )
 `;
-const ORDERED_WEBHOOK_HEAD_STATUS_SQL = Prisma.sql`
+const ORDERED_WEBHOOK_RAW_HEAD_STATUS_SQL = Prisma.sql`
   (
     "status" = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
     OR (
@@ -232,6 +239,9 @@ const ORDERED_WEBHOOK_HEAD_STATUS_SQL = Prisma.sql`
       )
     )
   )
+`;
+const ORDERED_WEBHOOK_HEAD_STATUS_SQL = Prisma.sql`
+  ${ORDERED_WEBHOOK_RAW_HEAD_STATUS_SQL}
   AND NOT ${legacyOrderReleasedSql('webhook_events')}
 `;
 const ORDERED_WEBHOOK_MESSAGE_SQL = Prisma.sql`
@@ -284,6 +294,23 @@ type CurrentEnqueueRepresentative = WebhookEnqueueCandidate & {
   legacyDispositionId: string | null;
   sourceDispositionId: string | null;
 };
+
+const CURRENT_ENQUEUE_REPRESENTATIVE_SELECT = {
+  id: true,
+  status: true,
+  botId: true,
+  queueName: true,
+  enqueueAttempts: true,
+  createdAt: true,
+  queuedAt: true,
+  nextEnqueueAt: true,
+  timeoutQuarantineExpiresAt: true,
+  errorMessage: true,
+  normalizedPayload: true,
+  processedAt: true,
+  legacyDispositionId: true,
+  sourceDispositionId: true,
+} as const;
 
 type WebhookEnqueueStateSnapshot = Pick<
   WebhookEnqueueCandidate,
@@ -477,6 +504,8 @@ export class WebhookOutboxService
   private enqueueScans?: Map<string, OutboxScanState>;
   private enqueueScanReserveOffset = 0;
   private pendingEnqueueRepresentatives?: Map<string, string>;
+  private recentEnqueuedChats?: Map<string, { id: string; expiresAt: number }>;
+  private continuationHintOffset = 0;
   private readonly deferredEnqueueScopes = new DeferredWebhookScopes();
   private finishedHeadRecoveryOffset = 0;
   private finishedOwnerRecoveryOffset = 0;
@@ -701,6 +730,11 @@ export class WebhookOutboxService
     );
     const refilledUnits = new Set(this.activeEnqueueUnits.keys());
     let selectionFinishedAtMs = admissionFinishedAtMs;
+    let selectionDone = false;
+    let finishSelection!: () => void;
+    const selectionFinished = new Promise<void>((resolve) => {
+      finishSelection = resolve;
+    });
     // FLAG: Re-read bounded retained identities before using them. Refill from that
     // current snapshot while the single SQL selector runs; carried preparations can
     // otherwise finish and leave every slot idle throughout a slow history scan.
@@ -711,6 +745,8 @@ export class WebhookOutboxService
         try {
           return await this.selectEnqueueCandidates(now, admission, scopedCandidates.length);
         } finally {
+          selectionDone = true;
+          finishSelection();
           selectionFinishedAtMs = Date.now();
           // FLAG: Leave live/due-only polls after slow or failed recovery scans too.
           if (admission.includeCompletedTimeoutRepair) {
@@ -718,15 +754,13 @@ export class WebhookOutboxService
           }
         }
       })(),
-      (async () => {
-        if (!retainedCandidates.length) return createEnqueueProgress();
-        const prioritized = await this.prioritizeCandidates(
-          retainedCandidates,
-          now,
-          admission.batchSize,
-        );
-        return this.enqueueCandidates(prioritized, admission.enqueueConcurrency, refilledUnits);
-      })(),
+      this.refillDuringSelection(
+        retainedCandidates,
+        admission,
+        refilledUnits,
+        () => selectionDone,
+        selectionFinished,
+      ),
     ]);
     if (selection.status === 'rejected') throw selection.reason;
     if (refill.status === 'rejected') {
@@ -819,6 +853,216 @@ export class WebhookOutboxService
           : 'Webhook enqueue batch progress',
       );
     }
+  }
+
+  private rememberEnqueuedChat(chatId: string, id: string): void {
+    // FLAG: These bounded identities are optional discovery hints, never cursor debt,
+    // payloads or execution authority. Dropped hints remain owned by the durable scan.
+    const hints = (this.recentEnqueuedChats ??= new Map());
+    hints.delete(chatId);
+    hints.set(chatId, { id, expiresAt: Date.now() + CONTINUATION_HINT_TTL_MS });
+    if (hints.size > CONTINUATION_HINT_LIMIT) hints.delete(hints.keys().next().value!);
+  }
+
+  private async readChatContinuations(
+    now: Date,
+    attempts: ReadonlyMap<string, number>,
+    take = CONTINUATION_MAX_PER_POLL,
+    client: Pick<PrismaService, 'webhookEvent' | '$queryRaw'> = this.prisma,
+  ): Promise<WebhookEnqueueCandidate[]> {
+    const hints = this.recentEnqueuedChats;
+    if (!hints?.size) return [];
+    for (const [chatId, hint] of hints) if (hint.expiresAt <= now.getTime()) hints.delete(chatId);
+    const eligible = [...hints].filter(
+      ([chatId]) =>
+        !this.activeEnqueueUnits.has(`chat:${chatId}`) &&
+        (attempts.get(chatId) ?? 0) < CONTINUATION_MAX_PER_CHAT,
+    );
+    if (!eligible.length) return [];
+    const offset = (this.continuationHintOffset ?? 0) % eligible.length;
+    const selected = [...eligible.slice(offset), ...eligible.slice(0, offset)].slice(0, take);
+    this.continuationHintOffset = (offset + selected.length) % eligible.length;
+    if (!selected.length) return [];
+    // FLAG: A queue handoff is not completion. Only a fresh exact-PK terminal read
+    // permits successor discovery; the physical head and activation CAS still decide order.
+    const receipts = await client.webhookEvent.findMany({
+      where: { id: { in: selected.map(([, hint]) => hint.id) } },
+      select: { id: true, status: true, processedAt: true },
+    });
+    const completed = new Set(
+      receipts
+        .filter(
+          (row) =>
+            row.processedAt !== null &&
+            (row.status === WebhookStatus.PROCESSED || row.status === WebhookStatus.DUPLICATE),
+        )
+        .map((row) => row.id),
+    );
+    const ready = selected.filter(
+      ([chatId, hint]) => completed.has(hint.id) && hints.get(chatId) === hint,
+    );
+    if (!ready.length) return [];
+    const headRows = await client.$queryRaw<OrderedWebhookHeadByChat[]>(
+      this.continuationRawHeadsQuery(ready.map(([chatId]) => chatId)),
+    );
+    const heads = new Map(headRows.map(({ chatId, id, createdAt }) => [chatId, { id, createdAt }]));
+    for (const [chatId, hint] of ready)
+      if (!heads.has(chatId) && hints.get(chatId) === hint) hints.delete(chatId);
+    if (!heads.size) return [];
+    const rows = await client.webhookEvent.findMany({
+      where: { id: { in: [...heads.values()].map((head) => head.id) } },
+      select: CURRENT_ENQUEUE_REPRESENTATIVE_SELECT,
+    });
+    return rows.filter((row) => {
+      const chatId = this.extractPriorityChatId(row.normalizedPayload);
+      return (
+        chatId !== null &&
+        heads.get(chatId)?.id === row.id &&
+        !this.activeEnqueueUnits.has(`chat:${chatId}`) &&
+        this.currentEnqueueRepresentative(row, now)
+      );
+    });
+  }
+
+  private continuationRawHeadsQuery(chatIds: readonly string[]): Prisma.Sql {
+    // FLAG: Probe one raw indexed head per chat before any release/hold predicate.
+    // A released prefix is not permission to scan onward in this optional lane;
+    // normal current-head lookup and activation CAS remain mandatory before dispatch.
+    return Prisma.sql`
+      /* continuation_raw_heads */
+      SELECT requested_chats."chatId", head."id", head."createdAt"
+      FROM (VALUES ${Prisma.join(chatIds.map((chatId) => Prisma.sql`(${chatId})`))})
+        AS requested_chats("chatId")
+      JOIN LATERAL (
+        SELECT "id", "created_at" AS "createdAt" FROM "webhook_events"
+        WHERE ${ORDERED_WEBHOOK_RAW_HEAD_STATUS_SQL}
+          AND ${ORDERED_WEBHOOK_MESSAGE_SQL}
+          AND ${ORDERED_WEBHOOK_CHAT_ID_SQL} = requested_chats."chatId"
+        ORDER BY "created_at", "id" LIMIT 1
+      ) head ON TRUE
+    `;
+  }
+
+  private async refillDuringSelection(
+    retained: WebhookEnqueueCandidate[],
+    admission: WebhookEnqueueAdmission,
+    dispatched: Set<string>,
+    selectionDone: () => boolean,
+    selectionFinished: Promise<void>,
+  ): Promise<EnqueueProgress> {
+    const progress = createEnqueueProgress();
+    const deadline = performance.now() + ENQUEUE_DISPATCH_BUDGET_MS;
+    const attempts = new Map<string, number>();
+    let total = 0;
+    let passes = 0;
+    let continuationPass = false;
+    let candidates = retained;
+    while (!this.shuttingDown) {
+      const ended = () => selectionDone() || this.shuttingDown || performance.now() >= deadline;
+      if (continuationPass && ended()) return progress;
+      if (candidates.length) {
+        const prioritized = await this.prioritizeCandidates(
+          candidates,
+          new Date(),
+          admission.batchSize,
+        );
+        if (continuationPass && ended()) return progress;
+        const current = await this.enqueueCandidates(
+          prioritized,
+          admission.enqueueConcurrency,
+          dispatched,
+          Math.min(CONTINUATION_SLICE_MS, Math.max(1, deadline - performance.now())),
+          continuationPass ? () => !ended() : undefined,
+        );
+        for (const key of Object.keys(progress) as Array<keyof EnqueueProgress>)
+          progress[key] += current[key];
+      }
+      if (
+        selectionDone() ||
+        this.shuttingDown ||
+        performance.now() >= deadline ||
+        total >= CONTINUATION_MAX_PER_POLL ||
+        passes >= CONTINUATION_READ_PASSES ||
+        !this.recentEnqueuedChats?.size
+      )
+        return progress;
+      // FLAG: Wait outside preparation/work-unit ownership, only while the existing
+      // single selector is running. Completion/shutdown never leaves an unowned timer.
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          selectionFinished,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(
+              resolve,
+              Math.min(CONTINUATION_CHECK_INTERVAL_MS, Math.max(1, deadline - performance.now())),
+            );
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      if (selectionDone() || this.shuttingDown || performance.now() >= deadline) return progress;
+      const now = new Date();
+      const unsent = retained.filter((row) => !dispatched.has(this.candidateWorkUnitKey(row)));
+      const remainingMs = Math.floor(deadline - performance.now());
+      if (remainingMs < 3) return progress;
+      const maxWait = Math.min(100, Math.floor(remainingMs / 3));
+      let reloaded: {
+        continuations: WebhookEnqueueCandidate[];
+        current: CurrentEnqueueRepresentative[];
+      };
+      try {
+        passes += 1;
+        reloaded = await this.prisma.$transaction(
+          async (tx) => {
+            // FLAG: At most four bounded reads per pass, four passes per poll. Pool
+            // wait plus transaction timeout fit the remaining initiation window.
+            await tx.$executeRaw`SET LOCAL statement_timeout = '150ms'`;
+            const continuations = await this.readChatContinuations(
+              now,
+              attempts,
+              CONTINUATION_MAX_PER_POLL - total,
+              tx,
+            );
+            const current = unsent.length
+              ? await tx.webhookEvent.findMany({
+                  where: { id: { in: unsent.map((row) => row.id) } },
+                  select: CURRENT_ENQUEUE_REPRESENTATIVE_SELECT,
+                })
+              : [];
+            return { continuations, current };
+          },
+          { maxWait, timeout: Math.min(250, remainingMs - maxWait) },
+        );
+      } catch {
+        // Optional discovery failure leaves all durable scan responsibility intact.
+        return progress;
+      }
+      if (ended()) return progress;
+      continuationPass = true;
+      const { continuations, current } = reloaded;
+      total += continuations.length;
+      for (const row of continuations) {
+        const chatId = this.extractPriorityChatId(row.normalizedPayload)!;
+        attempts.set(chatId, (attempts.get(chatId) ?? 0) + 1);
+      }
+      // FLAG: Unsent independent representatives keep precedence on every refill.
+      // Reload their exact bodies; never redispatch a stale initial payload snapshot.
+      const byId = new Map(current.map((row) => [row.id, row]));
+      candidates = [
+        ...unsent.flatMap((previous) => {
+          const row = byId.get(previous.id);
+          return row &&
+            this.currentEnqueueRepresentative(row, now) &&
+            this.candidateWorkUnitKey(row) === this.candidateWorkUnitKey(previous)
+            ? [{ ...previous, ...row }]
+            : [];
+        }),
+        ...continuations,
+      ];
+    }
+    return progress;
   }
 
   private defaultEnqueueAdmission(): WebhookEnqueueAdmission {
@@ -1790,9 +2034,11 @@ export class WebhookOutboxService
     candidates: PrioritizedWebhookEnqueueCandidate[],
     enqueueConcurrency = this.enqueueConcurrency,
     dispatchedUnitKeys?: Set<string>,
+    dispatchBudgetMs = ENQUEUE_DISPATCH_BUDGET_MS,
+    dispatchAllowed?: () => boolean,
   ): Promise<EnqueueProgress> {
     const progress = createEnqueueProgress();
-    if (candidates.length === 0) {
+    if (candidates.length === 0 || (dispatchAllowed && !dispatchAllowed())) {
       return progress;
     }
 
@@ -1828,16 +2074,19 @@ export class WebhookOutboxService
     progress.workUnits = workUnits.length;
     const chatIds = workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : []));
     let orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
+    if (dispatchAllowed && !dispatchAllowed()) return progress;
     // FLAG: Completed mirrors need only exact SQL proof. Keep them outside shared
     // preparation admission so saturated or unfinished preparation cannot strand a chat.
     const completedMirrors = await this.recoverCompletedOrderedHeadMirrors(
       orderedHeadsByChatId,
       enqueueConcurrency,
     );
+    progress.settled += completedMirrors;
+    if (dispatchAllowed && !dispatchAllowed()) return progress;
     if (completedMirrors > 0) {
-      progress.settled += completedMirrors;
       orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
     }
+    if (dispatchAllowed && !dispatchAllowed()) return progress;
     // FLAG: The physical head may be an earlier mirror of a finished owner. Settle only
     // that owner's exact SQL checkpoint before ordering rejects the later receipt; never
     // invoke preparation, the moderation engine or a remote action from this recovery lane.
@@ -1845,10 +2094,12 @@ export class WebhookOutboxService
       orderedHeadsByChatId,
       enqueueConcurrency,
     );
+    progress.settled += recovered;
+    if (dispatchAllowed && !dispatchAllowed()) return progress;
     if (recovered > 0) {
-      progress.settled += recovered;
       orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
     }
+    if (dispatchAllowed && !dispatchAllowed()) return progress;
     const workerCount = Math.max(1, enqueueConcurrency);
     // FLAG: A carried owner already serves this selected snapshot. Its completion
     // may wake other work, but must not redispatch that stale receipt snapshot.
@@ -1864,7 +2115,7 @@ export class WebhookOutboxService
     const active = new Set<Promise<void>>();
     // FLAG: Amortize SQL selection across a finite refill window even when the poll
     // interval is shorter. Fresh selection waits at most this dispatch budget.
-    const deadlineMs = Date.now() + ENQUEUE_DISPATCH_BUDGET_MS;
+    const deadlineMs = Date.now() + dispatchBudgetMs;
     let timer: NodeJS.Timeout | undefined;
     let budgetExhausted = false;
     const budgetExpired = new Promise<void>((resolve) => {
@@ -1905,8 +2156,10 @@ export class WebhookOutboxService
     // still own preparation or queue activation. Fresh independent units can advance.
     try {
       while (dispatched.size < workUnits.length && !this.shuttingDown && !budgetExhausted) {
+        if (dispatchAllowed && !dispatchAllowed()) break;
         if (Date.now() >= deadlineMs) break;
         for (const workUnit of workUnits) {
+          if (dispatchAllowed && !dispatchAllowed()) break;
           if (this.activeEnqueueUnits.size >= workerCount) break;
           if (dispatched.has(workUnit) || deferredHeadUnits.has(workUnit)) continue;
           const key = workUnitKey(workUnit);
@@ -2228,7 +2481,6 @@ export class WebhookOutboxService
     const startedAt = performance.now();
     if (startedAt < (this.nextFinishedHeadRecoveryAt ?? 0)) return 0;
     this.nextFinishedHeadRecoveryAt = startedAt + FINISHED_HEAD_RECOVERY_INTERVAL_MS;
-    const deadline = startedAt + FINISHED_HEAD_RECOVERY_BUDGET_MS;
     const uniqueHeads = Array.from(
       new Map(Array.from(heads.values(), (head) => [head.id, head])).values(),
     ).sort((left, right) => this.compareCandidateSequence(left, right));
@@ -2245,6 +2497,10 @@ export class WebhookOutboxService
       return 0;
     }
     if (owners.length === 0) return 0;
+    // FLAG: Discovery has independent pool/transaction bounds. Start the owner
+    // dispatch budget after it succeeds so slow SQL cannot starve proven recovery.
+    // Started transactions retain their own bounds and are always awaited.
+    const deadline = performance.now() + FINISHED_HEAD_RECOVERY_BUDGET_MS;
     owners.sort((left, right) => left.ownerId.localeCompare(right.ownerId));
     const ownerOffset = (this.finishedOwnerRecoveryOffset ?? 0) % owners.length;
     const orderedOwners = [...owners.slice(ownerOffset), ...owners.slice(0, ownerOffset)];
@@ -2419,6 +2675,7 @@ export class WebhookOutboxService
         return;
       }
       if (enqueueOutcome === 'outstanding') {
+        if (workUnit.chatId) this.rememberEnqueuedChat(workUnit.chatId, event.id);
         progress.outstanding += 1;
         return;
       }
