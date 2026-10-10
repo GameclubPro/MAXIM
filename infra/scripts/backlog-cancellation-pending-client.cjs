@@ -169,6 +169,18 @@ if (require.main === module)
       : /^P[0-9]{4}$/.test(error?.code ?? '')
         ? error.code
         : 'unknown';
-    process.stderr.write(JSON.stringify({ phase: 'FAILED', code }) + '\n');
+    const databaseCode = /^[A-Z0-9]{5}$/.test(error?.meta?.code ?? '') ? error.meta.code : null;
+    const databaseFailure =
+      [
+        'canceling statement due to statement timeout',
+        'unsupported Unicode escape sequence',
+        'invalid input syntax for type json',
+        'violates check constraint',
+        'index row requires',
+        'Cancellation evidence is permanent',
+      ].find((value) => String(error?.meta?.message ?? '').includes(value)) ?? null;
+    process.stderr.write(
+      JSON.stringify({ phase: 'FAILED', code, databaseCode, databaseFailure }) + '\n',
+    );
     process.exitCode = 1;
   });
