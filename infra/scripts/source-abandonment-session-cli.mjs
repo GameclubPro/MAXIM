@@ -26,8 +26,10 @@ import { createLegacyColdRuntime } from './legacy-cold-runtime.mjs';
 import { createLegacyColdClient } from './legacy-cold-client.mjs';
 import { readLegacyColdStoreConnection } from './legacy-cold-host.mjs';
 import {
+  SOURCE_ABANDONMENT_SESSION_DEFAULT_DURATION_MS,
   SOURCE_ABANDONMENT_SESSION_DIRECTORY,
   SOURCE_ABANDONMENT_SESSION_LIMITS,
+  SOURCE_ABANDONMENT_SESSION_ONLINE_ADMISSION_MAX_MS,
   createSourceAbandonmentSessionStore,
   readSourceAbandonmentSessionState,
   sourceAbandonmentSessionDigest as digest,
@@ -253,7 +255,7 @@ export function parseSourceAbandonmentSessionRequest(input, now = Date.now()) {
     requireFact(
       Number.isSafeInteger(value.deadlineAtMs) &&
         value.deadlineAtMs > now &&
-        value.deadlineAtMs <= now + SOURCE_ABANDONMENT_SESSION_LIMITS.durationMs,
+        value.deadlineAtMs <= now + SOURCE_ABANDONMENT_SESSION_ONLINE_ADMISSION_MAX_MS,
       'session_controller_deadline_refused',
     );
   } else {
@@ -382,7 +384,11 @@ export function createSourceAbandonmentSessionDeadlineRunner({
 
 function makeBudgets(feasibility, childCount) {
   const budgets = {
-    durationMs: SOURCE_ABANDONMENT_SESSION_LIMITS.durationMs,
+    // FLAG: Fix the reviewed duration before admission; never extend an active journal.
+    durationMs: Math.max(
+      SOURCE_ABANDONMENT_SESSION_DEFAULT_DURATION_MS,
+      feasibility.estimatedColdMs,
+    ),
     proofBytes: SOURCE_ABANDONMENT_SESSION_LIMITS.proofBytes,
   };
   for (const [key, frozen] of Object.entries(feasibility.frozenInventoryReservation)) {

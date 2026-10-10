@@ -18,6 +18,8 @@ export const SOURCE_ABANDONMENT_SESSION_DIRECTORY =
   '/var/lib/maxim-deploy/source-abandonment-session';
 export const SOURCE_ABANDONMENT_SESSION_JOURNAL = 'journal.json';
 export const SOURCE_ABANDONMENT_SESSION_MARKER = 'marker.json';
+export const SOURCE_ABANDONMENT_SESSION_DEFAULT_DURATION_MS = 60 * 60 * 1000;
+export const SOURCE_ABANDONMENT_SESSION_ONLINE_ADMISSION_MAX_MS = 60 * 60 * 1000;
 const maximumChildren = 32;
 const ownersPerChild = 8;
 export const SOURCE_ABANDONMENT_SESSION_LIMITS = Object.freeze({
@@ -33,9 +35,9 @@ export const SOURCE_ABANDONMENT_SESSION_LIMITS = Object.freeze({
   proofFiles: 2048,
   // The frozen scan plus two unchanged stock collector allowances per child.
   // These are parent totals; no existing per-call or per-certificate limit grows.
-  // FLAG: This ceiling admits a reviewed mass plan; measured feasibility and the
-  // immutable startup reserve still determine whether any concrete plan can run.
-  durationMs: 60 * 60 * 1000,
+  // FLAG: Only a new reviewed manifest may select a longer finite cold window.
+  // Existing manifests keep their admitted duration and immutable startup reserve.
+  durationMs: 90 * 60 * 1000,
   inventoryPages: 10000 + 2 * maximumChildren * 512,
   inventoryRows: 2000000 + 2 * maximumChildren * 10000,
   inventoryProbes: 10000000 + 2 * maximumChildren * 50000,

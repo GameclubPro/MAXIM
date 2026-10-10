@@ -207,10 +207,16 @@ resource refusal cannot exclude its owner as unsupported content. Semantic
 content refusals retain their separate bisection path, and no candidate is dropped
 to meet a ceiling.
 The parent ceiling is 32 certificates of at most eight owners each, 480 admission
-calls, 2,048 proof files and 60 minutes. These independent ceilings do not establish
-feasibility for every combination; each plan retains its actual phase estimates,
-128 MiB evidence limit and reserved restoration time. The online admission deadline
-is separate from the maintenance clock and remains explicitly bounded.
+calls and 2,048 proof files. A new manifest fixes its maintenance duration to the
+greater of 60 minutes and the reviewed `estimatedColdMs`, with a hard 90-minute
+maximum. Existing manifests keep their original duration; never extend or reset
+an active journal. The estimate must include all six phases, final readbacks,
+runtime restoration, host guards and explicit contingencies. A longer window
+permits longer downtime; it does not speed up work or guarantee completion.
+These independent ceilings do not establish feasibility for every combination;
+each plan retains its actual phase estimates, 128 MiB evidence limit and reserved
+restoration time. Online admission has its own separate 60-minute maximum and
+never consumes or extends the maintenance clock.
 
 One durable session preserves all 53 original queue pause states, drains work and
 stops the exact fourteen API and two native generations once. A full frozen
