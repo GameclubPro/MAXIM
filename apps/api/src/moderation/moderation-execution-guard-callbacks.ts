@@ -404,7 +404,7 @@ export function createRequiredSubscriptionAssertion(
   guard: RequiredSubscriptionExecutionGuardService | undefined,
   readSelectedBotId: ReadBotId,
   params: Identity & { reasonKey: string; metadata: unknown },
-  options: { initialQualification?: true } = {},
+  options: { initialQualification?: true; deleteHandoffQualification?: true } = {},
 ): Guard {
   return async (beforeFinalAuthority) => {
     if (!guard) throw new Error('Required subscription execution guard unavailable');
@@ -415,6 +415,7 @@ export function createRequiredSubscriptionAssertion(
       botId: readSelectedBotId(),
       beforeFinalAuthority,
       ...(options.initialQualification ? { initialQualification: true } : {}),
+      ...(options.deleteHandoffQualification ? { deleteHandoffQualification: true } : {}),
       reasons: [
         {
           ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE',

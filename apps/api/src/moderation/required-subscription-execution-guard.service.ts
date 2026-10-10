@@ -36,6 +36,15 @@ export class RequiredSubscriptionMembershipUnavailableError extends Error {
   }
 }
 
+// FLAG: This is unavailable source evidence before durable DELETE handoff, never
+// confirmed absence or permission to finish without persisting the obligation.
+export class RequiredSubscriptionDeleteSourceUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super('Required subscription DELETE handoff source unavailable', { cause });
+    this.name = 'RequiredSubscriptionDeleteSourceUnavailableError';
+  }
+}
+
 // FLAG: Initial unavailable evidence is distinct from revoked execution authority or absence.
 export class RequiredSubscriptionInitialSourceUnavailableError extends Error {
   readonly code = 'required_subscription_initial_source_unavailable';
@@ -124,6 +133,7 @@ export class RequiredSubscriptionExecutionGuardService {
     subjectUserId: string | null;
     botId?: string;
     initialQualification?: boolean;
+    deleteHandoffQualification?: true;
     beforeFinalAuthority?: () => Promise<void>;
     reasons: readonly { ruleCode: string; reasonKey: string; metadata: unknown }[];
   }): Promise<
@@ -202,17 +212,19 @@ export class RequiredSubscriptionExecutionGuardService {
     try {
       row = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
     } catch (error) {
-      // FLAG: Only the initial source GET may classify 404 or locally proven missing-ID
-      // responses as unavailable evidence, never as confirmed absence.
-      // Later authorization and attempted mutations retain their original failure fences.
+      // FLAG: Only explicitly scoped qualification GETs classify unavailable source
+      // evidence. Final dispatch and attempted mutations retain their failure fences.
       if (
-        params.initialQualification === true &&
+        (params.initialQualification === true || params.deleteHandoffQualification === true) &&
         (extractHttpStatusCode(error) === 404 || isMaxExactMessageLookupMissingIdError(error)) &&
         !wasMaxMessageSendAttempted(error) &&
         !wasMaxMemberMutationAttempted(error) &&
         !isMaxMutationOutcomeAmbiguous(error)
-      )
-        throw new RequiredSubscriptionInitialSourceUnavailableError(error);
+      ) {
+        if (params.initialQualification === true)
+          throw new RequiredSubscriptionInitialSourceUnavailableError(error);
+        throw new RequiredSubscriptionDeleteSourceUnavailableError(error);
+      }
       throw error;
     }
     if (!row) return 'absent';

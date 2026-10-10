@@ -16,6 +16,7 @@ import { materializeSourceAbandonmentReceipt } from './webhook-source-abandonmen
 import type { SourceAbandonmentChildKind } from './webhook-source-abandonment.contract';
 import {
   backlogUpdateHeldSql,
+  backlogReceiptHeldSql,
   materializeBacklogCancellation,
 } from './webhook-backlog-cancellation';
 
@@ -439,10 +440,7 @@ export function legacyUpdateHeldSql(eventAlias: string): Prisma.Sql {
     SELECT 1 FROM "webhook_source_abandonments" source
     WHERE source."chat_id" = ${event}."normalized_payload"->'message'->>'chatId'
       AND source."message_id" = ${event}."normalized_payload"->'message'->>'messageId')
-    OR EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled WHERE cancelled."semantic_key" = ${event}."semantic_key")
-    OR EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
-      WHERE cancelled."chat_id" = ${event}."normalized_payload"->'message'->>'chatId'
-        AND cancelled."message_id" = ${event}."normalized_payload"->'message'->>'messageId'))`;
+    OR ${backlogReceiptHeldSql(eventAlias)})`;
 }
 
 export function legacyReceiptBornAfterSealSql(eventAlias: string): Prisma.Sql {

@@ -1013,14 +1013,13 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     },
   );
 
-  it.each([
-    'still-missing',
-    'membership-restored',
-    'policy-disabled',
-    'queue-unavailable',
-  ] as const)(
-    'hands off unavailable post-notice membership durably and resumes only DELETE when %s',
-    async (outcome) => {
+  it.each(
+    ['still-missing', 'membership-restored', 'policy-disabled', 'queue-unavailable'].flatMap(
+      (outcome) => ['membership', 'source404'].map((failure) => [outcome, failure]),
+    ),
+  )(
+    'hands off unavailable post-notice evidence durably and resumes only DELETE when %s %s',
+    async (outcome, failure) => {
       const s = await fixture();
       const [chatId, targetId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
       await s.prisma.chatSettings.update({
@@ -1040,7 +1039,7 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       jest
         .spyOn(s.membership, 'getMembershipResolution')
         .mockImplementation(async () =>
-          noticeDelivered && unavailable
+          failure === 'membership' && noticeDelivered && unavailable
             ? { membership: null, fresh: false }
             : { membership, fresh: true },
         );
@@ -1055,6 +1054,14 @@ describeStores('native current-rule authorization across mirrored bot delivery',
         const result = await sendMessage(...args);
         if (args[0] === chatId) noticeDelivered = true;
         return result;
+      });
+      const getSource = s.max.getExactMessageRow.bind(s.max);
+      jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
+        if (failure === 'source404' && noticeDelivered && unavailable)
+          throw Object.assign(new Error('Fixture post-notice source unavailable'), {
+            response: { status: 404, data: {} },
+          });
+        return getSource(...args);
       });
       // FLAG: Hold the real DELETE queue, not webhook execution. Its exact durable
       // obligation must outlive the handler and must not block the next same-chat event.

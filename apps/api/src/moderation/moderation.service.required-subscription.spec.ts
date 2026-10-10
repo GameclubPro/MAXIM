@@ -23,6 +23,7 @@ import {
   RequiredSubscriptionExecutionRejectedError,
   RequiredSubscriptionInitialSourceUnavailableError,
   RequiredSubscriptionMembershipUnavailableError,
+  RequiredSubscriptionDeleteSourceUnavailableError,
 } from './required-subscription-execution-guard.service';
 
 // FLAG: This suite verifies orchestration with an explicit successful deletion boundary.
@@ -1688,19 +1689,26 @@ describe('ModerationService', () => {
         },
       );
 
-      it.each([
-        'committed',
-        'off',
-        'observed',
-        'missing-id',
-        'ambiguous',
-        'sql-failed',
-        'lease-lost',
-      ])(
-        'requires a committed guarded DELETE handoff after membership outage: %s',
-        async (state) => {
+      it.each(
+        [
+          'committed',
+          'off',
+          'observed',
+          'missing-id',
+          'ambiguous',
+          'sql-failed',
+          'lease-lost',
+        ].flatMap((state) => ['membership', 'source'].map((failure) => [state, failure])),
+      )(
+        'requires a committed guarded DELETE handoff after unavailable evidence: %s %s',
+        async (state, failure) => {
           const f = fixture();
-          const unavailable = new RequiredSubscriptionMembershipUnavailableError();
+          const unavailable =
+            failure === 'source'
+              ? new RequiredSubscriptionDeleteSourceUnavailableError(
+                  createMaxApiError(404, 'unavailable'),
+                )
+              : new RequiredSubscriptionMembershipUnavailableError();
           const storageError = new Error('Fixture DELETE persistence unavailable');
           const ensureIntent = jest.fn().mockResolvedValue({
             intentId: state === 'missing-id' ? null : 'fixture-delete',

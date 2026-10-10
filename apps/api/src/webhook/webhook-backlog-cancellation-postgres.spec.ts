@@ -15,9 +15,15 @@ import {
   type BacklogCancellationRequest,
 } from '../scripts/cancel-webhook-backlog';
 import { backlogSource, materializeBacklogCancellation } from './webhook-backlog-cancellation';
-import { WebhookLegacyHoldService, assertLegacyActionAllowed } from './webhook-legacy-hold.service';
+import {
+  WebhookLegacyHoldService,
+  assertLegacyActionAllowed,
+  legacyUpdateHeldSql,
+} from './webhook-legacy-hold.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WebhookOutboxService } from './webhook-outbox.service';
+import { WebhookParser } from './webhook.parser';
+import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 import {
   createMultibotHarness,
   type MultibotHarness,
@@ -306,6 +312,29 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
     ).toBe(false);
     expect(await holds.isGlobalUserHeld('same-user')).toBe(false);
     expect(await holds.isUpdateHeld(fresh.normalizedPayload as never)).toBe(false);
+    for (const type of [
+      'message_created',
+      'message_edited',
+      'message_removed',
+      'message_callback',
+    ]) {
+      const candidate = { ...(old.normalizedPayload as object), type };
+      const check = await db.webhookEvent.create({
+        data: {
+          dedupKey: randomUUID(),
+          semanticKey: buildWebhookSemanticEventKey(candidate),
+          normalizedPayload: candidate,
+          rawPayload: {},
+        },
+      });
+      const [sql] = await db.$queryRaw<Array<{ held: boolean }>>(Prisma.sql`
+        SELECT ${legacyUpdateHeldSql('event')} AS held FROM webhook_events event WHERE id = ${check.id}
+      `);
+      const objectHeld = await holds.isUpdateHeld(candidate as never);
+      expect(sql!.held).toBe(objectHeld);
+      expect(objectHeld).toBe(type === 'message_created' || type === 'message_edited');
+      await db.webhookEvent.delete({ where: { id: check.id } });
+    }
     const mirror = await db.webhookEvent.create({
       data: {
         dedupKey: randomUUID(),
@@ -326,6 +355,51 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
     ).rejects.toThrow();
     await db.webhookEvent.delete({ where: { id: fresh.id } });
   });
+
+  it.each(['message_removed', 'message_callback'])(
+    'retains exact semantic cancellation for %s',
+    async (type) => {
+      const at = new Date(Date.now() - 120_000);
+      const original = await receipt(at);
+      const update = {
+        ...(original.normalizedPayload as object),
+        type,
+        callback: { callbackId: randomUUID(), payload: 'fixture' },
+      };
+      const semanticKey = buildWebhookSemanticEventKey(update);
+      await db.webhookEvent.update({
+        where: { id: original.id },
+        data: {
+          semanticKey,
+          normalizedPayload: update,
+        },
+      });
+      const operation = request();
+      await captureBacklogReceipts(db, operation);
+      await seal(operation.id);
+      await projectBacklogReceipts(db, operation.id);
+      const mirror = await db.webhookEvent.create({
+        data: {
+          dedupKey: randomUUID(),
+          semanticKey,
+          normalizedPayload: update,
+          rawPayload: {},
+        },
+      });
+      const holds = new WebhookLegacyHoldService(db as unknown as PrismaService);
+      expect(await holds.isUpdateHeld(update as never)).toBe(true);
+      const [sql] = await db.$queryRaw<Array<{ held: boolean }>>(Prisma.sql`
+      SELECT ${legacyUpdateHeldSql('event')} AS held FROM webhook_events event WHERE id = ${mirror.id}
+    `);
+      expect(sql!.held).toBe(true);
+      expect(await db.$transaction((tx) => materializeBacklogCancellation(tx, mirror.id))).toBe(
+        'APPLIED_WITH_PROOF',
+      );
+      expect((await db.webhookEvent.findUniqueOrThrow({ where: { id: mirror.id } })).status).toBe(
+        'CANCELLED',
+      );
+    },
+  );
 
   it('retains a completed original behind a cancelled mirror without blocking unrelated history cleanup', async () => {
     const original = await receipt(new Date(Date.now() - 120_000));
@@ -475,6 +549,42 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
         botId: chat.botId,
       });
       expect(h.effects.some((effect) => effect.method === 'delete')).toBe(true);
+      const original = await db.webhookEvent.findUniqueOrThrow({ where: { id: oldId } });
+      const originalMessageId = (original.normalizedPayload as { message: { messageId: string } })
+        .message.messageId;
+      Object.assign(h.ingress, {
+        messageRetention: new MessageRetentionStore(h.prisma as never, h.config, h.legacyHolds),
+      });
+      const removal = new WebhookParser().parse(
+        {
+          update_type: 'message_removed',
+          update_id: randomUUID(),
+          timestamp: Date.now(),
+          chat_id: chatId,
+          message_id: originalMessageId,
+          user_id: 'fixture-user',
+        },
+        { botId: h.bots[0]!.id },
+      );
+      const removedId = (await h.ingress.storeReceipt(removal, null)).webhookEventId!;
+      h.receiptIds.push(removedId);
+      const revoke = jest.spyOn(h.history, 'remove');
+      const beforeEffects = h.effects.length;
+      expect(await h.legacyHolds.isUpdateHeld(removal)).toBe(false);
+      await expect(h.ingress.preparePersistedWebhookEvent(removedId)).resolves.toMatchObject({
+        canonical: true,
+        prepared: true,
+      });
+      await h.drain();
+      expect((await db.webhookEvent.findUniqueOrThrow({ where: { id: removedId } })).status).toBe(
+        'PROCESSED',
+      );
+      // FLAG: The observation settles, but the original message-family hold still
+      // denies whole-engine state changes, including duplicate history mutation.
+      expect(await h.legacyHolds.isMessageHeld(chatId!, originalMessageId)).toBe(true);
+      expect(revoke).not.toHaveBeenCalled();
+      expect(h.effects).toHaveLength(beforeEffects);
+      expect(await db.webhookEvent.findUnique({ where: { id: oldId } })).toEqual(original);
     } finally {
       if (h) {
         // FLAG: Permanent cancellation fixtures live until the disposable database is dropped.

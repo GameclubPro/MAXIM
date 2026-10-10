@@ -34,7 +34,7 @@ copying these notes does not install a fix or prove which version is deployed.
    404, lease loss, attempted/ambiguous mutations and a failure after successful authorization
    remain fenced. Never convert arbitrary errors to PROCESSED or rerun a started whole engine.
    After a successful required-subscription notice/coverage handoff, an exact typed unavailable
-   membership result may transfer only its DELETE obligation to the durable intent service.
+   membership result or explicitly scoped pre-handoff source-unavailable result may transfer only its DELETE obligation to the durable intent service.
    Require a committed executable intent with its original source, reason and deadline; missing
    persistence, shadow/off, ambiguous state or lost notice ownership still fails. The worker must
    obtain fresh membership and current policy before deletion. This is neither a DELETE receipt
@@ -48,7 +48,10 @@ copying these notes does not install a fix or prove which version is deployed.
    scope, with compatible readers throughout the fleet. Retain connected chats, settings,
    statistics, publications, original receipts/errors, claims and ambiguous actions. CANCELLED
    is abandonment, not success. Never use Redis FLUSH/obliterate, delete claims, expire unknown
-   effects or fabricate completion to clear SQL ordering. Existing holds remain in force.
+   effects or fabricate completion to clear SQL ordering. Existing holds remain in force. Keep object and SQL cancellation readers aligned: message-family
+   tombstones apply to created/edited content; exact semantic cancellation covers every type.
+   Fresh removal observations and new menu clicks cannot inherit an unrelated message-family
+   cancellation. Verify the final READY/start transition as well as early admission.
 7. **Resume exactly.** An interrupted cancellation retains its UUID, cutoff, source/image and
    journal. Resume the identical request. A new operation requires the previous one COMPLETE and
    its exact completed journal archived privately by the controller. Preserve lossless BullMQ

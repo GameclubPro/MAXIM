@@ -6,6 +6,7 @@ import {
   RequiredSubscriptionExecutionGuardService,
   RequiredSubscriptionExecutionRejectedError,
   RequiredSubscriptionInitialSourceUnavailableError,
+  RequiredSubscriptionDeleteSourceUnavailableError,
 } from './required-subscription-execution-guard.service';
 import {
   markMaxMemberMutationAttempted,
@@ -97,6 +98,30 @@ function fixture() {
 }
 
 describe('required subscription execution authorization', () => {
+  it.each(['404', 'missing-id'])(
+    'classifies exact source %s only for durable DELETE handoff, without granting deletion',
+    async (failure) => {
+      const s = fixture();
+      const error =
+        failure === '404' ? { response: { status: 404, data: {} } } : await exactLookupFailure({});
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      const beforeFinalAuthority = jest.fn();
+      await expect(
+        s.service.authorize({
+          ...s.input,
+          deleteHandoffQualification: true,
+          beforeFinalAuthority,
+        }),
+      ).rejects.toMatchObject({
+        constructor: RequiredSubscriptionDeleteSourceUnavailableError,
+        cause: error,
+      });
+      expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(beforeFinalAuthority).not.toHaveBeenCalled();
+      await expect(s.service.authorize(s.input)).rejects.toBe(error);
+    },
+  );
   it.each([{}, { message: { body: { text: 'hello' } } }, { body: { mid: 'another-message' } }])(
     'distinguishes genuine initial source GET missing requested ID (%j)',
     async (data) => {
@@ -131,6 +156,9 @@ describe('required subscription execution authorization', () => {
       await expect(s.service.authorize({ ...s.input, initialQualification: true })).rejects.toBe(
         error,
       );
+      await expect(
+        s.service.authorize({ ...s.input, deleteHandoffQualification: true }),
+      ).rejects.toBe(error);
       expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
       expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
     },
@@ -191,6 +219,9 @@ describe('required subscription execution authorization', () => {
     await expect(s.service.authorize({ ...s.input, initialQualification: true })).rejects.toBe(
       error,
     );
+    await expect(
+      s.service.authorize({ ...s.input, deleteHandoffQualification: true }),
+    ).rejects.toBe(error);
     expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
     expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
   });
@@ -251,6 +282,12 @@ describe('required subscription execution authorization', () => {
       await expect(s.service.authorize({ ...s.input, initialQualification: true })).rejects.toBe(
         error,
       );
+      await expect(
+        s.service.authorize({ ...s.input, deleteHandoffQualification: true }),
+      ).rejects.toBe(error);
+      await expect(
+        s.service.authorize({ ...s.input, deleteHandoffQualification: true }),
+      ).rejects.toBe(error);
       expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
       expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
     },

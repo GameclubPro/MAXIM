@@ -80,6 +80,15 @@ const indexes = [
     chatExpression,
     headPredicate,
   ],
+  [
+    'webhook_events_status_next_enqueue_at_created_at_idx',
+    'webhook_events',
+    ['status', 'next_enqueue_at', 'created_at'],
+    false,
+    false,
+    null,
+    null,
+  ],
   ['webhook_execution_claims_pkey', 'webhook_execution_claims', ['id'], true, true, null, null],
   [
     'webhook_execution_claims_kind_semantic_key',
@@ -155,15 +164,19 @@ const normalizedChat = (alias) =>
 
 // FLAG: Diagnose exactly the first predecessor, including unknown/ineligible heads.
 // No historical age, missing claim or missing effect row creates replay authority.
-export const ownerProofAuditSql = `WITH oldest_received AS MATERIALIZED (
+export function buildOwnerProofAuditSql(source = false, retry = false) {
+  return `WITH oldest_received AS MATERIALIZED (
   SELECT id, created_at, normalized_payload FROM webhook_events
-  WHERE status = 'RECEIVED'::"WebhookStatus" ORDER BY created_at, id LIMIT 1
+  WHERE ${retry ? `status = 'FAILED'::"WebhookStatus" AND next_enqueue_at IS NOT NULL ORDER BY next_enqueue_at, created_at` : `status = 'RECEIVED'::"WebhookStatus" ORDER BY created_at, id`} LIMIT 1
 ), received_source AS MATERIALIZED (
   SELECT id, created_at, CASE WHEN LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
     NULLIF(BTRIM(normalized_payload->>'update_type'), ''))) = ANY(ARRAY['message_created','message_edited'])
     THEN ${normalizedChat('oldest_received')} ELSE NULL END AS chat_id FROM oldest_received
 ), predecessor AS MATERIALIZED (
-  SELECT p.* FROM received_source r CROSS JOIN LATERAL (
+  ${
+    source
+      ? `SELECT ${sourceColumns} FROM webhook_events WHERE id = (SELECT id FROM oldest_received)`
+      : `SELECT p.* FROM received_source r CROSS JOIN LATERAL (
     SELECT ${sourceColumns} FROM webhook_events
     WHERE (
       status = ANY(ARRAY['RECEIVED','QUEUED']::"WebhookStatus"[])
@@ -173,7 +186,8 @@ export const ownerProofAuditSql = `WITH oldest_received AS MATERIALIZED (
       NULLIF(BTRIM(normalized_payload->>'update_type'), ''))) = ANY(ARRAY['message_created','message_edited'])
       AND ${chatExpression} = r.chat_id AND (created_at, id) < (r.created_at, r.id)
     ORDER BY created_at, id LIMIT 1
-  ) p
+  ) p`
+  }
 ), semantic_claim AS MATERIALIZED (
   SELECT c.id FROM predecessor p JOIN webhook_execution_claims c
     ON c.kind = 'EXECUTION' AND c.semantic_key = p.semantic_key
@@ -228,14 +242,14 @@ export const ownerProofAuditSql = `WITH oldest_received AS MATERIALIZED (
 SELECT json_build_object(
   'schema_version', 1, 'audit', 'webhook_owner_proof', 'sampled_at', statement_timestamp(),
   'read_only', current_setting('transaction_read_only') = 'on',
-  'scope', 'oldest_received_first_predecessor', 'authority', 'DIAGNOSTICS_ONLY',
+  'scope', '${retry ? 'earliest_scheduled_retry_own_claim' : source ? 'oldest_received_own_claim' : 'oldest_received_first_predecessor'}', 'authority', 'DIAGNOSTICS_ONLY',
   'settlement_authorized', false, 'semantic_source_rebuild', 'not_evaluated',
   'finished_timestamp_validation', 'not_evaluated', 'effect_completeness', 'unknown',
   'sample_caps', json_build_object('received', 1, 'predecessor', 1, 'semantic_claim', 1,
     'linked_claims', 2, 'owner', 1, 'delete_observations', 16),
   'classification', CASE
-    WHEN NOT EXISTS (SELECT 1 FROM oldest_received) THEN 'no_received'
-    WHEN NOT EXISTS (SELECT 1 FROM received_source WHERE chat_id IS NOT NULL) THEN 'source_unknown'
+    WHEN NOT EXISTS (SELECT 1 FROM oldest_received) THEN '${retry ? 'no_scheduled_retry' : 'no_received'}'
+    WHEN ${source ? 'false' : 'true'} AND NOT EXISTS (SELECT 1 FROM received_source WHERE chat_id IS NOT NULL) THEN 'source_unknown'
     WHEN x.predecessor_id IS NULL THEN 'no_predecessor'
     WHEN (SELECT count(*) FROM linked_claims) > 1 THEN 'multiple_linked_claims'
     WHEN x.id IS NULL THEN 'claim_missing'
@@ -255,17 +269,25 @@ SELECT json_build_object(
       AND x.journal_started_matches AND x.journal_finished_string) THEN 'finished_checkpoint_missing_or_mismatched'
     ELSE 'finished_checkpoint_candidate_requires_runtime_validation' END,
   'predecessor', (SELECT json_build_object(
+    'event_type', CASE WHEN normalized_payload->>'type' IN ('message_created','message_edited','user_added','user_removed','message_callback','bot_added','bot_removed','message_removed') THEN normalized_payload->>'type' ELSE 'other' END,
+    'next_retry_at', next_enqueue_at,
     'created_at', created_at, 'status', CASE WHEN status::text IN ('RECEIVED','QUEUED','FAILED') THEN status::text ELSE 'unknown' END,
     'legacy_unverified_marker', error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required',
     'retry_scheduled', next_enqueue_at IS NOT NULL, 'timeout_quarantine_present', timeout_quarantine_expires_at IS NOT NULL,
-    'processed', processed_at IS NOT NULL) FROM predecessor),
+    'processed', processed_at IS NOT NULL,
+    'preparation_lease_failure', error_message LIKE 'Webhook preparation failed: Webhook preparation lease was lost before READY%',
+    'ambiguous_error_marker', COALESCE(error_message, '') ILIKE '%ambiguous%') FROM predecessor),
   'claim', json_build_object('present', x.id IS NOT NULL, 'owner_present', x.owner_id IS NOT NULL,
     'owner_same_as_predecessor', x.owner_id = x.predecessor_id,
+    'owner_semantic_matches', x.owner_semantic_key = x.semantic_key,
+    'source_semantic_matches', x.predecessor_semantic_key = x.semantic_key,
     'linked_count_lower_bound', (SELECT count(*) FROM linked_claims),
     'linked_limit_reached', (SELECT count(*) FROM linked_claims) = 2,
     'enforced', x.enforced, 'status', CASE WHEN x.status::text IN ('PENDING','READY','COMPLETED') THEN x.status::text ELSE 'unknown' END,
     'prepared', x.prepared_at IS NOT NULL, 'business_started', x.business_started_at IS NOT NULL,
     'completed', x.completed_at IS NOT NULL,
+    'business_started_at', x.business_started_at,
+    'execution_waiting_marker', COALESCE(x.command_result->>'kind' = 'EXECUTION_WAITING', false),
     'executor_valid', x.execution_bot_id IS NULL OR BTRIM(x.execution_bot_id) <> '',
     'lease', CASE WHEN x.id IS NULL THEN 'unknown' WHEN NOT x.lease_pair_valid THEN 'malformed'
       WHEN x.lease_token IS NULL THEN 'absent' WHEN x.lease_expires_at > statement_timestamp() THEN 'live' ELSE 'expired' END),
@@ -288,6 +310,9 @@ SELECT json_build_object(
     'absence_proves_no_effects', false),
   'send_and_sanction_coverage', 'unavailable_without_exact_action_keys'
 ) FROM (SELECT 1) singleton LEFT JOIN checks x ON TRUE;`;
+}
+
+export const ownerProofAuditSql = buildOwnerProofAuditSql();
 
 function guard(sql, variable, failure) {
   return `${sql.replace(/;$/u, '')}\n\\gset\n\\if :${variable}\n\\else\n\\echo ${failure}\nSELECT 1 / 0;\n\\endif\n`;
@@ -301,20 +326,32 @@ export function emitOwnerProofPrivilegesSql(requireAll = false) {
   );
 }
 
-export function emitOwnerProofAuditSql(explain = false) {
-  return `SET LOCAL timezone = 'UTC';\n${emitOwnerProofPrivilegesSql(true)}${guard(ownerProofIndexesSql, 'owner_proof_indexes_ready', 'WEBHOOK_OWNER_PROOF_INDEXES_INVALID')}${explain ? 'EXPLAIN (FORMAT JSON) ' : ''}${ownerProofAuditSql}\n`;
+export function emitOwnerProofAuditSql(explain = false, source = false, retry = false) {
+  return `SET LOCAL timezone = 'UTC';\n${emitOwnerProofPrivilegesSql(true)}${guard(ownerProofIndexesSql, 'owner_proof_indexes_ready', 'WEBHOOK_OWNER_PROOF_INDEXES_INVALID')}${explain ? 'EXPLAIN (FORMAT JSON) ' : ''}${buildOwnerProofAuditSql(source, retry)}\n`;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const args = process.argv.slice(2);
-  if (args.length > 1 || (args.length && !['--explain', '--privileges'].includes(args[0]))) {
-    process.stderr.write('Usage: webhook-owner-proof-audit.mjs [--explain|--privileges]\n');
+  if (
+    args.length > 2 ||
+    new Set(args).size !== args.length ||
+    args.some((arg) => !['--explain', '--privileges', '--source', '--retry'].includes(arg)) ||
+    (args.includes('--privileges') && args.length !== 1) ||
+    (args.includes('--source') && args.includes('--retry'))
+  ) {
+    process.stderr.write(
+      'Usage: webhook-owner-proof-audit.mjs [--source|--retry] [--explain] | --privileges\n',
+    );
     process.exitCode = 2;
   } else {
     process.stdout.write(
       args[0] === '--privileges'
         ? emitOwnerProofPrivilegesSql()
-        : emitOwnerProofAuditSql(args[0] === '--explain'),
+        : emitOwnerProofAuditSql(
+            args.includes('--explain'),
+            args.includes('--source') || args.includes('--retry'),
+            args.includes('--retry'),
+          ),
     );
   }
 }

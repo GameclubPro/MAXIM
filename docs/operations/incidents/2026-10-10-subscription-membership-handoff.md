@@ -53,3 +53,69 @@ one strike, retained source deadline and no canonical handler replay.
 
 Deployment, any explicitly authorized abandonment of old receipts and closed fresh-cohort
 measurements must be recorded separately. Local tests are not proof of production recovery.
+
+## First deployment and cancellation
+
+The membership correction reached all 14 API roles and both native auxiliaries in source
+`24c2d84fd6fccbd0b214654ac5d64a3ad2a0a902`, image
+`sha256:840ccc6fbdcbf0fcf471ce8afb496eb2d6a23d69e6fc87a9c79acbc7cae7bf3f`.
+Exact-SHA Required and CodeQL passed. The image was preloaded from CI because the Docker
+filesystem was below the clean-build reserve. Deploy installed the exact fleet but timed out
+on readiness; no current release manifest was finalized.
+
+Authorized cancellation `d8248536-610d-4254-b689-997d40fe3569` used the fixed cutoff
+`2026-10-10T10:15:43.604Z`, the earliest new API generation start. A SQL timeout and then a
+Docker inventory race interrupted it. Repeating the identical request completed the host
+journal and restarted the captured generations at approximately 10:29. The successful client
+pass projected 106 receipts and removed 244 jobs with zero retained locked jobs; the final
+idempotent repeat projected/removed zero. These are per-pass counters, not an asserted total
+of all receipts across interrupted attempts. User settings, statistics, connected entities,
+publications and uncertain action evidence were retained.
+
+At 10:34:22 all 14 roles still matched the exact image, with no restarts, paused queues or
+queue owner. Both native auxiliaries were healthy. Readiness nevertheless remained 503:
+oldest RECEIVED was 10:20:42.118, and operational lag was 824 seconds. A closed receipt cohort
+10:30:30–10:30:35 sampled all 154 receipts without truncation: 76 PROCESSED, 22 DUPLICATE,
+46 NO_REPLAY_HELD and 10 still RECEIVED. Completed-only p50/p95 were 18.2/40.6 seconds;
+21 distinct chats had processed receipts. Cancellation succeeded; sustained recovery did not.
+
+## Additional failure found during acceptance
+
+At 10:21:33.069 the new runtime recorded a source GET 404 in
+`required-subscription.delete-authority`, after notice handoff. At 10:40:37 the oldest received
+mirror referenced a different canonical owner with a started READY claim, no lease and no
+finished checkpoint. This does not establish absent effects or permit replay. A separate
+`violation-delete` executor-proof rejection was recorded at 10:33:48.540.
+
+The follow-up correction classifies exact source GET 404 or a typed missing-ID response only
+in an explicit pre-intent DELETE handoff context. It uses the same committed durable-intent
+requirement as unavailable membership. Initial and final-dispatch authority remain separate;
+404 is never a deletion receipt. Source 503, member lookup errors, unknown/mutating errors,
+storage failure and lost notice ownership retain their fences. Native regression variants
+prove next same-chat progress, one notice, no handler replay, fresh resumed source/membership
+checks, policy revocation, and SQL-sweeper recovery after a lost queue wakeup.
+
+A separate retry diagnostic at 10:45:40 found an unstarted `message_removed` receipt created
+10:37:23 with a preparation-lease error. Preparation histograms over 10:40–10:46 had no
+samples above five seconds, so generic 30-second lease expiry is not an established explanation.
+Do not attribute this family to the corrected subscription error or hide it with another drain.
+The 15-minute monitor after restart did not meet the sustained lag-below-ten-seconds criterion.
+Follow-up rollout, cancellation and final acceptance must be recorded separately.
+
+## Reproduced cancellation-reader mismatch
+
+The retry family was reproduced with a real cancelled message followed by its official
+`message_removed` observation. Object-based admission (`backlogSource`) deliberately applies
+message-family tombstones only to created/edited messages. The final SQL execution transition
+applied that same tombstone to every event type. Admission therefore accepted the removal,
+but READY publication failed with `Webhook preparation lease was lost before READY`, despite
+fresh preparation. The native reproducer failed on that exact error before the correction.
+
+The SQL predicate now uses the same event-type eligibility as object admission. Exact semantic
+cancellations remain effective for every event type. A fresh removal now settles its observation;
+the whole-engine message hold still preserves local duplicate history and denies remote effects.
+Created/edited copies of the cancelled message remain denied.
+Fresh callback identity remains independent from a previous message-family cancellation.
+The native regression checks SQL/object agreement and the real preparation/worker path while
+preserving the original CANCELLED receipt. The source-404 fix and this predicate correction
+must be deployed together before assessing the remaining old started heads.

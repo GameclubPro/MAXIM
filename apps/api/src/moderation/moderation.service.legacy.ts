@@ -40,6 +40,7 @@ import {
   RequiredSubscriptionExecutionRejectedError,
   RequiredSubscriptionInitialSourceUnavailableError,
   RequiredSubscriptionMembershipUnavailableError,
+  RequiredSubscriptionDeleteSourceUnavailableError,
 } from './required-subscription-execution-guard.service';
 import { MESSAGE_LIMITS_STATEFUL_RULES } from './message-limits-delete-guard.service';
 import {
@@ -10229,6 +10230,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       subscriptionAssertionParams,
       { initialQualification: true },
     );
+    const assertRequiredSubscriptionDeleteHandoffCurrent = createRequiredSubscriptionAssertion(
+      this.requiredSubscriptionExecutionGuard,
+      () => this.maxBotContextService?.getActiveBotId() ?? undefined,
+      subscriptionAssertionParams,
+      { deleteHandoffQualification: true },
+    );
     return this.requiredSubscriptionMediaNoticeCoordinator.run({
       chatId: params.chatId,
       userId: params.userId,
@@ -10254,13 +10261,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'required-subscription.delete-authority',
         );
         // FLAG: Prior notice handoff or coverage does not retain delete authority.
-        // A membership outage may hand off only this exact guarded DELETE after SQL
+        // Unavailable membership/source may hand off only this guarded DELETE after SQL
         // commits it. Do not replay the notice/sanction or claim deletion success.
         try {
-          await assertRequiredSubscriptionCurrent();
+          await assertRequiredSubscriptionDeleteHandoffCurrent();
         } catch (error: unknown) {
           if (error instanceof RequiredSubscriptionExecutionRejectedError) return;
-          if (error instanceof RequiredSubscriptionMembershipUnavailableError) {
+          if (
+            error instanceof RequiredSubscriptionMembershipUnavailableError ||
+            error instanceof RequiredSubscriptionDeleteSourceUnavailableError
+          ) {
             await assertNoticeLeaseOwned();
             const handoff = await this.moderationDeleteIntentService?.ensureIntent(
               this.prepareModerationDeleteIntentInput(deleteIntent),

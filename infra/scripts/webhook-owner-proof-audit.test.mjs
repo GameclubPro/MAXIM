@@ -10,6 +10,7 @@ import {
   ownerProofIndexesSql,
   ownerProofAuditSql,
   emitOwnerProofAuditSql,
+  buildOwnerProofAuditSql,
 } from './webhook-owner-proof-audit.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -26,6 +27,7 @@ CREATE TABLE webhook_events (
   timeout_quarantine_expires_at timestamp(3), error_message text
 );
 CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status,created_at,id);
+CREATE INDEX webhook_events_status_next_enqueue_at_created_at_idx ON webhook_events(status,next_enqueue_at,created_at);
 ${migration('20260815123000_add_webhook_ordered_chat_head_index')}
 CREATE TABLE webhook_execution_claims (
   id text PRIMARY KEY, kind text, semantic_key text, webhook_event_id text, execution_bot_id text,
@@ -86,10 +88,11 @@ async function finishedClaim(db) {
     ],
   );
 }
-async function audit(db) {
+async function audit(db, source = false, retry = false) {
   await db.exec('BEGIN READ ONLY');
   try {
-    const report = (await db.query(ownerProofAuditSql)).rows[0].json_build_object;
+    const report = (await db.query(buildOwnerProofAuditSql(source, retry))).rows[0]
+      .json_build_object;
     assert.doesNotMatch(
       JSON.stringify(report),
       /PRIVATE_VALUE|private-blocker|private-received|private-claim/u,
@@ -103,6 +106,38 @@ async function audit(db) {
     await db.exec('ROLLBACK');
   }
 }
+
+test('source mode inspects the oldest receipt own claim without requiring a predecessor', async () => {
+  const db = new PGlite();
+  try {
+    await fixture(db);
+    await receipts(db);
+    await finishedClaim(db);
+    await db.exec("DELETE FROM webhook_events WHERE id='private-blocker'");
+    await db.exec(`UPDATE webhook_execution_claims SET webhook_event_id='private-received',
+      status='PENDING', business_started_at=NULL, prepared_at=NULL,
+      command_result='{"kind":"EXECUTION_WAITING"}'`);
+    await db.exec(`UPDATE webhook_events SET
+      error_message='Webhook preparation failed: Webhook preparation lease was lost before READY for PRIVATE_VALUE_MUST_NOT_APPEAR'`);
+    assert.equal((await audit(db)).classification, 'no_predecessor');
+    const report = await audit(db, true);
+    assert.equal(report.scope, 'oldest_received_own_claim');
+    assert.equal(report.classification, 'business_start_unrecorded');
+    assert.equal(report.claim.owner_same_as_predecessor, true);
+    assert.equal(report.claim.execution_waiting_marker, true);
+    assert.equal(report.predecessor.preparation_lease_failure, true);
+    assert.equal(report.predecessor.ambiguous_error_marker, false);
+    assert.equal(report.claim.lease, 'expired');
+    await db.exec(
+      "UPDATE webhook_events SET status='FAILED', next_enqueue_at='2026-10-01T00:01:00'",
+    );
+    const retryReport = await audit(db, true, true);
+    assert.equal(retryReport.scope, 'earliest_scheduled_retry_own_claim');
+    assert.equal(retryReport.predecessor.preparation_lease_failure, true);
+  } finally {
+    await db.close();
+  }
+});
 
 test('oldest first predecessor is retained even when a later head has finished proof', async () => {
   const db = new PGlite();
@@ -326,7 +361,7 @@ test('checked-in provision grants exactly both groups and rejects effective exce
   }
 });
 
-test('all seven index definitions are required before report or plain EXPLAIN', async () => {
+test('all eight index definitions are required before report or plain EXPLAIN', async () => {
   const db = new PGlite();
   try {
     await fixture(db);
@@ -404,22 +439,35 @@ test(
         result.classification,
         'finished_checkpoint_candidate_requires_runtime_validation',
       );
-      const plan = (await db.query(`EXPLAIN (FORMAT JSON) ${ownerProofAuditSql}`)).rows[0][
-        'QUERY PLAN'
-      ];
-      const scans = [];
-      const visit = (node) => {
-        if (node['Relation Name']) scans.push(node);
-        for (const child of node.Plans ?? []) visit(child);
-      };
-      visit(plan[0].Plan);
-      assert(scans.length >= 7);
-      for (const scan of scans) {
-        assert.match(scan['Node Type'], /^Index (Only )?Scan$/u, JSON.stringify(scan));
-        assert(scan['Index Cond'], JSON.stringify(scan));
+      for (const [source, retry] of [
+        [false, false],
+        [true, false],
+        [true, true],
+      ]) {
+        const plan = (
+          await db.query(`EXPLAIN (FORMAT JSON) ${buildOwnerProofAuditSql(source, retry)}`)
+        ).rows[0]['QUERY PLAN'];
+        const scans = [];
+        const visit = (node) => {
+          if (node['Relation Name']) scans.push(node);
+          for (const child of node.Plans ?? []) visit(child);
+        };
+        visit(plan[0].Plan);
+        assert(scans.length >= 7);
+        for (const scan of scans) {
+          assert.match(scan['Node Type'], /^Index (Only )?Scan$/u, JSON.stringify(scan));
+          assert(scan['Index Cond'], JSON.stringify(scan));
+        }
+        if (!source)
+          assert(scans.some((s) => s['Index Name'] === 'webhook_events_ordered_chat_head_idx'));
+        if (retry)
+          assert(
+            scans.some(
+              (s) => s['Index Name'] === 'webhook_events_status_next_enqueue_at_created_at_idx',
+            ),
+          );
+        assert(scans.some((s) => s['Index Name'] === 'max_action_ledger_delete_owner_lookup_idx'));
       }
-      assert(scans.some((s) => s['Index Name'] === 'webhook_events_ordered_chat_head_idx'));
-      assert(scans.some((s) => s['Index Name'] === 'max_action_ledger_delete_owner_lookup_idx'));
     } finally {
       await db.end();
       if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);

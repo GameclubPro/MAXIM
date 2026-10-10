@@ -39,6 +39,8 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh storage [--explain]
   ./infra/scripts/vps-postgres-audit.sh multibot-preparation [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-owner-proof [--explain]
+  ./infra/scripts/vps-postgres-audit.sh webhook-source-proof [--explain]
+  ./infra/scripts/vps-postgres-audit.sh webhook-retry-proof [--explain]
   ./infra/scripts/vps-postgres-audit.sh commercial-quality [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
@@ -90,7 +92,7 @@ case "$AUDIT_MODE" in
     fi
     DUPLICATE_EXPLAIN="${2:-}"
     ;;
-  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
+  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -1449,6 +1451,15 @@ WITH classified_activity AS MATERIALIZED (
       WHEN state IS DISTINCT FROM 'active' THEN 'not_applicable'
       WHEN query LIKE '%/* storage:delete_lease_renew */%' THEN 'delete_lease_renew'
       WHEN query LIKE '%/* storage:vk_import_upsert */%' THEN 'vk_import_upsert'
+      WHEN query LIKE '%webhook_events%' AND query LIKE '%WITH filtered AS%'
+        THEN 'webhook_type_metrics'
+      WHEN query LIKE '%webhook_events%' AND query ~* '^\s*SELECT\s+COUNT\('
+        THEN 'webhook_count'
+      WHEN query LIKE '%webhook_events%' AND query LIKE '%readinessWaiting%'
+        THEN 'webhook_operational_lag'
+      WHEN query LIKE 'SELECT "public"."webhook_events"."id", "public"."webhook_events"."created_at"%'
+        AND query LIKE '%ORDER BY%' AND query LIKE '%LIMIT%'
+        THEN 'webhook_oldest_metadata'
       WHEN query NOT LIKE '%audit_logs%' THEN 'not_applicable'
       WHEN query LIKE '%/* FLAG: publisher_suggestion_legacy_migration */%' THEN 'publisher_legacy_migration'
       WHEN query LIKE '%/* FLAG: publisher_suggestion_publication_recovery */%' THEN 'publisher_publication_recovery'
@@ -2223,8 +2234,13 @@ emit_sql() {
   node "$ROOT_DIR/infra/scripts/commercial-quality-audit.mjs" "${commercial_privilege_args[@]}"
   node "$ROOT_DIR/infra/scripts/webhook-owner-proof-audit.mjs" --privileges
   case "$AUDIT_MODE" in
-    webhook-owner-proof)
+    webhook-owner-proof|webhook-source-proof|webhook-retry-proof)
       local owner_proof_args=()
+      if [[ "$AUDIT_MODE" == "webhook-source-proof" ]]; then
+        owner_proof_args+=(--source)
+      elif [[ "$AUDIT_MODE" == "webhook-retry-proof" ]]; then
+        owner_proof_args+=(--retry)
+      fi
       if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
         owner_proof_args+=("$RULES_CLEANUP_EXPLAIN")
       fi
@@ -2342,7 +2358,7 @@ prepare_audit_sql() {
     echo "Generated PostgreSQL audit input is invalid." >&2
     return 1
   fi
-  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "moderation-outcomes" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" ) || "$AUDIT_MODE" == "moderation-outcomes" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
     AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
       echo "Could not create the private PostgreSQL audit diagnostics file." >&2
       return 1
@@ -2452,7 +2468,7 @@ trap 'exit 143' TERM
 
 prepare_audit_sql
 AUDIT_BACKEND_MAY_EXIST=1
-if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "moderation-outcomes" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" ) || "$AUDIT_MODE" == "moderation-outcomes" || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
   timeout --signal=TERM --kill-after=2s \
     "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
     2>"$AUDIT_STDERR_FILE" &
@@ -2469,7 +2485,7 @@ AUDIT_PROCESS_PID=''
 
 if [[ "$status" -eq 124 ]]; then
   echo "Bounded PostgreSQL audit exceeded ${AUDIT_WALL_TIMEOUT_SEC}s and was terminated." >&2
-elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "webhook-owner-proof" ]]; then
+elif [[ "$status" -ne 0 && ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" ) ]]; then
   echo "Bounded webhook owner proof audit failed closed (owner_proof_unavailable)." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
   echo "Bounded legacy default webhook database audit failed closed." >&2

@@ -892,6 +892,32 @@ test('activity query classification emits only fixed labels, including for sensi
     assert.equal(data.rows.find((row) => row.workload === 'publisher').query_shape, marker);
     assert.doesNotMatch(JSON.stringify(data), /secret_payload|private_field/u);
   }
+  for (const [shape, query] of [
+    [
+      'webhook_type_metrics',
+      'WITH filtered AS (SELECT secret_payload FROM webhook_events) SELECT COUNT(*) FROM filtered',
+    ],
+    ['webhook_count', 'SELECT COUNT(*) FROM "public"."webhook_events" WHERE "bot_id" = $1'],
+    [
+      'webhook_operational_lag',
+      'WITH heads AS (SELECT secret_payload FROM webhook_events) SELECT true AS "readinessWaiting" FROM heads',
+    ],
+    [
+      'webhook_oldest_metadata',
+      'SELECT "public"."webhook_events"."id", "public"."webhook_events"."created_at" FROM "public"."webhook_events" ORDER BY "created_at" LIMIT $1',
+    ],
+  ]) {
+    await database.query(
+      `UPDATE fixture_activity SET query = $1 WHERE application_name = 'api-publisher'`,
+      [query],
+    );
+    const sampled = await database.query(
+      statement.replace('FROM pg_stat_activity', 'FROM fixture_activity'),
+    );
+    const data = JSON.parse(Object.values(sampled.rows[0])[0]);
+    assert.equal(data.rows.find((row) => row.workload === 'publisher').query_shape, shape);
+    assert.doesNotMatch(JSON.stringify(data), /secret_payload|bot_id|"public"|created_at/u);
+  }
 });
 
 function extractQueueReportSql(sql) {
@@ -3434,6 +3460,27 @@ test('vps postgres-audit accepts only public fixed modes and needs no bypass', (
   assert.equal(publication.status, 0, publication.stderr);
   assert.match(readFileSync(data.sshArgs, 'utf8'), /publication-schema/u);
   assert.equal(runConnect(data, ['postgres-audit', 'publication-schema', 'other']).status, 2);
+
+  for (const mode of ['webhook-source-proof', 'webhook-retry-proof']) {
+    for (const flags of [[], ['--explain']]) {
+      const result = runConnect(data, ['postgres-audit', mode, ...flags]);
+      assert.equal(result.status, 0, result.stderr);
+      assert(readFileSync(data.sshArgs, 'utf8').includes(mode));
+      const auditResult = runAudit(data, [mode, ...flags]);
+      assert.equal(auditResult.status, 0, auditResult.stderr);
+      const sql = readFileSync(data.sql, 'utf8');
+      assert(
+        sql.includes(
+          mode === 'webhook-source-proof'
+            ? 'oldest_received_own_claim'
+            : 'earliest_scheduled_retry_own_claim',
+        ),
+      );
+      assert(sql.includes("'settlement_authorized', false"));
+      if (flags.length) assert(sql.includes('EXPLAIN (FORMAT JSON)'));
+    }
+    assert.equal(runConnect(data, ['postgres-audit', mode, '--apply']).status, 2);
+  }
 
   for (const privateMode of ['monitor-signals', 'legacy-default-webhook-jobs']) {
     rmSync(data.sshArgs, { force: true });

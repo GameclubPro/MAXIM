@@ -82,6 +82,8 @@ Commands:
   postgres-audit storage [--explain]
   postgres-audit multibot-preparation [--explain]
   postgres-audit webhook-owner-proof [--explain]
+  postgres-audit webhook-source-proof [--explain]
+  postgres-audit webhook-retry-proof [--explain]
   postgres-audit commercial-quality [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
@@ -498,7 +500,7 @@ postgres_audit() {
 
   if [[ "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
-        "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'legacy-order-window' ||
+        "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'webhook-source-proof' || "$mode" == 'webhook-retry-proof' || "$mode" == 'legacy-order-window' ||
         "$mode" == 'moderation-outcomes' || "$mode" == 'legacy-semantic-mirrors' ]]; then
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       echo "Usage: postgres-audit $mode [--explain]" >&2

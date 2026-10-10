@@ -14,6 +14,26 @@ it never provisions itself. Run catalogs sequentially under their shared audit l
 Keep the exact runtime release identity and UTC observation window with the report.
 The diagnostic is excluded from `all` and accepts no identifiers, SQL or input files.
 
+Two additional fixed views diagnose a receipt itself when no earlier same-chat predecessor
+exists, or inspect the next scheduled failed retry:
+
+```bash
+./infra/scripts/vps-connect.sh postgres-audit webhook-source-proof --explain
+./infra/scripts/vps-connect.sh postgres-audit webhook-source-proof
+./infra/scripts/vps-connect.sh postgres-audit webhook-retry-proof --explain
+./infra/scripts/vps-connect.sh postgres-audit webhook-retry-proof
+```
+
+They retain the same private read-only envelope and existing grants. Source mode selects the
+oldest RECEIVED receipt. Retry mode selects one FAILED receipt with non-null `next_enqueue_at`
+ordered by `(next_enqueue_at, created_at)` through the existing status/retry index; it never
+walks terminal FAILED history. In these two scopes the compatibility field `predecessor` describes
+the selected receipt itself, as identified by `scope`. Nonmessage lifecycle receipts can also expose their own claim in these modes. Their metadata
+remains diagnostic only. Fixed flags distinguish preparation
+lease errors, stored semantic matches and an execution-wait marker without exposing raw errors.
+The marker alone is not validated readiness authority. Source, receipt, claim and effect evidence
+remain unchanged; none of these reports can authorize a retry or settlement.
+
 ## Selection and limits
 
 The report selects the oldest `RECEIVED` row using `(status, created_at, id)`, then
@@ -35,7 +55,7 @@ These observations belong to the predecessor's message, not necessarily its exac
 execution or edit version. A missing normalized message key makes the effect source
 unavailable. Sends and sanctions are not searched without exact saved action keys.
 
-Both execution and plain `EXPLAIN (FORMAT JSON)` first attest all seven complete index
+Both execution and plain `EXPLAIN (FORMAT JSON)` first attest all eight complete index
 definitions and effective privileges. Missing, invalid or changed indexes fail closed.
 The existing single-session READ ONLY envelope, 2.5-second statement timeout,
 250-millisecond lock timeout, eight-second wall ceiling, memory/temp limits and exact

@@ -31,6 +31,20 @@ export function backlogUpdateHeldSql(update: Partial<MaxUpdate>): Prisma.Sql {
     WHERE chat_id = ${source.chatId} AND message_id = ${source.messageId}))`;
 }
 
+export function backlogReceiptHeldSql(eventAlias: string): Prisma.Sql {
+  if (!/^[a-z_]+$/u.test(eventAlias)) throw new Error('Invalid webhook SQL alias');
+  const event = Prisma.raw(eventAlias);
+  // FLAG: Match backlogSource exactly: a message-family tombstone covers created/edited
+  // content, not a fresh removal observation or a new click on an old menu. Exact
+  // semantic cancellations still fence every event type, including removals/callbacks.
+  return Prisma.sql`(EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+    WHERE cancelled."semantic_key" = ${event}."semantic_key") OR (
+    COALESCE(${event}."normalized_payload"->>'type', '') IN ('', 'message_created', 'message_edited')
+    AND EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+      WHERE cancelled."chat_id" = ${event}."normalized_payload"->'message'->>'chatId'
+        AND cancelled."message_id" = ${event}."normalized_payload"->'message'->>'messageId')))`;
+}
+
 // FLAG: This projects cancellation only. It never clears, completes or reacquires an
 // execution claim. Late mirrors inherit exact semantic/message tombstones, not user immunity.
 export async function materializeBacklogCancellation(
