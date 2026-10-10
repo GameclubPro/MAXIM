@@ -24,6 +24,29 @@ import {
   WEBHOOK_QUEUE_BACKGROUND,
 } from './webhook-queues';
 
+// Keep the existing in-memory persistence model at the writer boundary. Native tests
+// cover PostgreSQL CAS races and verify that each new writer submits one statement.
+jest.mock('./webhook-receipt-write', () => ({
+  writeWebhookEnqueueState: (
+    client: { webhookEvent: { updateMany: jest.Mock } },
+    event: import('./webhook-receipt-write').WebhookEnqueueSnapshot,
+    data: import('./webhook-receipt-write').WebhookEnqueueWrite,
+  ) =>
+    client.webhookEvent.updateMany({
+      where: {
+        id: event.id,
+        status: event.status,
+        queueName: event.queueName,
+        enqueueAttempts: event.enqueueAttempts,
+        queuedAt: event.queuedAt,
+        nextEnqueueAt: event.nextEnqueueAt,
+        timeoutQuarantineExpiresAt: event.timeoutQuarantineExpiresAt,
+        errorMessage: event.errorMessage,
+      },
+      data,
+    }),
+}));
+
 type JobMock = {
   getState: jest.Mock<Promise<string>, []>;
   retry: jest.Mock<Promise<void>, []>;

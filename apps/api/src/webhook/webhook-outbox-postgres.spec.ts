@@ -16,7 +16,9 @@ import {
   WebhookStatus,
 } from '../prisma/prisma-client';
 import { WebhookOutboxService } from './webhook-outbox.service';
-import { webhookPayloadChange } from './webhook-payload-write';
+import { writeWebhookPayload } from './webhook-payload-write';
+import { writeWebhookEnqueueState, type WebhookEnqueueSnapshot } from './webhook-receipt-write';
+import { Client } from 'pg';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
 import { WEBHOOK_QUEUE_CRITICAL } from './webhook-queues';
@@ -1869,28 +1871,85 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     const before = await tuple();
     // JSONB equality is semantic, including object key ordering.
     await expect(
-      prisma.webhookEvent.updateMany(
-        webhookPayloadChange(id, {
-          raw: { attachments: [], text: 'kept' },
-          type: 'message_created',
-        }),
-      ),
+      writeWebhookPayload(prisma, id, {
+        raw: { attachments: [], text: 'kept' },
+        type: 'message_created',
+      }),
     ).resolves.toEqual({ count: 0 });
     expect(await tuple()).toEqual(before);
     const changed = { ...payload, executionOwnerBotId: 'owner' };
-    await expect(
-      prisma.webhookEvent.updateMany(webhookPayloadChange(id, changed)),
-    ).resolves.toEqual({ count: 1 });
+    await expect(writeWebhookPayload(prisma, id, changed)).resolves.toEqual({ count: 1 });
     expect(
       (await prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).normalizedPayload,
     ).toEqual(changed);
     await prisma.webhookEvent.update({ where: { id }, data: { status: WebhookStatus.PROCESSED } });
-    await expect(
-      prisma.webhookEvent.updateMany(webhookPayloadChange(id, payload)),
-    ).resolves.toEqual({ count: 0 });
+    await expect(writeWebhookPayload(prisma, id, payload)).resolves.toEqual({ count: 0 });
     expect(
       (await prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).normalizedPayload,
     ).toEqual(changed);
+  });
+
+  it('commits payload and queue activation with one SQL statement each and only one race winner', async () => {
+    const { id } = await preparationReceipt();
+    const event = await prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    const data = {
+      status: WebhookStatus.QUEUED,
+      queueName: 'moderation-critical',
+      queuedAt: new Date(),
+      nextEnqueueAt: null,
+      timeoutQuarantineExpiresAt: null,
+      errorMessage: null,
+      enqueueAttempts: { increment: 1 },
+    } as const;
+    const queries = jest.spyOn(Client.prototype, 'query');
+    try {
+      await expect(
+        writeWebhookPayload(prisma, id, { type: 'message_created', text: 'changed' }),
+      ).resolves.toEqual({ count: 1 });
+      // The pg adapter must receive a single atomic UPDATE, with no ORM transaction envelope.
+      expect(queries).toHaveBeenCalledTimes(1);
+      queries.mockClear();
+      await expect(writeWebhookEnqueueState(prisma, event, data)).resolves.toEqual({ count: 1 });
+      expect(queries).toHaveBeenCalledTimes(1);
+    } finally {
+      queries.mockRestore();
+    }
+    const queued = await prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    const race = await Promise.all([
+      writeWebhookEnqueueState(prisma, queued, { ...data, enqueueAttempts: { increment: 1 } }),
+      writeWebhookEnqueueState(prisma, queued, { ...data, enqueueAttempts: { increment: 1 } }),
+    ]);
+    expect(race.map((row) => row.count).sort()).toEqual([0, 1]);
+    const current = await prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    expect(current.enqueueAttempts).toBe(2);
+    expect(current.queuedAt).toEqual(data.queuedAt);
+    expect(current.rawPayload).toEqual(event.rawPayload);
+  });
+
+  it.each([
+    ['status', WebhookStatus.FAILED],
+    ['queueName', 'changed'],
+    ['enqueueAttempts', 4],
+    ['queuedAt', new Date(1000)],
+    ['nextEnqueueAt', new Date(2000)],
+    ['timeoutQuarantineExpiresAt', new Date(3000)],
+    ['errorMessage', 'changed'],
+  ] as const)('rejects a stale %s snapshot without changing the receipt', async (field, value) => {
+    const { id } = await preparationReceipt();
+    const event = await prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    const stale = { ...event, [field]: value } as WebhookEnqueueSnapshot;
+    await expect(
+      writeWebhookEnqueueState(prisma, stale, {
+        status: WebhookStatus.QUEUED,
+        queueName: 'moderation-critical',
+        queuedAt: new Date(),
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        errorMessage: null,
+        enqueueAttempts: { increment: 1 },
+      }),
+    ).resolves.toEqual({ count: 0 });
+    expect(await prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(event);
   });
 
   it('executes the bulk ordered-head query and returns the oldest event per chat', async () => {
