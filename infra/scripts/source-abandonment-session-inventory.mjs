@@ -286,6 +286,37 @@ const selectedSqlDescriptors = new Set([
   'sql:exact-source-family',
 ]);
 function selectedSqlPageBudget(value) {
+  const issues = value.issues;
+  return (
+    Array.isArray(issues) &&
+    [1, 2].includes(issues.length) &&
+    issues.every(
+      (issue) =>
+        issue !== null &&
+        typeof issue === 'object' &&
+        !Array.isArray(issue) &&
+        Object.keys(issue).sort().join(',') === 'code,descriptor',
+    ) &&
+    issues.filter(
+      (issue) =>
+        issue.code === 'sql_budget_exceeded' && selectedSqlDescriptors.has(issue.descriptor),
+    ).length === 1 &&
+    issues.filter(
+      (issue) =>
+        issue.code === 'REDIS_STORE_OR_SOURCE_REFUSED' &&
+        freshActionPageDescriptors.has(issue.descriptor),
+    ).length ===
+      issues.length - 1 &&
+    [511, 512].includes(value.cost.pages)
+  );
+}
+const freshActionPageDescriptors = new Set([
+  'redis:moderation-actions',
+  'redis:max-actions-critical',
+  'redis:max-actions-interactive',
+  'redis:max-actions-background',
+]);
+function freshActionPageRefusal(value) {
   const issue = value.issues?.[0];
   return (
     Array.isArray(value.issues) &&
@@ -294,9 +325,8 @@ function selectedSqlPageBudget(value) {
     typeof issue === 'object' &&
     !Array.isArray(issue) &&
     Object.keys(issue).sort().join(',') === 'code,descriptor' &&
-    issue.code === 'sql_budget_exceeded' &&
-    selectedSqlDescriptors.has(issue.descriptor) &&
-    value.cost.pages >= 511
+    issue.code === 'ACTION_PAGE_UNPROVED' &&
+    freshActionPageDescriptors.has(issue.descriptor)
   );
 }
 
@@ -337,10 +367,11 @@ export async function planSourceAbandonmentSessionChildren({
   );
   const children = [],
     admissionProofs = [],
-    admissionCost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
+    admissionCost = { pages: 0, rows: 0, probes: 0, bytes: 0 },
+    selectionAttempts = new Map();
   let calls = 0,
     rejected = 0,
-    // FLAG: Leave initial SQL headroom without reinterpreting a mixed refusal.
+    // FLAG: Leave initial SQL headroom; a failed proof never grants authority.
     // The persisted per-child authority ceiling remains eight owners.
     ownersPerChild = 7,
     registryDigest = null,
@@ -377,6 +408,12 @@ export async function planSourceAbandonmentSessionChildren({
       protocol: 'source-abandonment-v1',
       abandonBefore: enumeration.request.cutoff,
     };
+    const selectionKey = canonical(selection),
+      previousAttempts = selectionAttempts.get(selectionKey) ?? 0;
+    if (previousAttempts >= 3) {
+      reason = 'global_admission_refused';
+      return 0;
+    }
     const request = {
       version: 1,
       operation: 'admission_preview',
@@ -385,6 +422,7 @@ export async function planSourceAbandonmentSessionChildren({
       selection,
       publisherBotId,
     };
+    selectionAttempts.set(selectionKey, previousAttempts + 1);
     calls++;
     const admission = await collectAdmission(request, { deadlineAtMs });
     fact(
@@ -393,7 +431,7 @@ export async function planSourceAbandonmentSessionChildren({
         admission.operation === 'admission_preview' &&
         admission.sourceSha === request.sourceSha &&
         admission.imageId === request.imageId &&
-        admission.selectionSha256 === canonical(selection) &&
+        admission.selectionSha256 === selectionKey &&
         admission.applied === false &&
         admission.activationAuthorized === false &&
         admission.stoppingAuthorized === false &&
@@ -425,6 +463,16 @@ export async function planSourceAbandonmentSessionChildren({
     }
     if (admission.decision === 'DENY') {
       fact(admission.sourceCoverageComplete === false, 'session_inventory_admission_unproved');
+      // FLAG: A failed action-page proof grants no authority. Retain and charge
+      // it before a fresh stock admission of the same selection; recursive calls
+      // share the three-attempt ceiling and never turn a denial into an exclusion.
+      if (freshActionPageRefusal(admission)) {
+        if (selectionAttempts.get(selectionKey) >= 3) {
+          reason = 'global_admission_refused';
+          return 0;
+        }
+        return admit(authorities);
+      }
       // FLAG: A known SQL page ceiling permits only a smaller fresh read. Keep
       // every unconsumed owner and charge failed proofs; it never excludes one.
       if (selectedSqlPageBudget(admission)) {

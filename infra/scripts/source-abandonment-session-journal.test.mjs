@@ -432,6 +432,48 @@ test('manifest binds a complete finite plan without truncating children or owner
     assert.throws(() => validateSourceAbandonmentSessionManifest(changed));
   }
 });
+for (const minutes of [60, 75, 90]) {
+  test(`manifest accepts an explicit ${minutes}-minute cold budget without changing it`, () => {
+    const plan = manifest();
+    plan.budgets.durationMs = minutes * 60 * 1000;
+    const before = JSON.stringify(plan);
+    assert.equal(
+      validateSourceAbandonmentSessionManifest(plan).budgets.durationMs,
+      minutes * 60 * 1000,
+    );
+    assert.equal(JSON.stringify(plan), before);
+  });
+}
+test('cold duration ceiling stays finite without increasing child, owner or admission limits', () => {
+  assert.equal(limits.durationMs, 90 * 60 * 1000);
+  assert.equal(limits.children, 32);
+  assert.equal(limits.ownersPerChild, 8);
+  assert.equal(limits.admissionCalls, 480);
+  const tooLong = manifest();
+  tooLong.budgets.durationMs = 90 * 60 * 1000 + 1;
+  assert.throws(() => validateSourceAbandonmentSessionManifest(tooLong));
+  assert.equal(validateSourceAbandonmentSessionManifest(manifest(32)).children.length, 32);
+  assert.throws(() => validateSourceAbandonmentSessionManifest(manifest(33)));
+  for (const owners of [8, 9]) {
+    const plan = manifest(1);
+    const child = plan.children[0];
+    child.authorities = Array.from({ length: owners }, (_, index) => ({
+      ownerId: `owner_${index}`,
+      claimId: `claim_${index}`,
+      semanticKey: `semantic_${index}`,
+      chatId: '-chat',
+      messageId: `message_${index}`,
+    }));
+    child.selection.ownerWebhookEventIds = child.authorities.map((row) => row.ownerId);
+    child.selectionDigest = digest(child.selection);
+    if (owners === 8)
+      assert.equal(
+        validateSourceAbandonmentSessionManifest(plan).children[0].authorities.length,
+        8,
+      );
+    else assert.throws(() => validateSourceAbandonmentSessionManifest(plan));
+  }
+});
 for (const field of ['certificateId', 'ownerId', 'claimId', 'semanticKey', 'messageId']) {
   test(`manifest rejects cross-child ${field} collision`, () => {
     const changed = manifest();
@@ -627,6 +669,49 @@ test('duration and cumulative reservation limits stop new writes without fabrica
   // Expiration prevents new work, but a positive zero-write closure may still restore service.
   f.store.beginAbortResume(f.store.read().digest, f.abortProofs());
   f.store.finish(f.store.read().digest, f.finishProofs());
+});
+test('reloading a retained 60-minute journal never extends its budget to the new 90-minute ceiling', (t) => {
+  assert.equal(limits.durationMs, 90 * 60 * 1000);
+  const f = fixture(t, {
+    adjust: (plan) => {
+      plan.budgets.durationMs = 60 * 60 * 1000;
+    },
+  });
+  f.stop();
+  const before = f.store.read();
+  const journalBytes = readFileSync(join(f.directory, journalName));
+  const markerBytes = readFileSync(join(f.directory, markerName));
+  const manifestBytes = JSON.stringify(before.journal.manifest);
+  assert.equal(before.journal.coldStartedAt, '2026-10-09T16:20:00.000Z');
+  f.setTime('2026-10-09T17:20:00.001Z');
+  const reloaded = createSourceAbandonmentSessionStore({
+    directory: f.directory,
+    assertLock: () => {},
+    now: () => '2026-10-09T17:20:00.001Z',
+  });
+  assert.deepEqual(reloaded.read(), before);
+  assert.deepEqual(readFileSync(join(f.directory, journalName)), journalBytes);
+  assert.throws(
+    () =>
+      reloaded.reserveWork(before.digest, {
+        inventoryPages: 1,
+        inventoryRows: 0,
+        inventoryProbes: 0,
+        inventoryBytes: 0,
+        materializationPages: 0,
+      }),
+    /session_duration_budget/u,
+  );
+  assert.throws(() => f.review(0), /session_duration_budget/u);
+  const after = reloaded.read();
+  assert.equal(after.journal.manifest.budgets.durationMs, 60 * 60 * 1000);
+  assert.equal(JSON.stringify(after.journal.manifest), manifestBytes);
+  assert.equal(after.journal.manifestDigest, before.journal.manifestDigest);
+  assert.equal(digest(after.journal.manifest), before.journal.manifestDigest);
+  assert.equal(after.journal.coldStartedAt, before.journal.coldStartedAt);
+  assert.deepEqual(after, before);
+  assert.deepEqual(readFileSync(join(f.directory, journalName)), journalBytes);
+  assert.deepEqual(readFileSync(join(f.directory, markerName)), markerBytes);
 });
 test('actual evidence files use bounded 0600 bytes and never overwrite immutable content', (t) => {
   const f = fixture(t),

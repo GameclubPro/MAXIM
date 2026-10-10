@@ -20,6 +20,8 @@ import {
 import {
   sourceAbandonmentSessionDigest as digest,
   SOURCE_ABANDONMENT_SESSION_LIMITS,
+  SOURCE_ABANDONMENT_SESSION_DEFAULT_DURATION_MS,
+  SOURCE_ABANDONMENT_SESSION_ONLINE_ADMISSION_MAX_MS,
 } from './source-abandonment-session-journal.mjs';
 import { canonicalLegacyColdDigest as canonical } from './legacy-cold-store-adapter.mjs';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
@@ -390,6 +392,43 @@ test('preview durably binds private proofs, runtime, source and finite budgets w
   assert.doesNotMatch(planBytes.toString(), /password|private-token/);
 });
 
+for (const [estimatedMinutes, durationMinutes] of [
+  [7, 60],
+  [60, 60],
+  [75, 75],
+  [90, 90],
+])
+  test(`a reviewed ${estimatedMinutes}-minute estimate creates a ${durationMinutes}-minute cold plan`, async (t) => {
+    const h = fixture(t);
+    h.feasibility.estimatedColdMs = estimatedMinutes * 60 * 1000;
+    h.previewRequest.deadlineAtMs = now + 60 * 60 * 1000;
+    h.rewriteFeasibility();
+    const result = await h.preview();
+    const planBytes = readFileSync(result.planPath);
+    const plan = JSON.parse(planBytes);
+    assert.equal(SOURCE_ABANDONMENT_SESSION_DEFAULT_DURATION_MS, 60 * 60 * 1000);
+    assert.equal(SOURCE_ABANDONMENT_SESSION_ONLINE_ADMISSION_MAX_MS, 60 * 60 * 1000);
+    assert.equal(SOURCE_ABANDONMENT_SESSION_LIMITS.durationMs, 90 * 60 * 1000);
+    assert.equal(result.feasible, true);
+    assert.equal(plan.manifest.budgets.durationMs, durationMinutes * 60 * 1000);
+    assert.equal(result.estimatedColdMs, estimatedMinutes * 60 * 1000);
+    assert.equal(result.planSha256, sha256(planBytes));
+    assert.equal(h.captured.planner.deadlineAtMs, now + 60 * 60 * 1000);
+    assert.equal(h.events.includes('host'), false);
+    assert.equal(h.events.includes('prepare'), false);
+  });
+
+test('a 90-minute cold estimate cannot extend online admission beyond 60 minutes', async (t) => {
+  const h = fixture(t);
+  h.feasibility.estimatedColdMs = 90 * 60 * 1000;
+  h.previewRequest.deadlineAtMs = now + 60 * 60 * 1000 + 1;
+  h.rewriteFeasibility();
+  await assert.rejects(h.preview(), /deadline_refused/);
+  assert.equal(h.events.includes('admission'), false);
+  assert.equal(h.events.includes('host'), false);
+  assert.equal(existsSync(join(h.directory, 'plan.json')), false);
+});
+
 test('run imports reviewed proofs, prepares once and applies once under the same host context', async (t) => {
   const h = fixture(t),
     preview = await h.preview();
@@ -412,6 +451,43 @@ test('run imports reviewed proofs, prepares once and applies once under the same
     h.captured.frozenDeadline,
     now + h.captured.host.manifest.budgets.durationMs - h.feasibility.startupReserveMs,
   );
+});
+
+test('continuation preserves a retained 60-minute manifest, digest and original frozen deadline', async (t) => {
+  const h = fixture(t);
+  const preview = await h.preview();
+  const originalBytes = readFileSync(preview.planPath);
+  const plan = JSON.parse(originalBytes);
+  const manifestDigest = digest(plan.manifest);
+  const coldStartedAt = new Date(now).toISOString();
+  assert.equal(plan.manifest.budgets.durationMs, 60 * 60 * 1000);
+  h.setState({
+    marker: {},
+    journal: { manifestDigest, manifest: plan.manifest, coldStartedAt },
+    digest: hash,
+  });
+  h.dependencies.now = () => now + 45 * 60 * 1000;
+  await runSourceAbandonmentSessionController(
+    {
+      version: 1,
+      operation: 'continue',
+      planPath: preview.planPath,
+      planSha256: preview.planSha256,
+      expectedJournalDigest: hash,
+    },
+    h.dependencies,
+  );
+  await h.captured.host.snapshotFrozenInventory(h.captured.host.manifest, {});
+  assert.equal(
+    h.captured.frozenDeadline,
+    now + 60 * 60 * 1000 - h.feasibility.startupReserveMs,
+  );
+  assert.equal(h.captured.host.manifest.budgets.durationMs, 60 * 60 * 1000);
+  assert.equal(digest(h.captured.host.manifest), manifestDigest);
+  assert.equal(h.state().journal.manifestDigest, manifestDigest);
+  assert.equal(h.state().journal.coldStartedAt, coldStartedAt);
+  assert.equal(h.state().digest, hash);
+  assert.deepEqual(readFileSync(preview.planPath), originalBytes);
 });
 
 for (const [name, alter] of [
@@ -698,7 +774,7 @@ for (const [name, change] of [
     },
   ],
   [
-    'unbounded duration',
+    'cold duration over 90 minutes',
     (h) => {
       h.feasibility.estimatedColdMs = SOURCE_ABANDONMENT_SESSION_LIMITS.durationMs + 1;
     },
