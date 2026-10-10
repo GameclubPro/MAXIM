@@ -197,12 +197,15 @@ each stopped inventory still requires exact equality of its two raw count maps.
 Online admission initially packs at most seven owners per selection, leaving SQL
 headroom below the retained eight-owner certificate ceiling. Every selection
 still requires a complete fresh stock admission, including after a prior refused
-plan; a mixed refusal never authorizes another attempt within that plan.
-If online admission returns only a known selected-source SQL page-budget refusal
-at 511 or 512 charged pages, the planner reduces the owner group by one and packs
+plan. If online admission returns a known selected-source SQL page-budget refusal
+at 511 or 512 charged pages, either alone or paired exactly with
+`REDIS_STORE_OR_SOURCE_REFUSED` on `moderation-actions`, `max-actions-critical`,
+`max-actions-interactive` or `max-actions-background`, the planner reduces the owner group by one and packs
 the remaining candidates using that smaller size. Every new selection requires
 fresh complete stock admission; failed proofs and their costs remain retained.
-Unknown, global, mixed or malformed refusals stop the whole plan. A singleton
+This narrow pair permits only a new smaller complete proof; it does not establish
+that the Redis refusal was harmless. Extra, unknown, global, other mixed or
+malformed refusals stop the whole plan. A singleton
 resource refusal cannot exclude its owner as unsupported content. Semantic
 content refusals retain their separate bisection path, and no candidate is dropped
 to meet a ceiling.

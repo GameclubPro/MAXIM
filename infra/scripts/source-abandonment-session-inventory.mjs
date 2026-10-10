@@ -286,17 +286,28 @@ const selectedSqlDescriptors = new Set([
   'sql:exact-source-family',
 ]);
 function selectedSqlPageBudget(value) {
-  const issue = value.issues?.[0];
+  const issues = value.issues;
   return (
-    Array.isArray(value.issues) &&
-    value.issues.length === 1 &&
-    issue !== null &&
-    typeof issue === 'object' &&
-    !Array.isArray(issue) &&
-    Object.keys(issue).sort().join(',') === 'code,descriptor' &&
-    issue.code === 'sql_budget_exceeded' &&
-    selectedSqlDescriptors.has(issue.descriptor) &&
-    value.cost.pages >= 511
+    Array.isArray(issues) &&
+    [1, 2].includes(issues.length) &&
+    issues.every(
+      (issue) =>
+        issue !== null &&
+        typeof issue === 'object' &&
+        !Array.isArray(issue) &&
+        Object.keys(issue).sort().join(',') === 'code,descriptor',
+    ) &&
+    issues.filter(
+      (issue) =>
+        issue.code === 'sql_budget_exceeded' && selectedSqlDescriptors.has(issue.descriptor),
+    ).length === 1 &&
+    issues.filter(
+      (issue) =>
+        issue.code === 'REDIS_STORE_OR_SOURCE_REFUSED' &&
+        freshActionPageDescriptors.has(issue.descriptor),
+    ).length ===
+      issues.length - 1 &&
+    [511, 512].includes(value.cost.pages)
   );
 }
 const freshActionPageDescriptors = new Set([
@@ -360,7 +371,7 @@ export async function planSourceAbandonmentSessionChildren({
     selectionAttempts = new Map();
   let calls = 0,
     rejected = 0,
-    // FLAG: Leave initial SQL headroom without reinterpreting a mixed refusal.
+    // FLAG: Leave initial SQL headroom; a failed proof never grants authority.
     // The persisted per-child authority ceiling remains eight owners.
     ownersPerChild = 7,
     registryDigest = null,

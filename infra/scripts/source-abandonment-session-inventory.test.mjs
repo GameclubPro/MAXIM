@@ -404,6 +404,12 @@ function sqlPageDenial(value, descriptor = 'sql:channel_auto_post_attach_markers
   };
 }
 
+function mixedSqlPageDenial(value, descriptor = 'redis:max-actions-interactive') {
+  const denied = sqlPageDenial(value);
+  denied.issues.unshift({ code: 'REDIS_STORE_OR_SOURCE_REFUSED', descriptor });
+  return denied;
+}
+
 function actionPageDenial(value, descriptor = 'redis:max-actions-background') {
   return {
     ...value,
@@ -725,41 +731,84 @@ test('initial seven-owner packing admits all 165 owners in 24 complete fresh cal
   assert.equal(h.peak(), 1);
 });
 
-test('SQL page exhaustion repacks all 165 owners into 28 fresh children and charges every proof', async (t) => {
-  const enumeration = writeWalk(
-    t,
-    Array.from({ length: 165 }, (_, i) => row(i + 1)),
-  ).read();
-  const h = planner(enumeration, (value, input) =>
-    input.selection.ownerWebhookEventIds.length > 6 ? sqlPageDenial(value) : value,
-  );
-  const result = await planSourceAbandonmentSessionChildren(h.options);
-  assert.equal(result.feasible, true);
-  assert.equal(result.children.length, 28);
-  assert.equal(result.admissionCalls, 29);
-  assert.deepEqual(
-    result.children.flatMap((child) => child.authorities),
-    enumeration.authorities,
-  );
-  assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
-  assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
-  for (const key of ['pages', 'rows', 'probes', 'bytes'])
-    assert.equal(
-      result.admissionCost[key],
-      h.proofs.reduce((sum, proof) => sum + proof.cost[key], 0),
+for (const [name, denial] of [
+  ['sole SQL', sqlPageDenial],
+  ['known mixed SQL/Redis', mixedSqlPageDenial],
+])
+  test(`${name} page exhaustion repacks all 165 owners into 28 fresh children and charges every proof`, async (t) => {
+    const enumeration = writeWalk(
+      t,
+      Array.from({ length: 165 }, (_, i) => row(i + 1)),
+    ).read();
+    const h = planner(enumeration, (value, input) =>
+      input.selection.ownerWebhookEventIds.length > 6 ? denial(value) : value,
     );
-  assert.equal(result.admissionCost.pages, 567);
-  assert.deepEqual(
-    h.calls.map((call) => call.selection.ownerWebhookEventIds.length),
-    [7, ...Array(27).fill(6), 3],
-  );
-  for (const child of result.children) {
-    const proof = h.proofs.find((value) => proofDigest(value) === child.admissionDigest);
-    assert.equal(proof.decision, 'READY_FOR_COLD_REVIEW');
-    assert.equal(proof.selectionSha256, canonical(child.selection));
-  }
-  assert.equal(h.peak(), 1);
-});
+    const result = await planSourceAbandonmentSessionChildren(h.options);
+    assert.equal(result.feasible, true);
+    assert.equal(result.children.length, 28);
+    assert.equal(result.admissionCalls, 29);
+    assert.deepEqual(
+      result.children.flatMap((child) => child.authorities),
+      enumeration.authorities,
+    );
+    assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+    assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+    for (const key of ['pages', 'rows', 'probes', 'bytes'])
+      assert.equal(
+        result.admissionCost[key],
+        h.proofs.reduce((sum, proof) => sum + proof.cost[key], 0),
+      );
+    assert.equal(result.admissionCost.pages, 567);
+    assert.deepEqual(
+      h.calls.map((call) => call.selection.ownerWebhookEventIds.length),
+      [7, ...Array(27).fill(6), 3],
+    );
+    for (const child of result.children) {
+      const proof = h.proofs.find((value) => proofDigest(value) === child.admissionDigest);
+      assert.equal(proof.decision, 'READY_FOR_COLD_REVIEW');
+      assert.equal(proof.selectionSha256, canonical(child.selection));
+    }
+    assert.equal(h.peak(), 1);
+  });
+
+for (const descriptor of [
+  'redis:moderation-actions',
+  'redis:max-actions-critical',
+  'redis:max-actions-interactive',
+  'redis:max-actions-background',
+])
+  for (const pages of [511, 512])
+    for (const reversed of [false, true])
+      test(`mixed page refusal repacks ${descriptor} at ${pages} pages, reversed=${reversed}`, async (t) => {
+        const enumeration = writeWalk(t, [row(1), row(2)]).read();
+        const h = planner(enumeration, (value, input) => {
+          if (input.selection.ownerWebhookEventIds.length === 1) {
+            assert.equal(h.proofs[0].decision, 'DENY');
+            return value;
+          }
+          const denied = mixedSqlPageDenial(value, descriptor);
+          denied.cost.pages = pages;
+          if (reversed) denied.issues.reverse();
+          return denied;
+        });
+        const result = await planSourceAbandonmentSessionChildren(h.options);
+        assert.equal(result.feasible, true);
+        assert.deepEqual(
+          h.calls.map((call) => call.selection.ownerWebhookEventIds.length),
+          [2, 1, 1],
+        );
+        assert.deepEqual(
+          result.children.flatMap((child) => child.authorities),
+          enumeration.authorities,
+        );
+        assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+        assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+        for (const key of ['pages', 'rows', 'probes', 'bytes'])
+          assert.equal(
+            result.admissionCost[key],
+            h.proofs.reduce((sum, proof) => sum + proof.cost[key], 0),
+          );
+      });
 
 test('successively smaller SQL groups retain all owners and the hard child ceiling', async (t) => {
   const enumeration = writeWalk(
@@ -830,14 +879,18 @@ for (const budgetBranch of ['left', 'right'])
       );
   });
 
-test('a singleton SQL resource refusal cannot be excluded as unsupported content', async (t) => {
-  const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => sqlPageDenial(value));
-  const result = await planSourceAbandonmentSessionChildren(h.options);
-  assert.equal(result.reason, 'global_admission_refused');
-  assert.equal(result.admissionCalls, 2);
-  assert.equal(result.excludedCounts.rejected, 0);
-  assert.deepEqual(result.children, []);
-});
+for (const [name, denial] of [
+  ['SQL', sqlPageDenial],
+  ['mixed SQL/Redis', mixedSqlPageDenial],
+])
+  test(`a singleton ${name} resource refusal cannot be excluded as unsupported content`, async (t) => {
+    const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => denial(value));
+    const result = await planSourceAbandonmentSessionChildren(h.options);
+    assert.equal(result.reason, 'global_admission_refused');
+    assert.equal(result.admissionCalls, 2);
+    assert.equal(result.excludedCounts.rejected, 0);
+    assert.deepEqual(result.children, []);
+  });
 
 for (const [name, change] of [
   [
@@ -871,14 +924,66 @@ for (const [name, change] of [
     },
   ],
   [
-    'mixed Redis source failure',
+    'unknown mixed Redis source failure',
     (value) => {
       value.issues.unshift({
         code: 'REDIS_STORE_OR_SOURCE_REFUSED',
-        descriptor: 'redis:max-actions-background',
+        descriptor: 'redis:inventory',
       });
     },
   ],
+  ...[
+    [
+      'extra mixed issue',
+      (value) =>
+        value.issues.push({ code: 'unknown', descriptor: 'redis:max-actions-interactive' }),
+    ],
+    [
+      'malformed mixed Redis issue',
+      (value) => {
+        value.issues[0].extra = true;
+      },
+    ],
+    [
+      'unknown mixed SQL descriptor',
+      (value) => {
+        value.issues[1].descriptor = 'sql:inventory';
+      },
+    ],
+    [
+      'unknown mixed Redis code',
+      (value) => {
+        value.issues[0].code = 'ACTION_PAGE_UNPROVED';
+      },
+    ],
+    [
+      'duplicate mixed Redis issue',
+      (value) => {
+        value.issues[1] = clone(value.issues[0]);
+      },
+    ],
+    [
+      'missing mixed issue',
+      (value) => {
+        value.issues[0] = null;
+      },
+    ],
+    [
+      'mixed unproved page exhaustion',
+      (value) => {
+        value.cost.pages = 510;
+      },
+    ],
+  ].map(([name, change]) => [
+    name,
+    (value) => {
+      value.issues.unshift({
+        code: 'REDIS_STORE_OR_SOURCE_REFUSED',
+        descriptor: 'redis:max-actions-interactive',
+      });
+      change(value);
+    },
+  ]),
   [
     'multiple budget issues',
     (value) => {
