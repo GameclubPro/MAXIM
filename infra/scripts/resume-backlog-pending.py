@@ -69,6 +69,9 @@ def main():
     if len(payload) > 32 * 1024 * 1024:
         raise SystemExit('Controller bundle exceeds the transport limit')
     digest = hashlib.sha256(payload).hexdigest()
+    previous = os.environ.get('MAXIM_BACKLOG_PENDING_PREVIOUS_SHA256', '')
+    if previous and not re.fullmatch(r'[a-f0-9]{64}', previous):
+        raise SystemExit('Invalid previous helper digest')
     parent = '/var/lib/maxim-deploy/backlog-cancellation-' + request['id']
     remote = f'''set -euo pipefail
 umask 077
@@ -82,7 +85,7 @@ cat > "$pending_bundle/bundle.tar.gz"
 [[ "$(sha256sum "$pending_bundle/bundle.tar.gz" | cut -d ' ' -f1)" == {digest} ]]
 tar -xzf "$pending_bundle/bundle.tar.gz" -C "$pending_bundle"
 cat "$pending_bundle/.controller.json"
-MAXIM_EXPECTED_DEPLOY_SHA={RUNTIME} node "$pending_bundle/infra/scripts/backlog-cancellation-host.mjs" --resume-pending < "$pending_bundle/.request.json"
+MAXIM_EXPECTED_DEPLOY_SHA={RUNTIME} MAXIM_BACKLOG_PENDING_PREVIOUS_SHA256={shlex.quote(previous)} node "$pending_bundle/infra/scripts/backlog-cancellation-host.mjs" --resume-pending < "$pending_bundle/.request.json"
 '''
     result = subprocess.run([str(ROOT / 'infra/scripts/vps-connect.sh'), 'exec', remote], cwd=ROOT, input=payload)
     raise SystemExit(result.returncode)

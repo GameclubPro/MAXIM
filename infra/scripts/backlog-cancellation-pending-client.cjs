@@ -153,7 +153,22 @@ async function main() {
 }
 module.exports = { pendingPageSql, assertPendingPlan, capturePending };
 if (require.main === module)
-  main().catch(() => {
-    process.stderr.write('Pending cancellation continuation failed\n');
+  main().catch((error) => {
+    const known = [
+      'Unidentified action job',
+      'Cancellation does not remove flow or repeat jobs',
+      'Cancellation queue budget exhausted',
+      'Cancellation projection deadline',
+      'Cancellation readback mismatch',
+      'Pending continuation index plan refused',
+      'Pending continuation budget exhausted',
+      'Frozen operation mismatch',
+    ];
+    const code = known.includes(error?.message)
+      ? error.message
+      : /^P[0-9]{4}$/.test(error?.code ?? '')
+        ? error.code
+        : 'unknown';
+    process.stderr.write(JSON.stringify({ phase: 'FAILED', code }) + '\n');
     process.exitCode = 1;
   });

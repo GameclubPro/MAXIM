@@ -93,9 +93,14 @@ export async function runBacklogCancellationHost(request, pendingOnly = false) {
   );
   if (pendingOnly) {
     const digest = createHash('sha256').update(readFileSync(continuation)).digest('hex');
-    if (state.pendingClientSha256 && state.pendingClientSha256 !== digest)
-      throw new Error('Pending continuation changed');
-    state = { ...state, pendingClientSha256: digest };
+    const revisions = state.pendingClientRevisions ?? [];
+    const prior = revisions.at(-1) ?? state.pendingClientSha256;
+    if (prior && prior !== digest) {
+      if (process.env.MAXIM_BACKLOG_PENDING_PREVIOUS_SHA256 !== prior)
+        throw new Error('Pending continuation changed without the exact previous digest');
+      state = { ...state, pendingClientRevisions: [...revisions, digest] };
+    }
+    state = { ...state, pendingClientSha256: state.pendingClientSha256 ?? digest };
   }
   const save = (phase) => {
     state = { ...state, phase };
