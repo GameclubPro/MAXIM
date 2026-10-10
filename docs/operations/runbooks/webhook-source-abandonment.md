@@ -194,6 +194,10 @@ Online admission requires two complete, individually bounded namespace censuses
 with the same known namespace names; active key counts may differ between them.
 Preserve both raw proofs. This tolerance applies only to online admission:
 each stopped inventory still requires exact equality of its two raw count maps.
+Online admission initially packs at most seven owners per selection, leaving SQL
+headroom below the retained eight-owner certificate ceiling. Every selection
+still requires a complete fresh stock admission, including after a prior refused
+plan; a mixed refusal never authorizes another attempt within that plan.
 If online admission returns only a known selected-source SQL page-budget refusal
 at 511 or 512 charged pages, the planner reduces the owner group by one and packs
 the remaining candidates using that smaller size. Every new selection requires

@@ -321,7 +321,7 @@ test('planner creates exact finite children in sequential stock admission calls'
   assert.equal(h.peak(), 1);
   assert.deepEqual(
     result.children.map((child) => child.authorities.length),
-    [8, 1],
+    [7, 2],
   );
   assert.deepEqual(
     result.children
@@ -404,18 +404,47 @@ function sqlPageDenial(value, descriptor = 'sql:channel_auto_post_attach_markers
   };
 }
 
-test('SQL page exhaustion repacks all 165 owners into 24 fresh children and charges every proof', async (t) => {
+test('initial seven-owner packing admits all 165 owners in 24 complete fresh calls', async (t) => {
+  const enumeration = writeWalk(
+    t,
+    Array.from({ length: 165 }, (_, i) => row(i + 1)),
+  ).read();
+  const h = planner(enumeration);
+  const result = await planSourceAbandonmentSessionChildren(h.options);
+  assert.equal(SOURCE_ABANDONMENT_SESSION_LIMITS.ownersPerChild, 8);
+  assert.equal(result.feasible, true);
+  assert.equal(result.children.length, 24);
+  assert.equal(result.admissionCalls, 24);
+  assert.deepEqual(
+    h.calls.map((call) => call.selection.ownerWebhookEventIds.length),
+    [...Array(23).fill(7), 4],
+  );
+  assert.deepEqual(
+    result.children.flatMap((child) => child.authorities),
+    enumeration.authorities,
+  );
+  assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+  assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+  for (const child of result.children) {
+    const proof = h.proofs.find((value) => proofDigest(value) === child.admissionDigest);
+    assert.equal(proof.decision, 'READY_FOR_COLD_REVIEW');
+    assert.equal(proof.selectionSha256, canonical(child.selection));
+  }
+  assert.equal(h.peak(), 1);
+});
+
+test('SQL page exhaustion repacks all 165 owners into 28 fresh children and charges every proof', async (t) => {
   const enumeration = writeWalk(
     t,
     Array.from({ length: 165 }, (_, i) => row(i + 1)),
   ).read();
   const h = planner(enumeration, (value, input) =>
-    input.selection.ownerWebhookEventIds.length > 7 ? sqlPageDenial(value) : value,
+    input.selection.ownerWebhookEventIds.length > 6 ? sqlPageDenial(value) : value,
   );
   const result = await planSourceAbandonmentSessionChildren(h.options);
   assert.equal(result.feasible, true);
-  assert.equal(result.children.length, 24);
-  assert.equal(result.admissionCalls, 25);
+  assert.equal(result.children.length, 28);
+  assert.equal(result.admissionCalls, 29);
   assert.deepEqual(
     result.children.flatMap((child) => child.authorities),
     enumeration.authorities,
@@ -427,10 +456,10 @@ test('SQL page exhaustion repacks all 165 owners into 24 fresh children and char
       result.admissionCost[key],
       h.proofs.reduce((sum, proof) => sum + proof.cost[key], 0),
     );
-  assert.equal(result.admissionCost.pages, 559);
+  assert.equal(result.admissionCost.pages, 567);
   assert.deepEqual(
     h.calls.map((call) => call.selection.ownerWebhookEventIds.length),
-    [8, ...Array(23).fill(7), 4],
+    [7, ...Array(27).fill(6), 3],
   );
   for (const child of result.children) {
     const proof = h.proofs.find((value) => proofDigest(value) === child.admissionDigest);
@@ -453,13 +482,14 @@ test('successively smaller SQL groups retain all owners and the hard child ceili
   const result = await planSourceAbandonmentSessionChildren(h.options);
   assert.equal(result.feasible, false);
   assert.equal(result.reason, 'child_limit');
-  assert.equal(result.admissionCalls, 35);
+  assert.equal(SOURCE_ABANDONMENT_SESSION_LIMITS.children, 32);
+  assert.equal(result.admissionCalls, 34);
   assert.equal(result.nominatedOwners, 193);
   assert.deepEqual(result.children, []);
   assert.equal(result.excludedCounts.rejected, 0);
   assert.deepEqual(
-    h.calls.slice(0, 3).map((call) => call.selection.ownerWebhookEventIds.length),
-    [8, 7, 6],
+    h.calls.slice(0, 2).map((call) => call.selection.ownerWebhookEventIds.length),
+    [7, 6],
   );
 });
 
@@ -469,12 +499,14 @@ for (const budgetBranch of ['left', 'right'])
       t,
       Array.from({ length: 11 }, (_, i) => row(i + 1)),
     ).read();
-    const rejectedOwner = enumeration.authorities[7].ownerId;
+    const rejectedOwner = enumeration.authorities[6].ownerId;
     const budgetOwner = enumeration.authorities[budgetBranch === 'left' ? 0 : 4].ownerId;
+    const budgetSize = budgetBranch === 'left' ? 4 : 3;
     const h = planner(enumeration, (value, input) => {
       const selected = input.selection.ownerWebhookEventIds;
-      if (selected.length === 4 && selected.includes(budgetOwner)) return sqlPageDenial(value);
-      if (selected.length === 8 || selected.includes(rejectedOwner))
+      if (selected.length === budgetSize && selected.includes(budgetOwner))
+        return sqlPageDenial(value);
+      if (selected.length === 7 || selected.includes(rejectedOwner))
         return {
           ...value,
           decision: 'DENY',
@@ -544,6 +576,15 @@ for (const [name, change] of [
     'mixed content failure',
     (value) => {
       value.issues.push({ code: 'source_content_unproved', descriptor: 'sql:selected-source' });
+    },
+  ],
+  [
+    'mixed Redis source failure',
+    (value) => {
+      value.issues.unshift({
+        code: 'REDIS_STORE_OR_SOURCE_REFUSED',
+        descriptor: 'redis:max-actions-background',
+      });
     },
   ],
   [
@@ -697,7 +738,7 @@ test('planner refuses more than the complete parent owner ceiling before admissi
   assert.equal(result.nominatedOwners, nominated);
   assert.equal(h.calls.length, 0);
 });
-test('complete 161-owner scope uses 21 unchanged finite certificates without truncation', async (t) => {
+test('complete 161-owner scope uses 23 unchanged finite certificates without truncation', async (t) => {
   const enumeration = writeWalk(
     t,
     Array.from({ length: 161 }, (_, index) => row(index + 1)),
@@ -705,13 +746,13 @@ test('complete 161-owner scope uses 21 unchanged finite certificates without tru
   const h = planner(enumeration);
   const result = await planSourceAbandonmentSessionChildren(h.options);
   assert.equal(result.feasible, true);
-  assert.equal(result.children.length, 21);
-  assert.equal(result.admissionCalls, 21);
+  assert.equal(result.children.length, 23);
+  assert.equal(result.admissionCalls, 23);
   assert.equal(result.children.flatMap((child) => child.authorities).length, 161);
-  assert(result.children.every((child) => child.authorities.length <= 8));
+  assert(result.children.every((child) => child.authorities.length <= 7));
   const denied = await planSourceAbandonmentSessionChildren({
     ...planner(enumeration).options,
-    maximumChildren: 20,
+    maximumChildren: 22,
   });
   assert.equal(denied.reason, 'child_limit');
   assert.deepEqual(denied.children, []);
