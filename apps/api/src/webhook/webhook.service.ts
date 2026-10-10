@@ -57,7 +57,7 @@ import {
   buildWebhookSemanticEventKey,
   readWebhookEventTimestamp,
 } from './webhook-semantic-event-key';
-import { webhookPayloadChange } from './webhook-payload-write';
+import { writeWebhookPayload } from './webhook-payload-write';
 import {
   DORMANT_BOT_OBSERVATION_MARKER,
   settleDormantWebhookObservation,
@@ -582,7 +582,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     }
 
     const update = event.normalizedPayload as MaxUpdate;
-    if (event.status === WebhookStatus.NO_REPLAY_HELD) {
+    if (event.status === WebhookStatus.NO_REPLAY_HELD || event.status === WebhookStatus.CANCELLED) {
       return {
         canonical: false,
         prepared: false,
@@ -946,9 +946,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
         }
         this.attachExecutionOwnerBotId(update, claim.executionBotId);
         await this.persistUserDisplayNameSnapshots(update);
-        await this.prisma.webhookEvent.updateMany(
-          webhookPayloadChange(webhookEventId, this.sanitizeForJsonStorage(update)),
-        );
+        await writeWebhookPayload(this.prisma, webhookEventId, this.sanitizeForJsonStorage(update));
         return {
           canonical: true,
           prepared: true,
@@ -1670,9 +1668,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
   ): Promise<{ update: MaxUpdate; executionBotId: string | null }> {
     if (this.isPublisherUpdate(update)) {
       await this.observePublisherWebhook(update, webhookEventId, false);
-      await this.prisma.webhookEvent.updateMany(
-        webhookPayloadChange(webhookEventId, this.sanitizeForJsonStorage(update)),
-      );
+      await writeWebhookPayload(this.prisma, webhookEventId, this.sanitizeForJsonStorage(update));
       return { update, executionBotId: null };
     }
 
@@ -1703,9 +1699,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     )
       await this.completeManagedEntityHandshake(update);
 
-    await this.prisma.webhookEvent.updateMany(
-      webhookPayloadChange(webhookEventId, this.sanitizeForJsonStorage(update)),
-    );
+    await writeWebhookPayload(this.prisma, webhookEventId, this.sanitizeForJsonStorage(update));
 
     return {
       update,

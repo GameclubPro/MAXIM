@@ -63,7 +63,305 @@ function fixture(shape: Shape) {
   return { at, raw, message, body, share, link, linkedBody, owner };
 }
 
+function linkedAttachment(kind: 'video' | 'share' | 'sticker'): Record<string, unknown> {
+  if (kind === 'video')
+    return {
+      type: 'video',
+      payload: { id: 2 ** 60, url: 'https://example.com/video', token: 'opaque-video' },
+      thumbnail: { url: 'https://example.com/thumbnail' },
+      width: 1920,
+      height: 1080,
+      duration: 30,
+    };
+  if (kind === 'share')
+    return {
+      type: 'share',
+      payload: { url: 'https://example.com/article', token: null },
+      title: 'Preview title',
+      description: 'Preview description',
+      image_url: 'https://example.com/preview',
+    };
+  return {
+    type: 'sticker',
+    payload: { url: 'https://example.com/sticker', code: 'sticker-code' },
+    width: 256,
+    height: 256,
+  };
+}
+
+const linkedMediaCases = [
+  ['forward', 'video'],
+  ['reply', 'video'],
+  ['forward', 'share'],
+  ['reply', 'sticker'],
+] as const;
+
 describe('modern source content profile', () => {
+  it.each(linkedMediaCases)(
+    'accepts one %s %s while retaining only the original outer human source',
+    (shape, kind) => {
+      const f = fixture(shape);
+      f.body.text = shape === 'forward' ? '' : 'An ordinary reply';
+      f.linkedBody.text = 'Quoted content';
+      f.linkedBody.attachments = [linkedAttachment(kind)];
+      f.linkedBody.markup = [{ type: 'strong', from: 0, length: 6 }];
+      if (shape === 'forward') delete f.link.sender;
+      const owner = f.owner();
+      const before = structuredClone(owner);
+      const expected = {
+        chatId: '-111',
+        messageId: 'outer-mid',
+        userId: 'outer-user',
+        sourceAt: new Date(f.at),
+      };
+      expect(inspectSourceAbandonmentSource(owner)).toEqual(expected);
+      expect(inspectSourceAbandonmentPostSealSource(owner)).toEqual(expected);
+      expect(inspectLegacyRecoverySource(owner)).toBeNull();
+      expect(inspectLegacyPostSealTextSource(owner)).toBeNull();
+      expect(owner).toEqual(before);
+      delete f.message.sender;
+      expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+    },
+  );
+
+  it.each(linkedMediaCases)(
+    'rejects default and configured commands in both texts of a %s %s',
+    (shape, kind) => {
+      const f = fixture(shape);
+      f.linkedBody.attachments = [linkedAttachment(kind)];
+      for (const target of [f.body, f.linkedBody]) {
+        f.body.text = 'Ordinary outer text';
+        f.linkedBody.text = 'Ordinary linked text';
+        for (const text of ['/ban', '$command', 'Старт', 'бан']) {
+          target.text = text;
+          expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+          expect(inspectSourceAbandonmentPostSealSource(f.owner())).toBeNull();
+        }
+        target.text = 'особое';
+        expect(
+          inspectSourceAbandonmentSource(f.owner(), undefined, { adminBanCommandName: 'особое' }),
+        ).toBeNull();
+        expect(
+          inspectSourceAbandonmentPostSealSource(f.owner(), { adminBanCommandName: 'особое' }),
+        ).toBeNull();
+      }
+    },
+  );
+
+  it.each(linkedMediaCases)(
+    'refuses nested, mixed, unsafe or unproved %s %s content',
+    (shape, kind) => {
+      for (const fault of [
+        'nested',
+        'mixed',
+        'two',
+        'credentials',
+        'raw-mismatch',
+        'text-mismatch',
+      ]) {
+        const f = fixture(shape);
+        const media = linkedAttachment(kind);
+        const payload = media.payload as Record<string, unknown>;
+        f.linkedBody.attachments = [media];
+        if (fault === 'nested') payload.message = { mid: 'unproved-nested-source' };
+        if (fault === 'mixed') (f.linkedBody.attachments as unknown[]).push(f.share);
+        if (fault === 'two') (f.linkedBody.attachments as unknown[]).push(media);
+        if (fault === 'credentials') payload.url = 'https://user:password@example.com/media';
+        const owner = f.owner();
+        if (fault === 'raw-mismatch') owner.rawPayload = { update_type: 'message_created' };
+        if (fault === 'text-mismatch')
+          (owner.normalizedPayload as unknown as { message: { text: string } }).message.text =
+            'Forged composed text';
+        expect(inspectSourceAbandonmentSource(owner)).toBeNull();
+        expect(inspectSourceAbandonmentPostSealSource(owner)).toBeNull();
+      }
+    },
+  );
+
+  it.each([
+    'code-missing',
+    'code-object',
+    'code-long',
+    'width-missing',
+    'width-zero',
+    'height-fraction',
+    'extra-field',
+  ])('rejects an unproved reply sticker: %s', (fault) => {
+    const f = fixture('reply');
+    const sticker = linkedAttachment('sticker');
+    const payload = sticker.payload as Record<string, unknown>;
+    if (fault === 'code-missing') delete payload.code;
+    if (fault === 'code-object') payload.code = { id: 'other-source' };
+    if (fault === 'code-long') payload.code = 'x'.repeat(32769);
+    if (fault === 'width-missing') delete sticker.width;
+    if (fault === 'width-zero') sticker.width = 0;
+    if (fault === 'height-fraction') sticker.height = 1.5;
+    if (fault === 'extra-field') sticker.user_id = 42;
+    f.linkedBody.attachments = [sticker];
+    expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+  });
+
+  it.each([
+    ['forward', 'sticker'],
+    ['reply', 'share'],
+    ['forward', 'audio'],
+    ['reply', 'audio'],
+  ] as const)('keeps unreviewed %s %s shapes outside this finite profile', (shape, kind) => {
+    const f = fixture(shape);
+    f.linkedBody.attachments = [
+      kind === 'audio'
+        ? { type: 'audio', payload: { url: 'https://example.com/audio', token: 'opaque' } }
+        : linkedAttachment(kind),
+    ];
+    expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+  });
+
+  it('accepts a bounded numeric mention on a forwarded photo without holding that user', () => {
+    const f = fixture('forward');
+    f.body.text = '';
+    f.linkedBody.text = '😀Quoted user';
+    f.linkedBody.markup = [{ type: 'user_mention', from: 2, length: 6, user_id: 42 }];
+    delete f.link.sender;
+    const owner = f.owner();
+    const before = structuredClone(owner);
+    const expected = {
+      chatId: '-111',
+      messageId: 'outer-mid',
+      userId: 'outer-user',
+      sourceAt: new Date(f.at),
+    };
+    expect(inspectSourceAbandonmentSource(owner)).toEqual(expected);
+    expect(inspectSourceAbandonmentPostSealSource(owner)).toEqual(expected);
+    expect(inspectLegacyRecoverySource(owner)).toBeNull();
+    expect(inspectLegacyPostSealTextSource(owner)).toBeNull();
+    expect(owner).toEqual(before);
+    f.body.markup = structuredClone(f.linkedBody.markup);
+    expect(inspectSourceAbandonmentSource(f.owner())).toEqual(expected);
+    delete f.message.sender;
+    expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+  });
+
+  it.each([
+    { user_id: '42' },
+    { user_id: 0 },
+    { user_id: -42 },
+    { user_id: 1.5 },
+    { user_id: Number.MAX_SAFE_INTEGER + 1 },
+    { user_id: null },
+    { user_id: undefined },
+    { user_link: 'https://max.ru/another-user' },
+    { user: { user_id: 42 } },
+    { from: -1 },
+    { from: 0.5 },
+    { length: 0 },
+    { length: 100 },
+  ])('refuses ambiguous mention metadata or invalid bounds: %j', (change) => {
+    const f = fixture('forward');
+    f.linkedBody.text = 'Quoted user';
+    f.linkedBody.markup = [{ type: 'user_mention', from: 0, length: 6, user_id: 42, ...change }];
+    expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+    expect(inspectSourceAbandonmentPostSealSource(f.owner())).toBeNull();
+  });
+
+  it.each<Shape>(['plain', 'share', 'reply', 'forward'])(
+    'accepts an initial %s human edit only in the modern profile with a proven receipt clock',
+    (shape) => {
+      const f = fixture(shape);
+      f.raw.update_type = 'message_edited';
+      f.raw.timestamp = f.at + 500;
+      const owner = f.owner();
+      expect(inspectSourceAbandonmentSource(owner)).toEqual({
+        chatId: '-111',
+        messageId: 'outer-mid',
+        userId: 'outer-user',
+        sourceAt: new Date(f.at),
+      });
+      expect(inspectLegacyRecoverySource(owner)).toBeNull();
+      owner.createdAt = new Date(f.at + 499);
+      expect(inspectSourceAbandonmentSource(owner)).toBeNull();
+    },
+  );
+
+  it('accepts one passive audio attachment without granting download or linked-source authority', () => {
+    const f = fixture('plain');
+    f.body.text = '';
+    f.body.attachments = [
+      {
+        type: 'audio',
+        payload: {
+          url: 'https://example.com/audio',
+          token: 'opaque-audio',
+          id: 9223372036854776000,
+        },
+      },
+    ];
+    const owner = f.owner();
+    expect(inspectSourceAbandonmentSource(owner)).toMatchObject({
+      chatId: '-111',
+      messageId: 'outer-mid',
+      userId: 'outer-user',
+    });
+    expect(inspectSourceAbandonmentPostSealSource(owner)).not.toBeNull();
+    expect(inspectLegacyRecoverySource(owner)).toBeNull();
+    f.message.link = f.link;
+    expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+  });
+
+  it.each(['credentials', 'transcription', 'nested', 'mixed', 'two', 'bad-id', 'long-token'])(
+    'refuses unsupported audio content %s',
+    (fault) => {
+      const f = fixture('plain');
+      const payload: Record<string, unknown> = {
+        url: 'https://example.com/audio',
+        token: 'opaque',
+      };
+      const audio: Record<string, unknown> = { type: 'audio', payload };
+      f.body.attachments = [audio];
+      if (fault === 'credentials') payload.url = 'https://user:pass@example.com/audio';
+      if (fault === 'transcription') audio.transcription = '/ban';
+      if (fault === 'nested') payload.message = { mid: 'secondary' };
+      if (fault === 'mixed') f.body.attachments = [audio, f.share];
+      if (fault === 'two') f.body.attachments = [audio, audio];
+      if (fault === 'bad-id') payload.id = 'another-source';
+      if (fault === 'long-token') payload.token = 'x'.repeat(32769);
+      expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+    },
+  );
+
+  it.each(['forward', 'reply'] as const)(
+    'accepts bounded formatting on the flat linked %s body',
+    (shape) => {
+      const f = fixture(shape);
+      f.linkedBody.text = 'Quoted source';
+      f.linkedBody.markup = [{ type: 'strong', from: 0, length: 6 }];
+      expect(inspectSourceAbandonmentSource(f.owner())).not.toBeNull();
+      expect(inspectLegacyRecoverySource(f.owner())).toBeNull();
+      f.linkedBody.markup = [{ type: 'strong', from: 0, length: 100 }];
+      expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+    },
+  );
+
+  it('accepts only identical linked formatting copied onto an empty forward body', () => {
+    const f = fixture('forward');
+    f.body.text = '';
+    f.linkedBody.text = 'Quoted source';
+    f.linkedBody.markup = [{ type: 'link', from: 0, length: 6, url: 'https://example.com' }];
+    f.body.markup = structuredClone(f.linkedBody.markup);
+    expect(inspectSourceAbandonmentSource(f.owner())).not.toBeNull();
+    expect(inspectLegacyRecoverySource(f.owner())).toBeNull();
+    f.body.markup = [{ type: 'strong', from: 0, length: 6 }];
+    expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+    f.body.markup = structuredClone(f.linkedBody.markup);
+    f.body.text = 'Different text';
+    // The markup is in-bounds for actual outer text, which has independent authority.
+    expect(inspectSourceAbandonmentSource(f.owner())).not.toBeNull();
+    f.body.text = 'x';
+    expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+    f.body.text = '';
+    f.link.type = 'reply';
+    expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+  });
+
   it.each([0, 1, 10])(
     'accepts a modern flat forward with %i photos and no linked sender, holding only its outer human source',
     (photos) => {

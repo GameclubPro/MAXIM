@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -31,6 +32,104 @@ const scripts = [
   ['deploy.sh', ['api-ingress']],
   ['vps-docker-space-reclaim.sh', []],
 ];
+
+// FLAG: Relocate only the fixed host sentinel in a disposable copy. Production
+// has no configurable path or environment bypass for an interrupted pre-drain.
+function pendingPreDrainFixture() {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-predrain-entrypoint-'));
+  const pending = join(directory, 'queue-predrain-pending.json');
+  const script = join(directory, 'authority.sh');
+  const log = join(directory, 'calls.log');
+  const source = readFileSync(
+    join(root, 'infra/scripts/lib/legacy-cold-maintenance.sh'),
+    'utf8',
+  );
+  assert.equal(source.split('/var/lib/maxim-deploy/queue-predrain-pending.json').length, 3);
+  writeFileSync(
+    script,
+    source.replaceAll('/var/lib/maxim-deploy/queue-predrain-pending.json', pending),
+  );
+  return {
+    directory,
+    pending,
+    run({ lock = true, journalStatus = 0 } = {}) {
+      return spawnSync(
+        'bash',
+        [
+          '-c',
+          `source "$1"
+PREDRAIN_TEST_LOCK_STATUS="$2"
+PREDRAIN_TEST_JOURNAL_STATUS="$3"
+require_deploy_lock() { return "$PREDRAIN_TEST_LOCK_STATUS"; }
+node() { printf '%s\\n' "$*" >>"$PREDRAIN_TEST_LOG"; return "$PREDRAIN_TEST_JOURNAL_STATUS"; }
+maxim_require_ordinary_effect_authority "$4"
+`,
+          'pending-pre-drain-fixture',
+          script,
+          lock ? '0' : '1',
+          String(journalStatus),
+          root,
+        ],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PREDRAIN_TEST_LOG: log,
+            MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE: '1',
+            MAXIM_PREDRAIN_ALLOW_PENDING: '1',
+            MAXIM_PREDRAIN_PENDING_PATH: join(directory, 'absent-override'),
+          },
+        },
+      );
+    },
+    calls() {
+      try {
+        return readFileSync(log, 'utf8');
+      } catch (error) {
+        if (error.code === 'ENOENT') return '';
+        throw error;
+      }
+    },
+    cleanup: () => rmSync(directory, { recursive: true, force: true }),
+  };
+}
+
+for (const kind of ['valid', 'malformed', 'empty', 'directory', 'dangling-symlink']) {
+  test(`pending pre-drain ${kind} refuses ordinary authority before the old cold journal`, () => {
+    const state = pendingPreDrainFixture();
+    try {
+      if (kind === 'directory') mkdirSync(state.pending);
+      else if (kind === 'dangling-symlink') symlinkSync('absent-target', state.pending);
+      else
+        writeFileSync(
+          state.pending,
+          kind === 'valid' ? '{"version":1}\n' : kind === 'malformed' ? '{' : '',
+          { mode: 0o600 },
+        );
+      const result = state.run();
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Queue pre-drain recovery is pending/u);
+      assert.equal(state.calls(), '');
+    } finally {
+      state.cleanup();
+    }
+  });
+}
+
+test('absent pre-drain sentinel preserves cold journal checks and refusals', () => {
+  const state = pendingPreDrainFixture();
+  try {
+    assert.equal(state.run().status, 0);
+    assert.equal(state.run({ journalStatus: 73 }).status, 73);
+    assert.equal((state.calls().match(/assert-ordinary-host/gu) ?? []).length, 2);
+    const result = state.run({ lock: false });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /protected shared deploy lock/u);
+    assert.equal((state.calls().match(/assert-ordinary-host/gu) ?? []).length, 2);
+  } finally {
+    state.cleanup();
+  }
+});
 
 function readScript(name) {
   return readFileSync(join(root, 'infra/scripts', name), 'utf8');

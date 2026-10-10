@@ -86,6 +86,7 @@ export class ChannelAutoPostLegacyRecovery {
     private readonly dependencies: {
       prisma: Pick<PrismaService, 'channelSettings'>;
       markerStore: LegacyRecoveryMarkerStore;
+      isMessageHeld: (chatId: string, messageId: string) => Promise<boolean>;
       lookupExactButtonIdentities: ExactChannelDialogButtonLookupPort;
       resolveUnifiedLookupBotId?: (params: {
         chatId: string;
@@ -140,6 +141,8 @@ export class ChannelAutoPostLegacyRecovery {
       let deferReason: ChannelAutoPostLegacyRecoveryRunResult['deferReason'] = null;
 
       for (const candidate of page.candidates) {
+        // FLAG: A held source preserves its uncertain marker; never claim, finish or replay it.
+        if (await this.dependencies.isMessageHeld(candidate.chatId, candidate.messageId)) continue;
         if (seenChatIds.has(candidate.chatId)) {
           cursorCanAdvance = false;
           deferReason ??= 'same_channel_limit';
@@ -432,6 +435,8 @@ export class ChannelAutoPostLegacyRecovery {
     lastStatusCode: number | null,
   ): Promise<FinishWithoutMutationOutcome> {
     try {
+      if (await this.dependencies.isMessageHeld(candidate.chatId, candidate.messageId))
+        return 'done';
       const claim = await this.dependencies.markerStore.claimChannelAutoPost({
         chatId: candidate.chatId,
         messageId: candidate.messageId,

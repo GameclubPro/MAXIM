@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
+import { RuleEngineService } from './rule-engine.service';
 import type { ChatSettings } from '../prisma/prisma-client';
 import { RedisCounterService } from './redis-counter.service';
 import {
@@ -57,24 +58,6 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       ...overrides,
     };
     return detector.detectMediaCooldownLimits(input);
-  };
-
-  const detectBurstDecision = async (
-    input: Parameters<RuleEngineMessageLimitsDetector['detectAntiSpamBurstLimit']>[0],
-  ) => {
-    // FLAG: Replay only this same detector input with native deadline guards; never the whole engine.
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await detector.detectAntiSpamBurstLimit(input);
-      } catch (error: unknown) {
-        if (
-          !(error instanceof Error) ||
-          error.message !== 'Message limit state deadline exceeded' ||
-          attempt === 2
-        )
-          throw error;
-      }
-    }
   };
 
   const burstWindowKey = () =>
@@ -218,121 +201,188 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       eventTimestampMs: now - 1000 + index,
     });
     for (let index = 0; index < 5; index++) {
-      expect(await detectBurstDecision(input(index))).toBeNull();
+      expect(await detector.detectAntiSpamBurstLimit(input(index))).toBeNull();
     }
     const sixth = input(5);
-    expect(await detectBurstDecision(sixth)).toMatchObject({
+    expect(await detector.detectAntiSpamBurstLimit(sixth)).toMatchObject({
       ruleCode: 'MESSAGE_RATE_LIMIT',
     });
     expect(await inspector.zcard(burstWindowKey())).toBe(6);
-    expect(await detectBurstDecision(sixth)).toMatchObject({
+    expect(await detector.detectAntiSpamBurstLimit(sixth)).toMatchObject({
       ruleCode: 'MESSAGE_RATE_LIMIT',
     });
-    expect(await detectBurstDecision(input(0))).toBeNull();
+    expect(await detector.detectAntiSpamBurstLimit(input(0))).toBeNull();
     expect(await inspector.zcard(burstWindowKey())).toBe(6);
   });
 
-  it('replays the same burst decision after a committed Redis response exceeds its deadline', async () => {
-    const config = { ...settings, antiSpamEnabled: true };
-    const input = (index: number) => ({
-      chatId,
-      userId: 'user',
-      messageId: `burst-${index}`,
-      settings: config,
-      eventTimestampMs: now - 1000 + index,
-    });
-    for (let index = 0; index < 5; index++) {
-      expect(await detectBurstDecision(input(index))).toBeNull();
-    }
-
-    const original = redis.replaceRevisionedSetMembershipsBeforeDeadline.bind(redis);
-    const sixth = input(5);
-    let committed = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
+  it.each(['burst', 'count'] as const)(
+    'keeps independent moderation after a committed %s response misses its deadline',
+    async (kind) => {
+      const config = {
+        ...settings,
+        antiSpamEnabled: kind === 'burst',
+        messageCountLimitEnabled: kind === 'count',
+        messageCountLimitMessages: 1,
+        messageCountLimitWindowHours: 1,
+        messageLimitsBlockedWords: ['спаммаркер'],
+        messageLimitsBlockedDomains: [],
+        phoneNumbersEnabled: true,
+      };
+      const input = (index: number) => ({
+        chatId,
+        userId: 'user',
+        messageId: `limit-${index}`,
+        settings: config,
+        eventTimestampMs: now - 1000 + index,
+      });
+      const threshold = kind === 'burst' ? ANTI_SPAM_BURST_LIMIT : 1;
+      for (let index = 0; index < threshold; index++) {
+        expect(
+          await (kind === 'burst'
+            ? detector.detectAntiSpamBurstLimit(input(index))
+            : detector.detectMessageCountLimit(input(index))),
+        ).toBeNull();
+      }
+      const original = redis.replaceRevisionedSetMembershipsBeforeDeadline.bind(redis);
       let releaseResponse!: () => void;
       const responseBarrier = new Promise<void>((resolve) => {
         releaseResponse = resolve;
       });
-      type NativeOutcome =
-        | { kind: 'result'; result: Awaited<ReturnType<typeof original>> }
-        | { kind: 'error'; error: unknown };
-      let recordNativeOutcome!: (outcome: NativeOutcome) => void;
-      const nativeOutcome = new Promise<NativeOutcome>((resolve) => {
-        recordNativeOutcome = resolve;
-      });
-      let responseFinished!: () => void;
+      let nativeResult!: Awaited<ReturnType<typeof original>>;
+      let finishResponse!: () => void;
       const responseDone = new Promise<void>((resolve) => {
-        responseFinished = resolve;
+        finishResponse = resolve;
       });
       const response = jest
         .spyOn(redis, 'replaceRevisionedSetMembershipsBeforeDeadline')
         .mockImplementationOnce(async (params) => {
           try {
-            const result = await original(params);
-            recordNativeOutcome({ kind: 'result', result });
-            if (result.kind === 'applied') await responseBarrier;
-            return result;
-          } catch (error: unknown) {
-            recordNativeOutcome({ kind: 'error', error });
-            throw error;
+            nativeResult = await original(params);
+            await responseBarrier;
+            return nativeResult;
           } finally {
-            responseFinished();
+            finishResponse();
           }
         });
-      const decision = detector.detectAntiSpamBurstLimit(sixth).then(
-        (result) => ({ kind: 'result' as const, result }),
-        (error: unknown) => ({ kind: 'error' as const, error }),
-      );
+      const engine = new RuleEngineService(redis);
+      const current = input(threshold);
+      const detection = engine.detect({
+        ...current,
+        text: 'тут спаммаркер внутри',
+        domainAllowlist: [],
+        duplicateStateEventTimestampMs: current.eventTimestampMs,
+      });
       try {
-        const outcome = await decision;
+        const result = await detection;
+        expect(nativeResult).toMatchObject({ kind: 'applied', counts: [threshold + 1] });
+        expect(result.violations.map((violation) => violation.ruleCode)).toEqual([
+          'MESSAGE_BLOCKED_WORD',
+        ]);
         expect(response).toHaveBeenCalledTimes(1);
-        const native = await nativeOutcome;
-        if (native.kind === 'error') throw native.error;
-        expect(outcome.kind).toBe('error');
-        if (outcome.kind !== 'error') throw new Error('Burst decision did not time out');
-        expect(outcome.error).toBeInstanceOf(Error);
-        expect((outcome.error as Error).message).toBe('Message limit state deadline exceeded');
-        if (native.result.kind === 'applied') {
-          expect(native.result).toMatchObject({ kind: 'applied', counts: [6] });
-          expect(await inspector.zcard(burstWindowKey())).toBe(6);
-          committed = true;
-        } else {
-          // FLAG: Retry only pre-commit expiry with identical detector input and fresh native guards.
-          expect(native.result).toEqual({ kind: 'deadline_exceeded' });
-        }
+        const key = response.mock.calls[0]![0].membershipKeys[0]!;
+        expect(await inspector.zcard(key)).toBe(threshold + 1);
+        releaseResponse();
+        await responseDone;
+        expect(result.violations.map((violation) => violation.ruleCode)).toEqual([
+          'MESSAGE_BLOCKED_WORD',
+        ]);
+        expect(response).toHaveBeenCalledTimes(1);
       } finally {
         releaseResponse();
-        await Promise.allSettled([decision, ...(response.mock.calls.length ? [responseDone] : [])]);
+        await Promise.allSettled([detection, ...(response.mock.calls.length ? [responseDone] : [])]);
         response.mockRestore();
       }
-      if (committed) break;
-    }
-    expect(committed).toBe(true);
+    },
+  );
 
-    detector = new RuleEngineMessageLimitsDetector(redis);
-    expect(await detectBurstDecision(sixth)).toMatchObject({ ruleCode: 'MESSAGE_RATE_LIMIT' });
-    expect(await detectBurstDecision(input(0))).toBeNull();
-    expect(await inspector.zcard(burstWindowKey())).toBe(6);
-  });
-
-  it.each([
-    ['deadline', new Error('Message limit state deadline exceeded'), 3],
-    ['other failure', new Error('Redis response failed'), 1],
-  ])('bounds detector decision replay after %s', async (_, error, attempts) => {
-    const decision = jest.spyOn(detector, 'detectAntiSpamBurstLimit').mockRejectedValue(error);
-    const input = {
+  it('completes the engine when a committed cooldown response arrives after its deadline', async () => {
+    await observe('first', now - 1000);
+    const original = redis.claimEventCooldown.bind(redis);
+    let releaseResponse!: () => void;
+    const responseBarrier = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    let nativeResult!: Awaited<ReturnType<typeof original>>;
+    let finishResponse!: () => void;
+    const responseDone = new Promise<void>((resolve) => {
+      finishResponse = resolve;
+    });
+    const response = jest
+      .spyOn(redis, 'claimEventCooldown')
+      .mockImplementationOnce(async (params) => {
+        try {
+          nativeResult = await original(params);
+          await responseBarrier;
+          return nativeResult;
+        } finally {
+          finishResponse();
+        }
+      });
+    const detection = new RuleEngineService(redis).detect({
       chatId,
       userId: 'user',
-      messageId: 'burst',
-      settings,
-      eventTimestampMs: now,
-    };
+      messageId: 'repeat',
+      duplicateStateEventTimestampMs: now,
+      text: '',
+      domainAllowlist: [],
+      hasStickerAttachment: true,
+      settings: {
+        ...settings,
+        messageLimitsBlockedWords: [],
+        messageLimitsBlockedDomains: [],
+        phoneNumbersEnabled: true,
+      },
+    });
     try {
-      await expect(detectBurstDecision(input)).rejects.toBe(error);
-      expect(decision).toHaveBeenCalledTimes(attempts);
-      expect(decision.mock.calls.every(([observed]) => observed === input)).toBe(true);
+      const result = await detection;
+      expect(nativeResult).toBe('blocked');
+      expect(result.violations).toEqual([]);
+      expect(response).toHaveBeenCalledTimes(1);
+      releaseResponse();
+      await responseDone;
+      expect(result.violations).toEqual([]);
+      expect(response).toHaveBeenCalledTimes(1);
     } finally {
-      decision.mockRestore();
+      releaseResponse();
+      await Promise.allSettled([detection, ...(response.mock.calls.length ? [responseDone] : [])]);
+      response.mockRestore();
+    }
+  });
+
+  it('keeps the absolute cooldown write deadline after the local detector returns', async () => {
+    const original = redis.claimEventCooldown.bind(redis);
+    let releaseCommand!: () => void;
+    const commandBarrier = new Promise<void>((resolve) => {
+      releaseCommand = resolve;
+    });
+    let nativeResult!: Awaited<ReturnType<typeof original>>;
+    let finishCommand!: () => void;
+    const commandDone = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    const command = jest
+      .spyOn(redis, 'claimEventCooldown')
+      .mockImplementationOnce(async (params) => {
+        try {
+          await commandBarrier;
+          nativeResult = await original(params);
+          return nativeResult;
+        } finally {
+          finishCommand();
+        }
+      });
+    try {
+      await expect(observe('late-command', now)).resolves.toEqual([]);
+      expect(command).toHaveBeenCalledTimes(1);
+      releaseCommand();
+      await commandDone;
+      expect(nativeResult).toBe('deadline_exceeded');
+      const params = command.mock.calls[0]![0];
+      expect(await inspector.exists(params.key, params.memberKey)).toBe(0);
+    } finally {
+      releaseCommand();
+      await commandDone;
+      command.mockRestore();
     }
   });
 

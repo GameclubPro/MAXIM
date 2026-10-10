@@ -4,12 +4,16 @@ import Redis from 'ioredis';
 import { Prisma, createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import type { LegacyRecoveryAdmissionOutput } from './legacy-recovery-admission-preview';
-import type { SourceAbandonmentCatalogProof } from './source-abandonment-redis-catalog';
+import {
+  assertSourceAbandonmentCatalogProofs,
+  type SourceAbandonmentCatalogProof,
+} from './source-abandonment-redis-catalog';
 import type { LegacyRecoveryLiveIssue } from './legacy-recovery-live-protocol';
 import {
   SOURCE_ABANDONMENT_OUTPUT_MAX_BYTES,
   SOURCE_ABANDONMENT_REQUEST_MAX_BYTES,
   SOURCE_ABANDONMENT_OBSERVATION_QUEUE,
+  SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
   sourceAbandonmentDigest,
   parseSourceAbandonmentLiveRequest,
   parseSourceAbandonmentAdmissionRequest,
@@ -39,6 +43,10 @@ const sourceCollectionDurationMs = 45_000;
 const sourceCollectionTransactionTimeoutMs = 50_000;
 
 type Cost = { pages: number; rows: number; probes: number; bytes: number };
+type SourceAbandonmentAdmissionOutput = Omit<LegacyRecoveryAdmissionOutput, 'selectedOwners'> & {
+  selectedOwners: SourceAbandonmentLiveOutput['selectedOwners'];
+  redisCatalogs: readonly SourceAbandonmentCatalogProof[];
+};
 const costFields = ['pages', 'rows', 'probes', 'bytes'] as const;
 function remaining(cost: Cost, deadlineAtMs: number): SourceInventoryAllowance {
   if (Date.now() >= deadlineAtMs) throw new Error('Source inventory deadline');
@@ -69,7 +77,13 @@ export function mergeSourceAbandonmentChildren(
   const result = new Map<string, SourceAbandonmentChildEvidence>();
   for (const group of groups)
     for (const child of group) {
-      const key = `${child.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE ? 'observation' : 'action'}:${child.jobKey}`;
+      const kind =
+        child.queueName === SOURCE_ABANDONMENT_OBSERVATION_QUEUE
+          ? 'observation'
+          : child.queueName === SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE
+            ? 'channel-auto-post'
+            : 'action';
+      const key = `${kind}:${child.jobKey}`;
       const prior = result.get(key);
       if (prior && sourceAbandonmentDigest(prior) !== sourceAbandonmentDigest(child))
         throw new Error('Exact child conflict');
@@ -98,7 +112,13 @@ async function gather(
   let childSql: Awaited<ReturnType<typeof inventorySourceAbandonmentChildSql>> | undefined;
   let children: SourceAbandonmentChildEvidence[] = [];
   try {
-    sql = await inventorySourceAbandonmentSql(tx, selection, remaining(cost, deadlineAtMs));
+    sql = await inventorySourceAbandonmentSql(
+      tx,
+      selection,
+      remaining(cost, deadlineAtMs),
+      false,
+      publisherBotId,
+    );
     charge(cost, sql.cost);
     issues.push(...sql.issues);
     if (
@@ -130,10 +150,20 @@ async function gather(
     );
     charge(cost, second.cost);
     issues.push(...second.issues);
-    // Cold evidence must repeat exactly; active online queues can change but both
-    // complete reads must independently satisfy source and accounting invariants.
-    if (queueFenceNonce && first.stableDigest !== second.stableDigest)
-      issues.push({ code: 'redis_inventory_changed', descriptor: 'redis:all' });
+    // FLAG: Stable effect identity excludes only two independent Publisher counts
+    // across inventories. Within one cold inventory, both complete raw catalogs
+    // must still match exactly and independently satisfy every original budget.
+    // Active online queues retain their existing independent-admission behavior.
+    if (queueFenceNonce) {
+      let catalogsStable = true;
+      try {
+        assertSourceAbandonmentCatalogProofs([first.catalog, second.catalog]);
+      } catch {
+        catalogsStable = false;
+      }
+      if (!catalogsStable || first.stableDigest !== second.stableDigest)
+        issues.push({ code: 'redis_inventory_changed', descriptor: 'redis:all' });
+    }
     children = mergeSourceAbandonmentChildren([sql.children, first.children, second.children]);
     childSql = await inventorySourceAbandonmentChildSql(
       tx,
@@ -248,14 +278,10 @@ export async function collectSourceAbandonmentAdmission(
   tx: Prisma.TransactionClient,
   redis: SourceAbandonmentRedisReader,
   request: SourceAbandonmentAdmissionRequest,
-): Promise<
-  LegacyRecoveryAdmissionOutput & { redisCatalogs: readonly SourceAbandonmentCatalogProof[] }
-> {
+): Promise<SourceAbandonmentAdmissionOutput> {
   request = parseSourceAbandonmentAdmissionRequest(JSON.stringify(request));
   const evidence = await gather(tx, redis, request.selection, undefined, request.publisherBotId);
-  const result: LegacyRecoveryAdmissionOutput & {
-    redisCatalogs: readonly SourceAbandonmentCatalogProof[];
-  } = {
+  const result: SourceAbandonmentAdmissionOutput = {
     version: 1,
     operation: 'admission_preview',
     applied: false,

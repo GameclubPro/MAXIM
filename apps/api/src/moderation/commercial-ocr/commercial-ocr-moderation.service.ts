@@ -859,7 +859,7 @@ export class CommercialOcrModerationService {
     }
     // FLAG: A permanent no-replay disposition is terminal and cannot be rebound
     // through a semantic owner to manufacture new OCR action authority.
-    if (String(webhookEvent.status) === 'NO_REPLAY_HELD') {
+    if (['NO_REPLAY_HELD', 'CANCELLED'].includes(String(webhookEvent.status))) {
       this.metrics.recordCounter('source.receipt.no_replay_held');
       return { kind: 'terminal' };
     }
@@ -1283,7 +1283,7 @@ export class CommercialOcrModerationService {
     ) {
       return { kind: 'terminal' };
     }
-    if (String(semanticClaim.webhookEvent?.status) === 'NO_REPLAY_HELD') {
+    if (['NO_REPLAY_HELD', 'CANCELLED'].includes(String(semanticClaim.webhookEvent?.status))) {
       return { kind: 'terminal' };
     }
     if (

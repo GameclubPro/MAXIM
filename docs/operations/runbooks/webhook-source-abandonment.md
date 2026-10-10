@@ -5,26 +5,74 @@ source without replay. It does not establish that previous remote effects succee
 or failed. A started execution claim and every existing action, sanction, DELETE and
 ambiguous member receipt remain unchanged.
 
-The scope is an exact outer human message in a moderated group, plus its proved
-descendants. The modern owner and late-receipt inspectors accept plain text,
-zero through ten strict direct image/photo/video attachments without a linked message, text
-with one strict official SHARE preview and no linked message, or a strict flat
-forward/reply whose linked text has zero through ten validated image/photo
-attachments. A modern forward may omit its linked sender; any supplied sender
-must retain the strict passive shape. The outer human sender is always required.
-A reply requires outer text with no direct attachments. The original
-payload must match the real webhook parser; direct, linked and composed text must
-pass default and configured command checks. Bounded passive formatting and strict
-credential-free HTTPS link markup add no source identity. Direct media reuses the
-existing legacy validator and never fetches its URLs. Nested links, other direct
-media, mixed preview/media and unknown metadata are refused. These shapes
-do not change the legacy recovery profile.
-Only the outer recipient chat, message ID and sender identify the source;
-linked identities never become held messages or people. A new outer message that
-forwards the same original, and any distinct message from either participant, remain
-outside the hold. Publisher is a separate observer/publisher, never a moderation executor.
-Legacy member/global-user holds remain independent and cannot be repurposed for this
-operation. Unsupported sources or unattributed actionable continuations are refused.
+The source is an exact original message and its proved descendants. Human group
+messages use `HUMAN_CHAT_V1`; channel messages with positively absent authors use
+`CHANNEL_AUTHORLESS_V1` with a real null author. Never infer an author from a linked
+message or substitute a synthetic user ID. Both profiles verify the original
+payload against the real webhook parser and reject default or configured commands.
+
+The human profile supports plain text, up to ten strict direct image/photo/video
+attachments, one direct audio attachment, or one official SHARE preview. Flat
+forwards and replies may contain linked text, up to ten images, or one video;
+a forward may contain one SHARE preview and a reply may contain one sticker.
+An absent linked sender is allowed only for a forward; supplied sender metadata
+remains validated. Initial human message edits retain the same exact identity and
+clock checks. A reply requires nonempty outer text and no direct attachments.
+Nested links, linked audio, mixed preview/media and unknown metadata are refused.
+
+Bounded formatting, credential-free HTTPS links and numeric user mentions are
+passive metadata with offsets in the original UTF-16 text. Identical linked
+formatting copied onto an empty outer forward is accepted only after separately
+validating its linked text. Media is inspected without downloading, decoding or
+transcribing it. The channel profile uses the same bounded direct media checks;
+its finite passive keyboard profile supports validated HTTPS links and app-open
+buttons without invoking them. Channel-only passive metadata also permits a strict
+original HTTPS message URL and bounded scheme-less relative markup links without
+whitespace, controls, colons, backslashes or a protocol-relative prefix. The original
+parser comparison and stored payload remain unchanged; linked validation may omit
+only the separately validated message URL. Existing legacy recovery retains its
+own profile.
+
+Only the original recipient chat, message ID and validated human sender, or explicit
+channel author absence, identify the source. Linked identities never become held
+messages or people. A distinct message remains outside the hold. Channel auto-post
+markers are real effect evidence: inventory them by exact chat/message, retain
+ambiguous receipts, and enforce source holds before marker claims and at final MAX
+calls. SQL guards prevent inserting, updating or deleting a held source marker.
+Publisher remains a separate observer/publisher, never a moderation executor.
+Its exact configured `publisher-observation:v1` receipt key stays unchanged during
+recovery. Inventory proves both the ordinary source claim and the absence of any
+independent Publisher, linked-event, command or unknown-kind claim. Late receipt
+materialization takes Publisher identity only from the sealed certificate's
+original separate bot catalog; a missing catalog never authorizes that namespace.
+Receipts of both profiles accept ingress's empty-object raw sampling sentinel only
+while the original `normalizedPayload.raw` still passes every source/parser check.
+Nonempty retained raw copies must match it; null, arrays and mismatched data refuse.
+Initial channel owners still require a retained original under the SQL seal guard.
+Source closure version 6 binds these receipt rules, and rollback must retain both
+readers. Existing owner claims, receipt keys and raw evidence are never rewritten.
+Legacy member/global-user holds are independent. Unsupported sources, independent
+unfinished edited claims and unattributed actionable continuations are refused.
+
+The automatic `PRISTINE_OPERATOR_DISCARD_V1` path accepts the strict human source
+profile only for an expired, enforced, prepared owner that has never started and
+has no lease, completion or command result. It requires the complete bounded
+receipt family, a prior dormant observation, later scrubbed operator-discard
+witnesses, exact claim ownership, current command checks and no existing hold.
+The business-start fence prevents moderation and media handlers from running
+before the retained claim starts. Settlement preserves the source and claim; it
+does not cancel independent ingress retention or invent an execution result.
+Started or uncertain owners still require the cold protocol below.
+
+An interrupted queue pre-drain leaves the protected host sentinel
+`/var/lib/maxim-deploy/queue-predrain-pending.json`. Ordinary deploy, rollback,
+rollout and cleanup authority refuses while any entry exists at that path, even
+when the preceding cold journal is complete. Queue-pause adoption does not bypass
+this guard. Stock cold entrypoints also refuse while it exists; their read-only
+`status` remains available under the deploy lock. Only the bound pre-drain recovery
+controller may remove its matching
+sentinel after proving the original auxiliary queue pause states restored; never
+delete it manually to unblock a deploy.
 
 `sendAutoDelete` consumes its parent SEND authority, so its exact original-source
 envelope and parent key remain part of the exclusion. A nullable source message
@@ -45,8 +93,11 @@ policy.
 Use a clean checkout at the exact reviewed runtime SHA with every API role and both
 native auxiliaries running that image. Deploy the additive schema and mandatory
 readers before any installation. Both rollback paths require the modern owner and
-late-receipt profiles, including strict direct-media/forward/reply/preview provenance, after
-this release. The controller requires a 20 GiB Docker filesystem reserve and uses
+late-receipt profiles, including strict direct-media/forward/reply/preview provenance,
+audio and link markup. Authorless channel holds additionally require the explicit
+`CHANNEL_AUTHORLESS_V1` profile with a null author, channel receipt materialization
+and source checks before polling or legacy-recovery marker claims. Existing human
+v1 certificates retain their original meaning. The controller requires a 20 GiB Docker filesystem reserve and uses
 the existing protected deploy lock and durable cold-operation journal.
 
 Create an owner-private `0600` JSON request. A `preflight` or `prepare` request has
@@ -69,7 +120,7 @@ inside the collector-specific shared 45-second deadline. The read-only collector
 transaction has a 50-second timeout; legacy collection and SQL-only store budgets
 remain unchanged. Structural census has separate
 4 MiB namespace-reply and 16 MiB returned measurement-metadata budgets. Each
-read performs at most two SCAN pages, with every cursor accounted for. Atomic read-only
+read performs one SCAN page, with every cursor accounted for. Atomic read-only
 transactions run three EVAL_RO commands: commandstats projection, page, projection.
 Each projection validates at most 64 KiB and 512 lines of internal INFO and returns
 at most 512 bytes of original counter text. Exactly two completed EVAL_RO calls
@@ -114,7 +165,159 @@ roles and both auxiliaries, fences all twenty-four webhook queues, and captures 
 bounded stable inventory. It does not install dispositions. A refused cold preview
 leaves the operation fenced; inspect the journal and use its exact recovery path.
 
+## Several certificates in one maintenance session
+
+`infra/scripts/source-abandonment-session-cli.mjs` coordinates a complete finite
+plan under the inherited deploy lock. Its bounded stdin request has an explicit
+`preview`, `run`, `status`, `continue`, `reconcile`, `finish`, `partial`, or `abort`
+operation. Use a clean reviewed controller commit with green exact-SHA CI. The
+controller source and the running API image have distinct identities; child SQL
+collectors and writers always execute in the captured immutable runtime image.
+
+Before preview, complete the read-only ordered-anchor inventory. It walks
+`webhook_events_ordered_chat_head_idx` through every non-null chat key before one
+fixed cutoff, including later blockers in the same chat. A checkpoint binds the
+request, exact running generations, immutable pages and actual end of range.
+Historical failures outside the runtime ordering predicate do not belong to this
+scope. An online end-of-range result nominates candidates only; it never proves
+source eligibility, absence of remote effects or fleet recovery.
+
+Preview authenticates that complete journal, attests the current bot catalog and
+captures actual stock admission proofs for every selected child. Freeze the
+queue-client bundle and its hash in private storage. A separate private feasibility
+artifact binds the inventory digest, measured phase evidence, startup/readback
+reserve, child count and aggregate work allowance. The checked-in limits are hard
+ceilings, not a promise that every plan fits. Refuse an incomplete or infeasible
+plan before pausing anything; never truncate the candidate set to fit a ceiling.
+The CLI returns a private plan path and SHA-256 for a subsequent `run` request.
+Online admission requires two complete, individually bounded namespace censuses
+with the same known namespace names; active key counts may differ between them.
+Preserve both raw proofs. This tolerance applies only to online admission:
+each stopped inventory still requires exact equality of its two raw count maps.
+Online admission initially packs at most seven owners per selection, leaving SQL
+headroom below the retained eight-owner certificate ceiling. Every selection
+still requires a complete fresh stock admission, including after a prior refused
+plan. If online admission returns a known selected-source SQL page-budget refusal
+at 511 or 512 charged pages, either alone or paired exactly with
+`REDIS_STORE_OR_SOURCE_REFUSED` on `moderation-actions`, `max-actions-critical`,
+`max-actions-interactive` or `max-actions-background`, the planner reduces the owner group by one and packs
+the remaining candidates using that smaller size. Every new selection requires
+fresh complete stock admission; failed proofs and their costs remain retained.
+This narrow pair permits only a new smaller complete proof; it does not establish
+that the Redis refusal was harmless. Extra, unknown, global, other mixed or
+malformed refusals stop the whole plan. A singleton
+resource refusal cannot exclude its owner as unsupported content. Semantic
+content refusals retain their separate bisection path, and no candidate is dropped
+to meet a ceiling.
+An online action page can disappear while workers consume the live queue. Only a
+sole exact `ACTION_PAGE_UNPROVED` issue on one of the four known action queues
+permits a fresh full admission of the identical selection, with at most three
+total attempts for that selection. Keep each failed proof, cost and call inside
+the original global call and online deadline budgets. The failed proof never
+becomes successful, and only a new complete stock proof can admit that selection.
+A repeated third refusal or any mixed, malformed or unknown issue stops the plan;
+it cannot exclude owners. Stopped collectors remain strict and do not retry.
+The parent ceiling is 32 certificates of at most eight owners each, 480 admission
+calls and 2,048 proof files. A new manifest fixes its maintenance duration to the
+greater of 60 minutes and the reviewed `estimatedColdMs`, with a hard 90-minute
+maximum. Existing manifests keep their original duration; never extend or reset
+an active journal. The estimate must include all six phases, final readbacks,
+runtime restoration, host guards and explicit contingencies. A longer window
+permits longer downtime; it does not speed up work or guarantee completion.
+These independent ceilings do not establish feasibility for every combination;
+each plan retains its actual phase estimates, 128 MiB evidence limit and reserved
+restoration time. Online admission has its own separate 60-minute maximum and
+never consumes or extends the maintenance clock.
+
+One durable session preserves all 53 original queue pause states, drains work and
+stops the exact fourteen API and two native generations once. A full frozen
+inventory repeats the ordered scope before any child installation. Every child
+keeps its own certificate, selection, actual admission and stopped inventory;
+source, claim, semantic and chat/message authority cannot overlap between children.
+The existing per-certificate owner, SQL and Redis limits remain independent of
+the full-inventory and session totals. `MATERIALIZED` is a child state and never
+authorizes an intermediate restart.
+The stopped inventory selects 200 rows before its first query and at every later
+cursor. This policy is fixed by the reviewed controller source, with one plain
+EXPLAIN and one SELECT per page. Output refusals, timeouts, invalid plans and
+unknown outcomes stop the walk without retry or cursor advancement. The page
+validator still reads retained 1,000-row evidence; that historical format does not
+authorize a larger query in a new session. Each successful page retains its plan
+and actual transport costs, and the complete ordered scope and EOF remain required.
+Reserve the full 200-row page count, evidence files and measured work before run;
+an online timing sample is not proof of stopped speed or whole-session feasibility.
+Changing this policy requires a new controller commit and newly reviewed plan,
+never an edited admitted journal. The online inventory remains capped at 200.
+
+The controller copies its reviewed finite store harness into private storage and
+binds its hash in the immutable host context. One writer process executes a child's
+certificate creation and installation as separate unchanged stock transactions;
+a second process materializes at most 200 pages within the existing 120-second
+window. Each writer is removed and absence is proved before independent read-only
+seals. Lost acknowledgements never permit another installation attempt. The final
+aggregate uses two separate read-only processes, each running one stock transaction
+per certificate, and retains their raw results and child-bound proof references.
+The reviewed runtime-restoration reserve remains unavailable to those readbacks.
+Batching removes process startup overhead; it does not share or skip the four
+complete Redis namespace scans performed for each child's two inventories.
+
+Only the session's stopped inventory, store and batch clients use the fixed
+1 CPU/384 MiB resource profile. Online admission and ordinary legacy clients
+retain 0.5 CPU. The host binds the profile to the captured runtime and re-attests
+all fourteen API plus two native generations immediately before each client
+create and start. Actual utility CPU, memory and swap limits are inspected before
+start; a failed attestation prevents that command and preserves normal cleanup.
+Each fleet attestation uses one Docker inventory call plus one batched inspection,
+so the reviewed feasibility estimate must include two attestations per utility
+process as additional host work. A faster import-only benchmark is not a measured
+collector, writer or complete session cost, and does not change any deadline.
+
+The global journal lives in `/var/lib/maxim-deploy/source-abandonment-session`.
+Its marker, immutable evidence and CAS transitions survive a lost response. An
+`ATTEMPTED` child requires `reconcile` of that same certificate before any new
+child; never replay an uncertain installation. Continuations require the exact
+plan hash and current journal digest. Before the single native-first restart,
+independently refresh every attempted child's positive seal and materialization
+proof, remove store clients, and prove the same stopped fleet and queue fence.
+Restore the original auxiliary pauses as well as the owned webhook fence.
+
+`partial` requires every attempted child positively materialized and leaves all
+unattempted and excluded sources explicit. `abort` cannot cross an unresolved
+attempt. These are truthful terminal states, not complete backlog recovery.
+If the runtime and final readbacks are already proved but the terminal journal
+acknowledgement is lost, inspect the journal independently; do not blindly stop
+the proved fleet or repeat writes. Ordinary deploy and rollback remain blocked by
+every active, missing or malformed session journal.
+
+Successful session completion is separate from release acceptance. Observe fresh
+receipt cohorts including still-pending receipts, real outcomes, strict readiness
+and queue trends after restart. Neither a finite set of installed holds nor an
+HTTP success alone proves that all bots have recovered. Never-started backlog
+requires its own reviewed cancellation authority or measured normal draining;
+the session does not silently discard it.
+
+Keep a controller that can read the admitted session duration through final
+release acceptance. A terminal journal with a duration over 60 minutes remains
+unreadable by older 60-minute controllers. Do not synchronize back to that older
+reader, reset the journal, or shorten its immutable manifest.
+For the supported captured runtime, use
+`vps-connect.sh finalize-release-recovery <controller-branch> --runtime-sha <runtime-sha>`.
+Both commits require exact green CI. The finalizer holds the deploy lock, proves
+the clean exact controller checkout, and accepts a distinct runtime only at its
+checked-in source pin, as an ancestor with the finite reviewed controller-file
+delta. API, dependency, configuration and Compose changes refuse this path.
+It reads maintenance journals with the retained controller while binding all
+three images, source topology, strict smokes and the new release manifest to the
+runtime SHA. It performs no runtime recreation and still refuses unfinished or
+malformed maintenance evidence.
+
 ## Installation and recovery
+
+A started owner may retain a strict `EXECUTION_WAITING` checkpoint only when its
+five fields match the current authority version, exact owner and semantic key, and
+canonical immutable execution deadline. Business start must precede that deadline.
+The original checkpoint remains unchanged: it records earlier readiness waiting,
+not proof that remote effects were absent. Other non-null checkpoints are refused.
 
 An `apply` request contains only `version`, `operation`, `targetSha`,
 `expectedJournalDigest`, `reviewedPreviewDigest` and `reviewedInventoryDigest`.
@@ -138,8 +341,9 @@ The modern controller cannot resume a legacy operation, or vice versa.
 
 When a host-controller defect blocks an already admitted operation, use the
 explicit corrective entrypoint only within its checked-in compatibility boundary.
-It currently pins runtime commit `9f06dff5d32d6f1bd61ee8fa92f103b043475452` and its
-immutable API image. The controller itself must be a distinct, clean, exact
+It currently pins runtime commit `e7e0066ac724726b42c5cba00bfd8f930673b645` and API
+image `sha256:c3e6540fa88d5695fb5c875a2baf7a7b7bf0b6c7c2a6907288f5217755727c45`.
+The controller itself must be a distinct, clean, exact
 descendant commit. The command checks CI for that controller commit; the normal
 documented emergency exception requires both `MAXIM_DEPLOY_EMERGENCY_BYPASS=1`
 and a nonblank `MAXIM_DEPLOY_EMERGENCY_REASON`. It never bypasses source, image,
@@ -167,9 +371,19 @@ journal digests, request and selection digests, and the actual adapter hash.
 The proof digest is emitted on stderr for private incident evidence. Original
 journal bindings and the frozen reviewed inventory are unchanged.
 
-Repeated catalog measurements may have different costs. Semantic comparison
-excludes only each catalog's direct `cost` field, while retaining namespace counts,
-version, completion, issue and all other fields. The fresh complete inventory is
+Repeated catalog measurements may have different costs. Modern semantic comparison
+excludes each catalog's direct `cost` field and only the numeric key counts of
+`publisher-start` and `publisher-binding-refresh` between independently stable
+inventories. These separate Publisher private-start and binding-refresh queues
+cannot consume the selected non-command Major group source; their auxiliary TTLs
+may expire while workers are stopped. Namespace presence, every other namespace
+count, version, completion, issue, all queue headers and exact source/owner/action
+evidence remain bound. Both complete raw namespace censuses within each cold
+inventory must still match exactly, including both Publisher counts; the collector
+and installer enforce the original census budgets independently. A disappearing
+namespace, changed relevant orphan count, queue generation, membership, owner
+payload or effect still refuses ordinary apply. This tolerance does not diagnose
+the cause of an observed count change or authorize a refreeze. The fresh complete inventory is
 saved as a separate recheck proof, and writers consume the original reviewed
 artifact. A changed source, child, namespace or completeness result still refuses
 installation.
@@ -214,7 +428,7 @@ Publisher identity is the separately host-attested admission `publisherBotId` or
 
 ## Abort before installation
 
-When a stopped modern preparation has no pending inventory and never crossed `INSTALLING`, a reviewed corrective envelope may use `abort-before-install` with the exact runtime SHA and current journal digest. This narrow controller supports the explicitly pinned runtime in `source-abandonment-abort-identity.mjs`; it does not deploy another image.
+When a modern preparation never crossed `INSTALLING`, a reviewed corrective envelope may use `abort-before-install` with the exact runtime SHA and current journal digest. It accepts `STOPPED` without pending inventory, or `INVENTORIED` with an authenticated ordinary pending/reviewed pair, or all four pending/reviewed/superseded/refreeze-absence proofs and the complete verified original-to-refrozen evidence chain. The ordinary pair must retain its original artifact hash, ready preview, source/image/operation/selection bindings and the exact sixteen stopped generations; partial or mixed refreeze history is refused. It refuses pending recheck, seal, runtime or release evidence. Every pending artifact, original journal and superseded proof remains immutable through `ABORTING` and `ABORTED`; two fresh independent certificate-absence reads still precede restart. This abort controller pins runtime `b0d3c4e1b437127b985791ea67b7109843988fbb` and API image `sha256:e7f01f71971f7c9c6410151bfcc90d7388c8766ab6a5f919e8f30a7603e6ec2b`, with a distinct controller descended from that exact runtime commit. The separate corrective apply/refreeze identity remains pinned to its documented runtime and is not widened by this abort path. It restores the same captured 14 API and two native generations, verifies all 24 queues resumed and checks dependencies; it does not install holds, retry effects or deploy another image. Retained-preview abort journals require this compatible host tooling for subsequent operations; do not switch back to an older journal reader.
 
 The controller records the original journal, removes its isolated client, confirms the same stopped generations and owned 24-queue fence, and performs two independent read-only primary-key checks that the exact operation certificate is absent. The fixed probe is hash-bound and runs in the frozen API image with database credentials only from the captured context and no MAX credentials. It cannot install or rewrite exclusions.
 

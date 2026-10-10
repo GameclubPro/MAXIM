@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { createPrismaClient, type PrismaClient, type WebhookEvent } from '../prisma/prisma-client';
+import {
+  createPrismaClient,
+  type PrismaClient,
+  type Prisma,
+  type WebhookEvent,
+} from '../prisma/prisma-client';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 import {
@@ -572,11 +577,18 @@ native('read-only materialization preview on representative PostgreSQL history',
     expect(result.decision).toBe('READY');
     expect(result.scannedReceipts).toBe(2);
     expect((await preview()).proofSha256).toBe(result.proofSha256);
-    expect(result.plans.flatMap((plan) => plan.indexes)).toEqual(
-      expect.arrayContaining([
-        'webhook_legacy_receipt_dispositions_pkey',
-        'webhook_legacy_sealed_authorities_pkey',
-      ]),
+    const proofPlans = result.plans.filter(
+      (plan) =>
+        plan.descriptor === 'sql:materialization-preview:webhook_legacy_receipt_dispositions',
+    );
+    expect(proofPlans.length).toBeGreaterThan(0);
+    for (const plan of proofPlans)
+      expect([
+        'webhook_legacy_receipt_dispositions_receipt_id_key',
+        'webhook_legacy_receipt_dispositions_receipt_id_id_key',
+      ]).toEqual(expect.arrayContaining(plan.indexes));
+    expect(result.plans.flatMap((plan) => plan.indexes)).toContain(
+      'webhook_legacy_sealed_authorities_pkey',
     );
     expect(await actualPage()).toMatchObject({ complete: true, blocked: false });
     expect(await installation(firstCertificate)).toMatchObject({ state: 'MATERIALIZED' });
@@ -629,6 +641,70 @@ native('read-only materialization preview on representative PostgreSQL history',
     expect(await installation(certificates.at(-1)!)).toMatchObject({ state: 'SEALED' });
     expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: unknown.id } })).toEqual(before);
   });
+  it.each([false, true])(
+    'proves the physical leading receipt lookup and rejects id-only plan evidence (wrongBound=%s)',
+    async (wrongBound) => {
+      await actualPage();
+      await nextCandidate();
+      const indexes = await db.$queryRaw<Array<{ name: string; unique: boolean; leading: string }>>`
+        SELECT c.relname AS name, i.indisunique AS unique,
+          pg_get_indexdef(i.indexrelid, 1, true) AS leading
+        FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+        WHERE c.relname IN ('webhook_legacy_receipt_dispositions_receipt_id_key',
+          'webhook_legacy_receipt_dispositions_receipt_id_id_key') ORDER BY c.relname`;
+      expect(indexes).toHaveLength(2);
+      for (const index of indexes)
+        expect(index).toMatchObject({ unique: true, leading: 'receipt_id' });
+      let inspected = 0;
+      const result = await reader.$transaction(
+        async (tx) => {
+          const observed = {
+            $queryRaw: async (statement: Prisma.Sql) => {
+              const rows =
+                await tx.$queryRaw<
+                  Array<{ 'QUERY PLAN': Array<{ Plan: Record<string, unknown> }> }>
+                >(statement);
+              if (
+                statement.sql.includes('EXPLAIN') &&
+                statement.sql.includes('FROM webhook_legacy_receipt_dispositions t')
+              ) {
+                const visit = (node: Record<string, unknown>) => {
+                  if (node['Relation Name'] === 'webhook_legacy_receipt_dispositions') {
+                    inspected++;
+                    expect(indexes.map((index) => index.name)).toContain(node['Index Name']);
+                    expect(node['Node Type']).toMatch(/^Index (?:Only )?Scan$/u);
+                    expect(node['Index Cond']).toMatch(/\bt\.receipt_id =/u);
+                    expect(node.Filter).toBeUndefined();
+                    // FLAG: Inject only a bad plan predicate after observing the actual native
+                    // leading-key proof. An allowed index name cannot authorize a nonleading id.
+                    if (wrongBound)
+                      node['Index Cond'] = String(node['Index Cond']).replace(
+                        't.receipt_id =',
+                        't.id =',
+                      );
+                  }
+                  for (const child of (node.Plans ?? []) as Array<Record<string, unknown>>)
+                    visit(child);
+                };
+                visit(rows[0]!['QUERY PLAN'][0]!.Plan);
+              }
+              return rows;
+            },
+          };
+          return previewLegacyRecoveryMaterialization(observed as never, [candidate], allowance());
+        },
+        { isolationLevel: 'RepeatableRead', timeout: 30_000 },
+      );
+      expect(inspected).toBeGreaterThan(0);
+      expect(result.decision).toBe(wrongBound ? 'DENY' : 'READY');
+      if (wrongBound)
+        expect(result.planFailure).toMatchObject({
+          reason: 'bound',
+          table: 'webhook_legacy_receipt_dispositions',
+        });
+      else expect(result.planFailure).toBeUndefined();
+    },
+  );
   it('passes an oversized unrelated receipt without fetching its body or changing it', async () => {
     const event = await receipt('x'.repeat(150_000), 'unrelated-user');
     const result = await preview({ bytes: 100_000 });

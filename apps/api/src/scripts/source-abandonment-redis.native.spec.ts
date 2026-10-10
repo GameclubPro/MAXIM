@@ -4,15 +4,18 @@ import {
   inventorySourceAbandonmentNamespaces,
   readMeasuredSourceCatalogScript,
   SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT,
+  SOURCE_ABANDONMENT_NAMESPACE_CATALOG_SCRIPT,
 } from './source-abandonment-redis-catalog';
 import {
   inventorySourceAbandonmentRedis,
   type SourceAbandonmentRedisReader,
+  type SourceAbandonmentRedisSource,
 } from './source-abandonment-live-redis';
 import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
 import { isLegacyRecoveryWebhookQueue } from './legacy-recovery-queue-inventory';
 import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
+import { SOURCE_ABANDONMENT_CHANNEL_PROFILE } from '../webhook/webhook-source-abandonment.contract';
 
 const url = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const native = url ? describe : describe.skip;
@@ -190,7 +193,7 @@ native('modern full namespace census on Redis 7', () => {
     expect(await redis.dbsize()).toBe(0);
   });
 
-  it('stops a paired scan on its first zero cursor and counts one underlying page', async () => {
+  it('finishes a single-step scan at its zero cursor and counts one underlying page', async () => {
     expect(await inventorySourceAbandonmentNamespaces(reader(), deadline())).toMatchObject({
       complete: true,
       issue: null,
@@ -212,8 +215,79 @@ native('modern full namespace census on Redis 7', () => {
     // The terminal hash contains a large payload; the namespace reader must never fetch it.
     await redis.hset('bull:photo-duplicates:retained-hash', 'data', 'x'.repeat(128 * 1024));
     const before = await redis.dbsize();
-    const first = await inventorySourceAbandonmentNamespaces(reader(), deadline());
-    const second = await inventorySourceAbandonmentNamespaces(reader(), deadline());
+    let completedPages = 0;
+    const readScanCalls = async () => {
+      const stats = await redis.info('commandstats');
+      const calls = /^cmdstat_scan:calls=(\d+),/mu.exec(stats)?.[1];
+      return calls === undefined ? 0n : BigInt(calls);
+    };
+    const census = async () => {
+      const targets: Array<[string, number, ...string[]]> = [];
+      const observedReader = {
+        ...reader(),
+        multi() {
+          const commands: Array<[string, number, ...string[]]> = [];
+          const transaction = redis.multi();
+          const measurement = {
+            eval_ro(script: string, keys: number, ...args: string[]) {
+              commands.push([script, keys, ...args]);
+              transaction.eval_ro(script, keys, ...args);
+              return measurement;
+            },
+            async exec() {
+              // FLAG: Observe the unchanged atomic meter/target/meter transaction.
+              // INFO outside each complete pass independently counts real SCAN calls.
+              expect(commands).toHaveLength(3);
+              expect(commands[0]).toEqual([SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT, 0]);
+              expect(commands[2]).toEqual([SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT, 0]);
+              expect(commands[1]).toEqual([
+                SOURCE_ABANDONMENT_NAMESPACE_CATALOG_SCRIPT,
+                0,
+                expect.stringMatching(/^\d+$/u),
+                '1',
+              ]);
+              targets.push(commands[1]);
+              const rows = await transaction.exec();
+              completedPages++;
+              return rows;
+            },
+          };
+          return measurement;
+        },
+      };
+      const scansBefore = await readScanCalls();
+      const proof = await inventorySourceAbandonmentNamespaces(observedReader, deadline());
+      const scansAfter = await readScanCalls();
+      expect(proof.complete).toBe(true);
+      expect(proof.issue).toBeNull();
+      expect(targets).toHaveLength(proof.cost.pages);
+      expect(scansAfter - scansBefore).toBe(BigInt(proof.cost.pages));
+      return proof;
+    };
+    const contender = new Redis(fixtureUrl, { maxRetriesPerRequest: 0, commandTimeout: 1000 });
+    let scanning = true;
+    const servicedPages = new Set<number>();
+    const independentReads = (async () => {
+      while (scanning) {
+        expect(await contender.ping()).toBe('PONG');
+        servicedPages.add(completedPages);
+        await new Promise<void>((done) => setImmediate(done));
+      }
+    })();
+    let first: Awaited<ReturnType<typeof census>>;
+    let second: Awaited<ReturnType<typeof census>>;
+    try {
+      first = await census();
+      second = await census();
+    } finally {
+      scanning = false;
+      await independentReads.finally(() => contender.disconnect());
+    }
+    // FLAG: An independent Redis connection must make progress between catalog
+    // pages, while each measured SCAN retains its server-cost and deadline guards.
+    expect(
+      [...servicedPages].filter((page) => page > 0 && page < completedPages).length,
+    ).toBeGreaterThan(1);
     expect(first).toMatchObject({
       complete: true,
       issue: null,
@@ -226,6 +300,7 @@ native('modern full namespace census on Redis 7', () => {
     expect(first.cost.maxCallDurationUs).toBeGreaterThan(0);
     expect(first.cost.bytes).toBeLessThan(16 * 1024);
     expect(await redis.dbsize()).toBe(before);
+    expect(await redis.get('bull:photo-duplicates:retained-0')).toBe('kept');
     expect(await redis.hstrlen('bull:photo-duplicates:retained-hash', 'data')).toBe(128 * 1024);
   });
 
@@ -289,6 +364,98 @@ native('modern full namespace census on Redis 7', () => {
     expect(changed.stableDigest).not.toBe(first.stableDigest);
     await redis.incr('bull:max-actions-background:id');
     expect((await observe()).stableDigest).not.toBe(changed.stableDigest);
+    const beforeOwner = await observe();
+    await redis.hset('bull:moderation-default-0:selected-owner', 'progress', '1');
+    expect((await observe()).stableDigest).not.toBe(beforeOwner.stableDigest);
+    for (const name of ['max-actions-background', 'moderation-default-0', 'photo-duplicates']) {
+      const beforeOrphan = await observe();
+      await redis.hset(`bull:${name}:orphan-fixture`, 'data', '{}');
+      expect((await observe()).stableDigest).not.toBe(beforeOrphan.stableDigest);
+    }
+    for (const name of ['publisher-start', 'publisher-binding-refresh']) {
+      await redis.hset(`bull:${name}:meta`, 'version', 'fixture');
+      const beforeHeader = await observe();
+      await redis.incr(`bull:${name}:id`);
+      expect((await observe()).stableDigest).not.toBe(beforeHeader.stableDigest);
+    }
+  });
+
+  it('authorless channel actions retain exact message proof and reject an attributed user', async () => {
+    const channel: SourceAbandonmentRedisSource = {
+      chatId: '-200',
+      messageId: 'channel-message',
+      userId: null,
+      sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+    };
+    const queue = new Queue('max-actions-background', { connection: { url: fixtureUrl } });
+    queues.push(queue);
+    const data = {
+      chatId: channel.chatId,
+      messageId: channel.messageId,
+      userId: null as string | null,
+      actionType: 'DELETE_MESSAGE',
+      idempotencyKey: 'channel-action',
+    };
+    const job = await queue.add('action', data, { jobId: 'channel-job', delay: 60_000 });
+    const observe = () =>
+      inventorySourceAbandonmentRedis(
+        reader(),
+        selection,
+        [channel],
+        { ...LEGACY_RECOVERY_LIVE_BUDGET, deadlineAtMs: deadline() },
+        resolve,
+      );
+    const first = await observe();
+    expect(first.issues).toEqual([]);
+    expect(first.children).toEqual([
+      {
+        jobKey: 'channel-action',
+        queueName: queue.name,
+        jobPayloadDigest: sourceAbandonmentDigest(data),
+        chatId: channel.chatId,
+        messageId: channel.messageId,
+      },
+    ]);
+    expect(await job.getState()).toBe('delayed');
+    await job.updateData({ ...data, userId: '123' });
+    const conflict = await observe();
+    expect(conflict.issues[0]?.code).toBe('ACTION_SUBJECT_CONFLICT');
+    expect(conflict.children).toEqual([]);
+    expect(await job.getState()).toBe('delayed');
+  });
+
+  it('authorless channel never proves unrelated FANOUT from a missing user', async () => {
+    const channel: SourceAbandonmentRedisSource = {
+      chatId: '-200',
+      messageId: 'channel-message',
+      userId: null,
+      sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+    };
+    const queue = new Queue('global-spammer-denorm', { connection: { url: fixtureUrl } });
+    queues.push(queue);
+    const data = {
+      observationId: 'fanout-observation',
+      chatId: '-300',
+      userId: '300',
+      source: 'FANOUT_HIGH',
+      fastPath: false,
+    };
+    const job = await queue.add('observation', data, { jobId: 'fanout-job', delay: 60_000 });
+    const result = await inventorySourceAbandonmentRedis(
+      reader(),
+      selection,
+      [channel],
+      { ...LEGACY_RECOVERY_LIVE_BUDGET, deadlineAtMs: deadline() },
+      async () => ({
+        row: { ...data, id: data.observationId, messageId: null },
+        digest: 'a'.repeat(64),
+        cost: { pages: 1, rows: 1, probes: 1, bytes: 128 },
+        plans: [],
+      }),
+    );
+    expect(result.issues[0]?.code).toBe('OBSERVATION_SOURCE_UNPROVED');
+    expect(result.children).toEqual([]);
+    expect(await job.getState()).toBe('delayed');
   });
 
   it('retains real delayed cleanup bytes while requiring its separately resolved parent proof', async () => {

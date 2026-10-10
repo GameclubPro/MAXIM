@@ -48,13 +48,15 @@ Commands:
   exec <command...>           Run a command in the remote repo
   deploy [branch] [services|--plan|--auto|--full]
                               Run or plan a manifest-aware production deploy
-  finalize-release-recovery [branch]
+  finalize-release-recovery [branch] [--runtime-sha <sha>]
                               Prove an exact runtime and finalize its interrupted manifest
   install-deploy-flock <old-sha>  Install reviewed lock tooling under both protocols
   legacy-cold-recovery <private-request.json>
                               Inspect or apply an exact journal-bound legacy recovery
   source-abandonment <private-request.json>
                               Discard an exact modern source without member-wide holds
+  cancel-webhook-backlog <private-request.json>
+                              Cancel pre-cutoff processing in one stopped-fleet operation
   source-abandonment-corrective <private-envelope.json>
                               Continue reviewed recovery with an exact green controller
   preload-ci-image <component> [git-ref]
@@ -301,6 +303,31 @@ install_deploy_flock() {
     *) return 2 ;;
   esac
   remote_exec "$(shell_quote_args bash -s -- "$1" "$target_sha")" <"$ROOT_DIR/infra/scripts/vps-install-deploy-flock.sh"
+}
+
+cancel_webhook_backlog() {
+  if [[ $# != 1 || ! -f "$1" ]]; then
+    echo 'Usage: cancel-webhook-backlog <private-request.json>' >&2
+    return 2
+  fi
+  local request_file="$1" target_sha
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  node --input-type=module - "$ROOT_DIR" "$request_file" "$target_sha" <<'NODE'
+import { constants, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [root, path, sha] = process.argv.slice(2);
+const { parseBacklogCancellationRequest } = await import(pathToFileURL(`${root}/infra/scripts/backlog-cancellation-host.mjs`));
+const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+try {
+  const stat = fstatSync(fd);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600 || stat.size > 4096)
+    throw new Error('Private bounded cancellation request required');
+  if (parseBacklogCancellationRequest(readFileSync(fd, 'utf8')).sourceSha !== sha)
+    throw new Error('Cancellation request must match local source');
+} finally { closeSync(fd); }
+NODE
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
+  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-backlog-cancellation.sh)" <"$request_file"
 }
 
 legacy_cold_recovery() {
@@ -945,12 +972,23 @@ deploy_main() {
 }
 
 finalize_release_recovery() {
-  local branch="${1:-main}"
+  local branch="main"
   local expected_sha
+  local runtime_sha=""
   local remote_command
 
-  if [[ "$#" -gt 1 ]]; then
-    echo "Usage: $0 finalize-release-recovery [branch]" >&2
+  if [[ "$#" -gt 0 && "$1" != "--runtime-sha" ]]; then
+    branch="$1"
+    shift
+  fi
+  if [[ "$#" -eq 2 && "$1" == "--runtime-sha" ]]; then
+    runtime_sha="$2"
+    if [[ ! "$runtime_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "Recovery finalization requires an exact runtime Git SHA." >&2
+      exit 2
+    fi
+  elif [[ "$#" -ne 0 ]]; then
+    echo "Usage: $0 finalize-release-recovery [branch] [--runtime-sha <sha>]" >&2
     exit 2
   fi
   if ! expected_sha="$(git rev-parse --verify --end-of-options "${branch}^{commit}" 2>/dev/null)"; then
@@ -961,10 +999,19 @@ finalize_release_recovery() {
     echo "Recovery finalization requires a full lowercase Git SHA." >&2
     exit 2
   fi
+  runtime_sha="${runtime_sha:-$expected_sha}"
+  if [[ ! "$runtime_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Recovery finalization requires an exact runtime Git SHA." >&2
+    exit 2
+  fi
 
-  node scripts/ci/assert-green.mjs "$expected_sha"
+  node scripts/ci/assert-green.mjs "$expected_sha" || return
+  if [[ "$runtime_sha" != "$expected_sha" ]]; then
+    node scripts/ci/assert-green.mjs "$runtime_sha" || return
+  fi
 
   remote_command="$(shell_quote_args ./infra/scripts/vps-finalize-release-recovery.sh "$branch")"
+  remote_command="MAXIM_FINALIZER_RUNTIME_SHA=$(printf '%q' "$runtime_sha") $remote_command"
   remote_command="MAXIM_EXPECTED_DEPLOY_SHA=$(printf '%q' "$expected_sha") $remote_command"
   if [[ "$branch" != "main" && "${MAXIM_ALLOW_NON_MAIN_DEPLOY:-0}" == "1" ]]; then
     remote_command="MAXIM_ALLOW_NON_MAIN_DEPLOY=1 $remote_command"
@@ -1444,6 +1491,9 @@ case "$command" in
     ;;
   install-deploy-flock)
     install_deploy_flock "$@"
+    ;;
+  cancel-webhook-backlog)
+    cancel_webhook_backlog "$@"
     ;;
   legacy-cold-recovery)
     legacy_cold_recovery "$@"

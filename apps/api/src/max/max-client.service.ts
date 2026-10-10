@@ -54,6 +54,7 @@ import {
 import { ActionHealthService, type ActionHealthLane } from '../system/action-health.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { MaxBotContextService } from './max-bot-context.service';
+import { MaxExactMessageLookupMissingIdError } from './max-exact-message-lookup.error';
 import {
   assertLegacyActionAllowed,
   WebhookLegacyHoldService,
@@ -4264,7 +4265,7 @@ export class MaxClientService implements OnModuleDestroy {
         candidate && this.extractMessageIdFromSendResponse(candidate) === normalizedMessageId,
     );
     if (!exactMessage) {
-      throw new Error('MAX direct message lookup returned a response without the requested id');
+      throw new MaxExactMessageLookupMissingIdError();
     }
     return exactMessage;
   }

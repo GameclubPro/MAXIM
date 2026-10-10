@@ -24,6 +24,29 @@ import {
   WEBHOOK_QUEUE_BACKGROUND,
 } from './webhook-queues';
 
+// Keep the existing in-memory persistence model at the writer boundary. Native tests
+// cover PostgreSQL CAS races and verify that each new writer submits one statement.
+jest.mock('./webhook-receipt-write', () => ({
+  writeWebhookEnqueueState: (
+    client: { webhookEvent: { updateMany: jest.Mock } },
+    event: import('./webhook-receipt-write').WebhookEnqueueSnapshot,
+    data: import('./webhook-receipt-write').WebhookEnqueueWrite,
+  ) =>
+    client.webhookEvent.updateMany({
+      where: {
+        id: event.id,
+        status: event.status,
+        queueName: event.queueName,
+        enqueueAttempts: event.enqueueAttempts,
+        queuedAt: event.queuedAt,
+        nextEnqueueAt: event.nextEnqueueAt,
+        timeoutQuarantineExpiresAt: event.timeoutQuarantineExpiresAt,
+        errorMessage: event.errorMessage,
+      },
+      data,
+    }),
+}));
+
 type JobMock = {
   getState: jest.Mock<Promise<string>, []>;
   retry: jest.Mock<Promise<void>, []>;
@@ -1412,7 +1435,7 @@ describe('WebhookOutboxService', () => {
     }
   });
 
-  it('charges proof selection to the same recovery budget before admitting owner transactions', async () => {
+  it('admits guarded owner recovery after slow successful proof discovery', async () => {
     const f = finishedHeadSchedulingFixture(3);
     let now = 0;
     const monotonic = jest.spyOn(performance, 'now').mockImplementation(() => now);
@@ -1422,12 +1445,63 @@ describe('WebhookOutboxService', () => {
     });
     try {
       await expect(f.internals.recoverFinishedOrderedHeads(f.heads, 1)).resolves.toBe(0);
-      expect(f.prisma.$transaction).not.toHaveBeenCalled();
+      expect(f.prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(f.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+        maxWait: 1_000,
+        timeout: 2_000,
+      });
+      expect(f.prisma.webhookEvent.findUnique).toHaveBeenCalledWith({
+        where: { id: 'finished-scheduling-0' },
+      });
       expect(f.prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
       expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+      expect(Object.values(f.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(0);
     } finally {
       monotonic.mockRestore();
       f.selector.mockRestore();
+    }
+  });
+
+  it('rotates guarded owners within a fresh bounded budget after each slow discovery', async () => {
+    jest.useFakeTimers();
+    const f = finishedHeadSchedulingFixture(6);
+    const owners = Array.from({ length: 6 }, (_, index) => ({
+      ownerId: `finished-scheduling-${index}`,
+    }));
+    f.selector.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 290));
+      return [...owners];
+    });
+    let active = 0;
+    let peak = 0;
+    f.prisma.$transaction.mockImplementation(async (operation) => {
+      peak = Math.max(peak, ++active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 260));
+        return await operation(f.prisma);
+      } finally {
+        active -= 1;
+      }
+    });
+    try {
+      for (let poll = 0; poll < 3; poll += 1) {
+        const recovery = f.internals.recoverFinishedOrderedHeads(f.heads, 2);
+        await jest.advanceTimersByTimeAsync(550);
+        expect(await recovery).toBe(0);
+        expect(f.prisma.webhookEvent.findUnique).toHaveBeenCalledTimes((poll + 1) * 2);
+        expect(active).toBe(0);
+        await jest.advanceTimersByTimeAsync(450);
+      }
+      expect(f.prisma.webhookEvent.findUnique.mock.calls.map(([query]) => query.where.id)).toEqual(
+        owners.map(({ ownerId }) => ownerId),
+      );
+      expect(peak).toBe(2);
+      expect(f.prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+      expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+      expect(Object.values(f.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(0);
+    } finally {
+      f.selector.mockRestore();
+      jest.useRealTimers();
     }
   });
 
@@ -1740,6 +1814,299 @@ describe('WebhookOutboxService', () => {
     }
   });
 
+  it('continues a fast ordered chat during slow selection while independent retained commands go first', async () => {
+    jest.useFakeTimers();
+    const chatId = '-continuation-chat';
+    const f = createService({
+      findManyResult: [
+        ...Array.from({ length: 11 }, (_, index) => ({
+          id: `continuation-${index}`,
+          enqueueAttempts: 0,
+          createdAt: new Date(1_770_000_000_000 + index),
+          status: index === 0 ? WebhookStatus.PROCESSED : WebhookStatus.RECEIVED,
+          processedAt: index === 0 ? new Date() : null,
+          normalizedPayload: {
+            type: 'message_created',
+            botId: 'ordinary-bot',
+            updateId: `continuation-${index}`,
+            message: { chatId, messageId: `message-${index}` },
+          },
+        })),
+        {
+          id: 'independent-start',
+          enqueueAttempts: 0,
+          normalizedPayload: {
+            type: 'message_created',
+            botId: 'command-bot',
+            updateId: 'independent-start',
+            message: { chatId: '-independent-start', messageId: 'start', text: 'Старт' },
+          },
+        },
+        {
+          id: 'independent-lifecycle',
+          enqueueAttempts: 0,
+          normalizedPayload: {
+            type: 'user_removed',
+            botId: 'lifecycle-bot',
+            updateId: 'independent-lifecycle',
+            message: { chatId: '-independent-lifecycle', messageId: 'leave' },
+          },
+        },
+      ],
+    });
+    f.prisma.webhookEvent.updateMany.mockImplementation(
+      createWebhookEventUpdateManyMock(f.webhookRows),
+    );
+    const internals = f.service as unknown as {
+      enqueueBatch(): Promise<void>;
+      selectEnqueueCandidates(...args: unknown[]): Promise<unknown[]>;
+      rememberEnqueuedChat(chatId: string, id: string): void;
+      pendingEnqueueRepresentatives: Map<string, string>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    internals.rememberEnqueuedChat(chatId, 'continuation-0');
+    internals.pendingEnqueueRepresentatives = new Map([
+      ['chat:-independent-start', 'independent-start'],
+      ['event:independent-lifecycle', 'independent-lifecycle'],
+    ]);
+    const select = internals.selectEnqueueCandidates.bind(internals);
+    const selection = jest
+      .spyOn(internals, 'selectEnqueueCandidates')
+      .mockImplementation(async (...args) => {
+        const rows = await select(...args);
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        return rows;
+      });
+    const admitted: string[] = [];
+    for (const queue of Object.values(f.queues))
+      queue.add.mockImplementation(async (_, job) => {
+        const row = f.webhookRows.find(({ id }) => id === job.webhookEventId)!;
+        expect(row.status).toBe(WebhookStatus.QUEUED);
+        if (row.id.startsWith('continuation-')) {
+          const index = Number(row.id.split('-')[1]);
+          expect(f.webhookRows[index - 1]!.status).toBe(WebhookStatus.PROCESSED);
+        }
+        admitted.push(row.id);
+        setTimeout(() => {
+          row.status = WebhookStatus.PROCESSED;
+          row.processedAt = new Date();
+        }, 50);
+      });
+    try {
+      const poll = internals.enqueueBatch();
+      await jest.advanceTimersByTimeAsync(799);
+      expect(admitted.slice(0, 2).sort()).toEqual(['independent-lifecycle', 'independent-start']);
+      expect(admitted.filter((id) => id.startsWith('continuation-'))).toEqual([
+        'continuation-1',
+        'continuation-2',
+        'continuation-3',
+        'continuation-4',
+      ]);
+      await jest.advanceTimersByTimeAsync(2);
+      await poll;
+      expect(selection).toHaveBeenCalledTimes(1);
+      expect(new Set(admitted).size).toBe(admitted.length);
+      expect(f.webhookRows[5]!.status).toBe(WebhookStatus.RECEIVED);
+      expect(internals.activeEnqueueUnits.size).toBe(0);
+    } finally {
+      await jest.runOnlyPendingTimersAsync();
+      await f.service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps chat continuation hints bounded and refuses unfinished predecessors or newly deferred heads', async () => {
+    const f = createService({
+      findManyResult: [
+        {
+          id: 'continuation-before',
+          enqueueAttempts: 0,
+          status: WebhookStatus.QUEUED,
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: '-bounded', messageId: 'before' },
+          },
+        },
+        {
+          id: 'continuation-after',
+          enqueueAttempts: 0,
+          createdAt: new Date('2026-03-25'),
+          nextEnqueueAt: new Date(Date.now() + 10_000),
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: '-bounded', messageId: 'after' },
+          },
+        },
+      ],
+    });
+    const internals = f.service as unknown as {
+      rememberEnqueuedChat(chatId: string, id: string): void;
+      readChatContinuations(now: Date, attempts: Map<string, number>): Promise<unknown[]>;
+      recentEnqueuedChats: Map<string, { id: string; expiresAt: number }>;
+    };
+    for (let index = 0; index < 150; index++)
+      internals.rememberEnqueuedChat(`-${index}`, `prior-${index}`);
+    expect(internals.recentEnqueuedChats.size).toBe(100);
+    for (let index = 0; index < 7; index++)
+      await internals.readChatContinuations(new Date(), new Map());
+    const probes = f.prisma.webhookEvent.findMany.mock.calls.map(
+      ([query]) => (query?.where?.id as { in: string[] }).in,
+    );
+    expect(probes.every((ids) => ids.length <= 16)).toBe(true);
+    expect(new Set(probes.flat()).size).toBe(100);
+    internals.recentEnqueuedChats.clear();
+    internals.rememberEnqueuedChat('-bounded', 'continuation-before');
+    expect(await internals.readChatContinuations(new Date(), new Map())).toEqual([]);
+    f.webhookRows[0]!.status = WebhookStatus.PROCESSED;
+    f.webhookRows[0]!.processedAt = new Date();
+    expect(await internals.readChatContinuations(new Date(), new Map())).toEqual([]);
+    f.webhookRows[1]!.nextEnqueueAt = null;
+    expect(await internals.readChatContinuations(new Date(), new Map())).toEqual([
+      expect.objectContaining({ id: 'continuation-after' }),
+    ]);
+    expect(await internals.readChatContinuations(new Date(Date.now() + 30_001), new Map())).toEqual(
+      [],
+    );
+    expect(internals.recentEnqueuedChats.size).toBe(0);
+    expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+  });
+
+  it.each(['deadline', 'selection', 'shutdown'] as const)(
+    'does not initiate continuation after %s changes during awaited discovery',
+    async (stop) => {
+      jest.useFakeTimers();
+      const f = createService({
+        findManyResult: [
+          {
+            id: 'late-continuation',
+            enqueueAttempts: 0,
+            normalizedPayload: {
+              type: 'message_created',
+              message: { chatId: '-late-continuation', messageId: 'next' },
+            },
+          },
+        ],
+      });
+      const internal = f.service as unknown as {
+        defaultEnqueueAdmission(): never;
+        rememberEnqueuedChat(chatId: string, id: string): void;
+        readChatContinuations(): Promise<unknown[]>;
+        refillDuringSelection(
+          rows: unknown[],
+          admission: unknown,
+          dispatched: Set<string>,
+          done: () => boolean,
+          finished: Promise<void>,
+        ): Promise<unknown>;
+        shuttingDown: boolean;
+      };
+      let done = false;
+      internal.rememberEnqueuedChat('-late-continuation', 'finished-before');
+      jest.spyOn(internal, 'readChatContinuations').mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, stop === 'deadline' ? 1_001 : 50));
+        if (stop === 'selection') done = true;
+        if (stop === 'shutdown') internal.shuttingDown = true;
+        return f.webhookRows;
+      });
+      try {
+        const refill = internal.refillDuringSelection(
+          [],
+          internal.defaultEnqueueAdmission(),
+          new Set(),
+          () => done,
+          new Promise(() => undefined),
+        );
+        await jest.advanceTimersByTimeAsync(1_102);
+        await refill;
+        expect(f.webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+        expect(Object.values(f.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(0);
+      } finally {
+        await f.service.onModuleDestroy();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('caps continuation admission at sixteen and drains its already owned preparation on shutdown', async () => {
+    jest.useFakeTimers();
+    const f = createService({
+      findManyResult: Array.from({ length: 20 }, (_, index) => [
+        {
+          id: `bulk-${index}-before`,
+          enqueueAttempts: 0,
+          status: WebhookStatus.PROCESSED,
+          processedAt: new Date(),
+          createdAt: new Date(1_760_000_000_000),
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: `-bulk-${index}`, messageId: 'before' },
+          },
+        },
+        {
+          id: `bulk-${index}-next`,
+          enqueueAttempts: 0,
+          createdAt: new Date(1_760_000_000_001),
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: `-bulk-${index}`, messageId: 'next' },
+          },
+        },
+      ]).flat(),
+    });
+    f.prisma.webhookEvent.updateMany.mockImplementation(
+      createWebhookEventUpdateManyMock(f.webhookRows),
+    );
+    const internal = f.service as unknown as {
+      tick(): Promise<void>;
+      selectEnqueueCandidates(): Promise<unknown[]>;
+      rememberEnqueuedChat(chatId: string, id: string): void;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    for (let index = 0; index < 20; index++)
+      internal.rememberEnqueuedChat(`-bulk-${index}`, `bulk-${index}-before`);
+    jest.spyOn(internal, 'selectEnqueueCandidates').mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      return [];
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prepare = f.webhookService.preparePersistedWebhookEvent.getMockImplementation()!;
+    f.webhookService.preparePersistedWebhookEvent.mockImplementation(async (...args) => {
+      if (args[0] === 'bulk-0-next') await held;
+      return prepare(...args);
+    });
+    let drained = false;
+    let closing: Promise<void> | undefined;
+    const poll = internal.tick();
+    try {
+      await jest.advanceTimersByTimeAsync(301);
+      expect(f.webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(16);
+      expect(Object.values(f.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(15);
+      expect(internal.activeEnqueueUnits.size).toBe(1);
+      closing = f.service.onModuleDestroy().then(() => {
+        drained = true;
+      });
+      await jest.advanceTimersByTimeAsync(600);
+      await poll;
+      expect(drained).toBe(false);
+      release();
+      await closing;
+      expect(drained).toBe(true);
+      expect(internal.activeEnqueueUnits.size).toBe(0);
+      expect(f.webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(16);
+      expect(Object.values(f.queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(16);
+    } finally {
+      release();
+      await jest.runOnlyPendingTimersAsync();
+      await poll;
+      await closing;
+      await f.service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
   it('dispatches a successful selection when the concurrent retained refill fails', async () => {
     const fixture = capacityFixture(2, async () => undefined, {
       poolMax: 12,
@@ -1869,6 +2236,106 @@ describe('WebhookOutboxService', () => {
       await fixture.service.onModuleDestroy();
       jest.useRealTimers();
     }
+  });
+
+  it('admits a selected fresh independent receipt while old scan debt continuously fills the dispatch budget', async () => {
+    jest.useFakeTimers();
+    const started: string[] = [];
+    const fixture = capacityFixture(
+      401,
+      async (id) => {
+        started.push(id);
+        await new Promise<void>((resolve) => setTimeout(resolve, 350));
+      },
+      { poolMax: 24, enqueueConcurrency: 32, systemMode: 'normal' },
+    );
+    fixture.prisma.webhookEvent.updateMany.mockImplementation(
+      createWebhookEventUpdateManyMock(fixture.webhookRows),
+    );
+    for (const [index, row] of fixture.webhookRows.entries()) {
+      (row.normalizedPayload as MaxUpdate).botId = `reserve-bot-${index % 3}`;
+    }
+    const fresh = fixture.webhookRows[400]!;
+    fresh.createdAt = new Date();
+    type Candidate = MockWebhookEventRow & {
+      isBacklogScan?: boolean;
+      isRecentReceipt?: boolean;
+      priority?: number;
+    };
+    const internal = fixture.service as unknown as {
+      enqueueCandidates(candidates: Candidate[]): Promise<unknown>;
+      pendingEnqueueRepresentatives: Map<string, string>;
+      activeEnqueueUnits: Map<string, Promise<void>>;
+    };
+    try {
+      for (let pass = 0; pass < 3; pass++) {
+        const old = fixture.webhookRows
+          .slice(0, 400)
+          .filter((row) => row.status === WebhookStatus.RECEIVED)
+          .slice(0, 100)
+          .map((row) => ({ ...row, priority: 5, isBacklogScan: true }));
+        expect(old).toHaveLength(100);
+        const selected = [
+          ...old,
+          ...(fresh.status === WebhookStatus.RECEIVED
+            ? [{ ...fresh, priority: 5, isRecentReceipt: true }]
+            : []),
+        ];
+        const work = internal.enqueueCandidates(selected);
+        await jest.advanceTimersByTimeAsync(1_001);
+        await work;
+        await jest.advanceTimersByTimeAsync(350);
+        await Promise.all(internal.activeEnqueueUnits.values());
+        expect(started).toContain(fresh.id);
+      }
+      expect(started).toContain(fresh.id);
+      expect(started.filter((id) => id !== fresh.id).length).toBeGreaterThan(30);
+      expect(fixture.admission.snapshot().inFlight).toBe(0);
+      expect(internal.pendingEnqueueRepresentatives.size).toBeLessThanOrEqual(100);
+      expect(fixture.capacityWrites()).toHaveLength(0);
+      expect(fresh.status).toBe(WebhookStatus.QUEUED);
+    } finally {
+      await jest.runOnlyPendingTimersAsync();
+      await fixture.service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps an earlier same-chat head fenced while reserving dispatch for an independent fresh receipt', async () => {
+    const fixture = capacityFixture(6, async () => undefined, {
+      poolMax: 24,
+      enqueueConcurrency: 32,
+      systemMode: 'normal',
+    });
+    const blocked = fixture.webhookRows[4]!;
+    (blocked.normalizedPayload as MaxUpdate).message!.chatId = 'capacity-chat-3';
+    const internal = fixture.service as unknown as {
+      enqueueCandidates(candidates: unknown[]): Promise<unknown>;
+    };
+    await internal.enqueueCandidates([
+      ...fixture.webhookRows.slice(0, 3).map((row) => ({
+        ...row,
+        priority: 5,
+        isBacklogScan: true,
+      })),
+      ...fixture.webhookRows.slice(4).map((row) => ({
+        ...row,
+        priority: 5,
+        isRecentReceipt: true,
+      })),
+    ]);
+    const started = fixture.webhookService.preparePersistedWebhookEvent.mock.calls.map(
+      ([id]) => id,
+    );
+    expect(started).toEqual(
+      expect.arrayContaining(['capacity-0', 'capacity-1', 'capacity-2', 'capacity-5']),
+    );
+    expect(started).not.toContain('capacity-3');
+    expect(started).not.toContain(blocked.id);
+    expect(started.indexOf('capacity-0')).toBeLessThan(started.indexOf('capacity-1'));
+    expect(started.indexOf('capacity-1')).toBeLessThan(started.indexOf('capacity-2'));
+    expect(blocked.status).toBe(WebhookStatus.RECEIVED);
+    expect(fixture.capacityWrites()).toHaveLength(0);
   });
 
   it('dispatches scanned ordinary receipts during a sustained lifecycle stream at the real preparation cap', async () => {

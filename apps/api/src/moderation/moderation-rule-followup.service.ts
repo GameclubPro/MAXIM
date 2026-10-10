@@ -137,9 +137,11 @@ export class ModerationRuleFollowupService
       await this.prisma.$executeRaw(Prisma.sql`
         WITH due AS (SELECT "id" FROM "moderation_rule_followups"
           WHERE "status" = ${status} AND "deadline_at" <= ${sweepAt}
-            AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+            AND (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
             WHERE held."chat_id" = "moderation_rule_followups"."chat_id"
-              AND held."message_id" = "moderation_rule_followups"."message_id")
+              AND held."message_id" = "moderation_rule_followups"."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+            WHERE cancelled."chat_id" = "moderation_rule_followups"."chat_id"
+              AND cancelled."message_id" = "moderation_rule_followups"."message_id"))
             AND COALESCE("effects"->>'phase', 'UNSTARTED') = 'UNSTARTED'
           ORDER BY "deadline_at", "id" LIMIT ${PAGE_SIZE} FOR UPDATE SKIP LOCKED)
         UPDATE "moderation_rule_followups" row SET "status" = 'EXPIRED', "completed_at" = (clock_timestamp() AT TIME ZONE 'UTC'),
@@ -154,17 +156,21 @@ export class ModerationRuleFollowupService
           ? Prisma.sql`
         SELECT "id" FROM "moderation_rule_followups" WHERE "status" = 'IN_PROGRESS'
           AND "lease_expires_at" <= ${sweepAt}
-          AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+          AND (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
             WHERE held."chat_id" = "moderation_rule_followups"."chat_id"
-              AND held."message_id" = "moderation_rule_followups"."message_id")
+              AND held."message_id" = "moderation_rule_followups"."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+            WHERE cancelled."chat_id" = "moderation_rule_followups"."chat_id"
+              AND cancelled."message_id" = "moderation_rule_followups"."message_id"))
           ORDER BY "lease_expires_at", "id" LIMIT ${PAGE_SIZE}
       `
           : Prisma.sql`
         SELECT "id" FROM "moderation_rule_followups" WHERE "status" = ${status}
           AND "next_attempt_at" <= ${sweepAt}
-          AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+          AND (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
             WHERE held."chat_id" = "moderation_rule_followups"."chat_id"
-              AND held."message_id" = "moderation_rule_followups"."message_id")
+              AND held."message_id" = "moderation_rule_followups"."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+            WHERE cancelled."chat_id" = "moderation_rule_followups"."chat_id"
+              AND cancelled."message_id" = "moderation_rule_followups"."message_id"))
           ORDER BY "next_attempt_at", "id" LIMIT ${PAGE_SIZE}
       `,
       );
@@ -185,9 +191,11 @@ export class ModerationRuleFollowupService
     const ambiguousIds = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT "id" FROM "moderation_rule_followups" WHERE "status" = 'AMBIGUOUS'
         AND "next_attempt_at" <= ${sweepAt}
-        AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+        AND (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
           WHERE held."chat_id" = "moderation_rule_followups"."chat_id"
-            AND held."message_id" = "moderation_rule_followups"."message_id")
+            AND held."message_id" = "moderation_rule_followups"."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+          WHERE cancelled."chat_id" = "moderation_rule_followups"."chat_id"
+            AND cancelled."message_id" = "moderation_rule_followups"."message_id"))
         ORDER BY "next_attempt_at", "id" LIMIT ${PAGE_SIZE}
     `);
     const ambiguous = ambiguousIds.length
@@ -234,9 +242,11 @@ export class ModerationRuleFollowupService
         "lease_expires_at" = (clock_timestamp() AT TIME ZONE 'UTC') + INTERVAL '30 seconds', "attempt_count" = "attempt_count" + 1,
         "updated_at" = (clock_timestamp() AT TIME ZONE 'UTC')
       WHERE "id" = ${id}
-        AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+        AND (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
             WHERE held."chat_id" = "moderation_rule_followups"."chat_id"
-              AND held."message_id" = "moderation_rule_followups"."message_id")
+              AND held."message_id" = "moderation_rule_followups"."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+            WHERE cancelled."chat_id" = "moderation_rule_followups"."chat_id"
+              AND cancelled."message_id" = "moderation_rule_followups"."message_id"))
         AND (
         ("status" IN ('READY', 'RETRYABLE') AND "next_attempt_at" <= (clock_timestamp() AT TIME ZONE 'UTC')) OR
         ("status" = 'IN_PROGRESS' AND "lease_expires_at" <= (clock_timestamp() AT TIME ZONE 'UTC')) OR

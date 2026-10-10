@@ -170,10 +170,13 @@ holds; it has only SQL/Redis credentials, no MAX tokens. The exact client must b
 removed before independent positive SQL readback. Lost writer output never
 permits replay. Finite indexed materialization then writes positive held receipt
 pointers (200 rows/page, at most 200 pages/120 seconds), with another readback.
-Only complete protection and chat cursors permit starting captured native
-containers, then the 14 captured API containers. Wait for the captured native
-healthchecks after Docker start; `starting` is not a changed generation. Native
-checks precede queue resume. Three fresh samples must prove healthy DB/Redis,
+Only complete protection and chat cursors permit starting the two captured native
+containers. Both must report `healthy` within the following 60 seconds, retaining
+their captured identities and isolation boundaries, before the 14 captured API
+containers start. Inventory commands and polling share that deadline; a healthy
+readback finishing at or after expiry refuses startup. Early `starting` or
+`unhealthy` probes may recover within the budget but never authorize API startup.
+Strict native attestation still precedes queue resume. Three fresh samples must prove healthy DB/Redis,
 exact runtime identities and released queues. A purely automatic queue-backlog
 failure may remain visible while this positively proved scope completes with
 `fleetReady: false`; it cannot stop unrelated chats. Other failures remain contained.
@@ -184,12 +187,43 @@ Any failure after cold admission attempts to stop the captured runtime first,
 remove its exact client, pause its queues and persist the blocked state. It never
 starts old images or automatically restores the baseline after a refusal.
 Every ordinary deploy, rollback, reclaim and supported topology mutation refuses
-while this journal is incomplete; missing/corrupt evidence also refuses.
+while this journal is incomplete, except for the verified empty-install closure
+described below; missing/corrupt evidence also refuses.
+
+A separately reviewed empty-install abort may leave the original journal truthfully
+at `INSTALLING` and write `legacy-cold-private/<controllerNonce>/empty-install-abort.json`.
+The ordinary guard accepts only its final `EMPTY_INSTALL_ABORTED` phase after checking
+the exact original journal, all referenced immutable proofs, the same full UNSEALED
+certificate snapshot in two empty witnesses, inventory/attestation bindings, the
+same stopped and restored 14 API plus two native generations, the owned 24-queue
+fence and restart smokes. Backlog-only `fleetReady: false` remains visible and is
+not fleet recovery or release acceptance. `EMPTY_INSTALL_ABORTING`, missing proof,
+interrupted writes and changed generations remain blocked.
+
+Reading this closure never rewrites the original journal or certificate. All original
+journal mutations refuse, including failure containment after a rejected next
+admission. A new cold admission first fsyncs an immutable archive containing the raw
+journal, marker, sidecar, context, referenced proofs and next admission bindings under
+`empty-install-closure-archives/`, then advances the normal monotonic marker. A pending
+archive write requires diagnosis and must never be deleted to clear the guard.
+
+When the installed tooling predates closure recognition, synchronize the reviewed
+exact-green-CI commit with the normal `vps-connect.sh deploy main --plan` path first.
+Plan mode holds the deploy lock and synchronizes tooling without application effects;
+the subsequent normal deploy still runs the ordinary guard and its other checks.
+This does not authorize installation, certificate edits or a generic journal reset.
 
 A process interruption after installation can be reconciled with the same request
 shape and `operation: "reconcile"`, using the current reviewed journal digest.
-The host reports fixed stage names, page counts and elapsed times on stderr. These
-diagnostics contain no source identities and never substitute for durable proof.
+The host reports fixed stage names, page counts and elapsed times on stderr.
+Startup failures additionally identify `stopped_inventory`, `start_native`,
+`wait_native_health` or `start_api`. A failed Docker call may include only its fixed
+command name (`ps`, `inspect`, `start` or `stop`), an exit code from 0 to 255,
+allowlisted spawn code or signal. Semantic failures retain their allowlisted
+failure code; unknown errors remain `unclassified_failure`. These diagnostics
+contain no source identities, arguments, raw errors, stdout, stderr or inventory
+and never substitute for durable proof. Diagnostic failures preserve the original
+operation failure and its containment path.
 Only `INSTALLING`, `SEALED` or `RESUMING` are eligible. Reconciliation first stops
 producers/removes the old client/pauses queues, then reads the existing certificate
 independently. It **never creates or installs a certificate again**. An absent,

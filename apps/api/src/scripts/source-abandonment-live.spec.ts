@@ -3,11 +3,15 @@ import { LEGACY_RECOVERY_LIVE_BUDGET } from './legacy-recovery-live-budget';
 import {
   classifySourceAbandonmentAction,
   inventorySourceAbandonmentRedis,
+  isUnrelatedSourceAbandonmentFanoutObservation,
+  type SourceAbandonmentRedisSource,
 } from './source-abandonment-live-redis';
+import { SOURCE_ABANDONMENT_CHANNEL_PROFILE } from '../webhook/webhook-source-abandonment.contract';
 import { mergeSourceAbandonmentChildren } from './source-abandonment-collect';
 import {
   assertSourceAbandonmentCatalogProofs,
   inventorySourceAbandonmentNamespaces,
+  projectSourceAbandonmentNamespaceCounts,
   readMeasuredSourceCatalogScript,
   SOURCE_ABANDONMENT_COMMANDSTATS_PROJECTION_SCRIPT,
   type SourceAbandonmentCatalogReader,
@@ -15,6 +19,7 @@ import {
 import {
   parseSourceAbandonmentSelection,
   SOURCE_ABANDONMENT_OBSERVATION_QUEUE,
+  SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
 } from './source-abandonment-live-protocol';
 
 const source = { chatId: 'chat-1', messageId: 'message-1', userId: 'user-1' };
@@ -77,7 +82,7 @@ function measuredFixture<T extends SourceAbandonmentCatalogReader>(reader: T) {
             reply.length === 7
           ) {
             const cursor = reply[2] as string;
-            reply = [...reply, cursor === '0' ? ['0'] : [`90000000000${cursor}1`, cursor]];
+            reply = [...reply, [cursor]];
           }
           return [
             [null, commandstats()],
@@ -111,6 +116,32 @@ function redisFixture(keys: string[] = []) {
 }
 
 describe('exact source abandonment bounded evidence', () => {
+  it('preserves namespace presence and every count outside the two independent Publisher queues', () => {
+    const first = {
+      'publisher-start': 5,
+      'publisher-binding-refresh': 7,
+      'max-actions-background': 9,
+    };
+    const stable = projectSourceAbandonmentNamespaceCounts(first);
+    expect(stable).toEqual({
+      'publisher-start': null,
+      'publisher-binding-refresh': null,
+      'max-actions-background': 9,
+    });
+    expect(projectSourceAbandonmentNamespaceCounts({ ...first, 'publisher-start': 3 })).toEqual(
+      stable,
+    );
+    expect(
+      projectSourceAbandonmentNamespaceCounts({ ...first, 'max-actions-background': 8 }),
+    ).not.toEqual(stable);
+    expect(
+      projectSourceAbandonmentNamespaceCounts({
+        'publisher-start': 5,
+        'max-actions-background': 9,
+      }),
+    ).not.toEqual(stable);
+  });
+
   it('records actual server cost despite delayed delivery and frozen Lua TIME', async () => {
     const reader = measuredFixture({
       eval_ro: async () => {
@@ -125,8 +156,8 @@ describe('exact source abandonment bounded evidence', () => {
       cost: { serverDurationUs: 100, maxCallDurationUs: 100 },
     });
   });
-  it.each([[], ['0', '2'], ['1'], ['1', '2', '3']])(
-    'rejects malformed paired page cursor accounting',
+  it.each([[], ['0', '2'], ['1'], ['1', '2'], ['1', '2', '3']])(
+    'rejects malformed or multiple page cursor accounting',
     async (...cursors) => {
       const reader = measuredFixture({ eval_ro: async () => [1, 0, '2', 0, 0, 0, [], cursors] });
       expect(await inventorySourceAbandonmentNamespaces(reader, Date.now() + 1000)).toMatchObject({
@@ -214,6 +245,73 @@ describe('exact source abandonment bounded evidence', () => {
       classifySourceAbandonmentAction(action({ messageId: 'other-message' }), [source]),
     ).toBeNull();
   });
+  it('binds an explicitly proven authorless channel source without inventing a user', () => {
+    const channel: SourceAbandonmentRedisSource = {
+      chatId: source.chatId,
+      messageId: source.messageId,
+      userId: null,
+      sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+    };
+    const child = classifySourceAbandonmentAction(action({ userId: null }), [channel]);
+    expect(child).toMatchObject({
+      chatId: channel.chatId,
+      messageId: channel.messageId,
+      jobKey: 'action-1',
+    });
+    expect(child).not.toHaveProperty('userId');
+    expect(() => classifySourceAbandonmentAction(action(), [channel])).toThrow(
+      'ACTION_SUBJECT_CONFLICT',
+    );
+    expect(
+      classifySourceAbandonmentAction(action({ messageId: 'other-message' }), [channel]),
+    ).toBeNull();
+  });
+  it.each([
+    { userId: null },
+    { userId: 'invented', sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE },
+    { userId: null, sourceProfile: 'unknown' },
+  ])('refuses incomplete authorless source metadata before Redis I/O: %j', async (changed) => {
+    const invalid = { ...source, ...changed } as unknown as SourceAbandonmentRedisSource;
+    expect(() => classifySourceAbandonmentAction(action(), [invalid])).toThrow(
+      'SOURCE_PROFILE_UNPROVED',
+    );
+    const redis = redisFixture();
+    const result = await inventorySourceAbandonmentRedis(
+      redis,
+      selection,
+      [invalid],
+      allowance(),
+      resolve,
+      'nonce',
+    );
+    expect(result.issues).toContainEqual({
+      code: 'SOURCE_PROFILE_UNPROVED',
+      descriptor: 'redis:inventory',
+    });
+    expect(redis.eval_ro).not.toHaveBeenCalled();
+  });
+  it('does not infer global FANOUT disjointness from an authorless channel', () => {
+    const data = {
+      observationId: 'observation-1',
+      userId: '300',
+      chatId: '-300',
+      source: 'FANOUT_HIGH',
+      fastPath: false,
+    };
+    const observation = { ...data, id: data.observationId, messageId: null };
+    const human = { ...source, userId: '100', chatId: '-100' };
+    const channel: SourceAbandonmentRedisSource = {
+      chatId: '-200',
+      messageId: 'channel-message',
+      userId: null,
+      sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+    };
+    expect(isUnrelatedSourceAbandonmentFanoutObservation(data, observation, [human])).toBe(true);
+    expect(isUnrelatedSourceAbandonmentFanoutObservation(data, observation, [channel])).toBe(false);
+    expect(isUnrelatedSourceAbandonmentFanoutObservation(data, observation, [human, channel])).toBe(
+      false,
+    );
+  });
   it('binds an explicit notice original source even when action target differs', () => {
     expect(
       classifySourceAbandonmentAction(
@@ -254,6 +352,23 @@ describe('exact source abandonment bounded evidence', () => {
     expect(() =>
       mergeSourceAbandonmentChildren([[child], [{ ...child, jobPayloadDigest: 'b'.repeat(64) }]]),
     ).toThrow();
+  });
+  it('keeps channel marker keys separate from action and observation keys', () => {
+    const marker = {
+      chatId: source.chatId,
+      messageId: source.messageId,
+      jobKey: 'same-key',
+      queueName: SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
+      jobPayloadDigest: 'a'.repeat(64),
+    };
+    const actionChild = { ...marker, queueName: 'max-actions-background' };
+    const observation = { ...marker, queueName: SOURCE_ABANDONMENT_OBSERVATION_QUEUE };
+    expect(
+      mergeSourceAbandonmentChildren([[marker, actionChild, observation], [marker]]),
+    ).toHaveLength(3);
+    expect(() =>
+      mergeSourceAbandonmentChildren([[marker], [{ ...marker, jobPayloadDigest: 'b'.repeat(64) }]]),
+    ).toThrow('Exact child conflict');
   });
   it('rejects a noncanonical cutoff and a source selection beyond eight owners', () => {
     expect(() =>
@@ -490,10 +605,10 @@ describe('exact source abandonment bounded evidence', () => {
     const redis = measuredFixture({
       eval_ro: jest.fn(async (script: string, keyCount: number, ...args: string[]) => {
         if (script.startsWith('-- source-abandonment:namespace-catalog-v2')) {
-          expect(args[1]).toBe('2');
-          pages += 2;
+          expect(args[1]).toBe('1');
+          pages += 1;
           const cursor = pages === 600 ? '0' : String(pages);
-          return [1, 9_212_720, cursor, 0, 0, 100, [], [String(pages - 1), cursor]];
+          return [1, 9_212_720, cursor, 0, 0, 100, [], [cursor]];
         }
         return base.eval_ro(script, keyCount, ...args);
       }),
@@ -512,9 +627,9 @@ describe('exact source abandonment bounded evidence', () => {
       redis.eval_ro.mock.calls.filter(([script]) =>
         script.startsWith('-- source-abandonment:namespace-catalog-v2'),
       ),
-    ).toHaveLength(300);
+    ).toHaveLength(600);
     expect(result.catalog?.cost.measurementBytes).toBe(
-      300 * (Buffer.byteLength(commandstats()) + Buffer.byteLength(commandstats(12, 200))),
+      600 * (Buffer.byteLength(commandstats()) + Buffer.byteLength(commandstats(12, 200))),
     );
     expect(result.cost.pages).toBeLessThan(100);
     expect(result.cost.probes).toBeLessThan(50_000);
@@ -546,6 +661,29 @@ describe('exact source abandonment bounded evidence', () => {
       issue: 'CATALOG_DEADLINE_EXCEEDED',
     });
     expect(redis.eval_ro).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unfinished catalog when its deadline expires during the page yield', async () => {
+    let now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const redis = measuredFixture({
+      eval_ro: jest.fn(async () => {
+        setImmediate(() => {
+          now += 20_000;
+        });
+        return [1, 100, '12', 0, 0, 1, []];
+      }),
+    });
+    try {
+      expect(await inventorySourceAbandonmentNamespaces(redis, now + 45_000)).toMatchObject({
+        complete: false,
+        issue: 'CATALOG_DEADLINE_EXCEEDED',
+        cost: { pages: 1, durationMs: 20_000 },
+      });
+      expect(redis.eval_ro).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('verifies both bounded catalog artifacts rather than trusting their completion labels', async () => {

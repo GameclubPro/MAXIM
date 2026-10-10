@@ -25,11 +25,12 @@ function fence(value, bindings) {
   return value;
 }
 const forbidden = [
-  'pendingInventory',
-  'reviewedPreview',
   'pendingRecheck',
   'sealedReadback',
   'releaseManifest',
+  'runtimeIdentity',
+  'nativeIdentity',
+  'strictSmokes',
 ];
 
 // FLAG: Abort proves that installation never began and the exact certificate is
@@ -38,9 +39,18 @@ export async function abortSourceAbandonmentPreinstall({ store, adapters, expect
   const original = store.read().journal;
   if (
     !original ||
-    !['STOPPED', 'ABORTING'].includes(original.phase) ||
+    !['STOPPED', 'INVENTORIED', 'ABORTING'].includes(original.phase) ||
     legacyColdDigest(original) !== expectedJournalDigest ||
     forbidden.some((name) => original.proofs[name])
+  )
+    throw new Error('abort_preinstall_journal_unproved');
+  const retained = ['pendingInventory', 'reviewedPreview', 'supersededPreview', 'refreezeAbsence'];
+  if (
+    (original.phase === 'STOPPED' && retained.some((name) => original.proofs[name])) ||
+    (original.phase === 'INVENTORIED' &&
+      (!original.proofs.pendingInventory ||
+        !original.proofs.reviewedPreview ||
+        Boolean(original.proofs.supersededPreview) !== Boolean(original.proofs.refreezeAbsence)))
   )
     throw new Error('abort_preinstall_journal_unproved');
   const bindings = original.bindings;

@@ -15,6 +15,7 @@ MAIN_PROJECT_NAME="infra"
 COMPOSE_FILES=(--env-file ".env" -p "$MAIN_PROJECT_NAME" -f "infra/docker-compose.yml")
 RELEASE_STATE_DIR="${MAXIM_RELEASE_STATE_DIR:-/var/lib/maxim-deploy}"
 EXPECTED_DEPLOY_SHA="${MAXIM_EXPECTED_DEPLOY_SHA:-}"
+EXPECTED_RUNTIME_SHA="${MAXIM_FINALIZER_RUNTIME_SHA:-$EXPECTED_DEPLOY_SHA}"
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
 COMMAND_TIMEOUT_SEC="${MAXIM_FINALIZER_COMMAND_TIMEOUT_SEC:-30}"
@@ -72,6 +73,9 @@ validate_finalizer_environment() {
   if [[ ! "$EXPECTED_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
     fail "MAXIM_EXPECTED_DEPLOY_SHA must be the reviewed full lowercase Git SHA."
   fi
+  if [[ ! "$EXPECTED_RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    fail "MAXIM_FINALIZER_RUNTIME_SHA must be the reviewed full lowercase runtime SHA."
+  fi
   if [[ -z "$BRANCH" || ! "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] ||
      [[ "$BRANCH" == *..* || "$BRANCH" == *//* || "$BRANCH" == */ ]]; then
     fail "Recovery finalizer branch is invalid."
@@ -94,6 +98,7 @@ validate_finalizer_environment() {
     "$WEBHOOK_QUEUE_CONTROL_HELPER" \
     "$RUNTIME_INVENTORY_HELPER" \
     "$MAXIM_PHOTO_NATIVE_BOUNDARY_HELPER" \
+    "$ROOT_DIR/infra/scripts/recovery-finalizer-identity.mjs" \
     "$ROOT_DIR/infra/scripts/release-manifest.mjs" \
     "$ROOT_DIR/scripts/smoke-http.mjs"; do
     [[ -s "$path" ]] || fail "Required recovery finalizer helper is missing: $path"
@@ -113,6 +118,13 @@ verify_synchronized_checkout() {
     fail "origin/$BRANCH does not match the reviewed recovery finalizer SHA."
   git diff --quiet -- . || fail "Tracked VPS changes block release recovery finalization."
   git diff --cached --quiet -- . || fail "Staged VPS changes block release recovery finalization."
+}
+
+verify_controller_runtime_compatibility() {
+  # FLAG: Keep the current journal reader while proving the captured runtime's
+  # immutable identity. A split is limited to the reviewed controller-only delta.
+  node "$ROOT_DIR/infra/scripts/recovery-finalizer-identity.mjs" \
+    "$EXPECTED_DEPLOY_SHA" "$EXPECTED_RUNTIME_SHA" "$ROOT_DIR"
 }
 
 release_manifest() {
@@ -152,9 +164,9 @@ verify_recovery_base_unchanged() {
 
 expected_component_ref() {
   case "$1" in
-    api-shared) printf 'maxim-api:%s' "$EXPECTED_DEPLOY_SHA" ;;
-    miniapp-major-static) printf 'maxim-miniapp-major:%s' "$EXPECTED_DEPLOY_SHA" ;;
-    admin-static) printf 'maxim-admin:%s' "$EXPECTED_DEPLOY_SHA" ;;
+    api-shared) printf 'maxim-api:%s' "$EXPECTED_RUNTIME_SHA" ;;
+    miniapp-major-static) printf 'maxim-miniapp-major:%s' "$EXPECTED_RUNTIME_SHA" ;;
+    admin-static) printf 'maxim-admin:%s' "$EXPECTED_RUNTIME_SHA" ;;
     *) fail "Unknown recovery finalizer component: $1" ;;
   esac
 }
@@ -180,10 +192,10 @@ inspect_target_image() {
   [[ "$protected" == "true" ]] ||
     fail "Recovery image is missing its release-protected label: $image_ref"
   if [[ "$component" == "api-shared" ]]; then
-    [[ "$revision" == "$EXPECTED_DEPLOY_SHA" ]] ||
+    [[ "$revision" == "$EXPECTED_RUNTIME_SHA" ]] ||
       fail "Shared API recovery image lacks the exact reviewed revision label."
   elif [[ -n "$revision" && "$revision" != "<no value>" ]]; then
-    [[ "$revision" == "$EXPECTED_DEPLOY_SHA" ]] ||
+    [[ "$revision" == "$EXPECTED_RUNTIME_SHA" ]] ||
       fail "Static recovery image has a mismatched revision label: $image_ref"
   fi
   printf '%s' "$image_id"
@@ -447,12 +459,12 @@ run_http_smoke() {
 
 prepare_target_ocr_runtime() {
   maxim_topology_prepare_commercial_ocr_target \
-    "$EXPECTED_DEPLOY_SHA" \
+    "$EXPECTED_RUNTIME_SHA" \
     COMPOSE_FILES \
     TARGET_HAS_MEDIA_ANALYSIS \
     TARGET_COMMERCIAL_OCR_VERSION \
     TARGET_HAS_OCR_NATIVE_SANDBOX
-  maxim_topology_prepare_photo_native_target "${EXPECTED_DEPLOY_SHA}" COMPOSE_FILES
+  maxim_topology_prepare_photo_native_target "${EXPECTED_RUNTIME_SHA}" COMPOSE_FILES
   [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]] ||
     fail "Recovery finalization requires the reviewed media-analysis topology."
   [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]] ||
@@ -517,23 +529,25 @@ wait_for_runtime_stability() {
 
 commit_recovered_release() {
   maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
+  verify_synchronized_checkout || return
+  verify_controller_runtime_compatibility || return
   local release_id
   local component
   local smoke
   local args
 
-  release_id="release-finalized-$(date -u +%Y%m%dT%H%M%SZ)-${EXPECTED_DEPLOY_SHA:0:12}-$$"
+  release_id="release-finalized-$(date -u +%Y%m%dT%H%M%SZ)-${EXPECTED_RUNTIME_SHA:0:12}-$$"
   args=(
     commit
     --release-id "$release_id"
-    --target-sha "$EXPECTED_DEPLOY_SHA"
+    --target-sha "$EXPECTED_RUNTIME_SHA"
     --current-manifest-file "$RECOVERY_BASE_MANIFEST"
     --migrations-file "$MIGRATIONS_FILE"
   )
   for component in api-shared miniapp-major-static admin-static; do
     args+=(
       --component
-      "${component}|${EXPECTED_DEPLOY_SHA}|${COMPONENT_IMAGE_REF[$component]}|${COMPONENT_IMAGE_ID[$component]}"
+      "${component}|${EXPECTED_RUNTIME_SHA}|${COMPONENT_IMAGE_REF[$component]}|${COMPONENT_IMAGE_ID[$component]}"
     )
   done
   for smoke in "${SMOKE_RESULTS[@]}"; do
@@ -562,7 +576,8 @@ main() {
   acquire_deploy_lock
   trap finalizer_cleanup EXIT
   maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
-  verify_synchronized_checkout
+  verify_synchronized_checkout || return
+  verify_controller_runtime_compatibility || return
   resolve_recovery_base_manifest
   resolve_target_images
   prepare_target_ocr_runtime

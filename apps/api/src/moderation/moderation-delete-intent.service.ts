@@ -2408,9 +2408,11 @@ export class ModerationDeleteIntentService {
           "leased_from_status" = NULL,
           "updated_at" = CURRENT_TIMESTAMP
         WHERE "id" = ${intentId}
-          AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+          AND (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
             WHERE held."chat_id" = "moderation_delete_intents"."chat_id"
-              AND held."message_id" = "moderation_delete_intents"."message_id")
+              AND held."message_id" = "moderation_delete_intents"."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+            WHERE cancelled."chat_id" = "moderation_delete_intents"."chat_id"
+              AND cancelled."message_id" = "moderation_delete_intents"."message_id"))
           AND "status" = CAST(${expectedStatus} AS "ModerationDeleteIntentStatus")
           AND "updated_at" = ${expectedVersion.updatedAt}
           AND "attempt_count" = ${expectedVersion.attemptCount}
@@ -3753,8 +3755,9 @@ export class ModerationDeleteIntentService {
           FROM "moderation_delete_intents" intent
           WHERE intent."updated_at" < ${cutoff}
             AND intent."retention_owned" = FALSE
-            AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
-              WHERE held."chat_id" = intent."chat_id" AND held."message_id" = intent."message_id")
+            AND (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+              WHERE held."chat_id" = intent."chat_id" AND held."message_id" = intent."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+              WHERE cancelled."chat_id" = intent."chat_id" AND cancelled."message_id" = intent."message_id"))
             AND intent."status" IN (
               CAST('OBSERVED' AS "ModerationDeleteIntentStatus"),
               CAST('SUCCEEDED' AS "ModerationDeleteIntentStatus"),
@@ -5979,9 +5982,11 @@ export class ModerationDeleteIntentService {
       WHERE "id" = ${intentId}
         AND "execute_at" <= ${now}
         AND (("remote_delete_succeeded_at" IS NOT NULL AND "remote_delete_succeeded_bot_id" IS NOT NULL)
-          OR NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+          OR (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
             WHERE held."chat_id" = "moderation_delete_intents"."chat_id"
-              AND held."message_id" = "moderation_delete_intents"."message_id"))
+              AND held."message_id" = "moderation_delete_intents"."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+            WHERE cancelled."chat_id" = "moderation_delete_intents"."chat_id"
+              AND cancelled."message_id" = "moderation_delete_intents"."message_id")))
         AND (${getAppRole() === 'all'} OR "retention_owned" = ${getAppRole() === 'message-retention'})
         AND (${!retentionOnly} OR "retention_owned" = TRUE)
         AND "next_attempt_at" <= ${now}
@@ -6029,8 +6034,9 @@ export class ModerationDeleteIntentService {
         FROM "moderation_delete_intents" intent
         WHERE intent."status" = ${status}
           AND ((intent."remote_delete_succeeded_at" IS NOT NULL AND intent."remote_delete_succeeded_bot_id" IS NOT NULL)
-            OR NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
-              WHERE held."chat_id" = intent."chat_id" AND held."message_id" = intent."message_id"))
+            OR (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+              WHERE held."chat_id" = intent."chat_id" AND held."message_id" = intent."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+              WHERE cancelled."chat_id" = intent."chat_id" AND cancelled."message_id" = intent."message_id")))
           AND intent."execute_at" <= ${now}
           AND intent."retention_owned" = FALSE
           AND intent."next_attempt_at" <= ${now}
@@ -6997,8 +7003,9 @@ export class ModerationDeleteIntentService {
         SELECT intent."id"
         FROM "moderation_delete_intents" intent
         WHERE intent."retry_until_at" <= CURRENT_TIMESTAMP
-          AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
-            WHERE held."chat_id" = intent."chat_id" AND held."message_id" = intent."message_id")
+          AND (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+            WHERE held."chat_id" = intent."chat_id" AND held."message_id" = intent."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+            WHERE cancelled."chat_id" = intent."chat_id" AND cancelled."message_id" = intent."message_id"))
           AND intent."retention_owned" = FALSE
           AND intent."remote_delete_succeeded_at" IS NULL
           AND intent."remote_delete_succeeded_bot_id" IS NULL
@@ -7045,9 +7052,11 @@ export class ModerationDeleteIntentService {
         "updated_at" = CURRENT_TIMESTAMP
       WHERE "id" = ${intentId}
         AND "retry_until_at" <= CURRENT_TIMESTAMP
-        AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
+        AND (NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" held
           WHERE held."chat_id" = "moderation_delete_intents"."chat_id"
-            AND held."message_id" = "moderation_delete_intents"."message_id")
+            AND held."message_id" = "moderation_delete_intents"."message_id") AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+          WHERE cancelled."chat_id" = "moderation_delete_intents"."chat_id"
+            AND cancelled."message_id" = "moderation_delete_intents"."message_id"))
         AND "retention_owned" = FALSE
         AND "remote_delete_succeeded_at" IS NULL
         AND "remote_delete_succeeded_bot_id" IS NULL

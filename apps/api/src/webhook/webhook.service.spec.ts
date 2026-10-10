@@ -10,6 +10,20 @@ import { WebhookParser } from './webhook.parser';
 import { WebhookService } from './webhook.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 
+// Persistence is mocked in this suite; native outbox tests exercise the single-statement writer.
+jest.mock('./webhook-payload-write', () => {
+  const actual =
+    jest.requireActual<typeof import('./webhook-payload-write')>('./webhook-payload-write');
+  return {
+    ...actual,
+    writeWebhookPayload: (
+      client: { webhookEvent: { updateMany: jest.Mock } },
+      id: string,
+      payload: Parameters<typeof actual.webhookPayloadChange>[1],
+    ) => client.webhookEvent.updateMany(actual.webhookPayloadChange(id, payload)),
+  };
+});
+
 const claimModels = new WeakMap<object, object>();
 const productionClaimModel = (
   WebhookService.prototype as unknown as { getWebhookExecutionClaimModel: () => object | null }
@@ -292,6 +306,7 @@ function coherentSemanticClaims(service: object) {
       };
       const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
       if (sql.includes('WITH authority_ids AS MATERIALIZED')) return [];
+      if (sql.includes('SELECT claim.id, claim.webhook_event_id AS "ownerId"')) return [];
       // Receipt admission uses its own lock before domain membership projection.
       if (
         sql.includes('SELECT error_message AS') &&

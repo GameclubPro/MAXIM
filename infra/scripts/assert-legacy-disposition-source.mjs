@@ -4,6 +4,22 @@ import { assertSourceAbandonmentSource } from './assert-source-abandonment-sourc
 
 export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
   [
+    'apps/api/src/webhook/webhook-backlog-cancellation.ts',
+    ['materializeBacklogCancellation', "status = 'CANCELLED'", 'webhook_backlog_receipts'],
+  ],
+  [
+    'apps/api/src/webhook/webhook-legacy-hold.service.ts',
+    ['backlogUpdateHeldSql', 'materializeBacklogCancellation', 'webhook_backlog_children'],
+  ],
+  ['apps/api/src/webhook/webhook.service.ts', ['WebhookStatus.CANCELLED']],
+  [
+    'apps/api/src/webhook/webhook-outbox.service.ts',
+    ['WebhookStatus.CANCELLED', 'webhook_backlog_receipts'],
+  ],
+  ['apps/api/src/moderation/webhook-canonical-execution.service.ts', ['WebhookStatus.CANCELLED']],
+  ['apps/api/src/moderation/moderation-delete-intent.service.ts', ['webhook_backlog_receipts']],
+  ['apps/api/src/moderation/moderation-rule-followup.service.ts', ['webhook_backlog_receipts']],
+  [
     'apps/api/src/webhook/webhook-legacy-hold.service.ts',
     [
       'WEBHOOK_LEGACY_DISPOSITION_VERSION = 1',
@@ -74,7 +90,15 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
   ],
   [
     'apps/api/src/webhook/webhook-legacy-forward-source.ts',
-    ['export function isLegacyOpaqueSequence(', 'Math.abs(value) <= 2 ** 63', 'identity(item.mid)'],
+    [
+      "} from './webhook-legacy-content-primitives';",
+      'isLegacyOpaqueSequence(item.seq)',
+      'identity(item.mid)',
+    ],
+  ],
+  [
+    'apps/api/src/webhook/webhook-legacy-content-primitives.ts',
+    ['export function isLegacyOpaqueSequence(', 'Math.abs(value) <= 2 ** 63'],
   ],
   [
     'apps/api/src/common/group-command-authority.service.ts',
@@ -124,7 +148,10 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
   ],
   [
     'apps/api/src/moderation/message-duplicate/message-duplicate-media.service.ts',
-    ["row.status === 'NO_REPLAY_HELD'", 'await this.legacyHolds?.isUpdateHeld(update)'],
+    [
+      "['NO_REPLAY_HELD', 'CANCELLED'].includes(row.status)",
+      'await this.legacyHolds?.isUpdateHeld(update)',
+    ],
   ],
   [
     'apps/api/src/moderation/moderation-state-delete-guard.service.ts',
@@ -270,7 +297,14 @@ export function assertLegacyDispositionSource(
   if (!/^[0-9a-f]{40}$/u.test(commitSha ?? ''))
     throw new Error('Legacy rollback requires an exact source SHA');
   for (const [path, markers] of LEGACY_DISPOSITION_SOURCE_CHECKS) {
-    const source = readSource(path);
+    let source;
+    try {
+      source = readSource(path);
+    } catch {
+      throw new Error(
+        `Rollback target lacks permanent legacy disposition readers or final effect guards: ${path}`,
+      );
+    }
     if (typeof source !== 'string' || markers.some((marker) => !source.includes(marker)))
       throw new Error(
         `Rollback target lacks permanent legacy disposition readers or final effect guards: ${path}`,

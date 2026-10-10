@@ -4,6 +4,7 @@ import { ChatEntityType } from '../prisma/prisma-client';
 import { maxApiMinuteCounterAddress } from './max-api-counter-storage';
 import { WebhookLegacyHoldRejectedError } from '../webhook/webhook-legacy-hold.service';
 import { isMaxMutationOutcomeAmbiguous } from './max-mutation-outcome.util';
+import { isMaxExactMessageLookupMissingIdError } from './max-exact-message-lookup.error';
 import {
   MAX_API_SOURCE_TAGS,
   MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
@@ -11838,22 +11839,36 @@ describe('MaxClientService inline keyboard guardrails', () => {
   });
 
   it.each([
-    { body: { mid: 'another-message' }, recipient: { chat_id: 'chat-1' } },
-    { body: { mid: 'mid-list-fallback' }, recipient: { chat_id: 'another-chat' } },
-    { body: { mid: 'mid-list-fallback' } },
-  ])('rejects unverified direct identity after list-route 404 (%j)', async (message) => {
-    const httpService = {
-      request: jest
-        .fn()
-        .mockReturnValueOnce(throwError(() => ({ response: { status: 404 } })))
-        .mockReturnValueOnce(of({ data: { message } })),
-    };
-    const service = createService(httpService);
+    { message: {}, missingRequestedId: true },
+    {
+      message: { body: { mid: 'another-message' }, recipient: { chat_id: 'chat-1' } },
+      missingRequestedId: true,
+    },
+    {
+      message: { body: { mid: 'mid-list-fallback' }, recipient: { chat_id: 'another-chat' } },
+      missingRequestedId: false,
+    },
+    { message: { body: { mid: 'mid-list-fallback' } }, missingRequestedId: false },
+  ])(
+    'rejects unverified direct identity after list-route 404 (%j)',
+    async ({ message, missingRequestedId }) => {
+      const httpService = {
+        request: jest
+          .fn()
+          .mockReturnValueOnce(throwError(() => ({ response: { status: 404 } })))
+          .mockReturnValueOnce(of({ data: { message } })),
+      };
+      const service = createService(httpService);
 
-    await expect(service.getExactMessageRow('chat-1', 'mid-list-fallback')).rejects.toThrow();
-    expect(httpService.request).toHaveBeenCalledTimes(2);
-    await service.onModuleDestroy();
-  });
+      const error = await service
+        .getExactMessageRow('chat-1', 'mid-list-fallback')
+        .catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect(isMaxExactMessageLookupMissingIdError(error)).toBe(missingRequestedId);
+      expect(httpService.request).toHaveBeenCalledTimes(2);
+      await service.onModuleDestroy();
+    },
+  );
 
   it('does not fall back to another route after a list lookup transport failure', async () => {
     const error = { code: 'ETIMEDOUT' };

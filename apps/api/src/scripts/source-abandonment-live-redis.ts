@@ -3,6 +3,10 @@ import { parseChatIdAsBigInt } from '../common/chat-id.util';
 import { MAX_ACTION_ALL_QUEUE_NAMES } from '../max/max-action.queue';
 import { readLegacyActionSourceScopes } from '../webhook/webhook-legacy-hold.service';
 import {
+  SOURCE_ABANDONMENT_CHANNEL_PROFILE,
+  SOURCE_ABANDONMENT_HUMAN_PROFILE,
+} from '../webhook/webhook-source-abandonment.contract';
+import {
   LEGACY_RECOVERY_LIVE_QUEUE_NAMES,
   LEGACY_RECOVERY_LIVE_QUEUE_STATES,
 } from './legacy-recovery-live-registry';
@@ -22,6 +26,7 @@ import {
 } from './source-abandonment-cleanup-proof';
 import {
   inventorySourceAbandonmentNamespaces,
+  projectSourceAbandonmentNamespaceCounts,
   type SourceAbandonmentCatalogReader,
   type SourceAbandonmentCatalogProof,
 } from './source-abandonment-redis-catalog';
@@ -270,7 +275,28 @@ function decodeJobs(value: unknown): JobRead[] {
 }
 
 export type SourceAbandonmentRedisReader = SourceAbandonmentCatalogReader;
-export type SourceAbandonmentRedisSource = { chatId: string; messageId: string; userId: string };
+export type SourceAbandonmentRedisSource = { chatId: string; messageId: string } & (
+  | { userId: string; sourceProfile?: typeof SOURCE_ABANDONMENT_HUMAN_PROFILE }
+  | { userId: null; sourceProfile: typeof SOURCE_ABANDONMENT_CHANNEL_PROFILE }
+);
+
+// FLAG: Only full SQL source proof may supply the explicit authorless profile.
+// Missing user metadata on an ordinary source never becomes a channel identity.
+function assertSourceIdentities(sources: readonly SourceAbandonmentRedisSource[]): void {
+  if (
+    sources.some(
+      (source) =>
+        !identity(source.chatId) ||
+        !identity(source.messageId) ||
+        (source.sourceProfile === SOURCE_ABANDONMENT_CHANNEL_PROFILE
+          ? source.userId !== null
+          : !identity(source.userId) ||
+            (source.sourceProfile !== undefined &&
+              source.sourceProfile !== SOURCE_ABANDONMENT_HUMAN_PROFILE)),
+    )
+  )
+    throw new Refused('SOURCE_PROFILE_UNPROVED');
+}
 
 function canonicalFanoutIdentity(value: unknown, chat: boolean): value is string {
   if (!identity(value)) return false;
@@ -283,6 +309,7 @@ function canonicalFanoutIdentity(value: unknown, chat: boolean): value is string
 // excluding it from this source inventory. This never installs a child hold,
 // retries a job, or treats its failure as success. Clocks cannot prove independence:
 // the observation producer can update observedAt on the same persisted row.
+// An authorless channel cannot prove the required global-user disjointness.
 export function isUnrelatedSourceAbandonmentFanoutObservation(
   data: Record<string, unknown>,
   observation: Record<string, unknown> | null,
@@ -345,6 +372,7 @@ export function classifySourceAbandonmentAction(
   sources: readonly SourceAbandonmentRedisSource[],
   cleanupParent?: SourceAbandonmentCleanupParent,
 ): SourceAbandonmentChildEvidence | null {
+  assertSourceIdentities(sources);
   assertJobAncestry(job);
   const data = record(job.data);
   if (
@@ -415,7 +443,7 @@ export function classifySourceAbandonmentAction(
     jobPayloadDigest: sourceAbandonmentDigest(data),
     chatId: source.chatId,
     messageId: source.messageId,
-    userId: source.userId,
+    ...(source.userId !== null ? { userId: source.userId } : {}),
   };
 }
 
@@ -521,6 +549,7 @@ export async function inventorySourceAbandonmentRedis(
     return catalog;
   };
   try {
+    assertSourceIdentities(sources);
     // FLAG: Live jobs can finish during the full census. Capture their current
     // state counts afterwards; stopped inventories retain fence/header bracketing.
     const onlineCatalog = queueFenceNonce ? null : await collectCatalog();
@@ -551,9 +580,13 @@ export async function inventorySourceAbandonmentRedis(
       return { queueName: row[0], states: row.slice(4, 12) as number[] };
     });
     const completeCatalog = onlineCatalog ?? (await collectCatalog());
-    // Full namespace coverage and per-namespace key counts repeat independently;
-    // generation, exact owners and effect envelopes keep their detailed proofs.
-    proofs.push({ catalog: completeCatalog.namespaceKeyCounts, headers });
+    // FLAG: The collector separately requires both complete raw catalogs to match
+    // within this inventory. Only the two independent Publisher auxiliary counts
+    // may differ across reviewed inventories; every header/owner/effect stays exact.
+    proofs.push({
+      catalog: projectSourceAbandonmentNamespaceCounts(completeCatalog.namespaceKeyCounts),
+      headers,
+    });
     const selectedFound = new Set<string>();
     for (const queue of queueCounts) {
       descriptor = `redis:${queue.queueName}`;
@@ -689,7 +722,7 @@ export async function inventorySourceAbandonmentRedis(
                   jobPayloadDigest: sourceAbandonmentDigest(observation),
                   chatId: related[0].chatId,
                   messageId: related[0].messageId,
-                  userId: related[0].userId,
+                  userId: observation.userId,
                 });
             }
           }

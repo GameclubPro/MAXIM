@@ -81,7 +81,8 @@ function fixture(type: 'user_removed' | 'message_created', mirrorIsEarlier: bool
       }),
     },
     $queryRaw: jest.fn(async (query: { strings?: readonly string[] }) =>
-      query.strings?.join(' ').includes('WITH authority_ids AS MATERIALIZED')
+      query.strings?.join(' ').includes('WITH authority_ids AS MATERIALIZED') ||
+      query.strings?.join(' ').includes('SELECT claim.id, claim.webhook_event_id AS "ownerId"')
         ? []
         : [{ finishedAt: new Date('2020-01-01T00:00:00Z') }],
     ),

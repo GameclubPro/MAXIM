@@ -1,6 +1,11 @@
 import { normalizeDeleteBotMessagesDelayMinutes } from '@maxim/contracts';
 import { UnrecoverableError } from 'bullmq';
 import type { MaxActionDispatchOptions, MaxActionLedgerContext } from '../max/max-client.service';
+import { wasMaxMemberMutationAttempted } from '../max/max-member-error.util';
+import {
+  isMaxMutationOutcomeAmbiguous,
+  wasMaxMessageSendAttempted,
+} from '../max/max-mutation-outcome.util';
 import { SanctionAction, type ChatSettings } from '../prisma/prisma-client';
 import { maskText } from './text-mask.util';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
@@ -26,6 +31,9 @@ import type { RequiredSubscriptionNoticePlan } from './required-subscription-not
 import {
   buildRequiredSubscriptionNoticeAuthority,
   readRequiredSubscriptionNoticeAuthority,
+  RequiredSubscriptionNoticeRejectedError,
+  RequiredSubscriptionNoticeSourceUnavailableError,
+  RequiredSubscriptionNoticeNotDispatchedError,
 } from './required-subscription-notice-authority';
 
 type FinalRouteGuard = () => Promise<void>;
@@ -345,21 +353,49 @@ export function createRequiredSubscriptionNoticeHandoff(
     if (!proof || proof.chatId !== identity.chatId || proof.userId !== identity.userId)
       throw new UnrecoverableError('Required subscription notice source proof unavailable');
     if (!guard) throw new Error('Required subscription notice execution guard unavailable');
-    const sent = await send({
-      chatId: proof.chatId,
-      text: plan.renderedText,
-      messageOptions: plan.messageOptions,
-      mediaFieldKey: plan.mediaFieldKey,
-      deleteBotMessagesEnabled: plan.deleteBotMessagesEnabled,
-      deleteBotMessagesDelayMinutes: plan.deleteBotMessagesDelayMinutes,
-      userFacing: true,
-      bypassNoticeBucket: true,
-      idempotencyKey,
-      ledgerContext: { requiredSubscriptionNotice: proof },
-      beforeSend: sequenceModerationGuards(lease, (beforeFinalAuthority) =>
-        guard.assertNoticeAllowed(proof, readSelectedBotId(), beforeFinalAuthority),
-      ),
-    });
+    let refusedBeforeSend: unknown;
+    let sent: boolean;
+    try {
+      sent = await send({
+        chatId: proof.chatId,
+        text: plan.renderedText,
+        messageOptions: plan.messageOptions,
+        mediaFieldKey: plan.mediaFieldKey,
+        deleteBotMessagesEnabled: plan.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: plan.deleteBotMessagesDelayMinutes,
+        userFacing: true,
+        bypassNoticeBucket: true,
+        idempotencyKey,
+        ledgerContext: { requiredSubscriptionNotice: proof },
+        beforeSend: sequenceModerationGuards(lease, async (beforeFinalAuthority) => {
+          try {
+            await guard.assertNoticeAllowed(proof, readSelectedBotId(), beforeFinalAuthority);
+          } catch (error) {
+            if (
+              error instanceof RequiredSubscriptionNoticeRejectedError ||
+              error instanceof RequiredSubscriptionNoticeSourceUnavailableError
+            )
+              refusedBeforeSend = error;
+            throw error;
+          }
+        }),
+      });
+    } catch (error) {
+      // FLAG: Preserve later send failures and lost-lease errors. Only this exact
+      // callback rejection ends the current no-dispatch path without a chat-wide stall.
+      if (
+        refusedBeforeSend !== undefined &&
+        error === refusedBeforeSend &&
+        !wasMaxMessageSendAttempted(error) &&
+        !wasMaxMemberMutationAttempted(error) &&
+        !isMaxMutationOutcomeAmbiguous(error)
+      )
+        throw new RequiredSubscriptionNoticeNotDispatchedError(
+          'Required subscription notice denied before handoff',
+          { cause: error },
+        );
+      throw error;
+    }
     if (!sent) throw new Error('Required subscription notice was not handed off');
   };
 }

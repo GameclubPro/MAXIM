@@ -267,6 +267,55 @@ test('equivalent stopped inventories retain original artifact and separately rec
   assert.equal(result.inventory.redisCatalogs[0].cost.durationMs, 1);
   assert.equal(h.state.calls.includes('certificate_create'), false);
 });
+test('modern recheck retains reviewed bytes across only Publisher namespace count drift', (t) => {
+  const h = fixture(t, 'publisher', true);
+  h.state.catalogs = [catalog(1), catalog(2)];
+  for (const proof of h.state.catalogs) {
+    proof.namespaceKeyCounts['publisher-start'] = 5;
+    proof.namespaceKeyCounts['publisher-binding-refresh'] = 7;
+    proof.cost.matchedKeys = 15;
+  }
+  h.state.pending = h.adapter.snapshotPending();
+  h.journal.proofs.pendingInventory = 'fixture';
+  const original = structuredClone(h.state.pending);
+  for (const proof of h.state.catalogs) {
+    proof.namespaceKeyCounts['publisher-start'] = 3;
+    proof.namespaceKeyCounts['publisher-binding-refresh'] = 3;
+    proof.cost.matchedKeys = 9;
+  }
+  const { recheckProof, ...result } = h.adapter.snapshotPending();
+  assert.deepEqual(result, original);
+  assert.match(recheckProof, /^[a-f0-9]{64}$/u);
+  assert.equal(result.inventory.redisCatalogs[0].namespaceKeyCounts['publisher-start'], 5);
+  assert.equal(h.state.calls.includes('certificate_create'), false);
+});
+for (const kind of [
+  'removed-namespace',
+  'changed-relevant-count',
+  'changed-one-pass',
+  'changed-source',
+  'changed-effects',
+]) {
+  test(`modern Publisher count tolerance refuses ${kind}`, (t) => {
+    const h = fixture(t, 'publisher', true);
+    h.state.catalogs = [catalog(1), catalog(2)];
+    for (const proof of h.state.catalogs) proof.namespaceKeyCounts['publisher-start'] = 5;
+    h.state.pending = h.adapter.snapshotPending();
+    h.journal.proofs.pendingInventory = 'fixture';
+    if (kind === 'changed-source') h.state.ownerChat = 'other-chat';
+    else if (kind === 'changed-effects')
+      h.state.inventoryPatch.redisEvidenceSha256 = '8'.repeat(64);
+    else if (kind === 'changed-one-pass')
+      h.state.catalogs[1].namespaceKeyCounts['publisher-start'] = 4;
+    else
+      for (const proof of h.state.catalogs) {
+        if (kind === 'removed-namespace') delete proof.namespaceKeyCounts['publisher-start'];
+        else proof.namespaceKeyCounts['max-actions'] = 4;
+      }
+    assert.throws(() => h.adapter.snapshotPending());
+    assert.equal(h.state.calls.includes('certificate_create'), false);
+  });
+}
 for (const [label, mutate] of [
   [
     'changed namespace',

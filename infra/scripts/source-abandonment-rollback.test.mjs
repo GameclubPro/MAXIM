@@ -42,12 +42,38 @@ test('rollback refuses a legacy content reader after modern previews and replies
     () =>
       assertSourceAbandonmentSource('a'.repeat(40), (path) =>
         path.endsWith('webhook-source-abandonment.ts')
-          ? read(path)
-              .replaceAll('inspectSourceAbandonmentSource', 'inspectLegacyRecoverySource')
-              .replaceAll(
-                'inspectSourceAbandonmentPostSealSource',
-                'inspectLegacyPostSealTextSource',
-              )
+          ? read(path).replaceAll(
+              'inspectSourceAbandonmentAnySource',
+              'inspectLegacyRecoverySource',
+            )
+          : read(path),
+      ),
+    /lacks permanent.*webhook-source-abandonment\.ts/u,
+  );
+});
+test('rollback refuses a human-only reader after authorless channel holds are installed', () => {
+  assert.throws(
+    () =>
+      assertSourceAbandonmentSource('a'.repeat(40), (path) =>
+        path.endsWith('webhook-source-abandonment-channel.ts')
+          ? read(path).replace(
+              'inspectChannelAuthorlessSource(owner, onRefusal, settings, postSeal)',
+              'inspectSourceAbandonmentSource(owner, onRefusal, settings)',
+            )
+          : read(path),
+      ),
+    /lacks permanent.*webhook-source-abandonment-channel\.ts/u,
+  );
+});
+test('rollback refuses to reconstruct a synthetic author for a held channel', () => {
+  assert.throws(
+    () =>
+      assertSourceAbandonmentSource('a'.repeat(40), (path) =>
+        path.endsWith('webhook-source-abandonment.ts')
+          ? read(path).replace(
+              '{ sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE, userId: null }',
+              "{ sourceProfile: SOURCE_ABANDONMENT_CHANNEL_PROFILE, userId: 'invented' }",
+            )
           : read(path),
       ),
     /lacks permanent.*webhook-source-abandonment\.ts/u,
@@ -57,10 +83,10 @@ test('rollback retains direct media recognition in the modern owner and late mir
   assert.throws(
     () =>
       assertSourceAbandonmentSource('a'.repeat(40), (path) =>
-        path.endsWith('webhook-source-abandonment-content.ts')
+        path.endsWith('webhook-source-abandonment-media.ts')
           ? read(path).replace('if (isLegacyDirectMedia(value)) return true;', '')
           : read(path),
       ),
-    /lacks permanent.*webhook-source-abandonment-content\.ts/u,
+    /lacks permanent.*webhook-source-abandonment-media\.ts/u,
   );
 });

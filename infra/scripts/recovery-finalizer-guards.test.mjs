@@ -65,12 +65,12 @@ test('finalizer binds every active component to the target ref and re-proves str
   const commit = functionBlock(finalizer, 'commit_recovered_release');
   const main = functionBlock(finalizer, 'main');
 
-  assert.match(finalizer, /api-shared\) printf 'maxim-api:%s' "\$EXPECTED_DEPLOY_SHA"/u);
+  assert.match(finalizer, /api-shared\) printf 'maxim-api:%s' "\$EXPECTED_RUNTIME_SHA"/u);
   assert.match(
     finalizer,
-    /miniapp-major-static\) printf 'maxim-miniapp-major:%s' "\$EXPECTED_DEPLOY_SHA"/u,
+    /miniapp-major-static\) printf 'maxim-miniapp-major:%s' "\$EXPECTED_RUNTIME_SHA"/u,
   );
-  assert.match(finalizer, /admin-static\) printf 'maxim-admin:%s' "\$EXPECTED_DEPLOY_SHA"/u);
+  assert.match(finalizer, /admin-static\) printf 'maxim-admin:%s' "\$EXPECTED_RUNTIME_SHA"/u);
   assert.match(runtime, /\{\{\.Config\.Image\}\}.*\{\{\.Image\}\}/u);
   assert.match(runtime, /"\$image_ref" == "\$expected_ref"/u);
   assert.match(runtime, /"\$image_id" == "\$expected_id"/u);
@@ -99,7 +99,7 @@ test('finalizer binds every active component to the target ref and re-proves str
   );
 
   assert.match(commit, /for component in api-shared miniapp-major-static admin-static/u);
-  assert.match(commit, /\$\{component\}\|\$\{EXPECTED_DEPLOY_SHA\}\|/u);
+  assert.match(commit, /\$\{component\}\|\$\{EXPECTED_RUNTIME_SHA\}\|/u);
   assert.match(commit, /--current-manifest-file "\$RECOVERY_BASE_MANIFEST"/u);
   assert.match(commit, /--migrations-file "\$MIGRATIONS_FILE"/u);
   assert.match(commit, /release_manifest archive-transition/u);
@@ -195,6 +195,7 @@ test('guarded wrapper requires exact green CI and directly verifies the synchron
   assert.match(connect, /finalize-release-recovery \[branch\]/u);
   assert.match(connect, /finalize-release-recovery\)\n\s+finalize_release_recovery "\$@"/u);
   assert.match(wrapper, /node scripts\/ci\/assert-green\.mjs "\$expected_sha"/u);
+  assert.match(wrapper, /node scripts\/ci\/assert-green\.mjs "\$runtime_sha"/u);
   assert.match(wrapper, /MAXIM_EXPECTED_DEPLOY_SHA/u);
   assert.ok(ci >= 0 && ci < finalizer && finalizer < remoteExec);
   assert.equal([...wrapper.matchAll(/remote_exec "\$remote_command"/gu)].length, 1);
@@ -203,12 +204,105 @@ test('guarded wrapper requires exact green CI and directly verifies the synchron
   assert.doesNotMatch(wrapper, /MAXIM_DEPLOY_EMERGENCY_BYPASS|MAXIM_DEPLOY_EMERGENCY_REASON/u);
 });
 
+test('split wrapper gates both exact commits before its one remote call', () => {
+  const wrapper = functionBlock(read('infra/scripts/vps-connect.sh'), 'finalize_release_recovery');
+  const controller = 'a'.repeat(40);
+  const runtime = 'b'.repeat(40);
+  const run = (arguments_, rejected = '') =>
+    spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -euo pipefail
+git() { printf '%s' '${controller}'; }
+node() {
+  printf 'ci=%s\\n' "$2" >&2
+  [[ "$2" != '${rejected}' ]]
+}
+shell_quote_args() { printf '%q ' "$@"; }
+remote_exec() { printf 'remote=%s\\n' "$1"; }
+${wrapper}
+finalize_release_recovery "$@"`,
+        'test-wrapper',
+        ...arguments_,
+      ],
+      { encoding: 'utf8', cwd: root },
+    );
+  const result = run(['codex/controller', '--runtime-sha', runtime]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, `ci=${controller}\nci=${runtime}\n`);
+  assert.match(result.stdout, new RegExp(`MAXIM_EXPECTED_DEPLOY_SHA=${controller}`, 'u'));
+  assert.match(result.stdout, new RegExp(`MAXIM_FINALIZER_RUNTIME_SHA=${runtime}`, 'u'));
+  assert.equal(result.stdout.trim().split('\n').length, 1);
+  for (const rejected of [controller, runtime]) {
+    const failed = run(['codex/controller', '--runtime-sha', runtime], rejected);
+    assert.notEqual(failed.status, 0);
+    assert.equal(failed.stdout, '');
+  }
+  for (const args of [
+    ['codex/controller', '--runtime-sha', ''],
+    ['codex/controller', '--runtime-sha', 'main'],
+    ['codex/controller', '--runtime-sha', runtime, '--extra'],
+  ]) {
+    const invalid = run(args);
+    assert.notEqual(invalid.status, 0);
+    assert.equal(invalid.stdout, '');
+    assert.doesNotMatch(invalid.stderr, /ci=/u);
+  }
+  const ordinary = run(['main']);
+  assert.equal(ordinary.status, 0, ordinary.stderr);
+  assert.equal(ordinary.stderr, `ci=${controller}\n`);
+  assert.match(ordinary.stdout, new RegExp(`MAXIM_FINALIZER_RUNTIME_SHA=${controller}`, 'u'));
+  const defaultBranch = run(['--runtime-sha', runtime]);
+  assert.equal(defaultBranch.status, 0, defaultBranch.stderr);
+  assert.match(defaultBranch.stdout, /vps-finalize-release-recovery\.sh main/u);
+});
+
+test('split finalization writes the captured runtime identity and rechecks compatibility before commit', () => {
+  const runtime = 'b'.repeat(40);
+  const body = `
+EXPECTED_RUNTIME_SHA='${runtime}'
+RECOVERY_BASE_MANIFEST=/private/transition.json
+MIGRATIONS_FILE=/private/migrations.txt
+maxim_require_ordinary_effect_authority() { :; }
+verify_synchronized_checkout() { :; }
+verify_controller_runtime_compatibility() { :; }
+for component in api-shared miniapp-major-static admin-static; do
+  COMPONENT_IMAGE_REF["$component"]="$(expected_component_ref "$component")"
+  COMPONENT_IMAGE_ID["$component"]='sha256:${'c'.repeat(64)}'
+done
+release_manifest() { printf 'manifest=%s\\n' "$*" >&2; }
+`;
+  const result = runSourced(`${body}\ncommit_recovered_release`);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, new RegExp(`--target-sha ${runtime}`, 'u'));
+  for (const [component, image] of [
+    ['api-shared', 'maxim-api'],
+    ['miniapp-major-static', 'maxim-miniapp-major'],
+    ['admin-static', 'maxim-admin'],
+  ])
+    assert.ok(result.stderr.includes(`--component ${component}|${runtime}|${image}:${runtime}|`));
+  assert.doesNotMatch(result.stderr, new RegExp('a'.repeat(40), 'u'));
+  for (const failed of [
+    'maxim_require_ordinary_effect_authority',
+    'verify_synchronized_checkout',
+    'verify_controller_runtime_compatibility',
+  ]) {
+    const invalid = runSourced(
+      `${body}\n${failed}() { return 41; }\nif commit_recovered_release; then exit 99; else exit "$?"; fi`,
+    );
+    assert.notEqual(invalid.status, 0);
+    assert.doesNotMatch(invalid.stderr, /manifest=/u);
+  }
+});
+
 test('main proves journal, runtime, released queues, smokes, and stability before commit', () => {
   const result = runSourced(`
 validate_finalizer_environment() { printf '%s\\n' validate >&2; }
 maxim_require_ordinary_effect_authority() { return 0; }
 acquire_deploy_lock() { printf '%s\\n' lock >&2; }
 verify_synchronized_checkout() { printf '%s\\n' checkout >&2; }
+verify_controller_runtime_compatibility() { printf '%s\\n' compatibility >&2; }
 resolve_recovery_base_manifest() { printf '%s\\n' journal >&2; }
 resolve_target_images() { printf '%s\\n' images >&2; }
 prepare_target_ocr_runtime() { printf '%s\\n' ocr-boundary >&2; }
@@ -228,6 +322,7 @@ main main
     'validate',
     'lock',
     'checkout',
+    'compatibility',
     'journal',
     'images',
     'ocr-boundary',
@@ -247,6 +342,7 @@ main main
 test('main fails closed before manifest commit when any proof boundary fails', () => {
   for (const failingFunction of [
     'verify_synchronized_checkout',
+    'verify_controller_runtime_compatibility',
     'resolve_recovery_base_manifest',
     'resolve_target_images',
     'prepare_target_ocr_runtime',
@@ -261,6 +357,7 @@ test('main fails closed before manifest commit when any proof boundary fails', (
 validate_finalizer_environment() { :; }
 acquire_deploy_lock() { :; }
 verify_synchronized_checkout() { :; }
+verify_controller_runtime_compatibility() { :; }
 resolve_recovery_base_manifest() { :; }
 resolve_target_images() { :; }
 prepare_target_ocr_runtime() { :; }

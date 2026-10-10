@@ -5,12 +5,12 @@ import {
   parseAdminForwardedModerationCommand,
   type AdminForwardedCommandSettings,
 } from '../moderation/admin-forwarded-command.util';
+import { isSourceAbandonmentOuterMarkup } from './webhook-source-abandonment-markup';
 import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
 import { isLegacyDirectMedia, isLegacyPassiveMarkup } from './webhook-legacy-direct-source';
 import {
   inspectSourceAbandonmentReplyText,
   isSourceAbandonmentDirectMedia,
-  isSourceAbandonmentMarkup,
   type SourceAbandonmentReplyRefusal,
 } from './webhook-source-abandonment-content';
 import {
@@ -149,8 +149,13 @@ function inspectLegacyTextSource(
     return refuse('source_objects_missing');
   if (typeof owner.botId !== 'string' || !identity(owner.botId) || update.botId !== owner.botId)
     return refuse('source_receiver_unproved');
+  // FLAG: A modern edit keeps its own semantic claim and original message clock.
+  // Candidate admission still proves the actual started owner and rejects any
+  // independent unfinished claim in the exact source family. This grants no
+  // replay and does not relax the ingress/cutoff clocks for initial installation.
   if (
-    (update.type !== 'message_created' && !(postSealForward && update.type === 'message_edited')) ||
+    (update.type !== 'message_created' &&
+      !((postSealForward || profile === 'source-abandonment') && update.type === 'message_edited')) ||
     raw.update_type !== update.type
   )
     return refuse('source_event_kind');
@@ -200,7 +205,7 @@ function inspectLegacyTextSource(
     return refuse('source_attachments');
   if (
     profile === 'source-abandonment'
-      ? !isSourceAbandonmentMarkup(body.markup, body.text)
+      ? !isSourceAbandonmentOuterMarkup(body, message.link)
       : !isLegacyPassiveMarkup(body.markup, body.text)
   )
     return refuse('source_markup');

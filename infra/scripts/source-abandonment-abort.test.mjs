@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createLegacyColdJournalStore,
   legacyColdDigest,
   assertNoActiveLegacyColdMaintenance,
+  LEGACY_COLD_JOURNAL,
 } from './legacy-cold-journal.mjs';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
+import { canonicalLegacyColdDigest } from './legacy-cold-store-adapter.mjs';
 import { abortSourceAbandonmentPreinstall } from './source-abandonment-abort.mjs';
 
 function fixture(t) {
@@ -38,14 +40,20 @@ function fixture(t) {
   const stopped = {
     ...base,
     unreviewedProducers: 0,
-    services: LEGACY_COLD_API_SERVICES.map((serviceName) => ({
+    services: LEGACY_COLD_API_SERVICES.map((serviceName, index) => ({
       serviceName,
+      containerId: (index + 1).toString(16).padStart(64, '0'),
+      imageId: bindings.targetImageId,
+      sourceSha: bindings.targetSha,
       stopped: true,
       exactGeneration: true,
       restartPolicy: 'unless-stopped',
     })),
-    auxiliaries: ['ocr-native-sandbox', 'photo-native-sandbox'].map((serviceName) => ({
+    auxiliaries: ['ocr-native-sandbox', 'photo-native-sandbox'].map((serviceName, index) => ({
       serviceName,
+      containerId: (index + 15).toString(16).padStart(64, '0'),
+      imageId: bindings.targetImageId,
+      sourceSha: bindings.targetSha,
       stopped: true,
       exactGeneration: true,
       restartPolicy: 'unless-stopped',
@@ -153,7 +161,7 @@ for (const change of [
       ...h.implementations.readAbortCertificateAbsent(),
       ...change,
     });
-    await assert.rejects(h.abort());
+    await assert.rejects(async () => h.abort());
     assert(!h.events.includes('startBoundRuntime'));
     assert.equal(h.store.read().journal.phase, 'STOPPED');
     assert.throws(() => assertNoActiveLegacyColdMaintenance(h.directory));
@@ -166,7 +174,7 @@ test('failure of second independent read refuses before restart', async (t) => {
     if (++reads === 2) throw new Error('read_failed');
     return h.implementations.readAbortCertificateAbsent();
   };
-  await assert.rejects(h.abort());
+  await assert.rejects(async () => h.abort());
   assert(!h.events.includes('startBoundRuntime'));
   assert.equal(reads, 2);
 });
@@ -183,7 +191,7 @@ for (const stage of [
     h.overrides[stage] = () => {
       throw new Error('failed');
     };
-    await assert.rejects(h.abort());
+    await assert.rejects(async () => h.abort());
     assert.equal(h.store.read().journal.phase, 'ABORTING');
     assert.throws(() => assertNoActiveLegacyColdMaintenance(h.directory));
     assert.deepEqual(h.events.slice(-3), ['stopRuntime', 'removeStoreClient', 'pauseQueues']);
@@ -205,13 +213,400 @@ test('known backlog can remain after safe abort without claiming fleet recovery'
   assert.equal((await h.abort()).fleetReady, false);
 });
 
-test('an inventoried source cannot cross this abort boundary', async (t) => {
+test('an inventoried source with malformed ordinary evidence cannot restart', async (t) => {
   const h = fixture(t),
     journal = h.store.read().journal;
   h.store.advance(legacyColdDigest(journal), 'INVENTORIED', {
     pendingInventory: h.store.recordProof({ a: 1 }),
     reviewedPreview: h.store.recordProof({ b: 1 }),
   });
-  await assert.rejects(h.abort(), /abort_preinstall_journal_unproved/);
-  assert.deepEqual(h.events, []);
+  await assert.rejects(h.abort(), /Preinstall abort refused/);
+  assert(!h.events.includes('startBoundRuntime'));
+});
+
+function addRefrozenPreview(h) {
+  const inventory = {
+    inventorySha256: 'a'.repeat(64),
+    previewSha256: 'b'.repeat(64),
+    selectionSha256: 'c'.repeat(64),
+    binding: { sourceSha: h.bindings.targetSha, imageId: h.bindings.targetImageId },
+  };
+  const pending = (value) => ({
+    ...h.base,
+    inventoryDigest: value.inventorySha256,
+    previewDigest: value.previewSha256,
+    inventoryArtifactSha256: legacyColdDigest(`${JSON.stringify(value)}\n`),
+    inventory: value,
+    unknownSources: 0,
+    saturated: false,
+  });
+  const review = (value) => ({
+    version: 1,
+    previewDigest: value.previewDigest,
+    inventoryDigest: value.inventoryDigest,
+    selectionDigest: h.bindings.selectionDigest,
+  });
+  const previous = pending(inventory);
+  const journal = h.store.advance(legacyColdDigest(h.store.read().journal), 'INVENTORIED', {
+    pendingInventory: h.store.recordProof(previous),
+    reviewedPreview: h.store.recordProof(review(previous)),
+  });
+  const replacement = pending({ ...inventory, inventorySha256: 'd'.repeat(64) });
+  replacement.inventoryArtifactName = `inventory-${replacement.inventoryArtifactSha256}.json`;
+  const readback = {
+    version: 1,
+    operation: 'readback',
+    state: 'ABSENT',
+    certificateId: h.bindings.certificateId,
+    activationAuthorized: false,
+    inventorySha256: previous.inventoryDigest,
+    previewSha256: previous.previewDigest,
+    bindingSha256: canonicalLegacyColdDigest(inventory.binding),
+  };
+  const refs = {
+    pendingInventory: h.store.recordProof(replacement),
+    reviewedPreview: h.store.recordProof(review(replacement)),
+    refreezeAbsence: h.store.recordProof({
+      version: 1,
+      operation: 'refreeze-certificate-absence',
+      certificateId: h.bindings.certificateId,
+      sourceSha: h.bindings.targetSha,
+      imageId: h.bindings.targetImageId,
+      controllerNonce: h.bindings.controllerNonce,
+      selectionDigest: h.bindings.selectionDigest,
+      inventoryDigest: previous.inventoryDigest,
+      previewDigest: previous.previewDigest,
+      before: readback,
+      after: structuredClone(readback),
+    }),
+  };
+  refs.supersededPreview = h.store.recordProof({
+    version: 1,
+    operation: 'refreeze-preview',
+    previousJournal: journal,
+    previousJournalDigest: legacyColdDigest(journal),
+    previousPendingInventory: journal.proofs.pendingInventory,
+    previousReviewedPreview: journal.proofs.reviewedPreview,
+    previousArtifactSha256: previous.inventoryArtifactSha256,
+    replacementPendingInventory: refs.pendingInventory,
+    replacementReviewedPreview: refs.reviewedPreview,
+    absenceProof: refs.refreezeAbsence,
+  });
+  return h.store.refreezePreinstall(legacyColdDigest(journal), refs);
+}
+
+test('blocked inventoried abort preserves the complete refreeze chain and all immutable bytes', async (t) => {
+  const h = fixture(t);
+  const prepared = addRefrozenPreview(h);
+  const initial = h.store.block(legacyColdDigest(prepared), 'protocol_proof_failed');
+  const evidenceDir = join(h.directory, 'legacy-cold-evidence');
+  const saved = readdirSync(evidenceDir).map((name) => [
+    name,
+    readFileSync(join(evidenceDir, name)),
+  ]);
+  const result = await h.abort();
+  assert.equal(result.aborted, true);
+  assert.equal(result.installed, false);
+  const finished = assertNoActiveLegacyColdMaintenance(h.directory).journal;
+  assert.equal(finished.phase, 'ABORTED');
+  for (const [name, hash] of Object.entries(initial.proofs))
+    assert.equal(finished.proofs[name], hash);
+  for (const [name, bytes] of saved) assert.deepEqual(readFileSync(join(evidenceDir, name)), bytes);
+  assert.deepEqual(h.store.readProof('abortOrigin').journal, initial);
+  assert.equal(h.events.filter((name) => name === 'readAbortCertificateAbsent').length, 2);
+  assert(
+    h.events.lastIndexOf('readAbortCertificateAbsent') < h.events.indexOf('startBoundRuntime'),
+  );
+});
+
+for (const name of ['pendingInventory', 'reviewedPreview', 'supersededPreview', 'refreezeAbsence'])
+  test(`inventoried abort refuses a missing retained ${name}`, async (t) => {
+    const h = fixture(t);
+    const journal = addRefrozenPreview(h);
+    delete journal.proofs[name];
+    writeFileSync(join(h.directory, LEGACY_COLD_JOURNAL), JSON.stringify(journal));
+    await assert.rejects(async () => h.abort());
+    assert(!h.events.includes('startBoundRuntime'));
+  });
+
+for (const name of [
+  'pendingRecheck',
+  'sealedReadback',
+  'runtimeIdentity',
+  'nativeIdentity',
+  'strictSmokes',
+  'releaseManifest',
+])
+  test(`inventoried abort refuses writer or restart evidence ${name}`, async (t) => {
+    const h = fixture(t);
+    const journal = addRefrozenPreview(h);
+    h.store.block(legacyColdDigest(journal), 'refused', {
+      [name]: h.store.recordProof({ test: true }),
+    });
+    await assert.rejects(async () => h.abort());
+    assert(!h.events.includes('startBoundRuntime'));
+  });
+
+for (const phase of ['INSTALLING', 'SEALED', 'RESUMING', 'COMPLETE'])
+  test(`retained preview cannot permit abort after ${phase}`, async (t) => {
+    const h = fixture(t);
+    const journal = addRefrozenPreview(h);
+    journal.phase = phase;
+    if (['SEALED', 'RESUMING'].includes(phase))
+      journal.proofs.sealedReadback = h.store.recordProof({ test: true });
+    if (phase === 'COMPLETE')
+      for (const name of ['runtimeIdentity', 'nativeIdentity', 'strictSmokes'])
+        journal.proofs[name] = h.store.recordProof({ test: true });
+    writeFileSync(join(h.directory, LEGACY_COLD_JOURNAL), JSON.stringify(journal));
+    await assert.rejects(async () => h.abort());
+    assert(!h.events.includes('startBoundRuntime'));
+  });
+
+for (const change of ['prior_binding', 'replacement_hash', 'prior_proof_missing'])
+  test(`retained preview history ${change} refuses restart`, async (t) => {
+    const h = fixture(t);
+    const journal = addRefrozenPreview(h);
+    const history = h.store.readProof('supersededPreview');
+    if (change === 'prior_binding') {
+      history.previousJournal.bindings.selectionDigest = 'f'.repeat(64);
+      history.previousJournalDigest = legacyColdDigest(history.previousJournal);
+    } else if (change === 'replacement_hash') {
+      history.replacementPendingInventory = 'f'.repeat(64);
+    } else {
+      rmSync(join(h.directory, 'legacy-cold-evidence', `${history.previousPendingInventory}.json`));
+    }
+    if (change !== 'prior_proof_missing') {
+      journal.proofs.supersededPreview = h.store.recordProof(history);
+      writeFileSync(join(h.directory, LEGACY_COLD_JOURNAL), JSON.stringify(journal));
+    }
+    await assert.rejects(async () => h.abort());
+    assert(!h.events.includes('startBoundRuntime'));
+  });
+
+test('failed inventoried restart reloads ABORTING with its retained proof chain before reviewed retry', async (t) => {
+  const h = fixture(t);
+  const prepared = addRefrozenPreview(h);
+  h.overrides.startBoundRuntime = () => {
+    throw new Error('restart_failed');
+  };
+  await assert.rejects(async () => h.abort());
+  const reloaded = h.store.read().journal;
+  assert.equal(reloaded.phase, 'ABORTING');
+  for (const [name, hash] of Object.entries(prepared.proofs))
+    assert.equal(reloaded.proofs[name], hash);
+  delete h.overrides.startBoundRuntime;
+  assert.equal((await h.abort()).aborted, true);
+  assert.equal(h.events.filter((name) => name === 'readAbortCertificateAbsent').length, 4);
+});
+
+function addOrdinaryPreview(h, change = () => {}) {
+  const stopped = h.store.readProof('stoppedInventory');
+  const inventory = {
+    version: 1,
+    operation: 'inventory_preview',
+    applied: false,
+    activationAuthorized: false,
+    decision: 'READY_TO_INSTALL',
+    issues: [],
+    inventorySha256: 'a'.repeat(64),
+    previewSha256: 'b'.repeat(64),
+    selectionSha256: 'c'.repeat(64),
+    binding: {
+      maintenanceId: h.bindings.controllerNonce,
+      queueFenceNonce: legacyColdDigest(h.bindings.controllerNonce),
+      transitionJournalSha256: legacyColdDigest(h.store.read().journal),
+      sourceSha: h.bindings.targetSha,
+      imageId: h.bindings.targetImageId,
+      stoppedGenerations: [...stopped.services, ...stopped.auxiliaries]
+        .map(({ serviceName, containerId, imageId, sourceSha }) => ({
+          serviceName,
+          containerId,
+          imageId,
+          sourceSha,
+          stopped: true,
+        }))
+        .sort((a, b) => a.serviceName.localeCompare(b.serviceName)),
+    },
+  };
+  const pending = {
+    ...h.base,
+    inventoryDigest: inventory.inventorySha256,
+    previewDigest: inventory.previewSha256,
+    inventoryArtifactSha256: legacyColdDigest(`${JSON.stringify(inventory)}\n`),
+    unknownSources: 0,
+    saturated: false,
+    inventory,
+  };
+  const review = {
+    version: 1,
+    previewDigest: pending.previewDigest,
+    inventoryDigest: pending.inventoryDigest,
+    selectionDigest: h.bindings.selectionDigest,
+  };
+  change({ pending, review, inventory });
+  return h.store.advance(legacyColdDigest(h.store.read().journal), 'INVENTORIED', {
+    pendingInventory: h.store.recordProof(pending),
+    reviewedPreview: h.store.recordProof(review),
+  });
+}
+
+for (const blocked of [false, true])
+  test(`ordinary complete preview abort retains immutable evidence (blocked=${blocked})`, async (t) => {
+    const h = fixture(t);
+    let original = addOrdinaryPreview(h);
+    if (blocked) original = h.store.block(legacyColdDigest(original), 'protocol_proof_failed');
+    const evidenceDir = join(h.directory, 'legacy-cold-evidence');
+    const saved = readdirSync(evidenceDir).map((name) => [
+      name,
+      readFileSync(join(evidenceDir, name)),
+    ]);
+    const result = await h.abort();
+    assert.equal(result.aborted, true);
+    assert.equal(result.installed, false);
+    assert.equal(result.coldRecoveryComplete, false);
+    const finished = assertNoActiveLegacyColdMaintenance(h.directory).journal;
+    assert.equal(finished.phase, 'ABORTED');
+    for (const [name, hash] of Object.entries(original.proofs))
+      assert.equal(finished.proofs[name], hash);
+    for (const [name, bytes] of saved)
+      assert.deepEqual(readFileSync(join(evidenceDir, name)), bytes);
+    assert.deepEqual(h.store.readProof('abortOrigin').journal, original);
+    assert.equal(h.events.filter((name) => name === 'readAbortCertificateAbsent').length, 2);
+    assert(
+      h.events.lastIndexOf('readAbortCertificateAbsent') < h.events.indexOf('startBoundRuntime'),
+    );
+  });
+
+for (const [name, change] of [
+  [
+    'pending source',
+    ({ pending }) => {
+      pending.sourceSha = 'f'.repeat(40);
+    },
+  ],
+  [
+    'pending nonce',
+    ({ pending }) => {
+      pending.controllerNonce = '44444444-4444-4444-8444-444444444444';
+    },
+  ],
+  [
+    'artifact digest',
+    ({ pending }) => {
+      pending.inventoryArtifactSha256 = 'f'.repeat(64);
+    },
+  ],
+  [
+    'review digest',
+    ({ review }) => {
+      review.inventoryDigest = 'f'.repeat(64);
+    },
+  ],
+  [
+    'review selection',
+    ({ review }) => {
+      review.selectionDigest = 'f'.repeat(64);
+    },
+  ],
+  [
+    'unknown source',
+    ({ pending }) => {
+      pending.unknownSources = 1;
+    },
+  ],
+  [
+    'versioned without history',
+    ({ pending }) => {
+      pending.inventoryArtifactName = `inventory-${pending.inventoryArtifactSha256}.json`;
+    },
+  ],
+  [
+    'embedded recheck',
+    ({ pending }) => {
+      pending.recheckProof = 'f'.repeat(64);
+    },
+  ],
+  [
+    'nested source',
+    ({ inventory }) => {
+      inventory.binding.sourceSha = 'f'.repeat(40);
+    },
+  ],
+  [
+    'nested fence',
+    ({ inventory }) => {
+      inventory.binding.queueFenceNonce = 'f'.repeat(64);
+    },
+  ],
+  [
+    'nested image',
+    ({ inventory }) => {
+      inventory.binding.imageId = `sha256:${'f'.repeat(64)}`;
+    },
+  ],
+  [
+    'stopped generation',
+    ({ inventory }) => {
+      inventory.binding.stoppedGenerations[0].containerId = 'f'.repeat(64);
+    },
+  ],
+  [
+    'missing native',
+    ({ inventory }) => {
+      inventory.binding.stoppedGenerations.pop();
+    },
+  ],
+  [
+    'denied preview',
+    ({ inventory }) => {
+      inventory.decision = 'DENY';
+    },
+  ],
+])
+  test(`ordinary preview refuses ${name} before restart`, async (t) => {
+    const h = fixture(t);
+    const original = addOrdinaryPreview(h, (value) => {
+      change(value);
+      if (name !== 'artifact digest')
+        value.pending.inventoryArtifactSha256 = legacyColdDigest(
+          `${JSON.stringify(value.inventory)}\n`,
+        );
+    });
+    await assert.rejects(h.abort());
+    assert(!h.events.includes('startBoundRuntime'));
+    assert.equal(legacyColdDigest(h.store.read().journal), legacyColdDigest(original));
+  });
+
+for (const forbidden of [
+  'pendingRecheck',
+  'sealedReadback',
+  'runtimeIdentity',
+  'nativeIdentity',
+  'strictSmokes',
+  'releaseManifest',
+])
+  test(`ordinary preview abort rejects ${forbidden}`, async (t) => {
+    const h = fixture(t);
+    const original = addOrdinaryPreview(h);
+    h.store.block(legacyColdDigest(original), 'refused', {
+      [forbidden]: h.store.recordProof({ test: true }),
+    });
+    await assert.rejects(h.abort());
+    assert(!h.events.includes('startBoundRuntime'));
+  });
+
+test('ordinary preview ABORTING reload preserves original review and requires fresh absence again', async (t) => {
+  const h = fixture(t);
+  const original = addOrdinaryPreview(h);
+  h.overrides.startBoundRuntime = () => {
+    throw Error('synthetic_restart_failure');
+  };
+  await assert.rejects(h.abort());
+  assert.equal(h.store.read().journal.phase, 'ABORTING');
+  for (const [name, hash] of Object.entries(original.proofs))
+    assert.equal(h.store.read().journal.proofs[name], hash);
+  delete h.overrides.startBoundRuntime;
+  assert.equal((await h.abort()).aborted, true);
+  assert.equal(assertNoActiveLegacyColdMaintenance(h.directory).journal.phase, 'ABORTED');
+  assert.equal(h.events.filter((name) => name === 'readAbortCertificateAbsent').length, 4);
 });

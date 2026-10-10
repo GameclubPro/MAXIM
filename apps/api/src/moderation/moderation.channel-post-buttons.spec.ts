@@ -335,6 +335,38 @@ function configureDefaultChannelAutoPostDeleteRoute(service: ModerationService):
 }
 
 describe('ModerationService channel auto post buttons', () => {
+  it.each(['webhook', 'poll'])(
+    'skips an exactly held senderless %s source before marker or route work',
+    async (source) => {
+      const isMessageHeld = jest.fn().mockResolvedValue(true);
+      const claimChannelAutoPost = jest.fn();
+      const resolveAutoAttachBotId = jest.fn();
+      const editMessageInlineKeyboard = jest.fn();
+      const service = Object.assign(Object.create(ModerationService.prototype), {
+        legacyHolds: { isMessageHeld },
+        replacementAttachMarkerStore: { claimChannelAutoPost },
+        resolveAutoAttachBotId,
+        maxClient: { editMessageInlineKeyboard },
+      });
+      expect(
+        await service.tryAutoAttachChannelMessageButtons({
+          chatId: '-held-channel',
+          messageId: 'held-message',
+          text: null,
+          linkType: null,
+          managedChannel: { channelSettings: {}, adminUserIds: [] },
+          source,
+          senderId: null,
+          senderAdminVerified: false,
+          allowSenderlessEngagement: true,
+        }),
+      ).toBe('skipped');
+      expect(isMessageHeld).toHaveBeenCalledWith('-held-channel', 'held-message');
+      expect(claimChannelAutoPost).not.toHaveBeenCalled();
+      expect(resolveAutoAttachBotId).not.toHaveBeenCalled();
+      expect(editMessageInlineKeyboard).not.toHaveBeenCalled();
+    },
+  );
   it.each([
     { text: 'Post "Read"="https://example.com"', expectedText: 'Post ' },
     { text: 'Post\nRead = https://example.com', expectedText: 'Post\n' },

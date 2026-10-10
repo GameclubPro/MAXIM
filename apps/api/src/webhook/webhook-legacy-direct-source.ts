@@ -1,4 +1,7 @@
-import { isLegacyImageAttachment, isLegacyOpaqueSequence } from './webhook-legacy-forward-source';
+import {
+  isLegacyImageAttachment,
+  isLegacyOpaqueSequence,
+} from './webhook-legacy-content-primitives';
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)

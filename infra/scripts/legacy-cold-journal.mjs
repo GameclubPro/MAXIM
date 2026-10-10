@@ -15,6 +15,13 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { assertNoActiveSourceAbandonmentSession } from './source-abandonment-session-journal.mjs';
+import { assertNoActiveBacklogCancellation } from './backlog-cancellation-journal.mjs';
+import {
+  archiveEmptyInstallClosure,
+  assertNoInterruptedEmptyInstallArchive,
+  readEmptyInstallClosure,
+} from './legacy-cold-empty-install-closure.mjs';
 
 export const LEGACY_COLD_STATE_DIR = '/var/lib/maxim-deploy';
 export const LEGACY_COLD_JOURNAL = 'legacy-cold-maintenance.json';
@@ -41,6 +48,12 @@ const preinstallProofNames = [
   'revocation',
   'repausedQueues',
   'restoppedInventory',
+];
+const retainedAbortPreviewNames = [
+  'pendingInventory',
+  'reviewedPreview',
+  'supersededPreview',
+  'refreezeAbsence',
 ];
 const abortBeginProofNames = ['abortOrigin', 'abortAbsence', 'stoppedInventory', 'repausedQueues'];
 const abortFinishProofNames = ['runtimeIdentity', 'nativeIdentity', 'strictSmokes'];
@@ -223,6 +236,7 @@ export function validateLegacyColdJournal(value) {
   if (abortPhases.includes(value.phase)) {
     const allowed = [
       ...preinstallProofNames,
+      ...retainedAbortPreviewNames,
       ...abortBeginProofNames,
       ...(value.phase === 'ABORTED' ? abortFinishProofNames : []),
     ];
@@ -232,6 +246,237 @@ export function validateLegacyColdJournal(value) {
     refuse('abort proof outside typed abort phase');
   }
   return value;
+}
+
+function validateRefrozenReview(journal, proofs, readEvidence) {
+  const expectedDigest = legacyColdDigest(journal);
+  const previous = readEvidence(journal.proofs.pendingInventory);
+  const previousReview = readEvidence(journal.proofs.reviewedPreview);
+  const pending = readEvidence(proofs.pendingInventory);
+  const reviewed = readEvidence(proofs.reviewedPreview);
+  const history = readEvidence(proofs.supersededPreview);
+  const absence = readEvidence(proofs.refreezeAbsence);
+  const binding = journal.bindings;
+  const validPending = (value) =>
+    value?.version === 1 &&
+    value.complete === true &&
+    value.sourceSha === binding.targetSha &&
+    value.imageId === binding.targetImageId &&
+    value.controllerNonce === binding.controllerNonce &&
+    value.selectionDigest === binding.selectionDigest &&
+    value.unknownSources === 0 &&
+    value.saturated === false &&
+    [value.inventoryDigest, value.previewDigest, value.inventoryArtifactSha256].every((hash) =>
+      digest.test(hash ?? ''),
+    ) &&
+    value.inventory?.inventorySha256 === value.inventoryDigest &&
+    value.inventory.previewSha256 === value.previewDigest &&
+    digest.test(value.inventory.selectionSha256 ?? '') &&
+    value.inventory.binding &&
+    typeof value.inventory.binding === 'object' &&
+    !Array.isArray(value.inventory.binding) &&
+    legacyColdDigest(`${JSON.stringify(value.inventory)}\n`) === value.inventoryArtifactSha256;
+  const validReview = (value, inventory) =>
+    keysExactly(value, ['version', 'previewDigest', 'inventoryDigest', 'selectionDigest']) &&
+    value.version === 1 &&
+    value.previewDigest === inventory.previewDigest &&
+    value.inventoryDigest === inventory.inventoryDigest &&
+    value.selectionDigest === binding.selectionDigest;
+  if (
+    !validPending(previous) ||
+    !validPending(pending) ||
+    !validReview(previousReview, previous) ||
+    !validReview(reviewed, pending) ||
+    pending.previewDigest !== previous.previewDigest ||
+    pending.inventory.selectionSha256 !== previous.inventory.selectionSha256 ||
+    canonicalEvidenceDigest(pending.inventory.binding) !==
+      canonicalEvidenceDigest(previous.inventory.binding) ||
+    pending.inventoryArtifactName !== `inventory-${pending.inventoryArtifactSha256}.json`
+  )
+    refuse('refreeze replacement binding unproved');
+  if (
+    !keysExactly(history, [
+      'version',
+      'operation',
+      'previousJournal',
+      'previousJournalDigest',
+      'previousPendingInventory',
+      'previousReviewedPreview',
+      'previousArtifactSha256',
+      'replacementPendingInventory',
+      'replacementReviewedPreview',
+      'absenceProof',
+    ]) ||
+    history.version !== 1 ||
+    history.operation !== 'refreeze-preview' ||
+    history.previousJournalDigest !== expectedDigest ||
+    legacyColdDigest(history.previousJournal) !== expectedDigest ||
+    history.previousPendingInventory !== journal.proofs.pendingInventory ||
+    history.previousReviewedPreview !== journal.proofs.reviewedPreview ||
+    history.previousArtifactSha256 !== previous.inventoryArtifactSha256 ||
+    history.replacementPendingInventory !== proofs.pendingInventory ||
+    history.replacementReviewedPreview !== proofs.reviewedPreview ||
+    history.absenceProof !== proofs.refreezeAbsence
+  )
+    refuse('refreeze superseded review unproved');
+  const validReadback = (value) =>
+    value?.version === 1 &&
+    value.operation === 'readback' &&
+    value.state === 'ABSENT' &&
+    value.certificateId === binding.certificateId &&
+    value.activationAuthorized === false &&
+    value.inventorySha256 === previous.inventoryDigest &&
+    value.previewSha256 === previous.previewDigest &&
+    value.bindingSha256 === canonicalEvidenceDigest(previous.inventory.binding);
+  if (
+    !keysExactly(absence, [
+      'version',
+      'operation',
+      'certificateId',
+      'sourceSha',
+      'imageId',
+      'controllerNonce',
+      'selectionDigest',
+      'inventoryDigest',
+      'previewDigest',
+      'before',
+      'after',
+    ]) ||
+    absence.version !== 1 ||
+    absence.operation !== 'refreeze-certificate-absence' ||
+    absence.certificateId !== binding.certificateId ||
+    absence.sourceSha !== binding.targetSha ||
+    absence.imageId !== binding.targetImageId ||
+    absence.controllerNonce !== binding.controllerNonce ||
+    absence.selectionDigest !== binding.selectionDigest ||
+    absence.inventoryDigest !== previous.inventoryDigest ||
+    absence.previewDigest !== previous.previewDigest ||
+    !validReadback(absence.before) ||
+    !validReadback(absence.after)
+  )
+    refuse('refreeze positive certificate absence unproved');
+}
+
+// FLAG: An ordinary reviewed preview grants no installation authority to abort.
+// Authenticate its immutable bytes and exact operation binding before preserving
+// them through the same two-ABSENT, same-generation restart path.
+function validateOrdinaryAbortPreview(original, readEvidence) {
+  const binding = original.bindings;
+  const pending = readEvidence(original.proofs.pendingInventory);
+  const reviewed = readEvidence(original.proofs.reviewedPreview);
+  const inventory = pending?.inventory;
+  const stopped = readEvidence(original.proofs.stoppedInventory);
+  const generations = [...(stopped?.services ?? []), ...(stopped?.auxiliaries ?? [])]
+    .map(({ serviceName, containerId, imageId, sourceSha }) => ({
+      serviceName,
+      containerId,
+      imageId,
+      sourceSha,
+      stopped: true,
+    }))
+    .sort((a, b) => a.serviceName.localeCompare(b.serviceName));
+  if (
+    !keysExactly(pending, [
+      'version',
+      'complete',
+      'sourceSha',
+      'imageId',
+      'controllerNonce',
+      'selectionDigest',
+      'inventoryDigest',
+      'previewDigest',
+      'inventoryArtifactSha256',
+      'unknownSources',
+      'saturated',
+      'inventory',
+    ]) ||
+    pending.version !== 1 ||
+    pending.complete !== true ||
+    pending.sourceSha !== binding.targetSha ||
+    pending.imageId !== binding.targetImageId ||
+    pending.controllerNonce !== binding.controllerNonce ||
+    pending.selectionDigest !== binding.selectionDigest ||
+    pending.unknownSources !== 0 ||
+    pending.saturated !== false ||
+    ![pending.inventoryDigest, pending.previewDigest, pending.inventoryArtifactSha256].every(
+      (value) => digest.test(value ?? ''),
+    ) ||
+    inventory?.version !== 1 ||
+    inventory.operation !== 'inventory_preview' ||
+    inventory.applied !== false ||
+    inventory.activationAuthorized !== false ||
+    inventory.decision !== 'READY_TO_INSTALL' ||
+    !Array.isArray(inventory.issues) ||
+    inventory.issues.length !== 0 ||
+    inventory.inventorySha256 !== pending.inventoryDigest ||
+    inventory.previewSha256 !== pending.previewDigest ||
+    !digest.test(inventory.selectionSha256 ?? '') ||
+    legacyColdDigest(`${JSON.stringify(inventory)}\n`) !== pending.inventoryArtifactSha256 ||
+    inventory.binding?.sourceSha !== binding.targetSha ||
+    inventory.binding?.imageId !== binding.targetImageId ||
+    inventory.binding?.maintenanceId !== binding.controllerNonce ||
+    inventory.binding?.queueFenceNonce !== legacyColdDigest(binding.controllerNonce) ||
+    !digest.test(inventory.binding?.transitionJournalSha256 ?? '') ||
+    generations.length !== 16 ||
+    generations.some(
+      (row) =>
+        !digest.test(row.containerId ?? '') ||
+        row.imageId !== binding.targetImageId ||
+        row.sourceSha !== binding.targetSha,
+    ) ||
+    canonicalEvidenceDigest(inventory.binding?.stoppedGenerations) !==
+      canonicalEvidenceDigest(generations) ||
+    !keysExactly(reviewed, ['version', 'previewDigest', 'inventoryDigest', 'selectionDigest']) ||
+    reviewed.version !== 1 ||
+    reviewed.previewDigest !== pending.previewDigest ||
+    reviewed.inventoryDigest !== pending.inventoryDigest ||
+    reviewed.selectionDigest !== binding.selectionDigest
+  )
+    refuse('abort ordinary preview unproved');
+}
+
+// FLAG: Retained previews are evidence only. Abort preserves an ordinary complete
+// review or a complete one-time refreeze, never recheck or post-writer evidence.
+function validateRetainedAbortPreview(original, readEvidence) {
+  const present = retainedAbortPreviewNames.filter((name) => original.proofs[name]);
+  if (!present.length) {
+    if (original.phase !== 'STOPPED') refuse('preinstall abort CAS failed');
+    return;
+  }
+  if (
+    original.phase !== 'INVENTORIED' ||
+    !original.proofs.pendingInventory ||
+    !original.proofs.reviewedPreview
+  )
+    refuse('preinstall abort CAS failed');
+  if (present.length === 2) {
+    validateOrdinaryAbortPreview(original, readEvidence);
+    return;
+  }
+  if (present.length !== retainedAbortPreviewNames.length) refuse('preinstall abort CAS failed');
+  const history = readEvidence(original.proofs.supersededPreview);
+  const previous = validateLegacyColdJournal(history.previousJournal);
+  if (
+    !['STOPPED', 'INVENTORIED'].includes(previous.phase) ||
+    previous.operationId !== original.operationId ||
+    previous.createdAt !== original.createdAt ||
+    previous.revision >= original.revision ||
+    canonicalEvidenceDigest(previous.bindings) !== canonicalEvidenceDigest(original.bindings) ||
+    Object.keys(previous.proofs).some(
+      (name) => ![...preinstallProofNames, 'pendingInventory', 'reviewedPreview'].includes(name),
+    ) ||
+    Object.entries(previous.proofs).some(
+      ([name, hash]) =>
+        !['pendingInventory', 'reviewedPreview'].includes(name) && original.proofs[name] !== hash,
+    )
+  )
+    refuse('abort retained preview history unproved');
+  for (const hash of Object.values(previous.proofs)) readEvidence(hash);
+  validateRefrozenReview(
+    previous,
+    Object.fromEntries(retainedAbortPreviewNames.map((name) => [name, original.proofs[name]])),
+    readEvidence,
+  );
 }
 
 function validateAbortEvidence(journal, readEvidence) {
@@ -249,12 +494,15 @@ function validateAbortEvidence(journal, readEvidence) {
     origin.version !== 1 ||
     origin.operation !== 'abort-before-install' ||
     origin.journalDigest !== legacyColdDigest(origin.journal) ||
-    origin.journal?.phase !== 'STOPPED'
+    !['STOPPED', 'INVENTORIED'].includes(origin.journal?.phase)
   )
     refuse('abort original journal unproved');
   const original = validateLegacyColdJournal(origin.journal);
+  validateRetainedAbortPreview(original, readEvidence);
   if (
-    Object.keys(original.proofs).some((name) => !preinstallProofNames.includes(name)) ||
+    Object.keys(original.proofs).some(
+      (name) => ![...preinstallProofNames, ...retainedAbortPreviewNames].includes(name),
+    ) ||
     canonicalEvidenceDigest(original.bindings) !== canonicalEvidenceDigest(binding) ||
     original.operationId !== journal.operationId ||
     original.createdAt !== journal.createdAt ||
@@ -411,6 +659,7 @@ function readProofEvidence(directory, hash) {
 // ordering exclusions remain independently bound to immutable permanent holds.
 export function readLegacyColdState(directory = LEGACY_COLD_STATE_DIR) {
   protectedDirectory(directory);
+  assertNoInterruptedEmptyInstallArchive(directory);
   const pendingWrites = readdirSync(directory).filter(
     (name) =>
       name.startsWith(`.${LEGACY_COLD_JOURNAL}.`) || name.startsWith(`.${LEGACY_COLD_MARKER}.`),
@@ -443,12 +692,26 @@ export function readLegacyColdState(directory = LEGACY_COLD_STATE_DIR) {
     if (abortPhases.includes(journal.phase))
       validateAbortEvidence(journal, (hash) => readProofEvidence(directory, hash));
   }
-  return { marker, journal };
+  const state = { marker, journal };
+  const closure = readEmptyInstallClosure(directory, state);
+  if (closure) state.emptyInstallAbort = closure.metadata;
+  return state;
 }
 
-export function assertNoActiveLegacyColdMaintenance(directory = LEGACY_COLD_STATE_DIR) {
+export function assertNoActiveLegacyColdMaintenance(
+  directory = LEGACY_COLD_STATE_DIR,
+  backlogCancellationId = null,
+) {
+  assertNoActiveBacklogCancellation(directory, backlogCancellationId);
+  // FLAG: A completed single-certificate epoch never releases an unfinished
+  // multi-certificate session; every ordinary host writer checks both journals.
+  assertNoActiveSourceAbandonmentSession(join(directory, 'source-abandonment-session'));
   const state = readLegacyColdState(directory);
-  if (state.journal && !['COMPLETE', 'ABORTED'].includes(state.journal.phase))
+  if (
+    state.journal &&
+    !['COMPLETE', 'ABORTED'].includes(state.journal.phase) &&
+    state.emptyInstallAbort?.phase !== 'EMPTY_INSTALL_ABORTED'
+  )
     refuse('active cold epoch blocks ordinary mutation');
   return state;
 }
@@ -514,9 +777,13 @@ export function createLegacyColdJournalStore({
   assertLock = () => assertInheritedDeployLock(directory),
   now = () => new Date().toISOString(),
 } = {}) {
-  function mutation() {
+  function mutation({ allowEmptyClosure = false } = {}) {
     protectedDirectory(directory);
     assertLock();
+    // FLAG: Containment after a failed next admission must not overwrite the
+    // closed origin, even when the protocol has already set its admitted flag.
+    if (!allowEmptyClosure && readLegacyColdState(directory).emptyInstallAbort)
+      refuse('closed empty-install origin is immutable');
   }
   return {
     read() {
@@ -532,7 +799,7 @@ export function createLegacyColdJournalStore({
       );
     },
     recordProof(value) {
-      mutation();
+      mutation({ allowEmptyClosure: true });
       const bytes = `${JSON.stringify(value)}\n`;
       if (Buffer.byteLength(bytes) > 8 * 1024 * 1024) refuse('proof transfer budget exceeded');
       const hash = legacyColdDigest(bytes);
@@ -581,7 +848,7 @@ export function createLegacyColdJournalStore({
       return marker;
     },
     admit(bindings, hostAdmissionDigest) {
-      mutation();
+      mutation({ allowEmptyClosure: true });
       const state = assertNoActiveLegacyColdMaintenance(directory);
       if (
         !state.marker ||
@@ -601,6 +868,9 @@ export function createLegacyColdJournalStore({
         proofs: { hostAdmission: hostAdmissionDigest },
         blockedReason: null,
       });
+      if (state.emptyInstallAbort) {
+        archiveEmptyInstallClosure({ directory, state, bindings, hostAdmissionDigest, assertLock });
+      }
       atomicPrivateWrite(
         directory,
         LEGACY_COLD_MARKER,
@@ -698,25 +968,28 @@ export function createLegacyColdJournalStore({
       const { journal } = readLegacyColdState(directory);
       if (
         !journal ||
-        !['STOPPED', 'ABORTING'].includes(journal.phase) ||
+        !['STOPPED', 'INVENTORIED', 'ABORTING'].includes(journal.phase) ||
         legacyColdDigest(journal) !== expectedDigest ||
         !keysExactly(proofs, abortBeginProofNames) ||
         Object.keys(journal.proofs).some(
           (name) =>
             ![
               ...preinstallProofNames,
+              ...retainedAbortPreviewNames,
               ...(journal.phase === 'ABORTING' ? abortBeginProofNames : []),
             ].includes(name),
         )
       )
         refuse('preinstall abort CAS failed');
+      if (journal.phase !== 'ABORTING')
+        validateRetainedAbortPreview(journal, (hash) => readProofEvidence(directory, hash));
       for (const [name, hash] of Object.entries(proofs)) {
         if (journal.proofs[name] && journal.proofs[name] !== hash)
           refuse('immutable proof changed');
       }
       const origin = readProofEvidence(directory, proofs.abortOrigin);
       if (
-        journal.phase === 'STOPPED' &&
+        journal.phase !== 'ABORTING' &&
         (origin.journalDigest !== expectedDigest ||
           legacyColdDigest(origin.journal) !== expectedDigest)
       )
@@ -730,7 +1003,7 @@ export function createLegacyColdJournalStore({
         proofs: { ...journal.proofs, ...proofs },
       });
       validateAbortEvidence(next, (hash) => readProofEvidence(directory, hash));
-      // FLAG: The complete STOPPED journal and every original evidence file remain
+      // FLAG: The complete pre-install journal and every original evidence file remain
       // immutable. Only this no-install branch may authorize a same-generation restart.
       atomicPrivateWrite(directory, LEGACY_COLD_JOURNAL, next);
       return next;
@@ -793,111 +1066,7 @@ export function createLegacyColdJournalStore({
           refuse('refreeze proof is absent or changed');
         return JSON.parse(bytes.toString('utf8'));
       };
-      const previous = readEvidence(journal.proofs.pendingInventory);
-      const previousReview = readEvidence(journal.proofs.reviewedPreview);
-      const pending = readEvidence(proofs.pendingInventory);
-      const reviewed = readEvidence(proofs.reviewedPreview);
-      const history = readEvidence(proofs.supersededPreview);
-      const absence = readEvidence(proofs.refreezeAbsence);
-      const binding = journal.bindings;
-      const validPending = (value) =>
-        value?.version === 1 &&
-        value.complete === true &&
-        value.sourceSha === binding.targetSha &&
-        value.imageId === binding.targetImageId &&
-        value.controllerNonce === binding.controllerNonce &&
-        value.selectionDigest === binding.selectionDigest &&
-        value.unknownSources === 0 &&
-        value.saturated === false &&
-        [value.inventoryDigest, value.previewDigest, value.inventoryArtifactSha256].every((hash) =>
-          digest.test(hash ?? ''),
-        ) &&
-        value.inventory?.inventorySha256 === value.inventoryDigest &&
-        value.inventory.previewSha256 === value.previewDigest &&
-        digest.test(value.inventory.selectionSha256 ?? '') &&
-        value.inventory.binding &&
-        typeof value.inventory.binding === 'object' &&
-        !Array.isArray(value.inventory.binding) &&
-        legacyColdDigest(`${JSON.stringify(value.inventory)}\n`) === value.inventoryArtifactSha256;
-      const validReview = (value, inventory) =>
-        keysExactly(value, ['version', 'previewDigest', 'inventoryDigest', 'selectionDigest']) &&
-        value.version === 1 &&
-        value.previewDigest === inventory.previewDigest &&
-        value.inventoryDigest === inventory.inventoryDigest &&
-        value.selectionDigest === binding.selectionDigest;
-      if (
-        !validPending(previous) ||
-        !validPending(pending) ||
-        !validReview(previousReview, previous) ||
-        !validReview(reviewed, pending) ||
-        pending.previewDigest !== previous.previewDigest ||
-        pending.inventory.selectionSha256 !== previous.inventory.selectionSha256 ||
-        canonicalEvidenceDigest(pending.inventory.binding) !==
-          canonicalEvidenceDigest(previous.inventory.binding) ||
-        pending.inventoryArtifactName !== `inventory-${pending.inventoryArtifactSha256}.json`
-      )
-        refuse('refreeze replacement binding unproved');
-      if (
-        !keysExactly(history, [
-          'version',
-          'operation',
-          'previousJournal',
-          'previousJournalDigest',
-          'previousPendingInventory',
-          'previousReviewedPreview',
-          'previousArtifactSha256',
-          'replacementPendingInventory',
-          'replacementReviewedPreview',
-          'absenceProof',
-        ]) ||
-        history.version !== 1 ||
-        history.operation !== 'refreeze-preview' ||
-        history.previousJournalDigest !== expectedDigest ||
-        legacyColdDigest(history.previousJournal) !== expectedDigest ||
-        history.previousPendingInventory !== journal.proofs.pendingInventory ||
-        history.previousReviewedPreview !== journal.proofs.reviewedPreview ||
-        history.previousArtifactSha256 !== previous.inventoryArtifactSha256 ||
-        history.replacementPendingInventory !== proofs.pendingInventory ||
-        history.replacementReviewedPreview !== proofs.reviewedPreview ||
-        history.absenceProof !== proofs.refreezeAbsence
-      )
-        refuse('refreeze superseded review unproved');
-      const validReadback = (value) =>
-        value?.version === 1 &&
-        value.operation === 'readback' &&
-        value.state === 'ABSENT' &&
-        value.certificateId === binding.certificateId &&
-        value.activationAuthorized === false &&
-        value.inventorySha256 === previous.inventoryDigest &&
-        value.previewSha256 === previous.previewDigest &&
-        value.bindingSha256 === canonicalEvidenceDigest(previous.inventory.binding);
-      if (
-        !keysExactly(absence, [
-          'version',
-          'operation',
-          'certificateId',
-          'sourceSha',
-          'imageId',
-          'controllerNonce',
-          'selectionDigest',
-          'inventoryDigest',
-          'previewDigest',
-          'before',
-          'after',
-        ]) ||
-        absence.version !== 1 ||
-        absence.operation !== 'refreeze-certificate-absence' ||
-        absence.certificateId !== binding.certificateId ||
-        absence.sourceSha !== binding.targetSha ||
-        absence.imageId !== binding.targetImageId ||
-        absence.controllerNonce !== binding.controllerNonce ||
-        absence.selectionDigest !== binding.selectionDigest ||
-        absence.inventoryDigest !== previous.inventoryDigest ||
-        absence.previewDigest !== previous.previewDigest ||
-        !validReadback(absence.before) ||
-        !validReadback(absence.after)
-      )
-        refuse('refreeze positive certificate absence unproved');
+      validateRefrozenReview(journal, proofs, readEvidence);
       // FLAG: Only this typed, one-time pre-install CAS can replace a reviewed
       // preview. The full old journal and immutable proof files remain evidence;
       // both bound ABSENT reads precede a separate review of the new inventory.

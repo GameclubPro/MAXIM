@@ -1,7 +1,10 @@
 # Webhook preparation backlog, 8 October 2026
 
-This incident remains open. All evidence windows below use UTC. A running
-process, successful MAX action or discarded backlog does not establish recovery.
+This record describes the investigation as of 8 October. The
+[10 October follow-up](2026-10-10-webhook-latency-recovery.md) records subsequent fixes,
+cancellation and short-window recovery, with sustained acceptance still unproved there.
+All evidence windows below use UTC. A running process, successful MAX action or
+discarded backlog does not establish recovery.
 
 At 07:17 the fourteen API roles and two native auxiliaries ran API source
 `d241e50a8b688bdc32380b20d40c2505413c50f1`, image

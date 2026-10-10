@@ -5,7 +5,18 @@ export const SOURCE_ABANDONMENT_OPERATION = 'MODERN_SOURCE_ABANDONMENT_V1' as co
 export const SOURCE_ABANDONMENT_VERSION = 1 as const;
 export const SOURCE_ABANDONMENT_MAX_SOURCES = 8;
 export const SOURCE_ABANDONMENT_MAX_CHILDREN = 10_000;
-export type SourceAbandonmentChildKind = 'MAX_ACTION' | 'SPAMMER_OBSERVATION';
+export const SOURCE_ABANDONMENT_HUMAN_PROFILE = 'HUMAN_CHAT_V1' as const;
+export const SOURCE_ABANDONMENT_CHANNEL_PROFILE = 'CHANNEL_AUTHORLESS_V1' as const;
+export type SourceAbandonmentSource =
+  | LegacyRecoverySource
+  | {
+      sourceProfile: typeof SOURCE_ABANDONMENT_CHANNEL_PROFILE;
+      chatId: string;
+      messageId: string;
+      userId: null;
+      sourceAt: Date;
+    };
+export type SourceAbandonmentChildKind = 'MAX_ACTION' | 'SPAMMER_OBSERVATION' | 'CHANNEL_AUTO_POST';
 export type SourceAbandonmentDatabase = Pick<
   Prisma.TransactionClient,
   '$queryRaw' | '$executeRaw' | 'webhookEvent' | 'webhookExecutionClaim' | 'chatSettings'
@@ -13,7 +24,7 @@ export type SourceAbandonmentDatabase = Pick<
 export type SourceAbandonmentCandidate = {
   owner: WebhookEvent;
   claim: WebhookExecutionClaim;
-  source: LegacyRecoverySource;
+  source: SourceAbandonmentSource;
   rawPayloadDigest: string;
   normalizedPayloadDigest: string;
 };
@@ -39,7 +50,10 @@ export type SourceAbandonmentRow = {
   claimId: string;
   chatId: string;
   messageId: string;
-  subjectUserId: string;
+  sourceProfile?:
+    | typeof SOURCE_ABANDONMENT_HUMAN_PROFILE
+    | typeof SOURCE_ABANDONMENT_CHANNEL_PROFILE;
+  subjectUserId: string | null;
   sourceAt: Date;
   rawPayloadDigest: string;
   normalizedPayloadDigest: string;

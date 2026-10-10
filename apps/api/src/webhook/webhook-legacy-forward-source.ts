@@ -1,5 +1,18 @@
 import type { AdminForwardedCommandSettings } from '../moderation/admin-forwarded-command.util';
 import { parseAdminForwardedModerationCommand } from '../moderation/admin-forwarded-command.util';
+import { isSourceAbandonmentLinkedMedia } from './webhook-source-abandonment-media';
+import {
+  isLegacyImageAttachment,
+  isLegacyOpaqueSequence,
+} from './webhook-legacy-content-primitives';
+export {
+  isLegacyImageAttachment,
+  isLegacyOpaqueSequence,
+} from './webhook-legacy-content-primitives';
+import {
+  isSourceAbandonmentMarkup,
+  isSourceAbandonmentOuterMarkup,
+} from './webhook-source-abandonment-markup';
 import { WebhookParser } from './webhook.parser';
 import { extractVisiblePhotoMessageContent } from '../moderation/photo-duplicate/photo-attachment-extractor';
 
@@ -22,52 +35,27 @@ function identity(value: unknown): boolean {
     ? Number.isSafeInteger(value)
     : typeof value === 'string' && value.length > 0 && value.trim() === value;
 }
-export function isLegacyImageAttachment(value: unknown): boolean {
-  const attachment = record(value);
-  const payload = record(attachment?.payload);
-  if (
-    !attachment ||
-    !payload ||
-    !onlyKeys(attachment, ['type', 'payload']) ||
-    !['image', 'photo'].includes(String(attachment.type)) ||
-    !onlyKeys(payload, ['photo_id', 'token', 'url']) ||
-    (payload.photo_id !== undefined && !identity(payload.photo_id)) ||
-    (payload.token !== undefined && typeof payload.token !== 'string') ||
-    (payload.url !== undefined && typeof payload.url !== 'string')
-  )
-    return false;
-  if (payload.url !== undefined) {
-    try {
-      const url = new URL(payload.url as string);
-      if (url.protocol !== 'https:' || url.username || url.password) return false;
-    } catch {
-      return false;
-    }
-  }
-  return identity(payload.photo_id) || typeof payload.url === 'string';
-}
-// FLAG: MAX seq is opaque int64 metadata and can exceed JavaScript's exact integer
-// range. The explicit mid alone supplies message identity; never derive ordering,
-// identity or a timestamp from this rounded metadata value.
-export function isLegacyOpaqueSequence(value: unknown): boolean {
-  return (
-    value === undefined ||
-    (typeof value === 'number' && Number.isInteger(value) && Math.abs(value) <= 2 ** 63)
-  );
-}
-function body(value: unknown, allowImages = false): Record<string, unknown> | null {
+function body(
+  value: unknown,
+  allowImages = false,
+  markup?: (body: Record<string, unknown>) => boolean,
+  media?: (attachments: unknown) => boolean,
+): Record<string, unknown> | null {
   const item = record(value);
   return item &&
-    onlyKeys(item, ['mid', 'seq', 'text', 'attachments']) &&
+    onlyKeys(item, ['mid', 'seq', 'text', 'attachments', ...(markup ? ['markup'] : [])]) &&
     identity(item.mid) &&
     isLegacyOpaqueSequence(item.seq) &&
     typeof item.text === 'string' &&
-    (item.attachments === undefined ||
-      (Array.isArray(item.attachments) &&
-        (item.attachments.length === 0 ||
-          (allowImages &&
-            item.attachments.length <= 10 &&
-            item.attachments.every(isLegacyImageAttachment)))))
+    (!markup || markup(item)) &&
+    (media
+      ? media(item.attachments)
+      : item.attachments === undefined ||
+        (Array.isArray(item.attachments) &&
+          (item.attachments.length === 0 ||
+            (allowImages &&
+              item.attachments.length <= 10 &&
+              item.attachments.every(isLegacyImageAttachment)))))
     ? item
     : null;
 }
@@ -100,9 +88,19 @@ function inspectForwardText(
   const raw = record(update.raw);
   const message = record(raw?.message);
   const normalized = record(update.message);
-  const direct = body(message?.body);
+  const modern = profile === 'source-abandonment';
+  const direct = body(
+    message?.body,
+    false,
+    modern ? (item) => isSourceAbandonmentOuterMarkup(item, message?.link) : undefined,
+  );
   const link = record(message?.link);
-  const linked = body(link?.message, true);
+  const linked = body(
+    link?.message,
+    true,
+    modern ? (item) => isSourceAbandonmentMarkup(item.markup, item.text) : undefined,
+    modern ? (attachments) => isSourceAbandonmentLinkedMedia(attachments, 'forward') : undefined,
+  );
   const sender = record(link?.sender);
   const omittedSender = profile === 'source-abandonment' && link?.sender === undefined;
   if (
@@ -143,7 +141,11 @@ function inspectForwardText(
   )
     return 'source_forward_shape';
 
-  if (Array.isArray(linked.attachments) && linked.attachments.length > 0) {
+  if (
+    Array.isArray(linked.attachments) &&
+    linked.attachments.length > 0 &&
+    linked.attachments.every(isLegacyImageAttachment)
+  ) {
     const photos = extractVisiblePhotoMessageContent(message);
     if (photos.kind !== 'complete' || photos.content.images.length !== linked.attachments.length)
       return 'source_forward_media';

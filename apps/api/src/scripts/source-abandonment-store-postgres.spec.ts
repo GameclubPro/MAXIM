@@ -1,6 +1,9 @@
 import { buildMaxActionIdempotencyKey } from '../max/max-action-idempotency';
 import { MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS } from '../max/managed-handshake-confirmation';
 import { createHash, randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { buildGroupCommandKey } from '../common/group-command-key';
@@ -8,6 +11,12 @@ import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
 import { createPrismaClient, Prisma, type PrismaClient } from '../prisma/prisma-client';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
+import { buildWebhookReceiptSemanticKey } from '../webhook/webhook-receipt-semantic-key';
+import {
+  inspectSourceAbandonmentCandidate,
+  inspectSourceAbandonmentReceiptCandidate,
+  materializeSourceAbandonmentReceipt,
+} from '../webhook/webhook-source-abandonment';
 import {
   buildSourceAbandonmentInventoryDigest,
   executeSourceAbandonmentStore,
@@ -28,6 +37,7 @@ import {
 } from './source-abandonment-live-sql';
 import {
   SOURCE_ABANDONMENT_PROTOCOL,
+  SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
   sourceAbandonmentDigest,
   type SourceAbandonmentLiveOutput,
   type SourceAbandonmentLiveRequest,
@@ -50,6 +60,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
   let fixtureRedisUrl: string;
   let ownsRedis = false;
   let historyWebhookIds: string[] = [];
+  const publisherReceiptIds: string[] = [];
   const queues: Queue[] = [];
 
   beforeAll(async () => {
@@ -283,6 +294,13 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
   afterEach(async () => {
     for (const queue of queues.splice(0)) await queue.close();
     if (ownsRedis) await redis.flushdb();
+    // FLAG: Sealed receipt proofs stay immutable until disposable-store teardown.
+    // Remove only this test's unheld Publisher fixtures and their claim aliases.
+    const receiptIds = publisherReceiptIds.splice(0);
+    await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: receiptIds } } });
+    await db.webhookEvent.deleteMany({
+      where: { id: { in: receiptIds }, sourceDispositionId: null },
+    });
     const held = await db.webhookSourceAbandonment.findUnique({
       where: { ownerWebhookEventId: ownerId },
     });
@@ -294,7 +312,28 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: historyIds } } });
     await db.webhookEvent.deleteMany({ where: { id: { in: historyIds } } });
     await db.spammerObservation.deleteMany({ where: { chatId } });
-    await db.chat.deleteMany({ where: { id: chatId } });
+    // FLAG: An immutable channel marker retains its chat, so chat cascade cleanup
+    // cannot own unrelated planner history. Remove only this fixture's history.
+    const historyMessageIds = Array.from(
+      { length: 512 },
+      (_, index) => `unrelated-history-${index}`,
+    );
+    await db.moderationDeleteIntent.deleteMany({
+      where: { chatId, id: { startsWith: `history-${ownerId}-` } },
+    });
+    await db.moderationEvent.deleteMany({
+      where: { chatId, messageId: { in: historyMessageIds } },
+    });
+    await db.moderationViolationMessageClaim.deleteMany({
+      where: { chatId, messageId: { in: historyMessageIds } },
+    });
+    await db.channelAutoPostAttachMarker.deleteMany({
+      where: { chatId, messageId: { startsWith: `marker-history-${ownerId}-` } },
+    });
+    // FLAG: Authorless source markers remain immutable, including their chat FK.
+    // Disposable-store teardown owns these retained fixture rows after readback.
+    if (held?.sourceProfile !== 'CHANNEL_AUTHORLESS_V1')
+      await db.chat.deleteMany({ where: { id: chatId } });
     await db.maxActionLedgerEntry.deleteMany({ where: { chatId } });
   });
 
@@ -712,11 +751,14 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
   );
 
   it.each(['', '2027-01-02T03:04:05.000Z'])(
-    'preserves the full settings row and admits a source with string expiry %j',
+    'reads only command settings despite large unrelated media and string expiry %j',
     async (requiredSubscriptionExpiresAt) => {
       const settings = await db.chatSettings.update({
         where: { chatId },
-        data: { requiredSubscriptionExpiresAt },
+        data: {
+          requiredSubscriptionExpiresAt,
+          botSpeechMedia: { fixture: 'x'.repeat(600_000) },
+        },
       });
       const restored = await db.$transaction(async (tx) => {
         await tx.$executeRaw`SET LOCAL enable_seqscan = off`;
@@ -730,7 +772,17 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         });
         return meter.candidateReader().chatSettings.findUnique({ where: { chatId } });
       });
-      expect(restored).toMatchObject(settings);
+      expect(restored).toEqual({
+        chatId,
+        sourceInventoryRowVersion: expect.stringMatching(/^\d+:\(\d+,\d+\)$/u),
+        adminBanCommandName: settings.adminBanCommandName,
+        adminBanAllCommandName: settings.adminBanAllCommandName,
+        adminMuteCommandName: settings.adminMuteCommandName,
+        adminPermanentMuteCommandName: settings.adminPermanentMuteCommandName,
+        adminRulesCommandName: settings.adminRulesCommandName,
+        adminSilenceCommandName: settings.adminSilenceCommandName,
+        adminOpenChatCommandName: settings.adminOpenChatCommandName,
+      });
       const evidence = await db.$transaction(
         (tx) =>
           collectSourceAbandonmentAdmission(tx, redis, {
@@ -1180,6 +1232,371 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     return { request, bytes };
   }
 
+  const publisherBotId = 'fixture-source-publisher';
+  async function publisherReceipt(keepRaw = true, botId = publisherBotId) {
+    const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const update = new WebhookParser().parse(
+      (owner.normalizedPayload as { raw: Record<string, unknown> }).raw,
+      { botId },
+    );
+    const receipt = await db.webhookEvent.create({
+      data: {
+        botId,
+        dedupKey: randomUUID(),
+        semanticKey: buildWebhookReceiptSemanticKey(update, publisherBotId),
+        rawPayload: keepRaw ? (update.raw as Prisma.InputJsonValue) : {},
+        normalizedPayload: JSON.parse(JSON.stringify(update)),
+        status: 'RECEIVED',
+      },
+    });
+    publisherReceiptIds.push(receipt.id);
+    return receipt;
+  }
+
+  it.each([
+    ['CHAT', true],
+    ['CHAT', false],
+    ['CHANNEL', true],
+    ['CHANNEL', false],
+  ] as const)(
+    'proves separate Publisher and moderation receipts through %s inventory, store and late materialization (raw sample: %s)',
+    async (entityType, keepRaw) => {
+      if (entityType === 'CHANNEL') {
+        const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+        const raw = JSON.parse(JSON.stringify(owner.rawPayload));
+        delete raw.message.sender;
+        raw.message.recipient.chat_type = 'channel';
+        const update = new WebhookParser().parse(raw, { botId: owner.botId! });
+        await db.webhookEvent.update({
+          where: { id: ownerId },
+          data: { rawPayload: raw, normalizedPayload: JSON.parse(JSON.stringify(update)) },
+        });
+        await db.chat.update({ where: { id: chatId }, data: { entityType } });
+        // FLAG: Preserve the stock exact-index guard with representative same-chat
+        // retained marker history, as in the existing channel store fixtures.
+        await db.channelAutoPostAttachMarker.createMany({
+          data: Array.from({ length: 512 }, (_, index) => ({
+            chatId,
+            messageId: `marker-history-${ownerId}-${index}`,
+            source: 'poll',
+            status: 'SKIPPED' as const,
+          })),
+        });
+        await db.$executeRaw`ANALYZE channel_auto_post_attach_markers`;
+      }
+      // FLAG: Initial channel owners retain the original under the immutable SQL
+      // seal guard. Unsampled initial/late mirrors exercise the ingress contract.
+      if (!keepRaw && entityType === 'CHAT')
+        await db.webhookEvent.update({ where: { id: ownerId }, data: { rawPayload: {} } });
+      const receipt = await publisherReceipt(keepRaw);
+      const mirror = await publisherReceipt(keepRaw, 'major-1');
+      const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+      const claims = await db.webhookExecutionClaim.findMany({
+        where: { webhookEventId: ownerId },
+      });
+      expect(receipt.semanticKey).not.toBe(owner.semanticKey);
+      expect((await collect()).decision).toBe('DENY');
+      liveRequest = { ...liveRequest, binding: { ...liveRequest.binding, publisherBotId } };
+      const admission = await db.$transaction(
+        (tx) =>
+          collectSourceAbandonmentAdmission(tx, redis, {
+            version: 1,
+            operation: 'admission_preview',
+            selection,
+            publisherBotId,
+            sourceSha: liveRequest.binding.sourceSha,
+            imageId: liveRequest.binding.imageId,
+          }),
+        { timeout: 30_000 },
+      );
+      expect(admission.issues).toEqual([]);
+      expect(admission.decision).toBe('READY_FOR_COLD_REVIEW');
+      const { request, bytes } = await storeFixture();
+      await executeSourceAbandonmentStore(db, request, bytes);
+      expect(
+        await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
+      ).toMatchObject({ state: 'SEALED', completeChats: 0, requiredChats: 1 });
+      expect(
+        await executeSourceAbandonmentStore(
+          db,
+          {
+            ...request,
+            operation: 'materialize',
+            page: { chatId, pageSize: 10 },
+          },
+          bytes,
+        ),
+      ).toMatchObject({ page: { complete: true, applied: 2, blocked: false } });
+      expect(
+        await executeSourceAbandonmentStore(
+          readonlyDb,
+          { ...request, operation: 'readback' },
+          bytes,
+        ),
+      ).toMatchObject({ state: 'MATERIALIZED', completeChats: 1, requiredChats: 1 });
+      const late = await publisherReceipt(keepRaw);
+      const lateMirror = await publisherReceipt(keepRaw, 'major-1');
+      expect(await db.$transaction((tx) => materializeSourceAbandonmentReceipt(tx, late.id))).toBe(
+        'APPLIED_WITH_PROOF',
+      );
+      expect(
+        await db.$transaction((tx) => materializeSourceAbandonmentReceipt(tx, lateMirror.id)),
+      ).toBe('APPLIED_WITH_PROOF');
+      for (const before of [receipt, mirror, late, lateMirror]) {
+        expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: before.id } })).toEqual({
+          ...before,
+          status: 'NO_REPLAY_HELD',
+          sourceDispositionId: expect.any(String),
+          sourceDispositionReceiptId: before.id,
+        });
+      }
+      expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } })).toEqual({
+        ...owner,
+        sourceDispositionId: expect.any(String),
+        sourceDispositionReceiptId: ownerId,
+      });
+      expect(
+        await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } }),
+      ).toEqual(claims);
+      expect(
+        await db.webhookExecutionClaim.count({
+          where: { webhookEventId: { in: [receipt.id, late.id] } },
+        }),
+      ).toBe(0);
+    },
+  );
+
+  it.each([
+    'null-key',
+    'shared-key',
+    'wrong-prefix',
+    'wrong-bot',
+    'wrong-catalog',
+    'different-source',
+  ])('refuses Publisher %s without rewriting the receipt or canonical claim', async (fault) => {
+    const receipt = await publisherReceipt();
+    const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    if (fault === 'null-key' || fault === 'shared-key' || fault === 'wrong-prefix')
+      await db.webhookEvent.update({
+        where: { id: receipt.id },
+        data: {
+          semanticKey:
+            fault === 'null-key'
+              ? null
+              : fault === 'shared-key'
+                ? owner.semanticKey
+                : `publisher-observation:v1:other-publisher:${owner.semanticKey}`,
+        },
+      });
+    if (fault === 'wrong-bot')
+      await db.webhookEvent.update({
+        where: { id: receipt.id },
+        data: { botId: 'other-publisher' },
+      });
+    if (fault === 'different-source') {
+      const raw = JSON.parse(JSON.stringify(receipt.rawPayload));
+      raw.message.timestamp += 1;
+      const update = new WebhookParser().parse(raw, { botId: publisherBotId });
+      await db.webhookEvent.update({
+        where: { id: receipt.id },
+        data: {
+          rawPayload: raw,
+          normalizedPayload: JSON.parse(JSON.stringify(update)),
+        },
+      });
+    }
+    const before = await db.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } });
+    const candidate = await inspectSourceAbandonmentCandidate(db, ownerId, {
+      majorBotIds: selection.majorBotIds,
+      abandonBefore: new Date(selection.abandonBefore),
+    });
+    expect(candidate).not.toBeNull();
+    const reasons: string[] = [];
+    expect(
+      await inspectSourceAbandonmentReceiptCandidate(
+        db,
+        receipt.id,
+        candidate!,
+        (reason) => reasons.push(reason),
+        fault === 'wrong-catalog' ? 'other-publisher' : publisherBotId,
+      ),
+    ).toBeNull();
+    expect(reasons).toContain('source_receipt_provenance_unproved');
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } })).toEqual(before);
+    expect(await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } })).toEqual(
+      [candidate!.claim],
+    );
+  });
+
+  it.each(['publisher-key', 'canonical-key', 'linked-event', 'command'])(
+    'retains every independent Publisher %s claim fence',
+    async (scope) => {
+      const receipt = await publisherReceipt();
+      const candidate = await inspectSourceAbandonmentCandidate(db, ownerId, {
+        majorBotIds: selection.majorBotIds,
+        abandonBefore: new Date(selection.abandonBefore),
+      });
+      expect(candidate).not.toBeNull();
+      const alias = await db.webhookExecutionClaim.create({
+        data: {
+          kind: scope === 'command' ? 'COMMAND' : 'NATIVE_PUBLISHER_UNKNOWN',
+          semanticKey:
+            scope === 'publisher-key'
+              ? receipt.semanticKey!
+              : scope === 'canonical-key'
+                ? candidate!.claim.semanticKey
+                : scope === 'command'
+                  ? buildGroupCommandKey(candidate!.source.chatId, candidate!.source.messageId)
+                  : randomUUID(),
+          webhookEventId: scope === 'linked-event' ? receipt.id : ownerId,
+        },
+      });
+      try {
+        const reasons: string[] = [];
+        expect(
+          await inspectSourceAbandonmentReceiptCandidate(
+            db,
+            receipt.id,
+            candidate!,
+            (reason) => reasons.push(reason),
+            publisherBotId,
+          ),
+        ).toBeNull();
+        expect(reasons).toContain('source_receipt_independent_claim');
+        expect(
+          await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: alias.id } }),
+        ).toEqual(alias);
+        expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } })).toEqual(
+          receipt,
+        );
+      } finally {
+        await db.webhookExecutionClaim.delete({ where: { id: alias.id } });
+      }
+    },
+  );
+
+  it('does not infer Publisher authority for a late receipt from an older certificate', async () => {
+    const { request, bytes } = await storeFixture();
+    await executeSourceAbandonmentStore(db, request, bytes);
+    await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes);
+    const late = await publisherReceipt();
+    expect(await db.$transaction((tx) => materializeSourceAbandonmentReceipt(tx, late.id))).toBe(
+      'BLOCKED_UNKNOWN',
+    );
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: late.id } })).toEqual(late);
+  });
+
+  it('rechecks an absent independent Publisher alias after a concurrent detached claim appears', async () => {
+    const receipt = await publisherReceipt();
+    const kind = 'NATIVE_PUBLISHER_DETACHED';
+    const ids: string[] = [];
+    try {
+      ids.push(
+        (
+          await db.webhookExecutionClaim.create({
+            data: {
+              kind,
+              semanticKey: randomUUID(),
+              webhookEventId: historyWebhookIds[0]!,
+            },
+          })
+        ).id,
+      );
+      await db.$transaction(
+        async (tx) => {
+          const meter = await candidateMeter(tx);
+          const reader = meter.candidateReader();
+          const candidate = await inspectSourceAbandonmentCandidate(reader, ownerId, {
+            majorBotIds: selection.majorBotIds,
+            abandonBefore: new Date(selection.abandonBefore),
+          });
+          expect(candidate).not.toBeNull();
+          for (let pass = 0; pass < 2; pass++)
+            expect(
+              await inspectSourceAbandonmentReceiptCandidate(
+                reader,
+                receipt.id,
+                candidate!,
+                undefined,
+                publisherBotId,
+              ),
+            ).not.toBeNull();
+          ids.push(
+            (
+              await db.webhookExecutionClaim.create({
+                data: {
+                  kind,
+                  semanticKey: receipt.semanticKey!,
+                  webhookEventId: historyWebhookIds[0]!,
+                },
+              })
+            ).id,
+          );
+          await expect(meter.verifyCandidateReads()).rejects.toMatchObject({
+            code: 'sql_candidate_proof_changed',
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 30_000 },
+      );
+    } finally {
+      await db.webhookExecutionClaim.deleteMany({ where: { id: { in: ids } } });
+    }
+  });
+
+  it.each(['publisher', 'catalog', 'source', 'image', 'cutoff'] as const)(
+    'rejects inconsistent sealed Publisher %s provenance even with a matching attestation digest',
+    async (fault) => {
+      liveRequest = { ...liveRequest, binding: { ...liveRequest.binding, publisherBotId } };
+      const { request, bytes } = await storeFixture();
+      await executeSourceAbandonmentStore(db, request, bytes);
+      await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes);
+      const late = await publisherReceipt();
+      const reasons: string[] = [];
+      // FLAG: Database immutability prevents editing real certificates. Substitute
+      // only this read result to prove semantic binding checks beyond its digest;
+      // all receipt/owner/claim reads and transaction behavior remain native.
+      const result = await db.$transaction(async (tx) => {
+        const guarded = new Proxy(tx, {
+          get(target, key) {
+            if (key !== 'webhookSourceAbandonment') return Reflect.get(target, key);
+            return {
+              findUnique: async (
+                args: Parameters<typeof tx.webhookSourceAbandonment.findUnique>[0],
+              ) => {
+                const row = await tx.webhookSourceAbandonment.findUnique({
+                  ...args,
+                  include: { certificate: true },
+                });
+                if (!row) return row;
+                const attestation = JSON.parse(JSON.stringify(row.certificate.attestation));
+                if (fault === 'publisher') attestation.binding.publisherBotId = 'invalid publisher';
+                if (fault === 'catalog') attestation.selection.majorBotIds.push(publisherBotId);
+                if (fault === 'source') attestation.binding.sourceSha = 'c'.repeat(40);
+                if (fault === 'image') attestation.binding.imageId = `sha256:${'d'.repeat(64)}`;
+                if (fault === 'cutoff')
+                  attestation.selection.abandonBefore = '2026-10-01T00:00:00.000Z';
+                return {
+                  ...row,
+                  certificate: {
+                    ...row.certificate,
+                    attestation,
+                    attestationDigest: sourceAbandonmentDigest(attestation),
+                  },
+                };
+              },
+            };
+          },
+        });
+        return materializeSourceAbandonmentReceipt(guarded, late.id, {
+          onRefusal: (reason) => reasons.push(reason),
+        });
+      });
+      expect(result).toBe('BLOCKED_UNKNOWN');
+      expect(reasons).toContain('source_receipt_publisher_unproved');
+      expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: late.id } })).toEqual(late);
+    },
+  );
+
   it('inspects the actual indexed source family without rewriting started evidence', async () => {
     const before = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
     const claims = await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } });
@@ -1342,6 +1759,222 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     },
   );
 
+  it.each(['message_created', 'message_edited'])(
+    'installs and positively reads back an authorless %s source with exact marker and userless action children',
+    async (type) => {
+      const old = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+      const raw = structuredClone(old.rawPayload) as Record<string, unknown>;
+      const message = raw.message as Record<string, unknown>;
+      delete message.sender;
+      (message.recipient as Record<string, unknown>).chat_type = 'channel';
+      raw.update_type = type;
+      (message.body as Record<string, unknown>).attachments = [
+        type === 'message_edited'
+          ? { type: 'image', payload: { photo_id: 42, url: 'https://example.com/native-image' } }
+          : {
+              type: 'video',
+              payload: {
+                id: 42,
+                token: 'synthetic-video-token',
+                url: 'https://example.com/native-video',
+              },
+            },
+        {
+          type: 'inline_keyboard',
+          payload: {
+            buttons:
+              type === 'message_edited'
+                ? [
+                    [{ type: 'link', text: 'First', url: 'https://example.com/a' }],
+                    [{ type: 'link', text: 'Second', url: 'https://example.com/b' }],
+                  ]
+                : [
+                    [
+                      {
+                        type: 'open_app',
+                        text: 'App',
+                        contact_id: 12345,
+                        web_app: 'https://example.com/app',
+                        payload: 'opaque-start',
+                      },
+                    ],
+                  ],
+          },
+        },
+      ];
+      const update = new WebhookParser().parse(raw, { botId: old.botId! });
+      const semanticKey = buildWebhookSemanticEventKey(update)!;
+      await db.webhookExecutionClaim.updateMany({
+        where: { webhookEventId: ownerId },
+        data: { semanticKey },
+      });
+      const before = await db.webhookEvent.update({
+        where: { id: ownerId },
+        data: {
+          semanticKey,
+          rawPayload: raw as Prisma.InputJsonValue,
+          normalizedPayload: JSON.parse(JSON.stringify(update)),
+        },
+      });
+      await db.chat.update({ where: { id: chatId }, data: { entityType: 'CHANNEL' } });
+      const messageId = update.message!.messageId;
+      const marker = await db.channelAutoPostAttachMarker.create({
+        data: {
+          chatId,
+          messageId,
+          source: 'webhook',
+          botId: old.botId,
+          lockedAt: old.createdAt,
+          lockToken: 'retained-ambiguous-marker-lock',
+          replacementSendStartedAt: old.createdAt,
+          lastError: 'Synthetic uncertain dispatch',
+        },
+      });
+      // FLAG: Exact marker and PK child resolvers must prove bounded indexed reads
+      // against representative same-chat history, not an empty-table mock plan.
+      await db.channelAutoPostAttachMarker.createMany({
+        data: Array.from({ length: 512 }, (_, index) => ({
+          chatId,
+          messageId: `marker-history-${ownerId}-${index}`,
+          source: 'poll',
+          status: 'SKIPPED' as const,
+        })),
+      });
+      await db.$executeRaw`ANALYZE channel_auto_post_attach_markers`;
+      const queue = await actionQueue();
+      const action = {
+        actionType: 'DELETE_MESSAGE',
+        idempotencyKey: `channel-action-${randomUUID()}`,
+        chatId,
+        messageId,
+        attempt: 0,
+      };
+      await queue.add('action', action, { jobId: action.idempotencyKey });
+      const actionBefore = await redis.hgetall(
+        `bull:max-actions-background:${action.idempotencyKey}`,
+      );
+      const claims = await db.webhookExecutionClaim.findMany({
+        where: { webhookEventId: ownerId },
+      });
+      const output = await collect();
+      expect(output.issues).toEqual([]);
+      expect(output.selectedOwners).toEqual([
+        expect.objectContaining({
+          ownerWebhookEventId: ownerId,
+          sourceProfile: 'CHANNEL_AUTHORLESS_V1',
+          userId: null,
+          chatId,
+          messageId,
+        }),
+      ]);
+      expect(output.children).toHaveLength(2);
+      expect(output.children).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            queueName: SOURCE_ABANDONMENT_CHANNEL_MARKER_QUEUE,
+            jobKey: marker.id,
+            chatId,
+            messageId,
+            jobPayloadDigest: sourceAbandonmentDigest(marker),
+          }),
+          expect.objectContaining({
+            queueName: 'max-actions-background',
+            jobKey: action.idempotencyKey,
+            chatId,
+            messageId,
+          }),
+        ]),
+      );
+      for (const child of output.children) expect(child).not.toHaveProperty('userId');
+      const { request, bytes } = await storeFixture(output);
+      expect(await executeSourceAbandonmentStore(db, request, bytes)).toMatchObject({
+        state: 'UNSEALED',
+      });
+      expect(
+        await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
+      ).toMatchObject({
+        state: 'MATERIALIZED',
+        completeChats: 1,
+        requiredChats: 1,
+        activationAuthorized: false,
+      });
+      for (let i = 0; i < 2; i += 1)
+        expect(
+          await executeSourceAbandonmentStore(
+            readonlyDb,
+            { ...request, operation: 'readback' },
+            bytes,
+          ),
+        ).toMatchObject({ state: 'MATERIALIZED', completeChats: 1, requiredChats: 1 });
+      expect(
+        await db.webhookSourceAbandonment.findUnique({ where: { ownerWebhookEventId: ownerId } }),
+      ).toMatchObject({
+        sourceProfile: 'CHANNEL_AUTHORLESS_V1',
+        subjectUserId: null,
+        chatId,
+        messageId,
+      });
+      expect(
+        await db.webhookSourceChildHold.findMany({
+          where: { abandonment: { certificateId: request.certificateId } },
+        }),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'CHANNEL_AUTO_POST', childKey: marker.id }),
+          expect.objectContaining({ kind: 'MAX_ACTION', childKey: action.idempotencyKey }),
+        ]),
+      );
+      expect(await db.webhookEvent.findUnique({ where: { id: ownerId } })).toEqual({
+        ...before,
+        sourceDispositionId: expect.any(String),
+        sourceDispositionReceiptId: ownerId,
+      });
+      expect(
+        await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } }),
+      ).toEqual(claims);
+      expect(await db.channelAutoPostAttachMarker.findUnique({ where: { id: marker.id } })).toEqual(
+        marker,
+      );
+      expect(await redis.hgetall(`bull:max-actions-background:${action.idempotencyKey}`)).toEqual(
+        actionBefore,
+      );
+      expect(await db.webhookLegacyRecovery.count({ where: { chatId } })).toBe(0);
+    },
+  );
+
+  it('installs a strictly bound EXECUTION_WAITING checkpoint without changing the started claim', async () => {
+    const owner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const originalClaim = await db.webhookExecutionClaim.findFirstOrThrow({
+      where: { webhookEventId: ownerId, kind: 'EXECUTION' },
+    });
+    const claim = await db.webhookExecutionClaim.update({
+      where: { id: originalClaim.id },
+      data: {
+        commandResult: {
+          kind: 'EXECUTION_WAITING',
+          authorityVersion: 'semantic-owner-lease-v1',
+          webhookEventId: owner.id,
+          semanticKey: owner.semanticKey!,
+          deadlineAt: owner.executionDeadlineAt!.toISOString(),
+        },
+      },
+    });
+    const { request, bytes } = await storeFixture();
+    await executeSourceAbandonmentStore(db, request, bytes);
+    expect(
+      await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
+    ).toMatchObject({ state: 'MATERIALIZED', completeChats: 1, requiredChats: 1 });
+    expect(
+      await executeSourceAbandonmentStore(readonlyDb, { ...request, operation: 'readback' }, bytes),
+    ).toMatchObject({ state: 'MATERIALIZED' });
+    expect(await db.webhookExecutionClaim.findUnique({ where: { id: claim.id } })).toEqual(claim);
+    expect(await db.webhookEvent.findUnique({ where: { id: owner.id } })).toEqual({
+      ...owner,
+      sourceDispositionId: expect.any(String),
+      sourceDispositionReceiptId: owner.id,
+    });
+  });
+
   it('denies settings drift between certificate creation and atomic installation', async () => {
     const { request, bytes } = await storeFixture();
     await executeSourceAbandonmentStore(db, request, bytes);
@@ -1472,6 +2105,213 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
       ledger,
     );
     expect(await queue.getJobCounts('paused')).toEqual({ paused: 1 });
+  });
+
+  it('rechecks and installs the original offline artifact after independent Publisher auxiliary TTL expiry', async () => {
+    const names = ['publisher-start', 'publisher-binding-refresh'];
+    for (const name of names) {
+      await redis.hset(`bull:${name}:meta`, 'version', 'fixture');
+      await redis.set(`bull:${name}:stalled-check`, '1', 'PX', 60_000);
+    }
+    const reviewed = await collect();
+    expect(reviewed.issues).toEqual([]);
+    expect(reviewed.decision).toBe('READY_TO_INSTALL');
+    for (const name of names) await redis.pexpire(`bull:${name}:stalled-check`, 1);
+    await new Promise((done) => setTimeout(done, 20));
+    for (const name of names) expect(await redis.exists(`bull:${name}:stalled-check`)).toBe(0);
+    const rechecked = await db.$transaction(
+      (tx) =>
+        collectSourceAbandonmentLiveEvidence(tx, redis, {
+          ...liveRequest,
+          expectedInventorySha256: reviewed.inventorySha256!,
+        }),
+      { timeout: 30_000, isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+    expect(rechecked.issues).toEqual([]);
+    expect(rechecked.decision).toBe('READY_TO_INSTALL');
+    expect(rechecked.redisEvidenceSha256).toBe(reviewed.redisEvidenceSha256);
+    expect(rechecked.inventorySha256).toBe(reviewed.inventorySha256);
+    for (const name of names) {
+      expect(reviewed.redisCatalogs[0]!.namespaceKeyCounts[name]).toBe(2);
+      expect(rechecked.redisCatalogs[0]!.namespaceKeyCounts[name]).toBe(1);
+    }
+    for (const inventory of [reviewed, rechecked]) {
+      expect(inventory.redisCatalogs).toHaveLength(2);
+      expect(inventory.redisCatalogs.every((catalog) => catalog.complete && !catalog.issue)).toBe(
+        true,
+      );
+      expect(inventory.redisCatalogs[0]!.namespaceKeyCounts).toEqual(
+        inventory.redisCatalogs[1]!.namespaceKeyCounts,
+      );
+    }
+    // FLAG: Exercise the actual host recheck against native store evidence. The
+    // local child only writes temporary artifacts; PostgreSQL apply uses the
+    // reviewed artifact bytes returned unchanged by that adapter below.
+    const bridge = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `
+            import assert from 'node:assert/strict';
+            import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+            import { join } from 'node:path';
+            import { tmpdir } from 'node:os';
+            import { randomUUID } from 'node:crypto';
+            const { createLegacyColdStoreAdapter } = await import(process.argv[1]);
+            const { legacyColdDigest } = await import(new URL('./legacy-cold-journal.mjs', process.argv[1]));
+            const { reviewed, rechecked, selection } = JSON.parse(readFileSync(0, 'utf8'));
+            const dir = mkdtempSync(join(tmpdir(), 'maxim-source-native-recheck-'));
+            try {
+              const inventoryPath = join(dir, 'inventory.json');
+              const originalBytes = JSON.stringify(reviewed) + '\\n';
+              writeFileSync(inventoryPath, originalBytes, { mode: 0o600, flag: 'wx' });
+              const bindings = {
+                targetSha: reviewed.binding.sourceSha,
+                targetImageId: reviewed.binding.imageId,
+                controllerNonce: reviewed.binding.maintenanceId,
+                certificateId: randomUUID(),
+                selectionDigest: legacyColdDigest(selection),
+              };
+              const prior = {
+                version: 1, complete: true,
+                sourceSha: bindings.targetSha, imageId: bindings.targetImageId,
+                controllerNonce: bindings.controllerNonce, selectionDigest: bindings.selectionDigest,
+                inventoryDigest: reviewed.inventorySha256, previewDigest: reviewed.previewSha256,
+                inventoryArtifactSha256: legacyColdDigest(originalBytes),
+                unknownSources: 0, saturated: false, inventory: reviewed,
+              };
+              let freshProof;
+              let inventories = 0;
+              const adapter = createLegacyColdStoreAdapter({
+                bindings, selection, inventoryPath, publisherBotId: reviewed.binding.publisherBotId,
+                runtime: { readStoppedRuntime: () => ({ services: [], auxiliaries: [] }) },
+                store: {
+                  read: () => ({ journal: { proofs: { pendingInventory: legacyColdDigest(prior) } } }),
+                  readProof: (name) => { assert.equal(name, 'pendingInventory'); return prior; },
+                  recordProof: (value) => {
+                    assert.deepEqual(value, rechecked);
+                    freshProof = JSON.stringify(value) + '\\n';
+                    writeFileSync(join(dir, 'recheck.json'), freshProof, { mode: 0o600, flag: 'wx' });
+                    return legacyColdDigest(freshProof);
+                  },
+                },
+                client: {
+                  invoke: (kind, request) => {
+                    assert.equal(kind, 'inventory');
+                    assert.equal(request.operation, 'inventory_preview');
+                    assert.equal(request.expectedInventorySha256, reviewed.inventorySha256);
+                    assert.deepEqual(request.binding, reviewed.binding);
+                    assert.deepEqual(request.selection, selection);
+                    inventories += 1;
+                    return rechecked;
+                  },
+                },
+              });
+              const { recheckProof, ...retained } = adapter.snapshotPending();
+              assert.equal(inventories, 1);
+              assert.deepEqual(retained, prior);
+              assert.equal(readFileSync(inventoryPath, 'utf8'), originalBytes);
+              assert.equal(readFileSync(join(dir, 'recheck.json'), 'utf8'), freshProof);
+              assert.equal(recheckProof, legacyColdDigest(freshProof));
+              assert.notEqual(recheckProof, prior.inventoryArtifactSha256);
+              process.stdout.write(JSON.stringify({
+                bytes: readFileSync(inventoryPath).toString('base64'),
+                recheckProof,
+                request: {
+                  version: 1, operation: 'certificate_create', certificateId: bindings.certificateId,
+                  binding: retained.inventory.binding, selection,
+                  expected: {
+                    inventorySha256: retained.inventoryDigest,
+                    previewSha256: retained.previewDigest,
+                    inventoryArtifactSha256: retained.inventoryArtifactSha256,
+                  },
+                },
+              }));
+            } finally { rmSync(dir, { recursive: true, force: true }); }
+          `,
+          pathToFileURL(
+            resolve(__dirname, '../../../../infra/scripts/legacy-cold-store-adapter.mjs'),
+          ).href,
+        ],
+        {
+          input: JSON.stringify({ reviewed, rechecked, selection }),
+          encoding: 'utf8',
+          timeout: 15_000,
+          maxBuffer: 8 * 1024 * 1024,
+        },
+      ),
+    ) as { bytes: string; recheckProof: string; request: unknown };
+    const bytes = Buffer.from(bridge.bytes, 'base64');
+    expect(bytes.toString('utf8')).toBe(`${JSON.stringify(reviewed)}\n`);
+    expect(bridge.recheckProof).toBe(
+      createHash('sha256')
+        .update(`${JSON.stringify(rechecked)}\n`)
+        .digest('hex'),
+    );
+    const request = parseSourceAbandonmentStoreRequest(JSON.stringify(bridge.request));
+    expect(request.expected.inventoryArtifactSha256).toBe(
+      createHash('sha256').update(bytes).digest('hex'),
+    );
+    const before = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const claims = await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } });
+    expect(
+      await executeSourceAbandonmentStore(readonlyDb, { ...request, operation: 'readback' }, bytes),
+    ).toMatchObject({ state: 'ABSENT', activationAuthorized: false });
+    expect(await executeSourceAbandonmentStore(db, request, bytes)).toMatchObject({
+      state: 'UNSEALED',
+      activationAuthorized: false,
+    });
+    expect(
+      await executeSourceAbandonmentStore(db, { ...request, operation: 'install' }, bytes),
+    ).toMatchObject({
+      state: 'MATERIALIZED',
+      completeChats: 1,
+      requiredChats: 1,
+      activationAuthorized: false,
+    });
+    expect(
+      await executeSourceAbandonmentStore(readonlyDb, { ...request, operation: 'readback' }, bytes),
+    ).toMatchObject({ state: 'MATERIALIZED', completeChats: 1, requiredChats: 1 });
+    expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } })).toEqual({
+      ...before,
+      sourceDispositionId: expect.any(String),
+      sourceDispositionReceiptId: ownerId,
+    });
+    expect(await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } })).toEqual(
+      claims,
+    );
+    expect(bytes.toString('utf8')).toBe(`${JSON.stringify(reviewed)}\n`);
+  });
+
+  it('denies Publisher auxiliary expiry between the two complete reads of one cold inventory', async () => {
+    const key = 'bull:publisher-binding-refresh:stalled-check';
+    await redis.hset('bull:publisher-binding-refresh:meta', 'version', 'fixture');
+    await redis.set(key, '1', 'PX', 60_000);
+    let headers = 0;
+    const reader: SourceAbandonmentRedisReader = {
+      multi: () => redis.multi(),
+      async eval_ro(script, keyCount, ...args) {
+        const result = await redis.eval_ro(script, keyCount, ...args);
+        if (script.startsWith('-- source-abandonment:headers') && ++headers === 2) {
+          await redis.pexpire(key, 1);
+          await new Promise((done) => setTimeout(done, 20));
+          expect(await redis.exists(key)).toBe(0);
+        }
+        return result;
+      },
+    };
+    const result = await collect(reader);
+    expect(headers).toBe(4);
+    expect(result.redisCatalogs).toHaveLength(2);
+    expect(result.redisCatalogs.every((catalog) => catalog.complete && !catalog.issue)).toBe(true);
+    expect(result.decision).toBe('DENY');
+    expect(result.issues).toContainEqual({
+      code: 'redis_inventory_changed',
+      descriptor: 'redis:all',
+    });
+    expect(result.inventorySha256).toBeNull();
   });
 
   it('denies a cold inventory when a real Redis job changes between the two complete reads', async () => {

@@ -141,7 +141,7 @@ export class PhotoDuplicateModerationService {
     if (
       !webhookEvent ||
       webhookEvent.status === WebhookStatus.DUPLICATE ||
-      String(webhookEvent.status) === 'NO_REPLAY_HELD' ||
+      ['NO_REPLAY_HELD', 'CANCELLED'].includes(String(webhookEvent.status)) ||
       (webhookEvent.status === WebhookStatus.FAILED &&
         webhookEvent.nextEnqueueAt === null &&
         !isPendingWebhookTimeoutQuarantineMessage(webhookEvent.errorMessage))

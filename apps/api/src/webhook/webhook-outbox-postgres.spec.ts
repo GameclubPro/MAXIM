@@ -16,7 +16,9 @@ import {
   WebhookStatus,
 } from '../prisma/prisma-client';
 import { WebhookOutboxService } from './webhook-outbox.service';
-import { webhookPayloadChange } from './webhook-payload-write';
+import { writeWebhookPayload } from './webhook-payload-write';
+import { writeWebhookEnqueueState, type WebhookEnqueueSnapshot } from './webhook-receipt-write';
+import { Client } from 'pg';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
 import { WEBHOOK_QUEUE_CRITICAL } from './webhook-queues';
@@ -293,6 +295,157 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       poll: () => (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch(),
     };
   }
+
+  it.each([false, true])(
+    'continues exact ordered successors during slow selection using real fences (earlier mirror=%s)',
+    async (withMirror) => {
+      const chatId = `-${randomUUID()}`;
+      const base = Math.max(Date.now(), executionCutoverAt.getTime() + 1);
+      const sources: Array<Awaited<ReturnType<typeof semanticReceipt>>> = [];
+      for (let index = 0; index < 11; index++) {
+        const source = await semanticReceipt({
+          chatId,
+          messageId: `continuation-${index}`,
+          createdAt: new Date(base + index * 10),
+        });
+        await readyClaim(source);
+        sources.push(source);
+      }
+      const mirror = withMirror
+        ? await semanticReceipt({
+            chatId,
+            messageId: 'continuation-1',
+            createdAt: new Date(base + 5),
+            sourceAt: sources[1]!.event.createdAt,
+            botId: 'mirror-bot',
+          })
+        : null;
+      const expectedCompletions = withMirror ? 3 : 4;
+      const worker = new WebhookCanonicalExecutionService(prisma as never);
+      const initial = await worker.prepareExecution(sources[0]!.event.id, 'preparation-bot');
+      expect(initial).not.toBeNull();
+      await worker.completeExecution(initial!);
+      const { service, queue, poll, prepareCore } = freshOutbox();
+      const internal = service as unknown as {
+        rememberEnqueuedChat(chatId: string, id: string): void;
+        selectEnqueueCandidates(...args: unknown[]): Promise<unknown[]>;
+      };
+      internal.rememberEnqueuedChat(chatId, sources[0]!.event.id);
+      const select = internal.selectEnqueueCandidates.bind(internal);
+      const selector = jest
+        .spyOn(internal, 'selectEnqueueCandidates')
+        .mockImplementation(async (...args) => {
+          const selected = await select(...args);
+          await prisma.$queryRaw`SELECT 1 FROM pg_sleep(0.8)`;
+          return selected;
+        });
+      const completed: string[] = [];
+      const workers: Promise<void>[] = [];
+      const errors: unknown[] = [];
+      queue.add.mockImplementation(async (_name: string, job: { webhookEventId: string }) => {
+        const index = sources.findIndex((source) => source.event.id === job.webhookEventId);
+        const previous = await prisma.webhookEvent.findUniqueOrThrow({
+          where: { id: sources[index - 1]!.event.id },
+        });
+        expect(previous.status).toBe(WebhookStatus.PROCESSED);
+        workers.push(
+          (async () => {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const context = await worker.prepareExecution(job.webhookEventId, 'preparation-bot');
+            expect(context).not.toBeNull();
+            await worker.completeExecution(context!);
+            completed.push(job.webhookEventId);
+          })().catch((error: unknown) => {
+            errors.push(error);
+          }),
+        );
+      });
+      try {
+        await poll();
+        await Promise.all(workers);
+        expect(errors).toEqual([]);
+        expect(selector).toHaveBeenCalledTimes(1);
+        expect(completed).toEqual(
+          sources.slice(1, expectedCompletions + 1).map((source) => source.event.id),
+        );
+        expect(queue.add).toHaveBeenCalledTimes(expectedCompletions);
+        expect(prepareCore).not.toHaveBeenCalled();
+        if (mirror)
+          expect(
+            await prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirror.event.id } }),
+          ).toMatchObject({ status: WebhookStatus.DUPLICATE, enqueueAttempts: 0 });
+        const rows = await prisma.webhookEvent.findMany({
+          where: { id: { in: sources.map((source) => source.event.id) } },
+          orderBy: { createdAt: 'asc' },
+        });
+        expect(
+          rows
+            .slice(0, expectedCompletions + 1)
+            .every((row) => row.status === WebhookStatus.PROCESSED),
+        ).toBe(true);
+        expect(
+          rows
+            .slice(expectedCompletions + 1)
+            .every((row) => row.status === WebhookStatus.RECEIVED && row.enqueueAttempts === 0),
+        ).toBe(true);
+        expect(
+          rows.slice(1, expectedCompletions + 1).every((row) => row.enqueueAttempts === 1),
+        ).toBe(true);
+      } finally {
+        await Promise.all(workers);
+        selector.mockRestore();
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
+  it('bounds continuation discovery to one indexed raw head per chat under retained skew', async () => {
+    const suffix = randomUUID();
+    const chatIds = Array.from(
+      { length: 16 },
+      (_, index) => `-continuation-plan-${suffix}-${index}`,
+    );
+    const rows = Array.from({ length: 4_111 }, (_, index) => ({
+      id: `continuation-plan-${suffix}-${index}`,
+      dedupKey: `continuation-plan-${suffix}-${index}`,
+      status: WebhookStatus.RECEIVED,
+      createdAt: new Date(1_760_000_000_000 + index),
+      rawPayload: {},
+      normalizedPayload: {
+        type: 'message_created',
+        message: {
+          chatId: chatIds[index < 4_096 ? 0 : index - 4_095],
+          messageId: `message-${index}`,
+        },
+      },
+    }));
+    createdEventIds.push(...rows.map((row) => row.id));
+    await prisma.webhookEvent.createMany({ data: rows });
+    await prisma.$executeRaw`ANALYZE webhook_events`;
+    const { service } = freshOutbox();
+    const query = (
+      service as unknown as { continuationRawHeadsQuery(chatIds: string[]): Prisma.Sql }
+    ).continuationRawHeadsQuery(chatIds);
+    const heads = await prisma.$queryRaw<Array<{ id: string }>>(query);
+    expect(heads).toHaveLength(16);
+    expect(heads.map((head) => head.id)).toContain(rows[0]!.id);
+    const explained = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+      Prisma.sql`EXPLAIN (ANALYZE, FORMAT JSON) ${query}`,
+    );
+    const probes = collectExplainNodes(explained).filter(
+      (node) => node['Relation Name'] === 'webhook_events',
+    );
+    expect(probes).toHaveLength(1);
+    expect(probes[0]).toMatchObject({
+      'Index Name': 'webhook_events_ordered_chat_head_idx',
+      'Actual Loops': 16,
+      'Actual Rows': 1,
+    });
+    expect(Number(probes[0]!['Rows Removed by Filter'] ?? 0)).toBe(0);
+    expect(query.strings.join(' ')).not.toMatch(
+      /legacy_disposition|source_disposition|webhook_legacy_recoveries/,
+    );
+  });
 
   it('keeps a permanent completed semantic tombstone after owner body retention', async () => {
     const chatId = `-${randomUUID()}`;
@@ -1718,28 +1871,85 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     const before = await tuple();
     // JSONB equality is semantic, including object key ordering.
     await expect(
-      prisma.webhookEvent.updateMany(
-        webhookPayloadChange(id, {
-          raw: { attachments: [], text: 'kept' },
-          type: 'message_created',
-        }),
-      ),
+      writeWebhookPayload(prisma, id, {
+        raw: { attachments: [], text: 'kept' },
+        type: 'message_created',
+      }),
     ).resolves.toEqual({ count: 0 });
     expect(await tuple()).toEqual(before);
     const changed = { ...payload, executionOwnerBotId: 'owner' };
-    await expect(
-      prisma.webhookEvent.updateMany(webhookPayloadChange(id, changed)),
-    ).resolves.toEqual({ count: 1 });
+    await expect(writeWebhookPayload(prisma, id, changed)).resolves.toEqual({ count: 1 });
     expect(
       (await prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).normalizedPayload,
     ).toEqual(changed);
     await prisma.webhookEvent.update({ where: { id }, data: { status: WebhookStatus.PROCESSED } });
-    await expect(
-      prisma.webhookEvent.updateMany(webhookPayloadChange(id, payload)),
-    ).resolves.toEqual({ count: 0 });
+    await expect(writeWebhookPayload(prisma, id, payload)).resolves.toEqual({ count: 0 });
     expect(
       (await prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).normalizedPayload,
     ).toEqual(changed);
+  });
+
+  it('commits payload and queue activation with one SQL statement each and only one race winner', async () => {
+    const { id } = await preparationReceipt();
+    const event = await prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    const data = {
+      status: WebhookStatus.QUEUED,
+      queueName: 'moderation-critical',
+      queuedAt: new Date(),
+      nextEnqueueAt: null,
+      timeoutQuarantineExpiresAt: null,
+      errorMessage: null,
+      enqueueAttempts: { increment: 1 },
+    } as const;
+    const queries = jest.spyOn(Client.prototype, 'query');
+    try {
+      await expect(
+        writeWebhookPayload(prisma, id, { type: 'message_created', text: 'changed' }),
+      ).resolves.toEqual({ count: 1 });
+      // The pg adapter must receive a single atomic UPDATE, with no ORM transaction envelope.
+      expect(queries).toHaveBeenCalledTimes(1);
+      queries.mockClear();
+      await expect(writeWebhookEnqueueState(prisma, event, data)).resolves.toEqual({ count: 1 });
+      expect(queries).toHaveBeenCalledTimes(1);
+    } finally {
+      queries.mockRestore();
+    }
+    const queued = await prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    const race = await Promise.all([
+      writeWebhookEnqueueState(prisma, queued, { ...data, enqueueAttempts: { increment: 1 } }),
+      writeWebhookEnqueueState(prisma, queued, { ...data, enqueueAttempts: { increment: 1 } }),
+    ]);
+    expect(race.map((row) => row.count).sort()).toEqual([0, 1]);
+    const current = await prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    expect(current.enqueueAttempts).toBe(2);
+    expect(current.queuedAt).toEqual(data.queuedAt);
+    expect(current.rawPayload).toEqual(event.rawPayload);
+  });
+
+  it.each([
+    ['status', WebhookStatus.FAILED],
+    ['queueName', 'changed'],
+    ['enqueueAttempts', 4],
+    ['queuedAt', new Date(1000)],
+    ['nextEnqueueAt', new Date(2000)],
+    ['timeoutQuarantineExpiresAt', new Date(3000)],
+    ['errorMessage', 'changed'],
+  ] as const)('rejects a stale %s snapshot without changing the receipt', async (field, value) => {
+    const { id } = await preparationReceipt();
+    const event = await prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    const stale = { ...event, [field]: value } as WebhookEnqueueSnapshot;
+    await expect(
+      writeWebhookEnqueueState(prisma, stale, {
+        status: WebhookStatus.QUEUED,
+        queueName: 'moderation-critical',
+        queuedAt: new Date(),
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        errorMessage: null,
+        enqueueAttempts: { increment: 1 },
+      }),
+    ).resolves.toEqual({ count: 0 });
+    expect(await prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(event);
   });
 
   it('executes the bulk ordered-head query and returns the oldest event per chat', async () => {

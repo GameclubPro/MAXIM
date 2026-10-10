@@ -1,9 +1,9 @@
 import { assertLegacyDispositionSource } from './assert-legacy-disposition-source.mjs';
 
-export const ABORT_RUNTIME_SHA = 'd241e50a8b688bdc32380b20d40c2505413c50f1';
+export const ABORT_RUNTIME_SHA = 'b0d3c4e1b437127b985791ea67b7109843988fbb';
 export const ABORT_RUNTIME_IMAGE =
-  'sha256:7fd007511ab23b897e87fb015d63dd9b005df2be437f5cf4deb9c1d3022b440b';
-const reviewedBase = 'bbdaf91aa8008985c11f35895baca1ff52e7a3ba';
+  'sha256:e7f01f71971f7c9c6410151bfcc90d7388c8766ab6a5f919e8f30a7603e6ec2b';
+const reviewedBase = 'b0d3c4e1b437127b985791ea67b7109843988fbb';
 const permitted = new Set([
   'infra/AGENTS.md',
   'docs/operations/runbooks/webhook-source-abandonment.md',
@@ -11,20 +11,16 @@ const permitted = new Set([
   'infra/scripts/legacy-cold-journal.test.mjs',
   'infra/scripts/legacy-cold-host.mjs',
   'infra/scripts/legacy-cold-host.test.mjs',
-  'infra/scripts/legacy-cold-client.mjs',
-  'infra/scripts/legacy-cold-client.test.mjs',
-  'infra/scripts/source-abandonment-corrective-host.mjs',
-  'infra/scripts/source-abandonment-corrective-host.test.mjs',
+  'infra/scripts/lib/legacy-cold-maintenance.sh',
+  'infra/scripts/legacy-cold-entrypoint-guards.test.mjs',
   'infra/scripts/source-abandonment-abort-identity.mjs',
   'infra/scripts/source-abandonment-abort-identity.test.mjs',
   'infra/scripts/source-abandonment-abort.mjs',
   'infra/scripts/source-abandonment-abort.test.mjs',
-  'infra/scripts/source-abandonment-absence.cjs',
-  'infra/scripts/source-abandonment-absence.test.mjs',
 ]);
 
-// FLAG: The reviewed base includes only previously reviewed companion changes.
-// This continuation always uses the frozen d241 runtime and only aborts an
+// FLAG: The reviewed base is the immutable runtime source. Only the permitted
+// controller paths may differ above it. This continuation only aborts an
 // operation that never reached its writer boundary; no inventory is installed.
 export function readSourceAbandonmentAbortIdentity(
   { controllerSha, targetSha, protocol, operation },
@@ -53,11 +49,10 @@ export function readSourceAbandonmentAbortIdentity(
       .some((path) => !permitted.has(path))
   )
     throw new Error('abort_dependency_changed');
-  // FLAG: Abort restores the pinned captured image and installs no new holds.
-  // A newer recovery-content floor is not a rollback requirement for that image.
-  // Attest the current controller; the original runtime stays bound by its exact
-  // reviewed source SHA, immutable image ID, journal and captured generations.
-  assertSource(controllerSha, (path) => run('git', ['show', `${controllerSha}:${path}`]));
+  // FLAG: Both reviewed runtime and descendant controller retain the source
+  // floor. Abort installs no holds and restores only the exact captured image.
+  for (const sha of [targetSha, controllerSha])
+    assertSource(sha, (path) => run('git', ['show', `${sha}:${path}`]));
   const images = JSON.parse(run('docker', ['image', 'inspect', `maxim-api:${targetSha}`]));
   if (
     images.length !== 1 ||

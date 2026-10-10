@@ -6,6 +6,7 @@ import { UnrecoverableError } from 'bullmq';
 import { EventType, Operator, Prisma, SanctionAction } from '../prisma/prisma-client';
 import type { RedisCounterService } from './redis-counter.service';
 import { REQUIRED_SUBSCRIPTION_NOTICE_LOCK_TTL_MS } from './moderation.service.support';
+import { RequiredSubscriptionNoticeNotDispatchedError } from './required-subscription-notice-authority';
 
 export const REQUIRED_SUBSCRIPTION_MEDIA_BURST_WINDOW_MS = 10_000;
 export const REQUIRED_SUBSCRIPTION_MEDIA_NOTICE_STATE_TTL_SEC = 10 * 60;
@@ -439,6 +440,11 @@ export class RequiredSubscriptionMediaNoticeCoordinator {
           await executeDelete();
         },
       });
+    }).catch((error: unknown) => {
+      // FLAG: A proven pre-handoff refusal handles this source without deleting it,
+      // creating delivered coverage, replaying sanctions, or blocking later chat events.
+      if (error instanceof RequiredSubscriptionNoticeNotDispatchedError) return true;
+      throw error;
     });
   }
 
