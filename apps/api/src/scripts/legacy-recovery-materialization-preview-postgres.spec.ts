@@ -114,10 +114,22 @@ native('read-only materialization preview on representative PostgreSQL history',
       const authority = await db.webhookLegacySealedAuthority.findUnique({
         where: { certificateId },
       });
-      if (authority)
-        await db.webhookLegacyReceiptDisposition.deleteMany({
-          where: { authorityId: authority.id },
-        });
+      if (authority) {
+        // FLAG: Fixture cleanup triggers a retained-webhook FK check for each disposition.
+        // Bound each local deletion without relaxing the production-query timeout under test.
+        for (let page = 0; page < 32; page++) {
+          const batch = await db.webhookLegacyReceiptDisposition.findMany({
+            where: { authorityId: authority.id },
+            select: { id: true },
+            take: 100,
+          });
+          if (!batch.length) break;
+          await db.webhookLegacyReceiptDisposition.deleteMany({
+            where: { id: { in: batch.map((row) => row.id) } },
+          });
+          if (page === 31) throw new Error('Fixture disposition cleanup exceeded its page bound');
+        }
+      }
       await db.webhookLegacyMaterializationCursor.deleteMany({ where: { certificateId } });
       await db.webhookLegacyRecovery.deleteMany({ where: { certificateId } });
       await db.webhookLegacySealedAuthority.deleteMany({ where: { certificateId } });

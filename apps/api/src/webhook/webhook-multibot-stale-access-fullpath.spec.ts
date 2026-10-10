@@ -36,9 +36,19 @@ describeStores('native multibot absent rights webhook and independently stale ro
       const engine = jest.spyOn(s.moderation, 'handleUpdate');
       s.denyBot(oldBot);
       s.setOwnMemberProbe(oldBot, proof);
-      await expect(s.moderation.processWebhookEvent(receipt)).rejects.toThrow(
-        'Simulated MAX chat access denied',
-      );
+      await s.moderation.processWebhookEvent(receipt);
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt } })).status,
+      ).toBe('PROCESSED');
+      const completed = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { kind: 'EXECUTION', webhookEventId: receipt },
+      });
+      expect(completed).toMatchObject({
+        status: 'COMPLETED',
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+      await s.moderation.processWebhookEvent(receipt);
+      expect(engine).toHaveBeenCalledTimes(1);
       const pending = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
         where: { chatId_messageId: { chatId: chatId!, messageId } },
       });
@@ -53,7 +63,8 @@ describeStores('native multibot absent rights webhook and independently stale ro
       expect(s.requests.filter((r) => r.path.endsWith('/members/me')).map((r) => r.botId)).toEqual([
         oldBot,
       ]);
-      // A later confirmed rejection can continue only the saved action. The
+      // FLAG: A committed guard retry completes the webhook without lending unknown
+      // access to a peer. A later confirmed rejection continues only the saved action. The
       // original rule engine and its semantic receipt are never started again.
       s.setOwnMemberProbe(oldBot, null);
       await s.prisma.moderationDeleteIntent.update({
@@ -100,9 +111,12 @@ describeStores('native multibot absent rights webhook and independently stale ro
     const engine = jest.spyOn(s.moderation, 'handleUpdate');
     for (const bot of s.bots.slice(0, -1)) s.denyBot(bot.id);
     s.setOwnMemberProbe(originalBot, 'unavailable');
-    await expect(s.moderation.processWebhookEvent(receipt)).rejects.toThrow(
-      'Simulated MAX chat access denied',
+    await s.moderation.processWebhookEvent(receipt);
+    expect((await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt } })).status).toBe(
+      'PROCESSED',
     );
+    await s.moderation.processWebhookEvent(receipt);
+    expect(engine).toHaveBeenCalledTimes(1);
     const pending = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
       where: { chatId_messageId: { chatId: chatId!, messageId } },
     });

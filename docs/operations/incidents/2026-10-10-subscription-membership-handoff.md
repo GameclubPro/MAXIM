@@ -269,3 +269,14 @@ handler replay, closed-chat enforcement outside canary, strict lease/persistence
 independent reason guards and correlated plan bounds with 50,000 retained intents/reasons.
 The fixed production duplicate audit at 15:42:10 UTC emitted its capped settings sample, then
 hit its statement timeout before the intent report; it is incomplete and proves no recovery.
+
+The first GitHub run for `69d319cc84033454fee9ea897d3e80fc56e09a87` passed API, static,
+images, consumers and CodeQL, but failed four of 1,225 PostgreSQL tests. Three stale-access
+full-path expectations still required a handler exception after a committed DELETE guard retry;
+they now require a completed receipt, no handler replay and the same later independently guarded
+reserve-bot recovery, retaining all no-effect/no-strike assertions before permission proof.
+The fourth failure was fixture teardown: deleting 801 dispositions together exceeded its
+five-second statement timeout while PostgreSQL checked retained webhook foreign keys. Teardown
+now deletes at most 100 owned disposition IDs per statement under a fixed page bound. Production
+query budgets and runtime recovery code remain unchanged. Both repaired suites passed locally:
+41 real-store tests, no skips. Exact-SHA CI and deployment still require completion.
