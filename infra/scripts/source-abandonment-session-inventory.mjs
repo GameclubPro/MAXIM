@@ -340,7 +340,9 @@ export async function planSourceAbandonmentSessionChildren({
     admissionCost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
   let calls = 0,
     rejected = 0,
-    ownersPerChild = sessionLimits.ownersPerChild,
+    // FLAG: Leave initial SQL headroom without reinterpreting a mixed refusal.
+    // The persisted per-child authority ceiling remains eight owners.
+    ownersPerChild = 7,
     registryDigest = null,
     reason = null;
   const result = () => ({
