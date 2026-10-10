@@ -270,6 +270,35 @@ function splittable(value) {
     )
   );
 }
+const selectedSqlDescriptors = new Set([
+  'sql:webhook_events',
+  'sql:webhook_execution_claims',
+  'sql:chat_settings',
+  'sql:moderation_delete_intents',
+  'sql:moderation_delete_intent_reasons',
+  'sql:moderation_rule_followups',
+  'sql:moderation_events',
+  'sql:moderation_violation_message_claims',
+  'sql:spammer_observations',
+  'sql:max_action_ledger',
+  'sql:channel_auto_post_attach_markers',
+  'sql:source-size',
+  'sql:exact-source-family',
+]);
+function selectedSqlPageBudget(value) {
+  const issue = value.issues?.[0];
+  return (
+    Array.isArray(value.issues) &&
+    value.issues.length === 1 &&
+    issue !== null &&
+    typeof issue === 'object' &&
+    !Array.isArray(issue) &&
+    Object.keys(issue).sort().join(',') === 'code,descriptor' &&
+    issue.code === 'sql_budget_exceeded' &&
+    selectedSqlDescriptors.has(issue.descriptor) &&
+    value.cost.pages >= 511
+  );
+}
 
 export async function planSourceAbandonmentSessionChildren({
   enumeration: input,
@@ -311,6 +340,7 @@ export async function planSourceAbandonmentSessionChildren({
     admissionCost = { pages: 0, rows: 0, probes: 0, bytes: 0 };
   let calls = 0,
     rejected = 0,
+    ownersPerChild = sessionLimits.ownersPerChild,
     registryDigest = null,
     reason = null;
   const result = () => ({
@@ -333,10 +363,11 @@ export async function planSourceAbandonmentSessionChildren({
     return result();
   }
   const admit = async (authorities) => {
-    if (reason !== null) return;
+    if (reason !== null) return 0;
+    if (authorities.length > ownersPerChild) return admit(authorities.slice(0, ownersPerChild));
     if (calls >= maximumAdmissionCalls || now() >= deadlineAtMs) {
       reason = 'admission_budget';
-      return;
+      return 0;
     }
     const selection = {
       ownerWebhookEventIds: authorities.map((row) => row.ownerId).sort(),
@@ -388,22 +419,29 @@ export async function planSourceAbandonmentSessionChildren({
     admissionProofs.push(admissionDigest);
     if (now() >= deadlineAtMs) {
       reason = 'admission_budget';
-      return;
+      return 0;
     }
     if (admission.decision === 'DENY') {
       fact(admission.sourceCoverageComplete === false, 'session_inventory_admission_unproved');
+      // FLAG: A known SQL page ceiling permits only a smaller fresh read. Keep
+      // every unconsumed owner and charge failed proofs; it never excludes one.
+      if (selectedSqlPageBudget(admission)) {
+        if (authorities.length === 1) reason = 'global_admission_refused';
+        else ownersPerChild = authorities.length - 1;
+        return 0;
+      }
       if (!splittable(admission)) {
         reason = 'global_admission_refused';
-        return;
+        return 0;
       }
       if (authorities.length === 1) {
         rejected++;
-        return;
+        return 1;
       }
       const midpoint = Math.ceil(authorities.length / 2);
-      await admit(authorities.slice(0, midpoint));
-      await admit(authorities.slice(midpoint));
-      return;
+      const consumed = await admit(authorities.slice(0, midpoint));
+      if (consumed < midpoint || reason !== null) return consumed;
+      return consumed + (await admit(authorities.slice(midpoint)));
     }
     validateSourceAbandonmentSessionAdmission({
       admission,
@@ -417,7 +455,7 @@ export async function planSourceAbandonmentSessionChildren({
     });
     if (children.length >= maximumChildren) {
       reason = 'child_limit';
-      return;
+      return 0;
     }
     const certificate = certificateId();
     fact(
@@ -433,9 +471,10 @@ export async function planSourceAbandonmentSessionChildren({
       admissionDigest,
       authorities: structuredClone(authorities),
     });
+    return authorities.length;
   };
-  for (let index = 0; index < enumeration.authorities.length && reason === null; index += 8)
-    await admit(enumeration.authorities.slice(index, index + 8));
+  for (let index = 0; index < enumeration.authorities.length && reason === null; )
+    index += await admit(enumeration.authorities.slice(index, index + ownersPerChild));
   if (reason === null && children.length === 0) reason = 'no_supported_children';
   return result();
 }

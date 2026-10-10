@@ -394,6 +394,235 @@ test('DENY group splits to individuals without losing the supported subset', asy
   assert.equal(h.peak(), 1);
 });
 
+function sqlPageDenial(value, descriptor = 'sql:channel_auto_post_attach_markers') {
+  return {
+    ...value,
+    decision: 'DENY',
+    sourceCoverageComplete: false,
+    issues: [{ code: 'sql_budget_exceeded', descriptor }],
+    cost: { pages: 511, rows: 313, probes: 5916, bytes: 348961 },
+  };
+}
+
+test('SQL page exhaustion repacks all 165 owners into 24 fresh children and charges every proof', async (t) => {
+  const enumeration = writeWalk(
+    t,
+    Array.from({ length: 165 }, (_, i) => row(i + 1)),
+  ).read();
+  const h = planner(enumeration, (value, input) =>
+    input.selection.ownerWebhookEventIds.length > 7 ? sqlPageDenial(value) : value,
+  );
+  const result = await planSourceAbandonmentSessionChildren(h.options);
+  assert.equal(result.feasible, true);
+  assert.equal(result.children.length, 24);
+  assert.equal(result.admissionCalls, 25);
+  assert.deepEqual(
+    result.children.flatMap((child) => child.authorities),
+    enumeration.authorities,
+  );
+  assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+  assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+  for (const key of ['pages', 'rows', 'probes', 'bytes'])
+    assert.equal(
+      result.admissionCost[key],
+      h.proofs.reduce((sum, proof) => sum + proof.cost[key], 0),
+    );
+  assert.equal(result.admissionCost.pages, 559);
+  assert.deepEqual(
+    h.calls.map((call) => call.selection.ownerWebhookEventIds.length),
+    [8, ...Array(23).fill(7), 4],
+  );
+  for (const child of result.children) {
+    const proof = h.proofs.find((value) => proofDigest(value) === child.admissionDigest);
+    assert.equal(proof.decision, 'READY_FOR_COLD_REVIEW');
+    assert.equal(proof.selectionSha256, canonical(child.selection));
+  }
+  assert.equal(h.peak(), 1);
+});
+
+test('successively smaller SQL groups retain all owners and the hard child ceiling', async (t) => {
+  const enumeration = writeWalk(
+    t,
+    Array.from({ length: 193 }, (_, i) => row(i + 1)),
+  ).read();
+  const h = planner(enumeration, (value, input) =>
+    input.selection.ownerWebhookEventIds.length > 6
+      ? sqlPageDenial(value, 'sql:max_action_ledger')
+      : value,
+  );
+  const result = await planSourceAbandonmentSessionChildren(h.options);
+  assert.equal(result.feasible, false);
+  assert.equal(result.reason, 'child_limit');
+  assert.equal(result.admissionCalls, 35);
+  assert.equal(result.nominatedOwners, 193);
+  assert.deepEqual(result.children, []);
+  assert.equal(result.excludedCounts.rejected, 0);
+  assert.deepEqual(
+    h.calls.slice(0, 3).map((call) => call.selection.ownerWebhookEventIds.length),
+    [8, 7, 6],
+  );
+});
+
+for (const budgetBranch of ['left', 'right'])
+  test(`SQL exhaustion inside the ${budgetBranch} semantic branch preserves the unconsumed suffix`, async (t) => {
+    const enumeration = writeWalk(
+      t,
+      Array.from({ length: 11 }, (_, i) => row(i + 1)),
+    ).read();
+    const rejectedOwner = enumeration.authorities[7].ownerId;
+    const budgetOwner = enumeration.authorities[budgetBranch === 'left' ? 0 : 4].ownerId;
+    const h = planner(enumeration, (value, input) => {
+      const selected = input.selection.ownerWebhookEventIds;
+      if (selected.length === 4 && selected.includes(budgetOwner)) return sqlPageDenial(value);
+      if (selected.length === 8 || selected.includes(rejectedOwner))
+        return {
+          ...value,
+          decision: 'DENY',
+          sourceCoverageComplete: false,
+          issues: [{ code: 'source_content_unproved', descriptor: 'sql:selected-source' }],
+        };
+      return value;
+    });
+    const result = await planSourceAbandonmentSessionChildren(h.options);
+    assert.equal(result.feasible, true);
+    assert.deepEqual(
+      result.children.flatMap((child) => child.authorities),
+      enumeration.authorities.filter((value) => value.ownerId !== rejectedOwner),
+    );
+    assert.equal(result.excludedCounts.rejected, 1);
+    const accepted = h.proofs.filter((value) => value.decision === 'READY_FOR_COLD_REVIEW');
+    assert.equal(
+      new Set(
+        accepted.flatMap((value) => value.selectedOwners.map((owner) => owner.ownerWebhookEventId)),
+      ).size,
+      10,
+    );
+    if (budgetBranch === 'right')
+      assert.equal(
+        h.calls.filter((call) =>
+          call.selection.ownerWebhookEventIds.includes(enumeration.authorities[0].ownerId),
+        ).length,
+        2,
+      );
+  });
+
+test('a singleton SQL resource refusal cannot be excluded as unsupported content', async (t) => {
+  const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => sqlPageDenial(value));
+  const result = await planSourceAbandonmentSessionChildren(h.options);
+  assert.equal(result.reason, 'global_admission_refused');
+  assert.equal(result.admissionCalls, 2);
+  assert.equal(result.excludedCounts.rejected, 0);
+  assert.deepEqual(result.children, []);
+});
+
+for (const [name, change] of [
+  [
+    'global kind census',
+    (value) => {
+      value.issues[0].descriptor = 'sql:claim-kind-prefix';
+    },
+  ],
+  [
+    'default SQL scope',
+    (value) => {
+      value.issues[0].descriptor = 'sql:inventory';
+    },
+  ],
+  [
+    'unknown table',
+    (value) => {
+      value.issues[0].descriptor = 'sql:unknown_table';
+    },
+  ],
+  [
+    'semantic callback',
+    (value) => {
+      value.issues[0].descriptor = 'sql:selected-source';
+    },
+  ],
+  [
+    'mixed content failure',
+    (value) => {
+      value.issues.push({ code: 'source_content_unproved', descriptor: 'sql:selected-source' });
+    },
+  ],
+  [
+    'multiple budget issues',
+    (value) => {
+      value.issues.push(clone(value.issues[0]));
+    },
+  ],
+  [
+    'extra issue metadata',
+    (value) => {
+      value.issues[0].extra = true;
+    },
+  ],
+  [
+    'unknown issue',
+    (value) => {
+      value.issues[0].code = 'sql_deadline_exceeded';
+    },
+  ],
+  [
+    'missing issue',
+    (value) => {
+      value.issues = [null];
+    },
+  ],
+  [
+    'non-array issues',
+    (value) => {
+      value.issues = {};
+    },
+  ],
+  [
+    'unproved page exhaustion',
+    (value) => {
+      value.cost.pages = 510;
+    },
+  ],
+])
+  test(`SQL packing refuses ${name} without another admission`, async (t) => {
+    const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => {
+      const denied = sqlPageDenial(value);
+      change(denied);
+      return denied;
+    });
+    const result = await planSourceAbandonmentSessionChildren(h.options);
+    assert.equal(result.reason, 'global_admission_refused');
+    assert.equal(result.admissionCalls, 1);
+    assert.equal(result.excludedCounts.rejected, 0);
+    assert.deepEqual(result.children, []);
+  });
+
+for (const limit of ['calls', 'deadline'])
+  test(`SQL repacking preserves the ${limit} budget and retained denial cost`, async (t) => {
+    let clock = 1000;
+    const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => {
+      if (limit === 'deadline') clock = 60000;
+      return sqlPageDenial(value);
+    });
+    const result = await planSourceAbandonmentSessionChildren({
+      ...h.options,
+      maximumAdmissionCalls: 1,
+      now: () => clock,
+    });
+    assert.equal(result.reason, 'admission_budget');
+    assert.equal(result.admissionCalls, 1);
+    assert.equal(result.admissionCost.pages, 511);
+    assert.deepEqual(result.children, []);
+  });
+
+test('SQL repacking validates the new complete admission before accepting a child', async (t) => {
+  const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value, input) => {
+    if (input.selection.ownerWebhookEventIds.length === 2) return sqlPageDenial(value);
+    value.selectedOwners[0].claimId = 'changed';
+    return value;
+  });
+  await assert.rejects(planSourceAbandonmentSessionChildren(h.options), /unproved/);
+});
+
 for (const [name, change] of [
   [
     'source identity',
