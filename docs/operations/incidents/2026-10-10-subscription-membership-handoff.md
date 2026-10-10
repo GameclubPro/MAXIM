@@ -298,3 +298,94 @@ assertions. It retains the index-only/index-scan requirement, exact primary-key 
 260-row maximum and all independent-bot/scope-overflow assertions. No planner switches are
 forced. The full focused native suite passed 37 cases with no skips; production recovery
 still awaits successful release checks and actual rollout.
+
+## Final queue recovery checkpoint, 18:21 UTC
+
+The deployed source is `ab9b389233c2ea8ce2e33022d43cbc6dbe09e814`, API image
+`sha256:3bd08a1880b93871ff60ec3909a65ae6f876f407425acf3110f3633e314a77fd`.
+Exact-SHA Required and CodeQL passed (runs `38071459812` and `38071459756`). The CI
+PostgreSQL lane passed all 1,225 cases. A separate full local run had two group-command
+retention-count fixture failures (foreign retained rows); the sequential fleet/command
+isolation run passed 37 + 37 tests. Do not report that full local run as green or weaken
+production assertions to make fixture cleanup pass.
+
+The shared image converged across all 14 API roles and both native auxiliaries; both static
+components also converged. Deploy then stopped at readiness because the old backlog remained.
+The unchanged deploy was not repeated. Cancellation
+`e4a707c7-e1e5-46c3-9f97-59c066ea14cc`, fixed cutoff `2026-10-10T17:48:17.438Z`, completed:
+six projected receipts, 32 removed jobs, zero retained locked jobs. Services were restored around
+17:55 UTC. Cancellation preserves user data, original claims and uncertain effects; these counts
+are abandonment results, not successful moderation or permission to repeat the operation.
+
+After queue recovery, `vps-connect.sh finalize-release-recovery main` passed exact-SHA CI,
+stable runtime/fence observations, migration inventory, API/static readiness and native OCR
+isolation/raster smokes. It recorded
+`release-finalized-20261010T182125Z-ab9b389233c2-557333` without recreating the runtime.
+This is the completed release identity; do not resume the earlier failed deployment journal.
+
+### Observed queue and moderation results
+
+- Readiness was continuously healthy in 61 samples from `18:01:40.287` to `18:16:44.034` UTC
+  (903.747 seconds, roughly 15-second sampling): normal mode, healthy PostgreSQL/Redis,
+  raw/operational queue checks passing, no burst, lag 0–8.533 seconds. Final lag was below
+  one second. This is sampled evidence, not uninterrupted observation between probes.
+- The closed `17:59:30–17:59:35` receipt cohort contained 42 events: 36 PROCESSED and six
+  DUPLICATE. The closed `18:12:00–18:12:05` cohort contained 47: 40 PROCESSED and seven
+  DUPLICATE. Both were complete under the 256-per-status cap, with zero RECEIVED, QUEUED,
+  FAILED, CANCELLED or NO_REPLAY_HELD. Completed-only p95 was 467.5 ms and 555.45 ms,
+  respectively. Invalid-clock counts were two and one: preserve those exceptions and do not
+  assert the helper's stronger independent-group acceptance, which remained false. Both
+  reports followed reviewed plain indexed plans; neither proves remote effects.
+- At `18:14:48` all 53 registered Redis queues were unpaused and webhook transport queues
+  had no waiting/active work in that snapshot. Night-mode had zero due/waiting/active jobs
+  and 5,148 future transitions. Delete intents had 89 prioritized and two active jobs;
+  the 32-job queued sample was at most 7.842 seconds old, active locks were present and
+  neither job had run for 0.1 seconds. This queue was serving current work, not empty.
+- The fixed moderation-outcomes audit at `18:18:55.710763` returned its capped 512 latest
+  events, spanning `18:05:27.714–18:18:52.871`: at least three remote-confirmed mute
+  enforcement deletions, four remote-confirmed administrator bans and 19 installed bot
+  mutes. The sample was truncated; installation alone does not prove mute enforcement,
+  every attempt, current mute state or every chat's health. No diagnostic messages were sent.
+- The complete bounded log sample `18:05:00–18:17:00` had no new classified webhook
+  handler/preparation failures across the 14 roles. Enqueue samples separated selection
+  (27–115 ms in the final captured batch samples) from enqueue/preparation work; recorded
+  work-unit errors were zero. Temporary ordered-head/preparation waits still occurred.
+  The five-second cohort's separate metrics window contained no log rows and is not a
+  throughput measurement; the longer phase sample also lacks a full ingress denominator.
+
+### Remaining observations, not cleared by this recovery
+
+- OCR recycled twice at `18:04:29.840236679` and `18:16:15.515417523` UTC after
+  `native_timeout` during recognition, with zero pending bytes/queue depth. It returned
+  healthy; current inspection reported no OOM. Photo sandbox restart count was zero.
+  The first monitor required absolute fleet restart count zero, including auxiliaries, so
+  it correctly exited 2 with `accepted=false` despite the 903.747-second healthy queue
+  interval. Preserve that result. The later finalizer independently proved stable runtime
+  during its smokes; it does not turn the earlier monitor into a pass. Never recreate a
+  sandbox merely to zero a diagnostic counter or disable its mandatory timeout containment.
+- Between `18:00:56.867` and `18:00:59.721`, eight critical-role handler failures at stage
+  `start` pointed to built `max-client.service.js:5364`, the pre-dispatch
+  `MaxApiInternalRateLimitError`. There were also 18 private-control warnings with callback
+  and bad-request metadata between `18:00:47.342` and `18:00:59.088`; their underlying
+  application error was not classified. Do not label all 18 as rate-limit failures or
+  replay started private handlers. No recurrence appeared in the later bounded log window.
+- Publisher binding refresh still had 1,004 prioritized maintenance jobs and two live
+  workers (down from 1,103 at `18:02:15`); its short queued sample reached about 1,053 seconds
+  of creation age. VK sync had five waiting/two active jobs. The later log window contained
+  89 `VK sync post autopublish enqueue failed` warnings and four bounded schedule-limit
+  warnings. Publisher/VK recovery is **not** established and was deferred by the user.
+- Other captured warnings included 40 missing-poll verification and 40 poll-render failures,
+  13 durable night-mode reconciliation retries, eight send-side auto-delete presence-check
+  failures, six unresolved subscription checks failing open, and two moderation skips for
+  missing MAX permissions. There were also unclassified warnings. Their counts are not
+  distinct chats, fresh blockers or proof of successful effects; retain them for targeted
+  follow-up rather than declaring every module error-free or clearing unrelated queues.
+- Anti-duplicate remains deferred. This task did not enable it. At the user's request,
+  stop after queue verification and recording successes/errors; do not expand this checkpoint
+  into a Publisher, OCR, private-menu or poll repair wave without a new request.
+
+Private evidence is under the operator state directory `queue-recovery-20261010`, with the
+final sanitized role sample under `antiduplicate-return-20261010`. Keep raw content, identifiers,
+tokens, request snapshots and local exports out of Git. The durable prevention rules are in
+[webhook latency prevention](../runbooks/webhook-latency-prevention.md), already required by
+the root agent notes before scheduling, execution handoff or backlog changes.

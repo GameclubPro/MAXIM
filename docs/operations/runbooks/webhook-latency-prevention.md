@@ -5,10 +5,13 @@ guards or backlog recovery. It is the durable checklist for the
 [October recovery review](../incidents/2026-10-10-webhook-latency-recovery.md), not a reason to run
 maintenance on a healthy fleet. Root and scoped `AGENTS.md` remain authoritative for delivery.
 
-The reviewed fixes are in runtime `629ae6917dd120bcafd67eca729fe15e7ec1d717`; the native
-notice expectation is corrected in `dc52b5e4ac45d8980f901b957c234440f517b518`. An older checkout
-may lack these implementations or tests. Reconcile the reviewed source before editing it;
-copying these notes does not install a fix or prove which version is deployed.
+The initial fixes are in runtime `629ae6917dd120bcafd67eca729fe15e7ec1d717`; the native
+notice expectation is corrected in `dc52b5e4ac45d8980f901b957c234440f517b518`. Subsequent
+guarded DELETE handoff and production canary corrections, including their completed release
+identity and acceptance limits, are recorded in the
+[subscription/membership incident](../incidents/2026-10-10-subscription-membership-handoff.md).
+An older checkout may lack these implementations or tests. Reconcile the reviewed source
+before editing it; copying these notes does not install a fix or prove the deployed version.
 
 ## Invariants that must survive a change
 
@@ -144,6 +147,18 @@ negative cases, effects evidence and following-event/no-replay checks.
   status, pending/failed counts and ages, cap/truncation, missing samples and invalid-clock counts.
   Label completed-only percentiles as such; report PROCESSED separately from DUPLICATE/CANCELLED.
   An empty or future window is not success. Measure remote actions separately from receipt settlement.
+- Distinguish future delayed schedules, current retryable DELETE work and retained terminal
+  failures from overdue executable backlog. Compare due time, active lock/runtime age and bounded
+  movement across snapshots; queue creation age or a nonzero queue count alone is insufficient.
+  Do not empty every namespace merely to make a dashboard show zero.
+- Separate API-role stability from native sandbox containment. `probeApiFleet.totalRestartCount`
+  includes auxiliaries: classify fixed lifecycle reasons, exact times and OOM/health state before
+  drawing conclusions. A mandatory native timeout recycle is not proof of a stalled webhook
+  queue or healthy OCR throughput. Preserve a failed zero-restart monitor result; use a separate
+  stable runtime observation and the guarded finalizer, never container recreation to reset counts.
+- Diagnose a log location against the exact image's built JS or matching source map, not the same
+  line number in TypeScript. Distinguish a pre-dispatch limiter rejection from an attempted/unknown
+  MAX mutation; neither authorizes whole-handler replay. Record unclassified errors as unresolved.
 - `COMPLETE`, HTTP 200 and container uptime are separate from recovery. Require exact images,
   released queues, healthy dependencies, fresh event progress and action outcomes. The prolonged-
   backlog acceptance remains at least 15 continuous minutes with lag below 10 seconds under the
