@@ -10323,8 +10323,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         settleNoticePlan,
       }) => {
         await assertNoticeLeaseOwned();
-        // FLAG: Only initial leader authorization may treat unavailable source as handled.
-        // Return handled to prevent active-mute fallthrough; later source failures stay errors.
+        // FLAG: This fresh leader has not claimed a violation or begun any sanction.
+        // Unavailable subscription evidence skips this source without punishment; it never
+        // waives later/unknown effects. Return handled to prevent active-mute fallthrough.
         this.markWebhookHotPathStage(
           params.hotPathProfile,
           'required-subscription.initial-authority',
@@ -10334,9 +10335,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } catch (error: unknown) {
           if (
             error instanceof RequiredSubscriptionExecutionRejectedError ||
-            error instanceof RequiredSubscriptionInitialSourceUnavailableError
-          )
+            error instanceof RequiredSubscriptionInitialSourceUnavailableError ||
+            error instanceof RequiredSubscriptionMembershipUnavailableError
+          ) {
+            void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+              stage: 'required-subscription.initial-authority',
+              outcome: 'skip',
+              failOpen: !(error instanceof RequiredSubscriptionExecutionRejectedError),
+            });
             return true;
+          }
           throw error;
         }
         const claimed = await this.claimAndPersistMessageScopedModerationViolation({
@@ -10447,6 +10455,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             sanctionEventId = this.readString(this.asRecord(event)?.id);
           } else {
             let persistedSanctionEventId: string | null = null;
+            this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.sanction');
             const sanctionApplied = await this.applySanctionAction({
               chatId: params.chatId,
               userId: params.userId,
@@ -10491,6 +10500,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
+        this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.notice-plan');
         const candidateNoticePlan = await buildRequiredSubscriptionNoticePlan({
           action: effectiveNoticeAction,
           executionProof,
@@ -10548,6 +10558,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           botId: this.maxBotContextService?.getActiveBotId() ?? null,
           plan: candidateNoticePlan,
         });
+        this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.notice-handoff');
         await settleNoticePlan(durableNoticePlan);
 
         return true;

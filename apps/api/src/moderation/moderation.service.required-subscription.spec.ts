@@ -1589,6 +1589,8 @@ describe('ModerationService', () => {
       }
 
       it.each([
+        [false, new RequiredSubscriptionMembershipUnavailableError()],
+        [true, new RequiredSubscriptionMembershipUnavailableError()],
         [false, new RequiredSubscriptionExecutionRejectedError()],
         [true, new RequiredSubscriptionExecutionRejectedError()],
         [
@@ -1639,7 +1641,6 @@ describe('ModerationService', () => {
           }),
         ],
         ['transient lookup', new Error('Required subscription fresh membership unavailable')],
-        ['initial membership outage', new RequiredSubscriptionMembershipUnavailableError()],
       ])('preserves %s as a failure', async (_label, error) => {
         const f = fixture();
         f.guard.authorize.mockRejectedValue(error);

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Queue, type ConnectionOptions } from 'bullmq';
 import type { MaxActionJob } from '../max/max-client.service';
 import { Prisma } from '../prisma/prisma-client';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
@@ -770,7 +771,12 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     expect(s.effects).toEqual([]);
   });
 
-  it.each(['authority-rejected', 'source-unavailable'] as const)(
+  it.each([
+    'authority-rejected',
+    'source-unavailable',
+    'membership-unavailable',
+    'source-timeout',
+  ] as const)(
     'completes one canonical handler and its mirrors for initial subscription %s',
     async (reason) => {
       const s = await fixture();
@@ -784,6 +790,15 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       const membership = jest
         .spyOn(s.membership, 'getMembershipResolution')
         .mockResolvedValueOnce({ membership: false, fresh: true });
+      if (reason === 'membership-unavailable')
+        membership.mockResolvedValue({ membership: null, fresh: false });
+      if (reason === 'source-timeout')
+        jest.spyOn(s.max, 'getExactMessageRow').mockRejectedValueOnce(
+          Object.assign(new Error('Initial source GET timeout'), {
+            code: 'ECONNABORTED',
+            config: { method: 'get' },
+          }),
+        );
       if (reason === 'source-unavailable') {
         jest.spyOn(s.max, 'getExactMessageRow').mockRejectedValueOnce(
           Object.assign(new Error('Fixture source unavailable'), {
@@ -852,6 +867,20 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       });
       for (const id of ids) await s.moderation.processWebhookEvent(id);
       expect(handler).toHaveBeenCalledTimes(1);
+      expect(s.effects).toEqual([]);
+      membership.mockResolvedValue({ membership: true, fresh: true });
+      const nextId = await s.ingest({
+        chatId: chatId!,
+        messageId: `following-initial-${randomUUID()}`,
+        botId: s.bots[0]!.id,
+        at: Date.now(),
+        text: 'Next event after unavailable initial evidence',
+      });
+      await s.drain();
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status,
+      ).toBe('PROCESSED');
+      expect(handler).toHaveBeenCalledTimes(2);
       expect(s.effects).toEqual([]);
     },
   );
@@ -1159,6 +1188,147 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       expect(handler).toHaveBeenCalledTimes(2);
       expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
       expect(s.failures).toEqual([]);
+    },
+  );
+
+  it.each(['missing', 'joined', 'disabled', 'expired'] as const)(
+    'defers a subscription source timeout to durable guarded actions: %s',
+    async (outcome) => {
+      const s = await fixture();
+      const [chatId, targetId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
+      await s.prisma.chatSettings.update({
+        where: { chatId: chatId! },
+        data: {
+          requiredSubscriptionEnabled: true,
+          requiredSubscriptionChannelIds: [targetId!],
+          requiredSubscriptionWarnEnabled: false,
+          requiredSubscriptionMuteEnabled: false,
+          requiredSubscriptionBanEnabled: false,
+          deleteBotMessagesEnabled: false,
+        },
+      });
+      let missing = true;
+      jest
+        .spyOn(s.membership, 'getMembershipResolution')
+        .mockImplementation(async () => ({ membership: !missing, fresh: true }));
+      const getMembers = s.max.getChatMembersAccess.bind(s.max);
+      jest.spyOn(s.max, 'getChatMembersAccess').mockImplementation(async (...args) => {
+        const members = await getMembers(...args);
+        if (args[0] === targetId && missing) members.delete('fixture-user');
+        return members;
+      });
+      const actionQueue = new Queue<MaxActionJob>(`subscription-timeout-${randomUUID()}`, {
+        connection: s.redis as unknown as ConnectionOptions,
+      });
+      try {
+        await actionQueue.waitUntilReady();
+        Object.assign(s.max, { dispatchEnabled: true, actionQueue });
+        await s.deleteQueue.pause();
+        const getSource = s.max.getExactMessageRow.bind(s.max);
+        const timeout = Object.assign(new Error('Fixture source GET timed out'), {
+          code: 'ECONNABORTED',
+          config: { method: 'get', url: '/messages' },
+        });
+        let unavailable = false;
+        let first = true;
+        jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
+          if (first) {
+            first = false;
+            unavailable = true;
+            return getSource(...args);
+          }
+          if (unavailable) throw timeout;
+          return getSource(...args);
+        });
+        const handler = jest.spyOn(s.moderation, 'handleUpdate');
+        const at = Date.now();
+        const messageId = `source-timeout-${randomUUID()}`;
+        const ids = await Promise.all(
+          s.bots.map((bot) =>
+            s.ingest({
+              chatId: chatId!,
+              messageId,
+              botId: bot.id,
+              at,
+              text: 'Subscription timeout fixture',
+            }),
+          ),
+        );
+        const waitReceipts = async (receiptIds: string[]) => {
+          const until = Date.now() + 10000;
+          while (Date.now() < until) {
+            await s.pumpOnce();
+            if (
+              (await s.prisma.webhookEvent.count({
+                where: { id: { in: receiptIds }, status: { notIn: ['PROCESSED', 'DUPLICATE'] } },
+              })) === 0
+            )
+              return;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          throw new Error('Deferred source read blocked the next webhook');
+        };
+        await waitReceipts(ids);
+        expect(s.failures).toEqual([]);
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(s.effects).toEqual([]);
+        const [queued] = await actionQueue.getJobs(['waiting']);
+        expect(queued).toBeDefined();
+        expect(queued!.data.ledgerContext?.requiredSubscriptionNotice).toMatchObject({
+          sourceAtMs: at,
+          deadlineAtMs: at + 300000,
+        });
+        const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+          where: { chatId_messageId: { chatId: chatId!, messageId } },
+        });
+        expect(intent).toMatchObject({
+          status: 'PENDING',
+          attemptCount: 0,
+          deleteDispatchStartedAt: null,
+          remoteDeleteSucceededAt: null,
+        });
+        expect(intent.retryUntilAt.getTime()).toBe(at + 300000);
+        // The independent executor must fail before POST while the GET is still unavailable.
+        await expect((s.max as any).executeImmediateActionJob(queued!.data)).rejects.toBe(timeout);
+        expect(s.effects).toEqual([]);
+        for (const id of ids) await s.moderation.processWebhookEvent(id);
+        expect(handler).toHaveBeenCalledTimes(1);
+        unavailable = false;
+        missing = false;
+        const nextId = await s.ingest({
+          chatId: chatId!,
+          messageId: `after-timeout-${randomUUID()}`,
+          botId: s.bots[0]!.id,
+          at: at + 1,
+          text: 'Next same-chat event',
+        });
+        await waitReceipts([nextId]);
+        expect(handler).toHaveBeenCalledTimes(2);
+        if (outcome !== 'joined') missing = true;
+        if (outcome === 'disabled')
+          await s.prisma.chatSettings.update({
+            where: { chatId: chatId! },
+            data: { requiredSubscriptionEnabled: false },
+          });
+        const clock =
+          outcome === 'expired' ? jest.spyOn(Date, 'now').mockReturnValue(at + 300001) : null;
+        try {
+          const execution = (s.max as any).executeImmediateActionJob(queued!.data);
+          if (outcome === 'missing') await execution;
+          else await expect(execution).rejects.toThrow();
+        } finally {
+          clock?.mockRestore();
+        }
+        expect(s.effects.filter((effect) => effect.method === 'post')).toHaveLength(
+          outcome === 'missing' ? 1 : 0,
+        );
+        expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(0);
+        expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+        expect(handler).toHaveBeenCalledTimes(2);
+      } finally {
+        await actionQueue.obliterate({ force: true });
+        await actionQueue.close();
+      }
     },
   );
 

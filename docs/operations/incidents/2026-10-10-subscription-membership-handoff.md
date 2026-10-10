@@ -119,3 +119,53 @@ Fresh callback identity remains independent from a previous message-family cance
 The native regression checks SQL/object agreement and the real preparation/worker path while
 preserving the original CANCELLED receipt. The source-404 fix and this predicate correction
 must be deployed together before assessing the remaining old started heads.
+
+## Second deployment: transient improvement, then source-read timeout
+
+Source `710cefecfe1946f6e83403f6305df9081b81eb0c`, image
+`sha256:77e3c0155edd40d3a88284247846c6da8c42d0d91af2ae34a59301e3a8fd219f`
+converged across all 14 API roles and two native auxiliaries. Required and CodeQL were green;
+CI preload avoided a clean build below its disk reserve. The interrupted release journal caused
+normal component reconciliation, including both static components. Readiness timed out and the
+current release manifest remained unfinalized.
+
+Cancellation `4d810e0a-cbfa-4efc-9020-3658fd21fd10`, fixed cutoff
+`2026-10-10T11:54:23.695Z`, completed in one successful pass: 64 projected receipts,
+86 removed jobs, zero retained locked jobs. A closed 12:04:32.695–12:04:37.695 cohort contained
+66 receipts without truncation: 46 PROCESSED, 20 DUPLICATE, no pending or failed receipts.
+Eleven invalid-clock exclusions (including five processed receipts) limit timestamp coverage.
+Completed-only valid-clock p50/p95/max were 580/974/1,111 ms. This was short improvement only.
+
+At 12:09:12.933 a new handler failure appeared in `required-subscription.follow-up`, GET messages
+collection, no HTTP status. Its adjacent MAX failure diagnostic at 12:09:12.929 identified
+`ECONNABORTED`; the original execution diagnostic did not allowlist this code. A bounded owner
+audit at 12:13:36 showed a new 12:09:06.997 FAILED predecessor with business start
+12:09:07.541, no lease and no finished checkpoint. Lag grew again. The 15-minute sustained
+acceptance criterion was not met; the broad follow-up stage alone cannot distinguish a sanction
+qualification from a notice handoff. No started handler was replayed or marked successful.
+
+The next correction covers an exact source GET transport outage before a notice handoff, and
+before its subsequent durable DELETE intent. Only a finite no-HTTP transport-code set without
+mutation markers can defer. The SEND keeps its serialized original source/policy/deadline and
+must actually be accepted by the normal guarded action path; failure does not settle the handler.
+The independent executor still rejects unknown source, renewed membership, changed policy and
+expired authority before any POST. DELETE requires its committed executable intent and fresh
+worker authority. Sanctions, HTTP 503, unknown failures and attempted mutations retain their fences. More specific sanction/notice-plan/notice-handoff stages and
+an allowlisted ECONNABORTED diagnostic make future failures attributable to their real boundary.
+
+Validation, rollout and sustained acceptance of this additional correction are recorded separately.
+
+At 12:13:02.774, the 12:10–12:27 bounded log window also identified a separate typed
+`subscription_membership_unavailable` in `required-subscription.initial-authority`. The fresh
+leader has not claimed the feature violation or begun a sanction at this exact boundary.
+Its typed unavailable membership or source transport outcome now finishes without sanction,
+notice, DELETE or active-mute fallthrough, retaining an explicit fail-open stage diagnostic.
+This matches the existing initial membership/source-unavailable policy and does not catch
+arbitrary errors or allow a later mutation failure to masquerade as initial qualification.
+Both new initial native cases failed before this correction and verify mirrored settlement,
+no feature effects, following same-chat progress and no started-handler replay afterward.
+
+Local validation of the expanded change passed all 40 native full-path scenarios. The combined
+run had one outdated unit expectation that still required an initial membership outage to throw;
+its replacement joins the existing muted/unmuted pre-write matrix and retains every no-effect
+assertion. Unknown lookalike errors and later boundaries keep their negative assertions.

@@ -98,12 +98,27 @@ function fixture() {
 }
 
 describe('required subscription execution authorization', () => {
-  it.each(['404', 'missing-id'])(
+  it.each([
+    '404',
+    'missing-id',
+    'ECONNABORTED',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'EAI_AGAIN',
+    'ECONNREFUSED',
+  ])(
     'classifies exact source %s only for durable DELETE handoff, without granting deletion',
     async (failure) => {
       const s = fixture();
       const error =
-        failure === '404' ? { response: { status: 404, data: {} } } : await exactLookupFailure({});
+        failure === '404'
+          ? { response: { status: 404, data: {} } }
+          : failure === 'missing-id'
+            ? await exactLookupFailure({})
+            : Object.assign(new Error('source read failed'), {
+                code: failure,
+                config: { method: 'get' },
+              });
       s.max.getExactMessageRow.mockRejectedValue(error);
       const beforeFinalAuthority = jest.fn();
       await expect(

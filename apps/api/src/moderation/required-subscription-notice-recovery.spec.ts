@@ -175,6 +175,40 @@ describe('required subscription notice recovery before dispatch', () => {
     },
   );
 
+  it('hands off a source read timeout without treating it as delivered authorization', async () => {
+    const s = fixture();
+    const timeout = Object.assign(new Error('timeout of 5000ms exceeded'), {
+      code: 'ECONNABORTED',
+      config: { method: 'get', url: '/messages' },
+    });
+    s.max.getExactMessageRow.mockRejectedValue(timeout);
+    await expect(s.run()).resolves.toBe(true);
+    // This fake represents the accepted guarded send handoff, not a remote POST.
+    expect(s.remoteSend).toHaveBeenCalledTimes(1);
+    expect(s.executeDelete).toHaveBeenCalledTimes(1);
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(['attempted', 'member', 'lease', 'post', 'handoff'] as const)(
+    'retains a transport failure at the %s boundary',
+    async (boundary) => {
+      const s = fixture();
+      const error = Object.assign(new Error('read timed out'), {
+        code: 'ECONNABORTED',
+        config: { method: boundary === 'post' ? 'post' : 'get' },
+      });
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      if (boundary === 'attempted') markMaxMessageSendAttempted(error);
+      if (boundary === 'member') s.max.getChatMemberAccess.mockRejectedValue(error);
+      if (boundary === 'lease')
+        s.redis.renewLock.mockResolvedValueOnce(true).mockRejectedValue(error);
+      if (boundary === 'handoff') s.remoteSend.mockRejectedValue(error);
+      await expect(s.run()).rejects.toBe(error);
+      expect(s.executeDelete).not.toHaveBeenCalled();
+      expect(s.coverage.upsert).not.toHaveBeenCalled();
+    },
+  );
+
   it('does not swallow a send failure after successful authority', async () => {
     const s = fixture();
     s.max.getExactMessageRow.mockResolvedValue({

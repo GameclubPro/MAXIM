@@ -19,6 +19,7 @@ import {
   assertRequiredSubscriptionNoticeAuthority,
   RequiredSubscriptionNoticeRejectedError,
   RequiredSubscriptionNoticeSourceUnavailableError,
+  RequiredSubscriptionNoticeSourceReadDeferredError,
   type RequiredSubscriptionNoticeAuthority,
 } from './required-subscription-notice-authority';
 
@@ -98,6 +99,11 @@ export class RequiredSubscriptionExecutionGuardService {
           )
             throw new RequiredSubscriptionNoticeSourceUnavailableError(
               'Required subscription notice source unavailable',
+              { cause: error },
+            );
+          if (isRequiredSubscriptionSourceReadTransportFailure(error))
+            throw new RequiredSubscriptionNoticeSourceReadDeferredError(
+              'Required subscription notice source read deferred',
               { cause: error },
             );
           throw error;
@@ -225,6 +231,16 @@ export class RequiredSubscriptionExecutionGuardService {
           throw new RequiredSubscriptionInitialSourceUnavailableError(error);
         throw new RequiredSubscriptionDeleteSourceUnavailableError(error);
       }
+      if (
+        params.initialQualification === true &&
+        isRequiredSubscriptionSourceReadTransportFailure(error)
+      )
+        throw new RequiredSubscriptionInitialSourceUnavailableError(error);
+      if (
+        params.deleteHandoffQualification === true &&
+        isRequiredSubscriptionSourceReadTransportFailure(error)
+      )
+        throw new RequiredSubscriptionDeleteSourceUnavailableError(error);
       throw error;
     }
     if (!row) return 'absent';
@@ -306,4 +322,25 @@ export class RequiredSubscriptionExecutionGuardService {
   private reject(): never {
     throw new RequiredSubscriptionExecutionRejectedError();
   }
+}
+
+// FLAG: Called only around the exact source GET, never around sanctions or sends.
+// HTTP errors, mutation markers and arbitrary failures retain their existing fences.
+function isRequiredSubscriptionSourceReadTransportFailure(error: unknown): boolean {
+  if (
+    !error ||
+    typeof error !== 'object' ||
+    extractHttpStatusCode(error) !== null ||
+    wasMaxMessageSendAttempted(error) ||
+    wasMaxMemberMutationAttempted(error) ||
+    isMaxMutationOutcomeAmbiguous(error)
+  )
+    return false;
+  const record = error as { code?: unknown; config?: { method?: unknown } };
+  return (
+    ['ECONNABORTED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ECONNREFUSED'].includes(
+      String(record.code),
+    ) &&
+    (record.config?.method === undefined || record.config.method === 'get')
+  );
 }

@@ -360,6 +360,9 @@ export const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
 export const WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES = new Set([
   'violation-follow-up',
   'required-subscription.follow-up',
+  'required-subscription.sanction',
+  'required-subscription.notice-plan',
+  'required-subscription.notice-handoff',
 ]);
 export const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
 export const BOT_NOTICE_TOKEN_BUCKET_TTL_SEC = 60;

@@ -39,6 +39,15 @@ copying these notes does not install a fix or prove which version is deployed.
    persistence, shadow/off, ambiguous state or lost notice ownership still fails. The worker must
    obtain fresh membership and current policy before deletion. This is neither a DELETE receipt
    nor permission to replay the notification, sanction or original webhook handler.
+   A typed source GET transport timeout before notice handoff may defer to the already-guarded
+   SEND action only with the exact serialized proof, original deadline and renewed notice lease.
+   The handoff must succeed before coverage or DELETE admission; source-read deferral never proves
+   delivery or deletion. A post-handoff source transport outage requires a committed executable
+   DELETE intent. Keep HTTP errors, attempted mutations, sanction qualification and lost
+   leases fenced. At the fresh initial leader boundary, before violation claim or any sanction,
+   typed unavailable membership/source transport may finish without effects; retain a fail-open
+   diagnostic, prevent active-mute fallthrough and never reuse this exception after effects begin. Test real queue persistence, continued same-chat progress and final worker
+   refusal while the source remains unknown or membership/policy/deadline has changed.
 5. **Observation is not execution.** A PROCESSED receipt can be a dormant-bot observation.
    Exclude only its exact validated marker with no linked claim; preserve the semantic anchor and
    every independent replay fence. `bot_added` must not demand an ordinary live executor or

@@ -28,6 +28,7 @@ const SAFE_ERROR_CODES = new Set([
   '57014',
   '53200',
   '53300',
+  'ECONNABORTED',
   'ECONNRESET',
   'ECONNREFUSED',
   'ETIMEDOUT',

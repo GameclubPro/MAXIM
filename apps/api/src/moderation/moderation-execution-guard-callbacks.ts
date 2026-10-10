@@ -33,6 +33,7 @@ import {
   readRequiredSubscriptionNoticeAuthority,
   RequiredSubscriptionNoticeRejectedError,
   RequiredSubscriptionNoticeSourceUnavailableError,
+  RequiredSubscriptionNoticeSourceReadDeferredError,
   RequiredSubscriptionNoticeNotDispatchedError,
 } from './required-subscription-notice-authority';
 
@@ -371,6 +372,13 @@ export function createRequiredSubscriptionNoticeHandoff(
           try {
             await guard.assertNoticeAllowed(proof, readSelectedBotId(), beforeFinalAuthority);
           } catch (error) {
+            // FLAG: This callback precedes the durable SEND handoff. A typed read-only
+            // outage may defer to its serialized proof's worker guard, never to an
+            // unguarded POST. Handoff failure still throws; no success is fabricated.
+            if (error instanceof RequiredSubscriptionNoticeSourceReadDeferredError) {
+              await lease();
+              return;
+            }
             if (
               error instanceof RequiredSubscriptionNoticeRejectedError ||
               error instanceof RequiredSubscriptionNoticeSourceUnavailableError
