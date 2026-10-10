@@ -82,6 +82,36 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
       WHERE id = ${id} AND sealed_at IS NULL`);
   }
 
+  it('preserves Redis snapshots containing strings rejected by PostgreSQL JSONB', async () => {
+    const { withPortableJobSnapshots } = createRequire(__filename)(
+      '../../../../infra/scripts/backlog-cancellation-pending-client.cjs',
+    );
+    const operation = request();
+    await db.webhookBacklogCancellation.create({
+      data: {
+        id: operation.id,
+        cutoff: new Date(operation.cutoff),
+        sourceSha: operation.sourceSha,
+        imageId: operation.imageId,
+      },
+    });
+    const key = randomUUID();
+    const snapshot = JSON.stringify({
+      opts: { legacyLabel: '\ud800' },
+      data: { value: 'unchanged' },
+    });
+    const query = Prisma.sql`INSERT INTO webhook_backlog_children (kind,child_key,cancellation_id,original_snapshot)
+      VALUES ('MAX_ACTION',${key},${operation.id},${snapshot}::jsonb) ON CONFLICT (kind,child_key) DO NOTHING`;
+    await expect(db.$executeRaw(query)).rejects.toThrow();
+    await withPortableJobSnapshots(db, Prisma).$executeRaw(query);
+    const row = await db.webhookBacklogChild.findUniqueOrThrow({
+      where: { kind_childKey: { kind: 'MAX_ACTION', childKey: key } },
+    });
+    const encoded = row.originalSnapshot as { format: string; jsonUtf8Base64: string };
+    expect(encoded.format).toBe('BULLMQ_JOB_JSON_UTF8_BASE64_V1');
+    expect(Buffer.from(encoded.jsonUtf8Base64, 'base64').toString('utf8')).toBe(snapshot);
+  });
+
   it('continues captured cancellation through pending heads without scanning terminal failed history', async () => {
     const { capturePending, pendingPageSql, assertPendingPlan } = createRequire(__filename)(
       '../../../../infra/scripts/backlog-cancellation-pending-client.cjs',

@@ -133,7 +133,14 @@ async function main() {
       progress,
       deadline,
     );
-    await original.visitBacklogQueues(db, redis, request, false, progress, deadline);
+    await original.visitBacklogQueues(
+      withPortableJobSnapshots(db, Prisma),
+      redis,
+      request,
+      false,
+      progress,
+      deadline,
+    );
     await db.$executeRaw(Prisma.sql`UPDATE webhook_backlog_cancellations SET sealed_at=clock_timestamp() AT TIME ZONE 'UTC'
       WHERE id=${request.id} AND sealed_at IS NULL`);
     const projected = await original.projectBacklogReceipts(db, request.id, progress, deadline);
@@ -151,7 +158,35 @@ async function main() {
     await db.$disconnect();
   }
 }
-module.exports = { pendingPageSql, assertPendingPlan, capturePending };
+// FLAG: Redis job metadata can contain lone UTF-16 surrogates accepted by JSON.parse
+// but rejected by PostgreSQL JSONB. Preserve the exact serialized JSON bytes in an
+// explicit envelope; source identity, eligibility and all claim evidence stay intact.
+function withPortableJobSnapshots(db, Prisma) {
+  return new Proxy(db, {
+    get(target, property) {
+      if (property === '$executeRaw')
+        return async (query) => {
+          if (query?.sql?.includes('INSERT INTO webhook_backlog_children')) {
+            if (query.values.length !== 3 || typeof query.values[2] !== 'string')
+              throw Error('Unexpected child snapshot query');
+            JSON.parse(query.values[2]);
+            const snapshot = JSON.stringify({
+              format: 'BULLMQ_JOB_JSON_UTF8_BASE64_V1',
+              jsonUtf8Base64: Buffer.from(query.values[2], 'utf8').toString('base64'),
+            });
+            return target.$executeRaw(Prisma.sql`INSERT INTO webhook_backlog_children
+          (kind,child_key,cancellation_id,original_snapshot)
+          VALUES ('MAX_ACTION',${query.values[0]},${query.values[1]},${snapshot}::jsonb)
+          ON CONFLICT (kind,child_key) DO NOTHING`);
+          }
+          return target.$executeRaw(query);
+        };
+      const value = target[property];
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+module.exports = { pendingPageSql, assertPendingPlan, capturePending, withPortableJobSnapshots };
 if (require.main === module)
   main().catch((error) => {
     const known = [

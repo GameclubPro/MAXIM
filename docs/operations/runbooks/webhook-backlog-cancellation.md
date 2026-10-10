@@ -58,6 +58,11 @@ source receipt and helper hash, mounts only that helper read-only into the origi
 image, and uses the same deploy lock and journal. Green exact controller CI is required unless
 the existing explicit emergency bypass and nonempty recorded reason are supplied. Never use
 the continuation to change runtime code or the frozen request.
+Redis job snapshots use an explicit `BULLMQ_JOB_JSON_UTF8_BASE64_V1` envelope when written by
+the continuation, preserving the exact serialized JSON even when PostgreSQL rejects a string
+in the original job metadata. A reviewed helper correction requires the exact last helper
+digest in `MAXIM_BACKLOG_PENDING_PREVIOUS_SHA256`; the journal retains the initial digest and
+every subsequent revision rather than replacing the previous evidence.
 
 `COMPLETE` means cancellation and restart finished, not that latency is healthy. Record the
 operation ID, cutoff, exact source/image, projected/removed counts and retained locked jobs.
