@@ -39,6 +39,10 @@ copying these notes does not install a fix or prove which version is deployed.
    persistence, shadow/off, ambiguous state or lost notice ownership still fails. The worker must
    obtain fresh membership and current policy before deletion. This is neither a DELETE receipt
    nor permission to replay the notification, sanction or original webhook handler.
+   In production, a successful post-notice authority check also transfers DELETE to that durable
+   worker; never immediately attempt the persisted intent inside the original webhook. The final
+   worker check can still fail after persistence. Its SQL retry must remain independent of the
+   completed handler, with no fabricated deletion and no renewed deadline.
    A typed source GET transport timeout or unavailable fresh membership before notice handoff may defer to the already-guarded
    SEND action only with the exact serialized proof, original deadline and renewed notice lease.
    The handoff must succeed before coverage or DELETE admission; source-read deferral never proves

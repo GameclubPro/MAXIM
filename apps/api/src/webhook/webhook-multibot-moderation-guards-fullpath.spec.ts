@@ -1113,7 +1113,8 @@ describeStores('native current-rule authorization across mirrored bot delivery',
 
   it.each(
     ['still-missing', 'membership-restored', 'policy-disabled', 'queue-unavailable'].flatMap(
-      (outcome) => ['membership', 'source404'].map((failure) => [outcome, failure]),
+      (outcome) =>
+        ['membership', 'source404', 'final-membership'].map((failure) => [outcome, failure]),
     ),
   )(
     'hands off unavailable post-notice evidence durably and resumes only DELETE when %s %s',
@@ -1134,13 +1135,17 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       let noticeDelivered = false;
       let unavailable = true;
       let membership = false;
-      jest
-        .spyOn(s.membership, 'getMembershipResolution')
-        .mockImplementation(async () =>
-          failure === 'membership' && noticeDelivered && unavailable
-            ? { membership: null, fresh: false }
-            : { membership, fresh: true },
-        );
+      jest.spyOn(s.membership, 'getMembershipResolution').mockImplementation(async () => {
+        const committed =
+          failure === 'final-membership' &&
+          (await s.prisma.moderationDeleteIntent.findUnique({
+            where: { chatId_messageId: { chatId: chatId!, messageId } },
+            select: { id: true },
+          }));
+        return (failure === 'membership' || committed) && noticeDelivered && unavailable
+          ? { membership: null, fresh: false }
+          : { membership, fresh: true };
+      });
       const getMembers = s.max.getChatMembersAccess.bind(s.max);
       jest.spyOn(s.max, 'getChatMembersAccess').mockImplementation(async (...args) => {
         const members = await getMembers(...args);
@@ -1207,6 +1212,23 @@ describeStores('native current-rule authorization across mirrored bot delivery',
         reasons: [expect.objectContaining({ ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE' })],
       });
       expect(intent.retryUntilAt.getTime()).toBe(at + 300_000);
+      if (failure === 'final-membership' && outcome === 'still-missing') {
+        // FLAG: A worker read outage retains SQL retry authority without reopening the webhook.
+        await expect(s.intents.attemptIntent(intent.id)).rejects.toThrow();
+        const deferred = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+          where: { id: intent.id },
+        });
+        expect(deferred).toMatchObject({
+          status: 'RETRYABLE',
+          attemptCount: 1,
+          deleteDispatchStartedAt: null,
+          remoteDeleteSucceededAt: null,
+          leaseToken: null,
+        });
+        expect(deferred.retryUntilAt).toEqual(intent.retryUntilAt);
+        expect(deferred.nextAttemptAt).not.toBeNull();
+        expect(s.effects).toHaveLength(1);
+      }
       const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
         where: { kind: 'EXECUTION', webhookEventId: { in: ids } },
       });
@@ -1239,6 +1261,15 @@ describeStores('native current-rule authorization across mirrored bot delivery',
           where: { chatId: chatId! },
           data: { requiredSubscriptionEnabled: false },
         });
+      }
+      if (failure === 'final-membership' && outcome === 'still-missing') {
+        const retry = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+          where: { id: intent.id },
+        });
+        const delay = Math.max(0, retry.nextAttemptAt!.getTime() - Date.now()) + 20;
+        expect(delay).toBeLessThan(10_000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        await s.intents.sweepDueIntents();
       }
       await s.deleteQueue.resume();
       if (unavailableQueue) {

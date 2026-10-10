@@ -40,8 +40,8 @@ import {
   RequiredSubscriptionExecutionRejectedError,
   RequiredSubscriptionInitialSourceUnavailableError,
   RequiredSubscriptionMembershipUnavailableError,
-  RequiredSubscriptionDeleteSourceUnavailableError,
 } from './required-subscription-execution-guard.service';
+import { handoffRequiredSubscriptionDelete } from './required-subscription-delete-handoff';
 import { MESSAGE_LIMITS_STATEFUL_RULES } from './message-limits-delete-guard.service';
 import {
   bindModerationExecutionPolicy,
@@ -10261,32 +10261,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           params.hotPathProfile,
           'required-subscription.delete-authority',
         );
-        // FLAG: Prior notice handoff or coverage does not retain delete authority.
-        // Unavailable membership/source may hand off only this guarded DELETE after SQL
-        // commits it. Do not replay the notice/sanction or claim deletion success.
-        try {
-          await assertRequiredSubscriptionDeleteHandoffCurrent();
-        } catch (error: unknown) {
-          if (error instanceof RequiredSubscriptionExecutionRejectedError) return;
-          if (
-            error instanceof RequiredSubscriptionMembershipUnavailableError ||
-            error instanceof RequiredSubscriptionDeleteSourceUnavailableError
-          ) {
-            await assertNoticeLeaseOwned();
-            const handoff = await this.moderationDeleteIntentService?.ensureIntent(
-              this.prepareModerationDeleteIntentInput(deleteIntent),
-            );
-            if (
-              handoff?.rollout === 'execute' &&
-              handoff.intentId &&
-              handoff.status !== null &&
-              handoff.status !== 'OBSERVED' &&
-              handoff.status !== 'AMBIGUOUS'
-            )
-              return;
-          }
-          throw error;
-        }
+        if (
+          await handoffRequiredSubscriptionDelete({
+            assertAuthority: assertRequiredSubscriptionDeleteHandoffCurrent,
+            assertLeaseOwned: assertNoticeLeaseOwned,
+            persist: this.moderationDeleteIntentService
+              ? () =>
+                  this.moderationDeleteIntentService!.ensureIntent(
+                    this.prepareModerationDeleteIntentInput(deleteIntent),
+                  )
+              : undefined,
+          })
+        )
+          return;
         await this.ensureModerationDeleteIntent(deleteIntent);
         await assertNoticeLeaseOwned();
         const deleteResult = await this.executeModerationDelete(deleteIntent);

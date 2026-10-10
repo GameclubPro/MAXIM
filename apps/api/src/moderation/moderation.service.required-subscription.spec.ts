@@ -1753,6 +1753,48 @@ describe('ModerationService', () => {
       );
 
       it.each([
+        'committed',
+        'off',
+        'observed',
+        'missing-id',
+        'ambiguous',
+        'null-status',
+        'sql-failed',
+        'lease-lost',
+      ])(
+        'always transfers an available post-notice DELETE to durable ownership: %s',
+        async (state) => {
+          const f = fixture();
+          const storageError = new Error('Fixture DELETE storage failure');
+          const ensureIntent = jest.fn().mockResolvedValue({
+            intentId: state === 'missing-id' ? null : 'fixture-delete',
+            rollout: state === 'off' ? 'off' : state === 'observed' ? 'observed' : 'execute',
+            status:
+              state === 'ambiguous' ? 'AMBIGUOUS' : state === 'null-status' ? null : 'PENDING',
+          });
+          if (state === 'sql-failed') ensureIntent.mockRejectedValue(storageError);
+          Object.assign(f.service, { moderationDeleteIntentService: { ensureIntent } });
+          if (state === 'lease-lost')
+            f.guard.authorize
+              .mockResolvedValueOnce({ reasonKeys: ['REQUIRED_SUBSCRIPTION:message-delete'] })
+              .mockImplementation(async () => {
+                f.redisCounter.renewLock.mockResolvedValue(false);
+                return { reasonKeys: ['REQUIRED_SUBSCRIPTION:message-delete'] };
+              });
+          const result = f.service.handleUpdate(createUpdate());
+          if (state === 'committed') await expect(result).resolves.toBeUndefined();
+          else if (state === 'sql-failed') await expect(result).rejects.toBe(storageError);
+          else if (state === 'lease-lost') await expect(result).rejects.toThrow('lease was lost');
+          else await expect(result).rejects.toThrow('DELETE handoff is not executable');
+          expect(ensureIntent).toHaveBeenCalledTimes(state === 'lease-lost' ? 0 : 1);
+          expect(f.executeDelete).not.toHaveBeenCalled();
+          expect(f.maxClient.deleteMessage).not.toHaveBeenCalled();
+          expect(f.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+          expect(f.activeMute).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([
         new RequiredSubscriptionInitialSourceUnavailableError(
           createMaxApiError(404, 'unavailable'),
         ),

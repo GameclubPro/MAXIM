@@ -201,3 +201,32 @@ both peer-success and all-refused variants; runtime sanction guards were not wea
 Final focused validation passed 344 tests in 13 suites with no skips, including all 46 native
 full-path cases on disposable PostgreSQL 16 and Redis 7. Production rollout and sustained
 recovery remain unverified at this checkpoint.
+
+## Third deployment: final-dispatch membership outage
+
+Source `fca2f9f326e2fb112802af83f4ac046131958280`, image
+`sha256:71d9b51b6dfd3b2c7c553a00062d86c76aaf85a4733fb12bb595cc8a68007fe8`,
+converged across all 14 API roles and both native auxiliaries after green exact-SHA CI.
+Cancellation `fb204db8-c2e0-4082-b068-3949a9ec38c2`, fixed cutoff
+`2026-10-10T13:55:24.218Z`, completed in one pass: 52 projected receipts, 68 removed jobs,
+zero retained locked jobs. The early closed 14:04:41–14:04:46 cohort eventually contained
+88 PROCESSED and 47 DUPLICATE receipts with none pending/failed, no truncation or invalid clocks.
+Its completed-only p95 was 136.672 seconds during warmup, not healthy latency.
+
+Lag briefly fell below ten seconds, but only 361 continuous seconds met normal-mode acceptance.
+The bounded 14:09–14:18 log window captured another membership-unavailable failure at
+14:17:03.278. Exact built source locations identify the last `beforeDeleteMutation` authority
+check, after intent persistence. By 14:29:11 operational lag had grown to 589 seconds.
+Cancellation completed; sustained recovery and release finalization did not.
+
+The native reproducer makes membership unavailable only after the exact DELETE intent exists
+in PostgreSQL. All four new outcome variants failed on the old inline path. The correction now
+hands every production post-notice DELETE to the durable worker, including when the initial
+handoff check succeeds. It no longer invokes that intent inline from the started webhook.
+Final source, membership, policy and deadline guards remain in the worker; storage failure,
+non-executable/ambiguous handoff and lost notice ownership still fail closed. No DELETE receipt,
+notice replay, longer deadline or successful remote action is inferred from persistence.
+
+Initial focused validation passed 356 checks in 13 suites, including 50 native full-path cases.
+An additional worker-outage assertion verifies retained SQL retry authority without reopening
+the completed webhook. Production rollout and sustained acceptance must be recorded separately.
