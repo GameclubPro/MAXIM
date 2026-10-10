@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { Queue, type ConnectionOptions } from 'bullmq';
 import { Redis } from 'ioredis';
 import { Prisma, createPrismaClient } from '../prisma/prisma-client';
@@ -11,7 +12,7 @@ import {
   visitBacklogQueues,
   type BacklogCancellationRequest,
 } from '../scripts/cancel-webhook-backlog';
-import { materializeBacklogCancellation } from './webhook-backlog-cancellation';
+import { backlogSource, materializeBacklogCancellation } from './webhook-backlog-cancellation';
 import { WebhookLegacyHoldService, assertLegacyActionAllowed } from './webhook-legacy-hold.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WebhookOutboxService } from './webhook-outbox.service';
@@ -80,6 +81,122 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
     await db.$executeRaw(Prisma.sql`UPDATE webhook_backlog_cancellations SET sealed_at = clock_timestamp() AT TIME ZONE 'UTC'
       WHERE id = ${id} AND sealed_at IS NULL`);
   }
+
+  it('preserves Redis snapshots containing strings rejected by PostgreSQL JSONB', async () => {
+    const { withPortableJobSnapshots } = createRequire(__filename)(
+      '../../../../infra/scripts/backlog-cancellation-pending-client.cjs',
+    );
+    const operation = request();
+    await db.webhookBacklogCancellation.create({
+      data: {
+        id: operation.id,
+        cutoff: new Date(operation.cutoff),
+        sourceSha: operation.sourceSha,
+        imageId: operation.imageId,
+      },
+    });
+    const key = randomUUID();
+    const snapshot = JSON.stringify({
+      opts: { legacyLabel: '\ud800' },
+      data: { value: 'unchanged' },
+    });
+    const query = Prisma.sql`INSERT INTO webhook_backlog_children (kind,child_key,cancellation_id,original_snapshot)
+      VALUES ('MAX_ACTION',${key},${operation.id},${snapshot}::jsonb) ON CONFLICT (kind,child_key) DO NOTHING`;
+    await expect(db.$executeRaw(query)).rejects.toThrow();
+    await withPortableJobSnapshots(db, Prisma).$executeRaw(query);
+    const row = await db.webhookBacklogChild.findUniqueOrThrow({
+      where: { kind_childKey: { kind: 'MAX_ACTION', childKey: key } },
+    });
+    const encoded = row.originalSnapshot as { format: string; jsonUtf8Base64: string };
+    expect(encoded.format).toBe('BULLMQ_JOB_JSON_UTF8_BASE64_V1');
+    expect(Buffer.from(encoded.jsonUtf8Base64, 'base64').toString('utf8')).toBe(snapshot);
+  });
+
+  it('continues captured cancellation through pending heads without scanning terminal failed history', async () => {
+    const { capturePending, pendingPageSql, assertPendingPlan } = createRequire(__filename)(
+      '../../../../infra/scripts/backlog-cancellation-pending-client.cjs',
+    );
+    const operation = request();
+    await db.webhookBacklogCancellation.create({
+      data: {
+        id: operation.id,
+        cutoff: new Date(operation.cutoff),
+        sourceSha: operation.sourceSha,
+        imageId: operation.imageId,
+      },
+    });
+    const old = await receipt(new Date(Date.now() - 120_000), 'FAILED');
+    const retry = await receipt(old.createdAt, 'FAILED');
+    await db.webhookEvent.update({
+      where: { id: retry.id },
+      data: { errorMessage: 'retry', nextEnqueueAt: new Date() },
+    });
+    const nullChat = await db.webhookEvent.create({
+      data: {
+        dedupKey: randomUUID(),
+        status: 'FAILED',
+        createdAt: old.createdAt,
+        errorMessage: 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:uncertain',
+        rawPayload: {},
+        normalizedPayload: { type: 'message_created' },
+      },
+    });
+    const fresh = await receipt(new Date());
+    const prefix = randomUUID();
+    await db.webhookEvent.createMany({
+      data: Array.from({ length: 10000 }, (_, i) => ({
+        id: `${prefix}-${i}`,
+        dedupKey: `${prefix}-${i}`,
+        status: 'FAILED' as const,
+        createdAt: old.createdAt,
+        rawPayload: {},
+        normalizedPayload: old.normalizedPayload as Prisma.InputJsonValue,
+        errorMessage: 'terminal historical failure',
+      })),
+    });
+    try {
+      await db.$executeRaw`ANALYZE webhook_events`;
+      for (const missingChat of [false, true]) {
+        const plan = await readBacklogPage<any[]>(
+          db,
+          Prisma.sql`EXPLAIN (ANALYZE, FORMAT JSON) ${pendingPageSql(Prisma, missingChat, null)}`,
+        );
+        assertPendingPlan(plan);
+        const scans: any[] = [];
+        const walk = (node: any) => {
+          if (node['Relation Name']) scans.push(node);
+          for (const child of node.Plans ?? []) walk(child);
+        };
+        walk(plan[0]['QUERY PLAN'][0].Plan);
+        for (const scan of scans) {
+          expect(Number(scan['Actual Rows']) * Number(scan['Actual Loops'])).toBeLessThanOrEqual(
+            200,
+          );
+          expect(Number(scan['Rows Removed by Filter'] ?? 0)).toBe(0);
+        }
+      }
+      const dependencies = { Prisma, readBacklogPage, backlogSource };
+      const result = await capturePending(db, operation, dependencies);
+      expect(result.scanned).toBeLessThan(20);
+      expect(result.captured).toBe(3);
+      expect((await capturePending(db, operation, dependencies)).captured).toBe(0);
+      await seal(operation.id);
+      await projectBacklogReceipts(db, operation.id);
+      for (const id of [old.id, retry.id, nullChat.id])
+        expect((await db.webhookEvent.findUniqueOrThrow({ where: { id } })).status).toBe(
+          'CANCELLED',
+        );
+      expect((await db.webhookEvent.findUniqueOrThrow({ where: { id: fresh.id } })).status).toBe(
+        'RECEIVED',
+      );
+      expect(
+        await db.webhookEvent.count({ where: { id: { startsWith: prefix }, status: 'FAILED' } }),
+      ).toBe(10000);
+    } finally {
+      await db.webhookEvent.deleteMany({ where: { id: { startsWith: prefix } } });
+      await db.webhookEvent.delete({ where: { id: fresh.id } });
+    }
+  });
 
   it('bounds each SQL page even across retained failed history and tied timestamps', async () => {
     const at = new Date(Date.now() - 3600_000);

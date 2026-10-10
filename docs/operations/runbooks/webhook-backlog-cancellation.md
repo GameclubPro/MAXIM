@@ -46,6 +46,24 @@ journal, delete claim evidence, or advance the cutoff during recovery. A lost co
 leave the single labelled helper; resume stops/removes only that exact helper before retrying.
 SQL projection and job removal are idempotent. The host restarts only the captured generations.
 
+If the initial `7f16c5f2` runtime exhausts its scan budget on terminal FAILED history, use
+`python3 infra/scripts/resume-backlog-pending.py <same-private-request.json>` from the committed
+compatible controller. It retains the cutoff, installed image, original snapshots and captured
+fleet. Its additional selection walks the existing ordered-head partial index in 200-row pages,
+including NULL chat keys, with a 100,000-row bound and a plain plan check. This completes the
+already captured backlog plus every pre-cutoff pending message ordering head. Historical
+nonmessage failures outside the captured set are not scanned or claimed as cancelled.
+The controller may differ only in its five finite tooling/test/document paths. It retains its
+source receipt and helper hash, mounts only that helper read-only into the original isolated
+image, and uses the same deploy lock and journal. Green exact controller CI is required unless
+the existing explicit emergency bypass and nonempty recorded reason are supplied. Never use
+the continuation to change runtime code or the frozen request.
+Redis job snapshots use an explicit `BULLMQ_JOB_JSON_UTF8_BASE64_V1` envelope when written by
+the continuation, preserving the exact serialized JSON even when PostgreSQL rejects a string
+in the original job metadata. A reviewed helper correction requires the exact last helper
+digest in `MAXIM_BACKLOG_PENDING_PREVIOUS_SHA256`; the journal retains the initial digest and
+every subsequent revision rather than replacing the previous evidence.
+
 `COMPLETE` means cancellation and restart finished, not that latency is healthy. Record the
 operation ID, cutoff, exact source/image, projected/removed counts and retained locked jobs.
 Then sample fresh ingress windows including still-pending receipts, oldest fresh age, SQL

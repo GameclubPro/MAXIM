@@ -10,7 +10,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import { createLegacyColdRuntime } from './legacy-cold-runtime.mjs';
 import { readLegacyColdStoreConnection } from './legacy-cold-host.mjs';
 import {
@@ -47,12 +48,14 @@ export function parseBacklogCancellationRequest(raw) {
   return request;
 }
 
-export async function runBacklogCancellationHost(request) {
+export async function runBacklogCancellationHost(request, pendingOnly = false) {
   assertInheritedDeployLock();
   if (process.env.MAXIM_EXPECTED_DEPLOY_SHA !== request.sourceSha)
     throw new Error('Cancellation source mismatch');
   assertNoActiveLegacyColdMaintenance(directory, request.id);
   const previous = readBacklogCancellation(directory);
+  if (pendingOnly && (!previous || previous.phase !== 'STOPPED'))
+    throw new Error('Pending continuation requires the existing stopped operation');
   if (previous && JSON.stringify(previous.request) !== JSON.stringify(request))
     throw new Error('Use the existing immutable cancellation request');
   if (previous?.phase === 'COMPLETE') {
@@ -85,6 +88,20 @@ export async function runBacklogCancellationHost(request) {
     closeSync(fd);
   }
   let state = previous ?? { version: 1, phase: 'PREPARED', request, baseline };
+  const continuation = fileURLToPath(
+    new URL('./backlog-cancellation-pending-client.cjs', import.meta.url),
+  );
+  if (pendingOnly) {
+    const digest = createHash('sha256').update(readFileSync(continuation)).digest('hex');
+    const revisions = state.pendingClientRevisions ?? [];
+    const prior = revisions.at(-1) ?? state.pendingClientSha256;
+    if (prior && prior !== digest) {
+      if (process.env.MAXIM_BACKLOG_PENDING_PREVIOUS_SHA256 !== prior)
+        throw new Error('Pending continuation changed without the exact previous digest');
+      state = { ...state, pendingClientRevisions: [...revisions, digest] };
+    }
+    state = { ...state, pendingClientSha256: state.pendingClientSha256 ?? digest };
+  }
   const save = (phase) => {
     state = { ...state, phase };
     writeBacklogCancellation(directory, state);
@@ -134,11 +151,19 @@ export async function runBacklogCancellationHost(request) {
           connection.networkId,
           '--env-file',
           environmentFile,
+          ...(pendingOnly
+            ? [
+                '--mount',
+                `type=bind,src=${continuation},dst=/app/backlog-cancellation-pending-client.cjs,readonly`,
+              ]
+            : []),
           '-e',
           `MAXIM_BACKLOG_COLD_OPERATION=${request.id}`,
           request.imageId,
           'node',
-          'apps/api/dist/apps/api/src/scripts/cancel-webhook-backlog.js',
+          pendingOnly
+            ? '/app/backlog-cancellation-pending-client.cjs'
+            : 'apps/api/dist/apps/api/src/scripts/cancel-webhook-backlog.js',
           JSON.stringify(request),
         ],
         { stdio: ['ignore', 'inherit', 'inherit'], timeout: 960_000 },
@@ -160,7 +185,12 @@ export async function runBacklogCancellationHost(request) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   try {
-    await runBacklogCancellationHost(parseBacklogCancellationRequest(readFileSync(0, 'utf8')));
+    if (process.argv.length > 3 || (process.argv[2] && process.argv[2] !== '--resume-pending'))
+      throw new Error('Invalid continuation arguments');
+    await runBacklogCancellationHost(
+      parseBacklogCancellationRequest(readFileSync(0, 'utf8')),
+      process.argv[2] === '--resume-pending',
+    );
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;
