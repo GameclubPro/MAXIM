@@ -20,6 +20,7 @@ import {
 } from './legacy-cold-journal.mjs';
 import {
   readBacklogCancellation,
+  readBacklogCancellationForRequest,
   writeBacklogCancellation,
 } from './backlog-cancellation-journal.mjs';
 
@@ -53,7 +54,9 @@ export async function runBacklogCancellationHost(request, pendingOnly = false) {
   if (process.env.MAXIM_EXPECTED_DEPLOY_SHA !== request.sourceSha)
     throw new Error('Cancellation source mismatch');
   assertNoActiveLegacyColdMaintenance(directory, request.id);
-  const previous = readBacklogCancellation(directory);
+  const previous = pendingOnly
+    ? readBacklogCancellation(directory)
+    : readBacklogCancellationForRequest(directory, request);
   if (pendingOnly && (!previous || previous.phase !== 'STOPPED'))
     throw new Error('Pending continuation requires the existing stopped operation');
   if (previous && JSON.stringify(previous.request) !== JSON.stringify(request))

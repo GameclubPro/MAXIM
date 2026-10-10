@@ -6,6 +6,8 @@ import { Prisma, createPrismaClient } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
   backlogReceiptPageSql,
+  backlogPendingReceiptPageSql,
+  backlogJobSnapshot,
   readBacklogPage,
   captureBacklogReceipts,
   projectBacklogReceipts,
@@ -110,6 +112,10 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
     const encoded = row.originalSnapshot as { format: string; jsonUtf8Base64: string };
     expect(encoded.format).toBe('BULLMQ_JOB_JSON_UTF8_BASE64_V1');
     expect(Buffer.from(encoded.jsonUtf8Base64, 'base64').toString('utf8')).toBe(snapshot);
+    const nativeEnvelope = backlogJobSnapshot(JSON.parse(snapshot));
+    expect(JSON.parse(nativeEnvelope)).toEqual(encoded);
+    await db.$executeRaw(Prisma.sql`INSERT INTO webhook_backlog_children (kind,child_key,cancellation_id,original_snapshot)
+      VALUES ('MAX_ACTION',${randomUUID()},${operation.id},${nativeEnvelope}::jsonb)`);
   });
 
   it('continues captured cancellation through pending heads without scanning terminal failed history', async () => {
@@ -157,6 +163,11 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
     try {
       await db.$executeRaw`ANALYZE webhook_events`;
       for (const missingChat of [false, true]) {
+        const currentPlan = await readBacklogPage<any[]>(
+          db,
+          Prisma.sql`EXPLAIN (ANALYZE, FORMAT JSON) ${backlogPendingReceiptPageSql(missingChat, null)}`,
+        );
+        assertPendingPlan(currentPlan);
         const plan = await readBacklogPage<any[]>(
           db,
           Prisma.sql`EXPLAIN (ANALYZE, FORMAT JSON) ${pendingPageSql(Prisma, missingChat, null)}`,
@@ -168,6 +179,7 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
           for (const child of node.Plans ?? []) walk(child);
         };
         walk(plan[0]['QUERY PLAN'][0].Plan);
+        walk(currentPlan[0]['QUERY PLAN'][0].Plan);
         for (const scan of scans) {
           expect(Number(scan['Actual Rows']) * Number(scan['Actual Loops'])).toBeLessThanOrEqual(
             200,
@@ -175,10 +187,16 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
           expect(Number(scan['Rows Removed by Filter'] ?? 0)).toBe(0);
         }
       }
+      const progress: Array<{ scanned?: number }> = [];
+      await captureBacklogReceipts(db, operation, (value) => progress.push(value));
+      expect(Math.max(...progress.map((value) => value.scanned ?? 0))).toBeLessThan(40);
+      expect(
+        await db.webhookBacklogReceipt.count({ where: { cancellationId: operation.id } }),
+      ).toBe(3);
       const dependencies = { Prisma, readBacklogPage, backlogSource };
       const result = await capturePending(db, operation, dependencies);
       expect(result.scanned).toBeLessThan(20);
-      expect(result.captured).toBe(3);
+      expect(result.captured).toBe(0);
       expect((await capturePending(db, operation, dependencies)).captured).toBe(0);
       await seal(operation.id);
       await projectBacklogReceipts(db, operation.id);

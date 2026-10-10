@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseBacklogCancellationRequest } from './backlog-cancellation-host.mjs';
@@ -8,6 +8,7 @@ import {
   assertNoActiveBacklogCancellation,
   readBacklogCancellation,
   writeBacklogCancellation,
+  readBacklogCancellationForRequest,
 } from './backlog-cancellation-journal.mjs';
 
 const request = {
@@ -48,4 +49,39 @@ test('the host requires an exact cutoff, source and image', () => {
       () => parseBacklogCancellationRequest(JSON.stringify(invalid)),
       /Invalid cancellation/,
     );
+});
+
+test('a new request archives completed evidence while every interrupted identity stays immutable', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-cancel-next-'));
+  const next = { ...request, id: 'a153ec6c-78ad-4e9a-a295-a02389c5cc3a' };
+  try {
+    for (const phase of ['PREPARED', 'STOPPED', 'APPLIED']) {
+      writeBacklogCancellation(directory, { version: 1, request, phase });
+      assert.throws(() => readBacklogCancellationForRequest(directory, next), /immutable/);
+      assert.deepEqual(readBacklogCancellationForRequest(directory, request).request, request);
+    }
+    writeBacklogCancellation(directory, { version: 1, request, phase: 'COMPLETE' });
+    const raw = readFileSync(join(directory, 'backlog-cancellation.json'));
+    assert.throws(
+      () =>
+        readBacklogCancellationForRequest(directory, {
+          ...request,
+          cutoff: '2026-10-09T00:00:00.000Z',
+        }),
+      /immutable/,
+    );
+    assert.equal(readBacklogCancellationForRequest(directory, next), null);
+    assert.equal(readBacklogCancellationForRequest(directory, next), null);
+    assert.deepEqual(readFileSync(join(directory, 'backlog-cancellation.json')), raw);
+    const archives = readdirSync(directory).filter((name) =>
+      name.startsWith('backlog-cancellation.complete-'),
+    );
+    assert.equal(archives.length, 1);
+    assert.deepEqual(readFileSync(join(directory, archives[0])), raw);
+    writeBacklogCancellation(directory, { version: 1, request: next, phase: 'PREPARED' });
+    assert.throws(() => readBacklogCancellationForRequest(directory, request), /immutable/);
+    assert.deepEqual(readFileSync(join(directory, archives[0])), raw);
+  } finally {
+    rmSync(directory, { recursive: true });
+  }
 });

@@ -26,9 +26,11 @@ The connector requires exact green CI and the host requires clean matching sourc
 holds the persistent deploy lock, captures the exact fleet generations, stops them once, and
 executes a bounded client with only database/Redis credentials. Static sites and stores stay up.
 
-The client walks at most 500,000 pre-cutoff receipts through 200-row indexed pages, preserving
-raw page bounds before eligibility filtering. It cancels RECEIVED/QUEUED receipts and retrying
-or pending-timeout FAILED receipts. Existing legacy/source dispositions remain untouched.
+The client walks at most 500,000 receipts through 200-row indexed pages, preserving raw page
+bounds before cutoff and eligibility filtering. It cancels pre-cutoff RECEIVED/QUEUED receipts
+and retrying or pending-timeout FAILED message ordering heads. The latter use the existing
+ordered-head partial index, including NULL chat keys, so terminal FAILED history is not scanned.
+Historical nonmessage FAILED receipts are outside this selection. Existing legacy/source dispositions remain untouched.
 Permanent exact semantic/message tombstones also stop late copies; they do not grant immunity
 to an author or an entire chat. Claims remain immutable, including ambiguous action evidence.
 
@@ -45,6 +47,12 @@ the journal and stopped fleet; repeat the **same request** to resume. Never edit
 journal, delete claim evidence, or advance the cutoff during recovery. A lost connection may
 leave the single labelled helper; resume stops/removes only that exact helper before retrying.
 SQL projection and job removal are idempotent. The host restarts only the captured generations.
+
+A separately authorized new cancellation can start after `COMPLETE`: the host preserves the exact
+completed journal in a content-addressed mode-0600 archive, then captures fresh runtime generations.
+It never reuses an operation ID with a different cutoff or replaces an unfinished journal. Diagnose
+and correct newly accumulating failures before a later cancellation; it is not a recurring drain.
+The normal client also stores BullMQ snapshots in the lossless Base64 envelope described below.
 
 If the initial `7f16c5f2` runtime exhausts its scan budget on terminal FAILED history, use
 `python3 infra/scripts/resume-backlog-pending.py <same-private-request.json>` from the committed

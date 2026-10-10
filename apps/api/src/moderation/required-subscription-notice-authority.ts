@@ -21,6 +21,13 @@ export class RequiredSubscriptionNoticeRejectedError extends Error {
   readonly code = 'required_subscription_notice_no_longer_authorized';
 }
 
+// FLAG: Missing source evidence denies a notice; it never proves message deletion.
+export class RequiredSubscriptionNoticeSourceUnavailableError extends Error {}
+
+// FLAG: Only the exact pre-send callback may establish that this handoff did not run.
+// Unknown or attempted send failures must retain their existing execution fences.
+export class RequiredSubscriptionNoticeNotDispatchedError extends Error {}
+
 export function readRequiredSubscriptionNoticeAuthority(
   value: unknown,
 ): RequiredSubscriptionNoticeAuthority | null {
