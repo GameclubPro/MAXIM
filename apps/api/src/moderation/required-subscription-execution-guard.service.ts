@@ -18,6 +18,7 @@ import { ParticipantModerationImmunityService } from './participant-moderation-i
 import {
   assertRequiredSubscriptionNoticeAuthority,
   RequiredSubscriptionNoticeRejectedError,
+  RequiredSubscriptionNoticeSourceUnavailableError,
   type RequiredSubscriptionNoticeAuthority,
 } from './required-subscription-notice-authority';
 
@@ -64,7 +65,26 @@ export class RequiredSubscriptionExecutionGuardService {
     await assertRequiredSubscriptionNoticeAuthority(this.prisma, proof, {
       isKnownBotUserId: (userId) => this.bots.isKnownBotUserId(userId),
       getMemberAccess: () => this.max.getChatMemberAccess(proof.chatId, proof.userId, options),
-      getSource: () => this.max.getExactMessageRow(proof.chatId, proof.messageId, options),
+      getSource: async () => {
+        try {
+          return await this.max.getExactMessageRow(proof.chatId, proof.messageId, options);
+        } catch (error) {
+          // FLAG: This GET supplies notice evidence only. A 404 denies the notice;
+          // do not turn it into null, deletion proof, or authority for another effect.
+          if (
+            (extractHttpStatusCode(error) === 404 ||
+              isMaxExactMessageLookupMissingIdError(error)) &&
+            !wasMaxMessageSendAttempted(error) &&
+            !wasMaxMemberMutationAttempted(error) &&
+            !isMaxMutationOutcomeAmbiguous(error)
+          )
+            throw new RequiredSubscriptionNoticeSourceUnavailableError(
+              'Required subscription notice source unavailable',
+              { cause: error },
+            );
+          throw error;
+        }
+      },
       getMembership: async (targetId) => {
         // FLAG: The selected executor proves the source chat. Each subscription target
         // has its own read route; retain fresh evidence without forcing the source bot there.

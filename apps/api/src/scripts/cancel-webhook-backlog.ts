@@ -20,14 +20,54 @@ export type BacklogCancellationRequest = {
 type Database = ReturnType<typeof createPrismaClient>;
 const statuses = ['RECEIVED', 'QUEUED', 'FAILED'] as const;
 const pageSize = 200;
+type PendingCursor = { id: string; at: Date; chatKey: string | null };
+
+// FLAG: Walk only current message ordering heads, including NULL chat keys. The
+// retained terminal FAILED history must not consume a stopped-fleet capture budget.
+export function backlogPendingReceiptPageSql(nullChat: boolean, cursor: PendingCursor | null) {
+  const chat = Prisma.sql`COALESCE(NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''), NULLIF(BTRIM(normalized_payload->>'chatId'), ''))`;
+  return Prisma.sql`WITH page AS MATERIALIZED (
+    SELECT id, created_at AS at, ${chat} AS "chatKey"
+    FROM webhook_events
+    WHERE (status = ANY(ARRAY['RECEIVED','QUEUED']::"WebhookStatus"[])
+      OR (status = 'FAILED'::"WebhookStatus" AND (next_enqueue_at IS NOT NULL
+        OR LEFT(COALESCE(error_message, ''), 37) = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:')))
+      AND LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
+        NULLIF(BTRIM(normalized_payload->>'update_type'), ''))) = ANY(ARRAY['message_created','message_edited'])
+      AND ${chat} IS ${Prisma.raw(nullChat ? 'NULL' : 'NOT NULL')}
+      ${
+        cursor
+          ? nullChat
+            ? Prisma.sql`AND (created_at,id) > (${cursor.at},${cursor.id})`
+            : Prisma.sql`AND (${chat},created_at,id) > (${cursor.chatKey},${cursor.at},${cursor.id})`
+          : Prisma.empty
+      }
+    ORDER BY ${nullChat ? Prisma.empty : Prisma.sql`${chat},`} created_at,id LIMIT 200
+  ) SELECT page.*, e.normalized_payload AS update, e.semantic_key AS "semanticKey",
+      (e.legacy_disposition_id IS NULL AND e.source_disposition_id IS NULL) AS eligible
+    FROM page CROSS JOIN LATERAL (SELECT * FROM webhook_events WHERE id=page.id OFFSET 0) e
+    ORDER BY page."chatKey",page.at,page.id`;
+}
+
+export function backlogJobSnapshot(value: unknown): string {
+  // FLAG: Preserve JSON bytes that PostgreSQL JSONB cannot encode (e.g. lone surrogates).
+  return JSON.stringify({
+    format: 'BULLMQ_JOB_JSON_UTF8_BASE64_V1',
+    jsonUtf8Base64: Buffer.from(JSON.stringify(value), 'utf8').toString('base64'),
+  });
+}
 
 export async function readBacklogPage<T>(db: Database, query: Prisma.Sql): Promise<T> {
   return db.$transaction(
     async (tx) => {
-      // FLAG: This maintenance session must walk the ordered index. Bitmap plans can
-      // otherwise read/sort all tied history before LIMIT, despite a correct keyset.
+      // FLAG: This maintenance session must walk the fully ordered index. Bitmap or
+      // prefix-index sort plans can read all tied history before LIMIT. The final
+      // materialized page sort is bounded; disable JIT for these small repeated reads.
       await tx.$executeRaw`SET LOCAL enable_bitmapscan = off`;
       await tx.$executeRaw`SET LOCAL enable_seqscan = off`;
+      await tx.$executeRaw`SET LOCAL enable_sort = off`;
+      await tx.$executeRaw`SET LOCAL enable_incremental_sort = off`;
+      await tx.$executeRaw`SET LOCAL jit = off`;
       await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
       return tx.$queryRaw<T>(query);
     },
@@ -77,10 +117,22 @@ export async function captureBacklogReceipts(
   const cutoff = new Date(request.cutoff);
   // FLAG: Inspect the live plan without executing it. Each history scan is capped
   // before payload reads; runtime changes must not turn it into a primary-table scan.
-  for (const status of statuses) {
+  const scansToRun = [
+    ...(['RECEIVED', 'QUEUED'] as const).map((status) => ({
+      name: status,
+      query: (cursor: PendingCursor | null) => backlogReceiptPageSql(status, cutoff, cursor),
+      index: 'webhook_events_status_created_at_id_idx',
+    })),
+    ...[false, true].map((nullChat) => ({
+      name: nullChat ? 'PENDING_MESSAGE_NULL_CHAT' : 'PENDING_MESSAGE',
+      query: (cursor: PendingCursor | null) => backlogPendingReceiptPageSql(nullChat, cursor),
+      index: 'webhook_events_ordered_chat_head_idx',
+    })),
+  ];
+  for (const scan of scansToRun) {
     const plans = await readBacklogPage<
       Array<{ 'QUERY PLAN': Array<{ Plan: Record<string, unknown> }> }>
-    >(db, Prisma.sql`EXPLAIN (FORMAT JSON) ${backlogReceiptPageSql(status, cutoff, null)}`);
+    >(db, Prisma.sql`EXPLAIN (FORMAT JSON) ${scan.query(null)}`);
     const scans: Array<Record<string, unknown>> = [];
     const visit = (node: Record<string, unknown>) => {
       if (node['Relation Name'] === 'webhook_events') scans.push(node);
@@ -89,9 +141,17 @@ export async function captureBacklogReceipts(
     visit(plans[0]!['QUERY PLAN'][0]!.Plan);
     if (
       scans.length !== 2 ||
-      scans.some((node) => !['Index Scan', 'Index Only Scan'].includes(String(node['Node Type'])))
+      scans.some(
+        (node) => !['Index Scan', 'Index Only Scan'].includes(String(node['Node Type'])),
+      ) ||
+      !scans.some((node) => node['Index Name'] === scan.index) ||
+      !scans.some((node) => node['Index Name'] === 'webhook_events_pkey')
     )
-      throw new Error('Cancellation requires indexed page and primary-key reads');
+      throw new Error(
+        `Cancellation ${scan.name} requires indexed page and primary-key reads: ${scans
+          .map((node) => `${node['Node Type']}:${node['Index Name']}`)
+          .join(',')}`,
+      );
   }
   await db.$executeRaw(Prisma.sql`INSERT INTO webhook_backlog_cancellations (id, cutoff, source_sha, image_id)
     VALUES (${request.id}, ${cutoff}, ${request.sourceSha}, ${request.imageId}) ON CONFLICT (id) DO NOTHING`);
@@ -107,8 +167,8 @@ export async function captureBacklogReceipts(
   if (operation.sealedAt) return;
   let scanned = 0,
     captured = 0;
-  for (const status of statuses) {
-    let cursor: { id: string; at: Date } | null = null;
+  for (const scan of scansToRun) {
+    let cursor: PendingCursor | null = null;
     while (true) {
       if (Date.now() >= deadline || scanned >= 500_000)
         throw new Error('Cancellation capture budget exhausted');
@@ -118,7 +178,8 @@ export async function captureBacklogReceipts(
         update: MaxUpdate;
         semanticKey: string | null;
         eligible: boolean;
-      }> = await readBacklogPage(db, backlogReceiptPageSql(status, cutoff, cursor));
+        chatKey?: string | null;
+      }> = await readBacklogPage(db, scan.query(cursor));
       if (!page.length) break;
       scanned += page.length;
       await db.$transaction(
@@ -126,7 +187,7 @@ export async function captureBacklogReceipts(
           await tx.$executeRaw`SET LOCAL lock_timeout = '1s'`;
           await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
           for (const row of page) {
-            if (!row.eligible) continue;
+            if (!row.eligible || row.at >= cutoff) continue;
             const source = backlogSource(row.update);
             captured += await tx.$executeRaw(Prisma.sql`INSERT INTO webhook_backlog_receipts
             (receipt_id, cancellation_id, semantic_key, chat_id, message_id, original_snapshot)
@@ -137,8 +198,8 @@ export async function captureBacklogReceipts(
         { timeout: 15_000 },
       );
       const last = page[page.length - 1]!;
-      cursor = { id: last.id, at: last.at };
-      progress({ phase: 'CAPTURING', status, scanned, captured });
+      cursor = { id: last.id, at: last.at, chatKey: last.chatKey ?? null };
+      progress({ phase: 'CAPTURING', status: scan.name, scanned, captured });
     }
   }
 }
@@ -291,7 +352,7 @@ export async function visitBacklogQueues(
                 if (selected)
                   captured += await db.$executeRaw(Prisma.sql`INSERT INTO webhook_backlog_children
                   (kind, child_key, cancellation_id, original_snapshot)
-                  VALUES ('MAX_ACTION', ${data.idempotencyKey}, ${request.id}, ${JSON.stringify(job.toJSON())}::jsonb)
+                  VALUES ('MAX_ACTION', ${data.idempotencyKey}, ${request.id}, ${backlogJobSnapshot(job.toJSON())}::jsonb)
                   ON CONFLICT (kind, child_key) DO NOTHING`);
               }
             }
