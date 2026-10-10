@@ -9,7 +9,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
-import { publisherRefreshEvidenceWhere } from './publisher-entity-connection.util';
+import {
+  isPublisherManagedEntityActivationRequired,
+  publisherRefreshEvidenceWhere,
+} from './publisher-entity-connection.util';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 import {
   PUBLISHER_ACCESS_CANDIDATE_SOURCE,
@@ -37,7 +40,18 @@ const PUBLISHER_USER_ACCESS_REFRESH_BATCH_SIZE = 25;
 const PUBLISHER_PENDING_CANDIDATE_RETRY_MS = 60_000;
 const PUBLISHER_DENIED_USER_ACCESS_REPROBE_COOLDOWN_MS = 6 * 60 * 60_000;
 const PUBLISHER_ACTOR_EVIDENCE_LOOKBACK_MS = 30 * 24 * 60 * 60_000;
+const PUBLISHER_PASSIVE_REFRESH_SELECT = {
+  chatId: true,
+  status: true,
+  botAccessState: true,
+  botAccessSource: true,
+  permissionsSnapshot: true,
+} as const;
 type PublisherBindingRefreshCandidate = {
+  status?: ChatBotMembershipStatus;
+  botAccessState?: ChatBotAccessState;
+  botAccessSource?: string | null;
+  permissionsSnapshot?: unknown;
   chatId: string;
   botAccessCheckedAt?: Date | null;
   botAccessExpiresAt?: Date | null;
@@ -146,11 +160,19 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         const discoveryBindings = await this.readDiscoveryRefreshCandidates(now);
         const userAccessBindings = await this.readUserAccessRefreshCandidates(now);
 
-        const readyById = new Map(readyBindings.map((binding) => [binding.chatId, binding]));
+        // FLAG: Keep denied obligations in evidence and advance raw cursors, but do not
+        // repeatedly nominate work which requires a new explicit administrator activation.
+        const readyById = new Map(
+          readyBindings
+            .filter((binding) => !isPublisherManagedEntityActivationRequired(binding))
+            .map((binding) => [binding.chatId, binding]),
+        );
         const readyIds = new Set(readyById.keys());
         const bindingIds = new Set([
           ...readyIds,
-          ...discoveryBindings.map((binding) => binding.chatId),
+          ...discoveryBindings
+            .filter((binding) => !isPublisherManagedEntityActivationRequired(binding))
+            .map((binding) => binding.chatId),
         ]);
         for (const chatId of bindingIds) {
           await this.refreshQueue.enqueue({
@@ -184,6 +206,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
               metric: 'publisher_access_scan_v1',
               mode: this.policy.mode,
               readyRows: readyBindings.length,
+              activationRequiredRows: readyBindings.length - readyById.size,
               discoveryRows: discoveryBindings.length,
               actorRows: userAccessBindings.length,
               expiryCycleComplete: this.expiryCursor === null,
@@ -220,7 +243,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         },
         OR: [{ botAccessExpiresAt: null }, { botAccessExpiresAt: { lte: refreshBefore } }],
       },
-      select: { chatId: true },
+      select: PUBLISHER_PASSIVE_REFRESH_SELECT,
       orderBy: { chatId: 'asc' },
       take: PUBLISHER_READY_REFRESH_BATCH_SIZE,
     });
@@ -245,7 +268,11 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         botAccessExpiresAt: null,
         ...(this.nullExpiryCursor ? { chatId: { gt: this.nullExpiryCursor } } : {}),
       },
-      select: { chatId: true, botAccessCheckedAt: true, botAccessExpiresAt: true },
+      select: {
+        ...PUBLISHER_PASSIVE_REFRESH_SELECT,
+        botAccessCheckedAt: true,
+        botAccessExpiresAt: true,
+      },
       orderBy: { chatId: 'asc' },
       take: 25,
     });
@@ -268,7 +295,11 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
             }
           : {}),
       },
-      select: { chatId: true, botAccessCheckedAt: true, botAccessExpiresAt: true },
+      select: {
+        ...PUBLISHER_PASSIVE_REFRESH_SELECT,
+        botAccessCheckedAt: true,
+        botAccessExpiresAt: true,
+      },
       orderBy: [{ botAccessExpiresAt: 'asc' }, { chatId: 'asc' }],
       take: PUBLISHER_READY_REFRESH_BATCH_SIZE,
     });
@@ -325,7 +356,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
             }
           : {}),
       },
-      select: { chatId: true, rosterRefreshAfter: true },
+      select: { ...PUBLISHER_PASSIVE_REFRESH_SELECT, rosterRefreshAfter: true },
       orderBy: [{ rosterRefreshAfter: 'asc' }, { chatId: 'asc' }],
       take: 25,
     });
@@ -335,6 +366,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         ? null
         : { chatId: last.chatId, rosterRefreshAfter: last.rosterRefreshAfter };
     for (const binding of due) {
+      if (isPublisherManagedEntityActivationRequired(binding)) continue;
       if (!this.policy.separatesMaintenance(this.publisherBotId, binding.chatId)) continue;
       await this.refreshQueue.enqueue({
         chatId: binding.chatId,
@@ -405,7 +437,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
           },
         ],
       },
-      select: { chatId: true },
+      select: PUBLISHER_PASSIVE_REFRESH_SELECT,
       orderBy: { chatId: 'asc' },
       take: PUBLISHER_DISCOVERY_REFRESH_BATCH_SIZE,
     });
@@ -484,7 +516,12 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
             : []),
         ],
       },
-      select: { chatId: true, userId: true, sourceVersion: true },
+      select: {
+        chatId: true,
+        userId: true,
+        sourceVersion: true,
+        chat: { select: { publisherBinding: { select: PUBLISHER_PASSIVE_REFRESH_SELECT } } },
+      },
       orderBy: [{ chatId: 'asc' }, { userId: 'asc' }],
       take: PUBLISHER_USER_ACCESS_REFRESH_BATCH_SIZE,
     });
@@ -494,6 +531,8 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         : rows.at(-1)
           ? { chatId: rows.at(-1)!.chatId, userId: rows.at(-1)!.userId }
           : null;
-    return rows;
+    return rows.filter(
+      (row) => !isPublisherManagedEntityActivationRequired(row.chat?.publisherBinding),
+    );
   }
 }

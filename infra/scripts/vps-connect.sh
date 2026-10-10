@@ -72,6 +72,7 @@ Commands:
   monitor-readonly [duration-sec] [interval-sec]
                               Sample health, ps, restarts, public app, and error logs
   postgres-audit [queue|activity|duplicate|publication-schema|storage|all]
+  postgres-audit queue [--explain]
   postgres-audit legacy-order-candidates
   postgres-audit moderation-outcomes [--explain]
   postgres-audit duplicate [--explain]
@@ -498,7 +499,7 @@ ERROR
 postgres_audit() {
   local mode="${1:-all}"
 
-  if [[ "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
+  if [[ "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
         "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'webhook-source-proof' || "$mode" == 'webhook-retry-proof' || "$mode" == 'legacy-order-window' ||
         "$mode" == 'moderation-outcomes' || "$mode" == 'legacy-semantic-mirrors' ]]; then

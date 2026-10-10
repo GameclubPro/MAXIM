@@ -55,6 +55,7 @@ import {
   type MaxRoutedPublicationResult,
 } from '../max/max-routed-publication.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
+import { classifyMaxSendAutoDeleteVerificationCause } from '../max/max-send-auto-delete-verification-error';
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import {
   ChatEntityType,
@@ -1457,7 +1458,9 @@ export class ManagedPollService {
           pollId: poll.id,
           chatId: poll.chatId,
           messageId: poll.publicationMessageId,
-          err: this.formatError(lookupError),
+          stage: 'exact_presence',
+          outcome: 'unavailable',
+          ...classifyMaxSendAutoDeleteVerificationCause(lookupError),
         },
         'Failed to verify missing managed poll publication',
       );
@@ -1716,7 +1719,13 @@ export class ManagedPollService {
       data: { lastRenderError: message },
     });
     this.logger.warn(
-      { pollId, chatId, action, err: message },
+      {
+        pollId,
+        chatId,
+        action,
+        stage: 'render',
+        ...classifyMaxSendAutoDeleteVerificationCause(error),
+      },
       'Failed to render managed poll publication',
     );
   }

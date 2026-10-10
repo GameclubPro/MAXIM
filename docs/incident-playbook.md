@@ -65,6 +65,10 @@ full-path suite. Never remove uncertainty/order fences or clear Redis to repair 
    selection, ordered chat heads, execution claims, and delete intents. Compare several short
    samples with the queue trend; one snapshot does not establish a bottleneck. Raw query text and
    parameters never leave the catalog, and idle sessions are labeled `inactive`.
+   `queue --explain` plans the fixed queue query without executing it and keeps the same
+   read-only role and timeouts. Both status samples and oldest rows use `(created_at, id)`
+   ordering and the exact valid `webhook_events_status_created_at_id_idx`; tied timestamps
+   cannot change the selected head. A valid plan alone does not prove completion under live load.
    The queue report also reads only the oldest row per status for its attempt count, remaining
    retry delay, and fixed preparation category. `canonical_pending` or `membership_cache_pending`
    with a growing age calls for preparation-path diagnosis, not extra moderation consumers.

@@ -58,7 +58,7 @@ legacy image remains a valid rollback target while no minute events are written.
 ```
 
 Use the existing exact-SHA CI-image preload when build capacity requires it. Never
-lower the 10 GiB API build floor. Required online multibot preparation separately
+lower the 20 GiB API build floor. Required online multibot preparation separately
 checks and supervises a 10 GiB filesystem reserve; its peak estimates are advisory.
 Preserve typed release/queue-fence journals and run all
 strict smokes. After one readiness timeout, inspect lag trend, host I/O, PostgreSQL

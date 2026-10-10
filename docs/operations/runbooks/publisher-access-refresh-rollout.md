@@ -109,7 +109,7 @@ changes affect the common API environment. The current conservative impact class
 all three active release components for a production Compose change: all 14 API roles and their
 auxiliary, Major mini app static and Safety Desk static. Follow the reviewed deploy plan and preload
 every selected component; PostgreSQL/Redis are never recreated by this application rollout. If clean API build capacity is
-below 10 GiB, use verified CI image preload and its own archive-plus-reserve check. Do not lower
+below 20 GiB, use verified CI image preload and its own archive-plus-reserve check. Do not lower
 capacity floors. Required online multibot preparation separately checks and supervises a 10 GiB
 filesystem reserve; modeled peak estimates remain advisory. Verify background/OCR restart
 stability before proceeding.

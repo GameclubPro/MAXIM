@@ -1,3 +1,4 @@
+import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
 import { VK_PARSING_MAX_PUBLISH_TEXT_LENGTH } from '@maxim/contracts';
 import {
   ChatEntityType,
@@ -114,6 +115,7 @@ describe('VkParsingService', () => {
     dependencies: { maxRoutedPublicationService?: { publish: jest.Mock } } = {},
   ) {
     const prisma = {
+      publisherEntityBinding: { findUnique: jest.fn().mockResolvedValue(null) },
       chat: {
         findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHANNEL }),
       },
@@ -1850,6 +1852,110 @@ describe('VkParsingService', () => {
       expect.objectContaining({ attempts: 5 }),
     );
   });
+
+  it.each([false, true])(
+    'stops an exact pre-dispatch refusal once per batch (lease=%s)',
+    async (leased) => {
+      const { publishService, prisma, publisherReadiness, publishQueue, maxClient } =
+        createFixture();
+      const source = createSource({ syncLockedBy: 'sync-attempt', syncAttemptCount: 7 });
+      const posts = Array.from({ length: 3 }, (_, index) =>
+        createPostRow({
+          source,
+          id: `post-${index}`,
+          vkPostId: 100 + index,
+          publishScheduleFingerprint: VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT,
+        }),
+      );
+      prisma.vkParsingPost.findFirst.mockResolvedValue(posts[0]);
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+      prisma.vkParsingSettings.findUnique.mockResolvedValue({
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date(0),
+        autoPublishKillSwitchEnabled: false,
+        circuitBreakerEnabled: false,
+      });
+      publisherReadiness.assertEntityReady.mockRejectedValueOnce(
+        new PublisherSetupRequiredException(['channel-1'], 'write_permission_missing'),
+      );
+      await publishService.enqueueAutoPublishImportedPosts(
+        'channel-1',
+        posts as never,
+        leased ? (source as never) : undefined,
+      );
+      expect(publisherReadiness.assertEntityReady).toHaveBeenCalledTimes(1);
+      expect(publishQueue.add).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ publishReason: 'autopublish' }),
+        }),
+      );
+      // A refusal is local to this batch. A subsequent valid proof permits the same candidates.
+      publisherReadiness.assertEntityReady.mockClear();
+      await publishService.enqueueAutoPublishImportedPosts(
+        'channel-1',
+        posts as never,
+        leased ? (source as never) : undefined,
+      );
+      expect(publisherReadiness.assertEntityReady).toHaveBeenCalledTimes(3);
+      expect(publishQueue.add).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it.each([
+    new Error('temporary route failure'),
+    new PublisherSetupRequiredException(['another-chat'], 'write_permission_missing'),
+  ])('does not stop unrelated candidates for an unproved scope refusal', async (error) => {
+    const { publishService, prisma, publisherReadiness, publishQueue } = createFixture();
+    const posts = [1, 2, 3].map((index) => createPostRow({ id: `post-${index}`, vkPostId: index }));
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date(0),
+      circuitBreakerEnabled: false,
+    });
+    publisherReadiness.assertEntityReady.mockRejectedValueOnce(error);
+    await publishService.enqueueAutoPublishImportedPosts('channel-1', posts as never);
+    expect(publisherReadiness.assertEntityReady).toHaveBeenCalledTimes(3);
+    expect(publishQueue.add).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([false, true])(
+    'preserves pending imports across passes while exact durable access is denied (lease=%s)',
+    async (leased) => {
+      const { publishService, prisma, publisherReadiness, publishQueue } = createFixture();
+      const source = createSource({ syncLockedBy: 'sync-attempt', syncAttemptCount: 7 });
+      const post = createPostRow({
+        source,
+        publishScheduleFingerprint: VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT,
+      });
+      prisma.publisherEntityBinding.findUnique.mockResolvedValue({
+        publisherBotId: 'publisher-bot',
+        status: 'ACTIVE',
+        botAccessState: 'CONFIRMED_ADMIN',
+        permissionsSnapshot: {
+          isAdmin: true,
+          isOwner: false,
+          permissionsKnown: true,
+          permissions: [],
+        },
+      });
+      for (let pass = 0; pass < 2; pass += 1) {
+        await publishService.enqueueAutoPublishImportedPosts(
+          'channel-1',
+          [post] as never,
+          leased ? (source as never) : undefined,
+        );
+      }
+      expect(prisma.publisherEntityBinding.findUnique).toHaveBeenCalledTimes(2);
+      expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+      expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
+      expect(publisherReadiness.assertEntityReady).not.toHaveBeenCalled();
+      expect(publishQueue.add).not.toHaveBeenCalled();
+      expect(post.publishScheduleFingerprint).toBe(VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT);
+    },
+  );
 
   it('uses current source policy instead of an imported snapshot while holding the sync lease', async () => {
     const { publishService, prisma, publishQueue } = createFixture();

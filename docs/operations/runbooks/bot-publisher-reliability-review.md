@@ -375,7 +375,7 @@ existing ownership boundary.
 The earlier release encountered the guarded VPS migration-capacity preflight.
 Reassess admission against the current infrastructure code at release time;
 historical free-space measurements do not prove the current result. The current
-validated clean shared-build floor is 10 GiB; static-only builds require 6 GiB.
+validated clean shared-build floor is 20 GiB; static-only builds require 6 GiB.
 The caller override may raise, never lower, these component floors. Do not bypass
 data/temp/WAL/Docker floors or perform
 host-wide garbage collection. A code implementation and green CI do not mean

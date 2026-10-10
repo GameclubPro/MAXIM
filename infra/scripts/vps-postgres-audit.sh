@@ -27,6 +27,7 @@ usage() {
   cat <<'USAGE' >&2
 Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|storage|all]
+  ./infra/scripts/vps-postgres-audit.sh queue [--explain]
   ./infra/scripts/vps-postgres-audit.sh legacy-order-candidates
   ./infra/scripts/vps-postgres-audit.sh legacy-order-window [--explain]
   ./infra/scripts/vps-postgres-audit.sh legacy-semantic-mirrors [--explain]
@@ -92,7 +93,7 @@ case "$AUDIT_MODE" in
     fi
     DUPLICATE_EXPLAIN="${2:-}"
     ;;
-  publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
+  queue|publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -108,7 +109,7 @@ case "$AUDIT_MODE" in
     RULES_CLEANUP_CHAT_ID="$2"
     RULES_CLEANUP_EXPLAIN="${3:-}"
     ;;
-  queue|activity|publication-schema|legacy-order-candidates|all)
+  activity|publication-schema|legacy-order-candidates|all)
     if [[ $# -gt 1 ]]; then
       usage
       exit 2
@@ -486,11 +487,27 @@ SQL
 emit_queue_audit() {
   cat <<SQL
 SELECT CASE
-  WHEN to_regclass('public.webhook_events_status_created_at_idx') IS NOT NULL
-    AND to_regclass('public.webhook_events_ordered_chat_head_idx') IS NOT NULL THEN 'true'
+  WHEN EXISTS (
+    SELECT 1 FROM pg_index index_state
+    WHERE index_state.indexrelid = to_regclass('public.webhook_events_status_created_at_id_idx')
+      AND index_state.indrelid = to_regclass('public.webhook_events')
+      AND index_state.indisvalid AND index_state.indisready
+      AND index_state.indnkeyatts = 3 AND index_state.indnatts = 3
+      AND index_state.indexprs IS NULL AND index_state.indpred IS NULL
+      AND ARRAY(
+        SELECT pg_get_indexdef(index_state.indexrelid, key_position, false)
+        FROM generate_series(1, index_state.indnkeyatts) AS key_position
+        ORDER BY key_position
+      ) = ARRAY['status', 'created_at', 'id']
+  ) AND to_regclass('public.webhook_events_ordered_chat_head_idx') IS NOT NULL THEN 'true'
   ELSE 'false'
 END AS queue_audit_index_ready \gset
 \if :queue_audit_index_ready
+SQL
+  if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+    printf '%s\n' 'EXPLAIN (FORMAT JSON)'
+  fi
+  cat <<SQL
 WITH queue_statuses(status) AS (
   VALUES
     ('RECEIVED'::"WebhookStatus"),
@@ -503,7 +520,7 @@ WITH queue_statuses(status) AS (
     SELECT webhook_events.created_at
     FROM webhook_events
     WHERE webhook_events.status = queue_statuses.status
-    ORDER BY webhook_events.created_at ASC
+    ORDER BY webhook_events.created_at ASC, webhook_events.id ASC
     LIMIT $((QUEUE_SAMPLE_CAP + 1))
   ) AS sample ON TRUE
 ), summary AS (
@@ -607,7 +624,7 @@ LEFT JOIN LATERAL (
     END AS preparation_state
   FROM webhook_events
   WHERE webhook_events.status = summary.status
-  ORDER BY webhook_events.created_at ASC
+  ORDER BY webhook_events.created_at ASC, webhook_events.id ASC
   LIMIT 1
 ) oldest ON TRUE
 LEFT JOIN LATERAL (
@@ -2246,7 +2263,7 @@ emit_sql() {
       fi
       node "$ROOT_DIR/infra/scripts/webhook-owner-proof-audit.mjs" "${owner_proof_args[@]}"
       ;;
-    queue)
+    queue|queue-active)
       emit_queue_audit
       ;;
     legacy-order-candidates)

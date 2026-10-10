@@ -253,13 +253,49 @@ describePostgresRace('PostgreSQL durable GROUP command races', () => {
 
   const retentionCutoff = () => new Date(Date.now() + 86_400_000);
 
+  async function retainedTerminalBaseline() {
+    // FLAG: Other native suites retain sealed evidence until disposable-store teardown.
+    // Exercise that non-empty state deliberately and preserve every pre-existing row.
+    const control = await prisma.webhookEvent.create({
+      data: {
+        dedupKey: `group-retention-control-${randomUUID()}`,
+        status: 'PROCESSED',
+        normalizedPayload: {},
+        rawPayload: {},
+      },
+    });
+    receiptIds.push(control.id);
+    const rows = await prisma.webhookEvent.findMany({
+      where: { status: { in: ['PROCESSED', 'DUPLICATE'] }, createdAt: { lt: retentionCutoff() } },
+      select: { id: true, status: true, createdAt: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: 129,
+    });
+    expect(rows.length).toBeLessThanOrEqual(128);
+    return rows;
+  }
+
+  async function expectRetainedBaseline(
+    rows: Awaited<ReturnType<typeof retainedTerminalBaseline>>,
+  ) {
+    expect(
+      await prisma.webhookEvent.findMany({
+        where: { id: { in: rows.map((row) => row.id) } },
+        select: { id: true, status: true, createdAt: true },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      }),
+    ).toEqual(rows);
+  }
+
   it('silently expires a denied, unclaimed Start and purges its settled mirrored bodies', async () => {
+    const baseline = await retainedTerminalBaseline();
     const data = await startExpiryFixture();
     const { service } = cleanupService();
     expect(await service.deleteCompletedWebhookBatch(retentionCutoff())).toEqual({
       removed: 3,
-      scanned: 3,
+      scanned: 3 + baseline.length,
     });
+    await expectRetainedBaseline(baseline);
     expect(
       await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: data.command.id } }),
     ).toMatchObject({
@@ -444,8 +480,14 @@ describePostgresRace('PostgreSQL durable GROUP command races', () => {
   });
 
   it('uses the cleanup cursor to pass 500 pinned bodies and settle a later observation', async () => {
+    const baseline = await retainedTerminalBaseline();
     const data = await startExpiryFixture(1);
-    const old = new Date('2020-01-01T00:00:00Z');
+    const old = new Date(
+      Math.min(
+        Date.parse('2020-01-01T00:00:00Z'),
+        ...baseline.map((row) => row.createdAt.getTime() - 1),
+      ),
+    );
     const pinned = Array.from({ length: 500 }, (_, index) => ({
       id: `start-retention-prefix-${randomUUID()}-${index}`,
       dedupKey: `start-prefix-${randomUUID()}`,
@@ -468,8 +510,9 @@ describePostgresRace('PostgreSQL durable GROUP command races', () => {
     ).toBe('PENDING');
     expect(await service.deleteCompletedWebhookBatch(retentionCutoff())).toEqual({
       removed: 1,
-      scanned: 1,
+      scanned: 1 + baseline.length,
     });
+    await expectRetainedBaseline(baseline);
     expect(cursors.get('completed')).toBeUndefined();
     expect(
       (await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: data.command.id } }))

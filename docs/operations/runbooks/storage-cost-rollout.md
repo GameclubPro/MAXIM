@@ -15,7 +15,7 @@ any API role selection expands to all 14 shared-image roles, including Publisher
 and message retention. The queue ownership/pause fence, immutable image identity,
 OCR sandbox attestation and strict smokes remain mandatory. Do not recreate
 PostgreSQL or Redis. If local build capacity is insufficient, use the existing
-verified exact-SHA CI image preload; retain the 10 GiB API build floor and 6 GiB
+verified exact-SHA CI image preload; retain the 20 GiB API build floor and 6 GiB
 static floor. Required online multibot preparation has its own supervised 10 GiB
 filesystem reserve; advisory peak estimates do not replace its live checks.
 

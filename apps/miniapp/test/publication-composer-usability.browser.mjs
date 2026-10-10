@@ -125,7 +125,7 @@ try {
         await page.locator('.publication-target-picker__summary').click();
         const picker = page.getByRole('dialog', { name: 'Получатели', exact: true });
         await picker.waitFor();
-        await picker.getByText('Доступ нужно обновить', { exact: true }).first().waitFor();
+        await picker.getByText('Проверяем права Публика', { exact: true }).first().waitFor();
         await page.waitForFunction(() =>
           document.activeElement?.matches('.publication-target-picker__editor.is-sheet'),
         );

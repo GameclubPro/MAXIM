@@ -359,46 +359,146 @@ function readPositiveIntOption(args: readonly string[], name: string): number | 
   return parsed;
 }
 
+type VkDiagnosticStage =
+  | 'source_status'
+  | 'source_health'
+  | 'noisy_sources'
+  | 'sync_performance'
+  | 'publish_backlog'
+  | 'recent_publish_success'
+  | 'stuck_publish_posts'
+  | 'recent_publish_failures'
+  | 'media_status'
+  | 'media_identity_conflicts'
+  | 'recent_media_failures'
+  | 'owned_publish_database'
+  | 'schedule_policies'
+  | 'queues';
+
+export function classifyVkDiagnosticError(error: unknown): {
+  category: string;
+  prismaCode: string | null;
+  sqlState: string | null;
+} {
+  const value = error && typeof error === 'object' ? (error as Record<string, unknown>) : {};
+  const prismaCode =
+    typeof value.code === 'string' &&
+    ['P1001', 'P1002', 'P1008', 'P1010', 'P2010', 'P2024'].includes(value.code)
+      ? value.code
+      : null;
+  const sqlCategories: Record<string, string> = {
+    '57014': 'query_cancelled',
+    '42P01': 'schema_missing',
+    '42703': 'schema_missing',
+    '42501': 'permission_denied',
+    '53300': 'connection_capacity',
+    '53200': 'resource_exhausted',
+    '55P03': 'lock_unavailable',
+  };
+  let sqlState: string | null = null;
+  // FLAG: Prisma 7 wraps PostgreSQL SQLSTATE in driverAdapterError.cause.originalCode.
+  // Traverse known wrappers only, with fixed depth/node bounds and no raw serialization.
+  const pending: Array<{ value: unknown; depth: number }> = [{ value: error, depth: 0 }];
+  for (let index = 0; index < pending.length && index < 16 && sqlState === null; index += 1) {
+    const entry = pending[index]!;
+    if (!entry.value || typeof entry.value !== 'object' || Array.isArray(entry.value)) continue;
+    const row = entry.value as Record<string, unknown>;
+    for (const code of [row.code, row.originalCode]) {
+      if (typeof code === 'string' && Object.hasOwn(sqlCategories, code)) {
+        sqlState = code;
+        break;
+      }
+    }
+    if (entry.depth < 3) {
+      for (const key of ['meta', 'cause', 'driverAdapterError']) {
+        pending.push({ value: row[key], depth: entry.depth + 1 });
+      }
+    }
+  }
+  const category = sqlState
+    ? sqlCategories[sqlState]!
+    : prismaCode === 'P1010'
+      ? 'permission_denied'
+      : prismaCode === 'P2024'
+        ? 'pool_timeout'
+        : prismaCode === 'P1001'
+          ? 'connection_unavailable'
+          : prismaCode === 'P1002' || prismaCode === 'P1008'
+            ? 'operation_timeout'
+            : prismaCode === 'P2010'
+              ? 'unclassified_sql_error'
+              : 'unclassified';
+  return { category, prismaCode, sqlState };
+}
+
+export class VkDiagnosticStageError extends Error {
+  readonly diagnostic: ReturnType<typeof classifyVkDiagnosticError> & { stage: VkDiagnosticStage };
+  constructor(stage: VkDiagnosticStage, error: unknown) {
+    const diagnostic = { stage, ...classifyVkDiagnosticError(error) };
+    super(JSON.stringify(diagnostic));
+    this.name = 'VkDiagnosticStageError';
+    this.diagnostic = diagnostic;
+  }
+}
+
+async function runVkDiagnosticStage<T>(
+  stage: VkDiagnosticStage,
+  load: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await load();
+  } catch (error) {
+    throw new VkDiagnosticStageError(stage, error);
+  }
+}
+
 export async function loadVkParsingDiagnostics(
   prisma: PrismaClient,
   options: CliOptions,
 ): Promise<VkParsingDiagnostics> {
   const generatedAt = new Date();
   const since = new Date(generatedAt.getTime() - options.windowHours * 60 * 60_000);
-  const [
-    sourceStatus,
-    sourceHealth,
-    noisySources,
-    syncPerformance,
-    publishBacklog,
-    recentPublishSuccess,
-    stuckPublishPosts,
-    recentPublishFailures,
-    mediaStatus,
-    mediaIdentityConflicts,
-    recentMediaFailures,
-    ownedPublishDatabase,
-  ] = await Promise.all([
-    loadSourceStatus(prisma),
-    loadSourceHealth(prisma),
+  // FLAG: Diagnostics share one bounded database session. Stop at the failing stage;
+  // never leave a fanout of already-started queries behind a rejected report.
+  const sourceStatus = await runVkDiagnosticStage('source_status', () => loadSourceStatus(prisma));
+  const sourceHealth = await runVkDiagnosticStage('source_health', () => loadSourceHealth(prisma));
+  const noisySources = await runVkDiagnosticStage('noisy_sources', () =>
     loadNoisySources(prisma, options.limit),
+  );
+  const syncPerformance = await runVkDiagnosticStage('sync_performance', () =>
     loadSyncPerformance(prisma, since),
+  );
+  const publishBacklog = await runVkDiagnosticStage('publish_backlog', () =>
     loadPublishBacklog(prisma, options.publisherBotId),
+  );
+  const recentPublishSuccess = await runVkDiagnosticStage('recent_publish_success', () =>
     loadRecentPublishSuccess(prisma, since, options.publisherBotId),
+  );
+  const stuckPublishPosts = await runVkDiagnosticStage('stuck_publish_posts', () =>
     loadStuckPublishPosts(prisma, options.limit),
+  );
+  const recentPublishFailures = await runVkDiagnosticStage('recent_publish_failures', () =>
     loadRecentPublishFailures(prisma, since, options.limit),
-    loadMediaStatus(prisma),
+  );
+  const mediaStatus = await runVkDiagnosticStage('media_status', () => loadMediaStatus(prisma));
+  const mediaIdentityConflicts = await runVkDiagnosticStage('media_identity_conflicts', () =>
     loadMediaIdentityConflicts(prisma, options.limit),
+  );
+  const recentMediaFailures = await runVkDiagnosticStage('recent_media_failures', () =>
     loadRecentMediaFailures(prisma, since, options.limit),
+  );
+  const ownedPublishDatabase = await runVkDiagnosticStage('owned_publish_database', () =>
     loadOwnedPublishDatabaseSnapshot(prisma, options.reconcileCap, options.publisherBotId),
-  ]);
-  const [schedulePolicies, { queues, publishQueueReconciliation }] = await Promise.all([
+  );
+  const schedulePolicies = await runVkDiagnosticStage('schedule_policies', () =>
     loadSchedulePolicyDiagnostics(
       prisma,
       options.publisherBotId,
       generatedAt,
       ownedPublishDatabase,
     ),
+  );
+  const { queues, publishQueueReconciliation } = await runVkDiagnosticStage('queues', () =>
     loadQueueDiagnostics(
       options.redisUrl,
       options.limit,
@@ -406,7 +506,7 @@ export async function loadVkParsingDiagnostics(
       ownedPublishDatabase,
       generatedAt,
     ),
-  ]);
+  );
 
   return {
     generatedAt: generatedAt.toISOString(),
@@ -1982,7 +2082,13 @@ async function main(): Promise<void> {
 
 if (require.main === module) {
   void main().catch((error) => {
-    console.error(error);
+    console.error(
+      JSON.stringify(
+        error instanceof VkDiagnosticStageError
+          ? error.diagnostic
+          : { stage: 'startup_or_cleanup', ...classifyVkDiagnosticError(error) },
+      ),
+    );
     process.exit(1);
   });
 }

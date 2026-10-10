@@ -63,6 +63,7 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
+import { isPublisherManagedEntityActivationRequired } from '../publisher/publisher-entity-connection.util';
 import {
   PublisherDispatchHealthService,
   type PublisherFailureClassification,
@@ -2329,9 +2330,11 @@ export class VkPublishService {
       ) {
         throw new Error('VK sync enqueue lease crosses the candidate scope');
       }
+      if (await this.hasPersistedAutoPublishDenial(chatId, ownerScope.ownerBotId)) return;
       await this.enqueueAutoPublishImportedPostsUnderLease(posts, syncLease);
       return;
     }
+    if (await this.hasPersistedAutoPublishDenial(chatId, ownerScope.ownerBotId)) return;
     const settings = await this.getSettingsForChat(chatId, ownerScope);
 
     const circuitPausedSourceIds = new Set<string>();
@@ -2392,6 +2395,7 @@ export class VkPublishService {
           scheduleFingerprint,
         });
       } catch (error) {
+        if (this.isExactAutoPublishSetupRefusal(error, chatId)) return;
         this.logger.warn(
           {
             postId: post.id,
@@ -2472,12 +2476,49 @@ export class VkPublishService {
         });
       } catch (error) {
         if (error instanceof VkSyncLeaseLostError) throw error;
+        if (this.isExactAutoPublishSetupRefusal(error, lease.chatId)) return;
         this.logger.warn(
           { postId: candidate.id, sourceId: lease.id, err: error },
           'VK sync post autopublish enqueue failed',
         );
       }
     }
+  }
+
+  private async hasPersistedAutoPublishDenial(
+    chatId: string,
+    publisherBotId: string,
+  ): Promise<boolean> {
+    const binding = await this.prisma.publisherEntityBinding.findUnique({
+      where: { chatId },
+      select: {
+        publisherBotId: true,
+        status: true,
+        botAccessState: true,
+        botAccessSource: true,
+        permissionsSnapshot: true,
+      },
+    });
+    // FLAG: The exact durable binding is only a refusal gate. New grants still pass
+    // route readiness and beforeSend; untouched imports retain their recovery marker.
+    return Boolean(
+      binding?.publisherBotId === publisherBotId &&
+      isPublisherManagedEntityActivationRequired(binding),
+    );
+  }
+
+  private isExactAutoPublishSetupRefusal(error: unknown, chatId: string): boolean {
+    if (
+      !(error instanceof PublisherSetupRequiredException) ||
+      error.chatIds.length !== 1 ||
+      error.chatIds[0] !== chatId
+    )
+      return false;
+    this.logger.warn(
+      { blockerCode: error.blockerCode, attempted: false },
+      'VK autopublish batch awaits Publisher access',
+    );
+    return true;
   }
 
   private runWithVkSyncEnqueueLease<T>(

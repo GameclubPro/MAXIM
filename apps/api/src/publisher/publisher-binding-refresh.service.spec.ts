@@ -3229,7 +3229,24 @@ describe('PublisherBindingRefreshService', () => {
             }),
           ]),
         }),
-        select: { chatId: true, userId: true, sourceVersion: true },
+        select: {
+          chatId: true,
+          userId: true,
+          sourceVersion: true,
+          chat: {
+            select: {
+              publisherBinding: {
+                select: {
+                  chatId: true,
+                  status: true,
+                  botAccessState: true,
+                  botAccessSource: true,
+                  permissionsSnapshot: true,
+                },
+              },
+            },
+          },
+        },
         take: 25,
       }),
     );

@@ -1826,6 +1826,54 @@ describe('ManagedPollService callback rendering', () => {
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('channel-1');
   });
 
+  it.each([
+    [{ response: { status: 404 } }, 'access_ambiguous', 404],
+    [{ response: { status: 403 } }, 'access_ambiguous', 403],
+    [{ response: { status: 503 } }, 'upstream_5xx', 503],
+    [{ code: 'ETIMEDOUT' }, 'timeout', null],
+  ])(
+    'keeps unknown poll presence pending and reports a bounded category',
+    async (lookupError, kind, statusCode) => {
+      const prisma = { managedPoll: { updateMany: jest.fn() }, $transaction: jest.fn() };
+      const maxClient = {
+        getExactMessagePresence: jest
+          .fn()
+          .mockRejectedValue({ ...lookupError, message: 'private remote body' }),
+      };
+      const service = new ManagedPollService(
+        prisma as never,
+        maxClient as never,
+        {} as never,
+        {} as never,
+      );
+      const warn = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+      const poll = {
+        id: 'poll-1',
+        chatId: 'chat-1',
+        publicationMessageId: 'message-1',
+        publicationBotId: 'bot-1',
+        renderRevision: 7,
+      };
+      expect(
+        await (service as any).reconcileMissingPollPublication(poll, 'bot-1', 'chat', {
+          response: { status: 404 },
+        }),
+      ).toBe(false);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.managedPoll.updateMany).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: 'exact_presence',
+          outcome: 'unavailable',
+          kind,
+          statusCode,
+        }),
+        'Failed to verify missing managed poll publication',
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('private remote body');
+    },
+  );
+
   it('records terminal access loss from a missing-publication verification lookup', async () => {
     const lookupAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
     jest.useFakeTimers().setSystemTime(lookupAttemptStartedAt);

@@ -1,7 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { PublicationDispatchProfile, VkParsingOwnerProfile } from '../prisma/prisma-client';
 import {
+  PublicationDispatchProfile,
+  VkParsingOwnerProfile,
+  PrismaClient,
+  createPrismaAdapter,
+} from '../prisma/prisma-client';
+import {
+  classifyVkDiagnosticError,
+  loadVkParsingDiagnostics,
+  VkDiagnosticStageError,
   loadOwnedPublishDatabaseSnapshot,
   loadPublishBacklog,
   loadRecentPublishSuccess,
@@ -77,6 +85,96 @@ function createEmptyOperationalAggregates() {
 }
 
 describe('diagnose-vk-parsing script helpers', () => {
+  it('does not infer timeout from P2010 or disclose raw SQL or parameters', () => {
+    const raw = {
+      code: 'P2010',
+      message: 'secret SQL and token',
+      meta: { message: 'private chat', code: 'unknown-secret' },
+    };
+    expect(classifyVkDiagnosticError(raw)).toEqual({
+      category: 'unclassified_sql_error',
+      prismaCode: 'P2010',
+      sqlState: null,
+    });
+    const error = new VkDiagnosticStageError('publish_backlog', raw);
+    expect(JSON.stringify(error)).not.toMatch(/secret|private/);
+    expect(error.message).not.toMatch(/secret|private/);
+    expect(classifyVkDiagnosticError({ ...raw, meta: { code: '57014' } })).toEqual({
+      category: 'query_cancelled',
+      prismaCode: 'P2010',
+      sqlState: '57014',
+    });
+    expect(classifyVkDiagnosticError({ ...raw, meta: { code: '42501' } }).category).toBe(
+      'permission_denied',
+    );
+  });
+
+  it('classifies nested Prisma 7 driver codes without walking arbitrary or cyclic data', () => {
+    const raw = {
+      code: 'P2010',
+      meta: { driverAdapterError: { cause: { originalCode: '57014', message: 'private SQL' } } },
+    };
+    expect(classifyVkDiagnosticError(raw).category).toBe('query_cancelled');
+    const cyclic: Record<string, unknown> = { code: 'P2010', unrelated: raw };
+    cyclic.cause = cyclic;
+    expect(classifyVkDiagnosticError(cyclic).category).toBe('unclassified_sql_error');
+    expect(new VkDiagnosticStageError('source_status', raw).message).not.toContain('private SQL');
+  });
+
+  (process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL ? it : it.skip)(
+    'classifies an actual Prisma 7 PostgreSQL diagnostic error',
+    async () => {
+      const url = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL!;
+      const parsed = new URL(url);
+      if (
+        !['localhost', '127.0.0.1'].includes(parsed.hostname) ||
+        !parsed.pathname.includes('race_test')
+      )
+        throw new Error('Disposable race_test database required');
+      const prisma = new PrismaClient({
+        adapter: createPrismaAdapter(url, { max: 1, statement_timeout: 2500 }),
+      });
+      try {
+        let failure: unknown;
+        try {
+          await prisma.$queryRaw`SELECT diagnostic_missing_column FROM (SELECT 1 AS present) AS source`;
+        } catch (error) {
+          failure = error;
+        }
+        expect(classifyVkDiagnosticError(failure)).toEqual({
+          category: 'schema_missing',
+          prismaCode: 'P2010',
+          sqlState: '42703',
+        });
+      } finally {
+        await prisma.$disconnect();
+      }
+    },
+  );
+
+  it('reports the exact failed stage and starts no later database work', async () => {
+    const prisma = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockRejectedValueOnce({ code: 'P2010', meta: { code: '42703', message: 'private SQL' } }),
+    };
+    await expect(
+      loadVkParsingDiagnostics(
+        prisma as never,
+        readCliOptions([], { MAX_PUBLISHER_BOT_ID: PUBLISHER_BOT_ID } as NodeJS.ProcessEnv),
+      ),
+    ).rejects.toMatchObject({
+      diagnostic: {
+        stage: 'source_health',
+        category: 'schema_missing',
+        prismaCode: 'P2010',
+        sqlState: '42703',
+      },
+    });
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+
   it('parses CLI options with environment fallback', () => {
     expect(
       readCliOptions(['--json', '--limit', '5', '--window-hours', '12'], {

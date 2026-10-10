@@ -20,7 +20,10 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
     new ConfigService({ MAX_PUBLISHER_ACCESS_REFRESH_MODE: 'on' }),
   );
   const enqueue = jest.fn().mockResolvedValue('nomination');
-  function scheduler() {
+  function scheduler(
+    refreshPolicy = policy,
+    refreshEvidence?: PublisherAccessRefreshEvidenceService,
+  ) {
     return new PublisherBindingRefreshSchedulerService(
       db as never,
       { enqueue, compactScheduledBacklog: jest.fn() } as never,
@@ -30,7 +33,8 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
       { dispatchEnabled: true } as never,
       { runExclusive: async (_key: string, work: () => Promise<void>) => work() } as never,
       { recoverHistoricalActorCandidates: jest.fn() } as never,
-      policy,
+      refreshPolicy,
+      refreshEvidence,
     );
   }
   beforeAll(async () => {
@@ -615,6 +619,95 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
       .filter((job) => job.reason === 'scheduled_bot_access');
     expect(next.map((job) => job.chatId)).toEqual(due.slice(200).map((chat) => chat.id));
   });
+
+  it.each(['off', 'canary', 'on'])(
+    'advances past denied raw pages without hiding obligations or starving healthy work in %s',
+    async (mode) => {
+      const now = new Date();
+      const prefix = `denied-${randomUUID()}`;
+      const rows = Array.from({ length: 205 }, (_, index) => ({
+        id: `${prefix}-${String(index).padStart(3, '0')}`,
+        title: 'Passive nomination fixture',
+      }));
+      await db.chat.createMany({ data: rows });
+      await db.publisherEntityBinding.createMany({
+        data: rows.map((chat, index) => ({
+          chatId: chat.id,
+          publisherBotId: botId,
+          status: 'ACTIVE',
+          botAccessState: 'CONFIRMED_ADMIN',
+          botAccessCheckedAt: new Date(now.getTime() - 1_000_000),
+          botAccessExpiresAt: new Date(now.getTime() - 500_000),
+          rosterRefreshAfter: new Date(now.getTime() - 500_000),
+          permissionsSnapshot: {
+            isAdmin: true,
+            isOwner: false,
+            permissionsKnown: true,
+            permissions: index < 200 ? [] : ['write'],
+          },
+        })),
+      });
+      await db.managedEntityAccessEdge.createMany({
+        data: [rows[0]!, rows[204]!].map((row) => ({
+          chatId: row.id,
+          userId: 'actor',
+          botId,
+          entityType: 'CHAT',
+          state: 'GRANTED',
+          userRole: 'ADMIN',
+          botRole: 'ADMIN',
+          checkedAt: now,
+          expiresAt: now,
+          source: 'test',
+        })),
+      });
+      const refreshPolicy = new PublisherAccessRefreshPolicy(
+        new ConfigService({ MAX_PUBLISHER_ACCESS_REFRESH_MODE: mode }),
+      );
+      const observer = new PublisherAccessRefreshEvidenceService(db as never, refreshPolicy);
+      const observeDue = jest.spyOn(observer, 'observeDue');
+      const runner = scheduler(refreshPolicy, observer);
+      await runner.scan('startup');
+      expect(
+        enqueue.mock.calls.some(([job]) => rows.slice(0, 200).some((row) => row.id === job.chatId)),
+      ).toBe(false);
+      expect(observeDue.mock.calls[0]![1]).toHaveLength(200);
+      // A full denied page still advances both expiry and roster cursors.
+      for (let page = 0; page < 9; page += 1) await runner.scan('scheduled');
+      expect(
+        enqueue.mock.calls.some(([job]) => rows.slice(0, 200).some((row) => row.id === job.chatId)),
+      ).toBe(false);
+      for (const row of rows.slice(200)) {
+        expect(
+          enqueue.mock.calls.some(
+            ([job]) => job.chatId === row.id && job.reason === 'scheduled_bot_access',
+          ),
+        ).toBe(true);
+      }
+      if (mode !== 'off') {
+        expect(
+          await db.publisherAccessRefreshObligation.count({
+            where: {
+              publisherBotId: botId,
+              chatId: { in: rows.slice(0, 200).map((row) => row.id) },
+            },
+          }),
+        ).toBe(200);
+      }
+      // A new persisted grant becomes eligible; the scheduler never grants it itself.
+      await db.publisherEntityBinding.update({
+        where: { chatId: rows[0]!.id },
+        data: { permissionsSnapshot: adminAccess },
+      });
+      enqueue.mockClear();
+      await scheduler(refreshPolicy).scan('startup');
+      expect(
+        enqueue.mock.calls.some(
+          ([job]) => job.chatId === rows[0]!.id && job.reason === 'scheduled_bot_access',
+        ),
+      ).toBe(true);
+    },
+  );
 
   it('uses the reviewed expiry and roster index access paths', async () => {
     const plans = await db.$transaction(async (tx) => {

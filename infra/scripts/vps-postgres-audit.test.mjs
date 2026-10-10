@@ -528,6 +528,23 @@ process.exit(result.status ?? 1);
   },
 );
 
+test('queue explain plans the fixed report without executing it or widening the audit envelope', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const explained = runAudit(data, ['queue', '--explain']);
+  assert.equal(explained.status, 0, explained.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\)\nWITH queue_statuses/u);
+  assert.doesNotMatch(sql, /EXPLAIN\s+ANALYZE/iu);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /statement_timeout=2500ms/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'queue', '--explain']).status, 0);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /queue/u);
+  for (const arg of ['SELECT 1', '--analyze', '--file', '/tmp/private']) {
+    assert.equal(runAudit(data, ['queue', arg]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'queue', arg]).status, 2);
+  }
+});
+
 test('commercial quality mode is opt-in, fixed, indexed and preserves the bounded audit envelope', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -695,10 +712,13 @@ test('queue audit uses the dedicated role and a hard read-only resource envelope
   assert.match(sql, /current_setting\('enable_bitmapscan'\) = 'off'/u);
   assert.match(sql, /pg_size_bytes\(current_setting\('temp_file_limit'\)\) BETWEEN 0 AND 8388608/u);
   assert.match(sql, /MAXIM_POSTGRES_AUDIT_SESSION_INVALID\nSELECT 1 \/ 0;/u);
-  assert.match(sql, /to_regclass\('public\.webhook_events_status_created_at_idx'\)/u);
+  assert.match(sql, /to_regclass\('public\.webhook_events_status_created_at_id_idx'\)/u);
   assert.match(sql, /bounded_events AS MATERIALIZED/u);
   assert.match(sql, /WHERE webhook_events\.status = queue_statuses\.status/u);
-  assert.match(sql, /ORDER BY webhook_events\.created_at ASC\n {4}LIMIT 2001/u);
+  assert.match(
+    sql,
+    /ORDER BY webhook_events\.created_at ASC, webhook_events\.id ASC\n {4}LIMIT 2001/u,
+  );
   assert.match(sql, /'sample_cap_per_status', 2000/u);
   assert.doesNotMatch(
     sql.slice(sql.indexOf('WITH queue_statuses(status) AS')),
@@ -1592,6 +1612,7 @@ test(
           normalized_payload jsonb DEFAULT '{}'
         );
         CREATE INDEX webhook_events_status_created_at_idx ON webhook_events(status, created_at);
+        CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status, created_at, id);
       `);
       await client.query(
         readFileSync(
@@ -1846,9 +1867,22 @@ test(
       );
       assert.deepEqual([...new Set(relationScans.map((node) => node['Index Name']))].sort(), [
         'webhook_events_ordered_chat_head_idx',
-        'webhook_events_status_created_at_idx',
+        'webhook_events_status_created_at_id_idx',
       ]);
       assert.equal((await report()).quarantine_subtype, 'legacy_execution_unverified');
+      await client.query(`
+        UPDATE webhook_events SET enqueue_attempts = 7 WHERE id = 'private-received';
+        INSERT INTO webhook_events(id, status, created_at, enqueue_attempts)
+          SELECT 'private-received-z', status, created_at, 99 FROM webhook_events WHERE id = 'private-received';
+      `);
+      const tied = JSON.parse(Object.values((await client.query(statement)).rows[0])[0]);
+      const received = tied.rows.find((row) => row.status === 'RECEIVED');
+      assert.equal(received.count_lower_bound, 2);
+      assert.equal(received.oldest_enqueue_attempts, 7);
+      assert.equal(
+        received.oldest_ordering_predecessor.quarantine_subtype,
+        'legacy_execution_unverified',
+      );
     } finally {
       if (connected) await client.query('ROLLBACK').catch(() => undefined);
       await client.end();

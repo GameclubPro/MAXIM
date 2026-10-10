@@ -194,7 +194,7 @@ Revocation is rechecked on every hydration. Summary may lag up to fifteen second
 
 ## Capacity And Acceptance
 
-Retain the shared API 10 GiB and static 6 GiB clean-build floors. Required online
+Retain the shared API 20 GiB and static 6 GiB clean-build floors. Required online
 multibot preparation separately checks and supervises a 10 GiB filesystem reserve;
 its modeled peak estimates are advisory. Exact-SHA CI
 preload is an alternative build location, not a disk-capacity fix. Use only

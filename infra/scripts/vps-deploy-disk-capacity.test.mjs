@@ -11,7 +11,7 @@ const immutableRollbackScript = read('infra/scripts/vps-release-rollback.sh');
 const scaleDeployScript = read('infra/scripts/vps-pull-build-up-scale.sh');
 const migrationNoBuildCompose = read('infra/docker-compose.runtime-no-build.yml');
 const diskCapacityLibrary = read('infra/scripts/lib/deploy-disk-capacity.sh');
-const apiMinimumFreeBytes = 10 * 1024 ** 3;
+const apiMinimumFreeBytes = 20 * 1024 ** 3;
 const staticMinimumFreeBytes = 6 * 1024 ** 3;
 
 function read(path) {
@@ -181,23 +181,23 @@ printf 'reuse-only=%s\\n' "$REUSE_PRELOADED_TARGET_IMAGES_ONLY"
 }
 
 test('keeps component build floors in one shared library', () => {
-  assert.match(diskCapacityLibrary, /MAXIM_API_BUILD_HARD_MIN_FREE_BYTES="10737418240"/u);
+  assert.match(diskCapacityLibrary, /MAXIM_API_BUILD_HARD_MIN_FREE_BYTES="21474836480"/u);
   assert.match(diskCapacityLibrary, /MAXIM_STATIC_BUILD_HARD_MIN_FREE_BYTES="6442450944"/u);
   for (const script of [deployScript, runtimeRollbackScript, scaleDeployScript]) {
     assert.match(script, /source "\$ROOT_DIR\/infra\/scripts\/lib\/deploy-disk-capacity\.sh"/u);
   }
 });
 
-test('enforces the 10 GiB API build floor at its exact boundary', () => {
+test('enforces the 20 GiB API build floor at its exact boundary', () => {
   const below = runDiskPreflight(apiMinimumFreeBytes - 1);
   const equal = runDiskPreflight(apiMinimumFreeBytes);
 
   assert.equal(below.status, 1);
-  assert.match(below.stderr, /at least 10737418240 bytes are required/u);
+  assert.match(below.stderr, /at least 21474836480 bytes are required/u);
   assert.match(below.stderr, /not bypassed by MAXIM_ALLOW_CRITICAL_DISK_DEPLOY/u);
   assert.equal(equal.status, 0, equal.stderr);
   assert.match(equal.stdout, /components=api/u);
-  assert.match(equal.stdout, /minimum-free=10737418240B/u);
+  assert.match(equal.stdout, /minimum-free=21474836480B/u);
 });
 
 test('uses the smaller 6 GiB floor for static-only builds', () => {
@@ -223,10 +223,10 @@ test('mixed API and static builds use the higher API floor', () => {
 
   assert.equal(below.status, 1);
   assert.match(below.stdout, /components=api\+static/u);
-  assert.match(below.stderr, /at least 10737418240 bytes are required/u);
+  assert.match(below.stderr, /at least 21474836480 bytes are required/u);
   assert.equal(equal.status, 0, equal.stderr);
   assert.match(equal.stdout, /components=api\+static/u);
-  assert.match(equal.stdout, /minimum-free=10737418240B/u);
+  assert.match(equal.stdout, /minimum-free=21474836480B/u);
 });
 
 test('rejects malformed capacity configuration and component flags', () => {
@@ -252,15 +252,15 @@ test('rejects malformed capacity configuration and component flags', () => {
 });
 
 test('compares configured byte thresholds exactly without shell integer overflow', () => {
-  const leadingZeroResult = runDiskPreflight('00010737418240', {
-    minimumOverride: '00010737418240',
+  const leadingZeroResult = runDiskPreflight('00021474836480', {
+    minimumOverride: '00021474836480',
   });
   const hugeThresholdResult = runDiskPreflight('999999999999999999999999999998', {
     minimumOverride: '999999999999999999999999999999',
   });
 
   assert.equal(leadingZeroResult.status, 0, leadingZeroResult.stderr);
-  assert.match(leadingZeroResult.stdout, /available=10737418240B minimum-free=10737418240B/u);
+  assert.match(leadingZeroResult.stdout, /available=21474836480B minimum-free=21474836480B/u);
   assert.equal(hugeThresholdResult.status, 1);
   assert.match(hugeThresholdResult.stderr, /at least 999999999999999999999999999999 bytes/u);
 });
@@ -283,13 +283,13 @@ test('configuration may raise but never lower the selected component floor', () 
   });
 
   assert.equal(weakApi.status, 1);
-  assert.match(weakApi.stderr, /at least 10737418240 for build components: api/u);
+  assert.match(weakApi.stderr, /at least 21474836480 for build components: api/u);
   assert.equal(weakStatic.status, 1);
   assert.match(weakStatic.stderr, /at least 6442450944 for build components: static/u);
   assert.equal(raisedBelow.status, 1);
-  assert.match(raisedBelow.stderr, /at least 10737419264 bytes are required/u);
+  assert.match(raisedBelow.stderr, /at least 21474837504 bytes are required/u);
   assert.equal(raisedEqual.status, 0, raisedEqual.stderr);
-  assert.match(raisedEqual.stdout, /minimum-free=10737419264B/u);
+  assert.match(raisedEqual.stdout, /minimum-free=21474837504B/u);
 });
 
 test('admits the absolute reserve while reporting percentage pressure', () => {
@@ -332,7 +332,7 @@ test('normalizes percentage thresholds before comparing them', () => {
   assert.match(result.stderr, /WARNING: deploy host disk utilization is 80%/u);
 });
 
-test('exact-SHA API image reuse enforces the same 10 GiB reserve as a build', () => {
+test('exact-SHA API image reuse enforces the same 20 GiB reserve as a build', () => {
   const targetSha = 'a'.repeat(40);
   const localImages = [
     `maxim-api:${targetSha}`,
@@ -356,13 +356,13 @@ test('exact-SHA API image reuse enforces the same 10 GiB reserve as a build', ()
   });
 
   assert.equal(below.status, 1);
-  assert.match(below.stderr, /at least 10737418240 bytes are required/u);
+  assert.match(below.stderr, /at least 21474836480 bytes are required/u);
   assert.match(below.stderr, /not bypassed by MAXIM_ALLOW_CRITICAL_DISK_DEPLOY/u);
   assert.doesNotMatch(below.stdout, /reuse-only=1/u);
   assert.equal(equal.status, 0, equal.stderr);
   assert.match(equal.stdout, /Reusing every selected exact immutable target image/u);
   assert.match(equal.stdout, /components=api\+static/u);
-  assert.match(equal.stdout, /minimum-free=10737418240B/u);
+  assert.match(equal.stdout, /minimum-free=21474836480B/u);
   assert.match(equal.stdout, /mode=reuse/u);
   assert.match(equal.stdout, /reuse-only=1/u);
   assert.match(equal.stderr, /CRITICAL: deploy host disk utilization is 95%/u);
@@ -420,17 +420,17 @@ test('reuse reserve configuration may raise but never lower the component floor'
   });
 
   assert.equal(weak.status, 1);
-  assert.match(weak.stderr, /at least 10737418240 for build components: api/u);
+  assert.match(weak.stderr, /at least 21474836480 for build components: api/u);
   assert.equal(raisedBelow.status, 1);
-  assert.match(raisedBelow.stderr, /at least 10737419264 bytes are required/u);
+  assert.match(raisedBelow.stderr, /at least 21474837504 bytes are required/u);
   assert.equal(raisedEqual.status, 0, raisedEqual.stderr);
-  assert.match(raisedEqual.stdout, /minimum-free=10737419264B/u);
+  assert.match(raisedEqual.stdout, /minimum-free=21474837504B/u);
   assert.match(raisedEqual.stdout, /reuse-only=1/u);
 });
 
 test('reuse capacity helper keeps exact decimal comparisons and rejects malformed thresholds', () => {
-  const exact = runDiskPreflight('00010737418240', {
-    minimumOverride: '00010737418240',
+  const exact = runDiskPreflight('00021474836480', {
+    minimumOverride: '00021474836480',
     reuseOnly: true,
     usedPercent: 95,
   });
@@ -444,7 +444,7 @@ test('reuse capacity helper keeps exact decimal comparisons and rejects malforme
   });
 
   assert.equal(exact.status, 0, exact.stderr);
-  assert.match(exact.stdout, /available=10737418240B minimum-free=10737418240B/u);
+  assert.match(exact.stdout, /available=21474836480B minimum-free=21474836480B/u);
   assert.equal(huge.status, 1);
   assert.match(huge.stderr, /at least 999999999999999999999999999999 bytes/u);
   assert.equal(malformed.status, 1);
@@ -472,7 +472,7 @@ test('missing selected images receive the component-aware floor', () => {
 
   assert.equal(mixedResult.status, 1);
   assert.match(mixedResult.stderr, /requires a build: maxim-miniapp-major:/u);
-  assert.match(mixedResult.stderr, /at least 10737418240 bytes are required/u);
+  assert.match(mixedResult.stderr, /at least 21474836480 bytes are required/u);
   assert.equal(staticResult.status, 0, staticResult.stderr);
   assert.match(staticResult.stdout, /components=static/u);
   assert.match(staticResult.stdout, /reuse-only=0/u);
@@ -499,10 +499,10 @@ test('wrong-SHA and unknown targets cannot bypass the API floor', () => {
 
   assert.equal(wrongShaResult.status, 1);
   assert.match(wrongShaResult.stderr, /non-target image ref/u);
-  assert.match(wrongShaResult.stderr, /at least 10737418240 bytes are required/u);
+  assert.match(wrongShaResult.stderr, /at least 21474836480 bytes are required/u);
   assert.equal(unknownResult.status, 1);
   assert.match(unknownResult.stderr, /unknown target: manual-unknown-static/u);
-  assert.match(unknownResult.stderr, /at least 10737418240 bytes are required/u);
+  assert.match(unknownResult.stderr, /at least 21474836480 bytes are required/u);
 });
 
 test('an exact-SHA tag with unverified release labels cannot bypass the API floor', () => {
@@ -518,7 +518,7 @@ test('an exact-SHA tag with unverified release labels cannot bypass the API floo
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /unverified release labels/u);
-  assert.match(result.stderr, /at least 10737418240 bytes are required/u);
+  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
 });
 
 test('runtime and scale builds run capacity checks before destructive work', () => {

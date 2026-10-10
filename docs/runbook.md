@@ -842,7 +842,7 @@ ROLLBACK_REF="${ROLLBACK_REF:?Set ROLLBACK_REF to a compatible Git ref}"
 It requires the current Postgres and Redis services to be running and ready, then checks that the
 target contains all Prisma migrations already applied. Before switching the VPS checkout it
 preserves the current Compose file and release/smoke helpers, so historical Compose cannot recreate
-stateful services. Before switching refs or building, it applies the same 10 GiB API build-capacity
+stateful services. Before switching refs or building, it applies the same 20 GiB API build-capacity
 floor as a normal deploy. It builds a SHA-scoped shared API image, runs the API migration command,
 recreates all API roles by default with implicit Compose builds disabled, verifies image IDs, runs
 strict health checks, and records the rolled-back API component in a new release manifest. It cannot
@@ -871,8 +871,8 @@ The helper holds the deploy lock, validates every retained manifest, preserves i
 those manifests and every container, and removes only old unused immutable MAXIM release refs. It
 does not prune shared BuildKit cache, generic images, containers, or volumes.
 
-The shared component-aware preflight requires 10 GiB free for a clean API build and 6 GiB for a
-static-only build; mixed builds use 10 GiB. The API floor is 10,737,418,240 bytes. Percentage
+The shared component-aware preflight requires 20 GiB free for a clean API build and 6 GiB for a
+static-only build; mixed builds use 20 GiB. The API floor is 21,474,836,480 bytes. Percentage
 thresholds report warning or critical storage pressure but do not block a sufficient absolute
 reserve. When every selected local image ref exactly matches the verified target commit
 (`maxim-api:<sha>`, `maxim-miniapp-major:<sha>`, and/or `maxim-admin:<sha>`), the normal deploy uses
