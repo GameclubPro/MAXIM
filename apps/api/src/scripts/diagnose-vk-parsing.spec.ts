@@ -53,6 +53,13 @@ function createEmptyPublishQueueReconciliation() {
 
 function createEmptyOperationalAggregates() {
   return {
+    mediaCoverage: {
+      sampleBasis: 'id_desc' as const,
+      sampleCap: 1000,
+      scannedRows: 0,
+      sourceTruncated: false,
+      complete: true,
+    },
     recentPublishSuccess: {
       scope: 'autopublish' as const,
       count: 0,

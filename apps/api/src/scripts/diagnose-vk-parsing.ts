@@ -8,6 +8,7 @@ import {
 } from '../prisma/prisma-client';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 import { getVkAutoPublishLocalDayRange } from '../admin/vk-autopublish-timing';
+import { loadMediaDiagnostics } from './vk-media-diagnostics';
 
 type CliOptions = {
   json: boolean;
@@ -255,6 +256,7 @@ type VkParsingDiagnostics = {
   schedulePolicies: VkSchedulePolicySummary;
   stuckPublishPosts: unknown[];
   recentPublishFailures: unknown[];
+  mediaCoverage: Awaited<ReturnType<typeof loadMediaDiagnostics>>['mediaCoverage'];
   mediaStatus: unknown[];
   mediaIdentityConflicts: unknown[];
   recentMediaFailures: unknown[];
@@ -480,12 +482,8 @@ export async function loadVkParsingDiagnostics(
   const recentPublishFailures = await runVkDiagnosticStage('recent_publish_failures', () =>
     loadRecentPublishFailures(prisma, since, options.limit),
   );
-  const mediaStatus = await runVkDiagnosticStage('media_status', () => loadMediaStatus(prisma));
-  const mediaIdentityConflicts = await runVkDiagnosticStage('media_identity_conflicts', () =>
-    loadMediaIdentityConflicts(prisma, options.limit),
-  );
-  const recentMediaFailures = await runVkDiagnosticStage('recent_media_failures', () =>
-    loadRecentMediaFailures(prisma, since, options.limit),
+  const media = await runVkDiagnosticStage('media_status', () =>
+    loadMediaDiagnostics(prisma, since, options.limit),
   );
   const ownedPublishDatabase = await runVkDiagnosticStage('owned_publish_database', () =>
     loadOwnedPublishDatabaseSnapshot(prisma, options.reconcileCap, options.publisherBotId),
@@ -521,9 +519,7 @@ export async function loadVkParsingDiagnostics(
     schedulePolicies,
     stuckPublishPosts,
     recentPublishFailures,
-    mediaStatus,
-    mediaIdentityConflicts,
-    recentMediaFailures,
+    ...media,
     publishQueueReconciliation,
     queues,
   };
@@ -837,60 +833,6 @@ async function loadRecentPublishFailures(
       and updated_at >= ${since}
     group by 1
     order by count(*) desc, max(updated_at) desc
-    limit ${limit}
-  `;
-}
-
-async function loadMediaStatus(prisma: PrismaClient): Promise<unknown[]> {
-  return prisma.$queryRaw`
-    select
-      status,
-      count(*)::int as "count",
-      max(last_checked_at) as "latestCheckedAt",
-      count(*) filter (where media_identity is not null)::int as "withIdentity"
-    from vk_parsing_media_cache
-    group by status
-    order by count(*) desc, status asc
-  `;
-}
-
-async function loadMediaIdentityConflicts(prisma: PrismaClient, limit: number): Promise<unknown[]> {
-  return prisma.$queryRaw`
-    select
-      media_identity as "mediaIdentity",
-      count(*)::int as "rowCount",
-      array_agg(url order by updated_at desc) as "urls",
-      max(updated_at) as "latestAt"
-    from vk_parsing_media_cache
-    where media_identity is not null
-    group by media_identity
-    having count(*) > 1
-    order by count(*) desc, max(updated_at) desc
-    limit ${limit}
-  `;
-}
-
-async function loadRecentMediaFailures(
-  prisma: PrismaClient,
-  since: Date,
-  limit: number,
-): Promise<unknown[]> {
-  return prisma.$queryRaw`
-    select
-      id,
-      url,
-      media_identity as "mediaIdentity",
-      status,
-      last_checked_at as "lastCheckedAt",
-      left(coalesce(last_error, ''), 300) as "lastError"
-    from vk_parsing_media_cache
-    where (
-        status = 'FAILED'
-        or last_error ilike '%unique constraint%'
-        or last_error ilike '%P2002%'
-      )
-      and coalesce(last_checked_at, updated_at) >= ${since}
-    order by coalesce(last_checked_at, updated_at) desc
     limit ${limit}
   `;
 }
@@ -2002,6 +1944,7 @@ export function renderTextDiagnostics(diagnostics: VkParsingDiagnostics): string
     )}, groups=${JSON.stringify(diagnostics.schedulePolicies.groups)}`,
     '',
     `Source status: ${JSON.stringify(diagnostics.sourceStatus)}`,
+    `Media sample: ${JSON.stringify(diagnostics.mediaCoverage)}; counts, conflicts and failures cover only this sample`,
     `Media status: ${JSON.stringify(diagnostics.mediaStatus)}`,
     `Queue counts: sync=${JSON.stringify(
       diagnostics.queues.sync?.counts ?? null,
