@@ -72,6 +72,10 @@ test('both rollback paths require guarded participant report execution', () => {
         cwd: root,
         env: {
           ...process.env,
+          // FLAG: These short source parsers run inside a concurrent native test
+          // fleet. Bound their unused background pools; all guard verdicts remain real.
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --v8-pool-size=1`.trim(),
+          UV_THREADPOOL_SIZE: '1',
           MAXIM_TEST_ROOT: root,
           MAXIM_TEST_VARIANT: variant,
           MAXIM_TEST_MISSING: variant === 'missing' ? '1' : '0',
