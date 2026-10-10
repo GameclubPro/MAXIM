@@ -92,7 +92,7 @@ async function explicitActivation(
   return proof;
 }
 
-describeStores('native user_added finite executor readiness', () => {
+describeStores('native lifecycle finite executor readiness', () => {
   let h: MultibotHarness | undefined;
   afterEach(async () => {
     jest.restoreAllMocks();
@@ -100,9 +100,13 @@ describeStores('native user_added finite executor readiness', () => {
     h = undefined;
   });
 
-  it.each(['expires', 'restored'] as const)(
-    'keeps the original join authority when readiness %s and another chat progresses',
-    async (outcome) => {
+  it.each(
+    ['user_added', 'chat_title_changed'].flatMap((eventType) =>
+      (['expires', 'restored'] as const).map((outcome) => ({ eventType, outcome })),
+    ),
+  )(
+    'keeps $eventType authority when readiness $outcome and another chat progresses',
+    async ({ eventType, outcome }) => {
       const s = (h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 2, mode: 'on' }));
       await s.pause();
       const [chatId, independentChatId] = await s.seedCatalog(2);
@@ -111,8 +115,9 @@ describeStores('native user_added finite executor readiness', () => {
       const sourceAt = Date.now();
       const update = new WebhookParser().parse({
         update_id: randomUUID(),
-        update_type: 'user_added',
+        update_type: eventType,
         chat_id: chatId!,
+        title: 'Fixture title',
         user: { user_id: 'fixture-user', first_name: 'Fixture' },
         timestamp: sourceAt,
       });
@@ -132,9 +137,12 @@ describeStores('native user_added finite executor readiness', () => {
           data: { executionDeadlineAt: new Date(Date.now() + 10_000) },
         });
       } else {
-        // FLAG: Old user_added receipts have NULL deadlines. Existing preparation must
+        // FLAG: Old lifecycle receipts have NULL deadlines. Existing preparation must
         // reconstruct the original source bound, never a new five minutes from this retry.
-        await s.prisma.webhookEvent.update({ where: { id }, data: { executionDeadlineAt: null } });
+        await s.prisma.webhookEvent.update({
+          where: { id },
+          data: { executionDeadlineAt: null },
+        });
       }
       await s.ingress.preparePersistedWebhookEvent(id);
       const original = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
@@ -174,7 +182,7 @@ describeStores('native user_added finite executor readiness', () => {
         },
       });
 
-      // Another chat keeps its separate, fresh administrator route while this join waits.
+      // Another chat keeps its separate, fresh administrator route while this event waits.
       await s.prisma.chat.update({
         where: { id: independentChatId },
         data: { botId: independentBotId, primaryBotId: independentBotId },
@@ -249,6 +257,77 @@ describeStores('native user_added finite executor readiness', () => {
       expect(s.failures).toEqual([]);
     },
   );
+});
+
+describeStores('native legacy title readiness deadline', () => {
+  let h: MultibotHarness | undefined;
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await h?.dispose();
+    h = undefined;
+  });
+
+  it('expires an unstarted title with a missing deadline from its original source time', async () => {
+    const s = (h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 1, mode: 'on' }));
+    await s.pause();
+    const [chatId] = await s.seedCatalog(1);
+    const botId = s.bots[0]!.id;
+    const sourceAt = Date.now() - 6 * 60_000;
+    const [migration] = await s.prisma.$queryRaw<Array<{ id: string; finishedAt: Date }>>`
+      SELECT id, finished_at AS "finishedAt" FROM _prisma_migrations
+      WHERE migration_name = '20261005020000_add_multibot_order_fences'
+        AND rolled_back_at IS NULL AND finished_at IS NOT NULL
+      ORDER BY finished_at DESC LIMIT 1
+    `;
+    if (!migration) throw new Error('Expected native fixture authority migration');
+    // FLAG: Model an old post-migration source in this disposable, newly migrated DB.
+    // Restore its cutoff afterward; the runtime legacy authority reader remains active.
+    await s.prisma.$executeRaw`
+      UPDATE _prisma_migrations SET finished_at = ${new Date(sourceAt - 60_000)} WHERE id = ${migration.id}
+    `;
+    try {
+      const update = new WebhookParser().parse({
+        update_id: randomUUID(),
+        update_type: 'chat_title_changed',
+        chat_id: chatId!,
+        title: 'Fixture title',
+        actor: { user_id: 'fixture-user', first_name: 'Fixture' },
+        timestamp: sourceAt,
+      });
+      update.botId = botId;
+      const id = (await s.ingress.storeReceipt(update, null)).webhookEventId!;
+      s.receiptIds.push(id);
+      await s.ingress.preparePersistedWebhookEvent(id);
+      // FLAG: Reproduce an already prepared receipt from before title deadlines existed.
+      // Recovery must use its original timestamp and the existing no-business claim CAS.
+      await s.prisma.webhookEvent.update({ where: { id }, data: { executionDeadlineAt: null } });
+      await s.demote(chatId!, botId);
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      await s.moderation.processWebhookEvent(id);
+      await explicitActivation(s, chatId!, botId);
+      await s.moderation.processWebhookEvent(id);
+      const deadline = new Date(sourceAt + 5 * 60_000);
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'PROCESSED',
+        executionDeadlineAt: deadline,
+        normalizedPayload: {
+          executionOutcome: { code: 'NO_EXECUTABLE_OWNER', deadlineAt: deadline.toISOString() },
+        },
+      });
+      expect(
+        await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+          where: { webhookEventId: id, kind: 'EXECUTION' },
+        }),
+      ).toMatchObject({ status: 'COMPLETED', businessStartedAt: null, leaseToken: null });
+      expect(handler).not.toHaveBeenCalled();
+      expect(s.effects).toEqual([]);
+      expect(s.failures).toEqual([]);
+    } finally {
+      await s.prisma.$executeRaw`
+        UPDATE _prisma_migrations SET finished_at = ${migration.finishedAt} WHERE id = ${migration.id}
+      `;
+    }
+  });
 });
 
 describeStores('native dormant receipt and explicit activation isolation', () => {

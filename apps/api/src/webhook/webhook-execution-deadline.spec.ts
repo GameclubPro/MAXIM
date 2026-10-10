@@ -40,6 +40,23 @@ describe('webhook executor readiness source deadlines', () => {
     },
   );
 
+  it.each([
+    ['payload', earlierAt.toISOString(), '2026-10-06T21:04:00.000Z'],
+    ['payload', '2026-10-06T22:00:00.000Z', '2026-10-06T21:05:00.000Z'],
+    ['payload', 'invalid', '2026-10-06T21:05:00.000Z'],
+    ['ingress', earlierAt.toISOString(), '2026-10-06T21:05:00.000Z'],
+  ] as const)(
+    'bounds chat_title_changed from %s timestamp %s without extending retries',
+    (timestampSource, source, deadline) => {
+      expect(
+        buildWebhookExecutionDeadlineAt(
+          update('chat_title_changed', source, timestampSource),
+          receivedAt,
+        ),
+      ).toEqual(new Date(deadline));
+    },
+  );
+
   it.each(['message_created', 'message_edited'])(
     'preserves the ten-minute image deadline for %s',
     (type) => {

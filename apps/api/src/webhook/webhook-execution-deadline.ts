@@ -21,7 +21,13 @@ export function buildWebhookExecutionDeadlineAt(
   const eventType = update.type.trim().toLowerCase();
   const messageEvent = eventType === 'message_created' || eventType === 'message_edited';
   const callbackEvent = eventType === 'message_callback';
-  if (!messageEvent && !callbackEvent && eventType !== 'user_added') return null;
+  if (
+    !messageEvent &&
+    !callbackEvent &&
+    eventType !== 'user_added' &&
+    eventType !== 'chat_title_changed'
+  )
+    return null;
   // FLAG: A callback can reference an old button message. Its readiness budget starts
   // at the immutable receipt time, never the original message's creation time.
   const source = callbackEvent
@@ -31,7 +37,7 @@ export function buildWebhookExecutionDeadlineAt(
   if (!Number.isFinite(sourceMs)) return null;
   // FLAG: This bounds only unstarted executor readiness. Rule-specific source deadlines
   // remain stricter; retrying or choosing another bot never starts a new time window.
-  // FLAG: Membership joins may require moderation, but never inherit an image's longer wait.
+  // FLAG: Joins and title changes require an executor, but never inherit an image's longer wait.
   const lifetime =
     messageEvent && isExactImageContent(extractDuplicateMessageContent(update.raw))
       ? IMAGE_PENDING_READINESS_MS
