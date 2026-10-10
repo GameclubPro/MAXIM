@@ -1,3 +1,4 @@
+import { DURABLE_USER_DELETE_RULES } from './durable-user-delete-rules';
 import {
   persistRuleFollowupBeforeDelete,
   activateOwnedRuleFollowups,
@@ -353,6 +354,7 @@ type IntentRow = {
   commercialOcrDeleteReason?: boolean;
   standardCommercialOcrDeleteReason?: boolean;
   nonCommercialOcrDeleteReason?: boolean;
+  durableUserDeleteReason?: boolean;
   reportDeleteReason?: boolean;
   reportCounterCleanupReason?: boolean;
   reportHistoryOnly?: boolean;
@@ -525,6 +527,8 @@ export type ModerationDeleteIntentAttemptOptions = {
   beforeDeleteMutation?: (phase?: ModerationDeletePreDispatchPhase) => Promise<void>;
   /** Retention callers must not execute a concurrent ordinary-moderation takeover. */
   retentionOnly?: boolean;
+  /** Internal inline caller: a committed built-in guard retry may outlive the webhook. */
+  deferGuardFailure?: boolean;
 };
 
 export type RetentionIntentAttemptResult = {
@@ -569,7 +573,10 @@ class ModerationDeleteIntentLeaseLostError extends Error {
 }
 
 class ModerationDeletePreDispatchGuardError extends Error {
-  constructor(readonly guardError: unknown) {
+  constructor(
+    readonly guardError: unknown,
+    readonly origin: 'guard' | 'caller' = 'guard',
+  ) {
     super('Moderation delete pre-dispatch guard rejected the mutation', { cause: guardError });
     this.name = 'ModerationDeletePreDispatchGuardError';
   }
@@ -892,6 +899,7 @@ export class ModerationDeleteIntentService {
     ruleCodes: readonly string[],
   ): ModerationDeleteIntentRollout {
     const normalizedRuleCodes = ruleCodes.map((ruleCode) => ruleCode.trim());
+    if (normalizedRuleCodes.some((rule) => DURABLE_USER_DELETE_RULES.has(rule))) return 'execute';
     if (normalizedRuleCodes.includes(SUGGESTION_SUBSCRIPTION_DELETE_RULE)) return 'execute';
     // FLAG: Counter ownership survives admission disable; sanctions use their own exact-chat ceiling.
     if (normalizedRuleCodes.includes(REPORT_COUNTER_RULE)) return 'execute';
@@ -1983,7 +1991,12 @@ export class ModerationDeleteIntentService {
 
     const result = await this.observeConcurrentInlineReceipt(
       input,
-      await this.attemptIntent(ensured.intentId, options),
+      await this.attemptIntent(
+        ensured.intentId,
+        DURABLE_USER_DELETE_RULES.has(input.ruleCode ?? input.reasonKey)
+          ? { ...options, deferGuardFailure: true }
+          : options,
+      ),
     );
     if (!result.confirmed) {
       await this.enqueueCurrentWakeup(ensured.intentId);
@@ -2463,6 +2476,7 @@ export class ModerationDeleteIntentService {
     reopened.requiredSubscriptionDeleteReason = existing.requiredSubscriptionDeleteReason;
     reopened.commercialOcrDeleteReason = existing.commercialOcrDeleteReason;
     reopened.nonCommercialOcrDeleteReason = existing.nonCommercialOcrDeleteReason;
+    reopened.durableUserDeleteReason = existing.durableUserDeleteReason;
     reopened.messageDuplicateOwned = existing.messageDuplicateOwned;
     await this.enqueueWakeup(reopened, DELETE_QUEUE_PRIORITY_INTERACTIVE);
     return { reopened: true, intent: this.toSnapshot(reopened) };
@@ -2998,6 +3012,34 @@ export class ModerationDeleteIntentService {
             }
             const internalQuotaDeferral =
               !intent.retentionOwned && error.guardError instanceof MaxApiInternalRateLimitError;
+            if (
+              !terminalGuardRejection &&
+              !internalQuotaDeferral &&
+              options?.deferGuardFailure === true &&
+              intent.durableUserDeleteReason === true &&
+              !intent.messageDuplicateOwned &&
+              !intent.retentionOwned &&
+              error.origin === 'guard' &&
+              !(error.guardError instanceof ModerationDeleteIntentLeaseLostError)
+            ) {
+              // FLAG: Only built-in pre-dispatch guards may transfer this retry. Commit
+              // the exact live lease without mutation evidence first; caller ownership,
+              // storage/CAS failures and unknown DELETE results never use this exception.
+              try {
+                return await this.finishRetryableAttempt(
+                  intent,
+                  leaseToken,
+                  {
+                    ...details,
+                    status: 'RETRYABLE',
+                    retryDelayMs: this.retryDelayMs(intent.attemptCount),
+                  },
+                  'guarded',
+                );
+              } catch (persistenceError) {
+                throw new ModerationDeletePreDispatchGuardError(persistenceError);
+              }
+            }
             const outcome = terminalGuardRejection
               ? await this.finishTerminalPreDispatchGuardRejection(
                   intent,
@@ -3172,6 +3214,7 @@ export class ModerationDeleteIntentService {
         throw error.guardError;
       }
       if (error instanceof ModerationDeleteIntentLeaseLostError) {
+        if (options?.deferGuardFailure) throw error;
         return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
       }
       try {
@@ -3937,13 +3980,18 @@ export class ModerationDeleteIntentService {
           throw new Error('Guarded link delete intent lost its required reason metadata');
         }
       }
-      await options?.beforeDeleteMutation?.(
-        !finalDispatchLeaseToken &&
-          intent.attemptCount === 1 &&
-          !this.hasDeleteMutationEvidence(intent)
-          ? 'initial_unattempted'
-          : 'recheck',
-      );
+      try {
+        await options?.beforeDeleteMutation?.(
+          !finalDispatchLeaseToken &&
+            intent.attemptCount === 1 &&
+            !this.hasDeleteMutationEvidence(intent)
+            ? 'initial_unattempted'
+            : 'recheck',
+        );
+      } catch (error) {
+        if (error instanceof ModerationDeleteGuardedMessageAbsentError) throw error;
+        throw new ModerationDeletePreDispatchGuardError(error, 'caller');
+      }
       if (finalDispatchLeaseToken) {
         // FLAG: Independent user rules share one DELETE, not each other's authorization.
         // A stale binding may yield only to a freshly verified reason on this exact attempt.
@@ -4004,6 +4052,7 @@ export class ModerationDeleteIntentService {
       if (error instanceof ModerationDeleteGuardedMessageAbsentError) {
         throw error;
       }
+      if (error instanceof ModerationDeletePreDispatchGuardError) throw error;
       throw new ModerationDeletePreDispatchGuardError(error);
     }
   }
@@ -5383,6 +5432,7 @@ export class ModerationDeleteIntentService {
         );
       }
       let storedNonCommercialOcrDeleteReason: boolean | undefined;
+      let storedDurableUserDeleteReason: boolean | undefined;
       let storedReplacementCleanup: boolean | undefined;
       let storedNonChannelReplacementCleanup: boolean | undefined;
       let storedChannelAutoPostCleanupReason: boolean | undefined;
@@ -5395,6 +5445,7 @@ export class ModerationDeleteIntentService {
         const reasonState = await tx.$queryRaw<
           Array<{
             nonCommercialOcrDeleteReason: boolean;
+            durableUserDeleteReason: boolean;
             replacementCleanup: boolean;
             nonChannelReplacementCleanup: boolean;
             channelAutoPostCleanupReason: boolean;
@@ -5413,6 +5464,7 @@ export class ModerationDeleteIntentService {
               AND existing_non_ocr_reason."rule_code" <>
                 ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
           ) AS "nonCommercialOcrDeleteReason",
+          ${this.durableUserDeleteReasonSql(Prisma.sql`${intent.id}`)} AS "durableUserDeleteReason",
           EXISTS (
             SELECT 1
             FROM "moderation_delete_intent_reasons" existing_replacement_reason
@@ -5479,6 +5531,7 @@ export class ModerationDeleteIntentService {
           ) AS "imageTextStopListDeleteOnly"
         `);
         storedNonCommercialOcrDeleteReason = reasonState[0]?.nonCommercialOcrDeleteReason === true;
+        storedDurableUserDeleteReason = reasonState[0]?.durableUserDeleteReason === true;
         storedReplacementCleanup = reasonState[0]?.replacementCleanup === true;
         storedNonChannelReplacementCleanup =
           typeof reasonState[0]?.nonChannelReplacementCleanup === 'boolean'
@@ -5819,6 +5872,9 @@ export class ModerationDeleteIntentService {
       if (effectiveIntent.status === 'SUCCEEDED') {
         await this.materializeModerationEventsForIntent(tx, effectiveIntent.id);
       }
+      if (storedDurableUserDeleteReason !== undefined) {
+        effectiveIntent.durableUserDeleteReason = storedDurableUserDeleteReason;
+      }
       if (storedNonCommercialOcrDeleteReason !== undefined) {
         effectiveIntent.nonCommercialOcrDeleteReason = storedNonCommercialOcrDeleteReason;
       }
@@ -5914,6 +5970,9 @@ export class ModerationDeleteIntentService {
         ? (persisted.standardCommercialOcrDeleteReason ?? false)
         : true;
     }
+    persisted.durableUserDeleteReason =
+      persisted.durableUserDeleteReason === true ||
+      DURABLE_USER_DELETE_RULES.has(normalized.ruleCode);
     persisted.nonCommercialOcrDeleteReason =
       persisted.nonCommercialOcrDeleteReason === true ||
       (normalized.ruleCode !== COMMERCIAL_OCR_DELETE_RULE_CODE &&
@@ -6089,7 +6148,7 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     leaseToken: string,
     details: DeleteErrorDetails,
-    requireInitialUnattempted = false,
+    requireInitialUnattempted: boolean | 'guarded' = false,
   ): Promise<ModerationDeleteAttemptResult> {
     const retryLimitReached =
       details.status !== 'FAILED_TERMINAL' &&
@@ -6156,7 +6215,7 @@ export class ModerationDeleteIntentService {
         AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
         AND "lease_token" = ${leaseToken}
         AND (${!requireInitialUnattempted} OR (
-          "attempt_count" = 1
+          (${requireInitialUnattempted !== true} OR "attempt_count" = 1)
           AND "lease_expires_at" > (clock_timestamp() AT TIME ZONE 'UTC')
           AND "delete_dispatch_started_at" IS NULL
           AND "delete_dispatch_started_bot_id" IS NULL
@@ -6165,6 +6224,7 @@ export class ModerationDeleteIntentService {
         ))
     `);
     if (changed === 0) {
+      if (requireInitialUnattempted === 'guarded') throw new ModerationDeleteIntentLeaseLostError();
       if (requireInitialUnattempted)
         throw new Error('Initial duplicate source deferral lost unattempted ownership');
       return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
@@ -7881,6 +7941,7 @@ export class ModerationDeleteIntentService {
         )
         OFFSET 0
       )
+      OR ${this.durableUserDeleteReasonSql(Prisma.sql`intent."id"`)}
       ${replacementCleanupFilter}
       ${requiredSubscriptionDeleteFilter}
       ${imageTextStopListFilter}
@@ -7913,6 +7974,16 @@ export class ModerationDeleteIntentService {
         OR intent."remote_delete_succeeded_at" IS NOT NULL
         OR intent."remote_delete_succeeded_bot_id" IS NOT NULL
       )
+    )`;
+  }
+
+  private durableUserDeleteReasonSql(intentIdColumn: Prisma.Sql): Prisma.Sql {
+    // FLAG: Preserve the per-intent indexed probe even in due-status queries with retained history.
+    return Prisma.sql`EXISTS (
+      SELECT 1 FROM "moderation_delete_intent_reasons" durable_user_reason
+      WHERE durable_user_reason."intent_id" = ${intentIdColumn}
+        AND durable_user_reason."rule_code" IN (${Prisma.join([...DURABLE_USER_DELETE_RULES])})
+      OFFSET 0
     )`;
   }
 
@@ -7992,6 +8063,7 @@ export class ModerationDeleteIntentService {
       | 'commercialOcrDeleteReason'
       | 'standardCommercialOcrDeleteReason'
       | 'nonCommercialOcrDeleteReason'
+      | 'durableUserDeleteReason'
       | 'imageTextStopListDeleteReason'
       | 'imageTextStopListDeleteOnly'
       | 'messageDuplicateOwned'
@@ -8055,10 +8127,12 @@ export class ModerationDeleteIntentService {
       | 'botMessageAutoDeleteOnly'
       | 'requiredSubscriptionDeleteReason'
       | 'nonCommercialOcrDeleteReason'
+      | 'durableUserDeleteReason'
       | 'messageDuplicateOwned'
     >,
   ): boolean {
-    if (intent.messageDuplicateOwned === true) return true;
+    if (intent.messageDuplicateOwned === true || intent.durableUserDeleteReason === true)
+      return true;
     if (
       intent.reportCounterCleanupReason === true ||
       (intent.reportDeleteReason === true && this.reportsEnabled(intent.chatId))
@@ -8096,6 +8170,7 @@ export class ModerationDeleteIntentService {
       | 'commercialOcrGuardRequired'
       | 'commercialOcrDeleteReason'
       | 'nonCommercialOcrDeleteReason'
+      | 'durableUserDeleteReason'
       | 'messageDuplicateOwned'
     >,
   ): boolean {
@@ -8932,6 +9007,7 @@ export class ModerationDeleteIntentService {
           AND commercial_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
           AND COALESCE(commercial_reason."metadata"->>'source', '') <> 'image_text_ocr'
       ) AS "standardCommercialOcrDeleteReason",
+      ${this.durableUserDeleteReasonSql(intentIdColumn)} AS "durableUserDeleteReason",
       EXISTS (
         SELECT 1
         FROM "moderation_delete_intent_reasons" non_ocr_reason

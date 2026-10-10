@@ -230,3 +230,42 @@ notice replay, longer deadline or successful remote action is inferred from pers
 Initial focused validation passed 356 checks in 13 suites, including 50 native full-path cases.
 An additional worker-outage assertion verifies retained SQL retry authority without reopening
 the completed webhook. Production rollout and sustained acceptance must be recorded separately.
+
+## Fourth deployment: ordinary DELETE still outside durable routing
+
+Source `ca2f021a3521cc33b2529c6cfe54d4062bcd802e`, image
+`sha256:89eb28698a4ff9f47891473a9697096884a7d4c1839b85ab74c3d34bf350e099`,
+converged across all 14 API roles and both auxiliaries after green exact-SHA CI. Cancellation
+`3b183528-0485-4d9e-bb76-cef80a327bce`, cutoff `2026-10-10T15:14:33.157Z`, completed:
+13 projected receipts, 12 removed jobs, zero retained locked jobs. Readiness did not recover.
+
+The bounded 15:14:33–15:23:30 UTC log window captured a handler failure at 15:17:21.896 in
+`violation-delete`: `ECONNABORTED`, operation `delete_messages`, collection target, no HTTP
+status. The 15:23:59.495 exact-owner audit found the FAILED 15:15:01.057 predecessor with a
+15:17:19.626 business start, no live lease and no finished checkpoint. The following RECEIVED
+receipt was created at 15:17:09.118. Neither absence of a DELETE observation nor the timeout
+proves whether MAX applied the mutation. The cancellation correctly excluded this post-cutoff
+source; replay or invented completion would be unsafe.
+
+The base delete-intent rollout was `canary` with two chats. Current user-delete guards therefore
+had inconsistent behavior outside that cohort: content rules could fall back to legacy inline
+DELETE, while closed-chat and stateful rules refused that fallback but had no executable durable
+intent. The native timeout reproducer failed in canary/shadow/off and passed in on.
+
+The correction makes the finite `DURABLE_USER_DELETE_RULES` set independently executable at
+admission, exact intent loading and indexed due selection. It does not change per-chat settings,
+base cleanup recovery, duplicate authority, OCR or retention ceilings. OBSERVED history is not
+promoted by a sweep. Current source/policy/author/deadline checks still gate every new mutation.
+Only a built-in pre-dispatch guard failure may leave a committed retry and finish its inline
+caller: exact live lease CAS and absent mutation markers are mandatory. Caller callback errors,
+lost leases, failed persistence and duplicate-specific boundaries keep their existing fences.
+Unknown actual DELETE outcomes remain AMBIGUOUS; they neither authorize peer retry nor create a
+strike or sanction receipt. Validation and production acceptance follow separately.
+
+Focused validation passed 465 tests in six suites with no skips using disposable PostgreSQL 16
+and Redis 7. Coverage includes all four base modes under unknown DELETE, original-deadline
+source-read retry followed by real sweep/worker completion, next same-chat progress without
+handler replay, closed-chat enforcement outside canary, strict lease/persistence refusal,
+independent reason guards and correlated plan bounds with 50,000 retained intents/reasons.
+The fixed production duplicate audit at 15:42:10 UTC emitted its capped settings sample, then
+hit its statement timeout before the intent report; it is incomplete and proves no recovery.

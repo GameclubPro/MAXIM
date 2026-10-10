@@ -190,11 +190,12 @@ const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() || process.env.REDIS_U
       expect(
         await prisma.moderationEvent.count({ where: { chatId, messageId: 'after-claim' } }),
       ).toBe(0);
-      const disabled = makeIntents('off');
-      const outcome = await disabled.attemptIntent(persisted.id);
+      const outsideBaseRollout = makeIntents('off');
+      const outcome = await outsideBaseRollout.attemptIntent(persisted.id);
+      expect(outcome).toMatchObject({ kind: 'pending', status: 'RETRYABLE' });
       expect(outcome.confirmed).toBe(false);
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-      expect((await row('after-claim')).attemptCount).toBe(0);
+      expect((await row('after-claim')).attemptCount).toBe(1);
     });
   },
 );

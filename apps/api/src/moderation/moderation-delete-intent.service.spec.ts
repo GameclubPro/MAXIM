@@ -873,6 +873,113 @@ describe('ModerationDeleteIntentService', () => {
     return { ...fixture, leased, deferred, remoteDelete, mark, clear };
   }
 
+  it.each(['off', 'shadow', 'canary', 'on'] as const)(
+    'keeps current user-delete guards executable in %s without enabling historical work',
+    (mode) => {
+      const { service } = createService({
+        MODERATION_DELETE_INTENT_MODE: mode,
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'off',
+        MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+        MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: false,
+      });
+      for (const rule of [
+        ...VERIFIED_RECEIPT_RULE_CODES.filter((rule) => rule !== 'REQUIRED_SUBSCRIPTION_DELETE'),
+        'LINK_BLOCKED_DELETE',
+        'PROFANITY_DELETE',
+        'COMMERCIAL_AD_DELETE',
+        'SLOW_MODE_DELETE',
+        'MEDIA_RATE_LIMIT_DELETE',
+        'STICKER_BLOCKED_DELETE',
+      ]) {
+        expect(service.getRolloutForRule('chat-1', rule)).toBe('execute');
+      }
+      if (mode !== 'on')
+        for (const rule of [
+          'DUPLICATE_DELETE',
+          'UNKNOWN_DELETE',
+          'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+        ]) {
+          expect(service.getRolloutForRule('chat-1', rule)).toBe(
+            mode === 'off' ? 'off' : 'observed',
+          );
+        }
+      expect(service.getRolloutForRule('chat-1', 'COMMERCIAL_OCR_DELETE')).toBe('off');
+      expect(
+        (service as unknown as ServiceInternals).isExecutionEnabledForIntent({
+          ...baseIntent,
+          durableUserDeleteReason: true,
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it.each(['initial', 'final'] as const)(
+    'commits a built-in %s guard retry independently of the inline caller',
+    async (phase) => {
+      const s = initialDuplicateSourceFixture();
+      Object.assign(s.leased, { messageDuplicateOwned: false, durableUserDeleteReason: true });
+      const failure = Object.assign(new Error('Source read unavailable'), {
+        response: { status: 503 },
+      });
+      Object.assign(
+        s.service,
+        phase === 'initial'
+          ? {
+              assertNightModeCloseNoticeCleanupStillAuthorized: jest
+                .fn()
+                .mockRejectedValue(failure),
+            }
+          : { authorizeGuardedUserDeleteReasons: jest.fn().mockRejectedValue(failure) },
+      );
+      await expect(
+        s.service.executeLeasedIntent(s.leased.id, 'lease-1', { deferGuardFailure: true }),
+      ).resolves.toMatchObject({ kind: 'pending', status: 'RETRYABLE', confirmed: false });
+      expect(s.remoteDelete).not.toHaveBeenCalled();
+      expect(s.clear).toHaveBeenCalledTimes(phase === 'final' ? 1 : 0);
+      const retry = s.prisma.$executeRaw.mock.calls.at(-1)![0];
+      expect(retry.strings.join('?')).toContain('"lease_expires_at" > (clock_timestamp()');
+      expect(retry.strings.join('?')).toContain('"remote_delete_succeeded_at" IS NULL');
+      expect(retry.strings.join('?')).not.toMatch(/SET\s+"retry_until_at"/u);
+    },
+  );
+
+  it.each(['lease-cas', 'storage-error', 'caller', 'clear-failed'] as const)(
+    'does not detach an inline guard failure after %s',
+    async (failure) => {
+      const s = initialDuplicateSourceFixture();
+      Object.assign(s.leased, { messageDuplicateOwned: false, durableUserDeleteReason: true });
+      const error = new Error('Caller ownership lost');
+      if (failure === 'clear-failed') {
+        Object.assign(s.service, {
+          authorizeGuardedUserDeleteReasons: jest.fn().mockRejectedValue(error),
+        });
+        s.clear.mockResolvedValue(false);
+        await expect(
+          s.service.executeLeasedIntent(s.leased.id, 'lease-1', { deferGuardFailure: true }),
+        ).rejects.toThrow('lease ownership was lost');
+      } else if (failure === 'caller') {
+        await expect(
+          s.service.executeLeasedIntent(s.leased.id, 'lease-1', {
+            deferGuardFailure: true,
+            beforeDeleteMutation: async () => {
+              throw error;
+            },
+          }),
+        ).rejects.toBe(error);
+      } else {
+        Object.assign(s.service, {
+          assertNightModeCloseNoticeCleanupStillAuthorized: jest.fn().mockRejectedValue(error),
+        });
+        if (failure === 'lease-cas') s.prisma.$executeRaw.mockResolvedValue(0);
+        else s.prisma.$executeRaw.mockRejectedValue(new Error('retry storage unavailable'));
+        await expect(
+          s.service.executeLeasedIntent(s.leased.id, 'lease-1', { deferGuardFailure: true }),
+        ).rejects.toThrow(failure === 'lease-cas' ? 'lease ownership was lost' : 'retry storage');
+      }
+      expect(s.remoteDelete).not.toHaveBeenCalled();
+    },
+  );
+
   it('commits a first duplicate source retry before declining inline effects', async () => {
     const s = initialDuplicateSourceFixture();
     const sourceError = { response: { status: 404 } };
@@ -1520,7 +1627,7 @@ describe('ModerationDeleteIntentService', () => {
     (ruleCode) => {
       const { service } = createService({ MODERATION_DELETE_INTENT_MODE: 'off' });
       expect(service.getRolloutForRule('chat-1', ruleCode)).toBe('execute');
-      expect(service.getRolloutForRule('chat-1', 'MESSAGE_COUNT_LIMIT_DELETE')).toBe('off');
+      expect(service.getRolloutForRule('chat-1', 'MESSAGE_COUNT_LIMIT_DELETE')).toBe('execute');
     },
   );
   function boundMessageInput(): EnsureModerationDeleteIntentInput {
@@ -1579,7 +1686,7 @@ describe('ModerationDeleteIntentService', () => {
       }),
     ).toBe('observed');
     expect(service.getRolloutForRule('chat-1', 'DUPLICATE_DELETE')).toBe('observed');
-    expect(service.getRolloutForRule('chat-1', 'LINK_BLOCKED_DELETE')).toBe('observed');
+    expect(service.getRolloutForRule('chat-1', 'LINK_BLOCKED_DELETE')).toBe('execute');
     expect(
       (service as unknown as ServiceInternals).isExecutionEnabledForIntent({
         chatId: 'chat-1',
@@ -3695,12 +3802,12 @@ describe('ModerationDeleteIntentService', () => {
     expect(service.getRolloutForRule('chat-1', COMMERCIAL_OCR_DELETE_RULE_CODE)).toBe('execute');
     expect(service.getRolloutForRule('chat-2', COMMERCIAL_OCR_DELETE_RULE_CODE)).toBe('observed');
     expect(service.getRolloutForRule('chat-1', 'STOP_WORD_DELETE')).toBe('observed');
-    expect(service.getRolloutForRule('chat-1', 'LINK_BLOCKED_DELETE')).toBe('observed');
+    expect(service.getRolloutForRule('chat-1', 'LINK_BLOCKED_DELETE')).toBe('execute');
     expect(service.getRolloutForRule('*', COMMERCIAL_OCR_DELETE_RULE_CODE)).toBe('observed');
   });
 
   it.each(['off', 'baseline', 'invalid-mode'])(
-    'admits only commercial baseline when generic deletion mode is %s and image stop-list is off',
+    'keeps commercial baseline and guarded user deletes independent of base mode %s and image stop-list off',
     (genericMode) => {
       const service = createService({
         MODERATION_DELETE_INTENT_MODE: genericMode,
@@ -3715,7 +3822,7 @@ describe('ModerationDeleteIntentService', () => {
       );
       expect(service.getRolloutForChat('chat-1')).toBe('off');
       expect(service.getRolloutForRule('chat-1', 'STOP_WORD_DELETE')).toBe('off');
-      expect(service.getRolloutForRule('chat-1', 'LINK_BLOCKED_DELETE')).toBe('off');
+      expect(service.getRolloutForRule('chat-1', 'LINK_BLOCKED_DELETE')).toBe('execute');
       expect(service.getRolloutForInput(imageTextStopListClaimedIntentInput().intent)).toBe('off');
       expect(
         internals.isExecutionEnabledForIntent({

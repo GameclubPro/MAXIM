@@ -57,6 +57,15 @@ copying these notes does not install a fix or prove which version is deployed.
    candidate pass, preserve the final executor check and report all-refused as unsuccessful
    deletion, with no strike/sanction/notice. Never infer permission loss from proof supersession.
    Keep following same-chat progress and unknown-effect fences in the full-path regressions.
+   Ordinary guarded user-message rules use `DURABLE_USER_DELETE_RULES` independently of the
+   legacy base canary. Keep writer, exact-row reason classification and correlated due-sweep
+   eligibility aligned; base historical-cleanup recovery and independent OCR/duplicate/retention
+   ceilings must not expand with them. A built-in pre-dispatch guard outage may finish the inline
+   caller only after exact live-lease retry CAS with no mutation evidence and the original deadline.
+   A caller callback failure or failed commit cannot take this path. Unknown DELETE outcomes remain
+   fenced durable work, never a successful deletion or sanction receipt. Run the native canary,
+   shadow and off timeout/next-event cases, source retry, closed-chat execution and retained-history
+   due-plan regressions; on-only fixtures cannot prove production rollout behavior.
 5. **Observation is not execution.** A PROCESSED receipt can be a dormant-bot observation.
    Exclude only its exact validated marker with no linked claim; preserve the semantic anchor and
    every independent replay fence. `bot_added` must not demand an ordinary live executor or

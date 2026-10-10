@@ -43,6 +43,29 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     return new Date(at);
   }
 
+  async function waitForUserDelete(s: MultibotHarness, chatId: string, messageId: string) {
+    const until = Date.now() + 5_000;
+    while (Date.now() < until) {
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId, messageId } },
+        include: { reasons: true },
+      });
+      if (
+        intent.status === 'SUCCEEDED' &&
+        intent.remoteDeleteSucceededAt &&
+        intent.reasons.some(
+          (reason) =>
+            (reason.metadata as Record<string, unknown> | null)?.moderationDeleteVerified === true,
+        )
+      ) {
+        expect(s.messages.has(messageId)).toBe(false);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error('Guarded user DELETE did not commit its exact verified receipt');
+  }
+
   async function priorLengthViolations(s: MultibotHarness, chatId: string, count: number) {
     await s.prisma.violation.createMany({
       data: Array.from({ length: count }, () => ({
@@ -60,6 +83,8 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     async (outcome) => {
       const s = await fixture(2);
       Object.assign(s.intents, { mode: 'off' });
+      // Deliberate compatibility fixture: real ordinary rules now always use durable execution.
+      jest.spyOn(s.intents, 'getRolloutForInput').mockReturnValue('off');
       const [chatId] = await s.seedCatalog(1, { messageLimitsWarnEnabled: true });
       await priorLengthViolations(s, chatId!, 1);
       const verify = s.links.verifyChatExecutionProof.bind(s.links);
@@ -246,53 +271,201 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     expect(s.failures).toEqual([]);
   });
 
-  it('keeps an unknown DELETE fenced without a strike or peer sanction', async () => {
-    const s = await fixture(9);
-    const [chatId] = await s.seedCatalog(1, { messageLimitsBanEnabled: true });
-    await priorLengthViolations(s, chatId!, 3);
-    const messageId = `unknown-delete-${randomUUID()}`;
-    s.ambiguousNextDelete();
+  it.each(['on', 'canary', 'shadow', 'off'] as const)(
+    'keeps an unknown DELETE fenced and the next event live in %s',
+    async (mode) => {
+      const s = await fixture(4);
+      Object.assign(s.intents, { mode });
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const [chatId] = await s.seedCatalog(1, { messageLimitsBanEnabled: true });
+      await priorLengthViolations(s, chatId!, 3);
+      const messageId = `unknown-delete-${randomUUID()}`;
+      s.ambiguousNextDelete();
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            text: 'Long unchanged content cannot borrow an unknown DELETE as sanction proof',
+          }),
+        ),
+      );
+      await s.drain();
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+        include: { reasons: true },
+      });
+      expect(intent.status).toBe('AMBIGUOUS');
+      expect(intent.deleteDispatchStartedAt).not.toBeNull();
+      expect(
+        intent.reasons.every(
+          (reason) =>
+            (reason.metadata as Record<string, unknown> | null)?.moderationDeleteVerified !== true,
+        ),
+      ).toBe(true);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(3);
+      expect(
+        await s.prisma.moderationEvent.count({
+          where: { chatId, messageId, action: { in: ['WARN', 'MUTE', 'BAN'] } },
+        }),
+      ).toBe(0);
+      expect(
+        s.effects.filter((effect) => effect.method === 'delete' && effect.path === '/messages'),
+      ).toHaveLength(1);
+      expect(
+        s.effects.filter(
+          (effect) =>
+            effect.path.endsWith('/members') ||
+            (effect.method === 'post' && effect.path === '/messages'),
+        ),
+      ).toEqual([]);
+      expect(s.failures).toEqual([]);
+      const receipts = await s.prisma.webhookEvent.findMany({ where: { id: { in: ids } } });
+      expect(receipts.map((row) => row.status).sort()).toEqual([
+        'DUPLICATE',
+        'DUPLICATE',
+        'DUPLICATE',
+        'PROCESSED',
+      ]);
+      const owner = receipts.find((row) => row.status === 'PROCESSED')!;
+      await s.moderation.processWebhookEvent(owner.id);
+      expect(handler).toHaveBeenCalledTimes(1);
+      const nextId = await s.ingest({
+        chatId: chatId!,
+        messageId: `after-unknown-${randomUUID()}`,
+        botId: s.bots[0]!.id,
+        at: at + 1,
+        text: 'Next event',
+      });
+      await s.drain();
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status,
+      ).toBe('PROCESSED');
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+    },
+  );
+
+  it.each(['timeout', '503'] as const)(
+    'hands a persisted %s source-read retry to the worker without blocking the next event',
+    async (failure) => {
+      const s = await fixture(4);
+      Object.assign(s.intents, { mode: 'canary' });
+      const [chatId] = await s.seedCatalog(1, { messageLimitsWarnEnabled: true });
+      await priorLengthViolations(s, chatId!, 1);
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const messageId = `guard-retry-${randomUUID()}`;
+      let inline = false;
+      let originalRetryUntil: Date | undefined;
+      let unavailable = true;
+      const ensure = s.intents.ensureAndAttempt.bind(s.intents);
+      jest.spyOn(s.intents, 'ensureAndAttempt').mockImplementation(async (input, options) => {
+        originalRetryUntil = (
+          await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+            where: { chatId_messageId: { chatId: input.chatId, messageId: input.messageId } },
+          })
+        ).retryUntilAt;
+        inline = true;
+        try {
+          return await ensure(input, options);
+        } finally {
+          inline = false;
+        }
+      });
+      const sourceRead = s.max.getExactMessageRow.bind(s.max);
+      jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
+        if (inline && unavailable)
+          throw Object.assign(
+            new Error('Fixture guarded source GET unavailable'),
+            failure === 'timeout'
+              ? { code: 'ECONNABORTED', config: { method: 'get' } }
+              : { response: { status: 503 } },
+          );
+        return sourceRead(...args);
+      });
+      const at = Date.now();
+      const id = await s.ingest({
+        chatId: chatId!,
+        messageId,
+        botId: s.bots[0]!.id,
+        at,
+        text: 'A long message with a durable retry and its original deadline',
+      });
+      await s.drain();
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+      });
+      expect(intent).toMatchObject({
+        status: 'RETRYABLE',
+        deleteDispatchStartedAt: null,
+        remoteDeleteSucceededAt: null,
+        leaseToken: null,
+      });
+      expect(intent.retryUntilAt).toEqual(originalRetryUntil);
+      expect(s.effects).toEqual([]);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+      expect((await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).status).toBe(
+        'PROCESSED',
+      );
+      await s.moderation.processWebhookEvent(id);
+      expect(handler).toHaveBeenCalledTimes(1);
+      const nextId = await s.ingest({
+        chatId: chatId!,
+        messageId: `after-guard-${randomUUID()}`,
+        botId: s.bots[0]!.id,
+        at: at + 1,
+        text: 'Next event',
+      });
+      await s.drain();
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status,
+      ).toBe('PROCESSED');
+      expect(handler).toHaveBeenCalledTimes(2);
+      unavailable = false;
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, intent.nextAttemptAt.getTime() - Date.now()) + 20),
+      );
+      // The real sweeper must select this reason outside the base canary.
+      expect(await s.intents.sweepDueIntents()).toBeGreaterThan(0);
+      await waitForUserDelete(s, chatId!, messageId);
+      expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+      expect(
+        (await s.prisma.moderationDeleteIntent.findUniqueOrThrow({ where: { id: intent.id } }))
+          .retryUntilAt,
+      ).toEqual(intent.retryUntilAt);
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it('enforces a closed chat outside the base canary through its durable current-policy guard', async () => {
+    const s = await fixture(4);
+    Object.assign(s.intents, { mode: 'canary' });
+    const [chatId] = await s.seedCatalog(1, {
+      maxMessageLengthEnabled: false,
+      nightModeForceCloseEnabled: true,
+      nightModeForceCloseForever: true,
+    });
+    const messageId = `closed-canary-${randomUUID()}`;
     const at = Date.now();
     await Promise.all(
       s.bots.map((bot) =>
-        s.ingest({
-          chatId: chatId!,
-          messageId,
-          botId: bot.id,
-          at,
-          text: 'Long unchanged content cannot borrow an unknown DELETE as sanction proof',
-        }),
+        s.ingest({ chatId: chatId!, messageId, botId: bot.id, at, text: 'Closed chat message' }),
       ),
     );
     await s.drain();
+    await waitForUserDelete(s, chatId!, messageId);
     const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
       where: { chatId_messageId: { chatId: chatId!, messageId } },
       include: { reasons: true },
     });
-    expect(intent.status).toBe('AMBIGUOUS');
-    expect(intent.deleteDispatchStartedAt).not.toBeNull();
-    expect(
-      intent.reasons.every(
-        (reason) =>
-          (reason.metadata as Record<string, unknown> | null)?.moderationDeleteVerified !== true,
-      ),
-    ).toBe(true);
-    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(3);
-    expect(
-      await s.prisma.moderationEvent.count({
-        where: { chatId, messageId, action: { in: ['WARN', 'MUTE', 'BAN'] } },
-      }),
-    ).toBe(0);
-    expect(
-      s.effects.filter((effect) => effect.method === 'delete' && effect.path === '/messages'),
-    ).toHaveLength(1);
-    expect(
-      s.effects.filter(
-        (effect) =>
-          effect.path.endsWith('/members') ||
-          (effect.method === 'post' && effect.path === '/messages'),
-      ),
-    ).toEqual([]);
+    expect(intent.status).toBe('SUCCEEDED');
+    expect(intent.reasons.map((reason) => reason.ruleCode)).toContain('MANUAL_GROUP_CLOSE_DELETE');
+    expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+    expect(s.failures).toEqual([]);
   });
 
   it.each([1, 4, 9, 3, 6, 12])(

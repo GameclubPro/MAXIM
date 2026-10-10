@@ -125,10 +125,10 @@ describePostgres('PostgreSQL delete due selection', () => {
     await client.query('ANALYZE moderation_delete_intent_reasons');
   }
 
-  it.each([false, true])(
-    'bounds intent and reason scans with optional scopes %s',
-    async (optionalScopes) => {
-      if (optionalScopes)
+  it.each(['base', 'optional', 'guarded'])(
+    'bounds intent and reason scans with scope %s',
+    async (scope) => {
+      if (scope === 'optional')
         service = createService({
           MODERATION_DELETE_INTENT_MODE: 'canary',
           MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-fixture',
@@ -137,6 +137,12 @@ describePostgres('PostgreSQL delete due selection', () => {
           IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on',
         });
       await seed(50_000);
+      if (scope === 'guarded') {
+        await client.query(
+          "UPDATE moderation_delete_intent_reasons SET rule_code='MESSAGE_TOO_LONG_DELETE'",
+        );
+        await client.query('ANALYZE moderation_delete_intent_reasons');
+      }
       explain = true;
       await select();
       const scans: Plan[] = [];
