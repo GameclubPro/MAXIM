@@ -1013,52 +1013,81 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     },
   );
 
-  it('keeps a later subscription source failure fenced after feature evidence was persisted', async () => {
-    const s = await fixture(1);
-    const [chatId, targetId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
-    await s.prisma.chatSettings.update({
-      where: { chatId: chatId! },
-      data: { requiredSubscriptionEnabled: true, requiredSubscriptionChannelIds: [targetId!] },
-    });
-    jest
-      .spyOn(s.membership, 'getMembershipResolution')
-      .mockResolvedValue({ membership: false, fresh: true });
-    const getSource = s.max.getExactMessageRow.bind(s.max);
-    const sourceError = Object.assign(new Error('Fixture later source unavailable'), {
-      response: { status: 404, data: {} },
-    });
-    jest
-      .spyOn(s.max, 'getExactMessageRow')
-      .mockImplementationOnce(getSource)
-      .mockRejectedValue(sourceError);
-    const handler = jest.spyOn(s.moderation, 'handleUpdate');
-    const messageId = `subscription-later-unavailable-${randomUUID()}`;
-    const id = await s.ingest({
-      chatId: chatId!,
-      messageId,
-      botId: s.bots[0]!.id,
-      at: Date.now(),
-      text: 'Later source unavailable',
-    });
-    await expect(s.drain()).rejects.toBe(sourceError);
-    expect(handler).toHaveBeenCalledTimes(1);
-    expect(s.failures).toHaveLength(1);
-    expect(s.effects).toEqual([]);
-    expect(
-      await s.prisma.violation.count({ where: { chatId, ruleCode: 'REQUIRED_SUBSCRIPTION' } }),
-    ).toBe(1);
-    const receipt = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
-    expect(receipt.status).toBe('FAILED');
-    const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
-      where: { kind: 'EXECUTION', webhookEventId: id },
-    });
-    expect(claim.status).not.toBe('COMPLETED');
-    expect(claim.businessStartedAt).not.toBeNull();
-    expect(claim.completedAt).toBeNull();
-    expect(claim.commandResult).not.toEqual(
-      expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
-    );
-  });
+  it.each([404, 503])(
+    'preserves persisted subscription evidence after a later source GET %s',
+    async (status) => {
+      const s = await fixture(1);
+      const [chatId, targetId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
+      await s.prisma.chatSettings.update({
+        where: { chatId: chatId! },
+        data: { requiredSubscriptionEnabled: true, requiredSubscriptionChannelIds: [targetId!] },
+      });
+      jest
+        .spyOn(s.membership, 'getMembershipResolution')
+        .mockResolvedValue({ membership: false, fresh: true });
+      const getSource = s.max.getExactMessageRow.bind(s.max);
+      const sourceError = Object.assign(new Error('Fixture later source unavailable'), {
+        response: { status, data: {} },
+      });
+      jest
+        .spyOn(s.max, 'getExactMessageRow')
+        .mockImplementationOnce(getSource)
+        .mockRejectedValue(sourceError);
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const messageId = `subscription-later-unavailable-${randomUUID()}`;
+      const id = await s.ingest({
+        chatId: chatId!,
+        messageId,
+        botId: s.bots[0]!.id,
+        at: Date.now(),
+        text: 'Later source unavailable',
+      });
+      if (status === 404) await s.drain();
+      else await expect(s.drain()).rejects.toBe(sourceError);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(s.failures).toHaveLength(status === 404 ? 0 : 1);
+      expect(s.effects).toEqual([]);
+      expect(
+        await s.prisma.violation.count({ where: { chatId, ruleCode: 'REQUIRED_SUBSCRIPTION' } }),
+      ).toBe(1);
+      const receipt = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+      expect(receipt.status).toBe(status === 404 ? 'PROCESSED' : 'FAILED');
+      const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { kind: 'EXECUTION', webhookEventId: id },
+      });
+      expect(claim.businessStartedAt).not.toBeNull();
+      if (status === 404) {
+        // FLAG: A proven notice refusal completes this source without fabricating any
+        // remote effect or erasing feature evidence. It must not replay the handler.
+        expect(claim.status).toBe('COMPLETED');
+        expect(claim.completedAt).not.toBeNull();
+        expect(claim.commandResult).toEqual(
+          expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+        );
+        await s.moderation.processWebhookEvent(id);
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(s.effects).toEqual([]);
+        const nextId = await s.ingest({
+          chatId: chatId!,
+          messageId: `subscription-following-refusal-${randomUUID()}`,
+          botId: s.bots[0]!.id,
+          at: Date.now(),
+          text: 'Following event can progress after the notice refusal',
+        });
+        await s.drain();
+        expect(
+          (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status,
+        ).toBe('PROCESSED');
+        expect(handler).toHaveBeenCalledTimes(2);
+      } else {
+        expect(claim.status).not.toBe('COMPLETED');
+        expect(claim.completedAt).toBeNull();
+        expect(claim.commandResult).not.toEqual(
+          expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+        );
+      }
+    },
+  );
 
   it('requires fresh missing membership for a queued subscription deletion', async () => {
     const s = await fixture();
