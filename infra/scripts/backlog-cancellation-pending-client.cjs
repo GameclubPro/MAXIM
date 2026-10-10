@@ -169,7 +169,20 @@ if (require.main === module)
       : /^P[0-9]{4}$/.test(error?.code ?? '')
         ? error.code
         : 'unknown';
-    const databaseCode = /^[A-Z0-9]{5}$/.test(error?.meta?.code ?? '') ? error.meta.code : null;
+    const strings = [];
+    const codes = [];
+    const inspect = (value, depth = 0, key = '') => {
+      if (depth > 8) return;
+      if (typeof value === 'string') {
+        strings.push(value);
+        if (/code/i.test(key) && /^[A-Z0-9]{5}$/.test(value)) codes.push(value);
+      } else if (value && typeof value === 'object') {
+        for (const name of Object.getOwnPropertyNames(value).slice(0, 30))
+          inspect(value[name], depth + 1, name);
+      }
+    };
+    inspect(error);
+    const databaseCode = codes;
     const databaseFailure =
       [
         'canceling statement due to statement timeout',
@@ -178,7 +191,11 @@ if (require.main === module)
         'violates check constraint',
         'index row requires',
         'Cancellation evidence is permanent',
-      ].find((value) => String(error?.meta?.message ?? '').includes(value)) ?? null;
+        'invalid byte sequence',
+        'value too long',
+        'violates foreign key constraint',
+        'cannot be converted to text',
+      ].find((value) => strings.some((message) => message.includes(value))) ?? null;
     process.stderr.write(
       JSON.stringify({ phase: 'FAILED', code, databaseCode, databaseFailure }) + '\n',
     );
