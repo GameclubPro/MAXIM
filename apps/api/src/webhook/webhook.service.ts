@@ -582,7 +582,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     }
 
     const update = event.normalizedPayload as MaxUpdate;
-    if (event.status === WebhookStatus.NO_REPLAY_HELD) {
+    if (event.status === WebhookStatus.NO_REPLAY_HELD || event.status === WebhookStatus.CANCELLED) {
       return {
         canonical: false,
         prepared: false,

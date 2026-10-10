@@ -181,6 +181,7 @@ export class WebhookCanonicalExecutionService {
     }
     if (
       webhookEvent.status === WebhookStatus.NO_REPLAY_HELD ||
+      webhookEvent.status === WebhookStatus.CANCELLED ||
       webhookEvent.status === WebhookStatus.DUPLICATE ||
       webhookEvent.status === WebhookStatus.PROCESSED
     ) {
@@ -674,6 +675,7 @@ export class WebhookCanonicalExecutionService {
       if (
         !latestWebhookEvent ||
         latestWebhookEvent.status === WebhookStatus.NO_REPLAY_HELD ||
+        latestWebhookEvent.status === WebhookStatus.CANCELLED ||
         latestWebhookEvent.status === WebhookStatus.DUPLICATE ||
         latestWebhookEvent.status === WebhookStatus.PROCESSED ||
         this.isHotPathTimeoutQuarantined(latestWebhookEvent)
@@ -843,7 +845,7 @@ export class WebhookCanonicalExecutionService {
         AND claim."lease_token" = ${params.leaseToken}
         AND claim."lease_expires_at" > instant."now"
         AND (${ready} OR claim."enforced")
-        AND event."status" NOT IN ('PROCESSED', 'DUPLICATE', 'NO_REPLAY_HELD')
+        AND event."status" NOT IN ('PROCESSED', 'DUPLICATE', 'NO_REPLAY_HELD', 'CANCELLED')
         AND event."timeout_quarantine_expires_at" IS NULL
         AND COALESCE(event."error_message", '') NOT LIKE ${`${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}%`}
         AND COALESCE(event."error_message", '') NOT LIKE ${`${WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX}%`}
@@ -889,6 +891,7 @@ export class WebhookCanonicalExecutionService {
       event.executionDeadlineAt.getTime() > now.getTime() ||
       hasWebhookReplayFence(event) ||
       event.status === WebhookStatus.NO_REPLAY_HELD ||
+      event.status === WebhookStatus.CANCELLED ||
       event.status === WebhookStatus.PROCESSED ||
       event.status === WebhookStatus.DUPLICATE ||
       buildWebhookSemanticEventKey(event.normalizedPayload) !== params.semanticKey
@@ -1415,7 +1418,12 @@ export class WebhookCanonicalExecutionService {
       where: {
         id: context.webhookEvent.id,
         status: {
-          notIn: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE, WebhookStatus.NO_REPLAY_HELD],
+          notIn: [
+            WebhookStatus.PROCESSED,
+            WebhookStatus.DUPLICATE,
+            WebhookStatus.NO_REPLAY_HELD,
+            WebhookStatus.CANCELLED,
+          ],
         },
         executionClaims: { none: { kind: 'EXECUTION', status: 'COMPLETED' } },
       },
@@ -2330,7 +2338,8 @@ export class WebhookCanonicalExecutionService {
     }
     if (ownerEvent.status !== WebhookStatus.PROCESSED) {
       return ownerEvent.status === WebhookStatus.DUPLICATE ||
-        ownerEvent.status === WebhookStatus.NO_REPLAY_HELD
+        ownerEvent.status === WebhookStatus.NO_REPLAY_HELD ||
+        ownerEvent.status === WebhookStatus.CANCELLED
         ? 'invalid'
         : 'retry';
     }

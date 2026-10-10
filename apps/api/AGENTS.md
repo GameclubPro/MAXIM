@@ -27,6 +27,8 @@
 
 ## Validation And Prisma
 
+- Explicit bulk abandonment uses permanent `CANCELLED` receipts and exact semantic/message/child tombstones, preserving uncertain claims. Only the stopped-fleet host writer creates an operation; runtime may project late copies after its seal. Never reset cancelled receipts or treat them as successful executions. See `docs/operations/runbooks/webhook-backlog-cancellation.md`.
+
 - Focused validation: `npm run check:api`, `npm run check:prisma`, or a targeted `npm test --workspace @maxim/api -- <spec-or-pattern>` while iterating.
 - Public API build/typecheck/test scripts serialize codegen through repo file locks. Do not invoke `*:unlocked`, `*:source`, raw Prisma Generate, and another API validation concurrently.
 - Run disposable PostgreSQL race checks with `TZ=UTC`: raw `pg` interprets `timestamp without time zone` in the process timezone, while Prisma reads the stored UTC value. Local non-UTC runs otherwise produce false lifecycle/epoch mismatches.

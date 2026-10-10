@@ -776,7 +776,7 @@ export class MessageDuplicateMediaService {
     if (
       !row ||
       row.status === 'DUPLICATE' ||
-      row.status === 'NO_REPLAY_HELD' ||
+      ['NO_REPLAY_HELD', 'CANCELLED'].includes(row.status) ||
       (row.status === 'FAILED' &&
         row.nextEnqueueAt === null &&
         !isPendingWebhookTimeoutQuarantineMessage(row.errorMessage))
