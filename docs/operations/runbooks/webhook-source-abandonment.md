@@ -206,6 +206,14 @@ Unknown, global, mixed or malformed refusals stop the whole plan. A singleton
 resource refusal cannot exclude its owner as unsupported content. Semantic
 content refusals retain their separate bisection path, and no candidate is dropped
 to meet a ceiling.
+An online action page can disappear while workers consume the live queue. Only a
+sole exact `ACTION_PAGE_UNPROVED` issue on one of the four known action queues
+permits a fresh full admission of the identical selection, with at most three
+total attempts for that selection. Keep each failed proof, cost and call inside
+the original global call and online deadline budgets. The failed proof never
+becomes successful, and only a new complete stock proof can admit that selection.
+A repeated third refusal or any mixed, malformed or unknown issue stops the plan;
+it cannot exclude owners. Stopped collectors remain strict and do not retry.
 The parent ceiling is 32 certificates of at most eight owners each, 480 admission
 calls and 2,048 proof files. A new manifest fixes its maintenance duration to the
 greater of 60 minutes and the reviewed `estimatedColdMs`, with a hard 90-minute
@@ -284,6 +292,21 @@ and queue trends after restart. Neither a finite set of installed holds nor an
 HTTP success alone proves that all bots have recovered. Never-started backlog
 requires its own reviewed cancellation authority or measured normal draining;
 the session does not silently discard it.
+
+Keep a controller that can read the admitted session duration through final
+release acceptance. A terminal journal with a duration over 60 minutes remains
+unreadable by older 60-minute controllers. Do not synchronize back to that older
+reader, reset the journal, or shorten its immutable manifest.
+For the supported captured runtime, use
+`vps-connect.sh finalize-release-recovery <controller-branch> --runtime-sha <runtime-sha>`.
+Both commits require exact green CI. The finalizer holds the deploy lock, proves
+the clean exact controller checkout, and accepts a distinct runtime only at its
+checked-in source pin, as an ancestor with the finite reviewed controller-file
+delta. API, dependency, configuration and Compose changes refuse this path.
+It reads maintenance journals with the retained controller while binding all
+three images, source topology, strict smokes and the new release manifest to the
+runtime SHA. It performs no runtime recreation and still refuses unfinished or
+malformed maintenance evidence.
 
 ## Installation and recovery
 

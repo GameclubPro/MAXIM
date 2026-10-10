@@ -48,7 +48,7 @@ Commands:
   exec <command...>           Run a command in the remote repo
   deploy [branch] [services|--plan|--auto|--full]
                               Run or plan a manifest-aware production deploy
-  finalize-release-recovery [branch]
+  finalize-release-recovery [branch] [--runtime-sha <sha>]
                               Prove an exact runtime and finalize its interrupted manifest
   install-deploy-flock <old-sha>  Install reviewed lock tooling under both protocols
   legacy-cold-recovery <private-request.json>
@@ -945,12 +945,23 @@ deploy_main() {
 }
 
 finalize_release_recovery() {
-  local branch="${1:-main}"
+  local branch="main"
   local expected_sha
+  local runtime_sha=""
   local remote_command
 
-  if [[ "$#" -gt 1 ]]; then
-    echo "Usage: $0 finalize-release-recovery [branch]" >&2
+  if [[ "$#" -gt 0 && "$1" != "--runtime-sha" ]]; then
+    branch="$1"
+    shift
+  fi
+  if [[ "$#" -eq 2 && "$1" == "--runtime-sha" ]]; then
+    runtime_sha="$2"
+    if [[ ! "$runtime_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "Recovery finalization requires an exact runtime Git SHA." >&2
+      exit 2
+    fi
+  elif [[ "$#" -ne 0 ]]; then
+    echo "Usage: $0 finalize-release-recovery [branch] [--runtime-sha <sha>]" >&2
     exit 2
   fi
   if ! expected_sha="$(git rev-parse --verify --end-of-options "${branch}^{commit}" 2>/dev/null)"; then
@@ -961,10 +972,19 @@ finalize_release_recovery() {
     echo "Recovery finalization requires a full lowercase Git SHA." >&2
     exit 2
   fi
+  runtime_sha="${runtime_sha:-$expected_sha}"
+  if [[ ! "$runtime_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Recovery finalization requires an exact runtime Git SHA." >&2
+    exit 2
+  fi
 
-  node scripts/ci/assert-green.mjs "$expected_sha"
+  node scripts/ci/assert-green.mjs "$expected_sha" || return
+  if [[ "$runtime_sha" != "$expected_sha" ]]; then
+    node scripts/ci/assert-green.mjs "$runtime_sha" || return
+  fi
 
   remote_command="$(shell_quote_args ./infra/scripts/vps-finalize-release-recovery.sh "$branch")"
+  remote_command="MAXIM_FINALIZER_RUNTIME_SHA=$(printf '%q' "$runtime_sha") $remote_command"
   remote_command="MAXIM_EXPECTED_DEPLOY_SHA=$(printf '%q' "$expected_sha") $remote_command"
   if [[ "$branch" != "main" && "${MAXIM_ALLOW_NON_MAIN_DEPLOY:-0}" == "1" ]]; then
     remote_command="MAXIM_ALLOW_NON_MAIN_DEPLOY=1 $remote_command"
