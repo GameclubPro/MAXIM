@@ -752,6 +752,10 @@ native('fleet admission isolation from one unknown ordered scope', () => {
         after: null,
         retained: new Map(),
       };
+      // FLAG: This shared disposable table was replaced by the fixture above. Own its
+      // planner statistics, just as the retained-history plan cases do; stale estimates
+      // from another suite can select a full sorted scan for this 1,200-row fixture.
+      await prisma.$executeRaw`ANALYZE webhook_events`;
       const planRows = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
         Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${internal.deferredScopePageQuery(planState)}`,
       );
@@ -765,7 +769,10 @@ native('fleet admission isolation from one unknown ordered scope', () => {
         }
       };
       visit(planRows[0]?.['QUERY PLAN']);
-      expect(accesses.length).toBeGreaterThanOrEqual(4);
+      expect(accesses).toHaveLength(4);
+      expect(
+        accesses.find((node) => String(node['Index Cond']).includes('page_ids.id'))?.['Index Name'],
+      ).toBe('webhook_events_pkey');
       expect(
         accesses.every((node) =>
           ['Index Scan', 'Index Only Scan'].includes(String(node['Node Type'])),

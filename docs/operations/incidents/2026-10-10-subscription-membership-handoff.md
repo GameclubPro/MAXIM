@@ -280,3 +280,12 @@ five-second statement timeout while PostgreSQL checked retained webhook foreign 
 now deletes at most 100 owned disposition IDs per statement under a fixed page bound. Production
 query budgets and runtime recovery code remain unchanged. Both repaired suites passed locally:
 41 real-store tests, no skips. Exact-SHA CI and deployment still require completion.
+
+The next exact CI (`084236f0a9eb61f11bc2c208de3525a2df0985fd`) passed 1,224 native
+cases and failed the deferred-scope plan bound: 1,264 returned base-scan rows instead of
+at most 260. The unchanged focused suite passed locally, while controlled stale-statistics
+fixtures demonstrated that the planner could also use a non-leading index for exact ID probes.
+The plan fixture now analyzes its replaced disposable table before measuring, as the existing
+retained-history cases already do. The 260-row bound remains, and exact body accesses additionally
+require primary-key probes. This changes only test
+setup and assertions; no production planner settings, query budgets or runtime were changed.
