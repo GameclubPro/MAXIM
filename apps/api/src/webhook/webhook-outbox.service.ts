@@ -2924,6 +2924,7 @@ export class WebhookOutboxService
         if (
           !owner ||
           owner.status === WebhookStatus.NO_REPLAY_HELD ||
+          owner.status === WebhookStatus.CANCELLED ||
           owner.status === WebhookStatus.PROCESSED ||
           owner.status === WebhookStatus.DUPLICATE ||
           owner.timeoutQuarantineExpiresAt !== null
@@ -3443,6 +3444,7 @@ export class WebhookOutboxService
     if (
       !current ||
       current.status === WebhookStatus.NO_REPLAY_HELD ||
+      current.status === WebhookStatus.CANCELLED ||
       current.status === WebhookStatus.PROCESSED ||
       current.status === WebhookStatus.DUPLICATE ||
       (current.status === WebhookStatus.FAILED &&
@@ -3856,6 +3858,10 @@ export class WebhookOutboxService
     // mirror, action ambiguity, incomplete command result or lease pins the owner proof.
     return Prisma.sql`
       candidate."semantic_key" IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+        WHERE cancelled."receipt_id" = candidate."id")
+      AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+        WHERE cancelled."semantic_key" = candidate."semantic_key")
       AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" original
         WHERE original."owner_webhook_event_id" = candidate."id")
       AND NOT EXISTS (SELECT 1 FROM "webhook_source_receipt_dispositions" proof
@@ -3905,6 +3911,8 @@ export class WebhookOutboxService
     // positive post-seal declined work without a claim can release its retained body.
     return Prisma.sql`
       candidate."legacy_disposition_id" IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+        WHERE cancelled."receipt_id" = candidate."id")
       AND NOT EXISTS (SELECT 1 FROM "webhook_source_abandonments" original
         WHERE original."owner_webhook_event_id" = candidate."id")
       AND NOT EXISTS (SELECT 1 FROM "webhook_source_receipt_dispositions" proof

@@ -55,6 +55,8 @@ Commands:
                               Inspect or apply an exact journal-bound legacy recovery
   source-abandonment <private-request.json>
                               Discard an exact modern source without member-wide holds
+  cancel-webhook-backlog <private-request.json>
+                              Cancel pre-cutoff processing in one stopped-fleet operation
   source-abandonment-corrective <private-envelope.json>
                               Continue reviewed recovery with an exact green controller
   preload-ci-image <component> [git-ref]
@@ -301,6 +303,31 @@ install_deploy_flock() {
     *) return 2 ;;
   esac
   remote_exec "$(shell_quote_args bash -s -- "$1" "$target_sha")" <"$ROOT_DIR/infra/scripts/vps-install-deploy-flock.sh"
+}
+
+cancel_webhook_backlog() {
+  if [[ $# != 1 || ! -f "$1" ]]; then
+    echo 'Usage: cancel-webhook-backlog <private-request.json>' >&2
+    return 2
+  fi
+  local request_file="$1" target_sha
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  node --input-type=module - "$ROOT_DIR" "$request_file" "$target_sha" <<'NODE'
+import { constants, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [root, path, sha] = process.argv.slice(2);
+const { parseBacklogCancellationRequest } = await import(pathToFileURL(`${root}/infra/scripts/backlog-cancellation-host.mjs`));
+const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+try {
+  const stat = fstatSync(fd);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600 || stat.size > 4096)
+    throw new Error('Private bounded cancellation request required');
+  if (parseBacklogCancellationRequest(readFileSync(fd, 'utf8')).sourceSha !== sha)
+    throw new Error('Cancellation request must match local source');
+} finally { closeSync(fd); }
+NODE
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
+  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-backlog-cancellation.sh)" <"$request_file"
 }
 
 legacy_cold_recovery() {
@@ -1464,6 +1491,9 @@ case "$command" in
     ;;
   install-deploy-flock)
     install_deploy_flock "$@"
+    ;;
+  cancel-webhook-backlog)
+    cancel_webhook_backlog "$@"
     ;;
   legacy-cold-recovery)
     legacy_cold_recovery "$@"

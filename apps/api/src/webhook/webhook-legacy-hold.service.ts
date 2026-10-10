@@ -14,6 +14,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { MaxActionJob } from '../max/max-client.service';
 import { materializeSourceAbandonmentReceipt } from './webhook-source-abandonment';
 import type { SourceAbandonmentChildKind } from './webhook-source-abandonment.contract';
+import {
+  backlogUpdateHeldSql,
+  materializeBacklogCancellation,
+} from './webhook-backlog-cancellation';
 
 export type WebhookLegacyHoldDatabase = Pick<Prisma.TransactionClient, '$queryRaw' | '$executeRaw'>;
 export const WEBHOOK_LEGACY_DISPOSITION_VERSION = 1;
@@ -84,7 +88,7 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
 
   private async exists(
     sql: Prisma.Sql,
-    client: WebhookLegacyHoldDatabase = this.prisma,
+    client: Pick<WebhookLegacyHoldDatabase, '$queryRaw'> = this.prisma,
   ): Promise<boolean> {
     const rows = await client.$queryRaw<Array<{ held: boolean }>>(sql);
     if (typeof rows[0]?.held !== 'boolean')
@@ -101,6 +105,8 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
       Prisma.sql`SELECT EXISTS (SELECT 1 FROM "webhook_legacy_recoveries"
       WHERE "chat_id" = ${chatId} AND "message_id" = ${messageId})
       OR EXISTS (SELECT 1 FROM "webhook_source_abandonments"
+      WHERE "chat_id" = ${chatId} AND "message_id" = ${messageId})
+      OR EXISTS (SELECT 1 FROM "webhook_backlog_receipts"
       WHERE "chat_id" = ${chatId} AND "message_id" = ${messageId}) AS held`,
       client,
     );
@@ -114,6 +120,8 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
   ): Promise<boolean> {
     return this.exists(
       Prisma.sql`SELECT EXISTS (SELECT 1 FROM "webhook_source_abandonments"
+        WHERE "chat_id" = ${chatId} AND "message_id" = ${messageId})
+        OR EXISTS (SELECT 1 FROM "webhook_backlog_receipts"
         WHERE "chat_id" = ${chatId} AND "message_id" = ${messageId}) AS held`,
       client,
     );
@@ -125,6 +133,8 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
   ): Promise<boolean> {
     return this.exists(
       Prisma.sql`SELECT EXISTS (SELECT 1 FROM "webhook_source_child_holds"
+        WHERE "kind" = ${kind} AND "child_key" = ${childKey})
+        OR EXISTS (SELECT 1 FROM "webhook_backlog_children"
         WHERE "kind" = ${kind} AND "child_key" = ${childKey}) AS held`,
       client,
     );
@@ -177,6 +187,8 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
         WHERE "user_id" IN (${Prisma.join(sources.map((source) => source.userId))}))
       OR EXISTS (SELECT 1 FROM "webhook_source_abandonments"
         WHERE "chat_id" = ${chatId} AND "message_id" IN (${Prisma.join(sources.map((source) => source.messageId))}))
+      OR EXISTS (SELECT 1 FROM "webhook_backlog_receipts"
+        WHERE "chat_id" = ${chatId} AND "message_id" IN (${Prisma.join(sources.map((source) => source.messageId))}))
     ) AS held`,
       client,
     );
@@ -185,6 +197,8 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
     return this.exists(
       Prisma.sql`SELECT EXISTS (SELECT 1 FROM "webhook_legacy_child_holds"
       WHERE "job_key" = ${jobKey}) OR EXISTS (SELECT 1 FROM "webhook_source_child_holds"
+      WHERE "kind" = 'MAX_ACTION' AND "child_key" = ${jobKey})
+      OR EXISTS (SELECT 1 FROM "webhook_backlog_children"
       WHERE "kind" = 'MAX_ACTION' AND "child_key" = ${jobKey}) AS held`,
       client,
     );
@@ -207,16 +221,18 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
   }
 
   async isUpdateHeld(
-    update: Pick<MaxUpdate, 'message'>,
+    update: Partial<MaxUpdate>,
     client?: WebhookLegacyHoldDatabase,
   ): Promise<boolean> {
     const message = update.message;
-    if (!message?.chatId) return false;
+    if (!message?.chatId)
+      return this.exists(Prisma.sql`SELECT ${backlogUpdateHeldSql(update)} AS held`, client);
     return this.exists(
       Prisma.sql`SELECT (
       EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" WHERE "chat_id" = ${message.chatId} AND "message_id" = ${message.messageId ?? ''})
       OR EXISTS (SELECT 1 FROM "webhook_legacy_recoveries" WHERE "user_id" = ${message.senderId ?? ''})
       OR EXISTS (SELECT 1 FROM "webhook_source_abandonments" WHERE "chat_id" = ${message.chatId} AND "message_id" = ${message.messageId ?? ''})
+      OR ${backlogUpdateHeldSql(update)}
     ) AS held`,
       client,
     );
@@ -229,11 +245,20 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
     if (await this.isUpdateHeld(update, client)) throw new WebhookLegacyHoldRejectedError();
   }
 
-  readFreshCommandReceipt(
+  async readFreshCommandReceipt(
     webhookEventId: string,
     expectedUpdate?: MaxUpdate,
     client: FreshHeldCommandDatabase = this.prisma,
   ) {
+    // FLAG: Fresh-command exceptions never revive an explicitly cancelled source.
+    if (
+      expectedUpdate &&
+      (await this.exists(
+        Prisma.sql`SELECT ${backlogUpdateHeldSql(expectedUpdate)} AS held`,
+        client,
+      ))
+    )
+      return null;
     return readFreshHeldCommandReceipt(client, webhookEventId, expectedUpdate);
   }
 
@@ -242,6 +267,8 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
     client?: Prisma.TransactionClient,
   ): Promise<LegacyReceiptDispositionResult> {
     const materialize = async (tx: Prisma.TransactionClient) => {
+      const cancelled = await materializeBacklogCancellation(tx, webhookEventId);
+      if (cancelled !== 'NOT_HELD') return cancelled;
       const modern = await materializeSourceAbandonmentReceipt(tx, webhookEventId);
       return modern === 'NOT_HELD'
         ? materializeLegacyReceiptDisposition(tx, webhookEventId)
@@ -411,7 +438,11 @@ export function legacyUpdateHeldSql(eventAlias: string): Prisma.Sql {
   return Prisma.sql`(${legacyScopeSql(eventAlias, false)} OR EXISTS (
     SELECT 1 FROM "webhook_source_abandonments" source
     WHERE source."chat_id" = ${event}."normalized_payload"->'message'->>'chatId'
-      AND source."message_id" = ${event}."normalized_payload"->'message'->>'messageId'))`;
+      AND source."message_id" = ${event}."normalized_payload"->'message'->>'messageId')
+    OR EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled WHERE cancelled."semantic_key" = ${event}."semantic_key")
+    OR EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
+      WHERE cancelled."chat_id" = ${event}."normalized_payload"->'message'->>'chatId'
+        AND cancelled."message_id" = ${event}."normalized_payload"->'message'->>'messageId'))`;
 }
 
 export function legacyReceiptBornAfterSealSql(eventAlias: string): Prisma.Sql {

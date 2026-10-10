@@ -97,6 +97,7 @@ enum WebhookStatus {
   DUPLICATE
   FAILED
   NO_REPLAY_HELD
+  CANCELLED
 }
 
 enum WebhookExecutionClaimStatus {
@@ -2489,6 +2490,44 @@ model WebhookEvent {
   @@index([botId, status, createdAt], map: "webhook_events_bot_id_status_created_at_idx")
   @@index([status, nextEnqueueAt, createdAt])
   @@map("webhook_events")
+}
+
+// FLAG: Explicit operator cancellation retains evidence without claiming successful effects.
+model WebhookBacklogCancellation {
+  id String @id
+  cutoff DateTime
+  sourceSha String @map("source_sha")
+  imageId String @map("image_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  sealedAt DateTime? @map("sealed_at")
+  receipts WebhookBacklogReceipt[]
+  children WebhookBacklogChild[]
+  @@map("webhook_backlog_cancellations")
+}
+
+model WebhookBacklogReceipt {
+  receiptId String @id @map("receipt_id")
+  cancellationId String @map("cancellation_id")
+  semanticKey String? @map("semantic_key")
+  chatId String? @map("chat_id")
+  messageId String? @map("message_id")
+  originalSnapshot Json @map("original_snapshot")
+  createdAt DateTime @default(now()) @map("created_at")
+  cancellation WebhookBacklogCancellation @relation(fields: [cancellationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  @@index([semanticKey], map: "webhook_backlog_receipts_semantic_idx")
+  @@index([chatId, messageId], map: "webhook_backlog_receipts_message_idx")
+  @@index([cancellationId, receiptId], map: "webhook_backlog_receipts_operation_idx")
+  @@map("webhook_backlog_receipts")
+}
+
+model WebhookBacklogChild {
+  kind String
+  childKey String @map("child_key")
+  cancellationId String @map("cancellation_id")
+  originalSnapshot Json @map("original_snapshot")
+  cancellation WebhookBacklogCancellation @relation(fields: [cancellationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  @@id([kind, childKey])
+  @@map("webhook_backlog_children")
 }
 
 model WebhookExecutionClaim {

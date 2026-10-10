@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261009190000_add_authorless_channel_source_profile",
-  "baselineNamesSha256": "18cf25e72e59f7c7ff7c8d7a17a987cd9166d7842218701d5b8e2e99ee0db9b2",
-  "baselineContentsSha256": "1b3bbb9aae849fff43d2511f6f5236428c08b7412eba099a7d9f9c80cef77a82",
+  "baselineThrough": "20261010070000_add_backlog_cancellation",
+  "baselineNamesSha256": "f444eef0fe06016557cfedc452fe3b83a646da08c41d13d039c4fa35c77d6689",
+  "baselineContentsSha256": "e20852b857d8676396495fa5b669d7ff37ec3f0a7e34e64fb91f9221b40ac576",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -116,6 +116,11 @@
       "reason": "Reviewed additive authorless-channel profile with nullable subject coupled by a check, expanded exact-child kind, and static immutable-evidence triggers. DROP NOT NULL and replacing a child-kind check broaden only the separately validated versioned channel path; no table, column or evidence is deleted.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Existing human rows keep HUMAN_CHAT_V1 and nonnull subjects. New authorless certificates are installed only after all API roles use the profile-aware runtime and its rollback source floor. Generic exact-message holds continue denying effects independently of author; older materializers refuse unknown/null channel evidence. Channel markers are preserved before and after seal and all legacy operation/version checks remain unchanged."
+    },
+    "20261010070000_add_backlog_cancellation": {
+      "reason": "Reviewed additive cancellation tables and permanent evidence triggers. No existing row is modified by this migration; cancellation is separately invoked with all application writers stopped. Function bodies contain DELETE guards, not business data deletion.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Empty additive tables and enum value precede activation. Activation requires every role to use cancellation readers; both rollback paths require the new source floor."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -187,6 +192,9 @@
     },
     "20261007070000_add_webhook_source_abandonment": {
       "reason": "Every ordinary index belongs to a new empty immutable source/certificate/child/proof table. Existing webhook history gains only nullable columns and NOT VALID constraints; no historical scan or index build occurs."
+    },
+    "20261010070000_add_backlog_cancellation": {
+      "reason": "Indexes are created only on the three empty additive cancellation tables."
     }
   }
 }

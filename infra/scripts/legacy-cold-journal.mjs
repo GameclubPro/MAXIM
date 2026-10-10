@@ -16,6 +16,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertNoActiveSourceAbandonmentSession } from './source-abandonment-session-journal.mjs';
+import { assertNoActiveBacklogCancellation } from './backlog-cancellation-journal.mjs';
 import {
   archiveEmptyInstallClosure,
   assertNoInterruptedEmptyInstallArchive,
@@ -697,7 +698,11 @@ export function readLegacyColdState(directory = LEGACY_COLD_STATE_DIR) {
   return state;
 }
 
-export function assertNoActiveLegacyColdMaintenance(directory = LEGACY_COLD_STATE_DIR) {
+export function assertNoActiveLegacyColdMaintenance(
+  directory = LEGACY_COLD_STATE_DIR,
+  backlogCancellationId = null,
+) {
+  assertNoActiveBacklogCancellation(directory, backlogCancellationId);
   // FLAG: A completed single-certificate epoch never releases an unfinished
   // multi-certificate session; every ordinary host writer checks both journals.
   assertNoActiveSourceAbandonmentSession(join(directory, 'source-abandonment-session'));
