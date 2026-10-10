@@ -1,3 +1,4 @@
+import { writeWebhookEnqueueState } from './webhook-receipt-write';
 import {
   buildBoundedEnqueueWorkUnitsSql,
   type OutboxScanState,
@@ -3081,17 +3082,14 @@ export class WebhookOutboxService
   }> {
     const queuedAt = new Date();
     const enqueueAttempts = event.enqueueAttempts + 1;
-    const result = await this.prisma.webhookEvent.updateMany({
-      where: this.buildEnqueueStateWhere(event),
-      data: {
-        status: WebhookStatus.QUEUED,
-        queueName,
-        queuedAt,
-        enqueueAttempts: { increment: 1 },
-        nextEnqueueAt: null,
-        timeoutQuarantineExpiresAt: null,
-        errorMessage: null,
-      },
+    const result = await writeWebhookEnqueueState(this.prisma, event, {
+      status: WebhookStatus.QUEUED,
+      queueName,
+      queuedAt,
+      enqueueAttempts: { increment: 1 },
+      nextEnqueueAt: null,
+      timeoutQuarantineExpiresAt: null,
+      errorMessage: null,
     });
     if (result.count !== 1) {
       return {
@@ -3148,10 +3146,7 @@ export class WebhookOutboxService
         : {}),
     };
 
-    const result = await this.prisma.webhookEvent.updateMany({
-      where: this.buildEnqueueStateWhere(event),
-      data,
-    });
+    const result = await writeWebhookEnqueueState(this.prisma, event, data);
     return result.count === 1 ? 'outstanding' : this.resolveCurrentCandidateOutcome(event.id);
   }
 
@@ -3164,17 +3159,14 @@ export class WebhookOutboxService
     const exhausted = nextAttempts >= this.maxEnqueueAttempts;
     const nextDelaySec = Math.min(300, 2 ** Math.min(nextAttempts, 8));
 
-    const result = await this.prisma.webhookEvent.updateMany({
-      where: this.buildEnqueueStateWhere(event),
-      data: {
-        status: WebhookStatus.FAILED,
-        errorMessage: message.slice(0, 500),
-        queueName: null,
-        nextEnqueueAt: exhausted ? null : new Date(Date.now() + nextDelaySec * 1_000),
-        timeoutQuarantineExpiresAt: null,
-        enqueueAttempts: {
-          increment: 1,
-        },
+    const result = await writeWebhookEnqueueState(this.prisma, event, {
+      status: WebhookStatus.FAILED,
+      errorMessage: message.slice(0, 500),
+      queueName: null,
+      nextEnqueueAt: exhausted ? null : new Date(Date.now() + nextDelaySec * 1_000),
+      timeoutQuarantineExpiresAt: null,
+      enqueueAttempts: {
+        increment: 1,
       },
     });
     if (result.count === 1 && diagnostic) {
@@ -3202,16 +3194,13 @@ export class WebhookOutboxService
     error: WebhookPreparationDeferredError,
   ): Promise<CandidateEnqueueOutcome> {
     // FLAG: RECEIVED keeps the persisted envelope outside terminal-failure retention and attempt caps.
-    const result = await this.prisma.webhookEvent.updateMany({
-      where: this.buildEnqueueStateWhere(event),
-      data: {
-        status: WebhookStatus.RECEIVED,
-        errorMessage: `Webhook preparation deferred: ${error.message}`.slice(0, 500),
-        queueName: null,
-        queuedAt: null,
-        nextEnqueueAt: new Date(Date.now() + error.retryAfterMs),
-        timeoutQuarantineExpiresAt: null,
-      },
+    const result = await writeWebhookEnqueueState(this.prisma, event, {
+      status: WebhookStatus.RECEIVED,
+      errorMessage: `Webhook preparation deferred: ${error.message}`.slice(0, 500),
+      queueName: null,
+      queuedAt: null,
+      nextEnqueueAt: new Date(Date.now() + error.retryAfterMs),
+      timeoutQuarantineExpiresAt: null,
     });
     return result.count === 1 ? 'block' : this.resolveUncommittedPreparationRetry(event);
   }
@@ -3237,15 +3226,12 @@ export class WebhookOutboxService
   ): Promise<CandidateEnqueueOutcome> {
     const exhausted = event.enqueueAttempts >= this.maxEnqueueAttempts;
     const nextDelaySec = Math.min(300, 2 ** Math.min(event.enqueueAttempts, 8));
-    const result = await this.prisma.webhookEvent.updateMany({
-      where: this.buildEnqueueStateWhere(event),
-      data: {
-        status: WebhookStatus.FAILED,
-        errorMessage: message.slice(0, 500),
-        queueName: null,
-        nextEnqueueAt: exhausted ? null : new Date(Date.now() + nextDelaySec * 1_000),
-        timeoutQuarantineExpiresAt: null,
-      },
+    const result = await writeWebhookEnqueueState(this.prisma, event, {
+      status: WebhookStatus.FAILED,
+      errorMessage: message.slice(0, 500),
+      queueName: null,
+      nextEnqueueAt: exhausted ? null : new Date(Date.now() + nextDelaySec * 1_000),
+      timeoutQuarantineExpiresAt: null,
     });
     return result.count === 1
       ? exhausted
@@ -3262,15 +3248,12 @@ export class WebhookOutboxService
     const message = failedReason
       ? `Enqueue attempts exhausted (${event.enqueueAttempts}/${this.maxEnqueueAttempts}); terminal BullMQ failure: ${failedReason}`
       : `Enqueue attempts exhausted (${event.enqueueAttempts}/${this.maxEnqueueAttempts})`;
-    const result = await this.prisma.webhookEvent.updateMany({
-      where: this.buildEnqueueStateWhere(event),
-      data: {
-        status: WebhookStatus.FAILED,
-        errorMessage: message.slice(0, 500),
-        queueName: null,
-        nextEnqueueAt: null,
-        timeoutQuarantineExpiresAt: null,
-      },
+    const result = await writeWebhookEnqueueState(this.prisma, event, {
+      status: WebhookStatus.FAILED,
+      errorMessage: message.slice(0, 500),
+      queueName: null,
+      nextEnqueueAt: null,
+      timeoutQuarantineExpiresAt: null,
     });
     return result.count === 1 ? 'terminal' : this.resolveCurrentCandidateOutcome(event.id);
   }
@@ -3286,16 +3269,13 @@ export class WebhookOutboxService
   private async markProcessedFromCompletedJob(
     event: WebhookEnqueueStateSnapshot,
   ): Promise<CandidateEnqueueOutcome> {
-    const result = await this.prisma.webhookEvent.updateMany({
-      where: this.buildEnqueueStateWhere(event),
-      data: {
-        status: WebhookStatus.PROCESSED,
-        processedAt: new Date(),
-        queueName: null,
-        nextEnqueueAt: null,
-        timeoutQuarantineExpiresAt: null,
-        errorMessage: null,
-      },
+    const result = await writeWebhookEnqueueState(this.prisma, event, {
+      status: WebhookStatus.PROCESSED,
+      processedAt: new Date(),
+      queueName: null,
+      nextEnqueueAt: null,
+      timeoutQuarantineExpiresAt: null,
+      errorMessage: null,
     });
     return result.count === 1 ? 'terminal' : this.resolveCurrentCandidateOutcome(event.id);
   }
