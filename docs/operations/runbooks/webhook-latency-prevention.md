@@ -39,7 +39,7 @@ copying these notes does not install a fix or prove which version is deployed.
    persistence, shadow/off, ambiguous state or lost notice ownership still fails. The worker must
    obtain fresh membership and current policy before deletion. This is neither a DELETE receipt
    nor permission to replay the notification, sanction or original webhook handler.
-   A typed source GET transport timeout before notice handoff may defer to the already-guarded
+   A typed source GET transport timeout or unavailable fresh membership before notice handoff may defer to the already-guarded
    SEND action only with the exact serialized proof, original deadline and renewed notice lease.
    The handoff must succeed before coverage or DELETE admission; source-read deferral never proves
    delivery or deletion. A post-handoff source transport outage requires a committed executable
@@ -48,6 +48,11 @@ copying these notes does not install a fix or prove which version is deployed.
    typed unavailable membership/source transport may finish without effects; retain a fail-open
    diagnostic, prevent active-mute fallthrough and never reuse this exception after effects begin. Test real queue persistence, continued same-chat progress and final worker
    refusal while the source remains unknown or membership/policy/deadline has changed.
+   For legacy inline DELETE, a genuine marked `max_action_executor_proof_rejected` may try
+   the next already eligible candidate only before any attempted/ambiguous mutation. Bound the
+   candidate pass, preserve the final executor check and report all-refused as unsuccessful
+   deletion, with no strike/sanction/notice. Never infer permission loss from proof supersession.
+   Keep following same-chat progress and unknown-effect fences in the full-path regressions.
 5. **Observation is not execution.** A PROCESSED receipt can be a dormant-bot observation.
    Exclude only its exact validated marker with no linked claim; preserve the semantic anchor and
    every independent replay fence. `bot_added` must not demand an ordinary live executor or
@@ -89,7 +94,7 @@ name-matching only `required-subscription` misses the integration expectation th
 incident. Use Node 24 and the public wrappers, sequentially:
 
 ```bash
-npm test --workspace @maxim/api -- 'required-subscription|moderation-execution-guard-callbacks'
+npm test --workspace @maxim/api -- 'required-subscription|moderation-execution-guard-callbacks|moderation-action-executor-recovery'
 node scripts/agent/with-test-stores.mjs --migrate -- npm test --workspace @maxim/api -- webhook-multibot-moderation-guards-fullpath
 ```
 

@@ -50,11 +50,20 @@ function fixture(mode: 'persisted' | 'album' | 'leader' = 'persisted') {
     moderationDeleteIntent: { findUnique: jest.fn(async () => null) },
   };
   const immunity = { consumeForMessage: jest.fn(async () => 'not_granted') };
+  const membership = {
+    getMembershipResolution: jest.fn(
+      async (): Promise<{ fresh: boolean; membership: boolean | null }> => ({
+        fresh: true,
+        membership: false,
+      }),
+    ),
+    getLookupIssue: jest.fn(() => null),
+  };
   const guard = new RequiredSubscriptionExecutionGuardService(
     prisma as never,
     max as never,
     { isKnownBotUserId: () => false } as never,
-    { getMembershipResolution: async () => ({ fresh: true, membership: false }) } as never,
+    membership as never,
     immunity as never,
     new ConfigService(),
   );
@@ -118,6 +127,7 @@ function fixture(mode: 'persisted' | 'album' | 'leader' = 'persisted') {
     coverage,
     immunity,
     sourceError,
+    membership,
     plan,
     prisma,
   };
@@ -184,6 +194,21 @@ describe('required subscription notice recovery before dispatch', () => {
     s.max.getExactMessageRow.mockRejectedValue(timeout);
     await expect(s.run()).resolves.toBe(true);
     // This fake represents the accepted guarded send handoff, not a remote POST.
+    expect(s.remoteSend).toHaveBeenCalledTimes(1);
+    expect(s.executeDelete).toHaveBeenCalledTimes(1);
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
+
+  it('hands off unavailable fresh subscription membership to the guarded notice worker', async () => {
+    const s = fixture();
+    s.max.getExactMessageRow.mockResolvedValue({
+      sender: { user_id: 'user' },
+      recipient: { chat_id: '-123', chat_type: 'chat' },
+      timestamp: s.plan.executionProof!.sourceAtMs,
+      body: { mid: 'original', text: 'hello' },
+    });
+    s.membership.getMembershipResolution.mockResolvedValue({ fresh: false, membership: null });
+    await expect(s.run()).resolves.toBe(true);
     expect(s.remoteSend).toHaveBeenCalledTimes(1);
     expect(s.executeDelete).toHaveBeenCalledTimes(1);
     expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();

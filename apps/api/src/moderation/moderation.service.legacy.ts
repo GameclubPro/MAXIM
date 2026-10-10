@@ -146,6 +146,7 @@ import {
 import { MaxBotContextService } from '../max/max-bot-context.service';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
+import { wasMaxMemberMutationAttempted } from '../max/max-member-error.util';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import {
   isValidMaxBotStartPayload,
@@ -13404,6 +13405,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    if (attempt.status === 'executor_rejected') {
+      // FLAG: Every candidate stopped before DELETE. This is a declined action, not
+      // deletion success or a confirmed loss of permissions. Keep following events live.
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'moderation-delete.executor-proof',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      return { ok: false, botId: null };
+    }
+
     if (attempt.status === 'terminal_error') {
       this.scheduleModerationActionAccessRecheck(params.chatId, params.action);
       this.logSkippedModerationActionAfterTerminalError({
@@ -13454,6 +13466,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     let terminalError: unknown = null;
+    let executorRejected = false;
     let skippedDueToBackoff = false;
     const attemptedBotIds: string[] = [];
 
@@ -13482,6 +13495,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
         return { status: 'success', botId: candidateBotId ?? null };
       } catch (error: unknown) {
+        // FLAG: Only the genuine final executor fence proves this DELETE never reached
+        // HTTP. Try each existing candidate once; do not back off/demote a bot from a
+        // superseded proof, retry member mutations, or swallow uncertain remote effects.
+        if (
+          params.action === 'delete_message' &&
+          wasMaxPreDispatchGuardRejected(error) &&
+          (error as { code?: unknown }).code === 'max_action_executor_proof_rejected' &&
+          !wasMaxMessageSendAttempted(error) &&
+          !wasMaxMemberMutationAttempted(error) &&
+          !isMaxMutationOutcomeAmbiguous(error)
+        ) {
+          executorRejected = true;
+          continue;
+        }
         if (!this.isTerminalModerationActionPermissionError(error)) {
           throw error;
         }
@@ -13511,6 +13538,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
     }
+
+    if (executorRejected) return { status: 'executor_rejected' };
 
     if (terminalError) {
       return {

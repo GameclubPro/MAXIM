@@ -255,6 +255,7 @@ export type InvitationAccessProgressDelegate = {
 export type ChannelDialogType = 'comments' | 'suggest';
 
 export type ModerationActionAttemptResult =
+  | { status: 'executor_rejected' }
   | { status: 'success'; botId: string | null }
   | { status: 'no_candidates' }
   | { status: 'backoff_blocked' }

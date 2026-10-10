@@ -26,7 +26,7 @@ export class RequiredSubscriptionNoticeSourceUnavailableError extends Error {}
 
 // FLAG: This allows only a durable, independently guarded SEND handoff.
 // It grants no permission to dispatch, delete, or record delivered coverage itself.
-export class RequiredSubscriptionNoticeSourceReadDeferredError extends Error {}
+export class RequiredSubscriptionNoticeReadDeferredError extends Error {}
 
 // FLAG: Only the exact pre-send callback may establish that this handoff did not run.
 // Unknown or attempted send failures must retain their existing execution fences.

@@ -169,3 +169,35 @@ Local validation of the expanded change passed all 40 native full-path scenarios
 run had one outdated unit expectation that still required an initial membership outage to throw;
 its replacement joins the existing muted/unmuted pre-write matrix and retains every no-effect
 assertion. Unknown lookalike errors and later boundaries keep their negative assertions.
+
+## Notice membership and legacy executor rejection
+
+A second bounded window, 12:27:00–12:58:00 on the same `710cefec` fleet, contained two
+additional failures, with no log truncation across the eight inspected queue roles:
+
+- At 12:29:06.445, `required-subscription.follow-up` reported unavailable membership. The
+  built guard location identifies the notice guard's fresh-membership read, before SEND handoff.
+- At 12:42:10.052, `violation-delete` failed at the final executor-proof check after quota wait,
+  before the HTTP DELETE. The built handler location identifies the legacy inline deletion path.
+
+The notice correction defers typed unavailable fresh membership through the same serialized,
+independently guarded SEND handoff as a source-read outage. Its own worker still checks fresh
+membership before POST. Terminal target rejection, failed handoff, expired authority and
+attempted or ambiguous sends retain their distinct outcomes.
+
+Legacy deletion now tries the next already eligible bot only for the genuine pre-dispatch
+executor-proof rejection. The finite candidate pass neither retries a member mutation nor
+records access loss from a superseded proof. If all candidates decline before dispatch, the
+result remains an unsuccessful deletion; the rule path must not record a strike or issue a
+follow-up sanction/notice. Its execution can finish without blocking subsequent chat events.
+Unknown, unmarked, attempted and ambiguous failures remain fenced. These changes cannot settle
+or replay the previously started failed handlers; authorized cancellation remains separate.
+
+Both defects failed their new focused tests before correction (three failing cases). The first
+native run passed 45 cases and exposed one incorrect new test expectation: a rollout-off legacy
+DELETE has no durable own-reason receipt and therefore cannot authorize a new strike/notice even
+when a peer deletes successfully. The test now explicitly requires no new strike or notice in
+both peer-success and all-refused variants; runtime sanction guards were not weakened.
+Final focused validation passed 344 tests in 13 suites with no skips, including all 46 native
+full-path cases on disposable PostgreSQL 16 and Redis 7. Production rollout and sustained
+recovery remain unverified at this checkpoint.

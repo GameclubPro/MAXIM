@@ -19,7 +19,7 @@ import {
   assertRequiredSubscriptionNoticeAuthority,
   RequiredSubscriptionNoticeRejectedError,
   RequiredSubscriptionNoticeSourceUnavailableError,
-  RequiredSubscriptionNoticeSourceReadDeferredError,
+  RequiredSubscriptionNoticeReadDeferredError,
   type RequiredSubscriptionNoticeAuthority,
 } from './required-subscription-notice-authority';
 
@@ -102,7 +102,7 @@ export class RequiredSubscriptionExecutionGuardService {
               { cause: error },
             );
           if (isRequiredSubscriptionSourceReadTransportFailure(error))
-            throw new RequiredSubscriptionNoticeSourceReadDeferredError(
+            throw new RequiredSubscriptionNoticeReadDeferredError(
               'Required subscription notice source read deferred',
               { cause: error },
             );
@@ -124,7 +124,9 @@ export class RequiredSubscriptionExecutionGuardService {
             'terminal'
           )
             throw new RequiredSubscriptionNoticeRejectedError();
-          throw new Error('Required subscription notice fresh membership unavailable');
+          throw new RequiredSubscriptionNoticeReadDeferredError(
+            'Required subscription notice fresh membership unavailable',
+          );
         }
         return result.membership;
       },

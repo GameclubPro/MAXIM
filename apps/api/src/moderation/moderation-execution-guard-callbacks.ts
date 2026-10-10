@@ -33,7 +33,7 @@ import {
   readRequiredSubscriptionNoticeAuthority,
   RequiredSubscriptionNoticeRejectedError,
   RequiredSubscriptionNoticeSourceUnavailableError,
-  RequiredSubscriptionNoticeSourceReadDeferredError,
+  RequiredSubscriptionNoticeReadDeferredError,
   RequiredSubscriptionNoticeNotDispatchedError,
 } from './required-subscription-notice-authority';
 
@@ -375,7 +375,7 @@ export function createRequiredSubscriptionNoticeHandoff(
             // FLAG: This callback precedes the durable SEND handoff. A typed read-only
             // outage may defer to its serialized proof's worker guard, never to an
             // unguarded POST. Handoff failure still throws; no success is fabricated.
-            if (error instanceof RequiredSubscriptionNoticeSourceReadDeferredError) {
+            if (error instanceof RequiredSubscriptionNoticeReadDeferredError) {
               await lease();
               return;
             }

@@ -55,6 +55,75 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     });
   }
 
+  it.each(['peer', 'all-refused'] as const)(
+    'keeps legacy DELETE executor rejection bounded and following events live: %s',
+    async (outcome) => {
+      const s = await fixture(2);
+      Object.assign(s.intents, { mode: 'off' });
+      const [chatId] = await s.seedCatalog(1, { messageLimitsWarnEnabled: true });
+      await priorLengthViolations(s, chatId!, 1);
+      const verify = s.links.verifyChatExecutionProof.bind(s.links);
+      const rejected = new Set<string>();
+      jest.spyOn(s.links, 'verifyChatExecutionProof').mockImplementation(async (input) => {
+        if (
+          input.purpose === 'delete_message' &&
+          (outcome === 'all-refused' || input.botId === s.bots[0]!.id)
+        ) {
+          rejected.add(input.botId);
+          return false;
+        }
+        return verify(input);
+      });
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const messageId = `legacy-executor-${randomUUID()}`;
+      const at = Date.now();
+      const id = await s.ingest({
+        chatId: chatId!,
+        messageId,
+        botId: s.bots[0]!.id,
+        at,
+        text: 'Long harmless text must use the final executor guard',
+      });
+      await s.drain();
+      expect(rejected.size).toBe(outcome === 'peer' ? 1 : 2);
+      expect(s.failures).toEqual([]);
+      expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(
+        outcome === 'peer' ? 1 : 0,
+      );
+      // FLAG: Rollout-off legacy deletion has no durable own-reason sanction receipt,
+      // even when a peer confirms DELETE. Neither path may invent a strike or notice.
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+      expect(s.effects.filter((effect) => effect.method === 'post')).toHaveLength(0);
+      expect((await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).status).toBe(
+        'PROCESSED',
+      );
+      const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { kind: 'EXECUTION', webhookEventId: id },
+      });
+      expect(claim).toMatchObject({
+        status: 'COMPLETED',
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+      await s.moderation.processWebhookEvent(id);
+      expect(handler).toHaveBeenCalledTimes(1);
+      const nextId = await s.ingest({
+        chatId: chatId!,
+        messageId: `legacy-next-${randomUUID()}`,
+        botId: s.bots[0]!.id,
+        at: at + 1,
+        text: 'Next event',
+      });
+      await s.drain();
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status,
+      ).toBe('PROCESSED');
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(
+        outcome === 'peer' ? 1 : 0,
+      );
+    },
+  );
+
   it('records one strike and warning when the queue worker finishes the own DELETE before its inline caller', async () => {
     const s = await fixture(9);
     const [chatId] = await s.seedCatalog(1, { messageLimitsWarnEnabled: true });
@@ -1191,9 +1260,16 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     },
   );
 
-  it.each(['missing', 'joined', 'disabled', 'expired'] as const)(
-    'defers a subscription source timeout to durable guarded actions: %s',
-    async (outcome) => {
+  it.each(
+    (['source', 'membership'] as const).flatMap((boundary) =>
+      (['missing', 'joined', 'disabled', 'expired'] as const).map((outcome) => ({
+        boundary,
+        outcome,
+      })),
+    ),
+  )(
+    'defers a subscription $boundary outage to durable guarded actions: $outcome',
+    async ({ boundary, outcome }) => {
       const s = await fixture();
       const [chatId, targetId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
       await s.prisma.chatSettings.update({
@@ -1208,11 +1284,23 @@ describeStores('native current-rule authorization across mirrored bot delivery',
         },
       });
       let missing = true;
+      let sourceReads = 0;
+      let unavailable = true;
+      const timeout = Object.assign(new Error('Fixture read timed out'), {
+        code: 'ECONNABORTED',
+        config: { method: 'get', url: '/messages' },
+      });
       jest
         .spyOn(s.membership, 'getMembershipResolution')
-        .mockImplementation(async () => ({ membership: !missing, fresh: true }));
+        .mockImplementation(async () =>
+          boundary === 'membership' && unavailable && sourceReads >= 2
+            ? { membership: null, fresh: false }
+            : { membership: !missing, fresh: true },
+        );
       const getMembers = s.max.getChatMembersAccess.bind(s.max);
       jest.spyOn(s.max, 'getChatMembersAccess').mockImplementation(async (...args) => {
+        if (boundary === 'membership' && unavailable && sourceReads >= 2 && args[0] === targetId)
+          throw timeout;
         const members = await getMembers(...args);
         if (args[0] === targetId && missing) members.delete('fixture-user');
         return members;
@@ -1225,19 +1313,10 @@ describeStores('native current-rule authorization across mirrored bot delivery',
         Object.assign(s.max, { dispatchEnabled: true, actionQueue });
         await s.deleteQueue.pause();
         const getSource = s.max.getExactMessageRow.bind(s.max);
-        const timeout = Object.assign(new Error('Fixture source GET timed out'), {
-          code: 'ECONNABORTED',
-          config: { method: 'get', url: '/messages' },
-        });
-        let unavailable = false;
-        let first = true;
+
         jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
-          if (first) {
-            first = false;
-            unavailable = true;
-            return getSource(...args);
-          }
-          if (unavailable) throw timeout;
+          sourceReads += 1;
+          if (boundary === 'source' && sourceReads >= 2 && unavailable) throw timeout;
           return getSource(...args);
         });
         const handler = jest.spyOn(s.moderation, 'handleUpdate');
@@ -1288,7 +1367,7 @@ describeStores('native current-rule authorization across mirrored bot delivery',
           remoteDeleteSucceededAt: null,
         });
         expect(intent.retryUntilAt.getTime()).toBe(at + 300000);
-        // The independent executor must fail before POST while the GET is still unavailable.
+        // FLAG: The independent executor must refuse POST while source or membership is unknown.
         await expect((s.max as any).executeImmediateActionJob(queued!.data)).rejects.toBe(timeout);
         expect(s.effects).toEqual([]);
         for (const id of ids) await s.moderation.processWebhookEvent(id);
