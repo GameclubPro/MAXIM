@@ -27,6 +27,9 @@
 
 ## Validation And Prisma
 
+- Queue/notice changes must follow the [latency prevention regression matrix](../../docs/operations/runbooks/webhook-latency-prevention.md). Receipt/payload-only hot-path updates retain single-statement CAS/status and JSON no-op guards; multi-step invariants retain transactions. SQL page limits must precede expensive eligibility probes and preserve the raw cursor; verify retained-history/skew plans with real stores.
+- A persisted subscription notice/album handoff may finish without dispatch only for the exact typed rejection from its own final `beforeSend` callback. Source GET 404 is not deletion proof; retain persisted feature/violation evidence and write no delivered coverage. Source 503, member GET 404, lease loss, attempted/ambiguous sends and post-authorization errors remain fenced. Run both `required-subscription-notice-recovery.spec.ts` and native `webhook-multibot-moderation-guards-fullpath.spec.ts`; require next same-chat progress and no started-handler replay.
+
 - Explicit bulk abandonment uses permanent `CANCELLED` receipts and exact semantic/message/child tombstones, preserving uncertain claims. Only the stopped-fleet host writer creates an operation; runtime may project late copies after its seal. Never reset cancelled receipts or treat them as successful executions. See `docs/operations/runbooks/webhook-backlog-cancellation.md`.
 
 - Focused validation: `npm run check:api`, `npm run check:prisma`, or a targeted `npm test --workspace @maxim/api -- <spec-or-pattern>` while iterating.

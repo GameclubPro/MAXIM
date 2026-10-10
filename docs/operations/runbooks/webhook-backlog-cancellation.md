@@ -10,6 +10,13 @@ The shared API release must include `WebhookStatus.CANCELLED`, the cancellation 
 the mandatory source/child readers. Deploy all fourteen roles and both native auxiliaries first.
 Both rollback paths enforce the reader floor after this release. Never clear Redis wholesale.
 
+Before changing this protocol, read the [latency prevention checklist and regression matrix](webhook-latency-prevention.md).
+The [10 October review](../incidents/2026-10-10-webhook-latency-recovery.md) records the terminal-
+history scan, JSONB snapshot incompatibility and restart-inventory race. Missing Docker objects
+require re-attestation through the identical request; do not infer that an unknown object was
+owned or change the journal to pass. Historical direct-host emergency exceptions do not waive
+the normal connector's exact-SHA CI gate.
+
 Create a private mode-0600 JSON request with these four fields:
 
 ```json
@@ -78,6 +85,11 @@ Then sample fresh ingress windows including still-pending receipts, oldest fresh
 selection/preparation waits and execution outcomes. Finalize an interrupted release only after
 the existing strict smokes pass. New backlog requires diagnosis; do not repeatedly move the
 cutoff to hide a runtime fault.
+
+Receipt-created measurement windows must have ended before observation. Include all statuses,
+pending ages, cap/truncation and excluded-clock counts alongside completed-only percentiles;
+an empty or future cohort proves nothing. Apply the sustained acceptance window in
+[bot recovery](bot-reliability-recovery.md#capacity-and-acceptance) after fresh progress returns.
 
 Local validation uses real isolated stores:
 

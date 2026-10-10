@@ -133,6 +133,9 @@
 
 ## Required Smokes
 
+- Queue recovery follows the [latency prevention checklist](../docs/operations/runbooks/webhook-latency-prevention.md). An interrupted cancellation keeps the exact request UUID/cutoff/source/image and journal; resume it unchanged. A later operation requires COMPLETE plus the controller's private content-addressed journal archive. Retain lossless BullMQ snapshot encoding and treat disappearing Docker objects as failed inventory proof, never inferred ownership.
+- Cancellation COMPLETE and a running fleet do not prove latency recovery: require closed fresh receipt cohorts with all statuses, pending ages, cap/clock exclusions and separate action outcomes, then the sustained recovery window. Do not repeat a converged deployment to clear backlog or finalize bookkeeping. Use guarded exact-SHA delivery/finalization; incident-specific direct-host emergency exceptions do not become routine commands or standing bypass permission.
+
 - `vps-connect.sh cancel-webhook-backlog <private-request.json>` cancels pre-cutoff processing under one stopped-fleet window after deploying cancellation readers to every API role. Resume failures with the identical request; its durable journal fences ordinary mutations. Preserve publication schedules, original receipts and ambiguous claims. See `docs/operations/runbooks/webhook-backlog-cancellation.md`.
 
 - Message retention runs only in `api-message-retention`, with a separate queue, two-connection pool, and CPU/memory limits. Keep `MESSAGE_RETENTION_MODE=off` until the capacity and canary gates in `docs/operations/runbooks/message-retention-rollout.md` pass; all retention reads/deletes share the fleet-wide `message_retention` source budget. Both API rollback paths must preserve the retention guard and critical-sweeper exclusion.

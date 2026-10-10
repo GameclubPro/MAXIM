@@ -41,6 +41,12 @@ filtered role logs without reconciling webhooks or sending bot messages.
 
 ## Queue Backlog Or Ready Failure
 
+Before a correction, read the [latency prevention checklist and regression matrix](operations/runbooks/webhook-latency-prevention.md).
+The [10 October recovery review](operations/incidents/2026-10-10-webhook-latency-recovery.md)
+distinguishes preparation overhead, execution handoff failures and cancellation-tool defects.
+Use the affected regression rows; a focused notice-name test pattern alone misses the native
+full-path suite. Never remove uncertainty/order fences or clear Redis to repair SQL ordering.
+
 1. Read the local ready snapshots and inspect `checks.queueLag`, dependency state, and per-bot lag:
 
    ```bash
@@ -141,6 +147,13 @@ filtered role logs without reconciling webhooks or sending bot messages.
 
 See the [3 October 2026 queue review](operations/incidents/2026-10-03-queue-backlog.md) for the
 confirmed coupled defects and the limits of their measured attribution.
+
+Accept only closed receipt-created cohorts (`from < until <= observedAt`), with total/status
+counts including pending and failed work, sample caps/gaps and invalid-clock exclusions.
+Completed-only latency and MAX action outcomes are separate evidence. An empty/future window,
+cancellation COMPLETE or startup slot saturation cannot prove recovery or justify more capacity.
+The [sustained recovery requirement](operations/runbooks/bot-reliability-recovery.md#capacity-and-acceptance)
+still applies after short samples improve.
 
 ## API Container Restart Or Failed Rollout
 

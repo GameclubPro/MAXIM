@@ -2,6 +2,11 @@
 
 ## Diagnose Before Retrying
 
+For webhook selection, execution handoff or backlog changes, first use the
+[latency prevention checklist and regression matrix](webhook-latency-prevention.md).
+Its [incident review](../incidents/2026-10-10-webhook-latency-recovery.md) separates reproduced
+causes from recovery-command success and records the limits of short healthy samples.
+
 Use the routine bounded commands:
 
 ```bash
