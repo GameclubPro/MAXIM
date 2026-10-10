@@ -289,3 +289,12 @@ The plan fixture now analyzes its replaced disposable table before measuring, as
 retained-history cases already do. The 260-row bound remains, and exact body accesses additionally
 require primary-key probes. This changes only test
 setup and assertions; no production planner settings, query budgets or runtime were changed.
+
+Analyzing the tiny fixture alone did not stabilize the hosted planner: the `9e1dd1c3`
+CI again passed 1,224 cases but chose a sequential scan in this plan test. The fixture
+now measures the same unchanged query with 50,000 terminal historical receipts, analyzes
+that representative relation and rolls back its own history before continuing admission
+assertions. It retains the index-only/index-scan requirement, exact primary-key body probe,
+260-row maximum and all independent-bot/scope-overflow assertions. No planner switches are
+forced. The full focused native suite passed 37 cases with no skips; production recovery
+still awaits successful release checks and actual rollout.

@@ -752,13 +752,35 @@ native('fleet admission isolation from one unknown ordered scope', () => {
         after: null,
         retained: new Map(),
       };
-      // FLAG: This shared disposable table was replaced by the fixture above. Own its
-      // planner statistics, just as the retained-history plan cases do; stale estimates
-      // from another suite can select a full sorted scan for this 1,200-row fixture.
-      await prisma.$executeRaw`ANALYZE webhook_events`;
-      const planRows = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
-        Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${internal.deferredScopePageQuery(planState)}`,
-      );
+      // FLAG: A tiny emptied table may legitimately favor a sequential scan. Measure
+      // the production index contract against retained history with owned statistics.
+      // Roll back only this local plan fixture; the live admission rows stay unchanged.
+      const historyPrefix = `scope-plan-history:${randomUUID()}:`;
+      const fixtureRollback = new Error('Discard local retained-history plan fixture');
+      let planRows: Array<{ 'QUERY PLAN': unknown }> = [];
+      try {
+        await prisma.$transaction(
+          async (tx) => {
+            await tx.$executeRaw`
+              INSERT INTO webhook_events
+                (id, dedup_key, status, raw_payload, normalized_payload, created_at, processed_at)
+              SELECT ${historyPrefix} || n, ${historyPrefix} || n, 'PROCESSED', '{}', '{}',
+                '2025-01-01'::timestamp + n * interval '1 second',
+                '2025-01-02'::timestamp
+              FROM generate_series(1, 50000) n`;
+            await tx.$executeRaw`ANALYZE webhook_events`;
+            planRows = await tx.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+              Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${internal.deferredScopePageQuery(planState)}`,
+            );
+            throw fixtureRollback;
+          },
+          { timeout: 20_000 },
+        );
+      } catch (error) {
+        if (error !== fixtureRollback) throw error;
+      } finally {
+        await prisma.$executeRaw`ANALYZE webhook_events`;
+      }
       const accesses: Record<string, unknown>[] = [];
       const visit = (value: unknown) => {
         if (Array.isArray(value)) for (const item of value) visit(item);
