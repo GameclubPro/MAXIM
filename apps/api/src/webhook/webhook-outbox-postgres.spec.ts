@@ -1013,10 +1013,15 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     expect(probes).toHaveLength(2);
     expect(
       probes.every(
-        (node) => Number(node['Actual Loops']) <= 200 && Number(node['Actual Rows']) <= 1,
+        (node) =>
+          Number(node['Actual Loops']) <= 200 &&
+          Number(node['Actual Rows']) + Number(node['Rows Removed by Filter'] ?? 0) <= 1 &&
+          Number(node['Rows Removed by Index Recheck'] ?? 0) === 0,
       ),
     ).toBe(true);
-    expect(probes.map((node) => node['Index Name'])).toEqual(
+    // FLAG: A bitmap heap probe carries its unique index in a child plan. Require
+    // the same exact indexes and bounded rows without depending on that placement.
+    expect(collectExplainNodes(probes).map((node) => node['Index Name'])).toEqual(
       expect.arrayContaining(['webhook_events_pkey', 'webhook_execution_claims_kind_semantic_key']),
     );
     expect(queue.add).not.toHaveBeenCalled();

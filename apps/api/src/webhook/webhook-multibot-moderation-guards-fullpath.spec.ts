@@ -1013,6 +1013,148 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     },
   );
 
+  it.each([
+    'still-missing',
+    'membership-restored',
+    'policy-disabled',
+    'queue-unavailable',
+  ] as const)(
+    'hands off unavailable post-notice membership durably and resumes only DELETE when %s',
+    async (outcome) => {
+      const s = await fixture();
+      const [chatId, targetId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
+      await s.prisma.chatSettings.update({
+        where: { chatId: chatId! },
+        data: {
+          requiredSubscriptionEnabled: true,
+          requiredSubscriptionChannelIds: [targetId!],
+          requiredSubscriptionWarnEnabled: false,
+          requiredSubscriptionMuteEnabled: false,
+          requiredSubscriptionBanEnabled: false,
+          deleteBotMessagesEnabled: false,
+        },
+      });
+      let noticeDelivered = false;
+      let unavailable = true;
+      let membership = false;
+      jest
+        .spyOn(s.membership, 'getMembershipResolution')
+        .mockImplementation(async () =>
+          noticeDelivered && unavailable
+            ? { membership: null, fresh: false }
+            : { membership, fresh: true },
+        );
+      const getMembers = s.max.getChatMembersAccess.bind(s.max);
+      jest.spyOn(s.max, 'getChatMembersAccess').mockImplementation(async (...args) => {
+        const members = await getMembers(...args);
+        if (args[0] === targetId && !membership) members.delete('fixture-user');
+        return members;
+      });
+      const sendMessage = s.max.sendMessage.bind(s.max);
+      jest.spyOn(s.max, 'sendMessage').mockImplementation(async (...args) => {
+        const result = await sendMessage(...args);
+        if (args[0] === chatId) noticeDelivered = true;
+        return result;
+      });
+      // FLAG: Hold the real DELETE queue, not webhook execution. Its exact durable
+      // obligation must outlive the handler and must not block the next same-chat event.
+      await s.deleteQueue.pause();
+      const unavailableQueue =
+        outcome === 'queue-unavailable'
+          ? jest
+              .spyOn(s.deleteQueue, 'add')
+              .mockRejectedValue(new Error('Fixture queue unavailable'))
+          : undefined;
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const messageId = `subscription-membership-unavailable-${randomUUID()}`;
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({ chatId: chatId!, messageId, botId: bot.id, at, text: 'Subscription fixture' }),
+        ),
+      );
+      const waitForReceipts = async (receiptIds: string[]) => {
+        const until = Date.now() + 10_000;
+        while (Date.now() < until) {
+          await s.pumpOnce();
+          const pending = await s.prisma.webhookEvent.count({
+            where: { id: { in: receiptIds }, status: { notIn: ['PROCESSED', 'DUPLICATE'] } },
+          });
+          if (pending === 0) return;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        throw new Error('Subscription handoff blocked canonical receipt settlement');
+      };
+      await waitForReceipts(ids);
+      expect(noticeDelivered).toBe(true);
+      expect(s.failures).toEqual([]);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(s.effects).toEqual([expect.objectContaining({ method: 'post', path: '/messages' })]);
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+        include: { reasons: true },
+      });
+      expect(intent).toMatchObject({
+        status: 'PENDING',
+        attemptCount: 0,
+        deleteDispatchStartedAt: null,
+        remoteDeleteSucceededAt: null,
+        reasons: [expect.objectContaining({ ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE' })],
+      });
+      expect(intent.retryUntilAt.getTime()).toBe(at + 300_000);
+      const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { kind: 'EXECUTION', webhookEventId: { in: ids } },
+      });
+      expect(claim).toMatchObject({
+        status: 'COMPLETED',
+        leaseToken: null,
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(s.effects).toHaveLength(1);
+
+      unavailable = false;
+      membership = true;
+      const nextId = await s.ingest({
+        chatId: chatId!,
+        messageId: `subscription-following-handoff-${randomUUID()}`,
+        botId: s.bots[0]!.id,
+        at: at + 1,
+        text: 'Next event while the first DELETE remains queued',
+      });
+      await waitForReceipts([nextId]);
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(s.effects).toHaveLength(1);
+      const shouldDelete = outcome === 'still-missing' || outcome === 'queue-unavailable';
+      if (shouldDelete) membership = false;
+      if (outcome === 'policy-disabled') {
+        membership = false;
+        await s.prisma.chatSettings.update({
+          where: { chatId: chatId! },
+          data: { requiredSubscriptionEnabled: false },
+        });
+      }
+      await s.deleteQueue.resume();
+      if (unavailableQueue) {
+        unavailableQueue.mockRestore();
+        await s.intents.sweepDueIntents();
+      }
+      await s.drain();
+      const settled = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { id: intent.id },
+      });
+      expect(settled.status).toBe(shouldDelete ? 'SUCCEEDED' : 'FAILED_TERMINAL');
+      expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(
+        shouldDelete ? 1 : 0,
+      );
+      expect(s.effects.filter((effect) => effect.method === 'post')).toHaveLength(1);
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
   it.each([404, 503])(
     'preserves persisted subscription evidence after a later source GET %s',
     async (status) => {

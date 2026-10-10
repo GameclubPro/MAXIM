@@ -27,6 +27,15 @@ export class RequiredSubscriptionExecutionRejectedError extends Error {
   readonly code = 'required_subscription_no_longer_authorized';
 }
 
+// FLAG: This proves unavailable membership evidence, never membership or permission
+// to delete. Only a committed guarded DELETE obligation may outlive its caller.
+export class RequiredSubscriptionMembershipUnavailableError extends Error {
+  constructor() {
+    super('Required subscription fresh membership unavailable');
+    this.name = 'RequiredSubscriptionMembershipUnavailableError';
+  }
+}
+
 // FLAG: Initial unavailable evidence is distinct from revoked execution authority or absence.
 export class RequiredSubscriptionInitialSourceUnavailableError extends Error {
   readonly code = 'required_subscription_initial_source_unavailable';
@@ -239,7 +248,7 @@ export class RequiredSubscriptionExecutionGuardService {
               'terminal'
             )
               this.reject();
-            throw new Error('Required subscription fresh membership unavailable');
+            throw new RequiredSubscriptionMembershipUnavailableError();
           }
           return result.membership;
         }),

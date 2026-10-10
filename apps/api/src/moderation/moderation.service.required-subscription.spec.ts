@@ -22,6 +22,7 @@ import {
 import {
   RequiredSubscriptionExecutionRejectedError,
   RequiredSubscriptionInitialSourceUnavailableError,
+  RequiredSubscriptionMembershipUnavailableError,
 } from './required-subscription-execution-guard.service';
 
 // FLAG: This suite verifies orchestration with an explicit successful deletion boundary.
@@ -1637,6 +1638,7 @@ describe('ModerationService', () => {
           }),
         ],
         ['transient lookup', new Error('Required subscription fresh membership unavailable')],
+        ['initial membership outage', new RequiredSubscriptionMembershipUnavailableError()],
       ])('preserves %s as a failure', async (_label, error) => {
         const f = fixture();
         f.guard.authorize.mockRejectedValue(error);
@@ -1683,6 +1685,61 @@ describe('ModerationService', () => {
               ([args]) => args?.data?.action === SanctionAction.DELETE_MESSAGE,
             ),
           ).toBe(false);
+        },
+      );
+
+      it.each([
+        'committed',
+        'off',
+        'observed',
+        'missing-id',
+        'ambiguous',
+        'sql-failed',
+        'lease-lost',
+      ])(
+        'requires a committed guarded DELETE handoff after membership outage: %s',
+        async (state) => {
+          const f = fixture();
+          const unavailable = new RequiredSubscriptionMembershipUnavailableError();
+          const storageError = new Error('Fixture DELETE persistence unavailable');
+          const ensureIntent = jest.fn().mockResolvedValue({
+            intentId: state === 'missing-id' ? null : 'fixture-delete',
+            rollout: state === 'off' ? 'off' : state === 'observed' ? 'observed' : 'execute',
+            status: state === 'ambiguous' ? 'AMBIGUOUS' : 'PENDING',
+          });
+          if (state === 'sql-failed') ensureIntent.mockRejectedValue(storageError);
+          Object.assign(f.service, { moderationDeleteIntentService: { ensureIntent } });
+          f.guard.authorize
+            .mockReset()
+            .mockResolvedValueOnce({ reasonKeys: ['REQUIRED_SUBSCRIPTION:message-delete'] })
+            .mockImplementation(async () => {
+              expect(f.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+              if (state === 'lease-lost') f.redisCounter.renewLock.mockResolvedValue(false);
+              throw unavailable;
+            });
+          const result = f.service.handleUpdate(createUpdate());
+          if (state === 'committed') await expect(result).resolves.toBeUndefined();
+          else if (state === 'sql-failed') await expect(result).rejects.toBe(storageError);
+          else if (state === 'lease-lost') await expect(result).rejects.toThrow('lease was lost');
+          else await expect(result).rejects.toBe(unavailable);
+          expect(ensureIntent).toHaveBeenCalledTimes(state === 'lease-lost' ? 0 : 1);
+          if (state !== 'lease-lost')
+            expect(ensureIntent).toHaveBeenCalledWith(
+              expect.objectContaining({
+                chatId: 'chat-1',
+                messageId: 'msg-1',
+                subjectUserId: 'user-1',
+                ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE',
+                reasonKey: 'REQUIRED_SUBSCRIPTION:message-delete',
+                retryUntilAt: expect.any(Date),
+              }),
+            );
+          expect(f.executeDelete).not.toHaveBeenCalled();
+          expect(f.maxClient.deleteMessage).not.toHaveBeenCalled();
+          expect(f.maxClient.banMember).not.toHaveBeenCalled();
+          expect(f.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+          expect(f.activeMute).not.toHaveBeenCalled();
+          expect(f.ruleEngine.detect).not.toHaveBeenCalled();
         },
       );
 

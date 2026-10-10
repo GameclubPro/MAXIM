@@ -39,6 +39,7 @@ import {
   RequiredSubscriptionExecutionGuardService,
   RequiredSubscriptionExecutionRejectedError,
   RequiredSubscriptionInitialSourceUnavailableError,
+  RequiredSubscriptionMembershipUnavailableError,
 } from './required-subscription-execution-guard.service';
 import { MESSAGE_LIMITS_STATEFUL_RULES } from './message-limits-delete-guard.service';
 import {
@@ -10252,12 +10253,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           params.hotPathProfile,
           'required-subscription.delete-authority',
         );
-        // FLAG: Prior notice handoff or coverage does not retain revoked delete authority.
-        // Only this pre-intent policy rejection ends deletion; later failures keep their fences.
+        // FLAG: Prior notice handoff or coverage does not retain delete authority.
+        // A membership outage may hand off only this exact guarded DELETE after SQL
+        // commits it. Do not replay the notice/sanction or claim deletion success.
         try {
           await assertRequiredSubscriptionCurrent();
         } catch (error: unknown) {
           if (error instanceof RequiredSubscriptionExecutionRejectedError) return;
+          if (error instanceof RequiredSubscriptionMembershipUnavailableError) {
+            await assertNoticeLeaseOwned();
+            const handoff = await this.moderationDeleteIntentService?.ensureIntent(
+              this.prepareModerationDeleteIntentInput(deleteIntent),
+            );
+            if (
+              handoff?.rollout === 'execute' &&
+              handoff.intentId &&
+              handoff.status !== null &&
+              handoff.status !== 'OBSERVED' &&
+              handoff.status !== 'AMBIGUOUS'
+            )
+              return;
+          }
           throw error;
         }
         await this.ensureModerationDeleteIntent(deleteIntent);
