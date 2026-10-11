@@ -1603,7 +1603,7 @@ test('TERM to only the top-level monitor PID reaps every worker and ephemeral lo
   );
   writeFileSync(
     join(libraryDirectory, 'deploy-disk-capacity.sh'),
-    'MAXIM_API_BUILD_HARD_MIN_FREE_BYTES=21474836480\n',
+    'MAXIM_API_BUILD_HARD_MIN_FREE_BYTES=10737418240\n',
   );
   writeFileSync(join(scriptsDirectory, 'monitor-capacity-probe.cjs'), '// fixture\n');
   writeFileSync(join(scriptsDirectory, 'monitor-capacity-archive.cjs'), '// fixture\n');
