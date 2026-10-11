@@ -139,6 +139,128 @@ selected BullMQ jobs and retained zero locked jobs. The host journal reached
 COMPLETE; original receipts, claims, error/uncertainty evidence and publication
 schedules were preserved. Cancellation is abandonment, not successful processing.
 
-The normal c727 shared-image deployment then passed its unchanged disk preflight
-with 21,741,363,200 bytes available and selected every API role. Release identity and
-post-release acceptance will be recorded after strict smokes and fresh observation.
+The normal c727 shared-image deployment passed its unchanged disk preflight with
+21,741,363,200 bytes available and recreated all fourteen API roles and both native
+auxiliaries. It reused the verified image and found no pending Prisma migrations.
+The rollout's queued ingress took several minutes to drain: a bounded RECEIVED
+sample fell from more than 2,000 to 1,650, then raw lag fell from 334 to 196 seconds
+and below three seconds. No second cancellation, capacity increase or readiness
+timeout extension was used. Strict API/native smokes passed and committed release
+`release-20261011T111904Z-c72721574284`, image
+`sha256:581929a3e6b4b3747d758b9fc4960fbb1358203d224bc6cdde820342b1b5f0c4`.
+Static components retained their prior image identities.
+
+## Post-release observations
+
+The first continuous observation began at 11:31:08.370 UTC. It failed at
+11:42:07.746: raw oldest age reached 13.922 seconds while operational lag was
+2.464 seconds and the readiness HTTP response remained 200. This is a failed
+strict ten-second window, not sustained acceptance. A fresh read at 11:42:48
+showed raw lag below one second and normal automatic mode. The failed window
+is retained separately from the subsequent observation.
+
+The second observation passed from 11:43:56.324 to 11:59:01.170 UTC: 181 samples,
+904.846 seconds elapsed, no missing samples and maximum raw lag 7.85 seconds.
+This confirms that particular continuous window below ten seconds; it does not
+erase the earlier failed window or classify receipt outcomes by itself.
+
+Six nonempty, complete closed receipt-created samples from 11:31:08.858 to
+11:45:24.178 UTC contained 2,206 PROCESSED, 597 DUPLICATE and 29 FAILED receipts,
+with zero RECEIVED, QUEUED, NO_REPLAY_HELD or CANCELLED rows and no invalid clocks.
+Processed-only p95 ranged from 968.8 to 3,065 ms across these individual samples;
+this is not a pooled percentile. All 29 failures occurred in the first two samples;
+the following four had none. Their exact historical causes are not established by
+the available schema-v1 cohort report. The bounded cohort report was extended in
+`d4c20d6e2cad9883b8fa238a7277f0a450158c20` to expose fixed saved-error categories and
+independent retry/quarantine/deadline counts without raw errors or identifiers.
+Five focused checks passed, including real PostgreSQL with retained history and
+512-row saturation in both PROCESSED and FAILED samples. This is diagnostic tooling,
+not another API runtime change or replay authority.
+
+Exact diagnostic-source Required (run `38136624488`) and CodeQL (run
+`38136624441`) passed. The clean VPS source was fast-forwarded under the shared
+deploy lock to d4c20d6e without recreating the c727 runtime. The reviewed plain
+plan retained the status/creation index and bounded primary-key metadata probes.
+The schema-v2 closed cohort at 12:06:46.825–12:07:16.825 UTC was complete and
+nonempty: 417 PROCESSED, 256 DUPLICATE and zero rows in every other status, with
+no invalid clocks and processed-only p95 1,386 ms. Its empty failure-family result
+does not retrospectively classify the earlier 29 failures.
+
+A separate bounded log read of 11:43:09–11:53:09 UTC found one preparation warning
+without input truncation. It recorded attempt one and a scheduled two-second
+retry, with no classified error code. The exact c727 image places its frame at
+the transaction used to settle a prepared canonical mirror. The frame identifies
+the operation, not the underlying database failure or that receipt's eventual
+outcome; it does not authorize a business-handler replay.
+
+All six moderation identities/subscriptions and Publisher's subscription/type
+coverage passed again at 11:31 UTC; the 11:46 load snapshot showed activity for all
+seven bots. The canonical mini app and its assets passed the HTTP smoke. The
+11:40:48–11:46:58 capped moderation sample included 82 remote-confirmed mute
+enforcement deletions, 46 administrator mute installations and five bot mute
+installations. It covers only the latest 512 observations, not every rule/attempt.
+
+Publisher logged 25 persisted delivery receipts during 11:30:54–11:40:54: eight
+SLOTS, fifteen RECURRENCE and two NOW. The same window also contained missed-window
+markers and one blocked deferral; these are not necessarily distinct publications.
+No expired or uncertain publication was replayed. The sampled comment failures
+included the same pre-dispatch setup/readiness refusal; protected action cleanup
+continued to reject ambiguous message presence. Access/policy guards remained intact.
+
+Read OCR counters from `api-media-analysis`: its native behavior scope differs from
+the generic admin process. The admin-scope zero deltas collected initially do not
+measure the media worker. In the verified media scope, 11:44:00–11:49:15 had nineteen
+started and nineteen terminal analyses: eighteen COMPLETE_KEEP and one
+TECHNICAL_INCOMPLETE with an OCR timeout; ten image stop-list checks completed
+without a match. These are actual counter deltas, not historical totals or proof
+that every image is analyzable. Native timeout containment remains mandatory.
+
+The repeated duplicate catalog completed its capped settings sample and recent
+moderation sample, then its delete-intent section hit the unchanged statement
+timeout. The plain plan uses bounded per-status index reads and indexed reason
+lookups; no scan widening, timeout increase or partial-as-complete claim was used.
+No duplicate rule was observed in the complete one-hour moderation sample. Modes
+that are disabled/shadow or received no suitable traffic have configuration/test
+coverage only; this audit does not claim live execution of every product feature.
+
+## Handoff readback
+
+At 12:07:46 UTC, all fourteen API roles and both native auxiliaries were running
+the manifest's exact c727 image. Both readiness endpoints returned 200 with
+PostgreSQL/Redis available, normal automatic mode and raw lag below 3.4 seconds.
+API and photo-sandbox restart counts remained zero. OCR had two native-recognition
+timeout recycles since 11:31:08; its bounded lifecycle log classified both, without
+truncation or unknown lifecycle events. It was healthy with no OOM. These mandatory
+containment restarts and incomplete image analyses are not successful recognition.
+
+Media-worker counters from 11:44:00.384 to 12:10:58.352 UTC retained the same metric
+scope and showed 183 logical starts and 177 terminal outcomes: 171 COMPLETE_KEEP,
+two TECHNICAL_INCOMPLETE (OCR timeout), three LEGITIMATE_SKIP (source unavailable)
+and one EXPIRED (governor pressure). Image-text stop-list analysis completed 111
+times without a match. All reported counter deltas were nonnegative. These are
+interval deltas, not a joined closed cohort; outstanding work and cross-boundary
+completions prevent interpreting their difference as a count of lost jobs.
+
+The 12:09:33 census covered all 54 queue namespaces. Webhook queues had no fresh
+failures in the preceding five minutes and only current active/prioritized work.
+Night-mode and VK publication queues retained 5,112 and 2,282 future delayed jobs,
+respectively, with none due then. OCR had two waiting, one active and four delayed
+jobs, three already due; this instantaneous count alone does not establish a stall.
+Roster had 42 prioritized and one active job, with no new activation failures.
+Publisher refresh had 1,029 prioritized and two active jobs; its queue count is
+not an obligation-deadline or delivery-success measurement.
+
+The independently bounded 12:04:16–12:09:16 error sample covered 27 queues without
+truncation. It found two Publisher-refresh HTTP 404s, three interactive-action HTTP
+404s and seven guarded auto-delete refusals for ambiguous exact message presence.
+No fresh webhook or roster failure was observed. The adjacent census uses a later
+window, so its fresh-failure counts are not expected to match this sample exactly.
+The ambiguous-action guards and future publication schedules were preserved.
+
+Docker-filesystem free space at 12:07:46 was 21,569,048,576 bytes, only 94,212,096
+bytes above the unchanged 20 GiB deployment reserve. Reviewed image reclaim and
+closed-log archival freed 1,279,823,872 bytes net in their individual readbacks,
+but ongoing growth and the preloaded image consumed part of that space. This is
+not a durable capacity solution or assurance that a later rollout will pass its
+fresh disk preflight. Shared caches, protected rollback history and backups were
+not deleted. The temporary recovery checkout was archived after successful use.
