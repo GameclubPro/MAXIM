@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Queue, type ConnectionOptions } from 'bullmq';
-import type { MaxActionJob } from '../max/max-client.service';
+import { MaxApiInternalRateLimitError, type MaxActionJob } from '../max/max-client.service';
 import { Prisma } from '../prisma/prisma-client';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
 import {
@@ -1288,6 +1288,8 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     'membership-unavailable',
     'source-timeout',
     'author-rate-limit',
+    'author-local-limit',
+    'source-local-limit',
   ] as const)(
     'completes one canonical handler and its mirrors for initial subscription %s',
     async (reason) => {
@@ -1311,6 +1313,18 @@ describeStores('native current-rule authorization across mirrored bot delivery',
             config: { method: 'get' },
           }),
         );
+      if (reason === 'author-local-limit')
+        jest
+          .spyOn(s.max, 'getChatMemberAccess')
+          .mockRejectedValueOnce(
+            new MaxApiInternalRateLimitError('Initial author local limiter', 250),
+          );
+      if (reason === 'source-local-limit')
+        jest
+          .spyOn(s.max, 'getExactMessageRow')
+          .mockRejectedValueOnce(
+            new MaxApiInternalRateLimitError('Initial source local limiter', 250),
+          );
       if (reason === 'source-timeout')
         jest.spyOn(s.max, 'getExactMessageRow').mockRejectedValueOnce(
           Object.assign(new Error('Initial source GET timeout'), {
@@ -1564,10 +1578,14 @@ describeStores('native current-rule authorization across mirrored bot delivery',
   it.each(
     ['still-missing', 'membership-restored', 'policy-disabled', 'queue-unavailable'].flatMap(
       (outcome) =>
-        ['membership', 'source404', 'final-membership', 'author429'].map((failure) => [
-          outcome,
-          failure,
-        ]),
+        [
+          'membership',
+          'source404',
+          'final-membership',
+          'author429',
+          'author-local-limit',
+          'source-local-limit',
+        ].map((failure) => [outcome, failure]),
     ),
   )(
     'hands off unavailable post-notice evidence durably and resumes only DELETE when %s %s',
@@ -1613,6 +1631,8 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       });
       const getAuthor = s.max.getChatMemberAccess.bind(s.max);
       jest.spyOn(s.max, 'getChatMemberAccess').mockImplementation(async (...args) => {
+        if (failure === 'author-local-limit' && noticeDelivered && unavailable)
+          throw new MaxApiInternalRateLimitError('Post-notice author local limiter', 250);
         if (failure === 'author429' && noticeDelivered && unavailable)
           throw Object.assign(new Error('Post-notice author GET rate limited'), {
             response: { status: 429 },
@@ -1622,6 +1642,8 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       });
       const getSource = s.max.getExactMessageRow.bind(s.max);
       jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
+        if (failure === 'source-local-limit' && noticeDelivered && unavailable)
+          throw new MaxApiInternalRateLimitError('Post-notice source local limiter', 250);
         if (failure === 'source404' && noticeDelivered && unavailable)
           throw Object.assign(new Error('Fixture post-notice source unavailable'), {
             response: { status: 404, data: {} },
@@ -1674,9 +1696,19 @@ describeStores('native current-rule authorization across mirrored bot delivery',
         reasons: [expect.objectContaining({ ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE' })],
       });
       expect(intent.retryUntilAt.getTime()).toBe(at + 300_000);
-      if (failure === 'final-membership' && outcome === 'still-missing') {
+      if (
+        ['final-membership', 'author-local-limit', 'source-local-limit'].includes(failure!) &&
+        outcome === 'still-missing'
+      ) {
         // FLAG: A worker read outage retains SQL retry authority without reopening the webhook.
-        await expect(s.intents.attemptIntent(intent.id)).rejects.toThrow();
+        if (failure === 'final-membership')
+          await expect(s.intents.attemptIntent(intent.id)).rejects.toThrow();
+        else
+          await expect(s.intents.attemptIntent(intent.id)).resolves.toMatchObject({
+            confirmed: false,
+            kind: 'pending',
+            status: 'RETRYABLE',
+          });
         const deferred = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
           where: { id: intent.id },
         });
@@ -1724,7 +1756,10 @@ describeStores('native current-rule authorization across mirrored bot delivery',
           data: { requiredSubscriptionEnabled: false },
         });
       }
-      if (failure === 'final-membership' && outcome === 'still-missing') {
+      if (
+        ['final-membership', 'author-local-limit', 'source-local-limit'].includes(failure!) &&
+        outcome === 'still-missing'
+      ) {
         const retry = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
           where: { id: intent.id },
         });
@@ -1754,7 +1789,15 @@ describeStores('native current-rule authorization across mirrored bot delivery',
   );
 
   it.each(
-    (['source', 'membership', 'author-rate-limit'] as const).flatMap((boundary) =>
+    (
+      [
+        'source',
+        'membership',
+        'author-rate-limit',
+        'author-local-limit',
+        'source-local-limit',
+      ] as const
+    ).flatMap((boundary) =>
       (['missing', 'joined', 'disabled', 'expired'] as const).map((outcome) => ({
         boundary,
         outcome,
@@ -1779,19 +1822,22 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       let missing = true;
       let sourceReads = 0;
       let unavailable = true;
-      const timeout = Object.assign(new Error('Fixture read unavailable'), {
-        ...(boundary === 'author-rate-limit'
-          ? { response: { status: 429 } }
-          : { code: 'ECONNABORTED' }),
-        config: {
-          method: 'get',
-          url: boundary === 'author-rate-limit' ? `/chats/${chatId}/members` : '/messages',
-        },
-      });
+      const timeout =
+        boundary === 'author-local-limit' || boundary === 'source-local-limit'
+          ? new MaxApiInternalRateLimitError('Fixture local read limiter', 250)
+          : Object.assign(new Error('Fixture read unavailable'), {
+              ...(boundary === 'author-rate-limit'
+                ? { response: { status: 429 } }
+                : { code: 'ECONNABORTED' }),
+              config: {
+                method: 'get',
+                url: boundary === 'author-rate-limit' ? `/chats/${chatId}/members` : '/messages',
+              },
+            });
       const getAuthor = s.max.getChatMemberAccess.bind(s.max);
       jest.spyOn(s.max, 'getChatMemberAccess').mockImplementation(async (...args) => {
         if (
-          boundary === 'author-rate-limit' &&
+          (boundary === 'author-rate-limit' || boundary === 'author-local-limit') &&
           args[0] === chatId &&
           sourceReads >= 1 &&
           unavailable
@@ -1825,7 +1871,12 @@ describeStores('native current-rule authorization across mirrored bot delivery',
 
         jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
           sourceReads += 1;
-          if (boundary === 'source' && sourceReads >= 2 && unavailable) throw timeout;
+          if (
+            (boundary === 'source' || boundary === 'source-local-limit') &&
+            sourceReads >= 2 &&
+            unavailable
+          )
+            throw timeout;
           return getSource(...args);
         });
         const handler = jest.spyOn(s.moderation, 'handleUpdate');

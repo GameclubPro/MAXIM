@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { MaxClientService } from '../max/max-client.service';
+import { MaxApiInternalRateLimitError, MaxClientService } from '../max/max-client.service';
 import { isMaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { fingerprintModerationSettings } from './message-limits-delete-guard.service';
 import {
@@ -117,6 +117,56 @@ describe('required subscription execution authorization', () => {
       expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
     },
   );
+  it.each(['member', 'source'] as const)(
+    'defers only a concrete pre-dispatch %s limiter at allowed scopes',
+    async (boundary) => {
+      const s = fixture();
+      const error = new MaxApiInternalRateLimitError('token rate limit', 250);
+      const read = boundary === 'member' ? s.max.getChatMemberAccess : s.max.getExactMessageRow;
+      read.mockRejectedValue(error);
+      for (const scope of ['initialQualification', 'deleteHandoffQualification'] as const) {
+        await expect(s.service.authorize({ ...s.input, [scope]: true })).rejects.toMatchObject({
+          constructor:
+            boundary === 'member'
+              ? RequiredSubscriptionAuthorAccessUnavailableError
+              : scope === 'initialQualification'
+                ? RequiredSubscriptionInitialSourceUnavailableError
+                : RequiredSubscriptionDeleteSourceUnavailableError,
+          cause: error,
+        });
+      }
+      await expect(s.service.authorize(s.input)).rejects.toBe(error);
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['copied', 'http', 'post', 'send', 'member', 'confirmed', 'ambiguous'] as const)(
+    'retains unsafe local limiter evidence: %s',
+    async (failure) => {
+      let error: unknown = new MaxApiInternalRateLimitError('token rate limit', 250);
+      if (failure === 'copied') error = Object.assign(new Error('token rate limit'), error);
+      if (failure === 'http') Object.assign(error as object, { response: { status: 503 } });
+      if (failure === 'post') Object.assign(error as object, { config: { method: 'post' } });
+      if (failure === 'send') error = markMaxMessageSendAttempted(error);
+      if (failure === 'member') error = markMaxMemberMutationAttempted(error);
+      if (failure === 'confirmed') error = markMaxMemberMutationConfirmed(error);
+      if (failure === 'ambiguous')
+        Object.assign(error as object, { message: 'ambiguous MAX mutation' });
+      for (const boundary of ['member', 'source']) {
+        const s = fixture();
+        const read = boundary === 'member' ? s.max.getChatMemberAccess : s.max.getExactMessageRow;
+        read.mockRejectedValue(error);
+        for (const scope of [
+          { initialQualification: true },
+          { deleteHandoffQualification: true as const },
+          {},
+        ])
+          await expect(s.service.authorize({ ...s.input, ...scope })).rejects.toBe(error);
+        expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it.each([
     '404',
     '403',

@@ -53,8 +53,9 @@ a remote message ID is not proof that a send did not happen.
 
 Webhook backlog age covers all RECEIVED and QUEUED events, independent of the
 configured SLO window. A RECEIVED event that was enqueued previously still counts
-as pending. The service uses two exact-status oldest-row reads against the
-`(status, created_at)` index, matching the readiness backlog definition.
+as pending. The service selects two exact-status heads through the covered
+`(status, created_at, id)` index, then fetches metadata by primary key, matching
+the readiness backlog definition.
 
 Receipt counts and processing/enqueue latency samples still describe the recent
 receipt-created cohort. They are not a completion-time cohort. Old work completed

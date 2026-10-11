@@ -3,7 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS } from '@maxim/contracts';
 import { extractHttpStatusCode } from '../common/http-error.util';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
-import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxApiInternalRateLimitError,
+  MaxClientService,
+} from '../max/max-client.service';
 import { isMaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { wasMaxMemberMutationAttempted } from '../max/max-member-error.util';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
@@ -120,7 +124,7 @@ export class RequiredSubscriptionExecutionGuardService {
               'Required subscription notice source unavailable',
               { cause: error },
             );
-          if (isRequiredSubscriptionSourceReadTransportFailure(error))
+          if (isRequiredSubscriptionSourceReadDeferred(error))
             throw new RequiredSubscriptionNoticeReadDeferredError(
               'Required subscription notice source read deferred',
               { cause: error },
@@ -235,7 +239,7 @@ export class RequiredSubscriptionExecutionGuardService {
       .getChatMemberAccess(params.chatId, userId, options)
       .catch((error: unknown) => {
         // FLAG: Only the initial no-effect qualification or committed DELETE handoff may
-        // outlive this exact author GET 429. Final dispatch still requires fresh access.
+        // outlive this exact author GET limiter refusal. Final dispatch requires fresh access.
         if (
           (params.initialQualification === true || params.deleteHandoffQualification === true) &&
           isRequiredSubscriptionMemberReadRateLimited(error)
@@ -263,14 +267,11 @@ export class RequiredSubscriptionExecutionGuardService {
           throw new RequiredSubscriptionInitialSourceUnavailableError(error);
         throw new RequiredSubscriptionDeleteSourceUnavailableError(error);
       }
-      if (
-        params.initialQualification === true &&
-        isRequiredSubscriptionSourceReadTransportFailure(error)
-      )
+      if (params.initialQualification === true && isRequiredSubscriptionSourceReadDeferred(error))
         throw new RequiredSubscriptionInitialSourceUnavailableError(error);
       if (
         params.deleteHandoffQualification === true &&
-        isRequiredSubscriptionSourceReadTransportFailure(error)
+        isRequiredSubscriptionSourceReadDeferred(error)
       )
         throw new RequiredSubscriptionDeleteSourceUnavailableError(error);
       throw error;
@@ -357,20 +358,34 @@ export class RequiredSubscriptionExecutionGuardService {
 }
 
 // FLAG: Called only around the source author's member GET, never a mutation.
-// Other HTTP statuses, missing/non-GET provenance and attempted effects remain fenced.
+// A typed local limiter refuses before transport; HTTP 429 needs explicit GET provenance.
+// Other HTTP statuses, non-GET provenance and attempted effects remain fenced.
 function isRequiredSubscriptionMemberReadRateLimited(error: unknown): boolean {
   return (
-    extractHttpStatusCode(error) === 429 &&
-    (error as { config?: { method?: unknown } })?.config?.method === 'get' &&
+    (isRequiredSubscriptionLocalReadRateLimited(error) ||
+      (extractHttpStatusCode(error) === 429 &&
+        (error as { config?: { method?: unknown } })?.config?.method === 'get')) &&
     !wasMaxMessageSendAttempted(error) &&
     !wasMaxMemberMutationAttempted(error) &&
     !isMaxMutationOutcomeAmbiguous(error)
   );
 }
 
+// FLAG: Only the concrete pre-dispatch limiter at an exact read boundary qualifies.
+// Copied code/name fields, HTTP responses and conflicting method evidence do not.
+function isRequiredSubscriptionLocalReadRateLimited(error: unknown): boolean {
+  const method = (error as { config?: { method?: unknown } })?.config?.method;
+  return (
+    error instanceof MaxApiInternalRateLimitError &&
+    error.preDispatch === true &&
+    extractHttpStatusCode(error) === null &&
+    (method === undefined || method === 'get')
+  );
+}
+
 // FLAG: Called only around the exact source GET, never around sanctions or sends.
 // HTTP errors, mutation markers and arbitrary failures retain their existing fences.
-function isRequiredSubscriptionSourceReadTransportFailure(error: unknown): boolean {
+function isRequiredSubscriptionSourceReadDeferred(error: unknown): boolean {
   if (
     !error ||
     typeof error !== 'object' ||
@@ -380,6 +395,7 @@ function isRequiredSubscriptionSourceReadTransportFailure(error: unknown): boole
     isMaxMutationOutcomeAmbiguous(error)
   )
     return false;
+  if (isRequiredSubscriptionLocalReadRateLimited(error)) return true;
   const record = error as { code?: unknown; config?: { method?: unknown } };
   return (
     ['ECONNABORTED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ECONNREFUSED'].includes(

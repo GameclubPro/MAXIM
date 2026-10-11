@@ -70,6 +70,9 @@ before editing it; copying these notes does not install a fix or prove the deplo
    guards full-path suites, including following-channel progress and access-loss/hold refusal.
    A source-author member GET with explicit GET provenance and HTTP 429 may use only the
    existing initial no-effect, durable SEND or committed DELETE handoff boundaries above.
+   A concrete local `MaxApiInternalRateLimitError` from that author GET or exact source GET
+   may use the same boundaries only before transport, without an HTTP response, conflicting
+   method or mutation evidence. Copied error code/name fields do not qualify.
    Final workers still require fresh author rights; other HTTP statuses, mutation markers,
    missing GET provenance and non-handoff qualification remain fenced. Run subscription
    guard/notice tests and native moderation guards with real queue persistence.
