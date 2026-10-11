@@ -75,6 +75,7 @@ Commands:
   postgres-audit queue [--explain]
   postgres-audit legacy-order-candidates
   postgres-audit moderation-outcomes [--explain]
+  postgres-audit webhook-cohort [--explain]
   postgres-audit duplicate [--explain]
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
@@ -499,7 +500,7 @@ ERROR
 postgres_audit() {
   local mode="${1:-all}"
 
-  if [[ "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
+  if [[ "$mode" == 'webhook-cohort' || "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
         "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'webhook-source-proof' || "$mode" == 'webhook-retry-proof' || "$mode" == 'legacy-order-window' ||
         "$mode" == 'moderation-outcomes' || "$mode" == 'legacy-semantic-mirrors' ]]; then

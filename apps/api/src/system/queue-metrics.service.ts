@@ -42,6 +42,10 @@ import { ActionHealthService, type ActionHealthSnapshot } from './action-health.
 import { MaxActionLedgerWatchdogService } from './max-action-ledger-watchdog.service';
 import { WebhookDynamicLeaseStatusService } from './webhook-dynamic-lease-status.service';
 import {
+  buildOldestPendingWebhookQuery,
+  type OldestPendingWebhook,
+} from './webhook-oldest-pending';
+import {
   buildWebhookOperationalLagQuery,
   resolveWebhookOperationalLag,
   type WebhookOperationalLagHead,
@@ -714,17 +718,13 @@ export class QueueMetricsService {
     };
   }
 
-  private readOldestWebhookEvent(status: WebhookStatus): Promise<{
-    id: string;
-    createdAt: Date;
-    nextEnqueueAt: Date | null;
-    executionDeadlineAt: Date | null;
-  } | null> {
-    return this.prisma.webhookEvent.findFirst({
-      where: { status },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true, createdAt: true, nextEnqueueAt: true, executionDeadlineAt: true },
-    });
+  private async readOldestWebhookEvent(
+    status: typeof WebhookStatus.RECEIVED | typeof WebhookStatus.QUEUED,
+  ): Promise<OldestPendingWebhook | null> {
+    const rows = await this.prisma.$queryRaw<OldestPendingWebhook[]>(
+      buildOldestPendingWebhookQuery(status),
+    );
+    return rows[0] ?? null;
   }
 
   private async buildWebhookDefaultShardSnapshot(

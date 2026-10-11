@@ -1100,6 +1100,38 @@ test('moderation outcomes retain the bounded read-only envelope and reject opera
   assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /recent_moderation_outcomes/u);
 });
 
+test('closed webhook cohorts retain the bounded read-only envelope and reject operator SQL', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['webhook-cohort']).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /BEGIN READ ONLY/u);
+  assert.match(sql, /webhook_cohort_index_ready/u);
+  assert.match(sql, /ORDER BY created_at, id LIMIT 513/u);
+  assert.match(sql, /ordinal <= 512/u);
+  assert.match(sql, /closed_webhook_cohort/u);
+  assert.match(sql, /NO_REPLAY_HELD/u);
+  assert.equal(runAudit(data, ['webhook-cohort', '--explain']).status, 0);
+  assert.match(readFileSync(data.sql, 'utf8'), /EXPLAIN \(FORMAT JSON\)/u);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /EXPLAIN ANALYZE/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'webhook-cohort', '--explain']).status, 0);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /webhook-cohort/u);
+  const failed = runAudit(data, ['webhook-cohort'], { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7);
+  assert.match(failed.stderr, /Bounded webhook cohort audit failed closed/u);
+  assert.doesNotMatch(`${failed.stdout}${failed.stderr}`, /fixture-event|ERROR near/u);
+  for (const extra of ['--apply', 'SELECT 1', '/tmp/query.sql', '--explain=analyze']) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, ['webhook-cohort', extra]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'webhook-cohort', extra]).status, 2);
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /closed_webhook_cohort/u);
+});
+
 test('legacy candidate classification never skips an earlier unknown fence or leaks source data', async (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));

@@ -1,6 +1,16 @@
+import { QueueMetricsService } from './queue-metrics.service';
+import {
+  buildOldestPendingWebhookQuery,
+  type OldestPendingWebhook,
+} from './webhook-oldest-pending';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
-import { createPrismaClient, Prisma, type PrismaClient } from '../prisma/prisma-client';
+import {
+  createPrismaClient,
+  Prisma,
+  type PrismaClient,
+  WebhookStatus,
+} from '../prisma/prisma-client';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from '../webhook/webhook-semantic-authority';
 import {
   buildWebhookOperationalLagQuery,
@@ -235,5 +245,116 @@ describePostgres('bounded PostgreSQL webhook operational lag', () => {
           ['webhook_events', 'webhook_execution_claims'].includes(String(node['Relation Name'])),
       ),
     ).toBe(false);
+  });
+});
+
+const oldestPrefix = `oldest-pending-${randomUUID()}-`;
+
+describePostgres('oldest pending webhook after retained terminal history', () => {
+  let prisma: PrismaClient;
+  let pool: Pool;
+  jest.setTimeout(60_000);
+
+  beforeAll(async () => {
+    const parsed = new URL(databaseUrl);
+    if (
+      !['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname) ||
+      !parsed.pathname.includes('race_test')
+    )
+      throw new Error('Disposable local race_test database required');
+    prisma = createPrismaClient(databaseUrl, { max: 2, statement_timeout: 15_000 });
+    pool = new Pool({ connectionString: databaseUrl, max: 2, statement_timeout: 15_000 });
+    await prisma.$connect();
+    await pool.query(
+      `
+      INSERT INTO webhook_events (id, dedup_key, status, raw_payload, normalized_payload, created_at)
+      SELECT $1 || n, $1 || n,
+        CASE WHEN n % 2 = 0 THEN 'PROCESSED' ELSE 'FAILED' END::"WebhookStatus",
+        '{}', '{}', '2020-01-01'::timestamp + n * INTERVAL '1 second'
+      FROM generate_series(1, 60000) n`,
+      [oldestPrefix + 'history-'],
+    );
+    await pool.query('ANALYZE webhook_events');
+  });
+
+  afterEach(async () => {
+    await pool.query('DELETE FROM webhook_events WHERE id LIKE $1', [oldestPrefix + 'live-%']);
+  });
+
+  afterAll(async () => {
+    if (pool) await pool.query('DELETE FROM webhook_events WHERE id LIKE $1', [oldestPrefix + '%']);
+    await prisma?.$disconnect();
+    await pool?.end();
+  });
+
+  async function read(status: typeof WebhookStatus.RECEIVED | typeof WebhookStatus.QUEUED) {
+    const query = buildOldestPendingWebhookQuery(status);
+    const result = await prisma.$queryRaw<OldestPendingWebhook[]>(query);
+    // FLAG: Execution plans run only against the disposable local fixture, never production.
+    const plan = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}
+    `);
+    const scans = explainNodes(plan).filter((node) => node['Relation Name'] === 'webhook_events');
+    expect(scans).toHaveLength(2);
+    expect(scans.map((node) => node['Index Name']).sort()).toEqual([
+      'webhook_events_pkey',
+      'webhook_events_status_created_at_id_idx',
+    ]);
+    for (const scan of scans) {
+      expect(Number(scan['Actual Rows'])).toBeLessThanOrEqual(1);
+      expect(Number(scan['Actual Loops'])).toBeLessThanOrEqual(1);
+      expect(Number(scan['Rows Removed by Filter'] ?? 0)).toBe(0);
+    }
+    return result;
+  }
+
+  it.each([WebhookStatus.RECEIVED, WebhookStatus.QUEUED])(
+    'bounds an empty %s lookup independently of terminal history',
+    async (status) => {
+      expect(await read(status)).toEqual([]);
+    },
+  );
+
+  it.each([WebhookStatus.RECEIVED, WebhookStatus.QUEUED])(
+    'finds the oldest %s with deterministic timestamp ties and unchanged retry metadata',
+    async (status) => {
+      const createdAt = new Date('2035-01-01T00:00:00Z');
+      const nextEnqueueAt = new Date('2035-01-01T00:00:10Z');
+      const executionDeadlineAt = new Date('2035-01-01T00:05:00Z');
+      for (const suffix of ['b', 'a']) {
+        await prisma.webhookEvent.create({
+          data: {
+            id: oldestPrefix + 'live-' + suffix,
+            dedupKey: oldestPrefix + 'live-' + suffix,
+            status,
+            rawPayload: {},
+            normalizedPayload: {},
+            createdAt,
+            nextEnqueueAt,
+            executionDeadlineAt,
+          },
+        });
+      }
+      expect(await read(status)).toEqual([
+        {
+          id: oldestPrefix + 'live-a',
+          createdAt,
+          nextEnqueueAt,
+          executionDeadlineAt,
+        },
+      ]);
+    },
+  );
+
+  it('reports an empty queue through the real service without counting terminal rows', async () => {
+    const service = Object.create(QueueMetricsService.prototype) as QueueMetricsService;
+    Object.assign(service, { prisma });
+    expect(await service.getLagSnapshot()).toMatchObject({
+      oldestReceivedEventId: null,
+      oldestQueuedEventId: null,
+      effectiveLagSec: 0,
+      operationalLagSec: 0,
+      readinessWaitingCount: 0,
+    });
   });
 });

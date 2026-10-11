@@ -168,6 +168,11 @@ negative cases, effects evidence and following-event/no-replay checks.
   status, pending/failed counts and ages, cap/truncation, missing samples and invalid-clock counts.
   Label completed-only percentiles as such; report PROCESSED separately from DUPLICATE/CANCELLED.
   An empty or future window is not success. Measure remote actions separately from receipt settlement.
+  Use `postgres-audit webhook-cohort --explain` before the fixed `postgres-audit webhook-cohort`
+  report. Its 30-second interval ends 30 seconds before observation; each of all seven statuses
+  has a 512-row cap with a saturation sentinel. It reports invalid completion/enqueue clocks,
+  pending age and processed-only latency without returning event identities or payloads.
+  Repeat closed samples across the observation window; one cohort is not sustained acceptance.
 - Distinguish future delayed schedules, current retryable DELETE work and retained terminal
   failures from overdue executable backlog. Compare due time, active lock/runtime age and bounded
   movement across snapshots; queue creation age or a nonzero queue count alone is insufficient.
