@@ -10,6 +10,8 @@ CREATE TYPE "WebhookStatus" AS ENUM (
   'RECEIVED','QUEUED','PROCESSED','DUPLICATE','FAILED','NO_REPLAY_HELD','CANCELLED');
 CREATE TABLE webhook_events (id text PRIMARY KEY, status "WebhookStatus" NOT NULL,
   created_at timestamp(3) NOT NULL, queued_at timestamp(3), processed_at timestamp(3),
+  error_message text, next_enqueue_at timestamp(3), timeout_quarantine_expires_at timestamp(3),
+  execution_deadline_at timestamp(3),
   raw_payload jsonb, normalized_payload jsonb);
 CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status,created_at,id);`;
 const query = buildWebhookCohortAuditSql();
@@ -27,6 +29,7 @@ test('closed cohort includes all seven statuses and excludes invalid completion 
   t.after(() => db.close());
   await db.exec(fixture);
   await db.exec(`INSERT INTO webhook_events
+    (id,status,created_at,queued_at,processed_at,raw_payload,normalized_payload)
     SELECT 'private-' || status, status, now() - interval '45 seconds',
       now() - interval '44 seconds', now() - interval '43 seconds', '{"secret":1}', '{}'
     FROM unnest(enum_range(NULL::"WebhookStatus")) status;
@@ -55,12 +58,49 @@ test('closed cohort includes all seven statuses and excludes invalid completion 
   assert.doesNotMatch(JSON.stringify(report), /private-|secret|payload/u);
 });
 
+test('failed cohorts expose bounded categories and timing separately without trusting embedded errors', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  await db.exec(`INSERT INTO webhook_events(id,status,created_at,error_message,
+    execution_deadline_at,next_enqueue_at,timeout_quarantine_expires_at) VALUES
+    ('private-expired','FAILED',now()-interval '45 seconds',
+      'NO_EXECUTABLE_OWNER; deadline=2026-01-01T00:00:00.000Z',now()-interval '50 seconds',NULL,NULL),
+    ('private-quarantine','FAILED',now()-interval '45 seconds',
+      'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:private-token: private-error',
+      now()-interval '40 seconds',now()+interval '1 second',now()-interval '1 second'),
+    ('private-embedded','FAILED',now()-interval '45 seconds',
+      'private text NO_EXECUTABLE_OWNER; deadline=2026-01-01T00:00:00.000Z',NULL,NULL,NULL),
+    ('private-malformed','FAILED',now()-interval '45 seconds',
+      'NO_EXECUTABLE_OWNER; deadline=private-error',NULL,NULL,NULL),
+    ('private-completion','FAILED',now()-interval '45 seconds',
+      'Handler completion claim changed',NULL,NULL,NULL),
+    ('private-not-failed','PROCESSED',now()-interval '45 seconds',
+      'NO_EXECUTABLE_OWNER; deadline=2026-01-01T00:00:00.000Z',NULL,NULL,NULL);`);
+  const report = (await db.query(query)).rows[0].json_build_object;
+  assert.equal(report.schema_version, 2);
+  assert.equal(report.failure_classification_authority, 'saved_metadata_only');
+  const byFamily = Object.fromEntries(report.failure_families.map((r) => [r.family, r]));
+  assert.equal(byFamily.no_executable_owner.count_lower_bound, 1);
+  assert.equal(byFamily.no_executable_owner.deadline_elapsed_at_receipt, 1);
+  assert.equal(byFamily.no_executable_owner.retry_scheduled, 0);
+  assert.equal(byFamily.pending_quarantine_marker.count_lower_bound, 1);
+  assert.equal(byFamily.pending_quarantine_marker.quarantine_timestamp_present, 1);
+  assert.equal(byFamily.pending_quarantine_marker.retry_scheduled, 1);
+  assert.equal(byFamily.pending_quarantine_marker.deadline_elapsed_at_receipt, 0);
+  assert.equal(byFamily.pending_quarantine_marker.deadline_elapsed_at_observation, 1);
+  assert.equal(byFamily.completion_claim_changed.count_lower_bound, 1);
+  assert.equal(byFamily.other.count_lower_bound, 2);
+  assert.doesNotMatch(JSON.stringify(report), /private-|secret|payload|2026-01-01/u);
+});
+
 test('empty and capped cohorts never claim complete processing', async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.exec(fixture);
   let report = (await db.query(query)).rows[0].json_build_object;
   assert.equal(report.nonempty, false);
+  assert.deepEqual(report.failure_families, []);
   assert.ok(report.rows.every((r) => r.count_lower_bound === 0));
   await db.exec(`INSERT INTO webhook_events(id,status,created_at)
     SELECT 'private-' || n, 'PROCESSED', now()-interval '45 seconds' FROM generate_series(1,513) n;`);
@@ -95,6 +135,9 @@ test(
     SELECT 'private-old-' || n, 'PROCESSED', now()-interval '2 days' FROM generate_series(1,60000) n;
     INSERT INTO webhook_events(id,status,created_at)
     SELECT 'private-new-' || n, 'PROCESSED', now()-interval '45 seconds' FROM generate_series(1,1200) n;
+    INSERT INTO webhook_events(id,status,created_at,error_message)
+    SELECT 'private-failed-' || n, 'FAILED', now()-interval '45 seconds', 'private-error'
+      FROM generate_series(1,1200) n;
     ANALYZE webhook_events; SET LOCAL enable_seqscan=off; SET LOCAL enable_bitmapscan=off;
     SET LOCAL max_parallel_workers_per_gather=0;`);
     // FLAG: EXPLAIN ANALYZE is local disposable-fixture evidence only.
@@ -118,11 +161,15 @@ test(
     for (const s of scans) {
       assert.equal(s['Rows Removed by Filter'] ?? 0, 0);
       assert.ok(s['Actual Rows'] <= 513);
-      assert.ok(s['Actual Loops'] <= 512);
+      assert.ok(s['Actual Loops'] <= 1024);
     }
     const report = (await db.query(query)).rows[0].json_build_object;
     assert.equal(report.sample_complete, false);
     assert.equal(report.rows.find((r) => r.status === 'PROCESSED').count_lower_bound, 512);
+    assert.deepEqual(
+      report.failure_families.map((r) => [r.family, r.count_lower_bound]),
+      [['other', 512]],
+    );
   },
 );
 

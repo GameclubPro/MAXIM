@@ -187,6 +187,10 @@ negative cases, effects evidence and following-event/no-replay checks.
   report. Its 30-second interval ends 30 seconds before observation; each of all seven statuses
   has a 512-row cap with a saturation sentinel. It reports invalid completion/enqueue clocks,
   pending age and processed-only latency without returning event identities or payloads.
+  Schema v2 also groups the same bounded FAILED samples into fixed saved-error families,
+  with retry/quarantine metadata and deadline counts at receipt and observation. These are
+  diagnostic markers, never proof of no effects or permission to replay; unknown text stays
+  `other`. Failure-family counts inherit the FAILED row's truncation/completeness limit.
   Repeat closed samples across the observation window; one cohort is not sustained acceptance.
 - Distinguish future delayed schedules, current retryable DELETE work and retained terminal
   failures from overdue executable backlog. Compare due time, active lock/runtime age and bounded

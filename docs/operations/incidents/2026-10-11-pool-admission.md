@@ -63,6 +63,82 @@ do not prove message absence and must not cause publication recreation or grant 
 The duplicate diagnostic hit its server statement timeout after a plain plan was collected;
 that report is incomplete and its bounds were not widened.
 
-Release identity, recovery counts and post-release acceptance will be recorded after the
-normal exact-SHA CI, fixed-scope recovery and shared-image deployment complete. Historical
-started handlers are not recovered by the new acquisition wrapper itself.
+All six active moderation bots passed exact identity and webhook-target reads at
+09:56 UTC, with one subscription each and no missing required update types. Publisher
+passed its independent identity probe and, at 10:48:51 UTC, its exact subscription
+target and required update types. These were bounded read-only requests, with no
+test messages or subscription mutations. The 10:08 bot-load snapshot recorded MAX
+activity for all seven bots; it does not prove every feature performed an action.
+
+The 54-namespace queue census distinguishes future schedules from overdue work and
+terminal failure history. Night mode and VK retained future schedules with no due-now
+jobs; OCR and duplicate queues were not cleared. A complete closed pre-release cohort
+at 10:37:57–10:38:27 UTC contained 327 PROCESSED, 60 DUPLICATE and two FAILED receipts,
+with no pending/cancelled rows. Processed-only p95 was 1.642 seconds. Those two failures
+remain unclassified; this small healthy cohort does not resolve the old ordered head.
+
+The Publisher comment failure sampled at 10:32–10:42 was a setup/readiness refusal
+before dispatch. Later interactive action failures included HTTP 404 from the final
+required-subscription target membership read. Neither observation authorizes sending
+without current access, activating a module or replaying an uncertain action.
+
+## Validation and release preparation
+
+Runtime correction: `6deabb6905ce66f4b0a87fac147014d2dad6ea0c`. Release candidate:
+`c72721574284f4ebd6222ba0f3575fd6c148701d`, whose additional change only batches the
+retained-history test fixture into two `generate_series` inserts. The fixture still
+contains 20,000 grants and 20,000 receipts and asserts the actual index plan.
+
+Local staged checks passed 745 API suites and 19,067 tests; 98 store-dependent suites
+and 2,123 tests were skipped in that mock-only run. A separate native PostgreSQL 16 /
+Redis 7 run passed 172 focused tests across six suites without skips. The fixture
+correction separately passed all six native immunity tests.
+
+Exact-candidate CI's PostgreSQL lane passed all 1,420 tests: 1,286 native race checks,
+three traffic-policy checks, 61 participant-report checks, 50 retention-storage checks
+and 20 moderation-rollup checks. The first candidate's history fixture exceeded its
+five-second test timeout; the correction changes fixture preparation and its test
+deadline, not runtime limits. Candidate c727's first Static attempt failed when a
+child Node process aborted inside an unchanged rollback-guard test. Its focused local
+rerun passed. The hosted Static rerun and Required aggregate then passed without
+source changes. Exact-candidate Required (run `38132419378`) and CodeQL
+(run `38132419402`) were both verified before preload; failed evidence is retained.
+
+Manifest-aware cleanup used the fixed cutoff `2026-10-11T09:00:00Z` and removed five
+unused MAXIM image references outside protected release history. Six manifests and
+13 image identities remained protected. One apply refused a disappearing Docker
+object before deletion; a complete new preview selected the identical five images
+before the successful apply. Free Docker-filesystem space increased from
+21,885,476,864 to 22,559,055,872 bytes (673,579,008 bytes net). Shared build cache,
+sibling applications, containers, volumes and backups were preserved. A new image
+preload still requires a fresh check of the deployment's 20 GiB reserve.
+
+The verified CI image archive was 742,288,384 bytes uncompressed. After preload,
+available space was 21,184,892,928 bytes, below the unchanged 21,474,836,480-byte
+rollout reserve, so cancellation/deployment did not start. A bounded inventory
+identified 27 closed rotated nginx logs (607,882,736 content bytes). Under the
+deployment and logrotate locks, every file was checked for unchanged identity and
+absence of open descriptors, copied to the separate cold filesystem, fsynced and
+verified by SHA-256 before removal from the root filesystem. Contents and a private
+manifest remain at `/mnt/maxim-cold/archived-host-logs/nginx-20261011T111338Z`.
+Active logs and rotation configuration were unchanged. This freed a net
+606,244,864 bytes; the immediate free-space readback was 21,754,433,536 bytes.
+
+## Fixed-scope recovery
+
+The final owner proof at 11:02:48 UTC still identified the original 09:24 started
+handler without its completion checkpoint. Absence of sampled DELETE observations
+did not prove absence of effects, so no handler replay or fabricated completion was
+used. Historical started handlers are not recovered by the acquisition wrapper.
+
+Cancellation `4a508a4e-cab6-463b-a184-6a561c1fde61` used the immutable cutoff
+`2026-10-11T11:15:40.513Z` and exact installed b29 source/image. The normal controller
+ran from a clean b29 checkout after its own exact-SHA CI gate. It stopped and
+restarted its captured fleet, projected 304 receipts to CANCELLED, removed 108
+selected BullMQ jobs and retained zero locked jobs. The host journal reached
+COMPLETE; original receipts, claims, error/uncertainty evidence and publication
+schedules were preserved. Cancellation is abandonment, not successful processing.
+
+The normal c727 shared-image deployment then passed its unchanged disk preflight
+with 21,741,363,200 bytes available and selected every API role. Release identity and
+post-release acceptance will be recorded after strict smokes and fresh observation.

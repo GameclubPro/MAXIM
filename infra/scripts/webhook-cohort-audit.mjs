@@ -45,10 +45,47 @@ export function buildWebhookCohortAuditSql(explain = false) {
     FROM candidates WHERE id IS NOT NULL
   ) ranked WHERE ordinal <= 512
 ), details AS MATERIALIZED (
-  SELECT samples.status, samples.created_at, metadata.processed_at, metadata.queued_at
+  SELECT samples.status, samples.created_at, metadata.processed_at, metadata.queued_at,
+    metadata.next_enqueue_at, metadata.timeout_quarantine_expires_at, metadata.execution_deadline_at,
+    CASE WHEN samples.status = 'FAILED' THEN
+      CASE
+        WHEN metadata.error_message IS NULL THEN 'missing'
+        WHEN metadata.error_message ~ '^NO_EXECUTABLE_OWNER; deadline=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'
+          THEN 'no_executable_owner'
+        WHEN starts_with(metadata.error_message, 'WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINED:')
+          THEN 'terminal_quarantine_marker'
+        WHEN starts_with(metadata.error_message, 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:')
+          THEN 'pending_quarantine_marker'
+        WHEN metadata.error_message ~ '^(Webhook preparation failed: )?Canonical webhook claim is not ready for .+'
+          THEN 'canonical_not_ready'
+        WHEN metadata.error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease is busy for .+'
+          THEN 'business_lease_busy'
+        WHEN metadata.error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease was lost (before completion|before unfenced timeout settlement|during timeout quarantine) for .+'
+          THEN 'business_lease_lost'
+        WHEN metadata.error_message ~ '^(Webhook preparation failed: )?Canonical webhook business lease storage is unavailable for .+'
+          THEN 'business_lease_unavailable'
+        WHEN metadata.error_message = 'Handler completion claim changed'
+          THEN 'completion_claim_changed'
+        WHEN metadata.error_message = 'timeout exceeded when trying to connect'
+          THEN 'connection_admission_timeout_text'
+        ELSE 'other'
+      END
+    END AS failure_family
   FROM samples CROSS JOIN LATERAL (
-    SELECT processed_at, queued_at FROM webhook_events WHERE id = samples.id OFFSET 0
+    SELECT processed_at, queued_at, next_enqueue_at, timeout_quarantine_expires_at,
+      execution_deadline_at, error_message
+    FROM webhook_events WHERE id = samples.id OFFSET 0
   ) metadata
+), failure_rows AS (
+  -- FLAG: Saved text is untrusted diagnostic evidence, never replay authority.
+  -- Classify only the already bounded primary-key samples; never emit raw errors.
+  SELECT failure_family, count(*) AS sampled,
+    count(*) FILTER (WHERE next_enqueue_at IS NOT NULL) AS retry_scheduled,
+    count(*) FILTER (WHERE timeout_quarantine_expires_at IS NOT NULL) AS quarantine_timestamp_present,
+    count(*) FILTER (WHERE execution_deadline_at <= created_at) AS deadline_elapsed_at_receipt,
+    count(*) FILTER (WHERE execution_deadline_at <= bounds.observed_at) AS deadline_elapsed_at_observation
+  FROM details CROSS JOIN bounds WHERE status = 'FAILED'
+  GROUP BY failure_family
 ), grouped AS (
   SELECT statuses.status,
     (SELECT count(*) FROM candidates c WHERE c.status = statuses.status AND c.id IS NOT NULL) AS captured,
@@ -66,10 +103,17 @@ export function buildWebhookCohortAuditSql(explain = false) {
   GROUP BY statuses.status
 )
 SELECT json_build_object(
-  'schema_version', 1, 'audit', 'closed_webhook_cohort', 'window_basis', 'receipt_created_at',
+  'schema_version', 2, 'audit', 'closed_webhook_cohort', 'window_basis', 'receipt_created_at',
   'from', bounds.from_at, 'until', bounds.until_at, 'observed_at', bounds.observed_at,
   'cap_per_status', 512, 'sample_complete', NOT EXISTS (SELECT 1 FROM grouped WHERE captured > 512),
   'nonempty', EXISTS (SELECT 1 FROM samples), 'remote_effects_proven', false,
+  'failure_classification_authority', 'saved_metadata_only',
+  'failure_families', coalesce((SELECT json_agg(json_build_object(
+    'family', failure_family, 'count_lower_bound', sampled,
+    'retry_scheduled', retry_scheduled, 'quarantine_timestamp_present', quarantine_timestamp_present,
+    'deadline_elapsed_at_receipt', deadline_elapsed_at_receipt,
+    'deadline_elapsed_at_observation', deadline_elapsed_at_observation
+  ) ORDER BY failure_family) FROM failure_rows), '[]'::json),
   'rows', (SELECT json_agg(json_build_object(
     'status', status, 'count_lower_bound', sampled, 'truncated', captured > 512,
     'oldest_pending_age_seconds', oldest_pending_age_seconds,
