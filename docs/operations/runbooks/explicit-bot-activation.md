@@ -8,6 +8,8 @@ An administrator can activate the receiving bot by sending `Старт` in the g
 
 Moderators require their baseline read/delete capabilities; optional member, edit and send rights cannot grow through a passive refresh after known loss. Publisher uses its separate publication permission policy. Bot rights denial in one scope does not revoke another bot's independently verified rights.
 
+A legacy connection callback can receive `ManagedEntityActivationRequiredError` from its initial bot-access check. The handshake records `BOT_DENIED` with `explicit_activation_required` and returns a silent denial, allowing normal webhook preparation to finish without activating the bot or retrying this permanent refusal indefinitely. Preserve the callback cooldown. Errors with copied text, failures after the initial probe, and failed outcome persistence remain failures; this narrow path grants no replay or mutation authority.
+
 Unclaimed ordinary observations with no eligible moderator are durably settled with `DORMANT_BOT_OBSERVATION_V1`, without creating or completing shared execution authority. First observations create only a context Chat shell to serialize against simultaneous initial activation. The validated activation source time remains in the membership snapshot across passive refreshes; a later activation cannot authorize an older observation, even when activation commits before preparation starts. A peer already eligible for that observation may still process the source. Settled observations never replay after activation; existing owned claims, unknown mutation outcomes and permanent source holds remain intact.
 
 ## Delivery and rollback

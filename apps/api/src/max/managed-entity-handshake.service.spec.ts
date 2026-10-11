@@ -12,6 +12,7 @@ import type { MaxChatMemberAccess } from './max-client.service';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { createGroupCommandAuthorityMock } from '../common/group-command-authority.spec-support';
 import { buildGroupCommandKey } from '../common/group-command-authority.service';
+import { ManagedEntityActivationRequiredError } from './managed-entity-activation.util';
 
 function createUpdate(overrides: Record<string, unknown> = {}) {
   const messageOverrides =
@@ -395,6 +396,68 @@ describe('ManagedEntityHandshakeService', () => {
       expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     },
   );
+
+  it('settles a typed initial activation refusal silently without retrying the legacy callback', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(
+      new ManagedEntityActivationRequiredError(),
+    );
+    const update = createUpdate({
+      type: 'message_callback',
+      raw: {
+        callback: {
+          payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+          user: { user_id: 'admin-1' },
+        },
+      },
+    });
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('denied');
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.BOT_DENIED,
+        reason: 'explicit_activation_required',
+      }),
+    );
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('rate_limited');
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps an untyped activation error retryable instead of inferring a safe refusal from its text', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(
+      new Error(new ManagedEntityActivationRequiredError().message),
+    );
+    const update = createUpdate({
+      type: 'message_callback',
+      raw: {
+        callback: {
+          payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+          user: { user_id: 'admin-1' },
+        },
+      },
+    });
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('failed');
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a later activation error as an initial access refusal', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getChatMembersAccess.mockRejectedValueOnce(
+      new ManagedEntityActivationRequiredError(),
+    );
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('failed');
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+  });
 
   it('does not turn a legacy callback into activation of a dormant membership', async () => {
     const fixture = createFixture();

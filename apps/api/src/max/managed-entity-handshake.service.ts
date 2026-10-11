@@ -34,6 +34,7 @@ import {
 import { ManagedEntityHandshakeOutcomeService } from './managed-entity-handshake-outcome.service';
 import {
   isExplicitManagedEntityActivationCurrent,
+  ManagedEntityActivationRequiredError,
   type ManagedEntityExplicitActivation,
 } from './managed-entity-activation.util';
 import { readWebhookEventTimestamp } from '../webhook/webhook-semantic-event-key';
@@ -477,6 +478,17 @@ export class ManagedEntityHandshakeService {
       return this.completeGrantedContext(context, wasConnected);
     } catch (error: unknown) {
       if (commandPermit) await this.groupCommandAuthority!.release(commandPermit);
+      // FLAG: A legacy callback has no activation authority. The typed initial
+      // access refusal is terminal for this check, not a transient preparation failure.
+      if (checkingBotAccess && error instanceof ManagedEntityActivationRequiredError) {
+        await this.recordOutcome(
+          context,
+          ManagedEntityHandshakeOutcomeStatus.BOT_DENIED,
+          'explicit_activation_required',
+        );
+        this.logOutcome(context, 'bot_denied');
+        return 'denied';
+      }
       if (checkingBotAccess && this.isBotAccessDeniedError(error)) {
         await this.recordOutcome(
           context,
