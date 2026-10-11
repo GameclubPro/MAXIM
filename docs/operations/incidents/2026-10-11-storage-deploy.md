@@ -1,7 +1,14 @@
 # Storage cleanup and bot release, 2026-10-11
 
-All timestamps below are UTC. The requested runtime release is
-`6a9d67fcae74d037855d8bda98197c3e54f5818d`; its exact Required and CodeQL checks
+All timestamps below are UTC. The final API release is
+`b29d7f78990bb8f8f104849679eb5fc531a1f6c8`, recorded as
+`release-20261011T083353Z-b29d7f78990b`. It fixes the confirmed local-rate-limit
+handoff stall and passed the sustained fifteen-minute queue-readiness window.
+Static components retain `6a9d67fcae74d037855d8bda98197c3e54f5818d`.
+The sampled FAILED receipt, OCR timeouts and uncertain historical publication
+outcomes remain explicitly accounted for below; this is not an error-free fleet claim.
+
+The first requested release was `6a9d67fc`; its exact Required and CodeQL checks
 passed before image preload. The prior runtime was
 `a8567220a2ec7466fa4a3c832ab75ee4fb201785`.
 
@@ -190,3 +197,158 @@ location was the receipt update during SQL completion after the separate durable
 finished-handler checkpoint. Existing checkpoint recovery retains the exact CAS
 and does not repeat the handler. This observation does not prove every completion
 error has the same cause; no lease/CAS or uncertain-effect fence was relaxed.
+
+## Validated forward release and fixed recovery scope
+
+The forward correction is `b29d7f78990bb8f8f104849679eb5fc531a1f6c8`, including
+`f9e7515db2d28328a9def605af8f2ccbba244a6e`'s pending-metric query and closed-cohort
+catalog. Local validation passed 325 focused unit tests, 93 native full-path tests
+with PostgreSQL 16/Redis 7 and no skips, and the staged wrapper's 19,059 API tests.
+The standard API run skipped 2,112 store/environment-dependent cases; that run alone
+is not real-store coverage. Repository static checks passed 2,647 tests with 23 skips.
+
+Exact-SHA CI run `38123173147` and CodeQL `38123173113` succeeded. The first CI Static
+attempt aborted a Node subprocess in the unchanged participant-report rollback guard
+fixture. The focused local guard passed; the failed CI job was rerun on the same SHA
+after the other jobs completed. Its static/infrastructure checks and Required then
+passed. No assertion, production guard or CI requirement was removed or bypassed.
+
+The guarded preload checked archive checksums, exact revision/protection labels and
+capacity. The loaded API image is
+`sha256:a3d5af2a1ea11da367c085a1133517ea772d248aaaab0827aef40bdf56912808`.
+At 08:29:36, Docker had 22,512,369,664 available bytes, above the unchanged 20 GiB floor.
+
+A final owner-proof sample at 08:25:46 still identified the original 07:32:55 started
+owner without a finished checkpoint. With the tested correction already preloaded,
+the authorized cancellation used a matching clean `6a9d67fc` controller checkout and
+fixed operation `7151feb3-9aaf-4826-9c67-3e66a0db2a60`, cutoff
+`2026-10-11T08:28:36.809Z`. It ran immediately before the forward deployment; the cutoff
+was not repeatedly advanced. The first capture saved nine receipts, then stopped on
+SQL statement timeout `57014`. A fixed activity audit found no remaining active query.
+The identical request resumed with unchanged budgets and completed: twelve receipts
+were CANCELLED, 113 related jobs removed, and zero locked jobs retained. Claims,
+original evidence, publications, future schedules and prior holds were preserved.
+
+Normal API-only deployment reused the exact image, passed the unchanged disk guard,
+and found no pending migrations. All fourteen API roles and both native auxiliaries
+were recreated. The two static components retained their previously finalized images.
+During restart the normal ingress backlog exceeded the queue report's 2,000-row cap.
+Its oldest inspected receipt had no execution claim or earlier ordering predecessor;
+this was preparation backlog, not evidence for replay or another cancellation. The
+sample later fell to 1,036 receipts with an advancing oldest head. Existing processing
+drained it without another cleanup, capacity override or longer readiness timeout.
+
+The ordinary strict API/public/native smokes passed and deployment committed
+`release-20261011T083353Z-b29d7f78990b`. At 08:47:16, all sixteen API/native containers
+had the exact new image, zero restarts and no OOM. Available Docker space was
+22,484,680,704 bytes. Publisher dispatch reported enabled matching runtime configuration,
+no pause, fresh enabled heartbeat and ready secrets. The temporary old-source controller
+worktree was archived successfully after its completed operation.
+
+## Publisher observations during verification
+
+The bounded 07:58:59–08:08:59 log sample was not truncated. It recorded 1,073 scheduled
+bot-access probes, of which 1,071 confirmed before their deadline, one was a transient
+error and one remained unresolved in that sample. All ninety urgent webhook-observed
+refresh attempts and 519 binding-maintenance attempts returned without throwing.
+Seven stale-user-access attempts threw and retained their normal guarded retries;
+the successful bot probes are not proof of those users' authority or send completion.
+
+The reviewed indexed access census at 08:09:16 included all 23,169 binding rows under
+its 50,000-row cap, with one active bot scope. Of 1,233 confirmed-admin bindings,
+1,223 had fresh evidence and ten were expired. Snapshot freshness does not prove
+historical deadline success or authorize renewal without fresh rights. The Publisher
+priority queue decreased from 966 tasks in the earlier 07:19 census to 487 around
+08:20, confirming movement rather than a stopped queue. The same queue census retained
+future schedules and historical failures; neither was relabeled as executable backlog.
+
+After deployment, the untruncated 08:48:09–08:58:09 execution-log sample contained no
+new handler/completion/preparation failure diagnostics across enqueue and all seven
+moderation services. The moderation-outcome audit at 08:58:10 reached its 512-event
+cap, so it covers only 08:51:52–08:58:09 of the requested hour. Within that sample it
+reported 49 independently confirmed mute-enforcement deletes, two confirmed admin
+bans and nine mute installations. These are observed outcomes, not proof that every
+attempt succeeded or a count of all events during the hour.
+
+The untruncated Publisher delivery log sample at 08:50:02–09:00:02 recorded 273
+`receipt_persisted` observations: 260 NOW and thirteen RECURRENCE. These are durable
+receipt observations, not deduplicated publication totals or exactly-once telemetry.
+The largest measured intent/schedule-to-receipt delay was 187,198 ms. Its separate
+08:48:09–08:58:09 access sample recorded 1,041 scheduled bot probes, with 1,037 confirmed
+in time and four unresolved observations, plus nine publication-due probes confirmed
+in time. Of 98 urgent webhook-observed refreshes, 96 returned and two threw; 529
+binding-maintenance and 92 publication-actor-due refreshes returned without throwing.
+These guards remain active: unavailable access does not become permission to publish.
+
+The final fixed census covered 54 queue names, including the retired VK sentinel:
+7 waiting, 1,253 prioritized, fourteen active and 7,501 delayed tasks, with one due
+at the instant sampled. Publisher binding refresh had 954 prioritized and two active
+tasks, with no failures in that queue's five-minute window. These are non-atomic
+workload snapshots; advancing refresh work, future schedules and retained failed
+history were not purged or presented as zero backlog. The separate webhook receipt
+cohorts and readiness interval measure completion latency.
+
+Historical Publication AMBIGUOUS/FAILED evidence and in-progress delivery recovery
+remain under their existing fences. The action logs also retained 31 source-presence
+404 observations and their matching poll-render refusals over ten minutes. Existing
+bounded five-minute poll repair backoff remains in force; MAX GET 404 alone cannot
+prove absence or authorize resend. No user message, uncertain send receipt, execution
+claim or publication was deleted to remove these diagnostics, and no live diagnostic
+message was sent to user groups/channels.
+
+## Sustained latency observation and final limits
+
+The readiness observation retained its two initial 503 samples at 08:47:35 and
+08:47:40, with raw lag of approximately 114 and 119 seconds. These are outside the
+accepted interval. From 08:47:45.403 through 09:02:45.684, all 180 samples had both
+private readiness endpoints returning 200 with raw queue checks passing. The
+900,281 ms interval had maximum raw lag 6.969 seconds, below the unchanged ten-second
+threshold, fresh queue measurements and no gap exceeding the collector's limit.
+This establishes sustained queue readiness, not successful completion of every action.
+
+Six separate closed thirty-second receipt-created cohorts were nonempty and complete,
+with no status truncation or invalid clocks. They are sampled windows, not a census
+of all arrivals during the fifteen minutes. The first precedes the accepted readiness
+interval; the other five fall inside it.
+
+| Receipt-created window | PROCESSED | DUPLICATE | FAILED | Processed-only p95 |
+| ---------------------- | --------: | --------: | -----: | -----------------: |
+| 08:46:35–08:47:05      |       313 |        94 |      0 |           1,104 ms |
+| 08:49:36–08:50:06      |       394 |       114 |      0 |        1,535.75 ms |
+| 08:52:36–08:53:06      |       505 |       202 |      0 |           2,626 ms |
+| 08:55:36–08:56:06      |       394 |       114 |      0 |        2,073.95 ms |
+| 08:58:36–08:59:06      |       394 |       106 |      0 |        1,720.35 ms |
+| 09:01:36–09:02:06      |       367 |       102 |      1 |         1,540.4 ms |
+
+The combined samples contain 2,367 PROCESSED, 732 DUPLICATE and one FAILED receipt.
+Every sample had zero RECEIVED, QUEUED, CANCELLED and NO_REPLAY_HELD receipts.
+The p95 values exclude unsuccessful receipts and do not measure remote effect latency.
+
+The 08:53:57–09:03:57 bounded execution-log sample contained no matching
+handler/completion/preparation failure diagnostics and was not capped. A separate
+bounded Redis census around 09:05 found one `database_query_error` observation in
+`moderation-join-0`; it did not retain raw errors or identities. At 09:06:59 the
+fifteen-minute failed-job census had no observations or truncation, and fixed retry
+audits at 09:03:57 and 09:11:47 returned `no_scheduled_retry`. These aggregate probes
+cannot establish identity between the SQL FAILED receipt and the Redis error or
+prove that receipt's final SQL outcome. The worker can throw during preparation
+before the handler's diagnostic boundary, so absence of that diagnostic is not
+proof of success. No speculative replay or extra cancellation was performed.
+
+At 09:11:14 both readiness endpoints still passed, with raw lag 1.395/1.426 seconds.
+All fourteen API roles and both native auxiliaries were running the exact final image.
+The fourteen API roles and photo auxiliary had zero restarts and no OOM. The queue
+audit showed 22 RECEIVED receipts with oldest age two seconds and ten QUEUED with
+oldest age four seconds; neither selected head had an ordering fence. The historical
+FAILED status hit its 2,000-row cap and was not treated as fresh executable backlog.
+Available Docker filesystem space was 22,220,890,112 bytes, still above the API floor.
+
+The OCR auxiliary had six restarts after the earlier zero-restart attestation.
+An uncapped lifecycle-log sample from 08:47:16 through 09:12:31 accounted for all six
+as `native_timeout` during `recognize`, with no unclassified lifecycle events. It was
+running and healthy with no OOM at the final probe. These are mandatory isolated
+container recycles after incomplete native analysis, not six successful OCR analyses.
+The existing terminal-incomplete behavior, original deadlines and full containment
+remain intact; no timeout was widened or uncertain native operation retried to improve
+the apparent success rate. Queue readiness and a healthy restored sandbox do not
+establish OCR coverage for those six attempts.
