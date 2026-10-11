@@ -1,3 +1,8 @@
+import {
+  assertPublisherSuggestionDeliveryReady,
+  canRecoverPublisherSuggestionDelivery,
+} from './publisher-suggestion-setup-block';
+import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -43,6 +48,85 @@ describePostgres('PostgreSQL channel suggestion delivery recovery', () => {
 
   afterAll(async () => {
     await prisma?.$disconnect();
+  });
+
+  it('retains partial and ambiguous receipts while setup is blocked, then clears only its own marker', async () => {
+    const suffix = randomUUID();
+    const chatId = `publisher-setup-${suffix}`;
+    const auditLogId = `publisher-setup-audit-${suffix}`;
+    createdChatIds.push(chatId);
+    await prisma.chat.create({ data: { id: chatId, title: 'Setup recovery' } });
+    await prisma.auditLog.create({
+      data: {
+        id: auditLogId,
+        chatId,
+        actorUserId: 'author',
+        action: 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION',
+        payload: { type: 'suggest', reviewStatus: 'pending', deliveries: [{ messageId: 'saved' }] },
+      },
+    });
+    await prisma.channelSuggestionAdminDelivery.createMany({
+      data: ['SENT', 'AMBIGUOUS', 'PENDING'].map((status, index) => ({
+        auditLogId,
+        adminUserId: `admin-${index}`,
+        botKey: 'publisher:publisher',
+        botId: 'publisher',
+        status: status as ChannelSuggestionAdminDeliveryStatus,
+        remoteMessageId: status === 'SENT' ? 'saved' : null,
+        sentAt: status === 'SENT' ? new Date() : null,
+      })),
+    });
+    const before = await prisma.channelSuggestionAdminDelivery.findMany({
+      where: { auditLogId },
+      orderBy: { id: 'asc' },
+    });
+    const readiness = {
+      assertEntityReady: jest
+        .fn()
+        .mockRejectedValue(new PublisherSetupRequiredException([chatId], 'module_disabled')),
+    };
+    const params = {
+      prisma: prisma as never,
+      readiness: readiness as never,
+      auditLogId,
+      chatId,
+      requiredBotId: 'publisher',
+      setupBlockPresent: true,
+    };
+    await expect(assertPublisherSuggestionDeliveryReady(params)).rejects.toThrow('setup blocked');
+    await expect(canRecoverPublisherSuggestionDelivery(params)).resolves.toBe(false);
+    await expect(assertPublisherSuggestionDeliveryReady(params)).rejects.toThrow('setup blocked');
+    readiness.assertEntityReady.mockResolvedValue({ requiredBotId: 'publisher' });
+    await expect(canRecoverPublisherSuggestionDelivery(params)).resolves.toBe(true);
+    await prisma.auditLog.update({
+      where: { id: auditLogId },
+      data: {
+        payload: {
+          type: 'suggest',
+          reviewStatus: 'published',
+          deliveries: [{ messageId: 'saved' }],
+          publisherAdminDeliverySetupBlock: {
+            version: 1,
+            botId: 'publisher',
+            code: 'module_disabled',
+          },
+        },
+      },
+    });
+    await assertPublisherSuggestionDeliveryReady(params);
+    const row = await prisma.auditLog.findUniqueOrThrow({ where: { id: auditLogId } });
+    expect(row.payload).toEqual({
+      type: 'suggest',
+      reviewStatus: 'published',
+      deliveries: [{ messageId: 'saved' }],
+    });
+    expect(
+      await prisma.channelSuggestionAdminDelivery.findMany({
+        where: { auditLogId },
+        orderBy: { id: 'asc' },
+      }),
+    ).toEqual(before);
+    await expect(canRecoverPublisherSuggestionDelivery(params)).resolves.toBe(false);
   });
 
   it('executes the recovery update and reopens an eligible terminal delivery', async () => {

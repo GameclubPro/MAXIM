@@ -24,7 +24,8 @@ CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED','QUEUED','FAILED','PROCESSED','D
 CREATE TABLE webhook_events (
   id text PRIMARY KEY, semantic_key text, status "WebhookStatus", created_at timestamp(3),
   normalized_payload jsonb, processed_at timestamp(3), next_enqueue_at timestamp(3),
-  timeout_quarantine_expires_at timestamp(3), error_message text
+  timeout_quarantine_expires_at timestamp(3), error_message text,
+  execution_deadline_at timestamp(3), queue_name text, queued_at timestamp(3), enqueue_attempts integer
 );
 CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status,created_at,id);
 CREATE INDEX webhook_events_status_next_enqueue_at_created_at_idx ON webhook_events(status,next_enqueue_at,created_at);
@@ -88,10 +89,10 @@ async function finishedClaim(db) {
     ],
   );
 }
-async function audit(db, source = false, retry = false) {
+async function audit(db, source = false, retry = false, queued = false) {
   await db.exec('BEGIN READ ONLY');
   try {
-    const report = (await db.query(buildOwnerProofAuditSql(source, retry))).rows[0]
+    const report = (await db.query(buildOwnerProofAuditSql(source, retry, queued))).rows[0]
       .json_build_object;
     assert.doesNotMatch(
       JSON.stringify(report),
@@ -439,13 +440,14 @@ test(
         result.classification,
         'finished_checkpoint_candidate_requires_runtime_validation',
       );
-      for (const [source, retry] of [
+      for (const [source, retry, queued] of [
         [false, false],
         [true, false],
-        [true, true],
+        [true, true, false],
+        [true, false, true],
       ]) {
         const plan = (
-          await db.query(`EXPLAIN (FORMAT JSON) ${buildOwnerProofAuditSql(source, retry)}`)
+          await db.query(`EXPLAIN (FORMAT JSON) ${buildOwnerProofAuditSql(source, retry, queued)}`)
         ).rows[0]['QUERY PLAN'];
         const scans = [];
         const visit = (node) => {
@@ -475,3 +477,30 @@ test(
     }
   },
 );
+
+test('queued proof isolates the oldest QUEUED from received and retry heads without exposing its queue identity', async () => {
+  const db = new PGlite();
+  try {
+    await fixture(db);
+    assert.equal((await audit(db, true, false, true)).classification, 'no_queued');
+    await receipts(db);
+    await finishedClaim(db);
+    await db.exec(`UPDATE webhook_events SET status='QUEUED',
+      execution_deadline_at='2026-10-01', queued_at='2026-10-01', enqueue_attempts=3,
+      queue_name='moderation-join-PRIVATE_VALUE_MUST_NOT_APPEAR'
+      WHERE id='private-blocker'`);
+    const report = await audit(db, true, false, true);
+    assert.equal(report.scope, 'oldest_queued_own_claim');
+    assert.equal(report.predecessor.status, 'QUEUED');
+    assert.equal(report.predecessor.queue_family, 'moderation-join');
+    assert.equal(report.predecessor.enqueue_attempts, 3);
+    assert.equal(report.predecessor.deadline_elapsed, true);
+    assert.equal(report.claim.business_started, true);
+    assert.equal(
+      report.classification,
+      'finished_checkpoint_candidate_requires_runtime_validation',
+    );
+  } finally {
+    await db.close();
+  }
+});

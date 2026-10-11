@@ -1,3 +1,4 @@
+import { assertPublisherSuggestionDeliveryReady } from './publisher-suggestion-setup-block';
 import {
   advanceChatMutationOrder,
   applyGroupChatControlCommand,
@@ -17202,20 +17203,21 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
-    if (scope.publisherOwned) {
-      const route = await this.publisherReadinessService?.assertEntityReady(
-        row.chatId,
-        'suggestion_publish',
-      );
-      if (!route || route.requiredBotId !== scope.requiredBotId) {
-        throw new ServiceUnavailableException('Publisher suggestion delivery route is unavailable');
-      }
-    }
-
     const payload = this.readObjectPayload(row.payload);
     const reviewStatus = this.readLowerString(payload.reviewStatus);
     if (reviewStatus && reviewStatus !== 'pending') {
       return;
+    }
+
+    if (scope.publisherOwned) {
+      await assertPublisherSuggestionDeliveryReady({
+        prisma: this.prisma,
+        readiness: this.publisherReadinessService,
+        auditLogId: row.id,
+        chatId: row.chatId,
+        requiredBotId: scope.requiredBotId,
+        setupBlockPresent: Boolean(payload.publisherAdminDeliverySetupBlock),
+      });
     }
 
     const ledgerBotKey = scope.publisherOwned ? scope.botKey : undefined;

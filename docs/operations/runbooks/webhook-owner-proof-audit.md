@@ -14,20 +14,24 @@ it never provisions itself. Run catalogs sequentially under their shared audit l
 Keep the exact runtime release identity and UTC observation window with the report.
 The diagnostic is excluded from `all` and accepts no identifiers, SQL or input files.
 
-Two additional fixed views diagnose a receipt itself when no earlier same-chat predecessor
-exists, or inspect the next scheduled failed retry:
+Three additional fixed views diagnose a receipt itself when no earlier same-chat predecessor
+exists, inspect the next scheduled failed retry, or inspect the oldest QUEUED receipt:
 
 ```bash
 ./infra/scripts/vps-connect.sh postgres-audit webhook-source-proof --explain
 ./infra/scripts/vps-connect.sh postgres-audit webhook-source-proof
 ./infra/scripts/vps-connect.sh postgres-audit webhook-retry-proof --explain
 ./infra/scripts/vps-connect.sh postgres-audit webhook-retry-proof
+./infra/scripts/vps-connect.sh postgres-audit webhook-queued-proof --explain
+./infra/scripts/vps-connect.sh postgres-audit webhook-queued-proof
 ```
 
 They retain the same private read-only envelope and existing grants. Source mode selects the
 oldest RECEIVED receipt. Retry mode selects one FAILED receipt with non-null `next_enqueue_at`
 ordered by `(next_enqueue_at, created_at)` through the existing status/retry index; it never
-walks terminal FAILED history. In these two scopes the compatibility field `predecessor` describes
+walks terminal FAILED history. Queued mode selects one QUEUED receipt through `(status, created_at, id)`. All scopes expose
+stored execution deadline, enqueue time/count and a finite queue-family label; they never expose
+the raw queue name or certify BullMQ job presence. In these receipt scopes the compatibility field `predecessor` describes
 the selected receipt itself, as identified by `scope`. Nonmessage lifecycle receipts can also expose their own claim in these modes. Their metadata
 remains diagnostic only. Fixed flags distinguish preparation
 lease errors, stored semantic matches and an execution-wait marker without exposing raw errors.

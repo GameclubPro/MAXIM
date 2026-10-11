@@ -76,7 +76,7 @@ Commands:
   postgres-audit legacy-order-candidates
   postgres-audit moderation-outcomes [--explain]
   postgres-audit webhook-cohort [--explain]
-  postgres-audit duplicate [--explain]
+  postgres-audit duplicate [--status <STATUS>] [--explain]
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
   postgres-audit publisher-publications [--explain]
@@ -86,6 +86,7 @@ Commands:
   postgres-audit webhook-owner-proof [--explain]
   postgres-audit webhook-source-proof [--explain]
   postgres-audit webhook-retry-proof [--explain]
+  postgres-audit webhook-queued-proof [--explain]
   postgres-audit commercial-quality [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
@@ -500,9 +501,22 @@ ERROR
 postgres_audit() {
   local mode="${1:-all}"
 
+  if [[ "$mode" == 'duplicate' && "${2:-}" == '--status' ]]; then
+    case "${3:-}" in
+      OBSERVED|PENDING|IN_PROGRESS|RETRYABLE|WAITING_CAPABILITY|AMBIGUOUS|SUCCEEDED|ALREADY_ABSENT|EXPIRED|FAILED_TERMINAL) ;;
+      *) echo 'Unknown duplicate intent status.' >&2; exit 2 ;;
+    esac
+    if [[ $# -gt 4 || ( $# -eq 4 && "$4" != '--explain' ) ]]; then
+      echo 'Usage: postgres-audit duplicate --status <STATUS> [--explain]' >&2
+      exit 2
+    fi
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
+
   if [[ "$mode" == 'webhook-cohort' || "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
-        "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'webhook-source-proof' || "$mode" == 'webhook-retry-proof' || "$mode" == 'legacy-order-window' ||
+        "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'webhook-source-proof' || "$mode" == 'webhook-retry-proof' || "$mode" == 'webhook-queued-proof' || "$mode" == 'legacy-order-window' ||
         "$mode" == 'moderation-outcomes' || "$mode" == 'legacy-semantic-mirrors' ]]; then
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       echo "Usage: postgres-audit $mode [--explain]" >&2

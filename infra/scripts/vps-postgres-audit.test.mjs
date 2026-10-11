@@ -2409,6 +2409,121 @@ test('duplicate explain plans only the fixed intent query and forwards no operat
   }
 });
 
+test('duplicate status pages reject arbitrary input and expose only the measured status', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  for (const status of [
+    'OBSERVED',
+    'PENDING',
+    'IN_PROGRESS',
+    'RETRYABLE',
+    'WAITING_CAPABILITY',
+    'AMBIGUOUS',
+    'SUCCEEDED',
+    'ALREADY_ABSENT',
+    'EXPIRED',
+    'FAILED_TERMINAL',
+  ]) {
+    for (const options of [[], ['--explain']]) {
+      const args = ['duplicate', '--status', status, ...options];
+      assert.equal(runAudit(data, args).status, 0);
+      assert.equal(runConnect(data, ['postgres-audit', ...args]).status, 0);
+      const sql = extractDuplicateReportSql(readFileSync(data.sql, 'utf8'));
+      assert.equal([...sql.matchAll(/FROM moderation_delete_intents\b/gu)].length, 1);
+      assert.match(sql, new RegExp(`'status_scope', '${status}'`, 'u'));
+      assert.match(sql, new RegExp(`intent_status_state.status::text = '${status}'`, 'u'));
+      assert.doesNotMatch(
+        sql,
+        /'audit', 'duplicate_settings'|'audit', 'recent_duplicate_moderation'/u,
+      );
+      assert.match(sql, /LIMIT 65/u);
+      assert.match(sql, /LIMIT 9/u);
+    }
+  }
+  for (const args of [
+    ['duplicate', '--status'],
+    ['duplicate', '--status', 'UNKNOWN'],
+    ['duplicate', '--status', "PENDING'; SELECT 1"],
+    ['duplicate', '--status', 'PENDING', '--analyze'],
+  ]) {
+    assert.equal(runAudit(data, args).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', ...args]).status, 2);
+  }
+});
+
+test(
+  'native duplicate pages bound reason probes despite retained history, skew and updates',
+  { skip: !nativePostgresUrl, timeout: 30_000 },
+  async (t) => {
+    const url = new URL(nativePostgresUrl);
+    assert(
+      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) &&
+        url.pathname.includes('race_test'),
+    );
+    const { default: pg } = await import('pg');
+    const db = new pg.Client({ connectionString: url.href });
+    const data = fixture();
+    t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+    const namespace = `duplicate_probe_${randomUUID().replaceAll('-', '')}`;
+    await db.connect();
+    try {
+      await db.query('BEGIN');
+      await db.query(`CREATE SCHEMA ${namespace}; SET LOCAL search_path=${namespace},public;
+        CREATE TYPE "ModerationDeleteIntentStatus" AS ENUM ('OBSERVED','PENDING','IN_PROGRESS','RETRYABLE',
+          'WAITING_CAPABILITY','AMBIGUOUS','SUCCEEDED','ALREADY_ABSENT','EXPIRED','FAILED_TERMINAL');
+        CREATE TABLE moderation_delete_intents(id text PRIMARY KEY, status "ModerationDeleteIntentStatus", updated_at timestamptz);
+        CREATE INDEX moderation_delete_intents_retention_idx ON moderation_delete_intents(status,updated_at);
+        CREATE TABLE moderation_delete_intent_reasons(intent_id text, reason_key text, rule_code text);
+        CREATE UNIQUE INDEX moderation_delete_intent_reasons_intent_reason_key ON moderation_delete_intent_reasons(intent_id,reason_key);
+        INSERT INTO moderation_delete_intents SELECT 'history-'||n, 'SUCCEEDED', now()-interval '2 days' FROM generate_series(1,120000) n;
+        INSERT INTO moderation_delete_intents SELECT 'recent-'||n, 'PENDING', now()-n*interval '1 second' FROM generate_series(1,80) n;
+        INSERT INTO moderation_delete_intent_reasons SELECT 'recent-'||n, 'reason-'||r, 'DUPLICATE_DELETE' FROM generate_series(1,80) n CROSS JOIN generate_series(1,12) r;
+        UPDATE moderation_delete_intents SET updated_at=updated_at+interval '1 millisecond';
+        ANALYZE moderation_delete_intents; ANALYZE moderation_delete_intent_reasons;
+        SET LOCAL statement_timeout='2500ms'; SET LOCAL enable_seqscan=off; SET LOCAL enable_bitmapscan=off;
+        SET LOCAL max_parallel_workers_per_gather=0; SET LOCAL jit=off; SET LOCAL work_mem='1MB';`);
+      const read = async (status) => {
+        assert.equal(runAudit(data, ['duplicate', '--status', status]).status, 0);
+        const sql = extractDuplicateReportSql(readFileSync(data.sql, 'utf8'));
+        const report = JSON.parse((await db.query(sql)).rows[0].json_build_object);
+        assert.equal(report.status_scope, status);
+        assert.equal(report.rows.length, 2);
+        assert(report.rows.every((row) => row.status === status));
+        return { sql, report };
+      };
+      const pending = await read('PENDING');
+      assert(
+        pending.report.rows.every(
+          (row) =>
+            row.sampled_intents === 64 &&
+            row.sample_saturated &&
+            !row.complete &&
+            row.saturated_reason_intents === 64,
+        ),
+      );
+      const empty = await read('SUCCEEDED');
+      assert(empty.report.rows.every((row) => row.sampled_intents === 0 && row.complete));
+      // FLAG: ANALYZE is local disposable-fixture coverage only; production stays plain EXPLAIN.
+      const plan = (await db.query(`EXPLAIN (ANALYZE, FORMAT JSON) ${pending.sql}`)).rows[0][
+        'QUERY PLAN'
+      ][0].Plan;
+      const nodes = (node) => [node, ...(node.Plans ?? []).flatMap(nodes)];
+      const scans = nodes(plan).filter((node) => node['Relation Name']);
+      assert.equal(scans.length, 2);
+      for (const scan of scans) {
+        assert.match(scan['Node Type'], /^Index (Only )?Scan$/u);
+        assert(
+          scan['Actual Rows'] * scan['Actual Loops'] <=
+            (scan['Relation Name'].endsWith('reasons') ? 64 * 9 : 65),
+        );
+      }
+    } finally {
+      await db.query('ROLLBACK');
+      await db.end();
+    }
+  },
+);
+
 test('all public audit mode includes the duplicate catalog report', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -3527,7 +3642,7 @@ test('vps postgres-audit accepts only public fixed modes and needs no bypass', (
   assert.match(readFileSync(data.sshArgs, 'utf8'), /publication-schema/u);
   assert.equal(runConnect(data, ['postgres-audit', 'publication-schema', 'other']).status, 2);
 
-  for (const mode of ['webhook-source-proof', 'webhook-retry-proof']) {
+  for (const mode of ['webhook-source-proof', 'webhook-retry-proof', 'webhook-queued-proof']) {
     for (const flags of [[], ['--explain']]) {
       const result = runConnect(data, ['postgres-audit', mode, ...flags]);
       assert.equal(result.status, 0, result.stderr);
@@ -3537,9 +3652,11 @@ test('vps postgres-audit accepts only public fixed modes and needs no bypass', (
       const sql = readFileSync(data.sql, 'utf8');
       assert(
         sql.includes(
-          mode === 'webhook-source-proof'
-            ? 'oldest_received_own_claim'
-            : 'earliest_scheduled_retry_own_claim',
+          mode === 'webhook-queued-proof'
+            ? 'oldest_queued_own_claim'
+            : mode === 'webhook-source-proof'
+              ? 'oldest_received_own_claim'
+              : 'earliest_scheduled_retry_own_claim',
         ),
       );
       assert(sql.includes("'settlement_authorized', false"));

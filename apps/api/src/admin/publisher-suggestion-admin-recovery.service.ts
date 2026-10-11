@@ -1,3 +1,5 @@
+import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
+import { canRecoverPublisherSuggestionDelivery } from './publisher-suggestion-setup-block';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -36,6 +38,7 @@ export class PublisherSuggestionAdminRecoveryService implements OnModuleInit, On
     runtimeBoundary: PublisherRuntimeBoundaryService,
     credentials: PublisherActionCredentialService,
     private readonly governor: BackgroundRuntimeGovernorService,
+    private readonly readiness: PublisherReadinessService,
   ) {
     this.enabled =
       roleRunsPublisher(getAppRole()) &&
@@ -105,6 +108,15 @@ export class PublisherSuggestionAdminRecoveryService implements OnModuleInit, On
     let recovered = 0;
     for (const row of rows) {
       try {
+        if (
+          !(await canRecoverPublisherSuggestionDelivery({
+            prisma: this.prisma,
+            readiness: this.readiness,
+            auditLogId: row.id,
+            requiredBotId: this.publisherBotId,
+          }))
+        )
+          continue;
         await reconcileStaleChannelSuggestionDeliveryClaims({
           prisma: this.prisma,
           auditLogId: row.id,

@@ -33,7 +33,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh legacy-order-window [--explain]
   ./infra/scripts/vps-postgres-audit.sh legacy-semantic-mirrors [--explain]
   ./infra/scripts/vps-postgres-audit.sh moderation-outcomes [--explain]
-  ./infra/scripts/vps-postgres-audit.sh duplicate [--explain]
+  ./infra/scripts/vps-postgres-audit.sh duplicate [--status <STATUS>] [--explain]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
@@ -43,6 +43,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh webhook-owner-proof [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-source-proof [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-retry-proof [--explain]
+  ./infra/scripts/vps-postgres-audit.sh webhook-queued-proof [--explain]
   ./infra/scripts/vps-postgres-audit.sh commercial-quality [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
@@ -86,15 +87,25 @@ SIGNAL_WINDOW_MIN=''
 RULES_CLEANUP_CHAT_ID=''
 RULES_CLEANUP_EXPLAIN=''
 DUPLICATE_EXPLAIN=''
+DUPLICATE_STATUS=''
 case "$AUDIT_MODE" in
   duplicate)
-    if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
+    shift
+    if [[ "${1:-}" == '--status' ]]; then
+      case "${2:-}" in
+        OBSERVED|PENDING|IN_PROGRESS|RETRYABLE|WAITING_CAPABILITY|AMBIGUOUS|SUCCEEDED|ALREADY_ABSENT|EXPIRED|FAILED_TERMINAL)
+          DUPLICATE_STATUS="$2" ;;
+        *) usage; exit 2 ;;
+      esac
+      shift 2
+    fi
+    if [[ $# -gt 1 || ( $# -eq 1 && "$1" != '--explain' ) ]]; then
       usage
       exit 2
     fi
-    DUPLICATE_EXPLAIN="${2:-}"
+    DUPLICATE_EXPLAIN="${1:-}"
     ;;
-  webhook-cohort|queue|publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
+  webhook-cohort|queue|publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|webhook-queued-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -1720,6 +1731,9 @@ emit_duplicate_intent_samples() {
   # statistics. Each independently ordered source retains its fixed sentinel cap.
   for status in OBSERVED PENDING IN_PROGRESS RETRYABLE WAITING_CAPABILITY \
     AMBIGUOUS SUCCEEDED ALREADY_ABSENT EXPIRED FAILED_TERMINAL; do
+    if [[ -n "$DUPLICATE_STATUS" && "$status" != "$DUPLICATE_STATUS" ]]; then
+      continue
+    fi
     if ((status_order > 0)); then
       printf '%s\n' '  UNION ALL'
     fi
@@ -1838,7 +1852,7 @@ SELECT CASE
 END AS duplicate_audit_ready \gset
 \if :duplicate_audit_ready
 SQL
-  if [[ -z "$DUPLICATE_EXPLAIN" ]]; then
+  if [[ -z "$DUPLICATE_EXPLAIN" && -z "$DUPLICATE_STATUS" ]]; then
     cat <<SQL
 WITH settings_sample_plus AS MATERIALIZED (
   SELECT
@@ -2104,7 +2118,7 @@ SELECT json_build_object(
 )::text;
 
 SQL
-  else
+  elif [[ -n "$DUPLICATE_EXPLAIN" ]]; then
     printf '%s\n' 'EXPLAIN (FORMAT JSON)'
   fi
   cat <<SQL
@@ -2201,6 +2215,7 @@ $(emit_duplicate_intent_samples)
     ON intent_reason_summary.status = intent_status_state.status
     AND intent_reason_summary.updated_at >=
       statement_timestamp() - make_interval(mins => audit_windows.window_minutes)
+  WHERE ('$DUPLICATE_STATUS' = '' OR intent_status_state.status::text = '$DUPLICATE_STATUS')
   GROUP BY
     audit_windows.window_minutes,
     intent_status_state.status_order,
@@ -2211,6 +2226,8 @@ $(emit_duplicate_intent_samples)
 SELECT json_build_object(
   'schema_version', 1,
   'audit', 'recent_duplicate_delete_intents',
+  'sampled_at', statement_timestamp(),
+  'status_scope', '${DUPLICATE_STATUS:-all}',
   'window_basis', 'updated_at',
   'sample_cap_per_status', $DUPLICATE_INTENT_SAMPLE_CAP_PER_STATUS,
   'reason_sample_cap_per_intent', $DUPLICATE_REASON_SAMPLE_CAP_PER_INTENT,
@@ -2253,10 +2270,12 @@ emit_sql() {
   node "$ROOT_DIR/infra/scripts/commercial-quality-audit.mjs" "${commercial_privilege_args[@]}"
   node "$ROOT_DIR/infra/scripts/webhook-owner-proof-audit.mjs" --privileges
   case "$AUDIT_MODE" in
-    webhook-owner-proof|webhook-source-proof|webhook-retry-proof)
+    webhook-owner-proof|webhook-source-proof|webhook-retry-proof|webhook-queued-proof)
       local owner_proof_args=()
       if [[ "$AUDIT_MODE" == "webhook-source-proof" ]]; then
         owner_proof_args+=(--source)
+      elif [[ "$AUDIT_MODE" == "webhook-queued-proof" ]]; then
+        owner_proof_args+=(--queued)
       elif [[ "$AUDIT_MODE" == "webhook-retry-proof" ]]; then
         owner_proof_args+=(--retry)
       fi
@@ -2384,7 +2403,7 @@ prepare_audit_sql() {
     echo "Generated PostgreSQL audit input is invalid." >&2
     return 1
   fi
-  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" ) || ( "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
     AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
       echo "Could not create the private PostgreSQL audit diagnostics file." >&2
       return 1
@@ -2494,7 +2513,7 @@ trap 'exit 143' TERM
 
 prepare_audit_sql
 AUDIT_BACKEND_MAY_EXIST=1
-if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" ) || ( "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
   timeout --signal=TERM --kill-after=2s \
     "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
     2>"$AUDIT_STDERR_FILE" &
@@ -2511,7 +2530,7 @@ AUDIT_PROCESS_PID=''
 
 if [[ "$status" -eq 124 ]]; then
   echo "Bounded PostgreSQL audit exceeded ${AUDIT_WALL_TIMEOUT_SEC}s and was terminated." >&2
-elif [[ "$status" -ne 0 && ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" ) ]]; then
+elif [[ "$status" -ne 0 && ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) ]]; then
   echo "Bounded webhook owner proof audit failed closed (owner_proof_unavailable)." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
   echo "Bounded legacy default webhook database audit failed closed." >&2

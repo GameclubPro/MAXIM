@@ -1,3 +1,4 @@
+import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
 import {
   buildPublisherSuggestionAdminRecoveryQuery,
   buildPublisherSuggestionAdminTerminalSyncRecoveryQuery,
@@ -19,6 +20,13 @@ function createService(params: {
   }>;
 }) {
   const prisma = {
+    auditLog: {
+      findUnique: jest.fn().mockResolvedValue({
+        chatId: '-9001',
+        action: 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION',
+        payload: { type: 'suggest', reviewStatus: 'pending' },
+      }),
+    },
     $queryRaw: jest
       .fn()
       .mockResolvedValueOnce(params.rows ?? [])
@@ -40,14 +48,16 @@ function createService(params: {
     getBotId: jest.fn(() => 'publisher-bot'),
   };
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'run' }) };
+  const readiness = { assertEntityReady: jest.fn() };
   const service = new PublisherSuggestionAdminRecoveryService(
     prisma as never,
     queue as never,
     runtimeBoundary as never,
     credentials as never,
     governor as never,
+    readiness as never,
   );
-  return { service, prisma, queue, runtimeBoundary, credentials, governor };
+  return { service, prisma, queue, runtimeBoundary, credentials, governor, readiness };
 }
 
 describe('Publisher suggestion admin recovery query', () => {
@@ -216,6 +226,40 @@ describe('PublisherSuggestionAdminRecoveryService', () => {
       requiredBotId: 'publisher-bot',
       recoverExisting: true,
     });
+  });
+
+  it('advances a full blocked page without retrying and resumes after fresh readiness', async () => {
+    const rows = Array.from({ length: 25 }, (_, i) => ({
+      id: `blocked-${i}`,
+      createdAt: new Date('2026-09-01'),
+    }));
+    const f = createService({ dispatchEnabled: true, rows });
+    f.prisma.auditLog.findUnique.mockResolvedValue({
+      chatId: '-9001',
+      action: 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        reviewStatus: 'pending',
+        publisherAdminDeliverySetupBlock: {
+          version: 1,
+          botId: 'publisher-bot',
+          code: 'module_disabled',
+        },
+      },
+    } as never);
+    f.readiness.assertEntityReady.mockRejectedValue(
+      new PublisherSetupRequiredException(['-9001'], 'module_disabled'),
+    );
+    await expect(f.service.recover()).resolves.toBe(0);
+    expect(f.queue.enqueueDelivery).not.toHaveBeenCalled();
+    expect(f.prisma.channelSuggestionAdminDelivery.findMany).not.toHaveBeenCalled();
+    f.prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    await f.service.recover();
+    expect(f.prisma.$queryRaw.mock.calls[2][0].values).toContain('blocked-24');
+    f.prisma.$queryRaw.mockResolvedValueOnce([rows[0]]).mockResolvedValueOnce([]);
+    f.readiness.assertEntityReady.mockResolvedValue({ requiredBotId: 'publisher-bot' });
+    await expect(f.service.recover()).resolves.toBe(1);
+    expect(f.queue.enqueueDelivery).toHaveBeenCalledTimes(1);
   });
 
   it('recycles failed terminal card sync jobs even when no pending delivery needs recovery', async () => {
