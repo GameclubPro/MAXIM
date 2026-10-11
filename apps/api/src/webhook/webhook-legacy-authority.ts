@@ -7,6 +7,7 @@ import {
   readWebhookEventTimestamp,
 } from './webhook-semantic-event-key';
 import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
+import { quarantineLegacyMembershipMirror } from './webhook-legacy-membership-mirror';
 
 type LegacyExecutionClaim = {
   id: string;
@@ -167,7 +168,7 @@ export async function holdUnverifiedLegacyExecution(
       owner.status !== WebhookStatus.DUPLICATE &&
       owner.status !== WebhookStatus.NO_REPLAY_HELD
     ) {
-      await prisma.webhookEvent.updateMany({
+      const held = await prisma.webhookEvent.updateMany({
         where: {
           id: owner.id,
           status: owner.status,
@@ -191,6 +192,19 @@ export async function holdUnverifiedLegacyExecution(
           errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required`,
         },
       });
+      if (
+        held.count === 1 &&
+        persistedOwner &&
+        persistedOwner.id !== owner.id &&
+        asRecord(persistedOwner.normalizedPayload)?.type === 'user_removed'
+      ) {
+        await quarantineLegacyMembershipMirror(prisma, {
+          mirrorId: persistedOwner.id,
+          ownerId: owner.id,
+          claimId: claim.id,
+          semanticKey: claim.semanticKey,
+        });
+      }
     }
   }
   return true;

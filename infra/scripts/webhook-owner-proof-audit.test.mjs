@@ -504,3 +504,36 @@ test('queued proof isolates the oldest QUEUED from received and retry heads with
     await db.close();
   }
 });
+
+test('source mirror reports terminal canonical metadata without exposing its saved error', async () => {
+  const db = new PGlite();
+  try {
+    await fixture(db);
+    await receipts(db);
+    await finishedClaim(db);
+    await db.exec(`UPDATE webhook_execution_claims SET status='PENDING', prepared_at=NULL,
+      business_started_at=NULL, lease_token=NULL, lease_expires_at=NULL, command_result=NULL`);
+    await db.query(
+      `UPDATE webhook_events SET timeout_quarantine_expires_at=NULL,
+      error_message=$1 WHERE id='private-blocker'`,
+      ['Webhook preparation failed: Webhook preparation lease was lost before READY for ' + secret],
+    );
+    const report = await audit(db, true);
+    assert.equal(report.classification, 'different_canonical_owner');
+    assert.deepEqual(report.canonical_owner, {
+      status: 'FAILED',
+      created_at: '2026-10-01T00:00:00',
+      processed: false,
+      legacy_unverified_marker: false,
+      retry_scheduled: false,
+      timeout_quarantine_present: false,
+      ambiguous_error_marker: false,
+      preparation_lease_failure: true,
+      error_family: 'preparation_failed',
+    });
+    await db.exec("DELETE FROM webhook_events WHERE id='private-blocker'");
+    assert.equal((await audit(db, true)).canonical_owner, null);
+  } finally {
+    await db.close();
+  }
+});

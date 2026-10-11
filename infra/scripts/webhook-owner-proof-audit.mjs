@@ -286,6 +286,21 @@ SELECT json_build_object(
     'processed', processed_at IS NOT NULL,
     'preparation_lease_failure', error_message LIKE 'Webhook preparation failed: Webhook preparation lease was lost before READY%',
     'ambiguous_error_marker', COALESCE(error_message, '') ILIKE '%ambiguous%') FROM predecessor),
+  'canonical_owner', (SELECT json_build_object(
+    'status', status::text, 'created_at', created_at,
+    'legacy_unverified_marker', error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required',
+    'processed', processed_at IS NOT NULL,
+    'retry_scheduled', next_enqueue_at IS NOT NULL,
+    'timeout_quarantine_present', timeout_quarantine_expires_at IS NOT NULL,
+    'ambiguous_error_marker', COALESCE(error_message, '') ILIKE '%ambiguous%',
+    'preparation_lease_failure', error_message LIKE 'Webhook preparation failed: Webhook preparation lease was lost before READY%',
+    'error_family', CASE
+      WHEN error_message IS NULL THEN 'absent'
+      WHEN error_message LIKE 'Webhook preparation deferred: Terminal canonical owner requires proof recovery%' THEN 'terminal_canonical_owner'
+      WHEN error_message LIKE 'Webhook preparation failed:%' THEN 'preparation_failed'
+      WHEN error_message LIKE 'Webhook preparation deferred:%' THEN 'preparation_deferred'
+      WHEN error_message LIKE 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:%' THEN 'timeout_quarantined'
+      ELSE 'other' END) FROM owner),
   'claim', json_build_object('present', x.id IS NOT NULL, 'owner_present', x.owner_id IS NOT NULL,
     'owner_same_as_predecessor', x.owner_id = x.predecessor_id,
     'owner_semantic_matches', x.owner_semantic_key = x.semantic_key,

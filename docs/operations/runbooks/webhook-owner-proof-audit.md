@@ -40,6 +40,19 @@ remain unchanged; none of these reports can authorize a retry or settlement.
 
 ## Selection and limits
 
+The `canonical_owner` section describes the already selected claim owner's status,
+retry/quarantine flags and fixed saved-error family. It adds no owner traversal,
+payload output or settlement authority. A pending removal mirror can otherwise
+obscure an already quarantined owner behind repeated preparation deferrals.
+
+Runtime may propagate the exact pending `LEGACY_EXECUTION_UNVERIFIED` quarantine
+to an unqueued `user_removed` mirror only after locking and revalidating the same
+unprepared, unstarted, unleased claim and both receipts. Independent claims,
+dispositions, attempted queue delivery or different source/error evidence refuse.
+Both original payloads and the claim remain unchanged; the mirror remains FAILED
+under the pending no-replay marker, protected from terminal retention. This does
+not complete the owner, authorize replay or recover historical external effects.
+
 The report selects the oldest `RECEIVED` row using `(status, created_at, id)`, then
 exactly its first earlier ordered predecessor through the ordered-chat partial index.
 It classifies that row even if its authority is missing or invalid; it never skips to
