@@ -29,6 +29,18 @@ before editing it; copying these notes does not install a fix or prove the deplo
    statement should keep their conditional status/CAS and JSON no-op checks in that statement.
    Do not add BEGIN/COMMIT around a single atomic update. Multi-step invariants still require
    transactions; removing all locks or transactions is not a throughput correction.
+   Prisma pool admission may retry pg-pool's exact waiting-list timeout once, before a
+   client is returned. The configured pool cap and per-attempt timeout remain unchanged;
+   total admission can take two waits (ten seconds with the production five-second timeout).
+   Never extend this retry to SQL, transaction callbacks, commits or MAX calls, including
+   failures with the same error text. Shutdown must suppress a new acquisition. Native
+   `connection-admission-pool-postgres.spec.ts` verifies bounded occupancy, no SQL replay,
+   callback release, shutdown and adapter reconnect. This cannot recover a historical
+   started handler or prove that a future exhausted pool will become available.
+   The no-immunity path probes the exact grant and logical-message receipt unique keys
+   before reserving a transaction. Retain full ownership/current-grant validation when
+   either exists; never cache absence. Native immunity regressions cover retained-history
+   plans, concurrent quota consumption, grant creation and revoked/conflicting receipts.
 4. **Distinguish denied dispatch from unknown effects.** For an already persisted required-
    subscription notice/album handoff, only the exact typed rejection produced by that handoff's
    own final `beforeSend` callback may finish without dispatch. Exact source GET 404 is unavailable

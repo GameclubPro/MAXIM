@@ -1,7 +1,8 @@
-import { PrismaPg } from '@prisma/adapter-pg';
+import type { PrismaPg } from '@prisma/adapter-pg';
 import type { PoolConfig } from 'pg';
 
 import { PrismaClient } from '../generated/prisma/client';
+import { ConnectionAdmissionPrismaPg } from './connection-admission-pool';
 
 export * from '../generated/prisma/client';
 
@@ -50,7 +51,7 @@ export function createPrismaAdapter(
 
   const connectionString = databaseUrl.trim();
 
-  return new PrismaPg(
+  return new ConnectionAdmissionPrismaPg(
     {
       connectionString,
       ...poolConfig,

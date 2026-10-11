@@ -108,6 +108,23 @@ export class ParticipantModerationImmunityService {
     // FLAG: Quota belongs to one logical message/day, never to a rule, mirror or edit.
     const expected = buildClaim({ ...params, scope: `logical-message:v2:${dateKey}` });
 
+    // FLAG: Most messages have neither a grant nor a receipt. Two exact indexed
+    // probes avoid reserving a transaction for that case. An existing receipt must
+    // still pass ownership/current-grant validation; absence is never cached.
+    const admission = await this.prisma.$queryRaw<Array<{ needed: boolean }>>(Prisma.sql`
+      SELECT EXISTS (
+        SELECT 1 FROM "chat_participant_moderation_immunities"
+        WHERE "chat_id" = ${params.chatId} AND "user_id" = ${params.userId}
+      ) OR EXISTS (
+        SELECT 1 FROM "moderation_violation_message_claims"
+        WHERE "dedupe_key" = ${expected.dedupeKey}
+      ) AS "needed"
+    `);
+    if (admission.length !== 1 || typeof admission[0]?.needed !== 'boolean') {
+      throw new Error('Participant moderation immunity admission is unavailable');
+    }
+    if (!admission[0].needed) return 'not_granted';
+
     try {
       return await this.prisma.$transaction(async (tx) => {
         const existing = await tx.moderationViolationMessageClaim.findUnique({

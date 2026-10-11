@@ -19,6 +19,7 @@ import { MAX_API_SOURCE_TAGS, MaxClientService, type MaxBotChat } from './max-cl
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { canDiscoverChatsForBotState } from './max-bot-state.util';
+import { ManagedEntityActivationRequiredError } from './managed-entity-activation.util';
 import {
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
   type MaxChatAdminRosterSyncJob,
@@ -390,6 +391,7 @@ export class MaxChatAdminRosterSyncService {
     let recoverableError: unknown = null;
     let attemptedCandidate = false;
     let skippedDueToTerminalBackoff = false;
+    let activationRequired = false;
     const requestedBotIds = new Set(
       (job.botIds ?? []).map((id) => this.resolveDiscoveryBotId(id)).filter(Boolean),
     );
@@ -418,6 +420,7 @@ export class MaxChatAdminRosterSyncService {
 
       if (
         normalized.source !== 'webhook_bot_added' &&
+        normalized.source !== 'handshake_start' &&
         this.isTerminalBotBackoffActive(normalized.chatId, botId)
       ) {
         skippedDueToTerminalBackoff = true;
@@ -458,6 +461,14 @@ export class MaxChatAdminRosterSyncService {
 
         rosterAccess ??= { botId, access, probeStartedAt: accessProbeStartedAt };
       } catch (error: unknown) {
+        // FLAG: Passive retries cannot satisfy explicit activation. Preserve the
+        // exact bot's dormant state and try healthy peers without granting access,
+        // clearing their roster, or treating a missing activation as propagation.
+        if (error instanceof ManagedEntityActivationRequiredError) {
+          activationRequired = true;
+          this.markTerminalBotBackoff(normalized.chatId, botId);
+          continue;
+        }
         if (this.isChatAccessDeniedError(error)) {
           if (!accessProbeStartedAt) {
             recoverableError ??= error;
@@ -540,6 +551,8 @@ export class MaxChatAdminRosterSyncService {
     if (rosterAccess) {
       return true;
     }
+
+    if (activationRequired && deniedBotEpochs.length === 0) return false;
 
     if (!attemptedCandidate && skippedDueToTerminalBackoff) {
       this.logger.debug(

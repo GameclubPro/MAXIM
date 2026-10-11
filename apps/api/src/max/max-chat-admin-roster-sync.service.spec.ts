@@ -2,6 +2,7 @@ import {
   MaxChatAdminRosterSyncService,
   MaxChatAdminRosterSyncSourceBackoffError,
 } from './max-chat-admin-roster-sync.service';
+import { ManagedEntityActivationRequiredError } from './managed-entity-activation.util';
 
 describe('MaxChatAdminRosterSyncService', () => {
   function createService() {
@@ -188,6 +189,96 @@ describe('MaxChatAdminRosterSyncService', () => {
       latestProbeByMembership,
     };
   }
+
+  it('does not retry a dormant bot or clear roster grants when explicit activation is required', async () => {
+    const h = createService();
+    h.maxClient.getCurrentChatMemberAccess.mockRejectedValue(
+      new ManagedEntityActivationRequiredError(),
+    );
+    const job = { chatId: '-100131', botIds: ['bot-1'], source: 'discovery_snapshot' as const };
+    await expect(h.service.processJob(job)).resolves.toBe(false);
+    await expect(h.service.processJob(job)).resolves.toBe(false);
+    expect(h.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(h.maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(h.maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+    expect(h.prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+    expect(h.prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+  });
+
+  it('does not mistake explicit activation for still-propagating bot_added rights', async () => {
+    const h = createService();
+    h.maxClient.getCurrentChatMemberAccess.mockRejectedValue(
+      new ManagedEntityActivationRequiredError(),
+    );
+    await expect(
+      h.service.processJob({
+        chatId: '-100131',
+        botIds: ['bot-1'],
+        source: 'webhook_bot_added',
+        retryUntilMs: Date.now() + 30_000,
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it('continues through a healthy peer while another bot awaits activation', async () => {
+    const h = createService();
+    h.maxClient.getCurrentChatMemberAccess
+      .mockRejectedValueOnce(new ManagedEntityActivationRequiredError())
+      .mockResolvedValue({ isAdmin: true, isOwner: false });
+    h.maxClient.getChatAdminIds.mockResolvedValue(['admin-1']);
+    await expect(
+      h.service.processJob({ chatId: '-100131', botIds: ['bot-1', 'bot-2'] }),
+    ).resolves.toBe(true);
+    expect(h.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(h.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-2' }),
+    );
+    expect(h.prisma.chatAdminAllowlist.createMany).toHaveBeenCalledWith({
+      data: [{ chatId: '-100131', userId: 'admin-1' }],
+      skipDuplicates: true,
+    });
+    expect(h.prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('retains pending-rights retries for another bot while one awaits activation', async () => {
+    const h = createService();
+    h.maxClient.getCurrentChatMemberAccess
+      .mockRejectedValueOnce(new ManagedEntityActivationRequiredError())
+      .mockResolvedValue({ isAdmin: false, isOwner: false });
+    await expect(
+      h.service.processJob({
+        chatId: '-100131',
+        botIds: ['bot-1', 'bot-2'],
+        source: 'webhook_bot_added',
+        retryUntilMs: Date.now() + 30_000,
+      }),
+    ).rejects.toThrow('still propagating');
+    expect(h.prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('rechecks fresh handshake rights without waiting for the passive backoff', async () => {
+    const h = createService();
+    h.maxClient.getCurrentChatMemberAccess
+      .mockRejectedValueOnce(new ManagedEntityActivationRequiredError())
+      .mockResolvedValue({ isAdmin: true, isOwner: false });
+    h.maxClient.getChatAdminIds.mockResolvedValue(['admin-1']);
+    const job = { chatId: '-100131', botIds: ['bot-1'] };
+    await expect(h.service.processJob(job)).resolves.toBe(false);
+    await expect(h.service.processJob({ ...job, source: 'handshake_start' })).resolves.toBe(true);
+    expect(h.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not suppress an untyped or unrelated probe failure', async () => {
+    const h = createService();
+    const error = Object.assign(
+      new Error('An explicit administrator Start or forwarded message is required'),
+      { name: 'ManagedEntityActivationRequiredError' },
+    );
+    h.maxClient.getCurrentChatMemberAccess.mockRejectedValue(error);
+    await expect(h.service.processJob({ chatId: '-100131', botIds: ['bot-1'] })).rejects.toBe(
+      error,
+    );
+  });
 
   it('enqueues fresh webhook bot_added jobs with delayed exponential retry cadence', async () => {
     const { service, queue } = createService();

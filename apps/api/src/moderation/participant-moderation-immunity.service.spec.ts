@@ -106,6 +106,22 @@ describe('ParticipantModerationImmunityService', () => {
     expect(harness.prisma.moderationViolationMessageClaim.findUnique).not.toHaveBeenCalled();
   });
 
+  it('does not reserve a transaction when both the grant and receipt are absent', async () => {
+    const harness = buildHarness({ admissionNeeded: false });
+    await expect(harness.service.consumeForMessage(input)).resolves.toBe('not_granted');
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+    expect(harness.tx.moderationViolationMessageClaim.create).not.toHaveBeenCalled();
+  });
+
+  it('retains an unavailable admission as a failure rather than absence of immunity', async () => {
+    const harness = buildHarness();
+    harness.prisma.$queryRaw.mockReset().mockResolvedValue([]);
+    await expect(harness.service.consumeForMessage(input)).rejects.toThrow(
+      'Participant moderation immunity admission is unavailable',
+    );
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it('recognizes a concurrent claim when the serialized limited update finds no capacity', async () => {
     const harness = buildHarness({
       consumedRows: [],
@@ -170,6 +186,7 @@ function expectedClaim() {
 
 function buildHarness(
   options: {
+    admissionNeeded?: boolean;
     consumedRows?: Array<{ granted: number }>;
     transactionClaim?: ReturnType<typeof expectedClaim> | null;
     transactionClaims?: Array<ReturnType<typeof expectedClaim> | null>;
@@ -196,7 +213,11 @@ function buildHarness(
       .mockResolvedValue(options.currentRows ?? []),
   };
   const prisma = {
-    $queryRaw: jest.fn().mockResolvedValue(options.currentRows ?? []),
+    $queryRaw: jest.fn(async (query: { sql: string }) =>
+      query.sql.includes('AS "needed"')
+        ? [{ needed: options.admissionNeeded ?? true }]
+        : (options.currentRows ?? []),
+    ),
     moderationViolationMessageClaim: {
       findUnique: jest.fn().mockResolvedValue(options.reconciledClaim ?? null),
     },
