@@ -113,22 +113,20 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
 
   it('uses exact unique-index probes with a large retained grant and receipt history', async () => {
     await prisma.chatParticipantModerationImmunity.deleteMany({ where: { chatId } });
-    for (let page = 0; page < 20; page++) {
-      const users = Array.from({ length: 1000 }, (_, i) => `history-${page * 1000 + i}`);
-      await prisma.chatParticipantModerationImmunity.createMany({
-        data: users.map((userId) => ({ chatId, userId })),
-      });
-      await prisma.moderationViolationMessageClaim.createMany({
-        data: users.map((userId) => ({
-          chatId,
-          userId,
-          dedupeKey: `${chatId}:${userId}`,
-          messageId: userId,
-          ruleCode: 'TEST',
-          updateType: 'message_created',
-        })),
-      });
-    }
+    // FLAG: Seed the same 20,000-row histories inside disposable PostgreSQL. Avoid
+    // measuring ORM serialization and forty ingestion round trips as query-plan work.
+    await prisma.$executeRaw`
+      INSERT INTO chat_participant_moderation_immunities (id, chat_id, user_id, updated_at)
+      SELECT ${chatId} || ':grant-' || n, ${chatId}, 'history-' || n, CURRENT_TIMESTAMP
+      FROM generate_series(0, 19999) AS n
+    `;
+    await prisma.$executeRaw`
+      INSERT INTO moderation_violation_message_claims
+        (id, dedupe_key, chat_id, user_id, message_id, rule_code, update_type)
+      SELECT ${chatId} || ':receipt-' || n, ${chatId} || ':history-' || n,
+        ${chatId}, 'history-' || n, 'history-' || n, 'TEST', 'message_created'
+      FROM generate_series(0, 19999) AS n
+    `;
     await prisma.$executeRaw`ANALYZE chat_participant_moderation_immunities`;
     await prisma.$executeRaw`ANALYZE moderation_violation_message_claims`;
     const read = jest.spyOn(prisma, '$queryRaw');
@@ -147,5 +145,5 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
     expect(plan).toContain('moderation_violation_message_claims_dedupe_key_key');
     expect(plan).not.toContain('Seq Scan');
     expect(plan).not.toContain('Sort');
-  });
+  }, 30_000);
 });
