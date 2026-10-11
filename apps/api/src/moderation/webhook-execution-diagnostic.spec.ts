@@ -147,6 +147,7 @@ describe('webhook execution diagnostics', () => {
   });
 
   it.each([
+    ['max_action_executor_proof_rejected', 'executor_proof_rejected'],
     ['required_subscription_no_longer_authorized', 'subscription_authority_rejected'],
     ['Required subscription source no longer actionable', 'subscription_source_unavailable'],
     ['Required subscription fresh membership unavailable', 'subscription_membership_unavailable'],

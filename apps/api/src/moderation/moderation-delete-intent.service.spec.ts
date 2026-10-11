@@ -3245,6 +3245,28 @@ describe('ModerationDeleteIntentService', () => {
     expect(result.retryDelayMs).toBeGreaterThanOrEqual(45_000);
   });
 
+  it('retains an elapsed explicit deadline when immediate execution was omitted', () => {
+    const { service } = createService();
+    const deadline = new Date(Date.now() - 60_000);
+    const input = {
+      chatId: 'chat-1',
+      messageId: 'expired-message',
+      reasonKey: 'MESSAGE_TOO_LONG_DELETE',
+      retryUntilAt: deadline,
+      sourceMessageAt: new Date(deadline.getTime() - 300_000),
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      originBotId: 'bot-1',
+    };
+    const normalized = (service as unknown as ServiceInternals).normalizeInput(input);
+    expect(normalized.retryUntilAt).toEqual(deadline);
+    expect(normalized.executeAt).toEqual(deadline);
+    for (const executeAt of [new Date(), new Date(Date.now() + 60_000), 'invalid-date'])
+      expect(() =>
+        (service as unknown as ServiceInternals).normalizeInput({ ...input, executeAt }),
+      ).toThrow();
+  });
+
   it('keeps the retry window after delayed executeAt', () => {
     const { service } = createService({ MODERATION_DELETE_INTENT_RETRY_HORIZON_MS: 60_000 });
     const executeAt = new Date(Date.now() + 3_600_000);

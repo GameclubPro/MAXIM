@@ -656,6 +656,8 @@ queues=(
   publisher-suggestion-publication
   publisher-suggestion-admin
   publisher-start
+  publisher-video-upload
+  marketplace-publisher-access
   vk-parsing-sync
   vk-parsing-publish
   vk-parsing-publisher

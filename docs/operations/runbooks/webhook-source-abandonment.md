@@ -195,7 +195,13 @@ with the same known namespace names; active key counts may differ between them.
 Preserve both raw proofs. This tolerance applies only to online admission:
 each stopped inventory still requires exact equality of its two raw count maps.
 Online admission initially packs at most seven owners per selection, leaving SQL
-headroom below the retained eight-owner certificate ceiling. Every selection
+headroom below the retained eight-owner certificate ceiling. A preview request may
+set `maximumOwnersPerAdmission` to an integer from one to seven to start with smaller
+selections after measured per-proof budget pressure. Omission retains seven. Every
+candidate remains accounted for, and the feasibility artifact must reserve the
+resulting child count and measured collection/readback cost. The option changes no
+collector ceiling or refusal category; the reviewed frozen plan owns the run scope.
+Every selection
 still requires a complete fresh stock admission, including after a prior refused
 plan. If online admission returns a known selected-source SQL page-budget refusal
 at 511 or 512 charged pages, either alone or paired exactly with

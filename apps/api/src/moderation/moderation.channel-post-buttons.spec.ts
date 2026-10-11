@@ -249,6 +249,7 @@ function createChannelAutoPostAttachMarkerMock() {
         replacementSendStartedAt: null,
         publishedUrl: null,
         originalDeleted: false,
+        cleanupIntentId: null,
       });
       return { count: 1 };
     }),
@@ -261,14 +262,21 @@ function createChannelAutoPostAttachMarkerMock() {
       for (const field of [
         'status',
         'lockToken',
+        'botId',
+        'linkType',
+        'deliveryMode',
         'replacementMessageId',
         'replyMessageId',
         'replacementSendStartedAt',
+        'publishedUrl',
+        'originalDeleted',
+        'cleanupIntentId',
       ]) {
         if (Object.prototype.hasOwnProperty.call(where, field) && row[field] !== where[field]) {
           return { count: 0 };
         }
       }
+      if (where.lockedAt?.gte && !(row.lockedAt >= where.lockedAt.gte)) return { count: 0 };
       rows.set(key, { ...row, ...data });
       return { count: 1 };
     }),
@@ -335,6 +343,150 @@ function configureDefaultChannelAutoPostDeleteRoute(service: ModerationService):
 }
 
 describe('ModerationService channel auto post buttons', () => {
+  it.each(['webhook', 'poll'] as const)(
+    'hands off a genuine first-edit route rejection without delivery or scan advancement: %s',
+    async (source) => {
+      const marker = createChannelAutoPostAttachMarkerMock();
+      const prisma = {
+        ...createChannelMutationGuardPrismaMock(),
+        channelAutoPostAttachMarker: marker.delegate,
+        auditLog: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      };
+      const rejection = markMaxPreDispatchGuardRejected(
+        Object.assign(new Error('MAX action executor proof changed during quota wait'), {
+          code: 'max_action_executor_proof_rejected',
+        }),
+        MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
+      );
+      const maxClient = {
+        ...createChannelMutationGuardMaxClientMock(),
+        editMessageInlineKeyboard: jest.fn().mockRejectedValue(rejection),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        {} as never,
+        {} as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        createAdminServiceMock() as never,
+      );
+      configureDefaultChannelAutoPostEditRoute(service);
+      const input = {
+        chatId: 'channel-1',
+        messageId: 'deferred-edit',
+        text: 'Post',
+        linkType: null,
+        managedChannel: { channelSettings: { commentsEnabled: true }, adminUserIds: [] },
+        source,
+        senderId: null,
+        senderAdminVerified: false,
+        allowSenderlessEngagement: true,
+      };
+      await expect((service as any).tryAutoAttachChannelMessageButtons(input)).resolves.toBe(
+        'in_progress',
+      );
+      expect(marker.rows.get('channel-1:deferred-edit')).toMatchObject({
+        status: 'IN_PROGRESS',
+        deliveryMode: 'edit_message',
+        lockToken: null,
+        lockedAt: null,
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        lastError: 'Channel edit deferred before dispatch: max_action_executor_proof_rejected',
+      });
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+      expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+      maxClient.editMessageInlineKeyboard.mockImplementation(
+        async (_chat, _message, _text, options) => {
+          await options.beforeEditMutation();
+        },
+      );
+      await expect(
+        (service as any).tryAutoAttachChannelMessageButtons({ ...input, source: 'poll' }),
+      ).resolves.toBe('attached');
+      expect(marker.rows.get('channel-1:deferred-edit')).toMatchObject({ status: 'SUCCEEDED' });
+    },
+  );
+
+  it.each([
+    'forged',
+    'other_guard',
+    'ambiguous',
+    'lost_lease',
+    'expired_lease',
+    'persistence_failed',
+    'forward',
+    'quick_buttons',
+  ] as const)('does not complete a channel edit handoff with %s evidence', async (failure) => {
+    const marker = createChannelAutoPostAttachMarkerMock();
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      channelAutoPostAttachMarker: marker.delegate,
+      auditLog: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+    };
+    let rejection: unknown = Object.assign(
+      new Error(failure === 'ambiguous' ? 'timeout' : 'route changed'),
+      {
+        code:
+          failure === 'other_guard'
+            ? MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE
+            : 'max_action_executor_proof_rejected',
+      },
+    );
+    if (failure !== 'forged')
+      rejection = markMaxPreDispatchGuardRejected(
+        rejection,
+        MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
+      );
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      editMessageInlineKeyboard: jest.fn(async () => {
+        const row = marker.rows.get('channel-1:rejected-edit')!;
+        if (failure === 'lost_lease') row.lockToken = 'another-owner';
+        if (failure === 'expired_lease') row.lockedAt = new Date(Date.now() - 121_000);
+        if (failure === 'persistence_failed')
+          marker.delegate.updateMany.mockRejectedValueOnce(new Error('DB unavailable'));
+        throw rejection;
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+    configureDefaultChannelAutoPostEditRoute(service);
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'rejected-edit',
+        text: 'Post',
+        linkType: failure === 'forward' ? 'forward' : null,
+        ...(failure === 'quick_buttons' ? { quickButtons: { buttons: [], text: 'Post' } } : {}),
+        managedChannel: { channelSettings: { commentsEnabled: true }, adminUserIds: [] },
+        source: 'webhook',
+        senderId: null,
+        senderAdminVerified: false,
+        allowSenderlessEngagement: true,
+      }),
+    ).rejects.toThrow();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(marker.rows.get('channel-1:rejected-edit')?.lastError).not.toBe(
+      'Channel edit deferred before dispatch: max_action_executor_proof_rejected',
+    );
+  });
+
   it.each(['webhook', 'poll'])(
     'skips an exactly held senderless %s source before marker or route work',
     async (source) => {

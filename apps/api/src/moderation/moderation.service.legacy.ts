@@ -15425,6 +15425,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     let replacementSendStarted = false;
     let signatureApplied = false;
     let maxMutationAttemptStartedAt: Date | null = null;
+    let editAttempts = 0;
 
     try {
       ctaButton =
@@ -15616,6 +15617,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       } else {
         try {
           maxMutationAttemptStartedAt = new Date();
+          editAttempts += 1;
           await this.maxClient.editMessageInlineKeyboard(
             chatId,
             messageId,
@@ -15662,6 +15664,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             'Failed to merge channel post buttons; retrying with preserved actions first',
           );
           maxMutationAttemptStartedAt = new Date();
+          editAttempts += 1;
           await this.maxClient.editMessageInlineKeyboard(
             chatId,
             messageId,
@@ -15691,6 +15694,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
+      if (
+        await this.replacementAttachMarkerStore.deferChannelEditBeforeDispatch(
+          { ...params, lockToken: claim.lockToken, botId: autoAttachBotId },
+          error,
+          editAttempts,
+        )
+      )
+        return 'in_progress';
       if (replaceForward && replacementMessageId) {
         this.logger.error(
           {

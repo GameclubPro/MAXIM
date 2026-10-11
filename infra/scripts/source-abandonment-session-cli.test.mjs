@@ -385,12 +385,33 @@ test('preview durably binds private proofs, runtime, source and finite budgets w
   assert.equal(plan.manifest.imageId, imageId);
   assert.equal(plan.manifest.baselineDigest, digest(plan.baseline));
   assert.equal(h.captured.planner.maximumChildren, 1);
+  assert.equal(h.captured.planner.maximumOwnersPerAdmission, 7);
   assert.equal(existsSync(join(h.directory, 'admission.env')), false);
   assert.equal(h.events.includes('host'), false);
   assert.equal(h.events.includes('prepare'), false);
   assert.doesNotMatch(JSON.stringify(result), /private_owner|password|private-token/);
   assert.doesNotMatch(planBytes.toString(), /password|private-token/);
 });
+
+test('preview forwards a smaller admission pack while retaining the complete frozen plan', async (t) => {
+  const h = fixture(t);
+  h.previewRequest.maximumOwnersPerAdmission = 3;
+  const result = await h.preview();
+  assert.equal(result.feasible, true);
+  assert.equal(h.captured.planner.maximumOwnersPerAdmission, 3);
+  assert.equal(h.events.includes('host'), false);
+  assert.equal(h.events.includes('prepare'), false);
+});
+
+for (const maximumOwnersPerAdmission of [0, 8, 1.5, null])
+  test(`preview refuses invalid admission pack ${maximumOwnersPerAdmission} before clients`, async (t) => {
+    const h = fixture(t);
+    h.previewRequest.maximumOwnersPerAdmission = maximumOwnersPerAdmission;
+    await assert.rejects(h.preview(), /admission_pack_refused/);
+    assert.equal(h.events.includes('admission'), false);
+    assert.equal(h.events.includes('host'), false);
+    assert.equal(existsSync(join(h.directory, 'plan.json')), false);
+  });
 
 for (const [estimatedMinutes, durationMinutes] of [
   [7, 60],
@@ -478,10 +499,7 @@ test('continuation preserves a retained 60-minute manifest, digest and original 
     h.dependencies,
   );
   await h.captured.host.snapshotFrozenInventory(h.captured.host.manifest, {});
-  assert.equal(
-    h.captured.frozenDeadline,
-    now + 60 * 60 * 1000 - h.feasibility.startupReserveMs,
-  );
+  assert.equal(h.captured.frozenDeadline, now + 60 * 60 * 1000 - h.feasibility.startupReserveMs);
   assert.equal(h.captured.host.manifest.budgets.durationMs, 60 * 60 * 1000);
   assert.equal(digest(h.captured.host.manifest), manifestDigest);
   assert.equal(h.state().journal.manifestDigest, manifestDigest);

@@ -31,9 +31,17 @@ export class RequiredSubscriptionExecutionRejectedError extends Error {
 // FLAG: This proves unavailable membership evidence, never membership or permission
 // to delete. Only a committed guarded DELETE obligation may outlive its caller.
 export class RequiredSubscriptionMembershipUnavailableError extends Error {
-  constructor() {
-    super('Required subscription fresh membership unavailable');
+  constructor(cause?: unknown) {
+    super('Required subscription fresh membership unavailable', { cause });
     this.name = 'RequiredSubscriptionMembershipUnavailableError';
+  }
+}
+
+export class RequiredSubscriptionAuthorAccessUnavailableError extends RequiredSubscriptionMembershipUnavailableError {
+  constructor(cause: unknown) {
+    super(cause);
+    this.message = 'Required subscription author access unavailable';
+    this.name = 'RequiredSubscriptionAuthorAccessUnavailableError';
   }
 }
 
@@ -83,7 +91,18 @@ export class RequiredSubscriptionExecutionGuardService {
     };
     await assertRequiredSubscriptionNoticeAuthority(this.prisma, proof, {
       isKnownBotUserId: (userId) => this.bots.isKnownBotUserId(userId),
-      getMemberAccess: () => this.max.getChatMemberAccess(proof.chatId, proof.userId, options),
+      getMemberAccess: async () => {
+        try {
+          return await this.max.getChatMemberAccess(proof.chatId, proof.userId, options);
+        } catch (error) {
+          if (isRequiredSubscriptionMemberReadRateLimited(error))
+            throw new RequiredSubscriptionNoticeReadDeferredError(
+              'Required subscription notice author access rate limited',
+              { cause: error },
+            );
+          throw error;
+        }
+      },
       getSource: async () => {
         try {
           return await this.max.getExactMessageRow(proof.chatId, proof.messageId, options);
@@ -212,7 +231,18 @@ export class RequiredSubscriptionExecutionGuardService {
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
       timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5_000,
     };
-    const access = await this.max.getChatMemberAccess(params.chatId, userId, options);
+    const access = await this.max
+      .getChatMemberAccess(params.chatId, userId, options)
+      .catch((error: unknown) => {
+        // FLAG: Only the initial no-effect qualification or committed DELETE handoff may
+        // outlive this exact author GET 429. Final dispatch still requires fresh access.
+        if (
+          (params.initialQualification === true || params.deleteHandoffQualification === true) &&
+          isRequiredSubscriptionMemberReadRateLimited(error)
+        )
+          throw new RequiredSubscriptionAuthorAccessUnavailableError(error);
+        throw error;
+      });
     if (!access || access.isAdmin === true || access.isOwner === true) this.reject();
     if (access.userId !== userId || access.isAdmin !== false || access.isOwner !== false)
       throw new Error('Required subscription author access unavailable');
@@ -324,6 +354,18 @@ export class RequiredSubscriptionExecutionGuardService {
   private reject(): never {
     throw new RequiredSubscriptionExecutionRejectedError();
   }
+}
+
+// FLAG: Called only around the source author's member GET, never a mutation.
+// Other HTTP statuses, missing/non-GET provenance and attempted effects remain fenced.
+function isRequiredSubscriptionMemberReadRateLimited(error: unknown): boolean {
+  return (
+    extractHttpStatusCode(error) === 429 &&
+    (error as { config?: { method?: unknown } })?.config?.method === 'get' &&
+    !wasMaxMessageSendAttempted(error) &&
+    !wasMaxMemberMutationAttempted(error) &&
+    !isMaxMutationOutcomeAmbiguous(error)
+  );
 }
 
 // FLAG: Called only around the exact source GET, never around sanctions or sends.

@@ -5225,6 +5225,7 @@ export class ModerationDeleteIntentService {
       )
     )`;
 
+    let retainedExpiredConflict = false;
     const persist = async (tx: Prisma.TransactionClient) => {
       const rows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
         INSERT INTO "moderation_delete_intents" (
@@ -5350,6 +5351,7 @@ export class ModerationDeleteIntentService {
             ELSE "moderation_delete_intents"."completed_at"
           END,
           "updated_at" = CURRENT_TIMESTAMP
+        WHERE ${!normalized.expiredImmediateSchedule}
         RETURNING
           "id",
           "chat_id" AS "chatId",
@@ -5382,6 +5384,18 @@ export class ModerationDeleteIntentService {
           "leased_from_status" AS "leasedFromStatus"
       `);
       const intent = rows[0];
+      if (!intent && normalized.expiredImmediateSchedule) {
+        // FLAG: The rejected upsert retains the conflicting row lock. Expired new
+        // authority cannot move another schedule, retire retention or append a reason.
+        const [existing] = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
+          SELECT ${this.intentSelectSql('intent')}
+          FROM "moderation_delete_intents" intent
+          WHERE intent."chat_id" = ${normalized.chatId} AND intent."message_id" = ${normalized.messageId}
+        `);
+        if (!existing) throw new Error('Expired delete conflict disappeared');
+        retainedExpiredConflict = true;
+        return existing;
+      }
       if (!intent) {
         throw new Error('Failed to persist moderation delete intent');
       }
@@ -5934,6 +5948,15 @@ export class ModerationDeleteIntentService {
     const persisted = transactionClient
       ? await persist(transactionClient)
       : await this.prisma.$transaction(persist);
+    if (retainedExpiredConflict)
+      return {
+        intentId: persisted.id,
+        rollout:
+          persisted.status !== 'OBSERVED' && this.isExecutionEnabledForIntent(persisted)
+            ? 'execute'
+            : 'observed',
+        status: persisted.status,
+      };
     persisted.replacementCleanup =
       persisted.replacementCleanup === true ||
       this.isReplacementCleanupRuleCode(normalized.ruleCode);
@@ -8700,7 +8723,7 @@ export class ModerationDeleteIntentService {
     }
 
     const now = new Date();
-    const executeAt = this.toDate(input.executeAt, now);
+    let executeAt = this.toDate(input.executeAt, now);
     const sourceMessageAt = this.toNullableDate(input.sourceMessageAt);
     const defaultRetryBaseMs = Math.max(
       executeAt.getTime(),
@@ -8710,8 +8733,13 @@ export class ModerationDeleteIntentService {
       input.retryUntilAt,
       new Date(defaultRetryBaseMs + this.retryHorizonMs),
     );
+    const expiredImmediateSchedule =
+      input.executeAt == null && input.retryUntilAt != null && retryUntilAt <= now;
     if (retryUntilAt < executeAt) {
-      throw new Error('retryUntilAt must not be earlier than executeAt');
+      // FLAG: An omitted immediate schedule can arrive after its original deadline.
+      // Persist it EXPIRED without extending authority; explicit inverted schedules still fail.
+      if (expiredImmediateSchedule) executeAt = retryUntilAt;
+      else throw new Error('retryUntilAt must not be earlier than executeAt');
     }
     const commercialOcrDeadlineAt = this.toNullableDate(input.commercialOcrDeadlineAt);
     if (
@@ -8769,6 +8797,7 @@ export class ModerationDeleteIntentService {
       originBotId,
       routingPolicy,
       executeAt,
+      expiredImmediateSchedule,
       suggestionSubscriptionId,
       retryUntilAt,
       commercialOcrDeadlineAt,

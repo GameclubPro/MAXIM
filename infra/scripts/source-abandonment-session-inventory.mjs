@@ -340,6 +340,7 @@ export async function planSourceAbandonmentSessionChildren({
   certificateId = randomUUID,
   maximumChildren = sessionLimits.children,
   maximumAdmissionCalls = sessionLimits.admissionCalls,
+  maximumOwnersPerAdmission = 7,
   deadlineAtMs,
   now = Date.now,
 }) {
@@ -351,6 +352,7 @@ export async function planSourceAbandonmentSessionChildren({
       typeof certificateId === 'function' &&
       integer(maximumChildren, sessionLimits.children, 1) &&
       integer(maximumAdmissionCalls, sessionLimits.admissionCalls, 1) &&
+      integer(maximumOwnersPerAdmission, 7, 1) &&
       Number.isSafeInteger(deadlineAtMs) &&
       deadlineAtMs > started &&
       Array.isArray(majorBotIds) &&
@@ -373,7 +375,7 @@ export async function planSourceAbandonmentSessionChildren({
     rejected = 0,
     // FLAG: Leave initial SQL headroom; a failed proof never grants authority.
     // The persisted per-child authority ceiling remains eight owners.
-    ownersPerChild = 7,
+    ownersPerChild = maximumOwnersPerAdmission,
     registryDigest = null,
     reason = null;
   const result = () => ({

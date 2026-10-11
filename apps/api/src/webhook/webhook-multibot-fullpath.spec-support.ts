@@ -191,6 +191,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   const effects: SimulatedMaxEffect[] = [];
   const requests: SimulatedMaxEffect[] = [];
   const messages = new Map<string, Record<string, unknown>>();
+  const channelIds = new Set<string>();
   const deniedBots = new Set<string>();
   const ownMemberProbeOverrides = new Map<string, 'unavailable' | 'permissions_unknown'>();
   const botPermissions = new Map(
@@ -198,6 +199,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   );
   const adminUsers = new Set<string>();
   let ambiguousNextSend = false;
+  let ambiguousNextEdit = false;
   let ambiguousNextDelete = false;
   let ambiguousNextMemberMutation = false;
   const http = {
@@ -286,7 +288,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
           } else if (method === 'get' && path.startsWith('/chats/'))
             data = {
               chat_id: path.split('/')[2],
-              type: 'chat',
+              type: channelIds.has(path.split('/')[2]!) ? 'channel' : 'chat',
               title: 'Fixture chat',
               participants_count: 2,
             };
@@ -300,6 +302,22 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
               });
             }
             messages.delete(messageId);
+            data = { success: true };
+          } else if (method === 'put' && path === '/messages') {
+            effects.push(call);
+            if (ambiguousNextEdit) {
+              ambiguousNextEdit = false;
+              throw Object.assign(new Error('Simulated ambiguous MAX edit timeout'), {
+                code: 'ECONNABORTED',
+                request: {},
+              });
+            }
+            const existing = messages.get(messageId);
+            if (!existing) throw new Error('Fixture edit requires an existing message');
+            messages.set(messageId, {
+              ...existing,
+              body: { ...(existing.body as object), ...request.data },
+            });
             data = { success: true };
           } else if (method === 'post' && path === '/messages') {
             effects.push(call);
@@ -607,6 +625,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   async function seedCatalog(
     count: number,
     settings: Prisma.ChatSettingsUncheckedCreateWithoutChatInput = {},
+    entityType: 'CHAT' | 'CHANNEL' = 'CHAT',
   ) {
     const added: string[] = [];
     for (let offset = 0; offset < count; offset += 250) {
@@ -618,7 +637,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
         data: batch.map((id) => ({
           id,
           title: 'Local multibot fixture',
-          entityType: 'CHAT',
+          entityType,
           primaryBotId: bots[0]!.id,
           botId: bots[0]!.id,
           routingState: 'READY',
@@ -635,6 +654,12 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
         })),
       });
       const checkedAt = new Date();
+      if (entityType === 'CHANNEL') {
+        for (const id of batch) channelIds.add(id);
+        await prisma.channelSettings.createMany({
+          data: batch.map((chatId) => ({ chatId, commentsEnabled: true })),
+        });
+      }
       await prisma.chatBotMembership.createMany({
         data: batch.flatMap((chatId) =>
           bots.map((bot, index) => ({
@@ -668,14 +693,20 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     type?: 'message_created' | 'message_edited';
     at?: number;
     attachments?: unknown[];
+    senderless?: boolean;
   }) {
     const at = input.at ?? Date.now();
     const raw = {
       update_type: input.type ?? 'message_created',
       timestamp: at,
       message: {
-        sender: { user_id: 'fixture-user', name: 'Fixture user', is_bot: false },
-        recipient: { chat_id: input.chatId, chat_type: 'chat' },
+        ...(input.senderless
+          ? {}
+          : { sender: { user_id: 'fixture-user', name: 'Fixture user', is_bot: false } }),
+        recipient: {
+          chat_id: input.chatId,
+          chat_type: channelIds.has(input.chatId) ? 'channel' : 'chat',
+        },
         timestamp: at,
         body: {
           mid: input.messageId,
@@ -900,6 +931,9 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     resume: () => worker.resume(),
     ambiguousNextSend: () => {
       ambiguousNextSend = true;
+    },
+    ambiguousNextEdit: () => {
+      ambiguousNextEdit = true;
     },
     ambiguousNextDelete: () => {
       ambiguousNextDelete = true;

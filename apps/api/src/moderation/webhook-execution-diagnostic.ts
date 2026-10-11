@@ -45,6 +45,7 @@ const HOT_PATH_STAGES = new Set([
 ]);
 
 const LOCAL_FAILURES = new Map([
+  ['max_action_executor_proof_rejected', 'executor_proof_rejected'],
   ['Message limit state deadline exceeded', 'message_limit_state_deadline'],
   ['Media cooldown state deadline exceeded', 'media_cooldown_state_deadline'],
   ['DUPLICATE_STATE_BUDGET_EXCEEDED', 'duplicate_state_budget'],

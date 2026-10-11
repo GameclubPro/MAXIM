@@ -4,6 +4,10 @@ import type { MaxActionJob } from '../max/max-client.service';
 import { Prisma } from '../prisma/prisma-client';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
 import {
+  markMaxPreDispatchGuardRejected,
+  MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
+} from '../max/max-action-pre-dispatch-guard';
+import {
   createMultibotHarness,
   type MultibotHarness,
 } from './webhook-multibot-fullpath.spec-support';
@@ -27,6 +31,271 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     h = await createMultibotHarness({ databaseUrl, redisUrl, bots, mode: 'on' });
     return h;
   }
+
+  it('records a qualified DELETE whose deadline elapses before persistence as expired and permits the next same-chat event', async () => {
+    const s = await fixture(2);
+    const [chatId] = await s.seedCatalog(1, {
+      slowModeEnabled: true,
+      slowModeIntervalSeconds: 10,
+      trafficPolicyEffectiveAt: new Date(Date.now() - 1000),
+    });
+    await s.ingest({ chatId: chatId!, messageId: `cooldown-first-${randomUUID()}`, text: 'First' });
+    await s.drain();
+    expect(s.effects).toEqual([]);
+    const at = Date.now();
+    const messageId = `expired-delete-${randomUUID()}`;
+    const ensure = s.intents.ensureIntent.bind(s.intents);
+    const persistence = jest
+      .spyOn(s.intents, 'ensureIntent')
+      .mockImplementationOnce(async (input, options) => {
+        expect(input.ruleCode).toBe('SLOW_MODE_DELETE');
+        expect(input.executeAt).toBeUndefined();
+        const deadline = new Date(input.retryUntilAt!).getTime();
+        expect(deadline).toBe(at + 10_000);
+        expect(Date.now()).toBeLessThan(deadline);
+        // FLAG: Let the real clock expire the original authority after qualification.
+        // Keep native stores, persisted evidence and every runtime guard unchanged.
+        await new Promise((resolve) => setTimeout(resolve, deadline - Date.now() + 20));
+        return ensure(input, options);
+      });
+    const handler = jest.spyOn(s.moderation, 'handleUpdate');
+    const id = await s.ingest({ chatId: chatId!, messageId, at, text: 'Second' });
+    await s.drain();
+    expect(persistence).toHaveBeenCalled();
+    const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+      where: { chatId_messageId: { chatId: chatId!, messageId } },
+    });
+    expect(intent).toMatchObject({
+      status: 'EXPIRED',
+      attemptCount: 0,
+      remoteDeleteSucceededAt: null,
+      deleteDispatchStartedAt: null,
+    });
+    expect(intent.retryUntilAt.getTime()).toBe(at + 10_000);
+    expect(intent.executeAt).toEqual(intent.retryUntilAt);
+    expect(s.effects).toEqual([]);
+    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+    expect((await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).status).toBe(
+      'PROCESSED',
+    );
+    await s.moderation.processWebhookEvent(id);
+    expect(handler).toHaveBeenCalledTimes(1);
+    const nextId = await s.ingest({
+      chatId: chatId!,
+      messageId: `fresh-after-expiry-${randomUUID()}`,
+      text: 'Short text',
+    });
+    await s.drain();
+    expect((await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status).toBe(
+      'PROCESSED',
+    );
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(s.effects).toEqual([]);
+  });
+
+  it.each([false, true])(
+    'preserves an existing future deletion when an expired immediate reason arrives, retention=%s',
+    async (retentionOwned) => {
+      const s = await fixture(2);
+      const [chatId] = await s.seedCatalog(1);
+      const messageId = `future-delete-${randomUUID()}`;
+      const executeAt = new Date(Date.now() + 120_000);
+      const existing = await s.prisma.moderationDeleteIntent.create({
+        data: {
+          id: randomUUID(),
+          chatId: chatId!,
+          messageId,
+          subjectUserId: 'fixture-user',
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          originBotId: s.bots[0]!.id,
+          routingPolicy: 'delete_capable',
+          retentionOwned,
+          executeAt,
+          nextAttemptAt: executeAt,
+          retryUntilAt: new Date(executeAt.getTime() + 60_000),
+          reasons: {
+            create: {
+              id: randomUUID(),
+              reasonKey: 'existing-future',
+              ruleCode: retentionOwned ? 'MESSAGE_RETENTION_DELETE' : 'MESSAGE_TOO_LONG_DELETE',
+            },
+          },
+        },
+        include: { reasons: true },
+      });
+      await s.intents.ensureIntent({
+        chatId: chatId!,
+        messageId,
+        reasonKey: 'expired-incoming',
+        ruleCode: 'SLOW_MODE_DELETE',
+        subjectUserId: 'fixture-user',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        originBotId: s.bots[0]!.id,
+        retryUntilAt: new Date(Date.now() - 1000),
+      });
+      expect(
+        await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+          where: { id: existing.id },
+          include: { reasons: true },
+        }),
+      ).toEqual(existing);
+      expect(s.effects).toEqual([]);
+    },
+  );
+
+  it.each(['recover', 'access_lost', 'held'] as const)(
+    'commits a rejected channel edit handoff and advances the same channel, recovery=%s',
+    async (recovery) => {
+      const s = await fixture(2);
+      for (const bot of s.bots)
+        s.setBotPermissions(bot.id, [
+          'read_all_messages',
+          'write',
+          'edit_message',
+          'delete_message',
+        ]);
+      const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+      const verify = s.links.verifyChatExecutionProof.bind(s.links);
+      let refused = 0;
+      const rejection = jest
+        .spyOn(s.links, 'verifyChatExecutionProof')
+        .mockImplementation(async (input) => {
+          if (input.purpose === 'edit_message') {
+            refused += 1;
+            return false;
+          }
+          return verify(input);
+        });
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const messageId = `edit-handoff-${randomUUID()}`;
+      const id = await s.ingest({
+        chatId: chatId!,
+        messageId,
+        text: 'Channel post',
+        senderless: true,
+      });
+      await s.drain();
+      expect(refused).toBe(1);
+      expect(s.effects).toEqual([]);
+      expect((await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).status).toBe(
+        'PROCESSED',
+      );
+      expect(
+        await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+          where: { kind: 'EXECUTION', webhookEventId: id },
+        }),
+      ).toMatchObject({
+        status: 'COMPLETED',
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+      const where = { chatId_messageId: { chatId: chatId!, messageId } };
+      expect(await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({ where })).toMatchObject(
+        {
+          status: 'IN_PROGRESS',
+          deliveryMode: 'edit_message',
+          lockedAt: null,
+          lockToken: null,
+          replacementMessageId: null,
+          replyMessageId: null,
+          replacementSendStartedAt: null,
+        },
+      );
+      await s.moderation.processWebhookEvent(id);
+      expect(handler).toHaveBeenCalledTimes(1);
+      const nextId = await s.ingest({
+        chatId: chatId!,
+        messageId: `edit-next-${randomUUID()}`,
+        text: 'Next post',
+        senderless: true,
+      });
+      await s.drain();
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status,
+      ).toBe('PROCESSED');
+      expect(handler).toHaveBeenCalledTimes(2);
+      rejection.mockRestore();
+      await s.prisma.channelAutoPostAttachMarker.update({
+        where,
+        data: { updatedAt: new Date(Date.now() - 360_000) },
+      });
+      if (recovery === 'access_lost') {
+        for (const bot of s.bots) s.denyBot(bot.id);
+      } else if (recovery === 'held') {
+        jest.spyOn((s.moderation as any).legacyHolds, 'isMessageHeld').mockResolvedValue(true);
+      }
+      await (s.moderation as any).channelAutoPostLegacyRecovery.runIfDue();
+      expect(s.effects.filter((effect) => effect.method === 'put')).toHaveLength(
+        recovery === 'recover' ? 1 : 0,
+      );
+      expect(s.effects.filter((effect) => effect.method !== 'put')).toEqual([]);
+      expect((await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({ where })).status).toBe(
+        recovery === 'recover' ? 'SUCCEEDED' : 'IN_PROGRESS',
+      );
+      expect(handler).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(['forged', 'ambiguous', 'lost_lease', 'replacement_evidence'] as const)(
+    'retains the started channel owner without a safe edit handoff: %s',
+    async (failure) => {
+      const s = await fixture(1);
+      s.setBotPermissions(s.bots[0]!.id, [
+        'read_all_messages',
+        'write',
+        'edit_message',
+        'delete_message',
+      ]);
+      const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+      await s.pause();
+      const messageId = `unsafe-edit-${randomUUID()}`;
+      const id = await s.ingest({
+        chatId: chatId!,
+        messageId,
+        text: 'Channel post',
+        senderless: true,
+      });
+      if (failure === 'ambiguous') s.ambiguousNextEdit();
+      else
+        jest.spyOn(s.max, 'editMessageInlineKeyboard').mockImplementation(async () => {
+          if (failure !== 'forged') {
+            await s.prisma.channelAutoPostAttachMarker.update({
+              where: { chatId_messageId: { chatId: chatId!, messageId } },
+              data:
+                failure === 'lost_lease'
+                  ? { lockToken: 'other-worker' }
+                  : { replacementSendStartedAt: new Date() },
+            });
+          }
+          const error = Object.assign(
+            new Error('MAX action executor proof changed during quota wait'),
+            { code: 'max_action_executor_proof_rejected' },
+          );
+          throw failure === 'forged'
+            ? error
+            : markMaxPreDispatchGuardRejected(error, MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE);
+        });
+      await s.ingress.preparePersistedWebhookEvent(id);
+      await expect(s.moderation.processWebhookEvent(id)).rejects.toThrow();
+      const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { kind: 'EXECUTION', webhookEventId: id },
+      });
+      expect(claim.businessStartedAt).not.toBeNull();
+      expect(claim.completedAt).toBeNull();
+      expect(claim.commandResult).toBeNull();
+      expect(s.effects.filter((effect) => effect.method === 'put')).toHaveLength(
+        failure === 'ambiguous' ? 1 : 0,
+      );
+      expect(
+        (
+          await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({
+            where: { chatId_messageId: { chatId: chatId!, messageId } },
+          })
+        ).status,
+      ).toBe('IN_PROGRESS');
+    },
+  );
   function source(
     s: MultibotHarness,
     chatId: string,
@@ -1018,6 +1287,7 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     'source-unavailable',
     'membership-unavailable',
     'source-timeout',
+    'author-rate-limit',
   ] as const)(
     'completes one canonical handler and its mirrors for initial subscription %s',
     async (reason) => {
@@ -1034,6 +1304,13 @@ describeStores('native current-rule authorization across mirrored bot delivery',
         .mockResolvedValueOnce({ membership: false, fresh: true });
       if (reason === 'membership-unavailable')
         membership.mockResolvedValue({ membership: null, fresh: false });
+      if (reason === 'author-rate-limit')
+        jest.spyOn(s.max, 'getChatMemberAccess').mockRejectedValueOnce(
+          Object.assign(new Error('Initial author GET rate limited'), {
+            response: { status: 429 },
+            config: { method: 'get' },
+          }),
+        );
       if (reason === 'source-timeout')
         jest.spyOn(s.max, 'getExactMessageRow').mockRejectedValueOnce(
           Object.assign(new Error('Initial source GET timeout'), {
@@ -1287,7 +1564,10 @@ describeStores('native current-rule authorization across mirrored bot delivery',
   it.each(
     ['still-missing', 'membership-restored', 'policy-disabled', 'queue-unavailable'].flatMap(
       (outcome) =>
-        ['membership', 'source404', 'final-membership'].map((failure) => [outcome, failure]),
+        ['membership', 'source404', 'final-membership', 'author429'].map((failure) => [
+          outcome,
+          failure,
+        ]),
     ),
   )(
     'hands off unavailable post-notice evidence durably and resumes only DELETE when %s %s',
@@ -1330,6 +1610,15 @@ describeStores('native current-rule authorization across mirrored bot delivery',
         const result = await sendMessage(...args);
         if (args[0] === chatId) noticeDelivered = true;
         return result;
+      });
+      const getAuthor = s.max.getChatMemberAccess.bind(s.max);
+      jest.spyOn(s.max, 'getChatMemberAccess').mockImplementation(async (...args) => {
+        if (failure === 'author429' && noticeDelivered && unavailable)
+          throw Object.assign(new Error('Post-notice author GET rate limited'), {
+            response: { status: 429 },
+            config: { method: 'get' },
+          });
+        return getAuthor(...args);
       });
       const getSource = s.max.getExactMessageRow.bind(s.max);
       jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
@@ -1465,7 +1754,7 @@ describeStores('native current-rule authorization across mirrored bot delivery',
   );
 
   it.each(
-    (['source', 'membership'] as const).flatMap((boundary) =>
+    (['source', 'membership', 'author-rate-limit'] as const).flatMap((boundary) =>
       (['missing', 'joined', 'disabled', 'expired'] as const).map((outcome) => ({
         boundary,
         outcome,
@@ -1490,9 +1779,25 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       let missing = true;
       let sourceReads = 0;
       let unavailable = true;
-      const timeout = Object.assign(new Error('Fixture read timed out'), {
-        code: 'ECONNABORTED',
-        config: { method: 'get', url: '/messages' },
+      const timeout = Object.assign(new Error('Fixture read unavailable'), {
+        ...(boundary === 'author-rate-limit'
+          ? { response: { status: 429 } }
+          : { code: 'ECONNABORTED' }),
+        config: {
+          method: 'get',
+          url: boundary === 'author-rate-limit' ? `/chats/${chatId}/members` : '/messages',
+        },
+      });
+      const getAuthor = s.max.getChatMemberAccess.bind(s.max);
+      jest.spyOn(s.max, 'getChatMemberAccess').mockImplementation(async (...args) => {
+        if (
+          boundary === 'author-rate-limit' &&
+          args[0] === chatId &&
+          sourceReads >= 1 &&
+          unavailable
+        )
+          throw timeout;
+        return getAuthor(...args);
       });
       jest
         .spyOn(s.membership, 'getMembershipResolution')

@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 
 import type { PrismaService } from '../prisma/prisma.service';
 import type { Prisma } from '../prisma/prisma-client';
-import { MAX_SEND_AMBIGUOUS_ERROR_PREFIX } from '../max/max-send-ambiguity.util';
+import {
+  MAX_SEND_AMBIGUOUS_ERROR_PREFIX,
+  isAmbiguousMaxMutationError,
+} from '../max/max-send-ambiguity.util';
+import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
+import { wasMaxMessageSendAttempted } from '../max/max-mutation-outcome.util';
+import { extractHttpStatusCode } from '../common/http-error.util';
 import type { PublisherChatCommentAdmissionFailureReason } from '../publisher/publisher-chat-comment.queue';
 import {
   CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
@@ -898,6 +904,65 @@ export class ReplacementAttachMarkerStore {
     lastStatusCode: number | null;
   }): Promise<void> {
     return this.release('channel_auto_post', params);
+  }
+
+  async deferChannelEditBeforeDispatch(
+    params: {
+      chatId: string;
+      messageId: string;
+      lockToken: string;
+      botId: string;
+      linkType: string | null;
+      source: 'webhook' | 'poll';
+      quickButtons?: unknown;
+    },
+    error: unknown,
+    editAttempts: number,
+  ): Promise<boolean> {
+    // FLAG: Only a genuine route rejection before the first direct PUT can hand off an edit.
+    // Forwards, quick buttons and attempted/ambiguous mutations retain their original failure.
+    if (
+      params.linkType === 'forward' ||
+      params.quickButtons ||
+      editAttempts !== 1 ||
+      extractHttpStatusCode(error) !== null ||
+      !wasMaxPreDispatchGuardRejected(error) ||
+      (error as { code?: unknown }).code !== 'max_action_executor_proof_rejected' ||
+      wasMaxMessageSendAttempted(error) ||
+      isAmbiguousMaxMutationError(error)
+    )
+      return false;
+    // FLAG: Completing a webhook needs a committed handoff of its exact live edit lease.
+    // Retain IN_PROGRESS for the existing guarded recovery; never certify delivery here.
+    const delegate = this.getDelegate('channel_auto_post');
+    const { chatId, messageId, lockToken, botId, linkType, source } = params;
+    const result = await delegate?.updateMany?.({
+      where: {
+        chatId,
+        messageId,
+        lockToken,
+        botId,
+        linkType,
+        source,
+        status: 'IN_PROGRESS',
+        deliveryMode: 'edit_message',
+        lockedAt: { gte: new Date(Date.now() - ATTACH_LOCK_TTL_MS) },
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        publishedUrl: null,
+        originalDeleted: false,
+        cleanupIntentId: null,
+      },
+      data: {
+        lockToken: null,
+        lockedAt: null,
+        lastError: 'Channel edit deferred before dispatch: max_action_executor_proof_rejected',
+        lastStatusCode: null,
+      },
+    });
+    if (result?.count !== 1) throw new Error('Channel post edit handoff did not commit.');
+    return true;
   }
 
   async assertChannelEditClaimCurrent(params: {

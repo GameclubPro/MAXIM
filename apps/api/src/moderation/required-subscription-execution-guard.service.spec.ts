@@ -7,6 +7,7 @@ import {
   RequiredSubscriptionExecutionRejectedError,
   RequiredSubscriptionInitialSourceUnavailableError,
   RequiredSubscriptionDeleteSourceUnavailableError,
+  RequiredSubscriptionAuthorAccessUnavailableError,
 } from './required-subscription-execution-guard.service';
 import {
   markMaxMemberMutationAttempted,
@@ -98,6 +99,55 @@ function fixture() {
 }
 
 describe('required subscription execution authorization', () => {
+  it.each(['initialQualification', 'deleteHandoffQualification'] as const)(
+    'classifies only the exact author GET 429 for %s while final dispatch remains denied',
+    async (scope) => {
+      const s = fixture();
+      const error = Object.assign(new Error('member read rate limited'), {
+        response: { status: 429 },
+        config: { method: 'get' },
+      });
+      s.max.getChatMemberAccess.mockRejectedValue(error);
+      await expect(s.service.authorize({ ...s.input, [scope]: true })).rejects.toMatchObject({
+        constructor: RequiredSubscriptionAuthorAccessUnavailableError,
+        cause: error,
+      });
+      await expect(s.service.authorize(s.input)).rejects.toBe(error);
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    '404',
+    '403',
+    '503',
+    'missing-method',
+    'post',
+    'send-attempted',
+    'member-confirmed',
+    'ambiguous',
+  ])('preserves unsafe author-read evidence: %s', async (failure) => {
+    const s = fixture();
+    let error: unknown = Object.assign(
+      new Error(failure === 'ambiguous' ? 'ambiguous MAX mutation' : 'read failed'),
+      {
+        response: { status: /^\d+$/.test(failure) ? Number(failure) : 429 },
+        ...(failure === 'missing-method'
+          ? {}
+          : { config: { method: failure === 'post' ? 'post' : 'get' } }),
+      },
+    );
+    if (failure === 'send-attempted') error = markMaxMessageSendAttempted(error);
+    if (failure === 'member-confirmed') error = markMaxMemberMutationConfirmed(error);
+    s.max.getChatMemberAccess.mockRejectedValue(error);
+    for (const scope of [
+      { initialQualification: true },
+      { deleteHandoffQualification: true as const },
+      {},
+    ])
+      await expect(s.service.authorize({ ...s.input, ...scope })).rejects.toBe(error);
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
   it.each([
     '404',
     'missing-id',

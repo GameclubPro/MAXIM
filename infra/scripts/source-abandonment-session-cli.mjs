@@ -236,7 +236,17 @@ export function parseSourceAbandonmentSessionRequest(input, now = Date.now()) {
       'feasibilityPath',
       'feasibilitySha256',
       'deadlineAtMs',
+      ...(Object.hasOwn(value, 'maximumOwnersPerAdmission') ? ['maximumOwnersPerAdmission'] : []),
     ]);
+    // FLAG: A smaller pack may reduce per-proof work, never omit an owner or raise a budget.
+    // Every resulting child still needs complete fresh admission and frozen inventory.
+    requireFact(
+      !Object.hasOwn(value, 'maximumOwnersPerAdmission') ||
+        (Number.isSafeInteger(value.maximumOwnersPerAdmission) &&
+          value.maximumOwnersPerAdmission >= 1 &&
+          value.maximumOwnersPerAdmission <= 7),
+      'session_controller_admission_pack_refused',
+    );
     requireFact(
       shaPattern.test(value.controllerSha) &&
         hashPattern.test(value.expectedCheckpointSha256) &&
@@ -534,6 +544,7 @@ async function preview(request, dependencies) {
       queueNames: registry.queueNames,
       publisherBotId: connection.publisherBotId,
       maximumChildren: feasibility.maximumChildren,
+      maximumOwnersPerAdmission: request.maximumOwnersPerAdmission ?? 7,
       deadlineAtMs: request.deadlineAtMs,
       now,
       collectAdmission: (input) => {

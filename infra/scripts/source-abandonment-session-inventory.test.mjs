@@ -702,6 +702,55 @@ test('fresh retries and semantic splitting share the unchanged 480-call ceiling'
   assert.deepEqual(result.children, []);
 });
 
+test('a smaller admission pack proves all owners without changing certificate or work ceilings', async (t) => {
+  const enumeration = writeWalk(
+    t,
+    Array.from({ length: 7 }, (_, i) => row(i + 1)),
+  ).read();
+  const h = planner(enumeration);
+  const result = await planSourceAbandonmentSessionChildren({
+    ...h.options,
+    maximumOwnersPerAdmission: 3,
+  });
+  assert.equal(result.feasible, true);
+  assert.deepEqual(
+    h.calls.map((call) => call.selection.ownerWebhookEventIds.length),
+    [3, 3, 1],
+  );
+  assert.deepEqual(
+    result.children.flatMap((child) => child.authorities),
+    enumeration.authorities,
+  );
+  assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+  assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+  assert.equal(result.admissionCalls, 3);
+  for (const child of result.children) {
+    const proof = h.proofs.find((value) => proofDigest(value) === child.admissionDigest);
+    assert.equal(proof.decision, 'READY_FOR_COLD_REVIEW');
+    assert.equal(proof.selectionSha256, canonical(child.selection));
+  }
+  const bounded = planner(enumeration);
+  const refused = await planSourceAbandonmentSessionChildren({
+    ...bounded.options,
+    maximumOwnersPerAdmission: 3,
+    maximumChildren: 2,
+  });
+  assert.equal(refused.feasible, false);
+  assert.equal(refused.reason, 'child_limit');
+  assert.deepEqual(refused.children, []);
+  assert.equal(refused.admissionCalls, 3);
+  assert.deepEqual(refused.excludedCounts, { rejected: 0, unresolved: 0 });
+});
+
+for (const maximumOwnersPerAdmission of [0, 8, 1.5, null])
+  test(`invalid admission pack ${maximumOwnersPerAdmission} fails before collection`, async (t) => {
+    const h = planner(writeWalk(t, [row(1)]).read());
+    await assert.rejects(
+      planSourceAbandonmentSessionChildren({ ...h.options, maximumOwnersPerAdmission }),
+    );
+    assert.equal(h.calls.length, 0);
+  });
+
 test('initial seven-owner packing admits all 165 owners in 24 complete fresh calls', async (t) => {
   const enumeration = writeWalk(
     t,
