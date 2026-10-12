@@ -1,8 +1,10 @@
 # Webhook fault isolation and release prevention
 
-Status: implemented and deployed as `dbd699740efaee890c78db39727df0148ee106fe`.
-The recorded sustained window passed, but a later handoff check found a different unstarted
-queued lifecycle delay; follow-up diagnosis is active and overall work is not closed.
+Status: implemented and deployed as `41430f93c0f7fe4de1794781849ea5b1945c4183`.
+The follow-up corrects preparation contention and a reproduced PostgreSQL deadlock.
+Implementation, exact-SHA delivery and the prolonged-backlog acceptance boundary are complete.
+The full observation remains qualified by transient preparation spikes and individual retained
+failures below; it is not an all-errors-eliminated or all-normal-capacity certification.
 Incident evidence:
 [REG bot audit](../incidents/2026-10-12-reg-bot-audit.md).
 
@@ -237,8 +239,8 @@ READY/unstarted claim, no business lease, retry, error or predecessor. This is a
 boundary from the quarantined unknown-effect owners. Lag later reached 98 seconds; one
 head cleared and another similar delay appeared. Do not misrepresent the earlier closed
 window as permanent recovery or quarantine positively unstarted work merely because it is old.
-Further read-only SQL/Redis correlation is in progress. No new stop, cancellation, replay,
-threshold change or runtime mutation has been performed during this diagnosis.
+The following investigation correlated bounded SQL/Redis evidence and led to the focused
+correction below. No cancellation, handler replay or readiness threshold change was used.
 
 ## Focused preparation follow-up
 
@@ -264,7 +266,8 @@ no replay. Unexpected preparation failures now produce allowlisted diagnostics w
 propagating the identical error; typed waits stay quiet. The focused real-store run passed
 415 tests across nine suites, including quarantine and existing replay fences. This proves
 the implementation defect and fix, not the unrecorded cause of every production spike.
-Local staged checks, exact-SHA CI, guarded deploy and fresh observation are still required.
+Local staged checks, exact-SHA CI and guarded deployment were subsequently completed
+with the additional concurrent-settlement correction below.
 
 ## Confirmed concurrent settlement deadlock
 
@@ -291,9 +294,163 @@ The 16:29:35–16:44:35 pre-deploy monitor stayed ready but included raw-age spi
 distinguished raw age 17.352 seconds from operational lag 0.474 seconds with one positively
 proven readiness wait. Later health at 16:45:43 returned to 0.368–0.390 seconds. These
 observations must not be conflated with the earlier 15:54 readiness failure or with the
-16:45 deadlock. Current production still runs `dbd69974` during follow-up validation.
+16:45 deadlock. Production retained `dbd69974` throughout follow-up validation.
 
 The expanded native matrix passed 491 tests across nine suites (multibot full path,
 quarantine, outbox, membership readiness and moderation). Expected ordered-predecessor
 waits are explicitly excluded from the new unexpected-preparation error log. Broad local
-validation and a new exact-SHA CI run precede any deployment of this correction.
+validation and a new exact-SHA CI run preceded deployment of this correction.
+
+
+The earlier 15:53:30–15:59:00 UTC PostgreSQL window was then read with the same bounded
+sanitizer: 30 lines, no truncation, deadlocks at 15:53:39.805 and 15:56:48.362 with the
+same claim/receipt lock shapes. Their timing matches the two handoff delays. The removed
+job hashes and stacks remain unavailable, so this correlation does not reconstruct the
+identity or full execution path of either original job. The deterministic native race,
+not timing alone, establishes the corrected code defect.
+
+## Corrective release 41430f93
+
+The preparation-only candidate `48b8a168` was never deployed separately. The combined
+correction `41430f93c0f7fe4de1794781849ea5b1945c4183` passed Required CI `38282820270`
+and CodeQL `38282820203`. Final local staged validation passed 746 API suites / 19,101
+tests with 2,167 store-dependent skips, plus 2,653 static tests / 24 skips and 21 retention
+tests / three skips. Typecheck, build and documentation checks passed. Separate native
+PostgreSQL 16 / Redis 7 validation passed 491 tests across nine suites; the skipped mock-run
+rows are not presented as native coverage. The new concurrency test first reproduced
+`40P01` on the old implementation and then passed with the lock-order correction.
+
+The preloaded immutable image passed checksum and source verification. Normal API-only
+deployment ran at approximately 17:44–17:47 UTC on 12 October, with the explicit 20 GiB
+reserve and existing queue fence. All 14 API roles and both native auxiliaries converged
+before normal queue release, enqueue last. Strict live/ready/public/native smokes passed;
+initial readiness 503 while startup work drained cleared before manifest commit. The
+manifest `release-20261012T174413Z-41430f93c0f7` committed at 17:47:12.604 UTC with image
+`sha256:9ed63980de2674d735c4659e6f300d2798e484ae4134b41f82d8d8aec05319da`.
+PostgreSQL, Redis, static services and sibling-project generations were not recreated.
+Antiduplicate stayed FULL revision 12 for all enabled chats, without expiry. The previous
+`dbd69974` manifest and preloaded writer-disabled compatible image remain rollback options.
+
+Only the demonstrated prepared-mirror and handler-finished checkpoint paths changed their
+lock order. This release does not claim a rewrite or proof of every transaction path. The
+existing unknown-effect fences remain authoritative; no original handler was replayed,
+quarantined receipt cancelled, or result fabricated to make readiness pass.
+
+
+## Corrective release: first observation window
+
+The full 17:47:50–18:10:50 UTC capacity report contains 92 samples, complete coverage,
+maximum gap 16.244 seconds, zero readiness/queue-metrics/fence/topology failures and zero
+restart increments. Its unmodified result is **degraded**: 35 system-mode flags and four
+raw-lag warnings; raw lag p50 0.330 seconds, p95 6.137, maximum 26.403. It is not a clean
+stable acceptance window. A second finite observation was started without another deploy,
+queue mutation or threshold change.
+
+A separate 15-second readiness stream distinguishes operational lag from raw age. Startup
+included raw 18.698 / operational 11.270 seconds and one saturated readiness-head sample;
+quarantine sampling never saturated. The fleet became normal by 17:53:46.967. At
+18:08:31.967 raw lag was 18.176 seconds but operational lag 8.073 with five positively
+proven readiness waits and no sample saturation. Both fell to 0.178 seconds at 18:08:46.967,
+while the automatic mode entered backlog recovery/stabilization. The capacity stream's
+separate raw peak cannot be assigned the readiness stream's simultaneous operational value.
+The later oldest-QUEUED probe at 18:10:13 showed only a fresh READY/unstarted message,
+without error, lease, retry or timeout marker; it does not reconstruct the earlier spike.
+
+Fifteen complete, nonempty, nonoverlapping fresh 30-second cohorts spanning
+17:47:17.846–18:08:47.558 contained 3,988 PROCESSED and 1,896 DUPLICATE; the other six
+statuses were zero, with no cap/clock exclusions. Per-cohort processed-only p95 ranged
+382–10,713 ms. These are sampled cohorts, not all events, and the separate two historical
+quarantined receipts remain retained. Fifteen contiguous bounded log windows across all
+14 roles, 17:48:16.560–18:09:18.474, had no read failures, saturation or unexpected
+preparation/handler/completion diagnostics. Bounded PostgreSQL logs from 17:47:13 through
+18:11:13.715 contained 30 lines and no deadlock, without hitting either output cap.
+
+Antiduplicate diagnostics included ten intent acceptances and 1,107 worker completions,
+maximum history phase 79 ms and no history-unavailable counter. They are not confirmed
+DELETE receipts. One decode deadline, one bytes failure and one expired media job remained
+visible; deferred/older media worker attempts are not webhook handler replay. The rolling
+18:10:12 action snapshot was 2,045 successes and two failures out of 2,047, with zero critical
+failures. External refusals and individual media failures therefore remain distinct from
+SQL completion, quarantine isolation and prolonged active backlog.
+
+
+## Prolonged-backlog boundary and remaining transient pressure
+
+The closed 18:08:46–18:23:48 UTC report meets the recovery runbook's 15-minute
+readiness/lag boundary: 56 samples, complete catalog coverage, maximum gap 81.079 seconds
+at the handoff between the two finite monitors (below its unchanged 90-second allowance).
+Both readiness checks, queue metrics, released fence and exact fleet topology passed every
+sample. Raw lag p50 was 0.188 seconds, p95 1.080, maximum 3.797; there were no restart
+increments or resets. This is **not** an all-normal-mode window: the original report remains
+**degraded** because its first 18 samples include automatic stabilization. This distinction
+is deliberate; none of the capacity thresholds or report results was changed.
+
+A later brief spike remains outside that window and must not be hidden by selecting it.
+At 18:24:02 operational lag reached 10.205 seconds, then 13.112 at 18:24:17; raw age
+reached 25.859 at 18:24:32 while operational lag was already 1.643 with four proven
+readiness waits. By 18:24:47 raw age was 0.176 seconds. Readiness never failed; its existing
+sustain guard and the system-mode recovery period remained active. This shows transient
+pressure, not a proof that all event latency stays below ten seconds indefinitely.
+
+Bounded enqueue logs for 18:23–18:25 show the preparation pool reaching its existing
+12-slot cap: the minute admitted 529 operations, with 94 completed preparations in the
+1–5 second duration bucket and none above five seconds. One batch spent 48 ms selecting,
+181 ms prioritizing and 1,010 ms dispatching, with zero work-unit errors. Its sampled shared
+and per-scope admission pressure later cleared. Host load was approximately six across
+24 CPUs, with about 51 GB memory available and roughly one percent sampled I/O wait;
+the subsequent fixed activity audit found no old transaction. These observations localize
+pressure to preparation, but do not prove a periodic timer, cache-expiry cause, individual
+MAX outcome, or that increasing concurrency would be safe. No capacity, provider-rate or
+readiness guard was relaxed to smooth the graph.
+
+The extended fresh cohorts also retain five FAILED receipts (two in 18:15:34–18:16:04,
+three in 18:17:03–18:17:33), classified only by saved pending-quarantine metadata, with no
+retry or quarantine timestamp. This is not remote-effect proof or automatic replay authority.
+Bounded logs did not identify an exact matching execution exception; the separate night-mode
+reconcile warning is not assigned to these receipts merely by time. Independent work kept
+completing, the two historical quarantined receipts remained separate, and no original
+receipt was cancelled or called successful. Quarantine acceptance is isolation and evidence
+preservation, not a requirement to erase every FAILED row.
+
+
+## Extended observation and handoff
+
+The second set of 15 complete, nonempty, nonoverlapping 30-second cohorts, spanning
+18:11:03.972–18:32:33.941 UTC, contains 2,304 PROCESSED, 764 DUPLICATE and the five FAILED
+already described; the other five statuses are zero. No cap or invalid-clock exclusions
+apply. Processed-only per-cohort p95 is 452.5–1,238 ms. Across both sets, 30 **sampled**
+cohorts contain 6,292 PROCESSED / 2,660 DUPLICATE / five FAILED. They do not represent all
+traffic, nor establish every deletion or publication outcome.
+
+The extended 15 contiguous bounded log windows cover all 14 roles from
+18:12:03.032–18:33:04.645 without failed reads, saturation or unexpected
+preparation/handler/completion diagnostics. History phase maximum is 17 ms; no
+history-unavailable counter appeared. Twenty-one intent acceptances and 707 worker
+completions remain distinct from deletion receipts. Two media bytes failures and one
+expired background job remain visible; they did not turn into shared SQL backlog.
+There is a gap between the first and second log sequences, so they are not represented
+as one uninterrupted all-period log capture.
+
+At 18:31:56 UTC the manifest was byte-equivalent to the committed release, all 14 API
+roles retained the exact image and zero restarts, and both native auxiliaries were healthy
+with zero restarts. No container's image, generation, configuration or restart counter
+changed since the initial post-deploy inventory; PostgreSQL/Redis, static and sibling
+services remained intact, with no unhealthy/OOM containers. Antiduplicate readback still
+reported FULL revision 12, all enabled chats, permanent.
+
+
+The complete extended capacity report for 18:12:00–18:35:10 UTC contains 92 samples,
+maximum gap 22.945 seconds, zero readiness/queue-metrics/fence/topology failures and zero
+restart changes. It remains **degraded** (34 mode flags, three raw-lag warnings), with raw
+lag p50 0.234 seconds, p95 3.982, maximum 25.859. The separate 91-sample readiness stream
+has no failures or saturated samples, operational median 0.246 seconds and maximum 13.112.
+Neither whole-window result is overwritten by the narrower low-lag interval.
+
+Final health at 18:35:25 UTC confirms both API readiness endpoints HTTP 200,
+normal/healthy mode, healthy PostgreSQL/Redis, operational lag 0.148–0.205 seconds, no
+readiness waits and two unsaturated historical quarantine entries. Its rolling minute
+has 1,739 successful actions and one failure, zero critical failures, out of 1,740.
+The final bounded PostgreSQL log check, 17:47:13–18:35:25, reads 46 lines with no deadlock
+and neither cap reached. All finite observation processes completed; no follow-up deployment,
+queue cleanup or cancellation occurred. Reviewed private raw monitor streams and temporary
+probes are removed after retaining sanitized reports and durable operation evidence.
