@@ -85,7 +85,8 @@ jobs:
   postgres-races:
     name: PostgreSQL Races
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Include store setup, native fault/race suites and the final compatibility checks.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16

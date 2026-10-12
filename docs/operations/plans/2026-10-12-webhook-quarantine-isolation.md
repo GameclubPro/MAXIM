@@ -109,3 +109,13 @@ readers stop or are replaced before enqueue starts, with exact fleet/native veri
 queue release. The ordinary deploy controller and its mandatory regression tests already enforce
 that order. No readiness exception, cancellation, direct database repair or manual manifest is
 introduced. Finalization still requires strict smokes after the quarantine is enabled.
+
+## CI wall-clock admission
+
+Reader CI run `38254230153` completed all 1,320 tests in its 74-suite PostgreSQL race matrix
+in 1,004 seconds, then passed the traffic, participant report, retention and final 20-test
+moderation-rollup checks. The job's 20-minute overall limit cancelled completion of the last
+step; Required correctly refused the release. The unfinished lane was retried, with the same
+source and assertions. Future runs have a bounded 30-minute PostgreSQL job budget including
+setup and all follow-up checks. No test, Required dependency, production timeout or readiness
+threshold is removed or relaxed. This workflow-only adjustment does not change runtime code.
