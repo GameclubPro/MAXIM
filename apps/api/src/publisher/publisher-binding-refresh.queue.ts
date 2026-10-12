@@ -28,6 +28,7 @@ export type PublisherBindingRefreshReason =
   | 'binding_maintenance'
   | 'connection_roster'
   | 'stale_user_access'
+  | 'selected_actor_access'
   | 'manual_recheck'
   | 'policy_enablement_recheck'
   | 'send_access_lost';
@@ -90,6 +91,7 @@ function resolveRefreshPriority(reason: PublisherBindingRefreshReason, createdAt
   switch (reason) {
     case 'manual_recheck':
     case 'policy_enablement_recheck':
+    case 'selected_actor_access':
       return 1;
     case 'bot_added':
     case 'webhook_observed':
@@ -289,13 +291,14 @@ export class PublisherBindingRefreshQueueService {
       params.reason === 'manual_recheck' || params.reason === 'policy_enablement_recheck';
     const coalescedWebhookObservation =
       params.reason === 'webhook_observed' && candidateUserId === null;
-    const discriminator = interactiveRecheck
-      ? requestedAt.getTime()
-      : coalescedWebhookObservation
-        ? Math.floor(requestedAt.getTime() / PUBLISHER_REFRESH_JOB_BUCKET_MS)
-        : params.eventAt
-          ? params.eventAt.getTime()
-          : Math.floor(requestedAt.getTime() / PUBLISHER_REFRESH_JOB_BUCKET_MS);
+    const discriminator =
+      interactiveRecheck || params.reason === 'selected_actor_access'
+        ? requestedAt.getTime()
+        : coalescedWebhookObservation
+          ? Math.floor(requestedAt.getTime() / PUBLISHER_REFRESH_JOB_BUCKET_MS)
+          : params.eventAt
+            ? params.eventAt.getTime()
+            : Math.floor(requestedAt.getTime() / PUBLISHER_REFRESH_JOB_BUCKET_MS);
     const entityHash = createHash('sha256')
       .update(`${publisherBotId}\0${chatId}`)
       .digest('hex')
@@ -324,7 +327,7 @@ export class PublisherBindingRefreshQueueService {
 
     // FLAG: A failed personal verification must be retryable on later demand even
     // when BullMQ retains its stable job id for diagnostics.
-    if (params.reason === 'stale_user_access') {
+    if (params.reason === 'stale_user_access' || params.reason === 'selected_actor_access') {
       const previous = await this.queue.getJob(jobId);
       if (
         previous &&

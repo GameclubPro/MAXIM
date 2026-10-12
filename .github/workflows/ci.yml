@@ -185,6 +185,8 @@ jobs:
       - run: npm run check:miniapp
       - run: npm run build:miniapp:production
       - run: npm run screenshots:miniapp:smoke
+      - name: Saved catalogs and selected settings access on mobile
+        run: node apps/miniapp/test/personal-access-entry.browser.mjs
       - name: Participant report mobile settings and journal
         run: node apps/miniapp/test/settings-reports.browser.mjs
       - name: Participant report journal polling and response races

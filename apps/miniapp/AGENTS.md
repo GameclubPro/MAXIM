@@ -94,3 +94,4 @@
 - Statistics screens stay factual: metrics, freshness, coverage, charts, top posts, and publishing windows. Do not add pseudo-AI advice or coaching copy.
 - Managed poll lists render persisted `imageCount`; raw poll images belong to details only.
 - Home readiness is user-scoped and separate from global discovery completion. Managed entities are unique per chat/channel, not repeated per bot.
+- Home loads saved navigation without per-chat authorization polling. Idle prefetch may load code, never protected settings for unopened entities. Navigate to settings immediately; cached settings may render while the selected entity is revalidated, with controls disabled until that check completes. Cached UI is never server mutation authority.

@@ -26,6 +26,7 @@ export function publisherRefreshTiming(job: PublisherBindingRefreshJob, now: num
     'historical_actor_recovery',
     'send_access_lost',
     'manual_recheck',
+    'selected_actor_access',
     'policy_enablement_recheck',
   ].includes(job.reason);
   const workClass =

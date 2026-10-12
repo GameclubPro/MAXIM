@@ -1009,6 +1009,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     queryFn: ({ signal }) =>
       getChannelSettingsScreen(api, chatId, { signal, prefetch: handoffRequested }),
     enabled: Boolean(chatId),
+    refetchOnMount: 'always',
     refetchOnWindowFocus: false,
     ...(handoffRequested
       ? {
@@ -3289,7 +3290,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }
 
   return (
-    <div
+    <fieldset
+      disabled={settingsScreenQuery.isFetching && !settingsScreenQuery.isFetchedAfterMount}
+      style={{ margin: 0, padding: 0, border: 0, minWidth: 0 }}
+      aria-label="Настройки канала"
       id="channel-settings-overview"
       className="channel-settings-screen page-enter"
       data-managed-entity-workspace="channel-settings"
@@ -3297,6 +3301,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     >
       {workspaceHeader}
 
+      {settingsScreenQuery.isFetching && !settingsScreenQuery.isFetchedAfterMount ? (
+        <p role="status">Проверяем права. Сохранённые настройки уже доступны для просмотра.</p>
+      ) : null}
       <MarketplaceProfileCard
         api={api}
         entityId={chatId ?? ''}
@@ -4500,6 +4507,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         onClose={() => setManagedAutopostRuleDeleteTarget(null)}
         onConfirm={confirmDeleteManagedAutopostRule}
       />
-    </div>
+    </fieldset>
   );
 }

@@ -1,4 +1,5 @@
 import { ManagedEntityAccessRefreshService } from './managed-entity-access-refresh.service';
+import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
 
 describe('personal managed entity demand', () => {
   const boundary = new Date('2026-10-12T10:00:00Z');
@@ -136,25 +137,59 @@ describe('personal managed entity demand', () => {
     expect(f.roster.scheduleActorProbe).toHaveBeenCalledTimes(3);
   });
 
-  it('does not show a historical card until the human check started after entry', async () => {
+  it('returns 150 saved cards on every launch without scheduling or waiting for MAX', async () => {
     const f = fixture();
-    f.prisma.$queryRaw.mockResolvedValue([{ chatId: '-1' }]);
-    const result = await f.service.listPersonal(
-      { userId: 'alice', username: null, displayName: null, accessCheckedAfter: +boundary },
-      'chat',
+    const records = Array.from({ length: 150 }, (_, i) =>
+      edge({
+        chatId: `chat-${i}`,
+        expiresAt: new Date(0),
+        chat: {
+          id: `chat-${i}`,
+          title: `Saved ${i}`,
+          createdAt: new Date(0),
+          primaryBotId: 'major-1',
+          botMemberships: [
+            {
+              botId: 'major-1',
+              status: 'ACTIVE',
+              ...buildBotAccessSnapshotPersistence(
+                {
+                  isAdmin: true,
+                  isOwner: false,
+                  permissionsKnown: true,
+                  permissions: ['read_all_messages', 'write'],
+                },
+                { source: 'explicit_start', now: new Date(0) },
+              ),
+            },
+          ],
+        },
+      }),
     );
-    expect(result.items).toEqual([]);
-    expect(result.refresh).toEqual(
-      expect.objectContaining({ complete: false, nextPollAfterMs: 1500 }),
-    );
+    f.prisma.managedEntityAccessEdge.findMany.mockResolvedValue(records);
+    const user = {
+        userId: 'alice',
+        username: null,
+        displayName: null,
+        accessCheckedAfter: +boundary,
+      },
+      result = await f.service.listPersonal(user, 'chat');
+    expect(result.items).toHaveLength(150);
+    expect(result.refresh).toMatchObject({ complete: true, nextPollAfterMs: 0 });
     expect(
-      f.prisma.managedEntityAccessEdge.findMany.mock.calls.some(
-        ([q]) => q.where.checkedAt?.gte?.getTime() === +boundary,
-      ),
-    ).toBe(true);
-    const sql = f.prisma.$queryRaw.mock.calls[0][0].sql;
-    expect(sql).toContain('membership.bot_id = edge.bot_id');
-    expect(sql).not.toContain('bot_access_expires_at');
+      (await f.service.listPersonal({ ...user, accessCheckedAfter: +boundary + 60_000 }, 'chat'))
+        .items,
+    ).toEqual(result.items);
+    expect(f.prisma.managedEntityAccessEdge.findMany.mock.calls[0][0].where).toEqual({
+      userId: 'alice',
+      botId: { in: ['major-1', 'major-2'] },
+      entityType: 'CHAT',
+      state: 'GRANTED',
+      userRole: { in: ['ADMIN', 'OWNER'] },
+    });
+    expect(f.roster.scheduleActorProbe).not.toHaveBeenCalled();
+    expect(f.publisher.enqueue).not.toHaveBeenCalled();
+    expect(f.prisma.$queryRaw).not.toHaveBeenCalled();
     await f.service.onModuleDestroy();
   });
 });

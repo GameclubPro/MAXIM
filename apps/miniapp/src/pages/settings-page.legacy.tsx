@@ -722,6 +722,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     queryFn: ({ signal }) =>
       getSettingsScreen(api, chatId ?? '', { signal, prefetch: handoffRequested }),
     enabled: Boolean(chatId),
+    refetchOnMount: 'always',
     refetchOnWindowFocus: expandedSections.links,
     refetchInterval: (query) => {
       const expiryInterval = expandedSections.links
@@ -4554,10 +4555,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         />
       ) : null}
 
+      {settingsScreenQuery.data &&
+      settingsScreenQuery.isFetching &&
+      !settingsScreenQuery.isFetchedAfterMount ? (
+        <p role="status">Проверяем права. Сохранённые настройки уже доступны для просмотра.</p>
+      ) : null}
       {!handoffMode && !settingsQuery.isLoading && !settingsQuery.error && draft ? (
         <section
           className="settings-sections settings-sections--chat-home"
           aria-label="Настройки чата"
+          inert={settingsScreenQuery.isFetching && !settingsScreenQuery.isFetchedAfterMount}
           onClickCapture={handleDesktopToggleRowClick}
         >
           {settingsScreenQuery.data?.header.accessDiagnostics?.state === 'bot_access_lost' ? (

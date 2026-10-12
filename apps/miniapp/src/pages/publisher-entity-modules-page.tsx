@@ -125,6 +125,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     queryFn: ({ signal }) => getPublisherEntity(api, entityType!, entityId, { signal }),
     enabled: entityType !== null && entityId.length > 0,
     staleTime: 10_000,
+    refetchOnMount: 'always',
     refetchOnWindowFocus: false,
     refetchInterval: (query) => getPublisherReadinessPollingInterval(query.state.data?.readiness),
   });
@@ -281,7 +282,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
   }
 
   const entity = entityQuery.data;
-  if (!entity) {
+  if (!entity || entityQuery.error) {
     return (
       <section className="publisher-entity-modules-page">
         <div className="publisher-entity-modules-page__state has-error" role="alert">
@@ -307,6 +308,9 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
 
   return (
     <section className="publisher-entity-modules-page" aria-busy={busy || undefined}>
+      {entityQuery.isFetching && !entityQuery.isFetchedAfterMount ? (
+        <p role="status">Проверяем права. Сохранённые настройки уже доступны для просмотра.</p>
+      ) : null}
       <header className="publisher-entity-modules-page__header">
         <Link
           to={buildPublisherEntityListRoute(entity.entityType)}

@@ -374,10 +374,9 @@ export class ManagedEntitiesService {
   }
 
   listChats(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
-    if (user.accessCheckedAfter !== undefined && this.accessRefresh) {
+    if (this.accessRefresh) {
       return this.listPersonalManagedEntities(user, 'chat').then((result) => result.items);
     }
-    this.accessRefresh?.schedule(user.userId, 'moderation', 'chat');
     return listManagedEntitiesValue({
       user,
       entityType: 'chat',
@@ -399,10 +398,9 @@ export class ManagedEntitiesService {
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
-    if (user.accessCheckedAfter !== undefined && this.accessRefresh) {
+    if (this.accessRefresh) {
       return this.listPersonalManagedEntities(user, 'chat');
     }
-    this.accessRefresh?.schedule(user.userId, 'moderation', 'chat');
     return listManagedEntitiesWithRefreshStateValue({
       user,
       entityType: 'chat',
@@ -425,10 +423,9 @@ export class ManagedEntitiesService {
   }
 
   listChannels(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
-    if (user.accessCheckedAfter !== undefined && this.accessRefresh) {
+    if (this.accessRefresh) {
       return this.listPersonalManagedEntities(user, 'channel').then((result) => result.items);
     }
-    this.accessRefresh?.schedule(user.userId, 'moderation', 'channel');
     return listManagedEntitiesValue({
       user,
       entityType: 'channel',
@@ -450,10 +447,9 @@ export class ManagedEntitiesService {
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
-    if (user.accessCheckedAfter !== undefined && this.accessRefresh) {
+    if (this.accessRefresh) {
       return this.listPersonalManagedEntities(user, 'channel');
     }
-    this.accessRefresh?.schedule(user.userId, 'moderation', 'channel');
     return listManagedEntitiesWithRefreshStateValue({
       user,
       entityType: 'channel',

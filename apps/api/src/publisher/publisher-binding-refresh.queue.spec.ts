@@ -1,6 +1,25 @@
 import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh.queue';
 
 describe('PublisherBindingRefreshQueueService', () => {
+  it('prioritizes selected actor checks and keeps separate verification boundaries', async () => {
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue({ id: 'job' }),
+    };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+    const request = {
+      chatId: 'chat-1',
+      publisherBotId: 'publik',
+      candidateUserId: 'alice',
+      reason: 'selected_actor_access' as const,
+    };
+    await service.enqueue({ ...request, requestedAt: new Date('2026-10-13T00:00:00Z') });
+    await service.enqueue({ ...request, requestedAt: new Date('2026-10-13T00:00:30Z') });
+    expect(queue.add.mock.calls[0][2].priority).toBe(1);
+    expect(queue.add.mock.calls[1][2].jobId).not.toBe(queue.add.mock.calls[0][2].jobId);
+    expect(queue.add.mock.calls[0][1]).not.toHaveProperty('publicationRequested');
+    expect(queue.add.mock.calls[0][1]).not.toHaveProperty('replyToStartCommand');
+  });
   it('carries an explicit Start reply request with the exact actor and command version', async () => {
     const queue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -32,6 +51,7 @@ describe('PublisherBindingRefreshQueueService', () => {
   it.each([
     'manual_recheck',
     'stale_user_access',
+    'selected_actor_access',
     'historical_actor_recovery',
     'bot_added',
   ] as const)(

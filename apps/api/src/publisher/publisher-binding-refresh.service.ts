@@ -189,6 +189,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
               'publication_due',
               'publication_actor_due',
               'manual_recheck',
+              'selected_actor_access',
               'policy_enablement_recheck',
             ].includes(job.reason)
           ? 'urgent'
@@ -251,6 +252,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
         'binding_maintenance',
         'stale_user_access',
         'manual_recheck',
+        'selected_actor_access',
         'policy_enablement_recheck',
         'send_access_lost',
       ].includes(job.reason)
@@ -474,6 +476,10 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       outcomes.roster = await this.rosterRefresh.execute(job, (stage, work) =>
         this.measureStage(timings, stage, work),
       );
+      return;
+    }
+    if (job.reason === 'selected_actor_access') {
+      await this.refreshSelectedActor(job, timings, outcomes);
       return;
     }
     if (candidateJob) {
@@ -1242,6 +1248,59 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     return isExplicitManagedEntityActivationCurrent(proof, proof.chatId, this.publisherBotId)
       ? proof
       : null;
+  }
+
+  private async refreshSelectedActor(
+    job: PublisherBindingRefreshJob,
+    timings: RefreshTimings,
+    outcomes: ProbeOutcomes,
+  ): Promise<void> {
+    const userId = job.candidateUserId?.trim();
+    const boundary = Date.parse(job.requestedAt);
+    if (
+      !userId ||
+      !Number.isFinite(boundary) ||
+      boundary > Date.now() ||
+      job.replyChatId ||
+      job.replyToStartCommand
+    )
+      throw new Error('Invalid selected Publisher actor demand');
+    const chatId = job.chatId.trim();
+    const edge = await this.prisma.managedEntityAccessEdge.findUnique({
+      where: { chatId_userId_botId: { chatId, userId, botId: this.publisherBotId } },
+    });
+    // FLAG: Selected verification reuses durable bot proof and reads only this human.
+    // It cannot reactivate a bot, eagerly refresh a roster, refresh metadata or send a reply.
+    if (
+      !edge ||
+      (!edge.lastAdminConfirmedAt &&
+        !(edge.state === 'GRANTED' && ['ADMIN', 'OWNER'].includes(edge.userRole)))
+    )
+      return;
+    if (edge.checkedAt.getTime() >= boundary && edge.checkedAt.getTime() <= Date.now()) return;
+    if (job.candidateVersion && edge.sourceVersion !== job.candidateVersion)
+      throw new PublisherCandidateRefreshSupersededError();
+    const binding = await this.prisma.publisherEntityBinding.findUnique({ where: { chatId } });
+    const startedAt = new Date();
+    const botAccess = readPublisherFreshBotProof(binding, this.publisherBotId, startedAt);
+    if (!botAccess || !binding?.botAccessCheckedAt)
+      throw new Error('Selected Publisher actor requires confirmed bot access');
+    outcomes.bot = 'reused';
+    const result = await this.measureStage(timings, 'userAccessMs', () =>
+      this.actorAccess.execute({
+        chatId,
+        entityType: edge.entityType,
+        userId,
+        candidateVersion: job.candidateVersion ?? null,
+        botAccess,
+        probeStartedAt: startedAt,
+        committedBotAccessCheckedAt: binding.botAccessCheckedAt!,
+        committedBotAccessState: binding.botAccessState,
+        interactive: true,
+      }),
+    );
+    outcomes.actor = result.outcome;
+    if (!result.committed) throw new PublisherCandidateRefreshSupersededError();
   }
 
   private isScheduledRefreshSuperseded(

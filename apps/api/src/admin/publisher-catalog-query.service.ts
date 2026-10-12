@@ -61,7 +61,7 @@ export class PublisherCatalogQueryService {
       after = cursor.after;
       expiresAt = cursor.expiresAt;
     }
-    const source = this.source(userId, botId, now, runtimeAvailable, checkedAfter);
+    const source = this.source(userId, botId, now, runtimeAvailable);
     const filter = Prisma.sql`
       (${query.entityType ?? null}::text IS NULL OR entity_type::text = ${query.entityType?.toUpperCase() ?? null})
       AND (${query.readiness ?? null}::text IS NULL OR ready = ${query.readiness === 'ready'})
@@ -72,8 +72,8 @@ export class PublisherCatalogQueryService {
       ORDER BY chat_id ASC LIMIT ${query.limit + 1}
     `);
     const summaryKey = `summary-${scope}-${Number(runtimeAvailable)}`;
-    // FLAG: Entry verification changes the visible cohort between polls. A cached zero
-    // must not hide newly verified cards after the final pending flag becomes false.
+    // FLAG: Session summaries follow current explicit grants and revocations; stale
+    // cached totals must not hide a new connection or outlive a selected access denial.
     const cached =
       checkedAfter === undefined ? await this.cache.readPublisherCatalogState(summaryKey) : null;
     let totals: Summary;
@@ -133,15 +133,9 @@ export class PublisherCatalogQueryService {
     return { ids: page.map((row) => row.chatId), nextCursor, ...totals };
   }
 
-  private source(
-    userId: string,
-    botId: string,
-    now: Date,
-    runtimeAvailable: boolean,
-    checkedAfter?: number,
-  ) {
-    // FLAG: This is a scoped read model, never an authorization grant. The page is
-    // hydrated through current Publisher access again before any entity is returned.
+  private source(userId: string, botId: string, now: Date, runtimeAvailable: boolean) {
+    // FLAG: Historical positive edges are navigation hints, never authority to read
+    // selected settings or publish. Explicit denials remain excluded on every page.
     return Prisma.sql`
       SELECT edge.chat_id, edge.entity_type,
         COALESCE(NULLIF(BTRIM(catalog.title), ''), edge.chat_id) AS title,
@@ -168,8 +162,6 @@ export class PublisherCatalogQueryService {
       LEFT JOIN managed_entity_publication_policies policy ON policy.chat_id = edge.chat_id
       WHERE edge.user_id = ${userId} AND edge.bot_id = ${botId} AND edge.state = 'GRANTED'
         AND edge.user_role IN ('OWNER','ADMIN')
-        ${checkedAfter === undefined ? Prisma.empty : Prisma.sql`AND edge.checked_at >= ${new Date(checkedAfter)}`}
-        AND (edge.expires_at > ${now} OR (edge.expires_at IS NULL AND edge.checked_at > ${new Date(now.getTime() - 7 * 86400_000)}))
     `;
   }
 

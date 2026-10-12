@@ -400,6 +400,19 @@ describe('PublisherPolicyService', () => {
     );
   });
 
+  it('checks the selected actor before returning persisted settings, without probing on home', async () => {
+    const f = createListFixture([createListEntity('chat-1', 'Чат', ChatEntityType.CHAT)]);
+    const denied = new Error('Selected actor denied');
+    const assertAccess = jest.fn().mockRejectedValue(denied);
+    Object.assign(f.service, { selectedAccess: { assertAccess } });
+    await f.service.listEntities(user);
+    expect(assertAccess).not.toHaveBeenCalled();
+    f.findMany.mockClear();
+    await expect(f.service.getEntity('chat', 'chat-1', user)).rejects.toBe(denied);
+    expect(assertAccess).toHaveBeenCalledWith(user, 'chat-1', 'chat');
+    expect(f.findMany).not.toHaveBeenCalled();
+  });
+
   it('rejects selected refresh authorization for a missing actor grant or mismatched entity type', async () => {
     const { service, findMany } = createListFixture([
       createListEntity('chat-1', 'Чат', ChatEntityType.CHAT),

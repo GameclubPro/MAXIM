@@ -174,19 +174,27 @@ integration('Publisher catalog SQL pages and shared cursors', () => {
     }
   });
 
-  it('updates the summary with the first verified card instead of retaining an empty launch', async () => {
+  it('keeps saved navigation across launches and expiry while removing explicit denials', async () => {
     const boundary = Date.now();
     const query = publisherEntitiesCursorQuerySchema.parse({ pagination: 'cursor', limit: 30 });
     const initial = await first.page(actor, bot, query, true, boundary);
-    expect(initial.summary.total).toBe(0);
+    expect(initial.ids).toHaveLength(30);
+    expect(initial.summary.total).toBeGreaterThan(9900);
     const id = `${prefix}00001`;
     await db.managedEntityAccessEdge.update({
       where: { chatId_userId_botId: { chatId: id, userId: actor, botId: bot } },
-      data: { checkedAt: new Date(boundary + 1) },
+      data: { checkedAt: new Date(0), expiresAt: new Date(0) },
     });
     const verified = await replica.page(actor, bot, query, true, boundary);
-    expect(verified.ids).toEqual([id]);
-    expect(verified.summary).toMatchObject({ total: 1, chat: 1 });
+    expect(verified.ids).toContain(id);
+    expect(verified.summary.total).toBe(initial.summary.total);
+    await db.managedEntityAccessEdge.update({
+      where: { chatId_userId_botId: { chatId: id, userId: actor, botId: bot } },
+      data: { state: 'USER_DENIED' },
+    });
+    const denied = await replica.page(actor, bot, query, true, boundary + 1);
+    expect(denied.ids).not.toContain(id);
+    expect(denied.summary.total).toBe(initial.summary.total - 1);
   });
 
   it('executes a bounded indexed page on the 10000-entity fixture', async () => {

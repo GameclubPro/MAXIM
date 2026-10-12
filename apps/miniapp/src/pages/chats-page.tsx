@@ -1522,7 +1522,6 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
       return undefined;
     }
 
-    const candidates = filteredEntities.slice(0, 3).map((entity) => entity.id);
     let cancelled = false;
     const run = () => {
       if (cancelled) {
@@ -1530,9 +1529,7 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
       }
 
       void preloadHomeEntitySheets();
-      for (const entityId of candidates) {
-        prefetchEntitySettings(activeTab, entityId);
-      }
+      // FLAG: Idle work may preload code, never settings or MAX checks for unopened chats.
     };
     const idleWindow = window as unknown as WindowWithIdleCallback;
     const idleHandle = idleWindow.requestIdleCallback

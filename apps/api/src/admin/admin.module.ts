@@ -77,6 +77,7 @@ import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sy
 import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { ManagedEntityAccessRefreshService } from './managed-entity-access-refresh.service';
+import { PublisherSelectedAccessService } from './publisher-selected-access.service';
 import { MANAGED_ENTITIES_LEGACY_PORT } from './managed-entities-legacy.port';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
@@ -244,6 +245,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
     ManagedEntityAccessRefreshService,
+    PublisherSelectedAccessService,
     ManagedEntitiesDiscoveryService,
     ManagedGiveawayService,
     ManagedPollService,

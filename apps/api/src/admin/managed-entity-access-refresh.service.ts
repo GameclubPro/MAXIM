@@ -206,39 +206,34 @@ export class ManagedEntityAccessRefreshService implements OnModuleDestroy {
     user: AuthUser,
     entityType: ManagedEntityType,
   ): Promise<ManagedEntitiesListResponse> {
-    this.schedule(user.userId, 'moderation', entityType, user.accessCheckedAfter);
-    const now = new Date();
-    const [edges, pending] = await Promise.all([
-      this.prisma.managedEntityAccessEdge.findMany({
-        where: {
-          userId: user.userId,
-          botId: { in: this.botIds('moderation') },
-          entityType: entityType === 'chat' ? 'CHAT' : 'CHANNEL',
-          state: 'GRANTED',
-          userRole: { in: ['ADMIN', 'OWNER'] },
-          checkedAt: { gte: new Date(user.accessCheckedAfter!) },
-          OR: [{ expiresAt: { gt: now } }, { expiresAt: null }],
-        },
-        orderBy: [{ chatId: 'asc' }, { botId: 'asc' }],
-        include: {
-          chat: {
-            select: {
-              id: true,
-              title: true,
-              createdAt: true,
-              primaryBotId: true,
-              botMemberships: {
-                where: {
-                  status: 'ACTIVE',
-                  botAccessState: { in: ['CONFIRMED_ADMIN', 'CONFIRMED_OWNER'] },
-                },
+    // FLAG: Home is a persisted navigation catalog, never an authorization grant.
+    // Only opening a selected entity checks human rights; list size causes no MAX fan-out.
+    const edges = await this.prisma.managedEntityAccessEdge.findMany({
+      where: {
+        userId: user.userId,
+        botId: { in: this.botIds('moderation') },
+        entityType: entityType === 'chat' ? 'CHAT' : 'CHANNEL',
+        state: 'GRANTED',
+        userRole: { in: ['ADMIN', 'OWNER'] },
+      },
+      orderBy: [{ chatId: 'asc' }, { botId: 'asc' }],
+      include: {
+        chat: {
+          select: {
+            id: true,
+            title: true,
+            createdAt: true,
+            primaryBotId: true,
+            botMemberships: {
+              where: {
+                status: 'ACTIVE',
+                botAccessState: { in: ['CONFIRMED_ADMIN', 'CONFIRMED_OWNER'] },
               },
             },
           },
         },
-      }),
-      this.pending(user, 'moderation', entityType),
-    ]);
+      },
+    });
     const catalogs = edges.length
       ? await this.prisma.managedBotChatCatalog.findMany({
           where: {
@@ -284,16 +279,16 @@ export class ManagedEntityAccessRefreshService implements OnModuleDestroy {
     return {
       items: [...items.values()],
       refresh: {
-        complete: !pending,
-        cursor: pending ? 0 : null,
+        complete: true,
+        cursor: null,
         backoffActive: false,
-        userVisibleComplete: !pending,
-        nextPollAfterMs: pending ? COOLDOWN_MS : 0,
+        userVisibleComplete: true,
+        nextPollAfterMs: 0,
         processedCandidates: null,
         totalCandidates: null,
         progressPercent: null,
         lastSyncedAt: null,
-        manualRefreshBlockedReason: pending ? 'in_progress' : null,
+        manualRefreshBlockedReason: null,
         manualRefreshRetryAfterMs: null,
       },
     };

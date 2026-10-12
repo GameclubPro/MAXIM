@@ -51,7 +51,7 @@ import {
   publisherRefreshEvidenceWhere,
 } from '../publisher/publisher-entity-connection.util';
 import { ManagedEntitiesService } from './managed-entities.service';
-import { ManagedEntityAccessRefreshService } from './managed-entity-access-refresh.service';
+import { PublisherSelectedAccessService } from './publisher-selected-access.service';
 import {
   BotCapabilityRequiredException,
   type BotCapabilityPermission,
@@ -94,17 +94,16 @@ export class PublisherPolicyService {
     private readonly readinessService: PublisherReadinessService,
     private readonly managedEntitiesService: ManagedEntitiesService,
     private readonly publisherBindingRefreshQueue: PublisherBindingRefreshQueueService,
-    @Optional() private readonly accessRefresh?: ManagedEntityAccessRefreshService,
+    @Optional() private readonly selectedAccess?: PublisherSelectedAccessService,
     @Optional() private readonly catalogQuery?: PublisherCatalogQueryService,
   ) {}
 
   async listEntities(user: AuthUser, query?: unknown): Promise<PublisherEntitiesResponse> {
-    this.accessRefresh?.schedule(user.userId, 'publisher', undefined, user.accessCheckedAfter);
     const pagination = this.readPaginationMode(query);
     if (pagination === undefined) {
       return publisherEntitiesResponseSchema.parse({
-        items: await this.loadScopedEntities(user, undefined, true),
-        accessVerificationPending: (await this.accessRefresh?.pending(user, 'publisher')) ?? false,
+        items: await this.loadScopedEntities(user, undefined, true, true),
+        accessVerificationPending: false,
       });
     }
 
@@ -119,6 +118,7 @@ export class PublisherPolicyService {
     user: AuthUser,
     entityIds?: readonly string[],
     includeDisabled = false,
+    catalogOnly = false,
   ): Promise<PublisherEntity[]> {
     const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
     const now = new Date();
@@ -129,15 +129,18 @@ export class PublisherPolicyService {
         where: {
           ...(entityIds ? { chatId: { in: [...entityIds] } } : {}),
           userId: user.userId,
-          ...(user.accessCheckedAfter === undefined
-            ? {}
-            : { checkedAt: { gte: new Date(user.accessCheckedAfter) } }),
           state: ManagedEntityAccessState.GRANTED,
           userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-          OR: [
-            { expiresAt: { gt: now } },
-            { expiresAt: null, checkedAt: { gt: legacyGraceStart } },
-          ],
+          // FLAG: Historical grants display navigation only. Target resolution retains
+          // expiry checks; selected settings and writes independently verify the actor.
+          ...(catalogOnly
+            ? {}
+            : {
+                OR: [
+                  { expiresAt: { gt: now } },
+                  { expiresAt: null, checkedAt: { gt: legacyGraceStart } },
+                ],
+              }),
           botId: publisherBotId,
           chat: {
             ...(!includeDisabled
@@ -467,6 +470,10 @@ export class PublisherPolicyService {
     user: AuthUser,
     includeDisabled: boolean,
   ) {
+    // FLAG: Runtime must verify the selected actor before returning settings or allowing writes.
+    if (!this.selectedAccess && process.env.NODE_ENV !== 'test')
+      throw new ServiceUnavailableException('Проверка прав временно недоступна.');
+    await this.selectedAccess?.assertAccess(user, entityId, entityType);
     const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
     const now = new Date();
     const legacyGraceStart = new Date(now.getTime() - 7 * 24 * 60 * 60_000);
@@ -1165,7 +1172,9 @@ export class PublisherPolicyService {
       await this.readinessService.isRuntimeAvailable(),
       user.accessCheckedAfter,
     );
-    const entities = page.ids.length ? await this.loadScopedEntities(user, page.ids, true) : [];
+    const entities = page.ids.length
+      ? await this.loadScopedEntities(user, page.ids, true, true)
+      : [];
     const byId = new Map(entities.map((entity) => [entity.id, entity]));
     return publisherEntitiesCursorResponseSchema.parse({
       items: page.ids.flatMap((id) => {
@@ -1180,7 +1189,7 @@ export class PublisherPolicyService {
       nextCursor: page.nextCursor,
       filteredTotal: page.filteredTotal,
       summary: page.summary,
-      accessVerificationPending: (await this.accessRefresh?.pending(user, 'publisher')) ?? false,
+      accessVerificationPending: false,
     });
   }
 

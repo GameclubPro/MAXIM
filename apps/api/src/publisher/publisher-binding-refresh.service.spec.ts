@@ -308,6 +308,75 @@ describe('PublisherBindingRefreshService', () => {
     permissionsKnown: true,
   };
 
+  it.each(['granted', 'denied', 'transient'] as const)(
+    'verifies only the selected actor using durable bot proof: %s',
+    async (verdict) => {
+      const f = createHarness(adminAccess);
+      const old = new Date('2020-01-01T00:00:00Z');
+      const binding = {
+        publisherBotId: 'publik_bot',
+        status: 'ACTIVE',
+        lifecycleEventAt: null,
+        ...buildBotAccessSnapshotPersistence(adminAccess, {
+          source: 'publisher_explicit_start',
+          now: old,
+        }),
+      };
+      Object.assign(f.prisma.publisherEntityBinding, {
+        findUnique: jest.fn().mockResolvedValue(binding),
+      });
+      f.tx.publisherEntityBinding.findUnique.mockResolvedValue(binding as never);
+      f.prisma.managedEntityAccessEdge.findUnique.mockResolvedValue({
+        entityType: 'CHAT',
+        state: 'GRANTED',
+        userRole: 'ADMIN',
+        checkedAt: old,
+        lastAdminConfirmedAt: old,
+        sourceVersion: 'v1',
+      } as never);
+      f.edgeState.sourceVersion = 'v1';
+      f.edgeState.checkedAt = old;
+      if (verdict === 'transient')
+        f.maxClient.getChatMemberAccess.mockRejectedValue(new Error('MAX timeout'));
+      if (verdict === 'denied')
+        f.maxClient.getChatMemberAccess.mockResolvedValue({
+          userId: 'alice',
+          isBot: false,
+          isAdmin: false,
+          isOwner: false,
+          explicitPrivilegeEvidence: true,
+          permissions: [],
+          permissionsKnown: true,
+        });
+      const work = f.service.refresh({
+        ...job,
+        reason: 'selected_actor_access',
+        candidateUserId: 'alice',
+        candidateVersion: 'v1',
+        requestedAt: new Date().toISOString(),
+      });
+      if (verdict === 'transient') {
+        await expect(work).rejects.toThrow('MAX timeout');
+        expect(f.tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      } else {
+        await work;
+        expect(f.tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            update: expect.objectContaining({
+              state: verdict === 'granted' ? 'GRANTED' : 'USER_DENIED',
+            }),
+          }),
+        );
+      }
+      expect(f.maxClient.getChatMemberAccess).toHaveBeenCalledTimes(1);
+      expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+      expect(f.maxClient.getChatSnapshot).not.toHaveBeenCalled();
+      expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
+      expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(f.prisma.managedBotChatCatalog.findUnique).not.toHaveBeenCalled();
+    },
+  );
+
   function dormantActivation(kind: 'start_in_chat' | 'forwarded_message' = 'start_in_chat') {
     const f = createHarness(adminAccess);
     f.activationSource.mockImplementation(readPersistedActivation);
