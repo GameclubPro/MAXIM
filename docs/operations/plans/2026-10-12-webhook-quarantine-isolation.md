@@ -1,8 +1,9 @@
 # Webhook fault isolation and release prevention
 
-Status: implemented and deployed as `dbd699740efaee890c78db39727df0148ee106fe`;
-sustained readiness/active-lag acceptance passed, with the explicitly retained local failures
-and OCR containment restart below. Incident evidence:
+Status: implemented and deployed as `dbd699740efaee890c78db39727df0148ee106fe`.
+The recorded sustained window passed, but a later handoff check found a different unstarted
+queued lifecycle delay; follow-up diagnosis is active and overall work is not closed.
+Incident evidence:
 [REG bot audit](../incidents/2026-10-12-reg-bot-audit.md).
 
 ## Why the releases did not prevent the incident
@@ -226,3 +227,41 @@ It does not promise provider availability, zero individual failures, replay safe
 positive receipts, or unconditional progress for genuinely dependent ordered operations.
 Reviewed raw monitor streams are removed after retaining these sanitized aggregates; durable
 production failure, claim, action and quarantine evidence remains intact.
+
+## Post-window handoff regression
+
+At 15:54:20 UTC readiness was 503 with active lag 41.975 seconds; database and Redis were
+healthy and quarantine remained at two. At 15:54:54 the bounded queued proof saw a fresh
+`message_removed` receipt from 15:53:38.569, QUEUED with one activation and an enforced
+READY/unstarted claim, no business lease, retry, error or predecessor. This is a different
+boundary from the quarantined unknown-effect owners. Lag later reached 98 seconds; one
+head cleared and another similar delay appeared. Do not misrepresent the earlier closed
+window as permanent recovery or quarantine positively unstarted work merely because it is old.
+Further read-only SQL/Redis correlation is in progress. No new stop, cancellation, replay,
+threshold change or runtime mutation has been performed during this diagnosis.
+
+## Focused preparation follow-up
+
+The handoff monitor observed a fresh failed background job during both later spikes.
+Its exact exception was not retained before ordinary job recovery removed it. A 16:27 UTC
+bounded Redis stream probe has no failed events in its sampled windows; those windows do
+not cover the original incident. The 16:22 UTC live/ready checks passed again, active lag
+244–271 ms, with the same two quarantined receipts. This does not identify the old failure.
+
+Code review found a demonstrable gap: losing the conditional business-lease update threw
+a generic error. The real static/dynamic workers therefore failed the BullMQ job while SQL
+remained QUEUED, until the separate 20-second user-facing or 120-second background repair.
+New native fault injection reproduced this failure for edit, join and dynamic message jobs;
+the removal case additionally required the normal retention store in the test fixture.
+The fix changes only this refused CAS to the existing one-second typed preparation deferral.
+It does not replay SQL errors, handlers or command recovery, release another worker's lease,
+renew deadlines, weaken final start checks or change stale repair/readiness thresholds.
+
+Four native contention cases now cover background edit/removal, join and dynamic workers.
+Each proves no failed job or business start during the competing lease, independent-chat
+completion first, unchanged receipt deadline/activation, then one original completion and
+no replay. Unexpected preparation failures now produce allowlisted diagnostics while
+propagating the identical error; typed waits stay quiet. The focused real-store run passed
+415 tests across nine suites, including quarantine and existing replay fences. This proves
+the implementation defect and fix, not the unrecorded cause of every production spike.
+Local staged checks, exact-SHA CI, guarded deploy and fresh observation are still required.

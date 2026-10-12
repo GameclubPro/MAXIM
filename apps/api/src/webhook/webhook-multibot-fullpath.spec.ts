@@ -1900,21 +1900,29 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
   });
 
   it.each([
-    { kind: 'static', type: 'message_edited' },
-    { kind: 'static', type: 'user_added' },
-    { kind: 'dynamic', type: 'message_created' },
+    { fault: 'route', kind: 'static', type: 'message_edited' },
+    { fault: 'route', kind: 'static', type: 'user_added' },
+    { fault: 'route', kind: 'dynamic', type: 'message_created' },
+    { fault: 'lease', kind: 'static', type: 'message_edited' },
+    { fault: 'lease', kind: 'static', type: 'message_removed' },
+    { fault: 'lease', kind: 'static', type: 'user_added' },
+    { fault: 'lease', kind: 'dynamic', type: 'message_created' },
   ] as const)(
-    'retries a changed route proof in the same native $kind job for $type',
-    async ({ kind, type }) => {
+    'retries a refused $fault proof in the same native $kind job for $type',
+    async ({ fault, kind, type }) => {
       const s = await fixture(2, 'on');
       await s.pause();
+      if (type === 'message_removed')
+        Object.assign(s.ingress, {
+          messageRetention: new MessageRetentionStore(s.prisma as never, s.config, s.legacyHolds),
+        });
       const [chatId, independentChatId] = await s.seedCatalog(2, {
         maxMessageLengthEnabled: false,
       });
       const botId = s.bots[0]!.id;
       const messageId = randomUUID();
       let id: string;
-      if (type !== 'user_added') {
+      if (type !== 'user_added' && type !== 'message_removed') {
         id = await s.ingest({ chatId: chatId!, messageId, text: 'Fixture', botId, type });
       } else {
         const update = new WebhookParser().parse(
@@ -1922,6 +1930,9 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
             update_id: randomUUID(),
             update_type: type,
             chat_id: chatId,
+            ...(type === 'message_removed'
+              ? { message_id: messageId, user_id: 'fixture-user' }
+              : {}),
             timestamp: Date.now(),
             user: { user_id: 'fixture-user', first_name: 'Fixture' },
           },
@@ -1938,6 +1949,20 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       const originalClaim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
         where: { webhookEventId: id, kind: 'EXECUTION' },
       });
+      const competingLease = {
+        leaseToken: randomUUID(),
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      };
+      if (fault === 'lease') {
+        // FLAG: Represent another unstarted worker with a real SQL lease. The
+        // worker under test must lose its real CAS without releasing that lease.
+        expect(
+          await s.prisma.webhookExecutionClaim.updateMany({
+            where: { id: originalClaim.id, status: 'READY', businessStartedAt: null },
+            data: competingLease,
+          }),
+        ).toEqual({ count: 1 });
+      }
       const ensureReady = s.readiness.ensureReady.bind(s.readiness);
       let allowStableProof = false;
       let proofRevision = 0;
@@ -1947,7 +1972,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
         // FLAG: Change the real SQL proof only after readiness accepted it. The
         // production adoption fence must reject this unstarted attempt itself.
         // Keep this chat pending until independent work completes, even on slow CI.
-        if (p.chatId === chatId && !allowStableProof) {
+        if (fault === 'route' && p.chatId === chatId && !allowStableProof) {
           await s.prisma.chatBotMembership.update({
             where: { chatId_botId: { chatId: chatId!, botId: proof!.botId } },
             data: { botAccessSource: `fixture-proof-${++proofRevision}` },
@@ -2028,8 +2053,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
           status: 'READY',
           preparedAt: originalClaim.preparedAt,
           businessStartedAt: null,
-          leaseToken: null,
-          leaseExpiresAt: null,
+          ...(fault === 'lease' ? competingLease : { leaseToken: null, leaseExpiresAt: null }),
           commandResult: null,
         });
         expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
@@ -2058,6 +2082,19 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
         await independent.waitUntilFinished(events, 10_000);
         expect(completedIds).toEqual([independentId]);
         allowStableProof = true;
+        if (fault === 'lease') {
+          expect(
+            await s.prisma.webhookExecutionClaim.updateMany({
+              where: {
+                id: originalClaim.id,
+                status: 'READY',
+                businessStartedAt: null,
+                ...competingLease,
+              },
+              data: { leaseToken: null, leaseExpiresAt: null },
+            }),
+          ).toEqual({ count: 1 });
+        }
         await job.waitUntilFinished(events, 10_000);
         expect(completedIds).toEqual([independentId, id]);
         expect(failed).not.toHaveBeenCalled();

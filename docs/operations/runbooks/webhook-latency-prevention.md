@@ -20,6 +20,14 @@ before editing it; copying these notes does not install a fix or prove the deplo
    bounded work across polls, current eligibility reloads and same-chat exclusion. An unfinished
    operation keeps its slot until it really finishes; a polling timeout cannot release its authority.
    Refill available preparation capacity during selection and drain owned work before closing stores.
+   A refused canonical business-lease CAS grants no execution authority. Use the typed
+   preparation deferral and the existing locked BullMQ delay, preserving the competing lease,
+   source deadline and all start/completion fences on re-entry. Never turn contention into
+   a failed job that waits for stale-QUEUED repair. Do not generalize this to arbitrary SQL,
+   commit, command recovery or handler failures. The native multibot full-path suite covers
+   background removal/edit, join and dynamic workers, independent completion and no replay.
+   Unexpected preparation errors retain their original propagation and emit only the closed
+   execution diagnostic fields under `stage=preparation`; this stage is not no-effect proof.
 2. **Bound database work before expensive predicates.** A result `LIMIT` does not bound scans,
    sorts or correlated probes. Use indexed keyset pages with raw cursors retained before filtering,
    bounded materialization and primary-key payload reads. Keep due work separate from terminal

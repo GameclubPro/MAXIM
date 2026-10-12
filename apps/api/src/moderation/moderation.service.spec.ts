@@ -24,8 +24,45 @@ import {
   withCanonicalWebhookFixture,
 } from './moderation.service.spec-support';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
+import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
+import { WebhookPreparationRetryError } from './webhook-preparation-retry';
 
 describe('ModerationService', () => {
+  it.each([false, true])(
+    'preserves preparation failures and diagnoses only unexpected errors, deferred=%s',
+    async (deferred) => {
+      const error = deferred
+        ? new WebhookPreparationDeferredError('private-receipt', 1_000)
+        : Object.assign(new Error('private-receipt secret'), { code: 'P2028' });
+      const canonical = {
+        prepareExecution: jest.fn().mockRejectedValue(error),
+        failExecution: jest.fn(),
+      };
+      const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+      const warn = jest.fn();
+      Object.assign(service, {
+        injectedWebhookCanonicalExecutionService: canonical,
+        logger: { warn },
+      });
+      const handler = jest.spyOn(service, 'handleUpdate');
+      if (deferred) {
+        await expect(service.processWebhookEvent('private-receipt')).rejects.toBeInstanceOf(
+          WebhookPreparationRetryError,
+        );
+        expect(warn).not.toHaveBeenCalled();
+      } else {
+        await expect(service.processWebhookEvent('private-receipt')).rejects.toBe(error);
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ stage: 'preparation', errorCode: 'P2028' }),
+          'Webhook execution failed before recovery settlement',
+        );
+        expect(JSON.stringify(warn.mock.calls)).not.toMatch(/private-receipt|secret/u);
+      }
+      expect(handler).not.toHaveBeenCalled();
+      expect(canonical.failExecution).not.toHaveBeenCalled();
+    },
+  );
+
   it('fails closed for an official callback whose source message was deleted', async () => {
     const update = new WebhookParser().parse(
       {

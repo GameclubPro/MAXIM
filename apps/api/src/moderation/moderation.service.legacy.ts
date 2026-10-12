@@ -1,6 +1,7 @@
 import { verifyFreshHeldCommandAccess } from '../webhook/webhook-legacy-fresh-command';
 import {
   describeWebhookExecutionFailure,
+  logWebhookExecutionFailure,
   type WebhookExecutionFailureStage,
 } from './webhook-execution-diagnostic';
 import {
@@ -1324,6 +1325,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       // Handler failures retain their existing durable effects and recovery path.
       if (error instanceof WebhookPreparationDeferredError)
         throw new WebhookPreparationRetryError(webhookEventId, error);
+      logWebhookExecutionFailure(this.logger, 'preparation', error);
       throw error;
     }
     if (!execution) {
@@ -1427,15 +1429,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       failureStage = 'ocr_activation';
       await this.commercialOcrEnqueueService?.activatePendingBatch(commercialOcrPendingActivations);
     } catch (error: unknown) {
-      this.logger.warn(
-        {
-          stage: failureStage,
-          ...describeWebhookExecutionFailure(
-            error,
-            this.readWebhookHotPathProfileSnapshot(hotPathProfile)?.latestStage,
-          ),
-        },
-        'Webhook execution failed before recovery settlement',
+      logWebhookExecutionFailure(
+        this.logger,
+        failureStage,
+        error,
+        this.readWebhookHotPathProfileSnapshot(hotPathProfile)?.latestStage,
       );
       await recordGroupCommandNoticeRecovery(this.prisma, execution, error);
       await this.commercialOcrEnqueueService?.suppressPendingBatch(commercialOcrPendingActivations);

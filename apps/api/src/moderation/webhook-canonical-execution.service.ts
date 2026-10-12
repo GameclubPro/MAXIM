@@ -2491,7 +2491,13 @@ export class WebhookCanonicalExecutionService {
       },
     });
     if (leaseResult?.count === 0) {
-      throw new Error(`Canonical webhook business lease is busy for ${webhookEventId}`);
+      // FLAG: A refused CAS grants no business authority. Re-enter preparation
+      // through the locked job delay; never release a competing lease or retry
+      // its handler. The next read must retain start/completion/deadline fences.
+      throw new WebhookPreparationDeferredError(
+        `Canonical webhook business lease is busy for ${webhookEventId}`,
+        1_000,
+      );
     }
     return businessLeaseToken;
   }

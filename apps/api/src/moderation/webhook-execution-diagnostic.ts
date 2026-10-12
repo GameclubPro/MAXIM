@@ -1,7 +1,24 @@
+import type { Logger } from '@nestjs/common';
 import { describeWebhookPreparationFailure } from '../webhook/webhook-preparation-diagnostic';
 import { readDuplicateLookupFailure } from './message-duplicate/message-duplicate-lookup-diagnostic';
 
-export type WebhookExecutionFailureStage = 'handler' | 'completion' | 'ocr_activation';
+export type WebhookExecutionFailureStage =
+  | 'preparation'
+  | 'handler'
+  | 'completion'
+  | 'ocr_activation';
+
+export function logWebhookExecutionFailure(
+  logger: Pick<Logger, 'warn'>,
+  stage: WebhookExecutionFailureStage,
+  error: unknown,
+  hotPathStage?: unknown,
+): void {
+  logger.warn(
+    { stage, ...describeWebhookExecutionFailure(error, hotPathStage) },
+    'Webhook execution failed before recovery settlement',
+  );
+}
 
 const HOT_PATH_STAGES = new Set([
   'start',
