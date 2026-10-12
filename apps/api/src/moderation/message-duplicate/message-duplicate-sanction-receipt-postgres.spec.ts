@@ -60,7 +60,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       return chatId;
     }
 
-    async function fixture() {
+    async function fixture(lookupErrorData: Record<string, unknown> = { code: 'not.found' }) {
       const chatId = await createChat();
       const settings = await prisma.chatSettings.create({
         data: {
@@ -162,7 +162,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       const originalUpdate = duplicateUpdate('original', binding.original.publishedAtMs);
       const originalRaw = (originalUpdate.raw as { message: Record<string, unknown> }).message;
       originalRaw.recipient = { chat_id: chatId, chat_type: 'chat' };
-      const sourceError = { response: { status: 404, data: {} } };
+      const sourceError = { response: { status: 404, data: lookupErrorData } };
       const currentLookup = jest.fn(async () => {
         throw sourceError;
       });
@@ -270,27 +270,30 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
     }
 
-    it('uses the exact durable peer DELETE receipt after bare 404 and retains every fresh sanction check', async () => {
-      const s = await fixture();
-      const before = await snapshot();
-      await expect(s.service.assertMessageStillActionable(s.request)).resolves.toBe('allowed');
-      expect(s.currentLookup).toHaveBeenCalledTimes(1);
-      expect(s.originalLookup).toHaveBeenCalledTimes(1);
-      expect(s.max.getChatMemberAccess).toHaveBeenCalledWith(
-        s.request.chatId,
-        s.binding.senderId,
-        expect.objectContaining({ botId: s.request.botId, bypassCache: true }),
-      );
-      expect(s.history.stillMatches).toHaveBeenCalledWith(s.request.chatId, s.binding, true);
-      expect(s.immunity.consumeForMessage).toHaveBeenCalledTimes(1);
-      expect(s.beforeFinalAuthority).toHaveBeenCalledTimes(1);
-      expect(s.policy.resolve).toHaveBeenCalledTimes(2);
-      expect(s.authorization.isAllowed).toHaveBeenCalledTimes(2);
-      expect(s.legacyHolds.isAnyMessageSourceHeld).toHaveBeenCalled();
-      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.current_lookup_confirmed_absent');
-      expectNoEffects(s);
-      expect(await snapshot()).toEqual(before);
-    });
+    it.each([{}, { code: 'not.found' }, { error: { code: 'not.found' } }])(
+      'uses the exact durable peer DELETE receipt after unavailable 404 (%j) and retains every fresh sanction check',
+      async (body) => {
+        const s = await fixture(body);
+        const before = await snapshot();
+        await expect(s.service.assertMessageStillActionable(s.request)).resolves.toBe('allowed');
+        expect(s.currentLookup).toHaveBeenCalledTimes(1);
+        expect(s.originalLookup).toHaveBeenCalledTimes(1);
+        expect(s.max.getChatMemberAccess).toHaveBeenCalledWith(
+          s.request.chatId,
+          s.binding.senderId,
+          expect.objectContaining({ botId: s.request.botId, bypassCache: true }),
+        );
+        expect(s.history.stillMatches).toHaveBeenCalledWith(s.request.chatId, s.binding, true);
+        expect(s.immunity.consumeForMessage).toHaveBeenCalledTimes(1);
+        expect(s.beforeFinalAuthority).toHaveBeenCalledTimes(1);
+        expect(s.policy.resolve).toHaveBeenCalledTimes(2);
+        expect(s.authorization.isAllowed).toHaveBeenCalledTimes(2);
+        expect(s.legacyHolds.isAnyMessageSourceHeld).toHaveBeenCalled();
+        expect(s.metrics.record).not.toHaveBeenCalledWith('guard.current_lookup_confirmed_absent');
+        expectNoEffects(s);
+        expect(await snapshot()).toEqual(before);
+      },
+    );
 
     it.each(['missing success', 'unfinished receipt'] as const)(
       'declines initial sanction on %s without rewriting durable evidence or permitting a late recheck',

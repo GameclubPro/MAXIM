@@ -280,6 +280,16 @@ a new publication time. Confirmed current absence alone cannot authorize sanctio
 successful DELETE receipt and every existing binding/policy check remain required. These fixed
 labels disclose no message, chat, user, source or error payload.
 
+A generic `not.found` from the exact current-message GET is unavailable evidence, just like a
+codeless 404; it is never a message-specific absence receipt. Only a full sanction may replace
+that read with its own unchanged, verified, successful DELETE receipt, including exact v3
+binding, reason and registered executor identity. Original-message reads, fresh rights,
+policy, immunity, source holds and final authority still apply. Without that receipt, only
+the explicit initial unattempted sanction may decline; later checks keep the failure fence.
+Explicit chat/access errors, conflicting nested codes, other codes and attempted or ambiguous
+mutations cannot use this path. Keep both codeless and generic-code cases in the native
+PostgreSQL receipt regression; a mock with only an empty 404 body misses MAX's actual envelope.
+
 The first inline delete check has an explicit `initial_unattempted` phase only when its
 durable intent has one lease attempt and no dispatch or remote-success markers. An unavailable
 current/original HTTP 404 at this boundary may end the inline action after an exact live-lease

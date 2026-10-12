@@ -332,10 +332,10 @@ export class MessageDuplicateDeleteGuardService {
         lookupPhase,
       );
     } catch (error) {
-      // FLAG: A bare GET 404 is still unavailable evidence. Only this sanction's
+      // FLAG: A bare or generic not.found GET 404 is still unavailable evidence. Only this sanction's
       // independently proven successful DELETE may replace that current-source read;
       // healthy returned content, original reads, notices and initial deletes stay strict.
-      if (lookupPhase !== 'sanction' || !isUnstructuredMessageLookup404(error)) throw error;
+      if (lookupPhase !== 'sanction' || !isUnprovenMessageLookup404(error)) throw error;
       currentReadFailure = error;
       raw = null;
     }
@@ -716,7 +716,7 @@ function isConfirmedMessageAbsence(error: unknown): boolean {
   );
 }
 
-function isUnstructuredMessageLookup404(error: unknown): boolean {
+function isUnprovenMessageLookup404(error: unknown): boolean {
   const response = (error as { response?: { status?: unknown; data?: unknown } } | null)?.response;
   if (
     response?.status !== 404 ||
@@ -730,11 +730,15 @@ function isUnstructuredMessageLookup404(error: unknown): boolean {
   if (Array.isArray(body)) return false;
   const row = body as Record<string, unknown>;
   const nested = row.error;
+  // FLAG: MAX's generic not.found code proves neither message absence nor lost chat access.
+  // It may use only the same exact own-DELETE receipt path as a codeless 404. Explicit access
+  // errors, conflicting nested codes and every other coded failure retain their original fence.
+  const unprovenCode = (code: unknown) => code == null || code === 'not.found';
   return (
-    row.code == null &&
+    unprovenCode(row.code) &&
     (nested == null ||
       (typeof nested === 'object' &&
         !Array.isArray(nested) &&
-        (nested as Record<string, unknown>).code == null))
+        unprovenCode((nested as Record<string, unknown>).code)))
   );
 }

@@ -1022,26 +1022,29 @@ describe('message duplicate final delete guard', () => {
     };
   }
 
-  it('uses an exact own DELETE receipt after a bare current GET 404 without claiming absence', async () => {
-    const s = full();
-    const error = { response: { status: 404, data: {} } };
-    s.max.getExactMessageRow.mockRejectedValue(error);
-    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
-    const finalAuthority = jest.fn();
-    await expect(
-      s.service.assertMessageStillActionable({
-        ...s.request,
-        beforeFinalAuthority: finalAuthority,
-      }),
-    ).resolves.toBe('allowed');
-    expect(s.originalLookup).toHaveBeenCalledTimes(1);
-    expect(finalAuthority).toHaveBeenCalledTimes(1);
-    expect(s.history.stillMatches).toHaveBeenCalledWith(s.params.chatId, s.binding, true);
-    expect(s.metrics.record).not.toHaveBeenCalledWith('guard.current_lookup_confirmed_absent');
-    expect(s.metrics.record).not.toHaveBeenCalledWith('guard.absent');
-    expect(s.history.remove).not.toHaveBeenCalled();
-    expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
-  });
+  it.each([{}, { code: 'not.found' }, { error: { code: 'not.found' } }])(
+    'uses an exact own DELETE receipt after an unavailable current GET 404 (%j) without claiming absence',
+    async (body) => {
+      const s = full();
+      const error = { response: { status: 404, data: body } };
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
+      const finalAuthority = jest.fn();
+      await expect(
+        s.service.assertMessageStillActionable({
+          ...s.request,
+          beforeFinalAuthority: finalAuthority,
+        }),
+      ).resolves.toBe('allowed');
+      expect(s.originalLookup).toHaveBeenCalledTimes(1);
+      expect(finalAuthority).toHaveBeenCalledTimes(1);
+      expect(s.history.stillMatches).toHaveBeenCalledWith(s.params.chatId, s.binding, true);
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.current_lookup_confirmed_absent');
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.absent');
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['missing', 'unfinished', 'unverified'] as const)(
     'declines only the initial sanction on unavailable current source and a %s receipt',
@@ -1162,6 +1165,11 @@ describe('message duplicate final delete guard', () => {
     { response: { status: 403, data: {} } },
     { response: { status: 404, data: { code: 'chat.denied' } } },
     { response: { status: 404, data: { error: { code: 'chat.not.found' } } } },
+    { response: { status: 404, data: { code: 'not.found', error: { code: 'chat.denied' } } } },
+    { response: { status: 404, data: { code: 'chat.denied', error: { code: 'not.found' } } } },
+    { response: { status: 404, data: { code: 'unknown.failure' } } },
+    { response: { status: 404, data: { code: 'not.found', error: 'chat.denied' } } },
+    { response: { status: 404, data: [{ code: 'not.found' }] } },
     { response: { status: 500, data: {} } },
   ])(
     'does not use a DELETE receipt to mask an explicit access/transport failure (%j)',
@@ -1187,10 +1195,10 @@ describe('message duplicate final delete guard', () => {
   });
 
   it.each(['send', 'member'] as const)(
-    'does not use a DELETE receipt for a %s mutation-marked 404',
+    'does not use a DELETE receipt for a %s mutation-marked generic not.found 404',
     async (kind) => {
       const s = full();
-      const error = { response: { status: 404, data: {} } };
+      const error = { response: { status: 404, data: { code: 'not.found' } } };
       if (kind === 'send') markMaxMessageSendAttempted(error);
       else markMaxMemberMutationAttempted(error);
       s.max.getExactMessageRow.mockRejectedValue(error);
@@ -1200,16 +1208,19 @@ describe('message duplicate final delete guard', () => {
     },
   );
 
-  it('retains a bare original GET failure after proving the current DELETE receipt', async () => {
-    const s = full();
-    s.max.getExactMessageRow.mockRejectedValue({ response: { status: 404, data: {} } });
-    const originalError = { response: { status: 404, data: {} } };
-    s.originalLookup.mockRejectedValue(originalError);
-    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
-    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(originalError);
-    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
-    expect(s.history.remove).not.toHaveBeenCalled();
-  });
+  it.each([{}, { code: 'not.found' }])(
+    'retains an unavailable original GET failure (%j) after proving the current DELETE receipt',
+    async (body) => {
+      const s = full();
+      s.max.getExactMessageRow.mockRejectedValue({ response: { status: 404, data: body } });
+      const originalError = { response: { status: 404, data: body } };
+      s.originalLookup.mockRejectedValue(originalError);
+      s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
+      await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(originalError);
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(s.history.remove).not.toHaveBeenCalled();
+    },
+  );
   it('allows configured full sanctions only after fresh source and policy checks', async () => {
     const s = full();
     await expect(s.service.assertMessageStillActionable(s.request)).resolves.toBe('allowed');
