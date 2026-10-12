@@ -136,3 +136,18 @@ follows the existing scheduler boundary exactly: pending timeouts retain the cha
 ordinary FAILED owners with no retry isolate only the exact pristine copies of their semantic
 event. The paired negative case proves that new same-chat events behind a pending timeout
 still cannot start. Neither change certifies or retries the failed original.
+
+## Final candidate preparation
+
+The writer-disabled compatible image source is `d6d841334ccf24d1351738549c457e01a21c9cf0`.
+Its runtime is identical to `c0c34f96`; only workflow budgets and this plan differ. The old
+20-minute PostgreSQL job timed out on its second attempt too, so the compatibility build
+must pass its own revised CI instead of inheriting either cancelled result.
+
+The final writer runtime and native tests are byte-identical to locally validated
+`63c44c5a15594ba16876c0e150355280db6a13e9`. Merging the compatibility build retains its
+history without replacing that verified implementation. Final local results: 746 API suites /
+19,098 passed tests, 2,162 store-dependent skips; the separate native quarantine suite passed
+21 tests including both terminal-mirror progress and the persistent pending-timeout barrier.
+The earlier five-suite native matrix passed 274 tests. Both exact candidate CI identities,
+image preload, deployment and sustained production observation remain required.
