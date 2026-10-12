@@ -137,3 +137,30 @@ home card made a 100+ entity catalog rebuild one card at a time on every launch.
 follow-up changes home to persisted navigation and moves human checks to selected
 settings; it does not reinstate fleet scans or expire bot proof. Its rollout is a
 separate runtime boundary from the recovery evidence above.
+
+The follow-up runtime `aca17b8a9b7dd41b29df7ced2997037b6c512acd` passed CI
+`38321699925` and CodeQL `38321699875`. Release
+`release-20261012T234722Z-aca17b8a9b7d` was committed at **23:52:01.993 UTC**
+(13 October 02:52:01.993 Moscow), after strict ingress/admin/public/Mini App and
+native sandbox smokes. All 14 API roles and Mini App changed; Safety Desk retained
+`4aa48ce8`. There were no new migrations or PostgreSQL/Redis restarts/recreations.
+The temporary 503 during the stopped-worker rollout cleared under the normal smoke
+deadline; no timeout extension, readiness suppression or queue clearing was used.
+
+The separate post-release observation covered **23:52:27.998–23:57:28.035 UTC**:
+21 valid samples over 300.037 seconds, maximum spacing 15.375 seconds and no missing
+or unavailable probes. Both readiness endpoints stayed 200, maximum operational lag
+was 1.401 seconds, every sample attested the exact 14-role fleet with no restarts,
+duplicates or unexpected roles, and the queue fence remained released/unowned.
+The last sample reached `normal/healthy`. This five-minute release smoke does not
+replace the earlier continuous 16-minute prolonged-backlog acceptance window.
+
+Closed cohorts 23:52:37.160228–23:53:07.160228 (observed 23:53:37.160228) and
+23:56:32.368668–23:57:02.368668 (observed 23:57:32.368668) contained respectively
+132/91 PROCESSED and 30/18 DUPLICATE receipts, with processed-only p95 805.85/726.5 ms.
+Both were complete and untruncated at the 512-per-status cap, with every other status
+and all invalid-clock counters zero. They do not prove individual remote effects.
+Separate overlapping 60-second action windows ranged over 1,688–1,965 attempts,
+1,677–1,933 successes, 3–32 failures and 0–4 critical failures (maximum error rate
+1.6521%); do not sum these ranges or describe MAX delivery as error-free. Individual
+action failures were not causally classified in this follow-up observation.
