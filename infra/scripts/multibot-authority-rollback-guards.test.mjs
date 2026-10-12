@@ -69,6 +69,23 @@ test('both rollback paths reject targets that erase shared multibot authority', 
       0,
       `Current authority fixture was rejected: signal=${positive.signal ?? 'none'} error=${positive.error?.message ?? 'none'}\nstdout:\n${positive.stdout}\nstderr:\n${positive.stderr}`,
     );
+    const legacyPath = paths[11];
+    const legacySource = readFileSync(resolve(fixture, legacyPath), 'utf8');
+    writeFileSync(
+      resolve(fixture, legacyPath),
+      legacySource
+        .replace('value <= ownerMs + LEGACY_SOURCE_CLOCK_LEAD_MS;', 'value <= ownerMs;')
+        .replace(
+          'hasNewOriginalSource(currentOwner, cutoff) &&\n        currentOwner.errorMessage !== LEGACY_EXECUTION_UNVERIFIED_MARKER',
+          'hasNewOriginalSource(currentOwner, cutoff)',
+        ),
+    );
+    assert.equal(
+      check(commit()).status,
+      0,
+      'Strict historical source clock bound must remain compatible',
+    );
+    writeFileSync(resolve(fixture, legacyPath), legacySource);
     const commandPath = paths[3];
     const commandSource = readFileSync(resolve(fixture, commandPath), 'utf8');
     writeFileSync(
@@ -125,6 +142,12 @@ test('both rollback paths reject targets that erase shared multibot authority', 
       [paths[11], "if (!raw && sourceMarker !== 'payload') return false;", ''],
       [paths[11], 'const source = raw ?? payload;', 'const source = payload;'],
       [paths[11], 'value > cutoffMs && value <= ownerMs', 'value > 0'],
+      [
+        paths[11],
+        'const LEGACY_SOURCE_CLOCK_LEAD_MS = 1_000;',
+        'const LEGACY_SOURCE_CLOCK_LEAD_MS = 60_000;',
+      ],
+      [paths[11], 'currentOwner.errorMessage !== LEGACY_EXECUTION_UNVERIFIED_MARKER', 'true'],
       [paths[11], "message: !raw || type === 'message_created' ? message : undefined,", 'message,'],
       [paths[11], '!isNewSource(parseWebhookEventTimestampMs(message[field]))', 'false'],
       [

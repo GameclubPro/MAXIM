@@ -27,7 +27,7 @@ function fixture() {
     id: 'event-1',
     createdAt: new Date(cutoff.getTime() + 2),
     status: WebhookStatus.QUEUED as WebhookStatus,
-    errorMessage: null,
+    errorMessage: null as string | null,
     normalizedPayload: payload,
   };
   const prisma = {
@@ -112,6 +112,33 @@ describe('historical semantic execution authority', () => {
     await expect(holdUnverifiedLegacyExecution(prisma as never, claim)).resolves.toBe(false);
     (payload.raw as Record<string, unknown>).timestamp = undefined;
     await expect(holdUnverifiedLegacyExecution(prisma as never, claim)).resolves.toBe(true);
+  });
+
+  it.each([4, 1_000])('accepts bounded MAX clock lead of %i ms on a new source', async (leadMs) => {
+    const { claim, prisma, owner, payload } = fixture();
+    payload.type = 'message_removed';
+    payload.raw = { timestamp: owner.createdAt.getTime() + leadMs };
+    claim.semanticKey = buildWebhookSemanticEventKey(payload)!;
+    await expect(holdUnverifiedLegacyExecution(prisma as never, claim)).resolves.toBe(false);
+    expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects clock lead beyond the fixed bound', async () => {
+    const { claim, prisma, owner, payload } = fixture();
+    payload.type = 'message_removed';
+    payload.raw = { timestamp: owner.createdAt.getTime() + 1_001 };
+    claim.semanticKey = buildWebhookSemanticEventKey(payload)!;
+    await expect(holdUnverifiedLegacyExecution(prisma as never, claim)).resolves.toBe(true);
+  });
+
+  it('preserves an installed legacy quarantine even if current source checks would accept it', async () => {
+    const { claim, prisma, owner } = fixture();
+    owner.status = WebhookStatus.FAILED;
+    owner.errorMessage =
+      'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required';
+    await expect(holdUnverifiedLegacyExecution(prisma as never, claim)).resolves.toBe(true);
+    expect(prisma.webhookEvent.findFirst).not.toHaveBeenCalled();
   });
 
   it('preserves explicitly sourced normalized edit time when original raw data is absent', async () => {

@@ -1454,28 +1454,33 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     },
   );
 
-  it('permits an enforced claim with fresh owner and source after cutover to execute once', async () => {
-    const source = await semanticReceipt({
-      chatId: `-${randomUUID()}`,
-      messageId: 'new-enforced',
-      createdAt: new Date(),
-    });
-    const claim = await readyClaim(source);
-    expect(claim.createdAt.getTime()).toBeGreaterThan(executionCutoverAt.getTime());
-    await expect(holdUnverifiedLegacyExecution(prisma as never, claim)).resolves.toBe(false);
-    const worker = new WebhookCanonicalExecutionService(prisma as never);
-    const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
-    expect(context?.businessLeaseToken).toEqual(expect.any(String));
-    await worker.completeExecution(context!);
-    await expect(worker.prepareExecution(source.event.id, 'peer')).resolves.toBeNull();
-    expect(
-      await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
-    ).toMatchObject({
-      status: 'COMPLETED',
-      businessStartedAt: expect.any(Date),
-      commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
-    });
-  });
+  it.each([0, 4, 1_000])(
+    'permits a new enforced source with %i ms clock lead to execute once',
+    async (leadMs) => {
+      const receiptAt = new Date();
+      const source = await semanticReceipt({
+        chatId: `-${randomUUID()}`,
+        messageId: 'new-enforced',
+        createdAt: receiptAt,
+        sourceAt: new Date(receiptAt.getTime() + leadMs),
+      });
+      const claim = await readyClaim(source);
+      expect(claim.createdAt.getTime()).toBeGreaterThan(executionCutoverAt.getTime());
+      await expect(holdUnverifiedLegacyExecution(prisma as never, claim)).resolves.toBe(false);
+      const worker = new WebhookCanonicalExecutionService(prisma as never);
+      const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
+      expect(context?.businessLeaseToken).toEqual(expect.any(String));
+      await worker.completeExecution(context!);
+      await expect(worker.prepareExecution(source.event.id, 'peer')).resolves.toBeNull();
+      expect(
+        await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: claim.id } }),
+      ).toMatchObject({
+        status: 'COMPLETED',
+        businessStartedAt: expect.any(Date),
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+    },
+  );
 
   it.each(['PENDING', 'READY', 'COMPLETED'] as const)(
     'rejects an ownerless incomplete %s claim',

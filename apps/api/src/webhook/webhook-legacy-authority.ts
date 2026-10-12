@@ -7,7 +7,10 @@ import {
   readWebhookEventTimestamp,
 } from './webhook-semantic-event-key';
 import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
-import { quarantineLegacyMembershipMirror } from './webhook-legacy-membership-mirror';
+import { quarantineLegacyRemovalMirror } from './webhook-legacy-removal-mirror';
+
+const LEGACY_SOURCE_CLOCK_LEAD_MS = 1_000;
+const LEGACY_EXECUTION_UNVERIFIED_MARKER = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required`;
 
 type LegacyExecutionClaim = {
   id: string;
@@ -56,8 +59,11 @@ function hasNewOriginalSource(owner: PersistedExecutionOwner, cutoff: Date): boo
   });
   const cutoffMs = cutoff.getTime();
   const ownerMs = Math.min(owner.createdAt.getTime(), Date.now());
+  // FLAG: MAX and receipt clocks need not agree to the millisecond. This fixed
+  // tolerance only classifies a post-cutover source; it never rewrites source time,
+  // moves the cutover, renews an execution deadline or releases an installed hold.
   const isNewSource = (value: number | null) =>
-    value !== null && value > cutoffMs && value <= ownerMs;
+    value !== null && value > cutoffMs && value <= ownerMs + LEGACY_SOURCE_CLOCK_LEAD_MS;
   if (!isNewSource(eventAt?.getTime() ?? null)) return false;
   if (type === 'message_created' && message) {
     // FLAG: A newer delivery timestamp cannot renew a stable old message identity.
@@ -143,7 +149,8 @@ export async function holdUnverifiedLegacyExecution(
         Number.isFinite(currentOwner.createdAt.getTime()) &&
         currentOwner.createdAt.getTime() > cutoff.getTime() &&
         buildWebhookSemanticEventKey(currentOwner.normalizedPayload) === claim.semanticKey &&
-        hasNewOriginalSource(currentOwner, cutoff)
+        hasNewOriginalSource(currentOwner, cutoff) &&
+        currentOwner.errorMessage !== LEGACY_EXECUTION_UNVERIFIED_MARKER
       ) {
         const oldMirror = await prisma.webhookEvent.findFirst({
           where: { semanticKey: claim.semanticKey, createdAt: { lte: cutoff } },
@@ -189,16 +196,18 @@ export async function holdUnverifiedLegacyExecution(
           status: WebhookStatus.FAILED,
           nextEnqueueAt: null,
           queueName: null,
-          errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required`,
+          errorMessage: LEGACY_EXECUTION_UNVERIFIED_MARKER,
         },
       });
       if (
         held.count === 1 &&
         persistedOwner &&
         persistedOwner.id !== owner.id &&
-        asRecord(persistedOwner.normalizedPayload)?.type === 'user_removed'
+        ['user_removed', 'message_removed'].includes(
+          String(asRecord(persistedOwner.normalizedPayload)?.type ?? ''),
+        )
       ) {
-        await quarantineLegacyMembershipMirror(prisma, {
+        await quarantineLegacyRemovalMirror(prisma, {
           mirrorId: persistedOwner.id,
           ownerId: owner.id,
           claimId: claim.id,

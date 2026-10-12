@@ -162,6 +162,34 @@ const claimColumns = OWNER_PROOF_COLUMNS.webhook_execution_claims.map((c) => `c.
 const normalizedChat = (alias) =>
   `COALESCE(NULLIF(BTRIM(${alias}.normalized_payload->'message'->>'chatId'), ''), NULLIF(BTRIM(${alias}.normalized_payload->>'chatId'), ''))`;
 
+// FLAG: Inspect only the selected receipt's direct original timestamp. This is clock
+// diagnostics, never complete source/cutoff proof; unknown shapes cannot authorize replay.
+const sourceClock = (alias) => `(SELECT json_build_object(
+  'source_marker', CASE WHEN LOWER(BTRIM(${alias}.normalized_payload->>'eventTimestampSource'))
+    IN ('payload','ingress') THEN LOWER(BTRIM(${alias}.normalized_payload->>'eventTimestampSource'))
+    ELSE 'unknown' END,
+  'raw_object', COALESCE(jsonb_typeof(${alias}.normalized_payload->'raw') = 'object', false),
+  'direct_timestamp_shape', CASE WHEN source IS NULL THEN 'unknown'
+    WHEN source->'timestamp' IS NULL OR source->'timestamp' = 'null'::jsonb THEN 'missing'
+    WHEN jsonb_typeof(source->'timestamp') <> 'number' THEN 'unknown'
+    WHEN ms IS NULL OR ms < 1 OR ms > 8640000000000000 THEN 'invalid_numeric'
+    ELSE 'numeric' END,
+  'direct_receipt_delta_seconds', CASE WHEN ms >= 1 AND ms <= 8640000000000000
+    THEN round(ms / 1000 - extract(epoch FROM ${alias}.created_at), 3) ELSE NULL END
+) FROM (
+  SELECT source, trunc(CASE WHEN n < 10000000000 THEN n * 1000 ELSE n END) AS ms FROM (
+    SELECT source, CASE WHEN jsonb_typeof(source->'timestamp') = 'number'
+      AND length(source->>'timestamp') <= 32
+      AND source->>'timestamp' ~ '^[0-9]+([.][0-9]+)?$'
+      THEN (source->>'timestamp')::numeric ELSE NULL END AS n FROM (
+      SELECT CASE WHEN jsonb_typeof(${alias}.normalized_payload->'raw') = 'object'
+        THEN ${alias}.normalized_payload->'raw'
+        WHEN LOWER(BTRIM(${alias}.normalized_payload->>'eventTimestampSource')) = 'payload'
+        THEN ${alias}.normalized_payload ELSE NULL END AS source
+    ) original
+  ) guarded
+) clock)`;
+
 // FLAG: Diagnose exactly the first predecessor, including unknown/ineligible heads.
 // No historical age, missing claim or missing effect row creates replay authority.
 export function buildOwnerProofAuditSql(source = false, retry = false, queued = false) {
@@ -288,6 +316,7 @@ SELECT json_build_object(
     'ambiguous_error_marker', COALESCE(error_message, '') ILIKE '%ambiguous%') FROM predecessor),
   'canonical_owner', (SELECT json_build_object(
     'status', status::text, 'created_at', created_at,
+    'source_clock', ${sourceClock('owner')},
     'legacy_unverified_marker', error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required',
     'processed', processed_at IS NOT NULL,
     'retry_scheduled', next_enqueue_at IS NOT NULL,

@@ -31,6 +31,7 @@
 ## Core Workflow
 
 - Unless the user says not to deploy, runtime changes in API, mini app, contracts, Prisma, Docker, or MAX integration finish with local validation and the scoped VPS deploy.
+- A discovered readiness 503, failed smoke, CI failure or deploy blocker is part of finishing the authorized task: preserve evidence, diagnose the cause, implement and validate a safe correction, and continue delivery without waiting for another user command. An existing red baseline is not by itself a reason to stop or request permission. Keep exact-SHA gates and strict final smokes; destructive recovery, uncertain-effect replay and changes outside the task still require their own authority. If an external dependency truly prevents progress, report the concrete blocker and completed diagnosis.
 - Docs, agent notes, README, test-only changes, and cleanup do not require VPS deploy unless requested.
 - Prefer focused checks while iterating, then broaden in proportion to the change:
   - `npm run typecheck:contracts`

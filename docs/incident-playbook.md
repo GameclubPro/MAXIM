@@ -110,6 +110,13 @@ full-path suite. Never remove uncertainty/order fences or clear Redis to repair 
    describes that row's most recent deferral, not a fleet-wide cause. FAILED rows may be historical
    quarantine: report fresh deltas separately. Raw readiness, normal/healthy mode, burst state,
    exact images and queue fences must be assessed together; HTTP 200 may be hysteresis.
+   For a deferred head with no ordered predecessor, inspect `webhook-source-proof --explain`
+   before `webhook-source-proof`: it follows that receipt's own semantic owner, including
+   nonordered lifecycle events. `canonical_owner.source_clock` reports only the original
+   direct numeric timestamp's signed lead/lag against its receipt, with bounded numeric casts.
+   It neither rebuilds the semantic source nor proves cutoff admission or absence of effects.
+   A pending unprepared claim and a retained legacy marker require no-replay handling, not
+   whole-handler retry; distinguish a never-enqueued copy from its canonical owner.
    Readiness failure does not prevent the fixed read-only queue audit. If a reviewed queue-only
    catalog revision is needed before runtime deployment, transport its exact script bytes over SSH
    stdin into a private `infra/scripts/.maxim-multibot-audit.XXXXXXXX.sh` sibling created by `mktemp`

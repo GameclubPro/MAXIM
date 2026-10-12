@@ -276,6 +276,14 @@ maxim_topology_require_multibot_authority() {
     const originalSource = sourceStart >= 0 && sourceEnd > sourceStart ?
       squash(legacy.slice(sourceStart, sourceEnd + 2)) : "";
     const legacyAuthority = squash(legacy);
+    // FLAG: Accept the strict historical bound or the fixed 1-second clock tolerance
+    // only with sticky installed holds. A wider/missing bound cannot authorize rollback.
+    const sourceClockBound = originalSource.includes("value !== null && value > cutoffMs && value <= ownerMs;") || (
+      legacyAuthority.includes("const LEGACY_SOURCE_CLOCK_LEAD_MS = 1_000;") &&
+      originalSource.includes("value !== null && value > cutoffMs && value <= ownerMs + LEGACY_SOURCE_CLOCK_LEAD_MS;") &&
+      legacyAuthority.includes("hasNewOriginalSource(currentOwner, cutoff) && currentOwner.errorMessage !== LEGACY_EXECUTION_UNVERIFIED_MARKER") &&
+      legacyAuthority.includes("const LEGACY_EXECUTION_UNVERIFIED_MARKER = \u0060\u0024{WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required\u0060;")
+    );
     // FLAG: A new claim cannot certify an old off-mode receipt. Preserve owner birth,
     // original MAX source age and the indexed older-mirror exclusion on every rollback.
     const legacyNoReplay = legacyAuthority.includes(
@@ -293,7 +301,7 @@ maxim_topology_require_multibot_authority() {
       originalSource.includes("const source = raw ?? payload;") &&
       originalSource.includes("message: !raw || type === \u0027message_created\u0027 ? message : undefined,") &&
       originalSource.includes("const ownerMs = Math.min(owner.createdAt.getTime(), Date.now());") &&
-      originalSource.includes("value !== null && value > cutoffMs && value <= ownerMs;") &&
+      sourceClockBound &&
       originalSource.includes("if (!isNewSource(eventAt?.getTime() ?? null)) return false;") &&
       originalSource.includes("if (type === \u0027message_created\u0027 && message)") &&
       originalSource.includes("for (const field of [\u0027createdAt\u0027, \u0027created_at\u0027, \u0027timestamp\u0027])") &&

@@ -24,7 +24,7 @@ function untouchedReceipt(event: WebhookEvent): boolean {
 function removal(event: WebhookEvent, semanticKey: string): boolean {
   const payload = event.normalizedPayload as { type?: unknown } | null;
   return (
-    payload?.type === 'user_removed' &&
+    (payload?.type === 'user_removed' || payload?.type === 'message_removed') &&
     event.semanticKey === semanticKey &&
     buildWebhookSemanticEventKey(event.normalizedPayload) === semanticKey
   );
@@ -33,8 +33,9 @@ function removal(event: WebhookEvent, semanticKey: string): boolean {
 // FLAG: Propagate the existing *pending* no-replay quarantine to one never-enqueued
 // removal mirror. This is neither completion nor abandonment: preserve both payloads,
 // the canonical claim, every effect receipt, and the marker that prevents retention/replay.
-// Message ordering, prepared/started claims and independently owned mirrors do not qualify.
-export async function quarantineLegacyMembershipMirror(
+// Only nonordered user/message removals qualify. Prepared/started claims and
+// independently owned mirrors retain their original fences.
+export async function quarantineLegacyRemovalMirror(
   prisma: PrismaService,
   input: { mirrorId: string; ownerId: string; claimId: string; semanticKey: string },
 ): Promise<boolean> {

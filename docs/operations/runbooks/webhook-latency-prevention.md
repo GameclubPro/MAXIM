@@ -121,6 +121,15 @@ before editing it; copying these notes does not install a fix or prove the deplo
    Exclude only its exact validated marker with no linked claim; preserve the semantic anchor and
    every independent replay fence. `bot_added` must not demand an ordinary live executor or
    perform passive activation. Keep exact receiving-bot identity and the explicit denylist path.
+   Legacy source classification tolerates at most 1,000 ms of MAX clock lead, keeping the
+   successful migration cutoff and all source/receipt/deadline values unchanged. Previously
+   installed legacy holds cannot become executable through this tolerance. Pristine
+   nonordered removal mirrors (`user_removed`, `message_removed`) inherit their exact
+   unprepared owner's pending no-replay marker under claim-before-receipt locks, rather
+   than retrying forever as RECEIVED. No completion, abandonment or effect receipt is created.
+   Run `webhook-legacy-authority.spec.ts`, native `webhook-legacy-membership-mirror-postgres.spec.ts`
+   and `webhook-outbox-postgres.spec.ts`; include active lag before/after, stale-CAS refusal,
+   competing propagation, independent claims and excessive/old/unknown source timestamps.
 6. **Cancellation preserves authority and user data.** Use the
    [backlog cancellation protocol](webhook-backlog-cancellation.md) only for an authorized fixed
    scope, with compatible readers throughout the fleet. Retain connected chats, settings,

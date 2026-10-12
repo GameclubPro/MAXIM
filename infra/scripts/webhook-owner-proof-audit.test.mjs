@@ -140,6 +140,43 @@ test('source mode inspects the oldest receipt own claim without requiring a pred
   }
 });
 
+test('owner clock diagnostics preserve numeric bounds and never export source content', async () => {
+  const db = new PGlite();
+  try {
+    await fixture(db);
+    await receipts(db);
+    await finishedClaim(db);
+    for (const [timestamp, shape, delta] of [
+      [Date.parse(now) + 1250, 'numeric', 1.25],
+      [Date.parse(now) / 1000 - 3, 'numeric', -3],
+      [1e100, 'invalid_numeric', null],
+      [-1, 'invalid_numeric', null],
+      [secret, 'unknown', null],
+      [null, 'missing', null],
+    ]) {
+      await db.query(
+        `UPDATE webhook_events SET normalized_payload = $1 WHERE id='private-blocker'`,
+        [
+          JSON.stringify({
+            ...JSON.parse(payload),
+            eventTimestampSource: 'payload',
+            raw: { timestamp, text: secret },
+          }),
+        ],
+      );
+      const report = await audit(db, true);
+      assert.deepEqual(report.canonical_owner.source_clock, {
+        source_marker: 'payload',
+        raw_object: true,
+        direct_timestamp_shape: shape,
+        direct_receipt_delta_seconds: delta,
+      });
+    }
+  } finally {
+    await db.close();
+  }
+});
+
 test('oldest first predecessor is retained even when a later head has finished proof', async () => {
   const db = new PGlite();
   try {
@@ -523,6 +560,12 @@ test('source mirror reports terminal canonical metadata without exposing its sav
     assert.deepEqual(report.canonical_owner, {
       status: 'FAILED',
       created_at: '2026-10-01T00:00:00',
+      source_clock: {
+        source_marker: 'unknown',
+        raw_object: false,
+        direct_timestamp_shape: 'unknown',
+        direct_receipt_delta_seconds: null,
+      },
       processed: false,
       legacy_unverified_marker: false,
       retry_scheduled: false,
