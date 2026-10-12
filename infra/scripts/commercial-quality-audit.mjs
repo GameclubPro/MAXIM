@@ -73,17 +73,18 @@ export function buildCommercialQualityAuditSql(explain = false) {
   // FLAG: The sole table walk uses the attested observed_at/id index and a 5,001-row sentinel.
   // Metadata projection uses fixed enums only. Evidence, identifiers, scores, hashes, contact
   // material and arbitrary reason/candidate strings cannot appear in the report.
+  // FLAG: Project bounded scalar fields before materialization. Retaining raw JSON in several
+  // CTE stores can exhaust the audit role's 8 MiB temporary-file limit within the row cap.
   const query = `WITH candidates AS MATERIALIZED (
+  WITH source_rows AS NOT MATERIALIZED (
   SELECT id, observed_at, expires_at, source, independent_label,
     independent_review_count, review_state, quality_metadata
   FROM commercial_review_samples
   WHERE observed_at >= statement_timestamp() - interval '24 hours'
     AND observed_at <= statement_timestamp()
   ORDER BY observed_at DESC, id DESC LIMIT 5001
-), sample AS MATERIALIZED (
-  SELECT * FROM candidates ORDER BY observed_at DESC, id DESC LIMIT 5000
-), classified AS MATERIALIZED (
-  SELECT observed_at, expires_at > statement_timestamp() AS unexpired,
+), classified AS NOT MATERIALIZED (
+  SELECT id, observed_at, expires_at > statement_timestamp() AS unexpired,
     CASE WHEN source IN ('TEXT', 'OCR') THEN source ELSE 'UNKNOWN' END AS source,
     CASE WHEN quality_metadata->'schemaVersion' = '2'::jsonb THEN true ELSE false END AS metadata_v2,
     CASE WHEN quality_metadata->'schemaVersion' = '2'::jsonb THEN quality_metadata ELSE '{}'::jsonb END AS metadata,
@@ -93,9 +94,9 @@ export function buildCommercialQualityAuditSql(explain = false) {
       THEN review_state ELSE 'UNKNOWN' END AS review_state,
     CASE WHEN independent_review_count = 0 THEN 'ZERO' WHEN independent_review_count = 1
       THEN 'ONE' WHEN independent_review_count >= 2 THEN 'TWO_OR_MORE' ELSE 'UNKNOWN' END AS review_count
-  FROM sample
-), normalized AS MATERIALIZED (
-  SELECT observed_at, unexpired, source, metadata_v2, independent_label, review_state, review_count,
+  FROM source_rows
+)
+  SELECT id, observed_at, unexpired, source, metadata_v2, independent_label, review_state, review_count,
     CASE WHEN metadata->>'samplingStratum' IN ('HIT', 'REVIEW', 'NO_HIT', 'TECHNICAL')
       THEN metadata->>'samplingStratum' ELSE 'UNKNOWN' END AS stratum,
     CASE WHEN jsonb_typeof(metadata->'samplingProbability') = 'number' THEN
@@ -122,6 +123,8 @@ export function buildCommercialQualityAuditSql(explain = false) {
     CASE WHEN metadata->'sourceExcerptComplete' = 'true'::jsonb THEN 'COMPLETE'
       WHEN metadata->'sourceExcerptComplete' = 'false'::jsonb THEN 'INCOMPLETE' ELSE 'UNKNOWN' END AS excerpt
   FROM classified
+), normalized AS MATERIALIZED (
+  SELECT * FROM candidates ORDER BY observed_at DESC, id DESC LIMIT 5000
 ), strata AS (
   SELECT source, stratum, count(*) AS captured_samples,
     count(probability) AS samples_with_probability,
@@ -147,9 +150,9 @@ SELECT json_build_object(
   'truncated', (SELECT count(*) > 5000 FROM candidates),
   'complete', (SELECT count(*) <= 5000 FROM candidates)
     AND NOT EXISTS (SELECT 1 FROM normalized WHERE NOT metadata_v2 OR probability IS NULL),
-  'captured_samples', (SELECT count(*) FROM sample),
-  'oldest_observed_at', (SELECT min(observed_at) FROM sample),
-  'newest_observed_at', (SELECT max(observed_at) FROM sample),
+  'captured_samples', (SELECT count(*) FROM normalized),
+  'oldest_observed_at', (SELECT min(observed_at) FROM normalized),
+  'newest_observed_at', (SELECT max(observed_at) FROM normalized),
   'metadata_missing_or_legacy', (SELECT count(*) FROM normalized WHERE NOT metadata_v2),
   'probability_unknown', (SELECT count(*) FROM normalized WHERE probability IS NULL),
   'uniform_evaluation_samples', (SELECT count(*) FROM normalized WHERE evaluation_membership = 'YES'),

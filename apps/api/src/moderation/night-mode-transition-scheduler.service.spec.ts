@@ -393,65 +393,78 @@ describe('NightModeTransitionSchedulerService', () => {
     expect(rows[0]?.created_at).toEqual(new Date('2026-09-02T06:29:00.000Z'));
   });
 
-  it('defers an exact current close while access is denied and executes after access recovers', async () => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T06:33:00.000Z'));
-    try {
-      const deniedSnapshot = {
-        entityType: ChatEntityType.CHAT,
-        settings: SAMARA_CLOSE_SETTINGS,
-        botMemberships: [
-          {
-            botId: 'bot-1',
-            status: ChatBotMembershipStatus.ACTIVE,
-            botAccessState: ChatBotAccessState.DENIED,
-            permissionsSnapshot: null,
+  it.each([
+    { botAccessState: ChatBotAccessState.DENIED, permissionsSnapshot: null },
+    {
+      botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+      permissionsSnapshot: {
+        isAdmin: true,
+        permissionsKnown: true,
+        permissions: ['read_all_messages', 'write'],
+        activationCapabilityCeiling: ['moderation', 'delete_message'],
+      },
+    },
+  ])(
+    'defers an exact current close while access is denied and executes after access recovers (%j)',
+    async (deniedAccess) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-09-02T06:33:00.000Z'));
+      try {
+        const deniedSnapshot = {
+          entityType: ChatEntityType.CHAT,
+          settings: SAMARA_CLOSE_SETTINGS,
+          botMemberships: [
+            {
+              botId: 'bot-1',
+              status: ChatBotMembershipStatus.ACTIVE,
+              ...deniedAccess,
+            },
+          ],
+        };
+        const prisma = {
+          chat: {
+            findUnique: jest
+              .fn()
+              .mockResolvedValueOnce(deniedSnapshot)
+              .mockResolvedValueOnce({
+                ...deniedSnapshot,
+                botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
+              }),
           },
-        ],
-      };
-      const prisma = {
-        chat: {
-          findUnique: jest
-            .fn()
-            .mockResolvedValueOnce(deniedSnapshot)
-            .mockResolvedValueOnce({
-              ...deniedSnapshot,
-              botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
-            }),
-        },
-      };
-      const maxBotRegistry = {
-        getActionableBots: jest.fn().mockReturnValue([{ id: 'bot-1' }]),
-      };
-      const service = new NightModeTransitionSchedulerService(
-        prisma as never,
-        undefined,
-        undefined,
-        maxBotRegistry as never,
-      );
-      const job = buildSamaraCloseJob();
-      const jobId = buildNightModeTransitionJobId(
-        job.chatId,
-        job.transition,
-        job.scheduledFor,
-        job.sessionKey,
-      );
-      await seedRegisteredJob(service, {
-        chatId: job.chatId,
-        jobId,
-        transition: job.transition,
-        sessionKey: job.sessionKey,
-        scheduledFor: job.scheduledFor,
-        scheduleFingerprint: job.scheduleFingerprint,
-      });
+        };
+        const maxBotRegistry = {
+          getActionableBots: jest.fn().mockReturnValue([{ id: 'bot-1' }]),
+        };
+        const service = new NightModeTransitionSchedulerService(
+          prisma as never,
+          undefined,
+          undefined,
+          maxBotRegistry as never,
+        );
+        const job = buildSamaraCloseJob();
+        const jobId = buildNightModeTransitionJobId(
+          job.chatId,
+          job.transition,
+          job.scheduledFor,
+          job.sessionKey,
+        );
+        await seedRegisteredJob(service, {
+          chatId: job.chatId,
+          jobId,
+          transition: job.transition,
+          sessionKey: job.sessionKey,
+          scheduledFor: job.scheduledFor,
+          scheduleFingerprint: job.scheduleFingerprint,
+        });
 
-      await expect(service.inspectTransitionExecution(job, jobId)).resolves.toBe('defer');
-      await expect(service.inspectTransitionExecution(job, jobId)).resolves.toBe('execute');
+        await expect(service.inspectTransitionExecution(job, jobId)).resolves.toBe('defer');
+        await expect(service.inspectTransitionExecution(job, jobId)).resolves.toBe('execute');
 
-      expect(prisma.chat.findUnique).toHaveBeenCalledTimes(2);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
+        expect(prisma.chat.findUnique).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it.each([
     {

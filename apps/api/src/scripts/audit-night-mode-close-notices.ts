@@ -57,6 +57,7 @@ const AUDIT_SETTINGS_SELECT = {
           botId: true,
           status: true,
           botAccessState: true,
+          botAccessSource: true,
           permissionsSnapshot: true,
           sendRouteFailureCount: true,
           sendRouteQuarantinedUntil: true,

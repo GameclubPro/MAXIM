@@ -1188,6 +1188,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
                   select: {
                     status: true,
                     botAccessState: true,
+                    botAccessSource: true,
                     permissionsSnapshot: true,
                   },
                 })

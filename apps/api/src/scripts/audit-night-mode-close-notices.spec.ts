@@ -37,6 +37,7 @@ function membership(overrides: Partial<AuditMembership> = {}): AuditMembership {
     botId: 'bot-actionable',
     status: ChatBotMembershipStatus.ACTIVE,
     botAccessState: ChatBotAccessState.UNKNOWN,
+    botAccessSource: null,
     permissionsSnapshot: null,
     sendRouteFailureCount: 0,
     sendRouteQuarantinedUntil: null,

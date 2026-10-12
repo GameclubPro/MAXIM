@@ -65,7 +65,8 @@ const MEMBER_PERMISSIONS = new Set([
 ]);
 
 export function hasExecutionCapability(
-  membership: MaxExecutionMembershipProof,
+  membership: Pick<MaxExecutionMembershipProof, 'permissionsSnapshot'> &
+    Partial<Omit<MaxExecutionMembershipProof, 'permissionsSnapshot'>>,
   entityType: ChatEntityType | null,
   purpose: MaxExecutionPurpose,
 ): boolean {

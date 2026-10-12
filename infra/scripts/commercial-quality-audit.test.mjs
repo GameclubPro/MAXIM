@@ -53,16 +53,21 @@ test(
       'CREATE SCHEMA commercial_quality_audit_fixture; SET LOCAL search_path TO commercial_quality_audit_fixture, public',
     );
     await client.query(fixture);
+    await client.query(
+      'ALTER TABLE commercial_review_samples ALTER COLUMN quality_metadata SET STORAGE PLAIN',
+    );
     await client.query(`INSERT INTO commercial_review_samples (id, observed_at, source, quality_metadata)
       SELECT 'private-native-' || i, now() - interval '2 days' - i * interval '1 second', 'TEXT', NULL
       FROM generate_series(1, 100000) i;
       INSERT INTO commercial_review_samples (id, observed_at, source, quality_metadata)
       SELECT 'private-recent-' || i, now() - i * interval '1 second', 'OCR',
-        '{"schemaVersion":2,"samplingProbability":1,"samplingStratum":"HIT","sourceExcerptComplete":true}'
+        '{"schemaVersion":2,"samplingProbability":1,"samplingStratum":"HIT","sourceExcerptComplete":true}'::jsonb
+          || jsonb_build_object('privateUnusedMetadata', repeat('private-payload-', 300))
       FROM generate_series(1, 6000) i;
       ANALYZE commercial_review_samples;
       SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
-      SET LOCAL max_parallel_workers_per_gather = 0;`);
+      SET LOCAL max_parallel_workers_per_gather = 0;
+      SET LOCAL work_mem = '1MB'; SET LOCAL temp_file_limit = '8MB';`);
     const report = (await client.query(query)).rows[0].json_build_object;
     assert.equal(report.captured_samples, 5000);
     assert.equal(report.truncated, true);
