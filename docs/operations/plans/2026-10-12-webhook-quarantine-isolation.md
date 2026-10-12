@@ -1,7 +1,8 @@
 # Webhook fault isolation and release prevention
 
-Status: implementation and verification in progress. Production remains unchanged until the
-exact revision passes the checks below. Incident evidence:
+Status: implemented and deployed as `dbd699740efaee890c78db39727df0148ee106fe`;
+sustained readiness/active-lag acceptance passed, with the explicitly retained local failures
+and OCR containment restart below. Incident evidence:
 [REG bot audit](../incidents/2026-10-12-reg-bot-audit.md).
 
 ## Why the releases did not prevent the incident
@@ -81,15 +82,15 @@ must be contained and reported, not cleared to pass a release check.
   the mini app/administrative API remains available. Finer command/message isolation requires
   explicit effect dependencies, not skipping an unknown predecessor.
 
-Validation, deployment and observation results will be recorded here after execution.
+Validation, deployment and observation results are recorded below.
 
 Development verification: the affected native regression matrix passed 1,191 tests across
 14 suites after correcting the plan assertion to bound actual work at each EXPLAIN node
 instead of prohibiting a harmless empty-result sort. Subsequent multibot-owner additions
 passed all 305 tests in the four affected native/outbox suites. The initial broad API pass
 completed 746 suites / 19,098 tests, with 2,154 store-dependent tests skipped; native coverage
-is reported separately. Final staged validation and both production rollout phases remain
-pending; these development results do not authorize declaring the rollout complete.
+is reported separately. The later final staged validation and single fenced activation
+supersede the initial two-deployment plan; development results alone do not certify production.
 
 ## Admission refinement from the live baseline
 
@@ -150,4 +151,78 @@ history without replacing that verified implementation. Final local results: 746
 19,098 passed tests, 2,162 store-dependent skips; the separate native quarantine suite passed
 21 tests including both terminal-mirror progress and the persistent pending-timeout barrier.
 The earlier five-suite native matrix passed 274 tests. Both exact candidate CI identities,
-image preload, deployment and sustained production observation remain required.
+image preload, deployment and the sustained readiness/active-lag window subsequently passed.
+
+## Production activation
+
+Both immutable API images were preloaded through the normal connector, with checksum and
+exact Required/CodeQL verification. Compatibility CI `38262447860` and CodeQL `38262448035`
+passed for `d6d841334ccf24d1351738549c457e01a21c9cf0`. Writer CI `38263225775` and CodeQL
+`38263225780` passed for `dbd699740efaee890c78db39727df0148ee106fe`. No bypass was used.
+
+The ordinary API-only deployment on 12 October ran at approximately 15:07–15:11 UTC with
+the explicit 20 GiB Docker reserve and existing immutable image. It applied the additive
+quarantine migration under the mandatory stopped-worker queue fence, then resumed queues
+only after replacing all readers and starting enqueue last. Strict ingress/admin live/ready,
+public live, both native boundaries and OCR raster checks passed. The committed manifest is
+`release-20261012T150703Z-dbd699740efa`; all 14 API roles and both native auxiliaries use
+`sha256:82a4197794db6e40e5bc4ebfe7cbde2b097cd96c3112bd955c587e6121fc7c9d`.
+Antiduplicate readback remained FULL, revision 12, all enabled chats, permanent.
+
+At 15:10:00 UTC, two retained receipts were already quarantined while another old active
+head was still draining. The 15:10:18 owner probe had no predecessor; the next source probe
+found only a fresh multibot copy with a positively completed canonical owner. Strict readiness
+then passed without cancellation, manual status repair or a repeated deployment. PostgreSQL,
+Redis, static services and sibling-project container generations were unchanged against the
+earlier audit inventory. A separate Karavan worker was unhealthy at the initial inventory;
+the final 15:46:16 inventory found every container healthy, with its same generation/restart
+count. No Karavan mutation was performed and its transient cause is not established here.
+
+## Closed production acceptance
+
+The 15:31:50–15:46:55 UTC window contains 61 samples with complete coverage, maximum gap
+16.014 seconds. Readiness, queue metrics and the released deploy fence passed every sample.
+Active lag was p50 0.312 seconds, p95 1.762 seconds, maximum 3.032 seconds; no sample crossed
+10 seconds. This meets the prolonged-backlog readiness/lag acceptance boundary. At the final
+snapshot the system was normal/healthy, with two quarantined receipts and an unsaturated
+quarantine sample. Antiduplicate remained FULL revision 12.
+
+The unmodified capacity report still says **degraded**: 21 initial samples were in automatic
+stabilization, and one sample caught the isolated OCR sandbox recycling at 15:37:17.461 UTC
+for the fixed `native_timeout` reason. Its OOM flag was false and it returned healthy on the
+same image; all 14 API roles retained zero restarts. The final inventory verified 14 exact API
+roles plus both healthy native auxiliaries. This is not a zero-error OCR certification or a
+claim that every sample had a stable auxiliary. No counter reset or container recreation was
+used to change the observation result.
+
+Seventeen nonoverlapping, complete, nonempty 30-second cohorts across 15:10:27–15:44:56 UTC
+contained 5,268 PROCESSED, 1,689 DUPLICATE and 11 FAILED receipts. The other five statuses
+were zero in those **fresh sampled cohorts**; the separate two historical quarantined receipts
+remain retained. No cohort had truncation or invalid clocks. Per-cohort processed-only p95
+ranged from 536 to 2,374 ms; these are not a combined percentile or all-window totals.
+The 11 FAILED retained pending-quarantine metadata without a retry; they are not successful
+moderation, confirmed absent effects or proof of regression from this release. New independent
+work continued while those failures remained visible. DUPLICATE means mirrored/repeated
+webhook delivery, not three duplicate advertisements counted against a user.
+
+Twelve contiguous bounded log windows covered all 14 roles from 15:10:30 to 15:46:16 UTC,
+without failed reads or saturation. They contained two handler/completion failure diagnostics,
+zero duplicate-history-unavailable counters and maximum observed history phase 66 ms. Thirty
+duplicate intent acceptances and 2,559 background completions are handoff/worker observations,
+not confirmed deletion receipts. Eighty-one current-lookup refusals remained guarded. The final
+60-second action snapshot had 1,931 successes, seven failures and two critical failures out of
+1,938; these rolling counters must not be added across overlapping samples.
+
+The initial 15:10:30–15:29:00 capacity report is retained separately: all readiness samples
+passed, but intermittent active lag reached 25.637 seconds and stabilization persisted. A
+later sample reached 28.392 seconds. During one spike the exact bounded queued proof saw a
+new `user_added` event, READY/unstarted with no lease, not an uncertain failed predecessor.
+The follow-up read-only Redis observation saw no recurrence within its three-minute bound;
+it does not establish the original job's state or diagnose every spike. Thresholds and queue
+contents were not changed to obtain the later acceptance window.
+
+The release addresses the demonstrated shared-dependency blocker and its prevention gates.
+It does not promise provider availability, zero individual failures, replay safety without
+positive receipts, or unconditional progress for genuinely dependent ordered operations.
+Reviewed raw monitor streams are removed after retaining these sanitized aggregates; durable
+production failure, claim, action and quarantine evidence remains intact.
