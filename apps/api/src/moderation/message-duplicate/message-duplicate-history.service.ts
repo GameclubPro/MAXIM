@@ -338,7 +338,10 @@ export class MessageDuplicateHistoryService {
           ...input,
           token: digestDuplicateContent(randomUUID()),
         }),
-      timeoutMs: 250,
+      // FLAG: Redis retains its independent 250 ms admission deadline before mutation.
+      // Allow a bounded reply delay for a command it already accepted. Never retry the
+      // unknown mutation or treat a missing reply as a match or successful observation.
+      timeoutMs: 1_000,
       onTimeout: () => {
         throw new Error('Message duplicate history deadline exceeded');
       },

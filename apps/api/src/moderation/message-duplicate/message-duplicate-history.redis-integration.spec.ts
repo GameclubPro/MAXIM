@@ -73,6 +73,21 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     `dup:window:v1:${digestDuplicateContent(chatId)}:${MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION}:`;
   const recordExpiry = async (key: string) => Number(await inspector.call('PEXPIRETIME', key));
 
+  it('rejects an expired Redis admission before mutation despite the longer reply wait', async () => {
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValueOnce(now - 1_000);
+    try {
+      await expect(redis.duplicateWindow(chatId, { op: 'reset', author: 'user' })).rejects.toThrow(
+        'Message duplicate window deadline exceeded',
+      );
+    } finally {
+      clock.mockRestore();
+    }
+    expect(await inspector.keys(`${windowPrefix()}*`)).toEqual([]);
+    expect(await observe('fresh', 0, 'Fresh original')).toBeNull();
+    expect(await inspector.keys(`${windowPrefix()}*`)).not.toHaveLength(0);
+  });
+
   describe.each(['STANDARD', 'STRICT', 'CUSTOM_NEAR', 'CUSTOM_PHONE'] as const)(
     '%s case-sensitive numeric quantities',
     (preset) => {

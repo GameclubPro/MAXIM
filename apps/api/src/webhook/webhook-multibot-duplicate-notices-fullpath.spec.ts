@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { RedisCounterService } from '../moderation/redis-counter.service';
 import { Queue, QueueEvents, Worker, type ConnectionOptions } from 'bullmq';
 import Redis from 'ioredis';
 import { MaxActionDispatchService } from '../max/max-action-dispatch.service';
@@ -185,6 +186,56 @@ describeStores(
       expect(f.s.effects.filter((effect) => effect.method === 'post')).toHaveLength(0);
       return { ...f, originalId, duplicateId, proof, intent };
     }
+
+    it.each(['shadow', 'full'] as const)(
+      'settles a delayed native history reply and the following same-chat message in %s',
+      async (mode) => {
+        const f = await harness(1);
+        const control = JSON.parse((await f.s.redis.get(MESSAGE_DUPLICATE_CONTROL_KEY))!);
+        await f.s.redis.set(MESSAGE_DUPLICATE_CONTROL_KEY, JSON.stringify({ ...control, mode }));
+        const original = RedisCounterService.prototype.duplicateWindow;
+        let delayed = false;
+        let observations = 0;
+        const spy = jest
+          .spyOn(RedisCounterService.prototype, 'duplicateWindow')
+          .mockImplementation(async function (this: RedisCounterService, chatId, input) {
+            const result = await original.call(this, chatId, input);
+            if (chatId === f.chatId && input.op === 'observe') {
+              observations += 1;
+              if (!delayed) {
+                delayed = true;
+                await new Promise((resolve) => setTimeout(resolve, 450));
+              }
+            }
+            return result;
+          });
+        try {
+          const first = await f.s.ingest({
+            chatId: f.chatId,
+            messageId: `first-${randomUUID()}`,
+            text: 'Original alpha',
+          });
+          await f.s.drain(4_000);
+          const next = await f.s.ingest({
+            chatId: f.chatId,
+            messageId: `next-${randomUUID()}`,
+            text: 'Independent beta',
+          });
+          await f.s.drain(4_000);
+          const receipts = await f.s.prisma.webhookEvent.findMany({
+            where: { id: { in: [first, next] } },
+          });
+          expect(receipts).toHaveLength(2);
+          expect(receipts.every((receipt) => receipt.status === 'PROCESSED')).toBe(true);
+          expect(observations).toBe(2);
+          expect(f.s.effects).toHaveLength(0);
+          expect(f.jobs).toHaveLength(0);
+          expect(f.s.failures).toHaveLength(0);
+        } finally {
+          spy.mockRestore();
+        }
+      },
+    );
 
     it.each([1, 4, 9])(
       'publishes one explanation through the selected surviving peer with %i mirrored bots',

@@ -2,6 +2,23 @@ import { describeWebhookExecutionFailure } from './webhook-execution-diagnostic'
 import { recordDuplicateLookupFailure } from './message-duplicate/message-duplicate-lookup-diagnostic';
 
 describe('webhook execution diagnostics', () => {
+  it.each([
+    ['Message duplicate history deadline exceeded', 'duplicate_history_reply_deadline'],
+    ['Message duplicate window deadline exceeded', 'duplicate_history_admission_deadline'],
+  ])('distinguishes %s without exposing private context', (message, failureReason) => {
+    const error = new Error(message);
+    error.stack =
+      'private-value\n at x (/app/moderation/message-duplicate/message-duplicate-history.service.js:123:4)';
+    const result = describeWebhookExecutionFailure(error, 'message-duplicate.observe');
+    expect(result).toMatchObject({
+      failureReason,
+      locations: { duplicateHistory: { format: 'js', line: 123, column: 4 } },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/private-value|\/app/u);
+    expect(
+      describeWebhookExecutionFailure(new Error(`${message}: private-value`)).failureReason,
+    ).toBe('unknown');
+  });
   it('preserves frozen HTTP errors and their first bounded duplicate lookup provenance', () => {
     const error = Object.freeze({ response: { status: 404 }, private: 'secret' });
     const before = JSON.stringify(error);

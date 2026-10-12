@@ -49,6 +49,8 @@ const LOCAL_FAILURES = new Map([
   ['Message limit state deadline exceeded', 'message_limit_state_deadline'],
   ['Media cooldown state deadline exceeded', 'media_cooldown_state_deadline'],
   ['DUPLICATE_STATE_BUDGET_EXCEEDED', 'duplicate_state_budget'],
+  ['Message duplicate history deadline exceeded', 'duplicate_history_reply_deadline'],
+  ['Message duplicate window deadline exceeded', 'duplicate_history_admission_deadline'],
   ['required_subscription_no_longer_authorized', 'subscription_authority_rejected'],
   ['required_subscription_notice_no_longer_authorized', 'subscription_authority_rejected'],
   ['Required subscription source no longer actionable', 'subscription_source_unavailable'],
@@ -118,6 +120,8 @@ export function describeWebhookExecutionFailure(error: unknown, hotPathStage?: u
         /\/moderation\/rule-engine-message-limits\.detector\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
       duplicateState:
         /\/moderation\/rule-engine-duplicate-detector\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
+      duplicateHistory:
+        /\/moderation\/message-duplicate\/message-duplicate-history\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
       redisCounter: /\/moderation\/redis-counter\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
       maxClient: /\/max\/max-client\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,
       actionLedger: /\/max\/max-action-ledger\.service\.(js|ts):([0-9]{1,7}):([0-9]{1,5})\b/u,

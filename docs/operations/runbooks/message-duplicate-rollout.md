@@ -198,6 +198,13 @@ without treating incomplete proof as a match or successful action. Media retains
 
 ## Operational Diagnostics
 
+Duplicate history keeps a 250 ms Redis admission deadline, checked before the Lua mutation,
+and a separate one-second client reply budget. A delayed reply may settle the same already
+accepted command; it never retries that command or extends duplicate action authority.
+Missing replies still fail closed. Execution diagnostics distinguish
+`duplicate_history_reply_deadline` from `duplicate_history_admission_deadline`; neither
+label authorizes replay or settlement of a previously started webhook.
+
 The SQL cleanup reconciler retains its limit of 25 due obligations per 10-second tick. Its
 `message_duplicate_cleanup_sample` log reuses that indexed selection: `sampledDue` is a lower
 bound at selection time, `sampleLimitReached` means the sample reached 25, and `oldestDueAgeMs`
