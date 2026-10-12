@@ -24,6 +24,8 @@
   - `apps/admin`: closed React/Vite Safety Desk; it is not a MAX mini app.
   - `packages/contracts`: shared Zod schemas and API types.
 - Production uses one API image split by `APP_ROLE` and `APP_SERVICE_NAME`, plus `miniapp-major-static` and `admin-static`.
+- Production runs on the shared REG.RU dedicated server through `maxim-vps`, with the checkout at `/var/www/Chat_bot`. Use the [REG.RU production profile](docs/operations/runbooks/reg-production-profile.md) for hardware, storage, access and capacity decisions; the retired Yandex host is not a deploy or database rollback target.
+- Plan capacity for 12 physical cores / 24 hardware threads and 64 GB installed RAM shared with Svyazka and Karavan. Measure readiness, queue progress, database pressure and host headroom before raising worker/pool limits; MAX API quotas and native sandbox isolation do not increase with server size.
 - `https://major-maksimov.ru/app/` is the only routine production mini app URL. CDN, Object Storage, and app2 delivery are paused.
 
 ## Core Workflow

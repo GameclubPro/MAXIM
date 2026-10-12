@@ -57,6 +57,10 @@ mutating direct invocation without the expected full SHA is rejected; only `--pl
 
 ## Routine Access
 
+Production is the REG.RU dedicated server via `maxim-vps`, not the retired Yandex VM.
+Use the [production profile](operations/runbooks/reg-production-profile.md) for hardware,
+storage, access recovery and capacity changes. The server also hosts Svyazka and Karavan.
+
 ```bash
 ./infra/scripts/vps-connect.sh health
 ./infra/scripts/vps-connect.sh ps
@@ -81,7 +85,10 @@ to 15 seconds and must remain between 15 and 60 seconds; override it with
 The default archive is
 `${XDG_STATE_HOME:-$HOME/.local/state}/maxim/capacity-monitor`. Override it only with an absolute
 local path through `MAXIM_MONITOR_CAPACITY_ARCHIVE_DIR`. Set
-`MAXIM_MONITOR_CAPACITY_BLOCK_DEVICE` when the production root filesystem does not use `vda`.
+`MAXIM_MONITOR_CAPACITY_BLOCK_DEVICE` when monitoring another host. The default is REG.RU's
+NVMe RAID1 device `md1`, shared by the root and cold filesystems. A missing device is an
+unavailable sample, not zero utilization. CPU count is hardware threads (24 on this host),
+not physical cores; the host has 12 physical cores.
 
 The archive contains only allowlisted numeric, boolean, and fixed-enum readiness, queue-fence,
 memory, filesystem, swap, CPU, block-device, aggregate action-health, and API fleet summaries.
@@ -299,11 +306,10 @@ preview before reviewing the same apply command as recovery. An already absent q
 idempotent success. Keep `moderation-default` in the append-only rollout queue registry and
 `monitor-readonly` census as a zero-count regression sentinel.
 
-If direct SSH is blocked after an IP change and Yandex security-group configuration is present:
-
-```bash
-./infra/scripts/vps-connect.sh ensure-ssh
-```
+If REG.RU SSH is blocked, verify the destination and host/provider firewall, then use its
+server console/IPMI if necessary. Leave Yandex security-group settings unset in the production
+`.env.vps` and keep `MAXIM_VPS_AUTO_AUTHORIZE_SSH=0`; the legacy `ensure-ssh`/`yc-shell` recovery
+path does not manage REG.RU.
 
 ## Submit And Deploy Gate
 

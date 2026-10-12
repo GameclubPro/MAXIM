@@ -37,6 +37,7 @@ const {
   normalizeSnapshot,
 } = archiveModule;
 const {
+  DEFAULT_BLOCK_DEVICE,
   DEFAULT_EXPECTED_API_SERVICES,
   calculateCounterRates,
   normalizeActionHealth: normalizeProbedActionHealth,
@@ -465,6 +466,24 @@ function waitForClose(child, timeoutMs) {
     });
   });
 }
+
+test('production disk counters select the REG RAID while legacy overrides remain explicit', () => {
+  const diskstats = [
+    '259 0 nvme0n1 10 0 20 30 40 0 50 60 0 11 12',
+    '9 0 md0 10 0 20 30 40 0 50 60 0 21 22',
+    '9 1 md1 10 0 20 30 40 0 50 60 0 70 80',
+  ].join('\n');
+  assert.equal(DEFAULT_BLOCK_DEVICE, 'md1');
+  assert.match(
+    monitorSource,
+    /CAPACITY_BLOCK_DEVICE="\$\{MAXIM_MONITOR_CAPACITY_BLOCK_DEVICE:-md1\}"/u,
+  );
+  assert.deepEqual(parseDiskstats(diskstats, DEFAULT_BLOCK_DEVICE), {
+    ioMs: 70,
+    weightedIoMs: 80,
+  });
+  assert.throws(() => parseDiskstats(diskstats, 'vda'));
+});
 
 test('host counter parsers calculate bounded iowait, swap-in, and disk rates', () => {
   assert.deepEqual(parseProcStat('cpu  100 0 50 800 50 0 0 0 0 0\n'), {

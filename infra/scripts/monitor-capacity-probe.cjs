@@ -21,7 +21,7 @@ try {
   photoBoundary = null;
 }
 
-const DEFAULT_BLOCK_DEVICE = 'vda';
+const DEFAULT_BLOCK_DEVICE = 'md1';
 const DEFAULT_DISK_PATH = '/var/lib/docker';
 const DEFAULT_SAMPLE_MS = 1_000;
 const MAX_PROCESS_OUTPUT_BYTES = 64 * 1024;

@@ -2,6 +2,7 @@
 
 ## Active Production Topology
 
+- The production backend is the REG.RU dedicated host `89.108.122.76`: Xeon W-2265, 12 cores / 24 threads, 64 GB installed RAM, two 2 TB NVMe drives in RAID1. Current storage/access rules and capacity procedure live in [the production profile](../docs/operations/runbooks/reg-production-profile.md); do not size work from the former Yandex VM.
 - `infra/docker-compose.yml` is the main production stack. `infra/docker-compose.scale.yml` is split/load-testing only; never run both at once.
 - Use `docker compose`, not the legacy standalone command.
 - Production API roles share one image:
@@ -42,19 +43,20 @@
 - Current canonical user host is `https://major-maksimov.ru`; `/app/` is the only routine production mini app path.
 - Sibling Svyazka marketplace owns `/market/`, proxied with that prefix stripped to local port 4311. Its source, images, database, and releases are separate under `/var/www/svyazka`; preserve the route during nginx operations, but never include Svyazka in MAXIM container deploys or database operations.
 - Only Svyazka's exact `/market/api/media` upload route has a 9 MiB body limit; the rest of `/market/` stays at 64 KiB. Do not widen the entire prefix for uploads.
-- CDN, Object Storage, and app2 delivery are paused. Do not deploy, publish, smoke, or propose them as fallback. Historical context is non-authoritative under `docs/operations/archive/`.
+- Karavan is another independent project under `/var/www/max-delivery-platform`. Include both siblings in host resource planning, but never in MAXIM deploy/restart/cleanup commands.
+- MAXIM CDN, Object Storage, and app2 delivery are paused. Do not deploy, publish, smoke, or propose them as MAXIM fallback. Karavan's remaining cloud transport and the shared DNS are separate dependencies; do not remove them during MAXIM maintenance. Historical context is non-authoritative under `docs/operations/archive/`.
 
 ## VPS Access
 
-- Preferred local aliases, when configured: `maxim-vps` for backend deploy, `maxim-vps-edge` for the edge, and `maxim-vps-legacy` only for explicit legacy work.
+- `maxim-vps` must resolve to REG.RU `89.108.122.76` as `maximadmin`. `maxim-vps-yandex-retired` is inspection-only for the old source; never resume its application containers or use its stale databases for rollback. Older edge/legacy aliases are not production deploy targets.
 - Portable setup:
   - copy `infra/env/vps.env.example` to ignored root `.env.vps`;
   - run `./infra/scripts/vps-connect.sh doctor`;
   - use `health`, `ps`, `logs <service>`, `deploy main [services...]`, `monitor-readonly [duration-sec] [interval-sec]`, or `postgres-audit [queue|activity|duplicate|publication-schema|all]`.
 - Interactive `shell` is break-glass, not routine access. It requires caller-only `MAXIM_VPS_DATABASE_BREAK_GLASS=1` and a non-empty `MAXIM_VPS_DATABASE_BREAK_GLASS_REASON`; never persist either value in `.env.vps`.
 - `npm run vps -- <command>` and `npm run prod -- <command>` call the same wrapper.
-- If SSH access changed with the client IP, `./infra/scripts/vps-connect.sh ensure-ssh` can authorize the configured `/32`/CIDR and run doctor.
-- If SSH stalls before the banner, check Yandex security-group `22/tcp` reachability first and use `yc compute ssh` as the recovery path when configured.
+- Keep `MAXIM_VPS_AUTO_AUTHORIZE_SSH=0` and Yandex VM/security-group settings out of the REG.RU `.env.vps`. Yandex SSH helpers are legacy-only and cannot recover this host.
+- If REG.RU SSH stalls before the banner, check the destination, local network, provider firewall and host UFW/sshd. Use the REG.RU server console/IPMI for recovery; retain strict host-key verification.
 - GitHub Actions Deploy is manual-only. Local `vps-connect.sh deploy` is the routine path unless hosted-runner SSH reachability is known to work.
 - Deploy and rollback scripts run on the backend VPS. Invoke them locally only through the wrapper/SSH.
 - Incident evidence must retain exact time/release boundaries, truncation/gaps and an allowlisted failure stage/code. Run `postgres-audit` catalog calls sequentially (shared lock); never substitute inline live SQL. For shell-over-stdin diagnostics, redirect non-reading child commands from `/dev/null` and require every expected stage, since exit zero alone may describe an incomplete probe.
@@ -189,15 +191,13 @@
 - Nginx `add_header` inheritance stops when a location defines any local header. Locations with local `add_header` directives must repeat the full security-header set, and site apply scripts must keep their EXIT rollback guard armed until localhost/SNI route and header smokes pass.
 - Before applying `infra/nginx/maxim.play-team.ru.conf`, compare the live backend site: it may contain sibling routes such as `reshenie` and `karavan` that must not be removed.
 - Never keep nginx backups in `/etc/nginx/sites-enabled`; nginx parses every file there. Store backups outside included directories before `nginx -t`.
-- `maxim.play-team.ru` enters through Yandex edge `maxim-site-edge-1` and TCP HAProxy to the backend private address. Deploy/rollback still run on `maxim-vps`, not the edge.
-- Edge HAProxy passes TLS through. Its TCP timeouts cover the longest public request; path-specific exceptions belong at backend nginx.
-- Keep protected edge `eth0` MTU at 1450 (TCP MSS 1410 expectation) when changing network config.
-- The `maxim.play-team.ru` certificate lineage covers only `maxim.play-team.ru` and `hook.maxim.play-team.ru`; do not add `www` without DNS/nginx support because NXDOMAIN breaks renewal.
+- Canonical MAXIM HTTPS enters REG.RU nginx directly. The old Yandex edge, its HAProxy/MTU settings and `play-team.ru` certificate lineage are historical, not prerequisites for current deploy or TLS renewal. Do not reintroduce those routes as fallbacks.
 - `app.major-maksimov.ru` redirects to canonical `major-maksimov.ru`; keep the public root free of internal infrastructure details.
 
 ## Postgres And Redis
 
-- Keep Postgres `shm_size` comfortably above `shared_buffers` (currently 512m versus 128MB). Reducing it can trigger `53100` errors under admin/suggestion load.
+- Preserve PostgreSQL's 512 MiB Docker `/dev/shm` budget for dynamic/parallel-query shared memory. On Linux it is separate from the main `shared_buffers` allocation; changing `shared_buffers` requires a planned PostgreSQL restart, not an ordinary API deploy. Read actual settings and per-query memory multiplication before tuning for the larger host.
+- Production stateful named volumes are backed by paths under `/mnt/maxim-cold/runtime`. Preserve their existing driver options and Docker's cold-mount startup guard; never accept Compose volume recreation to fix metadata drift. `/mnt/maxim-cold` is a separate filesystem on the same NVMe RAID, not an independent disk or backup.
 - Keep production Prisma pool caps aligned with `apps/api/src/config/production-compose-prisma-pool.spec.ts`. The fourteen main API pools total 72 connections, plus the separate admin read pool of 6. Enqueue uses 24 connections for 12 shared preparation slots, with at most 4 per bot/work-class pair and one interactive preparation per process. Preserve the separate MAX rate limits; compare preparation, fresh receipt progress and database pressure before changing these budgets.
 - Live audits use indexed, bounded queries and short samples. Broad `webhook_events`/ledger aggregates can saturate I/O despite connection headroom.
 - Run routine production database diagnostics only through `./infra/scripts/vps-connect.sh postgres-audit [queue|activity|duplicate|publication-schema|storage|all]`. The catalog accepts no SQL, file path, or stdin from the operator and runs through the bounded audit role/session. The `duplicate` report uses only identifier-free aggregates from capped index walks and exact column grants; after synchronizing a catalog change, re-run the reviewed audit-role provision step before using `duplicate` or `all`.
@@ -225,7 +225,7 @@
 - Production audit queries stay read-only, output-bounded, index-compatible, single-session, and guarded by server and wall-clock timeouts, `max_parallel_workers_per_gather=0`, a unique `application_name`, and exact-backend cleanup. `LIMIT` does not bound the scan or sort required to find rows. Use plain `EXPLAIN`, never `EXPLAIN ANALYZE`, for a new live query shape.
 - Never run whole-table `COUNT`, `DISTINCT`, `GROUP BY`, JSON `OR`/`IN`, or unbounded ordering over `webhook_events`, `audit_logs`, delivery, or ledger tables on the sole primary. Prefer health snapshots and fixed catalog reports. Add a reviewed catalog query when existing reports are insufficient.
 - Full backup and restore-smoke timers are disabled by default. Configure `/etc/maxim-postgres-backup.env` with separate persistent/disposable volumes and enough capacity, then run each service successfully before enabling timers.
-- On the current VPS, the persistent MAXIM backup root is `/mnt/maxim-cold/backups/maxim` and the disposable restore root is `/mnt/maxim-cold/restore-smoke/maxim`; keep both on the dedicated cold filesystem. The backup service may run as `maximadmin`, but the restore-smoke service must run as `root` because the disposable PostgreSQL container creates root-owned host files that otherwise survive cleanup.
+- On REG.RU, the persistent MAXIM backup root is `/mnt/maxim-cold/backups/maxim` and the disposable restore root is `/mnt/maxim-cold/restore-smoke/maxim`; keep both on the cold filesystem and also check its RAID backing filesystem's free space. These local paths share the production failure domain; independent encrypted copies belong in REG.RU S3. The backup service may run as `maximadmin`, but the restore-smoke service must run as `root` because the disposable PostgreSQL container creates root-owned host files that otherwise survive cleanup.
 - Operator copies use `infra/scripts/pull-latest-backup-to-local.sh` with age-encrypted `.age`, `.sha256`, and `.ack` pairs. Its remote ACK fast path trusts only a canonical sidecar plus size/publication metadata; any new or changed candidate falls back to full sidecar/content verification in `pull-backup-to-local.sh`. The local scheduler lock is an advisory `flock` file descriptor, so an interrupted task cannot leave a stale lock.
 - A direct live PostgreSQL stream is a reviewed maintenance path, not an unattended timer on the sole primary: require the readiness guard, low I/O priority, a unique `application_name` cleanup path, and an external lag watchdog; a standby or an approved maintenance window is required before replacing the cold-volume producer.
 - PostgreSQL backup and deploy/rollback/preload operations serialize through the shared deploy lock. Keep backup readiness-gated, rate-limited, low-priority, time-bounded, and exact-`application_name` cleaned; stop the backup service normally before an urgent deploy instead of bypassing either lock.
