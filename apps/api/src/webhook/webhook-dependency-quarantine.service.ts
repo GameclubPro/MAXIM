@@ -10,9 +10,9 @@ import {
   WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
 } from './webhook-timeout-quarantine';
 
-// FLAG: Compatibility release first: every role must understand QUARANTINED before
-// a subsequent release enables writers. This constant is a deployment phase, not a TTL.
-export const WEBHOOK_DEPENDENCY_QUARANTINE_WRITES_ENABLED = false;
+// FLAG: Writers require compatible readers. Deploy under the mandatory stopped-worker
+// queue fence, with enqueue recreated last; retain the compatible writer-disabled image.
+export const WEBHOOK_DEPENDENCY_QUARANTINE_WRITES_ENABLED = true;
 
 export const WEBHOOK_QUARANTINE_BATCH_SIZE = 16;
 export const WEBHOOK_QUARANTINE_RECHECK_MS = 60_000;
@@ -84,7 +84,9 @@ export class WebhookDependencyQuarantineService {
         AND claim.webhook_event_id <> head.id
       JOIN webhook_events owner ON owner.id = claim.webhook_event_id
       WHERE owner.status = 'FAILED' AND owner.next_enqueue_at IS NULL
-        AND starts_with(COALESCE(owner.error_message, ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX + ':'})
+        AND (starts_with(COALESCE(owner.error_message, ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX + ':'})
+          OR (claim.business_started_at IS NOT NULL AND claim.completed_at IS NULL
+              AND claim.status <> 'COMPLETED'))
       `);
         },
         { maxWait: 250, timeout: 1_000 },
@@ -189,7 +191,6 @@ export class WebhookDependencyQuarantineService {
           !blocker ||
           blocker.status !== 'FAILED' ||
           blocker.nextEnqueueAt !== null ||
-          !isPendingWebhookTimeoutQuarantineMessage(blocker.errorMessage) ||
           orderedChat(blocker) !== chatId ||
           !anchor ||
           orderedChat(anchor) !== chatId ||
@@ -201,6 +202,21 @@ export class WebhookDependencyQuarantineService {
           blocker.sourceDispositionId !== null
         )
           return false;
+        if (!isPendingWebhookTimeoutQuarantineMessage(blocker.errorMessage)) {
+          // FLAG: A failed started owner can have an arbitrary persistence/transport error.
+          // Its exact unfinished authority, never error text alone, fences pristine copies.
+          const ownerClaim = await tx.webhookExecutionClaim.findUnique({
+            where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey: blocker.semanticKey! } },
+          });
+          if (
+            !ownerClaim?.enforced ||
+            ownerClaim.webhookEventId !== blocker.id ||
+            ownerClaim.businessStartedAt === null ||
+            ownerClaim.completedAt !== null ||
+            ownerClaim.status === 'COMPLETED'
+          )
+            return false;
+        }
         const existing = await tx.webhookDependencyQuarantine.findUnique({
           where: { receiptId_blockerId: { receiptId, blockerId } },
         });

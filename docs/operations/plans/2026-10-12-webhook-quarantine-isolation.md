@@ -27,7 +27,7 @@ cancelling a larger time window cannot fix that architecture.
 1. Keep the original failed event, exact claim, unknown MAX effects and all durable child
    journals unchanged. Quarantine never constitutes success or authorizes original replay.
 2. Park only positively unstarted ordered successors in the **same chat**, behind the exact
-   pending-quarantine predecessor. Record their identity, blocker, original receipt status,
+   pending-quarantine predecessor or exact failed, enforced started owner with no completion. Record their identity, blocker, original receipt status,
    creation/deadline and quarantine time durably. Change their scheduling status to
    `QUARANTINED`, not PROCESSED or CANCELLED. Reject started/completed/leased/ambiguous sources.
    For a pristine physical multibot copy, retain the distinct canonical owner and first
@@ -88,3 +88,24 @@ passed all 305 tests in the four affected native/outbox suites. The initial broa
 completed 746 suites / 19,098 tests, with 2,154 store-dependent tests skipped; native coverage
 is reported separately. Final staged validation and both production rollout phases remain
 pending; these development results do not authorize declaring the rollout complete.
+
+## Admission refinement from the live baseline
+
+Before deployment, the read-only 13:03–13:04 UTC checks found an old never-activated
+RECEIVED mirror with an elapsed deadline, whose different canonical owner was FAILED with
+an enforced READY claim, a recorded business start and no completion. The saved error was
+outside the timeout-marker family. Fresh 13:02:24–13:02:54 UTC traffic still completed:
+457 PROCESSED, 188 DUPLICATE, no pending/failed sample rows; processed-only p95 was 961 ms.
+This is evidence of stale dependency pressure, not complete recovery or proof of remote effects.
+The native mirror fixture now also covers unclassified started-owner failure, with negative
+cases for unstarted, completed and unenforced claims. No live receipt or claim was altered.
+
+The writer-disabled compatibility commit is `c0c34f96`. It passed staged static/docs/infra,
+API build/typecheck/tests and Prisma validation; final native schema drift also matched the
+unchanged reviewed baseline. Retain its green exact-SHA image before activation. Because the
+existing stale dependency already fails readiness, a reader-only deploy cannot honestly pass
+strict release smokes. Use the documented single fenced activation path instead: all older
+readers stop or are replaced before enqueue starts, with exact fleet/native verification before
+queue release. The ordinary deploy controller and its mandatory regression tests already enforce
+that order. No readiness exception, cancellation, direct database repair or manual manifest is
+introduced. Finalization still requires strict smokes after the quarantine is enabled.

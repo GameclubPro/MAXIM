@@ -1,6 +1,8 @@
 # Webhook dependency quarantine
 
-An unknown started handler retains its original FAILED receipt and pending timeout marker.
+An unknown started handler retains its original FAILED receipt and error evidence.
+Classification accepts the existing pending timeout marker, or an exact enforced canonical
+claim with a business start and no completion; generic FAILED text alone is insufficient.
 Its ordered message successors can enter `QUARANTINED` only while they are positively
 unstarted. Their immutable `(receipt_id, blocker_id)` journal records chat, original status,
 deadline and time. A second blocker creates another journal entry. No quarantine operation
@@ -57,11 +59,18 @@ an unresolved quarantine. They must not be represented as successful moderation.
 `postgres-audit webhook-cohort` includes QUARANTINED as its eighth status. The closed cohort
 report does not prove remote effects or resolve historical quarantine.
 
-Use a compatibility release with writes disabled first, verifying every API role and both
-native auxiliaries. Enable automatic parking only in a subsequent exact-SHA release after
-that compatible fleet has passed strict smokes. Both rollback wrappers enforce quarantine
-readers; roll back to the retained compatible release, not to a build that can execute parked
-receipts. The schema is additive, has no history backfill and creates indexes only on a new
+Prepare a green exact-SHA compatibility image with writes disabled and retain it on the
+host before activation. A healthy installation can deploy this reader release first, then
+activate in a subsequent release. For an already degraded installation, use one ordinary
+fenced activation deployment: the existing mandatory controller pauses the webhook queues,
+stops and verifies enqueue and every moderation role, replaces all non-webhook readers,
+replaces moderation, then starts enqueue last. No old worker may survive that fence. Verify
+all exact images and both native auxiliaries before releasing queues; strict readiness and
+release finalization still happen after activation. Never use an unfenced rolling update or
+bypass readiness to record a release. Both rollback wrappers enforce quarantine readers;
+use the retained compatible manifest, or `rollback-runtime` to the green writer-disabled
+compatibility SHA when that build was preloaded without a production manifest. A writer
+downgrade retains parked evidence but does not promise to isolate new failures. The schema is additive, has no history backfill and creates indexes only on a new
 empty table. Retention pins both dependent and predecessor evidence via indexed checks/FKs.
 
 Required native regression:

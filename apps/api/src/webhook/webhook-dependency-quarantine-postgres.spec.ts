@@ -295,52 +295,89 @@ native('durable dependency quarantine and independent final execution', () => {
     });
   });
 
-  it('isolates pristine copies when an earlier bot is the order anchor and a later bot owns the unknown effect', async () => {
-    const messageId = randomUUID();
-    const mirror = await receipt(undefined, { messageId, claim: false, botId: 'first-bot' });
-    const between = await receipt(chat(mirror));
-    const owner = await receipt(chat(mirror), { messageId, poison: true, botId: 'owner-bot' });
-    const lateMirror = await receipt(chat(mirror), { messageId, claim: false, botId: 'third-bot' });
-    const independent = await receipt();
-    const original = await prisma.webhookExecutionClaim.findUniqueOrThrow({
-      where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey: owner.semanticKey! } },
-    });
-    const scheduler = outbox() as unknown as {
-      enqueueCandidates(rows: unknown[], concurrency?: number): Promise<unknown>;
-      drainEnqueueUnits(): Promise<void>;
-    };
-    await scheduler.enqueueCandidates(
-      [mirror, between, owner, lateMirror, independent].map((row) => ({ ...row, priority: 1 })),
-      8,
-    );
-    await scheduler.drainEnqueueUnits();
-    for (const event of [mirror, between, lateMirror]) {
+  it.each(['timeout-marker', 'unclassified-started-failure'])(
+    'isolates pristine copies around an earlier order anchor and later %s owner',
+    async (failureKind) => {
+      const messageId = randomUUID();
+      const mirror = await receipt(undefined, { messageId, claim: false, botId: 'first-bot' });
+      const between = await receipt(chat(mirror));
+      let owner = await receipt(chat(mirror), { messageId, poison: true, botId: 'owner-bot' });
+      if (failureKind === 'unclassified-started-failure')
+        owner = await prisma.webhookEvent.update({
+          where: { id: owner.id },
+          data: { errorMessage: 'local fixture persistence failure' },
+        });
+      const lateMirror = await receipt(chat(mirror), {
+        messageId,
+        claim: false,
+        botId: 'third-bot',
+      });
+      const independent = await receipt();
+      const original = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+        where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey: owner.semanticKey! } },
+      });
+      const scheduler = outbox() as unknown as {
+        enqueueCandidates(rows: unknown[], concurrency?: number): Promise<unknown>;
+        drainEnqueueUnits(): Promise<void>;
+      };
+      await scheduler.enqueueCandidates(
+        [mirror, between, owner, lateMirror, independent].map((row) => ({ ...row, priority: 1 })),
+        8,
+      );
+      await scheduler.drainEnqueueUnits();
+      for (const event of [mirror, between, lateMirror]) {
+        expect(
+          (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).status,
+        ).toBe('QUARANTINED');
+        expect(
+          await prisma.webhookDependencyQuarantine.findFirst({ where: { receiptId: event.id } }),
+        ).toMatchObject({ blockerId: owner.id, anchorId: mirror.id });
+      }
       expect(
-        (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).status,
-      ).toBe('QUARANTINED');
+        (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: independent.id } })).status,
+      ).toBe('QUEUED');
+      expect(await prisma.webhookEvent.findUnique({ where: { id: owner.id } })).toEqual(owner);
+      expect(await prisma.webhookExecutionClaim.findUnique({ where: { id: original.id } })).toEqual(
+        original,
+      );
+      await completePredecessor(owner);
+      await makeDue();
+      expect((await quarantine.reconcileDue()).released).toBe(3);
+      expect(await canonical.prepareExecution(mirror.id, mirror.botId)).toBeNull();
       expect(
-        await prisma.webhookDependencyQuarantine.findFirst({ where: { receiptId: event.id } }),
-      ).toMatchObject({ blockerId: owner.id, anchorId: mirror.id });
-    }
-    expect(
-      (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: independent.id } })).status,
-    ).toBe('QUEUED');
-    expect(await prisma.webhookEvent.findUnique({ where: { id: owner.id } })).toEqual(owner);
-    expect(await prisma.webhookExecutionClaim.findUnique({ where: { id: original.id } })).toEqual(
-      original,
-    );
-    await completePredecessor(owner);
-    await makeDue();
-    expect((await quarantine.reconcileDue()).released).toBe(3);
-    expect(await canonical.prepareExecution(mirror.id, mirror.botId)).toBeNull();
-    expect((await prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirror.id } })).status).toBe(
-      'DUPLICATE',
-    );
-    const execution = await canonical.prepareExecution(between.id, between.botId);
-    expect(execution).not.toBeNull();
-    await canonical.completeExecution(execution!);
-    expect(await canonical.prepareExecution(lateMirror.id, lateMirror.botId)).toBeNull();
-  });
+        (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirror.id } })).status,
+      ).toBe('DUPLICATE');
+      const execution = await canonical.prepareExecution(between.id, between.botId);
+      expect(execution).not.toBeNull();
+      await canonical.completeExecution(execution!);
+      expect(await canonical.prepareExecution(lateMirror.id, lateMirror.botId)).toBeNull();
+    },
+  );
+
+  it.each(['unstarted', 'completed', 'unenforced'] as const)(
+    'refuses generic FAILED ownership without exact unfinished start proof: %s',
+    async (invalidProof) => {
+      const messageId = randomUUID();
+      const mirror = await receipt(undefined, { messageId, claim: false });
+      const owner = await receipt(chat(mirror), { messageId, poison: true });
+      await prisma.webhookEvent.update({
+        where: { id: owner.id },
+        data: { errorMessage: 'unclassified fixture' },
+      });
+      await prisma.webhookExecutionClaim.updateMany({
+        where: { webhookEventId: owner.id },
+        data:
+          invalidProof === 'unstarted'
+            ? { businessStartedAt: null }
+            : invalidProof === 'completed'
+              ? { status: 'COMPLETED', completedAt: new Date() }
+              : { enforced: false },
+      });
+      expect((await quarantine.findQuarantinedMirrorOwners([mirror.id])).size).toBe(0);
+      expect(await quarantine.parkSuccessors(owner.id, [mirror.id], mirror.id)).toBe(0);
+      expect(await prisma.webhookEvent.findUnique({ where: { id: mirror.id } })).toEqual(mirror);
+    },
+  );
 
   it.each(['activated', 'independent-claim'] as const)(
     'preserves an uncertain source copy with %s evidence',
