@@ -55,7 +55,8 @@ jobs:
   api:
     name: API
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Include full API validation, Redis integration and runner cleanup.
+    timeout-minutes: 30
     services:
       redis:
         image: redis:7-alpine

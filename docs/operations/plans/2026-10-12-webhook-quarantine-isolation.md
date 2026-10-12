@@ -119,3 +119,10 @@ step; Required correctly refused the release. The unfinished lane was retried, w
 source and assertions. Future runs have a bounded 30-minute PostgreSQL job budget including
 setup and all follow-up checks. No test, Required dependency, production timeout or readiness
 threshold is removed or relaxed. This workflow-only adjustment does not change runtime code.
+
+Activation run `38255892953` passed the complete PostgreSQL lane and every API step,
+including Redis integration and cleanup, but its API job was also cancelled at the overall
+20-minute boundary. Required again remained red. The API job receives the same bounded
+30-minute wall-clock allowance; all assertions, native stores, teardown and Required checks
+remain mandatory. Publish the workflow correction and require a fresh green exact-SHA run
+before deployment instead of overriding either cancelled result.
