@@ -205,6 +205,9 @@ export class WebhookDependencyQuarantineService {
         if (!isPendingWebhookTimeoutQuarantineMessage(blocker.errorMessage)) {
           // FLAG: A failed started owner can have an arbitrary persistence/transport error.
           // Its exact unfinished authority, never error text alone, fences pristine copies.
+          // Ordinary terminal FAILED owners are not chat-order heads. Isolate only their
+          // semantic mirrors; do not invent a dependency for neighboring messages.
+          if (blocker.semanticKey !== receipt.semanticKey) return false;
           const ownerClaim = await tx.webhookExecutionClaim.findUnique({
             where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey: blocker.semanticKey! } },
           });

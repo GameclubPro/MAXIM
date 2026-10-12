@@ -3,8 +3,10 @@
 An unknown started handler retains its original FAILED receipt and error evidence.
 Classification accepts the existing pending timeout marker, or an exact enforced canonical
 claim with a business start and no completion; generic FAILED text alone is insufficient.
-Its ordered message successors can enter `QUARANTINED` only while they are positively
-unstarted. Their immutable `(receipt_id, blocker_id)` journal records chat, original status,
+A pending timeout retains its existing chat-order barrier; its ordered successors can
+enter `QUARANTINED` only while they are positively unstarted. An ordinary terminal FAILED
+owner is not a chat-order head: quarantine only its pristine semantic bot copies, allowing
+neighboring and subsequently received messages to follow ordinary processing. Their immutable `(receipt_id, blocker_id)` journal records chat, original status,
 deadline and time. A second blocker creates another journal entry. No quarantine operation
 changes the uncertain original, claims or MAX action evidence.
 
@@ -39,9 +41,10 @@ the saved deadline again; it cannot renew the processing window. A parked stale 
 returns without business execution. A started, completed, leased, ambiguous or independently
 claimed successor does not qualify for parking.
 
-The scope is deliberately the existing ordered chat dependency. Other chats and nonordered
+The scope follows the existing dependency: chat ordering for pending timeouts, exact semantic
+identity for terminal FAILED owners. Other chats and nonordered
 events retain independent capacity; administrative HTTP/mini app operations remain available.
-Ordered group commands in the affected chat remain dependent. Releasing them independently
+Ordered group commands behind a pending timeout remain dependent. Releasing them independently
 requires a separately proven command-only authority path; do not skip the original fence.
 
 Neither timeout expiry, FAILED/terminal text, an absent root nor an unmatched successful

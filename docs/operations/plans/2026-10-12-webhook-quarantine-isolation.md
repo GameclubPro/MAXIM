@@ -27,7 +27,9 @@ cancelling a larger time window cannot fix that architecture.
 1. Keep the original failed event, exact claim, unknown MAX effects and all durable child
    journals unchanged. Quarantine never constitutes success or authorizes original replay.
 2. Park only positively unstarted ordered successors in the **same chat**, behind the exact
-   pending-quarantine predecessor or exact failed, enforced started owner with no completion. Record their identity, blocker, original receipt status,
+   pending-quarantine predecessor. An ordinary terminal failed, enforced started owner
+   without completion quarantines only its pristine semantic copies; it must not invent a
+   dependency for other messages in the chat. Record their identity, blocker, original receipt status,
    creation/deadline and quarantine time durably. Change their scheduling status to
    `QUARANTINED`, not PROCESSED or CANCELLED. Reject started/completed/leased/ambiguous sources.
    For a pristine physical multibot copy, retain the distinct canonical owner and first
@@ -75,7 +77,7 @@ must be contained and reported, not cleared to pass a release check.
   work already parked in quarantine remains unresolved.
 - Real provider/storage outages can still cause failures. This change bounds their spread;
   it cannot promise that errors never happen or infer the result of an unknown MAX mutation.
-- Ordered group commands in the affected chat retain the conservative dependency boundary;
+- Ordered group commands behind a pending timeout retain the conservative dependency boundary;
   the mini app/administrative API remains available. Finer command/message isolation requires
   explicit effect dependencies, not skipping an unknown predecessor.
 
@@ -126,3 +128,11 @@ including Redis integration and cleanup, but its API job was also cancelled at t
 30-minute wall-clock allowance; all assertions, native stores, teardown and Required checks
 remain mandatory. Publish the workflow correction and require a fresh green exact-SHA run
 before deployment instead of overriding either cancelled result.
+
+Before activation, the multibot regression was extended through a second scheduling pass and
+fresh same-chat business completion while the generic failed owner remains unchanged. This
+exposed overly broad parking of neighboring events in that terminal-error case. Parking now
+follows the existing scheduler boundary exactly: pending timeouts retain the chat barrier;
+ordinary FAILED owners with no retry isolate only the exact pristine copies of their semantic
+event. The paired negative case proves that new same-chat events behind a pending timeout
+still cannot start. Neither change certifies or retries the failed original.

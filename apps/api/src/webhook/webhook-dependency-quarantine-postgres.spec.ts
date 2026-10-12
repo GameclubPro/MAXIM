@@ -325,7 +325,9 @@ native('durable dependency quarantine and independent final execution', () => {
         8,
       );
       await scheduler.drainEnqueueUnits();
-      for (const event of [mirror, between, lateMirror]) {
+      const chatOrderHeld = failureKind === 'timeout-marker';
+      const parkedCopies = chatOrderHeld ? [mirror, between, lateMirror] : [mirror, lateMirror];
+      for (const event of parkedCopies) {
         expect(
           (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: event.id } })).status,
         ).toBe('QUARANTINED');
@@ -336,20 +338,46 @@ native('durable dependency quarantine and independent final execution', () => {
       expect(
         (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: independent.id } })).status,
       ).toBe('QUEUED');
+      const fresh = await receipt(chat(mirror));
+      await scheduler.enqueueCandidates(
+        [between, fresh].map((row) => ({ ...row, priority: 1 })),
+        8,
+      );
+      await scheduler.drainEnqueueUnits();
+      if (chatOrderHeld) {
+        expect(
+          (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: fresh.id } })).status,
+        ).toBe('QUARANTINED');
+        expect(await canonical.prepareExecution(fresh.id, fresh.botId)).toBeNull();
+      } else {
+        expect(
+          await prisma.webhookDependencyQuarantine.findFirst({ where: { receiptId: between.id } }),
+        ).toBeNull();
+        const followingExecution = await canonical.prepareExecution(between.id, between.botId);
+        expect(followingExecution).not.toBeNull();
+        await canonical.completeExecution(followingExecution!);
+        await scheduler.enqueueCandidates([{ ...fresh, priority: 1 }], 8);
+        await scheduler.drainEnqueueUnits();
+        const freshExecution = await canonical.prepareExecution(fresh.id, fresh.botId);
+        expect(freshExecution).not.toBeNull();
+        await canonical.completeExecution(freshExecution!);
+      }
       expect(await prisma.webhookEvent.findUnique({ where: { id: owner.id } })).toEqual(owner);
       expect(await prisma.webhookExecutionClaim.findUnique({ where: { id: original.id } })).toEqual(
         original,
       );
       await completePredecessor(owner);
       await makeDue();
-      expect((await quarantine.reconcileDue()).released).toBe(3);
+      expect((await quarantine.reconcileDue()).released).toBe(chatOrderHeld ? 4 : 2);
       expect(await canonical.prepareExecution(mirror.id, mirror.botId)).toBeNull();
       expect(
         (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirror.id } })).status,
       ).toBe('DUPLICATE');
-      const execution = await canonical.prepareExecution(between.id, between.botId);
-      expect(execution).not.toBeNull();
-      await canonical.completeExecution(execution!);
+      if (chatOrderHeld) {
+        const execution = await canonical.prepareExecution(between.id, between.botId);
+        expect(execution).not.toBeNull();
+        await canonical.completeExecution(execution!);
+      }
       expect(await canonical.prepareExecution(lateMirror.id, lateMirror.botId)).toBeNull();
     },
   );
