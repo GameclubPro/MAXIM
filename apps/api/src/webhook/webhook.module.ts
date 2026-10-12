@@ -1,3 +1,4 @@
+import { WebhookDependencyQuarantineService } from './webhook-dependency-quarantine.service';
 import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
 import { Module } from '@nestjs/common';
@@ -31,6 +32,7 @@ import { WebhookService } from './webhook.service';
     WebhookRateLimitService,
     WebhookRoutingService,
     WebhookOutboxService,
+    WebhookDependencyQuarantineService,
   ],
   exports: [WebhookIngestionService, WebhookService],
 })

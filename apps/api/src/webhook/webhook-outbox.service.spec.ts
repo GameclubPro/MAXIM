@@ -3712,6 +3712,7 @@ describe('WebhookOutboxService', () => {
             outstanding: 0,
             enqueueBlocked: 0,
             workUnitErrors: 0,
+            quarantined: 0,
           },
         },
         'Slow webhook enqueue batch',

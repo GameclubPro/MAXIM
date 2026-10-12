@@ -125,6 +125,12 @@ before editing it; copying these notes does not install a fix or prove the deplo
 
 ## Minimum regression coverage by change
 
+Dependency quarantine changes additionally require native
+`webhook/webhook-dependency-quarantine-postgres.spec.ts`: final independent completion,
+no parked/expired starts, no original replay, claim/start races, exact completion recovery,
+restart, repeated blockers and bounded indexed reconciliation. Its required CI lane and
+reader-before-writer rollout are described in [the quarantine runbook](webhook-dependency-quarantine.md).
+
 These are existing executable regressions, not substitutes for required impact checks or exact-SHA
 CI. Paths in the table are relative to `apps/api/src` except the explicit `infra/` path. Run the
 rows affected by a change; do not rerun unrelated suites for a documentation-only edit.
@@ -184,7 +190,7 @@ negative cases, effects evidence and following-event/no-replay checks.
   Label completed-only percentiles as such; report PROCESSED separately from DUPLICATE/CANCELLED.
   An empty or future window is not success. Measure remote actions separately from receipt settlement.
   Use `postgres-audit webhook-cohort --explain` before the fixed `postgres-audit webhook-cohort`
-  report. Its 30-second interval ends 30 seconds before observation; each of all seven statuses
+  report. Its 30-second interval ends 30 seconds before observation; each of all eight statuses
   has a 512-row cap with a saturation sentinel. It reports invalid completion/enqueue clocks,
   pending age and processed-only latency without returning event identities or payloads.
   Schema v2 also groups the same bounded FAILED samples into fixed saved-error families,

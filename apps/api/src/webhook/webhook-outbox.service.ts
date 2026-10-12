@@ -1,3 +1,4 @@
+import { WebhookDependencyQuarantineService } from './webhook-dependency-quarantine.service';
 import { writeWebhookEnqueueState } from './webhook-receipt-write';
 import {
   buildBoundedEnqueueWorkUnitsSql,
@@ -329,7 +330,10 @@ type PrioritizedWebhookEnqueueCandidate = WebhookEnqueueCandidate & {
   priority: number;
 };
 
-type OrderedWebhookHead = Pick<WebhookEnqueueCandidate, 'id' | 'createdAt'>;
+type OrderedWebhookHead = Pick<WebhookEnqueueCandidate, 'id' | 'createdAt'> & {
+  quarantined?: boolean;
+  quarantineBlockerId?: string;
+};
 type OrderedWebhookHeadByChat = OrderedWebhookHead & { chatId: string };
 
 type WebhookEnqueueWorkUnit = {
@@ -352,6 +356,7 @@ type CandidateEnqueueOutcome = 'terminal' | 'outstanding' | 'block';
 function createEnqueueProgress() {
   return {
     workUnits: 0,
+    quarantined: 0,
     orderedHeadBlocked: 0,
     preparationBlocked: 0,
     preparationSharedCapacityBlocked: 0,
@@ -524,6 +529,8 @@ export class WebhookOutboxService
   private activeTick: Promise<void> | null = null;
   private readonly activeEnqueueUnits = new Map<string, Promise<void>>();
   private cleaning = false;
+  private quarantineReconcileInFlight: Promise<void> | null = null;
+  private nextQuarantineReconcileAt = 0;
   private webhookHeldRetentionTurn = false;
   private readonly webhookRetentionCursors = new Map<string, { id: string; createdAt: Date }>();
   private enqueueAdmissionModeCheckedAtMs = 0;
@@ -554,6 +561,7 @@ export class WebhookOutboxService
     private readonly legacyQueue: Queue<ProcessWebhookJob>,
     private readonly systemModeService: SystemModeService,
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
+    @Optional() private readonly dependencyQuarantine?: WebhookDependencyQuarantineService,
   ) {
     super();
     this.enabled = roleRunsEnqueue(getAppRole());
@@ -675,6 +683,7 @@ export class WebhookOutboxService
     // FLAG: Work remains owned across polls. Stop selecting first, then drain each
     // admitted operation before the module releases its SQL/Redis dependencies.
     await this.activeTick;
+    await this.quarantineReconcileInFlight;
     await Promise.all(this.activeEnqueueUnits.values());
   }
 
@@ -715,6 +724,22 @@ export class WebhookOutboxService
 
   private async enqueueBatch() {
     const now = new Date();
+    if (
+      this.dependencyQuarantine &&
+      !this.quarantineReconcileInFlight &&
+      now.getTime() >= this.nextQuarantineReconcileAt
+    ) {
+      this.nextQuarantineReconcileAt = now.getTime() + 1_000;
+      // FLAG: A bounded SQL-only recovery lane owns one task across polls. Slow recovery
+      // cannot stop independent admission, and shutdown drains it before closing Prisma.
+      this.quarantineReconcileInFlight = this.dependencyQuarantine
+        .reconcileDue()
+        .then(() => undefined)
+        .catch(() => this.logger.warn('Dependency quarantine reconciliation unavailable'))
+        .finally(() => {
+          this.quarantineReconcileInFlight = null;
+        });
+    }
     const admission = await this.resolveEnqueueAdmission(now);
     const scopedCandidates = await this.readDeferredEnqueueRepresentatives(
       now,
@@ -2133,6 +2158,18 @@ export class WebhookOutboxService
       orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(chatIds);
     }
     if (dispatchAllowed && !dispatchAllowed()) return progress;
+    if (this.dependencyQuarantine) {
+      const mirrors = await this.dependencyQuarantine.findQuarantinedMirrorOwners(
+        [...orderedHeadsByChatId.values()].map((head) => head.id),
+      );
+      for (const head of orderedHeadsByChatId.values()) {
+        const blockerId = mirrors.get(head.id);
+        if (blockerId) {
+          head.quarantined = true;
+          head.quarantineBlockerId = blockerId;
+        }
+      }
+    }
     const workerCount = Math.max(1, enqueueConcurrency);
     // FLAG: A carried owner already serves this selected snapshot. Its completion
     // may wake other work, but must not redispatch that stale receipt snapshot.
@@ -2211,6 +2248,7 @@ export class WebhookOutboxService
           if (
             orderedHead &&
             !first &&
+            !(orderedHead.quarantined && this.dependencyQuarantine) &&
             (pending.has(key) ||
               workUnit.candidates.some((candidate) => candidate.isDeferredScopeScan))
           ) {
@@ -2659,6 +2697,15 @@ export class WebhookOutboxService
     progress = createEnqueueProgress(),
   ): Promise<void> {
     let orderedHead = initialOrderedHead;
+    if (orderedHead?.quarantined && this.dependencyQuarantine) {
+      progress.quarantined += await this.dependencyQuarantine.parkSuccessors(
+        orderedHead.quarantineBlockerId ?? orderedHead.id,
+        workUnit.candidates.map((candidate) => candidate.id),
+        orderedHead.id,
+      );
+      progress.orderedHeadBlocked += 1;
+      return;
+    }
 
     for (const event of workUnit.candidates) {
       if (workUnit.chatId) {
@@ -2668,6 +2715,13 @@ export class WebhookOutboxService
         }
         const headOrder = this.compareCandidateSequence(orderedHead, event);
         if (headOrder < 0) {
+          if (orderedHead.quarantined && this.dependencyQuarantine) {
+            progress.quarantined += await this.dependencyQuarantine.parkSuccessors(
+              orderedHead.quarantineBlockerId ?? orderedHead.id,
+              workUnit.candidates.map((candidate) => candidate.id),
+              orderedHead.id,
+            );
+          }
           progress.orderedHeadBlocked += 1;
           return;
         }
@@ -2731,10 +2785,12 @@ export class WebhookOutboxService
       WITH requested_chats("chatId") AS (
         VALUES ${requestedChats}
       )
-      SELECT requested_chats."chatId", head."id", head."createdAt"
+      SELECT requested_chats."chatId", head."id", head."createdAt", head."quarantined"
       FROM requested_chats
       JOIN LATERAL (
-        SELECT "id", "created_at" AS "createdAt"
+        SELECT "id", "created_at" AS "createdAt",
+          ("status" = 'FAILED' AND "next_enqueue_at" IS NULL AND
+           LEFT(COALESCE("error_message", ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}) = ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}) AS "quarantined"
         FROM "webhook_events"
         WHERE (
             "status" = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
@@ -2762,7 +2818,12 @@ export class WebhookOutboxService
       ) head ON TRUE
     `);
 
-    return new Map(rows.map(({ chatId, id, createdAt }) => [chatId, { id, createdAt }]));
+    return new Map(
+      rows.map(({ chatId, id, createdAt, quarantined }) => [
+        chatId,
+        { id, createdAt, quarantined },
+      ]),
+    );
   }
 
   private async findOrderedWebhookHeadForChat(
@@ -2778,7 +2839,9 @@ export class WebhookOutboxService
         `
       : Prisma.empty;
     const rows = await this.prisma.$queryRaw<OrderedWebhookHead[]>(Prisma.sql`
-      SELECT "id", "created_at" AS "createdAt"
+      SELECT "id", "created_at" AS "createdAt",
+          ("status" = 'FAILED' AND "next_enqueue_at" IS NULL AND
+           LEFT(COALESCE("error_message", ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}) = ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}) AS "quarantined"
       FROM "webhook_events"
       WHERE (
           "status" = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
@@ -2924,6 +2987,7 @@ export class WebhookOutboxService
         });
         if (
           !owner ||
+          owner.status === WebhookStatus.QUARANTINED ||
           owner.status === WebhookStatus.NO_REPLAY_HELD ||
           owner.status === WebhookStatus.CANCELLED ||
           owner.status === WebhookStatus.PROCESSED ||
@@ -3423,6 +3487,7 @@ export class WebhookOutboxService
     });
     if (
       !current ||
+      current.status === WebhookStatus.QUARANTINED ||
       current.status === WebhookStatus.NO_REPLAY_HELD ||
       current.status === WebhookStatus.CANCELLED ||
       current.status === WebhookStatus.PROCESSED ||
@@ -3838,6 +3903,12 @@ export class WebhookOutboxService
     // mirror, action ambiguity, incomplete command result or lease pins the owner proof.
     return Prisma.sql`
       candidate."semantic_key" IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM "webhook_dependency_quarantines" quarantine
+        WHERE quarantine."receipt_id" = candidate."id")
+      AND NOT EXISTS (SELECT 1 FROM "webhook_dependency_quarantines" quarantine
+        WHERE quarantine."blocker_id" = candidate."id")
+      AND NOT EXISTS (SELECT 1 FROM "webhook_dependency_quarantines" quarantine
+        WHERE quarantine."anchor_id" = candidate."id")
       AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled
         WHERE cancelled."receipt_id" = candidate."id")
       AND NOT EXISTS (SELECT 1 FROM "webhook_backlog_receipts" cancelled

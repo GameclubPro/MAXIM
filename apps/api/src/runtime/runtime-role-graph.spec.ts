@@ -161,6 +161,19 @@ describe('runtime role dependency graphs', () => {
             });
           }
           const context = await builder.compile();
+          if (providerNames.has('WebhookOutboxService')) {
+            const { WebhookOutboxService } = await import('../webhook/webhook-outbox.service');
+            const { WebhookDependencyQuarantineService } =
+              await import('../webhook/webhook-dependency-quarantine.service');
+            // FLAG: Optional constructor compatibility for old fixtures must never silently
+            // disable the production quarantine writer through a missing module provider.
+            const outbox = context.get(WebhookOutboxService) as unknown as {
+              dependencyQuarantine: unknown;
+            };
+            expect(outbox.dependencyQuarantine).toBe(
+              context.get(WebhookDependencyQuarantineService),
+            );
+          }
           const legacyHolds = context.get(WebhookLegacyHoldService);
           expect(() => legacyHolds.onApplicationBootstrap()).not.toThrow();
           expect(WebhookLegacyHoldService.forPrisma(context.get(PrismaService))).toBe(legacyHolds);

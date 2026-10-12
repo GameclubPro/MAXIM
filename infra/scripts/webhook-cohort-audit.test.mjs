@@ -7,7 +7,7 @@ import { buildWebhookCohortAuditSql, buildWebhookCohortIndexSql } from './webhoo
 
 const fixture = `SET TIME ZONE 'UTC';
 CREATE TYPE "WebhookStatus" AS ENUM (
-  'RECEIVED','QUEUED','PROCESSED','DUPLICATE','FAILED','NO_REPLAY_HELD','CANCELLED');
+  'RECEIVED','QUEUED','PROCESSED','DUPLICATE','FAILED','NO_REPLAY_HELD','CANCELLED','QUARANTINED');
 CREATE TABLE webhook_events (id text PRIMARY KEY, status "WebhookStatus" NOT NULL,
   created_at timestamp(3) NOT NULL, queued_at timestamp(3), processed_at timestamp(3),
   error_message text, next_enqueue_at timestamp(3), timeout_quarantine_expires_at timestamp(3),
@@ -24,7 +24,7 @@ const local = (() => {
   }
 })();
 
-test('closed cohort includes all seven statuses and excludes invalid completion clocks from percentiles', async (t) => {
+test('closed cohort includes all eight statuses and excludes invalid completion clocks from percentiles', async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.exec(fixture);
@@ -42,7 +42,7 @@ test('closed cohort includes all seven statuses and excludes invalid completion 
   assert.equal(report.sample_complete, true);
   assert.equal(report.nonempty, true);
   assert.equal(report.remote_effects_proven, false);
-  assert.equal(report.rows.length, 7);
+  assert.equal(report.rows.length, 8);
   assert.ok(Date.parse(report.from) < Date.parse(report.until));
   assert.ok(Date.parse(report.until) < Date.parse(report.observed_at));
   const byStatus = Object.fromEntries(report.rows.map((r) => [r.status, r]));
@@ -51,7 +51,7 @@ test('closed cohort includes all seven statuses and excludes invalid completion 
   assert.equal(byStatus.PROCESSED.processed_only_p95_ms, 2000);
   assert.equal(byStatus.RECEIVED.count_lower_bound, 1);
   assert.ok(byStatus.RECEIVED.oldest_pending_age_seconds >= 45);
-  for (const status of ['DUPLICATE', 'CANCELLED', 'NO_REPLAY_HELD', 'FAILED']) {
+  for (const status of ['DUPLICATE', 'CANCELLED', 'NO_REPLAY_HELD', 'FAILED', 'QUARANTINED']) {
     assert.equal(byStatus[status].count_lower_bound, 1);
     assert.equal(byStatus[status].processed_only_p95_ms, null);
   }

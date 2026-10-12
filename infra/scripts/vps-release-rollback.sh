@@ -310,6 +310,7 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   maxim_topology_require_suggestion_subscription_guard "$API_SOURCE_SHA"
   maxim_topology_require_message_duplicate_delete_guard "$API_SOURCE_SHA"
   maxim_topology_require_multibot_authority "$API_SOURCE_SHA"
+  maxim_topology_require_dependency_quarantine "$API_SOURCE_SHA"
   maxim_topology_require_bot_publisher_reliability "$API_SOURCE_SHA"
   maxim_topology_require_legacy_dispositions "$API_SOURCE_SHA"
   maxim_topology_require_managed_entity_activation "$API_SOURCE_SHA"

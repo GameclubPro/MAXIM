@@ -79,6 +79,9 @@ export type ReadinessSnapshot = {
       operationalLagSec: number;
       readinessWaitingCount?: number;
       readinessHeadLimitReached?: boolean;
+      quarantinedCountLowerBound?: number;
+      quarantineSampleLimitReached?: boolean;
+      oldestQuarantinedAgeSec?: number;
       sampleGeneratedAt: string;
       breachStartedAt: string | null;
       breachDurationSec: number;
@@ -762,6 +765,9 @@ export class HealthService implements OnModuleDestroy {
           operationalLagSec,
           readinessWaitingCount: queueLag?.readinessWaitingCount,
           readinessHeadLimitReached: queueLag?.readinessHeadLimitReached,
+          quarantinedCountLowerBound: queueLag?.quarantinedCountLowerBound,
+          quarantineSampleLimitReached: queueLag?.quarantineSampleLimitReached,
+          oldestQuarantinedAgeSec: queueLag?.oldestQuarantinedAgeSec,
           sampleGeneratedAt: queueLag?.generatedAt ?? systemMode.updatedAt,
           breachStartedAt: breachStartedAtMs ? new Date(breachStartedAtMs).toISOString() : null,
           breachDurationSec,

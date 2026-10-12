@@ -136,6 +136,8 @@
 
 ## Required Smokes
 
+- Dependency quarantine is a two-release rollout: install readers across all API roles before enabling writers. Both rollback paths require the `QUARANTINED` preparation/start/retention readers; retain that compatible release as the rollback target. Closed webhook cohorts include eight statuses, with QUARANTINED separate from processing success. See [the quarantine runbook](../docs/operations/runbooks/webhook-dependency-quarantine.md).
+
 - Queue recovery follows the [latency prevention checklist](../docs/operations/runbooks/webhook-latency-prevention.md). An interrupted cancellation keeps the exact request UUID/cutoff/source/image and journal; resume it unchanged. A later operation requires COMPLETE plus the controller's private content-addressed journal archive. Retain lossless BullMQ snapshot encoding and treat disappearing Docker objects as failed inventory proof, never inferred ownership.
 - Cancellation COMPLETE and a running fleet do not prove latency recovery: require closed fresh receipt cohorts with all statuses, pending ages, cap/clock exclusions and separate action outcomes, then the sustained recovery window. Do not repeat a converged deployment to clear backlog or finalize bookkeeping. Use guarded exact-SHA delivery/finalization; incident-specific direct-host emergency exceptions do not become routine commands or standing bypass permission.
 

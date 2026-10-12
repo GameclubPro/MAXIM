@@ -2012,8 +2012,8 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
 
     expect(heads).toEqual(
       new Map([
-        [chatA, { id: eventAFirst, createdAt: firstCreatedAt }],
-        [chatB, { id: eventB, createdAt: secondCreatedAt }],
+        [chatA, { id: eventAFirst, createdAt: firstCreatedAt, quarantined: false }],
+        [chatB, { id: eventB, createdAt: secondCreatedAt, quarantined: false }],
       ]),
     );
   });
@@ -2292,7 +2292,7 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     expect(selectedTestIds).not.toContain(fencedHeadId);
     expect(selectedTestIds).toContain(fencedNewerId);
     await expect(reader.findOrderedWebhookHeadsForChats([fencedChat])).resolves.toEqual(
-      new Map([[fencedChat, { id: fencedHeadId, createdAt: tiedCreatedAt }]]),
+      new Map([[fencedChat, { id: fencedHeadId, createdAt: tiedCreatedAt, quarantined: false }]]),
     );
 
     await prisma.webhookEvent.update({

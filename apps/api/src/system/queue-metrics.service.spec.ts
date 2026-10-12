@@ -1,5 +1,8 @@
 import { Prisma, WebhookStatus } from '../prisma/prisma-client';
-import { buildOldestPendingWebhookQuery } from './webhook-oldest-pending';
+import {
+  buildOldestPendingWebhookQuery,
+  buildQuarantinedWebhookSampleQuery,
+} from './webhook-oldest-pending';
 import { getQueueToken } from '@nestjs/bullmq';
 import {
   AUXILIARY_QUEUE_NAMES,
@@ -80,11 +83,12 @@ describe('QueueMetricsService', () => {
     );
   });
 
-  it('builds and caches lightweight lag from only two indexed oldest-event queries', async () => {
+  it('builds and caches lightweight lag and separate bounded quarantine visibility without diagnostic fanout', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-09-02T12:00:00.000Z'));
     try {
       const queryRaw = jest
         .fn()
+        .mockResolvedValue([])
         .mockResolvedValueOnce([
           {
             id: 'received-oldest',
@@ -133,6 +137,9 @@ describe('QueueMetricsService', () => {
         oldestReceivedLagSec: 12,
         effectiveLagSec: 25,
         operationalLagSec: 25,
+        quarantinedCountLowerBound: 0,
+        quarantineSampleLimitReached: false,
+        oldestQuarantinedAgeSec: 0,
         readinessWaitingCount: 0,
         readinessHeadLimitReached: false,
         generatedAt: '2026-09-02T12:00:00.000Z',
@@ -145,6 +152,7 @@ describe('QueueMetricsService', () => {
       expect(queryRaw.mock.calls).toEqual([
         [buildOldestPendingWebhookQuery(WebhookStatus.RECEIVED)],
         [buildOldestPendingWebhookQuery(WebhookStatus.QUEUED)],
+        [buildQuarantinedWebhookSampleQuery()],
       ]);
       expect(prisma.webhookEvent.count).not.toHaveBeenCalled();
       expect(prisma.webhookEvent.groupBy).not.toHaveBeenCalled();
@@ -171,8 +179,10 @@ describe('QueueMetricsService', () => {
       const queued = { id: 'queued', createdAt: new Date('2026-09-02T11:59:28.000Z') };
       const queryRaw = jest
         .fn()
+        .mockResolvedValue([])
         .mockResolvedValueOnce([received])
         .mockResolvedValueOnce([queued])
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ ...received, readinessWaiting: true }]);
       const service = Object.create(QueueMetricsService.prototype) as QueueMetricsService;
       Object.assign(service, { prisma: { $queryRaw: queryRaw } });
@@ -184,7 +194,7 @@ describe('QueueMetricsService', () => {
         readinessWaitingCount: 1,
         readinessHeadLimitReached: false,
       });
-      expect(queryRaw).toHaveBeenCalledTimes(3);
+      expect(queryRaw).toHaveBeenCalledTimes(4);
     } finally {
       jest.useRealTimers();
     }
@@ -211,11 +221,16 @@ describe('QueueMetricsService', () => {
     try {
       const queryRaw = jest
         .fn()
-        .mockImplementation(async (query: Prisma.Sql) => [
-          query.sql.includes("'RECEIVED'")
-            ? { id: 'received-oldest', createdAt: new Date('2026-09-02T11:59:48.000Z') }
-            : { id: 'queued-oldest', createdAt: new Date('2026-09-02T11:59:35.000Z') },
-        ]);
+        .mockResolvedValue([])
+        .mockImplementation(async (query: Prisma.Sql) =>
+          query.sql.includes("'QUARANTINED'")
+            ? []
+            : [
+                query.sql.includes("'RECEIVED'")
+                  ? { id: 'received-oldest', createdAt: new Date('2026-09-02T11:59:48.000Z') }
+                  : { id: 'queued-oldest', createdAt: new Date('2026-09-02T11:59:35.000Z') },
+              ],
+        );
       const prisma = {
         webhookEvent: {
           findFirst: jest.fn(),
@@ -310,6 +325,7 @@ describe('QueueMetricsService', () => {
       expect(queryRaw.mock.calls).toEqual([
         [buildOldestPendingWebhookQuery(WebhookStatus.RECEIVED)],
         [buildOldestPendingWebhookQuery(WebhookStatus.QUEUED)],
+        [buildQuarantinedWebhookSampleQuery()],
       ]);
       for (const queue of Object.values(defaultQueues)) {
         expect(queue.getJobCounts).toHaveBeenCalledTimes(1);

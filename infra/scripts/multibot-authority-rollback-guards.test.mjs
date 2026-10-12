@@ -50,7 +50,7 @@ test('both rollback paths reject targets that erase shared multibot authority', 
       'bash',
       [
         '-c',
-        'source "$1"; maxim_topology_require_multibot_authority "$2"',
+        'source "$1"; maxim_topology_require_multibot_authority "$2" && maxim_topology_require_dependency_quarantine "$2"',
         'multibot-test',
         library,
         sha,
@@ -104,6 +104,9 @@ test('both rollback paths reject targets that erase shared multibot authority', 
     assert.equal(check(commit()).status, 1);
     writeFileSync(resolve(fixture, clientPath), readFileSync(resolve(root, clientPath)));
     for (const [path, capability, replacement] of [
+      [paths[2], 'latestWebhookEvent.status === WebhookStatus.QUARANTINED', 'false'],
+      [paths[1], 'event.status === WebhookStatus.QUARANTINED', 'false'],
+      [paths[10], 'quarantine."blocker_id" = candidate."id"', 'false'],
       [paths[2], 'tryRecoverFinishedExecution(', 'unsafeLegacyFinishedRecovery('],
       [paths[2], 'holdUnverifiedLegacyExecution(', 'unsafeLegacyAuthorityPromotion('],
       [paths[2], 'transitionLiveUnstartedOwnerWithClient(', 'unsafeExpiredLeaseTransition('],

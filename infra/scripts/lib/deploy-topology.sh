@@ -193,6 +193,35 @@ maxim_topology_require_image_text_stop_list_delete_guard() {
   fi
 }
 
+# FLAG: A rollback cannot make durable parked receipts executable or erase their evidence.
+maxim_topology_require_dependency_quarantine() {
+  node - "$1" <<'NODE'
+const { execFileSync } = require('node:child_process');
+const sha = process.argv[2];
+try {
+  const read = (path) => execFileSync('git', ['show', `${sha}:${path}`], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const worker = read('apps/api/src/moderation/webhook-canonical-execution.service.ts');
+  const ingress = read('apps/api/src/webhook/webhook.service.ts');
+  const outbox = read('apps/api/src/webhook/webhook-outbox.service.ts');
+  const schema = read('apps/api/prisma/schema.prisma');
+  if (!worker.includes('webhookEvent.status === WebhookStatus.QUARANTINED') ||
+      !worker.includes('latestWebhookEvent.status === WebhookStatus.QUARANTINED') ||
+      !/event\."status" NOT IN \([^)]*'QUARANTINED'/u.test(worker) ||
+      !worker.includes('webhook_dependency_quarantines') ||
+      !ingress.includes('event.status === WebhookStatus.QUARANTINED') ||
+      !outbox.includes('current.status === WebhookStatus.QUARANTINED') ||
+      !outbox.includes('quarantine."blocker_id" = candidate."id"') ||
+      !outbox.includes('quarantine."anchor_id" = candidate."id"') ||
+      !schema.includes('model WebhookDependencyQuarantine')) throw new Error('missing readers');
+} catch {
+  process.stderr.write('Rollback target predates durable dependency-quarantine readers.\n');
+  process.exit(1);
+}
+NODE
+}
+
 maxim_topology_require_multibot_authority() {
   local commit_sha="$1"
   local path source

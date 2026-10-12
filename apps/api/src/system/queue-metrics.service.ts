@@ -43,6 +43,7 @@ import { MaxActionLedgerWatchdogService } from './max-action-ledger-watchdog.ser
 import { WebhookDynamicLeaseStatusService } from './webhook-dynamic-lease-status.service';
 import {
   buildOldestPendingWebhookQuery,
+  buildQuarantinedWebhookSampleQuery,
   type OldestPendingWebhook,
 } from './webhook-oldest-pending';
 import {
@@ -219,6 +220,9 @@ export type QueueLagSnapshot = {
   operationalLagSec?: number;
   readinessWaitingCount?: number;
   readinessHeadLimitReached?: boolean;
+  quarantinedCountLowerBound?: number;
+  quarantineSampleLimitReached?: boolean;
+  oldestQuarantinedAgeSec?: number;
   generatedAt: string;
 };
 
@@ -680,9 +684,12 @@ export class QueueMetricsService {
   }
 
   private async buildLagSnapshot(): Promise<QueueLagSnapshot> {
-    const [received, queued] = await Promise.all([
+    const [received, queued, quarantined] = await Promise.all([
       this.readOldestWebhookEvent(WebhookStatus.RECEIVED),
       this.readOldestWebhookEvent(WebhookStatus.QUEUED),
+      // FLAG: Parked work remains visible without becoming active lag. A covered,
+      // bounded status index read reports a lower bound, never a misleading total.
+      this.prisma.$queryRaw<Array<{ createdAt: Date }>>(buildQuarantinedWebhookSampleQuery()),
     ]);
     let now = new Date();
     let operationalReceivedLag: ReturnType<typeof resolveWebhookOperationalLag> | null = null;
@@ -712,6 +719,12 @@ export class QueueMetricsService {
         oldestQueuedLagSec,
         operationalReceivedLag?.lagSec ?? oldestReceivedLagSec,
       ),
+      quarantinedCountLowerBound: quarantined.length,
+      quarantineSampleLimitReached: quarantined.length === 65,
+      oldestQuarantinedAgeSec:
+        quarantined[0]?.createdAt instanceof Date
+          ? Math.max(0, (now.getTime() - quarantined[0].createdAt.getTime()) / 1_000)
+          : 0,
       readinessWaitingCount: operationalReceivedLag?.readinessWaitingCount ?? 0,
       readinessHeadLimitReached: operationalReceivedLag?.readinessHeadLimitReached ?? false,
       generatedAt: now.toISOString(),

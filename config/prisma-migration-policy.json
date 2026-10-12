@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261010070000_add_backlog_cancellation",
-  "baselineNamesSha256": "f444eef0fe06016557cfedc452fe3b83a646da08c41d13d039c4fa35c77d6689",
-  "baselineContentsSha256": "e20852b857d8676396495fa5b669d7ff37ec3f0a7e34e64fb91f9221b40ac576",
+  "baselineThrough": "20261012150000_add_webhook_dependency_quarantine",
+  "baselineNamesSha256": "f16d6c0f6bfa14ec37e7981de569d7f8e0c32fc5beae51dc0f6ebc56bcd042c3",
+  "baselineContentsSha256": "faedb19837ee33d096762cecfc988c39b9c200d9fce21cd81888f24367b00db4",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -195,6 +195,9 @@
     },
     "20261010070000_add_backlog_cancellation": {
       "reason": "Indexes are created only on the three empty additive cancellation tables."
+    },
+    "20261012150000_add_webhook_dependency_quarantine": {
+      "reason": "All indexes belong to the new empty quarantine journal. No existing webhook history is scanned, indexed or backfilled; the additive enum is not written until the compatible fleet release is verified."
     }
   }
 }

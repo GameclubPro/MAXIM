@@ -39,3 +39,12 @@ export function buildOldestPendingWebhookQuery(
     ) metadata
   `;
 }
+
+export function buildQuarantinedWebhookSampleQuery(): Prisma.Sql {
+  // FLAG: Count only a bounded covered sample; 65 means at least 65, not a fleet total.
+  return Prisma.sql`
+    SELECT "created_at" AS "createdAt" FROM "webhook_events"
+    WHERE "status" = 'QUARANTINED'::"WebhookStatus"
+    ORDER BY "created_at", "id" LIMIT 65
+  `;
+}

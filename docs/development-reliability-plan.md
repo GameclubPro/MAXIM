@@ -39,6 +39,14 @@ emulator image labeled as a native-layout success.
    remain unstaged, validate and submit from a separate worktree; do not stash someone else's work.
 6. Wait for both exact-SHA `Required` and `Analyze JavaScript and TypeScript`. Use the normal
    scoped deploy wrapper, then verify its strict smokes and release manifest.
+7. Queue, effect or recovery changes require the affected native fault experiments, including
+   final independent execution while an unknown predecessor remains fenced. An admission-only
+   test or mock-only pass is insufficient. Keep the quarantine suite in Required CI and the
+   delayed Redis reply-after-commit case in the blocking Redis lane. For durable new scheduling
+   states install compatible readers before writers and retain a compatible rollback image.
+   Evaluate closed all-status cohorts and the sustained observation window after activation;
+   report isolated work separately from success. See the
+   [quarantine release plan](operations/plans/2026-10-12-webhook-quarantine-isolation.md).
 
 Local screenshots and visual audits start an isolated owned server by default. An explicit
 `MINIAPP_SCREENSHOT_BASE_URL` or `MINIAPP_VISUAL_AUDIT_BASE_URLS` keeps its requested port and

@@ -30,7 +30,7 @@ export function buildWebhookCohortAuditSql(explain = false) {
 ), statuses(status) AS (VALUES
   ('RECEIVED'::"WebhookStatus"), ('QUEUED'::"WebhookStatus"),
   ('PROCESSED'::"WebhookStatus"), ('DUPLICATE'::"WebhookStatus"),
-  ('FAILED'::"WebhookStatus"), ('NO_REPLAY_HELD'::"WebhookStatus"), ('CANCELLED'::"WebhookStatus")
+  ('FAILED'::"WebhookStatus"), ('NO_REPLAY_HELD'::"WebhookStatus"), ('CANCELLED'::"WebhookStatus"), ('QUARANTINED'::"WebhookStatus")
 ), candidates AS MATERIALIZED (
   SELECT statuses.status, head.id, head.created_at
   FROM statuses CROSS JOIN bounds

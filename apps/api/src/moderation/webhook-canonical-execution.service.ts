@@ -180,6 +180,7 @@ export class WebhookCanonicalExecutionService {
       return null;
     }
     if (
+      webhookEvent.status === WebhookStatus.QUARANTINED ||
       webhookEvent.status === WebhookStatus.NO_REPLAY_HELD ||
       webhookEvent.status === WebhookStatus.CANCELLED ||
       webhookEvent.status === WebhookStatus.DUPLICATE ||
@@ -674,6 +675,7 @@ export class WebhookCanonicalExecutionService {
       });
       if (
         !latestWebhookEvent ||
+        latestWebhookEvent.status === WebhookStatus.QUARANTINED ||
         latestWebhookEvent.status === WebhookStatus.NO_REPLAY_HELD ||
         latestWebhookEvent.status === WebhookStatus.CANCELLED ||
         latestWebhookEvent.status === WebhookStatus.DUPLICATE ||
@@ -845,12 +847,18 @@ export class WebhookCanonicalExecutionService {
         AND claim."lease_token" = ${params.leaseToken}
         AND claim."lease_expires_at" > instant."now"
         AND (${ready} OR claim."enforced")
-        AND event."status" NOT IN ('PROCESSED', 'DUPLICATE', 'NO_REPLAY_HELD', 'CANCELLED')
+        AND event."status" NOT IN ('PROCESSED', 'DUPLICATE', 'NO_REPLAY_HELD', 'CANCELLED', 'QUARANTINED')
         AND event."timeout_quarantine_expires_at" IS NULL
         AND COALESCE(event."error_message", '') NOT LIKE ${`${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}%`}
         AND COALESCE(event."error_message", '') NOT LIKE ${`${WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX}%`}
         AND COALESCE(event."error_message", '') NOT ILIKE '%ambiguous%'
         AND event."execution_deadline_at" IS NOT DISTINCT FROM ${params.executionDeadlineAt}
+        AND NOT EXISTS (
+          SELECT 1 FROM "webhook_dependency_quarantines" quarantine
+          WHERE quarantine."receipt_id" = event."id" AND quarantine."state" = 'RELEASED'
+            AND (quarantine."deadline_at" <= instant."now"
+                 OR event."execution_deadline_at" IS DISTINCT FROM quarantine."deadline_at")
+        )
         AND (NOT COALESCE(claim."command_result" @> ${waitingMarker}::jsonb, false)
              OR event."execution_deadline_at" > instant."now")
         ${executionBotFence} ${routeFence} ${receiptFence} ${observationFence}
@@ -890,6 +898,7 @@ export class WebhookCanonicalExecutionService {
       !event.executionDeadlineAt ||
       event.executionDeadlineAt.getTime() > now.getTime() ||
       hasWebhookReplayFence(event) ||
+      event.status === WebhookStatus.QUARANTINED ||
       event.status === WebhookStatus.NO_REPLAY_HELD ||
       event.status === WebhookStatus.CANCELLED ||
       event.status === WebhookStatus.PROCESSED ||
@@ -897,6 +906,11 @@ export class WebhookCanonicalExecutionService {
       buildWebhookSemanticEventKey(event.normalizedPayload) !== params.semanticKey
     )
       return false;
+    const dependency = await client.webhookDependencyQuarantine?.findFirst({
+      where: { receiptId: event.id, state: 'RELEASED' },
+      orderBy: [{ createdAt: 'desc' }, { blockerId: 'desc' }],
+    });
+    const dependencyExpired = dependency?.state === 'RELEASED';
     // FLAG: Expiry is a proven no-business disposition, not an access grant or a success
     // receipt. Its exact existing claim completes so late mirrors cannot replay the event.
     const waitingMarker = JSON.stringify({
@@ -919,11 +933,24 @@ export class WebhookCanonicalExecutionService {
         AND claim."status"::text = ${claim.status} AND claim."enforced"
         AND claim."lease_token" = ${params.leaseToken} AND claim."lease_expires_at" > instant."now"
         AND claim."business_started_at" IS NULL AND claim."completed_at" IS NULL
-        AND claim."command_result" @> ${waitingMarker}::jsonb
+        AND (claim."command_result" @> ${waitingMarker}::jsonb OR ${dependencyExpired})
         AND event."execution_deadline_at" = ${event.executionDeadlineAt}
         AND event."execution_deadline_at" <= instant."now"
     `);
     if (fenced !== 1) return false;
+    if (dependencyExpired) {
+      // FLAG: A released dependency cannot acquire a new lifetime while waiting to start.
+      // Preserve the original envelope; this completed claim certifies no business start.
+      await client.webhookDependencyQuarantine.update({
+        where: { receiptId_blockerId: { receiptId: event.id, blockerId: dependency!.blockerId } },
+        data: { state: 'EXPIRED', resolvedAt: now },
+      });
+      await client.webhookEvent.update({
+        where: { id: event.id },
+        data: { status: WebhookStatus.QUARANTINED, nextEnqueueAt: null, queueName: null },
+      });
+      return true;
+    }
     const payload = {
       ...(event.normalizedPayload as unknown as MaxUpdate),
       executionOutcome: {

@@ -98,6 +98,7 @@ enum WebhookStatus {
   FAILED
   NO_REPLAY_HELD
   CANCELLED
+  QUARANTINED
 }
 
 enum WebhookExecutionClaimStatus {
@@ -2484,12 +2485,41 @@ model WebhookEvent {
   legacyDispositionReceiptId String? @map("legacy_disposition_receipt_id")
   legacyDisposition WebhookLegacyReceiptDisposition? @relation(fields: [legacyDispositionReceiptId, legacyDispositionId], references: [receiptId, id], onDelete: Restrict, onUpdate: NoAction)
   executionClaims WebhookExecutionClaim[]
+  dependencyQuarantines WebhookDependencyQuarantine[] @relation("QuarantinedReceipt")
+  quarantineDependents WebhookDependencyQuarantine[] @relation("QuarantineBlocker")
+  quarantineAnchors WebhookDependencyQuarantine[] @relation("QuarantineAnchor")
 
   @@index([status, createdAt])
   @@index([status, createdAt, id], map: "webhook_events_status_created_at_id_idx")
   @@index([botId, status, createdAt], map: "webhook_events_bot_id_status_created_at_idx")
   @@index([status, nextEnqueueAt, createdAt])
   @@map("webhook_events")
+}
+
+// FLAG: Parking retains an unstarted receipt and its exact uncertain predecessor. Neither
+// timeout expiry nor operator visibility grants permission to replay the predecessor.
+model WebhookDependencyQuarantine {
+  receiptId String @map("receipt_id")
+  blockerId String @map("blocker_id")
+  anchorId String @map("anchor_id")
+  chatId String @map("chat_id")
+  originalStatus WebhookStatus @map("original_status")
+  deadlineAt DateTime @map("deadline_at")
+  state String @default("WAITING")
+  createdAt DateTime @default(now()) @map("created_at")
+  nextCheckAt DateTime @default(now()) @map("next_check_at")
+  resolvedAt DateTime? @map("resolved_at")
+  receipt WebhookEvent @relation("QuarantinedReceipt", fields: [receiptId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  blocker WebhookEvent @relation("QuarantineBlocker", fields: [blockerId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  anchor WebhookEvent @relation("QuarantineAnchor", fields: [anchorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@id([receiptId, blockerId])
+  @@index([state, nextCheckAt, receiptId, blockerId], map: "webhook_dependency_quarantines_due_idx")
+  @@index([anchorId], map: "webhook_dependency_quarantines_anchor_idx")
+  @@index([blockerId], map: "webhook_dependency_quarantines_blocker_idx")
+  @@index([state, createdAt, receiptId], map: "webhook_dependency_quarantines_age_idx")
+  @@map("webhook_dependency_quarantines")
 }
 
 // FLAG: Explicit operator cancellation retains evidence without claiming successful effects.

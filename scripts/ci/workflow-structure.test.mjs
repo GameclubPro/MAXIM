@@ -47,3 +47,19 @@ test('requires traffic revision and activation checks against local PostgreSQL',
   );
   assert.doesNotMatch(postgres, /continue-on-error/u);
 });
+
+test('requires native quarantine isolation and delayed Redis reply coverage before release', () => {
+  const pkg = JSON.parse(readFileSync(resolve(root, 'apps/api/package.json'), 'utf8'));
+  assert.match(
+    pkg.scripts['test:postgres-races:unlocked'],
+    /webhook-dependency-quarantine-postgres\.spec\.ts/u,
+  );
+  const postgres = jobBody('postgres-races', 'commercial-benchmark');
+  assert.match(postgres, /npm run test:postgres-races --workspace @maxim\/api/u);
+  assert.doesNotMatch(postgres, /continue-on-error/u);
+  const required = workflow.slice(workflow.indexOf('  required:'));
+  assert.match(required, /postgres-races/u);
+  const api = jobBody('api', 'postgres-races');
+  assert.match(api, /MAXIM_TEST_REDIS_URL:/u);
+  assert.match(api, /npm test --workspace @maxim\/api -- 'message-duplicate\|/u);
+});
