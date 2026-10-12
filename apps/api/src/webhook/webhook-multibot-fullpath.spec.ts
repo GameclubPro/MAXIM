@@ -13,6 +13,7 @@ import { MaxActionProcessor } from '../max/max-action.processor';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 import { DefaultWebhookLeaseManagerService } from '../moderation/default-webhook-lease-manager.service';
+import { WebhookCanonicalExecutionService } from '../moderation/webhook-canonical-execution.service';
 import { digestDuplicateContent } from '../moderation/message-duplicate/message-duplicate-content';
 import { MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION } from '../moderation/message-duplicate/message-duplicate-window.script';
 import {
@@ -2131,6 +2132,121 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       }
     },
   );
+
+  it('settles a prepared mirror concurrently with checkpoint recovery without a claim/receipt deadlock', async () => {
+    const s = await fixture(2, 'on');
+    await s.pause();
+    const [chatId, independentChatId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
+    const messageId = randomUUID();
+    const at = Date.now();
+    const ownerId = await s.ingest({
+      chatId: chatId!,
+      messageId,
+      text: 'Fixture',
+      botId: s.bots[0]!.id,
+      at,
+    });
+    await s.ingress.preparePersistedWebhookEvent(ownerId);
+    await s.prisma.webhookEvent.update({ where: { id: ownerId }, data: { status: 'QUEUED' } });
+    const handler = jest.spyOn(s.moderation, 'handleUpdate');
+    const completion = jest
+      .spyOn(s.canonical, 'completeExecution')
+      .mockImplementation(async (context) => {
+        // FLAG: Stop only after the real handler saved its exact finished checkpoint.
+        // Recovery below must settle this proof without repeating the handler.
+        await (
+          s.canonical as unknown as {
+            markExecutionHandlerFinished(value: typeof context): Promise<void>;
+          }
+        ).markExecutionHandlerFinished(context);
+      });
+    try {
+      await s.moderation.processWebhookEvent(ownerId);
+    } finally {
+      completion.mockRestore();
+    }
+    const mirrorId = await s.ingest({
+      chatId: chatId!,
+      messageId,
+      text: 'Fixture',
+      botId: s.bots[1]!.id,
+      at,
+    });
+    const owner = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+      where: { webhookEventId: ownerId, kind: 'EXECUTION' },
+    });
+    const mirror = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirrorId } });
+    const independentId = await s.ingest({
+      chatId: independentChatId!,
+      messageId: randomUUID(),
+      text: 'Independent',
+      botId: s.bots[0]!.id,
+    });
+    await s.ingress.preparePersistedWebhookEvent(independentId);
+    let locked!: () => void;
+    const claimLocked = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    let attempting!: () => void;
+    const mirrorAttemptsClaim = new Promise<void>((resolve) => {
+      attempting = resolve;
+    });
+    const recovery = s.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM webhook_execution_claims WHERE id = ${claim.id} FOR UPDATE`,
+      );
+      locked();
+      await mirrorAttemptsClaim;
+      await s.moderation.processWebhookEvent(independentId);
+      expect(
+        await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: independentId } }),
+      ).toMatchObject({ status: 'PROCESSED' });
+      return WebhookCanonicalExecutionService.tryRecoverFinishedExecutionWithClient(
+        tx as never,
+        owner,
+        claim,
+      );
+    });
+    await claimLocked;
+    const settleMirror = s.prisma.$transaction((tx) => {
+      const client = {
+        $queryRaw: tx.$queryRaw.bind(tx),
+        webhookEvent: tx.webhookEvent,
+        webhookExecutionClaim: {
+          findUnique: tx.webhookExecutionClaim.findUnique.bind(tx.webhookExecutionClaim),
+          updateMany: async (args: Parameters<typeof tx.webhookExecutionClaim.updateMany>[0]) => {
+            attempting();
+            return tx.webhookExecutionClaim.updateMany(args);
+          },
+        },
+      };
+      return WebhookCanonicalExecutionService.trySettlePreparedMirrorWithClient(
+        client as never,
+        {
+          webhookEvent: mirror,
+          update: mirror.normalizedPayload as unknown as MaxUpdate,
+          businessLeaseToken: null,
+        },
+        { id: mirror.id, status: mirror.status, timeoutQuarantineExpiresAt: null },
+      );
+    });
+    const results = await Promise.allSettled([recovery, settleMirror]);
+    expect(results).toEqual([
+      { status: 'fulfilled', value: true },
+      { status: 'fulfilled', value: 'retry' },
+    ]);
+    await s.moderation.processWebhookEvent(mirrorId);
+    await s.moderation.processWebhookEvent(ownerId);
+    expect(
+      await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirrorId } }),
+    ).toMatchObject({ status: 'DUPLICATE' });
+    expect(handler.mock.calls.filter(([update]) => update.message?.chatId === chatId)).toHaveLength(
+      1,
+    );
+    expect(s.effects).toEqual([]);
+    handler.mockRestore();
+  });
 
   it('retains the business replay fence after the worker lease expires', async () => {
     const s = await fixture(9);

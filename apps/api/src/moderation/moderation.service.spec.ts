@@ -28,12 +28,15 @@ import { WebhookPreparationDeferredError } from '../common/webhook-preparation-d
 import { WebhookPreparationRetryError } from './webhook-preparation-retry';
 
 describe('ModerationService', () => {
-  it.each([false, true])(
-    'preserves preparation failures and diagnoses only unexpected errors, deferred=%s',
-    async (deferred) => {
-      const error = deferred
-        ? new WebhookPreparationDeferredError('private-receipt', 1_000)
-        : Object.assign(new Error('private-receipt secret'), { code: 'P2028' });
+  it.each(['unexpected', 'preparation', 'ordering'] as const)(
+    'preserves preparation failures and diagnoses only unexpected errors, kind=%s',
+    async (kind) => {
+      const error =
+        kind === 'preparation'
+          ? new WebhookPreparationDeferredError('private-receipt', 1_000)
+          : kind === 'ordering'
+            ? new WebhookOrderedPredecessorPendingError('private-receipt', 'private-owner')
+            : Object.assign(new Error('private-receipt secret'), { code: 'P2028' });
       const canonical = {
         prepareExecution: jest.fn().mockRejectedValue(error),
         failExecution: jest.fn(),
@@ -45,10 +48,13 @@ describe('ModerationService', () => {
         logger: { warn },
       });
       const handler = jest.spyOn(service, 'handleUpdate');
-      if (deferred) {
+      if (kind === 'preparation') {
         await expect(service.processWebhookEvent('private-receipt')).rejects.toBeInstanceOf(
           WebhookPreparationRetryError,
         );
+        expect(warn).not.toHaveBeenCalled();
+      } else if (kind === 'ordering') {
+        await expect(service.processWebhookEvent('private-receipt')).rejects.toBe(error);
         expect(warn).not.toHaveBeenCalled();
       } else {
         await expect(service.processWebhookEvent('private-receipt')).rejects.toBe(error);

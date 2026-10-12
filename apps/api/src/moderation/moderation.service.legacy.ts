@@ -1325,6 +1325,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       // Handler failures retain their existing durable effects and recovery path.
       if (error instanceof WebhookPreparationDeferredError)
         throw new WebhookPreparationRetryError(webhookEventId, error);
+      if (error instanceof WebhookOrderedPredecessorPendingError) throw error;
       logWebhookExecutionFailure(this.logger, 'preparation', error);
       throw error;
     }

@@ -28,6 +28,11 @@ before editing it; copying these notes does not install a fix or prove the deplo
    background removal/edit, join and dynamic workers, independent completion and no replay.
    Unexpected preparation errors retain their original propagation and emit only the closed
    execution diagnostic fields under `stage=preparation`; this stage is not no-effect proof.
+   Prepared-mirror settlement and handler-finished checkpoint persistence acquire their
+   canonical claim before the owner receipt, matching start and completion. Preserve each
+   CAS and the checkpoint transaction's rollback on receipt rejection. The native multibot
+   regression races mirror settlement with positive checkpoint recovery and independent
+   execution; ordinary ordered-predecessor waits remain quiet typed scheduling events.
 2. **Bound database work before expensive predicates.** A result `LIMIT` does not bound scans,
    sorts or correlated probes. Use indexed keyset pages with raw cursors retained before filtering,
    bounded materialization and primary-key payload reads. Keep due work separate from terminal

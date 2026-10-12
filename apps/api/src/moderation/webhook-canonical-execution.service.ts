@@ -1238,20 +1238,6 @@ export class WebhookCanonicalExecutionService {
           'Handler-finished execution lease changed',
           1_000,
         );
-      const receipt = await tx.webhookEvent.updateMany({
-        where: {
-          id: context.webhookEvent.id,
-          normalizedPayload: {
-            equals: context.webhookEvent.normalizedPayload as Prisma.InputJsonValue,
-          },
-          status: context.webhookEvent.status,
-          errorMessage: context.webhookEvent.errorMessage,
-          timeoutQuarantineExpiresAt: null,
-        },
-        data: { status: context.webhookEvent.status },
-      });
-      if (receipt.count !== 1)
-        throw new WebhookPreparationDeferredError('Handler-finished source receipt changed', 1_000);
       const journal = {
         kind: 'EXECUTION_FINISHED',
         authorityVersion: MULTIBOT_EXECUTION_AUTHORITY_VERSION,
@@ -1276,6 +1262,21 @@ export class WebhookCanonicalExecutionService {
       });
       if (recorded.count !== 1)
         throw new WebhookPreparationDeferredError('Handler-finished journal changed', 1_000);
+      // FLAG: A rejected receipt proof rolls this checkpoint back in the same transaction.
+      const receipt = await tx.webhookEvent.updateMany({
+        where: {
+          id: context.webhookEvent.id,
+          normalizedPayload: {
+            equals: context.webhookEvent.normalizedPayload as Prisma.InputJsonValue,
+          },
+          status: context.webhookEvent.status,
+          errorMessage: context.webhookEvent.errorMessage,
+          timeoutQuarantineExpiresAt: null,
+        },
+        data: { status: context.webhookEvent.status },
+      });
+      if (receipt.count !== 1)
+        throw new WebhookPreparationDeferredError('Handler-finished source receipt changed', 1_000);
     });
   }
 
@@ -2188,18 +2189,7 @@ export class WebhookCanonicalExecutionService {
       !(owner.status === WebhookStatus.FAILED && owner.nextEnqueueAt instanceof Date)
     )
       return 'retry';
-    const ownerFence = await client.webhookEvent.updateMany({
-      where: {
-        id: owner.id,
-        status: owner.status,
-        nextEnqueueAt: owner.nextEnqueueAt,
-        errorMessage: owner.errorMessage,
-        timeoutQuarantineExpiresAt: null,
-        normalizedPayload: { equals: owner.normalizedPayload as Prisma.InputJsonValue },
-      },
-      data: { status: owner.status },
-    });
-    if (ownerFence.count !== 1) return 'retry';
+    // FLAG: Match business start/completion: claim before owner receipt, then mirror.
     const claimFence = await client.webhookExecutionClaim.updateMany({
       where: {
         id: claim.id,
@@ -2215,6 +2205,18 @@ export class WebhookCanonicalExecutionService {
       data: { enforced: true },
     });
     if (claimFence.count !== 1) return 'retry';
+    const ownerFence = await client.webhookEvent.updateMany({
+      where: {
+        id: owner.id,
+        status: owner.status,
+        nextEnqueueAt: owner.nextEnqueueAt,
+        errorMessage: owner.errorMessage,
+        timeoutQuarantineExpiresAt: null,
+        normalizedPayload: { equals: owner.normalizedPayload as Prisma.InputJsonValue },
+      },
+      data: { status: owner.status },
+    });
+    if (ownerFence.count !== 1) return 'retry';
     const settled = await client.webhookEvent.updateMany({
       where: {
         ...mirrorWhere,

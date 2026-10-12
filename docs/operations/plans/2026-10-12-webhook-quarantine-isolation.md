@@ -265,3 +265,35 @@ propagating the identical error; typed waits stay quiet. The focused real-store 
 415 tests across nine suites, including quarantine and existing replay fences. This proves
 the implementation defect and fix, not the unrecorded cause of every production spike.
 Local staged checks, exact-SHA CI, guarded deploy and fresh observation are still required.
+
+## Confirmed concurrent settlement deadlock
+
+Before deploying the preparation follow-up, a bounded Redis stream read retained a failed
+background event at 16:45:21.105 UTC. Its error positively classified as PostgreSQL `40P01`,
+`deadlock detected`, during `updateMany`; it was not the busy-lease refusal. The job hash
+had already been removed by ordinary recovery, so its lost stack is not reconstructed.
+The matching eight-line PostgreSQL log window records the deadlock at 16:45:21.093:
+one transaction updates `webhook_events` completion fields while the other updates the
+READY canonical claim's `enforced` fence. Only allowlisted query shape/column metadata was
+retained; no user content or SQL parameters are published.
+
+`trySettlePreparedMirrorWithClient` locked the owner receipt before the claim, opposite to
+checkpoint recovery/completion. A real-store deterministic race reproduced the same
+`40P01` using actual prepared-mirror settlement and exact finished-checkpoint recovery.
+The prepared-mirror fence now acquires the claim before the owner receipt, retaining every
+predicate and result. Handler-finished checkpoint persistence uses the same order; a lost
+receipt proof still rolls back the checkpoint in the same transaction. No whole-handler or
+arbitrary transaction retry is introduced. The regression also completes an independent
+chat during contention and checks exactly one original handler execution after convergence.
+
+The 16:29:35–16:44:35 pre-deploy monitor stayed ready but included raw-age spikes up to
+66.845 seconds; it is not a clean low-lag acceptance window. A captured 16:44:02 snapshot
+distinguished raw age 17.352 seconds from operational lag 0.474 seconds with one positively
+proven readiness wait. Later health at 16:45:43 returned to 0.368–0.390 seconds. These
+observations must not be conflated with the earlier 15:54 readiness failure or with the
+16:45 deadlock. Current production still runs `dbd69974` during follow-up validation.
+
+The expanded native matrix passed 491 tests across nine suites (multibot full path,
+quarantine, outbox, membership readiness and moderation). Expected ordered-predecessor
+waits are explicitly excluded from the new unexpected-preparation error log. Broad local
+validation and a new exact-SHA CI run precede any deployment of this correction.
