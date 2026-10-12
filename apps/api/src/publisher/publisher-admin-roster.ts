@@ -75,7 +75,10 @@ export async function syncPublisherAdminRoster(
   const humanAdminIds = [
     ...new Set(
       roster.flatMap((member) =>
-        member.userId && member.isBot === false && (member.isAdmin || member.isOwner)
+        member.userId &&
+        member.isBot === false &&
+        member.explicitPrivilegeEvidence === true &&
+        (member.isAdmin || member.isOwner)
           ? [member.userId]
           : [],
       ),

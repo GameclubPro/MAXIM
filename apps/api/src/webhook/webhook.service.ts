@@ -1,3 +1,8 @@
+import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import {
+  applyManagedBotPermissionEvent,
+  BOT_PERMISSION_CHANGE_UPDATE,
+} from '../max/managed-bot-permission-event';
 import { holdUnverifiedLegacyExecution } from './webhook-legacy-authority';
 import { settleOperatorDiscardedMirror } from './webhook-operator-discard-mirror';
 import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
@@ -343,6 +348,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     @Optional() private readonly executionOwnerReadiness?: MaxExecutionOwnerReadinessService,
     @Optional() private readonly runtimeDiagnostics?: RuntimeDiagnosticsService,
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
+    @Optional() private readonly permissionEventRegistry?: MaxBotRegistryService,
   ) {
     super();
     this.preparationAdmission = new WebhookPreparationAdmission(
@@ -454,6 +460,16 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
   }
 
   private async repairDuplicateReceiptReadModelsCore(update: MaxUpdate): Promise<void> {
+    if (update.type === BOT_PERMISSION_CHANGE_UPDATE) {
+      if (!this.permissionEventRegistry) throw new Error('Permission event registry unavailable');
+      await applyManagedBotPermissionEvent({
+        update,
+        prisma: this.prisma,
+        registry: this.permissionEventRegistry,
+        links: this.maxBotLinkService,
+      });
+      return;
+    }
     if (this.isPublisherUpdate(update)) {
       await this.observePublisherWebhook(update, null, true);
       return;
@@ -1670,6 +1686,17 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     webhookEventId: string,
     update: MaxUpdate,
   ): Promise<{ update: MaxUpdate; executionBotId: string | null }> {
+    if (update.type === BOT_PERMISSION_CHANGE_UPDATE) {
+      if (!this.permissionEventRegistry) throw new Error('Permission event registry unavailable');
+      await applyManagedBotPermissionEvent({
+        update,
+        prisma: this.prisma,
+        registry: this.permissionEventRegistry,
+        links: this.maxBotLinkService,
+      });
+      await writeWebhookPayload(this.prisma, webhookEventId, this.sanitizeForJsonStorage(update));
+      return { update, executionBotId: null };
+    }
     if (this.isPublisherUpdate(update)) {
       await this.observePublisherWebhook(update, webhookEventId, false);
       await writeWebhookPayload(this.prisma, webhookEventId, this.sanitizeForJsonStorage(update));
@@ -1767,6 +1794,16 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     webhookEventId: string | null,
     duplicate: boolean,
   ): Promise<void> {
+    if (update.type === BOT_PERMISSION_CHANGE_UPDATE) {
+      if (!this.permissionEventRegistry) throw new Error('Permission event registry unavailable');
+      await applyManagedBotPermissionEvent({
+        update,
+        prisma: this.prisma,
+        registry: this.permissionEventRegistry,
+        links: this.maxBotLinkService,
+      });
+      return;
+    }
     if (update.type === 'user_added' || update.type === 'user_removed' || update.membership) {
       await this.invalidateMembershipCacheFromWebhook(update);
     }

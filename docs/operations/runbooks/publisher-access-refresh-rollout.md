@@ -1,5 +1,7 @@
 # Publisher access refresh rollout
 
+> Superseded for bot permission renewal by [personal access demand](../plans/2026-10-12-managed-access-demand-plan.md). Positive bot proofs no longer expire; the fleet bot/roster scheduler is retired. Publication-author preflight still checks human authority independently. Historical rollout parameters below describe the earlier scheduler.
+
 ## Scope and invariants
 
 The access coordinator delegates bot, actor, catalog and roster work to focused executors.

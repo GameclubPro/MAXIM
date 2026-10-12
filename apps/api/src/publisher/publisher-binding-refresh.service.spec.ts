@@ -1052,28 +1052,24 @@ describe('PublisherBindingRefreshService', () => {
     }
   });
 
-  it.each(['scheduled_bot_access', 'publication_due'] as const)(
-    'keeps %s lightweight and independently queues fenced roster maintenance',
+  it.each(['scheduled_bot_access', 'binding_maintenance'] as const)(
+    'drains retired %s jobs without bot, actor or roster requests',
     async (reason) => {
       const f = createHarness(adminAccess);
       await f.service.refresh({ ...job, reason });
-      expect(f.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
-      expect(f.maxClient.getChatSnapshot).not.toHaveBeenCalled();
+      expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
       expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
-      expect(f.refreshQueue.enqueue).toHaveBeenCalledWith(
-        expect.objectContaining({
-          reason: 'binding_maintenance',
-          chatId: job.chatId,
-          publisherBotId: job.publisherBotId,
-        }),
-      );
-      await f.service.refresh({ ...job, reason: 'binding_maintenance' });
-      expect(f.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
-      expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalledTimes(1);
-      expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalled();
+      expect(f.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+      expect(f.refreshQueue.enqueue).not.toHaveBeenCalled();
     },
   );
-
+  it('keeps publication demand lightweight without scheduling a roster', async () => {
+    const f = createHarness(adminAccess);
+    await f.service.refresh({ ...job, reason: 'publication_due' });
+    expect(f.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
+    expect(f.refreshQueue.enqueue).not.toHaveBeenCalled();
+  });
   it('separates bot refresh from roster maintenance while keeping manual checks immediate', async () => {
     const policy = new PublisherAccessRefreshPolicy(
       new ConfigService({ MAX_PUBLISHER_ACCESS_REFRESH_MODE: 'on' }),
@@ -1123,7 +1119,7 @@ describe('PublisherBindingRefreshService', () => {
       Object.assign(new Error('MAX rate limit'), { retryAfterMs: 120000 }),
     );
     const before = Date.now();
-    await expect(f.service.refresh({ ...job, reason: 'binding_maintenance' })).rejects.toThrow(
+    await expect(f.service.refresh({ ...job, reason: 'connection_roster' })).rejects.toThrow(
       'MAX rate limit',
     );
     const write = f.prisma.publisherEntityBinding.updateMany.mock.calls.find(
@@ -1135,29 +1131,21 @@ describe('PublisherBindingRefreshService', () => {
     expect(f.tx.managedEntityAccessEdge.createMany).not.toHaveBeenCalled();
   });
 
-  it('recovers failed maintenance enqueue without repeating a newer successful bot probe', async () => {
-    const f = createHarness(adminAccess);
-    f.refreshQueue.enqueue.mockRejectedValueOnce(new Error('redis unavailable'));
-    const scheduled = {
-      ...job,
-      reason: 'scheduled_bot_access' as const,
-      requestedAt: new Date(Date.now() - 10_000).toISOString(),
-    };
-    await expect(f.service.refresh(scheduled)).rejects.toThrow('redis unavailable');
-    await f.service.refresh(scheduled, { retrying: true });
-    expect(f.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
-    expect(f.refreshQueue.enqueue).toHaveBeenCalledTimes(2);
+  it('enqueues a roster after a committed explicit connection', async () => {
+    const f = dormantActivation();
+    await f.service.refresh(f.command);
+    expect(f.refreshQueue.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'connection_roster' }),
+    );
   });
 
-  it('maintenance requests a bot refresh instead of using an expired proof', async () => {
+  it('connection roster reuses old positive authority without a bot refresh', async () => {
     const f = createHarness(adminAccess);
-    f.bindingState.botAccessCheckedAt = new Date(Date.now() - 16 * 60_000);
-    await f.service.refresh({ ...job, reason: 'binding_maintenance' });
+    f.bindingState.botAccessCheckedAt = new Date(Date.now() - 365 * 86400_000);
+    await f.service.refresh({ ...job, reason: 'connection_roster' });
     expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
-    expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
-    expect(f.refreshQueue.enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'scheduled_bot_access' }),
-    );
+    expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalledTimes(1);
+    expect(f.refreshQueue.enqueue).not.toHaveBeenCalled();
   });
 
   it('retries a superseded active roster handoff with the newer bot proof', async () => {
@@ -1182,10 +1170,10 @@ describe('PublisherBindingRefreshService', () => {
         lastWebhookAt: null,
       };
     });
-    await expect(
-      f.service.refresh({ ...job, reason: 'binding_maintenance' }),
-    ).rejects.toBeInstanceOf(PublisherBindingMaintenanceSupersededError);
-    await f.service.refresh({ ...job, reason: 'binding_maintenance' }, { retrying: true });
+    await expect(f.service.refresh({ ...job, reason: 'connection_roster' })).rejects.toBeInstanceOf(
+      PublisherBindingMaintenanceSupersededError,
+    );
+    await f.service.refresh({ ...job, reason: 'connection_roster' }, { retrying: true });
     expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalledTimes(2);
     expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalled();
     expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
@@ -1255,6 +1243,7 @@ describe('PublisherBindingRefreshService', () => {
         denial === 'superseded' ? 'newer-update' : startJob.candidateVersion;
       if (denial === 'user')
         maxClient.getChatMemberAccess.mockResolvedValueOnce({
+          explicitPrivilegeEvidence: true,
           isBot: false,
           isAdmin: false,
           isOwner: false,
@@ -1346,11 +1335,11 @@ describe('PublisherBindingRefreshService', () => {
     },
   );
 
-  it('always hydrates metadata when refreshing a specific actor', async () => {
+  it('reuses stored metadata when refreshing a specific actor', async () => {
     const { service, prisma, maxClient } = createHarness(adminAccess);
     prisma.managedBotChatCatalog.findUnique.mockResolvedValue(recentCatalog());
     await service.refresh({ ...job, reason: 'stale_user_access', candidateUserId: 'user-1' });
-    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
     expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
       'chat-1',
       'user-1',
@@ -1582,7 +1571,7 @@ describe('PublisherBindingRefreshService', () => {
     );
   });
 
-  it.each(['bootstrap', 'bot_added', 'manual_recheck'] as const)(
+  it.each(['bootstrap', 'connection_roster', 'manual_recheck'] as const)(
     'synchronizes all Publisher admins on %s even while publishing is disabled',
     async (reason) => {
       const f = createHarness(
@@ -1590,13 +1579,20 @@ describe('PublisherBindingRefreshService', () => {
         true,
         false,
       );
+      f.bindingState.botAccessCheckedAt = new Date();
       f.maxClient.getChatAdminAccesses.mockResolvedValue([
-        { userId: 'other-admin', isBot: false, isAdmin: true, isOwner: false },
+        {
+          explicitPrivilegeEvidence: true,
+          userId: 'other-admin',
+          isBot: false,
+          isAdmin: true,
+          isOwner: false,
+        },
       ]);
       await f.service.refresh({
         ...job,
         reason,
-        ...(reason === 'bootstrap' ? {} : { candidateUserId: 'installer' }),
+        ...(reason === 'manual_recheck' ? { candidateUserId: 'installer' } : {}),
       });
       expect(f.tx.managedEntityAccessEdge.createMany).toHaveBeenCalledWith({
         skipDuplicates: true,
@@ -2446,7 +2442,7 @@ describe('PublisherBindingRefreshService', () => {
     expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
       'chat-1',
       'admin-established',
-      expect.objectContaining({ botId: 'publik_bot', trafficClass: 'background' }),
+      expect.objectContaining({ botId: 'publik_bot', trafficClass: 'interactive' }),
     );
     expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2480,7 +2476,14 @@ describe('PublisherBindingRefreshService', () => {
       edgeState.deniedReason = null;
       maxClient.getChatMemberAccess.mockImplementationOnce(async () => {
         edgeState.checkedAt = new Date(Date.now() + 1_000);
-        return { isBot: false, isAdmin, isOwner: false, permissions: [], permissionsKnown: true };
+        return {
+          explicitPrivilegeEvidence: true,
+          isBot: false,
+          isAdmin,
+          isOwner: false,
+          permissions: [],
+          permissionsKnown: true,
+        };
       });
       await expect(
         service.refresh({
@@ -2563,7 +2566,13 @@ describe('PublisherBindingRefreshService', () => {
         Object.assign(new Error('member lookup unavailable'), { response: { status: statusCode } }),
       );
       f.maxClient.getChatAdminAccesses.mockResolvedValue([
-        { userId: 'admin-1', isBot: false, isAdmin: true, isOwner: false },
+        {
+          explicitPrivilegeEvidence: true,
+          userId: 'admin-1',
+          isBot: false,
+          isAdmin: true,
+          isOwner: false,
+        },
       ]);
       await f.service.refresh({ ...job, reason: 'stale_user_access', candidateUserId: 'admin-1' });
       expect(f.tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
@@ -2819,25 +2828,15 @@ describe('PublisherBindingRefreshService', () => {
       permissionsKnown: true,
     });
 
-    await service.refresh({
-      ...job,
-      reason: 'historical_actor_recovery',
-      candidateUserId: 'untyped-admin',
-      candidateVersion,
-    });
-
-    expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          state: 'USER_DENIED',
-          deniedReason: 'publisher_actor_type_unverified',
-        }),
-        update: expect.objectContaining({
-          state: 'USER_DENIED',
-          deniedReason: 'publisher_actor_type_unverified',
-        }),
+    await expect(
+      service.refresh({
+        ...job,
+        reason: 'historical_actor_recovery',
+        candidateUserId: 'untyped-admin',
+        candidateVersion,
       }),
-    );
+    ).rejects.toThrow('MAX actor type is unknown');
+    expect(tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
   });
 
   it('does not grant a Publisher access edge when the Publisher bot is not an admin', async () => {
@@ -2984,602 +2983,36 @@ describe('PublisherBindingRefreshService', () => {
     }
   });
 
-  it('refreshes only existing evidenced bindings at startup', async () => {
+  it('never scans a fleet at startup or on timers, even with dispatch enabled', async () => {
+    jest.useFakeTimers();
     const prisma = {
+      publisherEntityBinding: { findMany: jest.fn() },
+      managedEntityAccessEdge: { findMany: jest.fn() },
       $queryRaw: jest.fn(),
-      managedBotChatCatalog: {
-        findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-discovery' }]),
-      },
-      publisherEntityBinding: {
-        findMany: jest
-          .fn()
-          .mockResolvedValueOnce([{ chatId: 'chat-ready' }])
-          .mockResolvedValueOnce([{ chatId: 'chat-discovery' }]),
-      },
-      managedEntityAccessEdge: {
-        findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-user', userId: 'admin-1' }]),
-      },
     };
-    const compactScheduledBacklog = jest.fn().mockResolvedValue({
-      scannedCount: 0,
-      scheduledCount: 0,
-      duplicateCount: 0,
-      removedCount: 0,
-      racedCount: 0,
-      truncated: false,
-    });
-    const refreshQueue = {
-      enqueue: jest.fn().mockResolvedValue(undefined),
-      compactScheduledBacklog,
-    };
-    const dispatchHealth = { isGloballyPaused: jest.fn().mockResolvedValue(false) };
-    const identityAttestation = { assertAttested: jest.fn().mockResolvedValue(undefined) };
+    const queue = { enqueue: jest.fn() };
+    const identity = { assertAttested: jest.fn() };
     const scheduler = new PublisherBindingRefreshSchedulerService(
       prisma as never,
-      refreshQueue as never,
-      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
-      dispatchHealth as never,
-      identityAttestation as never,
-      { dispatchEnabled: true } as never,
-      createBackgroundWork() as never,
-      createHistoricalRecovery() as never,
-    );
-
-    const scan = jest.spyOn(scheduler, 'scan');
-    await scheduler.onModuleInit();
-
-    expect(compactScheduledBacklog).toHaveBeenCalledTimes(1);
-    expect(scan).toHaveBeenCalledWith('startup');
-    expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
-    expect(prisma.$queryRaw).not.toHaveBeenCalled();
-    expect(prisma.publisherEntityBinding.findMany).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        take: 200,
-        where: expect.objectContaining({
-          botAccessState: {
-            in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
-          },
-        }),
-      }),
-    );
-    expect(prisma.publisherEntityBinding.findMany).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        take: 25,
-        where: expect.objectContaining({
-          publisherBotId: 'publik_bot',
-          status: ChatBotMembershipStatus.ACTIVE,
-          chatId: { in: ['chat-discovery'] },
-          OR: expect.arrayContaining([
-            {
-              botAccessState: {
-                in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
-              },
-            },
-            { lastWebhookAt: { not: null } },
-          ]),
-        }),
-      }),
-    );
-    expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { botId: 'publik_bot', status: 'ACTIVE' },
-        select: { chatId: true },
-        take: 25,
-      }),
-    );
-    expect(refreshQueue.enqueue).toHaveBeenCalledTimes(3);
-    expect(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId)).toEqual([
-      'chat-ready',
-      'chat-discovery',
-      'chat-user',
-    ]);
-    expect(refreshQueue.enqueue).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        chatId: 'chat-user',
-        candidateUserId: 'admin-1',
-        reason: 'stale_user_access',
-      }),
-    );
-    scheduler.onModuleDestroy();
-  });
-
-  it('never discovers catalog-less UNKNOWN or LOST ghost bindings', async () => {
-    const bindingFindMany = jest.fn().mockResolvedValue([]);
-    const catalogFindMany = jest.fn().mockResolvedValue([]);
-    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
-    const scheduler = new PublisherBindingRefreshSchedulerService(
-      {
-        publisherEntityBinding: { findMany: bindingFindMany },
-        managedBotChatCatalog: { findMany: catalogFindMany },
-        managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
-      } as never,
-      refreshQueue as never,
+      queue as never,
       { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
       { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
-      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      identity as never,
       { dispatchEnabled: true } as never,
       createBackgroundWork() as never,
       createHistoricalRecovery() as never,
     );
-
-    await scheduler.scan('scheduled');
-
-    expect(catalogFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { botId: 'publik_bot', status: 'ACTIVE' } }),
-    );
-    expect(bindingFindMany).toHaveBeenCalledTimes(1);
-    expect(refreshQueue.enqueue).not.toHaveBeenCalled();
-  });
-
-  it('discovers confirmed and authenticated-webhook bindings only through exact active catalog rows', async () => {
-    const catalogRows = [{ chatId: 'confirmed-chat' }, { chatId: 'webhook-chat' }];
-    const bindingFindMany = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce(catalogRows);
-    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
-    const scheduler = new PublisherBindingRefreshSchedulerService(
-      {
-        managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue(catalogRows) },
-        publisherEntityBinding: { findMany: bindingFindMany },
-        managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
-      } as never,
-      refreshQueue as never,
-      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
-      { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
-      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
-      { dispatchEnabled: true } as never,
-      createBackgroundWork() as never,
-      createHistoricalRecovery() as never,
-    );
-
-    await scheduler.scan('scheduled');
-
-    expect(bindingFindMany).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        where: expect.objectContaining({
-          chatId: { in: ['confirmed-chat', 'webhook-chat'] },
-          OR: [
-            {
-              botAccessState: {
-                in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
-              },
-            },
-            { lastWebhookAt: { not: null } },
-          ],
-        }),
-      }),
-    );
-    expect(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId)).toEqual([
-      'confirmed-chat',
-      'webhook-chat',
-    ]);
-  });
-
-  it('scans only the exact Publisher catalog and never creates candidate bindings', async () => {
-    const userEdgeFindMany = jest.fn().mockResolvedValue([]);
-    const catalogFindMany = jest.fn().mockResolvedValue([]);
-    const prisma = {
-      $queryRaw: jest.fn(),
-      managedBotChatCatalog: { findMany: catalogFindMany },
-      publisherEntityBinding: { findMany: jest.fn().mockResolvedValue([]) },
-      managedEntityAccessEdge: { findMany: userEdgeFindMany },
-    };
-    const scheduler = new PublisherBindingRefreshSchedulerService(
-      prisma as never,
-      { enqueue: jest.fn() } as never,
-      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
-      { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
-      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
-      { dispatchEnabled: true } as never,
-      createBackgroundWork() as never,
-      createHistoricalRecovery() as never,
-    );
-
-    await scheduler.scan('scheduled');
-
-    expect(prisma.$queryRaw).not.toHaveBeenCalled();
-    expect(catalogFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { botId: 'publik_bot', status: 'ACTIVE' },
-        select: { chatId: true },
-      }),
-    );
-    expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(1);
-    expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(1);
-    expect(userEdgeFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          botId: 'publik_bot',
-          OR: expect.arrayContaining([
-            expect.objectContaining({ state: ManagedEntityAccessState.GRANTED }),
-            expect.objectContaining({
-              state: {
-                in: [ManagedEntityAccessState.USER_DENIED, ManagedEntityAccessState.BOT_DENIED],
-              },
-              OR: expect.arrayContaining([
-                expect.objectContaining({
-                  deniedReason: 'publisher_actor_verification_pending',
-                  checkedAt: { lte: expect.any(Date) },
-                  expiresAt: { gt: expect.any(Date) },
-                }),
-                expect.objectContaining({
-                  createdAt: { gt: expect.any(Date) },
-                  checkedAt: { lte: expect.any(Date) },
-                  OR: [{ expiresAt: null }, { expiresAt: { lte: expect.any(Date) } }],
-                }),
-              ]),
-            }),
-          ]),
-          AND: expect.arrayContaining([
-            expect.objectContaining({
-              OR: expect.arrayContaining([
-                expect.objectContaining({
-                  chat: expect.objectContaining({
-                    publisherBinding: {
-                      is: expect.objectContaining({ publisherBotId: 'publik_bot' }),
-                    },
-                  }),
-                }),
-                expect.objectContaining({
-                  source: 'publisher_actor_candidate_forwarded',
-                  sourceVersion: { startsWith: 'forwarded:' },
-                }),
-              ]),
-            }),
-          ]),
-        }),
-        select: {
-          chatId: true,
-          userId: true,
-          sourceVersion: true,
-          chat: {
-            select: {
-              publisherBinding: {
-                select: {
-                  chatId: true,
-                  status: true,
-                  botAccessState: true,
-                  botAccessSource: true,
-                  permissionsSnapshot: true,
-                },
-              },
-            },
-          },
-        },
-        take: 25,
-      }),
-    );
-  });
-
-  it('starts refresh early and bounds denied recovery by immutable actor evidence', async () => {
-    jest.useFakeTimers();
-    jest.setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
     try {
-      const bindingFindMany = jest.fn().mockResolvedValue([]);
-      const userEdgeFindMany = jest.fn().mockResolvedValue([]);
-      const scheduler = new PublisherBindingRefreshSchedulerService(
-        {
-          managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue([]) },
-          publisherEntityBinding: { findMany: bindingFindMany },
-          managedEntityAccessEdge: { findMany: userEdgeFindMany },
-        } as never,
-        { enqueue: jest.fn() } as never,
-        { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
-        { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
-        { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
-        { dispatchEnabled: true } as never,
-        createBackgroundWork() as never,
-        createHistoricalRecovery() as never,
-      );
-
-      await scheduler.scan('scheduled');
-
-      const readyQuery = bindingFindMany.mock.calls[0]?.[0];
-      expect(readyQuery.where.OR).toContainEqual({
-        botAccessExpiresAt: { lte: new Date('2026-08-26T12:05:00.000Z') },
-      });
-      const edgeQuery = userEdgeFindMany.mock.calls[0]?.[0];
-      const grantedBranch = edgeQuery.where.OR.find(
-        (branch: { state?: ManagedEntityAccessState }) =>
-          branch.state === ManagedEntityAccessState.GRANTED,
-      );
-      expect(grantedBranch.OR).toContainEqual({
-        expiresAt: { lte: new Date('2026-08-27T00:00:00.000Z') },
-      });
-      const deniedBranch = edgeQuery.where.OR.find(
-        (branch: { state?: { in?: ManagedEntityAccessState[] } }) =>
-          branch.state?.in?.includes(ManagedEntityAccessState.USER_DENIED),
-      );
-      expect(deniedBranch.OR).toContainEqual(
-        expect.objectContaining({
-          createdAt: { gt: new Date('2026-07-27T12:00:00.000Z') },
-          checkedAt: { lte: new Date('2026-08-26T06:00:00.000Z') },
-        }),
-      );
-      expect(deniedBranch.OR).not.toContainEqual(
-        expect.objectContaining({
-          checkedAt: expect.objectContaining({ gt: expect.any(Date) }),
-        }),
-      );
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it('advances ready-binding and actor cursors across full pages under backlog', async () => {
-    const readyPages = [
-      Array.from({ length: 200 }, (_, index) => ({
-        chatId: `ready-${String(index).padStart(3, '0')}`,
-      })),
-      Array.from({ length: 200 }, (_, index) => ({
-        chatId: `ready-${String(index + 200).padStart(3, '0')}`,
-      })),
-      Array.from({ length: 5 }, (_, index) => ({
-        chatId: `ready-${String(index + 400).padStart(3, '0')}`,
-      })),
-    ];
-    const actorPages = [
-      Array.from({ length: 25 }, (_, index) => ({
-        chatId: `actor-${String(index).padStart(3, '0')}`,
-        userId: 'admin-1',
-        sourceVersion: 'edge-v1',
-      })),
-      Array.from({ length: 25 }, (_, index) => ({
-        chatId: `actor-${String(index + 25).padStart(3, '0')}`,
-        userId: 'admin-1',
-        sourceVersion: 'edge-v1',
-      })),
-      Array.from({ length: 5 }, (_, index) => ({
-        chatId: `actor-${String(index + 50).padStart(3, '0')}`,
-        userId: 'admin-1',
-        sourceVersion: 'edge-v1',
-      })),
-    ];
-    const bindingFindMany = jest
-      .fn()
-      .mockResolvedValueOnce(readyPages[0])
-      .mockResolvedValueOnce(readyPages[1])
-      .mockResolvedValueOnce(readyPages[2]);
-    const userEdgeFindMany = jest
-      .fn()
-      .mockResolvedValueOnce(actorPages[0])
-      .mockResolvedValueOnce(actorPages[1])
-      .mockResolvedValueOnce(actorPages[2]);
-    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
-    const scheduler = new PublisherBindingRefreshSchedulerService(
-      {
-        managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue([]) },
-        publisherEntityBinding: { findMany: bindingFindMany },
-        managedEntityAccessEdge: { findMany: userEdgeFindMany },
-      } as never,
-      refreshQueue as never,
-      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
-      { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
-      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
-      { dispatchEnabled: true } as never,
-      createBackgroundWork() as never,
-      createHistoricalRecovery() as never,
-    );
-
-    await scheduler.scan('scheduled');
-    await scheduler.scan('scheduled');
-    await scheduler.scan('scheduled');
-
-    expect(bindingFindMany.mock.calls.map(([query]) => query.where.chatId ?? null)).toEqual([
-      null,
-      { gt: 'ready-199' },
-      { gt: 'ready-399' },
-    ]);
-    const actorCursorGroups = userEdgeFindMany.mock.calls.map(([query]) => query.where.AND[1]);
-    expect(actorCursorGroups).toEqual([
-      undefined,
-      {
-        OR: [{ chatId: { gt: 'actor-024' } }, { chatId: 'actor-024', userId: { gt: 'admin-1' } }],
-      },
-      {
-        OR: [{ chatId: { gt: 'actor-049' } }, { chatId: 'actor-049', userId: { gt: 'admin-1' } }],
-      },
-    ]);
-    expect(new Set(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId))).toEqual(
-      new Set([
-        ...readyPages.flat().map((row) => row.chatId),
-        ...actorPages.flat().map((row) => row.chatId),
-      ]),
-    );
-  });
-
-  it('prioritizes an expiring ready binding and excludes 2500 LOST rows regardless of age', async () => {
-    jest.useFakeTimers();
-    jest.setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
-    try {
-      const freshLost = Array.from({ length: 2_500 }, (_, index) => ({
-        chatId: `lost-${String(index).padStart(4, '0')}`,
-      }));
-      const ready = {
-        chatId: 'ready-expiring',
-        botAccessExpiresAt: new Date('2026-08-26T12:01:00.000Z'),
-      };
-      const findMany = jest.fn(
-        async (query: {
-          where: {
-            chatId?: { in?: string[] };
-            botAccessState?: { in?: ChatBotAccessState[]; notIn?: ChatBotAccessState[] };
-            OR?: Array<{
-              botAccessExpiresAt?: { lte?: Date } | null;
-              botAccessState?: { in?: ChatBotAccessState[]; notIn?: ChatBotAccessState[] };
-              OR?: Array<{ botAccessCheckedAt?: { lte?: Date } | null }>;
-            }>;
-            AND?: Array<{
-              OR?: Array<{
-                botAccessState?: { in?: ChatBotAccessState[]; notIn?: ChatBotAccessState[] };
-                OR?: Array<{ botAccessCheckedAt?: { lte?: Date } | null }>;
-              }>;
-            }>;
-          };
-          take: number;
-        }) => {
-          if (query.where.botAccessState?.in?.includes(ChatBotAccessState.CONFIRMED_ADMIN)) {
-            const refreshBefore = query.where.OR?.find(
-              (branch) => branch.botAccessExpiresAt && 'lte' in branch.botAccessExpiresAt,
-            )?.botAccessExpiresAt?.lte;
-            return refreshBefore && ready.botAccessExpiresAt <= refreshBefore
-              ? [{ chatId: ready.chatId }]
-              : [];
-          }
-
-          expect(query.where.botAccessState?.notIn).toEqual([
-            ChatBotAccessState.DENIED,
-            ChatBotAccessState.LOST,
-            ChatBotAccessState.CONFIRMED_MEMBER,
-          ]);
-          return [];
-        },
-      );
-      const catalogFindMany = jest
-        .fn()
-        .mockResolvedValue(freshLost.slice(0, 25).map(({ chatId }) => ({ chatId })));
-      const prisma = {
-        managedBotChatCatalog: { findMany: catalogFindMany },
-        publisherEntityBinding: { findMany },
-        managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
-      };
-      const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
-      const scheduler = new PublisherBindingRefreshSchedulerService(
-        prisma as never,
-        refreshQueue as never,
-        { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
-        { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
-        { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
-        { dispatchEnabled: true } as never,
-        createBackgroundWork() as never,
-        createHistoricalRecovery() as never,
-      );
-
-      await scheduler.scan('scheduled');
-      jest.advanceTimersByTime(60_000);
-      await scheduler.scan('scheduled');
-
-      expect(refreshQueue.enqueue).toHaveBeenCalledTimes(2);
-      expect(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId)).toEqual([
-        'ready-expiring',
-        'ready-expiring',
-      ]);
-      const discoveryQueries = findMany.mock.calls
-        .map(([query]) => query)
-        .filter((query) => query.where.botAccessState?.notIn !== undefined);
-      expect(discoveryQueries).toHaveLength(2);
-      for (const query of discoveryQueries) {
-        expect(query.where.botAccessState?.notIn).toContain(ChatBotAccessState.LOST);
-        expect(query.where.chatId?.in).toEqual(freshLost.slice(0, 25).map((row) => row.chatId));
-      }
-      expect(catalogFindMany).toHaveBeenCalledTimes(2);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it('advances the disconnected discovery cursor across repeated scans', async () => {
-    const eligible = Array.from({ length: 60 }, (_, index) => ({
-      chatId: `lost-${String(index).padStart(3, '0')}`,
-    }));
-    const discoveryCursors: Array<string | null> = [];
-    const catalogFindMany = jest.fn(
-      async (query: {
-        where: {
-          chatId?: { gt?: string };
-        };
-        take: number;
-      }) => {
-        const cursor = query.where.chatId?.gt ?? null;
-        discoveryCursors.push(cursor);
-        return eligible.filter((row) => !cursor || row.chatId > cursor).slice(0, query.take);
-      },
-    );
-    const bindingFindMany = jest.fn(
-      async (query: { where: { chatId?: { in?: string[] } } }) =>
-        query.where.chatId?.in?.map((chatId) => ({ chatId })) ?? [],
-    );
-    const prisma = {
-      managedBotChatCatalog: { findMany: catalogFindMany },
-      publisherEntityBinding: { findMany: bindingFindMany },
-      managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
-    };
-    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
-    const scheduler = new PublisherBindingRefreshSchedulerService(
-      prisma as never,
-      refreshQueue as never,
-      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
-      { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
-      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
-      { dispatchEnabled: true } as never,
-      createBackgroundWork() as never,
-      createHistoricalRecovery() as never,
-    );
-
-    await scheduler.scan('scheduled');
-    await scheduler.scan('scheduled');
-    await scheduler.scan('scheduled');
-
-    expect(discoveryCursors).toEqual([null, 'lost-024', 'lost-049']);
-    expect(new Set(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId))).toEqual(
-      new Set(eligible.map((row) => row.chatId)),
-    );
-    expect(bindingFindMany).toHaveBeenCalledTimes(6);
-  });
-
-  it('keeps enabled refresh timers idle before identity, DB, or queue work while paused', async () => {
-    jest.useFakeTimers();
-    try {
-      const prisma = {
-        managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue([]) },
-        publisherEntityBinding: { findMany: jest.fn().mockResolvedValue([]) },
-        managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
-      };
-      const refreshQueue = {
-        enqueue: jest.fn(),
-        compactScheduledBacklog: jest.fn().mockResolvedValue({
-          scannedCount: 0,
-          scheduledCount: 0,
-          duplicateCount: 0,
-          removedCount: 0,
-          racedCount: 0,
-          truncated: false,
-        }),
-      };
-      let globallyPaused = true;
-      const dispatchHealth = {
-        isGloballyPaused: jest.fn(async () => globallyPaused),
-      };
-      const identityAttestation = { assertAttested: jest.fn() };
-      const scheduler = new PublisherBindingRefreshSchedulerService(
-        prisma as never,
-        refreshQueue as never,
-        { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
-        dispatchHealth as never,
-        identityAttestation as never,
-        { dispatchEnabled: true } as never,
-        createBackgroundWork() as never,
-        createHistoricalRecovery() as never,
-      );
-
       await scheduler.onModuleInit();
-      await jest.advanceTimersByTimeAsync(60_000);
-
-      expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(24 * 60 * 60_000);
+      await scheduler.scan('scheduled');
       expect(prisma.publisherEntityBinding.findMany).not.toHaveBeenCalled();
-      expect(refreshQueue.enqueue).not.toHaveBeenCalled();
-
-      globallyPaused = false;
-      await jest.advanceTimersByTimeAsync(60_000);
-
-      expect(dispatchHealth.isGloballyPaused).toHaveBeenCalledTimes(3);
-      expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
-      expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(1);
-      expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledTimes(1);
-      expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(1);
-      scheduler.onModuleDestroy();
+      expect(prisma.managedEntityAccessEdge.findMany).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(identity.assertAttested).not.toHaveBeenCalled();
+      expect(queue.enqueue).not.toHaveBeenCalled();
     } finally {
+      scheduler.onModuleDestroy();
       jest.useRealTimers();
     }
   });

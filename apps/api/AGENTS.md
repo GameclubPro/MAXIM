@@ -83,7 +83,7 @@
 ## Webhooks And Deletion Safety
 
 - `POST /subscriptions` is transport source of truth: public HTTPS on port 443, trusted full-chain TLS, HTTP 200 within 30 seconds, and `X-Max-Bot-Api-Secret` validation when configured.
-- Keep required subscriptions aligned with `src/max/max-webhook-subscription.constants.ts`: the base set is `message_created`, `message_edited`, `message_callback`, `user_added`, `user_removed`, `bot_added`, `bot_removed`, `bot_started`, and `chat_title_changed`. Shadow/canary/on also subscribe to `message_removed`, `bot_stopped`, and `dialog_removed`; shadow records those events without applying terminal lifecycle transitions, while off omits them.
+- Keep required subscriptions aligned with `src/max/max-webhook-subscription.constants.ts`: the base set is `message_created`, `message_edited`, `message_callback`, `user_added`, `user_removed`, `bot_added`, `bot_removed`, `bot_started`, `chat_title_changed`, and `bot_admin_permissions_changed`. Shadow/canary/on also subscribe to `message_removed`, `bot_stopped`, and `dialog_removed`; shadow records those events without applying terminal lifecycle transitions, while off omits them.
 - `MAX_REQUIRED_WEBHOOK_UPDATE_TYPES` is the product subset of official updates. Add parser, queue, and product handling before subscribing to additional lifecycle events.
 - After changing a webhook host/domain, read `GET /subscriptions` and recreate the target; do not assume its secret binding changed automatically.
 - Keep `APP_BASE_URL` and `MAX_WEBHOOK_BASE_URL` aligned with the canonical host, currently `https://major-maksimov.ru`.
@@ -131,11 +131,9 @@
 - Managed broadcast/autopost MAX calls use `MAX_API_SOURCE_TAGS.MANAGED_BROADCAST`. User sends/tests are `interactive`; scheduled/startup delivery is `background` and honors governor pause/slow decisions. Uploads stay on the send lane.
 - Publication `NOW` is user-triggered even when recovered by the action poller: materialize it ahead of background work and dispatch through the immediate lane.
 - Keep DB-only publication rollups outside governor pauses; ambiguous sends require manual review.
-- Publisher bot snapshots remain valid for 15 minutes. Scheduled and urgent bot probes use the
-  lightweight refresh path; separately queued roster/catalog maintenance reuses the fresh exact-bot
-  SQL proof and retries proof supersession. Do not acknowledge superseded maintenance as a completed
-  candidate check. Periodic compaction promotes aged non-active scheduled work without activating
-  delayed jobs.
+- Publisher bot snapshots remain valid until explicit loss of access. Connection roster work reuses
+  the confirmed exact-bot SQL proof and retries proof supersession. Retired scheduled bot/maintenance
+  jobs drain without MAX calls; publication-demand work retains its guarded coordinator lanes.
 - New publication sends and pins require author authority checked within 15 minutes, independently
   of the three-day discovery grant. Imminent-publication preflight owns its distinct
   `publication_access_preflight` coordinator lane; different operations must never share a coalescing lane.
@@ -162,7 +160,7 @@
 ## Managed Entities And Multi-Bot
 
 - The fleet has six moderation bots (two Major, two Majorsha and two Rex) plus a separate Publisher that works alongside them. Publisher never replaces a moderator: keep its configured identity outside the non-Publisher runtime route registry and moderation candidate pool, and keep its lifecycle in `PublisherEntityBinding` without assigning `Chat.botId`, `primaryBotId` or `ChatBotMembership`.
-- Publisher access refresh uses `MAX_PUBLISHER_ACCESS_REFRESH_MODE=off|canary|on`: priorities apply queue-wide while the 30-minute roster cadence is cohort-scoped. Roster schedule/edge writes share the exact-proof SQL transaction; publication promotion preserves job identity and delayed retries. See `docs/operations/runbooks/publisher-access-refresh-rollout.md`.
+- Confirmed bot access has no time expiry. `botAccessExpiresAt` is legacy/negative diagnostic data, never positive execution authority. Keep explicit activation, exact-bot denial/removal, capability ceilings and SQL proof fences. Fleet permission timers are retired; retained scheduled bot/maintenance jobs drain without MAX calls. Connection rosters and exact-user mini app demand use the existing bounded queues; publication-author preflight retains its separate 15-minute human proof. See `docs/operations/plans/2026-10-12-managed-access-demand-plan.md`.
 
 - Ownership is `Chat.primaryBotId` plus `ChatBotMembership`; `Chat.botId` is transitional compatibility.
 - Centralize primary-bot scoring in `src/max/max-bot-access-policy.util.ts`; routing and ownership repair share this policy.
@@ -174,8 +172,8 @@
 - Aggregate managed entities per unique chat/channel; never duplicate cards per bot.
 - Roster/admin sync skips positive-ID private dialogs unless explicitly channel-typed.
 - Terminal access loss routes through `ManagedEntityAccessLossService`. Treat `chat.denied`, `chat.not.found`, and bare send/read/lookup 403/404 as loss, but old-message `message.not.found` delete remains harmless.
-- Keep `BOT_DENIED` bot-scoped. Do not block an entity or mass-mark edges when another runtime bot has fresh confirmed owner/admin access.
-- Home access is based on fresh `GRANTED` `managed_entity_access_edges` plus active bot membership. Transient/bot-scoped 403 must not prune access before checking that edge.
+- Keep `BOT_DENIED` bot-scoped. Do not block an entity or mass-mark edges when another runtime bot has confirmed owner/admin access.
+- Mini app home verifies only the entering human on their previously confirmed edges. `lastAdminConfirmedAt` preserves discovery history through revocation via a SQL trigger; it never authorizes a card or action. Cards require a human check started at/after the authenticated entry boundary and an eligible exact-bot membership. Network/429/5xx failures preserve earlier evidence.
 - Missing-edge repair is allowlist-backed, preserves fresh denied state, and queues roster validation. Legacy allowlist rows missing bot ownership fields remain repair candidates.
 - Fresh `bot_added` observations create only pending connection evidence. They cannot initiate a rights probe or activate service; an explicit administrator `Старт` or private forward to that exact bot must prove both human and bot privileges first. Settings links come after a successful handshake.
 - A successful handshake keeps the access edge, `ChatBotMembership`, `chat:admin-access` cache, and user snapshot aligned.

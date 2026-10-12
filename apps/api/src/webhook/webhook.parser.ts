@@ -129,6 +129,7 @@ export class WebhookParser {
       normalized === 'bot_added' ||
       normalized === 'user_removed' ||
       normalized === 'bot_removed' ||
+      normalized === 'bot_admin_permissions_changed' ||
       normalized === 'bot_started' ||
       normalized === 'bot_stopped' ||
       normalized === 'dialog_removed' ||

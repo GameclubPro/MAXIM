@@ -121,11 +121,11 @@ describeStores('native multibot absent rights webhook and independently stale ro
       where: { chatId_messageId: { chatId: chatId!, messageId } },
     });
     s.setOwnMemberProbe(originalBot, null);
-    // FLAG: Simulate the elapsed proof lifetime in SQL without changing Redis,
-    // BullMQ or database clocks. Recovery must now probe the whole reserve fairly.
+    // FLAG: Simulate missing authority, without changing Redis/BullMQ clocks.
+    // Expiry alone no longer revokes proof; genuinely unknown reserves still need bounded probes.
     await s.prisma.chatBotMembership.updateMany({
       where: { chatId },
-      data: { botAccessExpiresAt: new Date(Date.now() - 1) },
+      data: { botAccessState: 'UNKNOWN' },
     });
     let completed = false;
     for (let pass = 0; pass < 3; pass += 1) {
@@ -193,8 +193,8 @@ describeStores('native multibot absent rights webhook and independently stale ro
       // FLAG: Only the simulated remote changes rights. No membership webhook,
       // denial receipt, cache invalidation or epoch publication informs either role.
       for (const bot of s.bots.filter((bot) => bot.id !== replacement)) s.denyBot(bot.id);
-      // Move the saved proof past its expiry instead of changing the process clock
-      // driving real Redis leases and BullMQ workers. Its original epoch stays intact.
+      // Move only the legacy expiry. It must not revoke authority; the explicit
+      // MAX refusal at dispatch triggers the same guarded continuation in both cases.
       if (access === 'expired')
         await s.prisma.chatBotMembership.updateMany({
           where: { chatId },
@@ -213,7 +213,7 @@ describeStores('native multibot absent rights webhook and independently stale ro
         status: 'COMPLETED',
         // Before preparation the owner may transfer. Once its engine started,
         // keep that history and transfer only the guarded DELETE action.
-        executionBotId: access === 'expired' ? replacement : oldBot,
+        executionBotId: oldBot,
         webhookEventId: receipt,
       });
       expect(after.webhookEvent?.executionDeadlineAt).toEqual(
@@ -222,15 +222,12 @@ describeStores('native multibot absent rights webhook and independently stale ro
       const probes = s.requests
         .slice(requestsBefore)
         .filter((request) => request.method === 'get' && request.path.endsWith('/members/me'));
-      expect(probes.map((request) => request.botId)).toEqual(
-        expect.arrayContaining(access === 'expired' ? s.bots.map((b) => b.id) : [oldBot]),
-      );
+      expect(probes.map((request) => request.botId)).toEqual(expect.arrayContaining([oldBot]));
       expect(s.effects.filter((effect) => effect.messageId === messageId)).toMatchObject([
         { method: 'delete', botId: replacement },
       ]);
       const promoted = await s.prisma.chat.findUniqueOrThrow({ where: { id: chatId } });
-      if (access === 'expired') expect(promoted.primaryBotId).toBe(replacement);
-      else expect(promoted.primaryBotId).not.toBe(oldBot);
+      expect(promoted.primaryBotId).not.toBe(oldBot);
       expect(promoted.routingVersion).toBeGreaterThan(initialProof!.routingVersion);
       for (const role of staleRoles) {
         // Each independent process-local hint is still stale. SQL proofs must

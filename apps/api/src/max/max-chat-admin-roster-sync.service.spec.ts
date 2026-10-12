@@ -98,6 +98,18 @@ describe('MaxChatAdminRosterSyncService', () => {
       getChatAdminIds: jest.fn(),
       listBotChats: jest.fn(),
     };
+    const getChatAdminAccesses = jest.fn(async (...args: unknown[]) =>
+      ((await maxClient.getChatAdminIds(...args)) ?? []).map((userId: string) => ({
+        userId,
+        isBot: false,
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+        permissionsKnown: true,
+        explicitPrivilegeEvidence: true,
+      })),
+    );
+    Object.assign(maxClient, { getChatAdminAccesses });
     const maxBotLinkService = {
       bindDiscoveredChatBots: jest.fn().mockResolvedValue('bot-1'),
       recordBotAccessProbe: jest.fn(
@@ -195,7 +207,11 @@ describe('MaxChatAdminRosterSyncService', () => {
     h.maxClient.getCurrentChatMemberAccess.mockRejectedValue(
       new ManagedEntityActivationRequiredError(),
     );
-    const job = { chatId: '-100131', botIds: ['bot-1'], source: 'discovery_snapshot' as const };
+    const job = {
+      chatId: '-100131',
+      botIds: ['bot-1'],
+      source: 'admin_access_validation' as const,
+    };
     await expect(h.service.processJob(job)).resolves.toBe(false);
     await expect(h.service.processJob(job)).resolves.toBe(false);
     expect(h.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
@@ -347,38 +363,22 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(queue.add).not.toHaveBeenCalled();
   });
 
-  it('keeps webhook membership churn roster prewarms behind access-critical work', async () => {
-    const { service, queue } = createService();
-
-    await expect(
-      service.scheduleChatAdminRosterSync({
-        chatId: '-100122',
-        botIds: ['bot-1'],
-        title: 'Membership churn chat',
-        entityType: 'chat',
-        source: 'webhook_membership_churn',
-      }),
-    ).resolves.toBe(true);
-
-    expect(queue.add).toHaveBeenCalledWith(
-      'sync-chat-admin-roster',
-      expect.objectContaining({
-        chatId: '-100122',
-        source: 'webhook_membership_churn',
-      }),
-      expect.objectContaining({
-        attempts: 6,
-        priority: 10,
-        backoff: {
-          type: 'fixed',
-          delay: 3_000,
-        },
-      }),
-    );
-  });
+  it.each(['webhook_membership_churn', 'discovery_snapshot'] as const)(
+    'drops passive %s admission and retained jobs without MAX or database work',
+    async (source) => {
+      const f = createService();
+      const job = { chatId: '-100', botIds: ['bot-1'], source };
+      await expect(f.service.scheduleChatAdminRosterSync(job)).resolves.toBe(false);
+      await expect(f.service.processJob(job)).resolves.toBe(false);
+      expect(f.queue.add).not.toHaveBeenCalled();
+      expect(f.prisma.chat.findUnique).not.toHaveBeenCalled();
+      expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+      expect(f.maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['waiting', 'delayed', 'prioritized'])(
-    'preserves bot-added propagation retries when %s discovery work overlaps',
+    'preserves bot-added propagation retries when %s administrator demand overlaps',
     async (state) => {
       const { service, queue } = createService();
       const retryUntilMs = Date.now() + 45_000;
@@ -390,7 +390,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       await service.scheduleChatAdminRosterSync({
         chatId: '-100122',
         botIds: ['bot-2'],
-        source: 'discovery_snapshot',
+        source: 'admin_access_validation',
       });
       expect(queue.add).toHaveBeenCalledWith(
         'sync-chat-admin-roster',
@@ -408,7 +408,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     const { service, queue } = createService();
     const remove = jest.fn();
     queue.getJob.mockResolvedValue({
-      data: { chatId: '-100122', botIds: ['bot-1'], source: 'discovery_snapshot' },
+      data: { chatId: '-100122', botIds: ['bot-1'], source: 'admin_access_validation' },
       getState: jest.fn().mockResolvedValue('active'),
       remove,
     });
@@ -474,7 +474,7 @@ describe('MaxChatAdminRosterSyncService', () => {
         entityType: 'chat',
         source: 'webhook_membership_churn',
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
 
     expect(existing.remove).not.toHaveBeenCalled();
     expect(queue.getJobCounts).not.toHaveBeenCalled();
@@ -1180,7 +1180,7 @@ describe('MaxChatAdminRosterSyncService', () => {
         botIds: ['bot-1'],
         title: 'Partial chat',
         entityType: 'channel',
-        source: 'webhook_membership_churn',
+        source: 'moderation_destructive_path',
       }),
     ).resolves.toBe(false);
 
@@ -1536,7 +1536,6 @@ describe('MaxChatAdminRosterSyncService', () => {
         botIds: ['bot-1'],
         title: 'Discovery chat',
         entityType: 'chat',
-        source: 'discovery_snapshot',
       }),
     ).resolves.toBe(true);
 
@@ -1560,44 +1559,17 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
   });
 
-  it('uses the background lane with a fast timeout to prewarm membership churn snapshots', async () => {
-    const { service, maxClient } = createService();
-    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
-      userId: 'bot-user-1',
-      isAdmin: true,
-      isOwner: false,
-      permissions: ['delete_messages'],
-    });
-    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
-
+  it('does not read a roster on ordinary membership churn', async () => {
+    const f = createService();
     await expect(
-      service.processJob({
+      f.service.processJob({
         chatId: '-100128',
         botIds: ['bot-1'],
-        title: 'Joined chat',
-        entityType: 'chat',
         source: 'webhook_membership_churn',
       }),
-    ).resolves.toBe(true);
-
-    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
-      '-100128',
-      expect.objectContaining({
-        botId: 'bot-1',
-        trafficClass: 'background',
-        actionHealthLane: 'background',
-        timeoutMs: 1_500,
-      }),
-    );
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
-      '-100128',
-      expect.objectContaining({
-        botId: 'bot-1',
-        trafficClass: 'background',
-        actionHealthLane: 'background',
-        timeoutMs: 1_500,
-      }),
-    );
+    ).resolves.toBe(false);
+    expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(f.maxClient.getChatAdminIds).not.toHaveBeenCalled();
   });
 
   it('uses the background lane with a fast timeout for destructive moderation roster refreshes', async () => {
@@ -1927,7 +1899,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       botIds: ['bot-1'],
       title: 'Removed roster chat',
       entityType: 'chat',
-      source: 'webhook_membership_churn',
+      source: 'moderation_destructive_path',
     });
     await rosterRequested;
     const membershipKey = '-100-roster-removed-before-persist:bot-1';
@@ -2004,7 +1976,7 @@ describe('MaxChatAdminRosterSyncService', () => {
         botIds: ['bot-1'],
         title: 'Removed cache chat',
         entityType: 'chat',
-        source: 'webhook_membership_churn',
+        source: 'moderation_destructive_path',
       }),
     ).rejects.toThrow('Admin roster access epoch was superseded before sync completion (bot-1)');
 

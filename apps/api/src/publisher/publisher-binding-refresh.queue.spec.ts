@@ -2,7 +2,10 @@ import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh
 
 describe('PublisherBindingRefreshQueueService', () => {
   it('carries an explicit Start reply request with the exact actor and command version', async () => {
-    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new PublisherBindingRefreshQueueService(queue as never);
     await service.enqueue({
       chatId: '-100',
@@ -34,7 +37,10 @@ describe('PublisherBindingRefreshQueueService', () => {
   ] as const)(
     'never turns %s into explicit activation from an old actor version',
     async (reason) => {
-      const queue = { add: jest.fn().mockResolvedValue(undefined) };
+      const queue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
       const service = new PublisherBindingRefreshQueueService(queue as never);
       await service.enqueue({
         chatId: '-100',
@@ -49,7 +55,10 @@ describe('PublisherBindingRefreshQueueService', () => {
   );
 
   it('prioritizes manual rechecks and deduplicates until the in-flight job finishes', async () => {
-    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new PublisherBindingRefreshQueueService(queue as never);
 
     await service.enqueue({
@@ -73,7 +82,10 @@ describe('PublisherBindingRefreshQueueService', () => {
   });
 
   it('prioritizes and independently deduplicates disabled-policy enablement rechecks', async () => {
-    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new PublisherBindingRefreshQueueService(queue as never);
 
     await service.enqueue({
@@ -104,7 +116,10 @@ describe('PublisherBindingRefreshQueueService', () => {
   });
 
   it('keeps background scans bucketed and behind lifecycle refresh work', async () => {
-    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new PublisherBindingRefreshQueueService(queue as never);
 
     await service.enqueue({
@@ -123,7 +138,10 @@ describe('PublisherBindingRefreshQueueService', () => {
   });
 
   it('deduplicates scheduled binding and actor refreshes for their full job lifecycle', async () => {
-    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new PublisherBindingRefreshQueueService(queue as never);
 
     for (const [index, requestedAt] of [
@@ -395,7 +413,10 @@ describe('PublisherBindingRefreshQueueService', () => {
   });
 
   it('scopes actor refresh deduplication to the normalized Publisher user', async () => {
-    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new PublisherBindingRefreshQueueService(queue as never);
 
     await service.enqueue({
@@ -420,7 +441,10 @@ describe('PublisherBindingRefreshQueueService', () => {
   });
 
   it('preserves the durable forwarded actor fence and private reply context', async () => {
-    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new PublisherBindingRefreshQueueService(queue as never);
 
     await service.enqueue({
@@ -451,7 +475,10 @@ describe('PublisherBindingRefreshQueueService', () => {
   });
 
   it('uses different job identities for old and new candidate versions at the same event time', async () => {
-    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new PublisherBindingRefreshQueueService(queue as never);
     const eventAt = new Date('2026-08-27T12:00:00.000Z');
 
@@ -476,7 +503,10 @@ describe('PublisherBindingRefreshQueueService', () => {
   });
 
   it('coalesces stale ordinary webhook observations without delaying actor handshakes', async () => {
-    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new PublisherBindingRefreshQueueService(queue as never);
     const requestedAt = new Date('2026-08-27T12:00:30.000Z');
 

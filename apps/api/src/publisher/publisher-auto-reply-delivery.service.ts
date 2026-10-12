@@ -642,8 +642,6 @@ export class PublisherAutoReplyDeliveryService {
             AND binding."bot_access_state"::text = ${binding.botAccessState}
             AND binding."bot_access_checked_at" >= ${binding.botAccessCheckedAt}
             AND binding."bot_access_checked_at" <= clock."now"
-            AND binding."bot_access_expires_at" >= ${binding.botAccessExpiresAt}
-            AND binding."bot_access_expires_at" > clock."now"
             AND (
               binding."permissions_snapshot" IS NOT DISTINCT FROM ${permissionsSnapshot}::jsonb
               OR (

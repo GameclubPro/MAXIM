@@ -506,7 +506,7 @@ maxim_topology_require_bot_publisher_reliability() {
       replies.includes("OR EXISTS (SELECT 1 FROM cooldown)") &&
       replies.includes("\u0022publisher_auto_reply_cooldowns\u0022.\u0022next_allowed_at\u0022 <= (clock_timestamp() AT TIME ZONE") &&
       replies.includes("FOR UPDATE") &&
-      replies.includes("binding.\u0022bot_access_expires_at\u0022 > clock.\u0022now\u0022") &&
+      replies.includes("binding.\u0022bot_access_state\u0022::text = " + String.fromCharCode(36) + "{binding.botAccessState}") &&
       replies.includes("binding.\u0022bot_access_checked_at\u0022 <= clock.\u0022now\u0022") &&
       replies.includes("rule.\u0022version\u0022 = delivery.\u0022matched_rule_version\u0022") &&
       replies.includes("settings.\u0022auto_reply_config_revision\u0022 = delivery.\u0022auto_reply_config_revision\u0022") &&

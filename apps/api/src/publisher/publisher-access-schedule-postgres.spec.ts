@@ -91,10 +91,20 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
     chatId,
     publisherBotId: botId,
     probeStartedAtMs: p.probeStartedAt.getTime(),
-    members: [{ userId: 'admin', isBot: false, isAdmin: true, isOwner: false, permissions: [] }],
+    members: [
+      {
+        explicitPrivilegeEvidence: true,
+        userId: 'admin',
+        isBot: false,
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      },
+    ],
   });
 
   const adminAccess = {
+    explicitPrivilegeEvidence: true,
     isAdmin: true,
     isOwner: false,
     permissions: ['write'],
@@ -160,18 +170,18 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
         chatId,
         entityType: 'CHAT',
         userId: 'actor',
-        candidateVersion: 'v1',
+        candidateVersion: race === 'actor_version' ? 'v1' : null,
         botAccess: { ...adminAccess, userId: null },
         probeStartedAt: new Date(),
         committedBotAccessCheckedAt: binding.botAccessCheckedAt!,
         committedBotAccessState: 'CONFIRMED_ADMIN',
         interactive: false,
       });
-      if (race === 'renewed' || race === 'expired')
+      if (race === 'renewed')
         await expect(running).rejects.toBeInstanceOf(PublisherBotProofSupersededError);
-      else expect((await running).committed).toBe(false);
+      else expect((await running).committed).toBe(race === 'expired');
       expect(await db.managedEntityAccessEdge.count({ where: { chatId, state: 'GRANTED' } })).toBe(
-        0,
+        race === 'expired' ? 1 : 0,
       );
     },
   );
@@ -477,16 +487,9 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
     }
   });
 
-  it('recovers a lost queue nomination after restart and stops scheduling after atomic success', async () => {
+  it('persists an explicit connection roster without periodic nominations', async () => {
     await scheduler().scan('startup');
-    expect(enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ chatId, reason: 'binding_maintenance' }),
-    );
-    enqueue.mockClear();
-    await scheduler().scan('startup');
-    expect(enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ chatId, reason: 'binding_maintenance' }),
-    );
+    expect(enqueue).not.toHaveBeenCalled();
     const p = await proof();
     expect(await syncPublisherAdminRoster(p, roster(p))).toBe(true);
     const saved = (await db.publisherEntityBinding.findUnique({ where: { chatId } }))!;
@@ -587,78 +590,23 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
     ).toBeNull();
   });
 
-  it('orders by expiry and advances past a full page of still-pending bot checks', async () => {
-    const prefix = `deadline-${randomUUID()}`;
-    const due = Array.from({ length: 205 }, (_, index) => ({
-      id: `${prefix}-${String(205 - index).padStart(3, '0')}`,
-      title: 'Deadline fixture',
-    }));
-    await db.chat.createMany({ data: due });
-    await db.publisherEntityBinding.createMany({
-      data: due.map((chat, index) => ({
-        chatId: chat.id,
-        publisherBotId: botId,
-        status: 'ACTIVE',
-        botAccessState: 'CONFIRMED_ADMIN',
-        botAccessCheckedAt: new Date(Date.now() - 1000000),
-        botAccessExpiresAt: new Date(Date.now() - 500000 + index * 100),
-        rosterRefreshAfter: new Date(Date.now() + 1800000),
-      })),
-    });
-    const runner = scheduler();
-    await runner.scan('startup');
-    const first = enqueue.mock.calls
-      .map(([job]) => job)
-      .filter((job) => job.reason === 'scheduled_bot_access');
-    expect(first.map((job) => job.chatId)).toEqual(due.slice(0, 200).map((chat) => chat.id));
-    expect(first.every((job) => job.requiredBefore instanceof Date)).toBe(true);
-    enqueue.mockClear();
-    await runner.scan('scheduled');
-    const next = enqueue.mock.calls
-      .map(([job]) => job)
-      .filter((job) => job.reason === 'scheduled_bot_access');
-    expect(next.map((job) => job.chatId)).toEqual(due.slice(200).map((chat) => chat.id));
-  });
-
   it.each(['off', 'canary', 'on'])(
-    'advances past denied raw pages without hiding obligations or starving healthy work in %s',
+    'does not scan or nominate a fleet of expired bindings in legacy mode %s',
     async (mode) => {
-      const now = new Date();
-      const prefix = `denied-${randomUUID()}`;
       const rows = Array.from({ length: 205 }, (_, index) => ({
-        id: `${prefix}-${String(index).padStart(3, '0')}`,
-        title: 'Passive nomination fixture',
+        id: `retired-${chatId}-${index}`,
+        title: 'Retired timer fixture',
       }));
       await db.chat.createMany({ data: rows });
       await db.publisherEntityBinding.createMany({
-        data: rows.map((chat, index) => ({
+        data: rows.map((chat) => ({
           chatId: chat.id,
           publisherBotId: botId,
           status: 'ACTIVE',
           botAccessState: 'CONFIRMED_ADMIN',
-          botAccessCheckedAt: new Date(now.getTime() - 1_000_000),
-          botAccessExpiresAt: new Date(now.getTime() - 500_000),
-          rosterRefreshAfter: new Date(now.getTime() - 500_000),
-          permissionsSnapshot: {
-            isAdmin: true,
-            isOwner: false,
-            permissionsKnown: true,
-            permissions: index < 200 ? [] : ['write'],
-          },
-        })),
-      });
-      await db.managedEntityAccessEdge.createMany({
-        data: [rows[0]!, rows[204]!].map((row) => ({
-          chatId: row.id,
-          userId: 'actor',
-          botId,
-          entityType: 'CHAT',
-          state: 'GRANTED',
-          userRole: 'ADMIN',
-          botRole: 'ADMIN',
-          checkedAt: now,
-          expiresAt: now,
-          source: 'test',
+          botAccessCheckedAt: new Date(0),
+          botAccessExpiresAt: new Date(1),
+          rosterRefreshAfter: new Date(1),
         })),
       });
       const refreshPolicy = new PublisherAccessRefreshPolicy(
@@ -668,44 +616,17 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
       const observeDue = jest.spyOn(observer, 'observeDue');
       const runner = scheduler(refreshPolicy, observer);
       await runner.scan('startup');
+      await runner.scan('scheduled');
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(observeDue).not.toHaveBeenCalled();
       expect(
-        enqueue.mock.calls.some(([job]) => rows.slice(0, 200).some((row) => row.id === job.chatId)),
-      ).toBe(false);
-      expect(observeDue.mock.calls[0]![1]).toHaveLength(200);
-      // A full denied page still advances both expiry and roster cursors.
-      for (let page = 0; page < 9; page += 1) await runner.scan('scheduled');
+        await db.publisherAccessRefreshObligation.count({ where: { publisherBotId: botId } }),
+      ).toBe(0);
       expect(
-        enqueue.mock.calls.some(([job]) => rows.slice(0, 200).some((row) => row.id === job.chatId)),
-      ).toBe(false);
-      for (const row of rows.slice(200)) {
-        expect(
-          enqueue.mock.calls.some(
-            ([job]) => job.chatId === row.id && job.reason === 'scheduled_bot_access',
-          ),
-        ).toBe(true);
-      }
-      if (mode !== 'off') {
-        expect(
-          await db.publisherAccessRefreshObligation.count({
-            where: {
-              publisherBotId: botId,
-              chatId: { in: rows.slice(0, 200).map((row) => row.id) },
-            },
-          }),
-        ).toBe(200);
-      }
-      // A new persisted grant becomes eligible; the scheduler never grants it itself.
-      await db.publisherEntityBinding.update({
-        where: { chatId: rows[0]!.id },
-        data: { permissionsSnapshot: adminAccess },
-      });
-      enqueue.mockClear();
-      await scheduler(refreshPolicy).scan('startup');
-      expect(
-        enqueue.mock.calls.some(
-          ([job]) => job.chatId === rows[0]!.id && job.reason === 'scheduled_bot_access',
-        ),
-      ).toBe(true);
+        await db.publisherEntityBinding.count({
+          where: { publisherBotId: botId, status: 'ACTIVE' },
+        }),
+      ).toBe(206);
     },
   );
 

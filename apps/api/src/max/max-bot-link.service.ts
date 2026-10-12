@@ -52,7 +52,7 @@ import {
 } from './max-bot-state.util';
 import {
   membershipExplicitlyLacksAccess,
-  isFreshMembershipAccessSnapshot,
+  isConfirmedMembershipAccessSnapshot,
   normalizeMembershipAccessSnapshot,
   normalizePermissionName,
   resolvePreferredPrimaryBotId,
@@ -893,25 +893,22 @@ export class MaxBotLinkService implements OnModuleDestroy {
         status: true,
         botAccessCheckedAt: true,
         botAccessExpiresAt: true,
+        botAccessState: true,
+        botAccessSource: true,
+        permissionsSnapshot: true,
       },
     });
     if (!membership || membership.status !== ChatBotMembershipStatus.ACTIVE) {
       return true;
     }
 
-    const nowMs = (params.now ?? new Date()).getTime();
-    const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
-    if (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) {
-      return true;
-    }
-
-    const checkedAtMs = membership.botAccessCheckedAt?.getTime() ?? Number.NaN;
-    if (!Number.isFinite(checkedAtMs)) {
-      return true;
-    }
-
-    const maxAgeMs = Math.max(0, Math.trunc(params.maxAgeMs));
-    return nowMs - checkedAtMs >= maxAgeMs;
+    return (
+      isManagedEntityActivationRequired(membership) ||
+      !isConfirmedMembershipAccessSnapshot(
+        normalizeMembershipAccessSnapshot(membership.permissionsSnapshot),
+        { nowMs: (params.now ?? new Date()).getTime() },
+      )
+    );
   }
 
   async ensureChatForAccessProbe(params: {
@@ -2249,7 +2246,6 @@ export class MaxBotLinkService implements OnModuleDestroy {
         const checkedAtMs =
           membership.botAccessCheckedAt?.getTime() ??
           (snapshot?.checkedAt ? Date.parse(snapshot.checkedAt) : Number.NaN);
-        const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
         const checkedAt = Number.isFinite(checkedAtMs) ? new Date(checkedAtMs).toISOString() : null;
         const result = (state: MaxDeleteMessageCapabilityState) => ({
           botId: membership.botId,
@@ -2268,9 +2264,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
         const fresh =
           Number.isFinite(checkedAtMs) &&
           checkedAtMs <= Date.now() &&
-          (Number.isFinite(expiresAtMs)
-            ? expiresAtMs > Date.now()
-            : isFreshMembershipAccessSnapshot(snapshot));
+          isConfirmedMembershipAccessSnapshot(snapshot);
         if (
           !fresh ||
           (membership.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
@@ -3702,11 +3696,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       return false;
     }
 
-    const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
-    if (Number.isFinite(expiresAtMs)) {
-      return expiresAtMs > Date.now();
-    }
-    return isFreshMembershipAccessSnapshot(
+    return isConfirmedMembershipAccessSnapshot(
       normalizeMembershipAccessSnapshot(membership.permissionsSnapshot),
     );
   }
@@ -4171,9 +4161,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     const fresh =
       Number.isFinite(checkedAtMs) &&
       checkedAtMs <= nowMs &&
-      (Number.isFinite(expiresAtMs)
-        ? expiresAtMs > nowMs
-        : isFreshMembershipAccessSnapshot(snapshot, { nowMs }));
+      isConfirmedMembershipAccessSnapshot(snapshot, { nowMs });
     if (!fresh) {
       return result('stale_or_unknown', 'snapshot_stale', actionable);
     }
@@ -4280,13 +4268,10 @@ export class MaxBotLinkService implements OnModuleDestroy {
   }
 
   private hasFreshManagedPollAccessSnapshot(
-    membership: Pick<ResolvedChatRouteMembership, 'botAccessExpiresAt'>,
+    _membership: Pick<ResolvedChatRouteMembership, 'botAccessExpiresAt'>,
     snapshot: MembershipAccessSnapshot | null,
   ): boolean {
-    const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
-    return Number.isFinite(expiresAtMs)
-      ? expiresAtMs > Date.now()
-      : isFreshMembershipAccessSnapshot(snapshot);
+    return isConfirmedMembershipAccessSnapshot(snapshot);
   }
 
   private membershipExplicitlyLacksSendMessageAccess(
@@ -4625,7 +4610,6 @@ export class MaxBotLinkService implements OnModuleDestroy {
             ...(liveProbe
               ? {
                   botAccessCheckedAt: { gte: params.lifecycleEventAt },
-                  botAccessExpiresAt: { gt: params.lifecycleEventAt },
                 }
               : {}),
           },
@@ -4667,11 +4651,9 @@ export class MaxBotLinkService implements OnModuleDestroy {
     if (
       (membership.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
         membership.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER) ||
-      !isFreshMembershipAccessSnapshot(
+      !isConfirmedMembershipAccessSnapshot(
         normalizeMembershipAccessSnapshot(membership.permissionsSnapshot),
-      ) ||
-      (membership.botAccessExpiresAt !== null &&
-        membership.botAccessExpiresAt.getTime() <= Date.now())
+      )
     ) {
       return false;
     }

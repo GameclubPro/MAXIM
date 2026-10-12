@@ -1665,6 +1665,7 @@ model ManagedEntityAccessEdge {
   userRole            ManagedEntityAccessRole  @default(UNKNOWN) @map("user_role")
   botRole             ManagedEntityAccessRole  @default(UNKNOWN) @map("bot_role")
   checkedAt           DateTime                 @default(now()) @map("checked_at")
+  lastAdminConfirmedAt DateTime?                @map("last_admin_confirmed_at")
   expiresAt           DateTime?                @map("expires_at")
   deniedReason        String?                  @map("denied_reason")
   lastMaxErrorCode    String?                  @map("last_max_error_code")
@@ -1682,6 +1683,7 @@ model ManagedEntityAccessEdge {
   @@index([chatId, state, checkedAt(sort: Desc)], map: "managed_entity_access_edges_chat_state_idx")
   @@index([botId, state, checkedAt(sort: Desc)], map: "managed_entity_access_edges_bot_state_idx")
   @@index([userId, botId, state, chatId], map: "managed_entity_access_edges_publisher_page_idx")
+  @@index([userId, chatId, botId], map: "managed_entity_access_edges_user_demand_idx")
   @@map("managed_entity_access_edges")
 }
 

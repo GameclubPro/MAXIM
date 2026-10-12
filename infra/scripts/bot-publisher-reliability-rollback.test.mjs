@@ -114,7 +114,7 @@ const protectedSources = [
   ],
   [
     'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',
-    'binding."bot_access_expires_at" > clock."now"',
+    'binding."bot_access_state"::text = ${binding.botAccessState}',
   ],
   [
     'apps/api/src/publisher/publisher-auto-reply-delivery.service.ts',

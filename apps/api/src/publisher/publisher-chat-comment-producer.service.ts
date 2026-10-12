@@ -105,7 +105,7 @@ export class PublisherChatCommentProducerService {
             botAccessState: {
               in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
             },
-            botAccessExpiresAt: { gt: now },
+
             OR: [{ sendRouteQuarantinedUntil: null }, { sendRouteQuarantinedUntil: { lte: now } }],
           },
         },

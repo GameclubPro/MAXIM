@@ -1,190 +1,160 @@
 import { ManagedEntityAccessRefreshService } from './managed-entity-access-refresh.service';
 
-describe('ManagedEntityAccessRefreshService', () => {
+describe('personal managed entity demand', () => {
+  const boundary = new Date('2026-10-12T10:00:00Z');
   function fixture() {
-    const prisma = { managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) } };
+    const prisma = {
+      managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue([]) },
+    };
     const registry = {
       getPublisherBotDescriptor: () => ({ id: 'publik' }),
       getDiscoveryBots: () => [{ id: 'major-1' }, { id: 'major-2' }],
     };
-    const roster = { scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true) };
-    const publisher = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const roster = { scheduleActorProbe: jest.fn().mockResolvedValue(true) };
+    const publisher = { enqueue: jest.fn().mockResolvedValue('job') };
     const service = new ManagedEntityAccessRefreshService(
       prisma as never,
       registry as never,
       roster as never,
       publisher as never,
     );
-    const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
-    return { prisma, roster, publisher, service, flush };
+    return {
+      service,
+      prisma,
+      roster,
+      publisher,
+      flush: () => new Promise<void>((resolve) => setImmediate(resolve)),
+    };
   }
-
+  const edge = (overrides = {}) => ({
+    chatId: '-1',
+    botId: 'major-1',
+    entityType: 'CHAT',
+    state: 'GRANTED',
+    userRole: 'ADMIN',
+    checkedAt: new Date(boundary.getTime() - 1000),
+    lastAdminConfirmedAt: null,
+    sourceVersion: null,
+    ...overrides,
+  });
   afterEach(() => jest.restoreAllMocks());
 
-  it('renews and recovers only exact Publisher grants or known cross-profile corruptions', async () => {
+  it('only requests the entering human in their historically confirmed profile and entity type', async () => {
     const f = fixture();
     f.prisma.managedEntityAccessEdge.findMany.mockResolvedValue([
-      { chatId: 'channel-1', botId: 'publik', entityType: 'CHANNEL', sourceVersion: 'edge-v1' },
+      edge(),
+      edge({ chatId: '-2', state: 'USER_DENIED', lastAdminConfirmedAt: new Date(0) }),
+      edge({ chatId: '-3', state: 'USER_DENIED' }),
+      edge({ chatId: '-4', botId: 'publik' }),
+      edge({ chatId: '-5', entityType: 'CHANNEL' }),
+      edge({ chatId: '-6', checkedAt: boundary }),
     ]);
-    f.service.schedule('user-1', 'publisher');
+    f.service.schedule('alice', 'moderation', 'chat', +boundary);
+    f.service.schedule('alice', 'moderation', 'chat', +boundary);
     await f.flush();
+    expect(f.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(1);
     expect(f.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          userId: 'user-1',
-          botId: { in: ['publik'] },
-          OR: expect.arrayContaining([
-            expect.objectContaining({
-              state: 'GRANTED',
-              userRole: { in: ['ADMIN', 'OWNER'] },
-              OR: [{ expiresAt: null }, { expiresAt: { lte: expect.any(Date) } }],
-            }),
-            {
-              state: { in: ['USER_DENIED', 'BOT_DENIED'] },
-              source: { in: ['admin_roster_sync_clear', 'prune_persisted_chat_access'] },
-            },
-          ]),
-          chat: {
-            publisherBinding: {
-              is: expect.objectContaining({ publisherBotId: 'publik', status: 'ACTIVE' }),
-            },
-          },
-        }),
+        where: { userId: 'alice' },
         take: 25,
+        orderBy: [{ chatId: 'asc' }, { botId: 'asc' }],
       }),
     );
-    expect(f.publisher.enqueue).toHaveBeenCalledWith({
-      chatId: 'channel-1',
-      publisherBotId: 'publik',
-      candidateUserId: 'user-1',
-      candidateVersion: 'edge-v1',
-      reason: 'stale_user_access',
-      requestedAt: expect.any(Date),
-    });
-    expect(f.roster.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
-  });
-
-  it('coalesces active moderation bots per entity and keeps CHAT and CHANNEL independent', async () => {
-    const f = fixture();
-    f.prisma.managedEntityAccessEdge.findMany.mockResolvedValue([
-      { chatId: 'chat-1', botId: 'major-1', entityType: 'CHAT' },
-      { chatId: 'chat-1', botId: 'major-2', entityType: 'CHAT' },
-      { chatId: 'foreign', botId: 'publik', entityType: 'CHAT' },
-    ]);
-    f.service.schedule('user-1', 'moderation', 'chat');
-    f.service.schedule('user-1', 'moderation', 'chat');
-    await f.flush();
-    f.service.schedule('user-1', 'moderation', 'chat');
-    expect(f.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(1);
-    expect(f.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          userId: 'user-1',
-          entityType: 'CHAT',
-          botId: { in: ['major-1', 'major-2'] },
-          OR: expect.arrayContaining([
-            expect.objectContaining({
-              state: 'GRANTED',
-              chat: {
-                botMemberships: {
-                  some: { botId: { in: ['major-1', 'major-2'] }, status: 'ACTIVE' },
-                },
-              },
-            }),
-          ]),
-        }),
-      }),
-    );
-    expect(f.roster.scheduleChatAdminRosterSync).toHaveBeenCalledTimes(1);
-    expect(f.roster.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
-      chatId: 'chat-1',
-      botIds: ['major-1', 'major-2'],
-      entityType: 'chat',
-      source: 'admin_access_validation',
-    });
-    f.service.schedule('user-1', 'moderation', 'channel');
-    await f.flush();
-    expect(f.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(2);
-    expect(f.publisher.enqueue).not.toHaveBeenCalled();
-  });
-
-  it('backs off failed enqueues without losing the ability to retry', async () => {
-    const f = fixture();
-    const clock = jest.spyOn(Date, 'now').mockReturnValue(1_000);
-    f.prisma.managedEntityAccessEdge.findMany.mockRejectedValueOnce(
-      new Error('temporary database failure'),
-    );
-    f.service.schedule('user-1', 'publisher');
-    await f.flush();
-    f.service.schedule('user-1', 'publisher');
-    expect(f.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(1);
-    clock.mockReturnValue(6_001);
-    f.service.schedule('user-1', 'publisher');
-    await f.flush();
-    expect(f.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(2);
-  });
-
-  it('rechecks historical message-only denials even after their membership was removed', async () => {
-    const f = fixture();
-    f.prisma.managedEntityAccessEdge.findMany.mockResolvedValue([
-      { chatId: 'chat-1', botId: 'major-1', entityType: 'CHAT' },
-    ]);
-    f.service.schedule('user-1', 'moderation', 'chat');
-    await f.flush();
-    const query = f.prisma.managedEntityAccessEdge.findMany.mock.calls[0][0];
-    expect(query.where).not.toHaveProperty('chat');
-    expect(query.where.OR[1]).toEqual({
-      state: 'BOT_DENIED',
-      source: { in: ['managed_poll:lookup', 'managed_giveaway:results:verification'] },
-      lastMaxStatusCode: { in: [403, 404] },
-      lastMaxErrorCode: null,
-    });
-    expect(f.roster.scheduleChatAdminRosterSync).toHaveBeenCalledWith(
-      expect.objectContaining({ chatId: 'chat-1', botIds: ['major-1'] }),
-    );
-    expect(f.publisher.enqueue).not.toHaveBeenCalled();
-  });
-
-  it.each(['publisher', 'moderation'] as const)(
-    'rechecks expired %s denials without granting privileges',
-    async (profile) => {
-      const f = fixture();
-      f.service.schedule('user-1', profile, 'chat');
-      await f.flush();
-      const where = f.prisma.managedEntityAccessEdge.findMany.mock.calls[0][0].where;
-      expect(where.OR).toContainEqual(
-        expect.objectContaining({
-          state: { in: ['USER_DENIED', 'BOT_DENIED'] },
-          checkedAt: { lte: expect.any(Date) },
-          OR: [{ expiresAt: null }, { expiresAt: { lte: expect.any(Date) } }],
-        }),
-      );
-    },
-  );
-
-  it('rotates past pending first-page edges and wraps after the final page', async () => {
-    const f = fixture();
-    const clock = jest.spyOn(Date, 'now').mockReturnValue(1_000);
-    f.prisma.managedEntityAccessEdge.findMany.mockResolvedValueOnce(
-      Array.from({ length: 25 }, (_, i) => ({
-        chatId: `chat-${String(i).padStart(2, '0')}`,
-        botId: 'publik',
-        entityType: 'CHAT',
+    expect(f.roster.scheduleActorProbe.mock.calls.map(([job]) => job)).toEqual(
+      ['-1', '-2'].map((chatId) => ({
+        chatId,
+        botId: 'major-1',
+        userId: 'alice',
+        requiredCheckedAfter: boundary,
       })),
     );
-    f.service.schedule('user-1', 'publisher');
-    await f.flush();
-    clock.mockReturnValue(31_001);
-    f.service.schedule('user-1', 'publisher');
-    await f.flush();
-    expect(f.prisma.managedEntityAccessEdge.findMany.mock.calls[1][0].where.AND).toEqual([
-      { OR: [{ chatId: { gt: 'chat-24' } }, { chatId: 'chat-24', botId: { gt: 'publik' } }] },
+    expect(f.publisher.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('keeps Publisher demand exact-bot, including publication-disabled connections', async () => {
+    const f = fixture();
+    f.prisma.managedEntityAccessEdge.findMany.mockResolvedValue([
+      edge({ botId: 'publik', sourceVersion: 'v1' }),
+      edge(),
     ]);
-    clock.mockReturnValue(61_002);
-    f.service.schedule('user-1', 'publisher');
+    f.service.schedule('alice', 'publisher', 'chat', +boundary);
     await f.flush();
-    expect(f.prisma.managedEntityAccessEdge.findMany.mock.calls[2][0].where).not.toHaveProperty(
-      'AND',
+    expect(f.publisher.enqueue).toHaveBeenCalledTimes(1);
+    expect(f.publisher.enqueue).toHaveBeenCalledWith({
+      chatId: '-1',
+      publisherBotId: 'publik',
+      candidateUserId: 'alice',
+      candidateVersion: 'v1',
+      reason: 'stale_user_access',
+      requestedAt: boundary,
+    });
+    expect(f.roster.scheduleActorProbe).not.toHaveBeenCalled();
+  });
+
+  it('advances the raw cursor past 25 rejected candidates and wraps after the last page', async () => {
+    const f = fixture();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(+boundary);
+    f.prisma.managedEntityAccessEdge.findMany.mockResolvedValueOnce(
+      Array.from({ length: 25 }, (_, i) =>
+        edge({ chatId: `chat-${String(i).padStart(2, '0')}`, state: 'USER_DENIED' }),
+      ),
     );
+    f.service.schedule('alice', 'moderation', 'chat', +boundary);
+    await f.flush();
+    clock.mockReturnValue(+boundary + 1501);
+    f.service.schedule('alice', 'moderation', 'chat', +boundary);
+    await f.flush();
+    expect(f.prisma.managedEntityAccessEdge.findMany.mock.calls[1][0].where).toEqual({
+      userId: 'alice',
+      OR: [{ chatId: { gt: 'chat-24' } }, { chatId: 'chat-24', botId: { gt: 'major-1' } }],
+    });
+    clock.mockReturnValue(+boundary + 3002);
+    f.service.schedule('alice', 'moderation', 'chat', +boundary);
+    await f.flush();
+    expect(f.prisma.managedEntityAccessEdge.findMany.mock.calls[2][0].where).toEqual({
+      userId: 'alice',
+    });
+  });
+
+  it('retries admission failures without skipping a page or blocking other users', async () => {
+    const f = fixture();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(+boundary);
+    f.prisma.managedEntityAccessEdge.findMany.mockResolvedValue([edge()]);
+    f.roster.scheduleActorProbe.mockResolvedValueOnce(false);
+    f.service.schedule('alice', 'moderation', 'chat', +boundary);
+    await f.flush();
+    f.service.schedule('bob', 'moderation', 'chat', +boundary);
+    await f.flush();
+    f.service.schedule('alice', 'moderation', 'chat', +boundary);
+    await f.flush();
+    expect(f.roster.scheduleActorProbe).toHaveBeenCalledTimes(2);
+    clock.mockReturnValue(+boundary + 5001);
+    f.service.schedule('alice', 'moderation', 'chat', +boundary);
+    await f.flush();
+    expect(f.roster.scheduleActorProbe).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not show a historical card until the human check started after entry', async () => {
+    const f = fixture();
+    f.prisma.$queryRaw.mockResolvedValue([{ chatId: '-1' }]);
+    const result = await f.service.listPersonal(
+      { userId: 'alice', username: null, displayName: null, accessCheckedAfter: +boundary },
+      'chat',
+    );
+    expect(result.items).toEqual([]);
+    expect(result.refresh).toEqual(
+      expect.objectContaining({ complete: false, nextPollAfterMs: 1500 }),
+    );
+    expect(
+      f.prisma.managedEntityAccessEdge.findMany.mock.calls.some(
+        ([q]) => q.where.checkedAt?.gte?.getTime() === +boundary,
+      ),
+    ).toBe(true);
+    const sql = f.prisma.$queryRaw.mock.calls[0][0].sql;
+    expect(sql).toContain('membership.bot_id = edge.bot_id');
+    expect(sql).not.toContain('bot_access_expires_at');
+    await f.service.onModuleDestroy();
   });
 });

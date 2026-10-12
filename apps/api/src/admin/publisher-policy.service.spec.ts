@@ -466,7 +466,7 @@ describe('PublisherPolicyService', () => {
     expect(response.items).toHaveLength(1);
     expect(response.items[0]?.id).toBe('chat-1');
     expect(response.items[0]?.title).toBe('Команда Публика');
-    expect(Object.keys(response)).toEqual(['items']);
+    expect(response.accessVerificationPending).toBe(false);
     expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -761,8 +761,12 @@ describe('PublisherPolicyService', () => {
           AND: expect.arrayContaining([
             {
               OR: expect.arrayContaining([
-                { botAccessExpiresAt: null },
-                { botAccessExpiresAt: { lte: expect.any(Date) } },
+                {
+                  botAccessState: {
+                    in: ['UNKNOWN', 'CONFIRMED_MEMBER', 'DENIED', 'LOST', 'STALE'],
+                  },
+                },
+                { sendRouteQuarantinedUntil: { gt: expect.any(Date) } },
               ]),
             },
           ]),
@@ -810,7 +814,6 @@ describe('PublisherPolicyService', () => {
           botAccessState: {
             in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
           },
-          botAccessExpiresAt: { gt: expect.any(Date) },
         }),
       }),
     );

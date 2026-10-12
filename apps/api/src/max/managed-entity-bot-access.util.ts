@@ -4,7 +4,7 @@ import {
   ManagedEntityAccessState,
 } from '../prisma/prisma-client';
 import {
-  isFreshMembershipAccessSnapshot,
+  isConfirmedMembershipAccessSnapshot,
   normalizeMembershipAccessSnapshot,
 } from './max-bot-access-policy.util';
 
@@ -79,24 +79,22 @@ export function managedEntityBotMembershipHasFreshConfirmedAccess(
   const nowMs = resolveNowMs(options.nowMs);
   const accessState = membership.botAccessState;
   if (
+    accessState != null &&
+    accessState !== ChatBotAccessState.UNKNOWN &&
+    accessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
+    accessState !== ChatBotAccessState.CONFIRMED_OWNER
+  )
+    return false;
+
+  if (
     accessState === ChatBotAccessState.CONFIRMED_ADMIN ||
     accessState === ChatBotAccessState.CONFIRMED_OWNER
-  ) {
-    if (membership.botAccessExpiresAt !== null && membership.botAccessExpiresAt !== undefined) {
-      return readTimestampMs(membership.botAccessExpiresAt) > nowMs;
-    }
-  } else if (
-    accessState !== null &&
-    accessState !== undefined &&
-    accessState !== ChatBotAccessState.UNKNOWN
-  ) {
-    return false;
-  }
-
+  )
+    return true;
   const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
   return Boolean(
     snapshot &&
-    isFreshMembershipAccessSnapshot(snapshot, { nowMs }) &&
+    isConfirmedMembershipAccessSnapshot(snapshot, { nowMs }) &&
     (snapshot.isAdmin || snapshot.isOwner),
   );
 }

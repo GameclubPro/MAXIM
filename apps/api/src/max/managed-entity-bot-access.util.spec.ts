@@ -19,7 +19,7 @@ const freshSnapshot = {
 };
 
 describe('managed entity bot access', () => {
-  it('treats an explicit structured expiry as authoritative', () => {
+  it('ignores legacy expiry for explicitly confirmed bot authority', () => {
     expect(
       managedEntityBotMembershipHasFreshConfirmedAccess(
         {
@@ -30,7 +30,7 @@ describe('managed entity bot access', () => {
         },
         { nowMs },
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       managedEntityBotMembershipHasFreshConfirmedAccess(
         {
@@ -41,7 +41,7 @@ describe('managed entity bot access', () => {
         },
         { nowMs },
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('uses a fresh snapshot only for legacy or unknown structured access', () => {

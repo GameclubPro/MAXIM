@@ -188,7 +188,7 @@ describe('MaxExecutionOwnerReadinessService', () => {
 
   it('does not turn a transient owner lookup into denial or peer promotion', async () => {
     const f = fixture(9);
-    f.state.candidates[0]!.botAccessCheckedAt = new Date(NOW.getTime() - 6 * 60_000);
+    f.state.candidates[0]!.botAccessState = ChatBotAccessState.UNKNOWN;
     f.max.getCurrentChatMemberAccess.mockRejectedValueOnce({ response: { status: 429 } });
     await expect(f.service.ensureReady({ chatId: '-100' })).rejects.toBeInstanceOf(
       WebhookExecutionOwnerUnavailableError,

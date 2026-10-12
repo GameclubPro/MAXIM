@@ -174,6 +174,21 @@ integration('Publisher catalog SQL pages and shared cursors', () => {
     }
   });
 
+  it('updates the summary with the first verified card instead of retaining an empty launch', async () => {
+    const boundary = Date.now();
+    const query = publisherEntitiesCursorQuerySchema.parse({ pagination: 'cursor', limit: 30 });
+    const initial = await first.page(actor, bot, query, true, boundary);
+    expect(initial.summary.total).toBe(0);
+    const id = `${prefix}00001`;
+    await db.managedEntityAccessEdge.update({
+      where: { chatId_userId_botId: { chatId: id, userId: actor, botId: bot } },
+      data: { checkedAt: new Date(boundary + 1) },
+    });
+    const verified = await replica.page(actor, bot, query, true, boundary);
+    expect(verified.ids).toEqual([id]);
+    expect(verified.summary).toMatchObject({ total: 1, chat: 1 });
+  });
+
   it('executes a bounded indexed page on the 10000-entity fixture', async () => {
     const source = (
       first as unknown as {

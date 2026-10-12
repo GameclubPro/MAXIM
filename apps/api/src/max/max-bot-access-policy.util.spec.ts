@@ -76,7 +76,7 @@ describe('max bot access policy', () => {
     ).toBe('primary-bot');
   });
 
-  it('selects the active bot with stronger confirmed access', () => {
+  it('retains a healthy primary when a stronger peer is also confirmed', () => {
     expect(
       resolvePreferredPrimaryBotId('primary-bot', [
         {
@@ -100,7 +100,7 @@ describe('max bot access policy', () => {
           },
         },
       ]),
-    ).toBe('standby-bot');
+    ).toBe('primary-bot');
   });
 
   it('does not let permission aliases override an explicit non-admin snapshot', () => {
@@ -239,7 +239,7 @@ describe('max bot access policy', () => {
     ).toBe('primary-bot');
   });
 
-  it('uses a fresh replacement instead of a stale fallback when the current primary is gone', () => {
+  it('uses a confirmed owner regardless of former TTL when the primary is gone', () => {
     const nowMs = Date.parse('2026-05-11T10:00:00.000Z');
 
     expect(
@@ -275,7 +275,7 @@ describe('max bot access policy', () => {
           freshMs: 60 * 60 * 1_000,
         },
       ),
-    ).toBe('fresh-admin-bot');
+    ).toBe('stale-owner-bot');
   });
 
   it('does not promote a fresh explicit denied snapshot over an unknown fallback', () => {
@@ -311,7 +311,7 @@ describe('max bot access policy', () => {
     ).toBe('unknown-standby-bot');
   });
 
-  it('prefers owner access and ignores removed memberships', () => {
+  it('keeps a confirmed primary stable and ignores removed memberships', () => {
     expect(
       resolvePreferredPrimaryBotId('primary-bot', [
         {
@@ -345,6 +345,6 @@ describe('max bot access policy', () => {
           },
         },
       ]),
-    ).toBe('owner-bot');
+    ).toBe('primary-bot');
   });
 });

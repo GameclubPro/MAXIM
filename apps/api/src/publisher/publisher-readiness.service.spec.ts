@@ -114,27 +114,15 @@ describe('PublisherReadinessService', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('nominates one exact-bot refresh while an expired positive snapshot still blocks send', async () => {
+  it('keeps confirmed publication rights after expiry without a MAX renewal', async () => {
     const source = readySource();
     source.publisherBinding!.botAccessExpiresAt = new Date(Date.now() - 1);
-    const enqueue = jest.fn().mockResolvedValue('refresh-1');
+    const enqueue = jest.fn();
     const service = createService({ source, enqueue });
-    await expect(service.assertEntityReady(source.id, 'publication')).rejects.toMatchObject({
-      blockerCode: 'bot_access_expired',
-    });
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    expect(enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chatId: source.id,
-        publisherBotId: 'publik-bot',
-        reason: 'publication_due',
-      }),
-    );
+    await expect(service.assertEntityReady(source.id, 'publication')).resolves.toBeDefined();
+    expect(enqueue).not.toHaveBeenCalled();
     expect(service.resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
-      state: 'temporarily_unavailable',
-      canPublish: false,
-      blockerCode: 'bot_access_expired',
-      retryAt: expect.any(String),
+      canPublish: true,
     });
   });
 
@@ -167,16 +155,14 @@ describe('PublisherReadinessService', () => {
     },
   );
 
-  it('preserves the stale blocker when Redis nomination fails', async () => {
+  it('does not depend on Redis renewal while bot rights remain confirmed', async () => {
     const source = readySource();
     source.publisherBinding!.botAccessExpiresAt = new Date(Date.now() - 1);
     const service = createService({
       source,
       enqueue: jest.fn().mockRejectedValue(new Error('redis offline')),
     });
-    await expect(service.assertEntityReady(source.id, 'publication')).rejects.toMatchObject({
-      blockerCode: 'bot_access_expired',
-    });
+    await expect(service.assertEntityReady(source.id, 'publication')).resolves.toBeDefined();
   });
 
   it('does not promise automatic renewal for an expired unknown access verdict', async () => {
@@ -320,12 +306,11 @@ describe('PublisherReadinessService', () => {
     });
   });
 
-  it('does not accept confirmed access without an expiry', () => {
+  it('accepts confirmed access without an expiry', () => {
     const source = readySource();
     if (source.publisherBinding) source.publisherBinding.botAccessExpiresAt = null;
     expect(createService().resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
-      state: 'setup_required',
-      blockerCode: 'bot_access_unconfirmed',
+      canPublish: true,
     });
   });
 

@@ -502,8 +502,7 @@ export class PublisherEntityBindingLifecycleService {
       isPublisherManagedEntityActivationRequired(binding) ||
       (binding.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
         binding.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER) ||
-      !binding.botAccessExpiresAt ||
-      binding.botAccessExpiresAt <= params.receivedAt ||
+      !binding.botAccessCheckedAt ||
       (binding.sendRouteQuarantinedUntil !== null &&
         binding.sendRouteQuarantinedUntil > params.receivedAt) ||
       catalog?.status !== 'ACTIVE' ||

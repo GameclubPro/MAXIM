@@ -426,6 +426,13 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     outcomes: ProbeOutcomes,
     evidence: RefreshProofEvidence,
   ): Promise<void> {
+    // FLAG: Old fleet-renewal jobs drain without MAX calls after the timer is retired.
+    // Promoted publication demands are rewritten before this boundary.
+    if (
+      ['scheduled_bot_access', 'binding_maintenance'].includes(job.reason) &&
+      !job.publicationRequested
+    )
+      return;
     const candidateUserId = job.candidateUserId?.trim() ?? '';
     const candidateJob = candidateUserId.length > 0;
     const lightweightBotRefresh =
@@ -463,7 +470,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     } else if (await this.dispatchHealth.isGloballyPaused()) {
       return;
     }
-    if (job.reason === 'binding_maintenance') {
+    if (job.reason === 'connection_roster') {
       outcomes.roster = await this.rosterRefresh.execute(job, (stage, work) =>
         this.measureStage(timings, stage, work),
       );
@@ -561,13 +568,9 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       lightweightBotRefresh &&
       this.refreshQueue &&
       candidate.publisherBinding?.botAccessCheckedAt &&
-      candidate.publisherBinding.botAccessCheckedAt.getTime() > Date.parse(job.requestedAt) &&
-      candidate.publisherBinding.botAccessExpiresAt &&
-      candidate.publisherBinding.botAccessExpiresAt > probeStartedAt
+      candidate.publisherBinding.botAccessCheckedAt.getTime() > Date.parse(job.requestedAt)
     ) {
       outcomes.bot = 'superseded';
-      if (!this.refreshPolicy.separatesMaintenance(this.publisherBotId, chatId))
-        await this.enqueueBindingMaintenance(chatId, probeStartedAt);
       return;
     }
     let botAccess: MaxChatMemberAccess;
@@ -576,7 +579,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     const forwardedCandidateNeedsMaterialization = explicitCandidateNeedsMaterialization;
     try {
       const reusable =
-        candidateJob && job.reason === 'publication_actor_due'
+        candidateJob && !explicitActivation
           ? readPublisherFreshBotProof(
               candidate.publisherBinding,
               this.publisherBotId,
@@ -675,15 +678,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
 
     // FLAG: Catalog and actor verification remain available while publishing is disabled.
 
-    if (lightweightBotRefresh && this.refreshQueue) {
-      if (
-        this.isAdminOrOwner(botAccess) &&
-        !hasPublisherKnownWriteDenial(botAccess) &&
-        !this.refreshPolicy.separatesMaintenance(this.publisherBotId, chatId)
-      )
-        await this.enqueueBindingMaintenance(chatId, committedBotAccessCheckedAt);
-      return;
-    }
+    if (lightweightBotRefresh && this.refreshQueue) return;
 
     if (
       (forwardedCandidateFlow || forwardedCandidateNeedsMaterialization) &&
@@ -750,12 +745,11 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       : Number.NaN;
     const reuseCatalog =
       ((parallelRoster && job.reason === 'stale_access') ||
-        (candidateJob && job.reason === 'publication_actor_due')) &&
+        (candidateJob && !explicitActivation)) &&
       publisherCatalog?.source === 'publisher_targeted_snapshot' &&
       publisherCatalog.status === 'ACTIVE' &&
       Boolean(publisherCatalog.title?.trim()) &&
-      catalogAgeMs >= 0 &&
-      catalogAgeMs < PUBLISHER_CATALOG_METADATA_MAX_AGE_MS;
+      (candidateJob || (catalogAgeMs >= 0 && catalogAgeMs < PUBLISHER_CATALOG_METADATA_MAX_AGE_MS));
     // FLAG: Probe only after exact bot access is confirmed. Drain both independent reads
     // before returning on any error; catalog/roster writes retain their existing fences.
     const [catalogResult, rosterResult] = await Promise.allSettled([
@@ -805,6 +799,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
           committedBotAccessState,
           interactive:
             job.reason === 'manual_recheck' ||
+            job.reason === 'stale_user_access' ||
             job.reason === 'bot_added' ||
             job.reason === 'webhook_observed' ||
             job.reason === 'forwarded_private',
@@ -821,10 +816,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       );
     }
     if (
-      (!candidateJob ||
-        job.reason === 'bot_added' ||
-        job.reason === 'webhook_observed' ||
-        job.reason === 'manual_recheck') &&
+      (!candidateJob || explicitActivation !== null || job.reason === 'manual_recheck') &&
       (committedBotAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
         committedBotAccessState === ChatBotAccessState.CONFIRMED_OWNER)
     ) {
@@ -855,7 +847,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     await this.refreshQueue?.enqueue({
       chatId,
       publisherBotId: this.publisherBotId,
-      reason: 'binding_maintenance',
+      reason: 'connection_roster',
       requestedAt,
     });
   }
@@ -1160,6 +1152,7 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       throw new PublisherCandidateRefreshSupersededError();
     }
     params.evidence.botCommittedAt = new Date();
+    await this.enqueueBindingMaintenance(chatId, params.botAccessCheckedAt);
     await this.replyForwardedCandidate(params.job, 'granted');
     if (params.job.replyToStartCommand) await this.replyToStartCommandSafely(params.job);
   }

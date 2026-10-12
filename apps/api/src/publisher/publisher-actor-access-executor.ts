@@ -1,3 +1,4 @@
+import { hasExplicitHumanAdministrator } from '../max/managed-entity-activation.util';
 import { isPublisherManagedEntityActivationRequired } from './publisher-entity-connection.util';
 import type { MaxChatMemberAccess, MaxClientService } from '../max/max-client.service';
 import {
@@ -66,15 +67,41 @@ export class PublisherActorAccessExecutor {
               timeoutMs: 5_000,
             })
           : [];
-      userAccess = roster.find((member) => member.userId === params.userId) ?? null;
+      if (
+        roster.some(
+          (member) =>
+            !member.userId ||
+            typeof member.isBot !== 'boolean' ||
+            !(member.isAdmin || member.isOwner) ||
+            member.explicitPrivilegeEvidence !== true,
+        )
+      )
+        throw new Error('Incomplete MAX administrator roster');
+      const identity = (id: string | null) =>
+        (id ?? '')
+          .trim()
+          .toLowerCase()
+          .replace(/^id(?=\d)/u, '');
+      userAccess =
+        roster.find((member) => identity(member.userId) === identity(params.userId)) ?? null;
       terminalStatusCode = userAccess ? null : statusCode;
     }
-    const checkedAt = new Date();
+    const checkedAt = params.probeStartedAt;
     const userIsBot = userAccess?.isBot === true;
     const userHasUnverifiedBotType =
-      userAccess?.isBot !== false && (userAccess?.isAdmin === true || userAccess?.isOwner === true);
-    const userHasAdminAccess =
-      userAccess?.isBot === false && (userAccess.isAdmin === true || userAccess.isOwner === true);
+      typeof userAccess?.isBot !== 'boolean' &&
+      (userAccess?.isAdmin === true || userAccess?.isOwner === true);
+    if (userHasUnverifiedBotType) throw new Error('MAX actor type is unknown');
+    if (
+      userAccess?.isBot === false &&
+      (userAccess.isAdmin || userAccess.isOwner) &&
+      userAccess.explicitPrivilegeEvidence !== true
+    )
+      throw new Error('MAX actor privilege evidence is incomplete');
+    const userHasAdminAccess = hasExplicitHumanAdministrator(
+      userAccess ?? undefined,
+      params.userId,
+    );
     const botHasAdminAccess = params.botAccess.isAdmin || params.botAccess.isOwner;
     const granted = userHasAdminAccess && botHasAdminAccess;
     const state = granted
@@ -89,9 +116,7 @@ export class PublisherActorAccessExecutor {
           ? 'publisher_user_access_unavailable'
           : userIsBot
             ? 'publisher_actor_is_bot'
-            : userHasUnverifiedBotType
-              ? 'publisher_actor_type_unverified'
-              : 'publisher_user_not_admin'
+            : 'publisher_user_not_admin'
         : 'publisher_bot_not_admin';
     const userRole = this.toAccessRole(userAccess);
     const botRole = this.toAccessRole(params.botAccess);
@@ -133,12 +158,10 @@ export class PublisherActorAccessExecutor {
       )
         return false;
       // FLAG: A concurrent bot renewal is not completion of the actor check. Retry
-      // without granting against a changed or expired proof; lifecycle revocation above stays terminal.
+      // without granting against a changed proof; lifecycle revocation above stays terminal.
       if (
         binding.botAccessCheckedAt?.getTime() !== params.committedBotAccessCheckedAt.getTime() ||
-        binding.botAccessState !== params.committedBotAccessState ||
-        !binding.botAccessExpiresAt ||
-        binding.botAccessExpiresAt <= new Date()
+        binding.botAccessState !== params.committedBotAccessState
       ) {
         throw new PublisherBotProofSupersededError();
       }

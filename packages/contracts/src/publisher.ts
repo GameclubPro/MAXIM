@@ -193,6 +193,7 @@ export type PublisherEntitiesSummary = z.infer<typeof publisherEntitiesSummarySc
 export const publisherEntitiesResponseSchema = z
   .object({
     items: z.array(publisherEntitySchema),
+    accessVerificationPending: z.boolean().optional(),
     nextCursor: z
       .string()
       .trim()

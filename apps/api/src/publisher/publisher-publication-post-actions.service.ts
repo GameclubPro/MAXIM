@@ -466,7 +466,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
               publisherBotId: botId,
               status: 'ACTIVE',
               botAccessState: { in: ['CONFIRMED_ADMIN', 'CONFIRMED_OWNER'] },
-              botAccessExpiresAt: { gt: now },
+
               AND: [
                 { OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lte: row.sentAt! } }] },
                 {
@@ -516,11 +516,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
         Status.FAILED,
       );
     }
-    if (
-      binding.botAccessExpiresAt &&
-      binding.botAccessExpiresAt > now &&
-      ['DENIED', 'LOST', 'CONFIRMED_MEMBER'].includes(binding.botAccessState)
-    ) {
+    if (['DENIED', 'LOST', 'CONFIRMED_MEMBER'].includes(binding.botAccessState)) {
       throw new PinAuthorityUnavailableError(
         'Закрепление отменено: Публик больше не администратор.',
         Status.FAILED,

@@ -26,12 +26,14 @@ export class PublisherCatalogQueryService {
     botId: string,
     query: PublisherEntitiesCursorQuery,
     runtimeAvailable: boolean,
+    checkedAfter?: number,
   ) {
     const now = new Date();
     const scope = createHash('sha256')
       .update(
         JSON.stringify([
           'publisher',
+          checkedAfter ?? null,
           userId,
           botId,
           query.query,
@@ -59,7 +61,7 @@ export class PublisherCatalogQueryService {
       after = cursor.after;
       expiresAt = cursor.expiresAt;
     }
-    const source = this.source(userId, botId, now, runtimeAvailable);
+    const source = this.source(userId, botId, now, runtimeAvailable, checkedAfter);
     const filter = Prisma.sql`
       (${query.entityType ?? null}::text IS NULL OR entity_type::text = ${query.entityType?.toUpperCase() ?? null})
       AND (${query.readiness ?? null}::text IS NULL OR ready = ${query.readiness === 'ready'})
@@ -70,7 +72,10 @@ export class PublisherCatalogQueryService {
       ORDER BY chat_id ASC LIMIT ${query.limit + 1}
     `);
     const summaryKey = `summary-${scope}-${Number(runtimeAvailable)}`;
-    const cached = await this.cache.readPublisherCatalogState(summaryKey);
+    // FLAG: Entry verification changes the visible cohort between polls. A cached zero
+    // must not hide newly verified cards after the final pending flag becomes false.
+    const cached =
+      checkedAfter === undefined ? await this.cache.readPublisherCatalogState(summaryKey) : null;
     let totals: Summary;
     if (cached) totals = JSON.parse(cached) as Summary;
     else {
@@ -100,7 +105,8 @@ export class PublisherCatalogQueryService {
         },
         filteredTotal: count.filteredTotal,
       };
-      await this.cache.storePublisherCatalogState(summaryKey, JSON.stringify(totals), 15);
+      if (checkedAfter === undefined)
+        await this.cache.storePublisherCatalogState(summaryKey, JSON.stringify(totals), 15);
     }
     const page = ids.slice(0, query.limit);
     let nextCursor: string | null = null;
@@ -127,14 +133,20 @@ export class PublisherCatalogQueryService {
     return { ids: page.map((row) => row.chatId), nextCursor, ...totals };
   }
 
-  private source(userId: string, botId: string, now: Date, runtimeAvailable: boolean) {
+  private source(
+    userId: string,
+    botId: string,
+    now: Date,
+    runtimeAvailable: boolean,
+    checkedAfter?: number,
+  ) {
     // FLAG: This is a scoped read model, never an authorization grant. The page is
     // hydrated through current Publisher access again before any entity is returned.
     return Prisma.sql`
       SELECT edge.chat_id, edge.entity_type,
         COALESCE(NULLIF(BTRIM(catalog.title), ''), edge.chat_id) AS title,
         COALESCE(${runtimeAvailable} AND COALESCE(policy.publik_enabled, true)
-          AND binding.bot_access_checked_at IS NOT NULL AND binding.bot_access_expires_at > ${now}
+          AND binding.bot_access_checked_at IS NOT NULL
           AND (binding.send_route_quarantined_until IS NULL OR binding.send_route_quarantined_until <= ${now})
           AND (binding.bot_access_state = 'CONFIRMED_OWNER' OR (
             binding.bot_access_state = 'CONFIRMED_ADMIN'
@@ -156,6 +168,7 @@ export class PublisherCatalogQueryService {
       LEFT JOIN managed_entity_publication_policies policy ON policy.chat_id = edge.chat_id
       WHERE edge.user_id = ${userId} AND edge.bot_id = ${botId} AND edge.state = 'GRANTED'
         AND edge.user_role IN ('OWNER','ADMIN')
+        ${checkedAfter === undefined ? Prisma.empty : Prisma.sql`AND edge.checked_at >= ${new Date(checkedAfter)}`}
         AND (edge.expires_at > ${now} OR (edge.expires_at IS NULL AND edge.checked_at > ${new Date(now.getTime() - 7 * 86400_000)}))
     `;
   }

@@ -859,7 +859,7 @@ describe('MaxBotOwnershipFoundationService', () => {
     await service.onModuleDestroy();
   });
 
-  it('flags primary bots whose latest permissions snapshot no longer has admin access', async () => {
+  it('clears primary bots whose latest permissions snapshot explicitly denies admin access', async () => {
     process.env.APP_ROLE = 'admin';
 
     const prisma = createPrismaMock({
@@ -906,12 +906,12 @@ describe('MaxBotOwnershipFoundationService', () => {
     const snapshot = await service.getSnapshot(0);
 
     expect(prisma.chat.update).not.toHaveBeenCalled();
-    expect(maxBotLinkService.forgetChatBotBinding).not.toHaveBeenCalled();
+    expect(maxBotLinkService.forgetChatBotBinding).toHaveBeenCalledWith('chat-no-access');
     expect(snapshot.anomalies).toMatchObject({
-      noPrimary: 0,
+      noPrimary: 1,
       noEligibleBot: 1,
       unbound: 0,
-      primaryWithoutAdminAccess: 1,
+      primaryWithoutAdminAccess: 0,
       primaryWithoutActiveMembership: 0,
     });
 
@@ -1219,7 +1219,7 @@ describe('MaxBotOwnershipFoundationService', () => {
     await service.onModuleDestroy();
   });
 
-  it('does not move primary to a stronger standby with a stale permissions snapshot', async () => {
+  it('allows older durable standby proof during explicitly enabled ownership rebalance', async () => {
     process.env.APP_ROLE = 'admin';
 
     const prisma = createPrismaMock({
@@ -1242,7 +1242,7 @@ describe('MaxBotOwnershipFoundationService', () => {
             checkedAt: '2026-05-09T10:04:00.000Z',
             isAdmin: true,
             isOwner: false,
-            permissions: ['read_all_messages'],
+            permissions: ['read_all_messages', 'write'],
           },
         },
         {
@@ -1293,15 +1293,11 @@ describe('MaxBotOwnershipFoundationService', () => {
     await service.onModuleInit();
     await runDeferredStartupSync();
 
-    expect(prisma.chat.update).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ id: 'chat-stale-standby' }),
-        data: expect.objectContaining({
-          primaryBotId: 'bot-stale-owner',
-        }),
-      }),
-    );
-    expect(maxBotLinkService.rememberChatBotBinding).not.toHaveBeenCalledWith(
+    expect(prisma.__state.chats[0]).toMatchObject({
+      primaryBotId: 'bot-stale-owner',
+      routingState: ChatRoutingState.READY,
+    });
+    expect(maxBotLinkService.rememberChatBotBinding).toHaveBeenCalledWith(
       'chat-stale-standby',
       'bot-stale-owner',
     );

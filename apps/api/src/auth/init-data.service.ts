@@ -83,6 +83,7 @@ export class InitDataService {
 
     return {
       userId,
+      accessCheckedAfter: Math.min(Date.now(), Number(params.get('auth_date')) * 1000),
       launchBotId,
       username: parsedUser.username ? String(parsedUser.username) : null,
       displayName: resolveMaxUserDisplayName(parsedUser),

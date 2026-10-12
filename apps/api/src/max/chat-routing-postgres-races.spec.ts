@@ -224,6 +224,7 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
                 },
               });
               return ['other-admin', 'removed-during-probe'].map((userId) => ({
+                explicitPrivilegeEvidence: true,
                 userId,
                 isBot: false,
                 isAdmin: true,
@@ -263,7 +264,12 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
             ...params,
             maxClient: {
               getChatAdminAccesses: async () => [
-                { userId: 'busy-chat-admin', isBot: false, isAdmin: true },
+                {
+                  explicitPrivilegeEvidence: true,
+                  userId: 'busy-chat-admin',
+                  isBot: false,
+                  isAdmin: true,
+                },
               ],
             } as never,
           }),
@@ -301,7 +307,12 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
             ...params,
             maxClient: {
               getChatAdminAccesses: async () => [
-                { userId: 'late-admin', isBot: false, isAdmin: true },
+                {
+                  explicitPrivilegeEvidence: true,
+                  userId: 'late-admin',
+                  isBot: false,
+                  isAdmin: true,
+                },
               ],
             } as never,
           }),

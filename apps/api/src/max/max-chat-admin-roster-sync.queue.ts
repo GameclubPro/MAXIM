@@ -14,6 +14,8 @@ export type ManagedEntityAccessLossCleanupReason =
 export type MaxChatAdminRosterSyncJob = QueueJobEnvelope<
   {
     chatId: string;
+    targetUserId?: string;
+    requiredCheckedAfter?: string;
     botIds?: string[];
     title?: string | null;
     entityType?: 'chat' | 'channel' | null;

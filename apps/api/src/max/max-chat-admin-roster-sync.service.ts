@@ -1,3 +1,4 @@
+import { probeManagedEntityActor } from './managed-entity-actor-probe';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
@@ -130,9 +131,11 @@ export class MaxChatAdminRosterSyncService {
   }
 
   async scheduleChatAdminRosterSync(params: MaxChatAdminRosterSyncJob): Promise<boolean> {
-    if (!this.queue) {
+    // FLAG: Passive fleet snapshots and ordinary membership churn never renew rosters.
+    // Explicit connection/recheck and a concrete missing-capability action retain demand.
+    if (params.source === 'discovery_snapshot' || params.source === 'webhook_membership_churn')
       return false;
-    }
+    if (!this.queue) return false;
 
     let desiredJobData = this.normalizeJobData(params);
     if (!desiredJobData) {
@@ -220,7 +223,63 @@ export class MaxChatAdminRosterSyncService {
     }
   }
 
+  async scheduleActorProbe(params: {
+    chatId: string;
+    botId: string;
+    userId: string;
+    requiredCheckedAfter: Date;
+  }): Promise<boolean> {
+    if (!this.queue || !this.resolveDiscoveryBotId(params.botId)) return false;
+    const jobId = `managed-actor-${createHash('sha256')
+      .update(
+        JSON.stringify([
+          params.chatId,
+          params.botId,
+          params.userId,
+          params.requiredCheckedAfter.toISOString(),
+        ]),
+      )
+      .digest('hex')}`;
+    const existing = await this.queue.getJob(jobId);
+    if (existing && (await existing.getState()) === 'failed') await existing.remove();
+    await this.queue.add(
+      'verify-managed-actor',
+      {
+        chatId: params.chatId,
+        botIds: [params.botId],
+        targetUserId: params.userId,
+        requiredCheckedAfter: params.requiredCheckedAfter.toISOString(),
+        source: 'admin_access_validation',
+      },
+      {
+        jobId,
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 2_000 },
+        priority: 2,
+        removeOnComplete: true,
+        removeOnFail: { age: 300, count: 1000 },
+      },
+    );
+    return true;
+  }
+
   async processJob(job: MaxChatAdminRosterSyncJob): Promise<boolean> {
+    if (job.targetUserId) {
+      const requiredCheckedAfter = new Date(job.requiredCheckedAfter ?? '');
+      if (!Number.isFinite(requiredCheckedAfter.getTime()) || job.botIds?.length !== 1)
+        throw new Error('Invalid personal access demand');
+      return probeManagedEntityActor({
+        prisma: this.prisma,
+        maxClient: this.maxClient,
+        cache: this.chatContextCache,
+        chatId: job.chatId,
+        botId: job.botIds[0]!,
+        userId: job.targetUserId,
+        requiredCheckedAfter,
+      });
+    }
+    if (job.source === 'discovery_snapshot' || job.source === 'webhook_membership_churn')
+      return false;
     return this.syncChatAdminRoster(job);
   }
 
@@ -512,10 +571,28 @@ export class MaxChatAdminRosterSyncService {
     await this.reconcilePrimaryAfterSelfAccessRefresh(normalized);
 
     if (rosterAccess) {
-      const adminUserIds = await this.maxClient.getChatAdminIds(
+      const roster = await this.maxClient.getChatAdminAccesses(
         normalized.chatId,
         this.buildChatAdminRosterReadOptions(normalized, rosterAccess.botId),
       );
+      if (
+        roster.some(
+          (member) =>
+            !member.userId ||
+            typeof member.isBot !== 'boolean' ||
+            !(member.isAdmin || member.isOwner) ||
+            member.explicitPrivilegeEvidence !== true,
+        )
+      )
+        throw new Error('Incomplete MAX administrator roster');
+      const adminUserIds = roster
+        .filter(
+          (member) =>
+            member.isBot === false &&
+            member.explicitPrivilegeEvidence === true &&
+            (member.isAdmin || member.isOwner),
+        )
+        .map((member) => member.userId!);
       const rosterPersisted = await this.syncAllowlist(normalized, adminUserIds, {
         botId: rosterAccess.botId,
         botRole: this.resolveManagedEntityAccessRole(rosterAccess.access),

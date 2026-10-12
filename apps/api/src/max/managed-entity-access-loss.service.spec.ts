@@ -1562,7 +1562,7 @@ describe('ManagedEntityAccessLossService', () => {
     expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('chat-1');
   });
 
-  it('cleans runtime work when the replacement bot only has stale snapshot access', async () => {
+  it('preserves runtime work when a replacement has an old confirmed snapshot', async () => {
     const staleCheckedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1_000).toISOString();
     const prisma = {
       chat: {
@@ -1642,13 +1642,13 @@ describe('ManagedEntityAccessLossService', () => {
         botId: 'bot-1',
         nextOwnerBotId: 'bot-3',
         cleanup: expect.objectContaining({
-          nightModeJobsCleared: true,
-          canceledBroadcasts: 1,
-          canceledBroadcastDeliveries: 2,
-          canceledBroadcastOccurrences: 1,
+          nightModeJobsCleared: false,
+          canceledBroadcasts: null,
+          canceledBroadcastDeliveries: null,
+          canceledBroadcastOccurrences: null,
           clearedVkPublishPosts: null,
           pausedVkSources: null,
-          removedRosterSyncJobs: 0,
+          removedRosterSyncJobs: null,
         }),
       }),
     );
@@ -1667,8 +1667,8 @@ describe('ManagedEntityAccessLossService', () => {
         botAccessExpiresAt: true,
       },
     });
-    expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('channel-1');
-    expect(prisma.managedBroadcast.updateMany).toHaveBeenCalled();
+    expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
+    expect(prisma.managedBroadcast.updateMany).not.toHaveBeenCalled();
     expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
     expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
     expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
@@ -2008,7 +2008,7 @@ describe('ManagedEntityAccessLossService', () => {
               isOwner: false,
               permissions: [],
             },
-            botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+            botAccessState: ChatBotAccessState.DENIED,
             botAccessExpiresAt: new Date(Date.now() - 60_000),
           },
         ]),

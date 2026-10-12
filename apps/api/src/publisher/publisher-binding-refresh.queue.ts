@@ -26,6 +26,7 @@ export type PublisherBindingRefreshReason =
   | 'publication_due'
   | 'publication_actor_due'
   | 'binding_maintenance'
+  | 'connection_roster'
   | 'stale_user_access'
   | 'manual_recheck'
   | 'policy_enablement_recheck'
@@ -103,6 +104,7 @@ function resolveRefreshPriority(reason: PublisherBindingRefreshReason, createdAt
     case 'stale_access':
     case 'scheduled_bot_access':
       return 10;
+    case 'connection_roster':
     case 'binding_maintenance':
     case 'stale_user_access':
       // FLAG: New maintenance starts behind bot checks; aged work joins priority five above.
@@ -320,6 +322,17 @@ export class PublisherBindingRefreshQueueService {
       requestedAt: requestedAt.toISOString(),
     });
 
+    // FLAG: A failed personal verification must be retryable on later demand even
+    // when BullMQ retains its stable job id for diagnostics.
+    if (params.reason === 'stale_user_access') {
+      const previous = await this.queue.getJob(jobId);
+      if (
+        previous &&
+        (await previous.getState()) === 'failed' &&
+        (previous.finishedOn ?? 0) + 30_000 <= Date.now()
+      )
+        await previous.remove();
+    }
     const queued = await this.queue.add(
       'refresh',
       {

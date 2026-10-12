@@ -24,7 +24,7 @@ import { MaxBotRegistryService } from './max-bot-registry.service';
 import { canExecuteActionsForBotState, createBotLifecycleStats } from './max-bot-state.util';
 import {
   calculatePrimaryAccessScore,
-  isFreshMembershipAccessSnapshot,
+  isConfirmedMembershipAccessSnapshot,
   membershipExplicitlyLacksAccess,
   normalizeMembershipAccessSnapshot,
   resolvePreferredPrimaryBotId,
@@ -1102,7 +1102,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         if (
           !bot ||
           this.membershipHasStructuredAccessLoss(membership) ||
-          !isFreshMembershipAccessSnapshot(snapshot)
+          !isConfirmedMembershipAccessSnapshot(snapshot)
         ) {
           return null;
         }
@@ -1215,11 +1215,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       return false;
     }
 
-    const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
-    if (Number.isFinite(expiresAtMs)) {
-      return expiresAtMs > Date.now();
-    }
-    return isFreshMembershipAccessSnapshot(
+    return isConfirmedMembershipAccessSnapshot(
       normalizeMembershipAccessSnapshot(membership.permissionsSnapshot),
     );
   }
@@ -1228,11 +1224,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     if (this.membershipHasStructuredAccessLoss(membership)) {
       return false;
     }
-    const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-    return !(
-      membershipExplicitlyLacksAccess(membership.permissionsSnapshot) &&
-      isFreshMembershipAccessSnapshot(snapshot)
-    );
+    return !membershipExplicitlyLacksAccess(membership.permissionsSnapshot);
   }
 
   private isManagedOwnershipChat(chat: ChatRecord): boolean {

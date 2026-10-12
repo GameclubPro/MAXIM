@@ -180,7 +180,7 @@ export class MarketplaceStateService {
           SELECT 1 FROM chat_bot_memberships m WHERE m.chat_id=b.entity_id AND m.bot_id=${input.botId}
             AND m.status='ACTIVE' AND (m.lifecycle_event_at IS NULL OR m.lifecycle_event_at AT TIME ZONE 'UTC'<b.checked_at)
             AND ((b.bot_id=m.bot_id AND (m.bot_access_checked_at IS NULL OR m.bot_access_checked_at AT TIME ZONE 'UTC'<b.checked_at OR m.bot_access_state IN ('CONFIRMED_ADMIN','CONFIRMED_OWNER')))
-              OR (m.bot_access_state IN ('CONFIRMED_ADMIN','CONFIRMED_OWNER') AND m.bot_access_expires_at AT TIME ZONE 'UTC'>${now}))
+              OR (m.bot_access_state IN ('CONFIRMED_ADMIN','CONFIRMED_OWNER') AND m.bot_access_checked_at IS NOT NULL))
         )) OR (b.profile='publisher' AND EXISTS (
           SELECT 1 FROM publisher_entity_bindings p WHERE p.chat_id=b.entity_id AND p.publisher_bot_id=${input.botId}
             AND p.status='ACTIVE' AND b.bot_id=p.publisher_bot_id

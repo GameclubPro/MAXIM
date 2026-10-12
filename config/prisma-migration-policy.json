@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261012150000_add_webhook_dependency_quarantine",
-  "baselineNamesSha256": "f16d6c0f6bfa14ec37e7981de569d7f8e0c32fc5beae51dc0f6ebc56bcd042c3",
-  "baselineContentsSha256": "faedb19837ee33d096762cecfc988c39b9c200d9fce21cd81888f24367b00db4",
+  "baselineThrough": "20261012230100_index_personal_admin_history",
+  "baselineNamesSha256": "7d8f45be44d4a9b6574c7f3fd2b0d05ed82d26382135595cd0ad889323173e2d",
+  "baselineContentsSha256": "c0cb51b39cd8bfbc72e382bd28b62021b3e8efeb09d8c58369c2ab6d7dc1882c",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -121,6 +121,11 @@
       "reason": "Reviewed additive cancellation tables and permanent evidence triggers. No existing row is modified by this migration; cancellation is separately invoked with all application writers stopped. Function bodies contain DELETE guards, not business data deletion.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Empty additive tables and enum value precede activation. Activation requires every role to use cancellation readers; both rollback paths require the new source floor."
+    },
+    "20261012230000_add_personal_admin_history": {
+      "reason": "Reviewed additive nullable history column and static row trigger. No dynamic SQL, row deletion or fleet backfill. The trigger preserves confirmed administrator history on later denial; history never grants access.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Old readers ignore the nullable column; the trigger covers all existing grant and revocation writers. New readers require a fresh exact-user verdict for entry. No existing columns or rows are removed."
     }
   },
   "nonConcurrentIndexExceptions": {

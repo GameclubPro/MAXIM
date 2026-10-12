@@ -23,8 +23,20 @@ describe('Publisher administrator discovery', () => {
     };
     const maxClient = {
       getChatAdminAccesses: jest.fn().mockResolvedValue([
-        { userId: 'installer', isBot: false, isAdmin: true, isOwner: false },
-        { userId: 'other-admin', isBot: false, isAdmin: true, isOwner: true },
+        {
+          explicitPrivilegeEvidence: true,
+          userId: 'installer',
+          isBot: false,
+          isAdmin: true,
+          isOwner: false,
+        },
+        {
+          explicitPrivilegeEvidence: true,
+          userId: 'other-admin',
+          isBot: false,
+          isAdmin: true,
+          isOwner: true,
+        },
         { userId: 'bot-admin', isBot: true, isAdmin: true, isOwner: false },
         { userId: 'untyped-admin', isBot: null, isAdmin: true, isOwner: false },
       ]),

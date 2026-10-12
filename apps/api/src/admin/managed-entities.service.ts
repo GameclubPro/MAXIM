@@ -360,7 +360,23 @@ export class ManagedEntitiesService {
     }
   }
 
+  private async listPersonalManagedEntities(
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<ManagedEntitiesListResponse> {
+    const result = await this.accessRefresh!.listPersonal(user, entityType);
+    return {
+      ...result,
+      items: this.sanitizePublicChatSummaries(
+        await this.attachManagedEntityFavoriteTypes(user.userId, result.items),
+      ),
+    };
+  }
+
   listChats(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
+    if (user.accessCheckedAfter !== undefined && this.accessRefresh) {
+      return this.listPersonalManagedEntities(user, 'chat').then((result) => result.items);
+    }
     this.accessRefresh?.schedule(user.userId, 'moderation', 'chat');
     return listManagedEntitiesValue({
       user,
@@ -383,6 +399,9 @@ export class ManagedEntitiesService {
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
+    if (user.accessCheckedAfter !== undefined && this.accessRefresh) {
+      return this.listPersonalManagedEntities(user, 'chat');
+    }
     this.accessRefresh?.schedule(user.userId, 'moderation', 'chat');
     return listManagedEntitiesWithRefreshStateValue({
       user,
@@ -406,6 +425,9 @@ export class ManagedEntitiesService {
   }
 
   listChannels(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
+    if (user.accessCheckedAfter !== undefined && this.accessRefresh) {
+      return this.listPersonalManagedEntities(user, 'channel').then((result) => result.items);
+    }
     this.accessRefresh?.schedule(user.userId, 'moderation', 'channel');
     return listManagedEntitiesValue({
       user,
@@ -428,6 +450,9 @@ export class ManagedEntitiesService {
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
+    if (user.accessCheckedAfter !== undefined && this.accessRefresh) {
+      return this.listPersonalManagedEntities(user, 'channel');
+    }
     this.accessRefresh?.schedule(user.userId, 'moderation', 'channel');
     return listManagedEntitiesWithRefreshStateValue({
       user,

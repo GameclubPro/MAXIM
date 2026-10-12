@@ -147,7 +147,10 @@ describe('InitDataGuard', () => {
     };
 
     await expect(guard.canActivate(createContext(request))).resolves.toBe(true);
-    expect(request.user).toBe(expiredInitDataUser);
+    expect(request.user).toEqual({
+      ...expiredInitDataUser,
+      accessCheckedAfter: session.record.createdAt,
+    });
     expect(request.miniappAuth).toMatchObject({
       source: 'session',
       principalKey: 'session-key-hash',

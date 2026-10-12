@@ -89,11 +89,7 @@ export class PublisherRosterRefreshExecutor {
       binding.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER
     )
       return 'denied';
-    if (
-      !binding.botAccessCheckedAt ||
-      !binding.botAccessExpiresAt ||
-      binding.botAccessExpiresAt <= probeStartedAt
-    ) {
+    if (!binding.botAccessCheckedAt) {
       await this.refreshQueue?.enqueue({
         chatId,
         publisherBotId: this.publisherBotId,
@@ -103,12 +99,6 @@ export class PublisherRosterRefreshExecutor {
       });
       return 'deferred';
     }
-    if (
-      this.policy.separatesMaintenance(this.publisherBotId, chatId) &&
-      binding.rosterRefreshAfter &&
-      binding.rosterRefreshAfter > probeStartedAt
-    )
-      return 'deferred';
     const catalogAgeMs = catalog?.lastSeenAt
       ? probeStartedAt.getTime() - catalog.lastSeenAt.getTime()
       : Number.NaN;

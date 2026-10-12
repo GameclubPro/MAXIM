@@ -37,7 +37,7 @@ import {
   VkParsingOwnerProfile,
 } from '../prisma/prisma-client';
 import {
-  isFreshMembershipAccessSnapshot,
+  isConfirmedMembershipAccessSnapshot,
   normalizeMembershipAccessSnapshot,
 } from '../max/max-bot-access-policy.util';
 import { resolveDeleteMessageAccessFailure } from '../max/max-delete-message-access.util';
@@ -2250,9 +2250,7 @@ export class SafetyDeskService {
     const fresh =
       Number.isFinite(checkedAtMs) &&
       checkedAtMs <= nowMs &&
-      (Number.isFinite(expiresAtMs)
-        ? expiresAtMs > nowMs
-        : isFreshMembershipAccessSnapshot(snapshot, { nowMs }));
+      isConfirmedMembershipAccessSnapshot(snapshot, { nowMs });
     if (!fresh || membership.botAccessState === 'STALE') {
       return result('stale_or_unknown', 'snapshot_stale');
     }

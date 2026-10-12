@@ -8,7 +8,7 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
-  isFreshMembershipAccessSnapshot,
+  isConfirmedMembershipAccessSnapshot,
   normalizeMembershipAccessSnapshot,
 } from './max-bot-access-policy.util';
 import {
@@ -126,7 +126,6 @@ export class ModerationDeleteIntentAccessWakeService {
                 CAST('CONFIRMED_OWNER' AS "ChatBotAccessState")
               )
               AND membership."bot_access_checked_at" = ${params.checkedAt}
-              AND membership."bot_access_expires_at" > CURRENT_TIMESTAMP
               AND membership."bot_access_source" = ${params.source}
               AND membership."permissions_hash" = ${committedSnapshot.permissionsHash}
               AND chat."entity_type" = CAST(${params.entityType} AS "ChatEntityType")
@@ -174,13 +173,10 @@ export class ModerationDeleteIntentAccessWakeService {
 
     const atMs = at.getTime();
     const checkedAtMs = previous.botAccessCheckedAt?.getTime() ?? Number.NaN;
-    const expiresAtMs = previous.botAccessExpiresAt?.getTime() ?? Number.NaN;
     return (
       Number.isFinite(checkedAtMs) &&
       checkedAtMs <= atMs &&
-      (Number.isFinite(expiresAtMs)
-        ? expiresAtMs > atMs
-        : isFreshMembershipAccessSnapshot(snapshot, { nowMs: atMs }))
+      isConfirmedMembershipAccessSnapshot(snapshot, { nowMs: atMs })
     );
   }
 }

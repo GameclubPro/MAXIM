@@ -236,7 +236,7 @@ export async function prepareDefinitivelyRejectedNightModeTransitionRetry(
             in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
           },
           botAccessCheckedAt: { not: null },
-          botAccessExpiresAt: { gt: now },
+
           botId: {
             in: actionableBotIds,
           },

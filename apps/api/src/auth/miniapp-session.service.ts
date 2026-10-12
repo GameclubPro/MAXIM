@@ -64,6 +64,7 @@ return removed
 const authUserSchema = z
   .object({
     userId: z.string().min(1).max(128),
+    accessCheckedAfter: z.number().int().positive().optional(),
     launchBotId: z.string().min(1).max(256).nullable().optional(),
     username: z.string().max(256).nullable(),
     displayName: z.string().max(512).nullable(),

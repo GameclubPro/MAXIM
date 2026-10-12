@@ -150,7 +150,7 @@ describe('ModerationDeleteIntentAccessWakeService', () => {
     ).toBe(false);
   });
 
-  it('wakes after an identical capability renews expired access or confirms unknown permissions', async () => {
+  it('ignores legacy expiry and wakes only when unknown capabilities become confirmed', async () => {
     const executeRaw = jest.fn().mockResolvedValue(1);
     const service = new ModerationDeleteIntentAccessWakeService({
       $executeRaw: executeRaw,
@@ -161,7 +161,7 @@ describe('ModerationDeleteIntentAccessWakeService', () => {
           previousAccess: previousAccess({ botAccessExpiresAt: new Date(checkedAt.getTime() - 1) }),
         }),
       ),
-    ).resolves.toBe(1);
+    ).resolves.toBe(0);
     await expect(
       service.wakeAfterCommittedProbe(
         probe({
@@ -177,7 +177,7 @@ describe('ModerationDeleteIntentAccessWakeService', () => {
         }),
       ),
     ).resolves.toBe(1);
-    expect(executeRaw).toHaveBeenCalledTimes(2);
+    expect(executeRaw).toHaveBeenCalledTimes(1);
   });
 
   it('wakes a bounded origin-aware batch while preserving lifecycle and mutation evidence', async () => {

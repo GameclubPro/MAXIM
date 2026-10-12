@@ -862,7 +862,7 @@ describe('MaxBotLinkService', () => {
     expect(operation).toHaveBeenCalledTimes(2);
   });
 
-  it('treats routed send access as stale at the configured age boundary', async () => {
+  it('keeps routed send access after the former age boundary', async () => {
     const fixture = createServiceFixture();
     fixture.memberships.push(
       createActiveMembership('chat-access-age', fixture.bots[0]!.id, 0, {
@@ -876,7 +876,7 @@ describe('MaxBotLinkService', () => {
         botId: fixture.bots[0]!.id,
         maxAgeMs: 30 * 60_000,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
     await expect(
       fixture.service.isBotAccessSnapshotStale({
         chatId: 'chat-access-age',
@@ -886,7 +886,7 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBe(false);
   });
 
-  it('treats routed access as stale immediately when its explicit expiry is reached', async () => {
+  it('keeps confirmed routed access after the former expiry', async () => {
     const fixture = createServiceFixture();
     const membership = createActiveMembership('chat-access-expiry', fixture.bots[0]!.id, 0, {
       botAccessCheckedAt: new Date('2026-05-09T09:49:00.000Z'),
@@ -900,7 +900,7 @@ describe('MaxBotLinkService', () => {
         botId: fixture.bots[0]!.id,
         maxAgeMs: 30 * 60_000,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
 
     membership.botAccessExpiresAt = new Date('2026-05-09T10:05:00.001Z');
     await expect(
@@ -1056,7 +1056,7 @@ describe('MaxBotLinkService', () => {
     expect(fixture.nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
   });
 
-  it('wakes pending deletion after identical expired capability renews, then skips a fresh renewal', async () => {
+  it('does not wake deletion solely because an identical proof passed its old TTL', async () => {
     const fixture = createServiceFixture();
     const chatId = 'chat-expired-identical-delete-proof';
     const botId = fixture.bots[0]!.id;
@@ -1095,7 +1095,7 @@ describe('MaxBotLinkService', () => {
       checkedAt,
     };
     await expect(fixture.service.recordBotAccessProbe(probe)).resolves.toBe(true);
-    expect(executeRaw).toHaveBeenCalledTimes(1);
+    expect(executeRaw).not.toHaveBeenCalled();
     jest.setSystemTime(new Date('2026-05-09T10:05:01.000Z'));
     await expect(
       fixture.service.recordBotAccessProbe({
@@ -1106,7 +1106,7 @@ describe('MaxBotLinkService', () => {
     expect(fixture.moderationDeleteIntentAccessWake.wakeAfterCommittedProbe).toHaveBeenCalledTimes(
       2,
     );
-    expect(executeRaw).toHaveBeenCalledTimes(1);
+    expect(executeRaw).not.toHaveBeenCalled();
   });
 
   it('reconciles night mode only after a fresh actionable access transition commits', async () => {
@@ -2826,7 +2826,7 @@ describe('MaxBotLinkService', () => {
     );
   });
 
-  it('promotes a fresh standby over a stale stronger standby when primary access is lost', async () => {
+  it('promotes the stronger confirmed standby regardless of old TTL', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-3bot-lost-primary', {
       id: 'chat-3bot-lost-primary',
@@ -2891,19 +2891,19 @@ describe('MaxBotLinkService', () => {
         botId: 'id613002203036_bot',
         title: 'Shared chat',
       }),
-    ).resolves.toBe('id613002203036_5_bot');
+    ).resolves.toBe('id613002203036_4_bot');
 
     expect(fixture.chats.get('chat-3bot-lost-primary')).toEqual(
       expect.objectContaining({
-        botId: 'id613002203036_5_bot',
-        primaryBotId: 'id613002203036_5_bot',
+        botId: 'id613002203036_4_bot',
+        primaryBotId: 'id613002203036_4_bot',
       }),
     );
     expect(
       fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot'),
     ).toEqual(
       expect.objectContaining({
-        role: ChatBotMembershipRole.STANDBY,
+        role: ChatBotMembershipRole.PRIMARY,
         status: ChatBotMembershipStatus.ACTIVE,
       }),
     );
@@ -2911,7 +2911,7 @@ describe('MaxBotLinkService', () => {
       fixture.memberships.find((membership) => membership.botId === 'id613002203036_5_bot'),
     ).toEqual(
       expect.objectContaining({
-        role: ChatBotMembershipRole.PRIMARY,
+        role: ChatBotMembershipRole.STANDBY,
         status: ChatBotMembershipStatus.ACTIVE,
       }),
     );
@@ -4027,7 +4027,7 @@ describe('MaxBotLinkService', () => {
         role: ChatBotMembershipRole.PRIMARY,
         botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
-          checkedAt: '2026-07-10T10:00:00.000Z',
+          checkedAt: '2026-05-09T10:00:00.000Z',
           isAdmin: true,
           isOwner: false,
           permissions: ['write', 'edit'],
@@ -4036,7 +4036,7 @@ describe('MaxBotLinkService', () => {
       createActiveMembership('channel-poll-route', 'id613002203036_4_bot', 1, {
         botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
-          checkedAt: '2026-07-10T10:00:01.000Z',
+          checkedAt: '2026-05-09T10:00:01.000Z',
           isAdmin: true,
           isOwner: false,
           permissions: ['read_all_messages', 'write', 'edit'],
@@ -4045,7 +4045,7 @@ describe('MaxBotLinkService', () => {
       createActiveMembership('channel-poll-route', 'id613002203036_5_bot', 2, {
         botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
-          checkedAt: '2026-07-10T10:00:02.000Z',
+          checkedAt: '2026-05-09T10:00:02.000Z',
           isAdmin: true,
           isOwner: false,
           permissions: ['read_all_messages', 'post_edit_delete_message', 'edit_message'],
@@ -4077,7 +4077,7 @@ describe('MaxBotLinkService', () => {
       createActiveMembership('channel-poll-owner', 'id613002203036_bot', 0, {
         botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
-          checkedAt: '2026-07-10T10:00:00.000Z',
+          checkedAt: '2026-05-09T10:00:00.000Z',
           isAdmin: false,
           isOwner: true,
           permissions: ['edit'],
@@ -4107,7 +4107,7 @@ describe('MaxBotLinkService', () => {
         role: ChatBotMembershipRole.PRIMARY,
         botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
-          checkedAt: '2026-07-10T10:00:00.000Z',
+          checkedAt: '2026-05-09T10:00:00.000Z',
           isAdmin: false,
           isOwner: false,
           permissions: ['write'],
@@ -4116,7 +4116,7 @@ describe('MaxBotLinkService', () => {
       createActiveMembership('chat-poll-route', 'id613002203036_4_bot', 1, {
         botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
-          checkedAt: '2026-07-10T10:00:01.000Z',
+          checkedAt: '2026-05-09T10:00:01.000Z',
           isAdmin: true,
           isOwner: false,
           permissions: ['write'],
@@ -4125,7 +4125,7 @@ describe('MaxBotLinkService', () => {
       createActiveMembership('chat-poll-route', 'id613002203036_5_bot', 2, {
         botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
-          checkedAt: '2026-07-10T10:00:02.000Z',
+          checkedAt: '2026-05-09T10:00:02.000Z',
           isAdmin: true,
           isOwner: false,
           permissions: ['can_read_all_messages', 'can_write'],
@@ -4157,7 +4157,7 @@ describe('MaxBotLinkService', () => {
       createActiveMembership('chat-poll-owner', 'id613002203036_bot', 0, {
         botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
-          checkedAt: '2026-07-10T10:00:00.000Z',
+          checkedAt: '2026-05-09T10:00:00.000Z',
           isAdmin: false,
           isOwner: true,
           permissions: [],
@@ -4187,7 +4187,7 @@ describe('MaxBotLinkService', () => {
         role: ChatBotMembershipRole.PRIMARY,
         botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
-          checkedAt: '2026-07-10T10:00:00.000Z',
+          checkedAt: '2026-05-09T10:00:00.000Z',
           isAdmin: true,
           isOwner: false,
           permissions: ['write'],
@@ -4196,7 +4196,7 @@ describe('MaxBotLinkService', () => {
       createActiveMembership('channel-poll-split', 'id613002203036_4_bot', 1, {
         botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
-          checkedAt: '2026-07-10T10:00:01.000Z',
+          checkedAt: '2026-05-09T10:00:01.000Z',
           isAdmin: true,
           isOwner: false,
           permissions: ['edit'],
@@ -4209,7 +4209,7 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBeNull();
   });
 
-  it('excludes an expired poll route and falls back to a fresh snapshot without an expiry', async () => {
+  it('keeps confirmed poll routes regardless of legacy expiry', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-poll-expired', {
       id: 'chat-poll-expired',
@@ -4243,8 +4243,8 @@ describe('MaxBotLinkService', () => {
     await expect(
       fixture.service.resolveBotRouteForManagedPoll({ chatId: 'chat-poll-expired' }),
     ).resolves.toMatchObject({
-      botId: 'id613002203036_4_bot',
-      candidateBotIds: ['id613002203036_4_bot'],
+      botId: 'id613002203036_bot',
+      candidateBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
     });
   });
 
@@ -4583,7 +4583,7 @@ describe('MaxBotLinkService', () => {
     ).resolves.toMatchObject({ botId: null, capabilityState: 'explicitly_incapable' });
   });
 
-  it('keeps mixed stale and fresh-missing member snapshots recheckable', async () => {
+  it('retains an old confirmed member capability alongside a peer missing that capability', async () => {
     const fixture = createServiceFixture();
     const chatId = 'chat-strict-member-mixed';
     fixture.chats.set(chatId, {
@@ -4609,7 +4609,7 @@ describe('MaxBotLinkService', () => {
 
     await expect(
       fixture.service.resolveStrictMemberModerationBotRoute({ chatId }),
-    ).resolves.toMatchObject({ botId: null, capabilityState: 'stale_or_unknown' });
+    ).resolves.toMatchObject({ botId: fixture.bots[0]!.id, capabilityState: 'confirmed_capable' });
   });
 
   it('excludes inactive member-capable memberships from a strict route', async () => {
@@ -4984,7 +4984,7 @@ describe('MaxBotLinkService', () => {
     });
   });
 
-  it('distinguishes a stale capability and only exposes it through an explicit soft fallback', async () => {
+  it('uses durable confirmed capabilities for strict and soft routes', async () => {
     const fixture = createServiceFixture();
     const chatId = 'chat-stale-delete-capability';
     fixture.chats.set(chatId, {
@@ -5019,21 +5019,21 @@ describe('MaxBotLinkService', () => {
     });
 
     expect(strictRoute).toMatchObject({
-      botId: null,
-      candidateBotIds: [],
-      capabilityState: 'stale_or_unknown',
-      capabilityReason: 'snapshot_stale',
+      botId: 'id613002203036_bot',
+      candidateBotIds: ['id613002203036_bot'],
+      capabilityState: 'confirmed_capable',
+      capabilityReason: 'confirmed',
     });
     expect(softRoute).toMatchObject({
       botId: 'id613002203036_bot',
       candidateBotIds: ['id613002203036_bot'],
-      reason: 'primary_soft',
-      capabilityState: 'stale_or_unknown',
-      capabilityReason: 'snapshot_stale',
+      reason: 'primary_confirmed',
+      capabilityState: 'confirmed_capable',
+      capabilityReason: 'confirmed',
     });
   });
 
-  it('prefers a fresh confirmed alternate over a stale primary in soft-fallback mode', async () => {
+  it('keeps a confirmed primary stable after its former expiry', async () => {
     const fixture = createServiceFixture();
     const chatId = 'chat-mixed-delete-capabilities';
     fixture.chats.set(chatId, {
@@ -5075,9 +5075,9 @@ describe('MaxBotLinkService', () => {
         requireFreshSnapshot: false,
       }),
     ).resolves.toMatchObject({
-      botId: 'id613002203036_4_bot',
-      candidateBotIds: ['id613002203036_4_bot', 'id613002203036_bot'],
-      reason: 'alternate_confirmed',
+      botId: 'id613002203036_bot',
+      candidateBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+      reason: 'primary_confirmed',
       capabilityState: 'confirmed_capable',
       capabilityReason: 'confirmed',
     });

@@ -34,6 +34,7 @@ describe('PublisherWebhookSubscriptionReconcilerService', () => {
       'user_removed',
       'bot_added',
       'bot_removed',
+      'bot_admin_permissions_changed',
       'bot_started',
       'chat_title_changed',
       'message_removed',

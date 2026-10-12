@@ -22,10 +22,18 @@ describe('Exact Publisher SQL proof reuse', () => {
     });
     expect(row.botAccessCheckedAt.getTime()).toBe(now.getTime() - 60_000);
   });
+  it('reuses a years-old confirmed snapshot regardless of a legacy expiry', () => {
+    const row = binding();
+    row.botAccessCheckedAt = new Date('2020-01-01T00:00:00Z');
+    row.permissionsSnapshot = {
+      ...(row.permissionsSnapshot as object),
+      checkedAt: row.botAccessCheckedAt.toISOString(),
+    };
+    row.botAccessExpiresAt = new Date('2020-01-01T00:15:00Z');
+    expect(readPublisherFreshBotProof(row, 'publisher', now)).toMatchObject({ isAdmin: true });
+  });
   it.each([
     'wrong_bot',
-    'expired',
-    'near_expiry',
     'future_proof',
     'old_proof',
     'removed',
@@ -35,8 +43,6 @@ describe('Exact Publisher SQL proof reuse', () => {
   ])('requires a new remote probe for %s', (kind) => {
     const row = binding();
     if (kind === 'wrong_bot') row.publisherBotId = 'other';
-    if (kind === 'expired') row.botAccessExpiresAt = now;
-    if (kind === 'near_expiry') row.botAccessExpiresAt = new Date(now.getTime() + 5_000);
     if (kind === 'future_proof') row.botAccessCheckedAt = new Date(now.getTime() + 1);
     if (kind === 'old_proof') row.botAccessCheckedAt = new Date(now.getTime() - 15 * 60_000);
     if (kind === 'removed') row.status = ChatBotMembershipStatus.REMOVED;

@@ -81,7 +81,13 @@ export class InitDataGuard implements CanActivate {
           throw new MiniappCsrfRejectedException();
         }
 
-        request.user = expiredInitDataUser ?? session.record.user;
+        request.user = {
+          ...(expiredInitDataUser ?? session.record.user),
+          accessCheckedAfter: Math.max(
+            session.record.createdAt ?? 0,
+            expiredInitDataUser?.accessCheckedAfter ?? session.record.user.accessCheckedAfter ?? 0,
+          ),
+        };
         request.miniappAuth = {
           source: 'session',
           principalKey: session.keyHash,

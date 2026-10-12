@@ -165,6 +165,7 @@ export function PublisherEntitiesPage({
     staleTime: 15_000,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
+      if (query.state.data?.pages.some((page) => page.accessVerificationPending)) return 1500;
       const intervals =
         query.state.data?.pages.flatMap((page) =>
           page.items
@@ -764,6 +765,13 @@ export function PublisherEntitiesPage({
             <Refresh aria-hidden />
             <span>Повторить</span>
           </button>
+        </div>
+      ) : entities.length === 0 &&
+        entitiesQuery.data?.pages.some((page) => page.accessVerificationPending) ? (
+        <div className="publisher-entities-page__state" role="status">
+          <Refresh className="is-refreshing" aria-hidden />
+          <strong>Проверяю ваши права</strong>
+          <span>Чаты и каналы появятся по мере подтверждения.</span>
         </div>
       ) : shouldAutoOpenChannels ? (
         <div className="publisher-entities-page__state" role="status">

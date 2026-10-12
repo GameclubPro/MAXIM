@@ -1,5 +1,7 @@
 import { ChatBotMembershipRole, ChatBotMembershipStatus } from '../prisma/prisma-client';
 
+export const MANAGED_ENTITY_DURABLE_ACCESS_READER_VERSION = 1;
+
 export const MANAGED_ENTITY_EXECUTION_PURPOSES = [
   'moderation',
   'send_message',
@@ -156,6 +158,21 @@ export function isFreshMembershipAccessSnapshot(
   return checkedAtMs <= nowMs && checkedAtMs + freshMs > nowMs;
 }
 
+// FLAG: A confirmed bot capability is durable connection evidence. Wall-clock age
+// never revokes it; explicit denial, activation state and capability ceilings are
+// checked by the owning route. This helper must not be used for human authority.
+export function isConfirmedMembershipAccessSnapshot(
+  snapshot: MembershipAccessSnapshot | null,
+  options: { nowMs?: number; freshMs?: number } = {},
+): boolean {
+  if (!snapshot || (!snapshot.isAdmin && !snapshot.isOwner)) return false;
+  // FLAG: Older persisted positive snapshots predate the embedded timestamp.
+  // Their owning membership still enforces structured denial and activation state.
+  if (!snapshot.checkedAt) return true;
+  const checkedAt = Date.parse(snapshot.checkedAt);
+  return Number.isFinite(checkedAt) && checkedAt <= (options.nowMs ?? Date.now());
+}
+
 export function calculatePrimaryAccessScore(snapshot: MembershipAccessSnapshot | null): number {
   if (!snapshot) {
     return PRIMARY_UNKNOWN_ACCESS_SCORE;
@@ -222,10 +239,7 @@ export function resolvePreferredPrimaryBotId(
       membership,
       index,
       hasSnapshot: snapshot !== null,
-      hasFreshSnapshot:
-        isFreshMembershipAccessSnapshot(snapshot, options) &&
-        (membership.botAccessExpiresAt == null ||
-          membership.botAccessExpiresAt.getTime() > (options.nowMs ?? Date.now())),
+      hasFreshSnapshot: isConfirmedMembershipAccessSnapshot(snapshot, options),
       score: calculatePrimaryAccessScore(snapshot),
     };
   });

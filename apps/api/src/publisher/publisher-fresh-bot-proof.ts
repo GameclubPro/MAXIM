@@ -24,10 +24,7 @@ export function readPublisherFreshBotProof(
     binding.publisherBotId !== botId ||
     binding.status !== ChatBotMembershipStatus.ACTIVE ||
     !binding.botAccessCheckedAt ||
-    !binding.botAccessExpiresAt ||
     binding.botAccessCheckedAt > now ||
-    binding.botAccessCheckedAt.getTime() <= now.getTime() - 15 * 60_000 ||
-    binding.botAccessExpiresAt.getTime() <= now.getTime() + 30_000 ||
     publisherAccessProbeLifecycleSuperseded(binding, binding.botAccessCheckedAt)
   )
     return null;
@@ -46,7 +43,7 @@ export function readPublisherFreshBotProof(
   )
     return null;
   // FLAG: Only this exact SQL snapshot may replace the duplicate remote bot probe.
-  // The actor commit independently fences lifecycle, expiry and the same checkedAt.
+  // The actor commit independently fences lifecycle and the same checkedAt.
   return {
     userId: null,
     isAdmin: snapshot.isAdmin === true,

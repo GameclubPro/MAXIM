@@ -231,7 +231,9 @@ export class WebhookCanonicalExecutionService {
     const normalizedUpdateType = update.type.trim().toLowerCase();
     const botAddedObservation = normalizedUpdateType === 'bot_added';
     const preparedObservationOnly =
-      normalizedUpdateType === 'user_removed' || normalizedUpdateType === 'bot_removed';
+      normalizedUpdateType === 'user_removed' ||
+      normalizedUpdateType === 'bot_removed' ||
+      normalizedUpdateType === 'bot_admin_permissions_changed';
     const localObservationOnly =
       preparedObservationOnly || botAddedObservation || normalizedUpdateType === 'message_removed';
     const executionClaimModel = this.executionClaimModel;
@@ -805,8 +807,6 @@ export class WebhookCanonicalExecutionService {
             AND membership."bot_access_checked_at" = ${params.route.proof.accessEpoch.checkedAt}
             AND membership."bot_access_source" = ${params.route.proof.accessEpoch.source}
             AND membership."bot_access_checked_at" <= instant."now"
-            AND membership."bot_access_checked_at" + INTERVAL '5 minutes' > instant."now"
-            AND membership."bot_access_expires_at" > instant."now"
         )`
       : Prisma.empty;
     const executionBotFence =

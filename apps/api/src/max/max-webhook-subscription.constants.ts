@@ -10,6 +10,7 @@ export const MAX_KNOWN_OFFICIAL_WEBHOOK_UPDATE_TYPES = [
   'user_removed',
   'bot_added',
   'bot_removed',
+  'bot_admin_permissions_changed',
   'bot_started',
   'bot_stopped',
   'chat_title_changed',
@@ -27,6 +28,7 @@ export const MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES = [
   'user_removed',
   'bot_added',
   'bot_removed',
+  'bot_admin_permissions_changed',
   'bot_started',
   'chat_title_changed',
 ] as const;

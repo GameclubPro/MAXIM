@@ -1,5 +1,11 @@
 # Managed Entity Administrator Visibility
 
+For the proposed next architecture at 10,000–50,000 connections, see the
+[12 October demand-based access plan](operations/plans/2026-10-12-managed-access-demand-plan.md).
+It adds persistent explicit bot activation, administrator seeding at connection,
+and per-user checks on mini-app entry. It is a design proposal; the implementation
+and existing permission invariants described below remain the current baseline.
+
 ## Scope And Evidence
 
 This follow-up covers home visibility for moderation bots and Publik, for both chats

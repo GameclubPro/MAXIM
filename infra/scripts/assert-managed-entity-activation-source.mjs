@@ -27,6 +27,8 @@ export const MANAGED_ENTITY_ACTIVATION_SOURCE_CHECKS = Object.freeze([
   [
     'apps/api/src/max/max-bot-access-policy.util.ts',
     [
+      'MANAGED_ENTITY_DURABLE_ACCESS_READER_VERSION = 1',
+      'export function isConfirmedMembershipAccessSnapshot(',
       "Object.hasOwn(row, 'activationCapabilityCeiling')",
       "Object.hasOwn(row, 'explicitActivationSourceAt')",
       'MANAGED_ENTITY_EXECUTION_PURPOSES.filter(',
@@ -173,7 +175,10 @@ export const MANAGED_ENTITY_ACTIVATION_SOURCE_CHECKS = Object.freeze([
   ],
   [
     'apps/api/src/publisher/publisher-binding-refresh-scheduler.service.ts',
-    ['publisherRefreshEvidenceWhere(this.publisherBotId)'],
+    [
+      'async onModuleInit(): Promise<void> {}',
+      "async scan(_reason: 'startup' | 'scheduled'): Promise<void> {}",
+    ],
   ],
   [
     'apps/api/src/publisher/publisher-catalog-refresh-executor.ts',

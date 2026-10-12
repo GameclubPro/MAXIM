@@ -99,11 +99,12 @@ export class PublisherPolicyService {
   ) {}
 
   async listEntities(user: AuthUser, query?: unknown): Promise<PublisherEntitiesResponse> {
-    this.accessRefresh?.schedule(user.userId, 'publisher');
+    this.accessRefresh?.schedule(user.userId, 'publisher', undefined, user.accessCheckedAfter);
     const pagination = this.readPaginationMode(query);
     if (pagination === undefined) {
       return publisherEntitiesResponseSchema.parse({
         items: await this.loadScopedEntities(user, undefined, true),
+        accessVerificationPending: (await this.accessRefresh?.pending(user, 'publisher')) ?? false,
       });
     }
 
@@ -128,6 +129,9 @@ export class PublisherPolicyService {
         where: {
           ...(entityIds ? { chatId: { in: [...entityIds] } } : {}),
           userId: user.userId,
+          ...(user.accessCheckedAfter === undefined
+            ? {}
+            : { checkedAt: { gte: new Date(user.accessCheckedAfter) } }),
           state: ManagedEntityAccessState.GRANTED,
           userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
           OR: [
@@ -301,8 +305,6 @@ export class PublisherPolicyService {
                 },
               },
               { sendRouteQuarantinedUntil: { gt: now } },
-              { botAccessExpiresAt: null },
-              { botAccessExpiresAt: { lte: now } },
             ],
           },
         ],
@@ -324,7 +326,7 @@ export class PublisherPolicyService {
         botAccessState: {
           in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
         },
-        botAccessExpiresAt: { gt: now },
+
         AND: [
           {
             OR: [{ sendRouteQuarantinedUntil: null }, { sendRouteQuarantinedUntil: { lte: now } }],
@@ -1161,6 +1163,7 @@ export class PublisherPolicyService {
       this.botRegistry.getPublisherBotDescriptor().id,
       query,
       await this.readinessService.isRuntimeAvailable(),
+      user.accessCheckedAfter,
     );
     const entities = page.ids.length ? await this.loadScopedEntities(user, page.ids, true) : [];
     const byId = new Map(entities.map((entity) => [entity.id, entity]));
@@ -1177,6 +1180,7 @@ export class PublisherPolicyService {
       nextCursor: page.nextCursor,
       filteredTotal: page.filteredTotal,
       summary: page.summary,
+      accessVerificationPending: (await this.accessRefresh?.pending(user, 'publisher')) ?? false,
     });
   }
 

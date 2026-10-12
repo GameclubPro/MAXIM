@@ -426,7 +426,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
     );
   });
 
-  it('falls through to durable refresh when an ordinary message sees stale access', async () => {
+  it('retains durable bot authority on ordinary messages after legacy expiry', async () => {
     const observedAt = new Date();
     const prisma = {
       publisherEntityBinding: {
@@ -440,7 +440,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
           lifecycleEventAt: new Date(observedAt.getTime() - 1_000),
           lifecycleEventType: 'message_created',
         }),
-        updateMany: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       managedBotChatCatalog: {
         findUnique: jest.fn().mockResolvedValue({
@@ -476,14 +476,9 @@ describe('PublisherEntityBindingLifecycleService', () => {
       } as never),
     ).resolves.toBe('applied');
 
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-    expect(refreshQueue.enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chatId: 'chat-1',
-        publisherBotId: 'publik_bot',
-        reason: 'webhook_observed',
-      }),
-    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.publisherEntityBinding.updateMany).toHaveBeenCalledTimes(1);
+    expect(refreshQueue.enqueue).not.toHaveBeenCalled();
   });
 
   it('falls back to the ordered lifecycle path when the fresh binding CAS loses a race', async () => {

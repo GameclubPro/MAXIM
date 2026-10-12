@@ -189,7 +189,6 @@ describe('MaxActionLedgerService', () => {
           in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
         },
         botAccessCheckedAt: { not: null },
-        botAccessExpiresAt: { gt: new Date('2026-08-21T10:00:00.000Z') },
         botId: { in: ['bot-1'] },
       },
       select: { id: true },

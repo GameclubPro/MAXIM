@@ -321,36 +321,6 @@ function normalizeManagedEntitiesSnapshotVersion(value: string | null | undefine
   return normalized.length > 0 ? normalized : null;
 }
 
-function readManagedEntitiesLocalCache(
-  entityType: ManagedEntityKind,
-  scope: string,
-): ManagedEntitiesLocalCachePayload | null {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  try {
-    const raw = window.localStorage.getItem(buildManagedEntitiesLocalCacheKey(entityType, scope));
-    if (!raw) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as ManagedEntitiesLocalCachePayload | null;
-    if (!parsed || parsed.version !== MANAGED_ENTITIES_LOCAL_CACHE_VERSION) {
-      return null;
-    }
-
-    return {
-      version: parsed.version,
-      items: Array.isArray(parsed.items) ? sanitizeManagedEntities(parsed.items) : [],
-      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
-      snapshot: sanitizeManagedEntitiesSnapshot(parsed.snapshot),
-    };
-  } catch {
-    return null;
-  }
-}
-
 function saveManagedEntitiesLocalCache(
   entityType: ManagedEntityKind,
   scope: string,
@@ -689,19 +659,10 @@ export function useManagedEntitiesSync({
           hasLoadedFromServer: cachedState.hasLoadedFromServer === true,
           snapshot: sanitizeManagedEntitiesSnapshot(cachedState.snapshot),
         };
-  const persistedCache = useMemo(
-    () =>
-      persistLocalCache && effectiveLocalCacheScope !== null
-        ? readManagedEntitiesLocalCache(entityType, effectiveLocalCacheScope)
-        : null,
-    [effectiveLocalCacheScope, entityType, persistLocalCache],
-  );
-  const initialCachedData = sanitizeManagedEntitiesOrNull(
-    cachedState?.data ?? persistedCache?.items ?? null,
-  );
-  const initialSnapshot = sanitizeManagedEntitiesSnapshot(
-    normalizedCachedState?.snapshot ?? persistedCache?.snapshot ?? null,
-  );
+  // FLAG: A previous launch's cards are discovery hints, never this launch's human proof.
+  // In-memory navigation may reuse the current launch; persistent storage cannot seed it.
+  const initialCachedData = sanitizeManagedEntitiesOrNull(cachedState?.data ?? null);
+  const initialSnapshot = sanitizeManagedEntitiesSnapshot(normalizedCachedState?.snapshot ?? null);
   const initialState: ManagedEntitiesSyncState = freshOnLoad
     ? {
         ...EMPTY_SYNC_STATE,

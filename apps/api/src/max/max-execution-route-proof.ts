@@ -94,12 +94,16 @@ export function hasExecutionCapability(
       'post_edit_delete_messages',
     ].some((permission) => permissions.has(permission));
   if (entityType === ChatEntityType.CHANNEL) {
+    // FLAG: MAX now documents read_all_messages for channel administrators as well.
+    // A permission event can confirm it directly; legacy channel GET evidence stays supported.
+    if (permissions.has('read_all_messages') || permissions.has('can_read_all_messages'))
+      return true;
     const raw = membership.permissionsSnapshot as {
       channelReadProof?: { kind?: unknown; checkedAt?: unknown; source?: unknown };
     };
     const proof = raw.channelReadProof;
-    // FLAG: MAX channel admin permissions do not declare read-all. An exact successful
-    // channel GET recorded with this same access epoch proves reads, never mutation rights.
+    // FLAG: An exact successful channel GET recorded with this same access epoch
+    // remains valid legacy read evidence; it never proves mutation rights.
     return (
       proof?.kind === 'MAX_CHANNEL_GET' &&
       proof.checkedAt === membership.botAccessCheckedAt?.toISOString() &&
@@ -114,18 +118,16 @@ export function hasExecutionCapability(
 export function hasFreshExecutionAccess(
   membership: MaxExecutionMembershipProof,
   nowMs = Date.now(),
-  maxAgeMs = MAX_EXECUTION_ACCESS_MAX_AGE_MS,
+  _maxAgeMs = MAX_EXECUTION_ACCESS_MAX_AGE_MS,
 ): boolean {
   const checkedAt = membership.botAccessCheckedAt?.getTime() ?? Number.NaN;
-  const expiresAt = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
   return (
     membership.status === ChatBotMembershipStatus.ACTIVE &&
     !isManagedEntityActivationRequired(membership) &&
     Number.isFinite(checkedAt) &&
     checkedAt <= nowMs &&
-    checkedAt + maxAgeMs > nowMs &&
-    Number.isFinite(expiresAt) &&
-    expiresAt > nowMs &&
+    (membership.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+      membership.botAccessState === ChatBotAccessState.CONFIRMED_OWNER) &&
     Boolean(membership.botAccessSource)
   );
 }

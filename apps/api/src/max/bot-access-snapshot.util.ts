@@ -16,7 +16,7 @@ export type BotAccessSnapshotPersistence = {
   permissionsSnapshot: Prisma.InputJsonValue;
   botAccessState: ChatBotAccessState;
   botAccessCheckedAt: Date;
-  botAccessExpiresAt: Date;
+  botAccessExpiresAt: Date | null;
   botAccessSource: string;
   botAccessLastErrorCode: string | null;
   permissionsHash: string;
@@ -62,7 +62,10 @@ export function buildBotAccessSnapshotPersistence(
     permissionsSnapshot,
     botAccessState: resolveBotAccessState(access),
     botAccessCheckedAt: now,
-    botAccessExpiresAt: new Date(now.getTime() + (options.ttlMs ?? DEFAULT_BOT_ACCESS_TTL_MS)),
+    botAccessExpiresAt:
+      access && (access.isAdmin || access.isOwner)
+        ? null
+        : new Date(now.getTime() + (options.ttlMs ?? DEFAULT_BOT_ACCESS_TTL_MS)),
     botAccessSource: options.source,
     botAccessLastErrorCode: options.lastErrorCode ?? null,
     permissionsHash: hashPermissionsSnapshot(permissionsSnapshot),

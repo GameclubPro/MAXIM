@@ -529,20 +529,23 @@ integration('Publisher auto-reply exact receipt settlement on PostgreSQL', () =>
   );
 
   it.each(['removed', 'reassigned', 'permissions', 'expired'] as const)(
-    'cancels a binding %s change committed during a real delivery-row wait',
+    'rechecks binding %s during a real row wait without treating expiry as revocation',
     async (kind) => {
-      await changeDuringRowLock('delivery', () =>
-        db.publisherEntityBinding.update({
-          where: { chatId },
-          data:
-            kind === 'removed'
-              ? { status: 'REMOVED' }
-              : kind === 'reassigned'
-                ? { publisherBotId: 'synthetic-other-publisher' }
-                : kind === 'permissions'
-                  ? { permissionsSnapshot: { permissionsKnown: true, permissions: [] } }
-                  : { botAccessExpiresAt: new Date(Date.now() - 1_000) },
-        }),
+      await changeDuringRowLock(
+        'delivery',
+        () =>
+          db.publisherEntityBinding.update({
+            where: { chatId },
+            data:
+              kind === 'removed'
+                ? { status: 'REMOVED' }
+                : kind === 'reassigned'
+                  ? { publisherBotId: 'synthetic-other-publisher' }
+                  : kind === 'permissions'
+                    ? { permissionsSnapshot: { permissionsKnown: true, permissions: [] } }
+                    : { botAccessExpiresAt: new Date(Date.now() - 1_000) },
+          }),
+        { expected: kind === 'expired' ? 'sent' : 'canceled' },
       );
     },
   );
@@ -568,7 +571,7 @@ integration('Publisher auto-reply exact receipt settlement on PostgreSQL', () =>
     'quarantine',
     'older-check',
     'future-check',
-  ] as const)('rejects binding %s supersession after the last binding read', async (kind) => {
+  ] as const)('checks binding %s after the last read and ignores legacy expiry', async (kind) => {
     const binding = await db.publisherEntityBinding.findUniqueOrThrow({ where: { chatId } });
     afterBindingRead = async () => {
       await db.publisherEntityBinding.update({
@@ -577,7 +580,7 @@ integration('Publisher auto-reply exact receipt settlement on PostgreSQL', () =>
           kind === 'permissions'
             ? { permissionsSnapshot: { permissionsKnown: true, permissions: [] } }
             : kind === 'shortened'
-              ? { botAccessExpiresAt: new Date(binding.botAccessExpiresAt!.getTime() - 1_000) }
+              ? { botAccessExpiresAt: new Date(Date.now() - 1_000) }
               : kind === 'lifecycle'
                 ? { lifecycleEventAt: new Date() }
                 : kind === 'quarantine'
@@ -594,12 +597,15 @@ integration('Publisher auto-reply exact receipt settlement on PostgreSQL', () =>
                       )
                     : {
                         botAccessCheckedAt: new Date(binding.botAccessCheckedAt!.getTime() - 1),
-                        botAccessExpiresAt: new Date(binding.botAccessExpiresAt!.getTime() + 1_000),
+                        botAccessExpiresAt: new Date(Date.now() + 1_000),
                       },
       });
     };
     await service.process(job(), attempt);
-    await expectCanceledBeforeSend();
+    if (kind === 'shortened') {
+      expect(await row()).toMatchObject({ status: 'SENT', remoteMessageId });
+      expect(remoteSend).toHaveBeenCalledTimes(1);
+    } else await expectCanceledBeforeSend();
   });
 
   it('permits a monotonic renewal of the same authority snapshot after its last read', async () => {
@@ -625,7 +631,7 @@ integration('Publisher auto-reply exact receipt settlement on PostgreSQL', () =>
     expect(remoteSend).toHaveBeenCalledTimes(1);
   });
 
-  it('checks the live database deadline when binding evidence expires after its last read', async () => {
+  it('retains confirmed bot authority when the legacy expiry passes during the final check', async () => {
     let expiresAt: Date;
     beforeFence = async () => {
       expiresAt = new Date(Date.now() + 1_000);
@@ -640,7 +646,8 @@ integration('Publisher auto-reply exact receipt settlement on PostgreSQL', () =>
       );
     };
     await service.process(job(), attempt);
-    await expectCanceledBeforeSend();
+    expect(await row()).toMatchObject({ status: 'SENT', remoteMessageId });
+    expect(remoteSend).toHaveBeenCalledTimes(1);
   });
 
   it('retries a real failed SQL receipt write without another MAX send', async () => {

@@ -204,7 +204,7 @@ export class PublisherReadinessService {
   async requestBotAccessRefresh(
     targets: readonly { chatId: string; entityType: ManagedEntityType }[],
     requiredBotId: string,
-    refreshBefore?: Date,
+    _refreshBefore?: Date,
     options: { publicationUrgentAt?: Date; strictEnqueue?: boolean } = {},
   ): Promise<void> {
     if (
@@ -234,7 +234,7 @@ export class PublisherReadinessService {
                 (source.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat'),
           )
         ) {
-          await this.nominateStaleBotRefresh(source, refreshBefore, options);
+          await this.nominateStaleBotRefresh(source, _refreshBefore, options);
         }
       }
     }
@@ -242,19 +242,13 @@ export class PublisherReadinessService {
 
   private async nominateStaleBotRefresh(
     source: PublisherReadinessSource,
-    refreshBefore?: Date,
+    _refreshBefore?: Date,
     options: { publicationUrgentAt?: Date; strictEnqueue?: boolean } = {},
   ): Promise<void> {
     const binding = source.publisherBinding;
     const now = new Date();
-    const refreshThreshold =
-      refreshBefore && Number.isFinite(refreshBefore.getTime())
-        ? new Date(
-            Math.min(now.getTime() + 15 * 60_000, Math.max(now.getTime(), refreshBefore.getTime())),
-          )
-        : now;
-    // FLAG: A stale positive snapshot can nominate an exact-bot probe, never authorize a send.
-    // Fresh denial, removal, disabled policy and route quarantine keep their own boundaries.
+    // FLAG: Only actual demand for missing evidence may nominate a probe. A confirmed
+    // connection never needs a clock-driven renewal; explicit revocation remains sticky.
     if (
       !this.dispatchConfigured ||
       !this.bindingRefreshQueue ||
@@ -265,7 +259,10 @@ export class PublisherReadinessService {
       binding.status !== ChatBotMembershipStatus.ACTIVE ||
       (binding.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
         binding.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER) ||
-      (binding.botAccessExpiresAt && binding.botAccessExpiresAt > refreshThreshold) ||
+      (binding.botAccessCheckedAt &&
+        binding.botAccessCheckedAt <= now &&
+        (binding.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+          binding.botAccessState === ChatBotAccessState.CONFIRMED_OWNER)) ||
       (binding.sendRouteQuarantinedUntil && binding.sendRouteQuarantinedUntil > now)
     )
       return;
@@ -352,38 +349,12 @@ export class PublisherReadinessService {
       });
     }
     if (
-      !binding.botAccessCheckedAt ||
-      !binding.botAccessExpiresAt ||
-      binding.botAccessExpiresAt <= now
-    ) {
-      return publisherEntityReadinessSchema.parse({
-        ...base,
-        state:
-          binding.botAccessCheckedAt &&
-          binding.botAccessExpiresAt &&
-          (binding.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
-            binding.botAccessState === ChatBotAccessState.CONFIRMED_OWNER)
-            ? 'temporarily_unavailable'
-            : 'setup_required',
-        blockerCode:
-          binding.botAccessCheckedAt &&
-          binding.botAccessExpiresAt &&
-          (binding.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
-            binding.botAccessState === ChatBotAccessState.CONFIRMED_OWNER)
-            ? 'bot_access_expired'
-            : 'bot_access_unconfirmed',
-        retryAt:
-          binding.botAccessCheckedAt &&
-          binding.botAccessExpiresAt &&
-          (binding.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
-            binding.botAccessState === ChatBotAccessState.CONFIRMED_OWNER)
-            ? new Date(now.getTime() + 60_000).toISOString()
-            : null,
-      });
-    }
-    if (
-      binding.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
-      binding.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER
+      !(
+        binding.botAccessCheckedAt &&
+        binding.botAccessCheckedAt <= now &&
+        (binding.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+          binding.botAccessState === ChatBotAccessState.CONFIRMED_OWNER)
+      )
     ) {
       return publisherEntityReadinessSchema.parse({
         ...base,
