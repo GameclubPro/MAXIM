@@ -88,3 +88,13 @@ passed all 305 tests in the four affected native/outbox suites. The initial broa
 completed 746 suites / 19,098 tests, with 2,154 store-dependent tests skipped; native coverage
 is reported separately. Final staged validation and both production rollout phases remain
 pending; these development results do not authorize declaring the rollout complete.
+
+## Compatible rollback image build
+
+The original reader-only implementation is retained unchanged from `c0c34f96`, with
+quarantine writes disabled. Its full CI job exceeded the original 20-minute wall-clock
+budget twice. This compatibility build brings in the reviewed 30-minute API/PostgreSQL
+job budgets and retains subsequent main history; it introduces no runtime differences
+from that already locally validated reader implementation. Require its own green exact-SHA
+CI and preload its immutable API image before activating the newer writer build. It is
+prepared as a `rollback-runtime` target, not deployed into the currently degraded fleet.
