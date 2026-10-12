@@ -313,8 +313,10 @@ it must not appear as an empty duplicate backlog. Lightweight readiness and oper
 snapshots do not add auxiliary queue reads.
 
 Use `./infra/scripts/vps-connect.sh postgres-audit duplicate` for bounded, identifier-free SQL
-diagnostics. Re-provision the reviewed audit role after synchronizing this catalog: Antiduplicate
-requires exactly 17 column SELECT grants and never table SELECT on settings or delete intents.
+diagnostics. Re-provision the reviewed audit role after synchronizing this catalog. The current
+settings/intent/reason group has 38 column SELECT grants: the original 17 plus 21 bounded
+owner-proof metadata columns. It never grants table SELECT on settings or delete intents;
+identities, lease tokens and reason metadata are check-only and must not appear in reports.
 The `duplicate_settings` schema-v2 report separates `saved_eligibility` (master switch, MESSAGE
 comparison, scope and valid schedule) from `legacy_compatibility` (retired toggle/presets).
 `image_eligible_count_lower_bound` describes only the capped settings sample; it does not prove
