@@ -11,6 +11,10 @@ import { assertManualGroupCommandSuccessNoticeAuthority } from './admin-manual-g
 import { mergeManagedBotChatCatalogRows } from './admin-managed-bot-catalog-values';
 import { createManagedEntityHeader } from './admin-managed-entity-header';
 import {
+  hydrateManagedEntityHeaders,
+  publishManagedEntityHeaderChanges,
+} from './admin-managed-entity-header-refresh';
+import {
   resolveManualMuteResultFromLedger,
   isAmbiguousAttemptedMaxMemberMutation,
   isManualModerationTransientMaxError,
@@ -502,8 +506,6 @@ import {
   MANAGED_BOT_CHAT_CATALOG_FALLBACK_LIMIT,
   MANAGED_BOT_CHAT_CATALOG_MARK_MISSING_MAX_SEEN,
   MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES,
-  MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE,
-  MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY,
   ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
   ADMIN_ACTION_HEALTH_LANE,
   DEFAULT_SUPER_BAN_DEVELOPER_USER_IDS,
@@ -1778,6 +1780,12 @@ export class AdminService implements OnModuleDestroy {
           },
         );
         if (diffResponse) {
+          this.scheduleManagedEntityHeaderHydration(
+            user.userId,
+            entityType,
+            publishedSnapshot.items,
+            { deferStart: true },
+          );
           return diffResponse;
         }
       }
@@ -1920,13 +1928,26 @@ export class AdminService implements OnModuleDestroy {
           entityType,
           filteredItems,
         );
-      const responseSnapshot = snapshot;
+      const hydratedItems = await this.attachManagedEntityAvatars(responseItems);
+      const responseSnapshot =
+        this.managedEntitiesPublishedSnapshotWriteEnabled &&
+        this.supportsManagedEntitiesPublishedSnapshot(entityType)
+          ? await publishManagedEntityHeaderChanges({
+              cache: this.chatContextCache,
+              userId,
+              entityType,
+              snapshot,
+              visibleItems: hydratedItems,
+              writeDiff: this.managedEntitiesPublishedDiffWriteEnabled,
+            })
+          : snapshot;
+      if (!responseSnapshot) return null;
       if (!this.haveSameManagedEntityIds(responseItems, runtimeScopedItems)) {
         this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
       }
 
       return {
-        items: responseItems,
+        items: hydratedItems,
         version: responseSnapshot.version,
         builtAt: responseSnapshot.builtAt,
         lastSyncedAt: responseSnapshot.lastSyncedAt,
@@ -22361,102 +22382,23 @@ export class AdminService implements OnModuleDestroy {
     chats: ChatSummary[],
     remoteChats?: readonly MaxBotChat[],
   ): Promise<void> {
-    if (await this.isManagedEntitiesRefreshBackoffActive(userId, entityType, refreshKey)) {
-      return;
-    }
-
-    if (Array.isArray(remoteChats) && remoteChats.length > 0) {
-      await this.primeManagedEntityHeaders(chats, remoteChats);
-    }
-
-    const hydrationCandidates = (
-      await Promise.all(
-        chats.map(async (chat) => {
-          const cachedHeader = await this.chatContextCache.getManagedEntityHeader?.(
-            chat.id,
-            chat.entityType,
-          );
-          return this.isManagedEntityHeaderStale(cachedHeader ?? null, chat) ? chat : null;
-        }),
-      )
-    )
-      .filter((chat): chat is ChatSummary => chat !== null)
-      .sort((left, right) => {
-        if (left.entityType === right.entityType) {
-          return 0;
-        }
-        return left.entityType === 'channel' ? -1 : 1;
-      })
-      .slice(0, MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE);
-
-    if (hydrationCandidates.length === 0 || typeof this.maxClient.getChatSnapshot !== 'function') {
-      return;
-    }
-
-    let shouldBackoff = false;
-    let failure: unknown = null;
-
-    await mapWithConcurrencyLimit(
-      hydrationCandidates,
-      MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY,
-      async (chat) => {
-        if (shouldBackoff) {
-          return null;
-        }
-
-        try {
-          const snapshot = await this.maxClient.getChatSnapshot(chat.id, {
-            trafficClass: 'background',
-            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
-            ...(chat.primaryBotId ? { botId: chat.primaryBotId } : {}),
-          });
-          await this.persistManagedEntityHeaderSnapshot(chat, snapshot);
-        } catch (error: unknown) {
-          if (isMaxApiThrottleError(error) || isMaxApiTimeoutError(error)) {
-            shouldBackoff = true;
-            failure = error;
-          }
-        }
-
-        return null;
-      },
-    );
-
-    if (!shouldBackoff) {
-      return;
-    }
-
+    if (await this.isManagedEntitiesRefreshBackoffActive(userId, entityType, refreshKey)) return;
+    if (remoteChats?.length) await this.primeManagedEntityHeaders(chats, remoteChats);
+    const failure = await hydrateManagedEntityHeaders({
+      chats,
+      cache: this.chatContextCache,
+      maxClient: this.maxClient,
+      persist: (chat, snapshot) => this.persistManagedEntityHeaderSnapshot(chat, snapshot),
+    });
+    if (!failure) return;
     const backoffMs = await this.activateManagedEntitiesRefreshBackoff(
       userId,
       entityType,
       refreshKey,
     );
     this.logger.warn(
-      {
-        entityType,
-        userId,
-        backoffMs,
-        err: failure instanceof Error ? failure.message : String(failure),
-      },
+      { entityType, userId, backoffMs },
       'Paused managed entity header hydration after MAX API throttling',
-    );
-  }
-
-  private isManagedEntityHeaderStale(
-    header: ManagedEntityHeader | null,
-    chat: ChatSummary,
-    options: {
-      refreshMissingLink?: boolean;
-    } = {},
-  ): boolean {
-    if (!header) {
-      return true;
-    }
-
-    return (
-      isFallbackTitle(chat.id, header.title) ||
-      !this.readTrimmedString(header.avatarUrl) ||
-      (options.refreshMissingLink === true && !this.readTrimmedString(header.link))
     );
   }
 
@@ -22483,7 +22425,8 @@ export class AdminService implements OnModuleDestroy {
       avatarUrl: string | null;
     },
   ): Promise<void> {
-    const title = this.readTrimmedString(snapshot.title) ?? chat.title;
+    const title =
+      resolvePresentableManagedEntityTitle(chat.id, snapshot.title, chat.title) ?? chat.title;
     const avatarUrl = this.readTrimmedString(snapshot.avatarUrl);
     const link = this.readTrimmedString(snapshot.link) ?? chat.link ?? null;
 

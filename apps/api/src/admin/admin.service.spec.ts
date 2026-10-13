@@ -17106,7 +17106,11 @@ describe('AdminService.listChats', () => {
 
     expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
       trafficClass: 'background',
+      actionHealthLane: 'background',
       sourceTag: 'managed_refresh',
+      bypassCache: true,
+      timeoutMs: 2500,
+      ignoreFailureMetricStatuses: [403, 404],
     });
     expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(
       'admin-1',
