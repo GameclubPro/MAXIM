@@ -51,12 +51,9 @@ fi
 # FLAG: A restore competes for the same disks as production. Serialize it with the
 # producer and deployments, and never start without healthy production readiness.
 probe_ready() {
-  curl -fsS --max-time 10 "$READINESS_URL" | node -e '
-    let raw=""; process.stdin.on("data", x => raw += x).on("end", () => {
-      const s=JSON.parse(raw);
-      if (!s.ok || !s.checks?.database || !s.checks?.redis ||
-          s.checks?.queueLag?.rawOk !== true || s.checks?.queueLag?.softWarning === true) process.exit(1);
-    });'
+  local readiness_json curl_status=0
+  readiness_json="$(curl --fail-with-body -sS --max-time 10 "$READINESS_URL")" || curl_status=$?
+  node "$ROOT_DIR/infra/scripts/check-postgres-backup-readiness.mjs" "$curl_status" <<<"$readiness_json"
 }
 probe_ready
 if [[ "$MODE" != --preflight-only ]]; then

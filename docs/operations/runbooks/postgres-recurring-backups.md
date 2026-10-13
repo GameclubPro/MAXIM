@@ -6,6 +6,10 @@ loss of the configured free-space reserve. The cold filesystem and its backing
 filesystem are separate admission checks over the same RAID, not independent copies.
 After a watchdog abort, retain the exact window, release identity and queue/IO evidence;
 do not disable the guard or repeat the same attempt without explaining the change.
+Failed readiness probes emit `backup_readiness_v1` with fixed failure categories and
+numeric queue age/threshold scalars. HTTP failures remain failures even if their body
+claims readiness. The diagnostic excludes event identities and free-form health detail;
+retain the service journal because later healthy snapshots cannot reconstruct the abort.
 
 Install `infra/env/postgres-backup.env.example` as `/etc/maxim-postgres-backup.env`
 (root, 0600). Use `/mnt/maxim-cold/backups/maxim` and

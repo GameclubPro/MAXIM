@@ -393,6 +393,19 @@ test('aborts the exact dump backend after two consecutive watchdog failures', (t
   assert.match(result.stderr, /watchdog observed degraded readiness.*1\/2/iu);
   assert.match(result.stderr, /watchdog observed degraded readiness.*2\/2/iu);
   assert.match(result.stderr, /aborted after sustained readiness/iu);
+  const probes = result.stderr
+    .split('\n')
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line));
+  assert.equal(probes.length, 2);
+  assert.ok(
+    probes.every(
+      (probe) =>
+        probe.metric === 'backup_readiness_v1' &&
+        probe.failures.includes('raw_queue_lag') &&
+        probe.failures.includes('queue_soft_warning'),
+    ),
+  );
   assert.equal(existsSync(data.cleanupMarker), true);
   assert.deepEqual(dumpFiles(data), []);
   const dumpPid = Number(readFileSync(data.dumpPid, 'utf8'));

@@ -51,10 +51,9 @@ esac
     const script = join(dir, 'restore.sh');
     writeFileSync(
       script,
-      readFileSync(
-        resolve(import.meta.dirname, 'restore-postgres-backup-smoke.sh'),
-        'utf8',
-      ).replace('source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"', `source '${lock.helper}'`),
+      readFileSync(resolve(import.meta.dirname, 'restore-postgres-backup-smoke.sh'), 'utf8')
+        .replace(/^ROOT_DIR=.*$/mu, `ROOT_DIR='${resolve(import.meta.dirname, '../..')}'`)
+        .replace('source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"', `source '${lock.helper}'`),
     );
     const name = 'maxim_20261013T000000Z.dump';
     const dump = join(backup, name);
