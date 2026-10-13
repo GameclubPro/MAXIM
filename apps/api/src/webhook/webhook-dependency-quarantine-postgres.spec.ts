@@ -16,6 +16,7 @@ import {
   WEBHOOK_QUARANTINE_BATCH_SIZE,
 } from './webhook-dependency-quarantine.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
 import { WebhookParser } from './webhook.parser';
 import { WEBHOOK_QUEUE_CRITICAL } from './webhook-queues';
 import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
@@ -23,6 +24,7 @@ import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-qu
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const native = databaseUrl && redisUrl ? describe : describe.skip;
+const publisherBotId = 'publisher-quarantine-fixture';
 
 // FLAG: Real PostgreSQL, BullMQ handoff, canonical start/completion and lag queries.
 // The awaited business handler is a local spy: this suite never calls the MAX network.
@@ -63,7 +65,10 @@ native('durable dependency quarantine and independent final execution', () => {
   });
 
   beforeEach(() => {
-    quarantine = new WebhookDependencyQuarantineService(prisma as never);
+    quarantine = new WebhookDependencyQuarantineService(
+      prisma as never,
+      new ConfigService({ MAX_PUBLISHER_BOT_ID: publisherBotId }),
+    );
     // Exercise the future writer in the compatibility release's mandatory native lane.
     Object.assign(quarantine, { writesEnabled: true });
     canonical = new WebhookCanonicalExecutionService(prisma as never);
@@ -207,6 +212,90 @@ native('durable dependency quarantine and independent final execution', () => {
       quarantine,
     );
   }
+
+  it('parks and releases a Publisher observation without borrowing moderation execution authority', async () => {
+    const poison = await receipt(undefined, { poison: true });
+    const originalClaim = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+      where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey: poison.semanticKey! } },
+    });
+    const observation = await receipt(chat(poison), { botId: publisherBotId, claim: false });
+    const semanticKey = buildWebhookReceiptSemanticKey(
+      observation.normalizedPayload as never,
+      publisherBotId,
+    );
+    await prisma.webhookEvent.update({
+      where: { id: observation.id },
+      data: { semanticKey },
+    });
+
+    expect(await quarantine.parkSuccessors(poison.id, [observation.id])).toBe(1);
+    expect(
+      await prisma.webhookEvent.findUniqueOrThrow({ where: { id: observation.id } }),
+    ).toMatchObject({ status: 'QUARANTINED', semanticKey, processedAt: null, enqueueAttempts: 0 });
+    expect(
+      await prisma.webhookExecutionClaim.findUnique({ where: { id: originalClaim.id } }),
+    ).toEqual(originalClaim);
+    expect(
+      await prisma.webhookExecutionClaim.findMany({ where: { webhookEventId: observation.id } }),
+    ).toEqual([]);
+    await makeDue();
+    expect(await quarantine.reconcileDue()).toMatchObject({ released: 0 });
+
+    await completePredecessor(poison);
+    await makeDue();
+    expect(await quarantine.reconcileDue()).toMatchObject({ released: 1 });
+    expect(
+      await prisma.webhookEvent.findUniqueOrThrow({ where: { id: observation.id } }),
+    ).toMatchObject({ status: 'RECEIVED', semanticKey, processedAt: null, enqueueAttempts: 0 });
+    expect(
+      await prisma.webhookExecutionClaim.findMany({ where: { webhookEventId: observation.id } }),
+    ).toEqual([]);
+  });
+
+  it.each(['shared-key', 'foreign-namespace', 'receiver-drift', 'execution-claim', 'replay-fence'])(
+    'refuses Publisher observation with %s evidence',
+    async (variant) => {
+      const poison = await receipt(undefined, { poison: true });
+      const observation = await receipt(chat(poison), { botId: publisherBotId, claim: false });
+      const semanticKey = buildWebhookReceiptSemanticKey(
+        observation.normalizedPayload as never,
+        publisherBotId,
+      )!;
+      const updated = await prisma.webhookEvent.update({
+        where: { id: observation.id },
+        data: {
+          semanticKey:
+            variant === 'shared-key'
+              ? observation.semanticKey
+              : variant === 'foreign-namespace'
+                ? semanticKey.replace(publisherBotId, 'foreign')
+                : semanticKey,
+          ...(variant === 'receiver-drift' ? { botId: 'foreign' } : {}),
+          ...(variant === 'replay-fence' ? { errorMessage: 'ambiguous fixture mutation' } : {}),
+        },
+      });
+      if (variant === 'execution-claim') {
+        const claim = await prisma.webhookExecutionClaim.create({
+          data: {
+            kind: 'EXECUTION',
+            semanticKey,
+            webhookEventId: observation.id,
+            executionBotId: publisherBotId,
+            enforced: true,
+            status: 'READY',
+          },
+        });
+        claims.push(claim.id);
+      }
+      expect(await quarantine.parkSuccessors(poison.id, [observation.id])).toBe(0);
+      expect(await prisma.webhookEvent.findUnique({ where: { id: observation.id } })).toEqual(
+        updated,
+      );
+      expect(
+        await prisma.webhookDependencyQuarantine.findMany({ where: { receiptId: observation.id } }),
+      ).toEqual([]);
+    },
+  );
 
   it('parks a poison chat and completes independent work through BullMQ without replay or retry churn', async () => {
     const poison = await receipt(undefined, { poison: true });
@@ -447,7 +536,10 @@ native('durable dependency quarantine and independent final execution', () => {
     expect(await quarantine.reconcileDue()).toMatchObject({ released: 0 });
     await completePredecessor(poison);
     await makeDue();
-    const restarted = new WebhookDependencyQuarantineService(prisma as never);
+    const restarted = new WebhookDependencyQuarantineService(
+      prisma as never,
+      new ConfigService({ MAX_PUBLISHER_BOT_ID: publisherBotId }),
+    );
     expect(await restarted.reconcileDue()).toMatchObject({ released: 1 });
     const restored = await prisma.webhookEvent.findUniqueOrThrow({ where: { id: waiting.id } });
     expect(restored.executionDeadlineAt).toEqual(waiting.executionDeadlineAt);

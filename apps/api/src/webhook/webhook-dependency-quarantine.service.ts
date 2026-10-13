@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { MaxUpdate } from '@maxim/contracts';
 import { Prisma, WebhookStatus, type WebhookEvent } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
+import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 import { hasWebhookReplayFence } from './webhook-execution-deadline';
 import { buildGroupCommandKey } from '../common/group-command-key';
 import { readLegacyReceiptClaims } from './webhook-legacy-claims';
@@ -44,7 +48,15 @@ export class WebhookDependencyQuarantineService {
   private mirrorHeadOffset = 0;
   private readonly logger = new Logger(WebhookDependencyQuarantineService.name);
   private readonly writesEnabled = WEBHOOK_DEPENDENCY_QUARANTINE_WRITES_ENABLED;
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly publisherBotId: string;
+  constructor(
+    private readonly prisma: PrismaService,
+    config: ConfigService,
+  ) {
+    this.publisherBotId = buildPublisherBotDescriptor({
+      id: config.get<string>('MAX_PUBLISHER_BOT_ID'),
+    }).id;
+  }
 
   // FLAG: This is scheduling isolation only. The uncertain source/claim/remote journals
   // remain untouched, and its ordering fence continues to deny dependent business starts.
@@ -118,7 +130,11 @@ export class WebhookDependencyQuarantineService {
     if (
       !receipt ||
       receipt.semanticKey !== snapshot.semanticKey ||
-      receipt.semanticKey !== buildWebhookSemanticEventKey(receipt.normalizedPayload) ||
+      receipt.semanticKey !==
+        buildWebhookReceiptSemanticKey(
+          receipt.normalizedPayload as MaxUpdate,
+          this.publisherBotId,
+        ) ||
       receipt.processedAt !== null ||
       receipt.timeoutQuarantineExpiresAt !== null ||
       hasWebhookReplayFence(receipt)
@@ -127,6 +143,12 @@ export class WebhookDependencyQuarantineService {
     const claim = await tx.webhookExecutionClaim.findUnique({
       where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey: receipt.semanticKey } },
     });
+    // FLAG: Publisher observations retain their own receipt namespace. Parking is only
+    // scheduling isolation: mismatched receiving identity or any execution claim stays
+    // fenced, and no moderation claim is created, completed or borrowed for observation.
+    const publisherObservation =
+      (receipt.normalizedPayload as MaxUpdate).botId?.trim() === this.publisherBotId;
+    if (publisherObservation && (receipt.botId !== this.publisherBotId || claim)) return null;
     // FLAG: A pristine physical mirror is not the started semantic owner. Retain that
     // owner's claim unchanged; require no activation and no independent/legacy claim.
     const pristineMirror = Boolean(
