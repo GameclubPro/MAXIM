@@ -84,6 +84,33 @@ expect.extend({
   },
 });
 
+// FLAG: Notice orchestration fixtures model the new event + cleanup transaction.
+// Real rollback, persistence and concurrent execution are covered with native stores.
+function withAutomaticMutePersistenceFixture<T extends { moderationEvent: { create: jest.Mock } }>(
+  prisma: T,
+) {
+  const automaticMuteCleanup = { create: jest.fn().mockResolvedValue({}) };
+  let sequence = 0;
+  return Object.assign(prisma, {
+    automaticMuteCleanup,
+    $transaction: jest.fn(async function (this: T, operation: (tx: unknown) => Promise<unknown>) {
+      return operation({
+        ...this,
+        moderationEvent: {
+          ...this.moderationEvent,
+          create: async (args: { data: Record<string, unknown> }) => ({
+            ...args.data,
+            id: `automatic-mute-fixture-${++sequence}`,
+            createdAt: new Date(),
+            botId: null,
+            ...(await this.moderationEvent.create(args)),
+          }),
+        },
+      });
+    }),
+  });
+}
+
 type CanonicalWebhookPrismaFixture = {
   webhookEvent: {
     findUnique: jest.Mock;
@@ -2427,6 +2454,7 @@ export {
   buildDeveloperForcedGlobalSpammerCacheKey,
   buildDeveloperForcedGlobalSpammerWarmMarkerKey,
   ModerationService,
+  withAutomaticMutePersistenceFixture,
   resolveModerationDeleteIntentRollout,
   WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
   WebhookCanonicalExecutionService,

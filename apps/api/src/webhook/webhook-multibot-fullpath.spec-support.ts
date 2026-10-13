@@ -1,3 +1,4 @@
+import { AutomaticMuteCleanupService } from '../moderation/automatic-mute-cleanup.service';
 import type { MaxUpdate } from '@maxim/contracts';
 import type { ManagedEntityExplicitActivation } from '../max/managed-entity-activation.util';
 import { ModerationRuleFollowupService } from '../moderation/moderation-rule-followup.service';
@@ -64,6 +65,7 @@ export type MultibotHarnessOptions = {
   mode?: 'off' | 'shadow' | 'on';
   quotaProfile?: 'production' | 'fixture';
   recoverDueDeletes?: boolean;
+  recoverAutomaticMuteHistory?: boolean;
 };
 export type SimulatedMaxEffect = {
   method: string;
@@ -510,6 +512,11 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     links,
     context,
   );
+  const automaticMuteCleanup = new AutomaticMuteCleanupService(
+    prisma as never,
+    intents,
+    legacyHolds,
+  );
   const ruleFollowups = new ModerationRuleFollowupService(
     prisma as never,
     sanctionGuard,
@@ -736,6 +743,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       await intents.sweepDueIntents();
     }
     await ruleFollowups.sweep();
+    if (options.recoverAutomaticMuteHistory) await automaticMuteCleanup.sweep();
     const candidates = await prisma.webhookEvent.findMany({
       where: {
         id: { in: receiptIds },
@@ -778,7 +786,13 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     const pendingFollowups = await prisma.moderationRuleFollowup.count({
       where: { chatId: { in: chatIds }, status: { in: ['READY', 'RETRYABLE', 'IN_PROGRESS'] } },
     });
+    const pendingCleanup = options.recoverAutomaticMuteHistory
+      ? await prisma.automaticMuteCleanup.count({
+          where: { chatId: { in: chatIds }, status: 'PENDING' },
+        })
+      : 0;
     return (
+      pendingCleanup +
       pendingFollowups +
       pending +
       (queued.waiting ?? 0) +
@@ -896,6 +910,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     canonical,
     intents,
     ruleFollowups,
+    automaticMuteCleanup,
     stateGuard,
     globalPolicy,
     subscriptionGuard,

@@ -52,6 +52,23 @@ computer-use недоступен из-за ошибки инициализац�
 Подготовленное отдельно API-исправление счётчика комментариев сохраняет свой
 shared API scope. Подписи в этой правке покрываются только тестами.
 
+### Фактический выпуск
+
+PR 148 объединён в `0af721bbc52a6b38e435953cc3a40a51f71791ad`.
+Required CI `38419168581` и CodeQL `38419168687` для этого main SHA успешны.
+Штатный план выбрал только `miniapp-major-static`; выпуск
+`release-20261013T153117Z-0af721bbc52a` установлен 13 октября.
+Smoke `https://major-maksimov.ru/app/` прошёл. Сравнение контейнеров
+15:30:42–15:32:34 UTC подтвердило изменение только major static;
+API, оба native sandbox, Postgres, Redis и admin static сохранили прежние
+image/start/restart/health поля. Все 14 API-ролей соответствуют API manifest.
+
+Перед отправкой PR прошли 857 API-наборов / 21 422 теста; один Redis-dependent
+набор был пропущен в общей конфигурации и отдельно прошёл с настоящим Redis
+через `MAXIM_TEST_REDIS_SERVER`. Также прошли 50 retention-тестов,
+1 473 miniapp-теста, 2 750 static/tool проверок, build/budgets и браузерные
+проверки. Два optional tool lifecycle сценария были пропущены.
+
 ## Ручная публикация и подпись
 
 Добавлены два сценария полного пути с реальными PostgreSQL 16/Redis 7:

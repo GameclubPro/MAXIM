@@ -995,6 +995,21 @@ export class ModerationDeleteIntentService {
     return this.persistIntent(input, true, undefined, DELETE_QUEUE_PRIORITY_BACKGROUND);
   }
 
+  // FLAG: Retain the rollback-safe mute rule. Older readers reject pre-mute sources.
+  async ensureAutomaticMuteHistoryIntent(
+    input: EnsureModerationDeleteIntentInput,
+  ): Promise<EnsureModerationDeleteIntentResult> {
+    const metadata = this.asRecord(input.event?.metadata);
+    if (
+      input.ruleCode !== 'MUTE_ACTIVE_DELETE' ||
+      !input.sourceMessageAt ||
+      typeof metadata?.automaticMuteCleanupId !== 'string' ||
+      metadata.automaticMuteCleanupId !== metadata.muteEventId
+    )
+      throw new Error('Automatic mute history binding required');
+    return this.persistIntent(input, true, undefined, DELETE_QUEUE_PRIORITY_BACKGROUND);
+  }
+
   async ensureRetentionIntent(candidate: MessageRetentionCandidate): Promise<string> {
     // FLAG: Never append a retention reason to another module's intent: several guards
     // intentionally yield to independent reasons. Normal writers atomically take ownership.

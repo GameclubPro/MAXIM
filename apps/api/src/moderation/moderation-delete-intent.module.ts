@@ -1,3 +1,4 @@
+import { AutomaticMuteCleanupService } from './automatic-mute-cleanup.service';
 import { ClosedChatDeleteGuardService } from './closed-chat-delete-guard.service';
 import { ModerationRuleSanctionGuardService } from './moderation-rule-sanction-guard.service';
 import { ModerationStateDeleteGuardService } from './moderation-state-delete-guard.service';
@@ -38,6 +39,7 @@ import { MessageDuplicateCleanupReconcilerService } from './message-duplicate/me
 
 const actionRoleProviders = roleRunsAction(getAppRole())
   ? [
+      AutomaticMuteCleanupService,
       ModerationDeleteIntentProcessor,
       ModerationDeleteIntentReconcilerService,
       MessageDuplicateCleanupReconcilerService,

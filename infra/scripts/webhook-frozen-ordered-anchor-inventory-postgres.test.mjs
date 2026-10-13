@@ -95,9 +95,23 @@ test(
    business_started_at timestamp,completed_at timestamp,lease_token text,lease_expires_at timestamp,command_result jsonb,private_secret text)
    WITH (autovacuum_enabled=false,toast.autovacuum_enabled=false);
    CREATE UNIQUE INDEX webhook_execution_claims_kind_semantic_key ON webhook_execution_claims(kind,semantic_key);
-   CREATE INDEX webhook_execution_claims_event_kind_idx ON webhook_execution_claims(webhook_event_id,kind);
-   INSERT INTO webhook_events(id,status,created_at,error_message) SELECT 'terminal_'||n,'FAILED','2026-01-01','ordinary error' FROM generate_series(1,1000000)n;
-   INSERT INTO webhook_execution_claims(id,kind,semantic_key,webhook_event_id) SELECT 'retained_claim_'||n,'EXECUTION','retained_key_'||n,'terminal_'||n FROM generate_series(1,100000)n;`);
+   CREATE INDEX webhook_execution_claims_event_kind_idx ON webhook_execution_claims(webhook_event_id,kind);`);
+      // FLAG: Bound fixture construction under concurrent native suites without relaxing
+      // the query timeout or reducing the million-row retained-history population.
+      for (let start = 1; start <= 1_000_000; start += 100_000) {
+        await db.query(
+          `INSERT INTO webhook_events(id,status,created_at,error_message)
+           SELECT 'terminal_'||n,'FAILED','2026-01-01','ordinary error'
+           FROM generate_series($1::int, $2::int)n`,
+          [start, start + 99_999],
+        );
+      }
+      assert.equal(
+        Number((await db.query('SELECT COUNT(*) FROM webhook_events')).rows[0].count),
+        1_000_000,
+      );
+      await db.query(`INSERT INTO webhook_execution_claims(id,kind,semantic_key,webhook_event_id)
+        SELECT 'retained_claim_'||n,'EXECUTION','retained_key_'||n,'terminal_'||n FROM generate_series(1,100000)n;`);
       await db.query(
         migration('20260815123000_add_webhook_ordered_chat_head_index').replace(
           'CREATE INDEX CONCURRENTLY',
