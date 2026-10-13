@@ -189,6 +189,55 @@
     opacity: 1;
   }
 
+  .broadcast-content-composer__modifier-row {
+    display: flex;
+    gap: 5px;
+    overflow-x: auto;
+    padding-bottom: 1px;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .broadcast-content-composer__modifier-row::-webkit-scrollbar {
+    display: none;
+  }
+
+  .broadcast-content-composer__modifier {
+    flex: 0 0 auto;
+    min-width: 34px;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--color-border);
+    border-radius: 11px;
+    background: var(--color-surface);
+    color: var(--color-ink-muted);
+    font-size: 0.68rem;
+    font-weight: 850;
+    line-height: 1;
+    padding: 0 9px;
+  }
+
+  .broadcast-content-composer__modifier svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .broadcast-content-composer__modifier.is-italic {
+    font-style: italic;
+  }
+
+  .broadcast-content-composer__modifier.is-code {
+    font-family: ui-monospace, SFMono-Regular, 'SFMono-Regular', Consolas, monospace;
+    font-size: 0.62rem;
+  }
+
+  .broadcast-content-composer__modifier:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
   .broadcast-message-card__rich-editor {
     min-width: 0;
   }
@@ -383,6 +432,14 @@
     border-color: var(--color-border);
     background: var(--color-surface-tint);
     color: var(--text-secondary);
+  }
+
+  .broadcast-content-composer__modifier.is-active,
+  html[data-max-theme='dark'] .broadcast-content-composer__modifier.is-active {
+    border-color: var(--color-accent);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    box-shadow: inset 0 0 0 1px var(--color-accent);
   }
 
   .settings-drilldown .broadcast-content-composer__tool.has-label {

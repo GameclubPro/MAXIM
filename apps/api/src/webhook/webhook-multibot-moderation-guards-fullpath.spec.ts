@@ -3,6 +3,7 @@ import { Queue, type ConnectionOptions } from 'bullmq';
 import { MaxApiInternalRateLimitError, type MaxActionJob } from '../max/max-client.service';
 import { Prisma } from '../prisma/prisma-client';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
+import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
 import {
   markMaxPreDispatchGuardRejected,
   MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
@@ -31,6 +32,73 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     h = await createMultibotHarness({ databaseUrl, redisUrl, bots, mode: 'on' });
     return h;
   }
+
+  it.each([false, true])(
+    'signs a manually published channel post exactly once through mirrored receipts, senderless=%s',
+    async (senderless) => {
+      const s = await fixture(2);
+      for (const bot of s.bots) {
+        s.setBotPermissions(bot.id, [
+          'read_all_messages',
+          'write',
+          'edit_message',
+          'delete_message',
+        ]);
+      }
+      s.allowAdminUser('fixture-user');
+      const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+      await s.prisma.channelSettings.update({
+        where: { chatId: chatId! },
+        data: {
+          commentsEnabled: false,
+          postSignatureEnabled: true,
+          postSignaturePresentation: 'SIGNATURE',
+          postSignatureText: 'Наш канал',
+          postSignatureUrl: 'https://max.ru/fixture-channel',
+        },
+      });
+      Object.assign(s.moderation, {
+        channelPostSignatureService: new ChannelPostSignatureService(
+          s.prisma as never,
+          s.max,
+          s.links,
+        ),
+      });
+      const messageId = `manual-signature-${randomUUID()}`;
+      const attachments = [{ type: 'image', payload: { token: 'fixture-image' } }];
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            senderless,
+            text: 'Ручной пост',
+            attachments,
+          }),
+        ),
+      );
+      await s.drain();
+      const edits = s.effects.filter((effect) => effect.method === 'put');
+      expect(edits).toHaveLength(1);
+      expect(edits[0]!.body).toMatchObject({
+        text: 'Ручной пост\n\n<a href="https://max.ru/fixture-channel">Наш канал</a>',
+        format: 'html',
+        attachments,
+      });
+      expect(s.effects.filter((effect) => effect.method !== 'put')).toEqual([]);
+      expect(
+        await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({
+          where: { chatId_messageId: { chatId: chatId!, messageId } },
+        }),
+      ).toMatchObject({ status: 'SUCCEEDED', deliveryMode: 'edit_message' });
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(s.effects).toHaveLength(1);
+      expect(s.failures).toEqual([]);
+    },
+  );
 
   it.each(
     (['off', 'shadow', 'canary', 'on'] as const).flatMap((mode) =>

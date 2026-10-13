@@ -99,3 +99,10 @@ PostgreSQL/Redis; MAX HTTP в этих тестах симулируется.
 
 Исправление счётчика и эти test-only коррекции выпускаются одним обновлённым
 PR 147. Полная staged-проверка и exact-SHA CI должны пройти заново.
+
+Повторная staged-проверка принята: 858 API-наборов / 21 421 тест с настоящими
+PostgreSQL/Redis, 50 retention-тестов, 2 750 static/infra тестов и два optional
+tool lifecycle skip. CodeQL и все Required lanes для
+`c2a80898554e1c4dd166ac97e43669f7dc55c218` зелёные. PR 147 объединён в
+`61517f98aaafce6d876ae547dfef6d1436c85d58`; main exact-SHA CI и production
+приёмка фиксируются отдельно после их завершения.

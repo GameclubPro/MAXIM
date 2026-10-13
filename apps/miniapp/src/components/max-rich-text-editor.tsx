@@ -46,6 +46,12 @@ export type MaxRichTextEditorProps = {
 };
 
 const LINK_PLACEHOLDER_URL = 'https://max.ru/';
+const NATIVE_INLINE_COMMANDS = {
+  bold: 'bold',
+  italic: 'italic',
+  underline: 'underline',
+  strike: 'strikeThrough',
+} as const;
 const BLOCK_TAGS = new Set([
   'address',
   'article',
@@ -279,6 +285,17 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
 
         const range = restoreOrCreateEditorRange();
         if (!range) {
+          return;
+        }
+
+        if (tool in NATIVE_INLINE_COMMANDS) {
+          // FLAG: Native editing preserves selection, pending typing marks and undo history.
+          // Wrapping a Range cannot toggle an inherited mark off or format future typing.
+          editorRef.current?.focus();
+          document.execCommand('styleWithCSS', false, 'false');
+          document.execCommand(NATIVE_INLINE_COMMANDS[tool as keyof typeof NATIVE_INLINE_COMMANDS]);
+          emitCurrentMarkdown();
+          syncActiveTools();
           return;
         }
 
@@ -734,27 +751,10 @@ function resolveActiveTools(editor: HTMLElement, range: Range): ReadonlySet<MaxM
   const active = new Set<MaxMarkdownTool>();
   const container = resolveRangeNode(range.commonAncestorContainer);
 
-  if (
-    findClosestElement(container, editor, 'strong') ||
-    findClosestElement(container, editor, 'b')
-  ) {
-    active.add('bold');
-  }
-
-  if (findClosestElement(container, editor, 'em') || findClosestElement(container, editor, 'i')) {
-    active.add('italic');
-  }
-
-  if (findClosestElement(container, editor, 'u')) {
-    active.add('underline');
-  }
-
-  if (
-    findClosestElement(container, editor, 's') ||
-    findClosestElement(container, editor, 'strike') ||
-    findClosestElement(container, editor, 'del')
-  ) {
-    active.add('strike');
+  for (const tool of Object.keys(NATIVE_INLINE_COMMANDS) as Array<
+    keyof typeof NATIVE_INLINE_COMMANDS
+  >) {
+    if (document.queryCommandState(NATIVE_INLINE_COMMANDS[tool])) active.add(tool);
   }
 
   if (findClosestElement(container, editor, 'code')) {

@@ -1,5 +1,5 @@
 @layer components {
-  .max-rich-text-editor__surface strong {
+  .max-rich-text-editor__surface :is(strong, b) {
     font-weight: 860;
   }
 
@@ -52,11 +52,11 @@
   }
 
   .max-rich-text-editor__surface a {
+    /* FLAG: Link decoration must not become a native bold/underline typing mark. */
     color: var(--max-rich-text-link-ink);
-    font-weight: 760;
-    text-decoration: underline;
-    text-decoration-thickness: 1.5px;
-    text-underline-offset: 2px;
+    font-weight: inherit;
+    text-decoration: none;
+    border-bottom: 1.5px solid currentColor;
   }
 
   html[data-max-theme='dark']
