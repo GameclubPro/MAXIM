@@ -41,8 +41,7 @@ function readBotIds(chat: ChatSummary): Array<string | undefined> {
       (left, right) =>
         Number(right.botId === chat.primaryBotId) - Number(left.botId === chat.primaryBotId),
     )
-    .map((bot) => bot.botId)
-    .slice(0, 2);
+    .map((bot) => bot.botId);
 }
 
 // FLAG: Metadata reads never activate a bot or grant actor access. The caller supplies
@@ -76,6 +75,10 @@ export async function hydrateManagedEntityHeaders(params: {
     if (attempted >= MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE) break;
     const botIds = readBotIds(chat);
     if (botIds.length === 0) continue;
+    // FLAG: Leave a later chat unclaimed when its assigned routes do not fit. Otherwise
+    // the same failed prefix could consume its cooldown on every partial batch.
+    if (attempted > 0 && botIds.length > MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE - attempted)
+      continue;
     // A recent successful read without an icon, or a denied read, must not starve
     // later entities. The shared claim also bounds concurrent viewers' MAX traffic.
     if (

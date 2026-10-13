@@ -10334,7 +10334,7 @@ describe('ModerationDeleteIntentService', () => {
     await expect(service.sweepDueIntents()).resolves.toBe(1);
 
     const selectionSql = queryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
-    expect(selectionSql).toContain('SELECT candidates."id"');
+    expect(selectionSql).toContain('SELECT ranked."id"');
     expect(selectionSql).not.toContain('UPDATE "moderation_delete_intents" intent');
     expect(selectionSql).toContain('intent."remote_delete_succeeded_at" IS NOT NULL');
 

@@ -102,9 +102,24 @@ timestamp в первой версии SQL-фикстуры исправлена
 native-теста: миллионная вставка превысила существующий statement timeout.
 Оба одинаковых ordered/frozen fixture теперь создают историю десятью порциями
 по 100 000 с проверкой полного миллиона. Лимиты и рабочие SELECT не изменены;
-все 14 focused infra-тестов прошли. Staged gate повторяется после этой коррекции.
-Exact-SHA CI и production release ещё должны завершиться. Пока новый runtime не объявляется выпущенным.
+все 14 focused infra-тестов прошли. Полный staged gate затем прошёл с настоящими
+PostgreSQL 16/Redis 7: 859 API-наборов / 21 439 тестов, 2 629 infra-тестов,
+50 retention-тестов, Prisma validation и production build. Два optional
+agent-tool self-tests пропущены отдельно. Старые Prisma mocks обновлены под
+обязательную транзакцию event + cleanup; runtime-only сохранение мута не возвращалось.
 Для подтверждения исходной жалобы всё ещё нужен точный receipt и remote outcome.
+
+[PR 149](https://github.com/GameclubPro/MAXIM/pull/149) прошёл exact-SHA CI и
+объединён. Совместно с [исправлением заголовков](2026-10-13-managed-entity-headers.md)
+очистка выпущена в main `b4f11753e0d644e083dc4799289d2f6e44c24626`:
+зелёные [CI 38448856174](https://github.com/GameclubPro/MAXIM/actions/runs/38448856174)
+и [CodeQL 38448856129](https://github.com/GameclubPro/MAXIM/actions/runs/38448856129),
+production manifest `release-20261013T190129Z-b4f11753e0d6` от 19:05:01 UTC.
+Миграция `20261013180000_add_automatic_mute_cleanup` применена успешно.
+Все API-роли обновлены; PostgreSQL/Redis не пересоздавались. Strict smokes прошли.
+Совместные шесть native-наборов / 151 тест также прошли.
+Длительное наблюдение фиксируется в
+[общем отчёте](../plans/2026-10-13-live-fleet-audit-and-remediation.md#совместный-выпуск-очистки-мута-и-заголовков-чатов).
 
 UI-инструмент MAX не инициализируется в текущем WSL checkout
 (`sandboxCwd is not a local file URI`). Сообщения, тестовые санкции и диагностические

@@ -1068,6 +1068,65 @@ test('legacy order window keeps the private envelope and accepts only plain expl
   }
 });
 
+test('chat message window uses the audit envelope and rejects arbitrary input before SSH or SQL', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const args = ['chat-message-window', '-123', '2026-10-13T19:33:00Z'];
+  assert.equal(runAudit(data, args).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /BEGIN READ ONLY/u);
+  assert.match(sql, /webhook_cohort_index_ready/u);
+  assert.match(sql, /ORDER BY created_at, id LIMIT 513/u);
+  assert.match(sql, /chat_message_window/u);
+  assert.equal(runAudit(data, [...args, '--explain']).status, 0);
+  assert.match(readFileSync(data.sql, 'utf8'), /EXPLAIN \(FORMAT JSON\)/u);
+  assert.equal(runConnect(data, ['postgres-audit', ...args, '--explain']).status, 0);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /chat-message-window/u);
+  const failed = runAudit(data, args, { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7);
+  assert.match(failed.stderr, /Bounded chat message window audit failed closed/u);
+  assert.doesNotMatch(`${failed.stdout}${failed.stderr}`, /fixture-event|ERROR near/u);
+  for (const invalid of [
+    ['chat-message-window'],
+    ['chat-message-window', '-123', 'SELECT 1'],
+    ['chat-message-window', "-1'; SELECT 1", args[2]],
+    [...args, '--apply'],
+    [...args, '--explain', 'extra'],
+  ]) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, invalid).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', ...invalid]).status, 2);
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
+});
+
+test('delete retry heads retain the bounded envelope and reject operator SQL', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['delete-retry-heads', '--explain']).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /BEGIN READ ONLY/u);
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\)/u);
+  assert.match(sql, /delete_retry_indexes_ready/u);
+  assert.match(sql, /ORDER BY next_attempt_at LIMIT 33/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'delete-retry-heads']).status, 0);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /delete-retry-heads/u);
+  const failed = runAudit(data, ['delete-retry-heads'], { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7);
+  assert.match(failed.stderr, /Bounded delete retry heads audit failed closed/u);
+  assert.doesNotMatch(`${failed.stdout}${failed.stderr}`, /fixture-event|ERROR near/u);
+  for (const invalid of ['SELECT 1', '/tmp/query.sql', '--apply']) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, ['delete-retry-heads', invalid]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'delete-retry-heads', invalid]).status, 2);
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
+});
+
 test('moderation outcomes retain the bounded read-only envelope and reject operator SQL', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));

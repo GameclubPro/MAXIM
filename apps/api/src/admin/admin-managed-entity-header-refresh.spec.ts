@@ -151,6 +151,70 @@ describe('managed entity header refresh', () => {
     expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
   });
 
+  it('reaches a second active standby after both earlier assignments deny access', async () => {
+    const chat = {
+      ...summary(),
+      assignedBots: ['777000_bot', 'standby-1', 'standby-2'].map((botId) =>
+        createAssignedBotFixture({ botId }),
+      ),
+    };
+    const denied = { response: { status: 404, data: { code: 'chat.not.found' } } };
+    const maxClient = {
+      getChatSnapshot: jest
+        .fn()
+        .mockRejectedValueOnce(denied)
+        .mockRejectedValueOnce(denied)
+        .mockResolvedValue(snapshot),
+    };
+    const persist = jest.fn();
+    await hydrateManagedEntityHeaders({
+      chats: [chat],
+      cache: { getManagedEntityHeader: jest.fn() } as never,
+      maxClient,
+      persist,
+    });
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(3);
+    expect(maxClient.getChatSnapshot).toHaveBeenLastCalledWith(
+      chat.id,
+      expect.objectContaining({ botId: 'standby-2' }),
+    );
+    expect(persist).toHaveBeenCalledWith(chat, snapshot);
+  });
+
+  it('leaves a later chat unclaimed when the remaining batch cannot cover its assigned routes', async () => {
+    const chats = ['first', 'second'].map((id) => ({
+      ...summary(id),
+      assignedBots: Array.from({ length: 6 }, (_, index) =>
+        createAssignedBotFixture({ botId: `bot-${index}` }),
+      ),
+    }));
+    const claimed = new Set<string>();
+    const cache = {
+      getManagedEntityHeader: jest.fn(),
+      claimManagedEntityHeaderRefresh: jest.fn(async (id: string) => {
+        if (claimed.has(id)) return false;
+        claimed.add(id);
+        return true;
+      }),
+    };
+    const maxClient = {
+      getChatSnapshot: jest.fn(async (chatId: string, options: { botId?: string }) => {
+        if (chatId === 'second' && options.botId === 'bot-5') return { ...snapshot, chatId };
+        throw { response: { status: 404, data: { code: 'chat.not.found' } } };
+      }),
+    };
+    const persist = jest.fn();
+    const params = { chats, cache: cache as never, maxClient, persist };
+    await hydrateManagedEntityHeaders(params);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(6);
+    expect(claimed.has('second')).toBe(false);
+    expect(persist).not.toHaveBeenCalled();
+    maxClient.getChatSnapshot.mockClear();
+    await hydrateManagedEntityHeaders(params);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(6);
+    expect(persist).toHaveBeenCalledWith(chats[1], { ...snapshot, chatId: 'second' });
+  });
+
   it('stops the batch on throttling without persisting guessed metadata', async () => {
     const error = { response: { status: 429 } };
     const maxClient = { getChatSnapshot: jest.fn().mockRejectedValue(error) };

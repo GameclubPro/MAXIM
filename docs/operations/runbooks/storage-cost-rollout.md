@@ -61,8 +61,9 @@ is not an idle/pending/committed-work measurement. See the
 
 Delete recovery selects an ordered prefix separately for each of its five fixed active
 statuses, using the existing `(status, next_attempt_at, execute_at)` index. It then orders
-at most five batch prefixes by the original due/creation keys and retains the original
-total batch limit. This avoids a whole-population sort before a mixed-status LIMIT.
+at most five batch prefixes by their within-status position, then due/creation keys,
+and retains the original total batch limit. With the standard batch of 100, an older
+AMBIGUOUS backlog cannot occupy every slot ahead of PENDING/RETRYABLE work. This avoids a whole-population sort before a mixed-status LIMIT.
 Each prefix retains all due, rollout, retry-evidence and retention predicates; only the
 in-progress prefix requires an expired lease. `FOR UPDATE SKIP LOCKED` remains inside
 each prefix, with at most five batch prefixes locked for the statement's lifetime.

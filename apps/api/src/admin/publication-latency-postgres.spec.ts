@@ -133,13 +133,13 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
         ...Array.from({ length: 20 }, (_, i) => occurrence(`${prefix}-ready-${i}`, -1_000 + i)),
       ],
     });
-    // FLAG: Native suites share this disposable database. Compact dead occurrence
-    // tuples/index pages from earlier fixtures so this plan measures the declared
-    // live distribution, with the same indexes and unmodified planner settings.
-    await db.$executeRawUnsafe('VACUUM (FULL, ANALYZE) publication_occurrences');
-    await db.$executeRawUnsafe('ANALYZE publications');
-    await db.$executeRawUnsafe('ANALYZE publication_schedules');
-    await db.$executeRawUnsafe('ANALYZE managed_broadcasts');
+    // FLAG: Native suites share this disposable database. Compact every relation
+    // in the selection joins: dead parent/broadcast pages also change join costs
+    // and index choice even after ANALYZE reports the declared live distribution.
+    // Keep the production indexes and planner settings unchanged.
+    await db.$executeRawUnsafe(
+      'VACUUM (FULL, ANALYZE) publication_occurrences, publications, publication_schedules, managed_broadcasts',
+    );
     const selected: string[] = [];
     const context = {
       prisma: db,
