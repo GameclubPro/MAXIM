@@ -1081,6 +1081,15 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  async claimManagedEntityHeaderRefresh(
+    chatId: string,
+    entityType: ManagedEntityType,
+  ): Promise<boolean> {
+    // FLAG: Presentation-only admission; this key never supplies access authority.
+    const key = `${ChatContextCacheService.managedEntityHeaderKey(chatId, entityType)}:refresh:v1`;
+    return (await this.redis.set(key, '1', 'EX', 120, 'NX')) === 'OK';
+  }
+
   async invalidateManagedEntityHeader(
     chatId: string,
     entityType?: ManagedEntityType,

@@ -2,6 +2,7 @@ import type { ChatSummary } from '@maxim/contracts';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { ChatContextCacheService } from './chat-context-cache.service';
+import { publishManagedEntityHeaderChanges } from '../admin/admin-managed-entity-header-refresh';
 
 const redisIntegrationUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const isLocalRedisUrl = (() => {
@@ -15,6 +16,111 @@ const isLocalRedisUrl = (() => {
 const describeLocalRedis = isLocalRedisUrl ? describe : describe.skip;
 
 describeLocalRedis('ChatContextCacheService Redis integration', () => {
+  it('admits one metadata refresh across viewers and reopens it after the finite cooldown', async () => {
+    const chatId = `header-refresh-${randomUUID()}`;
+    const config = { getOrThrow: () => redisIntegrationUrl };
+    const first = new ChatContextCacheService({} as never, config as never, {} as never);
+    const second = new ChatContextCacheService({} as never, config as never, {} as never);
+    const inspector = new Redis(redisIntegrationUrl);
+    const key = `${ChatContextCacheService.managedEntityHeaderKey(chatId, 'chat')}:refresh:v1`;
+    try {
+      const results = await Promise.all([
+        first.claimManagedEntityHeaderRefresh(chatId, 'chat'),
+        second.claimManagedEntityHeaderRefresh(chatId, 'chat'),
+      ]);
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(await inspector.ttl(key)).toBeGreaterThan(115);
+      expect(await inspector.ttl(key)).toBeLessThanOrEqual(120);
+      await inspector.pexpire(key, 0);
+      await expect(second.claimManagedEntityHeaderRefresh(chatId, 'chat')).resolves.toBe(true);
+    } finally {
+      await inspector.del(key);
+      await inspector.quit();
+      await first.onModuleDestroy();
+      await second.onModuleDestroy();
+    }
+  });
+
+  it('publishes real Redis header diffs without resurrecting a removed entity on a stale write', async () => {
+    const userId = `header-user-${randomUUID()}`;
+    const chatId = `header-chat-${randomUUID()}`;
+    const service = new ChatContextCacheService(
+      {} as never,
+      { getOrThrow: () => redisIntegrationUrl } as never,
+      {} as never,
+    );
+    const inspector = new Redis(redisIntegrationUrl);
+    const key = ChatContextCacheService.managedEntitiesPublishedSnapshotKey(userId, 'chat');
+    const diffKey = ChatContextCacheService.managedEntitiesPublishedDiffKey(
+      userId,
+      'chat',
+      'before',
+    );
+    const item: ChatSummary = {
+      id: chatId,
+      title: `Chat ${chatId}`,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      entityType: 'chat',
+      link: null,
+      avatarUrl: null,
+      channelOverview: null,
+      primaryBotId: null,
+      assignedBots: [],
+      sharedMode: 'owned',
+    };
+    const old = {
+      version: 'before',
+      builtAt: item.createdAt,
+      lastSyncedAt: null,
+      itemCount: 1,
+      itemsHash: 'before',
+      items: [item],
+    };
+    try {
+      await service.setManagedEntitiesPublishedSnapshot(userId, 'chat', old, 60, {
+        expectedVersion: null,
+      });
+      const update = {
+        cache: service,
+        userId,
+        entityType: 'chat' as const,
+        snapshot: old,
+        visibleItems: [
+          { ...item, title: 'Название чата', avatarUrl: 'https://i.oneme.ru/avatar.webp' },
+        ],
+        writeDiff: true,
+      };
+      const next = await publishManagedEntityHeaderChanges(update);
+      expect(next?.version).not.toBe('before');
+      const stored = await service.getManagedEntitiesPublishedSnapshot(userId, 'chat');
+      expect(stored?.items[0]).toMatchObject({
+        title: 'Название чата',
+        avatarUrl: 'https://i.oneme.ru/avatar.webp',
+      });
+      const diff = await service.getManagedEntitiesPublishedDiff(userId, 'chat', 'before');
+      expect(diff).toMatchObject({
+        baseVersion: 'before',
+        nextVersion: next?.version,
+        updated: [expect.objectContaining({ id: chatId, title: 'Название чата' })],
+      });
+      await service.setManagedEntitiesPublishedSnapshot(
+        userId,
+        'chat',
+        { ...next!, version: 'removed', items: [], itemCount: 0 },
+        60,
+        { expectedVersion: next!.version },
+      );
+      await expect(publishManagedEntityHeaderChanges(update)).resolves.toBeNull();
+      expect((await service.getManagedEntitiesPublishedSnapshot(userId, 'chat'))?.items).toEqual(
+        [],
+      );
+    } finally {
+      await inspector.del(key, diffKey);
+      await inspector.quit();
+      await service.onModuleDestroy();
+    }
+  });
+
   it('shares bot backoff across clients without throttling other bots or shortening Retry-After', async () => {
     const botId = `backoff-${randomUUID()}`;
     const config = { getOrThrow: () => redisIntegrationUrl };
