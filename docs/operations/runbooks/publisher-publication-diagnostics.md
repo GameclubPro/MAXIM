@@ -9,8 +9,8 @@ evidence, disabled publication policy and attempted/ambiguous deliveries:
 ```
 
 After synchronizing this catalog, preview and apply the reviewed audit-role provision
-step before using it. It grants 43 exact publication/access metadata columns and expands
-the existing Publisher binding/comment group from 14 to 16 columns. Identifiers are
+step before using it. It grants 43 exact publication/access metadata columns; the
+Publisher binding/comment group has 17 columns including census activation source. Identifiers are
 used only for exact joins; report output contains fixed categories and aggregate counts,
 not identifiers, publication text, media, URLs, token values or raw permission snapshots.
 The role has no business-data write privilege and retains the existing one-connection,

@@ -108,6 +108,30 @@ async function audit(db, source = false, retry = false, queued = false) {
   }
 }
 
+test('receipt semantic families remain private diagnostics without execution authority', async () => {
+  const db = new PGlite();
+  try {
+    await fixture(db);
+    await receipts(db);
+    for (const [semanticKey, family] of [
+      [`publisher-observation:v1:${secret}:${key}`, 'publisher_observation'],
+      [key, 'moderation_message'],
+      [`message:message_edited:${secret}:${secret}`, 'moderation_message'],
+      [`unknown:${secret}`, 'other_or_missing'],
+      [null, 'other_or_missing'],
+    ]) {
+      await db.query("UPDATE webhook_events SET semantic_key=$1 WHERE id='private-received'", [
+        semanticKey,
+      ]);
+      const report = await audit(db, true);
+      assert.equal(report.predecessor.receipt_semantic_family, family);
+      assert.equal(report.classification, 'claim_missing');
+    }
+  } finally {
+    await db.close();
+  }
+});
+
 test('source mode inspects the oldest receipt own claim without requiring a predecessor', async () => {
   const db = new PGlite();
   try {

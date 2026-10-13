@@ -77,9 +77,20 @@ export function buildModerationOutcomesAuditSql(explain = false) {
   SELECT evidence, origin, count(*) AS count_lower_bound,
     min(created_at) AS oldest_recorded_at, max(created_at) AS newest_recorded_at
   FROM classified WHERE evidence <> 'OTHER_EVENT' GROUP BY evidence, origin
+), voice_classified AS MATERIALIZED (
+  SELECT created_at,
+    CASE WHEN action = 'DELETE_MESSAGE' AND operator = 'BOT'
+      AND metadata->'moderationDeleteVerified' = 'true'::jsonb
+      THEN 'VOICE_DELETE_REMOTE_CONFIRMED'
+      ELSE 'VOICE_EVENT_WITHOUT_DELETE_PROOF' END AS evidence
+  FROM sample WHERE rule_code IN ('VOICE_BLOCKED', 'VOICE_BLOCKED_DELETE')
+), voice_grouped AS (
+  SELECT evidence, count(*) AS count_lower_bound,
+    min(created_at) AS oldest_recorded_at, max(created_at) AS newest_recorded_at
+  FROM voice_classified GROUP BY evidence
 )
 SELECT json_build_object(
-  'schema_version', 1, 'audit', 'recent_moderation_outcomes',
+  'schema_version', 2, 'audit', 'recent_moderation_outcomes',
   'window_start_at', statement_timestamp() - interval '60 minutes',
   'window_end_at', statement_timestamp(), 'window_basis', 'event_recorded_at',
   'sample_cap', 512, 'sampled_events', (SELECT count(*) FROM sample),
@@ -89,7 +100,9 @@ SELECT json_build_object(
   'newest_recorded_at', (SELECT max(created_at) FROM sample),
   'other_events', (SELECT count(*) FROM classified WHERE evidence = 'OTHER_EVENT'),
   'all_attempts_observed', false, 'current_mute_state_proven', false,
+  'voice_eligible_inputs_observed', false, 'voice_policy_checked', false,
   'fleet_health_proven', false,
+  'voice_rows', coalesce((SELECT json_agg(voice_grouped ORDER BY evidence) FROM voice_grouped), '[]'::json),
   'rows', coalesce((SELECT json_agg(grouped ORDER BY evidence, origin) FROM grouped), '[]'::json)
 );`;
   return `${explain ? 'EXPLAIN (FORMAT JSON) ' : ''}${query}\n`;

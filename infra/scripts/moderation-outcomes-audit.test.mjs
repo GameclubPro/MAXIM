@@ -107,6 +107,41 @@ test('reports an empty complete event sample without treating absence as fleet s
   assert.equal(report.fleet_health_proven, false);
 });
 
+test('voice observations require independent boolean delete proof and never imply input coverage', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  const events = [
+    ['DELETE_MESSAGE', 'BOT', 'VOICE_BLOCKED_DELETE', { moderationDeleteVerified: true }],
+    ['DELETE_MESSAGE', 'BOT', 'VOICE_BLOCKED', { moderationDeleteVerified: true }],
+    ['DELETE_MESSAGE', 'BOT', 'VOICE_BLOCKED_DELETE', { moderationDeleteVerified: 'true' }],
+    ['NONE', 'BOT', 'VOICE_BLOCKED', { moderationDeleteVerified: true }],
+    ['DELETE_MESSAGE', 'ADMIN', 'VOICE_BLOCKED_DELETE', { moderationDeleteVerified: true }],
+    ['MUTE', 'BOT', 'VOICE_BLOCKED', { sanctionApplied: true }],
+    ['DELETE_MESSAGE', 'BOT', 'private-unknown-voice', { moderationDeleteVerified: true }],
+  ];
+  for (const [i, event] of events.entries()) {
+    await db.query(
+      `INSERT INTO moderation_events
+      (id, action, operator, rule_code, metadata, masked_excerpt)
+      VALUES ($1, $2, $3, $4, $5::jsonb, 'private-voice-content')`,
+      [`private-${i}`, ...event.slice(0, 3), JSON.stringify(event[3])],
+    );
+  }
+  const report = (await db.query(query)).rows[0].json_build_object;
+  assert.equal(report.schema_version, 2);
+  assert.equal(report.voice_eligible_inputs_observed, false);
+  assert.equal(report.voice_policy_checked, false);
+  assert.equal(report.fleet_health_proven, false);
+  const counts = Object.fromEntries(
+    report.voice_rows.map((r) => [r.evidence, r.count_lower_bound]),
+  );
+  assert.equal(counts.VOICE_DELETE_REMOTE_CONFIRMED, 2);
+  assert.equal(counts.VOICE_EVENT_WITHOUT_DELETE_PROOF, 4);
+  assert.equal(report.rows.find((r) => r.evidence === 'MUTE_INSTALLED').count_lower_bound, 1);
+  assert.doesNotMatch(JSON.stringify(report), /private-|masked_excerpt|metadata/u);
+});
+
 test('requires the expected live nonpartial created_at index and timestamp type', async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
