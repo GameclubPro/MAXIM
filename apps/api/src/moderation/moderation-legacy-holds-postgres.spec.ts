@@ -88,6 +88,7 @@ describeStores('native permanent legacy effect holds', () => {
         ${chatId}, ${messageId}, ${userId}, clock_timestamp() AT TIME ZONE 'UTC',
         ${'c'.repeat(64)}, ${'d'.repeat(64)}, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, ${id})
     `);
+    return id;
   }
 
   function update(
@@ -188,16 +189,21 @@ describeStores('native permanent legacy effect holds', () => {
     expect(s.effects).toHaveLength(0);
   });
 
-  it.each(['unproved', 'old-proof', 'post-seal-proof'] as const)(
+  it.each(['unproved', 'old-proof', 'at-seal-proof', 'post-seal-proof'] as const)(
     'checks persisted bot cleanup %s at preparation and final dispatch',
     async (kind) => {
       const { s, chatId } = await fixture();
       const before = new Date(Date.now() - 60_000);
-      await installFixtureHold(s, chatId, `original-${randomUUID()}`);
-      // A native SQL clock keeps the positive post-seal case strictly after its seal.
-      const [{ at }] = await s.prisma.$queryRaw<Array<{ at: Date }>>`
-        SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at`;
-      const sourceAt = kind === 'old-proof' ? before : at!;
+      const certificateId = await installFixtureHold(s, chatId, `original-${randomUUID()}`);
+      // FLAG: Bind the fixture to the persisted millisecond seal. Truncating a newer
+      // SQL microsecond clock to a JS Date must not turn post-seal proof into equality.
+      // Equality remains a separate negative case and never authorizes cleanup.
+      const [{ at, sealedAt }] = await s.prisma.$queryRaw<Array<{ at: Date; sealedAt: Date }>>`
+        SELECT GREATEST(date_trunc('milliseconds', clock_timestamp() AT TIME ZONE 'UTC'),
+          sealed_at + interval '1 millisecond') AS at, sealed_at AS "sealedAt"
+        FROM webhook_legacy_quiescence_certificates WHERE id = ${certificateId}`;
+      expect(at.getTime()).toBeGreaterThan(sealedAt.getTime());
+      const sourceAt = kind === 'old-proof' ? before : kind === 'at-seal-proof' ? sealedAt : at;
       const messageId = `bot-cleanup-${randomUUID()}`;
       const pending = await s.intents.ensureIntent({
         chatId,

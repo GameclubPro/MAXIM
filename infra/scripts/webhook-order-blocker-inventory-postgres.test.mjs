@@ -117,7 +117,22 @@ test(
     );
     CREATE UNIQUE INDEX webhook_execution_claims_kind_semantic_key ON webhook_execution_claims(kind,semantic_key);
     CREATE INDEX webhook_execution_claims_event_kind_idx ON webhook_execution_claims(webhook_event_id,kind);
-    INSERT INTO webhook_events(id,status,created_at) SELECT 'retained_'||n,'PROCESSED','2026-01-01' FROM generate_series(1,1000000)n;
+    `);
+      // FLAG: Keep the million-row fixture and the unchanged per-statement ceiling.
+      // Bounded setup batches avoid charging concurrent runner load to one bulk insert.
+      for (let start = 1; start <= 1_000_000; start += 100_000) {
+        await db.query(
+          `INSERT INTO webhook_events(id,status,created_at)
+           SELECT 'retained_'||n,'PROCESSED','2026-01-01'
+           FROM generate_series($1::integer,$2::integer)n`,
+          [start, start + 99_999],
+        );
+      }
+      assert.equal(
+        (await db.query('SELECT count(*)::integer AS count FROM webhook_events')).rows[0].count,
+        1_000_000,
+      );
+      await db.query(`
     INSERT INTO webhook_execution_claims(id,kind,semantic_key,webhook_event_id)
       SELECT 'retained_claim_'||n,'EXECUTION','retained_key_'||n,'retained_'||n FROM generate_series(1,100000)n;
     ANALYZE;
