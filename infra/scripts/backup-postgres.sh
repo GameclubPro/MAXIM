@@ -105,31 +105,9 @@ if ! flock -n "$BACKUP_LOCK_FD"; then
 fi
 
 probe_runtime_ready() {
-  local readiness_json
-  if ! readiness_json="$(curl -fsS --max-time "$READINESS_TIMEOUT_SEC" "$READINESS_URL")"; then
-    return 1
-  fi
-  if ! node -e '
-    const fs = require("node:fs");
-    let snapshot;
-    try {
-      snapshot = JSON.parse(fs.readFileSync(0, "utf8"));
-    } catch {
-      process.exit(1);
-    }
-    const queueLag = snapshot?.checks?.queueLag;
-    if (
-      snapshot?.ok !== true ||
-      snapshot?.checks?.database !== true ||
-      snapshot?.checks?.redis !== true ||
-      queueLag?.rawOk !== true ||
-      queueLag?.softWarning === true
-    ) {
-      process.exit(1);
-    }
-  ' <<<"$readiness_json"; then
-    return 1
-  fi
+  local readiness_json curl_status=0
+  readiness_json="$(curl --fail-with-body -sS --max-time "$READINESS_TIMEOUT_SEC" "$READINESS_URL")" || curl_status=$?
+  node "$ROOT_DIR/infra/scripts/check-postgres-backup-readiness.mjs" "$curl_status" <<<"$readiness_json"
 }
 
 if ! probe_runtime_ready; then

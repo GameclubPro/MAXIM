@@ -7,6 +7,7 @@ import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime'
 import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from './publication-dispatch-issue';
 import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 import { buildClearResolvedPublisherRecipientBlockerQuery } from './publisher-publication-recipient-admission';
+import { selectNextPendingPublisherPublicationDeadline } from './admin-managed-broadcast-due-selection';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const integration = databaseUrl ? describe : describe.skip;
@@ -471,6 +472,41 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
     expect(
       await db.publicationOccurrence.findUniqueOrThrow({ where: { id: occurrenceId } }),
     ).toMatchObject({ dispatchBlockerCode: null, dispatchBlockedAt: null });
+  });
+
+  it('continues recovered author batches promptly and renews denial cooldown without resending receipts', async () => {
+    await fixture(12);
+    await db.managedBroadcastDelivery.updateMany({
+      where: { broadcastId },
+      data: {
+        dispatchBlockerCode: PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
+        dispatchBlockedAt: new Date(Date.now() - 61_000),
+      },
+    });
+    await db.managedEntityAccessEdge.updateMany({
+      where: { botId, userId: actorId, chatId: { in: chatIds.slice(8) } },
+      data: { state: 'USER_DENIED' },
+    });
+    for (let batch = 0; batch < 3; batch += 1) {
+      expect(await selectNextPendingPublisherPublicationDeadline(db as never)).toMatchObject({
+        id: broadcastId,
+      });
+      await run();
+    }
+    expect(remoteSend.mock.calls.map((call) => call[0])).toEqual(chatIds.slice(0, 8));
+    expect(requestActorAccessRefresh).toHaveBeenCalledTimes(4);
+    expect(await selectNextPendingPublisherPublicationDeadline(db as never)).toBeNull();
+    const deliveries = await db.managedBroadcastDelivery.findMany({ where: { broadcastId } });
+    expect(
+      deliveries.filter((delivery) => delivery.status === 'SENT' && delivery.attemptCount === 1),
+    ).toHaveLength(8);
+    expect(
+      deliveries.filter((delivery) => delivery.status === 'PENDING' && delivery.attemptCount === 0),
+    ).toHaveLength(4);
+    // A safety poll during the renewed cooldown neither repeats sends nor probes denied authors.
+    await run();
+    expect(remoteSend).toHaveBeenCalledTimes(8);
+    expect(requestActorAccessRefresh).toHaveBeenCalledTimes(4);
   });
 
   it('recovers a quarantined recipient after healthy recipients while another author remains denied', async () => {

@@ -78,7 +78,7 @@ test('failed cohorts expose bounded categories and timing separately without tru
     ('private-not-failed','PROCESSED',now()-interval '45 seconds',
       'NO_EXECUTABLE_OWNER; deadline=2026-01-01T00:00:00.000Z',NULL,NULL,NULL);`);
   const report = (await db.query(query)).rows[0].json_build_object;
-  assert.equal(report.schema_version, 2);
+  assert.equal(report.schema_version, 3);
   assert.equal(report.failure_classification_authority, 'saved_metadata_only');
   const byFamily = Object.fromEntries(report.failure_families.map((r) => [r.family, r]));
   assert.equal(byFamily.no_executable_owner.count_lower_bound, 1);
@@ -91,7 +91,73 @@ test('failed cohorts expose bounded categories and timing separately without tru
   assert.equal(byFamily.pending_quarantine_marker.deadline_elapsed_at_observation, 1);
   assert.equal(byFamily.completion_claim_changed.count_lower_bound, 1);
   assert.equal(byFamily.other.count_lower_bound, 2);
+  assert.deepEqual(report.pending_quarantine_families, [
+    { family: 'other_pending', count_lower_bound: 1 },
+  ]);
   assert.doesNotMatch(JSON.stringify(report), /private-|secret|payload|2026-01-01/u);
+});
+
+test('quarantine subtype matches exact saved envelopes without mistaking copied text for provenance', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  const prefix = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:';
+  const nonce = '11111111-2222-3333-4444-555555555555';
+  const markers = [
+    ['LEGACY_EXECUTION_UNVERIFIED; exact effects proof required', 'legacy_execution_unverified'],
+    [
+      'CANONICAL_BUSINESS_ALREADY_STARTED; durable-effects recovery required',
+      'canonical_business_started',
+    ],
+    [
+      `${nonce}: Webhook user-facing hot path timed out after 10000ms for message_created`,
+      'detached_timeout',
+    ],
+    [
+      `${nonce}: Webhook user-facing hot path timed out after 10000ms for message_edited | private-error`,
+      'detached_timeout',
+    ],
+    [
+      `${nonce}: detached execution completed without a canonical claim: private-error`,
+      'unclaimed_detached_completed',
+    ],
+    [
+      `${nonce}: detached execution failed without a canonical claim: private-error`,
+      'unclaimed_detached_failed',
+    ],
+    ['LEGACY_EXECUTION_UNVERIFIED; exact effects proof required private-error', 'other_pending'],
+    [
+      `${nonce}: private-error LEGACY_EXECUTION_UNVERIFIED; exact effects proof required`,
+      'other_pending',
+    ],
+    [
+      'private-nonce: Webhook user-facing hot path timed out after 10000ms for message_created',
+      'other_pending',
+    ],
+    [
+      `${nonce}: Webhook user-facing hot path timed out after 10000ms for message_created_private`,
+      'other_pending',
+    ],
+  ];
+  for (const [i, [marker]] of markers.entries()) {
+    await db.query(
+      `INSERT INTO webhook_events(id,status,created_at,error_message)
+      VALUES ($1,'FAILED',now()-interval '45 seconds',$2)`,
+      [`private-${i}`, prefix + marker],
+    );
+  }
+  const report = (await db.query(query)).rows[0].json_build_object;
+  const expected = new Map();
+  for (const [, family] of markers) expected.set(family, (expected.get(family) ?? 0) + 1);
+  assert.deepEqual(
+    report.pending_quarantine_families,
+    [...expected]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([family, count_lower_bound]) => ({ family, count_lower_bound })),
+  );
+  assert.equal(report.remote_effects_proven, false);
+  assert.equal(report.failure_classification_authority, 'saved_metadata_only');
+  assert.doesNotMatch(JSON.stringify(report), /private-|11111111|LEGACY_EXECUTION_UNVERIFIED/u);
 });
 
 test('empty and capped cohorts never claim complete processing', async (t) => {
@@ -101,6 +167,7 @@ test('empty and capped cohorts never claim complete processing', async (t) => {
   let report = (await db.query(query)).rows[0].json_build_object;
   assert.equal(report.nonempty, false);
   assert.deepEqual(report.failure_families, []);
+  assert.deepEqual(report.pending_quarantine_families, []);
   assert.ok(report.rows.every((r) => r.count_lower_bound === 0));
   await db.exec(`INSERT INTO webhook_events(id,status,created_at)
     SELECT 'private-' || n, 'PROCESSED', now()-interval '45 seconds' FROM generate_series(1,513) n;`);

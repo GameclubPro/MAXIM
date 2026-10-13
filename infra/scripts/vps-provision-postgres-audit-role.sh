@@ -24,7 +24,7 @@ local Docker-socket access under the production pg_hba rules, with:
   - 21 additional delete-intent/verified-reason metadata columns for bounded owner proof;
     identities, lease tokens and reason metadata are check-only and never report output
   - ten rules-publication metadata columns; no rules text, media, links, or settings
-  - sixteen Publisher binding/comment metadata columns
+  - seventeen Publisher binding/comment metadata columns
   - forty-three publication/access metadata columns; IDs are join-only and never report output
   - eight commercial-review metadata columns only; no evidence, captions or user/message IDs
   - eight fixed migration receipt columns; errors classified in SQL, raw logs never reported

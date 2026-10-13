@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient, createPrismaAdapter, type Prisma } from '../prisma/prisma-client';
 import { dispatchScheduledPublicationOccurrences } from './publication-occurrence-dispatcher';
+import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 import {
   selectNextPendingPublisherPublicationDeadline,
   selectPublicationManagedBroadcastDueBatch,
@@ -226,5 +227,33 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
       data: { status: 'AMBIGUOUS' },
     });
     expect(await selectNextPendingPublisherPublicationDeadline(db as never)).toBeNull();
+  });
+
+  it('wakes elapsed actor-readiness retries but preserves cooldown, quarantine and lifecycle fences', async () => {
+    const pending = await envelope(randomUUID(), -60_000, {
+      dispatchBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+      dispatchBlockedAt: new Date(now.getTime() - 60_000),
+    });
+    const select = (at = now) =>
+      selectNextPendingPublisherPublicationDeadline(db as never, at, ['NOW']);
+    expect(await select(new Date(now.getTime() - 1))).toBeNull();
+    expect(await select()).toEqual({ id: pending.id, nextSendAt: pending.nextSendAt });
+    const update = (data: Prisma.ManagedBroadcastDeliveryUpdateManyMutationInput) =>
+      db.managedBroadcastDelivery.updateMany({ where: { broadcastId: pending.id }, data });
+    await expect(update({ dispatchBlockedAt: null })).rejects.toThrow(
+      'managed_broadcast_deliveries_dispatch_blocker_check',
+    );
+    await update({
+      dispatchBlockedAt: new Date(now.getTime() - 60_000),
+      lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+    });
+    expect(await select()).toBeNull();
+    await update({ lastErrorCode: null, dispatchBlockerCode: 'PUBLISHER_RUNTIME_UNAVAILABLE' });
+    expect(await select()).toBeNull();
+    await update({ dispatchBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED', status: 'AMBIGUOUS' });
+    expect(await select()).toBeNull();
+    await update({ status: 'PENDING' });
+    await db.publication.update({ where: { id: publicationId }, data: { lifecycle: 'CANCELED' } });
+    expect(await select()).toBeNull();
   });
 });

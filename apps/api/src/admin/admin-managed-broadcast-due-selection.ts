@@ -12,6 +12,10 @@ import type { PrismaService } from '../prisma/prisma.service';
 import { MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE } from '../max/max-send-route-health';
 import { buildManagedBroadcastAutoRetryableFailureWhere } from './admin-managed-broadcast-reconciliation';
 import {
+  PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
+  PUBLISHER_PUBLICATION_BLOCKED_RETRY_MS,
+} from './publication-dispatch-issue';
+import {
   buildPublicationDeliveryAutomatedVerificationWhere,
   buildPublicationDeliveryUnenrolledVerificationWhere,
   PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
@@ -139,9 +143,10 @@ export async function selectNextPendingPublisherPublicationDeadline(
   ],
 ): Promise<PendingPublisherPublicationDeadline | null> {
   const staleDeliveryLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
-  // FLAG: Exact wakeups are only for ACTIVE executable delivery work. PARTIAL/FAILED anomalies,
-  // blocked, verification-only, and fresh in-flight rows stay on the recovery poll so a
-  // deterministic failure cannot create a rapid timer loop.
+  // FLAG: Exact wakeups retain ACTIVE, revision/lifecycle and in-flight guards. Only an
+  // elapsed actor-readiness retry joins unblocked work: dispatch still rechecks authority
+  // before claiming/sending and renews a refused target's 60-second delay. Other blockers,
+  // route quarantine and verification-only work stay on the recovery poll.
   const row = await prisma.managedBroadcast.findFirst({
     where: {
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
@@ -170,6 +175,17 @@ export async function selectNextPendingPublisherPublicationDeadline(
             {
               status: ManagedBroadcastDeliveryStatus.PENDING,
               dispatchBlockerCode: null,
+              OR: [
+                { lastErrorCode: null },
+                { lastErrorCode: { not: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } },
+              ],
+            },
+            {
+              status: ManagedBroadcastDeliveryStatus.PENDING,
+              dispatchBlockerCode: PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
+              dispatchBlockedAt: {
+                lte: new Date(now.getTime() - PUBLISHER_PUBLICATION_BLOCKED_RETRY_MS),
+              },
               OR: [
                 { lastErrorCode: null },
                 { lastErrorCode: { not: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } },
