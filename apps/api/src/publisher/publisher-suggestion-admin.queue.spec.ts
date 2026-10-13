@@ -17,6 +17,24 @@ const actor = {
 };
 
 describe('PublisherSuggestionAdminQueueService', () => {
+  it.each(['active', 'waiting', 'delayed'] as const)(
+    'reports an existing %s job without requesting recovery again',
+    async (state) => {
+      const existing = { getState: jest.fn().mockResolvedValue(state), retry: jest.fn() };
+      const queue = { getJob: jest.fn().mockResolvedValue(existing), add: jest.fn() };
+      const service = new PublisherSuggestionAdminQueueService(queue as never);
+      await expect(
+        service.enqueueDelivery({
+          suggestionId: 'suggestion',
+          requiredBotId: 'publik',
+          recoverExisting: true,
+        }),
+      ).resolves.toBe('existing');
+      expect(existing.retry).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    },
+  );
+
   it('uses one stable delivery job id per suggestion and Publisher bot', async () => {
     const add = jest.fn().mockResolvedValue(undefined);
     const service = new PublisherSuggestionAdminQueueService({ add } as never);

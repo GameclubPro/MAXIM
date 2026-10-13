@@ -210,20 +210,26 @@ For a bounded population snapshot, first review the fixed plan, then run:
 ./infra/scripts/vps-connect.sh postgres-audit publisher-access-census
 ```
 
-This opt-in report uses the existing six binding metadata grants and the audit session's time,
-memory and read-only limits. An unfiltered primary-key scan stops at 50,001 rows before any
-status filter, cohort hash or aggregate. Only counts over at most 50,000 rows leave SQL;
-`source_truncated` explicitly marks an incomplete population. The SHA-256 bucket matches the
-runtime's compact JSON bot/entity pair. Both cohorts report active/admin/fresh/expired populations.
-`active_bot_scopes` must be one and agree with the attested runtime scope before using a complete
-snapshot as a population denominator. No new grants or application restart are required.
+Schema v2 uses seven exact binding metadata columns, including `bot_access_source`.
+After synchronizing the catalog, preview and apply the reviewed audit-role provision
+before running it. The publisher metadata group now has 17 exact columns; permission
+payloads and user identities are still inaccessible. The primary-key walk stops at
+50,001 rows before filtering or aggregation; only 50,000 enter the report.
 
-Collect comparable snapshots throughout the measured interval. Normalize only periodic
-`binding_maintenance` roster attempts against comparable eligible binding/time exposure;
-webhook/manual roster work is separate. Sparse snapshots, population changes and truncated
-samples must remain explicit uncertainties, not be converted into precise binding-hours.
-Fresh evidence in a snapshot cannot retrospectively resolve superseded jobs or prove that a
-previous deadline was met. This report never grants access or repairs/replays a publication.
+Cohorts retain their deterministic SHA-256 split for historical comparison. Current
+categories are `durable_confirmed`, `activation_required`, `explicit_denied` and
+`metadata_unknown`. Old/null expiry does not invalidate a confirmed observation.
+Missing/future observation clocks are unknown; pending activation overrides a saved
+positive role. Inactive bindings are counted separately. This is **role metadata**:
+`permissions=not_inspected` and `actor_authorization=not_inspected` deliberately prevent
+using it as a full readiness verdict. Known capability loss and fresh human authority
+remain runtime checks.
+
+`source_truncated` prevents fleet-wide conclusions. Multiple active bot scopes must be
+reconciled with runtime identity before comparison. Timestamps describe observations,
+not binding-hours, historical deadline success or permission to send. The census never
+repairs, activates, or replays a publication. Historical scheduler acceptance below is
+retained for incident interpretation and is not the current operation's gate.
 
 ### Acceptance protocol for the combined priority refactoring release
 

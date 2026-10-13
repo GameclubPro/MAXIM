@@ -108,6 +108,12 @@ export function buildPublisherSuggestionAdminReviewCallbackPayload(
   return `${PUBLISHER_SUGGESTION_ADMIN_CALLBACK_PREFIX}${action}:${suggestionId.trim()}`;
 }
 
+export type PublisherSuggestionEnqueueOutcome =
+  | 'enqueue_requested'
+  | 'retried'
+  | 'existing'
+  | 'invalid';
+
 @Injectable()
 export class PublisherSuggestionAdminQueueService implements OnModuleDestroy {
   private failedSyncScanOffset = 0;
@@ -171,13 +177,16 @@ export class PublisherSuggestionAdminQueueService implements OnModuleDestroy {
     requiredBotId: string;
     requestedAt?: Date;
     recoverExisting?: boolean;
-  }): Promise<void> {
+  }): Promise<PublisherSuggestionEnqueueOutcome> {
     const suggestionId = params.suggestionId.trim();
     const requiredBotId = params.requiredBotId.trim();
-    if (!suggestionId || !requiredBotId) return;
+    if (!suggestionId || !requiredBotId) return 'invalid';
     const requestedAt = params.requestedAt ?? new Date();
     const jobId = buildPublisherSuggestionAdminDeliveryJobId(requiredBotId, suggestionId);
-    if (params.recoverExisting && (await this.retryExistingJob(jobId))) return;
+    if (params.recoverExisting) {
+      const outcome = await this.retryExistingJob(jobId);
+      if (outcome) return outcome;
+    }
 
     await this.queue.add(
       'deliver',
@@ -197,19 +206,22 @@ export class PublisherSuggestionAdminQueueService implements OnModuleDestroy {
         removeOnFail: { age: 24 * 60 * 60, count: 5_000 },
       },
     );
+    // Queue.add can race with another producer; acceptance does not prove creation or delivery.
+    return 'enqueue_requested';
   }
 
-  private async retryExistingJob(jobId: string): Promise<boolean> {
+  private async retryExistingJob(jobId: string): Promise<'existing' | 'retried' | null> {
     const existing = await this.queue.getJob(jobId);
-    if (!existing) return false;
+    if (!existing) return null;
     const state = await existing.getState();
     if (state === 'failed' || state === 'completed') {
       await existing.retry(state, {
         resetAttemptsMade: true,
         resetAttemptsStarted: true,
       });
+      return 'retried';
     }
-    return true;
+    return 'existing';
   }
 
   async enqueueReview(params: {
@@ -285,17 +297,20 @@ export class PublisherSuggestionAdminQueueService implements OnModuleDestroy {
     reviewStatus: PublisherSuggestionAdminReviewStatus;
     requestedAt?: Date;
     recoverExisting?: boolean;
-  }): Promise<void> {
+  }): Promise<PublisherSuggestionEnqueueOutcome> {
     const suggestionId = params.suggestionId.trim();
     const requiredBotId = params.requiredBotId.trim();
-    if (!suggestionId || !requiredBotId) return;
+    if (!suggestionId || !requiredBotId) return 'invalid';
     const requestedAt = params.requestedAt ?? new Date();
     const jobId = buildPublisherSuggestionAdminSyncJobId(
       requiredBotId,
       suggestionId,
       params.reviewStatus,
     );
-    if (params.recoverExisting && (await this.retryExistingJob(jobId))) return;
+    if (params.recoverExisting) {
+      const outcome = await this.retryExistingJob(jobId);
+      if (outcome) return outcome;
+    }
 
     await this.queue.add(
       'sync',
@@ -316,6 +331,8 @@ export class PublisherSuggestionAdminQueueService implements OnModuleDestroy {
         removeOnFail: { age: 30 * 24 * 60 * 60, count: 5_000 },
       },
     );
+    // Queue.add can race with another producer; acceptance does not prove creation or delivery.
+    return 'enqueue_requested';
   }
 
   async recoverFailedSyncJobs(requiredBotId: string, limit = 25): Promise<number> {

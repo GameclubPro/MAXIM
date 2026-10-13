@@ -7,6 +7,39 @@ export type PublicationExecutionTiming = {
 };
 
 type PublicationMediaKind = 'none' | 'image' | 'video' | 'unknown';
+export type PublicationStage =
+  | 'actor_authority'
+  | 'delivery_readiness'
+  | 'target_preparation'
+  | 'target_selection'
+  | 'dispatch_quantum';
+
+export async function measurePublicationStage<T>(
+  logger: Partial<Pick<Logger, 'log'>> | undefined,
+  stage: PublicationStage,
+  operation: () => Promise<T>,
+  lane: 'immediate' | 'deadline' | 'preflight' | 'unknown' = 'unknown',
+): Promise<T> {
+  const started = performance.now();
+  let outcome: 'returned' | 'threw' = 'threw';
+  try {
+    const result = await operation();
+    outcome = 'returned';
+    return result;
+  } finally {
+    // FLAG: The original promise retains authority until settlement. No timeout race,
+    // raw exception/identifier label, or logging failure may alter dispatch behavior.
+    if (logger)
+      emit(logger, {
+        metric: 'publication_stage_v1',
+        stage,
+        lane,
+        outcome,
+        durationMs: Math.max(0, Math.round(performance.now() - started)),
+      });
+  }
+}
+
 type PublicationTimingInput = {
   mode?: PublicationScheduleMode | null;
   media: PublicationMediaKind;

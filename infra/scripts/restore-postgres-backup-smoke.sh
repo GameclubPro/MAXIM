@@ -10,6 +10,9 @@ RESTORE_DATA_ROOT="${MAXIM_RESTORE_SMOKE_DATA_ROOT:-$BACKUP_DIR/restore-smoke-da
 MIN_FREE_BYTES="${MAXIM_RESTORE_SMOKE_MIN_FREE_BYTES:-2147483648}"
 REQUIRED_PERCENT="${MAXIM_RESTORE_SMOKE_REQUIRED_PERCENT:-125}"
 REQUIRE_DEDICATED_FILESYSTEM="${MAXIM_RESTORE_SMOKE_REQUIRE_DEDICATED_FILESYSTEM:-1}"
+BACKING_FILESYSTEM_PATH="${MAXIM_BACKUP_BACKING_FILESYSTEM_PATH:-$RESTORE_DATA_ROOT}"
+MAX_DURATION_SEC="${MAXIM_RESTORE_SMOKE_MAX_DURATION_SEC:-43200}"
+READINESS_URL="${MAXIM_BACKUP_READINESS_URL:-http://127.0.0.1:3001/api/health/ready}"
 MODE=""
 DUMP_PATH=""
 
@@ -28,6 +31,10 @@ for argument in "$@"; do
   esac
 done
 
+if [[ ! "$MAX_DURATION_SEC" =~ ^[0-9]+$ ]] || ((MAX_DURATION_SEC < 1 || MAX_DURATION_SEC > 43200)); then
+  echo "Invalid bounded restore duration." >&2
+  exit 2
+fi
 if [[ ! "$MIN_FREE_BYTES" =~ ^[0-9]+$ || ! "$REQUIRED_PERCENT" =~ ^[0-9]+$ ]]; then
   echo "Restore-smoke capacity limits must be non-negative integers." >&2
   exit 2
@@ -41,6 +48,23 @@ if [[ "$REQUIRE_DEDICATED_FILESYSTEM" != "0" && "$REQUIRE_DEDICATED_FILESYSTEM" 
   exit 2
 fi
 
+# FLAG: A restore competes for the same disks as production. Serialize it with the
+# producer and deployments, and never start without healthy production readiness.
+probe_ready() {
+  curl -fsS --max-time 10 "$READINESS_URL" | node -e '
+    let raw=""; process.stdin.on("data", x => raw += x).on("end", () => {
+      const s=JSON.parse(raw);
+      if (!s.ok || !s.checks?.database || !s.checks?.redis ||
+          s.checks?.queueLag?.rawOk !== true || s.checks?.queueLag?.softWarning === true) process.exit(1);
+    });'
+}
+probe_ready
+if [[ "$MODE" != --preflight-only ]]; then
+  # shellcheck source=/dev/null
+  source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+  acquire_deploy_lock || exit 75
+  trap release_deploy_lock EXIT
+fi
 if [[ -z "$DUMP_PATH" ]]; then
   DUMP_PATH="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'maxim_*.dump' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d ' ' -f 2-)"
 fi
@@ -82,7 +106,9 @@ if [[ ! "$DATABASE_BYTES" =~ ^[0-9]+$ || ! "$AVAILABLE_BYTES" =~ ^[0-9]+$ ]]; th
 fi
 
 REQUIRED_BYTES=$(((DATABASE_BYTES * REQUIRED_PERCENT + 99) / 100 + MIN_FREE_BYTES))
-if ((AVAILABLE_BYTES < REQUIRED_BYTES)); then
+BACKING_AVAILABLE_BYTES="$(df -PB1 "$BACKING_FILESYSTEM_PATH" | awk 'NR == 2 { print $4 }')"
+if [[ ! "$BACKING_AVAILABLE_BYTES" =~ ^[0-9]+$ ]]; then exit 1; fi
+if ((AVAILABLE_BYTES < REQUIRED_BYTES || BACKING_AVAILABLE_BYTES < REQUIRED_BYTES)); then
   echo "Insufficient free space for an isolated PostgreSQL restore smoke." >&2
   echo "Available bytes: $AVAILABLE_BYTES; required bytes: $REQUIRED_BYTES." >&2
   echo "Configure MAXIM_RESTORE_SMOKE_DATA_ROOT on a separate disposable volume." >&2
@@ -96,17 +122,62 @@ fi
 
 CONTAINER_NAME="maxim-postgres-restore-smoke-$$-$RANDOM"
 RESTORE_DATA_DIR="$(mktemp -d "$RESTORE_DATA_ROOT/maxim-restore-smoke.XXXXXX")"
+WATCHDOG_PID=""
+ABORT_MARKER="$RESTORE_DATA_DIR/.watchdog-aborted"
 cleanup() {
+  local status=$?
+  trap - EXIT HUP INT TERM
+  if [[ -n "$WATCHDOG_PID" ]]; then
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+    wait "$WATCHDOG_PID" 2>/dev/null || true
+  fi
   docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-  rm -rf -- "$RESTORE_DATA_DIR" || true
+  rm -rf -- "$RESTORE_DATA_DIR" || status=1
+  release_deploy_lock || status=1
+  exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 docker run --detach --rm \
   --name "$CONTAINER_NAME" \
+  --network none --cpus 2 --memory 4g --pids-limit 128 --shm-size 256m \
   --env POSTGRES_PASSWORD=restore-smoke-only \
   --mount "type=bind,source=$RESTORE_DATA_DIR,target=/var/lib/postgresql/data" \
   "$POSTGRES_IMAGE" >/dev/null
+
+watch_restore() {
+  local failures=0 free backing started=$SECONDS sleeper=""
+  # FLAG: The watchdog owns its sleep child, which inherits the deploy lock.
+  # Reap it on shutdown so completion never leaves a live lock holder behind.
+  trap - EXIT
+  trap 'if [[ -n "$sleeper" ]]; then kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; fi; exit 0' TERM INT HUP
+  while true; do
+    sleep 15 &
+    sleeper=$!
+    wait "$sleeper" || return
+    sleeper=""
+    free="$(df -PB1 "$RESTORE_DATA_ROOT" | awk 'NR==2 {print $4}')"
+    backing="$(df -PB1 "$BACKING_FILESYSTEM_PATH" | awk 'NR==2 {print $4}')"
+    if [[ ! "$free" =~ ^[0-9]+$ || ! "$backing" =~ ^[0-9]+$ ]] ||
+      (( free < MIN_FREE_BYTES || backing < MIN_FREE_BYTES || SECONDS - started >= MAX_DURATION_SEC )); then
+      failures=2
+    elif probe_ready; then
+      failures=0
+    else
+      failures=$((failures + 1))
+    fi
+    if (( failures >= 2 )); then
+      touch "$ABORT_MARKER"
+      docker stop --time 10 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+      return
+    fi
+  done
+}
+watch_restore &
+WATCHDOG_PID=$!
 
 ready=0
 for _ in $(seq 1 60); do
@@ -123,7 +194,7 @@ fi
 
 docker exec -i "$CONTAINER_NAME" pg_restore --list < "$DUMP_PATH" >/dev/null
 docker exec "$CONTAINER_NAME" createdb -U postgres maxim_restore_smoke
-docker exec -i "$CONTAINER_NAME" pg_restore \
+timeout --signal=TERM --kill-after=30s "${MAX_DURATION_SEC}s" docker exec -i "$CONTAINER_NAME" pg_restore \
   -U postgres \
   -d maxim_restore_smoke \
   --exit-on-error \
@@ -138,5 +209,30 @@ if [[ "$HAS_MIGRATIONS_TABLE" != 1 ]]; then
   echo "Restore smoke did not find the Prisma migration table." >&2
   exit 1
 fi
+
+# FLAG: These queries run only inside the disposable restored database, never the primary.
+INVARIANTS="$(docker exec "$CONTAINER_NAME" psql -U postgres -d maxim_restore_smoke -Atqc "
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM (VALUES ('webhook_events'), ('webhook_execution_claims'),
+      ('max_action_ledger'), ('publications'), ('publication_occurrences'),
+      ('managed_broadcast_deliveries')) AS critical(name)
+    WHERE to_regclass('public.' || name) IS NULL OR NOT EXISTS (
+      SELECT 1 FROM pg_index WHERE indrelid=to_regclass('public.' || name)
+        AND indisprimary AND indisvalid AND indisready
+    )
+  ) AND NOT EXISTS (SELECT 1 FROM public._prisma_migrations
+    WHERE finished_at IS NULL AND rolled_back_at IS NULL)
+  THEN 1 ELSE 0 END")"
+[[ "$INVARIANTS" == 1 && ! -e "$ABORT_MARKER" ]]
+probe_ready
+RECEIPT_TMP="$(mktemp "$DUMP_PATH.restore-verified.XXXXXX.tmp")"
+node - "$DUMP_PATH" "$POSTGRES_IMAGE" >"$RECEIPT_TMP" <<'JS'
+const fs=require('node:fs');
+const [dump, postgresImage]=process.argv.slice(2);
+process.stdout.write(JSON.stringify({ schemaVersion:1, verifiedAt:new Date().toISOString(),
+  dump:require('node:path').basename(dump), dumpSha256:fs.readFileSync(dump+'.sha256','utf8').split(/\s+/)[0],
+  postgresImage, verification:'isolated_restore_and_authority_schema', network:'none' })+'\n');
+JS
+mv "$RECEIPT_TMP" "$DUMP_PATH.restore-verified.json"
 
 echo "PostgreSQL restore smoke passed for $DUMP_PATH"

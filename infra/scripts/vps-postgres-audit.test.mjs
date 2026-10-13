@@ -2592,7 +2592,7 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
       chat_id TEXT PRIMARY KEY, status TEXT, bot_access_state TEXT,
       bot_access_checked_at TIMESTAMP, bot_access_expires_at TIMESTAMP,
       send_route_quarantined_until TIMESTAMP, publisher_bot_id TEXT,
-      last_webhook_at TIMESTAMP, bot_access_source TEXT
+      last_webhook_at TIMESTAMP, bot_access_source TEXT, permissions_snapshot JSONB
     );
     CREATE TABLE publisher_entity_settings (
       chat_id TEXT PRIMARY KEY, chat_comments_enabled BOOLEAN,
@@ -2867,13 +2867,15 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
   await database.exec(columnResetSql);
   await database.exec(verificationSql);
 
-  await database.exec('GRANT SELECT (bot_access_source) ON publisher_entity_bindings TO PUBLIC;');
+  await database.exec(
+    'GRANT SELECT (permissions_snapshot) ON publisher_entity_bindings TO PUBLIC;',
+  );
   await assert.rejects(
     database.exec(verificationSql),
     /Publisher metadata privileges are not exact/u,
   );
   await database.exec(
-    'REVOKE SELECT (bot_access_source) ON publisher_entity_bindings FROM PUBLIC;',
+    'REVOKE SELECT (permissions_snapshot) ON publisher_entity_bindings FROM PUBLIC;',
   );
   await database.exec(`
     INSERT INTO publisher_entity_bindings
@@ -2932,7 +2934,7 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
     assert.match(commentsPlan, new RegExp(`${table}_pkey`, 'u'));
   }
   await assert.rejects(
-    database.query('SELECT bot_access_source FROM publisher_entity_bindings'),
+    database.query('SELECT permissions_snapshot FROM publisher_entity_bindings'),
     /permission denied/u,
   );
   await database.exec('SET SESSION AUTHORIZATION postgres;');

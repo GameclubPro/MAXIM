@@ -1,3 +1,7 @@
+import {
+  isMajorManagedEntityActivationRequired,
+  ManagedEntityActivationRequiredError,
+} from './managed-entity-activation.util';
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { managedRefreshBackoffMs } from './managed-refresh-backoff';
 import {
@@ -34,6 +38,8 @@ type PersistedMembership = {
   status: ChatBotMembershipStatus;
   capabilities: unknown;
   permissionsSnapshot: unknown;
+  botAccessState?: ChatBotAccessState;
+  botAccessSource?: string | null;
   lastSeenAt: Date | null;
   lastWebhookAt: Date | null;
 };
@@ -41,6 +47,7 @@ type PersistedMembership = {
 type PermissionsSummary = NonNullable<ManagedEntityAssignedBot['permissionsSummary']>;
 type BotAccessSnapshotRefreshResult = {
   snapshot: PermissionsSummary | null;
+  activationRequired?: true;
   accessStateOverride?: ChatBotAccessState;
   lastErrorCode?: string | null;
   persistedEpoch?: {
@@ -125,6 +132,11 @@ export class MaxBotExecutionPlannerService {
     const targetAccess = await this.refreshBotAccessSnapshot(chatId, targetBot.id, {
       source: 'execution_planner_primary',
     });
+    if (targetAccess.activationRequired) {
+      throw new BadRequestException(
+        'Подтвердите подключение этого бота командой «Старт» от администратора.',
+      );
+    }
     const targetSnapshot = targetAccess.snapshot;
     if (!targetSnapshot?.isAdmin && !targetSnapshot?.isOwner) {
       throw new BadRequestException(
@@ -167,7 +179,7 @@ export class MaxBotExecutionPlannerService {
             membership.status === ChatBotMembershipStatus.ACTIVE &&
             membership.role === ChatBotMembershipRole.STANDBY,
         )
-      : this.resolvePreferredStandbyPromotionCandidate(state.memberships);
+      : this.resolvePreferredStandbyPromotionCandidate(state.memberships, state.entityType);
 
     if (!candidateMembership) {
       throw new BadRequestException(
@@ -222,6 +234,11 @@ export class MaxBotExecutionPlannerService {
       nextAccess = await this.refreshBotAccessSnapshot(chatId, botId, {
         source: 'execution_planner_assist',
       });
+      if (nextAccess.activationRequired) {
+        throw new BadRequestException(
+          'Подтвердите подключение этого бота командой «Старт» от администратора.',
+        );
+      }
       nextPermissionsSnapshot = nextAccess.snapshot;
       if (!nextPermissionsSnapshot?.isAdmin && !nextPermissionsSnapshot?.isOwner) {
         await this.updateMembershipCapabilities(chatId, botId, [], nextAccess);
@@ -269,6 +286,13 @@ export class MaxBotExecutionPlannerService {
       if (!bot || !canDiscoverChatsForBotState(bot.state)) {
         continue;
       }
+      if (
+        isMajorManagedEntityActivationRequired(
+          membership,
+          this.toPrismaEntityType(params.entityType),
+        )
+      )
+        continue;
       const cachedSnapshot = params.force
         ? null
         : this.readFreshPermissionsSummary(membership.permissionsSnapshot);
@@ -302,7 +326,11 @@ export class MaxBotExecutionPlannerService {
     });
 
     const state = await this.loadChatState(chatId);
-    const assignedBots = this.buildAssignedBots(state.memberships, state.primaryBotId);
+    const assignedBots = this.buildAssignedBots(
+      state.memberships,
+      state.primaryBotId,
+      state.entityType,
+    );
     const sharedMode = this.resolveSharedMode(assignedBots);
     const activePartners = assignedBots.filter((bot) => this.isActiveExecutableStandbyBot(bot));
     const assistPartners = activePartners.filter((bot) => bot.capabilities.length > 0);
@@ -337,6 +365,18 @@ export class MaxBotExecutionPlannerService {
     }
 
     const warnings: string[] = [];
+    for (const membership of state.memberships) {
+      if (
+        membership.status === ChatBotMembershipStatus.ACTIVE &&
+        isMajorManagedEntityActivationRequired(membership, state.entityType)
+      ) {
+        const label = this.maxBotRegistry.getBotById(membership.botId)?.label;
+        if (label)
+          warnings.push(
+            `Для ${label} требуется явное подключение: команда «Старт» от администратора или пересланное сообщение в личный диалог с этим ботом.`,
+          );
+      }
+    }
     if (!primaryBotId) {
       warnings.push(
         'У чата нет валидного owner-бота. До multi-bot rollout надо назначить primary.',
@@ -377,11 +417,13 @@ export class MaxBotExecutionPlannerService {
 
   private resolvePreferredStandbyPromotionCandidate(
     memberships: readonly PersistedMembership[],
+    entityType: ChatEntityType | null,
   ): PersistedMembership | null {
     const activeExecutableStandbyMemberships = memberships.filter(
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE &&
         membership.role === ChatBotMembershipRole.STANDBY &&
+        !isMajorManagedEntityActivationRequired(membership, entityType) &&
         !membershipExplicitlyLacksAccess(membership.permissionsSnapshot) &&
         canExecuteActionsForBotState(
           this.maxBotRegistry.getBotById(membership.botId)?.state ?? 'disabled',
@@ -450,12 +492,14 @@ export class MaxBotExecutionPlannerService {
 
   private async loadChatState(chatId: string): Promise<{
     primaryBotId: string | null;
+    entityType: ChatEntityType | null;
     memberships: PersistedMembership[];
   }> {
     const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: {
         primaryBotId: true,
+        entityType: true,
         botId: true,
         botMemberships: {
           select: {
@@ -464,6 +508,8 @@ export class MaxBotExecutionPlannerService {
             status: true,
             capabilities: true,
             permissionsSnapshot: true,
+            botAccessState: true,
+            botAccessSource: true,
             lastSeenAt: true,
             lastWebhookAt: true,
           },
@@ -479,12 +525,15 @@ export class MaxBotExecutionPlannerService {
     return {
       primaryBotId:
         this.maxBotRegistry.getBotById(chat.primaryBotId ?? chat.botId ?? null)?.id ?? null,
+      entityType: chat.entityType ?? null,
       memberships: chat.botMemberships.map((membership) => ({
         botId: membership.botId,
         role: membership.role,
         status: membership.status,
         capabilities: membership.capabilities,
         permissionsSnapshot: membership.permissionsSnapshot,
+        botAccessState: membership.botAccessState,
+        botAccessSource: membership.botAccessSource,
         lastSeenAt: membership.lastSeenAt,
         lastWebhookAt: membership.lastWebhookAt,
       })),
@@ -494,6 +543,7 @@ export class MaxBotExecutionPlannerService {
   private buildAssignedBots(
     memberships: readonly PersistedMembership[],
     primaryBotId: string | null,
+    entityType: ChatEntityType | null,
   ): ManagedEntityAssignedBot[] {
     const seen = new Set<string>();
     const assignedBots: ManagedEntityAssignedBot[] = [];
@@ -504,6 +554,7 @@ export class MaxBotExecutionPlannerService {
         continue;
       }
       seen.add(bot.id);
+      const activationRequired = isMajorManagedEntityActivationRequired(membership, entityType);
       assignedBots.push({
         botId: bot.id,
         label: bot.label,
@@ -518,8 +569,10 @@ export class MaxBotExecutionPlannerService {
         speechPersona: bot.speechPersona,
         characterName: bot.characterName,
         avatarUrl: null,
-        capabilities: this.normalizeCapabilities(membership.capabilities),
-        permissionsSummary: this.normalizePermissionsSummary(membership.permissionsSnapshot),
+        capabilities: activationRequired ? [] : this.normalizeCapabilities(membership.capabilities),
+        permissionsSummary: activationRequired
+          ? null
+          : this.normalizePermissionsSummary(membership.permissionsSnapshot),
       });
     }
 
@@ -688,6 +741,12 @@ export class MaxBotExecutionPlannerService {
     botId: string,
     options: { source: string; honorSharedBackoff?: boolean },
   ): Promise<BotAccessSnapshotRefreshResult> {
+    const state = await this.loadChatState(chatId);
+    const membership = state.memberships.find((row) => row.botId === botId);
+    // FLAG: Passive planning cannot probe or resurrect an explicitly dormant bot.
+    if (isMajorManagedEntityActivationRequired(membership, state.entityType)) {
+      return { snapshot: null, activationRequired: true };
+    }
     if (await this.isManagedRefreshBackoffActive(botId, options)) {
       return {
         snapshot: await this.resolveStoredPermissionsSnapshot(chatId, botId),
@@ -725,6 +784,10 @@ export class MaxBotExecutionPlannerService {
           : {}),
       };
     } catch (error: unknown) {
+      // FLAG: A concurrent removal may win after admission. Never reload a stale grant.
+      if (error instanceof ManagedEntityActivationRequiredError) {
+        return { snapshot: null, activationRequired: true };
+      }
       const backoffMs = managedRefreshBackoffMs(error);
       if (backoffMs !== null) {
         await this.markManagedRefreshBackoff(botId, backoffMs);

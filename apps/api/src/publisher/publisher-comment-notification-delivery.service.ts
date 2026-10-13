@@ -1,3 +1,4 @@
+import { checkPublisherCommentReadiness } from './publisher-comment-readiness';
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { UnrecoverableError } from 'bullmq';
@@ -390,7 +391,9 @@ export class PublisherCommentNotificationDeliveryService implements OnModuleInit
     this.boundary.assertDispatchEnabled();
     await this.identity.assertAttested();
     await this.health.assertDispatchAllowed();
-    const route = await this.readiness.assertEntityReady(event.chatId, 'publication');
+    const route = await checkPublisherCommentReadiness(() =>
+      this.readiness.assertEntityReady(event.chatId, 'publication'),
+    );
     if (route.requiredBotId !== event.botId || route.entityType !== this.target(event).entityType)
       throw new UnrecoverableError('Publisher notification route mismatch');
   }

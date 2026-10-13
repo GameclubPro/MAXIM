@@ -3,6 +3,7 @@ import { PublisherChatCommentProcessor } from './publisher-chat-comment.processo
 import type { PublisherChatCommentJob } from './publisher-chat-comment.queue';
 import { PublisherDispatchPausedError } from './publisher-dispatch-health.service';
 import { PublisherSetupRequiredException } from './publisher-errors';
+import { PublisherCommentSetupBlockedError } from './publisher-comment-readiness';
 import { PUBLISHER_DISPATCH_PAUSE_DEFER_MS } from './publisher-dispatch-job-guard';
 import { PublisherIdentityAttestationError } from './publisher-identity-attestation.service';
 import { PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS } from './publisher-identity-attestation-job-guard';
@@ -133,10 +134,15 @@ describe('PublisherChatCommentProcessor', () => {
     });
   });
 
-  it('terminalizes a setup-blocked attach after its first actual delivery attempt', async () => {
+  it.each([
+    'attach_chat_reply',
+    'attach_channel_keyboard',
+    'edit_comment_keyboard',
+    'deliver_notification',
+  ] as const)('terminalizes proven persistent readiness refusal for %s', async (kind) => {
     process.env.APP_ROLE = 'publisher';
     process.env.APP_SERVICE_NAME = 'api-publisher';
-    const setupError = new PublisherSetupRequiredException(['chat-1'], 'bot_not_connected');
+    const setupError = new PublisherCommentSetupBlockedError(['chat-1'], 'bot_not_connected');
     const delivery = { process: jest.fn().mockRejectedValue(setupError) };
     const processor = new PublisherChatCommentProcessor(
       delivery as never,
@@ -144,8 +150,9 @@ describe('PublisherChatCommentProcessor', () => {
       createDispatchHealth() as never,
       createRuntimeBoundary() as never,
     );
+    const data = { ...attachJob, kind } as PublisherChatCommentJob;
     const job = {
-      data: attachJob,
+      data,
       attemptsMade: 0,
       opts: { attempts: 12 },
     } as Job<PublisherChatCommentJob>;
@@ -157,7 +164,7 @@ describe('PublisherChatCommentProcessor', () => {
       message: 'Publisher chat-comment setup blocked: bot_not_connected',
     });
     expect(delivery.process).toHaveBeenCalledTimes(1);
-    expect(delivery.process).toHaveBeenCalledWith(attachJob, {
+    expect(delivery.process).toHaveBeenCalledWith(data, {
       final: false,
       attemptsMade: 1,
       maxAttempts: 12,
@@ -186,7 +193,7 @@ describe('PublisherChatCommentProcessor', () => {
     expect(delivery.process).toHaveBeenCalledTimes(1);
   });
 
-  it('does not suppress keyboard retries when entity readiness changes', async () => {
+  it('does not reinterpret an unscoped setup exception as proven predispatch', async () => {
     process.env.APP_ROLE = 'publisher';
     process.env.APP_SERVICE_NAME = 'api-publisher';
     const setupError = new PublisherSetupRequiredException(['chat-1'], 'bot_not_connected');

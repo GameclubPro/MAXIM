@@ -26,7 +26,7 @@ WorkingDirectory=$ROOT_DIR
 EnvironmentFile=-/etc/maxim-postgres-backup.env
 ExecStart=$ROOT_DIR/infra/scripts/backup-postgres.sh
 SuccessExitStatus=75
-TimeoutStartSec=12h15m
+TimeoutStartSec=18h15m
 TimeoutStopSec=1m
 KillSignal=SIGTERM
 Restart=no
@@ -62,6 +62,9 @@ Type=oneshot
 WorkingDirectory=$ROOT_DIR
 EnvironmentFile=-/etc/maxim-postgres-backup.env
 ExecStart=$ROOT_DIR/infra/scripts/restore-postgres-backup-smoke.sh
+TimeoutStartSec=12h15m
+TimeoutStopSec=1m
+KillSignal=SIGTERM
 UMask=0077
 Nice=15
 IOSchedulingClass=best-effort
@@ -82,6 +85,33 @@ Unit=maxim-postgres-restore-smoke.service
 WantedBy=timers.target
 EOF
 
+cat > "$TEMP_DIR/maxim-postgres-backup-health.service" <<EOF
+[Unit]
+Description=MAXIM independent backup and restore freshness
+ConditionPathExists=/etc/maxim-postgres-backup.env
+
+[Service]
+Type=oneshot
+WorkingDirectory=$ROOT_DIR
+EnvironmentFile=/etc/maxim-postgres-backup.env
+ExecStart=/usr/bin/env node $ROOT_DIR/infra/scripts/check-postgres-backup-health.mjs
+TimeoutStartSec=30s
+UMask=0077
+EOF
+
+cat > "$TEMP_DIR/maxim-postgres-backup-health.timer" <<'EOF'
+[Unit]
+Description=Check MAXIM recovery evidence every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=maxim-postgres-backup-health.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 for unit in "$TEMP_DIR"/*; do
   sudo install -o root -g root -m 0644 "$unit" "$UNIT_DIR/$(basename "$unit")"
 done
@@ -92,7 +122,8 @@ if [[ "$ENABLE_BACKUP_TIMER" == "1" ]]; then
     echo "Refusing to enable backup timer without $BACKUP_ENV_FILE." >&2
     exit 2
   fi
-  sudo systemctl enable --now maxim-postgres-backup.timer
+  sudo systemctl start maxim-postgres-backup-health.service
+  sudo systemctl enable --now maxim-postgres-backup.timer maxim-postgres-backup-health.timer
 else
   echo "Backup timer installed but left disabled. Configure $BACKUP_ENV_FILE and a separate backup volume, then run the service once before enabling the timer."
 fi
@@ -102,7 +133,8 @@ if [[ "$ENABLE_RESTORE_TIMER" == "1" ]]; then
     echo "Refusing to enable restore-smoke timer without $BACKUP_ENV_FILE." >&2
     exit 2
   fi
-  sudo systemctl enable --now maxim-postgres-restore-smoke.timer
+  sudo systemctl start maxim-postgres-backup-health.service
+  sudo systemctl enable --now maxim-postgres-restore-smoke.timer maxim-postgres-backup-health.timer
 else
   echo "Restore-smoke timer installed but left disabled. Enable it only with a separate disposable volume sized for a full restore."
 fi

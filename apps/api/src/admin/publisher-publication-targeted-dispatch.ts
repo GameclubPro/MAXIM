@@ -1,3 +1,4 @@
+import { measurePublicationStage } from './publication-delivery-timing';
 import { PublicationDispatchProfile, PublicationScheduleMode } from '../prisma/prisma-client';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
 import type { ManagedBroadcastPublicationVerificationBudget } from './admin-managed-broadcast-publication-verification';
@@ -49,31 +50,42 @@ export async function processTargetedPublisherPublicationBroadcasts(options: {
       publicationId: options.publicationId,
       ...(options.occurrenceId ? { occurrenceId: options.occurrenceId } : {}),
     };
-    const { dueRows, staleLockBefore } =
-      options.reason === 'immediate'
-        ? await selectTargetedPublisherImmediatePublicationBroadcastBatch(
-            options.context.prisma,
-            scope,
-          )
-        : await selectTargetedPublisherPublicationBroadcastBatch(options.context.prisma, scope, [
-            PublicationScheduleMode.ONCE,
-            PublicationScheduleMode.SLOTS,
-            PublicationScheduleMode.RECURRENCE,
-          ]);
+    const { dueRows, staleLockBefore } = await measurePublicationStage(
+      options.context.logger,
+      'target_selection',
+      async () =>
+        options.reason === 'immediate'
+          ? await selectTargetedPublisherImmediatePublicationBroadcastBatch(
+              options.context.prisma,
+              scope,
+            )
+          : await selectTargetedPublisherPublicationBroadcastBatch(options.context.prisma, scope, [
+              PublicationScheduleMode.ONCE,
+              PublicationScheduleMode.SLOTS,
+              PublicationScheduleMode.RECURRENCE,
+            ]),
+      options.reason,
+    );
     if (dueRows.length === 0) {
       return verificationBudget;
     }
 
     let madeProgress = false;
     for (const row of dueRows) {
-      const result = await options.processOccurrence({
-        broadcastId: row.id,
-        reason: options.reason,
-        staleLockBefore,
-        verificationBudget,
-        automaticDeliveryQuantum: MANAGED_BROADCAST_AUTOMATIC_DELIVERY_QUANTUM,
-        rethrowPreDispatchPrismaError: true,
-      });
+      const result = await measurePublicationStage(
+        options.context.logger,
+        'dispatch_quantum',
+        () =>
+          options.processOccurrence({
+            broadcastId: row.id,
+            reason: options.reason,
+            staleLockBefore,
+            verificationBudget,
+            automaticDeliveryQuantum: MANAGED_BROADCAST_AUTOMATIC_DELIVERY_QUANTUM,
+            rethrowPreDispatchPrismaError: true,
+          }),
+        options.reason,
+      );
       madeProgress ||= result.sentChatIds.length > 0 || result.failedChatIds.length > 0;
       // FLAG: Yield only between durable occurrence attempts. The exact pending-work timer
       // continues both NOW and scheduled sends without replaying any attempted delivery.

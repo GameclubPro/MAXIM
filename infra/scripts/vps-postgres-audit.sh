@@ -272,7 +272,7 @@ SELECT CASE
         AND NOT (
           (relation.relname = 'publisher_entity_bindings' AND attribute.attname IN (
             'chat_id', 'status', 'bot_access_state', 'bot_access_checked_at',
-            'bot_access_expires_at', 'send_route_quarantined_until', 'publisher_bot_id', 'last_webhook_at'
+            'bot_access_expires_at', 'send_route_quarantined_until', 'publisher_bot_id', 'last_webhook_at', 'bot_access_source'
           ))
           OR (relation.relname = 'publisher_entity_settings' AND attribute.attname IN (
             'chat_id', 'chat_comments_enabled', 'chat_comments_admins_enabled',

@@ -149,7 +149,7 @@ GRANT USAGE ON SCHEMA public TO maxim_audit;
 GRANT SELECT ON TABLE public.webhook_events, public.moderation_events TO maxim_audit;
 GRANT SELECT (
   chat_id, status, bot_access_state, bot_access_checked_at,
-  bot_access_expires_at, send_route_quarantined_until, publisher_bot_id, last_webhook_at
+  bot_access_expires_at, send_route_quarantined_until, publisher_bot_id, last_webhook_at, bot_access_source
 ) ON TABLE public.publisher_entity_bindings TO maxim_audit;
 GRANT SELECT (
   chat_id, chat_comments_enabled, chat_comments_admins_enabled,
@@ -549,7 +549,7 @@ BEGIN
       AND NOT (
         (relation.relname = 'publisher_entity_bindings' AND attribute.attname IN (
           'chat_id', 'status', 'bot_access_state', 'bot_access_checked_at',
-          'bot_access_expires_at', 'send_route_quarantined_until', 'publisher_bot_id', 'last_webhook_at'
+          'bot_access_expires_at', 'send_route_quarantined_until', 'publisher_bot_id', 'last_webhook_at', 'bot_access_source'
         ))
         OR (relation.relname = 'publisher_entity_settings' AND attribute.attname IN (
           'chat_id', 'chat_comments_enabled', 'chat_comments_admins_enabled',
@@ -558,7 +558,7 @@ BEGIN
         OR (relation.relname = 'managed_entity_publication_policies'
           AND attribute.attname IN ('chat_id', 'publik_enabled'))
       )
-  ) OR 16 <> (
+  ) OR 17 <> (
     SELECT count(*) FROM information_schema.role_column_grants
     WHERE grantee = 'maxim_audit' AND table_schema = 'public'
       AND table_name IN (

@@ -17,6 +17,8 @@ WATCHDOG_FAILURE_THRESHOLD="${MAXIM_BACKUP_WATCHDOG_FAILURE_THRESHOLD:-2}"
 LOCK_FILE="${MAXIM_BACKUP_LOCK_FILE:-$BACKUP_DIR/.maxim-postgres-backup.lock}"
 RATE_LIMITER="$ROOT_DIR/infra/scripts/rate-limit-stream.mjs"
 DEPLOY_LOCK_HELPER="$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+BACKING_FILESYSTEM_PATH="${MAXIM_BACKUP_BACKING_FILESYSTEM_PATH:-$BACKUP_DIR}"
+REPLICATION_REQUIRED="${MAXIM_BACKUP_REPLICATION_REQUIRED:-0}"
 MODE="${1:-}"
 DEPLOY_LOCK_ACQUIRED=0
 
@@ -65,6 +67,10 @@ if ((WATCHDOG_FAILURE_THRESHOLD < 1 || WATCHDOG_FAILURE_THRESHOLD > 10)); then
 fi
 if [[ "$REQUIRE_DEDICATED_FILESYSTEM" != "0" && "$REQUIRE_DEDICATED_FILESYSTEM" != "1" ]]; then
   echo "MAXIM_BACKUP_REQUIRE_DEDICATED_FILESYSTEM must be 0 or 1." >&2
+  exit 2
+fi
+if [[ "$REPLICATION_REQUIRED" != "0" && "$REPLICATION_REQUIRED" != "1" ]]; then
+  echo "MAXIM_BACKUP_REPLICATION_REQUIRED must be 0 or 1." >&2
   exit 2
 fi
 if [[ -z "$LOCK_FILE" ]]; then
@@ -179,6 +185,20 @@ if [[ "$MODE" != "--preflight-only" ]]; then
   )
 fi
 
+# Keep the newest verification of each kind even after its local archive ages out.
+# This preserves weekly restore evidence while bounding daily receipt accumulation.
+if [[ "$MODE" != "--preflight-only" ]]; then
+  for receipt_suffix in remote-verified restore-verified; do
+    latest_receipt=""
+    shopt -s nullglob
+    for receipt_file in "$BACKUP_DIR"/maxim_*.dump."$receipt_suffix".json; do latest_receipt="$receipt_file"; done
+    shopt -u nullglob
+    while IFS= read -r -d '' receipt_file; do
+      if [[ "$receipt_file" != "$latest_receipt" ]]; then rm -f -- "$receipt_file"; fi
+    done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "maxim_*.dump.$receipt_suffix.json" -mtime +14 -print0)
+  done
+fi
+
 DATABASE_BYTES="$(
   docker compose -f "$COMPOSE_FILE" exec -T postgres \
     psql -U maxim -d maxim -Atqc 'SELECT pg_database_size(current_database())'
@@ -193,7 +213,9 @@ fi
 # A custom dump omits physical index pages, but reserving the full database size keeps
 # incompressible data from filling the production filesystem mid-stream.
 REQUIRED_BYTES=$((DATABASE_BYTES + MIN_FREE_BYTES))
-if ((AVAILABLE_BYTES < REQUIRED_BYTES)); then
+BACKING_AVAILABLE_BYTES="$(df -PB1 "$BACKING_FILESYSTEM_PATH" | awk 'NR == 2 { print $4 }')"
+if [[ ! "$BACKING_AVAILABLE_BYTES" =~ ^[0-9]+$ ]]; then exit 1; fi
+if ((AVAILABLE_BYTES < REQUIRED_BYTES || BACKING_AVAILABLE_BYTES < REQUIRED_BYTES)); then
   echo "Insufficient free space for a fail-safe PostgreSQL backup." >&2
   echo "Available bytes: $AVAILABLE_BYTES; required bytes: $REQUIRED_BYTES." >&2
   echo "Configure MAXIM_BACKUP_DIR on a separate persistent volume before retrying." >&2
@@ -280,9 +302,19 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 watch_dump_health() {
-  local consecutive_failures=0
+  local consecutive_failures=0 current_free backing_free
   while sleep "$WATCHDOG_INTERVAL_SEC"; do
     if ! kill -0 "$DUMP_PROCESS_PID" 2>/dev/null; then
+      return
+    fi
+    current_free="$(df -PB1 "$BACKUP_DIR" | awk 'NR == 2 { print $4 }')"
+    backing_free="$(df -PB1 "$BACKING_FILESYSTEM_PATH" | awk 'NR == 2 { print $4 }')"
+    if [[ ! "$current_free" =~ ^[0-9]+$ || ! "$backing_free" =~ ^[0-9]+$ ]] ||
+      (( current_free < MIN_FREE_BYTES || backing_free < MIN_FREE_BYTES )); then
+      printf 'capacity_aborted\n' >"$WATCHDOG_ABORT_MARKER"
+      cleanup_backend
+      terminate_process_group "$DUMP_PROCESS_PID"
+      terminate_process_group "$LIMITER_PROCESS_PID"
       return
     fi
     if probe_runtime_ready; then
@@ -376,3 +408,6 @@ DEPLOY_LOCK_ACQUIRED=0
 trap - EXIT HUP INT TERM
 
 echo "Validated PostgreSQL backup saved to $TARGET"
+if [[ "$REPLICATION_REQUIRED" == 1 ]]; then
+  "$ROOT_DIR/infra/scripts/replicate-postgres-backup.sh" "$TARGET"
+fi

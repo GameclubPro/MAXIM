@@ -37,8 +37,8 @@ function createService(params: {
     },
   };
   const queue = {
-    enqueueDelivery: jest.fn().mockResolvedValue(undefined),
-    enqueueSync: jest.fn().mockResolvedValue(undefined),
+    enqueueDelivery: jest.fn().mockResolvedValue('enqueue_requested'),
+    enqueueSync: jest.fn().mockResolvedValue('enqueue_requested'),
     recoverFailedSyncJobs: jest.fn().mockResolvedValue(0),
   };
   const runtimeBoundary = {
@@ -175,6 +175,29 @@ describe('PublisherSuggestionAdminRecoveryService', () => {
     expect(fixture.queue.enqueueDelivery).not.toHaveBeenCalled();
   });
 
+  it.each(['existing', 'invalid'])(
+    'does not count %s jobs as requested recovery',
+    async (outcome) => {
+      const fixture = createService({
+        dispatchEnabled: true,
+        rows: [{ id: 'pending-suggestion', createdAt: new Date('2026-09-01T17:00:00Z') }],
+        terminalRows: [
+          {
+            id: 'terminal-suggestion',
+            reviewStatus: 'published',
+            createdAt: new Date('2026-09-01T17:00:00Z'),
+          },
+        ],
+      });
+      fixture.queue.enqueueDelivery.mockResolvedValue(outcome);
+      fixture.queue.enqueueSync.mockResolvedValue(outcome);
+
+      await expect(fixture.service.recover(new Date('2026-09-01T18:00:00Z'))).resolves.toBe(0);
+      expect(fixture.queue.enqueueDelivery).toHaveBeenCalledTimes(1);
+      expect(fixture.queue.enqueueSync).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('re-enqueues a pending Publisher suggestion without a ledger via the stable delivery identity', async () => {
     const fixture = createService({
       dispatchEnabled: true,
@@ -216,7 +239,7 @@ describe('PublisherSuggestionAdminRecoveryService', () => {
     });
     fixture.queue.enqueueDelivery
       .mockRejectedValueOnce(new Error('BullMQ state changed'))
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce('enqueue_requested');
 
     await expect(fixture.service.recover(new Date('2026-09-01T18:00:00.000Z'))).resolves.toBe(1);
 

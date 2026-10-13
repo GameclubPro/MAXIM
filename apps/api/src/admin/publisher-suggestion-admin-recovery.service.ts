@@ -73,7 +73,10 @@ export class PublisherSuggestionAdminRecoveryService implements OnModuleInit, On
     try {
       const recovered = await this.recover();
       if (recovered > 0) {
-        this.logger.warn({ reason, recovered }, 'Recovered Publisher suggestion admin deliveries');
+        this.logger.debug(
+          { reason, requested: recovered },
+          'Requested Publisher suggestion admin recovery work',
+        );
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -105,6 +108,15 @@ export class PublisherSuggestionAdminRecoveryService implements OnModuleInit, On
       }),
     );
 
+    const outcomes = {
+      selected: rows.length,
+      blocked: 0,
+      enqueue_requested: 0,
+      retried: 0,
+      existing: 0,
+      invalid: 0,
+      failed: 0,
+    };
     let recovered = 0;
     for (const row of rows) {
       try {
@@ -115,8 +127,10 @@ export class PublisherSuggestionAdminRecoveryService implements OnModuleInit, On
             auditLogId: row.id,
             requiredBotId: this.publisherBotId,
           }))
-        )
+        ) {
+          outcomes.blocked += 1;
           continue;
+        }
         await reconcileStaleChannelSuggestionDeliveryClaims({
           prisma: this.prisma,
           auditLogId: row.id,
@@ -124,19 +138,26 @@ export class PublisherSuggestionAdminRecoveryService implements OnModuleInit, On
           botKey,
           staleBefore,
         });
-        await this.queue.enqueueDelivery({
+        const outcome = await this.queue.enqueueDelivery({
           suggestionId: row.id,
           requiredBotId: this.publisherBotId,
           recoverExisting: true,
         });
-        recovered += 1;
+        outcomes[outcome] += 1;
+        if (outcome === 'enqueue_requested' || outcome === 'retried') recovered += 1;
       } catch (error: unknown) {
+        outcomes.failed += 1;
         this.logger.warn(
           { suggestionId: row.id, err: error instanceof Error ? error.message : String(error) },
           'Failed to recover one Publisher suggestion admin delivery',
         );
       }
     }
+    if (rows.length)
+      this.logger.debug(
+        { event: 'publisher_suggestion_recovery_v1', ...outcomes },
+        'Publisher suggestion recovery selection outcomes',
+      );
     const last = rows.at(-1);
     this.recoveryCursor =
       rows.length >= PUBLISHER_SUGGESTION_ADMIN_RECOVERY_BATCH_SIZE && last
@@ -170,13 +191,13 @@ export class PublisherSuggestionAdminRecoveryService implements OnModuleInit, On
     }
     for (const row of terminalRows) {
       try {
-        await this.queue.enqueueSync({
+        const outcome = await this.queue.enqueueSync({
           suggestionId: row.id,
           requiredBotId: this.publisherBotId,
           reviewStatus: row.reviewStatus,
           recoverExisting: true,
         });
-        recovered += 1;
+        if (outcome === 'enqueue_requested' || outcome === 'retried') recovered += 1;
       } catch (error: unknown) {
         this.logger.warn(
           { suggestionId: row.id, err: error instanceof Error ? error.message : String(error) },

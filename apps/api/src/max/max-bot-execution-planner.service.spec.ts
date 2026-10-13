@@ -1,3 +1,4 @@
+import { ManagedEntityActivationRequiredError } from './managed-entity-activation.util';
 import {
   ChatBotAccessState,
   ChatBotMembershipRole,
@@ -365,6 +366,62 @@ function createFixture() {
 }
 
 describe('MaxBotExecutionPlannerService', () => {
+  it.each(['pending', 'denied', 'removed'] as const)(
+    'does not probe %s membership even with a retained admin snapshot',
+    async (kind) => {
+      const f = createFixture();
+      const target = f.memberships[1]!;
+      target.permissionsSnapshot = {
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        checkedAt: new Date().toISOString(),
+      };
+      if (kind === 'pending') target.botAccessSource = 'major_explicit_activation_pending';
+      if (kind === 'denied') target.botAccessState = ChatBotAccessState.DENIED;
+      if (kind === 'removed') target.status = ChatBotMembershipStatus.REMOVED;
+      await f.service.refreshChatBotCapabilitySnapshots({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId: target.botId,
+        force: true,
+      });
+      expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+      expect(f.maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+      const plan = await f.service.getManagedEntityExecutionPlan({
+        chatId: 'chat-1',
+        entityType: 'chat',
+      });
+      expect(
+        plan.assignedBots.find((bot) => bot.botId === target.botId)?.permissionsSummary,
+      ).toBeNull();
+    },
+  );
+
+  it('does not enable assist from stale evidence when activation changes during admission', async () => {
+    const f = createFixture();
+    const target = f.memberships[1]!;
+    target.permissionsSnapshot = {
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      checkedAt: new Date().toISOString(),
+    };
+    f.maxClient.getCurrentChatMemberAccess.mockRejectedValue(
+      new ManagedEntityActivationRequiredError(),
+    );
+    await expect(
+      f.service.setPartnerAssist({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId: target.botId,
+        enabled: true,
+      }),
+    ).rejects.toThrow('Старт');
+    expect(f.maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+    expect(target.capabilities).toEqual([]);
+  });
+
   it('enables shared-assist for an active standby bot with admin access', async () => {
     const fixture = createFixture();
 
@@ -646,6 +703,29 @@ describe('MaxBotExecutionPlannerService', () => {
     expect(fixture.maxBotLinkService.rememberChatBotBinding).not.toHaveBeenCalled();
   });
 
+  it('promotes a healthy peer when the preferred standby needs explicit activation', async () => {
+    const fixture = createFixture();
+    const blocked = fixture.memberships.find(
+      (membership) => membership.botId === 'id613002203036_5_bot',
+    )!;
+    blocked.botAccessState = ChatBotAccessState.DENIED;
+    blocked.permissionsSnapshot = {
+      isAdmin: true,
+      isOwner: true,
+      checkedAt: new Date().toISOString(),
+      permissions: ['write', 'read_all_messages'],
+    };
+
+    const plan = await fixture.service.promoteStandby({ chatId: 'chat-1', entityType: 'chat' });
+
+    expect(plan.primaryBotId).toBe('id613002203036_4_bot');
+    expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ botId: blocked.botId }),
+    );
+    expect(blocked.botAccessState).toBe(ChatBotAccessState.DENIED);
+  });
+
   it('keeps stale assist capabilities from non-executable standby bots out of shared mode', async () => {
     const fixture = createFixture();
     const standbyBot = fixture.bots.find((bot) => bot.id === 'id613002203036_4_bot');
@@ -726,7 +806,7 @@ describe('MaxBotExecutionPlannerService', () => {
       checkedAt: new Date().toISOString(),
       isAdmin: true,
       isOwner: false,
-      permissions: ['write'],
+      permissions: ['write', 'read_all_messages'],
       permissionsKnown: true,
     };
 

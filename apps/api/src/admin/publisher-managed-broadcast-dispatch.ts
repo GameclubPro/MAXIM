@@ -22,7 +22,10 @@ import {
 import { publisherConnectedBindingWhere } from '../publisher/publisher-entity-connection.util';
 import { isTransientPublicationPrismaError } from './publication-prisma-retry';
 import { PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS } from '../publisher/publisher-readiness.service';
-import { recordPublicationDispatchOutcome } from './publication-delivery-timing';
+import {
+  recordPublicationDispatchOutcome,
+  measurePublicationStage,
+} from './publication-delivery-timing';
 import {
   buildClearResolvedPublisherRecipientBlockerQuery,
   publisherPublicationRecipientRetryAt,
@@ -100,6 +103,16 @@ export class PublisherManagedBroadcastDispatch {
     requiredBotId: string,
     actorUserId?: string,
   ): Promise<void> {
+    return measurePublicationStage(this.logger, 'delivery_readiness', () =>
+      this.assertDeliveryReadyInternal(chatId, requiredBotId, actorUserId),
+    );
+  }
+
+  private async assertDeliveryReadyInternal(
+    chatId: string,
+    requiredBotId: string,
+    actorUserId?: string,
+  ): Promise<void> {
     try {
       const boundary = this.context.publisherRuntimeBoundaryService;
       const readiness = this.context.publisherReadinessService;
@@ -139,6 +152,17 @@ export class PublisherManagedBroadcastDispatch {
   }
 
   async assertActorAdminAccess(params: {
+    targetChatIds: readonly string[];
+    actorUserId: string;
+    entityType: 'chat' | 'channel';
+    requiredBotId: string;
+  }): Promise<void> {
+    return measurePublicationStage(this.logger, 'actor_authority', () =>
+      this.assertActorAdminAccessInternal(params),
+    );
+  }
+
+  private async assertActorAdminAccessInternal(params: {
     targetChatIds: readonly string[];
     actorUserId: string;
     entityType: 'chat' | 'channel';

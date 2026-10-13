@@ -239,7 +239,7 @@ export class PublisherPublicationAccessPreflightService implements OnModuleInit,
     for (const delivery of deliveries) {
       try {
         await preparePendingPublicationContext(
-          { prisma: this.prisma, publisherDialogContextService },
+          { prisma: this.prisma, publisherDialogContextService, logger: this.logger },
           delivery,
           this.botId,
         );

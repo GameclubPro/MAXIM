@@ -6,18 +6,18 @@ the starting point for capacity and operational work. Verify live inventory befo
 
 ## Host and access
 
-| Item               | Production baseline                                                         |
-| ------------------ | --------------------------------------------------------------------------- |
-| SSH                | `maxim-vps` → `maximadmin@89.108.122.76`, strict host-key verification      |
-| MAXIM checkout     | `/var/www/Chat_bot`                                                         |
-| CPU                | Xeon W-2265, 12 physical cores, 24 hardware threads                         |
-| Memory             | 64 GB installed; Linux reports about 62.5 GiB                               |
-| Storage            | 2 × 2 TB NVMe, RAID1; usable capacity is one drive, not their sum           |
-| Root/Docker        | LVM root on `md1`, about 1.8 TiB filesystem capacity                        |
-| Cold storage       | `/mnt/maxim-cold`, about 590 GiB loop-backed filesystem on the same RAID    |
-| Capacity sensor    | `MAXIM_MONITOR_CAPACITY_BLOCK_DEVICE=md1`                                   |
-| MAXIM entry points | `major-maksimov.ru/app/`, `/api/`, closed `admin.major-maksimov.ru`         |
-| Other projects     | Svyazka (`/var/www/svyazka`) and Karavan (`/var/www/max-delivery-platform`) |
+| Item               | Production baseline                                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------------------ |
+| SSH                | `maxim-vps` → `maximadmin@89.108.122.76`, strict host-key verification                                 |
+| MAXIM checkout     | `/var/www/Chat_bot`                                                                                    |
+| CPU                | Xeon W-2265, 12 physical cores, 24 hardware threads                                                    |
+| Memory             | 64 GB installed; Linux reports about 62.5 GiB                                                          |
+| Storage            | 2 × 2 TB NVMe, RAID1; usable capacity is one drive, not their sum                                      |
+| Root/Docker        | LVM root on `md1`, about 1.8 TiB filesystem capacity                                                   |
+| Cold storage       | `/mnt/maxim-cold`, 1,100 GiB loop-backed filesystem (fully preallocated backing file) on the same RAID |
+| Capacity sensor    | `MAXIM_MONITOR_CAPACITY_BLOCK_DEVICE=md1`                                                              |
+| MAXIM entry points | `major-maksimov.ru/app/`, `/api/`, closed `admin.major-maksimov.ru`                                    |
+| Other projects     | Svyazka (`/var/www/svyazka`) and Karavan (`/var/www/max-delivery-platform`)                            |
 
 Use ignored `.env.vps`, based on `infra/env/vps.env.example`, for local key paths and connection
 settings. Keep `MAXIM_VPS_AUTO_AUTHORIZE_SSH=0` and `MAXIM_YC_*` VM/security-group settings unset
@@ -45,7 +45,8 @@ that each member is healthy.
 
 Local backup paths remain `/mnt/maxim-cold/backups/maxim` and
 `/mnt/maxim-cold/restore-smoke/maxim`. They share the production failure domain. Independent
-encrypted backups use REG.RU S3; a copy on the cold filesystem does not replace them. Keep
+encrypted backups use REG.RU S3; a copy on the cold filesystem does not replace them. See [recurring backup verification](postgres-recurring-backups.md) for the guarded producer,
+independent readback receipts and freshness checks. Keep
 backup/restore timers disabled until their actual producer, independent copy verification,
 capacity bounds and isolated restore have passed. A verified migration snapshot does not
 establish recurring backup coverage.

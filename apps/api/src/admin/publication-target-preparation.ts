@@ -1,3 +1,4 @@
+import { measurePublicationStage } from './publication-delivery-timing';
 import { publicationButtonSchema, publicationEntityTypeSchema } from '@maxim/contracts/publication';
 import type { BroadcastLinkButton, ManagedEntityType } from '@maxim/contracts';
 import { ServiceUnavailableException } from '@nestjs/common';
@@ -20,7 +21,18 @@ export function createPendingPublicationContext(
   };
 }
 
-export async function preparePendingPublicationContext(
+export function preparePendingPublicationContext(
+  context: Pick<AdminManagedBroadcastRuntimeContext, 'prisma' | 'publisherDialogContextService'> &
+    Partial<Pick<AdminManagedBroadcastRuntimeContext, 'logger'>>,
+  delivery: { id: string; targetChatId: string; publisherDialogContext?: Prisma.JsonValue },
+  requiredBotId: string,
+): Promise<void> {
+  return measurePublicationStage(context.logger, 'target_preparation', () =>
+    preparePendingPublicationContextInternal(context, delivery, requiredBotId),
+  );
+}
+
+async function preparePendingPublicationContextInternal(
   context: Pick<AdminManagedBroadcastRuntimeContext, 'prisma' | 'publisherDialogContextService'>,
   delivery: { id: string; targetChatId: string; publisherDialogContext?: Prisma.JsonValue },
   requiredBotId: string,

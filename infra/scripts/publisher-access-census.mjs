@@ -12,7 +12,7 @@ export function buildPublisherAccessCensusReadinessSql() {
     AND i.indnkeyatts = 1 AND i.indnatts = 1 AND a.attname = 'chat_id'
 ) AND NOT EXISTS (
   SELECT 1 FROM unnest(ARRAY['chat_id', 'publisher_bot_id', 'status',
-    'bot_access_state', 'bot_access_checked_at', 'bot_access_expires_at']) AS required(column_name)
+    'bot_access_state', 'bot_access_checked_at', 'bot_access_expires_at', 'bot_access_source']) AS required(column_name)
   WHERE NOT has_column_privilege('maxim_audit', 'public.publisher_entity_bindings', column_name, 'SELECT')
 ) AS publisher_access_census_ready \\gset
 \\if :publisher_access_census_ready
@@ -29,7 +29,7 @@ export function buildPublisherAccessCensusSql(explain = false) {
   // historical confirmation deadlines or binding-hours between sparse observations.
   const query = `WITH source AS MATERIALIZED (
   SELECT chat_id, publisher_bot_id, status, bot_access_state,
-    bot_access_checked_at, bot_access_expires_at
+    bot_access_checked_at, bot_access_expires_at, bot_access_source
   FROM publisher_entity_bindings ORDER BY chat_id LIMIT ${PUBLISHER_ACCESS_CENSUS_CAP + 1}
 ), sample AS NOT MATERIALIZED (
   SELECT * FROM source LIMIT ${PUBLISHER_ACCESS_CENSUS_CAP}
@@ -43,38 +43,49 @@ export function buildPublisherAccessCensusSql(explain = false) {
     get_byte(cohort_hash, 2)::bigint * 256 + get_byte(cohort_hash, 3)::bigint
   ) % 10 = 0 THEN 'separated' ELSE 'legacy' END AS cohort,
     bot_access_state IN ('CONFIRMED_ADMIN', 'CONFIRMED_OWNER') AS confirmed_admin,
-    bot_access_expires_at > statement_timestamp()
-      AND bot_access_checked_at <= statement_timestamp()
-      AND bot_access_checked_at >= statement_timestamp() - interval '15 minutes' AS fresh
+    CASE
+      WHEN bot_access_state IN ('DENIED', 'LOST', 'CONFIRMED_MEMBER') THEN 'explicit_denied'
+      WHEN bot_access_source IN ('publisher_explicit_activation_pending', 'major_explicit_activation_pending')
+        THEN 'activation_required'
+      WHEN bot_access_state IN ('CONFIRMED_ADMIN', 'CONFIRMED_OWNER')
+        AND bot_access_checked_at IS NOT NULL AND bot_access_checked_at <= statement_timestamp()
+        THEN 'durable_confirmed'
+      ELSE 'metadata_unknown'
+    END AS access_metadata
   FROM active
 ), cohorts(cohort) AS (VALUES ('legacy'), ('separated')),
 cohort_counts AS (
   SELECT b.cohort, count(*) AS active_bindings,
     count(*) FILTER (WHERE b.confirmed_admin) AS confirmed_admin_bindings,
-    count(*) FILTER (WHERE b.confirmed_admin AND b.fresh) AS fresh_admin_bindings,
-    count(*) FILTER (WHERE b.confirmed_admin AND b.bot_access_expires_at <= statement_timestamp()) AS expired_admin_bindings,
-    count(*) FILTER (WHERE b.confirmed_admin AND b.bot_access_expires_at IS NULL) AS missing_admin_expiry,
-    count(*) FILTER (WHERE b.confirmed_admin AND b.fresh AND
-      b.bot_access_expires_at <= statement_timestamp() + interval '60 seconds') AS expiring_admin_in_60s,
-    count(*) FILTER (WHERE b.confirmed_admin AND
-      (b.bot_access_checked_at IS NULL OR b.bot_access_checked_at > statement_timestamp() OR
-        b.bot_access_checked_at < statement_timestamp() - interval '15 minutes')) AS invalid_or_stale_admin_check
+    count(*) FILTER (WHERE b.access_metadata = 'durable_confirmed') AS durable_confirmed,
+    count(*) FILTER (WHERE b.access_metadata = 'activation_required') AS activation_required,
+    count(*) FILTER (WHERE b.access_metadata = 'explicit_denied') AS explicit_denied,
+    count(*) FILTER (WHERE b.access_metadata = 'metadata_unknown') AS metadata_unknown,
+    count(*) FILTER (WHERE b.bot_access_checked_at IS NULL) AS missing_observation,
+    count(*) FILTER (WHERE b.bot_access_checked_at > statement_timestamp()) AS future_observation,
+    min(b.bot_access_checked_at) FILTER (WHERE b.bot_access_checked_at <= statement_timestamp()) AS oldest_observation_at,
+    max(b.bot_access_checked_at) FILTER (WHERE b.bot_access_checked_at <= statement_timestamp()) AS latest_observation_at
   FROM classified b GROUP BY b.cohort
 ), counts AS (
   SELECT c.cohort, coalesce(b.active_bindings, 0) AS active_bindings,
     coalesce(b.confirmed_admin_bindings, 0) AS confirmed_admin_bindings,
-    coalesce(b.fresh_admin_bindings, 0) AS fresh_admin_bindings,
-    coalesce(b.expired_admin_bindings, 0) AS expired_admin_bindings,
-    coalesce(b.missing_admin_expiry, 0) AS missing_admin_expiry,
-    coalesce(b.expiring_admin_in_60s, 0) AS expiring_admin_in_60s,
-    coalesce(b.invalid_or_stale_admin_check, 0) AS invalid_or_stale_admin_check
+    coalesce(b.durable_confirmed, 0) AS durable_confirmed,
+    coalesce(b.activation_required, 0) AS activation_required,
+    coalesce(b.explicit_denied, 0) AS explicit_denied,
+    coalesce(b.metadata_unknown, 0) AS metadata_unknown,
+    coalesce(b.missing_observation, 0) AS missing_observation,
+    coalesce(b.future_observation, 0) AS future_observation,
+    b.oldest_observation_at, b.latest_observation_at
   FROM cohorts c LEFT JOIN cohort_counts b USING (cohort)
 )
 SELECT json_build_object(
-  'schema_version', 1, 'audit', 'publisher_access_census',
+  'schema_version', 2, 'authority', 'metadata_only',
+  'bot_access_semantics', 'durable_until_explicit_loss',
+  'permissions', 'not_inspected', 'actor_authorization', 'not_inspected', 'audit', 'publisher_access_census',
   'observed_at', statement_timestamp(), 'source_row_cap', ${PUBLISHER_ACCESS_CENSUS_CAP},
   'source_rows_sampled', (SELECT count(*) FROM sample),
   'source_truncated', (SELECT count(*) > ${PUBLISHER_ACCESS_CENSUS_CAP} FROM source),
+  'inactive_bindings', (SELECT count(*) FROM sample WHERE status <> 'ACTIVE'),
   'active_bot_scopes', (SELECT count(DISTINCT publisher_bot_id) FROM active),
   'cohort_basis', 'sha256_bot_entity_mod10',
   'cohorts', (SELECT json_agg(counts ORDER BY cohort) FROM counts)

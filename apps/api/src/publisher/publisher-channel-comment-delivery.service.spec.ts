@@ -1,3 +1,5 @@
+import { PublisherSetupRequiredException } from './publisher-errors';
+import { PublisherCommentSetupBlockedError } from './publisher-comment-readiness';
 import type { MaxUpdate } from '@maxim/contracts';
 import { PublisherChannelCommentDeliveryService } from './publisher-channel-comment-delivery.service';
 import { PublisherChatCommentProducerService } from './publisher-chat-comment-producer.service';
@@ -139,6 +141,20 @@ function fixture() {
 }
 
 describe('Publisher channel keyboard webhook and delivery', () => {
+  it('stops an unchanged admin denial before source reads or EDIT and keeps later activation possible', async () => {
+    const h = fixture();
+    h.readiness.assertEntityReady.mockRejectedValueOnce(
+      new PublisherSetupRequiredException([chatId], 'bot_not_admin'),
+    );
+    await expect(h.service.process(h.job)).rejects.toBeInstanceOf(
+      PublisherCommentSetupBlockedError,
+    );
+    expect(h.maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(h.mutate).not.toHaveBeenCalled();
+    await h.service.process(h.job);
+    expect(h.maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+  });
+
   it('adds wrapper buttons without adopting a forwarded source keyboard or media', async () => {
     const h = fixture();
     Object.assign(h.message, {

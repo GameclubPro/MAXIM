@@ -1,3 +1,4 @@
+import { checkPublisherCommentReadiness } from './publisher-comment-readiness';
 import { Injectable } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import { isDeepStrictEqual } from 'node:util';
@@ -253,7 +254,9 @@ export class PublisherChannelCommentDeliveryService {
   private async assertReady(job: PublisherChannelCommentAttachJob): Promise<void> {
     this.runtime.assertDispatchEnabled();
     await this.health.assertDispatchAllowed();
-    const route = await this.readiness.assertEntityReady(job.chatId, 'publication');
+    const route = await checkPublisherCommentReadiness(() =>
+      this.readiness.assertEntityReady(job.chatId, 'publication'),
+    );
     if (route.entityType !== 'channel' || route.requiredBotId !== job.requiredBotId) {
       throw new UnrecoverableError('Publisher channel readiness selected another route');
     }

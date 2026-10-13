@@ -1,3 +1,4 @@
+import { checkPublisherCommentReadiness } from './publisher-comment-readiness';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { UnrecoverableError } from 'bullmq';
@@ -778,7 +779,7 @@ export class PublisherChatCommentDeliveryService {
     feature: 'publication' | 'chat_comments',
   ): Promise<PublisherReadyRoute> {
     await this.runtimeBoundaryCheck();
-    return this.readiness.assertEntityReady(chatId, feature);
+    return checkPublisherCommentReadiness(() => this.readiness.assertEntityReady(chatId, feature));
   }
 
   private async runtimeBoundaryCheck(): Promise<void> {

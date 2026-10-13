@@ -7,7 +7,7 @@ import {
   assertPublisherRuntimeEnabledOrDelay,
 } from './publisher-dispatch-job-guard';
 import { PublisherDispatchHealthService } from './publisher-dispatch-health.service';
-import { PublisherSetupRequiredException } from './publisher-errors';
+import { PublisherCommentSetupBlockedError } from './publisher-comment-readiness';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
 import { assertPublisherIdentityOrDelay } from './publisher-identity-attestation-job-guard';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
@@ -48,13 +48,8 @@ export class PublisherChatCommentProcessor extends WorkerHost {
         maxAttempts,
       });
     } catch (error: unknown) {
-      if (
-        job.data.kind === 'attach_chat_reply' &&
-        error instanceof PublisherSetupRequiredException
-      ) {
-        throw new UnrecoverableError(
-          `Publisher chat-comment setup blocked: ${error.blockerCode}`,
-        );
+      if (error instanceof PublisherCommentSetupBlockedError) {
+        throw new UnrecoverableError(`Publisher chat-comment setup blocked: ${error.blockerCode}`);
       }
       throw error;
     }

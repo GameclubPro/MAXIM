@@ -58,6 +58,35 @@ function collectExplainNodes(value: unknown): Array<Record<string, unknown>> {
   return [record, ...Object.values(record).flatMap(collectExplainNodes)];
 }
 
+async function prepareRecoveryPlanFixture(client: PoolClient): Promise<void> {
+  // FLAG: Empty shared tables retain statistics from earlier suites. Explain the real
+  // migrated indexes against isolated history; rollback removes every temporary object.
+  await client.query('BEGIN');
+  await client.query('CREATE TEMP TABLE audit_logs (LIKE public.audit_logs INCLUDING DEFAULTS)');
+  const indexes = await client.query<{ indexdef: string }>(
+    "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'audit_logs'",
+  );
+  for (const { indexdef } of indexes.rows) {
+    if (!indexdef.includes(' ON public.audit_logs ')) {
+      throw new Error('Unexpected migrated audit index definition');
+    }
+    await client.query(indexdef.replace(' ON public.audit_logs ', ' ON pg_temp.audit_logs '));
+  }
+  await client.query(`
+    INSERT INTO pg_temp.audit_logs (id, chat_id, actor_user_id, action, payload, created_at)
+    SELECT 'history-' || item, 'plan-fixture-chat', 'plan-fixture-author',
+      CASE item % 3 WHEN 0 THEN 'CHANNEL_DIALOG_SUGGESTION'
+        WHEN 1 THEN 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION' ELSE 'OTHER_ACTION' END,
+      jsonb_build_object('type', 'suggest',
+        'reviewStatus', (ARRAY['pending','publishing','published','drafted','cancelled'])[1 + item % 5],
+        'reviewDispatchProfile', 'PUBLIK_V1',
+        'reviewedByUserId', 'plan-fixture-admin', 'reviewedAt', '2026-08-20T00:00:00.000Z'),
+      TIMESTAMP '2026-08-20' + item * INTERVAL '1 second'
+    FROM generate_series(1, 18000) item
+  `);
+  await client.query('ANALYZE pg_temp.audit_logs');
+}
+
 describePostgresRace('PostgreSQL suggestion subscription watches', () => {
   let pool: Pool;
   let watchId: string;
@@ -222,7 +251,7 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
     const query = buildPublisherSuggestionRecoveryQuery(null);
     const client = await pool.connect();
     try {
-      await client.query('BEGIN READ ONLY');
+      await prepareRecoveryPlanFixture(client);
       await client.query('SET LOCAL enable_seqscan = off');
       await client.query('SET LOCAL enable_bitmapscan = off');
       const plan = await client.query<{ 'QUERY PLAN': unknown }>(
@@ -257,7 +286,7 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
     );
     const client = await pool.connect();
     try {
-      await client.query('BEGIN READ ONLY');
+      await prepareRecoveryPlanFixture(client);
       await client.query('SET LOCAL enable_seqscan = off');
       await client.query('SET LOCAL enable_bitmapscan = off');
       const plan = await client.query<{ 'QUERY PLAN': unknown }>(
@@ -288,7 +317,7 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
     });
     const client = await pool.connect();
     try {
-      await client.query('BEGIN READ ONLY');
+      await prepareRecoveryPlanFixture(client);
       await client.query('SET LOCAL enable_seqscan = off');
       await client.query('SET LOCAL enable_bitmapscan = off');
       const plan = await client.query<{ 'QUERY PLAN': unknown }>(
@@ -321,7 +350,7 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
     });
     const client = await pool.connect();
     try {
-      await client.query('BEGIN READ ONLY');
+      await prepareRecoveryPlanFixture(client);
       await client.query('SET LOCAL enable_seqscan = off');
       await client.query('SET LOCAL enable_bitmapscan = off');
       const plan = await client.query<{ 'QUERY PLAN': unknown }>(

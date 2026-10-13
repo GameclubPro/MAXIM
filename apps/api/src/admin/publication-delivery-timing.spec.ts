@@ -1,10 +1,55 @@
 import {
+  measurePublicationStage,
   recordPublicationDispatchOutcome,
   recordPublicationReceiptTiming,
 } from './publication-delivery-timing';
 
 describe('Publication delivery timing', () => {
   const scheduledAt = new Date('2026-09-30T10:00:00Z');
+
+  it('observes failures without swallowing the error or leaking its content', async () => {
+    const logger = { log: jest.fn() };
+    const failure = new Error('private target and content');
+    await expect(
+      measurePublicationStage(logger, 'target_preparation', async () => {
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+    expect(logger.log.mock.calls[0]![0]).toMatchObject({
+      metric: 'publication_stage_v1',
+      stage: 'target_preparation',
+      outcome: 'threw',
+    });
+    expect(JSON.stringify(logger.log.mock.calls)).not.toContain('private');
+  });
+
+  it('keeps the original work pending and preserves its result despite logging failure', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const logger = {
+      log: jest.fn(() => {
+        throw new Error('logger down');
+      }),
+    };
+    const settled = jest.fn();
+    const work = measurePublicationStage(
+      logger,
+      'dispatch_quantum',
+      async () => {
+        await gate;
+        return 42;
+      },
+      'deadline',
+    );
+    void work.then(settled);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(logger.log).not.toHaveBeenCalled();
+    release();
+    await expect(work).resolves.toBe(42);
+  });
 
   it('measures scheduled delivery through durable receipt persistence with fixed labels', () => {
     const logger = { log: jest.fn() };
