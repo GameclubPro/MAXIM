@@ -32,6 +32,110 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     return h;
   }
 
+  it.each(
+    (['off', 'shadow', 'canary', 'on'] as const).flatMap((mode) =>
+      (['audio', 'voice'] as const).map((type) => ({ mode, type })),
+    ),
+  )(
+    'deletes one mirrored textless $type message with durable rollout $mode',
+    async ({ mode, type }) => {
+      const s = await fixture(4);
+      Object.assign(s.intents, { mode });
+      const [chatId] = await s.seedCatalog(1, {
+        maxMessageLengthEnabled: false,
+        voiceMessagesEnabled: false,
+      });
+      const messageId = `voice-${randomUUID()}`;
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            text: '',
+            attachments: [{ type, payload: { url: 'https://media.invalid/fixture.opus' } }],
+          }),
+        ),
+      );
+      await s.drain();
+      await waitForUserDelete(s, chatId!, messageId);
+      expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+      expect(s.effects.filter((effect) => effect.method !== 'delete')).toEqual([]);
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+        include: { reasons: true },
+      });
+      expect(intent.reasons).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ruleCode: 'VOICE_BLOCKED_DELETE',
+            metadata: expect.objectContaining({ moderationDeleteVerified: true }),
+          }),
+        ]),
+      );
+      const receipts = await s.prisma.webhookEvent.findMany({ where: { id: { in: ids } } });
+      expect(receipts.filter((row) => row.status === 'PROCESSED')).toHaveLength(1);
+      expect(receipts.filter((row) => row.status === 'DUPLICATE')).toHaveLength(3);
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+      const nextId = await s.ingest({
+        chatId: chatId!,
+        messageId: `voice-next-${randomUUID()}`,
+        text: 'Next',
+      });
+      await s.drain();
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status,
+      ).toBe('PROCESSED');
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it.each(['allowed', 'administrator', 'policy_changed_before_delete'] as const)(
+    'preserves a voice message when %s denies deletion',
+    async (variant) => {
+      const s = await fixture(2);
+      const [chatId] = await s.seedCatalog(1, {
+        maxMessageLengthEnabled: false,
+        voiceMessagesEnabled: variant === 'allowed',
+      });
+      if (variant === 'administrator') s.allowAdminUser('fixture-user');
+      let changed = false;
+      const ensure = s.intents.ensureAndAttempt.bind(s.intents);
+      if (variant === 'policy_changed_before_delete') {
+        jest.spyOn(s.intents, 'ensureAndAttempt').mockImplementation(async (input, options) => {
+          if (input.ruleCode === 'VOICE_BLOCKED_DELETE') {
+            changed = true;
+            await s.prisma.chatSettings.update({
+              where: { chatId: chatId! },
+              data: { voiceMessagesEnabled: true },
+            });
+          }
+          return ensure(input, options);
+        });
+      }
+      const messageId = `preserved-voice-${randomUUID()}`;
+      await s.ingest({
+        chatId: chatId!,
+        messageId,
+        text: '',
+        attachments: [{ type: 'audio', payload: { url: 'https://media.invalid/fixture.opus' } }],
+      });
+      await s.drain();
+      expect(changed).toBe(variant === 'policy_changed_before_delete');
+      expect(s.messages.has(messageId)).toBe(true);
+      expect(s.effects).toEqual([]);
+      expect(
+        await s.prisma.moderationEvent.count({
+          where: { chatId, messageId, action: 'DELETE_MESSAGE' },
+        }),
+      ).toBe(0);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
   it('records a qualified DELETE whose deadline elapses before persistence as expired and permits the next same-chat event', async () => {
     const s = await fixture(2);
     const [chatId] = await s.seedCatalog(1, {
