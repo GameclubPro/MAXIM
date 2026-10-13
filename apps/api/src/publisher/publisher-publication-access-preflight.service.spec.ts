@@ -120,14 +120,14 @@ describe('PublisherPublicationAccessPreflightService', () => {
       )
       .mockResolvedValueOnce([]);
     await f.service.runOnce();
-    expect(f.readiness.requestBotAccessRefresh.mock.calls[0][0]).toHaveLength(2);
+    expect(f.readiness.requestBotAccessRefresh.mock.calls[0][0]).toHaveLength(4);
     f.prisma.publicationOccurrence.findFirst
       .mockResolvedValueOnce(f.occurrence)
       .mockResolvedValue(null);
     await f.createService().runOnce();
     expect(f.prisma.publicationTarget.findMany.mock.calls[1][0].where).toEqual({
       publicationId: 'publication-1',
-      position: { gt: 1 },
+      position: { gt: 3 },
     });
   });
 
@@ -188,7 +188,7 @@ describe('PublisherPublicationAccessPreflightService', () => {
       'author-2',
     ]);
     expect(f.readiness.requestActorAccessRefresh.mock.calls.map((call) => call[0].length)).toEqual([
-      2, 2,
+      3, 1,
     ]);
   });
 });

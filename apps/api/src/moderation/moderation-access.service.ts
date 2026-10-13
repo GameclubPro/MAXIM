@@ -104,14 +104,6 @@ export class ModerationAccessService {
   ): Promise<ChatAdminCheckResult> {
     const startedAtMs = Date.now();
     const localIsAdmin = this.isSenderChatAdmin(localAdminUserIds, userId);
-    if (localIsAdmin) {
-      return this.finalizeAdminCheckResult(
-        { isAdmin: true, source: 'local' },
-        'admin-check.local',
-        startedAtMs,
-      );
-    }
-
     const cachedRemoteAdminAccess = await this.getRemoteChatAdminAccess(chatId, userId, {
       allowLookup: false,
     });
@@ -133,17 +125,17 @@ export class ModerationAccessService {
     const localAdminsKnown = Array.isArray(localAdminUserIds) && localAdminUserIds.length > 0;
     if (options?.allowRemoteLookup === false) {
       return this.finalizeAdminCheckResult(
-        { isAdmin: false, source: 'local_fallback' },
+        { isAdmin: localIsAdmin, source: 'local_fallback' },
         'admin-check.local-fallback',
         startedAtMs,
       );
     }
-    if (options?.skipRemoteLookupWhenLocalAdminsKnown && localAdminsKnown) {
+    if (options?.skipRemoteLookupWhenLocalAdminsKnown && localAdminsKnown && !localIsAdmin) {
       if (options.prefetchRemoteLookupWhenLocalAdminsKnown) {
         void this.prefetchRemoteChatAdminAccess(chatId, userId);
       }
       return this.finalizeAdminCheckResult(
-        { isAdmin: false, source: 'local_fallback' },
+        { isAdmin: localIsAdmin, source: 'local_fallback' },
         'admin-check.local-fallback',
         startedAtMs,
       );
@@ -172,7 +164,7 @@ export class ModerationAccessService {
       }
 
       return this.finalizeAdminCheckResult(
-        { isAdmin: false, source: 'local_fallback' },
+        { isAdmin: localIsAdmin, source: 'local_fallback' },
         'admin-check.soft-timeout-fallback',
         startedAtMs,
       );
@@ -342,7 +334,8 @@ export class ModerationAccessService {
     if (!fencedSharedCache && cached && cached.expiresAt > now) {
       return cached.state;
     }
-    const staleCached = fencedSharedCache ? null : (cached?.state ?? null);
+    // FLAG: Expired human-role evidence cannot become fresh authority after a failed lookup.
+    const staleCached = null;
 
     const cachedFromSharedStore = await this.readChatAdminAccessFromSharedCache(
       chatId,
@@ -454,6 +447,8 @@ export class ModerationAccessService {
       chatId,
     );
     const requestOptions = {
+      // FLAG: The shared authority cache owns freshness; a new probe needs live MAX evidence.
+      bypassCache: true,
       trafficClass: options.trafficClass ?? ('interactive' as const),
       actionHealthLane: 'background' as const,
       ignoreFailureMetricStatuses: CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES,
@@ -687,6 +682,24 @@ export class ModerationAccessService {
           AND activity."user_id" IN (${Prisma.join(userIdVariants)})
           AND activity."event_type" IN ('user_added', 'user_removed')
           AND activity."event_at" >= ${params.probeStartedAt}
+        UNION ALL
+        SELECT edge."user_id" AS "userId"
+        FROM "managed_entity_access_edges" AS edge
+        WHERE edge."chat_id" = ${params.chatId}
+          AND edge."user_id" IN (${Prisma.join(userIdVariants)})
+          AND edge."checked_at" > ${params.probeStartedAt}
+        UNION ALL
+        SELECT member."user_id" AS "userId"
+        FROM "managed_entity_admin_members" AS member
+        WHERE member."chat_id" = ${params.chatId}
+          AND member."user_id" IN (${Prisma.join(userIdVariants)})
+          AND member."checked_at" > ${params.probeStartedAt}
+        UNION ALL
+        SELECT admin."user_id" AS "userId"
+        FROM "chat_admin_allowlist" AS admin
+        WHERE admin."chat_id" = ${params.chatId}
+          AND admin."user_id" IN (${Prisma.join(userIdVariants)})
+          AND admin."created_at" > ${params.probeStartedAt}
       `);
       const supersededUserIds = new Set<string>();
       for (const row of supersedingRows) {
@@ -701,6 +714,24 @@ export class ModerationAccessService {
           continue;
         }
         acceptedUserIds.add(userId);
+      }
+      const deniedVariants = [
+        ...new Set(
+          normalizedEntries
+            .filter(([userId, state]) => state === 'user_denied' && acceptedUserIds.has(userId))
+            .flatMap(([userId]) => [...this.buildUserIdVariants(userId)]),
+        ),
+      ];
+      if (deniedVariants.length) {
+        // FLAG: Prune only the obsolete moderation roster under the parent proof fence.
+        // Saved navigation edges remain intact; a timeout never reaches this mutation.
+        await tx.$queryRaw(Prisma.sql`
+          DELETE FROM "chat_admin_allowlist"
+          WHERE "chat_id" = ${params.chatId}
+            AND "user_id" IN (${Prisma.join(deniedVariants)})
+            AND "created_at" <= ${params.probeStartedAt}
+          RETURNING "user_id"
+        `);
       }
       return acceptedUserIds;
     });

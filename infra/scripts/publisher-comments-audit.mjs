@@ -10,8 +10,10 @@ export function buildPublisherCommentsAuditSql(chatId, explain = false) {
   'binding_status', binding.status,
   'access_state', binding.bot_access_state,
   'access_checked_at', binding.bot_access_checked_at,
-  'access_expires_at', binding.bot_access_expires_at,
-  'access_expired', binding.bot_access_expires_at <= statement_timestamp(),
+  'readiness_scope', 'metadata_only',
+  'positive_access_confirmed', binding.bot_access_state IN ('CONFIRMED_ADMIN', 'CONFIRMED_OWNER')
+    AND binding.bot_access_checked_at IS NOT NULL
+    AND binding.bot_access_checked_at <= statement_timestamp(),
   'quarantined', binding.send_route_quarantined_until > statement_timestamp(),
   'publik_enabled', coalesce(policy.publik_enabled, true),
   'chat_comments_enabled', coalesce(settings.chat_comments_enabled, false),

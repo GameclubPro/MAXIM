@@ -1058,7 +1058,7 @@ describe('AdminSettingsService chat rules', () => {
     );
     expect(
       legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings,
-    ).toHaveBeenCalledWith(expect.objectContaining({ antiSpamEnabled: false }));
+    ).not.toHaveBeenCalled();
     const chatUpsert = prisma.chat.upsert.mock.calls.find(
       ([args]) => args?.where?.id === 'chat-1',
     )?.[0];

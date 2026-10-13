@@ -373,6 +373,12 @@ maxim_topology_require_managed_entity_activation() {
   node "$(dirname "${BASH_SOURCE[0]}")/../assert-managed-entity-activation-source.mjs" "$commit_sha"
 }
 
+maxim_topology_require_publication_policy() {
+  local commit_sha="$1"
+  # FLAG: New deadline and pending-context intents require compatible readers after rollback.
+  node "$(dirname "${BASH_SOURCE[0]}")/../assert-publication-policy-source.mjs" "$commit_sha"
+}
+
 maxim_topology_require_bot_publisher_reliability() {
   local commit_sha="$1" path source
   local sources=()

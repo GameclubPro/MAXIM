@@ -28,8 +28,8 @@ test('publication audit classifies exact-bot access without exposing content or 
     INSERT INTO publication_occurrences VALUES ('private-occurrence', 'private-publication', 'private-schedule', 'SCHEDULED', now() - interval '1 hour', 'PUBLIK_V1', 'private-bot', 'PUBLISHER_ACTOR_ACCESS_REQUIRED', 'private-content');
     INSERT INTO publication_targets VALUES ('private-publication', 'private-chat', 'CHANNEL', 0);
     INSERT INTO chats VALUES ('private-chat', 'CHANNEL', 'private-title');
-    INSERT INTO publisher_entity_bindings (chat_id, publisher_bot_id, status, bot_access_state, bot_access_expires_at)
-      VALUES ('private-chat', 'private-bot', 'ACTIVE', 'CONFIRMED_ADMIN', now() + interval '10 minutes');
+    INSERT INTO publisher_entity_bindings (chat_id, publisher_bot_id, status, bot_access_state, bot_access_checked_at, bot_access_expires_at)
+      VALUES ('private-chat', 'private-bot', 'ACTIVE', 'CONFIRMED_ADMIN', now() - interval '90 days', NULL);
     INSERT INTO managed_bot_chat_catalog VALUES ('private-bot', 'private-chat', 'ACTIVE', 'CHANNEL', 'private-title');
     INSERT INTO managed_broadcast_deliveries VALUES ('private-delivery', 'private-occurrence', now(), 'AMBIGUOUS', 1, 'private-message', 'private-error');
   `);
@@ -49,6 +49,24 @@ test('publication audit classifies exact-bot access without exposing content or 
     `UPDATE managed_entity_access_edges SET checked_at = now() - interval '14 minutes';`,
   );
   assert.equal((await report()).target_reasons[0].reason, 'metadata_ready');
+  assert.equal((await report()).capabilities_and_activation_checked, false);
+  await db.exec(
+    `UPDATE publisher_entity_bindings SET bot_access_expires_at = now() - interval '89 days';`,
+  );
+  assert.equal((await report()).target_reasons[0].reason, 'metadata_ready');
+  await db.exec(
+    `UPDATE publisher_entity_bindings SET bot_access_checked_at = now() + interval '1 minute';`,
+  );
+  assert.equal((await report()).target_reasons[0].reason, 'bot_access_unconfirmed');
+  await db.exec(
+    `UPDATE publisher_entity_bindings SET bot_access_checked_at = now(), bot_access_state = 'CONFIRMED_MEMBER';`,
+  );
+  assert.equal((await report()).target_reasons[0].reason, 'bot_not_admin');
+  await db.exec(
+    `UPDATE publisher_entity_bindings SET bot_access_state = 'CONFIRMED_ADMIN', send_route_quarantined_until = now() + interval '1 minute';`,
+  );
+  assert.equal((await report()).target_reasons[0].reason, 'route_quarantined');
+  await db.exec(`UPDATE publisher_entity_bindings SET send_route_quarantined_until = NULL;`);
   await db.exec(`UPDATE managed_entity_access_edges SET expires_at = NULL;`);
   assert.equal((await report()).target_reasons[0].reason, 'metadata_ready');
   await db.exec(
@@ -206,7 +224,7 @@ test('column grants are sufficient, deny content and reject extra effective gran
     await db.exec(`GRANT SELECT (${columns.join(', ')}) ON ${table} TO maxim_audit;`);
   }
   await db.exec(`
-    GRANT SELECT (chat_id, publisher_bot_id, status, bot_access_state, bot_access_expires_at, last_webhook_at)
+    GRANT SELECT (chat_id, publisher_bot_id, status, bot_access_state, bot_access_checked_at, bot_access_expires_at, send_route_quarantined_until, last_webhook_at)
       ON publisher_entity_bindings TO maxim_audit;
     GRANT SELECT (chat_id, publik_enabled) ON managed_entity_publication_policies TO maxim_audit;
   `);

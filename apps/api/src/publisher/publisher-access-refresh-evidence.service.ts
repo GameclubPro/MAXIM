@@ -50,7 +50,9 @@ export class PublisherAccessRefreshEvidenceService {
       }
       if (rows.length > OBSERVATION_BATCH_SIZE) this.unavailable('observation_truncated');
       const missing = rows.filter(
-        (row) => !this.key(botId, row.chatId, row.botAccessCheckedAt, row.botAccessExpiresAt),
+        (row) =>
+          row.botAccessExpiresAt !== null &&
+          !this.key(botId, row.chatId, row.botAccessCheckedAt, row.botAccessExpiresAt),
       ).length;
       if (missing) this.unavailable('missing_proof_identity', missing);
     } catch {
@@ -67,6 +69,9 @@ export class PublisherAccessRefreshEvidenceService {
   }): Promise<void> {
     if (!this.policy.deadlinePrioritiesEnabled) return;
     const previous = params.previous;
+    // FLAG: Durable positive bot evidence has no renewal deadline. Its null expiry is
+    // intentional, not a missing proof; keep legacy obligations as historical diagnostics.
+    if (previous.botAccessExpiresAt === null) return;
     if (
       previous.status !== ChatBotMembershipStatus.ACTIVE ||
       (previous.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&

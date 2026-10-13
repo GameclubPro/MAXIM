@@ -340,18 +340,37 @@ const publicationTimezoneSchema = z.string().trim().min(1).max(128).default('Eur
 const publicationDateTimeSchema = z.string().datetime({ offset: true });
 const publicationLocalTimeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u);
 
+// Omission preserves the five-minute behavior of persisted legacy schedules.
+export const publicationLatePolicySchema = z.object({
+  mode: z.enum(['recover', 'strict']),
+  maxDelayMinutes: z
+    .number()
+    .int()
+    .min(1)
+    .max(7 * 24 * 60),
+  catchUp: z.enum(['latest', 'all']),
+});
+export type PublicationLatePolicy = z.infer<typeof publicationLatePolicySchema>;
+export const DEFAULT_PUBLICATION_LATE_POLICY: PublicationLatePolicy = {
+  mode: 'recover',
+  maxDelayMinutes: 24 * 60,
+  catchUp: 'latest',
+};
+
 export const publicationNowScheduleSchema = z.object({
   mode: z.literal('now'),
   timezone: publicationTimezoneSchema,
 });
 export const publicationOnceScheduleSchema = z.object({
   mode: z.literal('once'),
+  latePolicy: publicationLatePolicySchema.optional(),
   timezone: publicationTimezoneSchema,
   at: publicationDateTimeSchema,
   replaceConflicts: z.boolean().default(false),
 });
 export const publicationSlotsScheduleSchema = z.object({
   mode: z.literal('slots'),
+  latePolicy: publicationLatePolicySchema.optional(),
   timezone: publicationTimezoneSchema,
   slots: z
     .array(publicationDateTimeSchema)
@@ -365,6 +384,7 @@ export const publicationSlotsScheduleSchema = z.object({
 export const publicationRecurrenceScheduleSchema = z
   .object({
     mode: z.literal('recurrence'),
+    latePolicy: publicationLatePolicySchema.optional(),
     timezone: publicationTimezoneSchema,
     frequency: z.enum(['daily', 'weekly']),
     interval: z.number().int().min(1).max(31).default(1),

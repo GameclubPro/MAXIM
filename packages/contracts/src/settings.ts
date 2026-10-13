@@ -155,3 +155,5 @@ export * from './stop-words-legacy-phrases.js';
 export * from './stop-words-matcher.js';
 export * from './url-text.js';
 export * from './reports.js';
+
+export { chatClosureStatusSchema, type ChatClosureStatus } from './chat-closure-status.js';

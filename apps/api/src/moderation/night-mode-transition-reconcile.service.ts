@@ -42,6 +42,8 @@ const NIGHT_MODE_RECONCILE_ACTIVE_CATCH_UP_ERROR_PREFIX =
 type NightModeTransitionReconcileRequest = {
   chat_id: string;
   generation: bigint;
+  first_requested_at?: Date;
+  attempt_count?: number;
 };
 
 type ClaimedNightModeTransitionReconcileRequests = {
@@ -93,6 +95,7 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
     resolveRuntimeServiceProfile().service.serviceName === 'api-moderation-background';
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
+  private readonly catchUpWarnings = new Map<string, number>();
   private legacyRecoveryDiscoveryComplete = false;
   private legacyRecoveryDiscoveryNextAttemptAt = 0;
   private legacyRecoveryCursor: NightModeLegacyRecoveryCursor | null = null;
@@ -685,7 +688,7 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
       FROM candidates CROSS JOIN claim_context
       WHERE request."chat_id" = candidates."chat_id"
         AND request."generation" = candidates."generation"
-      RETURNING request."chat_id", request."generation"
+      RETURNING request."chat_id", request."generation", request."first_requested_at", request."attempt_count"
     `);
     return { leaseToken, requests };
   }
@@ -733,14 +736,33 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
           'Failed to release night mode reconcile lease; expiry will recover it',
         );
       });
-      this.logger.warn(
-        {
-          chatId: request.chat_id,
-          generation: request.generation.toString(),
-          error: repairError instanceof Error ? repairError.message : String(repairError),
-        },
-        'Failed to reconcile durable night mode state; request was requeued',
-      );
+      const waiting =
+        this.normalizeErrorCode(repairError) === NIGHT_MODE_RECONCILE_ACTIVE_CATCH_UP_ERROR_CODE;
+      const waitMs = request.first_requested_at
+        ? Math.max(0, Date.now() - request.first_requested_at.getTime())
+        : null;
+      const diagnostic = {
+        chatId: request.chat_id,
+        generation: request.generation.toString(),
+        reason: waiting ? 'catch_up_active' : 'repair_failed',
+        waitMs,
+        attempts: request.attempt_count ?? null,
+        error: waiting
+          ? undefined
+          : repairError instanceof Error
+            ? repairError.message
+            : String(repairError),
+      };
+      if (waiting && (waitMs === null || waitMs < 5 * 60_000)) {
+        this.logger.debug(diagnostic, 'Night mode reconcile waiting for active catch-up');
+      } else if (!waiting || this.shouldWarnCatchUp(request)) {
+        this.logger.warn(
+          diagnostic,
+          waiting
+            ? 'Night mode catch-up progress requires investigation'
+            : 'Failed to reconcile durable night mode state; request was requeued',
+        );
+      }
       return;
     }
 
@@ -748,7 +770,19 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
       await this.markManualReview(request, leaseToken, result.manualReview);
       return;
     }
+    this.catchUpWarnings.delete(this.buildRequestIdentity(request));
     await this.completeRequest(request, leaseToken);
+  }
+
+  private shouldWarnCatchUp(request: NightModeTransitionReconcileRequest): boolean {
+    const key = this.buildRequestIdentity(request);
+    const now = Date.now();
+    if ((this.catchUpWarnings.get(key) ?? 0) > now - 5 * 60_000) return false;
+    this.catchUpWarnings.delete(key);
+    if (this.catchUpWarnings.size >= 2_048)
+      this.catchUpWarnings.delete(this.catchUpWarnings.keys().next().value!);
+    this.catchUpWarnings.set(key, now);
+    return true;
   }
 
   private async confirmLeaseOwnership(
@@ -846,7 +880,7 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
           request."manual_blocked_at" IS NULL
           OR request."generation" > request."manual_blocked_generation"
         )
-      RETURNING request."chat_id", request."generation"
+      RETURNING request."chat_id", request."generation", request."first_requested_at", request."attempt_count"
     `);
   }
 

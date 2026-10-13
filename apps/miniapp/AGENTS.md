@@ -80,7 +80,7 @@
 - Rows with `publicationOccurrenceId != null` are Publication envelopes and must stay hidden from legacy broadcast/autopost APIs and UI.
 - Channel publication buttons are derived directly from `commentsEnabled` and `postSuggestionsEnabled`; do not add a separate button-mode control or preview filter.
 - Settings section apply defaults to the current chat. Applying all requires explicit `mode: 'all'`; keep contract, UI default, and preview transport aligned.
-- Required-subscription controls list fresh managed chats and channels, preserve external-link fallback, and save only server-verifiable targets.
+- Required-subscription controls preserve saved unknown sources and external-link fallback. Validate new selections without deleting existing ones on lookup failure.
 - Stop-word UI owns both blocked words and blocked domains. Domain entry defaults to `DOMAIN`, not an accidental exact root URL.
 - Stop-word edits use the revision-checked `/chats/:chatId/stop-words` API. Keep words/phrases atomic during bulk input, preserve unsaved buffers on failed saves, and poll only `/stop-words/status` for lightweight OCR availability. Legacy settings writes must not overwrite the independent policy.
 - Keep `VkParsingCard` lazy-loaded on chat/channel settings routes.

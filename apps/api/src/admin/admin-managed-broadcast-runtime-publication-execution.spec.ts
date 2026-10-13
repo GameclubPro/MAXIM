@@ -363,8 +363,12 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     const observations = logger.log.mock.calls.filter(
       ([event]) => event.metric === 'publication_delivery_v1',
     );
-    expect(observations).toHaveLength(1);
-    expect(observations[0]![0]).toMatchObject({
+    expect(observations.map(([event]) => event.outcome)).toEqual([
+      'max_acknowledgement_observed',
+      'receipt_persisted',
+    ]);
+    expect(observations[0]![0]).toMatchObject({ durationMs: 12_000 });
+    expect(observations[1]![0]).toMatchObject({
       scope: 'delivery',
       outcome: 'receipt_persisted',
       mode: 'ONCE',
@@ -379,8 +383,10 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       ManagedBroadcastStatus.ACTIVE,
     ]);
     expect(
-      logger.log.mock.calls.filter(([event]) => event.metric === 'publication_delivery_v1'),
-    ).toEqual([]);
+      logger.log.mock.calls
+        .filter(([event]) => event.metric === 'publication_delivery_v1')
+        .map(([event]) => event.outcome),
+    ).toEqual(['max_acknowledgement_observed']);
   });
 
   it('opts an ordinary Publik send out of optional message link hydration', async () => {
@@ -567,8 +573,10 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       ),
     ).toBe(false);
     expect(
-      logger.log.mock.calls.filter(([event]) => event.metric === 'publication_delivery_v1'),
-    ).toHaveLength(1);
+      logger.log.mock.calls
+        .filter(([event]) => event.metric === 'publication_delivery_v1')
+        .map(([event]) => event.outcome),
+    ).toEqual(['max_acknowledgement_observed', 'receipt_persisted']);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ err: 'temporary link lookup failure' }),
       'Managed broadcast comment dialog link lookup failed after persisted send receipt',

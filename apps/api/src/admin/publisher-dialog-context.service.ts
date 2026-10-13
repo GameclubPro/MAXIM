@@ -160,6 +160,7 @@ export class PublisherDialogContextService {
       const ctaButton =
         (await this.postSignature?.buildPostButton(params.chatId, {
           entityType: 'channel',
+          botId: params.dialogBotId,
           trafficClass: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
         })) ?? null;

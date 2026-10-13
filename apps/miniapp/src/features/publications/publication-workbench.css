@@ -1,4 +1,42 @@
 @layer pages {
+  .publications-page.is-publisher .publication-late-policy-options > summary {
+    min-height: 44px;
+    padding: 12px 0;
+    cursor: pointer;
+    color: var(--color-ink-muted);
+    font-size: 14px;
+    font-weight: 650;
+  }
+
+  .publications-page.is-publisher .publication-late-policy {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+    margin: 12px 0;
+    padding: 14px;
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+  }
+  .publications-page.is-publisher .publication-late-policy legend {
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .publications-page.is-publisher .publication-late-policy select {
+    min-width: 0;
+    width: 100%;
+    min-height: 44px;
+    font: inherit;
+    color: var(--color-ink);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    padding: 8px;
+  }
+  .publications-page.is-publisher .publication-late-policy p {
+    font-size: 12px;
+    color: var(--color-ink-muted);
+    margin: 4px 0 0;
+  }
   .publications-page .publication-date-loading {
     min-height: 72px;
   }

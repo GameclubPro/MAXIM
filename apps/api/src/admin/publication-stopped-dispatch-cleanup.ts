@@ -10,7 +10,7 @@ import {
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { PUBLISHER_MISSED_WINDOW_BLOCKER_CODE } from './publication-dispatch-issue';
-import { isPublicationScheduledWindowExpired } from './publication-late-policy';
+import { isPublicationOccurrenceWindowClosed } from './publication-late-policy';
 
 type StoppedPublicationClaim = {
   id: string;
@@ -59,7 +59,7 @@ export async function cancelPublicationDeliveryBeforeStoppedDispatch(
       where: { id: delivery.publicationOccurrenceId },
       include: {
         publication: { select: { lifecycle: true } },
-        schedule: { select: { revision: true, status: true, mode: true } },
+        schedule: { select: { id: true, revision: true, status: true, mode: true, rule: true } },
       },
     });
     if (
@@ -70,7 +70,7 @@ export async function cancelPublicationDeliveryBeforeStoppedDispatch(
       (occurrence.schedule.status !== PublicationScheduleStatus.ACTIVE &&
         occurrence.schedule.status !== PublicationScheduleStatus.ERROR) ||
       occurrence.schedule.revision !== occurrence.scheduleRevision ||
-      !isPublicationScheduledWindowExpired(occurrence) ||
+      !(await isPublicationOccurrenceWindowClosed(prisma, occurrence)) ||
       !(
         (occurrence.status === PublicationOccurrenceStatus.FAILED &&
           occurrence.dispatchBlockerCode === PUBLISHER_MISSED_WINDOW_BLOCKER_CODE) ||

@@ -1,7 +1,7 @@
 import type { ChatSummary, ManagedEntityHeader } from '@maxim/contracts';
 import {
   chatSummaryToManagedEntityHeader,
-  normalizeManagedEntityLink,
+  normalizeManagedEntityLink as normalizeLink,
 } from '../lib/managed-entity-header';
 
 export type RequiredSubscriptionSelectedChannel = {
@@ -30,16 +30,12 @@ export type RequiredSubscriptionChannelCollections = {
   availableChoices: ManagedEntityHeader[];
 };
 
-function normalizeLink(link: string | null | undefined): string | null {
-  return normalizeManagedEntityLink(link);
-}
-
 function createUnavailableChannel(channelId: string): RequiredSubscriptionUnavailableChannel {
   return {
     id: channelId,
-    title: 'Недоступный источник',
+    title: 'Сохранённый источник',
     reason: 'unavailable',
-    description: 'Ссылка недоступна.',
+    description: 'Данные не загружены.',
   };
 }
 
@@ -53,24 +49,16 @@ export function buildRequiredSubscriptionChannelCollections(params: {
   const selectedChannelById = new Map<string, ManagedEntityHeader>();
   const selectedIds = new Set(params.selectedChannelIds ?? []);
 
-  for (const channel of params.managedChats ?? []) {
-    if (channel.entityType !== 'chat') {
-      continue;
+  for (const [entityType, channels] of [
+    ['chat', params.managedChats],
+    ['channel', params.managedChannels],
+  ] as const) {
+    for (const channel of channels ?? []) {
+      if (channel.entityType !== entityType) continue;
+      const header = chatSummaryToManagedEntityHeader(channel);
+      availableChoiceById.set(channel.id, header);
+      selectedChannelById.set(channel.id, header);
     }
-
-    const header = chatSummaryToManagedEntityHeader(channel);
-    availableChoiceById.set(channel.id, header);
-    selectedChannelById.set(channel.id, header);
-  }
-
-  for (const channel of params.managedChannels ?? []) {
-    if (channel.entityType !== 'channel') {
-      continue;
-    }
-
-    const header = chatSummaryToManagedEntityHeader(channel);
-    availableChoiceById.set(channel.id, header);
-    selectedChannelById.set(channel.id, header);
   }
 
   for (const channel of params.resolvedChannels) {

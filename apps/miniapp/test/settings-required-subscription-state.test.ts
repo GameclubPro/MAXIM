@@ -234,9 +234,9 @@ test('keeps selected channels without a public link in the chosen required subsc
   assert.deepEqual(collections.selectedUnavailableChannels, [
     {
       id: 'channel-missing',
-      title: 'Недоступный источник',
+      title: 'Сохранённый источник',
       reason: 'unavailable',
-      description: 'Ссылка недоступна.',
+      description: 'Данные не загружены.',
     },
   ]);
 });

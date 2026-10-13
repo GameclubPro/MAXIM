@@ -756,6 +756,9 @@ export class AdminService implements OnModuleDestroy {
         get publisherReadinessService() {
           return owner.publisherReadinessService;
         },
+        get publisherDialogContextService() {
+          return owner.publisherDialogContextService;
+        },
         get publisherDispatchHealthService() {
           return owner.publisherDispatchHealthService;
         },

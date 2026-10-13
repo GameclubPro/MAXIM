@@ -2877,8 +2877,8 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
   );
   await database.exec(`
     INSERT INTO publisher_entity_bindings
-      (chat_id, status, bot_access_state, bot_access_expires_at)
-    VALUES ('-123', 'ACTIVE', 'CONFIRMED_ADMIN', CURRENT_TIMESTAMP + interval '1 hour');
+      (chat_id, status, bot_access_state, bot_access_checked_at, bot_access_expires_at)
+    VALUES ('-123', 'ACTIVE', 'CONFIRMED_ADMIN', CURRENT_TIMESTAMP - interval '1 year', NULL);
     INSERT INTO publisher_entity_settings (chat_id, chat_comments_enabled)
     VALUES ('-123', false);
   `);
@@ -2912,7 +2912,8 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
   const commentsReport = (await database.query(buildPublisherCommentsAuditSql('-123'))).rows[0]
     .json_build_object;
   assert.equal(commentsReport.binding_present, true);
-  assert.equal(commentsReport.access_expired, false);
+  assert.equal(commentsReport.positive_access_confirmed, true);
+  assert.equal(commentsReport.readiness_scope, 'metadata_only');
   assert.equal(commentsReport.chat_comments_enabled, false);
   assert.equal(commentsReport.publik_enabled, true);
   assert.equal(

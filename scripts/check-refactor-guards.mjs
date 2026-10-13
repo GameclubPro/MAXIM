@@ -8,17 +8,17 @@ const root = resolve(import.meta.dirname, '..');
 const guardedFiles = [
   {
     path: 'apps/miniapp/src/pages/publications-page.tsx',
-    maxLines: 2007,
+    maxLines: 2017,
     targetLines: 1900,
     reason:
-      'Publication list filters, cursor queries and calendar range now have dedicated controllers; the page should continue separating editor lifecycle and action confirmations.',
+      'This ceiling includes only the late-policy component wiring; policy controls remain in a focused component. Publication list filters, cursor queries and calendar range now have dedicated controllers; the page should continue separating editor lifecycle and action confirmations.',
   },
   {
     path: 'apps/api/src/admin/admin.service.legacy.ts',
-    maxLines: 22774,
+    maxLines: 22777,
     targetLines: 22500,
     reason:
-      'AdminService remains a legacy hotspot; this ceiling includes the shared crash-safe Major/Publisher suggestion delivery ledger and sanction lock/fence guards at existing side-effect boundaries, while unrelated domains should keep moving to focused services.',
+      'AdminService remains a legacy hotspot; the three-line lazy dialog-context bridge keeps per-target preparation in a focused helper; this ceiling includes the shared crash-safe Major/Publisher suggestion delivery ledger and sanction lock/fence guards at existing side-effect boundaries, while unrelated domains should keep moving to focused services.',
   },
   {
     path: 'apps/api/src/admin/admin-managed-broadcast-runtime.ts',
@@ -64,10 +64,10 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.legacy.tsx',
-    maxLines: 7411,
+    maxLines: 7412,
     targetLines: 7000,
     reason:
-      'SettingsPage remains a legacy shell; this ceiling includes the photo-duplicate mode plumbing and the scoped Karavan storefront allowlist section bridge into focused settings modules, while route state and workspaces should continue moving out.',
+      'SettingsPage remains a legacy shell; the one-line closure-status prop delegates presentation to the night section; this ceiling includes the photo-duplicate mode plumbing and the scoped Karavan storefront allowlist section bridge into focused settings modules, while route state and workspaces should continue moving out.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-native-controls.css',
@@ -313,17 +313,17 @@ const guardedFiles = [
   },
   {
     path: 'packages/contracts/src/core.ts',
-    maxLines: 2732,
+    maxLines: 2733,
     targetLines: 2500,
     reason:
-      'Core retains chat settings composition; this ceiling includes separate profanity message fields and commercial photo availability alongside the focused photo-duplicate integration. Reusable commercial thresholds and sanction-ladder policy live in commercial-settings.ts; new reusable schemas should continue moving to subpath exports.',
+      'Core retains chat settings composition; closure diagnostics have their own schema module with only import/response wiring here; this ceiling includes separate profanity message fields and commercial photo availability alongside the focused photo-duplicate integration. Reusable commercial thresholds and sanction-ladder policy live in commercial-settings.ts; new reusable schemas should continue moving to subpath exports.',
   },
   {
     path: 'apps/api/src/admin/publication.service.ts',
-    maxLines: 3870,
+    maxLines: 3872,
     targetLines: 3200,
     reason:
-      'Publication scheduling, query, and retry logic should keep moving to focused domain services.',
+      'Publication scheduling, query, and retry logic should keep moving to focused domain services; late-policy and recurrence-resume behavior live in a focused helper, with bounded materialization wiring here.',
   },
   {
     path: 'apps/miniapp/src/pages/publications-page.tsx',

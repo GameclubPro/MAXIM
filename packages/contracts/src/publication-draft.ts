@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   publicationDetailsSchema,
+  publicationLatePolicySchema,
   publicationDraftContentInputSchema,
   publicationTargetInputSchema,
   MAX_PUBLICATION_EXPLICIT_SLOTS,
@@ -28,6 +29,7 @@ export const publicationDraftStateSchema = z.object({
   timingMode: z.enum(['now', 'once', 'schedule']),
   scheduleKind: z.enum(['slots', 'recurrence']),
   scheduleTimezone: zone,
+  latePolicy: publicationLatePolicySchema.optional(),
   scheduledSlots: z.array(z.string().datetime()).max(MAX_PUBLICATION_EXPLICIT_SLOTS),
   onceDate: z.string().max(10),
   onceTime: time,

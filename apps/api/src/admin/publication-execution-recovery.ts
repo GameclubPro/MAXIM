@@ -33,7 +33,10 @@ import {
   resolvePublicationVerificationNextSendAt,
 } from './publication-delivery-verification-state';
 import { isTransientPublicationPrismaError } from './publication-prisma-retry';
-import { isPublicationScheduledWindowExpired } from './publication-late-policy';
+import {
+  isPublicationOccurrenceWindowClosed,
+  readPublicationLatePolicy,
+} from './publication-late-policy';
 import { PUBLISHER_MISSED_WINDOW_BLOCKER_CODE } from './publication-dispatch-issue';
 import {
   recordPublicationDispatchOutcome,
@@ -210,7 +213,7 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
       dispatchFirstBlockedAt: true,
       retryAuthorizedAt: true,
       publication: { select: { lifecycle: true } },
-      schedule: { select: { revision: true, status: true, mode: true } },
+      schedule: { select: { id: true, revision: true, status: true, mode: true, rule: true } },
     },
   });
   if (occurrence) {
@@ -241,7 +244,8 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
     return false;
   }
   if (executionStateActive) {
-    if (!occurrence || !isPublicationScheduledWindowExpired(occurrence)) return true;
+    if (!occurrence || !(await isPublicationOccurrenceWindowClosed(options.prisma, occurrence)))
+      return true;
     const preDispatchClaim = options.activeDeliveryClaim
       ? options.activeDeliveryClaim.sendAttemptStarted
         ? undefined
@@ -281,7 +285,77 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
           }
         : {}),
     };
-    if (await options.prisma.managedBroadcastDelivery.count({ where: attemptWhere })) return true;
+    if (await options.prisma.managedBroadcastDelivery.count({ where: attemptWhere })) {
+      if (!readPublicationLatePolicy(occurrence.schedule.rule)) return true;
+      // FLAG: New author deadlines apply per recipient. Preserve confirmed/uncertain
+      // effects and expire only claimable targets, including this exact pre-HTTP
+      // claim. Calendar serialization prevents a changed revision from being expired.
+      return options.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw(
+          Prisma.sql`SELECT pg_advisory_xact_lock(hashtext('publication-calendar'))`,
+        );
+        const fenced = await tx.publicationOccurrence.updateMany({
+          where: {
+            id: options.row.publicationOccurrenceId!,
+            status: occurrence.status,
+            scheduleRevision: occurrence.scheduleRevision,
+            contentRevisionId: occurrence.contentRevisionId,
+            retryAuthorizedAt: occurrence.retryAuthorizedAt,
+            schedule: {
+              is: {
+                revision: occurrence.scheduleRevision,
+                status: PublicationScheduleStatus.ACTIVE,
+              },
+            },
+            publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
+          },
+          data: {
+            dispatchBlockerCode: PUBLISHER_MISSED_WINDOW_BLOCKER_CODE,
+            dispatchBlockedAt: new Date(),
+          },
+        });
+        if (fenced.count !== 1) return false;
+        await tx.managedBroadcastDelivery.updateMany({
+          where: {
+            publicationOccurrenceId: options.row.publicationOccurrenceId!,
+            status: ManagedBroadcastDeliveryStatus.PENDING,
+            remoteMessageId: null,
+            sentAt: null,
+            legacySentWithoutRemoteId: false,
+          },
+          data: {
+            status: ManagedBroadcastDeliveryStatus.FAILED,
+            lastErrorCode: PUBLISHER_MISSED_WINDOW_BLOCKER_CODE,
+            lastError: 'Истёк выбранный автором срок отправки.',
+            dispatchBlockerCode: null,
+            dispatchBlockedAt: null,
+          },
+        });
+        if (preDispatchClaim) {
+          await tx.managedBroadcastDelivery.updateMany({
+            where: {
+              id: preDispatchClaim.id,
+              lockToken: preDispatchClaim.lockToken,
+              status: ManagedBroadcastDeliveryStatus.SENDING,
+              attemptCount: preDispatchClaim.attemptCount,
+              remoteMessageId: null,
+              sentAt: null,
+              legacySentWithoutRemoteId: false,
+            },
+            data: {
+              status: ManagedBroadcastDeliveryStatus.FAILED,
+              attemptCount: { decrement: 1 },
+              lockToken: null,
+              lockedAt: null,
+              lastErrorCode: PUBLISHER_MISSED_WINDOW_BLOCKER_CODE,
+              lastError: 'Истёк выбранный автором срок отправки.',
+            },
+          });
+          return false;
+        }
+        return true;
+      });
+    }
     // FLAG: The occurrence fence spans chat/channel envelopes. Preserve partial deliveries
     // and stop only a never-attempted scheduled occurrence, even after early materialization.
     const expired = await options.prisma.publicationOccurrence.updateMany({

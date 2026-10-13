@@ -29,6 +29,8 @@ import {
 } from './publisher-publication-recipient-admission';
 import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 
+import { preparePendingPublicationContext } from './publication-target-preparation';
+
 const PUBLISHER_RUNTIME_BLOCKER = 'PUBLISHER_RUNTIME_UNAVAILABLE';
 
 type PublisherBroadcastRow = {
@@ -41,6 +43,7 @@ type PublisherDeliveryRow = {
   id: string;
   targetChatId: string;
   dialogBotId: string | null;
+  publisherDialogContext?: Prisma.JsonValue;
 };
 
 type PublisherBroadcastLease = {
@@ -232,6 +235,7 @@ export class PublisherManagedBroadcastDispatch {
   ): Promise<Date | null> {
     try {
       await this.assertDeliveryReady(delivery.targetChatId, requiredBotId, actorUserId);
+      await preparePendingPublicationContext(this.context, delivery, requiredBotId);
       await this.context.prisma.managedBroadcastDelivery.updateMany({
         where: {
           id: delivery.id,

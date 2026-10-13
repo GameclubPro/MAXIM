@@ -1,6 +1,7 @@
 import { InfoCircle } from 'iconoir-react';
-import type { ChatSettings } from '@maxim/contracts/settings';
+import type { ChatSettings, ChatClosureStatus } from '@maxim/contracts/settings';
 import { Suspense } from 'react';
+import SettingsChatClosureStatus from './settings-chat-closure-status';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
@@ -55,6 +56,7 @@ export type SettingsNightSectionProps = SettingsSectionShellProps &
     | 'updateDraftButtonGroup'
   > & {
     api: ApiTransport;
+    closureStatus?: ChatClosureStatus;
     hasNightBotButtonError: boolean;
     hasNightForceCloseDurationError: boolean;
     hasPublishedRules: boolean;
@@ -140,6 +142,9 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
         >
           {expanded ? (
             <div className="settings-section__collapse-inner">
+              {props.closureStatus ? (
+                <SettingsChatClosureStatus status={props.closureStatus} />
+              ) : null}
               <div className="settings-native-toggle">
                 <div className="settings-native-toggle__row">
                   <div className="settings-native-toggle__title-wrap">

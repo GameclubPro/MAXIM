@@ -6253,6 +6253,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <SettingsNightSection
               api={api}
+              closureStatus={settingsScreenQuery.data?.closure}
               botSpeechEditorProps={botSpeechEditorProps!}
               botSpeechPreviewContext={botSpeechPreviewContext}
               clearButtonGroupErrors={clearButtonGroupErrors}

@@ -1,3 +1,4 @@
+import { resolveExplicitMembershipAccessDenial } from '../max/max-membership-access-error';
 import {
   createManagedPollRequestSchema,
   decodeManagedPollListCursor,
@@ -183,6 +184,7 @@ export class ManagedPollService {
   private readonly logger = new Logger(ManagedPollService.name);
   private readonly localRenderChains = new Map<string, Promise<void>>();
   private readonly scheduledRenderRepairs = new Map<string, Promise<void>>();
+  private readonly renderRetryUntil = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -1321,6 +1323,8 @@ export class ManagedPollService {
       if (!poll.publicationMessageId) {
         return true;
       }
+      const retryKey = `managed-poll:render-backoff:v1:${poll.id}:${poll.publicationMessageId}`;
+      if (await this.isRenderBackoffActive(retryKey)) return false;
       const entityType = this.managedEntityTypeFromPrisma(poll.chat.entityType);
       let botId: string | null | undefined = poll.publicationBotId;
       let editAttemptStartedAt: Date | null = null;
@@ -1394,8 +1398,14 @@ export class ManagedPollService {
         if (await this.reconcileMissingPollPublication(poll, botId, entityType, error)) {
           return true;
         }
+        await this.deferPollRender(retryKey);
         await this.recordPollRenderError(poll.id, poll.renderRevision, chatId, action, error);
-        if (editAttemptStartedAt && !this.wasManagedEntityAccessLossRecorded(error)) {
+        const status = (error as { response?: { status?: number } })?.response?.status;
+        if (
+          editAttemptStartedAt &&
+          (status !== 404 || resolveExplicitMembershipAccessDenial(error)) &&
+          !this.wasManagedEntityAccessLossRecorded(error)
+        ) {
           await this.recordAccessLoss(
             poll,
             botId ?? null,
@@ -1445,14 +1455,15 @@ export class ManagedPollService {
         },
       );
     } catch (lookupError: unknown) {
-      await this.recordAccessLoss(
-        poll,
-        botId ?? null,
-        'lookup',
-        lookupError,
-        entityType,
-        lookupAttemptStartedAt,
-      );
+      if (resolveExplicitMembershipAccessDenial(lookupError))
+        await this.recordAccessLoss(
+          poll,
+          botId ?? null,
+          'lookup',
+          lookupError,
+          entityType,
+          lookupAttemptStartedAt,
+        );
       this.logger.warn(
         {
           pollId: poll.id,
@@ -1703,6 +1714,34 @@ export class ManagedPollService {
       throw new BadRequestException(
         `Вопрос после форматирования слишком длинный. Максимум ${MANAGED_POLL_MESSAGE_MAX_LENGTH} символов сообщения.`,
       );
+    }
+  }
+
+  private async isRenderBackoffActive(key: string): Promise<boolean> {
+    if ((this.renderRetryUntil.get(key) ?? 0) > Date.now()) return true;
+    this.renderRetryUntil.delete(key);
+    try {
+      return Number(await this.redisCounter?.getString(key)) > Date.now();
+    } catch {
+      return false;
+    }
+  }
+
+  private async deferPollRender(key: string): Promise<void> {
+    const until = Date.now() + MANAGED_POLL_BACKGROUND_RETRY_DELAY_MS;
+    // FLAG: A read/edit failure is unknown, not proof of deletion or lost bot rights.
+    // Cooldown survives another replica; SQL still owns repair and exact presence proof.
+    this.renderRetryUntil.set(key, until);
+    if (this.renderRetryUntil.size > 2048)
+      this.renderRetryUntil.delete(this.renderRetryUntil.keys().next().value!);
+    try {
+      await this.redisCounter?.setStringWithTtl(
+        key,
+        String(until),
+        MANAGED_POLL_BACKGROUND_RETRY_DELAY_MS / 1000,
+      );
+    } catch {
+      /* Local bounded cooldown remains useful during Redis outages. */
     }
   }
 

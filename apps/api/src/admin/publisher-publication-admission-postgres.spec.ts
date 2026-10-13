@@ -1,3 +1,6 @@
+import { PublicationService } from './publication.service';
+import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
+import { PublisherDeliveryDeferredError } from './publisher-managed-broadcast-dispatch';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient, createPrismaAdapter, Prisma } from '../prisma/prisma-client';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
@@ -21,6 +24,13 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
   const botId = `publisher-admission-${randomUUID()}`;
   const requestActorAccessRefresh = jest.fn().mockResolvedValue(undefined);
   const remoteSend = jest.fn();
+  const unavailableTargets = new Set<string>();
+  const prepareContext = jest.fn(async ({ dialogBotId }: { dialogBotId: string }) => ({
+    version: 1,
+    dialogBotId,
+    buttons: [],
+    reference: null,
+  }));
   let beforeMutation: (() => Promise<void>) | undefined;
 
   beforeAll(async () => {
@@ -41,6 +51,8 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
   beforeEach(() => {
     requestActorAccessRefresh.mockClear();
     remoteSend.mockClear();
+    prepareContext.mockClear();
+    unavailableTargets.clear();
     beforeMutation = undefined;
     publicationId = '';
   });
@@ -68,9 +80,14 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
           recordSendSuccess: async () => undefined,
         },
         publisherReadinessService: {
-          assertEntityReady: async () => ({ requiredBotId: botId, entityType: 'chat' }),
+          assertEntityReady: async (chatId: string) => {
+            if (unavailableTargets.has(chatId))
+              throw new PublisherDeliveryDeferredError('bot_not_admin');
+            return { requiredBotId: botId, entityType: 'chat' };
+          },
           requestActorAccessRefresh,
         },
+        publisherDialogContextService: { prepare: prepareContext },
         maxRoutedPublicationService: {
           publish: async (request: {
             entityId: string;
@@ -253,6 +270,131 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
       ['ACTIVE'],
     );
   }
+
+  it.each([100, 1000])(
+    'materializes %s targets and recovers one unavailable target without resending receipts',
+    async (size) => {
+      await fixture(size);
+      await db.managedBroadcast.delete({ where: { id: broadcastId } });
+      await db.publicationOccurrence.update({
+        where: { id: occurrenceId },
+        data: { status: 'SCHEDULED', legacyBroadcastId: null },
+      });
+      const occurrence = await db.publicationOccurrence.findUniqueOrThrow({
+        where: { id: occurrenceId },
+        include: { contentRevision: true, publication: true, schedule: true },
+      });
+      const routing = new PublicationPublisherRoutingService(
+        db as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+      );
+      await (PublicationService.prototype as any).createOccurrenceExecution.call(
+        {
+          prisma: db,
+          publisherRouting: routing,
+          lockPublicationCalendar: (tx: Prisma.TransactionClient) =>
+            tx.$executeRaw(
+              Prisma.sql`SELECT pg_advisory_xact_lock(hashtext('publication-calendar'))`,
+            ),
+        },
+        occurrence,
+        chatIds.map((chatId) => ({
+          chatId,
+          entityType: 'chat',
+          title: chatId,
+          avatarUrl: null,
+          link: null,
+        })),
+        occurrence.schedule.rule,
+      );
+      const broadcast = await db.managedBroadcast.findFirstOrThrow({
+        where: { publicationOccurrenceId: occurrenceId },
+      });
+      broadcastId = broadcast.id;
+      expect(await db.managedBroadcastDelivery.count({ where: { broadcastId } })).toBe(size);
+      expect(prepareContext).not.toHaveBeenCalled();
+      unavailableTargets.add(chatIds[0]!);
+      runtime = createRuntime();
+      for (let page = 0; page < Math.ceil(size / 4) + 1; page++) await run();
+      expect(remoteSend).toHaveBeenCalledTimes(size - 1);
+      expect(prepareContext).toHaveBeenCalledTimes(size - 1);
+      expect(
+        await db.managedBroadcastDelivery.findFirstOrThrow({
+          where: { broadcastId, targetChatId: chatIds[0]! },
+        }),
+      ).toMatchObject({ status: 'PENDING', attemptCount: 0, dispatchBlockerCode: 'bot_not_admin' });
+      unavailableTargets.clear();
+      await db.managedBroadcastDelivery.updateMany({
+        where: { broadcastId, status: 'PENDING' },
+        data: { dispatchBlockedAt: new Date(Date.now() - 61_000) },
+      });
+      runtime = createRuntime();
+      await run();
+      expect(remoteSend).toHaveBeenCalledTimes(size);
+      expect(new Set(remoteSend.mock.calls.map((call) => call[0])).size).toBe(size);
+      expect(
+        await db.managedBroadcastDelivery.count({
+          where: { broadcastId, status: 'SENT', attemptCount: 1 },
+        }),
+      ).toBe(size);
+    },
+  );
+
+  it('enforces the pending-to-prepared transition in SQL and never claims an unprepared target', async () => {
+    await fixture(1);
+    const previous = await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } });
+    await db.managedBroadcastDelivery.delete({ where: { id: previous.id } });
+    const pending = {
+      version: 0,
+      preparation: 'pending',
+      chatId: chatIds[0]!,
+      entityType: 'chat',
+      dialogBotId: botId,
+      customButtons: [],
+    };
+    const delivery = await db.managedBroadcastDelivery.create({
+      data: {
+        broadcastId,
+        occurrenceIndex: 1,
+        targetChatId: chatIds[0]!,
+        publicationOccurrenceId: occurrenceId,
+        contentRevisionId: previous.contentRevisionId,
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: botId,
+        dialogBotId: botId,
+        publicationPolicyRevision: 0,
+        publisherDialogContext: pending,
+      },
+    });
+    await expect(
+      db.managedBroadcastDelivery.update({
+        where: { id: delivery.id },
+        data: { status: 'SENDING', attemptCount: 1 },
+      }),
+    ).rejects.toThrow('prepared_context_check');
+    await expect(
+      db.managedBroadcastDelivery.update({
+        where: { id: delivery.id },
+        data: { publisherDialogContext: { ...pending, chatId: 'wrong' } },
+      }),
+    ).rejects.toThrow('immutable');
+    const prepared = { version: 1, dialogBotId: botId, buttons: [], reference: null };
+    await db.managedBroadcastDelivery.update({
+      where: { id: delivery.id },
+      data: { publisherDialogContext: prepared },
+    });
+    await expect(
+      db.managedBroadcastDelivery.update({
+        where: { id: delivery.id },
+        data: { publisherDialogContext: pending },
+      }),
+    ).rejects.toThrow('immutable');
+    expect(remoteSend).not.toHaveBeenCalled();
+  });
 
   it('bounds probes to four and sends fresh recipients behind stale/denied heads in a 10,004-chat audience', async () => {
     await fixture(10_004, 4);

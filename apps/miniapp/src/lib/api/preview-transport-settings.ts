@@ -1,4 +1,5 @@
 import { SECTION_SETTING_KEYS } from '../../pages/settings-page-state';
+import { createPreviewOpenChatClosure } from './preview-chat-closure';
 import {
   StopWordsMatcher,
   duplicateDiagnosticsResponseSchema,
@@ -176,6 +177,7 @@ export function buildChatSettingsScreen(
   );
   return chatSettingsScreenResponseSchema.parse({
     messageRetention: getPreviewMessageRetention(state, chatId),
+    closure: createPreviewOpenChatClosure(state.chatSettings, readPreviewClock(state.clock)),
     settings: state.chatSettings,
     commercialPhotoModerationMode: state.chatSettings.commercialAdsFilterEnabled
       ? 'OBSERVE'

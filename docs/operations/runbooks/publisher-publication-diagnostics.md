@@ -23,14 +23,19 @@ Required indexes are attested before the query; `--explain` never executes it.
 
 Counts describe sampled occurrence/target/delivery slots, not unique users or entities.
 Repeated schedules can therefore contribute the same recipient more than once. Saturated
-or truncated samples are not a complete inventory. `metadata_ready` does not prove MAX
-write permission: raw permission data is deliberately outside this diagnostic.
+or truncated samples are not a complete inventory. The report explicitly declares
+`readiness_scope=metadata_only` and `capabilities_and_activation_checked=false`.
+`metadata_ready` does not prove MAX write permission or completed activation: raw
+permission data and the activation handshake are outside this diagnostic. Positive bot
+proofs do not expire; old/null expiry alone is not a blocker. `bot_access_unconfirmed`
+means a missing/future confirmation timestamp, and `route_quarantined` is separate.
 Granted actor metadata older than 15 minutes is classified as `actor_authority_stale`.
 `missed_window` identifies a missed scheduled window requiring an author decision; it is separate from `AMBIGUOUS` delivery results.
 
 Interpret all blockers together with lifecycle and schedule status. A disabled policy or
-fresh denied actor must never be silently enabled or granted access. A missing/expired
-cache may nominate an exact Publisher-owned verification, not authorize a send. A remote
+fresh denied actor must never be silently enabled or granted access. Missing bot evidence or stale human authority may nominate an exact Publisher-owned
+verification, never authorize a send. Explicit bot denial requires administrator
+reconnection; passive verification cannot bypass activation. A remote
 message ID or an attempted/AMBIGUOUS delivery must retain its receipt and dispatch fence.
 No report outcome authorizes bulk retry or recreating a failed publication as a new send.
 
@@ -49,6 +54,43 @@ the exact bot and webhook target; it does not verify update-type coverage or pub
 delivery. Invoke the built file directly: the runtime image omits the repository-root
 package manifest required by a root-level `npm run --workspace` invocation.
 
+## Current scheduling and recovery
+
+Deadline dispatch and imminent-publication preflight each have one coalesced coordinator
+slot, independent of the serialized recovery slot. The MAX limiter, two refresh workers
+and SQL send fences remain unchanged. `publisher_background_budget_v1` reports a lane
+whose wait or execution exceeds five seconds; this observation never cancels an effect.
+
+Preflight considers the next ten minutes, with at most eight target nominations per
+pass and sixteen queued preparation jobs. Two queued urgent jobs suspend speculative
+admission. Saved snapshot audiences are materialized in full; a blocked recipient does
+not prevent other recipients from preparing. A bounded page prepares each pending
+context independently. Version zero is intent only; SQL forbids sending until the
+untouched delivery wins the single transition to immutable version one. Every actual
+send still rechecks actor, bot, content, policy and schedule authority.
+
+New schedules persist an explicit late policy: by default recover for 24 hours and,
+for recurring schedules, retain the latest due durable occurrence of the same revision.
+The author may choose another deadline or all still-current repeats. Existing schedules
+without this field retain their five-minute window. Explicit author retries retain their
+separate five-minute authorization. Expiry fails only unsent claimable recipients and
+the exact owned pre-HTTP claim; confirmed and uncertain effects retain their evidence.
+No policy permits replay of an ambiguous send. Cancellation still consumes a slot in
+new recurrence limits, and catch-up materialization is capped at 300 slots per pass.
+
+`publication_delivery_v1` separates `max_acknowledgement_observed` from
+`receipt_persisted`. The former is the observed wrapper-return time, not a MAX server
+timestamp or verified visibility. Keep both clocks separate from claim delay and
+post-action completion. Measure fresh due cohorts separately from historical failures,
+denials and ambiguous receipts; a healthy queue or an empty sample cannot prove the
+publication SLO. Retain release, observation interval, sample size and truncation.
+
+The target-preparation migration replaces only the context constraint/trigger, with no
+history rewrite or validation scan. Its new constraint checks all new writes. Both API
+rollback paths require the current deadline/preparation readers and dispatch wiring;
+use reviewed current wrappers and a compatible forward correction if an older image
+fails that source floor.
+
 ## Publication Delay Investigation, 2026-09-27
 
 A bounded post-release log sample contained 34 deadline delivery claims with lateness
@@ -58,8 +100,9 @@ The action role paused preparation during an automatic webhook backlog of roughl
 46-48 minutes and also reported host-load pressure. The capped database audit still
 found fresh actor-access denials. Those denials must not be overridden to reduce lag.
 
-The latency fixes retain the existing per-bot budgets, two-connection Publisher pool,
-receipt fences, post-send stability window, and serialized background coordinator:
+This historical investigation retained the then-current per-bot budgets, two-connection
+Publisher pool, receipt fences, stability window and serialized coordinator. The current
+coordinator separation above supersedes only that serialization detail:
 
 - Only publication preparation opts into a bounded slow path for automatic webhook
   backlog. Manual, MAX, mixed/unknown emergency modes and hard CPU/I/O pressure still

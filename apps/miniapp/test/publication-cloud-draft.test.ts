@@ -334,3 +334,32 @@ test('publishing a cloud draft updates its original identity instead of creating
   assert.equal(published.lifecycle, 'ACTIVE');
   await assert.rejects(getServerPublicationDraft(api, saved.publication.id), { status: 404 });
 });
+
+test('cloud and local drafts preserve the authored late policy across reopening', async () => {
+  const { api } = setup();
+  const draft = initial();
+  draft.latePolicy = { mode: 'strict', maxDelayMinutes: 30, catchUp: 'all' };
+  const saved = await saveServerPublicationDraft(
+    api,
+    null,
+    serverDraftRequest(draft, 'late-policy-draft'),
+  );
+  const reopened = draftFromServer(await getServerPublicationDraft(api, saved.publication.id));
+  assert.deepEqual(reopened.latePolicy, draft.latePolicy);
+  assert.deepEqual(
+    parsePublicationDraftEnvelope({
+      version: 3,
+      savedAt: new Date().toISOString(),
+      draft: reopened,
+    })?.latePolicy,
+    draft.latePolicy,
+  );
+  assert.equal(
+    parsePublicationDraftEnvelope({
+      version: 3,
+      savedAt: new Date().toISOString(),
+      draft: { ...draft, latePolicy: undefined },
+    })?.latePolicy,
+    undefined,
+  );
+});

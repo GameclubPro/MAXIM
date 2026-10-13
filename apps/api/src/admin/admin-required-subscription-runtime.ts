@@ -1,5 +1,14 @@
 import { mergeManagedBotChatCatalogRows } from './admin-managed-bot-catalog-values';
-import { BadRequestException, ServiceUnavailableException, type Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ServiceUnavailableException,
+  type Logger,
+} from '@nestjs/common';
+import { raceWithTimeout } from '../common/promise-timeout.util';
+import { resolveExplicitMembershipAccessDenial } from '../max/max-membership-access-error';
+import { readSavedRequiredSubscriptionHeaders } from './admin-required-subscription-metadata';
+import { ManagedEntityActivationRequiredError } from '../max/managed-entity-activation.util';
 import type { ChatSettings, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { MaxBotLinkService } from '../max/max-bot-link.service';
@@ -11,7 +20,6 @@ import {
 } from '../max/max-client.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
-  extractMaxErrorCode,
   extractMaxErrorStatus,
   fromPrismaEntityType,
   isBotAdminLookupDeniedError,
@@ -40,6 +48,7 @@ type RequiredSubscriptionProbePersistenceResult =
   | { status: 'unavailable'; error: unknown };
 
 export class AdminRequiredSubscriptionRuntime {
+  private readonly linkLookups = new Map<string, Promise<MaxBotChat>>();
   constructor(private readonly context: AdminRequiredSubscriptionRuntimeContext) {}
 
   private get prisma(): PrismaService {
@@ -95,26 +104,11 @@ export class AdminRequiredSubscriptionRuntime {
           .filter((value): value is string => value.length > 0),
       ),
     );
-    const channels = await mapWithConcurrencyLimit(
+    return readSavedRequiredSubscriptionHeaders(
       normalizedChannelIds,
-      REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
-      async (channelId) => {
-        try {
-          return await this.resolveRequiredSubscriptionChannelById(channelId);
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              channelId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to resolve required subscription entity for settings screen',
-          );
-          return null;
-        }
-      },
+      this.prisma,
+      this.chatContextCache,
     );
-
-    return channels.filter((channel): channel is ManagedEntityHeader => channel !== null);
   }
 
   async resolveRequiredSubscriptionChannelReference(value: string): Promise<ManagedEntityHeader> {
@@ -202,6 +196,28 @@ export class AdminRequiredSubscriptionRuntime {
       throw new BadRequestException('Укажите корректную ссылку чата или канала MAX.');
     }
 
+    let lookup = this.linkLookups.get(normalizedLink);
+    if (!lookup) {
+      if (this.linkLookups.size >= 128)
+        throw new ServiceUnavailableException('Проверка источников занята. Повторите попытку.');
+      lookup = this.lookupRequiredSubscriptionChannelByLink(normalizedLink, Date.now() + 12_000);
+      this.linkLookups.set(normalizedLink, lookup);
+      void lookup.finally(() => this.linkLookups.delete(normalizedLink)).catch(() => undefined);
+    }
+    // Retain single-flight ownership until the actual read ends, even after the caller's deadline.
+    return raceWithTimeout({
+      operation: lookup,
+      timeoutMs: 12_000,
+      onTimeout: () => {
+        throw new ServiceUnavailableException('MAX не успел проверить ссылку. Повторите попытку.');
+      },
+    });
+  }
+
+  private async lookupRequiredSubscriptionChannelByLink(
+    normalizedLink: string,
+    deadline: number,
+  ): Promise<MaxBotChat> {
     let locallyKnownChannel: MaxBotChat | null = null;
     try {
       locallyKnownChannel = await resolveRequiredSubscriptionChannelByKnownLink({
@@ -232,38 +248,50 @@ export class AdminRequiredSubscriptionRuntime {
 
     const channelLink = this.extractRequiredSubscriptionPublicChannelLink(normalizedLink);
     if (channelLink && typeof this.maxClient.getChannelSnapshotByLink === 'function') {
-      try {
-        const snapshot = await this.maxClient.getChannelSnapshotByLink(channelLink, {
-          trafficClass: 'interactive',
-          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-          sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
-        });
-        return {
-          chatId: snapshot.chatId,
-          title: snapshot.title,
-          entityType: snapshot.entityType,
-          link: snapshot.link ?? normalizedLink,
-          avatarUrl: snapshot.avatarUrl,
-          lastEventTime: snapshot.lastEventAt ? Date.parse(snapshot.lastEventAt) : null,
-        };
-      } catch (error: unknown) {
-        if (isBotAdminLookupDeniedError(error)) {
-          throw new BadRequestException(
-            'Чат или канал по этой ссылке не найден. Проверьте ссылку и убедитесь, что бот состоит там администратором.',
+      const candidates = this.maxBotRegistry?.getDiscoveryBots().map((bot) => bot.id) ?? [
+        undefined,
+      ];
+      let unavailable = false;
+      for (const botId of candidates.slice(0, 6)) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          unavailable = true;
+          break;
+        }
+        try {
+          const snapshot = await this.maxClient.getChannelSnapshotByLink(channelLink, {
+            ...(botId ? { botId } : {}),
+            timeoutMs: Math.min(2_000, remaining),
+            trafficClass: 'interactive',
+            actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+            sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
+          });
+          return {
+            chatId: snapshot.chatId,
+            title: snapshot.title,
+            entityType: snapshot.entityType,
+            link: snapshot.link ?? normalizedLink,
+            avatarUrl: snapshot.avatarUrl,
+            lastEventTime: snapshot.lastEventAt ? Date.parse(snapshot.lastEventAt) : null,
+            ...(botId ? { botId, botIds: [botId] } : {}),
+          };
+        } catch (error: unknown) {
+          if (isBotAdminLookupDeniedError(error)) continue;
+          unavailable = true;
+          this.logger.warn(
+            {
+              link: normalizedLink,
+              channelLink,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to resolve required subscription channel by targeted public link lookup',
           );
         }
-        this.logger.warn(
-          {
-            link: normalizedLink,
-            channelLink,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to resolve required subscription channel by targeted public link lookup',
-        );
+      }
+      if (unavailable || candidates.length === 0)
         throw new ServiceUnavailableException(
           'Не удалось проверить публичную ссылку канала MAX. Повторите попытку.',
         );
-      }
     }
 
     throw new BadRequestException(
@@ -450,12 +478,17 @@ export class AdminRequiredSubscriptionRuntime {
     }
 
     let serviceFailure: unknown = null;
+    let activationRequired = false;
     for (const botId of candidateBotIds) {
       let probeStartedAt = new Date();
       let access: Awaited<ReturnType<MaxClientService['getCurrentChatMemberAccess']>>;
       try {
         access = await this.probeRequiredSubscriptionBotAccess(chatId, botId);
       } catch (error: unknown) {
+        if (error instanceof ManagedEntityActivationRequiredError) {
+          activationRequired = true;
+          continue;
+        }
         const terminalErrorCode = this.resolveTerminalBotAccessErrorCode(error);
         if (terminalErrorCode) {
           const persistence = await this.persistRequiredSubscriptionBotAccessProbe({
@@ -538,6 +571,17 @@ export class AdminRequiredSubscriptionRuntime {
       if (hasRequiredAccess && persistence.status === 'persisted') {
         return botId;
       }
+      if (hasRequiredAccess && persistence.status === 'stale') {
+        try {
+          if (await this.maxBotLinkService?.isChatBotActivationRequired?.(chatId, botId)) {
+            activationRequired = true;
+          } else {
+            serviceFailure ??= new Error('Required subscription access proof was superseded');
+          }
+        } catch (error) {
+          serviceFailure ??= error;
+        }
+      }
     }
 
     if (candidateBotIds.length === 0) {
@@ -547,6 +591,13 @@ export class AdminRequiredSubscriptionRuntime {
     }
 
     if (!serviceFailure) {
+      if (activationRequired)
+        throw new ConflictException({
+          code: 'REQUIRED_SUBSCRIPTION_ACTIVATION_REQUIRED',
+          chatId,
+          message:
+            'Нужно подтвердить подключение источника. Его администратору следует отправить «Старт» в группу или переслать сообщение из источника в личный диалог с ботом, которому выданы права.',
+        });
       throw new BadRequestException(
         'Бот должен быть администратором этого чата или канала, чтобы проверять подписку.',
       );
@@ -618,16 +669,7 @@ export class AdminRequiredSubscriptionRuntime {
   }
 
   private resolveTerminalBotAccessErrorCode(error: unknown): string | null {
-    const code = extractMaxErrorCode(error);
-    if (code === 'access.denied' || code === 'chat.denied' || code === 'chat.not.found') {
-      return code;
-    }
-
-    const status = extractMaxErrorStatus(error);
-    if (status === 403 || isBotAdminLookupDeniedError(error)) {
-      return 'access.denied';
-    }
-    return status === 404 ? 'chat.not.found' : null;
+    return resolveExplicitMembershipAccessDenial(error);
   }
 
   private isTransientRequiredSubscriptionMaxError(error: unknown): boolean {
@@ -707,34 +749,14 @@ export class AdminRequiredSubscriptionRuntime {
       };
     }
 
-    const validChannelIds = (
-      await mapWithConcurrencyLimit(
-        selectedChannelIds,
-        REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
-        async (channelId) => {
-          try {
-            await this.resolveRequiredSubscriptionChannelById(channelId);
-            return channelId;
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                channelId,
-                err: error instanceof Error ? error.message : String(error),
-              },
-              'Dropped required subscription entity because the bot cannot verify membership',
-            );
-            return null;
-          }
-        },
-      )
-    ).filter((channelId): channelId is string => channelId !== null);
-
-    return {
-      ...settings,
-      requiredSubscriptionEnabled: validChannelIds.length > 0,
-      requiredSubscriptionChannelIds: validChannelIds,
-      requiredSubscriptionBotMessageEnabled: validChannelIds.length > 0,
-    };
+    await mapWithConcurrencyLimit(
+      selectedChannelIds,
+      REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
+      async (channelId) => {
+        await this.resolveRequiredSubscriptionChannelById(channelId);
+      },
+    );
+    return settings;
   }
 
   async resolveRequiredSubscriptionEntityType(chatId: string): Promise<ManagedEntityType> {

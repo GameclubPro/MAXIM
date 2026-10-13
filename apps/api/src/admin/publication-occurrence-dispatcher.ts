@@ -20,7 +20,7 @@ import {
   PUBLISHER_EXPLICIT_RETRY_CODE,
 } from './publication-dispatch-issue';
 import { isTransientPublicationPrismaError } from './publication-prisma-retry';
-import { isPublicationScheduledWindowExpired } from './publication-late-policy';
+import { isPublicationOccurrenceWindowClosed } from './publication-late-policy';
 import {
   PublicationPublisherRoutingService,
   type ResolvedPublicationTarget,
@@ -192,7 +192,7 @@ export async function dispatchScheduledPublicationOccurrences(
         }
         continue;
       }
-      if (isPublicationScheduledWindowExpired(occurrence, now)) {
+      if (await isPublicationOccurrenceWindowClosed(context.prisma, occurrence, now)) {
         // FLAG: Returning access cannot authorize catch-up sends. Only an explicit author
         // retry may execute a missed one-off slot; recurrence continues with future slots.
         const expired = await context.prisma.$transaction(async (tx) => {

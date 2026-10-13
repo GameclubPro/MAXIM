@@ -172,7 +172,7 @@ integration('Publisher deadline queue on Redis', () => {
             }
           }
           const counts = await queue.getCountsPerPriority([8]);
-          expect(counts['8']).toBeLessThanOrEqual(8);
+          expect(counts['8']).toBeLessThanOrEqual(16);
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
         while (starts.length < expected) {

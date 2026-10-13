@@ -1,3 +1,4 @@
+import { PublicationLatePolicyFields } from '../features/publications/publication-late-policy-fields';
 import { usePublicationEditorSession } from '../features/publications/use-publication-editor-session';
 import { usePublicationActions } from '../features/publications/use-publication-actions';
 import {
@@ -1392,6 +1393,15 @@ export function PublicationsPage({
               )}
             </span>
           </div>
+        ) : null}
+
+        {draft.timingMode !== 'now' ? (
+          <PublicationLatePolicyFields
+            value={draft.latePolicy}
+            recurring={draft.timingMode === 'schedule' && draft.scheduleKind === 'recurrence'}
+            disabled={isBusy}
+            onChange={(latePolicy) => setDraft((current) => ({ ...current, latePolicy }))}
+          />
         ) : null}
 
         {draft.timingMode === 'once' ? (

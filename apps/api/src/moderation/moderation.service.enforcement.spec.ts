@@ -2322,6 +2322,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('chat-1', ['user-1'], {
+      bypassCache: true,
       trafficClass: 'interactive',
       actionHealthLane: 'background',
       timeoutMs: 2000,
@@ -2409,7 +2410,7 @@ describe('ModerationService', () => {
       executionOwnerBotId: 'id613002203036_4_bot',
     } as MaxUpdate & { executionOwnerBotId: string });
 
-    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
     expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceChatId: 'chat-1',
@@ -3120,7 +3121,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createAdminLinkedModerationUpdate());
 
-    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
     expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceChatId: 'chat-1',
@@ -4175,7 +4176,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createAdminForwardedBanUpdate('бан', 'chat-2'));
 
-    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -4187,7 +4188,7 @@ describe('ModerationService', () => {
     ).toBe(true);
   });
 
-  it('keeps local allowlist admin bypass even when remote list does not include sender', async () => {
+  it('retains local admin protection when a remote denial cannot pass the SQL proof fence', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -4236,7 +4237,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 

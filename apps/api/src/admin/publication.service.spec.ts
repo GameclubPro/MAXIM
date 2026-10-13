@@ -6757,7 +6757,7 @@ describe('PublicationService', () => {
       ...publication,
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
     });
-    expect(publisherPolicyService.resolvePublicationTargets).toHaveBeenCalledTimes(1);
+    expect(publisherPolicyService.resolvePublicationTargets).not.toHaveBeenCalled();
     expect(managedEntitiesService.listChats).not.toHaveBeenCalled();
 
     await (service as any).resolveOccurrenceTargets({
@@ -6766,7 +6766,7 @@ describe('PublicationService', () => {
     });
     expect(managedEntitiesService.listChats).toHaveBeenCalledTimes(1);
     expect(managedEntitiesService.assertChatAdminAccess).toHaveBeenCalledTimes(1);
-    expect(publisherPolicyService.resolvePublicationTargets).toHaveBeenCalledTimes(1);
+    expect(publisherPolicyService.resolvePublicationTargets).not.toHaveBeenCalled();
   });
 
   it('authorizes a PUBLIK_V1 retry through its persisted dispatch profile', async () => {

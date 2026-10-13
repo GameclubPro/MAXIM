@@ -1,6 +1,10 @@
 import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
 import { channelPostSignatureSettingsSchema } from '@maxim/contracts/channel-post-signature';
-import { MAX_PUBLICATION_IMAGES, publicationAssetSchema } from '@maxim/contracts/publication';
+import {
+  MAX_PUBLICATION_IMAGES,
+  publicationAssetSchema,
+  publicationLatePolicySchema,
+} from '@maxim/contracts/publication';
 import { publisherEntityReadinessSchema } from '@maxim/contracts/publisher';
 import { formatLocalDateTimeInputValue } from '../../lib/broadcast-schedule';
 import { publicationPostPublishSchema } from '@maxim/contracts/publication';
@@ -272,6 +276,7 @@ export function parsePublicationDraftEnvelope(value: unknown): PublicationDraft 
   const [storedOnceDate = '', storedOnceTime = ''] = storedOnceValue.split('T');
   return {
     title: readString(draft.title),
+    latePolicy: publicationLatePolicySchema.safeParse(draft.latePolicy).data,
     postPublish: publicationPostPublishSchema.safeParse(draft.postPublish ?? {}).data ?? {
       pin: 'none',
       deleteAfterMinutes: null,

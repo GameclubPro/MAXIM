@@ -7785,6 +7785,7 @@ describe('ModerationService', () => {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
       timeoutMs: 2000,
+      bypassCache: true,
       ignoreFailureMetricStatuses: [403, 404],
     });
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
@@ -7961,6 +7962,7 @@ describe('ModerationService', () => {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
       timeoutMs: 2000,
+      bypassCache: true,
       ignoreFailureMetricStatuses: [403, 404],
     });
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');

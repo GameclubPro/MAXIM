@@ -14,6 +14,7 @@ import {
   type MaxBotRouteRequest,
 } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
+import { resolveExplicitMembershipAccessDenial } from './max-membership-access-error';
 
 export type MaxMembershipLookupPolicy =
   | 'moderation_required_subscription'
@@ -537,7 +538,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     const basePolicy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
     const policy = this.resolveEffectivePolicy(normalizedChatId, policyName, basePolicy, now);
     const allowStaleOnError = options.allowStaleOnError ?? policy.allowStaleOnError;
-    const chatBackoffKey = this.buildChatPolicyKey(normalizedChatId, policyName);
+    const chatBackoffKey = this.buildChatBackoffKey(normalizedChatId, policyName, lookupBotId);
     const pendingPromises = new Map<string, Promise<MaxMembershipLookupResolution>>();
     const usersToLookup: string[] = [];
     const cacheKeyByUserId = new Map(
@@ -693,6 +694,31 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       results.set(userId, promise ? await promise : { membership: null, fresh: false });
     }
 
+    const unresolvedIds = normalizedUserIds.filter((id) => !results.get(id)?.fresh);
+    if (!requestedBotId && lookupBotId && unresolvedIds.length > 0 && this.maxBotLinkService) {
+      // FLAG: Retry only a different currently selected read route, once. Explicit token requests
+      // never switch identities; no unknown membership result can authorize a sanction.
+      try {
+        const peerBotId = await this.resolveLookupBotId(normalizedChatId);
+        if (peerBotId && peerBotId !== lookupBotId) {
+          const peerResults = await this.getMembershipResolutions(
+            normalizedChatId,
+            unresolvedIds,
+            policyName,
+            {
+              ...options,
+              botId: peerBotId,
+              forceRefresh: true,
+              allowStaleOnError: false,
+            },
+          );
+          for (const [id, resolution] of peerResults) results.set(id, resolution);
+        }
+      } catch {
+        // Preserve the observed unknown result if route resolution itself is unavailable.
+      }
+    }
+
     return results;
   }
 
@@ -822,7 +848,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       );
       const checkedAtMs = Date.now();
       if (this.hasAuthoritativePendingLookup(batch.lookups.values())) {
-        this.clearChatBackoff(batch.chatId, batch.policyName);
+        this.clearChatBackoff(batch.chatId, batch.policyName, batch.botId);
         this.clearHotChannelMode(batch.chatId, batch.policyName);
         this.clearLookupIssue(batch.chatId, batch.policyName);
       }
@@ -870,10 +896,16 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
           batch.chatId,
           batch.policyName,
           terminalBackoffMs,
+          batch.botId,
         );
         appliedBackoffMs = appliedBackoff.backoffMs;
       } else if (authoritative && transient) {
-        const appliedBackoff = this.applyChatBackoff(batch.chatId, batch.policyName, batch.policy);
+        const appliedBackoff = this.applyChatBackoff(
+          batch.chatId,
+          batch.policyName,
+          batch.policy,
+          batch.botId,
+        );
         appliedBackoffMs = appliedBackoff.backoffMs;
         this.recordHotChannelFailure(batch.chatId, batch.policyName);
         for (const lookup of batch.lookups.values()) {
@@ -969,7 +1001,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
             );
           })
         ) {
-          this.clearChatBackoff(chatId, policyName);
+          this.clearChatBackoff(chatId, policyName, botId);
           this.clearHotChannelMode(chatId, policyName);
           this.clearLookupIssue(chatId, policyName);
         }
@@ -1023,10 +1055,11 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
             chatId,
             policyName,
             terminalBackoffMs,
+            botId,
           );
           appliedBackoffMs = appliedBackoff.backoffMs;
         } else if (authoritative && transient) {
-          const appliedBackoff = this.applyChatBackoff(chatId, policyName, policy);
+          const appliedBackoff = this.applyChatBackoff(chatId, policyName, policy, botId);
           appliedBackoffMs = appliedBackoff.backoffMs;
           this.recordHotChannelFailure(chatId, policyName);
           for (const userId of normalizedUserIds) {
@@ -1964,15 +1997,25 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     return `max:membership:chat:v1:${policyName}:${chatId}`;
   }
 
+  private buildChatBackoffKey(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    botId: string | null,
+  ): string {
+    // FLAG: A denied or throttled token must not prevent a healthy peer from reading this target.
+    return `${this.buildChatPolicyKey(chatId, policyName)}:bot:${botId ?? 'default'}`;
+  }
+
   private applyChatBackoff(
     chatId: string,
     policyName: MaxMembershipLookupPolicy,
     policy: MembershipLookupPolicyConfig,
+    botId: string | null,
   ): {
     backoffMs: number;
     backoffUntilMs: number;
   } {
-    const cacheKey = this.buildChatPolicyKey(chatId, policyName);
+    const cacheKey = this.buildChatBackoffKey(chatId, policyName, botId);
     const now = Date.now();
     const previousState = this.chatBackoffState.get(cacheKey);
     const failureCount =
@@ -2002,8 +2045,12 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     };
   }
 
-  private clearChatBackoff(chatId: string, policyName: MaxMembershipLookupPolicy) {
-    const cacheKey = this.buildChatPolicyKey(chatId, policyName);
+  private clearChatBackoff(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    botId: string | null,
+  ) {
+    const cacheKey = this.buildChatBackoffKey(chatId, policyName, botId);
     this.chatBackoffState.delete(cacheKey);
     this.chatBackoffUntilMs.delete(cacheKey);
   }
@@ -2044,11 +2091,12 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     chatId: string,
     policyName: MaxMembershipLookupPolicy,
     backoffMs: number,
+    botId: string | null,
   ): {
     backoffMs: number;
     backoffUntilMs: number;
   } {
-    const cacheKey = this.buildChatPolicyKey(chatId, policyName);
+    const cacheKey = this.buildChatBackoffKey(chatId, policyName, botId);
     const now = Date.now();
     const backoffUntilMs = now + backoffMs;
 
@@ -2362,20 +2410,21 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   }
 
   private isTerminalChatAccessError(error: unknown): boolean {
-    const status = this.extractStatusCode(error);
-    return status === 403 || status === 404;
+    return resolveExplicitMembershipAccessDenial(error) !== null;
   }
 
   private resolveTerminalChatAccessErrorCode(error: unknown): string {
-    const code = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
-    if (typeof code === 'string' && code.trim().length > 0) {
-      return code.trim().toLowerCase();
-    }
-
-    return this.extractStatusCode(error) === 404 ? 'chat.not.found' : 'access.denied';
+    return resolveExplicitMembershipAccessDenial(error) ?? 'unknown';
   }
 
   private isTransientLookupError(error: unknown): boolean {
-    return this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error);
+    const status = this.extractStatusCode(error);
+    return (
+      this.isMaxApiThrottleError(error) ||
+      this.isMaxApiTimeoutError(error) ||
+      (status !== null &&
+        (status >= 500 ||
+          ((status === 403 || status === 404) && !this.isTerminalChatAccessError(error))))
+    );
   }
 }

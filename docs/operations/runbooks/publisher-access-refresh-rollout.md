@@ -2,7 +2,27 @@
 
 > Superseded for bot permission renewal by [personal access demand](../plans/2026-10-12-managed-access-demand-plan.md). Positive bot proofs no longer expire; the fleet bot/roster scheduler is retired. Publication-author preflight still checks human authority independently. Historical rollout parameters below describe the earlier scheduler.
 
-## Scope and invariants
+## Current operation
+
+Do not resume the fleet bot/roster scheduler or renew positive bot proofs by age.
+Saved catalogs are local, and administrator or publication-author checks are scoped
+to the selected entity or an imminent publication. Explicit denials still require the
+administrator activation flow; timeouts and rate limits do not revoke bot access.
+
+A null bot expiry is valid durable evidence and creates no expiry-renewal obligation.
+`publisher-access-refresh-evidence` neither emits `missing_proof_identity` for it nor
+rewrites retained legacy obligations. Earlier hourly obligation/expiry-cohort metrics
+below describe the retired scheduler and cannot be used as the current rollout gate.
+
+Current preflight runs every two seconds with a ten-minute lookahead, up to eight
+target nominations per pass and sixteen queued preparation jobs; two queued urgent
+jobs suspend speculative admission. Worker concurrency remains two. Deadline dispatch
+and access preflight each use an independent coalesced slot, with other recovery work
+serialized. This schedules concrete publication work and is not a fleet rights scan.
+See [publication diagnostics](publisher-publication-diagnostics.md) for independent
+recipient preparation, author late policy, receipt clocks and rollback compatibility.
+
+## Historical scope and invariants
 
 The access coordinator delegates bot, actor, catalog and roster work to focused executors.
 Bot proofs retain their 15-minute lifetime. Publication authority still requires fresh exact-bot,

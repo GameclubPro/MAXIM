@@ -1,3 +1,4 @@
+import { chatClosureStatusSchema } from './chat-closure-status.js';
 import { z } from 'zod';
 import * as sectionApply from './settings-apply-error.js';
 import { reportSettingsShape, addReportCommandIssues } from './report-settings.js';
@@ -2675,6 +2676,7 @@ export const managedAutopostHubRuleDetailsSchema = managedAutopostHubRuleSummary
 export type ManagedAutopostHubRuleDetails = z.infer<typeof managedAutopostHubRuleDetailsSchema>;
 
 export const chatSettingsScreenResponseSchema = z.object({
+  closure: chatClosureStatusSchema.optional(),
   messageRetention: messageRetentionSummarySchema.optional(),
   settings: chatSettingsSchema,
   reportsAvailable: z.boolean().default(false),

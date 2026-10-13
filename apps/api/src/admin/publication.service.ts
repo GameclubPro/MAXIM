@@ -1,4 +1,9 @@
 import {
+  readPublicationLatePolicy,
+  withDefaultPublicationLatePolicy,
+  resolvePublicationRecurrenceFrom,
+} from './publication-late-policy';
+import {
   mapPublicationPostActions,
   publicationPostActionsInitialData,
   publicationPostActionsRetryData,
@@ -609,7 +614,9 @@ export class PublicationService {
       await this.publisherRouting.assertTargetsReady(targets, dispatchRoute.requiredBotId);
     }
     const now = new Date();
-    const schedule = request.schedule ? this.normalizeSchedule(request.schedule, now) : null;
+    const schedule = request.schedule
+      ? this.normalizeSchedule(withDefaultPublicationLatePolicy(request.schedule), now)
+      : null;
     const initialSlots = schedule ? this.expandInitialSchedule(schedule, now) : [];
     const initialScheduleExhausted = this.isInitialRecurrenceExhausted(schedule, initialSlots, now);
     if (request.intent === 'publish') {
@@ -1945,23 +1952,24 @@ export class PublicationService {
             where: {
               scheduleId: schedule.id,
               scheduleRevision: schedule.revision,
-              status: { not: PublicationOccurrenceStatus.CANCELED },
+              ...(readPublicationLatePolicy(rule)
+                ? {}
+                : { status: { not: PublicationOccurrenceStatus.CANCELED } }),
             },
           }),
           this.prisma.publicationOccurrence.findFirst({
             where: {
               scheduleId: schedule.id,
               scheduleRevision: schedule.revision,
-              status: { not: PublicationOccurrenceStatus.CANCELED },
+              ...(readPublicationLatePolicy(rule)
+                ? {}
+                : { status: { not: PublicationOccurrenceStatus.CANCELED } }),
             },
             orderBy: { scheduledAt: 'desc' },
             select: { scheduledAt: true },
           }),
         ]);
-        const from =
-          latest?.scheduledAt && latest.scheduledAt > now
-            ? new Date(latest.scheduledAt.getTime() + 1)
-            : now;
+        const from = resolvePublicationRecurrenceFrom(rule, schedule, latest, now);
         const slots =
           from <= horizon
             ? expandPublicationSchedule(rule, {
@@ -1969,6 +1977,7 @@ export class PublicationService {
                 to: horizon,
                 existingCount,
                 now,
+                maxResults: 1,
               })
             : [];
         const nextSlot = slots[0] ?? this.findNextRecurrenceSlot(rule, from, existingCount);
@@ -2034,7 +2043,9 @@ export class PublicationService {
             where: {
               scheduleId: schedule.id,
               scheduleRevision: schedule.revision,
-              status: { not: PublicationOccurrenceStatus.CANCELED },
+              ...(readPublicationLatePolicy(rule)
+                ? {}
+                : { status: { not: PublicationOccurrenceStatus.CANCELED } }),
             },
             orderBy: { scheduledAt: 'desc' },
             select: { scheduledAt: true },
@@ -2043,24 +2054,25 @@ export class PublicationService {
             where: {
               scheduleId: schedule.id,
               scheduleRevision: schedule.revision,
-              status: { not: PublicationOccurrenceStatus.CANCELED },
+              ...(readPublicationLatePolicy(rule)
+                ? {}
+                : { status: { not: PublicationOccurrenceStatus.CANCELED } }),
             },
           }),
         ]);
-        const from =
-          latest?.scheduledAt && latest.scheduledAt > now
-            ? new Date(latest.scheduledAt.getTime() + 1)
-            : now;
+        const from = resolvePublicationRecurrenceFrom(rule, schedule, latest, now);
         const horizon = new Date(now.getTime() + PUBLICATION_RECURRENCE_HORIZON_MS);
         const slots = expandPublicationSchedule(rule, {
           from,
           to: horizon,
           existingCount,
           now,
+          maxResults: 300,
         });
         const reachedMax =
           rule.maxOccurrences !== null && existingCount + slots.length >= rule.maxOccurrences;
-        const reachedEnd = rule.endsAt !== null && new Date(rule.endsAt) <= horizon;
+        const reachedEnd =
+          rule.endsAt !== null && new Date(rule.endsAt) <= horizon && slots.length < 300;
         if (slots.length === 0 && existingCount === 0 && reachedEnd) {
           throw new Error('Расписание не содержит ни одного будущего запуска.');
         }
@@ -2074,9 +2086,11 @@ export class PublicationService {
         const nextMaterializeAt =
           reachedMax || reachedEnd
             ? null
-            : nextSlot
-              ? this.resolveRecurrenceHorizonEntry(nextSlot, now)
-              : new Date(now.getTime() + PUBLICATION_RECURRENCE_REFRESH_MS);
+            : slots.length === 300
+              ? now
+              : nextSlot
+                ? this.resolveRecurrenceHorizonEntry(nextSlot, now)
+                : new Date(now.getTime() + PUBLICATION_RECURRENCE_REFRESH_MS);
         const targets =
           slots.length > 0
             ? await publicationBackgroundAccess.recurrence(
@@ -2519,6 +2533,7 @@ export class PublicationService {
         }
         const nonCanceledCount = grouped.reduce(
           (count, group) =>
+            !readPublicationLatePolicy(rule) &&
             group.status === PublicationOccurrenceStatus.CANCELED
               ? count
               : count + group._count._all,
@@ -2531,16 +2546,15 @@ export class PublicationService {
             publicationId,
             scheduleId: currentSchedule.id,
             scheduleRevision: currentSchedule.revision,
-            status: { not: PublicationOccurrenceStatus.CANCELED },
+            ...(readPublicationLatePolicy(rule)
+              ? {}
+              : { status: { not: PublicationOccurrenceStatus.CANCELED } }),
           },
           orderBy: { scheduledAt: 'desc' },
           select: { scheduledAt: true },
         });
         const now = new Date();
-        const from =
-          latest?.scheduledAt && latest.scheduledAt > now
-            ? new Date(latest.scheduledAt.getTime() + 1)
-            : now;
+        const from = resolvePublicationRecurrenceFrom(rule, currentSchedule, latest, now);
         const nextSlot = reachedMax
           ? null
           : this.findNextRecurrenceSlot(rule, from, nonCanceledCount);
@@ -2980,6 +2994,7 @@ export class PublicationService {
       return {
         mode: schedule.mode,
         timezone: schedule.timezone,
+        ...('latePolicy' in schedule ? { latePolicy: schedule.latePolicy } : {}),
         at: new Date(schedule.at).toISOString(),
       };
     }
@@ -2987,6 +3002,7 @@ export class PublicationService {
       return {
         mode: schedule.mode,
         timezone: schedule.timezone,
+        ...('latePolicy' in schedule ? { latePolicy: schedule.latePolicy } : {}),
         slots: [...new Set(schedule.slots.map((slot) => new Date(slot).getTime()))]
           .sort((left, right) => left - right)
           .map((slot) => new Date(slot).toISOString()),
@@ -2995,6 +3011,7 @@ export class PublicationService {
     return {
       mode: schedule.mode,
       timezone: schedule.timezone,
+      ...('latePolicy' in schedule ? { latePolicy: schedule.latePolicy } : {}),
       frequency: schedule.frequency,
       interval: schedule.interval,
       weekdays: schedule.frequency === 'weekly' ? [...schedule.weekdays].sort((a, b) => a - b) : [],

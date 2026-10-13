@@ -1360,6 +1360,7 @@ test('builds a publication with mixed chat and channel targets and finite slots'
     timezone: draft.scheduleTimezone,
     slots: draft.scheduledSlots,
     replaceConflicts: false,
+    latePolicy: { mode: 'recover', maxDelayMinutes: 1440, catchUp: 'latest' },
   });
 });
 
@@ -1393,6 +1394,7 @@ test('builds daily and weekly recurrence requests with conflict replacement', ()
     endsAt: null,
     maxOccurrences: 20,
     replaceConflicts: true,
+    latePolicy: { mode: 'recover', maxDelayMinutes: 1440, catchUp: 'latest' },
   });
 });
 

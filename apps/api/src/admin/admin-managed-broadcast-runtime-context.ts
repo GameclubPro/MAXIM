@@ -17,6 +17,7 @@ import type { PublisherReadinessService } from '../publisher/publisher-readiness
 import type { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
 import type { SystemModeSnapshot } from '../system/system-mode.service';
 import type { AdminReadBypassOptions } from './admin.service.support';
+import type { PublisherDialogContextService } from './publisher-dialog-context.service';
 import type { ChannelPostSignatureService } from './channel-post-signature.service';
 
 export type ManagedBroadcastButtonContextOptions = {
@@ -56,6 +57,7 @@ export type AdminManagedBroadcastRuntimeContext = {
   readonly channelPostSignatureService?: ChannelPostSignatureService;
   readonly publisherRuntimeBoundaryService?: PublisherRuntimeBoundaryService;
   readonly publisherReadinessService?: PublisherReadinessService;
+  readonly publisherDialogContextService?: PublisherDialogContextService;
   readonly publisherDispatchHealthService?: PublisherDispatchHealthService;
   resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
   resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;

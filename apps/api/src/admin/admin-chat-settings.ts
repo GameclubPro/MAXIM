@@ -39,6 +39,7 @@ import type { PrismaService } from '../prisma/prisma.service';
 import {
   CHAT_SETTINGS_BUTTON_GROUPS,
   DEFAULT_CHAT_SETTINGS,
+  REQUIRED_SUBSCRIPTION_SETTING_KEYS,
   type AdminActionSource,
 } from './admin.service.support';
 import { buildStoredLinkButtonState } from './admin-chat-rules';
@@ -872,6 +873,15 @@ export async function saveChatSettings(params: {
     where: { chatId: params.chatId },
     select: {
       ...CHAT_SETTINGS_BOT_CAPABILITY_SELECT,
+      requiredSubscriptionChannelIds: true,
+      requiredSubscriptionDurationDays: true,
+      requiredSubscriptionExpiresAt: true,
+      requiredSubscriptionBotMessageText: true,
+      requiredSubscriptionWarnMessageText: true,
+      requiredSubscriptionMuteDurationHours: true,
+      requiredSubscriptionButtonText: true,
+      requiredSubscriptionAdminContactButtonEnabled: true,
+      requiredSubscriptionAdminContactButtonUrl: true,
       botSpeechMedia: true,
       stopWordsPolicy: true,
       stopWordsRevision: true,
@@ -1016,6 +1026,11 @@ export async function saveChatSettings(params: {
         parsed.data.messageLimitsImageTextScanEnabled),
   };
   assertLegacyStopWordsWrite(currentSettings ?? {}, params.body);
+  // FLAG: Omitted subscription fields preserve the saved policy, including during unrelated saves.
+  for (const key of REQUIRED_SUBSCRIPTION_SETTING_KEYS) {
+    if (currentSettings && !hasOwnSetting(params.body, key) && key in currentSettings)
+      Object.assign(settingsInput, { [key]: currentSettings[key as keyof typeof currentSettings] });
+  }
   // FLAG: Older clients must not reset a report policy they do not yet understand.
   for (const key of [
     'reportsEnabled',
@@ -1031,7 +1046,7 @@ export async function saveChatSettings(params: {
   const reportCompatibleInput = updateSettingsRequestSchema.safeParse(settingsInput);
   if (!reportCompatibleInput.success)
     throw new BadRequestException(reportCompatibleInput.error.format());
-  let normalizedSettings = normalizeChatSettings(
+  const normalizedSettings = normalizeChatSettings(
     reportCompatibleInput.data,
     {
       nightModeForceCloseEnabled: currentSettings?.nightModeForceCloseEnabled ?? false,
@@ -1042,8 +1057,23 @@ export async function saveChatSettings(params: {
     },
     params.chatId,
   );
-  normalizedSettings =
-    (await params.assertRequiredSubscriptionSettings(normalizedSettings)) ?? normalizedSettings;
+  const savedSubscriptionIds = new Set(
+    Array.isArray(currentSettings?.requiredSubscriptionChannelIds)
+      ? currentSettings.requiredSubscriptionChannelIds
+          .filter((id): id is string => typeof id === 'string')
+          .map((id) => id.trim())
+      : [],
+  );
+  const addedSubscriptionIds = normalizedSettings.requiredSubscriptionChannelIds.filter(
+    (id) => !savedSubscriptionIds.has(id),
+  );
+  if (addedSubscriptionIds.length > 0) {
+    // FLAG: Validation never rewrites the user's policy. Failure rejects the whole CAS save.
+    await params.assertRequiredSubscriptionSettings({
+      ...normalizedSettings,
+      requiredSubscriptionChannelIds: addedSubscriptionIds,
+    });
+  }
   assertReportsActivationAvailable(
     currentSettings,
     normalizedSettings,
@@ -1053,6 +1083,7 @@ export async function saveChatSettings(params: {
     current: {
       ...DEFAULT_CHAT_SETTINGS,
       ...(currentSettings ?? {}),
+      requiredSubscriptionChannelIds: [...savedSubscriptionIds],
       // FLAG: Raw media is only the write-comparison baseline; capability checks
       // retain their previous typed default and never receive unsanitized JSONB.
       botSpeechMedia: DEFAULT_CHAT_SETTINGS.botSpeechMedia,

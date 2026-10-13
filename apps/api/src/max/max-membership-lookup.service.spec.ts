@@ -234,6 +234,74 @@ describe('MaxMembershipLookupService', () => {
     jest.clearAllMocks();
   });
 
+  it.each([403, 404, 503])(
+    'keeps opaque %s scoped to its token and permits a healthy peer',
+    async (status) => {
+      const max = {
+        getChatMembersAccess: jest
+          .fn()
+          .mockRejectedValueOnce({ response: { status } })
+          .mockResolvedValueOnce(new Map([['user', { userId: 'user' }]])),
+      };
+      const link = { recordBotAccessProbe: jest.fn() };
+      const service = new MaxMembershipLookupService(
+        max as never,
+        createConfigMock() as never,
+        link as never,
+      );
+      await expect(
+        service.getMembership('channel', 'user', 'moderation_required_subscription', {
+          botId: 'a',
+          forceRefresh: true,
+          allowStaleOnError: false,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        service.getMembership('channel', 'user', 'moderation_required_subscription', {
+          botId: 'b',
+          forceRefresh: true,
+          allowStaleOnError: false,
+        }),
+      ).resolves.toBe(true);
+      expect(link.recordBotAccessProbe).not.toHaveBeenCalled();
+      expect(max.getChatMembersAccess).toHaveBeenCalledTimes(2);
+      await service.onModuleDestroy();
+    },
+  );
+
+  it('uses a newly selected healthy peer after an exact denial without poisoning that route', async () => {
+    let botId = 'a';
+    const max = {
+      getChatMembersAccess: jest
+        .fn()
+        .mockRejectedValueOnce({ response: { status: 403, data: { code: 'chat.denied' } } })
+        .mockResolvedValueOnce(new Map([['user', { userId: 'user' }]])),
+    };
+    const link = {
+      resolveBotRoute: jest.fn(async () => ({ botId })),
+      recordBotAccessProbe: jest.fn(async () => {
+        botId = 'b';
+        return true;
+      }),
+    };
+    const service = new MaxMembershipLookupService(
+      max as never,
+      createConfigMock() as never,
+      link as never,
+    );
+    await expect(
+      service.getMembership('channel', 'user', 'moderation_required_subscription', {
+        forceRefresh: true,
+        allowStaleOnError: false,
+      }),
+    ).resolves.toBe(true);
+    expect(max.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(link.recordBotAccessProbe).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'a', lastErrorCode: 'chat.denied' }),
+    );
+    await service.onModuleDestroy();
+  });
+
   it('disables Redis ready check on the pub/sub subscriber connection', () => {
     const maxClient = {
       hasChatMember: jest.fn(),

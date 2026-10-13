@@ -61,6 +61,7 @@ test('one-time payload and review reject calendar slots that disagree with visib
     timezone: 'Asia/Kathmandu',
     at: '2030-01-01T18:14:00.000Z',
     replaceConflicts: false,
+    latePolicy: { mode: 'recover', maxDelayMinutes: 1440, catchUp: 'latest' },
   });
   assert.match(formatDraftTiming(draft), /1 янв., 23:59/u);
   draft.onceDate = '';

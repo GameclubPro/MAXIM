@@ -13,6 +13,8 @@ import {
   MAX_PUBLICATION_IMAGES_TOTAL_BASE64_LENGTH,
   MAX_PUBLICATION_TEXT_LENGTH,
   publicationContentInputSchema,
+  publicationScheduleInputSchema,
+  DEFAULT_PUBLICATION_LATE_POLICY,
   publicationDeliverySchema,
   publicationDispatchIssueSchema,
   publicationOccurrenceSummarySchema,
@@ -492,5 +494,36 @@ describe('publication contracts', () => {
         sentAt: null,
       }).success,
     ).toBe(true);
+  });
+});
+
+describe('authored publication recovery policy', () => {
+  const once = { mode: 'once', at: '2026-10-14T10:00:00Z' };
+  it('keeps legacy omission distinct from the default for new drafts', () => {
+    expect(publicationScheduleInputSchema.parse(once)).not.toHaveProperty('latePolicy');
+    expect(
+      publicationScheduleInputSchema.parse({
+        ...once,
+        latePolicy: DEFAULT_PUBLICATION_LATE_POLICY,
+      }),
+    ).toMatchObject({ latePolicy: { mode: 'recover', maxDelayMinutes: 1440, catchUp: 'latest' } });
+  });
+  it.each([0, -1, 10081, 1.5, '60', null])(
+    'rejects an invalid recovery horizon %s',
+    (maxDelayMinutes) => {
+      expect(
+        publicationScheduleInputSchema.safeParse({
+          ...once,
+          latePolicy: { ...DEFAULT_PUBLICATION_LATE_POLICY, maxDelayMinutes },
+        }).success,
+      ).toBe(false);
+    },
+  );
+  it('rejects unknown recovery and catch-up modes', () => {
+    for (const latePolicy of [
+      { ...DEFAULT_PUBLICATION_LATE_POLICY, mode: 'forever' },
+      { ...DEFAULT_PUBLICATION_LATE_POLICY, catchUp: 'retry_unknown' },
+    ])
+      expect(publicationScheduleInputSchema.safeParse({ ...once, latePolicy }).success).toBe(false);
   });
 });

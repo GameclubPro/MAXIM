@@ -58,7 +58,7 @@ describe('PublisherBackgroundWorkCoordinatorService', () => {
     expect(secondOperation).toHaveBeenCalledTimes(1);
   });
 
-  it('prioritizes a queued publication deadline while preserving recovery FIFO order', async () => {
+  it('starts the deadline during active recovery while preserving recovery FIFO order', async () => {
     const coordinator = new PublisherBackgroundWorkCoordinatorService();
     const events: string[] = [];
     let releaseActive!: () => void;
@@ -82,14 +82,14 @@ describe('PublisherBackgroundWorkCoordinatorService', () => {
     });
 
     await Promise.resolve();
-    expect(events).toEqual(['active:start']);
+    expect(events).toEqual(['deadline', 'active:start']);
     releaseActive();
     await Promise.all([active, firstRecovery, deadline, secondRecovery]);
 
     expect(events).toEqual([
+      'deadline',
       'active:start',
       'active:end',
-      'deadline',
       'recovery:first',
       'recovery:second',
     ]);
@@ -117,13 +117,15 @@ describe('PublisherBackgroundWorkCoordinatorService', () => {
     expect(duplicate).not.toHaveBeenCalled();
   });
 
-  it('services an aged recovery before a newer deadline without interrupting active work', async () => {
+  it('runs nomination and deadline independently while preserving an aged recovery', async () => {
     jest.useFakeTimers();
     try {
       const coordinator = new PublisherBackgroundWorkCoordinatorService();
       const events: string[] = [];
       let release!: () => void;
-      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
       const active = coordinator.runExclusive('binding_refresh', () => gate);
       const recovery = coordinator.runExclusive('suggestion_recovery', async () => {
         events.push('recovery');
@@ -133,10 +135,13 @@ describe('PublisherBackgroundWorkCoordinatorService', () => {
         events.push('deadline');
       });
       await Promise.resolve();
-      expect(events).toEqual([]);
+      expect(events).toEqual(['deadline']);
+      await coordinator.runExclusive('publication_access_preflight', async () => {
+        events.push('preflight');
+      });
       release();
       await Promise.all([active, recovery, deadline]);
-      expect(events).toEqual(['recovery', 'deadline']);
+      expect(events).toEqual(['deadline', 'preflight', 'recovery']);
     } finally {
       jest.useRealTimers();
     }

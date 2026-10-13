@@ -4022,6 +4022,7 @@ export class AdminManagedBroadcastRuntime {
             };
           }
           sentMessage = deliveryAttempt.sentMessage;
+          publicationTiming.observeAcknowledgement();
           commentDialogReference = deliveryAttempt.commentDialogReference;
           resolvedBotId = deliveryAttempt.botId ?? undefined;
           if (activeDeliveryClaim) {

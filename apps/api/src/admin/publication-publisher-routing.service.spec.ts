@@ -8,7 +8,7 @@ import { PublicationPublisherRoutingService } from './publication-publisher-rout
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 
 describe('PublicationPublisherRoutingService', () => {
-  it('defers an unavailable scheduled recipient and requests an exact Publisher actor refresh', async () => {
+  it('defers an unavailable dynamic audience and requests an exact Publisher actor refresh', async () => {
     const requestActorAccessRefresh = jest.fn().mockResolvedValue(undefined);
     const resolvePublicationTargets = jest
       .fn()
@@ -25,7 +25,7 @@ describe('PublicationPublisherRoutingService', () => {
       service.resolveScheduledTargets({
         actorUserId: 'author',
         requiredBotId: 'publik',
-        audienceMode: 'SNAPSHOT',
+        audienceMode: 'DYNAMIC',
         audienceSelection: 'ALL_CHANNELS',
         targets: [{ targetChatId: 'channel', entityType: ChatEntityType.CHANNEL }],
       }),
@@ -40,7 +40,7 @@ describe('PublicationPublisherRoutingService', () => {
     );
     expect(resolvePublicationTargets).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'author' }),
-      [{ chatId: 'channel', entityType: 'channel' }],
+      undefined,
     );
   });
 
@@ -85,15 +85,15 @@ describe('PublicationPublisherRoutingService', () => {
       service.resolveScheduledTargets({
         actorUserId: 'author',
         requiredBotId: 'publik',
-        audienceMode: 'SNAPSHOT',
-        audienceSelection: 'SELECTED',
+        audienceMode: 'DYNAMIC',
+        audienceSelection: 'ALL_CHANNELS',
         targets: [],
       }),
     ).rejects.toBe(error);
     expect(requestActorAccessRefresh).not.toHaveBeenCalled();
   });
 
-  it('uses a Publisher-signed context with Publik chat comments for PUBLIK_V1 chats', async () => {
+  it('stores deferred context inputs before any recipient preparation for PUBLIK_V1 chats', async () => {
     const assertTargetsReady = jest.fn().mockResolvedValue([
       {
         chatId: 'chat-publisher-only',
@@ -124,22 +124,18 @@ describe('PublicationPublisherRoutingService', () => {
       [{ text: 'Открыть', url: 'https://example.com' }],
     );
 
-    expect(prepare).toHaveBeenCalledWith({
-      chatId: 'chat-publisher-only',
-      entityType: 'chat',
-      dialogBotId: 'publisher-bot',
-      customButtons: [{ text: 'Открыть', url: 'https://example.com' }],
-      includeManagedDialogs: true,
-    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(assertTargetsReady).not.toHaveBeenCalled();
     expect(result.deliveryDataByChatId.get('chat-publisher-only')).toMatchObject({
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
       dialogBotId: 'publisher-bot',
-      publicationPolicyRevision: 7,
+      publicationPolicyRevision: 0,
       publisherDialogContext: expect.objectContaining({
-        version: 1,
+        version: 0,
+        preparation: 'pending',
         dialogBotId: 'publisher-bot',
-        reference: null,
+        customButtons: [{ text: 'Открыть', url: 'https://example.com' }],
       }),
     });
   });
@@ -176,12 +172,7 @@ describe('PublicationPublisherRoutingService', () => {
       [],
     );
 
-    expect(prepare).toHaveBeenCalledWith(
-      expect.objectContaining({
-        dialogBotId: 'publisher-bot',
-        includeManagedDialogs: true,
-      }),
-    );
+    expect(prepare).not.toHaveBeenCalled();
     expect(result.deliveryDataByChatId.get('channel-1')).toMatchObject({
       dialogBotId: 'publisher-bot',
     });
@@ -327,6 +318,7 @@ describe('PublisherDialogContextService', () => {
     ]);
     expect(postSignature.buildPostButton).toHaveBeenCalledWith('channel-1', {
       entityType: 'channel',
+      botId: 'publisher-bot',
       trafficClass: 'background',
       sourceTag: 'managed_broadcast',
     });

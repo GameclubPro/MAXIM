@@ -1,4 +1,4 @@
-import { Injectable, type OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 
 export type PublisherBackgroundWorkLane =
   | 'suggestion_subscriptions'
@@ -28,14 +28,13 @@ type PublisherBackgroundWaiter = {
   reject: (error: Error) => void;
 };
 
-const RECOVERY_AGING_MS = 15_000;
-
 @Injectable()
 export class PublisherBackgroundWorkCoordinatorService implements OnModuleDestroy {
   private activeLane: PublisherBackgroundWorkLane | null = null;
   private readonly laneRuns = new Map<PublisherBackgroundWorkLane, Promise<unknown>>();
   private readonly waiters: PublisherBackgroundWaiter[] = [];
   private closed = false;
+  private readonly logger = new Logger(PublisherBackgroundWorkCoordinatorService.name);
 
   runExclusive<T>(lane: PublisherBackgroundWorkLane, operation: () => Promise<T>): Promise<T> {
     if (this.closed) {
@@ -66,11 +65,24 @@ export class PublisherBackgroundWorkCoordinatorService implements OnModuleDestro
     lane: PublisherBackgroundWorkLane,
     operation: () => Promise<T>,
   ): Promise<T> {
-    await this.acquire(lane);
+    // FLAG: Deadline and access nomination each have one coalesced slot, independent
+    // of the single recovery slot. The shared MAX limiter and durable claims still
+    // govern effects; an in-flight recovery mutation is never interrupted.
+    const isolated = lane === 'publication_deadline' || lane === 'publication_access_preflight';
+    const queuedAt = Date.now();
+    if (!isolated) await this.acquire(lane);
+    const startedAt = Date.now();
     try {
       return await operation();
     } finally {
-      this.release();
+      if (!isolated) this.release();
+      const runMs = Date.now() - startedAt;
+      const waitMs = startedAt - queuedAt;
+      if (runMs > 5_000 || waitMs > 5_000)
+        this.logger.warn(
+          { metric: 'publisher_background_budget_v1', lane, runMs, waitMs },
+          'Publisher background work exceeded its time budget',
+        );
     }
   }
 
@@ -93,22 +105,7 @@ export class PublisherBackgroundWorkCoordinatorService implements OnModuleDestro
       this.rejectWaiters();
       return;
     }
-    // FLAG: Keep deadline priority without starving access refresh or recovery. Service the
-    // oldest recovery after 15 seconds; active work is never interrupted. Lane coalescing
-    // already prevents consecutive deadline runs from overtaking the same queued recovery.
-    const deadlineIndex = this.waiters.findIndex(
-      (waiter) => waiter.lane === 'publication_deadline',
-    );
-    const recoveryIndex = this.waiters.findIndex(
-      (waiter) => waiter.lane !== 'publication_deadline',
-    );
-    const oldestRecovery = this.waiters[recoveryIndex];
-    const recoveryDue = oldestRecovery && Date.now() - oldestRecovery.queuedAt >= RECOVERY_AGING_MS;
-    const next = recoveryDue
-      ? this.waiters.splice(recoveryIndex, 1)[0]
-      : deadlineIndex >= 0
-        ? this.waiters.splice(deadlineIndex, 1)[0]
-        : this.waiters.shift();
+    const next = this.waiters.shift();
     if (next) {
       this.activeLane = next.lane;
       next.resolve();

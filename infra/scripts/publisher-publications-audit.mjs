@@ -172,8 +172,11 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
       WHEN (e.checked_at > statement_timestamp() - interval '15 minutes') IS NOT TRUE
         THEN 'actor_authority_stale'
       WHEN chat.entity_type IS DISTINCT FROM t.entity_type THEN 'chat_type_mismatch'
-      WHEN b.bot_access_expires_at IS NULL OR b.bot_access_expires_at <= statement_timestamp()
-        THEN 'bot_access_expired'
+      WHEN b.bot_access_state::text NOT IN ('CONFIRMED_ADMIN', 'CONFIRMED_OWNER')
+        THEN 'bot_not_admin'
+      WHEN b.bot_access_checked_at IS NULL OR b.bot_access_checked_at > statement_timestamp()
+        THEN 'bot_access_unconfirmed'
+      WHEN b.send_route_quarantined_until > statement_timestamp() THEN 'route_quarantined'
       ELSE 'metadata_ready'
     END AS reason,
     CASE WHEN e.denied_reason IN (
@@ -225,6 +228,7 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
 )
 SELECT json_build_object(
   'schema_version', 1, 'audit', 'publisher_publications',
+  'readiness_scope', 'metadata_only', 'capabilities_and_activation_checked', false,
   'occurrence_sample_cap_per_status', 32, 'target_sample_cap_per_occurrence', 8,
   'delivery_sample_cap_per_occurrence', 8,
   'occurrences', coalesce((SELECT json_agg(json_build_object(

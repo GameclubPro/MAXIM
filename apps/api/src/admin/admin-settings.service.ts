@@ -1,3 +1,5 @@
+import { readChatClosureStatus } from './chat-closure-status';
+import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import {
   channelSettingsScreenResponseSchema,
   chatSettingsScreenResponseSchema,
@@ -118,6 +120,7 @@ export class AdminSettingsService {
     @Optional() private readonly reports?: ReportViewService,
     @Optional() private readonly retention?: MessageRetentionStore,
     @Optional() private readonly commercialOcrRuntimePolicy?: CommercialOcrRuntimePolicyService,
+    @Optional() private readonly botRegistry?: MaxBotRegistryService,
   ) {}
 
   async getDuplicateDiagnostics(chatId: string, user: AuthUser, recheck = false, query?: unknown) {
@@ -205,6 +208,14 @@ export class AdminSettingsService {
 
     return chatSettingsScreenResponseSchema.parse({
       ...(messageRetention ? { messageRetention } : {}),
+      closure: this.botRegistry
+        ? await readChatClosureStatus(
+            this.prisma,
+            chatId,
+            settings,
+            this.botRegistry.getActionableBots().map((bot) => bot.id),
+          ).catch(() => undefined)
+        : undefined,
       settings,
       commercialPhotoModerationMode: await this.resolveCommercialPhotoModerationMode(
         chatId,

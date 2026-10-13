@@ -22,6 +22,7 @@ export function publicationDraftState(draft: PublicationDraft): PublicationDraft
     timingMode: draft.timingMode,
     scheduleKind: draft.scheduleKind,
     scheduleTimezone: draft.scheduleTimezone,
+    latePolicy: draft.latePolicy,
     scheduledSlots: draft.scheduledSlots,
     onceDate: draft.onceDate,
     onceTime: draft.onceTime,

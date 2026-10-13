@@ -1,8 +1,8 @@
 // FLAG: This bounds speculative preparation only. Actual due/manual producers retain
 // their durable work; a saturated queue never authorizes or silently drops a send.
 export const PUBLISHER_PREFLIGHT_INTERVAL_MS = 2_000;
-export const PUBLISHER_PREFLIGHT_PENDING_LIMIT = 8;
-export const PUBLISHER_PREFLIGHT_TARGET_BUDGET = 4;
+export const PUBLISHER_PREFLIGHT_PENDING_LIMIT = 16;
+export const PUBLISHER_PREFLIGHT_TARGET_BUDGET = 8;
 export const PUBLISHER_PUBLICATION_URGENCY_MS = 60_000;
 export const PUBLISHER_PREFLIGHT_PRIORITY = 8;
 

@@ -9,6 +9,8 @@ import type {
 } from '@maxim/contracts';
 import {
   MAX_PUBLICATION_EXPLICIT_SLOTS,
+  DEFAULT_PUBLICATION_LATE_POLICY,
+  type PublicationLatePolicy,
   MAX_PUBLICATION_TEXT_LENGTH,
   publicationPostPublishSchema,
   type PublicationPostPublish,
@@ -294,6 +296,7 @@ export function getPublicationTargetTitle(
 
 export type PublicationDraft = {
   cloudDraft?: { id: string; revision: number };
+  latePolicy?: PublicationLatePolicy;
   cloudRequestId?: string;
   postPublish: PublicationPostPublish;
   title: string;
@@ -862,6 +865,7 @@ export function hasSamePublicationTargetMetadata(
 export function createEmptyPublicationDraft(targets: PublicationTarget[] = []): PublicationDraft {
   return {
     postPublish: { pin: 'none', deleteAfterMinutes: null },
+    latePolicy: { ...DEFAULT_PUBLICATION_LATE_POLICY },
     title: '',
     text: '',
     textFormat: 'markdown',
@@ -943,6 +947,7 @@ export function hasPublicationDraftChanges(
     initialDraft.postPublish.pin === currentDraft.postPublish.pin &&
     initialDraft.postPublish.deleteAfterMinutes === currentDraft.postPublish.deleteAfterMinutes &&
     initialDraft.buttonEnabled === currentDraft.buttonEnabled &&
+    JSON.stringify(initialDraft.latePolicy) === JSON.stringify(currentDraft.latePolicy) &&
     initialDraft.timingMode === currentDraft.timingMode &&
     initialDraft.scheduleKind === currentDraft.scheduleKind &&
     initialDraft.onceDate === currentDraft.onceDate &&
@@ -1030,6 +1035,7 @@ export function rebasePublicationDraft(
   const textChanged = changed(['text', 'textFormat']);
   const targetsChanged = changed(['targets']);
   const scheduleChanged = changed([
+    'latePolicy',
     'timingMode',
     'scheduleKind',
     'scheduledSlots',
@@ -1060,6 +1066,7 @@ export function rebasePublicationDraft(
     targets: targetsChanged ? local.targets : latest.targets,
     ...(scheduleChanged
       ? {
+          latePolicy: local.latePolicy,
           timingMode: local.timingMode,
           scheduleKind: local.scheduleKind,
           scheduledSlots: local.scheduledSlots,
@@ -1069,6 +1076,7 @@ export function rebasePublicationDraft(
           recurrence: local.recurrence,
         }
       : {
+          latePolicy: latest.latePolicy,
           timingMode: latest.timingMode,
           scheduleKind: latest.scheduleKind,
           scheduledSlots: latest.scheduledSlots,
@@ -1151,6 +1159,7 @@ export function buildPublicationSchedule(
       timezone: draft.scheduleTimezone,
       at: getPublicationOnceSlot(draft) ?? '',
       replaceConflicts,
+      latePolicy: draft.latePolicy,
     };
   }
   if (draft.scheduleKind === 'recurrence') {
@@ -1165,6 +1174,7 @@ export function buildPublicationSchedule(
       endsAt: draft.recurrence.endsAt,
       maxOccurrences: draft.recurrence.maxOccurrences,
       replaceConflicts,
+      latePolicy: draft.latePolicy,
     };
   }
   return {
@@ -1172,6 +1182,7 @@ export function buildPublicationSchedule(
     timezone: draft.scheduleTimezone,
     slots: sortAndUniqueBroadcastSlots(draft.scheduledSlots),
     replaceConflicts,
+    latePolicy: draft.latePolicy,
   };
 }
 
@@ -1318,6 +1329,7 @@ export function createPublicationDraftFromDetails(
     onceDate,
     onceTime,
     scheduleTimezone: schedule?.timezone ?? fallback.scheduleTimezone,
+    latePolicy: schedule && 'latePolicy' in schedule ? schedule.latePolicy : undefined,
     recurrence,
     mediaType: null,
     mediaPayload: null,

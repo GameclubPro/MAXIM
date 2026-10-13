@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import {
   ChatEntityType,
   PublicationDispatchProfile,
@@ -6,6 +6,9 @@ import {
   PublicationOccurrenceStatus,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
+import { ModuleRef } from '@nestjs/core';
+import { PublisherDialogContextService } from '../admin/publisher-dialog-context.service';
+import { preparePendingPublicationContext } from '../admin/publication-target-preparation';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
@@ -23,8 +26,8 @@ import {
 } from './publisher-publication-access-admission';
 
 const INTERVAL_MS = PUBLISHER_PREFLIGHT_INTERVAL_MS;
-const LOOKAHEAD_MS = 5 * 60_000;
-const PER_OCCURRENCE_TARGET_BUDGET = 2;
+const LOOKAHEAD_MS = 10 * 60_000;
+const PER_OCCURRENCE_TARGET_BUDGET = 8;
 const OCCURRENCE_BUDGET = 4;
 
 @Injectable()
@@ -52,6 +55,7 @@ export class PublisherPublicationAccessPreflightService implements OnModuleInit,
     private readonly health: PublisherDispatchHealthService,
     private readonly backgroundWork: PublisherBackgroundWorkCoordinatorService,
     private readonly refreshQueue: PublisherBindingRefreshQueueService,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {
     this.botId = credentials.getBotId();
   }
@@ -187,6 +191,10 @@ export class PublisherPublicationAccessPreflightService implements OnModuleInit,
             },
           });
           completedCycles += complete ? 1 : 0;
+          await this.prepareTargetPage(
+            occurrence.id,
+            page.map((target) => target.targetChatId),
+          );
         }
         this.metrics.ticks += 1;
         this.metrics.visitedTargets += visitedTargets;
@@ -208,6 +216,42 @@ export class PublisherPublicationAccessPreflightService implements OnModuleInit,
       this.inFlight = false;
     }
   }
+  private async prepareTargetPage(occurrenceId: string, chatIds: string[]): Promise<void> {
+    if (!this.moduleRef || chatIds.length === 0) return;
+    const publisherDialogContextService = this.moduleRef.get(PublisherDialogContextService, {
+      strict: false,
+    });
+    // FLAG: The bounded imminent-target page prepares intent only. It never claims or sends;
+    // final author/bot/content checks and the SQL v0-to-v1 fence still own dispatch authority.
+    const deliveries = await this.prisma.managedBroadcastDelivery.findMany({
+      where: {
+        publicationOccurrenceId: occurrenceId,
+        targetChatId: { in: chatIds },
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: this.botId,
+        status: 'PENDING',
+        attemptCount: 0,
+        publisherDialogContext: { path: ['version'], equals: 0 },
+      },
+      take: PER_OCCURRENCE_TARGET_BUDGET,
+      select: { id: true, targetChatId: true, publisherDialogContext: true },
+    });
+    for (const delivery of deliveries) {
+      try {
+        await preparePendingPublicationContext(
+          { prisma: this.prisma, publisherDialogContextService },
+          delivery,
+          this.botId,
+        );
+      } catch (error: unknown) {
+        this.logger.debug(
+          { reason: error instanceof Error ? error.name : 'unknown' },
+          'Publication target preparation deferred to next bounded pass',
+        );
+      }
+    }
+  }
+
   private flushMetrics(): void {
     if (!this.metrics.ticks) return;
     try {

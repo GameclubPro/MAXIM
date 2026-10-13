@@ -6,6 +6,7 @@ export interface ExpandPublicationScheduleOptions {
   to: Date;
   existingCount?: number;
   now?: Date;
+  maxResults?: number;
 }
 
 export function isValidPublicationTimezone(timezone: string): boolean {
@@ -30,6 +31,12 @@ export function expandPublicationSchedule(
     throw new RangeError('Publication schedule window must end at or after it starts.');
   }
 
+  if (
+    options.maxResults !== undefined &&
+    (!Number.isSafeInteger(options.maxResults) || options.maxResults < 1)
+  ) {
+    throw new RangeError('maxResults must be a positive integer.');
+  }
   const existingCount = options.existingCount ?? 0;
   if (!Number.isInteger(existingCount) || existingCount < 0) {
     throw new RangeError('existingCount must be a non-negative integer.');
@@ -57,6 +64,7 @@ export function expandPublicationSchedule(
     fromMs,
     toMs,
     existingCount,
+    maxResults: options.maxResults,
   });
 }
 
@@ -66,6 +74,7 @@ function expandRecurrenceSchedule(
     fromMs: number;
     toMs: number;
     existingCount: number;
+    maxResults?: number;
   },
 ): Date[] {
   assertRecurrenceShape(schedule);
@@ -85,10 +94,12 @@ function expandRecurrenceSchedule(
     return [];
   }
 
-  const remainingOccurrences =
+  const remainingOccurrences = Math.min(
+    window.maxResults ?? Number.POSITIVE_INFINITY,
     schedule.maxOccurrences === null
       ? Number.POSITIVE_INFINITY
-      : Math.max(0, schedule.maxOccurrences - window.existingCount);
+      : Math.max(0, schedule.maxOccurrences - window.existingCount),
+  );
   if (remainingOccurrences === 0) {
     return [];
   }

@@ -1,5 +1,8 @@
 import { PublicationScheduleMode } from '../prisma/prisma-client';
-import { isPublicationScheduledWindowExpired } from './publication-late-policy';
+import {
+  isPublicationScheduledWindowExpired,
+  isPublicationOccurrenceWindowClosed,
+} from './publication-late-policy';
 
 describe('Publication scheduled late policy', () => {
   const now = new Date('2026-09-30T09:00:00Z');
@@ -64,4 +67,50 @@ describe('Publication scheduled late policy', () => {
       ),
     ).toBe(expired);
   });
+  it('keeps an unstarted new post recoverable for its authored 24-hour horizon', () => {
+    const occurrence = {
+      scheduledAt: new Date(now.getTime() - 15 * 60_000),
+      schedule: {
+        mode: PublicationScheduleMode.ONCE,
+        rule: { latePolicy: { mode: 'recover', maxDelayMinutes: 1440, catchUp: 'latest' } },
+      },
+    };
+    expect(isPublicationScheduledWindowExpired(occurrence, now)).toBe(false);
+    expect(
+      isPublicationScheduledWindowExpired(
+        occurrence,
+        new Date(occurrence.scheduledAt.getTime() + 1440 * 60_000 + 1),
+      ),
+    ).toBe(true);
+  });
+  it.each(['latest', 'all'] as const)(
+    'uses only durable newer occurrences for %s catch-up',
+    async (catchUp) => {
+      const findFirst = jest.fn().mockResolvedValue({ id: 'newer' });
+      const occurrence = {
+        scheduledAt: new Date(now.getTime() - 15 * 60_000),
+        scheduleRevision: 4,
+        schedule: {
+          id: 'schedule',
+          mode: PublicationScheduleMode.RECURRENCE,
+          rule: { latePolicy: { mode: 'recover', maxDelayMinutes: 1440, catchUp } },
+        },
+      };
+      expect(
+        await isPublicationOccurrenceWindowClosed(
+          { publicationOccurrence: { findFirst } } as never,
+          occurrence,
+          now,
+        ),
+      ).toBe(catchUp === 'latest');
+      if (catchUp === 'latest')
+        expect(findFirst.mock.calls[0][0].where).toEqual({
+          scheduleId: 'schedule',
+          scheduleRevision: 4,
+          scheduledAt: { gt: occurrence.scheduledAt, lte: now },
+          status: { not: 'CANCELED' },
+        });
+      else expect(findFirst).not.toHaveBeenCalled();
+    },
+  );
 });

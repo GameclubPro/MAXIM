@@ -1,5 +1,5 @@
 import { chatSettingsSchema } from '@maxim/contracts';
-import { ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { AdminRequiredSubscriptionRuntime } from './admin-required-subscription-runtime';
 import { AdminService } from './admin.service';
 import {
@@ -1549,7 +1549,7 @@ describe('AdminService required subscription settings', () => {
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
-  it('drops required subscription channels the bot cannot verify', async () => {
+  it('rejects an unverifiable new target without saving an empty policy', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
@@ -1578,22 +1578,16 @@ describe('AdminService required subscription settings', () => {
 
     const service = createRequiredSubscriptionService(prisma, maxClient);
 
-    const result = await service.updateSettings('chat-1', actor, {
-      requiredSubscriptionEnabled: true,
-      requiredSubscriptionChannelIds: ['channel-ext-1'],
-    });
-
-    expect(result.requiredSubscriptionEnabled).toBe(false);
-    expect(result.requiredSubscriptionChannelIds).toEqual([]);
-    expect(result.requiredSubscriptionBotMessageEnabled).toBe(false);
-    expectChatSettingsWrite(prisma, {
-      requiredSubscriptionEnabled: false,
-      requiredSubscriptionChannelIds: [],
-      requiredSubscriptionBotMessageEnabled: false,
-    });
+    await expect(
+      service.updateSettings('chat-1', actor, {
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-ext-1'],
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.chatSettings.updateMany).not.toHaveBeenCalled();
   });
 
-  it('keeps only verifiable required subscription targets from a mixed list', async () => {
+  it('rejects a mixed addition atomically without silently removing the blocked target', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();
     const maxClient = {
@@ -1618,19 +1612,13 @@ describe('AdminService required subscription settings', () => {
 
     const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
-    const result = await service.updateSettings('chat-1', actor, {
-      requiredSubscriptionEnabled: true,
-      requiredSubscriptionChannelIds: ['channel-1', 'channel-2', 'channel-3'],
-    });
-
-    expect(result.requiredSubscriptionEnabled).toBe(true);
-    expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1', 'channel-2']);
-    expect(result.requiredSubscriptionBotMessageEnabled).toBe(true);
-    expectChatSettingsWrite(prisma, {
-      requiredSubscriptionEnabled: true,
-      requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
-      requiredSubscriptionBotMessageEnabled: true,
-    });
+    await expect(
+      service.updateSettings('chat-1', actor, {
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1', 'channel-2', 'channel-3'],
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.chatSettings.updateMany).not.toHaveBeenCalled();
     const cachedHeaderIds = chatContextCache.setManagedEntityHeader.mock.calls.map(
       ([header]) => header.id,
     );

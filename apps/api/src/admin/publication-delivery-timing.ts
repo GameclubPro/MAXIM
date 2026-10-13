@@ -22,6 +22,7 @@ export function createPublicationExecutionObserver(
   readonly scheduledAt: Date | null;
   onOccurrenceScheduledAt: (scheduledAt: Date, execution?: PublicationExecutionTiming) => void;
   observeReceipt: () => void;
+  observeAcknowledgement: () => void;
 } {
   let scheduledAt: Date | null = null;
   let execution: PublicationExecutionTiming | null = null;
@@ -40,6 +41,17 @@ export function createPublicationExecutionObserver(
       return scheduledAt;
     },
     observeReceipt,
+    observeAcknowledgement: () => {
+      if (!enabled || !row.publicationOccurrenceId) return;
+      recordPublicationReceiptTiming(logger, {
+        mode: execution?.mode,
+        intentCreatedAt: execution?.intentCreatedAt,
+        scheduledAt,
+        media: row.mediaType === 'video' ? 'video' : row.imageEnabled ? 'image' : 'none',
+        receiptPersistedAt: new Date(),
+        outcome: 'max_acknowledgement_observed',
+      });
+    },
     onOccurrenceScheduledAt: (nextScheduledAt, nextExecution) => {
       scheduledAt = nextScheduledAt;
       execution = nextExecution ?? null;
@@ -64,7 +76,10 @@ const BLOCKER_REASONS = new Set([
 
 export function recordPublicationReceiptTiming(
   logger: Partial<Pick<Logger, 'log'>>,
-  input: PublicationTimingInput & { receiptPersistedAt: Date },
+  input: PublicationTimingInput & {
+    receiptPersistedAt: Date;
+    outcome?: 'receipt_persisted' | 'max_acknowledgement_observed';
+  },
 ): void {
   const reference = input.mode === 'NOW' ? input.intentCreatedAt : input.scheduledAt;
   const referenceMs = reference?.getTime();
@@ -80,7 +95,7 @@ export function recordPublicationReceiptTiming(
   emit(logger, {
     metric: 'publication_delivery_v1',
     scope: 'delivery',
-    outcome: 'receipt_persisted',
+    outcome: input.outcome ?? 'receipt_persisted',
     mode: input.mode ?? 'UNKNOWN',
     media: input.media,
     clock:

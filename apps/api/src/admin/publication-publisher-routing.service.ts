@@ -29,13 +29,13 @@ import {
 import { mapWithConcurrencyLimit } from './admin-legacy-utils';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
+import { createPendingPublicationContext } from './publication-target-preparation';
 import { PublisherPolicyService } from './publisher-policy.service';
 import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from './publication-dispatch-issue';
 import { recordPublicationDispatchOutcome } from './publication-delivery-timing';
 import { readPublicationRetryAuthorizedAt } from './publication-late-policy';
 
 const PUBLISHER_BLOCKED_RETRY_MS = 60_000;
-const DIALOG_CONTEXT_PREPARE_CONCURRENCY = 4;
 const PUBLICATION_ADMIN_ACCESS_CHECK_CONCURRENCY = 4;
 export const LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE = 'LEGACY_PUBLICATION_EXECUTION_IMMUTABLE';
 
@@ -203,12 +203,20 @@ export class PublicationPublisherRoutingService {
       entityType:
         target.entityType === ChatEntityType.CHANNEL ? ('channel' as const) : ('chat' as const),
     }));
+    // FLAG: The saved audience is intent, not current execution authority. Keep every
+    // target; exact actor/bot/policy guards run independently before each delivery.
+    if (publication.audienceMode === 'SNAPSHOT' || publication.audienceSelection === 'SELECTED') {
+      return targets.map((target) => ({
+        ...target,
+        title: target.chatId,
+        avatarUrl: null,
+        link: null,
+      }));
+    }
     try {
       return await this.resolveAudienceTargets(
         { userId: publication.actorUserId, username: null, displayName: null },
-        publication.audienceMode === 'SNAPSHOT' || publication.audienceSelection === 'SELECTED'
-          ? { selection: 'SELECTED', mode: 'SNAPSHOT', targets }
-          : { selection: publication.audienceSelection, mode: 'DYNAMIC', targets: [] },
+        { selection: publication.audienceSelection, mode: 'DYNAMIC', targets: [] },
         PublicationDispatchProfile.PUBLIK_V1,
       );
     } catch (error: unknown) {
@@ -263,27 +271,11 @@ export class PublicationPublisherRoutingService {
         ),
       };
     }
-    const routes = await this.assertTargetsReady(targets, requiredBotId);
-    const preparedContexts = await mapWithConcurrencyLimit(
-      [...targets],
-      DIALOG_CONTEXT_PREPARE_CONCURRENCY,
-      async (target) => ({
-        chatId: target.chatId,
-        dialogBotId: requiredBotId!,
-        context: await this.dialogContexts.prepare({
-          chatId: target.chatId,
-          entityType: target.entityType,
-          dialogBotId: requiredBotId!,
-          customButtons,
-          includeManagedDialogs: true,
-        }),
-      }),
-    );
-    const routeByChatId = new Map(routes.map((route) => [route.chatId, route]));
-    const dialogBotIds = new Map(preparedContexts.map((item) => [item.chatId, item.dialogBotId]));
-    const dialogContextByChatId = new Map(
-      preparedContexts.map((item) => [item.chatId, item.context]),
-    );
+    if (!requiredBotId?.trim())
+      throw new PublisherSetupRequiredException([], 'publisher_bot_changed');
+    // FLAG: Persist the complete immutable audience before preparing any target. The
+    // version-zero marker is not send authority; only a guarded PENDING delivery can
+    // replace it with a prepared context. A legacy reader safely refuses the marker.
     return {
       broadcastData,
       deliveryDataByChatId: new Map(
@@ -291,11 +283,14 @@ export class PublicationPublisherRoutingService {
           target.chatId,
           {
             ...broadcastData,
-            dialogBotId: dialogBotIds.get(target.chatId) ?? null,
-            publisherDialogContext:
-              (dialogContextByChatId.get(target.chatId) as Prisma.InputJsonValue | undefined) ??
-              Prisma.DbNull,
-            publicationPolicyRevision: routeByChatId.get(target.chatId)?.policyRevision ?? null,
+            dialogBotId: requiredBotId,
+            publisherDialogContext: createPendingPublicationContext(
+              target,
+              requiredBotId,
+              customButtons,
+            ),
+            // FLAG: Zero is a placeholder, never authority. Dispatch reads current policy.
+            publicationPolicyRevision: 0,
           },
         ]),
       ),

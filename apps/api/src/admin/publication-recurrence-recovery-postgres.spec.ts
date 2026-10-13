@@ -135,6 +135,96 @@ postgres('Publication recurrence failure fencing on PostgreSQL', () => {
     return { occurrence, row, delivery };
   }
 
+  it('retains a new recoverable delivery after a 15-minute outage across a restart', async () => {
+    const { occurrence, row, delivery } = await createLateEnvelope();
+    await db.publicationSchedule.update({
+      where: { id: occurrence.scheduleId },
+      data: {
+        rule: {
+          mode: 'once',
+          timezone: 'Europe/Moscow',
+          at: occurrence.scheduledAt.toISOString(),
+          latePolicy: { mode: 'recover', maxDelayMinutes: 1440, catchUp: 'latest' },
+        },
+      },
+    });
+    for (let replica = 0; replica < 2; replica++) {
+      expect(
+        await ensureManagedBroadcastPublicationExecutionActive({
+          prisma: db as never,
+          row,
+          occurrenceIndex: 1,
+        }),
+      ).toBe(true);
+    }
+    expect(
+      await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: delivery.id } }),
+    ).toMatchObject({ status: 'PENDING', attemptCount: 0 });
+  });
+
+  it.each(['SENT', 'AMBIGUOUS'] as const)(
+    'expires only an unstarted recipient alongside a %s effect',
+    async (status) => {
+      const { occurrence, row, delivery } = await createLateEnvelope();
+      await db.publicationSchedule.update({
+        where: { id: occurrence.scheduleId },
+        data: {
+          rule: {
+            mode: 'once',
+            timezone: 'Europe/Moscow',
+            at: occurrence.scheduledAt.toISOString(),
+            latePolicy: { mode: 'strict', maxDelayMinutes: 5, catchUp: 'all' },
+          },
+        },
+      });
+      await db.managedBroadcastDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          status,
+          attemptCount: 1,
+          remoteMessageId: status === 'SENT' ? 'confirmed-receipt' : null,
+          sentAt: status === 'SENT' ? new Date() : null,
+        },
+      });
+      const pending = await db.managedBroadcastDelivery.create({
+        data: {
+          broadcastId: row.id,
+          occurrenceIndex: 1,
+          targetChatId: `${delivery.targetChatId}-pending`,
+          publicationOccurrenceId: occurrence.id,
+          contentRevisionId: occurrence.contentRevisionId,
+          dispatchProfile: 'PUBLIK_V1',
+          requiredBotId: 'publisher-test',
+          dialogBotId: 'publisher-test',
+          publicationPolicyRevision: 0,
+          publisherDialogContext: {
+            version: 1,
+            dialogBotId: 'publisher-test',
+            buttons: [],
+            reference: null,
+          },
+        },
+      });
+      expect(
+        await ensureManagedBroadcastPublicationExecutionActive({
+          prisma: db as never,
+          row,
+          occurrenceIndex: 1,
+        }),
+      ).toBe(true);
+      expect(
+        await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: pending.id } }),
+      ).toMatchObject({
+        status: 'FAILED',
+        attemptCount: 0,
+        lastErrorCode: 'PUBLISHER_MISSED_WINDOW_REVIEW',
+      });
+      expect(
+        await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: delivery.id } }),
+      ).toMatchObject({ status, attemptCount: 1 });
+    },
+  );
+
   it('stops and removes an unattempted late envelope while preserving the missed occurrence', async () => {
     const { occurrence, row } = await createLateEnvelope();
     await expect(

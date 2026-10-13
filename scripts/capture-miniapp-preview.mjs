@@ -1278,6 +1278,19 @@ const scenarioBehaviors = [
       await page
         .locator('.publication-editor-section--timing')
         .evaluate((element) => element.scrollIntoView({ block: 'start' }));
+      const recovery = page.locator('.publication-late-policy-options');
+      await recovery.locator('summary').click();
+      await recovery.getByLabel('Действие при задержке', { exact: true }).selectOption('strict');
+      await recovery
+        .getByLabel('Пост актуален после назначенного времени', { exact: true })
+        .selectOption('30');
+      if (
+        (await recovery
+          .getByLabel('Пост актуален после назначенного времени', { exact: true })
+          .inputValue()) !== '30'
+      )
+        throw new Error('Authored publication delay did not persist in the editor.');
+      await recovery.locator('summary').click();
       await page.waitForTimeout(150);
     },
   },
@@ -2488,6 +2501,7 @@ const scenarioBehaviors = [
     name: 'chat-settings-night',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Ночной режим', '.settings-drilldown__panel--night');
+      await page.getByText('Сейчас группа открыта', { exact: true }).waitFor({ state: 'visible' });
     },
   },
   {
