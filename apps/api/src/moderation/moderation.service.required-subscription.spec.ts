@@ -3,6 +3,7 @@ import {
   ChatEntityType,
   SanctionAction,
   ModerationService,
+  withAutomaticMutePersistenceFixture,
   MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
   MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
   REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS,
@@ -83,7 +84,7 @@ describe('ModerationService', () => {
       adminUserIds: string[] = [],
     ) {
       const persistedModerationEvents = new Map<string, { metadata: unknown }>();
-      return {
+      const prisma = {
         chat: {
           upsert: jest.fn().mockResolvedValue({
             id: 'chat-1',
@@ -134,6 +135,7 @@ describe('ModerationService', () => {
           update: jest.fn(),
         },
       };
+      return withAutomaticMutePersistenceFixture(prisma);
     }
 
     function createRequiredSubscriptionMediaUpdate(params: {

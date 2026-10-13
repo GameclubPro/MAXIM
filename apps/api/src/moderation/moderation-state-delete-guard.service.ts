@@ -1,3 +1,4 @@
+import { AUTOMATIC_MUTE_HISTORY_MS } from './automatic-mute-cleanup';
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
@@ -177,6 +178,28 @@ export class ModerationStateDeleteGuardService {
       message.entityType === 'channel'
     )
       this.reject();
+    // FLAG: A held sanction source cannot consume immunity on unrelated historical targets.
+    for (const reason of [...reasons]) {
+      const id = this.metadata(reason.metadata).automaticMuteCleanupId;
+      if (id === undefined) continue;
+      const cleanup =
+        typeof id === 'string'
+          ? await this.prisma.automaticMuteCleanup.findUnique({
+              where: { eventId: id },
+              select: { sourceMessageId: true, chatId: true, userId: true },
+            })
+          : null;
+      if (
+        !cleanup ||
+        cleanup.chatId !== params.chatId ||
+        cleanup.userId !== userId ||
+        (await this.legacyHolds?.isMessageHeld(params.chatId, cleanup.sourceMessageId)) ||
+        (await this.legacyHolds?.isGlobalUserHeld(userId))
+      ) {
+        reasons = reasons.filter((r) => r !== reason);
+      }
+    }
+    if (!reasons.length) this.reject();
     if (
       (await this.immunity.consumeForMessage({
         chatId: params.chatId,
@@ -190,17 +213,14 @@ export class ModerationStateDeleteGuardService {
     const current = await load();
     const sourceAtMs = params.sourceMessageAt?.getTime() ?? Date.parse(message.createdAt);
     const sourceDeadlineAtMs = sourceAtMs + 5 * 60_000;
-    if (
-      !Number.isSafeInteger(sourceAtMs) ||
-      sourceAtMs <= 0 ||
-      sourceAtMs > Date.now() ||
-      Date.now() >= sourceDeadlineAtMs
-    )
+    if (!Number.isSafeInteger(sourceAtMs) || sourceAtMs <= 0 || sourceAtMs > Date.now())
       this.reject();
     const reasonDeadlines: { reasonKey: string; deadlineAtMs: number }[] = [];
     for (const reason of reasons) {
       let allowed = false;
       let deadlineAtMs = sourceDeadlineAtMs;
+      const historyId = this.metadata(reason.metadata).automaticMuteCleanupId;
+      if (historyId === undefined && Date.now() >= sourceDeadlineAtMs) continue;
       if (reason.ruleCode === 'MUTE_ACTIVE_DELETE') {
         const metadata = this.metadata(reason.metadata);
         const latest = await this.prisma.moderationEvent.findFirst({
@@ -219,8 +239,21 @@ export class ModerationStateDeleteGuardService {
           latest &&
           latest.id === metadata.muteEventId &&
           (latest.action === 'MUTE' || latest.action === 'BAN') &&
-          sourceAtMs >= latest.createdAt.getTime()
+          (historyId !== undefined || sourceAtMs >= latest.createdAt.getTime())
         ) {
+          if (historyId !== undefined) {
+            const historyDeadline = await this.automaticCleanupDeadline({
+              historyId,
+              eventId: latest.id,
+              issuedAt: latest.createdAt,
+              chatId: params.chatId,
+              userId,
+              sourceAtMs,
+              liveSourceAtMs: Date.parse(message.createdAt),
+            });
+            if (historyDeadline === null) continue;
+            deadlineAtMs = historyDeadline;
+          }
           const expiry = resolveModerationSanctionExpiry(
             latest.action,
             latest.metadata,
@@ -292,6 +325,47 @@ export class ModerationStateDeleteGuardService {
     await params.beforeFinalAuthority?.();
     if (fingerprintModerationSettings(await load()) !== fingerprintModerationSettings(current))
       this.reject();
+    // FLAG: A release during awaited remote checks revokes historical cleanup too.
+    for (const reason of reasons) {
+      if (
+        this.metadata(reason.metadata).automaticMuteCleanupId === undefined ||
+        !reasonDeadlines.some((r) => r.reasonKey === reason.reasonKey)
+      )
+        continue;
+      const metadata = this.metadata(reason.metadata);
+      const latest = await this.prisma.moderationEvent.findFirst({
+        where: {
+          chatId: params.chatId,
+          userId,
+          OR: [
+            { action: { in: ['MUTE', 'BAN'] } },
+            { ruleCode: { in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'] } },
+          ],
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        select: { id: true, createdAt: true },
+      });
+      if (
+        !latest ||
+        latest.id !== metadata.muteEventId ||
+        (await this.automaticCleanupDeadline({
+          historyId: metadata.automaticMuteCleanupId,
+          eventId: latest.id,
+          issuedAt: latest.createdAt,
+          chatId: params.chatId,
+          userId,
+          sourceAtMs,
+          liveSourceAtMs: Date.parse(message.createdAt),
+        })) === null ||
+        (await this.fence.isSanctionEventInvalidated({
+          chatId: params.chatId,
+          userId,
+          sanctionEventId: latest.id,
+          eventCreatedAt: latest.createdAt,
+        }))
+      )
+        this.reject();
+    }
     const currentReasons = reasonDeadlines.filter((r) => Date.now() < r.deadlineAtMs);
     if (!currentReasons.length) this.reject();
     return {
@@ -299,6 +373,45 @@ export class ModerationStateDeleteGuardService {
       deadlineAtMs: Math.max(...currentReasons.map((r) => r.deadlineAtMs)),
       reasonDeadlines: currentReasons,
     };
+  }
+
+  private async automaticCleanupDeadline(params: {
+    historyId: unknown;
+    eventId: string;
+    issuedAt: Date;
+    chatId: string;
+    userId: string;
+    sourceAtMs: number;
+    liveSourceAtMs: number;
+  }): Promise<number | null> {
+    if (params.historyId !== params.eventId || params.liveSourceAtMs !== params.sourceAtMs)
+      return null;
+    const row = await this.prisma.automaticMuteCleanup.findUnique({
+      where: { eventId: params.eventId },
+      include: { event: true },
+    });
+    if (
+      !row ||
+      !['PENDING', 'SCANNED'].includes(row.status) ||
+      row.chatId !== params.chatId ||
+      row.userId !== params.userId ||
+      row.event.chatId !== params.chatId ||
+      row.event.userId !== params.userId ||
+      row.event.action !== 'MUTE' ||
+      row.event.operator !== 'BOT' ||
+      this.metadata(row.event.metadata).sanctionApplied !== true ||
+      row.sourceMessageId !== row.event.messageId ||
+      row.windowEnd.getTime() !== params.issuedAt.getTime() ||
+      row.windowStart.getTime() !== params.issuedAt.getTime() - AUTOMATIC_MUTE_HISTORY_MS ||
+      row.deadlineAt.getTime() !== params.issuedAt.getTime() + AUTOMATIC_MUTE_HISTORY_MS ||
+      params.sourceAtMs < row.windowStart.getTime() ||
+      params.sourceAtMs > row.windowEnd.getTime() ||
+      Date.now() >= row.deadlineAt.getTime() ||
+      (await this.legacyHolds?.isMessageHeld(params.chatId, row.sourceMessageId)) ||
+      (await this.legacyHolds?.isGlobalUserHeld(params.userId))
+    )
+      return null;
+    return row.deadlineAt.getTime();
   }
 
   async assertSpammerMemberAllowed(params: {

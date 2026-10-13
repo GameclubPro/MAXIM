@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261013090000_prepare_publication_targets_independently",
-  "baselineNamesSha256": "9f575d7faf1d5218c08782ef6e207f5998d64d3859b60becdd7b4ce789d7032d",
-  "baselineContentsSha256": "85cdd011fa2ff3efc8377fffecc7993734a7ee6e4a643fd0b81413ea90902d38",
+  "baselineThrough": "20261013180000_add_automatic_mute_cleanup",
+  "baselineNamesSha256": "aef644ae8c1f514527e54fa366afbda7eab6cd059bb098af10933550b94dfe4c",
+  "baselineContentsSha256": "11a1304191479b7e4345b40c22a862f74a4f7f817743345698f5092d5d23a673",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -203,6 +203,9 @@
     },
     "20261012150000_add_webhook_dependency_quarantine": {
       "reason": "All indexes belong to the new empty quarantine journal. No existing webhook history is scanned, indexed or backfilled; the additive enum is not written until the compatible fleet release is verified."
+    },
+    "20261013180000_add_automatic_mute_cleanup": {
+      "reason": "Both indexes are created only on the empty additive automatic_mute_cleanups table in the same transaction; no retained relation is indexed."
     }
   }
 }

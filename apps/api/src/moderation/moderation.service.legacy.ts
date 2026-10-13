@@ -1,3 +1,4 @@
+import { needsAutomaticMuteCleanup, persistAutomaticMuteCleanup } from './automatic-mute-cleanup';
 import { verifyFreshHeldCommandAccess } from '../webhook/webhook-legacy-fresh-command';
 import {
   describeWebhookExecutionFailure,
@@ -1232,8 +1233,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       params.data.userId,
       params.data.messageId,
     );
-    return this.prisma.moderationEvent.create({
-      data: this.withBotModerationEventData(params.data),
+    const data = this.withBotModerationEventData(params.data);
+    if (!needsAutomaticMuteCleanup(data)) return this.prisma.moderationEvent.create({ data });
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertLegacyModerationAllowed(data.chatId, data.userId, data.messageId, tx);
+      const event = await tx.moderationEvent.create({ data });
+      await persistAutomaticMuteCleanup(tx, event);
+      return event;
     });
   }
 
@@ -4693,7 +4699,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         eventId: null,
         persisted: false,
       };
-      let muteStateCached = false;
       let fenceSettled = false;
       try {
         await leaseGuard?.assertOwned();
@@ -4712,23 +4717,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           logger: this.logger,
         });
+        // FLAG: A runtime-only mute would lose its cleanup obligation after a crash.
+        if (!eventPersistence.persisted || !eventPersistence.eventId)
+          throw new Error('Automatic mute requires a durable sanction event');
         onSanctionEventPersisted?.(eventPersistence.eventId);
         await leaseGuard?.assertOwned();
-        muteStateCached = await this.rememberActiveMuteState(chatId, userId, {
-          eventId: eventPersistence.eventId ?? `runtime:${chatId}:${userId}:${issuedAt.getTime()}`,
+        await this.rememberActiveMuteState(chatId, userId, {
+          eventId: eventPersistence.eventId,
           issuedAt,
           expiresAt,
           durationHours: effectiveMuteDurationHours,
           permanent: false,
           ruleCode: activeMuteRuleCode ?? null,
         });
-        if (!eventPersistence.persisted && !muteStateCached) {
-          await leaseGuard?.assertOwned();
-          await this.settleAutomaticSanctionStateFence(fence, 'ABORTED');
-          fenceSettled = true;
-          return false;
-        }
-
         await leaseGuard?.assertOwned();
         await this.settleAutomaticSanctionStateFence(fence, 'COMMITTED', eventPersistence.eventId);
         fenceSettled = true;
@@ -4766,7 +4767,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (!fenceSettled) {
           await this.settleAutomaticSanctionStateFence(
             fence,
-            eventPersistence.persisted || muteStateCached ? 'COMMITTED' : 'ABORTED',
+            eventPersistence.persisted ? 'COMMITTED' : 'ABORTED',
             eventPersistence.eventId,
           );
         }
@@ -6012,6 +6013,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           } as Prisma.InputJsonObject,
         },
       });
+      await persistAutomaticMuteCleanup(tx, event);
       // FLAG: The event and checkpoint commit together; a crash cannot leave a committed
       // mute/warning behind an unstarted checkpoint or extend its immutable expiry.
       const checkpoint = await tx.$executeRaw(Prisma.sql`

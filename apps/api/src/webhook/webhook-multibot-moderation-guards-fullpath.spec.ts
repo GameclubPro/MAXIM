@@ -34,7 +34,14 @@ describeStores('native current-rule authorization across mirrored bot delivery',
   }
 
   it('deletes sticker cooldown violations and later muted stickers across mirrored receipts', async () => {
-    const s = await fixture(2);
+    h = await createMultibotHarness({
+      databaseUrl,
+      redisUrl,
+      bots: 2,
+      mode: 'on',
+      recoverAutomaticMuteHistory: true,
+    });
+    const s = h;
     const [chatId] = await s.seedCatalog(1, {
       maxMessageLengthEnabled: false,
       antiSpamEnabled: false,
@@ -93,10 +100,14 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     );
     for (const messageId of violations) expect(s.messages.has(messageId)).toBe(false);
     expect(s.messages.has(muted)).toBe(false);
-    // FLAG: Automatic mute cannot delete earlier messages that passed their own policy.
-    expect(s.messages.has(first)).toBe(true);
+    // FLAG: A new automatic mute enrolls prior observed messages in its immutable 30-minute window.
+    expect(s.messages.has(first)).toBe(false);
+    const cleanup = await s.prisma.automaticMuteCleanup.findUniqueOrThrow({
+      where: { eventId: mute.id },
+    });
+    expect(cleanup.status).toBe('SCANNED');
     const deletions = s.effects.filter((effect) => effect.method === 'delete');
-    expect(deletions).toHaveLength(4);
+    expect(deletions).toHaveLength(5);
     for (const id of ids) await s.moderation.processWebhookEvent(id);
     expect(s.effects.filter((effect) => effect.method === 'delete')).toEqual(deletions);
     expect(s.failures).toEqual([]);
