@@ -1758,55 +1758,6 @@
     align-items: start;
   }
 
-  .broadcast-content-composer__modifier-row {
-    display: flex;
-    gap: 5px;
-    overflow-x: auto;
-    padding-bottom: 1px;
-    overscroll-behavior-x: contain;
-    scrollbar-width: none;
-  }
-
-  .broadcast-content-composer__modifier-row::-webkit-scrollbar {
-    display: none;
-  }
-
-  .broadcast-content-composer__modifier {
-    flex: 0 0 auto;
-    min-width: 34px;
-    min-height: 32px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid rgba(154, 174, 193, 0.42);
-    border-radius: 11px;
-    background: rgba(255, 255, 255, 0.94);
-    color: #174b70;
-    font-size: 0.68rem;
-    font-weight: 850;
-    line-height: 1;
-    padding: 0 9px;
-  }
-
-  .broadcast-content-composer__modifier svg {
-    width: 16px;
-    height: 16px;
-  }
-
-  .broadcast-content-composer__modifier.is-italic {
-    font-style: italic;
-  }
-
-  .broadcast-content-composer__modifier.is-code {
-    font-family: ui-monospace, SFMono-Regular, 'SFMono-Regular', Consolas, monospace;
-    font-size: 0.62rem;
-  }
-
-  .broadcast-content-composer__modifier:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-
   .broadcast-message-card.is-empty .broadcast-message-card__bubble {
     min-height: 94px;
     opacity: 0.86;

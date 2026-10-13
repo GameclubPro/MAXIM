@@ -131,6 +131,7 @@ export function BroadcastContentComposer({
   const preparationCallbackRef = useRef(onImagePreparationChange);
   preparationCallbackRef.current = onImagePreparationChange;
   const [formatToolsOpen, setFormatToolsOpen] = useState(false);
+  const [activeTools, setActiveTools] = useState<ReadonlySet<MaxMarkdownTool>>(() => new Set());
   const [normalizationReady, setNormalizationReady] = useState(true);
   const [preparingImages, setPreparingImages] = useState<PreparingImagesState>({
     done: 0,
@@ -563,6 +564,7 @@ export function BroadcastContentComposer({
               type="button"
               className={cn(
                 'broadcast-content-composer__modifier',
+                activeTools.has(tool.id) && 'is-active',
                 tool.id === 'italic' && 'is-italic',
                 tool.id === 'code' && 'is-code',
               )}
@@ -573,6 +575,11 @@ export function BroadcastContentComposer({
               disabled={isBusy}
               title={tool.title}
               aria-label={tool.title}
+              aria-pressed={
+                ['bold', 'italic', 'underline', 'strike'].includes(tool.id)
+                  ? activeTools.has(tool.id)
+                  : undefined
+              }
             >
               {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
             </button>
@@ -692,6 +699,7 @@ export function BroadcastContentComposer({
                   placeholder={textPlaceholder}
                   disabled={editorDisabled}
                   onNormalizationReadyChange={setNormalizationReady}
+                  onActiveToolsChange={setActiveTools}
                   ariaLabel={textAriaLabel}
                   ariaInvalid={Boolean(textError)}
                   ariaDescribedBy={textError ? textErrorId : undefined}
