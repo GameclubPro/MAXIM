@@ -70,7 +70,23 @@ export function buildWebhookCohortAuditSql(explain = false) {
           THEN 'connection_admission_timeout_text'
         ELSE 'other'
       END
-    END AS failure_family
+    END AS failure_family,
+    -- FLAG: Exact saved markers distinguish legacy holds from observed timeouts;
+    -- neither a marker nor a new receipt proves a new execution or permits replay.
+    CASE WHEN samples.status = 'FAILED' AND starts_with(metadata.error_message,
+      'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:') THEN CASE
+      WHEN metadata.error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:LEGACY_EXECUTION_UNVERIFIED; exact effects proof required'
+        THEN 'legacy_execution_unverified'
+      WHEN metadata.error_message = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:CANONICAL_BUSINESS_ALREADY_STARTED; durable-effects recovery required'
+        THEN 'canonical_business_started'
+      WHEN metadata.error_message ~ '^WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}: Webhook user-facing hot path timed out after [1-9][0-9]*ms for (message_created|message_edited)([[:space:]]\\|[[:space:]]|;|$)'
+        THEN 'detached_timeout'
+      WHEN metadata.error_message ~ '^WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}: detached execution completed without a canonical claim: .+'
+        THEN 'unclaimed_detached_completed'
+      WHEN metadata.error_message ~ '^WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}: detached execution failed without a canonical claim: .+'
+        THEN 'unclaimed_detached_failed'
+      ELSE 'other_pending'
+    END END AS pending_quarantine_family
   FROM samples CROSS JOIN LATERAL (
     SELECT processed_at, queued_at, next_enqueue_at, timeout_quarantine_expires_at,
       execution_deadline_at, error_message
@@ -103,11 +119,17 @@ export function buildWebhookCohortAuditSql(explain = false) {
   GROUP BY statuses.status
 )
 SELECT json_build_object(
-  'schema_version', 2, 'audit', 'closed_webhook_cohort', 'window_basis', 'receipt_created_at',
+  'schema_version', 3, 'audit', 'closed_webhook_cohort', 'window_basis', 'receipt_created_at',
   'from', bounds.from_at, 'until', bounds.until_at, 'observed_at', bounds.observed_at,
   'cap_per_status', 512, 'sample_complete', NOT EXISTS (SELECT 1 FROM grouped WHERE captured > 512),
   'nonempty', EXISTS (SELECT 1 FROM samples), 'remote_effects_proven', false,
   'failure_classification_authority', 'saved_metadata_only',
+  'pending_quarantine_families', coalesce((SELECT json_agg(json_build_object(
+    'family', pending_quarantine_family, 'count_lower_bound', sampled
+  ) ORDER BY pending_quarantine_family) FROM (
+    SELECT pending_quarantine_family, count(*) AS sampled FROM details
+    WHERE pending_quarantine_family IS NOT NULL GROUP BY pending_quarantine_family
+  ) quarantine_rows), '[]'::json),
   'failure_families', coalesce((SELECT json_agg(json_build_object(
     'family', failure_family, 'count_lower_bound', sampled,
     'retry_scheduled', retry_scheduled, 'quarantine_timestamp_present', quarantine_timestamp_present,

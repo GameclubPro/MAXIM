@@ -120,6 +120,12 @@ coordinator separation above supersedes only that serialization detail:
   rearm and sequential database reads. A completed
   NOW wake no longer waits for unrelated scheduled work in the background coordinator.
   The 15-second safety poll remains; pauses and failed sweeps do not spin the timer.
+- A PENDING recipient with the exact `PUBLISHER_ACTOR_ACCESS_REQUIRED` marker becomes
+  eligible for the pending-work timer only after its persisted 60-second retry delay.
+  The worker still verifies current bot/actor/policy authority before claiming and sending.
+  A refused recipient renews its delay; other blockers, route quarantine, ambiguous
+  effects and fresh in-flight siblings remain excluded. This prevents a recovered large
+  audience from draining only four recipients per 15-second safety poll.
 - Delivery verification becomes selectable only after its initial delay and persisted
   next-check time. Future verification rows cannot displace currently due verification.
 

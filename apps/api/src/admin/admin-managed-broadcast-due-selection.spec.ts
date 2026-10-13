@@ -135,6 +135,15 @@ describe('publication managed broadcast due selection', () => {
                 ],
               },
               {
+                status: ManagedBroadcastDeliveryStatus.PENDING,
+                dispatchBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+                dispatchBlockedAt: { lte: new Date('2026-09-04T09:59:00.000Z') },
+                OR: [
+                  { lastErrorCode: null },
+                  { lastErrorCode: { not: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } },
+                ],
+              },
+              {
                 status: ManagedBroadcastDeliveryStatus.SENDING,
                 OR: [
                   { lockedAt: null },
