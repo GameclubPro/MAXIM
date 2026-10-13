@@ -19,7 +19,7 @@ CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status, c
 CREATE TABLE moderation_delete_intents (
  id text PRIMARY KEY DEFAULT 'intent',
  chat_id text NOT NULL, message_id text NOT NULL, status text NOT NULL, attempt_count integer DEFAULT 0,
- last_status_code integer, delete_dispatch_started_at timestamp, remote_delete_succeeded_at timestamp,
+ last_error_code text, last_error text, last_status_code integer, delete_dispatch_started_at timestamp, remote_delete_succeeded_at timestamp,
  completed_at timestamp, retry_until_at timestamp, last_attempt_at timestamp, next_attempt_at timestamp
 );
 CREATE UNIQUE INDEX moderation_delete_intents_chat_message_key ON moderation_delete_intents(chat_id, message_id);
@@ -152,6 +152,46 @@ test('keeps an admitted delete distinct from dispatch and remote success', async
   });
   assert.equal(report.remote_effect_proven, false);
   assert.doesNotMatch(JSON.stringify(report), /private-voice/u);
+});
+
+test('classifies only the persisted exact-source guard failure and never exposes raw errors', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  await db.exec(`INSERT INTO webhook_events (id,status,created_at,normalized_payload)
+    VALUES ('source','PROCESSED','2026-10-13 19:33:20','{"message":{"chatId":"-123","messageId":"private-voice"}}');
+    INSERT INTO moderation_delete_intents (chat_id,message_id,status)
+    VALUES ('-123','private-voice','RETRYABLE');`);
+  const sourceError = 'MAX direct message lookup returned a response without the requested id';
+  for (const [code, error, expected] of [
+    ['delete_pre_dispatch_guard_rejected', sourceError, 'predispatch_exact_source_missing_id'],
+    ['delete_pre_dispatch_guard_rejected', `${sourceError} private-secret`, 'predispatch_other'],
+    ['private-code', sourceError, 'other'],
+    [
+      'delete_pre_dispatch_guard_rejected',
+      'Message limits author access unavailable',
+      'predispatch_author_access_unavailable',
+    ],
+    ['route_lookup_failed', 'private-secret', 'route_lookup_failed'],
+    [
+      'message_limits_delete_no_longer_authorized',
+      'private-secret',
+      'message_limits_no_longer_authorized',
+    ],
+    [null, null, 'none'],
+    [null, 'private-secret', 'other'],
+  ]) {
+    await db.query('UPDATE moderation_delete_intents SET last_error_code=$1,last_error=$2', [
+      code,
+      error,
+    ]);
+    const report = (await db.query(buildChatMessageWindowAuditSql('-123', minute))).rows[0]
+      .json_build_object;
+    assert.equal(report.rows[0].delete_intent.last_failure_family, expected);
+    assert.equal(report.rows[0].delete_intent.dispatch_started_at, null);
+    assert.equal(report.remote_effect_proven, false);
+    assert.doesNotMatch(JSON.stringify(report), /private-|MAX direct|last_error/u);
+  }
 });
 
 test('reports omitted receipts and bounds attachment projection even with malformed payloads', async (t) => {

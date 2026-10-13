@@ -350,7 +350,7 @@ SELECT CASE
             )
             OR (
               table_name = 'moderation_delete_intents'
-              AND column_name IN ('id', 'status', 'updated_at', 'chat_id', 'message_id', 'subject_user_id', 'source_message_at', 'attempt_count', 'leased_from_status', 'lease_token', 'lease_expires_at', 'delete_dispatch_started_at', 'delete_dispatch_started_bot_id', 'remote_delete_succeeded_at', 'remote_delete_succeeded_bot_id', 'completed_at', 'absence_verified_at', 'absence_verification_code', 'retry_until_at', 'next_attempt_at', 'first_attempt_at', 'last_attempt_at', 'last_status_code')
+              AND column_name IN ('id', 'status', 'updated_at', 'chat_id', 'message_id', 'subject_user_id', 'source_message_at', 'attempt_count', 'leased_from_status', 'lease_token', 'lease_expires_at', 'delete_dispatch_started_at', 'delete_dispatch_started_bot_id', 'remote_delete_succeeded_at', 'remote_delete_succeeded_bot_id', 'completed_at', 'absence_verified_at', 'absence_verification_code', 'retry_until_at', 'next_attempt_at', 'first_attempt_at', 'last_attempt_at', 'last_status_code', 'last_error_code', 'last_error')
             )
             OR (
               table_name = 'moderation_delete_intent_reasons'
@@ -372,7 +372,7 @@ SELECT CASE
           )
       )
       OR (
-        38 = (
+        40 = (
           SELECT count(DISTINCT (table_name, column_name, privilege_type))
           FROM information_schema.role_column_grants
           WHERE grantee = 'maxim_audit'
@@ -426,7 +426,7 @@ SELECT CASE
           )
           OR (
             restricted_relation.relname = 'moderation_delete_intents'
-            AND restricted_attribute.attname IN ('id', 'status', 'updated_at', 'chat_id', 'message_id', 'subject_user_id', 'source_message_at', 'attempt_count', 'leased_from_status', 'lease_token', 'lease_expires_at', 'delete_dispatch_started_at', 'delete_dispatch_started_bot_id', 'remote_delete_succeeded_at', 'remote_delete_succeeded_bot_id', 'completed_at', 'absence_verified_at', 'absence_verification_code', 'retry_until_at', 'next_attempt_at', 'first_attempt_at', 'last_attempt_at', 'last_status_code')
+            AND restricted_attribute.attname IN ('id', 'status', 'updated_at', 'chat_id', 'message_id', 'subject_user_id', 'source_message_at', 'attempt_count', 'leased_from_status', 'lease_token', 'lease_expires_at', 'delete_dispatch_started_at', 'delete_dispatch_started_bot_id', 'remote_delete_succeeded_at', 'remote_delete_succeeded_bot_id', 'completed_at', 'absence_verified_at', 'absence_verification_code', 'retry_until_at', 'next_attempt_at', 'first_attempt_at', 'last_attempt_at', 'last_status_code', 'last_error_code', 'last_error')
           )
           OR (
             restricted_relation.relname = 'moderation_delete_intent_reasons'
@@ -1849,7 +1849,7 @@ WITH required_duplicate_indexes(
     ) = required_duplicate_indexes.key_columns
 )
 SELECT CASE
-  WHEN 38 = (
+  WHEN 40 = (
     SELECT count(DISTINCT (table_name, column_name, privilege_type))
     FROM information_schema.role_column_grants
     WHERE grantee = 'maxim_audit'

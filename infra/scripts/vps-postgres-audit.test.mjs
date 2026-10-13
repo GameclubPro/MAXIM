@@ -365,7 +365,7 @@ process.exit(result.status ?? 1);
           duplicate_start_time_minutes int, duplicate_end_time_minutes int, duplicate_timezone text,
           private_extra text
         );
-        CREATE TABLE moderation_delete_intents (id text, status text, updated_at timestamptz, chat_id text, message_id text, subject_user_id text, source_message_at timestamp, attempt_count int, leased_from_status text, lease_token text, lease_expires_at timestamp, delete_dispatch_started_at timestamp, delete_dispatch_started_bot_id text, remote_delete_succeeded_at timestamp, remote_delete_succeeded_bot_id text, completed_at timestamp, absence_verified_at timestamp, absence_verification_code text, retry_until_at timestamp, next_attempt_at timestamp, first_attempt_at timestamp, last_attempt_at timestamp, last_status_code int, private_extra text);
+        CREATE TABLE moderation_delete_intents (id text, status text, updated_at timestamptz, chat_id text, message_id text, subject_user_id text, source_message_at timestamp, attempt_count int, leased_from_status text, lease_token text, lease_expires_at timestamp, delete_dispatch_started_at timestamp, delete_dispatch_started_bot_id text, remote_delete_succeeded_at timestamp, remote_delete_succeeded_bot_id text, completed_at timestamp, absence_verified_at timestamp, absence_verification_code text, retry_until_at timestamp, next_attempt_at timestamp, first_attempt_at timestamp, last_attempt_at timestamp, last_status_code int, last_error_code text, last_error text, private_extra text);
         CREATE TABLE moderation_delete_intent_reasons (intent_id text, reason_key text, rule_code text, metadata jsonb, private_extra text);
         CREATE TABLE publisher_entity_settings (
           chat_id text, chat_comments_enabled bool, chat_comments_admins_enabled bool,
@@ -501,14 +501,14 @@ process.exit(result.status ?? 1);
       assert.equal(
         (await client.query(duplicateReadiness)).rows[0].duplicate_audit_ready,
         'true',
-        'all four exact indexes and thirty-eight grants are admitted',
+        'all four exact indexes and forty grants are admitted',
       );
       await client.query(`
         REVOKE SELECT (id, anti_duplicate_enabled, duplicate_photo_enabled,
           duplicate_detection_preset, duplicate_photo_match_preset, duplicate_photo_scope,
           duplicate_compare_mode, duplicate_window_mode, duplicate_start_time_minutes,
           duplicate_end_time_minutes, duplicate_timezone) ON chat_settings FROM ${role};
-        REVOKE SELECT (id, status, updated_at, chat_id, message_id, subject_user_id, source_message_at, attempt_count, leased_from_status, lease_token, lease_expires_at, delete_dispatch_started_at, delete_dispatch_started_bot_id, remote_delete_succeeded_at, remote_delete_succeeded_bot_id, completed_at, absence_verified_at, absence_verification_code, retry_until_at, next_attempt_at, first_attempt_at, last_attempt_at, last_status_code) ON moderation_delete_intents FROM ${role};
+        REVOKE SELECT (id, status, updated_at, chat_id, message_id, subject_user_id, source_message_at, attempt_count, leased_from_status, lease_token, lease_expires_at, delete_dispatch_started_at, delete_dispatch_started_bot_id, remote_delete_succeeded_at, remote_delete_succeeded_bot_id, completed_at, absence_verified_at, absence_verification_code, retry_until_at, next_attempt_at, first_attempt_at, last_attempt_at, last_status_code, last_error_code, last_error) ON moderation_delete_intents FROM ${role};
         REVOKE SELECT (intent_id, reason_key, rule_code, metadata) ON moderation_delete_intent_reasons FROM ${role};
       `);
       assert.equal(await ready(), 'true', 'legacy zero duplicate grant group remains compatible');
@@ -2448,7 +2448,7 @@ test('duplicate explain plans only the fixed intent query and forwards no operat
   assert.equal([...reportSql.matchAll(/EXPLAIN/gu)].length, 1);
   assert.doesNotMatch(reportSql, /ANALYZE|duplicate_settings|recent_duplicate_moderation/u);
   assert.match(sql, /required_duplicate_indexes/u);
-  assert.match(sql, /38 = \(/u);
+  assert.match(sql, /40 = \(/u);
   assert.equal(runConnect(data, ['postgres-audit', 'duplicate', '--explain']).status, 0);
   assert.match(
     readFileSync(data.sshArgs, 'utf8'),
@@ -2699,7 +2699,9 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
       retry_until_at TIMESTAMP,
       first_attempt_at TIMESTAMP,
       last_attempt_at TIMESTAMP,
-      last_status_code INTEGER
+      last_status_code INTEGER,
+      last_error_code TEXT,
+      last_error TEXT
     );
     CREATE INDEX moderation_delete_intents_retention_idx
       ON moderation_delete_intents(status, updated_at);
@@ -2867,7 +2869,7 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
     extra_settings_update: false,
     extra_intent_select: false,
     extra_reason_select: false,
-    exact_grant_count: 38,
+    exact_grant_count: 40,
   });
 
   const verificationSql = extractProvisionVerificationSql();

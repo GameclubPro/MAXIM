@@ -54,6 +54,8 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
   // leaves this report. Hashes permit comparison with an independently read source.
   // FLAG: raw_payload is independently sampled (normally 1%). The retained source
   // consumed by moderation is normalized_payload.raw; prefer it when available.
+  // FLAG: Failure families describe the latest persisted failure, never its first
+  // attempt or a current probe. Match fixed code/text pairs; never emit raw errors.
   const query = `WITH bounds AS MATERIALIZED (
   SELECT '${from}'::timestamptz AT TIME ZONE 'UTC' AS from_at,
     ('${from}'::timestamptz + interval '1 minute') AT TIME ZONE 'UTC' AS until_at
@@ -107,6 +109,20 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
       THEN jsonb_array_length(source_payload->'message'->'body'->'attachments') > 32 ELSE false END AS attachments_truncated,
     (SELECT json_build_object('status', intent.status,
       'attempt_count', intent.attempt_count, 'last_status_code', intent.last_status_code,
+      'last_failure_family', CASE
+        WHEN intent.last_error_code = 'delete_pre_dispatch_guard_rejected'
+          AND intent.last_error = 'MAX direct message lookup returned a response without the requested id'
+          THEN 'predispatch_exact_source_missing_id'
+        WHEN intent.last_error_code = 'delete_pre_dispatch_guard_rejected'
+          AND intent.last_error = 'Message limits author access unavailable'
+          THEN 'predispatch_author_access_unavailable'
+        WHEN intent.last_error_code = 'delete_pre_dispatch_guard_rejected'
+          THEN 'predispatch_other'
+        WHEN intent.last_error_code = 'route_lookup_failed' THEN 'route_lookup_failed'
+        WHEN intent.last_error_code = 'message_limits_delete_no_longer_authorized'
+          THEN 'message_limits_no_longer_authorized'
+        WHEN intent.last_error_code IS NULL AND intent.last_error IS NULL THEN 'none'
+        ELSE 'other' END,
       'dispatch_started_at', intent.delete_dispatch_started_at,
       'remote_succeeded_at', intent.remote_delete_succeeded_at,
       'completed_at', intent.completed_at, 'retry_until_at', intent.retry_until_at,
@@ -122,7 +138,7 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
   FROM details
 )
 SELECT json_build_object(
-  'schema_version', 1, 'audit', 'chat_message_window', 'observed_at', statement_timestamp(),
+  'schema_version', 2, 'audit', 'chat_message_window', 'observed_at', statement_timestamp(),
   'from_at', (SELECT from_at FROM bounds), 'until_at', (SELECT until_at FROM bounds),
   'window_closed', (SELECT until_at <= statement_timestamp() AT TIME ZONE 'UTC' FROM bounds),
   'per_status_cap', 512, 'sampled_receipts', (SELECT count(*) FROM samples),
