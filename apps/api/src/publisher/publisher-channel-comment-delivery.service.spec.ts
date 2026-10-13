@@ -9,6 +9,8 @@ import {
 } from './publisher-chat-comment.queue';
 import { PublisherDialogLinkService } from './publisher-dialog-link.service';
 import { AdminDialogLinkHelper } from '../admin/admin-dialog-link-helper';
+import { prepareStoredChannelCommentsKeyboard } from '../admin/admin-channel-comment-keyboard';
+import { refreshExistingInlineKeyboardText } from '../max/max-inline-keyboard-text-refresh';
 
 const chatId = '-100';
 const config = { get: () => 'publik-bot' };
@@ -17,7 +19,7 @@ const links = new PublisherDialogLinkService(
   { getSigningKeys: () => ['publisher-test-key'] } as never,
 );
 
-function fixture() {
+function fixture(dialogLinks = links) {
   const entity = {
     entityType: 'CHANNEL',
     publicationPolicy: {
@@ -94,7 +96,7 @@ function fixture() {
     readiness as never,
     runtime as never,
     { getBotId: () => 'publik-bot' } as never,
-    links,
+    dialogLinks,
     health as never,
     postSignature as never,
   );
@@ -141,6 +143,73 @@ function fixture() {
 }
 
 describe('Publisher channel keyboard webhook and delivery', () => {
+  it.each([false, true])(
+    'retains the installed signed comments link for later counts when adding another action: %s',
+    async (addAction) => {
+      const oldLinks = new PublisherDialogLinkService(
+        config as never,
+        { getSigningKeys: () => ['previous-publisher-key'] } as never,
+      );
+      const currentLinks = new PublisherDialogLinkService(
+        config as never,
+        { getSigningKeys: () => ['publisher-test-key', 'previous-publisher-key'] } as never,
+      );
+      const h = fixture(currentLinks);
+      const comments = oldLinks.buildChannelDialogButton(
+        chatId,
+        'comments',
+        h.job.threadId,
+        '💬 Комментарии · 1',
+        'MINIAPP',
+      );
+      const suggest = oldLinks.buildChannelDialogButton(
+        chatId,
+        'suggest',
+        h.job.threadId,
+        'Предложить',
+        'MINIAPP',
+      );
+      if (comments.type !== 'link') throw new Error('Expected the signed launch link');
+      const start = new URL(comments.url).searchParams.get('startapp')!;
+      const token = JSON.parse(Buffer.from(start.slice(3), 'base64url').toString('utf8')).t;
+      expect(currentLinks.resolveChannelDialogThreadId(chatId, 'comments', token)).toBe(
+        h.job.threadId,
+      );
+      const shop = { type: 'link', text: 'Магазин', url: 'https://example.test/shop' };
+      h.message.body.attachments = [
+        { type: 'image', payload: { token: 'retained-photo' } },
+        { type: 'inline_keyboard', payload: { buttons: [[shop], [comments], [suggest]] } },
+      ];
+      if (addAction)
+        h.postSignature.buildPostButton.mockResolvedValue({
+          type: 'link',
+          text: 'Отзывы',
+          url: 'https://example.test/reviews',
+        });
+
+      await h.service.process(h.job);
+
+      expect(h.mutate).toHaveBeenCalledTimes(addAction ? 1 : 0);
+      const saved = h.prisma.auditLog.upsert.mock.calls[0]![0].create.payload;
+      const keyboard = prepareStoredChannelCommentsKeyboard(saved, 7)!;
+      const button =
+        keyboard.buttons[keyboard.commentsButton.rowIndex]![keyboard.commentsButton.columnIndex]!;
+      const readText = jest.fn().mockResolvedValue('💬 Комментарии · 7');
+      const refreshed = await refreshExistingInlineKeyboardText(h.message, { button, readText });
+      expect(refreshed).not.toBeNull();
+      expect(readText).toHaveBeenCalledTimes(1);
+      expect((refreshed!.body as typeof h.message.body).attachments).toEqual([
+        h.message.body.attachments[0],
+        {
+          type: 'inline_keyboard',
+          payload: {
+            buttons: [[shop], [{ ...comments, text: '💬 Комментарии · 7' }], [suggest]],
+          },
+        },
+      ]);
+    },
+  );
+
   it('stops an unchanged admin denial before source reads or EDIT and keeps later activation possible', async () => {
     const h = fixture();
     h.readiness.assertEntityReady.mockRejectedValueOnce(

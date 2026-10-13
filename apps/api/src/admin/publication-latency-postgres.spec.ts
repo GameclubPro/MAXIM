@@ -133,7 +133,10 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
         ...Array.from({ length: 20 }, (_, i) => occurrence(`${prefix}-ready-${i}`, -1_000 + i)),
       ],
     });
-    await db.$executeRawUnsafe('ANALYZE publication_occurrences');
+    // FLAG: Native suites share this disposable database. Compact dead occurrence
+    // tuples/index pages from earlier fixtures so this plan measures the declared
+    // live distribution, with the same indexes and unmodified planner settings.
+    await db.$executeRawUnsafe('VACUUM (FULL, ANALYZE) publication_occurrences');
     await db.$executeRawUnsafe('ANALYZE publications');
     await db.$executeRawUnsafe('ANALYZE publication_schedules');
     await db.$executeRawUnsafe('ANALYZE managed_broadcasts');
