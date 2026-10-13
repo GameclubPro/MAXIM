@@ -33,6 +33,86 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     return h;
   }
 
+  it('deletes sticker cooldown violations and later muted stickers across mirrored receipts', async () => {
+    h = await createMultibotHarness({
+      databaseUrl,
+      redisUrl,
+      bots: 2,
+      mode: 'on',
+      recoverAutomaticMuteHistory: true,
+    });
+    const s = h;
+    const [chatId] = await s.seedCatalog(1, {
+      maxMessageLengthEnabled: false,
+      antiSpamEnabled: false,
+      stickerMessageCooldownEnabled: true,
+      stickerMessageCooldownMinutes: 5,
+      messageLimitsWarnEnabled: false,
+      messageLimitsMuteEnabled: true,
+      messageLimitsBanEnabled: false,
+    });
+    const sendSticker = async (messageId: string) => {
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            text: '',
+            attachments: [{ type: 'sticker', payload: { code: 'fixture-sticker' } }],
+          }),
+        ),
+      );
+      await s.drain();
+      return ids;
+    };
+    const first = `sticker-allowed-${randomUUID()}`;
+    await sendSticker(first);
+    expect(s.effects).toEqual([]);
+
+    const violations = Array.from({ length: 3 }, () => `sticker-violation-${randomUUID()}`);
+    for (const messageId of violations) {
+      await sendSticker(messageId);
+      await waitForUserDelete(s, chatId!, messageId);
+    }
+    const mute = await s.prisma.moderationEvent.findFirstOrThrow({
+      where: { chatId, userId: 'fixture-user', action: 'MUTE' },
+    });
+    expect(mute.ruleCode).toBe('STICKER_RATE_LIMIT');
+    expect(mute.metadata).toEqual(expect.objectContaining({ sanctionApplied: true }));
+
+    const muted = `sticker-muted-${randomUUID()}`;
+    const ids = await sendSticker(muted);
+    await waitForUserDelete(s, chatId!, muted);
+    const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+      where: { chatId_messageId: { chatId: chatId!, messageId: muted } },
+      include: { reasons: true },
+    });
+    expect(intent.reasons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'MUTE_ACTIVE_DELETE',
+          metadata: expect.objectContaining({ moderationDeleteVerified: true }),
+        }),
+      ]),
+    );
+    for (const messageId of violations) expect(s.messages.has(messageId)).toBe(false);
+    expect(s.messages.has(muted)).toBe(false);
+    // FLAG: A new automatic mute enrolls prior observed messages in its immutable 30-minute window.
+    expect(s.messages.has(first)).toBe(false);
+    const cleanup = await s.prisma.automaticMuteCleanup.findUniqueOrThrow({
+      where: { eventId: mute.id },
+    });
+    expect(cleanup.status).toBe('SCANNED');
+    const deletions = s.effects.filter((effect) => effect.method === 'delete');
+    expect(deletions).toHaveLength(5);
+    for (const id of ids) await s.moderation.processWebhookEvent(id);
+    expect(s.effects.filter((effect) => effect.method === 'delete')).toEqual(deletions);
+    expect(s.failures).toEqual([]);
+  });
+
   it.each([false, true])(
     'signs a manually published channel post exactly once through mirrored receipts, senderless=%s',
     async (senderless) => {

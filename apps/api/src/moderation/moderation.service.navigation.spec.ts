@@ -5,6 +5,7 @@ import {
   INCIDENT_EXTERNAL_URL,
   INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE,
   ModerationService,
+  withAutomaticMutePersistenceFixture,
   RuleEngineService,
   ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS,
   userMention,
@@ -2908,7 +2909,7 @@ describe('ModerationService', () => {
           botSpeechStyle: null,
           persistModerationEvent: jest.fn().mockRejectedValue(new Error('database unavailable')),
         }),
-      ).resolves.toBe(false);
+      ).rejects.toThrow('Automatic mute requires a durable sanction event');
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
     });
   });
@@ -3116,6 +3117,7 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
 
+    withAutomaticMutePersistenceFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       ruleEngine as never,
@@ -3196,6 +3198,7 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
 
+    withAutomaticMutePersistenceFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       ruleEngine as never,
@@ -5148,6 +5151,7 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
 
+    withAutomaticMutePersistenceFixture(prisma);
     const service = new ModerationService(
       prisma as never,
       ruleEngine as never,
