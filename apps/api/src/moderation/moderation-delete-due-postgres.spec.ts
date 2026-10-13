@@ -206,7 +206,31 @@ describePostgres('PostgreSQL delete due selection', () => {
     expect(result).toHaveLength(23);
   });
 
-  it('skips rows locked by another worker and preserves global due ordering and the total batch cap', async () => {
+  it('admits fresh pending and retryable deletes alongside a full older ambiguous backlog', async () => {
+    await client.query(`INSERT INTO moderation_delete_intents
+      (id,status,next_attempt_at,created_at,retry_until_at,delete_dispatch_started_at)
+      SELECT 'old-'||n,'AMBIGUOUS','2026-01-01','2026-01-01','2026-01-02','2026-01-01'
+      FROM generate_series(1,200)n;
+      INSERT INTO moderation_delete_intent_reasons
+      SELECT id,'BOT_MESSAGE_AUTO_DELETE','fixture','{}'::jsonb FROM moderation_delete_intents;
+      INSERT INTO moderation_delete_intents (id,status,next_attempt_at,created_at)
+      VALUES ('fresh-voice','RETRYABLE','2026-10-01','2026-10-01'),
+        ('fresh-pending','PENDING','2026-10-01','2026-10-01');
+      INSERT INTO moderation_delete_intent_reasons VALUES
+        ('fresh-voice','VOICE_BLOCKED_DELETE','voice','{}'),
+        ('fresh-pending','PHOTO_BLOCKED_DELETE','photo','{}');`);
+    const selected = (await select()).map((row) => row.id);
+    expect(selected).toContain('fresh-voice');
+    expect(selected).toContain('fresh-pending');
+    expect(selected).toHaveLength(100);
+    expect(selected.filter((id) => id.startsWith('old-'))).toHaveLength(98);
+    const evidence = await client.query(`SELECT count(*)::int AS retained
+      FROM moderation_delete_intents WHERE status='AMBIGUOUS'
+        AND delete_dispatch_started_at='2026-01-01' AND retry_until_at='2026-01-02'`);
+    expect(evidence.rows[0].retained).toBe(200);
+  });
+
+  it('skips locked rows and interleaves ordered status lanes under the total batch cap', async () => {
     await seed(600);
     await locker.query('BEGIN');
     try {

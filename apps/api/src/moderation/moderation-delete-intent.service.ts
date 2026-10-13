@@ -6154,6 +6154,9 @@ export class ModerationDeleteIntentService {
     // index find each ordered prefix without sorting the whole mixed-status population.
     // Every lane keeps all eligibility/authority predicates. Locks are statement-local,
     // at most five batch prefixes; only the original total batch is handed to workers.
+    // FLAG: Interleave those bounded status prefixes so retained ambiguous effects
+    // cannot occupy every slot ahead of new PENDING/RETRYABLE moderation deletes.
+    // This schedules existing authority only; workers retain every claim and effect guard.
     return this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       WITH pending AS MATERIALIZED (
         ${selectStatus(Prisma.sql`CAST('PENDING' AS "ModerationDeleteIntentStatus")`)}
@@ -6169,15 +6172,20 @@ export class ModerationDeleteIntentService {
           Prisma.sql`AND intent."lease_expires_at" < ${now}`,
         )}
       ), candidates AS (
-        SELECT * FROM pending
-        UNION ALL SELECT * FROM retryable
-        UNION ALL SELECT * FROM waiting
-        UNION ALL SELECT * FROM ambiguous
-        UNION ALL SELECT * FROM in_progress
+        SELECT *, 0 AS lane FROM pending
+        UNION ALL SELECT *, 1 AS lane FROM retryable
+        UNION ALL SELECT *, 2 AS lane FROM waiting
+        UNION ALL SELECT *, 3 AS lane FROM ambiguous
+        UNION ALL SELECT *, 4 AS lane FROM in_progress
+      ), ranked AS (
+        SELECT *, row_number() OVER (
+          PARTITION BY lane ORDER BY next_attempt_at, created_at, id
+        ) AS lane_position
+        FROM candidates
       )
-      SELECT candidates."id"
-      FROM candidates
-      ORDER BY candidates."next_attempt_at" ASC, candidates."created_at" ASC
+      SELECT ranked."id"
+      FROM ranked
+      ORDER BY ranked.lane_position, ranked."next_attempt_at", ranked."created_at", ranked."id"
       LIMIT ${this.sweepBatchSize}
     `);
   }

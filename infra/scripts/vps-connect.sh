@@ -75,6 +75,8 @@ Commands:
   postgres-audit queue [--explain]
   postgres-audit legacy-order-candidates
   postgres-audit moderation-outcomes [--explain]
+  postgres-audit delete-retry-heads [--explain]
+  postgres-audit chat-message-window <chat-id> <UTC-minute> [--explain]
   postgres-audit webhook-cohort [--explain]
   postgres-audit duplicate [--status <STATUS>] [--explain]
   postgres-audit rules-cleanup <chat-id> [--explain]
@@ -501,6 +503,17 @@ ERROR
 postgres_audit() {
   local mode="${1:-all}"
 
+  if [[ "$mode" == 'chat-message-window' ]]; then
+    if [[ $# -lt 3 || $# -gt 4 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
+          ! "$3" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00Z$ ||
+          ( $# -eq 4 && "$4" != '--explain' ) ]]; then
+      echo 'Usage: postgres-audit chat-message-window <chat-id> <UTC-minute> [--explain]' >&2
+      exit 2
+    fi
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
+
   if [[ "$mode" == 'duplicate' && "${2:-}" == '--status' ]]; then
     case "${3:-}" in
       OBSERVED|PENDING|IN_PROGRESS|RETRYABLE|WAITING_CAPABILITY|AMBIGUOUS|SUCCEEDED|ALREADY_ABSENT|EXPIRED|FAILED_TERMINAL) ;;
@@ -514,7 +527,7 @@ postgres_audit() {
     return
   fi
 
-  if [[ "$mode" == 'webhook-cohort' || "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
+  if [[ "$mode" == 'delete-retry-heads' || "$mode" == 'webhook-cohort' || "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
         "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'webhook-source-proof' || "$mode" == 'webhook-retry-proof' || "$mode" == 'webhook-queued-proof' || "$mode" == 'legacy-order-window' ||
         "$mode" == 'moderation-outcomes' || "$mode" == 'legacy-semantic-mirrors' ]]; then
