@@ -51,6 +51,15 @@ rewritten, deleted, or republished by this investigation.
    rows, return the latest 80, and expose optional `hasMoreMessages`. A truncated
    history shows `80+`, not an asserted total of 80. Exactly 80 rows remain `80`.
    This uses a bounded lookahead, not an additional full-history count on each poll.
+10. **A retained Publisher button could be saved with a different signed link.**
+    Channel attachment kept the installed button, but its counter reference rebuilt
+    the URL using the current signing key. A still-valid older link then failed the
+    exact-match counter refresh. Save the same installed Publisher button in the
+    reference, including when attachment is a no-op or adds another action. Preserve
+    profile separation and the existing opaque URL; do not weaken refresh matching.
+    Regression tests authenticate the previous key and verify a later count update
+    without changing the photo, discussion link or neighboring buttons. See the
+    [13 October investigation](operations/plans/2026-10-13-comment-counter-reliability.md).
 
 ## Acceptance and Release
 

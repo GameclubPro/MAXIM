@@ -515,6 +515,16 @@ describeStores(
             const receipt = await f.s.waitForConfirmedDelete(f.chatId, currentMessageId);
             expect(receipt.status).toBe('SUCCEEDED');
             expect(receipt.remoteDeleteSucceededAt).toBeInstanceOf(Date);
+            const mute = await f.s.prisma.moderationEvent.findFirstOrThrow({
+              where: {
+                chatId: f.chatId,
+                messageId: currentMessageId,
+                ruleCode: 'DUPLICATE_MUTE',
+                action: 'MUTE',
+              },
+              select: { metadata: true },
+            });
+            expect(mute.metadata).toMatchObject({ sanctionApplied: true });
             if (change === 'peer-demoted')
               for (const bot of f.s.bots.slice(0, -1)) await f.s.demote(f.chatId, bot.id);
             if (change === 'policy-revoked')
@@ -525,6 +535,19 @@ describeStores(
             if (change === 'unknown-send') f.s.ambiguousNextSend();
           },
         );
+        const originalGuard = f.s.duplicateGuard.assertMessageStillActionable.bind(
+          f.s.duplicateGuard,
+        );
+        jest
+          .spyOn(f.s.duplicateGuard, 'assertMessageStillActionable')
+          .mockImplementation(async (input) => {
+            // FLAG: This scenario tests a notice after a successful sanction. Wait for
+            // the real DELETE receipt before sanction admission so its final guard
+            // cannot race an absent source whose receipt is still being committed.
+            if (input.sanctionIntentId && input.sanctionPhase === 'initial_unattempted')
+              await f.s.waitForConfirmedDelete(input.chatId, input.messageId);
+            return originalGuard(input);
+          });
         const text = 'Native duplicate mute and guarded successful sanction notification';
         for (let index = 0; index < 3; index += 1) {
           const messageId = `duplicate-mute-${index}-${randomUUID()}`;

@@ -123,6 +123,12 @@ export class PublisherChannelCommentDeliveryService {
             const includeSuggestButton =
               settings.channelSuggestionsEnabled &&
               (!existingSuggestion || existingSuggestion.profile === 'publisher');
+            const existingButtons = readPostButtonRows(message).flat();
+            const findExistingDialog = (kind: 'comments' | 'suggest') =>
+              existingButtons.find((button) => {
+                const identity = readInternalChannelDialogButtonIdentity(button, job.requiredBotId);
+                return identity?.chatId === job.chatId && identity.kind === kind;
+              });
             const count = includeCommentsButton
               ? await countPublisherChatComments(this.prisma, job.chatId, threadId)
               : 0;
@@ -147,9 +153,12 @@ export class PublisherChannelCommentDeliveryService {
                 )
               : null;
             ctaButton = await this.postSignature.buildPostButton(job.chatId, postButtonOptions);
+            // FLAG: Counter refresh matches the installed opaque link, not a regenerated
+            // signature. Preserve the same Publisher button that the locked edit keeps;
+            // a retained Major button must never become a Publisher count reference.
             const buttonRows = buildChannelPostActionRows({
-              commentsButton: comments,
-              suggestButton: suggest,
+              commentsButton: comments ? (findExistingDialog('comments') ?? comments) : null,
+              suggestButton: suggest ? (findExistingDialog('suggest') ?? suggest) : null,
               ctaButton,
             });
             reference = {
@@ -168,7 +177,6 @@ export class PublisherChannelCommentDeliveryService {
                 ? { rowIndex: 0, columnIndex: 0, baseText: commentsText }
                 : null,
             };
-            const existingButtons = readPostButtonRows(message).flat();
             const seenDialogKinds = new Set<'comments' | 'suggest'>();
             const hasDuplicateDialogs = existingButtons.some((button) => {
               const identity = readInternalChannelDialogButtonIdentity(button, job.requiredBotId);
@@ -185,11 +193,6 @@ export class PublisherChannelCommentDeliveryService {
               !existingButtons.some((button) => button.type === 'link' && button.url === ctaUrl);
             if (!missingComments && !missingSuggest && !missingCta && !hasDuplicateDialogs)
               return null;
-            const findExistingDialog = (kind: 'comments' | 'suggest') =>
-              existingButtons.find((button) => {
-                const identity = readInternalChannelDialogButtonIdentity(button, job.requiredBotId);
-                return identity?.chatId === job.chatId && identity.kind === kind;
-              });
             return buildChannelPostActionRows({
               commentsButton: findExistingDialog('comments') ?? comments,
               suggestButton: findExistingDialog('suggest') ?? suggest,
