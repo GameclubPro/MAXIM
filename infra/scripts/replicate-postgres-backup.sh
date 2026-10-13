@@ -29,7 +29,13 @@ run_bounded() {
 BACKUP_DIR="$(dirname "$DUMP_PATH")"
 exec {REPLICATION_LOCK_FD}>>"$BACKUP_DIR/.maxim-independent-backup.lock"
 flock -n "$REPLICATION_LOCK_FD" || exit 75
-(cd "$BACKUP_DIR" && sha256sum --check --status "$(basename "$DUMP_PATH").sha256")
+# FLAG: Check only this exact archive; a sidecar naming another file proves nothing.
+[[ -f "$DUMP_PATH.sha256" && ! -L "$DUMP_PATH.sha256" ]]
+(( $(stat -c %s "$DUMP_PATH.sha256") <= 256 ))
+CHECKSUM_LINE="$(cat "$DUMP_PATH.sha256")"
+EXPECTED_SHA="${CHECKSUM_LINE:0:64}"
+[[ "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ && "$CHECKSUM_LINE" == "$EXPECTED_SHA  $(basename "$DUMP_PATH")" ]]
+(cd "$BACKUP_DIR" && run_bounded sha256sum --check --status "$(basename "$DUMP_PATH").sha256")
 DUMP_BYTES="$(stat -c %s "$DUMP_PATH")"
 FREE_BYTES="$(df -PB1 "$BACKUP_DIR" | awk 'NR==2 {print $4}')"
 (( FREE_BYTES > DUMP_BYTES + DUMP_BYTES / 100 + MIN_FREE_BYTES ))
@@ -42,7 +48,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 run_bounded age --recipients-file "$RECIPIENTS" --output "$CIPHER" "$DUMP_PATH"
-CIPHER_SHA="$(sha256sum "$CIPHER" | cut -d' ' -f1)"
+CIPHER_SHA="$(run_bounded sha256sum "$CIPHER" | cut -d' ' -f1)"
 CIPHER_BYTES="$(stat -c %s "$CIPHER")"
 REMOTE_OBJECT="$REMOTE_PREFIX/$(basename "$DUMP_PATH").$CIPHER_SHA.age"
 RCLONE_ARGS=(--config "$RCLONE_CONFIG" --bwlimit "${BW_LIMIT}b" --retries 1 --low-level-retries 2 --contimeout 15s --timeout 60s)

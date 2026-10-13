@@ -82,6 +82,13 @@ if [[ ! -f "$CHECKSUM_PATH" ]]; then
   exit 2
 fi
 
+# FLAG: Check only this exact archive; a sidecar naming another file proves nothing.
+[[ -f "$DUMP_PATH.sha256" && ! -L "$DUMP_PATH.sha256" ]]
+(( $(stat -c %s "$DUMP_PATH.sha256") <= 256 ))
+CHECKSUM_LINE="$(cat "$DUMP_PATH.sha256")"
+EXPECTED_SHA="${CHECKSUM_LINE:0:64}"
+[[ "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ && "$CHECKSUM_LINE" == "$EXPECTED_SHA  $(basename "$DUMP_PATH")" ]]
+
 (
   cd "$DUMP_DIR"
   sha256sum --check --status "$(basename "$CHECKSUM_PATH")"
@@ -141,6 +148,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+probe_ready
 docker run --detach --rm \
   --name "$CONTAINER_NAME" \
   --network none --cpus 2 --memory 4g --pids-limit 128 --shm-size 256m \

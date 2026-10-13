@@ -9,9 +9,12 @@ import test from 'node:test';
 const script = resolve(import.meta.dirname, 'replicate-postgres-backup.sh');
 const ageAvailable = spawnSync('age', ['--version']).status === 0;
 
-for (const corrupt of [false, true]) {
+for (const scenario of ['valid', 'corrupt', 'foreign-checksum']) {
+  const corrupt = scenario === 'corrupt';
+  const foreignChecksum = scenario === 'foreign-checksum';
+  const accepted = scenario === 'valid';
   test(
-    `independent backup verifies full ciphertext readback, corrupt=${corrupt}`,
+    `independent backup verifies full ciphertext readback, scenario=${scenario}`,
     { skip: !ageAvailable },
     (t) => {
       const dir = mkdtempSync(join(tmpdir(), 'maxim-independent-backup-'));
@@ -45,7 +48,14 @@ else: sys.exit(2)
       const plain = Buffer.from('synthetic PostgreSQL archive, never production data\n');
       writeFileSync(dump, plain);
       const sha = createHash('sha256').update(plain).digest('hex');
-      writeFileSync(`${dump}.sha256`, `${sha}  ${name}\n`);
+      const foreign = Buffer.from('different archive');
+      writeFileSync(join(dir, 'unrelated.dump'), foreign);
+      writeFileSync(
+        `${dump}.sha256`,
+        foreignChecksum
+          ? `${createHash('sha256').update(foreign).digest('hex')}  unrelated.dump\n`
+          : `${sha}  ${name}\n`,
+      );
       const env = {
         ...process.env,
         PATH: `${bin}:${process.env.PATH}`,
@@ -58,13 +68,14 @@ else: sys.exit(2)
         MAXIM_BACKUP_REPLICATION_TIMEOUT_SEC: '30',
       };
       const result = spawnSync('bash', [script, dump], { env, encoding: 'utf8', timeout: 35_000 });
-      assert.equal(result.status === 0, !corrupt, result.stderr);
+      assert.equal(result.status === 0, accepted, result.stderr);
       const files = readdirSync(remote);
+      if (foreignChecksum) assert.deepEqual(files, []);
       assert.equal(
         files.some((file) => file.endsWith('.verified.json')),
-        !corrupt,
+        accepted,
       );
-      if (!corrupt) {
+      if (accepted) {
         const receipt = JSON.parse(readFileSync(`${dump}.remote-verified.json`, 'utf8'));
         assert.equal(receipt.dumpSha256, sha);
         assert.equal(receipt.verification, 'full_ciphertext_readback');

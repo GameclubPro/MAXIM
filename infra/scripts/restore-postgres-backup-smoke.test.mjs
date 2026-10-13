@@ -15,8 +15,10 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { deployLockFixture, deployLockEnvironment } from './test-fixtures/deploy-lock.mjs';
 
-for (const valid of [true, false]) {
-  test(`restore is isolated, cleaned and receipts require authority schema; valid=${valid}`, (t) => {
+for (const scenario of ['valid', 'invalid-schema', 'foreign-checksum']) {
+  const valid = scenario === 'valid';
+  const foreignChecksum = scenario === 'foreign-checksum';
+  test(`restore is isolated, cleaned and receipts require authority schema; scenario=${scenario}`, (t) => {
     const dir = mkdtempSync(join(tmpdir(), 'maxim-restore-test-'));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     const lock = deployLockFixture(dir);
@@ -60,8 +62,9 @@ esac
     writeFileSync(dump, bytes);
     writeFileSync(
       `${dump}.sha256`,
-      `${createHash('sha256').update(bytes).digest('hex')}  ${name}\n`,
+      `${createHash('sha256').update(bytes).digest('hex')}  ${foreignChecksum ? 'unrelated.dump' : name}\n`,
     );
+    writeFileSync(join(backup, 'unrelated.dump'), bytes);
     const env = deployLockEnvironment({
       PATH: `${bin}:${process.env.PATH}`,
       MAXIM_BACKUP_DIR: backup,
@@ -76,6 +79,11 @@ esac
     assert.equal(result.status === 0, valid, result.stderr);
     assert.equal(existsSync(`${dump}.restore-verified.json`), valid);
     assert.deepEqual(readdirSync(data), []);
+    if (foreignChecksum) {
+      assert.equal(existsSync(log), false);
+      assert.equal(spawnSync('flock', ['-n', lock.file, 'true']).status, 0);
+      return;
+    }
     const operations = readFileSync(log, 'utf8');
     assert.match(operations, /--network none --cpus 2 --memory 4g --pids-limit 128/u);
     assert.match(operations, /rm -f maxim-postgres-restore-smoke-/u);
